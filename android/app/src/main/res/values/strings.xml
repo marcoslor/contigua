@@ -1,0 +1,33 @@
+<resources>
+    <string name="app_name">PocketDeck</string>
+
+    <string name="channel_ongoing">Service</string>
+    <string name="channel_pairing">Pairing requests</string>
+    <string name="notif_starting">Starting…</string>
+    <string name="notif_listening">Listening on port %1$d</string>
+    <string name="notif_connected">Connected to %1$s · %2$d windows</string>
+
+    <string name="pairing_title">Allow %1$s to connect?</string>
+    <string name="pairing_text">Code: %1$s</string>
+    <string name="pairing_request">%1$s wants to connect.\nCode: %2$s</string>
+    <string name="allow">Allow</string>
+    <string name="deny">Deny</string>
+
+    <string name="grant">Grant Shizuku permission</string>
+    <string name="allow_connections">Allow connections</string>
+    <string name="paired_title">Paired Macs</string>
+    <string name="forget">Forget</string>
+    <string name="no_paired">No Macs paired yet.</string>
+
+    <string name="server_listening">Server: listening on port %1$d</string>
+    <string name="server_stopped">Server: not running</string>
+    <string name="connected_to">Connected to %1$s · %2$d windows</string>
+    <string name="not_connected">No Mac connected</string>
+
+    <string name="shizuku_not_running">Shizuku is not running. Start it in the Shizuku app.</string>
+    <string name="shizuku_granted">Shizuku: permission granted</string>
+    <string name="shizuku_need_grant">Shizuku: permission needed</string>
+
+    <string name="launcher_search_hint">Search apps</string>
+    <string name="launcher_no_match">No apps match</string>
+</resources>

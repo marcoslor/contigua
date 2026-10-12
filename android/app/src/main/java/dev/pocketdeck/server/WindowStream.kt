@@ -1,0 +1,330 @@
+package dev.pocketdeck.server
+
+import android.content.Context
+import android.hardware.display.DisplayManager
+import android.hardware.display.VirtualDisplay
+import android.media.MediaCodec
+import android.media.MediaCodecInfo
+import android.media.MediaFormat
+import android.os.Build
+import android.os.Bundle
+import android.view.Surface
+import dev.pocketdeck.proto.Frames
+import java.io.ByteArrayOutputStream
+import java.nio.ByteBuffer
+
+/**
+ * One VirtualDisplay whose surface is a MediaCodec H.264 encoder input. The
+ * encoded output is pushed straight into the session's send queue.
+ */
+internal class WindowStream(
+    private val ctx: Context,
+    val stream: Int,
+    private val sink: VideoSink,
+    private val log: (String) -> Unit,
+) {
+
+    private companion object {
+        const val MIME = "video/avc"
+        const val FPS = 60
+        const val I_FRAME_INTERVAL_S = 10
+        const val MAX_BITRATE = 8_000_000
+        const val MIN_BITRATE = 500_000
+
+        const val VIRTUAL_DISPLAY_CONFIG = "android.hardware.display.VirtualDisplayConfig"
+
+        // @hide DisplayManager flags, verified against AOSP. Deliberately absent:
+        // the system-decorations flag (bit 9) and the device display-group flag
+        // (bit 15). The first adds a SystemUI nav bar and poisons One UI's back
+        // gesture; the second would tie the VD to the panel's power state and
+        // freeze it while the phone is locked.
+        const val FLAG_SUPPORTS_TOUCH = 1 shl 6
+        const val FLAG_ROTATES_WITH_CONTENT = 1 shl 7
+        const val FLAG_DESTROY_CONTENT_ON_REMOVAL = 1 shl 8
+        const val FLAG_TRUSTED = 1 shl 10
+        const val FLAG_OWN_DISPLAY_GROUP = 1 shl 11
+        const val FLAG_ALWAYS_UNLOCKED = 1 shl 12
+        const val FLAG_TOUCH_FEEDBACK_DISABLED = 1 shl 13
+        const val FLAG_OWN_FOCUS = 1 shl 14
+    }
+
+    @Volatile private var vd: VirtualDisplay? = null
+    @Volatile private var encoder: MediaCodec? = null
+    @Volatile private var drainThread: Thread? = null
+    @Volatile private var released = false
+    @Volatile private var paused = false
+    @Volatile private var width = 0
+    @Volatile private var height = 0
+
+    @Volatile private var displayIdValue = -1
+
+    val displayId: Int get() = displayIdValue
+    val size: IntSize get() = IntSize(width, height)
+
+    fun start(w: Int, h: Int, dpi: Int): Int {
+        width = w
+        height = h
+        val codec = configure(w, h)
+        val surface = codec.createInputSurface()
+        codec.start()
+        val display = createDisplay(w, h, dpi, surface)
+        displayIdValue = display.display.displayId
+        vd = display
+        encoder = codec
+        startDrain(codec)
+        hideIme(displayIdValue)
+        log("stream $stream vd=$displayIdValue ${w}x$h dpi=$dpi")
+        return displayIdValue
+    }
+
+    fun resize(w: Int, h: Int, dpi: Int) {
+        width = w
+        height = h
+        detachEncoder()
+        runCatching { vd?.resize(w, h, dpi) }
+        if (!paused) attachEncoder(w, h)
+        log("stream $stream resize ${w}x$h dpi=$dpi")
+    }
+
+    fun pause() {
+        if (paused) return
+        paused = true
+        detachEncoder()
+    }
+
+    fun resume() {
+        if (!paused) return
+        paused = false
+        attachEncoder(width, height)
+    }
+
+    fun requestKeyframe() {
+        val codec = encoder ?: return
+        runCatching {
+            val params = Bundle()
+            params.putInt(MediaCodec.PARAMETER_KEY_REQUEST_SYNC_FRAME, 0)
+            codec.setParameters(params)
+        }
+    }
+
+    fun close() {
+        released = true
+        detachEncoder()
+        runCatching { vd?.release() }
+        vd = null
+        displayIdValue = -1
+    }
+
+    // ------------------------------------------------------------------
+
+    private fun attachEncoder(w: Int, h: Int) {
+        val codec = configure(w, h)
+        val surface = codec.createInputSurface()
+        codec.start()
+        encoder = codec
+        runCatching { vd?.setSurface(surface) }
+        startDrain(codec)
+    }
+
+    private fun detachEncoder() {
+        val codec = encoder
+        encoder = null
+        runCatching { vd?.setSurface(null) }
+        if (codec != null) {
+            runCatching { codec.stop() }
+            runCatching { codec.release() }
+        }
+    }
+
+    private fun configure(w: Int, h: Int): MediaCodec {
+        val format = MediaFormat.createVideoFormat(MIME, w, h)
+        format.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
+        format.setInteger(MediaFormat.KEY_BIT_RATE, bitrateFor(w, h))
+        format.setInteger(MediaFormat.KEY_FRAME_RATE, FPS)
+        format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, I_FRAME_INTERVAL_S)
+        format.setInteger(MediaFormat.KEY_PRIORITY, 0) // realtime
+        format.setInteger(MediaFormat.KEY_MAX_B_FRAMES, 0)
+        format.setInteger(MediaFormat.KEY_BITRATE_MODE, MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR)
+        runCatching { format.setInteger(MediaFormat.KEY_LATENCY, 1) }
+        val codec = MediaCodec.createEncoderByType(MIME)
+        codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+        return codec
+    }
+
+    private fun bitrateFor(w: Int, h: Int): Int {
+        // ~0.12 bpp·fps, capped at 8 Mbps.
+        val bits = w.toLong() * h.toLong() * FPS * 120 / 1000
+        return bits.coerceIn(MIN_BITRATE.toLong(), MAX_BITRATE.toLong()).toInt()
+    }
+
+    private fun flags(): Int =
+        DisplayManager.VIRTUAL_DISPLAY_FLAG_PUBLIC or
+            DisplayManager.VIRTUAL_DISPLAY_FLAG_PRESENTATION or
+            DisplayManager.VIRTUAL_DISPLAY_FLAG_OWN_CONTENT_ONLY or
+            FLAG_SUPPORTS_TOUCH or
+            FLAG_ROTATES_WITH_CONTENT or
+            FLAG_DESTROY_CONTENT_ON_REMOVAL or
+            FLAG_TRUSTED or
+            FLAG_OWN_DISPLAY_GROUP or
+            FLAG_ALWAYS_UNLOCKED or
+            FLAG_TOUCH_FEEDBACK_DISABLED or
+            FLAG_OWN_FOCUS
+
+    private fun displayManager(): DisplayManager {
+        val ctor = DisplayManager::class.java.getDeclaredConstructor(Context::class.java)
+        ctor.isAccessible = true
+        return ctor.newInstance(ctx)
+    }
+
+    /**
+     * Prefer `createVirtualDisplay(VirtualDisplayConfig, …)`: it lets us set
+     * `ignoreActivitySizeRestrictions` (SDK ≥ 36) so apps that declare a fixed
+     * size/orientation still fill whatever size the Mac window is. Everything is
+     * reflective so it compiles regardless of which constructors the build's SDK
+     * exposes; any failure falls back to the classic 6-arg call.
+     */
+    private fun createDisplay(w: Int, h: Int, dpi: Int, surface: Surface): VirtualDisplay {
+        val config = buildConfig(w, h, dpi, surface)
+        if (config != null) {
+            val dm = displayManager()
+            val method = dm.javaClass.methods.firstOrNull {
+                it.name == "createVirtualDisplay" &&
+                    it.parameterTypes.isNotEmpty() &&
+                    it.parameterTypes[0].name == VIRTUAL_DISPLAY_CONFIG
+            }
+            if (method != null) {
+                val args = arrayOfNulls<Any?>(method.parameterTypes.size)
+                args[0] = config
+                runCatching { method.invoke(dm, *args) as? VirtualDisplay }.getOrNull()?.let {
+                    log("stream $stream created from VirtualDisplayConfig")
+                    return it
+                }
+            }
+        }
+        return displayManager().createVirtualDisplay("pocketdeck-$stream", w, h, dpi, surface, flags())
+    }
+
+    private fun buildConfig(w: Int, h: Int, dpi: Int, surface: Surface): Any? = runCatching {
+        val builderClass = Class.forName("android.hardware.display.VirtualDisplayConfig\$Builder")
+        val ctor = builderClass.getDeclaredConstructor(
+            String::class.java,
+            Int::class.javaPrimitiveType,
+            Int::class.javaPrimitiveType,
+            Int::class.javaPrimitiveType,
+        )
+        ctor.isAccessible = true
+        val builder = ctor.newInstance("pocketdeck-$stream", w, h, dpi)
+        builderClass.getMethod("setFlags", Int::class.javaPrimitiveType).invoke(builder, flags())
+        builderClass.getMethod("setSurface", Surface::class.java).invoke(builder, surface)
+        if (Build.VERSION.SDK_INT >= 36) {
+            runCatching {
+                builderClass.getMethod("setIgnoreActivitySizeRestrictions", Boolean::class.javaPrimitiveType)
+                    .invoke(builder, true)
+            }
+        }
+        builderClass.getMethod("build").invoke(builder)
+    }.getOrNull()
+
+    private fun hideIme(displayId: Int) {
+        runCatching {
+            val wm = Hidden.proxy("android.view.IWindowManager", "window") ?: return
+            val m = Hidden.method(
+                Hidden.iface("android.view.IWindowManager"),
+                "setDisplayImePolicy",
+                Hidden.T_INT,
+                Hidden.T_INT,
+            ) ?: return
+            m.invoke(wm, displayId, IME_POLICY_HIDE)
+        }
+    }
+
+    private fun startDrain(codec: MediaCodec) {
+        drainThread = Thread({ drain(codec) }, "pocketdeck-drain-$stream").also { it.start() }
+    }
+
+    private fun drain(codec: MediaCodec) {
+        val info = MediaCodec.BufferInfo()
+        while (!released && encoder === codec) {
+            val idx = try {
+                codec.dequeueOutputBuffer(info, 10_000)
+            } catch (_: Throwable) {
+                break
+            }
+            if (idx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                readCsd(codec.outputFormat)?.let { sink.onConfig(stream, Frames.CODEC_H264, width, height, it) }
+                continue
+            }
+            if (idx < 0) continue
+            try {
+                val buf = codec.getOutputBuffer(idx)
+                if (buf != null && info.size > 0 && (info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) == 0) {
+                    buf.position(info.offset)
+                    buf.limit(info.offset + info.size)
+                    val bytes = ByteArray(info.size)
+                    buf.get(bytes)
+                    val key = (info.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0
+                    sink.onFrame(stream, info.presentationTimeUs, key, bytes)
+                }
+            } catch (_: Throwable) {
+            } finally {
+                runCatching { codec.releaseOutputBuffer(idx, false) }
+            }
+        }
+    }
+
+    private fun readCsd(format: MediaFormat): ByteArray? {
+        val csd0 = runCatching { format.getByteBuffer("csd-0") }.getOrNull() ?: return null
+        val out = ByteArrayOutputStream()
+        out.write(dupBytes(csd0))
+        runCatching { format.getByteBuffer("csd-1") }.getOrNull()?.let { out.write(dupBytes(it)) }
+        return out.toByteArray()
+    }
+
+    private fun dupBytes(buf: ByteBuffer): ByteArray {
+        val dup = buf.duplicate()
+        val bytes = ByteArray(dup.remaining())
+        dup.get(bytes)
+        return bytes
+    }
+}
+
+/** Owns every [WindowStream] and exposes them to the session as a [DisplayLayer]. */
+internal class AndroidDisplayLayer(
+    private val ctx: Context,
+    private val log: (String) -> Unit,
+) : DisplayLayer {
+
+    private val streams = HashMap<Int, WindowStream>()
+
+    override fun open(stream: Int, w: Int, h: Int, dpi: Int, sink: VideoSink): Int = synchronized(streams) {
+        streams.remove(stream)?.close()
+        val ws = WindowStream(ctx, stream, sink, log)
+        val id = ws.start(w, h, dpi)
+        streams[stream] = ws
+        id
+    }
+
+    override fun size(stream: Int): IntSize = synchronized(streams) {
+        streams[stream]?.size ?: IntSize(0, 0)
+    }
+
+    override fun resize(stream: Int, w: Int, h: Int, dpi: Int) {
+        synchronized(streams) { streams[stream] }?.resize(w, h, dpi)
+    }
+
+    override fun pause(stream: Int) {
+        synchronized(streams) { streams[stream] }?.pause()
+    }
+
+    override fun resume(stream: Int) {
+        synchronized(streams) { streams[stream] }?.resume()
+    }
+
+    override fun requestKeyframe(stream: Int) {
+        synchronized(streams) { streams[stream] }?.requestKeyframe()
+    }
+
+    override fun close(stream: Int) {
+        synchronized(streams) { streams.remove(stream) }?.close()
+    }
+}
