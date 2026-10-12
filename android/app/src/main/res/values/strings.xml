@@ -1,33 +1,86 @@
 <resources>
     <string name="app_name">PocketDeck</string>
 
+    <!-- ongoing + pairing notifications -->
     <string name="channel_ongoing">Service</string>
     <string name="channel_pairing">Pairing requests</string>
     <string name="notif_starting">Starting…</string>
     <string name="notif_listening">Listening on port %1$d</string>
     <string name="notif_connected">Connected to %1$s · %2$d windows</string>
-
-    <string name="pairing_title">Allow %1$s to connect?</string>
-    <string name="pairing_text">Code: %1$s</string>
-    <string name="pairing_request">%1$s wants to connect.\nCode: %2$s</string>
+    <string name="pairing_title">Pair with %1$s?</string>
+    <string name="pairing_text">Code %1$s</string>
+    <string name="pairing_hint">Check it matches your Mac.</string>
     <string name="allow">Allow</string>
     <string name="deny">Deny</string>
 
-    <string name="grant">Grant Shizuku permission</string>
-    <string name="allow_connections">Allow connections</string>
-    <string name="paired_title">Paired Macs</string>
-    <string name="forget">Forget</string>
-    <string name="no_paired">No Macs paired yet.</string>
+    <!-- onboarding -->
+    <string name="onboarding_welcome_title">Use your apps on your Mac</string>
+    <string name="onboarding_welcome_body">Your Android apps, on your Mac.</string>
+    <string name="onboarding_get_started">Get started</string>
 
-    <string name="server_listening">Server: listening on port %1$d</string>
-    <string name="server_stopped">Server: not running</string>
-    <string name="connected_to">Connected to %1$s · %2$d windows</string>
-    <string name="not_connected">No Mac connected</string>
+    <string name="onboarding_shizuku_title">Start Shizuku</string>
+    <string name="onboarding_shizuku_body">Shizuku lets PocketDeck run your apps as the shell.</string>
+    <string name="shizuku_status_not_installed">Not installed</string>
+    <string name="shizuku_status_not_running">Not running</string>
+    <string name="shizuku_status_permission">Permission needed</string>
+    <string name="shizuku_status_ready">Ready</string>
+    <string name="shizuku_get">Get Shizuku</string>
+    <string name="shizuku_open">Open Shizuku</string>
+    <string name="shizuku_allow">Allow</string>
+    <string name="shizuku_how_to">How to start it</string>
+    <string name="shizuku_how_1">Turn on Wireless debugging in Developer options.</string>
+    <string name="shizuku_how_2">Open Shizuku and start the service.</string>
+    <string name="shizuku_how_3">Come back here when it is running.</string>
+    <string name="shizuku_missing">Shizuku isn\'t installed.</string>
 
-    <string name="shizuku_not_running">Shizuku is not running. Start it in the Shizuku app.</string>
-    <string name="shizuku_granted">Shizuku: permission granted</string>
-    <string name="shizuku_need_grant">Shizuku: permission needed</string>
+    <string name="onboarding_notifications_title">Allow notifications</string>
+    <string name="onboarding_notifications_body">Needed for pairing prompts.</string>
+    <string name="onboarding_notifications_battery">Ignore battery optimizations</string>
+    <string name="onboarding_notifications_battery_body">Keeps PocketDeck reachable while your screen is off.</string>
 
+    <string name="onboarding_pair_title">Pair your Mac</string>
+    <string name="onboarding_pair_body">Open PocketDeck on your Mac. It will find this phone.</string>
+    <string name="onboarding_pair_scan">Scan QR code</string>
+    <string name="onboarding_pair_waiting">Waiting for your Mac…</string>
+
+    <!-- home -->
+    <string name="status_ready">Ready</string>
+    <string name="wifi_default">Wi-Fi</string>
+    <string name="status_visible_on">Visible to Macs on %1$s</string>
+    <string name="status_connected">Connected to %1$s</string>
+    <string name="status_windows_one">1 window open</string>
+    <string name="status_windows">%1$d windows open</string>
+    <string name="status_shizuku_not_running">Shizuku not running</string>
+    <string name="status_shizuku_not_running_body">Start it in the Shizuku app.</string>
+    <string name="status_permission">Shizuku permission needed</string>
+    <string name="status_permission_body">Allow PocketDeck to use Shizuku.</string>
+    <string name="status_connections_off">Connections are off</string>
+    <string name="status_connections_off_body">Turn on Allow connections.</string>
+    <string name="status_error">Couldn\'t start</string>
+    <string name="status_error_body">Tap retry to try again.</string>
+    <string name="action_open_shizuku">Open Shizuku</string>
+    <string name="action_allow">Allow</string>
+    <string name="action_turn_on">Turn on</string>
+    <string name="action_retry">Retry</string>
+
+    <string name="home_allow_connections">Allow connections</string>
+    <string name="home_paired_title">Paired Macs</string>
+    <string name="home_last_connected">Last connected %1$s</string>
+    <string name="home_forget">Forget</string>
+    <string name="home_no_paired">No Macs paired yet.</string>
+    <string name="home_pair_new">Pair new Mac</string>
+    <string name="home_forgotten">Forgot %1$s.</string>
+    <string name="undo">Undo</string>
+
+    <!-- QR pairing feedback -->
+    <string name="qr_not_pairing">That QR code isn\'t a PocketDeck pairing code.</string>
+    <string name="qr_incomplete">That QR code is missing pairing details.</string>
+    <string name="qr_bad_key">That pairing key isn\'t valid.</string>
+    <string name="qr_paired">Paired with %1$s.</string>
+    <string name="qr_scan_failed">Couldn\'t scan the code.</string>
+
+    <!-- phone-mode launcher -->
     <string name="launcher_search_hint">Search apps</string>
-    <string name="launcher_no_match">No apps match</string>
+    <string name="launcher_no_match">No apps match \"%1$s\"</string>
+    <string name="launcher_launch_failed">Couldn\'t open that app.</string>
 </resources>

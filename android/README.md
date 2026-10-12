@@ -14,14 +14,17 @@ app/src/main/java/dev/pocketdeck/
   server/    the shell process: DeckService (AIDL), Server, Session, WindowStream,
              InputInjector, AppLauncher, Power, AndroidWindowObserver, Hidden,
              ShellContext + the platform interfaces Session depends on
-  app/       MainActivity, DeckForegroundService, BootReceiver, NsdAdvertiser,
-             ShizukuClient, Prefs, DeckState
-  launcher/  LauncherActivity (phone-mode home)
+  app/       MainActivity (Compose host), DeckForegroundService, BootReceiver,
+             NsdAdvertiser, ShizukuClient, Prefs, DeckState, QrPairing (pure)
+  ui/        Compose UI: theme/, DeckViewModel + DeckUiState (pure mapping),
+             Onboarding/Home/PairingDialog screens, QrScan
+  launcher/  LauncherActivity + LauncherScreen (phone-mode home)
 ```
 
 The session core (`Session`, `Server`, `SendQueue`, the interfaces in
 `Platform.kt`) has **no Android imports**, which is what makes the JVM tests and
-the C4 harness possible.
+the C4 harness possible. The UI is Jetpack Compose + Material 3; all copy and
+visual values come from `docs/UX.md` and `docs/DESIGN.md`.
 
 ## Build
 
@@ -35,8 +38,8 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 `versionCode` is the **Shizuku user-service version**: the daemon keeps running
 after an install unless the number grows, so bump it on every device install.
 
-Shizuku must be running; grant the app permission from the main screen, then flip
-**Allow connections** on.
+Shizuku must be running. The first-run onboarding walks through installing and
+starting it, granting the app permission and turning **Allow connections** on.
 
 ## How it works
 
@@ -102,6 +105,12 @@ previous clip text is restored shortly after.
   `no_stream`/`launch_failed` errors, and app-exit → `window.closed(app_exited)`;
   plus the pure `TextRuns` split, `AppExit` close decision and
   `LauncherOverloads` ordering.
+- `app/` + `ui/` — the pure pieces: QR pairing URI parsing, pairing-code
+  formatting, and the input → status-card / onboarding-step mappings.
+- `ui/ScreenshotTest` — Robolectric + Roborazzi screenshots at 412×915 dp, light
+  and dark, using the static seeded color scheme. Run with the record system
+  property set (the Gradle build sets `roborazzi.test.record=true`); PNGs land in
+  `app/src/test/screenshots/`.
 
 ### C4 interop harness
 

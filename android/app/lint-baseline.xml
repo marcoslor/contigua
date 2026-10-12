@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Baseline for the three pre-existing `NewApi` findings in the reviewed
+  shell-process code (server/ShellContext.kt), which builds an
+  `AttributionSource` on API 31+ only. They are out of scope for the Compose UI
+  task; new findings still fail the build.
+-->
+<issues format="6" by="lint 8.7.3" type="baseline" client="gradle" dependencies="false" name="AGP (8.7.3)" variant="all" version="8.7.3">
+
+    <issue
+        id="NewApi"
+        message="Call requires API level 31 (current min is 30): `android.content.AttributionSource.Builder#build`"
+        errorLine1="        AttributionSource.Builder(2000).setPackageName(&quot;com.android.shell&quot;).build()"
+        errorLine2="                                                                            ~~~~~">
+        <location
+            file="src/main/java/dev/pocketdeck/server/ShellContext.kt"
+            line="19"
+            column="77"/>
+    </issue>
+
+    <issue
+        id="NewApi"
+        message="Call requires API level 31 (current min is 30): `android.content.AttributionSource.Builder#setPackageName`"
+        errorLine1="        AttributionSource.Builder(2000).setPackageName(&quot;com.android.shell&quot;).build()"
+        errorLine2="                                        ~~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/dev/pocketdeck/server/ShellContext.kt"
+            line="19"
+            column="41"/>
+    </issue>
+
+    <issue
+        id="NewApi"
+        message="Call requires API level 31 (current min is 30): `android.content.AttributionSource.Builder()`"
+        errorLine1="        AttributionSource.Builder(2000).setPackageName(&quot;com.android.shell&quot;).build()"
+        errorLine2="                          ~~~~~~~">
+        <location
+            file="src/main/java/dev/pocketdeck/server/ShellContext.kt"
+            line="19"
+            column="27"/>
+    </issue>
+
+</issues>

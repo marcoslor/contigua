@@ -13,14 +13,32 @@ object Prefs {
     private const val KEY_DEVICE_ID = "device_id"
     private const val KEY_DEVICE_NAME = "device_name"
     private const val KEY_PAIRED = "paired"
+    private const val KEY_ONBOARDING_DONE = "onboarding_done"
+    private const val KEY_BATTERY_REQUESTED = "battery_requested"
 
-    data class PairedMac(val clientId: String, val name: String, val keyHex: String)
+    data class PairedMac(
+        val clientId: String,
+        val name: String,
+        val keyHex: String,
+        /** Local epoch millis of the last successful pairing, 0 if unknown. */
+        val lastConnected: Long = 0,
+    )
 
     private fun sp(ctx: Context) = ctx.getSharedPreferences(FILE, Context.MODE_PRIVATE)
 
     fun isEnabled(ctx: Context): Boolean = sp(ctx).getBoolean(KEY_ENABLED, false)
 
     fun setEnabled(ctx: Context, value: Boolean) = sp(ctx).edit().putBoolean(KEY_ENABLED, value).apply()
+
+    fun isOnboardingDone(ctx: Context): Boolean = sp(ctx).getBoolean(KEY_ONBOARDING_DONE, false)
+
+    fun setOnboardingDone(ctx: Context, value: Boolean) =
+        sp(ctx).edit().putBoolean(KEY_ONBOARDING_DONE, value).apply()
+
+    fun isBatteryRequested(ctx: Context): Boolean = sp(ctx).getBoolean(KEY_BATTERY_REQUESTED, false)
+
+    fun setBatteryRequested(ctx: Context, value: Boolean) =
+        sp(ctx).edit().putBoolean(KEY_BATTERY_REQUESTED, value).apply()
 
     /** Stable random 16-hex id advertised over mDNS. */
     fun deviceId(ctx: Context): String {
@@ -46,7 +64,7 @@ object Prefs {
             val m = Json.asObject(entry) ?: return@mapNotNull null
             val id = Json.str(m["clientId"]) ?: return@mapNotNull null
             val key = Json.str(m["key"]) ?: return@mapNotNull null
-            PairedMac(id, Json.str(m["name"]) ?: "Mac", key)
+            PairedMac(id, Json.str(m["name"]) ?: "Mac", key, Json.long(m["lastConnected"]) ?: 0)
         }
     }
 
@@ -60,7 +78,16 @@ object Prefs {
     }
 
     private fun save(ctx: Context, macs: List<PairedMac>) {
-        val json = Json.encode(macs.map { mapOf("clientId" to it.clientId, "name" to it.name, "key" to it.keyHex) })
+        val json = Json.encode(
+            macs.map {
+                mapOf(
+                    "clientId" to it.clientId,
+                    "name" to it.name,
+                    "key" to it.keyHex,
+                    "lastConnected" to it.lastConnected,
+                )
+            },
+        )
         sp(ctx).edit().putString(KEY_PAIRED, json).apply()
     }
 
