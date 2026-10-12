@@ -10,7 +10,7 @@
 //   swift scripts/cgevent-input.swift scroll --window ID [--dy 3 --dx 0]
 //   swift scripts/cgevent-input.swift rclick --window ID
 //   swift scripts/cgevent-input.swift type   --text hi
-//   swift scripts/cgevent-input.swift key    --keycode 36 [--cmd]
+//   swift scripts/cgevent-input.swift key    --keycode 36 [--cmd] [--shift]
 //
 // Window coordinates are Quartz global coordinates (top-left origin). The
 // default `--inset 28` skips the standard title bar so the click lands in the
@@ -33,6 +33,8 @@ func argument(_ name: String) -> String? {
     guard let index = args.firstIndex(of: name), index + 1 < args.count else { return nil }
     return args[index + 1]
 }
+
+func hasFlag(_ name: String) -> Bool { CommandLine.arguments.contains(name) }
 
 func doubleArgument(_ name: String) -> Double? { argument(name).flatMap(Double.init) }
 
@@ -174,7 +176,10 @@ case "key":
         FileHandle.standardError.write(Data("cgevent-input: key needs --keycode\n".utf8))
         exit(1)
     }
-    pressKey(CGKeyCode(code), flags: argument("--cmd") != nil ? .maskCommand : [])
+    var keyFlags: CGEventFlags = []
+    if hasFlag("--cmd") { keyFlags.insert(.maskCommand) }
+    if hasFlag("--shift") { keyFlags.insert(.maskShift) }
+    pressKey(CGKeyCode(code), flags: keyFlags)
 default:
     FileHandle.standardError.write(Data("usage: cgevent-input.swift list|click|drag|scroll|rclick|type ...\n".utf8))
     exit(1)

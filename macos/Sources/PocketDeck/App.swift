@@ -91,10 +91,22 @@ enum UIState: Equatable {
     case failed(String)
 }
 
+/// One row of the Devices list: a discovered phone, a paired phone we only
+/// remember through its cached address, or both.
+struct DeviceRow: Equatable {
+    var deviceId: String
+    var name: String
+    var model: String
+    var paired: Bool
+    var status: String
+}
+
 final class AppModel {
     let options: LaunchOptions
     let keyStore = PairKeyStore()
+    let cache = CachedDeviceStore()
     let discovery = Discovery()
+    let spotlight = SpotlightIndex()
 
     private(set) var session: Session?
     private(set) var windows: WindowManager?
@@ -116,9 +128,27 @@ final class AppModel {
     /// Sheet shown/hidden, or its status line changed.
     var onQRSheetChange: (() -> Void)?
 
+    private enum SessionSource {
+        /// Connected through the mDNS service endpoint.
+        case discovery
+        /// Connected straight to a remembered address.
+        case cached
+        /// `--connect` or a user action with no discovery involved.
+        case manual
+    }
+
     private var didAutoOpen = false
-    private var didAutoConnect = false
-    private var lastConnection: (endpoint: Session.Endpoint, deviceId: String?)?
+    private var lastConnection: (endpoint: Session.Endpoint, deviceId: String?, source: SessionSource)?
+    private var sessionSource: SessionSource = .manual
+    /// Device id of the current session; set at `begin` and confirmed on welcome.
+    private var activeDeviceId: String?
+    /// Device ids whose cached address proved to be another phone ("Offline").
+    private(set) var offlineDeviceIds: Set<String> = []
+    private var launchAt = Date()
+    private var directWait: DispatchWorkItem?
+    private var directFallback: DispatchWorkItem?
+    private var directAttempts = 0
+    private var pendingOpen: SpotlightOpenRequest?
     private var qrProbes: [QRProbe] = []
     private var qrTimer: Timer?
 
@@ -139,14 +169,16 @@ final class AppModel {
             self?.autoConnectIfPaired()
             self?.onChange?()
         }
+        launchAt = Date()
         // Before any connection: a QR sheet must own the first handshake, so
         // the phone never sees a `pair.request` for a Mac that is showing a QR.
         if options.qrSheet { startQRPairing() }
         if let connect = options.connect {
-            begin(endpoint: .hostPort(host: connect.host, port: connect.port), deviceId: nil)
+            begin(endpoint: .hostPort(host: connect.host, port: connect.port), deviceId: nil, source: .manual)
         } else {
             discovery.start()
             uiState = .discovering
+            scheduleDirectWait()
         }
         if let quitAfter = options.quitAfter {
             DispatchQueue.main.asyncAfter(deadline: .now() + quitAfter) { [weak self] in
@@ -164,21 +196,204 @@ final class AppModel {
     }
 
     func connect(phone: DiscoveredPhone) {
-        begin(endpoint: .service(phone.endpoint), deviceId: phone.deviceId)
+        begin(endpoint: .service(phone.endpoint), deviceId: phone.deviceId, source: .discovery)
+    }
+
+    /// A row from the Devices list (discovered phone or a remember-only one).
+    func connect(row: DeviceRow) {
+        if let phone = phones.first(where: { $0.deviceId == row.deviceId }) {
+            connect(phone: phone)
+            return
+        }
+        guard let address = cache.address(forDeviceId: row.deviceId) else { return }
+        offlineDeviceIds.remove(row.deviceId)
+        begin(endpoint: .hostPort(host: address.host, port: address.port),
+              deviceId: row.deviceId, source: .cached)
+    }
+
+    /// Forget a phone completely: key, remembered address, Spotlight results.
+    func forget(deviceId: String) {
+        keyStore.forget(deviceId: deviceId)
+        cache.forget(deviceId: deviceId)
+        offlineDeviceIds.remove(deviceId)
+        spotlight.remove(deviceId: deviceId)
+        if activeDeviceId == deviceId {
+            windows?.closeAll()
+            session?.close()
+            session = nil
+            windows = nil
+            activeDeviceId = nil
+            uiState = .discovering
+        }
+        onChange?()
     }
 
     /// docs/UX.md: "Pairings are remembered; reconnection is automatic and
-    /// silent." One silent connect per launch, to the first remembered phone.
+    /// silent." Whenever a paired phone shows up and we are not already on it,
+    /// connect through its service endpoint. Discovery always beats the cache.
     private func autoConnectIfPaired() {
-        guard session == nil, !didAutoConnect, qrPayload == nil, options.connect == nil else { return }
+        guard options.connect == nil, qrPayload == nil else { return }
         guard let phone = phones.first(where: { keyStore.key(forDeviceId: $0.deviceId) != nil }) else { return }
-        didAutoConnect = true
-        connect(phone: phone)
+        if sessionWantsDevice(phone.deviceId) { return }
+        // Never hijack a working session to another phone.
+        if let session, session.state == .ready, activeDeviceId != phone.deviceId { return }
+        directWait?.cancel()
+        directWait = nil
+        begin(endpoint: .service(phone.endpoint), deviceId: phone.deviceId, source: .discovery)
+    }
+
+    /// True while the current session is connecting to (or ready with) `deviceId`.
+    private func sessionWantsDevice(_ deviceId: String) -> Bool {
+        guard let session, activeDeviceId == deviceId else { return false }
+        switch session.state {
+        case .idle, .closed: return false
+        case .failed: return false
+        case .connecting, .handshaking, .ready: return true
+        }
     }
 
     func retry() {
         guard let last = lastConnection else { return }
-        begin(endpoint: last.endpoint, deviceId: last.deviceId)
+        begin(endpoint: last.endpoint, deviceId: last.deviceId, source: last.source)
+    }
+
+    // MARK: Cached addresses (a dozing phone that stopped answering mDNS)
+
+    /// After the discovery grace, connect straight to the last known address of
+    /// a paired phone (only when nothing was discovered).
+    private func scheduleDirectWait() {
+        directWait?.cancel()
+        let elapsed = Date().timeIntervalSince(launchAt)
+        let delay = max(0, DirectConnectPolicy().discoveryGrace - elapsed)
+        let work = DispatchWorkItem { [weak self] in self?.directConnectIfNeeded() }
+        directWait = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+    }
+
+    private func directConnectIfNeeded() {
+        guard options.connect == nil, qrPayload == nil else { return }
+        let decision = policy.decide(discoveredPaired: pairedDiscoveredIds,
+                                     cached: cachedEntries,
+                                     activeDeviceId: activeDeviceId,
+                                     activeReady: session?.state == .ready,
+                                     elapsedSinceLaunch: Date().timeIntervalSince(launchAt))
+        apply(decision)
+    }
+
+    /// A discovery session failed: its phone may still be listening on the
+    /// cached address even though mDNS is gone. Same backoff as a reconnect.
+    private func scheduleCachedFallback() {
+        guard options.connect == nil, qrPayload == nil, sessionSource == .discovery else { return }
+        let decision = policy.failureDecision(deviceId: activeDeviceId,
+                                              cached: cachedEntries,
+                                              discoveredPaired: pairedDiscoveredIds)
+        guard case .useCached(let device) = decision else { return }
+        let delay = Session.backoff[min(directAttempts, Session.backoff.count - 1)]
+        directAttempts += 1
+        directFallback?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.sessionSource == .discovery else { return }
+            if let state = self.session?.state, case .failed = state {} else { return }
+            Log.session.notice("falling back to the cached address for \(device.deviceId, privacy: .public)")
+            self.begin(endpoint: .hostPort(host: device.address.host, port: device.address.port),
+                       deviceId: device.deviceId, source: .cached)
+        }
+        directFallback = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+    }
+
+    private func apply(_ decision: DirectConnectPolicy.Decision) {
+        switch decision {
+        case .useDiscovery(let deviceId):
+            guard let phone = phones.first(where: { $0.deviceId == deviceId }) else { return }
+            begin(endpoint: .service(phone.endpoint), deviceId: deviceId, source: .discovery)
+        case .useCached(let device):
+            offlineDeviceIds.remove(device.deviceId)
+            begin(endpoint: .hostPort(host: device.address.host, port: device.address.port),
+                  deviceId: device.deviceId, source: .cached)
+        case .none:
+            break
+        }
+    }
+
+    private var policy: DirectConnectPolicy { DirectConnectPolicy() }
+
+    private var pairedDiscoveredIds: [String] {
+        phones.filter { keyStore.key(forDeviceId: $0.deviceId) != nil }.map(\.deviceId)
+    }
+
+    /// Remembered devices, most recently paired first.
+    private var cachedEntries: [CachedDevice] {
+        var ids = cache.deviceIds
+        if let last = keyStore.lastDeviceId, let index = ids.firstIndex(of: last) {
+            ids.remove(at: index)
+            ids.insert(last, at: 0)
+        }
+        return ids.compactMap { id in cache.address(forDeviceId: id).map { CachedDevice(deviceId: id, address: $0) } }
+    }
+
+    // MARK: Devices list
+
+    /// Discovered phones plus paired phones we only know from their cached
+    /// address. A paired phone stays "Paired" (not "Offline") while the direct
+    /// connection works; "Offline" only after its address proved to be another
+    /// phone.
+    var deviceRows: [DeviceRow] {
+        let discoveredIds = Set(phones.map(\.deviceId))
+        var rows = phones.map { phone -> DeviceRow in
+            let paired = keyStore.key(forDeviceId: phone.deviceId) != nil
+            return DeviceRow(deviceId: phone.deviceId, name: phone.name, model: phone.model,
+                             paired: paired, status: paired ? "Paired" : "Nearby")
+        }
+        for id in cache.deviceIds where !discoveredIds.contains(id) {
+            let paired = keyStore.key(forDeviceId: id) != nil
+            let status: String
+            if offlineDeviceIds.contains(id) {
+                status = "Offline"
+            } else if !paired {
+                status = "Pair again" // the phone no longer accepts our key
+            } else if activeDeviceId == id, uiState == .connecting {
+                status = "Connecting…"
+            } else {
+                status = "Paired"
+            }
+            let name = cache.name(forDeviceId: id) ?? phone.flatMap { $0.id == id ? $0.name : nil } ?? id
+            rows.append(DeviceRow(deviceId: id, name: name, model: "",
+                                  paired: paired, status: status))
+        }
+        return rows
+    }
+
+    // MARK: Spotlight
+
+    /// Open an app from a Spotlight result, connecting to its phone first when
+    /// that phone is not the one we are already on.
+    func openFromSpotlight(_ request: SpotlightOpenRequest) {
+        if uiState == .connected, phone?.id == request.deviceId {
+            windows?.openApp(pkg: request.pkg)
+            return
+        }
+        pendingOpen = request
+        if uiState == .connecting || uiState == .awaitingCode { return } // opened on welcome
+        if let discovered = phones.first(where: { $0.deviceId == request.deviceId }) {
+            connect(phone: discovered)
+            return
+        }
+        if let address = cache.address(forDeviceId: request.deviceId) {
+            offlineDeviceIds.remove(request.deviceId)
+            begin(endpoint: .hostPort(host: address.host, port: address.port),
+                  deviceId: request.deviceId, source: .cached)
+            return
+        }
+        pendingOpen = nil
+        errorText = "That phone is not available."
+        onChange?()
+    }
+
+    private func openPendingAppIfPossible() {
+        guard let request = pendingOpen, let info = phone, info.id == request.deviceId else { return }
+        pendingOpen = nil
+        windows?.openApp(pkg: request.pkg)
     }
 
     func submitPairCode(_ code: String) {
@@ -286,15 +501,20 @@ final class AppModel {
             if let phone = self.phones.first(where: { $0.deviceId == deviceId }) {
                 self.connect(phone: phone)
             } else if let connect = self.options.connect {
-                self.begin(endpoint: .hostPort(host: connect.host, port: connect.port), deviceId: deviceId)
+                self.begin(endpoint: .hostPort(host: connect.host, port: connect.port),
+                           deviceId: deviceId, source: .manual)
             }
         }
     }
 
-    private func begin(endpoint: Session.Endpoint, deviceId: String?) {
-        lastConnection = (endpoint, deviceId)
+    private func begin(endpoint: Session.Endpoint, deviceId: String?, source: SessionSource) {
+        lastConnection = (endpoint, deviceId, source)
+        sessionSource = source
+        activeDeviceId = deviceId
         session?.close()
-        let newSession = Session(endpoint: endpoint, knownDeviceId: deviceId, keyStore: keyStore)
+        let strictId = source == .cached ? deviceId : nil
+        let newSession = Session(endpoint: endpoint, knownDeviceId: deviceId,
+                                 strictDeviceId: strictId, keyStore: keyStore)
         let manager = WindowManager(session: newSession)
         session = newSession
         windows = manager
@@ -321,21 +541,30 @@ final class AppModel {
             case .failed:
                 uiState = .failed(detail ?? "connection failed")
                 errorText = detail
+                scheduleCachedFallback()
             case .closed, .idle:
                 uiState = .discovering
             }
-        case .ready(let info, _):
+        case .ready(let info, _, let address):
             phone = info
             windows?.phone = info
             locked = info.locked
             battery = info.battery
             charging = info.charging ?? false
+            activeDeviceId = info.id
+            directAttempts = 0
+            offlineDeviceIds.remove(info.id)
+            if let address {
+                cache.store(address, deviceId: info.id)
+                cache.store(name: info.name, deviceId: info.id)
+            }
             uiState = .connected
             session?.requestApps()
             if !didAutoOpen {
                 didAutoOpen = true
                 applyAutoOpen()
             }
+            openPendingAppIfPossible()
         case .apps(let list):
             apps = list
             windows?.appsByPkg = Dictionary(list.map { ($0.pkg, $0) }, uniquingKeysWith: { first, _ in first })
@@ -347,6 +576,10 @@ final class AppModel {
                 } else {
                     session?.requestIcon(pkg: app.pkg)
                 }
+            }
+            if let info = phone {
+                spotlight.index(apps: list, deviceId: info.id, phoneName: info.name,
+                                iconData: { IconCache.shared.loadData(pkg: $0) })
             }
         case .icon(let pkg, let png):
             if let image = NSImage(data: png) {
@@ -367,6 +600,14 @@ final class AppModel {
             }
         case .qrPaired(let deviceId):
             finishQRPairing(deviceId: deviceId)
+        case .identityMismatch(let expected, let actual):
+            // The address no longer belongs to the paired phone: drop it and
+            // never connect there again (the session refused already).
+            Log.session.notice("dropping cached address for \(expected, privacy: .public) (answers as \(actual, privacy: .public))")
+            cache.forget(deviceId: expected)
+            offlineDeviceIds.insert(expected)
+            errorText = "Another phone is using the remembered address."
+            uiState = .discovering
         case .phoneError(let code, let message, _):
             errorText = message ?? code
             if code == "auth_failed" { uiState = .discovering }
@@ -434,6 +675,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if options.resetPairing {
             Keychain.deleteAll()
             UserDefaults.standard.removeObject(forKey: "lastDeviceId")
+            let cache = CachedDeviceStore()
+            cache.removeAll()
         }
         let model = AppModel(options: options)
         let launcher = LauncherWindowController(model: model)
@@ -444,6 +687,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         launcher.window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         model.start()
+    }
+
+    /// Spotlight results for indexed phone apps arrive as an NSUserActivity.
+    func application(_ application: NSApplication, continue userActivity: NSUserActivity,
+                     restorationHandler: @escaping ([any NSUserActivityRestoring]) -> Void) -> Bool {
+        guard let model, let request = model.spotlight.continuationRequest(from: userActivity) else { return false }
+        model.openFromSpotlight(request)
+        return true
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
@@ -479,6 +730,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let phone = NSMenuItem(title: "Phone Window", action: #selector(LauncherWindowController.openPhoneWindow), keyEquivalent: "p")
         phone.target = launcher
         viewMenu.addItem(phone)
+
+        // Nav shortcuts are discoverable here; targets stay nil so the key
+        // window's controller (responder chain) handles them.
+        let navigateItem = NSMenuItem()
+        main.addItem(navigateItem)
+        let navigateMenu = NSMenu(title: "Navigate")
+        navigateItem.submenu = navigateMenu
+        navigateMenu.addItem(withTitle: "Back",
+                             action: #selector(StreamWindowController.navigateBack(_:)), keyEquivalent: "[")
+        let home = NSMenuItem(title: "Home", action: #selector(PhoneWindowController.navigateHome(_:)), keyEquivalent: "h")
+        home.keyEquivalentModifierMask = [.command, .shift]
+        navigateMenu.addItem(home)
+        let recents = NSMenuItem(title: "Recents", action: #selector(PhoneWindowController.navigateRecents(_:)),
+                                 keyEquivalent: "\u{F700}") // NSUpArrowFunctionKey
+        recents.keyEquivalentModifierMask = [.command]
+        navigateMenu.addItem(recents)
 
         return main
     }

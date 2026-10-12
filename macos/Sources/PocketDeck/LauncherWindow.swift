@@ -220,6 +220,7 @@ final class LauncherView: NSView, NSTableViewDataSource, NSTableViewDelegate, NS
     private let devicesScroll = NSScrollView()
     private let devicesTable = NSTableView()
     private let connectButton = NSButton(title: "Connect", target: nil, action: nil)
+    private let forgetButton = NSButton(title: "Forget", target: nil, action: nil)
     private let qrButton = NSButton(title: "Pair with QR", target: nil, action: nil)
     private let retryButton = NSButton(title: "Retry", target: nil, action: nil)
 
@@ -272,6 +273,9 @@ final class LauncherView: NSView, NSTableViewDataSource, NSTableViewDelegate, NS
         connectButton.action = #selector(connectSelected)
         connectButton.keyEquivalent = "\r"
         devicesPane.addSubview(connectButton)
+        forgetButton.target = self
+        forgetButton.action = #selector(forgetSelected)
+        devicesPane.addSubview(forgetButton)
         retryButton.target = self
         retryButton.action = #selector(retry)
         devicesPane.addSubview(retryButton)
@@ -310,8 +314,9 @@ final class LauncherView: NSView, NSTableViewDataSource, NSTableViewDelegate, NS
         devicesScroll.frame = NSRect(x: pad, y: 66, width: bounds.width - pad * 2, height: bounds.height - 126)
         hintLabel.frame = NSRect(x: pad, y: 44, width: bounds.width - pad * 2 - 300, height: 40)
         connectButton.frame = NSRect(x: bounds.width - pad - 120, y: 22, width: 120, height: 32)
+        forgetButton.frame = NSRect(x: bounds.width - pad - 240, y: 22, width: 100, height: 32)
         retryButton.frame = NSRect(x: bounds.width - pad - 120, y: 22, width: 120, height: 32)
-        qrButton.frame = NSRect(x: bounds.width - pad - 274, y: 22, width: 140, height: 32)
+        qrButton.frame = NSRect(x: bounds.width - pad - 404, y: 22, width: 140, height: 32)
 
         searchField.frame = NSRect(x: pad, y: bounds.height - 48, width: 320, height: 28)
         phoneButton.frame = NSRect(x: bounds.width - pad - 100, y: bounds.height - 52, width: 100, height: 32)
@@ -331,17 +336,20 @@ final class LauncherView: NSView, NSTableViewDataSource, NSTableViewDelegate, NS
         appsPane.isHidden = state != .connected
         if state != .awaitingCode { onDismissCodeSheet?() }
 
+        let rows = model.deviceRows
         devicesTable.reloadData()
         let isFailed = isFailure(state)
         retryButton.isHidden = !isFailed
-        devicesScroll.isHidden = isFailed || model.phones.isEmpty
+        devicesScroll.isHidden = isFailed || rows.isEmpty
         connectButton.isHidden = isFailed || state != .discovering
         connectButton.isEnabled = selectedPhone != nil
+        forgetButton.isHidden = isFailed || state != .discovering
+        forgetButton.isEnabled = selectedRow(in: rows)?.paired == true
         phoneTitle.stringValue = "Phones"
 
         switch state {
         case .discovering:
-            hintLabel.stringValue = model.phones.isEmpty
+            hintLabel.stringValue = rows.isEmpty
                 ? "Looking for PocketDeck phones on your network…"
                 : "Select a phone and press Connect."
         case .connecting:
@@ -363,6 +371,11 @@ final class LauncherView: NSView, NSTableViewDataSource, NSTableViewDelegate, NS
         }
         if lastRefreshState != state { needsLayout = true }
         lastRefreshState = state
+    }
+
+    private func selectedRow(in rows: [DeviceRow]) -> DeviceRow? {
+        guard let index = selectedPhone, index >= 0, index < rows.count else { return nil }
+        return rows[index]
     }
 
     private func isFailure(_ state: UIState) -> Bool {
@@ -390,8 +403,15 @@ final class LauncherView: NSView, NSTableViewDataSource, NSTableViewDelegate, NS
     // MARK: Actions
 
     @objc private func connectSelected() {
-        guard let index = selectedPhone, index < model.phones.count else { return }
-        model.connect(phone: model.phones[index])
+        guard let row = selectedRow(in: model.deviceRows) else { return }
+        model.connect(row: row)
+    }
+
+    @objc private func forgetSelected() {
+        guard let row = selectedRow(in: model.deviceRows), row.paired else { return }
+        model.forget(deviceId: row.deviceId)
+        selectedPhone = nil
+        refresh()
     }
 
     @objc private func retry() { model.retry() }
@@ -430,14 +450,17 @@ final class LauncherView: NSView, NSTableViewDataSource, NSTableViewDelegate, NS
 
     // MARK: NSTableView
 
-    func numberOfRows(in tableView: NSTableView) -> Int { model.phones.count }
+    func numberOfRows(in tableView: NSTableView) -> Int { model.deviceRows.count }
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
-        let phone = model.phones[row]
+        let rows = model.deviceRows
+        guard row < rows.count else { return nil }
+        let device = rows[row]
         let cell = NSTableCellView()
-        let title = NSTextField(labelWithString: phone.name)
+        let title = NSTextField(labelWithString: device.name)
         title.font = .systemFont(ofSize: 13, weight: .medium)
-        let subtitle = NSTextField(labelWithString: [phone.model, phone.deviceId].filter { !$0.isEmpty }.joined(separator: " · "))
+        let subtitle = NSTextField(labelWithString: [device.model, device.deviceId, device.status]
+            .filter { !$0.isEmpty }.joined(separator: " · "))
         subtitle.font = .systemFont(ofSize: 11)
         subtitle.textColor = .secondaryLabelColor
         title.frame = NSRect(x: 8, y: 22, width: 460, height: 16)
@@ -449,7 +472,9 @@ final class LauncherView: NSView, NSTableViewDataSource, NSTableViewDelegate, NS
 
     func tableViewSelectionDidChange(_ notification: Notification) {
         selectedPhone = devicesTable.selectedRow >= 0 ? devicesTable.selectedRow : nil
-        connectButton.isEnabled = selectedPhone != nil
+        let row = selectedRow(in: model.deviceRows)
+        connectButton.isEnabled = row != nil
+        forgetButton.isEnabled = row?.paired == true
     }
 }
 
