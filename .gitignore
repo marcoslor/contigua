@@ -1,0 +1,19 @@
+.DS_Store
+# Android
+android/.gradle/
+android/.kotlin/
+android/build/
+android/app/build/
+android/local.properties
+*.apk
+# macOS / Swift
+macos/.build/
+macos/build/
+*.xcodeproj/xcuserdata/
+# Python
+__pycache__/
+*.pyc
+# local captures
+*.h264
+*.mp4
+/tmp/
