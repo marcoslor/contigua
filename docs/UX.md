@@ -36,15 +36,17 @@ Menu-bar presence + Dock icon. Windows:
      *Start Shizuku* (link "How?") · *Be on the same Wi-Fi*.
    - Primary button **Find my phone** → Devices view.
 2. **Devices** (also the window shown when nothing is paired):
-   - "Nearby" list (glass rows: phone name, model, signal of reachability), each with **Pair**.
+   - "Nearby" list (glass rows: phone name, model; paired phones show "Paired" or
+     "Pair again" if their key was rejected), each unpaired row with **Pair**.
    - Footer buttons (glass, secondary): **Pair with QR** · **Connect manually…**
    - Empty state: subtle spinner "Looking for phones on this network…" + "Make sure
      PocketDeck is open on your phone."
    - Code entry sheet: six digit boxes, auto-advance, auto-submit on the 6th digit;
-     wrong code shakes; 3 failures → back to list with a one-line error.
+     wrong code shakes; 3 failures → back to list with a one-line inline error (not the
+     "Pairing failed" alert, which is only for denied/unreachable).
 3. **Launcher** (main window once paired; ⌘K / menu-bar click toggles it, Spotlight-like):
    - Floating glass panel: search field (focused), app grid with icons, phone name +
-     lock/battery chip in the header, **Phone** button (opens phone mode).
+     one status chip (connection · lock · battery combined) in the header, **Phone** button (opens phone mode).
    - Typing filters; ↩ opens the first match; arrows move selection; esc hides.
 4. **App windows**: content only — video edge to edge, standard traffic lights,
    title = app name with its icon. No toolbar. A thin glass bar appears on hover at
