@@ -18,7 +18,16 @@ final class LauncherWindowController: NSWindowController {
         codeSheetView.onSubmit = { [weak self] code in self?.model.submitPairCode(code) }
         return sheet
     }()
+    private lazy var qrSheetWindow: NSWindow = {
+        let sheet = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 520),
+                             styleMask: [.titled], backing: .buffered, defer: false)
+        sheet.title = "Pair with QR"
+        sheet.contentView = qrSheetView
+        qrSheetView.onCancel = { [weak self] in self?.model.cancelQRPairing() }
+        return sheet
+    }()
     private let codeSheetView = CodeSheetView()
+    private let qrSheetView = QRSheetView()
     private let model: AppModel
 
     init(model: AppModel) {
@@ -43,6 +52,8 @@ final class LauncherWindowController: NSWindowController {
             if window.attachedSheet == nil { window.beginSheet(self.codeSheetWindow) }
             self.codeSheetView.focus()
         }
+        model.onQRSheetChange = { [weak self] in self?.updateQRSheet() }
+        launcherView.onPairWithQR = { [weak self] in self?.model.startQRPairing() }
         launcherView.refresh()
     }
 
@@ -51,8 +62,26 @@ final class LauncherWindowController: NSWindowController {
 
     /// Called by the launcher when the session leaves the code-entry state.
     func dismissCodeSheetIfNeeded() {
-        guard let window, let sheet = window.attachedSheet else { return }
+        guard let window, let sheet = window.attachedSheet, sheet === codeSheetWindow else { return }
         window.endSheet(sheet)
+    }
+
+    /// Show/hide the QR sheet and refresh its status line.
+    func updateQRSheet() {
+        guard let window else { return }
+        if let payload = model.qrPayload {
+            qrSheetView.setPayload(payload)
+            qrSheetView.setStatus(model.phones.isEmpty
+                ? "Looking for phones on this network…"
+                : "Waiting for the scan… (\(model.phones.count) phone\(model.phones.count == 1 ? "" : "s") found)")
+            window.makeKeyAndOrderFront(nil)
+            if window.attachedSheet !== qrSheetWindow {
+                if let attached = window.attachedSheet { window.endSheet(attached) }
+                window.beginSheet(qrSheetWindow)
+            }
+        } else if window.attachedSheet === qrSheetWindow {
+            window.endSheet(qrSheetWindow)
+        }
     }
 
     @objc func focusSearch() {
@@ -67,6 +96,8 @@ final class LauncherWindowController: NSWindowController {
         launcherView.openPhoneWindow()
     }
 }
+
+// MARK: - Pairing sheets
 
 /// Sheet content: the 6-digit pairing code.
 final class CodeSheetView: NSView {
@@ -116,6 +147,66 @@ final class CodeSheetView: NSView {
     }
 }
 
+/// Sheet content: the pairing QR (docs/UX.md, "Pairing model").
+final class QRSheetView: NSView {
+    var onCancel: (() -> Void)?
+
+    private let titleLabel = NSTextField(labelWithString: "Scan this with PocketDeck on your phone")
+    private let subtitleLabel = NSTextField(wrappingLabelWithString:
+        "Open PocketDeck → “Pair new Mac” → “Scan QR code”.")
+    private let imageView = NSImageView()
+    private let statusLabel = NSTextField(labelWithString: "")
+    private let cancelButton = NSButton(title: "Cancel", target: nil, action: nil)
+
+    init() {
+        super.init(frame: NSRect(x: 0, y: 0, width: 400, height: 520))
+        titleLabel.font = .systemFont(ofSize: 14, weight: .semibold)
+        titleLabel.alignment = .center
+        addSubview(titleLabel)
+        subtitleLabel.font = .systemFont(ofSize: 12)
+        subtitleLabel.textColor = .secondaryLabelColor
+        subtitleLabel.alignment = .center
+        addSubview(subtitleLabel)
+        imageView.imageScaling = .scaleProportionallyUpOrDown
+        imageView.wantsLayer = true
+        imageView.layer?.backgroundColor = NSColor.white.cgColor
+        addSubview(imageView)
+        statusLabel.font = .systemFont(ofSize: 12)
+        statusLabel.textColor = .secondaryLabelColor
+        statusLabel.alignment = .center
+        addSubview(statusLabel)
+        cancelButton.target = self
+        cancelButton.action = #selector(cancel)
+        cancelButton.keyEquivalent = "\u{1b}"
+        addSubview(cancelButton)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+    func setPayload(_ payload: PairingQRPayload) {
+        imageView.image = QRCode.image(from: payload.uri)
+    }
+
+    func setStatus(_ text: String) {
+        statusLabel.stringValue = text
+    }
+
+    override func layout() {
+        super.layout()
+        let width = bounds.width
+        titleLabel.frame = NSRect(x: 16, y: bounds.height - 40, width: width - 32, height: 20)
+        subtitleLabel.frame = NSRect(x: 24, y: bounds.height - 74, width: width - 48, height: 30)
+        let side = min(width - 80, bounds.height - 200)
+        imageView.frame = NSRect(x: (width - side) / 2, y: bounds.height - 100 - side,
+                                 width: side, height: side)
+        statusLabel.frame = NSRect(x: 16, y: 62, width: width - 32, height: 20)
+        cancelButton.frame = NSRect(x: bounds.midX - 60, y: 16, width: 120, height: 32)
+    }
+
+    @objc private func cancel() { onCancel?() }
+}
+
 // MARK: - Launcher view
 
 final class LauncherView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSSearchFieldDelegate {
@@ -129,6 +220,7 @@ final class LauncherView: NSView, NSTableViewDataSource, NSTableViewDelegate, NS
     private let devicesScroll = NSScrollView()
     private let devicesTable = NSTableView()
     private let connectButton = NSButton(title: "Connect", target: nil, action: nil)
+    private let qrButton = NSButton(title: "Pair with QR", target: nil, action: nil)
     private let retryButton = NSButton(title: "Retry", target: nil, action: nil)
 
     private let searchField = NSSearchField()
@@ -142,6 +234,8 @@ final class LauncherView: NSView, NSTableViewDataSource, NSTableViewDelegate, NS
 
     /// Asks the window controller to dismiss the pairing sheet.
     var onDismissCodeSheet: (() -> Void)?
+    /// Devices pane: "Pair with QR".
+    var onPairWithQR: (() -> Void)?
 
     init(model: AppModel) {
         self.model = model
@@ -181,6 +275,9 @@ final class LauncherView: NSView, NSTableViewDataSource, NSTableViewDelegate, NS
         retryButton.target = self
         retryButton.action = #selector(retry)
         devicesPane.addSubview(retryButton)
+        qrButton.target = self
+        qrButton.action = #selector(pairWithQR)
+        devicesPane.addSubview(qrButton)
 
         // Apps
         searchField.placeholderString = "Search apps"
@@ -211,9 +308,10 @@ final class LauncherView: NSView, NSTableViewDataSource, NSTableViewDelegate, NS
 
         phoneTitle.frame = NSRect(x: pad, y: bounds.height - 44, width: bounds.width - pad * 2, height: 20)
         devicesScroll.frame = NSRect(x: pad, y: 66, width: bounds.width - pad * 2, height: bounds.height - 126)
-        hintLabel.frame = NSRect(x: pad, y: 44, width: bounds.width - pad * 2 - 140, height: 40)
+        hintLabel.frame = NSRect(x: pad, y: 44, width: bounds.width - pad * 2 - 300, height: 40)
         connectButton.frame = NSRect(x: bounds.width - pad - 120, y: 22, width: 120, height: 32)
         retryButton.frame = NSRect(x: bounds.width - pad - 120, y: 22, width: 120, height: 32)
+        qrButton.frame = NSRect(x: bounds.width - pad - 274, y: 22, width: 140, height: 32)
 
         searchField.frame = NSRect(x: pad, y: bounds.height - 48, width: 320, height: 28)
         phoneButton.frame = NSRect(x: bounds.width - pad - 100, y: bounds.height - 52, width: 100, height: 32)
@@ -297,6 +395,8 @@ final class LauncherView: NSView, NSTableViewDataSource, NSTableViewDelegate, NS
     }
 
     @objc private func retry() { model.retry() }
+
+    @objc private func pairWithQR() { onPairWithQR?() }
 
     @objc private func searchReturn() {
         guard let first = filteredApps().first else { return }

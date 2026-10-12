@@ -55,7 +55,8 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     }
 
     func dpi() -> Double {
-        VideoSize.dpi(backingScale: Double(window?.backingScaleFactor ?? 2), density: density)
+        guard window != nil else { return 160 * density }
+        return VideoSize.dpi(pixels: displayPixels(), bounds: videoView.bounds.size, density: density)
     }
 
     func sendOpen() {}

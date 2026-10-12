@@ -75,6 +75,8 @@ enum SessionEvent {    case state(SessionState, String?)
     case phoneState(locked: Bool, battery: Int, charging: Bool)
     case phoneError(code: String, message: String?, stream: UInt32)
     case pairCodeRequired(deviceId: String?)
+    /// The phone accepted the key we were showing in a QR: it is stored now.
+    case qrPaired(deviceId: String)
     case protocolViolation(String)
 }
 
@@ -101,6 +103,13 @@ final class Session {
     private var everReady = false
     private var intentionalClose = false
     private var loggedUnknown: Set<String> = []
+    /// Key from an open QR sheet: tried before any stored key, and a rejection
+    /// never falls back to the code flow (`pair.request`).
+    private var qrKey: Data?
+    private var authedWithQRKey = false
+
+    /// QR probes connect once and stop; the launcher's session reconnects.
+    var autoReconnect = true
 
     private(set) var state: SessionState = .idle
     private(set) var phone: PhoneInfo?
@@ -144,6 +153,7 @@ final class Session {
         connection = conn
         decoder = FrameDecoder()
         awaitingPairCode = false
+        authedWithQRKey = false
         conn.stateUpdateHandler = { [weak self] newState in self?.handleConnectionState(newState, on: conn) }
         conn.start(queue: queue)
         receive(on: conn)
@@ -237,6 +247,7 @@ final class Session {
         }
         guard !intentionalClose else { transition(.closed, nil); return }
         transition(.failed(reason), reason)
+        guard autoReconnect else { return }
         let delay = Self.backoff[min(reconnectAttempt, Self.backoff.count - 1)]
         reconnectAttempt += 1
         Log.session.notice("reconnect in \(delay, privacy: .public)s")
@@ -281,6 +292,17 @@ final class Session {
             // The challenge names the phone, which picks the right key even when
             // we connected by address rather than through discovery.
             if let id = message.string("id"), !id.isEmpty { knownDeviceId = id }
+            // An open QR sheet takes precedence: the phone has the key as soon as
+            // the user scans, and until then `auth_failed` is the expected answer
+            // (never `pair.request`, which would spam the phone with prompts).
+            if let key = qrKey {
+                authDeviceId = knownDeviceId
+                authInFlight = false
+                authAttempts = 0
+                authedWithQRKey = true
+                sendJSON(["t": "auth", "mac": PairCrypto.hmacHex(key: key, nonceHex: nonce)])
+                return
+            }
             if let candidate = keyStore.candidateKey(knownDeviceId: knownDeviceId) {
                 authDeviceId = candidate.deviceId
                 authInFlight = true
@@ -305,6 +327,13 @@ final class Session {
             if let key = pendingPairKey {
                 keyStore.store(key: key, deviceId: info.id)
                 pendingPairKey = nil
+            }
+            if authedWithQRKey, let key = qrKey {
+                // Scanning is the consent: the phone already stored the same key.
+                keyStore.store(key: key, deviceId: info.id)
+                qrKey = nil
+                authedWithQRKey = false
+                emit(.qrPaired(deviceId: info.id))
             }
             knownDeviceId = info.id
             phone = info
@@ -343,7 +372,7 @@ final class Session {
             break
         case "error":
             let code = message.string("code") ?? "unknown"
-            if code == "auth_failed" {
+            if code == "auth_failed", !authedWithQRKey {
                 forgetAuthKey()
             }
             emit(.phoneError(code: code, message: message.string("message"),
@@ -369,8 +398,18 @@ final class Session {
 
     // MARK: Pairing
 
+    /// The key currently shown in a QR sheet. While set, the handshake
+    /// authenticates with it and never asks the phone to show a code.
+    func usePairingKey(_ key: Data) { qrKey = key }
+
+    func clearPairingKey() {
+        qrKey = nil
+        authedWithQRKey = false
+    }
+
     /// Drop the key we tried so the next handshake pairs instead of looping.
     private func forgetAuthKey() {
+        guard !authedWithQRKey else { return }
         if let id = authDeviceId ?? knownDeviceId { keyStore.forget(deviceId: id) }
         authDeviceId = nil
         knownDeviceId = nil

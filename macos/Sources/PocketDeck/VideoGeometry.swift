@@ -11,20 +11,36 @@ enum VideoSize {
     static let granularity = 16
 
     /// VD pixels = window content bounds (pt) × backing scale, floored to a
-    /// multiple of 16, then clamped to [320, 2560].
+    /// multiple of 16 and clamped to [320, 2560]. When one axis would exceed the
+    /// maximum, both are scaled together so the video keeps the window's aspect
+    /// ratio: an ultra-wide or very tall window fills the view instead of being
+    /// letterboxed by a capped codec size.
     static func displayPixels(bounds: CGSize, backingScale: Double) -> CGSize {
-        func quantize(_ value: Double) -> Double {
-            let scaled = value * backingScale
-            let floored = (scaled / Double(granularity)).rounded(.down) * Double(granularity)
-            return min(max(floored, Double(minDimension)), Double(maxDimension))
+        guard bounds.width > 0, bounds.height > 0 else {
+            return CGSize(width: minDimension, height: minDimension)
         }
-        return CGSize(width: quantize(bounds.width), height: quantize(bounds.height))
+        var width = bounds.width * backingScale
+        var height = bounds.height * backingScale
+        let longest = max(width, height)
+        if longest > Double(maxDimension) {
+            let factor = Double(maxDimension) / longest
+            width *= factor
+            height *= factor
+        }
+        return CGSize(width: quantize(width), height: quantize(height))
     }
 
-    /// dpi = 160 × backing scale × density. `density` is the user's ⌘+/⌘-/⌘0
-    /// UI scale in 0.75…1.5 (1.0 default).
-    static func dpi(backingScale: Double, density: Double) -> Double {
-        160 * backingScale * density
+    private static func quantize(_ value: Double) -> Double {
+        let floored = (value / Double(granularity)).rounded(.down) * Double(granularity)
+        return min(max(floored, Double(minDimension)), Double(maxDimension))
+    }
+
+    /// dpi = 160 × the VD's effective pixel ratio × density. The ratio comes from
+    /// the actual VD size, so a capped size also lowers the density and the app
+    /// lays out for exactly the window's dp size.
+    static func dpi(pixels: CGSize, bounds: CGSize, density: Double) -> Double {
+        guard bounds.width > 0, pixels.width > 0 else { return 160 * density }
+        return 160 * Double(pixels.width) / Double(bounds.width) * density
     }
 }
 
