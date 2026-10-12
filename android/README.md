@@ -12,8 +12,9 @@ Where this code and the docs disagree, the docs win (or the doc gets a proposal)
 app/src/main/java/dev/pocketdeck/
   proto/     frame codec + minimal JSON + hex/HMAC (pure Kotlin, no Android)
   server/    the shell process: DeckService (AIDL), Server, Session, WindowStream,
-             InputInjector, AppLauncher, Power, AndroidWindowObserver, Hidden,
-             ShellContext + the platform interfaces Session depends on
+             InputInjector, AppLauncher, Power, AndroidPower/PanelPower/DisplayProbe,
+             DarkPanelPolicy, AndroidWindowObserver, Hidden, ShellContext + the
+             platform interfaces Session depends on
   app/       MainActivity (Compose host), DeckForegroundService, BootReceiver,
              NsdAdvertiser, ShizukuClient, Prefs, DeckState, QrPairing (pure)
   ui/        Compose UI: theme/, DeckViewModel + DeckUiState (pure mapping),
@@ -77,14 +78,55 @@ classic 6-arg `createVirtualDisplay`.
 
 No session → no VD, no encoder, no wake lock, no polling threads. With a session,
 `userActivity(displayId)` + `wakeUpWithDisplayId(displayId)` are poked when a
-stream opens or resizes, on input (throttled to ≤1/s) and on a 10 s timer while
-at least one stream is unpaused, alongside a PARTIAL wake lock. There is **no**
-fallback to the global wake-up call and the keyguard is never dismissed, but the
-call is per display: on AOSP the VD's own display group wakes and the physical
-panel (a different group) stays off. Samsung's DisplayManager puts the VD in the
-panel's group (`displayGroupId 0` on SM-S936B, verified), so there the locked
-panel wakes with the stream — otherwise the VD renders nothing while the phone is
-locked. See docs/TRY-IT.md.
+stream opens or resizes and on a 10 s keep-alive timer while at least one stream
+is unpaused, alongside a PARTIAL wake lock. There is **no** fallback to the
+global wake-up call and the keyguard is never dismissed: the poke names the
+streaming display's own group (`PowerManagerService.wakeUpWithDisplayId` wakes
+the power group of that display's display group).
+
+The *physical* panel is a separate story, and the server picks one of two
+strategies from the display group the VD actually got (logged at creation, see
+below):
+
+- **Own display group (AOSP).** Waking the VD's group leaves the panel's group
+  (group 0) off. Nothing else to do; the panel power mode is never touched.
+- **Panel group (vendor builds that ignore `OWN_DISPLAY_GROUP`, e.g. Samsung One
+  UI).** The same wake also turns the panel on, so right after our own wake the
+  panel is powered off through SurfaceFlinger
+  (`SurfaceControl.setDisplayPowerMode(token, POWER_MODE_OFF)`, token from
+  `com.android.server.display.DisplayControl` loaded out of `services.jar`).
+  The override is re-applied after our own wakes only — never in a loop — and a
+  transitional wake re-applies it twice more (0.5 s and 1.5 s) because the
+  platform's display power controller writes its own mode while it processes the
+  wake. Waking on *input* is skipped in this mode: the keep-alive owns the group
+  and the panel.
+- **The user wins.** If the panel was on (ours, forced dark) and then reports
+  off, that was a power-button press: the server stops waking and stops
+  re-applying until the screen has been on and off again, so normal Android
+  behaviour takes over. The keyguard is never dismissed and the phone is never
+  unlocked.
+- **Restore.** When the last stream pauses/closes or the session ends, the panel
+  power mode is set back to NORMAL *only* if the platform believes the panel is
+  on (the override is masking it), then `IPowerManager.goToSleep(…,
+  GO_TO_SLEEP_REASON_APPLICATION)` puts the phone back to its normal locked-off
+  state. Never called when the user has the phone.
+
+`debug.pocketdeck.force_panel_off=1` forces the panel-dark path (used by the
+emulator checks, where AOSP gives the VD its own group).
+
+Every VD creation logs the requested flags, the creation path
+(`VirtualDisplayConfig` vs the classic call) and the resulting `DisplayInfo`
+(`flags`, `displayGroupId`, `state`) with the hidden
+`DisplayManagerGlobal.getDisplayInfo`, which is what tells the two strategies
+apart on a new build:
+
+```
+stream 1 vd=57 1280x800 dpi=240 path=VirtualDisplayConfig
+stream 1 vd=57 requested flags=0x7dcb (PUBLIC|…|OWN_DISPLAY_GROUP|ALWAYS_UNLOCKED|…)
+stream 1 vd=57 display 57: group=0 state=ON flags=0x4f88 (TRUSTED|OWN_DISPLAY_GROUP|…)
+```
+
+Root cause and the AOSP source trail: `docs/research/display-groups.md`.
 
 ### Typed text
 

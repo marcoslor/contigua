@@ -38,14 +38,20 @@ internal class WindowStream(
         // (bit 15). The first adds a SystemUI nav bar and poisons One UI's back
         // gesture; the second would tie the VD to the panel's power state and
         // freeze it while the phone is locked.
+        const val FLAG_SECURE = 1 shl 2
+        const val FLAG_AUTO_MIRROR = 1 shl 4
+        const val FLAG_CAN_SHOW_WITH_INSECURE_KEYGUARD = 1 shl 5
         const val FLAG_SUPPORTS_TOUCH = 1 shl 6
         const val FLAG_ROTATES_WITH_CONTENT = 1 shl 7
         const val FLAG_DESTROY_CONTENT_ON_REMOVAL = 1 shl 8
+        const val FLAG_SHOULD_SHOW_SYSTEM_DECORATIONS = 1 shl 9
         const val FLAG_TRUSTED = 1 shl 10
         const val FLAG_OWN_DISPLAY_GROUP = 1 shl 11
         const val FLAG_ALWAYS_UNLOCKED = 1 shl 12
         const val FLAG_TOUCH_FEEDBACK_DISABLED = 1 shl 13
         const val FLAG_OWN_FOCUS = 1 shl 14
+        const val FLAG_DEVICE_DISPLAY_GROUP = 1 shl 15
+        const val FLAG_STEAL_TOP_FOCUS_DISABLED = 1 shl 16
     }
 
     @Volatile private var vd: VirtualDisplay? = null
@@ -67,13 +73,17 @@ internal class WindowStream(
         val codec = configure(w, h)
         val surface = codec.createInputSurface()
         codec.start()
-        val display = createDisplay(w, h, dpi, surface)
+        val created = createDisplay(w, h, dpi, surface)
+        val display = created.display
         displayIdValue = display.display.displayId
         vd = display
         encoder = codec
         startDrain(codec)
         hideIme(displayIdValue)
-        log("stream $stream vd=$displayIdValue ${w}x$h dpi=$dpi")
+        val requested = flags()
+        log("stream $stream vd=$displayIdValue ${w}x$h dpi=$dpi path=${created.path}")
+        log("stream $stream vd=$displayIdValue requested flags=0x${requested.toString(16)} (${virtualFlagNames(requested)})")
+        log("stream $stream vd=$displayIdValue ${DisplayProbe.describe(displayIdValue)}")
         return displayIdValue
     }
 
@@ -170,6 +180,29 @@ internal class WindowStream(
             FLAG_TOUCH_FEEDBACK_DISABLED or
             FLAG_OWN_FOCUS
 
+    /** Names for the requested flags, so the server log shows what we asked for. */
+    private fun virtualFlagNames(f: Int): String {
+        val set = ArrayList<String>()
+        if (f and DisplayManager.VIRTUAL_DISPLAY_FLAG_PUBLIC != 0) set.add("PUBLIC")
+        if (f and DisplayManager.VIRTUAL_DISPLAY_FLAG_PRESENTATION != 0) set.add("PRESENTATION")
+        if (f and FLAG_SECURE != 0) set.add("SECURE")
+        if (f and FLAG_AUTO_MIRROR != 0) set.add("AUTO_MIRROR")
+        if (f and DisplayManager.VIRTUAL_DISPLAY_FLAG_OWN_CONTENT_ONLY != 0) set.add("OWN_CONTENT_ONLY")
+        if (f and FLAG_CAN_SHOW_WITH_INSECURE_KEYGUARD != 0) set.add("CAN_SHOW_WITH_INSECURE_KEYGUARD")
+        if (f and FLAG_SUPPORTS_TOUCH != 0) set.add("SUPPORTS_TOUCH")
+        if (f and FLAG_ROTATES_WITH_CONTENT != 0) set.add("ROTATES_WITH_CONTENT")
+        if (f and FLAG_DESTROY_CONTENT_ON_REMOVAL != 0) set.add("DESTROY_CONTENT_ON_REMOVAL")
+        if (f and FLAG_SHOULD_SHOW_SYSTEM_DECORATIONS != 0) set.add("SHOULD_SHOW_SYSTEM_DECORATIONS")
+        if (f and FLAG_TRUSTED != 0) set.add("TRUSTED")
+        if (f and FLAG_OWN_DISPLAY_GROUP != 0) set.add("OWN_DISPLAY_GROUP")
+        if (f and FLAG_ALWAYS_UNLOCKED != 0) set.add("ALWAYS_UNLOCKED")
+        if (f and FLAG_TOUCH_FEEDBACK_DISABLED != 0) set.add("TOUCH_FEEDBACK_DISABLED")
+        if (f and FLAG_OWN_FOCUS != 0) set.add("OWN_FOCUS")
+        if (f and FLAG_DEVICE_DISPLAY_GROUP != 0) set.add("DEVICE_DISPLAY_GROUP")
+        if (f and FLAG_STEAL_TOP_FOCUS_DISABLED != 0) set.add("STEAL_TOP_FOCUS_DISABLED")
+        return set.joinToString("|")
+    }
+
     private fun displayManager(): DisplayManager {
         val ctor = DisplayManager::class.java.getDeclaredConstructor(Context::class.java)
         ctor.isAccessible = true
@@ -181,9 +214,10 @@ internal class WindowStream(
      * `ignoreActivitySizeRestrictions` (SDK ≥ 36) so apps that declare a fixed
      * size/orientation still fill whatever size the Mac window is. Everything is
      * reflective so it compiles regardless of which constructors the build's SDK
-     * exposes; any failure falls back to the classic 6-arg call.
+     * exposes; any failure falls back to the classic call. The path is logged
+     * with the display's group: a fallback that loses flags would show up here.
      */
-    private fun createDisplay(w: Int, h: Int, dpi: Int, surface: Surface): VirtualDisplay {
+    private fun createDisplay(w: Int, h: Int, dpi: Int, surface: Surface): Created {
         val config = buildConfig(w, h, dpi, surface)
         if (config != null) {
             val dm = displayManager()
@@ -196,13 +230,15 @@ internal class WindowStream(
                 val args = arrayOfNulls<Any?>(method.parameterTypes.size)
                 args[0] = config
                 runCatching { method.invoke(dm, *args) as? VirtualDisplay }.getOrNull()?.let {
-                    log("stream $stream created from VirtualDisplayConfig")
-                    return it
+                    return Created(it, "VirtualDisplayConfig")
                 }
             }
         }
-        return displayManager().createVirtualDisplay("pocketdeck-$stream", w, h, dpi, surface, flags())
+        val classic = displayManager().createVirtualDisplay("pocketdeck-$stream", w, h, dpi, surface, flags())
+        return Created(classic, "classic")
     }
+
+    private class Created(val display: VirtualDisplay, val path: String)
 
     private fun buildConfig(w: Int, h: Int, dpi: Int, surface: Surface): Any? = runCatching {
         val builderClass = Class.forName("android.hardware.display.VirtualDisplayConfig\$Builder")

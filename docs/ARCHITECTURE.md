@@ -41,9 +41,10 @@ phone stays locked**. LAN only. Open source.
    - **Never `DEVICE_DISPLAY_GROUP`** — the VD would follow the panel's power
      state and freeze while the phone is locked. Note: some OEM builds (Samsung
      One UI) ignore `OWN_DISPLAY_GROUP` and put the VD in the panel's group
-     anyway (`displayGroupId 0`), so the VD still follows the panel; the phone
-     side then wakes that group when a stream opens, which lights the *locked*
-     panel (never unlocked, no keyguard dismissal) — see android/README.md.
+     anyway (`displayGroupId 0`); the phone side detects that from the VD's
+     `DisplayInfo` at creation and powers the panel off through SurfaceFlinger
+     while it streams, so the locked panel shows nothing and the VD still
+     renders (never unlocked, no keyguard dismissal) — see android/README.md.
    - `ALWAYS_UNLOCKED` keeps apps (not the keyguard) on the VD while the phone
      is locked. This is the whole "locked phone" feature.
    - Display IME policy = HIDE (no soft keyboard on the VD; Mac keyboard types).
@@ -75,11 +76,18 @@ phone stays locked**. LAN only. Open source.
   group when a stream opens, on input (throttled to ≤1/s) and on a timer every
   10 s while ≥1 stream is unpaused. Hold a PARTIAL wake lock only while ≥1
   stream is unpaused.
-- Never force the *panel* on where the platform keeps display groups separate
-  (AOSP): the poke names the VD's own group. On builds where the VD shares the
-  panel's group the same poke wakes the locked panel with it — that is the only
-  way to render there (see android/README.md). Never run a panel-off loop and
-  never dismiss the keyguard.
+- Panel policy, chosen from the display group the VD actually got (logged at
+  creation): own group (AOSP) → only that group is woken and the panel power
+  mode is never touched; panel group (vendor builds that ignore
+  `OWN_DISPLAY_GROUP`) → the same wake also lights the panel, so the panel is
+  powered off through SurfaceFlinger right after our own wakes (never in a
+  loop), the screen showing nothing while the VD renders. A power-button press
+  hands the phone back to normal Android behaviour until the screen has been on
+  and off again. Never dismiss the keyguard, never unlock, never force the panel
+  on.
+- End of session: when we were the ones who woke the panel's group, restore the
+  panel's power mode and `goToSleep` so the phone returns to its normal
+  locked-off state with no wake locks or forced power modes left behind.
 - Encoder: H.264 High, VBR, bitrate scaled to pixels (≈ 0.12 bpp·fps, capped
   8 Mbps), `KEY_FRAME_RATE 60`, `KEY_I_FRAME_INTERVAL` 10 s (IDR on demand),
   `KEY_PRIORITY 0` (realtime), `KEY_LATENCY 1` where supported,
@@ -99,7 +107,9 @@ android/                 Gradle project, single :app module (dev.pocketdeck)
     app/                 MainActivity, PairingPrompt, NsdAdvertiser, ShizukuBinder
     server/              (runs in the shell process) DeckService (AIDL), Server,
                          Session, WindowStream, Encoder, InputInjector,
-                         AppLauncher, Power, Hidden (reflection cache), ShellContext
+                         AppLauncher, Power, PanelPower (panel off through
+                         SurfaceFlinger), DisplayProbe, Hidden (reflection cache),
+                         ShellContext
     launcher/            LauncherActivity (phone mode)
     proto/               Frame codec (mirrors docs/PROTOCOL.md)
 macos/                   SwiftPM package (macOS 26+) → PocketDeck.app (scripts/bundle.sh)
