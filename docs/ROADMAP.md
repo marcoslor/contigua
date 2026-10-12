@@ -14,6 +14,9 @@ Status: `[ ]` todo · `[~]` in progress · `[x]` done (verified on device).
 - [ ] **Spike:** `VirtualDisplayConfig.Builder.setHomeSupported(true)` without
       `SHOULD_SHOW_SYSTEM_DECORATIONS`. If One UI's launcher runs on the VD and #6007
       stays clean across lock/unlock, use the system launcher in phone mode instead of ours.
+- [ ] **End-to-end encryption (P0):** mutual TLS 1.3 with keys pinned at pairing (QR/code exchanges
+      certificate fingerprints); the same encrypted stream runs over LAN, P2P and relay, so no
+      relay can read it. Replaces plaintext + HMAC; protocol v2.
 - [ ] Device QA on the S25+ with the phone locked: latency ≤ 80 ms p50, #6007 clean, battery drain per hour measured idle vs. one window
 - [ ] Repo polish: README with GIF, LICENSE, build docs, CI (gradle build + swift build/test + fakephone selfcheck)
 
@@ -44,13 +47,22 @@ looped dev task with its own checks; the next starts only after review.
 
 | Feature | Approach | Size |
 |---|---|---|
-| TLS (mutual, pinned at pairing) | replaces HMAC-only auth | M |
 | Links phone → Mac | open-on-Mac share target in the app | M |
 | Automation server (MCP) | local stdio server over deckctl: list apps, open, observe, tap, type | M |
 | Companion IME | composing/emoji/dictation | L |
 
+## Remote access (paid hosted option, always self-hostable)
+
+1. Rendezvous service: the phone's shell server keeps one outbound connection (keepalive
+   ≥ 4 min); the Mac asks it to connect to a paired phone id. Sees only ids and addresses.
+2. Relay fallback (TCP/WebSocket) that forwards opaque E2E-encrypted bytes; works on every
+   network. Remote mode caps video at ~2 Mbps / 30 fps.
+3. P2P upgrade: UDP hole punching (QUIC) with the rendezvous as the address exchange; relay only
+   when NAT forbids it (symmetric/CGNAT, typically mobile data).
+Single static server binary + Docker image; one process does rendezvous + relay.
+
 ## Later
 
-Remote (non-LAN) relay, wake over network, widgets on the Mac, Finder FileProvider,
+Wake over network, widgets on the Mac, Finder FileProvider,
 APK preview, calls, camera sharing, adb-only mode (no Shizuku: self-bootstrap
 via wireless-debugging pairing).
