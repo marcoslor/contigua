@@ -76,12 +76,15 @@ classic 6-arg `createVirtualDisplay`.
 ### Power
 
 No session → no VD, no encoder, no wake lock, no polling threads. With a session,
-`userActivity(displayId)` + `wakeUpWithDisplayId(displayId)` are poked on input
-(throttled to ≤1/s) and `userActivity(displayId)` again on a 30 s timer while at
-least one stream is unpaused, alongside a PARTIAL wake lock. The wake-up call is
-per-display and there is **no** fallback to the global wake-up call: the physical
-panel (a different display group) is never forced on and there is no panel-off
-loop.
+`userActivity(displayId)` + `wakeUpWithDisplayId(displayId)` are poked when a
+stream opens or resizes, on input (throttled to ≤1/s) and on a 10 s timer while
+at least one stream is unpaused, alongside a PARTIAL wake lock. There is **no**
+fallback to the global wake-up call and the keyguard is never dismissed, but the
+call is per display: on AOSP the VD's own display group wakes and the physical
+panel (a different group) stays off. Samsung's DisplayManager puts the VD in the
+panel's group (`displayGroupId 0` on SM-S936B, verified), so there the locked
+panel wakes with the stream — otherwise the VD renders nothing while the phone is
+locked. See docs/TRY-IT.md.
 
 ### Typed text
 
