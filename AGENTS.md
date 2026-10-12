@@ -5,8 +5,9 @@
 - **Do not `git commit`, `git add`, branch, or push.** The reviewer commits after review.
 - No debug/TEMP leftovers, no commented-out code, no "v48q"-style version tags in comments. Comments explain *why*, briefly.
 - Never name competitor or closed-source products in code, comments, docs or commit messages; describe techniques generically.
-- Keep dependencies minimal: Android = Shizuku + androidx.core only; macOS = system frameworks only; tools = Python 3.9 stdlib + ffmpeg/dns-sd CLIs.
-- Toolchain: `JAVA_HOME=/opt/homebrew/opt/openjdk@17`, `ANDROID_HOME=$HOME/Library/Android/sdk` (platform 36, build-tools 36.0.0). Swift 6.4 / macOS 27 SDK, deployment target macOS 15.
+- Keep dependencies minimal: Android = Shizuku, androidx core/activity/lifecycle, Jetpack Compose + Material 3 (via the Compose BOM), Google code scanner (`play-services-code-scanner`) for QR; macOS = system frameworks only; tools = Python 3.9 stdlib + ffmpeg/dns-sd CLIs.
+- UI: follow docs/UX.md (flows/copy) and docs/DESIGN.md (visual system). macOS UI is SwiftUI + Liquid Glass; Android UI is Compose + Material 3.
+- Toolchain: `JAVA_HOME=/opt/homebrew/opt/openjdk@17`, `ANDROID_HOME=$HOME/Library/Android/sdk` (platform 36, build-tools 36.0.0). Swift 6.4 / macOS 27 SDK, deployment target macOS 26 (Liquid Glass).
 - Phone rig (only when `timeout 20 adb devices` lists it): Samsung SM-S936B, Android 16, Shizuku running. Always prefix adb with `timeout 20`.
 
 ## Goal-loop protocol (every delegated task follows this)
