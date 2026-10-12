@@ -29,6 +29,11 @@ final class VideoLayerView: NSView {
     var onHoverChange: ((Bool) -> Void)?
     private var hoverTrackingArea: NSTrackingArea?
 
+    /// Edge-swipe back gesture (two fingers from the left strip).
+    private var edgeSwipe = EdgeSwipeClassifier()
+    private var edgeSwipeTracking = false
+    private let edgeHint = CAShapeLayer()
+
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         wantsLayer = true
@@ -36,6 +41,7 @@ final class VideoLayerView: NSView {
         displayLayer.backgroundColor = NSColor.black.cgColor
         layer?.backgroundColor = NSColor.black.cgColor
         layer?.addSublayer(displayLayer)
+        installEdgeHint()
     }
 
     @available(*, unavailable)
@@ -48,6 +54,7 @@ final class VideoLayerView: NSView {
     override func layout() {
         super.layout()
         displayLayer.frame = bounds
+        edgeHint.position = CGPoint(x: edgeHint.position.x, y: bounds.midY)
     }
 
     override func setFrameSize(_ newSize: NSSize) {
@@ -164,9 +171,87 @@ final class VideoLayerView: NSView {
     override func mouseUp(with event: NSEvent) { inputMapper?.mouseUp(event) }
     override func rightMouseDown(with event: NSEvent) { inputMapper?.rightMouseDown(event) }
     override func otherMouseDown(with event: NSEvent) { inputMapper?.otherMouseDown(event) }
-    override func scrollWheel(with event: NSEvent) { inputMapper?.scrollWheel(event) }
     override func keyDown(with event: NSEvent) { inputMapper?.keyDown(event) }
     override func keyUp(with event: NSEvent) { inputMapper?.keyUp(event) }
+
+    // MARK: Edge swipe
+
+    /// Two-finger trackpad scrolls arrive with phases; only a gesture that
+    /// starts in the left 24 pt is considered, and a mostly-vertical one falls
+    /// back to plain scrolling. Momentum and phase-less (wheel) events pass
+    /// straight through to the app.
+    override func scrollWheel(with event: NSEvent) {
+        if trackEdgeSwipe(event) { return }
+        inputMapper?.scrollWheel(event)
+    }
+
+    /// Returns true when the event was consumed by the back gesture.
+    private func trackEdgeSwipe(_ event: NSEvent) -> Bool {
+        if event.phase.contains(.began) {
+            let point = convert(event.locationInWindow, from: nil)
+            edgeSwipeTracking = edgeSwipe.begin(at: point, in: bounds)
+            return edgeSwipeTracking
+        }
+        if event.phase.contains(.changed) {
+            guard edgeSwipeTracking else { return false }
+            switch edgeSwipe.update(horizontal: event.scrollingDeltaX, vertical: event.scrollingDeltaY) {
+            case .trigger:
+                flashEdgeHint()
+                inputMapper?.edgeSwipeBack()
+                return true
+            case .hold:
+                return true
+            case .passThrough, .ignore:
+                edgeSwipeTracking = false
+                return false
+            }
+        }
+        if event.phase.contains(.ended) || event.phase.contains(.cancelled) {
+            let wasTracking = edgeSwipeTracking
+            edgeSwipe.end()
+            edgeSwipeTracking = false
+            return wasTracking
+        }
+        return false
+    }
+
+    private func installEdgeHint() {
+        let size = CGSize(width: 14, height: 26)
+        let path = CGMutablePath()
+        path.move(to: CGPoint(x: size.width, y: 0))
+        path.addLine(to: CGPoint(x: 0, y: size.height / 2))
+        path.addLine(to: CGPoint(x: size.width, y: size.height))
+        edgeHint.path = path
+        edgeHint.bounds = CGRect(origin: .zero, size: size)
+        edgeHint.position = CGPoint(x: 4, y: bounds.midY)
+        edgeHint.strokeColor = NSColor.white.withAlphaComponent(0.9).cgColor
+        edgeHint.fillColor = nil
+        edgeHint.lineWidth = 3
+        edgeHint.lineCap = .round
+        edgeHint.lineJoin = .round
+        edgeHint.opacity = 0
+        edgeHint.zPosition = 10
+        layer?.addSublayer(edgeHint)
+    }
+
+    /// 150 ms slide-in chevron: feedback that the swipe was taken as back.
+    private func flashEdgeHint() {
+        if edgeHint.superlayer == nil { layer?.addSublayer(edgeHint) }
+        edgeHint.removeAnimation(forKey: "edgeSwipeHint")
+        let from = CGPoint(x: 2, y: bounds.midY)
+        let to = CGPoint(x: 34, y: bounds.midY)
+        edgeHint.position = to
+        let slide = CABasicAnimation(keyPath: "position")
+        slide.fromValue = NSValue(point: from)
+        slide.toValue = NSValue(point: to)
+        let fade = CAKeyframeAnimation(keyPath: "opacity")
+        fade.values = [0.0, 1.0, 1.0, 0.0]
+        fade.keyTimes = [0, 0.2, 0.7, 1]
+        let group = CAAnimationGroup()
+        group.animations = [slide, fade]
+        group.duration = 0.15
+        edgeHint.add(group, forKey: "edgeSwipeHint")
+    }
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()

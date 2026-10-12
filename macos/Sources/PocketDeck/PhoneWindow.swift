@@ -25,6 +25,7 @@ final class PhoneWindowController: StreamWindowController {
         window?.minSize = NSSize(width: 240, height: 240 * self.phoneScreen.height / self.phoneScreen.width)
         videoView.hoverZoneHeight = 90
         videoView.onHoverChange = { [weak self] visible in self?.showChrome(visible) }
+        videoView.inputMapper?.isPhoneMode = true
         buildChrome()
         showChrome(false, animated: false)
     }
@@ -38,6 +39,15 @@ final class PhoneWindowController: StreamWindowController {
         let pixels = displayPixels()
         guard phoneScreen.width > 0, pixels.width > 0 else { return phoneDpi }
         return phoneDpi * pixels.width / phoneScreen.width
+    }
+
+    /// ⇧⌘H / ⌘↑ only make sense here (home/recents are phone-mode actions).
+    @objc func navigateHome(_ sender: Any?) {
+        session.nav(stream: stream, action: "home")
+    }
+
+    @objc func navigateRecents(_ sender: Any?) {
+        session.nav(stream: stream, action: "recents")
     }
 
     override func sendOpen() {

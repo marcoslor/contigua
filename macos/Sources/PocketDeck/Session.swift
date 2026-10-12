@@ -66,7 +66,7 @@ enum VideoEvent {
 }
 
 enum SessionEvent {    case state(SessionState, String?)
-    case ready(PhoneInfo, isReconnect: Bool)
+    case ready(PhoneInfo, isReconnect: Bool, address: CachedAddress?)
     case apps([AppInfo])
     case icon(pkg: String, png: Data)
     case windowOpened(stream: UInt32, displayId: Int, width: Int, height: Int)
@@ -77,6 +77,8 @@ enum SessionEvent {    case state(SessionState, String?)
     case pairCodeRequired(deviceId: String?)
     /// The phone accepted the key we were showing in a QR: it is stored now.
     case qrPaired(deviceId: String)
+    /// A cached address answered with a different device id: refuse it.
+    case identityMismatch(expected: String, actual: String)
     case protocolViolation(String)
 }
 
@@ -89,11 +91,16 @@ final class Session {
     private let endpoint: Endpoint
     private let keyStore: PairKeyStore
     private var knownDeviceId: String?
+    /// Set when the endpoint is a cached address for this exact device id: the
+    /// challenge must name it, or the connection is refused (the address may
+    /// have been handed to another phone).
+    private let strictDeviceId: String?
 
     private var connection: NWConnection?
     private var decoder = FrameDecoder()
     private let queue = DispatchQueue(label: "dev.pocketdeck.session")
     private var pingTimer: Timer?
+    private var connectWatchdog: DispatchWorkItem?
     private var reconnectAttempt = 0
     private var pendingPairKey: Data?
     private var awaitingPairCode = false
@@ -123,10 +130,16 @@ final class Session {
 
     static let pingInterval: TimeInterval = 15
     static let backoff: [TimeInterval] = [1, 2, 4, 8, 15]
+    /// A Bonjour connection can stay in `waiting` forever when the phone stops
+    /// answering mDNS; the caller needs a failure event to fall back to its
+    /// cached address.
+    static let connectTimeout: TimeInterval = 10
 
-    init(endpoint: Endpoint, knownDeviceId: String?, keyStore: PairKeyStore = PairKeyStore()) {
+    init(endpoint: Endpoint, knownDeviceId: String?, strictDeviceId: String? = nil,
+         keyStore: PairKeyStore = PairKeyStore()) {
         self.endpoint = endpoint
         self.knownDeviceId = knownDeviceId
+        self.strictDeviceId = strictDeviceId
         self.keyStore = keyStore
     }
 
@@ -157,15 +170,31 @@ final class Session {
         conn.stateUpdateHandler = { [weak self] newState in self?.handleConnectionState(newState, on: conn) }
         conn.start(queue: queue)
         receive(on: conn)
+        armConnectWatchdog()
     }
 
     func close() {
         intentionalClose = true
+        connectWatchdog?.cancel()
+        connectWatchdog = nil
         pingTimer?.invalidate()
         pingTimer = nil
         connection?.cancel()
         connection = nil
         transition(.closed, nil)
+    }
+
+    /// A session that has not reached `ready` in time is treated as failed, so
+    /// the app can try the cached address; `waiting` alone never fails.
+    private func armConnectWatchdog() {
+        connectWatchdog?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, !self.intentionalClose, self.state != .ready else { return }
+            Log.session.notice("connect timed out after \(Self.connectTimeout, privacy: .public)s")
+            self.fail("timeout")
+        }
+        connectWatchdog = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.connectTimeout, execute: work)
     }
 
     private static func tcpParameters() -> NWParameters {
@@ -235,6 +264,8 @@ final class Session {
     }
 
     private func fail(_ reason: String) {
+        connectWatchdog?.cancel()
+        connectWatchdog = nil
         pingTimer?.invalidate()
         pingTimer = nil
         connection?.stateUpdateHandler = nil
@@ -255,6 +286,18 @@ final class Session {
             guard let self, !self.intentionalClose else { return }
             self.start()
         }
+    }
+
+    /// The endpoint belongs to a different phone now: never authenticate and
+    /// never reconnect to it. The owner drops the cached address on the event.
+    private func refuseIdentityMismatch() {
+        intentionalClose = true
+        connectWatchdog?.cancel()
+        connectWatchdog = nil
+        connection?.stateUpdateHandler = nil
+        connection?.cancel()
+        connection = nil
+        transition(.failed("identity-mismatch"), "identity-mismatch")
     }
 
     // MARK: Frame dispatch
@@ -291,7 +334,16 @@ final class Session {
             let nonce = message.string("nonce") ?? ""
             // The challenge names the phone, which picks the right key even when
             // we connected by address rather than through discovery.
-            if let id = message.string("id"), !id.isEmpty { knownDeviceId = id }
+            if let id = message.string("id"), !id.isEmpty {
+                if let expected = strictDeviceId, id != expected {
+                    // A cached address must keep belonging to the same phone.
+                    Log.session.error("address answers as \(id, privacy: .public), expected \(expected, privacy: .public); dropping")
+                    emit(.identityMismatch(expected: expected, actual: id))
+                    refuseIdentityMismatch()
+                    return
+                }
+                knownDeviceId = id
+            }
             // An open QR sheet takes precedence: the phone has the key as soon as
             // the user scans, and until then `auth_failed` is the expected answer
             // (never `pair.request`, which would spam the phone with prompts).
@@ -340,11 +392,14 @@ final class Session {
             reconnectAttempt = 0
             authAttempts = 0
             authInFlight = false
+            connectWatchdog?.cancel()
+            connectWatchdog = nil
             startPing()
             let isReconnect = everReady
             everReady = true
+            let address = connection?.currentPath?.remoteEndpoint?.resolvedIPv4Address
             transition(.ready, nil)
-            emit(.ready(info, isReconnect: isReconnect))
+            emit(.ready(info, isReconnect: isReconnect, address: address))
         case "apps":
             let apps = (message.array("apps") ?? []).compactMap { AppInfo(json: $0) }
             emit(.apps(apps))

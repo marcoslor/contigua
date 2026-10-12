@@ -32,6 +32,10 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
             self?.videoView.convert(event.locationInWindow, from: nil) ?? .zero
         }
         mapper.viewIsFlipped = { [weak self] in self?.videoView.isFlipped ?? false }
+        mapper.escapeAllowed = { [weak self] in
+            guard let window = self?.window else { return false }
+            return window.isKeyWindow && window.attachedSheet == nil
+        }
         mapper.send = { [weak self] command in self?.handle(command) }
         videoView.inputMapper = mapper
         videoView.onRequestKeyframe = { [weak self] in
@@ -146,6 +150,13 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     func resetDensity() {
         density = 1.0
         sendResize()
+    }
+
+    // MARK: Navigation
+
+    /// Menu action (target nil, responder chain). Enabled in every stream window.
+    @objc func navigateBack(_ sender: Any?) {
+        session.nav(stream: stream, action: "back")
     }
 
     // MARK: Input routing

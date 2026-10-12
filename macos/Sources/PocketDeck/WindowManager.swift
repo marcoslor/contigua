@@ -134,7 +134,7 @@ final class WindowManager {
         case .windowClosed(let stream, let reason):
             Log.app.info("phone closed stream \(stream, privacy: .public) (\(reason, privacy: .public))")
             controller(for: stream)?.closeFromRemote()
-        case .ready(_, let isReconnect):
+        case .ready(_, let isReconnect, _):
             if isReconnect { reopenAll() }
         default:
             break
@@ -161,8 +161,13 @@ final class IconCache {
     }
 
     func load(pkg: String) -> NSImage? {
-        lock.lock(); defer { lock.unlock() }
-        guard let data = try? Data(contentsOf: directory.appendingPathComponent("\(pkg).png")) else { return nil }
+        guard let data = loadData(pkg: pkg) else { return nil }
         return NSImage(data: data)
+    }
+
+    /// Raw PNG (Spotlight thumbnails want the bytes, not an NSImage).
+    func loadData(pkg: String) -> Data? {
+        lock.lock(); defer { lock.unlock() }
+        return try? Data(contentsOf: directory.appendingPathComponent("\(pkg).png"))
     }
 }

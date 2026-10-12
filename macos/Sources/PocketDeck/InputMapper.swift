@@ -48,6 +48,14 @@ final class InputMapper {
     var videoRectProvider: () -> CGRect = { .zero }
     var locationProvider: (NSEvent) -> CGPoint = { _ in .zero }
     var viewIsFlipped: () -> Bool = { false }
+    /// Phone-mode windows add ⇧⌘H (home) and ⌘↑ (recents).
+    var isPhoneMode = false
+    /// Esc reaches the phone only from the focused window with no sheet open.
+    var escapeAllowed: () -> Bool = { true }
+
+    static let keyCodeEscape: UInt16 = 53
+    static let keyCodeH: UInt16 = 4
+    static let keyCodeUpArrow: UInt16 = 126
 
     private var pendingText = ""
     private var textFlush: DispatchWorkItem?
@@ -94,6 +102,12 @@ final class InputMapper {
         }
     }
 
+    /// Two-finger swipe from the window's left edge (see EdgeSwipeClassifier).
+    func edgeSwipeBack() {
+        flushText()
+        send?(.nav("back"))
+    }
+
     func scrollWheel(_ event: NSEvent) {
         flushText()
         var dx = Double(event.scrollingDeltaX)
@@ -115,7 +129,26 @@ final class InputMapper {
     func keyDown(_ event: NSEvent) {
         let flags = event.modifierFlags
         if flags.contains(.command) {
+            // Phone mode: ⇧⌘H = home, ⌘↑ = recents. ⇧⌘H is not ⌘H: no clash
+            // with the app menu's Hide.
+            if flags.contains(.shift), event.keyCode == Self.keyCodeH {
+                if isPhoneMode {
+                    flushText()
+                    send?(.nav("home"))
+                }
+                return
+            }
+            if event.keyCode == Self.keyCodeUpArrow {
+                if isPhoneMode {
+                    flushText()
+                    send?(.nav("recents"))
+                }
+                return
+            }
             switch event.charactersIgnoringModifiers?.lowercased() {
+            case "[":
+                flushText()
+                send?(.nav("back"))
             case "v":
                 if let text = NSPasteboard.general.string(forType: .string), !text.isEmpty {
                     flushText()
@@ -140,7 +173,8 @@ final class InputMapper {
             }
             return
         }
-        if event.keyCode == 53 { // Esc
+        if event.keyCode == Self.keyCodeEscape { // Esc
+            guard escapeAllowed() else { return }
             flushText()
             send?(.nav("back"))
             return
