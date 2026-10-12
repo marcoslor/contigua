@@ -1,0 +1,337 @@
+package dev.pocketdeck.ui
+
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Paint
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.size
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.onRoot
+import androidx.compose.ui.unit.dp
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.github.takahirom.roborazzi.ExperimentalRoborazziApi
+import com.github.takahirom.roborazzi.captureRoboImage
+import com.github.takahirom.roborazzi.captureScreenRoboImage
+import dev.pocketdeck.R
+import dev.pocketdeck.launcher.LauncherApp
+import dev.pocketdeck.launcher.LauncherScreen
+import dev.pocketdeck.ui.theme.PocketDeckTheme
+import org.junit.Rule
+import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.annotation.Config
+import org.robolectric.annotation.GraphicsMode
+
+/**
+ * Roborazzi screenshots at phone size (412×915 dp). A fixed static color scheme
+ * from the seed is used so pixels do not depend on the device's wallpaper.
+ */
+@RunWith(AndroidJUnit4::class)
+@GraphicsMode(GraphicsMode.Mode.NATIVE)
+@Config(sdk = [34], qualifiers = "w412dp-h915dp-420dpi")
+class ScreenshotTest {
+
+    @get:Rule
+    val compose = createComposeRule()
+
+    // ---- onboarding ----------------------------------------------------
+
+    @Test
+    fun onboardingWelcomeLight() = shoot("onboarding_1_welcome_light", dark = false, page = 0, shizuku = ShizukuUiState.NOT_INSTALLED)
+
+    @Test
+    fun onboardingWelcomeDark() = shoot("onboarding_1_welcome_dark", dark = true, page = 0, shizuku = ShizukuUiState.NOT_INSTALLED)
+
+    @Test
+    fun onboardingShizukuNotInstalledLight() =
+        shoot("onboarding_2_shizuku_not_installed_light", false, 1, ShizukuUiState.NOT_INSTALLED)
+
+    @Test
+    fun onboardingShizukuNotInstalledDark() =
+        shoot("onboarding_2_shizuku_not_installed_dark", true, 1, ShizukuUiState.NOT_INSTALLED)
+
+    @Test
+    fun onboardingShizukuNotRunningLight() =
+        shoot("onboarding_2_shizuku_not_running_light", false, 1, ShizukuUiState.NOT_RUNNING)
+
+    @Test
+    fun onboardingShizukuNotRunningDark() =
+        shoot("onboarding_2_shizuku_not_running_dark", true, 1, ShizukuUiState.NOT_RUNNING)
+
+    @Test
+    fun onboardingShizukuPermissionLight() =
+        shoot("onboarding_2_shizuku_permission_light", false, 1, ShizukuUiState.PERMISSION_NEEDED)
+
+    @Test
+    fun onboardingShizukuPermissionDark() =
+        shoot("onboarding_2_shizuku_permission_dark", true, 1, ShizukuUiState.PERMISSION_NEEDED)
+
+    @Test
+    fun onboardingShizukuReadyLight() =
+        shoot("onboarding_2_shizuku_ready_light", false, 1, ShizukuUiState.READY)
+
+    @Test
+    fun onboardingShizukuReadyDark() =
+        shoot("onboarding_2_shizuku_ready_dark", true, 1, ShizukuUiState.READY)
+
+    @Test
+    fun onboardingNotificationsLight() =
+        shoot("onboarding_3_notifications_light", false, 2, ShizukuUiState.READY)
+
+    @Test
+    fun onboardingNotificationsDark() =
+        shoot("onboarding_3_notifications_dark", true, 2, ShizukuUiState.READY)
+
+    @Test
+    fun onboardingPairLight() = shoot("onboarding_4_pair_light", false, 3, ShizukuUiState.READY)
+
+    @Test
+    fun onboardingPairDark() = shoot("onboarding_4_pair_dark", true, 3, ShizukuUiState.READY)
+
+    // ---- home ----------------------------------------------------------
+
+    @Test
+    fun homeReadyLight() = shootHome("home_ready_light", dark = false, state = homeState())
+
+    @Test
+    fun homeReadyDark() = shootHome("home_ready_dark", dark = true, state = homeState())
+
+    @Test
+    fun homeConnectedLight() =
+        shootHome("home_connected_light", false, homeState(connectedMac = "Marcos's MacBook", windows = 2))
+
+    @Test
+    fun homeConnectedDark() =
+        shootHome("home_connected_dark", true, homeState(connectedMac = "Marcos's MacBook", windows = 2))
+
+    @Test
+    fun homeShizukuNotRunningLight() =
+        shootHome("home_shizuku_not_running_light", false, homeState(shizukuRunning = false))
+
+    @Test
+    fun homeShizukuNotRunningDark() =
+        shootHome("home_shizuku_not_running_dark", true, homeState(shizukuRunning = false))
+
+    // ---- pairing dialog ------------------------------------------------
+
+    @Test
+    fun pairingDialogLight() = shootPairingDialog("pairing_dialog_light", dark = false)
+
+    @Test
+    fun pairingDialogDark() = shootPairingDialog("pairing_dialog_dark", dark = true)
+
+    // ---- phone-mode launcher -------------------------------------------
+
+    @Test
+    fun launcherLight() = shootLauncher("launcher_light", dark = false, query = "")
+
+    @Test
+    fun launcherDark() = shootLauncher("launcher_dark", dark = true, query = "")
+
+    @Test
+    fun launcherSearchLight() = shootLauncher("launcher_search_light", dark = false, query = "pho")
+
+    @Test
+    fun launcherSearchDark() = shootLauncher("launcher_search_dark", dark = true, query = "pho")
+
+    // ---- app icon (docs/DESIGN.md §3) ----------------------------------
+
+    @Test
+    fun appIcon() = shootIcon("app_icon", monochrome = false)
+
+    @Test
+    fun appIconMonochrome() = shootIcon("app_icon_monochrome", monochrome = true)
+
+    // --------------------------------------------------------------------
+
+    private fun shoot(name: String, dark: Boolean, page: Int, shizuku: ShizukuUiState) {
+        val state = DeckUiState(
+            enabled = true,
+            shizuku = shizuku,
+            shizukuInstalled = shizuku != ShizukuUiState.NOT_INSTALLED,
+            shizukuRunning = shizuku == ShizukuUiState.READY || shizuku == ShizukuUiState.PERMISSION_NEEDED,
+            shizukuGranted = shizuku == ShizukuUiState.READY,
+            notificationsGranted = false,
+            batteryRequested = false,
+        )
+        capture(name, dark) {
+            OnboardingScreen(
+                state = state,
+                onGetShizuku = {},
+                onOpenShizuku = {},
+                onAllowShizuku = {},
+                onAllowNotifications = {},
+                onIgnoreBattery = {},
+                onScanQr = {},
+                onFinished = {},
+                initialPage = page,
+                autoAdvance = false,
+            )
+        }
+    }
+
+    private fun homeState(
+        connectedMac: String? = null,
+        windows: Int = 0,
+        shizukuRunning: Boolean = true,
+    ): DeckUiState {
+        val status = mapStatus(
+            StatusInput(
+                enabled = true,
+                shizukuRunning = shizukuRunning,
+                shizukuGranted = shizukuRunning,
+                port = if (shizukuRunning) 4711 else -1,
+                connectedMac = connectedMac,
+            ),
+        )
+        return DeckUiState(
+            onboardingDone = true,
+            enabled = true,
+            shizukuInstalled = true,
+            shizukuRunning = shizukuRunning,
+            shizukuGranted = shizukuRunning,
+            port = 4711,
+            connectedMac = connectedMac,
+            windows = windows,
+            paired = listOf(
+                PairedMacUi("1a2b3c4d", "Marcos's MacBook", 1_700_000_000_000L),
+                PairedMacUi("5e6f7a8b", "Mac Studio", 1_699_000_000_000L),
+            ),
+            wifiName = "Home Wi-Fi",
+            shizuku = shizukuUiState(true, shizukuRunning, shizukuRunning),
+            status = status,
+        )
+    }
+
+    private fun shootHome(name: String, dark: Boolean, state: DeckUiState) {
+        capture(name, dark) {
+            HomeScreen(
+                state = state,
+                onToggleEnabled = {},
+                onStatusAction = {},
+                onForget = { "" },
+                onUndoForget = {},
+                onPairNew = {},
+                relativeTime = { "5 minutes ago" },
+            )
+        }
+    }
+
+    @OptIn(ExperimentalRoborazziApi::class)
+    private fun shootPairingDialog(name: String, dark: Boolean) {
+        compose.mainClock.autoAdvance = false
+        compose.setContent {
+            PocketDeckTheme(darkTheme = dark, dynamicColor = false) {
+                Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+                    PairingDialog(
+                        pending = PendingPairingUi(
+                            requestId = "req-1",
+                            macName = "Marcos's MacBook",
+                            code = "482913",
+                        ),
+                        onAnswer = {},
+                    )
+                }
+            }
+        }
+        compose.mainClock.advanceTimeBy(1_200)
+        captureScreenRoboImage("src/test/screenshots/$name.png")
+    }
+
+    private fun shootLauncher(name: String, dark: Boolean, query: String) {
+        val apps = fakeApps()
+        capture(name, dark) {
+            LauncherScreen(apps = apps, query = query, onQueryChange = {}, onLaunch = {})
+        }
+    }
+
+    private fun shootIcon(name: String, monochrome: Boolean) {
+        val tag = "appIcon"
+        compose.mainClock.autoAdvance = false
+        compose.setContent {
+            PocketDeckTheme(darkTheme = false, dynamicColor = false) {
+                Surface(color = Color(0xFFFBF8FF)) {
+                    Box(
+                        modifier = Modifier
+                            .size(108.dp)
+                            .testTag(tag),
+                    ) {
+                        if (!monochrome) {
+                            Image(
+                                painter = painterResource(R.drawable.ic_launcher_background),
+                                contentDescription = null,
+                                modifier = Modifier.fillMaxSize(),
+                            )
+                        } else {
+                            Box(modifier = Modifier.fillMaxSize().background(Color(0xFF3B4279)))
+                        }
+                        Image(
+                            painter = painterResource(
+                                if (monochrome) R.drawable.ic_launcher_monochrome else R.drawable.ic_launcher_foreground,
+                            ),
+                            contentDescription = null,
+                            modifier = Modifier.fillMaxSize(),
+                        )
+                    }
+                }
+            }
+        }
+        compose.mainClock.advanceTimeBy(500)
+        compose.onNodeWithTag(tag).captureRoboImage("src/test/screenshots/$name.png")
+    }
+
+    private fun capture(name: String, dark: Boolean, content: @Composable () -> Unit) {
+        compose.mainClock.autoAdvance = false
+        compose.setContent {
+            PocketDeckTheme(darkTheme = dark, dynamicColor = false) {
+                Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+                    content()
+                }
+            }
+        }
+        compose.mainClock.advanceTimeBy(1_200)
+        compose.onRoot().captureRoboImage("src/test/screenshots/$name.png")
+    }
+
+    private fun fakeApps(): List<LauncherApp> {
+        val entries = listOf(
+            "Photos" to 0xFF5B6CF0.toInt(),
+            "Phone" to 0xFF3FD0E0.toInt(),
+            "Messages" to 0xFF9B6BFF.toInt(),
+            "Camera" to 0xFF77536C.toInt(),
+            "Chrome" to 0xFF77A0FF.toInt(),
+            "Gmail" to 0xFFE7BAD6.toInt(),
+            "Maps" to 0xFF535A92.toInt(),
+            "Music" to 0xFFBCC2FF.toInt(),
+            "Calendar" to 0xFFE0E0F9.toInt(),
+            "Clock" to 0xFF3B4279.toInt(),
+            "Files" to 0xFF91909A.toInt(),
+            "Settings" to 0xFF444559.toInt(),
+        )
+        return entries.mapIndexed { index, (label, color) ->
+            LauncherApp(key = "app/$index", label = label, icon = solidIcon(color))
+        }
+    }
+
+    private fun solidIcon(color: Int): ImageBitmap {
+        val size = 144
+        val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bitmap)
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { this.color = color }
+        canvas.drawRoundRect(0f, 0f, size.toFloat(), size.toFloat(), size / 4f, size / 4f, paint)
+        return bitmap.asImageBitmap()
+    }
+}

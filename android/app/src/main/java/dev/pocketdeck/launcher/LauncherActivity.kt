@@ -1,99 +1,99 @@
 package dev.pocketdeck.launcher
 
-import android.app.Activity
 import android.app.ActivityOptions
 import android.content.ComponentName
 import android.content.Intent
-import android.graphics.drawable.Drawable
 import android.os.Bundle
-import android.text.Editable
-import android.text.TextWatcher
-import android.view.View
-import android.view.ViewGroup
-import android.widget.BaseAdapter
-import android.widget.EditText
-import android.widget.GridView
-import android.widget.ImageView
-import android.widget.TextView
-import android.widget.Toast
+import android.view.Display
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.core.graphics.drawable.toBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.material3.SnackbarHostState
 import dev.pocketdeck.R
+import dev.pocketdeck.ui.theme.PocketDeckTheme
+import kotlinx.coroutines.launch
 
 /**
  * Phone-mode home screen. Runs on the virtual display the shell service created
  * and launches tapped apps onto the same display. Deliberately exported but with
  * no HOME category so it is never the device's launcher.
  */
-class LauncherActivity : Activity() {
+class LauncherActivity : ComponentActivity() {
 
-    private data class Entry(val label: String, val component: ComponentName, val icon: Drawable)
-
-    private lateinit var grid: GridView
-    private lateinit var search: EditText
-    private var all: List<Entry> = emptyList()
-    private var shown: List<Entry> = emptyList()
+    private var apps: List<LauncherApp> = emptyList()
+    private var components: Map<String, ComponentName> = emptyMap()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContentView(R.layout.activity_launcher)
-        grid = findViewById(R.id.appGrid)
-        search = findViewById(R.id.search)
-        grid.adapter = AppAdapter()
-        grid.setOnItemClickListener { _, _, position, _ -> launch(shown[position]) }
-        search.addTextChangedListener(object : TextWatcher {
-            override fun afterTextChanged(s: Editable?) = filter(s?.toString().orEmpty())
-            override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) = Unit
-            override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) = Unit
-        })
-        loadApps()
+        enableEdgeToEdge()
+        val loaded = loadApps()
+        apps = loaded.map { it.first }
+        components = loaded.associate { it.first.key to it.second }
+
+        setContent {
+            PocketDeckTheme {
+                var query by rememberSaveable { mutableStateOf("") }
+                val scope = rememberCoroutineScope()
+                val snackbarHostState = remember { SnackbarHostState() }
+                LauncherScreen(
+                    apps = apps,
+                    query = query,
+                    onQueryChange = { query = it },
+                    onLaunch = { app ->
+                        val component = components[app.key]
+                        if (component == null || !launch(component)) {
+                            scope.launch {
+                                snackbarHostState.showSnackbar(getString(R.string.launcher_launch_failed))
+                            }
+                        }
+                    },
+                    snackbarHostState = snackbarHostState,
+                )
+            }
+        }
     }
 
-    private fun loadApps() {
+    private fun loadApps(): List<Pair<LauncherApp, ComponentName>> {
         val pm = packageManager
         val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
         val resolved = runCatching { pm.queryIntentActivities(intent, 0) }.getOrDefault(emptyList())
-        all = resolved.mapNotNull { ri ->
+        return resolved.mapNotNull { ri ->
             val ai = ri.activityInfo ?: return@mapNotNull null
             val label = runCatching { ri.loadLabel(pm).toString() }.getOrDefault(ai.packageName)
-            val icon = runCatching { ri.loadIcon(pm) }.getOrNull() ?: return@mapNotNull null
-            Entry(label, ComponentName(ai.packageName, ai.name), icon)
-        }.sortedBy { it.label.lowercase() }
-        filter(search.text.toString())
+            val drawable = runCatching { ri.loadIcon(pm) }.getOrNull() ?: return@mapNotNull null
+            val icon = runCatching {
+                drawable.toBitmap(ICON_SIZE_PX, ICON_SIZE_PX).asImageBitmap()
+            }.getOrNull() ?: return@mapNotNull null
+            LauncherApp(
+                key = "${ai.packageName}/${ai.name}",
+                label = label,
+                icon = icon,
+            ) to ComponentName(ai.packageName, ai.name)
+        }.sortedBy { it.first.label.lowercase() }
     }
 
-    private fun filter(query: String) {
-        val q = query.trim().lowercase()
-        shown = if (q.isEmpty()) all else all.filter { it.label.lowercase().contains(q) }
-        (grid.adapter as BaseAdapter).notifyDataSetChanged()
-        if (shown.isEmpty() && q.isNotEmpty()) {
-            Toast.makeText(this, getString(R.string.launcher_no_match), Toast.LENGTH_SHORT).show()
-        }
-    }
-
-    private fun launch(entry: Entry) {
+    private fun launch(component: ComponentName): Boolean {
         val intent = Intent(Intent.ACTION_MAIN).apply {
-            component = entry.component
+            this.component = component
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
-        val displayId = display?.displayId ?: android.view.Display.DEFAULT_DISPLAY
+        val displayId = display?.displayId ?: Display.DEFAULT_DISPLAY
         val options = ActivityOptions.makeBasic().apply { setLaunchDisplayId(displayId) }
-        try {
+        return runCatching {
             startActivity(intent, options.toBundle())
-        } catch (e: Throwable) {
-            Toast.makeText(this, e.message ?: "launch failed", Toast.LENGTH_SHORT).show()
-        }
+            true
+        }.getOrDefault(false)
     }
 
-    private inner class AppAdapter : BaseAdapter() {
-        override fun getCount(): Int = shown.size
-        override fun getItem(position: Int): Any = shown[position]
-        override fun getItemId(position: Int): Long = position.toLong()
-
-        override fun getView(position: Int, convertView: View?, parent: ViewGroup?): View {
-            val view = convertView ?: layoutInflater.inflate(R.layout.row_app, parent, false)
-            val entry = shown[position]
-            view.findViewById<ImageView>(R.id.appIcon).setImageDrawable(entry.icon)
-            view.findViewById<TextView>(R.id.appLabel).text = entry.label
-            return view
-        }
+    private companion object {
+        const val ICON_SIZE_PX = 144
     }
 }

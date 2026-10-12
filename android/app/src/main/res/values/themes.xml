@@ -1,3 +1,7 @@
 <resources>
-    <style name="Theme.PocketDeck" parent="@android:style/Theme.DeviceDefault.DayNight" />
+    <!-- Compose owns the whole window; no platform action bar. -->
+    <style name="Theme.PocketDeck" parent="@android:style/Theme.DeviceDefault.DayNight">
+        <item name="android:windowActionBar">false</item>
+        <item name="android:windowNoTitle">true</item>
+    </style>
 </resources>

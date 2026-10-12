@@ -142,7 +142,7 @@ class DeckForegroundService : Service() {
     }
 
     private fun handlePaired(clientId: String, name: String, keyHex: String) {
-        Prefs.addPaired(this, Prefs.PairedMac(clientId, name, keyHex))
+        Prefs.addPaired(this, Prefs.PairedMac(clientId, name, keyHex, System.currentTimeMillis()))
         DeckState.paired = Prefs.paired(this)
         DeckState.pending = null
         getSystemService(NotificationManager::class.java).cancel(NOTIF_PAIRING)
@@ -194,13 +194,19 @@ class DeckForegroundService : Service() {
         val notification = NotificationCompat.Builder(this, CHANNEL_PAIRING)
             .setSmallIcon(R.drawable.ic_deck)
             .setContentTitle(getString(R.string.pairing_title, macName))
-            .setContentText(getString(R.string.pairing_text, code))
-            .setStyle(NotificationCompat.BigTextStyle().bigText(getString(R.string.pairing_text, code)))
+            .setContentText(getString(R.string.pairing_text, formatPairingCode(code)))
+            .setStyle(
+                NotificationCompat.BigTextStyle()
+                    .bigText(getString(R.string.pairing_text, formatPairingCode(code))),
+            )
             .setContentIntent(mainIntent())
             .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setCategory(NotificationCompat.CATEGORY_STATUS)
+            .setOnlyAlertOnce(true)
+            .setTimeoutAfter(PAIRING_TIMEOUT_MS)
             .setAutoCancel(true)
-            .addAction(0, getString(R.string.deny), deny)
             .addAction(0, getString(R.string.allow), allow)
+            .addAction(0, getString(R.string.deny), deny)
             .build()
         getSystemService(NotificationManager::class.java).notify(NOTIF_PAIRING, notification)
     }
@@ -223,6 +229,9 @@ class DeckForegroundService : Service() {
         private const val CHANNEL_PAIRING = "pairing"
         private const val NOTIF_ONGOING = 1
         private const val NOTIF_PAIRING = 2
+
+        /** The prompt stops being answerable after two minutes (docs/DESIGN.md §2). */
+        private const val PAIRING_TIMEOUT_MS = 120_000L
 
         const val ACTION_ALLOW = "dev.pocketdeck.action.ALLOW"
         const val ACTION_DENY = "dev.pocketdeck.action.DENY"
