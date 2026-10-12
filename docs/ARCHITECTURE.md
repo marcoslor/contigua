@@ -94,7 +94,7 @@ android/                 Gradle project, single :app module (dev.pocketdeck)
                          AppLauncher, Power, Hidden (reflection cache), ShellContext
     launcher/            LauncherActivity (phone mode)
     proto/               Frame codec (mirrors docs/PROTOCOL.md)
-macos/                   SwiftPM package → PocketDeck.app (scripts/bundle.sh)
+macos/                   SwiftPM package (macOS 26+) → PocketDeck.app (scripts/bundle.sh)
   Sources/PocketDeck/    App, Discovery, Session, Protocol, WindowManager,
                          AppWindow, VideoLayerView, InputMapper, Launcher UI, Keychain
 tools/fakephone/         Python fake phone (protocol-complete, ffmpeg testsrc video)
