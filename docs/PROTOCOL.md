@@ -60,7 +60,9 @@ display id on every injected event.
 
 1. Mac → `{"t":"hello","v":1,"clientId":"<uuid>","name":"<Mac name>"}`
 2. Phone → `{"t":"challenge","nonce":"<32 hex>"}`
-3. Paired Mac → `{"t":"auth","mac":"<hex HMAC-SHA256(key, nonce)>"}`;
+3. Paired Mac → `{"t":"auth","mac":"<hex>"}` where `mac` = lowercase hex of
+   HMAC-SHA256(key = the 32 raw key bytes, message = UTF-8 bytes of the nonce
+   hex string as sent);
    unpaired Mac → `{"t":"pair.request"}` (see Pairing).
 4. Phone → `{"t":"welcome","device":{"id":..,"name":..,"model":..,"sdk":36,
    "screen":{"w":1080,"h":2340,"dpi":450},"locked":true}}` or
