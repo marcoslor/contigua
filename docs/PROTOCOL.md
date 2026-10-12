@@ -22,7 +22,9 @@ Every message is one frame:
 ```
 u32 len        // number of bytes that follow this field (type + stream + payload)
 u8  type
-u32 stream     // 0 = session-level; otherwise a window stream id chosen by the Mac
+u32 stream     // 0 = session-level; otherwise a window stream id chosen by the Mac.
+               // JSON frames: equals the message's "stream" field if it has one, else 0;
+               // the JSON field is authoritative.
 u8[len-5] payload
 ```
 
@@ -46,9 +48,13 @@ display id on every injected event.
 
 ### Video rules
 
-- A stream starts with VIDEO_CONFIG, then VIDEO_FRAMEs, first one a keyframe.
+- Order on open: `window.opened` (JSON), then VIDEO_CONFIG, then VIDEO_FRAMEs, the
+  first a keyframe.
+- One VIDEO_FRAME = exactly one access unit (one MediaCodec output buffer).
 - On resize the phone sends a **new VIDEO_CONFIG** (new size) followed by a
-  keyframe. The Mac must rebuild its format description on every CONFIG.
+  keyframe. The Mac must rebuild its format description on every CONFIG. Frames
+  received before the new CONFIG are old-size frames and may be shown or dropped.
+  `window.resume` and `window.keyframe` may also be answered with CONFIG + keyframe.
 - No frames are sent while the display content is static (that's normal).
 - Backpressure: the phone never queues more than ~250 ms of video per stream.
   If the socket can't keep up it drops non-key frames for that stream until the
@@ -59,7 +65,8 @@ display id on every injected event.
 ## Session handshake
 
 1. Mac → `{"t":"hello","v":1,"clientId":"<uuid>","name":"<Mac name>"}`
-2. Phone → `{"t":"challenge","nonce":"<32 hex>"}`
+2. Phone → `{"t":"challenge","nonce":"<32 hex>","id":"<deviceId>"}` (`id` = the mDNS TXT
+   `id`, so a Mac that connected by address knows which stored key to use)
 3. Paired Mac → `{"t":"auth","mac":"<hex>"}` where `mac` = lowercase hex of
    HMAC-SHA256(key = the 32 raw key bytes, message = UTF-8 bytes of the nonce
    hex string as sent);
@@ -116,7 +123,9 @@ Phone → Mac:
 | `state` | `locked`: bool, `battery`: int, `charging`: bool — sent on change |
 | `error` | `code`, `message`, optional `stream` |
 
-Unknown `t` values are ignored (log once). Unknown fields are ignored.
+Unknown `t` values and unknown binary frame types are ignored (log once). Unknown
+fields are ignored. `activity` is a component string `pkg/fully.qualified.Class`.
+The phone sends one `state` right after `welcome`, then on change.
 
 ## Versioning
 
