@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="?android:attr/colorBackground"
+    android:orientation="vertical">
+
+    <EditText
+        android:id="@+id/search"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_margin="12dp"
+        android:hint="@string/launcher_search_hint"
+        android:imeOptions="actionSearch"
+        android:inputType="text"
+        android:maxLines="1" />
+
+    <GridView
+        android:id="@+id/appGrid"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:columnWidth="88dp"
+        android:horizontalSpacing="8dp"
+        android:numColumns="4"
+        android:padding="12dp"
+        android:stretchMode="columnWidth"
+        android:verticalSpacing="16dp" />
+</LinearLayout>
