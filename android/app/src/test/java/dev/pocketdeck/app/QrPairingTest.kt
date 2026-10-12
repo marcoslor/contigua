@@ -71,6 +71,17 @@ class QrPairingTest {
     }
 
     @Test
+    fun `mac payload with encoded ampersand name parses`() {
+        // Exact shape PairingQRPayload produces on the Mac (QRPairing.swift).
+        val uri = "pocketdeck://pair?c=5f0c1d2e-0000-4000-8000-abcdefabcdef" +
+            "&n=Mac%20%26%20Co%20%2B%201%20%3D%202&k=$key"
+        assertEquals(
+            QrPairing.Result.Pairing("5f0c1d2e-0000-4000-8000-abcdefabcdef", "Mac & Co + 1 = 2", key),
+            QrPairing.parse(uri),
+        )
+    }
+
+    @Test
     fun `any hex length difference invalidates the key`() {
         val tooShort = QrPairing.parse("pocketdeck://pair?c=1a2b&k=" + key.dropLast(1))
         assertTrue(tooShort is QrPairing.Result.BadKey)

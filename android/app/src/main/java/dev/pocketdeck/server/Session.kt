@@ -360,6 +360,8 @@ class Session(
         if (w <= 0 || h <= 0) return
         state.size = IntSize(w, h)
         display.resize(stream, w, h, dpi)
+        // The new size means a redraw: make sure the group is awake for it.
+        power.setActiveStreams(activeDisplayIds())
     }
 
     private fun onWindowClose(obj: Map<String, Any?>, frame: Frame) {

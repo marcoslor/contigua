@@ -6,19 +6,16 @@ import android.os.SystemClock
 import java.lang.reflect.Method
 
 /**
- * Battery/keep-awake policy. It only ever pokes the *virtual display's* own
- * display group: the physical panel is never forced on and there is no panel
- * loop (a locked phone's panel is already off).
+ * Battery/keep-awake policy. It pokes the *virtual display's* display group:
+ * `userActivity(displayId)` + `wakeUpWithDisplayId(displayId)` on input, when a
+ * window opens, and on a timer while streams are unpaused.
  *
- *  - `userActivity(displayId)` on input, throttled to at most once per second.
- *  - `wakeUpWithDisplayId(displayId)` on the same throttle: waking an
- *    already-awake group is a no-op, and doing it *per display* keeps the
- *    physical panel — a different display group — off. There is deliberately no
- *    fallback to the global wake-up call: that would light the panel and show
- *    the keyguard.
- *  - the same `userActivity(displayId)` poke on a 30 s timer, only while at
- *    least one stream is unpaused.
- *  - a PARTIAL wake lock only while at least one stream is unpaused.
+ * On AOSP a `FLAG_OWN_DISPLAY_GROUP` VD has a group of its own, so waking it
+ * starts that group's compositor and leaves the physical panel off. Samsung's
+ * DisplayManager puts the VD in the panel's group (displayGroupId 0, verified on
+ * SM-S936B), so there the same calls wake the *panel* — the phone shows its lock
+ * screen while a window streams. That is the trade for a locked phone that still
+ * renders; the code never unlocks (no keyguard dismissal, no global wake).
  */
 internal class AndroidPower(private val ctx: Context, private val log: (String) -> Unit) : Power {
 
@@ -86,6 +83,13 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
                 stopTimerLocked()
             }
         }
+        // A window just opened: wake its display group right away. On builds where
+        // the VD shares the panel's group (Samsung), the group is the panel's, so
+        // the phone wakes *locked* — without this a locked phone renders nothing.
+        for (id in displayIds) {
+            userActivity(id)
+            wakeDisplay(id)
+        }
     }
 
     override fun onSessionEnded() {
@@ -137,7 +141,12 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
                 if (!timerRunning) return
             }
             val displays = synchronized(lock) { activeDisplays.toIntArray() }
-            for (id in displays) userActivity(id)
+            for (id in displays) {
+                userActivity(id)
+                // The panel going off after the screen timeout would take the VD
+                // with it, so the keep-alive wakes the group too.
+                wakeDisplay(id)
+            }
         }
     }
 
@@ -161,6 +170,7 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
     }
 
     private companion object {
-        const val KEEPALIVE_INTERVAL_MS = 30_000L
+        /** Shorter than any screen-off timeout, so a streaming group stays on. */
+        const val KEEPALIVE_INTERVAL_MS = 10_000L
     }
 }
