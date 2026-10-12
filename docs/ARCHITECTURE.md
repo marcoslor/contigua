@@ -39,7 +39,11 @@ phone stays locked**. LAN only. Open source.
      (`backGestureDisabled`) so the phone's back gesture dies until reboot
      (scrcpy #6007). Back = `KEYCODE_BACK` stamped with the VD display id.
    - **Never `DEVICE_DISPLAY_GROUP`** — the VD would follow the panel's power
-     state and freeze while the phone is locked.
+     state and freeze while the phone is locked. Note: some OEM builds (Samsung
+     One UI) ignore `OWN_DISPLAY_GROUP` and put the VD in the panel's group
+     anyway (`displayGroupId 0`), so the VD still follows the panel; the phone
+     side then wakes that group when a stream opens, which lights the *locked*
+     panel (never unlocked, no keyguard dismissal) — see android/README.md.
    - `ALWAYS_UNLOCKED` keeps apps (not the keyguard) on the VD while the phone
      is locked. This is the whole "locked phone" feature.
    - Display IME policy = HIDE (no soft keyboard on the VD; Mac keyboard types).
@@ -66,12 +70,16 @@ phone stays locked**. LAN only. Open source.
 - Mac window minimized/hidden/fully occluded → `window.pause`: encoder stopped
   (VD surface detached), app stays alive.
 - Static content → encoder emits nothing (no repeat-frame setting).
-- Keep-awake: the VD's own display group must not time out while a window is
-  visible on the Mac. Poke `userActivity` for the VD group **on input**
-  (throttled to ≤1/s) and on a timer no faster than every 30 s while ≥1 stream
-  is unpaused. Hold a PARTIAL wake lock only while ≥1 stream is unpaused.
-- Never force the physical panel on. Never run a panel-off loop (a locked
-  phone's panel is already off).
+- Keep-awake: the VD's display group must not time out while a window is
+  visible on the Mac. Poke `userActivity` + `wakeUpWithDisplayId` for the VD's
+  group when a stream opens, on input (throttled to ≤1/s) and on a timer every
+  10 s while ≥1 stream is unpaused. Hold a PARTIAL wake lock only while ≥1
+  stream is unpaused.
+- Never force the *panel* on where the platform keeps display groups separate
+  (AOSP): the poke names the VD's own group. On builds where the VD shares the
+  panel's group the same poke wakes the locked panel with it — that is the only
+  way to render there (see android/README.md). Never run a panel-off loop and
+  never dismiss the keyguard.
 - Encoder: H.264 High, VBR, bitrate scaled to pixels (≈ 0.12 bpp·fps, capped
   8 Mbps), `KEY_FRAME_RATE 60`, `KEY_I_FRAME_INTERVAL` 10 s (IDR on demand),
   `KEY_PRIORITY 0` (realtime), `KEY_LATENCY 1` where supported,
