@@ -41,11 +41,13 @@ python3 tools/fakephone/fakephone.py --no-mdns --auto-allow \
 Options: `--port` (0 = ephemeral), `--name` (mDNS instance), `--no-mdns`,
 `--auto-allow`, `--code-file`, `--state` (default `~/.pocketdeck-fakephone.json`),
 `--events` (JSON Lines log, flushed per line), `--no-labels` (skip the stream
-label overlay). The pairing code is printed to the terminal and written to
-`--code-file`. Paired clients are persisted, so a second connection authenticates
-with its key instead of pairing again. A second simultaneous session is answered
-with `{"t":"error","code":"busy"}`; the first keeps working. Ctrl-C kills every
-ffmpeg/dns-sd child.
+label overlay), `--qr-uri URI` (simulates a QR scan: registers the client id and
+key from a `pocketdeck://pair?c=&n=&k=` URI as paired, so the next `auth`
+succeeds without any `pair.request`). The pairing code is printed to the
+terminal and written to `--code-file`. Paired clients are persisted, so a second
+connection authenticates with its key instead of pairing again. A second
+simultaneous session is answered with `{"t":"error","code":"busy"}`; the first
+keeps working. Ctrl-C kills every ffmpeg/dns-sd child.
 
 Screens and streams: `welcome` reports a 1080x2340 @450dpi locked phone. Each
 `window.open`/`resize`/`resume`/`keyframe` starts an ffmpeg
@@ -85,10 +87,22 @@ Subcommands:
 - `icon PKG --out f.png` — fetch a 96x96 PNG.
 - `open (PKG|--phone) --w --h --dpi --seconds N --out f.h264` — record raw
   Annex-B H.264 and print `fps= kbps= first_frame_ms=`.
+- `probe (PKG|--phone) --w --h --steps "tap:NX,NY;text:STR;scroll:V;wait:S"` —
+  open one window and record one phase file + PNG (`frame-png` on the last
+  frame) per step.
+- `multi --apps PKG1 PKG2 --w --h --resize1 WxH --resize2 WxH --steps ... --steps2 ...`
+  — two windows in one session; a phase per step plus a phase after the
+  resizes, each checked against its new VIDEO_CONFIG, recorded to `.h264` + PNG.
 - `resize-test` — open, resize, require a new VIDEO_CONFIG and a keyframe after it.
 - `input-test` — open, then send touch down/move/up, scroll, key down/up, nav back.
 - `pause-test` — require no frames while paused and CONFIG + keyframe after resume.
+- `exit-test PKG` — back out of the app; require `window.closed(app_exited)`.
+- `frame-png FILE --out f.png [--at SECONDS]` — decode a frame of a recorded
+  `.h264` (default: the last frame) without any session.
 - `latency --count N` — ping round-trip p50/p95.
+
+`--wait-for-free SECONDS` (any subcommand) retries while another client holds the
+phone's single session; the default is to fail fast with `busy`.
 
 Any protocol violation (wrong order, wrong size, a frame before CONFIG, a
 non-keyframe first frame after CONFIG, an unknown frame type) exits non-zero
