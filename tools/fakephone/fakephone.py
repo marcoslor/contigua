@@ -27,6 +27,7 @@ import sys
 import tempfile
 import threading
 import time
+import urllib.parse
 import zlib
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -246,6 +247,30 @@ class EventLog(object):
 
 
 # --- persisted pairing state ----------------------------------------------
+def scan_qr_uri(store, uri):
+    """Simulate a QR scan: `pocketdeck://pair?c=&n=&k=` -> a paired client.
+
+    Scanning is the consent (docs/UX.md): the phone stores the Mac's client id
+    and key, so the Mac's next `auth` succeeds without any pair.request.
+    """
+    parsed = urllib.parse.urlparse(uri.strip())
+    if parsed.scheme.lower() != "pocketdeck" or parsed.netloc.lower() != "pair":
+        raise ValueError("not a PocketDeck pairing URI: %r" % uri)
+    params = urllib.parse.parse_qs(parsed.query)
+    client_id = (params.get("c") or [""])[0].strip()
+    key_hex = (params.get("k") or [""])[0].strip()
+    name = (params.get("n") or ["Mac"])[0]
+    if not client_id or len(key_hex) != 64:
+        raise ValueError("pairing URI needs ?c=<clientId>&k=<64 hex>")
+    try:
+        key = bytes.fromhex(key_hex)
+    except ValueError:
+        raise ValueError("pairing URI key is not hex: %r" % key_hex)
+    store.add_client(client_id, name, key)
+    print("QR scan: paired client %r (%s)" % (name, client_id))
+    sys.stdout.flush()
+
+
 class Store(object):
     def __init__(self, path):
         self.path = path
@@ -830,6 +855,8 @@ class FakePhone(object):
         self.args = args
         self.name = args.name
         self.store = Store(args.state)
+        if args.qr_uri:
+            scan_qr_uri(self.store, args.qr_uri)
         self.events = EventLog(args.events)
         self.sender = None            # active session's sender
         self._session = None
@@ -984,6 +1011,9 @@ def build_parser():
     p.add_argument("--events", metavar="PATH", help="write JSON Lines session events here")
     p.add_argument("--no-labels", dest="labels", action="store_false",
                    help="do not overlay the stream id/size label")
+    p.add_argument("--qr-uri", metavar="URI",
+                   help="simulate a QR scan: register the client+key from a "
+                        "pocketdeck://pair URI as paired, then authenticate normally")
     return p
 
 
