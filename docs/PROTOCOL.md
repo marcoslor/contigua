@@ -127,6 +127,13 @@ Unknown `t` values and unknown binary frame types are ignored (log once). Unknow
 fields are ignored. `activity` is a component string `pkg/fully.qualified.Class`.
 The phone sends one `state` right after `welcome`, then on change.
 
+## Error codes
+
+`{"t":"error","code":...}` codes: `busy` (another session is active; sent instead of
+`challenge`, then close), `auth_failed`, `pair_denied`, `version`, `protocol` (message not
+allowed in the current state; then close), `no_stream` (unknown `stream`), `launch_failed`.
+Oversized frames close the session without a reply.
+
 ## Versioning
 
 `v` in hello + mDNS TXT. A phone that can't serve the Mac's `v` replies
