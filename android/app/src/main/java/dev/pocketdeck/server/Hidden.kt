@@ -30,6 +30,15 @@ internal object Hidden {
         null
     }
 
+    /** `android.os.SystemProperties.get(name)`; "" when unset, null when unavailable. */
+    fun systemProperty(name: String): String? = try {
+        Class.forName("android.os.SystemProperties")
+            .getMethod("get", String::class.java)
+            .invoke(null, name) as? String
+    } catch (_: Throwable) {
+        null
+    }
+
     /** `IXxx.Stub.asInterface(binder)` for a hidden AIDL interface. */
     fun proxy(interfaceName: String, service: String): Any? {
         val b = binder(service) ?: return null

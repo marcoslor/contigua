@@ -25,9 +25,13 @@ cd macos && swift build && ./scripts/bundle.sh && open build/PocketDeck.app
 
 ## Known limitations (SM-S936B, Android 16)
 
-- The locked phone's screen wakes while a window streams (lock screen only; the
-  PIN is never needed) because this Samsung build puts the virtual display in
-  the panel's display group. AOSP builds keep the panel off.
+- This Samsung build puts the virtual display in the panel's display group, so
+  the server powers the physical panel off (SurfaceFlinger) while a window
+  streams: the locked phone shows nothing, frames keep arriving and input
+  works. Closing the last window restores the panel and puts the phone back to
+  sleep. While the fallback holds, the platform still counts the screen as on
+  (the panel is dark, not asleep), and pressing the power button hands the phone
+  back to normal Android behaviour until the screen has been off again.
 - Chrome stable (`com.android.chrome`) is disabled for user 0 by the vendor;
   use **Chrome Dev** (`com.chrome.dev`) from the app list.
 - After ~20 min with no stream the phone can stop answering mDNS while fully
