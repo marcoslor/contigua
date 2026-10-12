@@ -14,6 +14,8 @@ final class LaunchOptionsTests: XCTestCase {
             "--minimize-stream", "2:6",
             "--deminimize-stream", "2:11",
             "--quit-after", "20",
+            "--qr-sheet",
+            "--qr-payload-file", "/tmp/pd.qr",
         ])
         XCTAssertEqual(options.connect?.host, "127.0.0.1")
         XCTAssertEqual(options.connect?.port, 47000)
@@ -30,6 +32,8 @@ final class LaunchOptionsTests: XCTestCase {
         XCTAssertEqual(options.deminimizes.first?.after, 11)
         XCTAssertEqual(options.quitAfter, 20)
         XCTAssertFalse(options.resetPairing)
+        XCTAssertTrue(options.qrSheet)
+        XCTAssertEqual(options.qrPayloadFile, "/tmp/pd.qr")
     }
 
     func testResizeWithoutUnitSuffix() {

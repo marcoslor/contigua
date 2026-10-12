@@ -15,6 +15,8 @@ struct LaunchOptions {
     var deminimizes: [(stream: UInt32, after: TimeInterval)] = []
     var quitAfter: TimeInterval?
     var resetPairing = false
+    var qrSheet = false
+    var qrPayloadFile: String?
 
     static func parse(_ arguments: [String]) -> LaunchOptions {
         var options = LaunchOptions()
@@ -48,6 +50,10 @@ struct LaunchOptions {
                 if let value = next(), let seconds = Double(value) { options.quitAfter = seconds }
             case "--reset-pairing":
                 options.resetPairing = true
+            case "--qr-sheet":
+                options.qrSheet = true
+            case "--qr-payload-file":
+                options.qrPayloadFile = next()
             default:
                 break
             }
@@ -102,11 +108,26 @@ final class AppModel {
     private(set) var battery: Int?
     private(set) var charging = false
 
+    /// Non-nil while the QR sheet is open (docs/UX.md "Pairing model").
+    private(set) var qrPayload: PairingQRPayload?
+
     var onChange: (() -> Void)?
     var onPairCodeSheet: (() -> Void)?
+    /// Sheet shown/hidden, or its status line changed.
+    var onQRSheetChange: (() -> Void)?
 
     private var didAutoOpen = false
+    private var didAutoConnect = false
     private var lastConnection: (endpoint: Session.Endpoint, deviceId: String?)?
+    private var qrProbes: [QRProbe] = []
+    private var qrTimer: Timer?
+
+    private struct QRProbe {
+        let session: Session
+        /// Device id, or "host:port" for the `--connect` endpoint.
+        let id: String
+        let startedAt: Date
+    }
 
     init(options: LaunchOptions) { self.options = options }
 
@@ -115,8 +136,12 @@ final class AppModel {
     func start() {
         discovery.onChange = { [weak self] phones in
             self?.phones = phones
+            self?.autoConnectIfPaired()
             self?.onChange?()
         }
+        // Before any connection: a QR sheet must own the first handshake, so
+        // the phone never sees a `pair.request` for a Mac that is showing a QR.
+        if options.qrSheet { startQRPairing() }
         if let connect = options.connect {
             begin(endpoint: .hostPort(host: connect.host, port: connect.port), deviceId: nil)
         } else {
@@ -142,6 +167,15 @@ final class AppModel {
         begin(endpoint: .service(phone.endpoint), deviceId: phone.deviceId)
     }
 
+    /// docs/UX.md: "Pairings are remembered; reconnection is automatic and
+    /// silent." One silent connect per launch, to the first remembered phone.
+    private func autoConnectIfPaired() {
+        guard session == nil, !didAutoConnect, qrPayload == nil, options.connect == nil else { return }
+        guard let phone = phones.first(where: { keyStore.key(forDeviceId: $0.deviceId) != nil }) else { return }
+        didAutoConnect = true
+        connect(phone: phone)
+    }
+
     func retry() {
         guard let last = lastConnection else { return }
         begin(endpoint: last.endpoint, deviceId: last.deviceId)
@@ -149,6 +183,112 @@ final class AppModel {
 
     func submitPairCode(_ code: String) {
         session?.providePairCode(code)
+    }
+
+    // MARK: QR pairing
+
+    /// Show a fresh key as a QR and start trying it against every phone we can
+    /// see (every 2 s, for 5 minutes).
+    func startQRPairing() {
+        guard qrPayload == nil else { return }
+        guard let payload = PairingQRPayload.random(clientId: ClientIdentity.clientId,
+                                                    name: ClientIdentity.name) else {
+            errorText = "Could not generate a pairing key"
+            onChange?()
+            return
+        }
+        qrPayload = payload
+        session?.usePairingKey(payload.key)
+        if let path = options.qrPayloadFile {
+            try? payload.uri.write(toFile: path, atomically: true, encoding: .utf8)
+        }
+        let timer = Timer(timeInterval: 2, repeats: true) { [weak self] _ in self?.qrRound() }
+        RunLoop.main.add(timer, forMode: .common)
+        qrTimer = timer
+        qrRound()
+        onQRSheetChange?()
+        onChange?()
+    }
+
+    func cancelQRPairing() {
+        stopQRPairing()
+        onChange?()
+    }
+
+    private func stopQRPairing() {
+        qrTimer?.invalidate()
+        qrTimer = nil
+        for probe in qrProbes { probe.session.close() }
+        qrProbes.removeAll()
+        qrPayload = nil
+        session?.clearPairingKey()
+        onQRSheetChange?()
+    }
+
+    /// One round: probe every discovered phone (plus the `--connect` endpoint,
+    /// which has no discovery) that has no live probe.
+    private func qrRound() {
+        guard let payload = qrPayload else { return }
+        if payload.isExpired() {
+            stopQRPairing()
+            errorText = "The QR code expired. Press “Pair with QR” for a new one."
+            onChange?()
+            return
+        }
+        let now = Date()
+        for probe in qrProbes where now.timeIntervalSince(probe.startedAt) > 6 {
+            probe.session.close()
+        }
+
+        var candidates: [(id: String, endpoint: Session.Endpoint, deviceId: String?)] = phones.map {
+            ($0.deviceId, .service($0.endpoint), $0.deviceId)
+        }
+        if let connect = options.connect {
+            candidates.append(("\(connect.host):\(connect.port)",
+                               .hostPort(host: connect.host, port: connect.port), nil))
+        }
+        for candidate in candidates where !qrProbes.contains(where: { $0.id == candidate.id }) {
+            startProbe(id: candidate.id, endpoint: candidate.endpoint,
+                       deviceId: candidate.deviceId, key: payload.key)
+        }
+    }
+
+    private func startProbe(id: String, endpoint: Session.Endpoint, deviceId: String?, key: Data) {
+        let probe = Session(endpoint: endpoint, knownDeviceId: deviceId, keyStore: keyStore)
+        probe.autoReconnect = false
+        probe.usePairingKey(key)
+        probe.onEvent = { [weak self, weak probe] event in
+            guard let probe else { return }
+            self?.handleProbe(event, id: id, probe: probe)
+        }
+        qrProbes.append(QRProbe(session: probe, id: id, startedAt: Date()))
+        probe.start()
+    }
+
+    private func handleProbe(_ event: SessionEvent, id: String, probe: Session) {
+        switch event {
+        case .qrPaired(let deviceId):
+            finishQRPairing(deviceId: deviceId)
+        case .state(.failed, _), .state(.closed, _):
+            qrProbes.removeAll { $0.session === probe }
+        default:
+            break
+        }
+    }
+
+    /// The phone scanned the QR and accepted the key (already stored).
+    private func finishQRPairing(deviceId: String) {
+        stopQRPairing()
+        onChange?()
+        // The probe's socket has to be gone first: the phone serves one session.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+            guard let self else { return }
+            if let phone = self.phones.first(where: { $0.deviceId == deviceId }) {
+                self.connect(phone: phone)
+            } else if let connect = self.options.connect {
+                self.begin(endpoint: .hostPort(host: connect.host, port: connect.port), deviceId: deviceId)
+            }
+        }
     }
 
     private func begin(endpoint: Session.Endpoint, deviceId: String?) {
@@ -161,6 +301,7 @@ final class AppModel {
         didAutoOpen = false
         errorText = nil
         uiState = .connecting
+        if let key = qrPayload?.key { newSession.usePairingKey(key) }
         newSession.onEvent = { [weak self] event in self?.handle(event) }
         newSession.onVideoEvent = { [weak self] event in self?.windows?.handleVideo(event) }
         onChange?()
@@ -224,6 +365,8 @@ final class AppModel {
             } else {
                 onPairCodeSheet?()
             }
+        case .qrPaired(let deviceId):
+            finishQRPairing(deviceId: deviceId)
         case .phoneError(let code, let message, _):
             errorText = message ?? code
             if code == "auth_failed" { uiState = .discovering }

@@ -24,9 +24,21 @@ final class GeometryTests: XCTestCase {
     }
 
     func testDisplayPixelsClampToMaximum() {
+        // 4000x3600 would exceed the cap: both axes scale by 0.64, keeping 10:9.
         let size = VideoSize.displayPixels(bounds: CGSize(width: 2000, height: 1800), backingScale: 2)
         XCTAssertEqual(size.width, 2560)
-        XCTAssertEqual(size.height, 2560)
+        XCTAssertEqual(size.height, 2304)
+    }
+
+    func testDisplayPixelsKeepAspectWhenCapped() {
+        // Ultra-wide window: 3200x1000 -> 2560x800 (3.2:1, the window's shape).
+        let wide = VideoSize.displayPixels(bounds: CGSize(width: 1600, height: 500), backingScale: 2)
+        XCTAssertEqual(wide.width, 2560)
+        XCTAssertEqual(wide.height, 800)
+        // Tall window stays tall and is not re-shaped by the cap.
+        let tall = VideoSize.displayPixels(bounds: CGSize(width: 600, height: 1000), backingScale: 2)
+        XCTAssertEqual(tall.width, 1200)
+        XCTAssertEqual(tall.height, 2000)
     }
 
     func testDisplayPixelsClampedValuesStayOnGrid() {
@@ -41,10 +53,17 @@ final class GeometryTests: XCTestCase {
     // MARK: dpi
 
     func testDPIFormula() {
-        XCTAssertEqual(VideoSize.dpi(backingScale: 2, density: 1.0), 320)
-        XCTAssertEqual(VideoSize.dpi(backingScale: 2, density: 1.5), 480)
-        XCTAssertEqual(VideoSize.dpi(backingScale: 2, density: 0.75), 240)
-        XCTAssertEqual(VideoSize.dpi(backingScale: 1, density: 1.0), 160)
+        let bounds = CGSize(width: 900, height: 600)
+        XCTAssertEqual(VideoSize.dpi(pixels: CGSize(width: 1800, height: 1200), bounds: bounds, density: 1.0), 320)
+        XCTAssertEqual(VideoSize.dpi(pixels: CGSize(width: 1800, height: 1200), bounds: bounds, density: 1.5), 480)
+        XCTAssertEqual(VideoSize.dpi(pixels: CGSize(width: 1800, height: 1200), bounds: bounds, density: 0.75), 240)
+        XCTAssertEqual(VideoSize.dpi(pixels: CGSize(width: 900, height: 600), bounds: bounds, density: 1.0), 160)
+    }
+
+    func testDPIFollowsACappedPixelSize() {
+        let bounds = CGSize(width: 1600, height: 500)
+        let pixels = VideoSize.displayPixels(bounds: bounds, backingScale: 2)
+        XCTAssertEqual(VideoSize.dpi(pixels: pixels, bounds: bounds, density: 1.0), 256, accuracy: 0.01)
     }
 
     // MARK: Letterboxing

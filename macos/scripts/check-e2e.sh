@@ -82,6 +82,15 @@ screenshot_portrait() {
     screencapture -x -l"$id" "$file"
 }
 
+# screenshot_widest <file> — capture the widest window (wide resize, clamped by
+# the display so the requested point width may not exist).
+screenshot_widest() {
+    local file="$1" id
+    id="$(windows | sort -k4 -n | tail -1 | awk '{print $1}')"
+    [ -n "$id" ] || { say "no windows"; return 1; }
+    screencapture -x -l"$id" "$file"
+}
+
 # brightness <png> — prints "YMIN YMAX" (YMAX-YMIN > 60 means "not black").
 brightness() {
     ffmpeg -hide_banner -i "$1" -vf signalstats,metadata=print -f null - 2>&1 \
@@ -89,6 +98,59 @@ brightness() {
 }
 
 count_events() { grep -c "$1" "$WORK/events.jsonl" 2>/dev/null || echo 0; }
+
+# --- C3: QR pairing -------------------------------------------------------
+
+# check_qr — the Mac shows a QR, the phone "scans" it (--qr-uri), the Mac
+# authenticates with the pending key: auth_ok, no pair.request.
+check_qr() {
+    clean
+    start_fake || return 1
+    launch --connect "127.0.0.1:$PORT" --qr-sheet --qr-payload-file "$WORK/qr.txt" \
+        --open com.android.settings --quit-after 30
+    for _ in $(seq 1 40); do [ -s "$WORK/qr.txt" ] && break; sleep 0.25; done
+    if [ ! -s "$WORK/qr.txt" ]; then
+        bad "C3 no QR payload written"
+        kill "$APP_PID" "$FAKE_PID" >/dev/null 2>&1
+        return 1
+    fi
+    say "QR payload: $(cat "$WORK/qr.txt")"
+    [ "$(windows | wc -l | tr -d ' ')" -ge 2 ] \
+        && ok "C3 QR sheet is on screen (launcher + sheet)" \
+        || bad "C3 no sheet window: $(windows | tr '\n' ' ')"
+    case "$(cat "$WORK/qr.txt")" in
+        pocketdeck://pair?c=*"&n="*"&k="*) ok "C3 payload is a pocketdeck://pair URI" ;;
+        *) bad "C3 payload shape: $(cat "$WORK/qr.txt")" ;;
+    esac
+    [ "$(grep -o 'k=[0-9a-f]*' "$WORK/qr.txt" | cut -c3- | tr -d '\n' | wc -c | tr -d ' ')" = "64" ] \
+        && ok "C3 key is 64 hex" || bad "C3 key is not 64 hex"
+    grep -q '"t":"pair.request"' "$WORK/events.jsonl" \
+        && bad "C3 live session tried pair.request while a QR was pending" \
+        || ok "C3 no pair.request before the scan"
+    cp "$WORK/events.jsonl" "$WORK/events1.jsonl"
+
+    # The phone now "scans": a second fakephone on the same port/state, with the
+    # client+key from the QR registered as paired.
+    pkill -f fakephone.py >/dev/null 2>&1
+    sleep 1
+    python3 "$FAKEPHONE" --port "$PORT" --no-mdns --auto-allow \
+        --state "$WORK/state.json" --events "$WORK/events.jsonl" \
+        --qr-uri "$(cat "$WORK/qr.txt")" > "$WORK/fake2.log" 2>&1 &
+    FAKE_PID=$!
+    wait_app
+    grep -q '"state":"auth_ok"' "$WORK/events.jsonl" \
+        && ok "C3 Mac authenticated with the QR key" || bad "C3 no auth_ok after the scan"
+    grep -q '"t":"pair.request"' "$WORK/events.jsonl" \
+        && bad "C3 pair.request after the scan" || ok "C3 no pair.request at all"
+    grep -q '"t":"apps.list"' "$WORK/events.jsonl" \
+        && ok "C3 app list requested after pairing" || bad "C3 no apps.list"
+    grep -q '"t":"window.open"' "$WORK/events.jsonl" && grep -q '"pkg":"com.android.settings"' "$WORK/events.jsonl" \
+        && ok "C3 auto-opened app after pairing" || bad "C3 no window.open"
+    # Two auth_ok: the probe (QR key) and the reconnect from the stored Keychain key.
+    [ "$(grep -c '"state":"auth_ok"' "$WORK/events.jsonl")" -ge 2 ] \
+        && ok "C3 key stored, reconnect authenticated" || bad "C3 no reconnect auth_ok"
+    pkill -f fakephone.py >/dev/null 2>&1
+}
 
 # --- C4: pairing, auth, window.open, configs -------------------------------
 
@@ -167,6 +229,26 @@ check_resize() {
     grep '"ev":"video"' "$WORK/events.jsonl" | grep -q '"w":1600,"h":1200' \
         && ok "C6 new video config 1600x1200" || bad "C6 no new config"
     screenshot 800 "$WORK/resize.png" && say "screenshot: $WORK/resize.png"
+    wait_app
+
+    # Non-16:9 shapes: tall, then ultra-wide (capped at 2560 px, aspect kept).
+    launch --connect "127.0.0.1:$PORT" --open com.android.settings \
+        --resize-stream 1:600x1000-pt --quit-after 16
+    sleep 10
+    grep '"ev":"video"' "$WORK/events.jsonl" | grep -q '"w":1200,"h":2000' \
+        && ok "C6 tall shape resized to 1200x2000" || bad "C6 no tall config"
+    screenshot 600 "$WORK/resize-tall.png" && say "screenshot: $WORK/resize-tall.png"
+    wait_app
+
+    launch --connect "127.0.0.1:$PORT" --open com.android.settings \
+        --resize-stream 1:1600x500-pt --quit-after 16
+    sleep 10
+    grep '"ev":"video"' "$WORK/events.jsonl" | grep -q '"w":2560,"h":800' \
+        && ok "C6 ultra-wide capped to 2560x800 (aspect kept)" || bad "C6 no capped config"
+    grep -q '"dpi":256' "$WORK/events.jsonl" \
+        && ok "C6 capped size lowers the dpi to 256" || bad "C6 dpi did not follow the cap"
+    screenshot 1600 "$WORK/resize-wide.png" || screenshot_widest "$WORK/resize-wide.png" \
+        && say "screenshot: $WORK/resize-wide.png"
     wait_app
     pkill -f fakephone.py >/dev/null 2>&1
 }
@@ -250,13 +332,14 @@ check_orphans() {
 
 which_check="${1:-all}"
 case "$which_check" in
+    qr)     check_qr ;;
     pair)   check_pair ;;
     render) check_render ;;
     resize) check_resize ;;
     input)  check_input ;;
     pause)  check_pause ;;
-    all)    check_pair; check_render; check_resize; check_input; check_pause; check_orphans ;;
-    *)      say "usage: check-e2e.sh [pair|render|resize|input|pause|all]"; exit 2 ;;
+    all)    check_qr; check_pair; check_render; check_resize; check_input; check_pause; check_orphans ;;
+    *)      say "usage: check-e2e.sh [qr|pair|render|resize|input|pause|all]"; exit 2 ;;
 esac
 
 say ""
