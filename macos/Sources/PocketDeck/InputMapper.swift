@@ -81,6 +81,7 @@ final class InputMapper {
     static let keyCodeH: UInt16 = 4
     static let keyCodeUpArrow: UInt16 = 126
 
+    private var scrollMapping = ScrollMapping()
     private var pendingText = ""
     private var textFlush: DispatchWorkItem?
 
@@ -134,18 +135,10 @@ final class InputMapper {
 
     func scrollWheel(_ event: NSEvent) {
         flushText()
-        var dx = Double(event.scrollingDeltaX)
-        var dy = Double(event.scrollingDeltaY)
-        if event.hasPreciseScrollingDeltas {
-            dx /= 20.0
-            dy /= 20.0
-        } else {
-            dx = dx == 0 ? 0 : (dx > 0 ? 1 : -1)
-            dy = dy == 0 ? 0 : (dy > 0 ? 1 : -1)
-        }
-        guard dx != 0 || dy != 0 else { return }
+        guard let units = scrollMapping.map(deltaX: Double(event.scrollingDeltaX), deltaY: Double(event.scrollingDeltaY),
+                                            precise: event.hasPreciseScrollingDeltas, phase: event.phase) else { return }
         let (nx, ny) = normalized(locationProvider(event))
-        send?(.scroll(ScrollEvent(nx: nx, ny: ny, hscroll: Float(dx), vscroll: Float(dy))))
+        send?(.scroll(ScrollEvent(nx: nx, ny: ny, hscroll: units.hscroll, vscroll: units.vscroll)))
     }
 
     // MARK: Trackpad gestures

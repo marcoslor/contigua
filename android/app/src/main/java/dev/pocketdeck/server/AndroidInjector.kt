@@ -17,7 +17,11 @@ import java.util.concurrent.TimeUnit
  * Handles are resolved once; the hot path only sets the display id and calls the
  * binder. Times come from the session so nothing here sleeps.
  */
-internal class AndroidInjector(private val log: (String) -> Unit) : Injector {
+internal class AndroidInjector(
+    private val log: (String) -> Unit,
+    /** Receives every event and its display instead of the input service; the JVM tests capture them here. */
+    private val sink: ((InputEvent, Int) -> Unit)? = null,
+) : Injector {
 
     private val inputManager: Any? =
         Hidden.proxy("android.hardware.input.IInputManager", "input")
@@ -29,9 +33,6 @@ internal class AndroidInjector(private val log: (String) -> Unit) : Injector {
 
     private val setDisplayId: Method? =
         runCatching { InputEvent::class.java.getMethod("setDisplayId", Hidden.T_INT) }.getOrNull()
-
-    private val setAxisValue: Method? =
-        runCatching { MotionEvent::class.java.getMethod("setAxisValue", Hidden.T_INT, Hidden.T_FLOAT) }.getOrNull()
 
     private val clipboard: Any? = Hidden.proxy("android.os.IClipboard", "clipboard")
     private val clipboardClass = Hidden.iface("android.os.IClipboard")
@@ -88,8 +89,7 @@ internal class AndroidInjector(private val log: (String) -> Unit) : Injector {
             0, 0, 1f, 1f, 0, 0, InputDevice.SOURCE_TOUCHSCREEN, 0,
         )
         try {
-            setDisplay(e, displayId)
-            inject(e)
+            deliver(e, displayId)
         } finally {
             e.recycle()
         }
@@ -106,21 +106,33 @@ internal class AndroidInjector(private val log: (String) -> Unit) : Injector {
         TouchTracker.Kind.CANCEL -> MotionEvent.ACTION_CANCEL
     }
 
+    /**
+     * A mouse-wheel event. The axes live on the pointer's coords: the per-event
+     * `MotionEvent.setAxisValue` this used to call is gone on Android 16, and its
+     * failure was swallowed, so apps got scroll events with both axes at zero.
+     */
     override fun scroll(displayId: Int, nx: Float, ny: Float, hscroll: Float, vscroll: Float, size: IntSize) {
-        val x = nx.coerceIn(0f, 1f) * size.w
-        val y = ny.coerceIn(0f, 1f) * size.h
         val t = SystemClock.uptimeMillis()
-        val e = MotionEvent.obtain(t, t, MotionEvent.ACTION_SCROLL, x, y, 0)
+        val properties = arrayOf(
+            MotionEvent.PointerProperties().apply {
+                id = 0
+                toolType = MotionEvent.TOOL_TYPE_MOUSE
+            },
+        )
+        val coords = arrayOf(
+            MotionEvent.PointerCoords().apply {
+                x = nx.coerceIn(0f, 1f) * size.w
+                y = ny.coerceIn(0f, 1f) * size.h
+                setAxisValue(MotionEvent.AXIS_HSCROLL, hscroll)
+                setAxisValue(MotionEvent.AXIS_VSCROLL, vscroll)
+            },
+        )
+        val e = MotionEvent.obtain(
+            t, t, MotionEvent.ACTION_SCROLL, 1, properties, coords,
+            0, 0, 1f, 1f, 0, 0, InputDevice.SOURCE_MOUSE, 0,
+        )
         try {
-            e.setSource(InputDevice.SOURCE_MOUSE)
-            setAxisValue?.let {
-                runCatching {
-                    it.invoke(e, MotionEvent.AXIS_HSCROLL, hscroll)
-                    it.invoke(e, MotionEvent.AXIS_VSCROLL, vscroll)
-                }
-            }
-            setDisplay(e, displayId)
-            inject(e)
+            deliver(e, displayId)
         } finally {
             e.recycle()
         }
@@ -129,8 +141,7 @@ internal class AndroidInjector(private val log: (String) -> Unit) : Injector {
     override fun key(displayId: Int, action: Int, keycode: Int, metaState: Int, downTime: Long, eventTime: Long) {
         val e = KeyEvent(downTime, eventTime, action, keycode, metaState)
         e.setSource(InputDevice.SOURCE_KEYBOARD)
-        setDisplay(e, displayId)
-        inject(e)
+        deliver(e, displayId)
     }
 
     override fun text(displayId: Int, s: String) {
@@ -158,8 +169,7 @@ internal class AndroidInjector(private val log: (String) -> Unit) : Injector {
         for (ch in s) {
             val events = kcm.getEvents(charArrayOf(ch)) ?: continue
             for (e in events) {
-                setDisplay(e, displayId)
-                inject(e)
+                deliver(e, displayId)
             }
         }
     }
@@ -202,11 +212,12 @@ internal class AndroidInjector(private val log: (String) -> Unit) : Injector {
         }.getOrNull()
     }
 
-    private fun setDisplay(e: InputEvent, displayId: Int) {
+    private fun deliver(e: InputEvent, displayId: Int) {
+        sink?.let {
+            it(e, displayId)
+            return
+        }
         setDisplayId?.let { runCatching { it.invoke(e, displayId) } }
-    }
-
-    private fun inject(e: InputEvent) {
         val m = injectMethod ?: return
         try {
             m.invoke(inputManager, e, INJECT_MODE_ASYNC)

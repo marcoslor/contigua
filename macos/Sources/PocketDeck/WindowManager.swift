@@ -206,33 +206,3 @@ final class WindowManager {
         }
     }
 }
-
-/// App icons: memory first, disk under ~/Library/Caches/<profile folder>.
-final class IconCache {
-    static let shared = IconCache(profile: .active)
-    private let directory: URL
-    private let lock = NSLock()
-
-    private init(profile: Profile) {
-        let base = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
-            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Caches")
-        directory = base.appendingPathComponent(profile.supportDirectoryName, isDirectory: true)
-        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-    }
-
-    func store(_ data: Data, pkg: String) {
-        lock.lock(); defer { lock.unlock() }
-        try? data.write(to: directory.appendingPathComponent("\(pkg).png"))
-    }
-
-    func load(pkg: String) -> NSImage? {
-        guard let data = loadData(pkg: pkg) else { return nil }
-        return NSImage(data: data)
-    }
-
-    /// Raw PNG (Spotlight thumbnails want the bytes, not an NSImage).
-    func loadData(pkg: String) -> Data? {
-        lock.lock(); defer { lock.unlock() }
-        return try? Data(contentsOf: directory.appendingPathComponent("\(pkg).png"))
-    }
-}

@@ -1,7 +1,6 @@
 package dev.pocketdeck.app
 
 import android.content.Context
-import android.os.Build
 import dev.pocketdeck.proto.Crypto
 import dev.pocketdeck.proto.Json
 
@@ -49,13 +48,9 @@ object Prefs {
         return id
     }
 
-    fun deviceName(ctx: Context): String {
-        val sp = sp(ctx)
-        sp.getString(KEY_DEVICE_NAME, null)?.let { if (it.isNotEmpty()) return it }
-        val name = Build.MODEL ?: "Android"
-        sp.edit().putString(KEY_DEVICE_NAME, name).apply()
-        return name
-    }
+    /** Also the mDNS instance name and the `name` in `welcome`. */
+    fun deviceName(ctx: Context): String =
+        DeviceName.resolve(sp(ctx).getString(KEY_DEVICE_NAME, null), DeviceName.model()) { DeviceName.system(ctx) }
 
     fun paired(ctx: Context): List<PairedMac> {
         val raw = sp(ctx).getString(KEY_PAIRED, null) ?: return emptyList()
