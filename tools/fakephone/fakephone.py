@@ -18,6 +18,7 @@ import hmac
 import json
 import os
 import random
+import select
 import shutil
 import signal
 import socket
@@ -76,6 +77,34 @@ APPS = [
     {"pkg": "com.android.gallery3d", "label": "Gallery",
      "activity": "com.android.gallery3d/.app.GalleryActivity"},
 ]
+
+# Packages the phone has no icon for: like the real phone, it answers `icon`
+# with an empty png.
+NO_ICON_PKGS = set()
+
+_EXTRA_LABELS = [
+    "Authenticator", "Calculator", "Calendar", "Clock", "Contacts", "Drive", "Files", "Fitbit", "Keep Notes",
+    "RootlessJamesDSP", "Netflix", "Slack", "Signal", "Uber", "Waze", "Wallet", "Weather", "Zoom",
+    "Duolingo", "Notion", "Podcasts", "Reddit", "Shizuku", "Translate", "Tuner",
+]
+
+
+def add_demo_apps(count, no_icon_every):
+    """Grow APPS to `count` entries (screenshots of a full grid); every
+    `no_icon_every`-th app of the whole list gets no icon."""
+    index = 0
+    while len(APPS) < count:
+        label = _EXTRA_LABELS[index % len(_EXTRA_LABELS)]
+        if index >= len(_EXTRA_LABELS):
+            label = "%s %d" % (label, index // len(_EXTRA_LABELS) + 1)
+        pkg = "demo.%s" % label.lower().replace(" ", "")
+        APPS.append({"pkg": pkg, "label": label, "activity": "%s/.Main" % pkg})
+        index += 1
+    if no_icon_every > 0:
+        for position, app in enumerate(sorted(APPS, key=lambda a: a["label"].lower())):
+            if position % no_icon_every == no_icon_every - 1:
+                NO_ICON_PKGS.add(app["pkg"])
+
 
 
 # --- tiny 5x7 bitmap font (ffmpeg here has no drawtext; we render our own) ---
@@ -633,33 +662,38 @@ class Session(object):
         return True
 
     def _pair(self):
+        """Numeric comparison: the code goes to the Mac in pair.code_shown, and
+        the person's Allow (here: --auto-allow after --allow-delay, or the
+        terminal prompt) is the only step. Nothing comes back from the Mac."""
         code = "%06d" % random.randrange(0, 1000000)
         self.phone.report_code(code)
-        self._send({"t": "pair.code_shown"})
-        for _attempt in range(3):
-            frame = proto.recv_frame(self.sock)
-            if frame is None:
-                return False
-            if frame.type != proto.TYPE_JSON:
-                self._send_error("protocol", "expected pair.confirm")
-                return False
-            msg = proto.unpack_json(frame)
-            self.phone.events.rx(msg)
-            if msg.get("t") != "pair.confirm":
-                self._send_error("protocol", "expected pair.confirm")
-                return False
-            if not self.phone.args.auto_allow and not self.phone.ask_allow(self.client_name):
-                self._send_error("pair_denied")
-                return False
-            if hmac.compare_digest(code, str(msg.get("code", ""))):
-                key = proto.gen_key()
-                self.phone.store.add_client(self.client_id, self.client_name, key)
-                self._send({"t": "pair.ok", "key": key.hex()})
-                self.phone.events.session("paired")
-                self._welcome()
+        self._send({"t": "pair.code_shown", "code": code})
+        allowed = self._decision()
+        if allowed is None:
+            return False
+        if not allowed:
+            self._send_error("pair_denied")
+            return False
+        key = proto.gen_key()
+        self.phone.store.add_client(self.client_id, self.client_name, key)
+        self._send({"t": "pair.ok", "key": key.hex()})
+        self.phone.events.session("paired")
+        self._welcome()
+        return True
+
+    def _decision(self):
+        """True = Allow, False = Deny, None = the Mac hung up first (Cancel)."""
+        if not self.phone.args.auto_allow:
+            return self.phone.ask_allow(self.client_name)
+        deadline = time.time() + self.phone.args.allow_delay
+        while True:
+            left = deadline - time.time()
+            if left <= 0:
                 return True
-        self._send_error("pair_denied")
-        return False
+            ready, _, _ = select.select([self.sock], [], [], left)
+            if ready:
+                # The Mac says nothing while a person decides: readable means it hung up.
+                return None
 
     def _welcome(self):
         self._send({"t": "welcome", "device": {
@@ -884,7 +918,6 @@ class FakePhone(object):
         self._display_seq = 100
         self._display_lock = threading.Lock()
         self._mdns = None
-        self._code_file_lock = threading.Lock()
         self.label_dir = tempfile.mkdtemp(prefix="fakephone-") if args.labels else None
 
     def next_display_id(self):
@@ -893,6 +926,8 @@ class FakePhone(object):
             return self._display_seq
 
     def icon_png(self, pkg):
+        if pkg in NO_ICON_PKGS:
+            return b""
         with self._icon_lock:
             cached = self._icon_cache.get(pkg)
             if cached is not None:
@@ -916,10 +951,6 @@ class FakePhone(object):
             sys.stdout.flush()
         except (IOError, OSError):
             pass
-        if self.args.code_file:
-            with self._code_file_lock:
-                with open(self.args.code_file, "w") as fp:
-                    fp.write(code + "\n")
 
     def ask_allow(self, name):
         try:
@@ -1021,12 +1052,17 @@ def build_parser():
     p.add_argument("--no-mdns", action="store_true", help="do not advertise over mDNS")
     p.add_argument("--auto-allow", action="store_true",
                    help="accept pairing requests without the terminal y/n prompt")
-    p.add_argument("--code-file", metavar="PATH", help="also write the pairing code here")
+    p.add_argument("--allow-delay", type=float, default=0.0, metavar="SECONDS",
+                   help="with --auto-allow, wait this long before tapping Allow (a person comparing codes)")
     p.add_argument("--state", default=DEFAULT_STATE, metavar="PATH",
                    help="paired-client state file (default: %(default)s)")
     p.add_argument("--events", metavar="PATH", help="write JSON Lines session events here")
     p.add_argument("--no-labels", dest="labels", action="store_false",
                    help="do not overlay the stream id/size label")
+    p.add_argument("--demo-apps", type=int, default=0, metavar="N",
+                   help="pad the app list to N apps (grid screenshots)")
+    p.add_argument("--no-icon-every", type=int, default=0, metavar="K",
+                   help="with --demo-apps, every K-th app has no icon")
     p.add_argument("--qr-uri", metavar="URI",
                    help="simulate a QR scan: register the client+key from a "
                         "pocketdeck://pair URI as paired, then authenticate normally")
@@ -1035,6 +1071,7 @@ def build_parser():
 
 def main(argv=None):
     args = build_parser().parse_args(argv)
+    add_demo_apps(args.demo_apps, args.no_icon_every)
     phone = FakePhone(args)
 
     def _sig(_signum, _frame):

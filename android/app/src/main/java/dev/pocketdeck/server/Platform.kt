@@ -138,6 +138,8 @@ interface DeviceSource {
 /** Events pushed to the app process (pairing prompt, session state). */
 interface DeckCallback {
     fun onPairingRequest(requestId: String, macName: String, code: String)
+    /** The request ended without an answer (Mac cancelled, connection lost, timed out). */
+    fun onPairingEnded(requestId: String)
     fun onPaired(clientId: String, name: String, keyHex: String)
     fun onSessionChanged(connected: Boolean, macName: String?, windows: Int)
 }

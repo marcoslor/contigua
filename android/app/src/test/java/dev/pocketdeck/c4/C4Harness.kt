@@ -14,18 +14,16 @@ import java.util.concurrent.CountDownLatch
  * fakes and a canned H.264 clip, so `tools/fakephone/deckctl.py` can be pointed
  * at it. Prints `PORT=<n>` once listening and stays up.
  *
- *   ./gradlew :app:c4Harness -Pc4args="--code-file /tmp/code.txt --h264 /tmp/c4.h264"
+ *   ./gradlew :app:c4Harness -Pc4args="--h264 /tmp/c4.h264"
  */
 object C4Harness {
 
     @JvmStatic
     fun main(args: Array<String>) {
-        var codeFile: String? = null
         var h264Path = "build/c4.h264"
         var i = 0
         while (i < args.size) {
             when (args[i]) {
-                "--code-file" -> codeFile = args.getOrNull(++i)
                 "--h264" -> h264Path = args.getOrNull(++i) ?: h264Path
             }
             i++
@@ -56,7 +54,6 @@ object C4Harness {
 
         val holder = arrayOfNulls<Server>(1)
         platform.onPairingRequestHandler = { request ->
-            codeFile?.let { File(it).writeText(request.code) }
             holder[0]?.respondPairing(request.requestId, true)
         }
 

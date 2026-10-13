@@ -41,6 +41,7 @@ class FakePlatform : DisplayLayer, AppCatalog, Launcher, Injector, Power, Device
     val clients = CopyOnWriteArrayList<PairedClient>()
     val pairRequests = CopyOnWriteArrayList<PairingReq>()
     val paired = CopyOnWriteArrayList<PairedClient>()
+    val pairEnded = CopyOnWriteArrayList<String>()
     val sessionChanges = CopyOnWriteArrayList<SessionChange>()
 
     var apps: List<AppEntry> = emptyList()
@@ -175,6 +176,10 @@ class FakePlatform : DisplayLayer, AppCatalog, Launcher, Injector, Power, Device
         val req = PairingReq(requestId, macName, code)
         pairRequests.add(req)
         onPairingRequestHandler?.invoke(req)
+    }
+
+    override fun onPairingEnded(requestId: String) {
+        pairEnded.add(requestId)
     }
 
     override fun onPaired(clientId: String, name: String, keyHex: String) {

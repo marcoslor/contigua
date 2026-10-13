@@ -106,9 +106,9 @@ final class ConnectionController {
     private(set) var apps: [AppInfo] = []
     private(set) var appsLoaded = false
     private(set) var icons: [String: NSImage] = [:]
+    /// Packages the phone answered with no icon at all.
+    private(set) var missingIcons: Set<String> = []
     private(set) var status: PhoneStatus?
-    /// A phone showed its code; the sheet's boxes are live.
-    private(set) var codeShown = false
     private(set) var pairingSucceeded = false
     private(set) var qr: QRPairingState?
     private(set) var welcomeSeen: Bool
@@ -164,6 +164,9 @@ final class ConnectionController {
     private var transientTimer: DispatchWorkItem?
     private var searchTimer: DispatchWorkItem?
     private(set) var isPreview = false
+    /// Per-attempt limits for user-driven sessions; tests shorten them.
+    var connectTimeout = Session.defaultConnectTimeout
+    var pairingTimeout = Session.defaultPairingTimeout
 
     private enum PairingTarget {
         case discovered(DiscoveredPhone)
@@ -297,12 +300,6 @@ final class ConnectionController {
                      ref: PhoneRef(id: "", name: host, model: ""))
     }
 
-    func submitCode(_ code: String) {
-        guard codeShown else { return }
-        send(.codeSubmitted)
-        session?.providePairCode(code)
-    }
-
     func retryPairing() {
         guard case .pairing(let ref, _) = link, let target = pairingTarget else { return }
         beginPairing(target, ref: ref)
@@ -311,7 +308,6 @@ final class ConnectionController {
     func cancelPairing() {
         guard isPairing else { return }
         pairingTarget = nil
-        codeShown = false
         pairingSucceeded = false
         if sheet == .code { sheet = nil }
         closeSession()
@@ -385,8 +381,10 @@ final class ConnectionController {
         apps = appsCache.load(deviceId: ref.id)
         appsLoaded = !apps.isEmpty
         status = nil
-        for app in apps where icons[app.pkg] == nil {
-            if let image = IconCache.shared.load(pkg: app.pkg) { icons[app.pkg] = image }
+        icons = [:]
+        missingIcons = []
+        for app in apps {
+            if let image = IconCache.shared.load(pkg: app.pkg, deviceId: ref.id) { icons[app.pkg] = image }
         }
     }
 
@@ -545,7 +543,6 @@ final class ConnectionController {
 
     private func beginPairing(_ target: PairingTarget, ref: PhoneRef) {
         pairingTarget = target
-        codeShown = false
         pairingSucceeded = false
         windows.closeAll()
         closeSession()
@@ -557,12 +554,13 @@ final class ConnectionController {
         case .manual(let host, let port): endpoint = .hostPort(host: host, port: port)
         }
         let known: String? = { if case .discovered(let phone) = target { return phone.deviceId } else { return nil } }()
-        start(Session(endpoint: endpoint, knownDeviceId: known, clientId: clientId, keyStore: keyStore),
+        start(Session(endpoint: endpoint, knownDeviceId: known, clientId: clientId, keyStore: keyStore,
+                      connectTimeout: connectTimeout, pairingTimeout: pairingTimeout),
               policy: .allowed)
     }
 
-    /// `--connect host:port`: the old test entry point. The session may pair
-    /// (the `--pair-code-file` hook answers the code) or reconnect with a key.
+    /// `--connect host:port`: the test entry point. The session may pair (the
+    /// phone's Allow is the only step) or reconnect with a key.
     private func beginManualLaunch(host: String, port: UInt16) {
         let ref = remembered.active?.ref ?? PhoneRef(id: "", name: host, model: "")
         send(.launch(ref))
@@ -574,7 +572,8 @@ final class ConnectionController {
 
     private func startManual(host: String, port: UInt16, ref: PhoneRef) {
         start(Session(endpoint: .hostPort(host: host, port: port), knownDeviceId: ref.id.isEmpty ? nil : ref.id,
-                      clientId: clientId, keyStore: keyStore), policy: .allowed)
+                      clientId: clientId, keyStore: keyStore,
+                      connectTimeout: connectTimeout, pairingTimeout: pairingTimeout), policy: .allowed)
     }
 
     // MARK: Session events
@@ -591,12 +590,16 @@ final class ConnectionController {
             if let image = NSImage(data: png) {
                 icons[pkg] = image
                 windows.setIcon(image, pkg: pkg)
-                IconCache.shared.store(png, pkg: pkg)
+                if let id = link.phone?.id { IconCache.shared.store(png, pkg: pkg, deviceId: id) }
+            } else {
+                missingIcons.insert(pkg)
             }
         case .phoneState(let locked, let battery, let charging):
             status = PhoneStatus(locked: locked, battery: battery, charging: charging)
-        case .pairCodeRequired(let deviceId):
-            codeRequired(deviceId: deviceId)
+        case .pairCodeShown(let deviceId, let code):
+            codeShown(deviceId: deviceId, code: code)
+        case .pairApproved:
+            send(.pairApproved)
         case .qrPaired(let deviceId):
             finishQRPairing(deviceId: deviceId, name: session?.phone?.name)
         case .identityMismatch(let expected, let actual):
@@ -615,7 +618,6 @@ final class ConnectionController {
     private func attemptEnded(reason: String) {
         lastAttemptFailed = true
         send(.attemptFailed(reason: reason))
-        if case .pairing = link { codeShown = false }
     }
 
     private func ready(_ info: PhoneInfo, address: CachedAddress?) {
@@ -639,7 +641,6 @@ final class ConnectionController {
         if hadWindows { windows.reopenAll() }
         if wasPairing {
             pairingSucceeded = true
-            codeShown = false
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
                 MainActor.assumeIsolated {
                     guard let self else { return }
@@ -666,7 +667,7 @@ final class ConnectionController {
         windows.applyLabels()
         if let id = link.phone?.id { appsCache.store(list, deviceId: id) }
         for app in list where icons[app.pkg] == nil {
-            if let cached = IconCache.shared.load(pkg: app.pkg) {
+            if let id = link.phone?.id, let cached = IconCache.shared.load(pkg: app.pkg, deviceId: id) {
                 icons[app.pkg] = cached
                 windows.setIcon(cached, pkg: app.pkg)
             } else {
@@ -675,42 +676,14 @@ final class ConnectionController {
         }
         if let ref = link.phone {
             spotlight.index(apps: list, deviceId: ref.id, phoneName: ref.name,
-                            iconData: { IconCache.shared.loadData(pkg: $0) })
+                            iconData: { IconCache.shared.loadData(pkg: $0, deviceId: ref.id) })
         }
     }
 
-    private func codeRequired(deviceId: String?) {
+    private func codeShown(deviceId: String?, code: String) {
         let ref = link.phone ?? PhoneRef(id: deviceId ?? "", name: "your phone", model: "")
-        send(.codeShown(ref))
-        if let path = options.pairCodeFile {
-            readPairCodeFromFile(path: path, attempt: 0)
-            return
-        }
-        codeShown = true
+        send(.codeShown(ref, code: code))
         sheet = .code
-    }
-
-    /// The code file is written by the fake phone just before it announces the
-    /// code, so retry briefly instead of falling back to the sheet on a miss.
-    private func readPairCodeFromFile(path: String, attempt: Int) {
-        if let code = Self.readCode(path) {
-            session?.providePairCode(code)
-            return
-        }
-        guard attempt < 20 else {
-            codeShown = true
-            sheet = .code
-            return
-        }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
-            MainActor.assumeIsolated { self?.readPairCodeFromFile(path: path, attempt: attempt + 1) }
-        }
-    }
-
-    nonisolated static func readCode(_ path: String) -> String? {
-        guard let raw = try? String(contentsOfFile: path, encoding: .utf8) else { return nil }
-        let code = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        return code.isEmpty ? nil : code
     }
 
     private func showTransient(_ text: String) {
@@ -887,24 +860,24 @@ final class ConnectionController {
     /// cannot be staged against a fake phone.
     private func applyPreview(_ name: String) {
         isPreview = true
-        let ref = PhoneRef(id: "preview", name: "Pixel 9", model: "Pixel 9")
+        let ref = PhoneRef(id: "preview", name: "Galaxy S25+", model: "SM-S936B")
         let phone = RememberedPhone(id: ref.id, name: ref.name, model: ref.model, lastSeen: Date())
-        let other = PhoneRef(id: "preview-2", name: "Galaxy S25+", model: "SM-S936B")
-        func deck(_ link: Link, loaded: Bool = true) {
+        let other = PhoneRef(id: "preview-2", name: "Pixel 9", model: "Pixel 9")
+        func deck(_ link: Link, loaded: Bool = true, battery: Int = 87, charging: Bool = false, locked: Bool = true) {
             rememberedPhones = [phone]
             welcomeSeen = true
             apps = loaded ? PreviewData.apps : []
             appsLoaded = loaded
             icons = PreviewData.icons
+            missingIcons = PreviewData.iconless
             machine = LinkMachine(link: link)
-            if case .online = link { status = PhoneStatus(locked: true, battery: 87, charging: false) }
+            if case .online = link { status = PhoneStatus(locked: locked, battery: battery, charging: charging) }
         }
         func pairingSheet(_ state: Pairing) {
             rememberedPhones = []
             welcomeSeen = true
             discovered = []
             machine = LinkMachine(link: .pairing(ref, state))
-            codeShown = true
             pendingSheet = .code
         }
         switch name {
@@ -918,9 +891,9 @@ final class ConnectionController {
             rememberedPhones = []
             welcomeSeen = true
             discovered = PreviewData.nearby
-        case "code": pairingSheet(.waitingForCode)
+        case "code-contacting": pairingSheet(.contacting)
+        case "code": pairingSheet(.comparing(code: "482913"))
         case "code-verifying": pairingSheet(.verifying)
-        case "code-stillwaiting": pairingSheet(.stillWaiting)
         case "code-denied": pairingSheet(.denied)
         case "code-timedout": pairingSheet(.timedOut)
         case "qr", "qr-success", "qr-expired":
@@ -936,6 +909,9 @@ final class ConnectionController {
             pendingSheet = .manual
         case "loading": deck(.online(ref), loaded: false)
         case "deck": deck(.online(ref))
+        case "deck-5": deck(.online(ref), battery: 5)
+        case "deck-24": deck(.online(ref), battery: 24, locked: false)
+        case "deck-100": deck(.online(ref), battery: 100, charging: true)
         case "connecting": deck(.connecting(ref))
         case "reconnecting": deck(.reconnecting(ref))
         case "offline": deck(.offline(ref, .unreachable))

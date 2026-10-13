@@ -121,34 +121,15 @@ final class RememberedPhonesTests: XCTestCase {
     }
 }
 
-final class CodeEntryTests: XCTestCase {
-    func testSixthDigitSubmitsExactlyOnce() {
-        var entry = CodeEntry()
-        for text in ["4", "48", "482", "4829", "48291"] { XCTAssertNil(entry.update(text)) }
-        XCTAssertEqual(entry.update("482913"), "482913")
-        XCTAssertNil(entry.update("482913"))
+final class PairingCodeFormatTests: XCTestCase {
+    func testSixDigitsAreGroupedThreeAndThree() {
+        XCTAssertEqual(groupedPairingCode("482913"), "482 913")
+        XCTAssertEqual(groupedPairingCode("000007"), "000 007")
     }
 
-    func testPasteFillsAllBoxesAndIgnoresSeparators() {
-        var entry = CodeEntry()
-        XCTAssertEqual(entry.update("482 913"), "482913")
-        XCTAssertEqual(entry.digit(at: 0), "4")
-        XCTAssertEqual(entry.digit(at: 5), "3")
-    }
-
-    func testOnlyDigitsAndAtMostSix() {
-        var entry = CodeEntry()
-        _ = entry.update("12ab34567890")
-        XCTAssertEqual(entry.digits, "123456")
-        entry.clear()
-        XCTAssertNil(entry.digit(at: 0))
-    }
-
-    func testCodeCanBeEnteredAgainAfterClearing() {
-        var entry = CodeEntry()
-        XCTAssertEqual(entry.update("111111"), "111111")
-        entry.clear()
-        XCTAssertEqual(entry.update("222222"), "222222")
+    func testAnythingElseIsShownAsIs() {
+        XCTAssertEqual(groupedPairingCode("4829"), "4829")
+        XCTAssertEqual(groupedPairingCode(""), "")
     }
 }
 

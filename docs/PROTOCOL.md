@@ -36,7 +36,7 @@ Max frame size 8 MiB; a receiver that sees a larger `len` closes the session.
 | `0x02` | VIDEO_CONFIG | phone→mac | `u8 codec` (1 = H.264) · `u16 width` · `u16 height` · Annex-B SPS+PPS bytes |
 | `0x03` | VIDEO_FRAME | phone→mac | `u64 ptsUs` · `u8 flags` (bit0 = keyframe) · Annex-B access unit |
 | `0x10` | TOUCH | mac→phone | `u8 action` (0 down, 1 up, 2 move, 3 cancel) · `u8 pointerId` · `f32 nx` · `f32 ny` |
-| `0x11` | SCROLL | mac→phone | `f32 nx` · `f32 ny` · `f32 hscroll` · `f32 vscroll` (Android axis units, + = up/left content move like a mouse wheel) |
+| `0x11` | SCROLL | mac→phone | `f32 nx` · `f32 ny` · `f32 hscroll` · `f32 vscroll` — mouse-wheel units, injected as `ACTION_SCROLL` (`SOURCE_MOUSE`) with these as `AXIS_HSCROLL` / `AXIS_VSCROLL` at (nx, ny). `vscroll > 0` = content moves down (wheel up), `hscroll > 0` = content moves left (wheel right). One unit is one wheel notch (Android's default 64 dp scroll factor); fractions are fine |
 | `0x12` | KEY | mac→phone | `u8 action` (0 down, 1 up) · `u32 keycode` (Android `KEYCODE_*`) · `u32 metaState` |
 
 `nx`,`ny` are normalized `[0,1]` in the stream's video coordinates (top-left
@@ -81,20 +81,44 @@ display id on every injected event.
    "screen":{"w":1080,"h":2340,"dpi":450},"locked":true}}` or
    `{"t":"error","code":"auth_failed"}` and closes.
 
-Nothing but hello/challenge/auth/pair.* is accepted before `welcome`.
+Nothing but hello/challenge/auth/pair.request is accepted before `welcome`.
 
 ## Pairing (first contact)
 
+Numeric comparison, like Bluetooth: both screens show the same 6-digit code and the
+person taps Allow on the phone. Nothing is typed, and the Mac sends nothing after
+`pair.request`.
+
 1. Mac → `{"t":"pair.request"}`.
-2. Phone generates a 6-digit code, shows it in an Android notification/dialog
-   ("Allow <Mac name> to connect? Code 123456" + Allow/Deny). Phone →
-   `{"t":"pair.code_shown"}`.
-3. User types the code on the Mac. Mac → `{"t":"pair.confirm","code":"123456"}`.
-4. If the code matches **and** the user tapped Allow, phone generates a random
-   32-byte key, stores `{clientId, name, key}`, and replies
-   `{"t":"pair.ok","key":"<64 hex>"}` followed by `welcome`. Mac stores the key in
-   the Keychain under the device id. Otherwise `{"t":"error","code":"pair_denied"}`.
-5. 3 wrong codes → `pair_denied` and the pending request is discarded.
+2. Phone generates a random 6-digit code, shows it in an Android notification/dialog
+   ("Pair with <Mac name>? Code 123 456" + Allow/Deny) and replies
+   `{"t":"pair.code_shown","code":"123456"}`. The code is new in this message; it is
+   exactly six ASCII digits (leading zeros kept). The Mac shows it grouped "123 456".
+3. The person compares the two screens and taps **Allow** or **Deny** on the phone.
+   - Allow: the phone generates a random 32-byte key, stores `{clientId, name, key}`
+     and replies `{"t":"pair.ok","key":"<64 hex>"}` immediately followed by `welcome`.
+     The Mac stores the key in the Keychain under the device id.
+   - Deny: `{"t":"error","code":"pair_denied"}`, then the phone closes.
+   - No decision within **120 s**: `{"t":"error","code":"pair_timeout"}`, then the
+     phone closes.
+4. If the Mac closes the connection first (Cancel, network loss), the phone discards
+   the request and dismisses its prompt.
+
+Timing rules:
+
+- While a pairing request is open the phone applies no read timeout to the
+  connection (the 15 s handshake timeout ends at `pair.request`); the 120 s decision
+  window is the only limit. A Mac must not apply a per-attempt connect timeout to a
+  session that has received `pair.code_shown`; it may keep its own backstop of 125 s
+  from that message.
+- One pairing request per session; a second `pair.request` is ignored.
+- A phone that predates `code` in `pair.code_shown` expects `pair.confirm`; the Mac
+  treats a `pair.code_shown` without `code` as an incompatible version.
+
+**The code is displayed only, never typed.** A later milestone (E2E) derives the code
+from both TLS certificate fingerprints, so that comparing the screens authenticates
+the channel against a man in the middle. For that to hold the code must never become
+an input path (no field, no `pair.confirm`): the phone's Allow is the confirmation.
 
 ## JSON messages
 
@@ -138,7 +162,7 @@ The phone sends one `state` right after `welcome`, then on change.
 
 `{"t":"error","code":...}` codes: `busy` (another session is active; sent instead of
 `challenge`, then close), `auth_failed`, `pair_denied`, `version`, `protocol` (message not
-allowed in the current state; then close), `no_stream` (unknown `stream`), `launch_failed`.
+allowed in the current state; then close), `pair_timeout` (nobody answered the pairing prompt in 120 s; then close), `no_stream` (unknown `stream`), `launch_failed`.
 Oversized frames close the session without a reply.
 
 ## Versioning

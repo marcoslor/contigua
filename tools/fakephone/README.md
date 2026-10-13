@@ -35,16 +35,19 @@ size, and confirms no ffmpeg/dns-sd process survives shutdown.
 ```sh
 python3 tools/fakephone/fakephone.py            # mDNS on, random port, prompts y/n to pair
 python3 tools/fakephone/fakephone.py --no-mdns --auto-allow \
-    --port 47811 --state /tmp/fh.json --code-file /tmp/code --events /tmp/ev.jsonl
+    --port 47811 --state /tmp/fh.json --events /tmp/ev.jsonl
 ```
 
 Options: `--port` (0 = ephemeral), `--name` (mDNS instance), `--no-mdns`,
-`--auto-allow`, `--code-file`, `--state` (default `~/.pocketdeck-fakephone.json`),
+`--auto-allow` (with `--allow-delay SECONDS` to act like a person comparing codes), `--state` (default `~/.pocketdeck-fakephone.json`),
 `--events` (JSON Lines log, flushed per line), `--no-labels` (skip the stream
-label overlay), `--qr-uri URI` (simulates a QR scan: registers the client id and
+label overlay), `--demo-apps N` (pads the app list to N apps for grid screenshots;
+`--no-icon-every K` leaves every K-th one without an icon, answered with an empty
+`png` like the real phone), `--qr-uri URI` (simulates a QR scan: registers the client id and
 key from a `pocketdeck://pair?c=&n=&k=` URI as paired, so the next `auth`
-succeeds without any `pair.request`). The pairing code is printed to the
-terminal and written to `--code-file`. Paired clients are persisted, so a second
+succeeds without any `pair.request`). The pairing code is sent in `pair.code_shown`
+and printed to the terminal; Allow (`--auto-allow` or the y/n prompt) is the only
+step, there is no `pair.confirm`. Paired clients are persisted, so a second
 connection authenticates with its key instead of pairing again. A second
 simultaneous session is answered with `{"t":"error","code":"busy"}`; the first
 keeps working. Ctrl-C kills every ffmpeg/dns-sd child.
@@ -75,13 +78,13 @@ One JSON object per line, exactly:
 ```sh
 # directly:
 python3 tools/fakephone/deckctl.py --host 127.0.0.1 --port 47811 apps
-# or over mDNS (pair once with --code/--code-file, then the stored key is reused):
+# or over mDNS (pair once with --pair, then the stored key is reused):
 python3 tools/fakephone/deckctl.py --discover apps
 ```
 
 `--state` (default `~/.pocketdeck-deckctl.json`) stores the client id and per-device
-keys; `--code` / `--code-file` pair on first contact (the code is read after
-`pair.code_shown`, so a fresh `--code-file` written by the phone is picked up).
+keys; `--pair` pairs on first contact: it prints the code the phone shows (`--code-file F`
+also writes it to `F`) and waits for Allow on the phone.
 Subcommands:
 
 - `apps` — list `pkg<TAB>label`.

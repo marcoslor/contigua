@@ -40,8 +40,8 @@ deckctl() { python3 "$DECKCTL" --host 127.0.0.1 --port "$PORT" --state "$STATE" 
 # deckctl cannot read the phone's screen, so the pairing prompt is handled by
 # poc.py: it reads the 6-digit code (app dialog or notification), taps Allow and
 # stores the key in deckctl's own state file - so every deckctl call below just
-# authenticates. (To pair by hand instead: `deckctl --code-file F` with
-# `poc.py wait-prompt --code-file F` in the background; see README.)
+# authenticates. (To pair by hand instead: `deckctl --pair` with
+# `poc.py wait-prompt` in the background; see README.)
 bring_app_forward() {
   emu shell am start -n "dev.pocketdeck/.app.MainActivity" >/dev/null 2>&1 || true
   local deadline=$(( $(date +%s) + 60 ))
@@ -77,8 +77,7 @@ done
 
 if ! check_paired; then
   PAIRED=0
-  # The real code flow first (the phone only waits ~15 s for pair.confirm, so a
-  # loaded host can time it out).
+  # The real flow first (a loaded host can be too slow for it).
   for attempt in 1 2; do
     step "pairing (code from the app prompt), attempt $attempt"
     if python3 "$POC" --state "$STATE" --addr "127.0.0.1:$PORT" --serial "$SERIAL" --adb "$ADB" pair; then

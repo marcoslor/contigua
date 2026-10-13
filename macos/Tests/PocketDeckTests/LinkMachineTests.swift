@@ -168,51 +168,50 @@ final class LinkMachineTests: XCTestCase {
         var machine = LinkMachine()
         let actions = machine.handle(.beginPairing(phone), at: t0)
         XCTAssertEqual(actions, [.stopAttempts, .startPairing(phone)])
-        XCTAssertEqual(machine.link, .pairing(phone, .waitingForCode))
+        XCTAssertEqual(machine.link, .pairing(phone, .contacting))
         XCTAssertNil(machine.link.chip)
     }
 
-    func testCodeFlowToOnline() {
+    func testComparingTheCodeToOnline() {
         var machine = LinkMachine()
         machine.handle(.beginPairing(phone), at: t0)
-        machine.handle(.codeShown(phone), at: at(1))
-        machine.handle(.codeSubmitted, at: at(5))
+        machine.handle(.codeShown(phone, code: "123456"), at: at(1))
+        XCTAssertEqual(machine.link, .pairing(phone, .comparing(code: "123456")))
+        machine.handle(.pairApproved, at: at(30))
         XCTAssertEqual(machine.link, .pairing(phone, .verifying))
-        machine.handle(.welcome(phone), at: at(6))
+        machine.handle(.welcome(phone), at: at(30.2))
         XCTAssertEqual(machine.link, .online(phone))
     }
 
-    func testNoAnswerAfterThreeSecondsReadsAsStillWaiting() {
+    func testWaitingForAPersonNeverTimesOutOnTheMac() {
         var machine = LinkMachine()
         machine.handle(.beginPairing(phone), at: t0)
-        machine.handle(.codeShown(phone), at: at(1))
-        machine.handle(.codeSubmitted, at: at(5))
-        machine.handle(.tick, at: at(7.9))
-        XCTAssertEqual(machine.link, .pairing(phone, .verifying))
-        machine.handle(.tick, at: at(8))
-        XCTAssertEqual(machine.link, .pairing(phone, .stillWaiting))
-        // Typing the code again goes back through verifying.
-        machine.handle(.codeSubmitted, at: at(9))
-        XCTAssertEqual(machine.link, .pairing(phone, .verifying))
+        machine.handle(.codeShown(phone, code: "123456"), at: at(1))
+        for second in stride(from: 2.0, through: 125.0, by: 1.0) {
+            XCTAssertEqual(machine.handle(.tick, at: at(second)), [])
+        }
+        XCTAssertEqual(machine.link, .pairing(phone, .comparing(code: "123456")))
     }
 
-    func testDeniedAndTimedOutAreInlineStates() {
+    func testDeniedTimedOutAndLostAreInlineStates() {
         var machine = LinkMachine()
         machine.handle(.beginPairing(phone), at: t0)
-        machine.handle(.codeSubmitted, at: at(1))
+        machine.handle(.codeShown(phone, code: "123456"), at: at(1))
         machine.handle(.attemptFailed(reason: "pair_denied"), at: at(2))
         XCTAssertEqual(machine.link, .pairing(phone, .denied))
 
         var timedOut = LinkMachine()
         timedOut.handle(.beginPairing(phone), at: t0)
-        timedOut.handle(.codeShown(phone), at: at(1))
-        // The phone closes after its own 15 s code window.
-        XCTAssertEqual(timedOut.handle(.attemptFailed(reason: ConnectionFailure.pairingTimeout), at: at(16)), [])
+        timedOut.handle(.codeShown(phone, code: "123456"), at: at(1))
+        XCTAssertEqual(timedOut.handle(.attemptFailed(reason: "pair_timeout"), at: at(121)), [])
         XCTAssertEqual(timedOut.link, .pairing(phone, .timedOut))
-        var closed = LinkMachine()
-        closed.handle(.beginPairing(phone), at: t0)
-        closed.handle(.attemptFailed(reason: "closed-by-peer"), at: at(16))
-        XCTAssertEqual(closed.link, .pairing(phone, .timedOut))
+
+        // A connection that drops is not "nobody answered": the person may be mid-tap.
+        var lost = LinkMachine()
+        lost.handle(.beginPairing(phone), at: t0)
+        lost.handle(.codeShown(phone, code: "123456"), at: at(1))
+        lost.handle(.attemptFailed(reason: "closed-by-peer"), at: at(5))
+        XCTAssertEqual(lost.link, .pairing(phone, .unreachable))
     }
 
     func testUnreachableWhilePairing() {
@@ -225,7 +224,7 @@ final class LinkMachineTests: XCTestCase {
     func testPairingNeverRetriesOnItsOwn() {
         var machine = LinkMachine()
         machine.handle(.beginPairing(phone), at: t0)
-        for reason in ["closed-by-peer", "timeout", "pair_denied", "busy"] {
+        for reason in ["closed-by-peer", "timeout", "pair_denied", "pair_timeout", "busy"] {
             XCTAssertEqual(machine.handle(.attemptFailed(reason: reason), at: at(3)), [], reason)
         }
         XCTAssertEqual(machine.handle(.reachabilityHint, at: at(4)), [])
@@ -235,9 +234,9 @@ final class LinkMachineTests: XCTestCase {
     func testTryAgainIsANewPairing() {
         var machine = LinkMachine()
         machine.handle(.beginPairing(phone), at: t0)
-        machine.handle(.attemptFailed(reason: ConnectionFailure.pairingTimeout), at: at(16))
+        machine.handle(.attemptFailed(reason: "pair_timeout"), at: at(16))
         XCTAssertEqual(machine.handle(.beginPairing(phone), at: at(20)), [.stopAttempts, .startPairing(phone)])
-        XCTAssertEqual(machine.link, .pairing(phone, .waitingForCode))
+        XCTAssertEqual(machine.link, .pairing(phone, .contacting))
     }
 
     func testCancelReturnsToWhereTheUserWas() {
@@ -262,8 +261,8 @@ final class LinkMachineTests: XCTestCase {
     func testAManualLaunchThatAsksForACodeBecomesPairing() {
         var machine = LinkMachine()
         machine.handle(.launch(phone), at: t0)
-        XCTAssertEqual(machine.handle(.codeShown(phone), at: at(1)), [.stopAttempts])
-        XCTAssertEqual(machine.link, .pairing(phone, .waitingForCode))
+        XCTAssertEqual(machine.handle(.codeShown(phone, code: "123456"), at: at(1)), [.stopAttempts])
+        XCTAssertEqual(machine.link, .pairing(phone, .comparing(code: "123456")))
     }
 
     // MARK: Switching and forgetting

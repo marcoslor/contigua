@@ -101,11 +101,12 @@ clean() {
     clear_profile_state
 }
 
-# start_fake [state-file] — same port every time, never mDNS.
+# start_fake [state-file] — same port every time, never mDNS. FAKE_ALLOW_DELAY
+# makes the "person" take that many seconds to tap Allow.
 start_fake() {
     local state="${1:-$WORK/state.json}"
-    python3 "$FAKEPHONE" --port "$PORT" --no-mdns --auto-allow \
-        --code-file "$WORK/pd.code" --events "$WORK/events.jsonl" \
+    python3 "$FAKEPHONE" --port "$PORT" --no-mdns --auto-allow --allow-delay "${FAKE_ALLOW_DELAY:-0}" \
+        --events "$WORK/events.jsonl" \
         --state "$state" > "$WORK/fake.log" 2>&1 &
     FAKE_PID=$!
     for _ in $(seq 1 40); do
@@ -354,12 +355,19 @@ check_qr() {
 
 check_pair() {
     clean
-    start_fake || return 1
-    launch --connect "127.0.0.1:$PORT" --pair-code-file "$WORK/pd.code" \
-        --open com.android.settings,com.whatsapp --open-phone --quit-after 18
+    # The phone's person takes 8 s to compare the codes and tap Allow: longer than
+    # one connect attempt (6 s) may take, so a watchdog that fires while the code
+    # is up would end the pairing.
+    FAKE_ALLOW_DELAY=8 start_fake || return 1
+    launch --connect "127.0.0.1:$PORT" \
+        --open com.android.settings,com.whatsapp --open-phone --quit-after 30
     wait_app
     grep -q '"state":"paired"' "$WORK/events.jsonl" \
-        && ok "C4 first launch paired" || bad "C4 first launch did not pair"
+        && ok "C4 first launch paired after an 8 s wait for Allow" || bad "C4 first launch did not pair"
+    grep -q '"t":"pair.request"' "$WORK/events.jsonl" \
+        && ok "C4 pair.request sent" || bad "C4 no pair.request"
+    grep -q '"t":"pair.confirm"' "$WORK/events.jsonl" \
+        && bad "C4 sent pair.confirm (the code is never typed)" || ok "C4 no pair.confirm"
     [ "$(count_events '"t":"window.open"')" = "3" ] \
         && ok "C4 three window.open" || bad "C4 expected 3 window.open, got $(count_events '"t":"window.open"')"
     grep -q '"pkg":"com.android.settings"' "$WORK/events.jsonl" && grep -q '"pkg":"com.whatsapp"' "$WORK/events.jsonl" \
@@ -386,7 +394,7 @@ check_pair() {
 check_render() {
     clean
     start_fake || return 1
-    launch --connect "127.0.0.1:$PORT" --pair-code-file "$WORK/pd.code" \
+    launch --connect "127.0.0.1:$PORT" \
         --open com.android.settings --open-phone --quit-after 40
     local app_shot="$WORK/render-app.png" phone_shot="$WORK/render-phone.png" id
     if ! wait_until 30 events_have '"ev":"video","stream":1,' \
@@ -413,7 +421,7 @@ check_render() {
 check_resize() {
     clean
     start_fake || return 1
-    launch --connect "127.0.0.1:$PORT" --pair-code-file "$WORK/pd.code" \
+    launch --connect "127.0.0.1:$PORT" \
         --open com.android.settings --resize-stream 1:800x600-pt --quit-after 60
     wait_until 30 events_have '"ev":"video","stream":1,"config":true,"w":1600,"h":1200' \
         && ok "C6 new video config 1600x1200" || bad "C6 no new config"
@@ -467,6 +475,28 @@ PY
 
     [ "$(grep -c '"kind":"scroll","stream":1' "$WORK/events.jsonl")" -ge 1 ] \
         && ok "C7 scroll event" || bad "C7 no scroll event"
+    # A wheel/trackpad move "up" (dy > 0) must reach the phone as a positive
+    # vscroll with no hscroll; the scripted run adds a "down" one that must be negative.
+    local scrolls
+    scrolls="$(python3 - "$WORK/events.jsonl" <<'PY' || true
+import json, sys
+rows = [json.loads(l) for l in open(sys.argv[1]) if '"kind":"scroll","stream":1' in l]
+if not rows:
+    print("none")
+    sys.exit(0)
+up = rows[0]
+bad = []
+if not up["v"] > 0: bad.append("first vscroll %s not > 0" % up["v"])
+if up["h"] != 0: bad.append("first hscroll %s not 0" % up["h"])
+if abs(up["nx"] - 0.5) > 0.03 or abs(up["ny"] - 0.5) > 0.03: bad.append("not at the centre")
+if len(rows) > 1 and not rows[1]["v"] < 0: bad.append("second vscroll %s not < 0" % rows[1]["v"])
+print("ok v=%s" % ",".join(str(r["v"]) for r in rows) if not bad else "; ".join(bad))
+PY
+)"
+    case "$scrolls" in
+        ok*) ok "C7 scroll direction ($scrolls)" ;;
+        *) bad "C7 scroll direction: $scrolls" ;;
+    esac
     events_have '"text":"hi"' \
         && ok "C7 typed text" || bad "C7 no text event"
     events_have '"t":"nav"' && events_have '"action":"back"' \
@@ -479,9 +509,9 @@ PY
 check_input() {
     clean
     start_fake || return 1
-    printf '%s\n' "click 0.5 0.5" "drag 0.5 0.5 0.7 0.5" "scroll 3" "type hi" \
+    printf '%s\n' "click 0.5 0.5" "drag 0.5 0.5 0.7 0.5" "scroll 3" "scroll -2" "type hi" \
         "rightclick 0.5 0.5" > "$WORK/input.txt"
-    launch --connect "127.0.0.1:$PORT" --pair-code-file "$WORK/pd.code" \
+    launch --connect "127.0.0.1:$PORT" \
         --open com.android.settings --debug-input-script "$WORK/input.txt" --quit-after 60
     wait_until 30 events_have '"action":"back"' \
         || { bad "C7 scripted input did not reach the phone"; say "app log: $(tail -3 "$WORK/app.log")"; }
@@ -495,7 +525,7 @@ check_input() {
 check_input_global() {
     clean
     start_fake || return 1
-    launch --connect "127.0.0.1:$PORT" --pair-code-file "$WORK/pd.code" \
+    launch --connect "127.0.0.1:$PORT" \
         --open com.android.settings --quit-after 60
     wait_until 30 events_have '"ev":"video","stream":1,' || bad "C7 no video config"
     local win
@@ -522,7 +552,7 @@ check_pinch() {
     start_fake || return 1
     printf '%s\n' "pinch 0.5 0.5 1.5" "pinch 0.5 0.5 0.6" "rotate 0.5 0.5 90" \
         "rightclick 0.5 0.5" > "$WORK/pinch.txt"
-    launch --connect "127.0.0.1:$PORT" --pair-code-file "$WORK/pd.code" \
+    launch --connect "127.0.0.1:$PORT" \
         --open com.android.settings --debug-input-script "$WORK/pinch.txt" --quit-after 60
     wait_until 30 events_have '"action":"back"' \
         || { bad "C13 scripted gestures did not reach the phone"; say "app log: $(tail -3 "$WORK/app.log")"; }
@@ -701,7 +731,7 @@ PY
 check_pause() {
     clean
     start_fake || return 1
-    launch --connect "127.0.0.1:$PORT" --pair-code-file "$WORK/pd.code" \
+    launch --connect "127.0.0.1:$PORT" \
         --open com.android.settings --minimize-stream 1:6 --deminimize-stream 1:11 --quit-after 16
     wait_app
     [ "$(count_events '"t":"window.pause"')" = "1" ] \
@@ -720,7 +750,7 @@ check_direct() {
     clean
     # Phase A: pair; `welcome` stores the key (Keychain) + address (prefs).
     start_fake || return 1
-    launch --connect "127.0.0.1:$PORT" --pair-code-file "$WORK/pd.code" --quit-after 16
+    launch --connect "127.0.0.1:$PORT" --quit-after 16
     wait_app
     grep -q '"state":"paired"' "$WORK/events.jsonl" \
         && ok "C10a paired" || bad "C10a first launch did not pair"
@@ -801,7 +831,7 @@ PY
     # Phase A: an app window -> ⌘[ and Esc are `nav back` on stream 1.
     start_fake || return 1
     printf '%s\n' "key cmd+[" "key esc" > "$WORK/input-back.txt"
-    launch --connect "127.0.0.1:$PORT" --pair-code-file "$WORK/pd.code" \
+    launch --connect "127.0.0.1:$PORT" \
         --open com.android.settings --debug-input-script "$WORK/input-back.txt" --quit-after 60
     wait_until 30 nav_at_least 1 back \
         && ok "C11 ⌘[ in an app window -> nav back" || bad "C11 no nav back after ⌘["
@@ -846,7 +876,7 @@ spotlight_logged() { [ -n "$(spotlight_log_line)" ]; }
 check_spotlight() {
     clean
     start_fake || return 1
-    launch --connect "127.0.0.1:$PORT" --pair-code-file "$WORK/pd.code" --quit-after 18
+    launch --connect "127.0.0.1:$PORT" --quit-after 18
     wait_app
     # Read the app's index log line now: the log window is relative to the
     # time of the query, and the unit tests below can take minutes.

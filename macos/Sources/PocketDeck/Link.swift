@@ -22,14 +22,16 @@ enum Cause: Equatable {
 }
 
 enum Pairing: Equatable {
-    case waitingForCode
+    /// Connecting; the phone has not shown its code yet.
+    case contacting
+    /// Both screens show this code; the person compares and taps Allow on the phone.
+    case comparing(code: String)
+    /// The person tapped Allow; the key and `welcome` are on their way.
     case verifying
-    /// No answer 3 s after the code was sent (the protocol has no "wrong code" frame).
-    case stillWaiting
     case denied
-    /// The phone closed the connection before the code was accepted (its own window).
+    /// Nobody answered on the phone within its 120 s.
     case timedOut
-    /// The phone could not be reached to pair.
+    /// The phone could not be reached, or the connection dropped while pairing.
     case unreachable
 }
 
@@ -158,8 +160,9 @@ enum LinkEvent: Equatable {
     case tryNow
     case beginPairing(PhoneRef)
     /// The phone showed a code (`pair.code_shown`) in a session that is allowed to pair.
-    case codeShown(PhoneRef)
-    case codeSubmitted
+    case codeShown(PhoneRef, code: String)
+    /// The phone sent `pair.ok`: the person tapped Allow.
+    case pairApproved
     case cancelPairing
     case forget(deviceId: String)
     case localNetworkDenied
@@ -177,12 +180,10 @@ enum LinkAction: Equatable {
 
 struct LinkMachine {
     static let offlineAfter: TimeInterval = 15
-    static let stillWaitingAfter: TimeInterval = 3
 
     private(set) var link: Link = .idle
     private var outageStart: Date?
     private var failures = 0
-    private var verifyStart: Date?
     /// Where to go back to when a pairing is cancelled.
     private var resume: Link = .idle
 
@@ -210,7 +211,6 @@ struct LinkMachine {
             link = .online(phone)
             outageStart = nil
             failures = 0
-            verifyStart = nil
             return []
 
         case .attemptFailed(let reason):
@@ -223,26 +223,22 @@ struct LinkMachine {
 
         case .beginPairing(let phone):
             resume = pairingIsActive ? resume : link
-            link = .pairing(phone, .waitingForCode)
-            verifyStart = nil
+            link = .pairing(phone, .contacting)
             return [.stopAttempts, .startPairing(phone)]
 
-        case .codeShown(let phone):
+        case .codeShown(let phone, let code):
             if !pairingIsActive { resume = link }
-            link = .pairing(phone, .waitingForCode)
-            verifyStart = nil
+            link = .pairing(phone, .comparing(code: code))
             return [.stopAttempts]
 
-        case .codeSubmitted:
+        case .pairApproved:
             guard case .pairing(let p, _) = link else { return [] }
             link = .pairing(p, .verifying)
-            verifyStart = now
             return []
 
         case .cancelPairing:
             guard pairingIsActive else { return [] }
             link = resume
-            verifyStart = nil
             if case .idle = resume { return [] }
             if case .needsPairing = resume { return [] }
             failures = 0
@@ -265,10 +261,6 @@ struct LinkMachine {
             case .connecting(let p), .reconnecting(let p):
                 if let start = outageStart, now.timeIntervalSince(start) >= Self.offlineAfter {
                     link = .offline(p, .unreachable)
-                }
-            case .pairing(let p, .verifying):
-                if let start = verifyStart, now.timeIntervalSince(start) >= Self.stillWaitingAfter {
-                    link = .pairing(p, .stillWaiting)
                 }
             default:
                 break
@@ -293,8 +285,7 @@ struct LinkMachine {
         if case .pairing(let phone, _) = link {
             switch reason {
             case "pair_denied": link = .pairing(phone, .denied)
-            case "closed-by-peer", ConnectionFailure.pairingTimeout, "closed", "receive", "cancelled":
-                link = .pairing(phone, .timedOut)
+            case "pair_timeout": link = .pairing(phone, .timedOut)
             default: link = .pairing(phone, .unreachable)
             }
             return []
