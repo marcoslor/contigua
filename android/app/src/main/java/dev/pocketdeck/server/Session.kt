@@ -35,7 +35,9 @@ class Session(
     private val now: () -> Long = { System.nanoTime() / 1_000_000 },
     private val log: (String) -> Unit = {},
     private val handshakeTimeoutMs: Int = 15_000,
-    private val pairDecisionTimeoutMs: Long = 30_000,
+    /** Read timeout once a code is shown: a person is reading and typing it. */
+    private val pairingTimeoutMs: Int = 120_000,
+    private val pairDecisionTimeoutMs: Long = 120_000,
     private val exitPollIntervalMs: Long = 2_000,
     maxDeltaBytesPerStream: Int = SendQueue.DEFAULT_MAX_DELTA_BYTES,
 ) : VideoSink {
@@ -238,6 +240,7 @@ class Session(
         pairAllowed = null
         synchronized(pairLock) { pairLock.notifyAll() }
         val id = pendingPairId!!
+        runCatching { socket.soTimeout = pairingTimeoutMs }
         runCatching { callback.onPairingRequest(id, clientName, pairCode) }
         sendJson(mapOf("t" to "pair.code_shown"))
     }

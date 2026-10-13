@@ -51,6 +51,7 @@ class SessionTest {
                 now = { clock++ },
                 log = {},
                 handshakeTimeoutMs = 3_000,
+                pairingTimeoutMs = 10_000,
                 pairDecisionTimeoutMs = 2_000,
                 exitPollIntervalMs = 50,
             )
@@ -163,6 +164,19 @@ class SessionTest {
         val error = readUntil("error")
         assertEquals("auth_failed", error["code"])
         assertTrue(nonce.isNotEmpty())
+    }
+
+    @Test
+    fun typingTheCodeMayTakeLongerThanTheHandshakeTimeout() {
+        hello("c2", "NewMac")
+        send(mapOf("t" to "pair.request"))
+        readUntil("pair.code_shown")
+        val request = platform.pairRequests.first()
+        session!!.respondPairing(request.requestId, true)
+        Thread.sleep(3_500) // past handshakeTimeoutMs, well inside pairingTimeoutMs
+        send(mapOf("t" to "pair.confirm", "code" to request.code))
+        readUntil("pair.ok")
+        readUntil("welcome")
     }
 
     @Test
