@@ -67,6 +67,7 @@ One JSON object per line, exactly:
 {"ev":"input","kind":"scroll","stream":N,"nx":f,"ny":f,"h":f,"v":f,"ts":..}
 {"ev":"input","kind":"key","stream":N,"action":0|1,"keycode":N,"meta":N,"ts":..}
 {"ev":"video","stream":N,"config":true,"w":W,"h":H,"ts":..}
+{"ev":"quality","stream":N,"bitrate":N|null,"maxFps":N|null,"ts":..}
 ```
 
 ## deckctl
@@ -100,6 +101,18 @@ Subcommands:
 - `frame-png FILE --out f.png [--at SECONDS]` — decode a frame of a recorded
   `.h264` (default: the last frame) without any session.
 - `latency --count N` — ping round-trip p50/p95.
+- `quality-test (PKG|--phone) --w --h [--quality-bps N] [--quality-fps N]
+  [--stall S] [--stall-bps N] [--motion V] [--motion-mode scroll|drag]
+  [--cap-seconds S --cap-fps N]` — open, then print per-phase frame counts,
+  kbps and average frame size: `base` (untouched), `quality` (right after a
+  `window.quality` message), `stall` (the socket is deliberately not read for
+  `--stall` seconds, so the phone's send queue overflows; `--stall-bps` sets a
+  higher target first, so the phone's own -25% is visible above its floor) and
+  `recover`. `--motion V` injects motion to keep a static app drawing:
+  `--motion-mode scroll` sends wheel bursts, `drag` a synthetic fling.
+  `--cap-seconds`/`--cap-fps` end with an fps-cap phase.
+- `watch-state --seconds N` — print every `state` message with its timestamp;
+  lock/unlock the phone while it runs and count the lines (one per change).
 
 `--wait-for-free SECONDS` (any subcommand) retries while another client holds the
 phone's single session; the default is to fail fast with `busy`.

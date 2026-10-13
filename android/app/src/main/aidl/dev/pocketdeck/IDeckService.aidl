@@ -36,4 +36,18 @@ interface IDeckService {
 
     /** Human-readable diagnostics (uid/pid/server state). */
     String status() = 6;
+
+    /**
+     * Battery state pushed by the app process: the shell process' context cannot
+     * receive ACTION_BATTERY_CHANGED, so the app relays it (and owns the value
+     * that goes into `welcome` and the initial `state`).
+     */
+    void setBatteryState(int percent, boolean charging) = 7;
+
+    /**
+     * Keyguard state pushed by the app process, used only when the shell process
+     * has no hidden window-manager listener (its broadcast fallback would not be
+     * delivered either).
+     */
+    void setLockedState(boolean locked) = 8;
 }

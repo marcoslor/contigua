@@ -61,6 +61,12 @@ display id on every injected event.
   next keyframe, and requests one from the encoder (`PARAMETER_KEY_REQUEST_SYNC_FRAME`).
   JSON and frames for other streams are never blocked behind a stalled stream's
   backlog (send-queue priority: JSON > keyframes/config > delta frames).
+- `window.quality` is optional and best-effort: `bitrate` is a target in bps,
+  `maxFps` an upper bound for the encoder. The phone clamps both to what its
+  encoder supports, may apply only one of them, and is free to ignore the whole
+  message (older phones do). After a backpressure drop the phone lowers a
+  stream's bitrate on its own (with a floor) and grows it back once frames keep
+  up, so an explicit `bitrate` is a target to recover to, not a guarantee.
 
 ## Session handshake
 
@@ -105,6 +111,7 @@ Mac → phone (after `welcome`):
 | `window.pause` | `stream` | Mac window hidden/minimized/occluded: stop encoding (keep VD + app alive) |
 | `window.resume` | `stream` | resume; phone sends CONFIG + keyframe |
 | `window.keyframe` | `stream` | request IDR (decoder error recovery) |
+| `window.quality` | `stream`, `bitrate` (bps, optional), `maxFps` (optional) | live encoder quality; optional, the phone may ignore it |
 | `window.launch` | `stream`, `pkg` (+`activity`) | launch an app onto an existing window's display (phone mode) |
 | `nav` | `stream`, `action`: `back`/`home`/`recents` | back = KEYCODE_BACK on that display; home/recents meaningful in phone mode |
 | `text` | `stream`, `text` | type text into the focused field of that display |

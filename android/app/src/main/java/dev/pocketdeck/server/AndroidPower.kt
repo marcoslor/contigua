@@ -9,7 +9,13 @@ import java.lang.reflect.Method
 /**
  * Battery/keep-awake policy. It pokes the *streaming* displays' display groups:
  * `userActivity(displayId)` + `wakeUpWithDisplayId(displayId)` when a window
- * opens and on a timer while streams are unpaused, alongside a PARTIAL wake lock.
+ * opens and on a keep-alive timer while streams are unpaused, alongside a PARTIAL
+ * wake lock. Where the build has the hidden
+ * `PowerManager.newWakeLock(levelAndFlags, tag, displayId)` (API 33+), each
+ * unpaused stream also holds a display-scoped SCREEN_BRIGHT wake lock bound to
+ * its virtual display, which keeps that display's power group awake on its own —
+ * the keep-alive timer then slows to 60 s and is only a safety net. Without the
+ * hidden call the timer stays at 10 s.
  *
  * `wakeUpWithDisplayId` wakes the power group of that display's display group
  * (`PowerManagerService.wakeUpWithDisplayId`). AOSP gives an `OWN_DISPLAY_GROUP`
@@ -21,13 +27,17 @@ import java.lang.reflect.Method
  * the VD renders while the phone shows nothing. The override is lifted when the
  * last stream goes away (`POWER_MODE_NORMAL` + `goToSleep`), when the user
  * presses the power button, and by the platform itself on its next state change.
+ * While the override is live, [Watchdog] holds a marker file so a server crash
+ * cannot leave the panel dark.
  *
  * The code never unlocks and never dismisses the keyguard; it only ever names the
  * streaming display's own group, plus the panel's power mode on builds that
  * cannot separate the two.
  *
  * `debug.pocketdeck.force_panel_off=1` forces the panel-dark path (used by the
- * emulator checks, where AOSP would give the VD its own group).
+ * emulator checks, where AOSP would give the VD its own group);
+ * `debug.pocketdeck.force_timer_keepalive=1` skips the display wake locks, for
+ * measuring the timer path.
  */
 internal class AndroidPower(private val ctx: Context, private val log: (String) -> Unit) : Power {
 
@@ -40,6 +50,10 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
     private var wakeLock: PowerManager.WakeLock? = null
     private var loggedNoWakeUp = false
 
+    /** Display-scoped wake locks: one per streaming display while it is unpaused. */
+    private val displayWakeLocks = HashMap<Int, PowerManager.WakeLock>()
+    private var displayWakeLocksUnsupported = false
+
     /** Set from the keep-alive step: only safe to wake on input when the panel is not shared. */
     @Volatile private var groupOnly = false
 
@@ -49,8 +63,12 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
     /** True while the panel override is ours; cleared by restore, checked before each apply. */
     @Volatile private var darkEpisode = false
 
+    /** True while a panel override we applied is live: the watchdog has work to do if we die. */
+    @Volatile private var overrideLive = false
+
     private val panel = PanelPower(log)
     private val policy = DarkPanelPolicy(forced = Hidden.systemProperty(FORCE_PANEL_OFF) == "1")
+    private val watchdog = Watchdog(ctx, log)
 
     private val powerManager: Any? = Hidden.proxy("android.os.IPowerManager", "power")
     private val powerManagerClass = Hidden.iface("android.os.IPowerManager")
@@ -73,25 +91,29 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
         Hidden.T_INT,
     )
 
-    /** `goToSleep(long, int, int)` — puts the display group we woke back to sleep. */
-    private val goToSleepMethod: Method? =
-        Hidden.method(powerManagerClass, "goToSleep", Hidden.T_LONG, Hidden.T_INT, Hidden.T_INT)
-
     /** `PowerManager.WAKE_REASON_APPLICATION`, read reflectively; 2 is its stable value. */
     private val wakeReasonApplication: Int = runCatching {
         PowerManager::class.java.getField("WAKE_REASON_APPLICATION").getInt(null)
     }.getOrDefault(2)
 
-    /** `PowerManager.GO_TO_SLEEP_REASON_APPLICATION`, read reflectively; 0 is its stable value. */
-    private val sleepReasonApplication: Int = runCatching {
-        PowerManager::class.java.getField("GO_TO_SLEEP_REASON_APPLICATION").getInt(null)
-    }.getOrDefault(0)
+    /**
+     * Hidden `newWakeLock(int levelAndFlags, String tag, int displayId)`; bound to
+     * one display so its wake lock only keeps that display's group awake.
+     * `SCREEN_BRIGHT_WAKE_LOCK` is deprecated but remains the level that holds a
+     * display's power group on.
+     */
+    private val displayWakeLockMethod: Method? =
+        if (Hidden.systemProperty(FORCE_TIMER) == "1") null
+        else Hidden.method(PowerManager::class.java, "newWakeLock", Hidden.T_INT, String::class.java, Hidden.T_INT)
 
     init {
         log(
             "power: panel power control ${if (panel.available) "ready" else "unavailable"}" +
                 if (policy.isForced) " ($FORCE_PANEL_OFF=1: forcing the panel-dark path)" else "",
         )
+        if (displayWakeLockMethod == null) {
+            log("power: no display-scoped wake locks; keep-alive timer stays at ${KEEPALIVE_INTERVAL_MS / 1000}s")
+        }
     }
 
     override fun onInput(displayId: Int) {
@@ -134,8 +156,11 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
                 stopTimerLocked()
                 stopped = true
             }
+            syncDisplayLocksLocked(activeDisplays)
         }
-        if (started) synchronized(policyLock) { policy.streamsStarted() }
+        if (started) {
+            synchronized(policyLock) { policy.streamsStarted() }
+        }
         if (stopped) restoreAfterStop()
         // A window just opened: the keep-alive thread runs a step right away, so
         // the wake (and the panel-off after it) never blocks the session thread.
@@ -144,6 +169,12 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
 
     override fun onSessionEnded() {
         setActiveStreams(emptyList())
+    }
+
+    /** The service is going away: hand the panel back and stop the crash guard. */
+    fun shutdown() {
+        setActiveStreams(emptyList())
+        watchdog.stopCleanly()
     }
 
     // ------------------------------------------------------------------
@@ -162,7 +193,12 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
         val plan = synchronized(policyLock) { policy.step(panelOn, strategy) }
         keepLit = plan.wake
         darkEpisode = plan.panelOff
-        if (!plan.wake) return
+        if (!plan.wake) {
+            // The user has the phone: the platform owns the panel again, so the
+            // crash guard has nothing left to restore.
+            if (overrideLive) standDownOverride()
+            return
+        }
         for (id in ids) {
             userActivity(id)
             // The panel going off after the screen timeout would take the VD with
@@ -176,6 +212,12 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
     /** Forces the panel dark; [PanelPower] logs the mode transitions. */
     private fun applyPanelOff(transitional: Boolean) {
         if (!darkEpisode) return
+        // Arm the crash guard *before* the override goes live. The start is
+        // asynchronous, so the panel-off is never delayed, and a crash between
+        // these steps still leaves the marker the watchdog acts on.
+        watchdog.ensure()
+        watchdog.markPanelForced()
+        overrideLive = true
         if (!panel.panelOff()) {
             if (!loggedNoPanelControl) {
                 loggedNoPanelControl = true
@@ -203,7 +245,10 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
      */
     private fun restoreAfterStop() {
         val owned = synchronized(policyLock) { policy.streamsStopped() }
-        if (!owned) return
+        if (!owned) {
+            if (overrideLive) standDownOverride()
+            return
+        }
         // Stop any in-flight apply before handing the panel back.
         darkEpisode = false
         if (DisplayProbe.state(PANEL_DISPLAY_ID) == Display.STATE_ON) {
@@ -212,7 +257,16 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
         // goToSleep lets the platform re-apply its own power mode for the
         // transition and leaves the phone asleep and locked. Only ever called
         // when we were the ones who woke the group.
-        goToSleep()
+        if (SystemSleep.goToSleep()) log("phone back to sleep after the last stream")
+        // The panel is the platform's again, so the crash guard's job is done.
+        standDownOverride()
+    }
+
+    /** The platform owns the panel again: no override for the watchdog to restore. */
+    private fun standDownOverride() {
+        overrideLive = false
+        watchdog.clearPanelForced()
+        watchdog.stopCleanly()
     }
 
     private fun userActivity(displayId: Int) {
@@ -239,14 +293,6 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
         runCatching { m.invoke(powerManager, now, wakeReasonApplication, "pocketdeck", "pocketdeck", displayId) }
     }
 
-    private fun goToSleep() {
-        val m = goToSleepMethod ?: return
-        runCatching {
-            m.invoke(powerManager, SystemClock.uptimeMillis(), sleepReasonApplication, 0)
-            log("phone back to sleep after the last stream")
-        }
-    }
-
     private fun startTimerLocked() {
         if (timerRunning) return
         timerRunning = true
@@ -259,17 +305,26 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
     }
 
     private fun keepAliveLoop() {
-        // The timer parks until the next 10 s boundary *or* a nudge from
-        // setActiveStreams, which is how a new window gets its first step.
+        // The timer parks until the next boundary *or* a nudge from
+        // setActiveStreams, which is how a new window gets its first step. With
+        // display wake locks held the group stays awake by itself, so the step
+        // is a safety net and the interval slows to 60 s.
         var nextStepAt = 0L
+        var step = 0
         while (true) {
+            val interval: Long
+            val locks: Int
             synchronized(lock) {
                 if (!timerRunning) return
+                locks = displayWakeLocks.size
+                interval = if (locks > 0) DISPLAY_LOCK_INTERVAL_MS else KEEPALIVE_INTERVAL_MS
                 val waitMs = (nextStepAt - SystemClock.uptimeMillis()).coerceAtLeast(1)
                 runCatching { lock.wait(waitMs) }
                 if (!timerRunning) return
-                nextStepAt = SystemClock.uptimeMillis() + KEEPALIVE_INTERVAL_MS
+                nextStepAt = SystemClock.uptimeMillis() + interval
             }
+            step++
+            log("keepalive step $step interval=${interval / 1000}s displayLocks=$locks")
             runCatching { keepAliveStep() }
         }
     }
@@ -287,24 +342,74 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
     }
 
     private fun releaseWakeLockLocked() {
+        releaseDisplayLocksLocked()
         val wl = wakeLock ?: return
         wakeLock = null
         runCatching { wl.release() }
         log("partial wake lock released")
     }
 
+    /**
+     * Keeps one display-scoped wake lock per unpaused stream, so the display
+     * group stays awake without the 10 s timer pokes. The first wake of an
+     * episode still comes from `wakeUpWithDisplayId` (a wake lock does not wake
+     * a sleeping group); after that the lock holds it.
+     */
+    private fun syncDisplayLocksLocked(ids: List<Int>) {
+        val method = displayWakeLockMethod ?: return
+        if (displayWakeLocksUnsupported) return
+        for (id in displayWakeLocks.keys.toList()) {
+            if (id in ids) continue
+            val wl = displayWakeLocks.remove(id) ?: continue
+            runCatching { wl.release() }
+            log("display wake lock released (display $id)")
+        }
+        for (id in ids) {
+            if (displayWakeLocks.containsKey(id)) continue
+            val wl = runCatching {
+                val pm = ctx.getSystemService(Context.POWER_SERVICE) as PowerManager
+                (method.invoke(pm, PowerManager.SCREEN_BRIGHT_WAKE_LOCK, DISPLAY_WAKE_TAG, id) as? PowerManager.WakeLock)
+                    ?.apply {
+                        setReferenceCounted(false)
+                        acquire()
+                    }
+            }.getOrNull()
+            if (wl == null) {
+                displayWakeLocksUnsupported = true
+                log("display wake locks refused; keep-alive timer stays at ${KEEPALIVE_INTERVAL_MS / 1000}s")
+                return
+            }
+            displayWakeLocks[id] = wl
+            log("display wake lock held (display $id, SCREEN_BRIGHT, display-scoped)")
+        }
+    }
+
+    private fun releaseDisplayLocksLocked() {
+        for ((id, wl) in displayWakeLocks) {
+            runCatching { wl.release() }
+            log("display wake lock released (display $id)")
+        }
+        displayWakeLocks.clear()
+    }
+
     private var loggedNoPanelControl = false
 
     private companion object {
-        /** Shorter than any screen-off timeout, so a streaming group stays on. */
+        /** Timer path: shorter than any screen-off timeout, so a streaming group stays on. */
         const val KEEPALIVE_INTERVAL_MS = 10_000L
+
+        /** With a display wake lock held, the group holds itself awake. */
+        const val DISPLAY_LOCK_INTERVAL_MS = 60_000L
 
         /** Re-applies after a transitional wake, so a fresh lock screen cannot stay. */
         val REAPPLY_DELAYS_MS = longArrayOf(500, 1_500)
 
         const val FORCE_PANEL_OFF = "debug.pocketdeck.force_panel_off"
+        const val FORCE_TIMER = "debug.pocketdeck.force_timer_keepalive"
 
         /** Display 0 is the panel on every phone. */
         const val PANEL_DISPLAY_ID = 0
+
+        const val DISPLAY_WAKE_TAG = "pocketdeck:vd"
     }
 }

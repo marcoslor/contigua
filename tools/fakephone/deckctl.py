@@ -121,6 +121,8 @@ class Client(object):
         self.device_id = device_id
         self.device = None
         self.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        # Keeps partial frames across timed reads (a stall can split a frame).
+        self._reader = proto.FrameReader()
 
     # -- framing --
     def send_json(self, obj):
@@ -130,9 +132,9 @@ class Client(object):
         self.sock.sendall(data)
 
     def recv(self, timeout=DEFAULT_TIMEOUT):
-        self.sock.settimeout(timeout)
+        """Next complete frame, TIMEOUT if none arrived in time, None on EOF."""
         try:
-            return proto.recv_frame(self.sock)
+            return self._reader.read(self.sock, timeout)
         except socket.timeout:
             return TIMEOUT
 
@@ -907,6 +909,195 @@ def cmd_pause_test(client, args):
     return 0
 
 
+def _motion_step(client, stream, mode, magnitude):
+    """One motion event: a scroll burst, or a synthetic fling (down/moves/up).
+
+    The fling keeps a list animating afterwards, which is what a nearly static
+    app needs to produce frames the encoder can measure.
+    """
+    if mode == "drag":
+        client.send_raw(proto.pack_touch(stream, proto.TOUCH_DOWN, 0, 0.5, 0.85))
+        for i in range(14):
+            client.send_raw(proto.pack_touch(stream, proto.TOUCH_MOVE, 0, 0.5, 0.85 - 0.05 * (i + 1)))
+            time.sleep(0.012)
+        client.send_raw(proto.pack_touch(stream, proto.TOUCH_UP, 0, 0.5, 0.15))
+    else:
+        client.send_raw(proto.pack_scroll(stream, 0.5, 0.5, 0.0, magnitude))
+
+
+def _read_frames(client, seconds, stats, output, stream, motion, scroll_every,
+                 report_every=0.0, read=True, motion_mode="scroll"):
+    """Read (or deliberately skip reading) frames for `seconds`.
+
+    With `read=False` the socket is left unread, which is how a backlog is
+    simulated: the phone keeps encoding, its send queue fills and its
+    backpressure path takes over. `motion` injects a scroll/fling every
+    `scroll_every` seconds so a static app keeps producing frames.
+    """
+    deadline = time.time() + seconds
+    next_motion = time.time()
+    direction = 1
+    window_frames = 0
+    window_bytes = 0
+    window_start = time.time()
+    next_report = window_start + report_every if report_every else None
+    phase_start = window_start
+    while time.time() < deadline:
+        if motion:
+            now = time.time()
+            if now >= next_motion:
+                if motion_mode == "drag":
+                    _motion_step(client, stream, "drag", motion)
+                else:
+                    _motion_step(client, stream, "scroll", direction * motion)
+                    direction = -direction
+                next_motion = now + scroll_every
+        if read:
+            frame = client.recv(0.1)
+            if frame is TIMEOUT:
+                pass
+            elif frame is None:
+                raise DeckError("phone closed the connection during video")
+            elif frame.type == proto.TYPE_JSON:
+                msg = proto.unpack_json(frame)
+                if msg.get("t") == "error":
+                    raise DeckError("phone error %s: %s" % (msg.get("code"), msg.get("message", "")))
+            elif frame.type == proto.TYPE_VIDEO_CONFIG:
+                _codec, _w, _h, csd = proto.unpack_video_config(frame)
+                stats["configs"] += 1
+                if output is not None:
+                    output.write(csd)
+            elif frame.type == proto.TYPE_VIDEO_FRAME:
+                _pts, flags, au = proto.unpack_video_frame(frame)
+                stats["frames"] += 1
+                stats["bytes"] += len(au)
+                stats["sizes"].append(len(au))
+                window_frames += 1
+                window_bytes += len(au)
+                if flags & proto.FRAME_FLAG_KEY:
+                    stats["keys"] += 1
+                if output is not None:
+                    output.write(au)
+        else:
+            time.sleep(0.02)
+        if next_report is not None and time.time() >= next_report:
+            elapsed = max(1e-3, time.time() - window_start)
+            print("  t+%4.0fs frames=%3d kbps=%7.1f avg=%5d B" % (
+                time.time() - phase_start, window_frames,
+                window_bytes * 8.0 / elapsed / 1000.0, window_bytes // max(1, window_frames)))
+            window_frames = 0
+            window_bytes = 0
+            window_start = time.time()
+            next_report = window_start + report_every
+
+
+def cmd_quality_test(client, args):
+    """Open a window, change the encoder quality live, then stall the socket.
+
+    Phases: base, quality (after `window.quality`), stall (the socket is not
+    read, which fills the phone's send queue) and recover. Each prints frames,
+    kbps and the average frame size, so the effect of a bitrate request and of
+    the phone's own backpressure adaptation is visible without decoding.
+    """
+    stream = 1
+    # A real Mac keeps up; a small receive buffer makes the stall hit the
+    # phone's ~250 ms send-queue budget quickly.
+    try:
+        client.sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, args.rcvbuf)
+    except OSError:
+        pass
+    stats = {"configs": 0, "frames": 0, "bytes": 0, "sizes": [], "keys": 0}
+    output = open(args.out, "wb") if args.out else None
+    request = {"t": "window.open", "stream": stream, "w": args.w, "h": args.h, "dpi": args.dpi}
+    if args.phone:
+        request["mode"] = "phone"
+    else:
+        request["pkg"] = args.target
+    client.send_json(request)
+    print("quality-test stream=%d %dx%d quality=%s bps/%s fps stall=%ss motion=%s" % (
+        stream, args.w, args.h, args.quality_bps, args.quality_fps, args.stall,
+        args.motion or "off"))
+    try:
+        # Warm up first: a fresh window spends its first seconds launching the
+        # app and emitting an IDR, which would skew the base phase.
+        if args.warmup_seconds > 0:
+            warm = {"configs": 0, "frames": 0, "bytes": 0, "sizes": [], "keys": 0}
+            _read_frames(client, args.warmup_seconds, warm, output, stream, args.motion,
+                         args.scroll_every, 0, read=True, motion_mode=args.motion_mode)
+            warm_avg = (sum(warm["sizes"]) // len(warm["sizes"])) if warm["sizes"] else 0
+            print("warmup   frames=%4d avg_frame=%6d B" % (len(warm["sizes"]), warm_avg))
+
+        def phase(name, seconds, read=True, send=None):
+            before = len(stats["sizes"])
+            started = time.time()
+            if send is not None:
+                send()
+            if seconds > 0:
+                _read_frames(client, seconds, stats, output, stream, args.motion,
+                             args.scroll_every, args.report_every, read=read,
+                             motion_mode=args.motion_mode)
+            elapsed = max(1e-3, time.time() - started)
+            got = stats["sizes"][before:]
+            avg = (sum(got) / len(got)) if got else 0.0
+            kbps = (sum(got) * 8.0 / elapsed / 1000.0) if got else 0.0
+            print("phase %-8s frames=%4d kbps=%8.1f avg_frame=%6.0f B%s" % (
+                name, len(got), kbps, avg, "" if read else " (socket not read)"))
+            return len(got), avg
+
+        phase("base", args.base_seconds)
+        if args.seconds > 0:
+            phase("quality", args.seconds,
+                  send=lambda: client.send_json({"t": "window.quality", "stream": stream,
+                                                 "bitrate": args.quality_bps,
+                                                 "maxFps": args.quality_fps}))
+        if args.stall > 0:
+            if args.stall_bps > 0:
+                phase("stall-pre", 0,
+                      send=lambda: client.send_json({"t": "window.quality", "stream": stream,
+                                                     "bitrate": args.stall_bps,
+                                                     "maxFps": args.quality_fps}))
+            phase("stall", args.stall, read=False)
+        if args.recover_seconds > 0:
+            phase("recover", args.recover_seconds)
+        if args.cap_seconds > 0:
+            phase("fpscap", args.cap_seconds,
+                  send=lambda: client.send_json({"t": "window.quality", "stream": stream,
+                                                 "maxFps": args.cap_fps}))
+    finally:
+        client.send_json({"t": "window.close", "stream": stream})
+        if output is not None:
+            output.close()
+    print("quality-test totals frames=%d keys=%d configs=%d" %
+          (stats["frames"], stats["keys"], stats["configs"]))
+    return 0
+
+
+def cmd_watch_state(client, args):
+    """Print every `state` message as it arrives: event-driven evidence.
+
+    Run it in the background, lock/unlock the phone, and count the lines: one
+    per real change, nothing periodic.
+    """
+    deadline = time.time() + args.seconds
+    count = 0
+    while time.time() < deadline:
+        frame = client.recv(0.25)
+        if frame is TIMEOUT:
+            continue
+        if frame is None:
+            raise DeckError("phone closed during watch-state")
+        if frame.type != proto.TYPE_JSON:
+            continue
+        msg = proto.unpack_json(frame)
+        if msg.get("t") == "state":
+            count += 1
+            print("%s state #%d locked=%s battery=%s charging=%s" % (
+                time.strftime("%H:%M:%S"), count, msg.get("locked"),
+                msg.get("battery"), msg.get("charging")))
+    print("# %d state messages in %ss" % (count, args.seconds))
+    return 0
+
+
 def cmd_latency(client, args):
     samples = []
     for i in range(args.count):
@@ -1217,6 +1408,39 @@ def build_parser():
     sp = sub.add_parser("latency", help="ping round-trip latency", **spp)
     sp.add_argument("--count", type=int, default=20)
 
+    sp = sub.add_parser("quality-test", help="live window.quality + socket stall; per-phase frame stats", **spp)
+    sp.add_argument("target", nargs="?", help="package to launch")
+    sp.add_argument("--phone", action="store_true", help="phone mode instead of an app")
+    sp.add_argument("--w", type=int, required=True)
+    sp.add_argument("--h", type=int, required=True)
+    sp.add_argument("--dpi", type=int, default=450)
+    sp.add_argument("--warmup-seconds", type=float, default=6.0,
+                    help="read (and discard) frames until the app has settled")
+    sp.add_argument("--base-seconds", type=float, default=3.0, help="unmodified baseline phase")
+    sp.add_argument("--seconds", type=float, default=4.0,
+                    help="phase after window.quality (0 skips the message)")
+    sp.add_argument("--quality-bps", type=int, default=1000000)
+    sp.add_argument("--quality-fps", type=int, default=30)
+    sp.add_argument("--stall", type=float, default=2.5, help="seconds without reading the socket")
+    sp.add_argument("--stall-bps", type=int, default=0,
+                    help="bitrate target to request just before the stall (0 = keep the current one)")
+    sp.add_argument("--recover-seconds", type=float, default=6.0)
+    sp.add_argument("--cap-seconds", type=float, default=0.0,
+                    help="final phase: set --cap-fps and measure the frames that still arrive")
+    sp.add_argument("--cap-fps", type=int, default=1,
+                    help="fps cap for the final phase (frames above it are dropped)")
+    sp.add_argument("--motion", type=float, default=6.0,
+                    help="scroll magnitude / fling switch injected to keep frames flowing (0 = off)")
+    sp.add_argument("--motion-mode", choices=("scroll", "drag"), default="scroll",
+                    help="scroll: wheel bursts; drag: synthetic fling (animates a static list)")
+    sp.add_argument("--scroll-every", type=float, default=0.5)
+    sp.add_argument("--report-every", type=float, default=30.0, help="progress line interval (0 = off)")
+    sp.add_argument("--rcvbuf", type=int, default=32768, help="client receive buffer during the test")
+    sp.add_argument("--out", help="write the whole run's raw Annex-B H.264 here")
+
+    sp = sub.add_parser("watch-state", help="print every state message; lock/unlock while it runs", **spp)
+    sp.add_argument("--seconds", type=float, default=30.0)
+
     sp = sub.add_parser("probe", help="open, run steps, record one phase file per step", **spp)
     sp.add_argument("target", nargs="?", help="package to launch")
     sp.add_argument("--phone", action="store_true", help="phone mode instead of an app")
@@ -1268,6 +1492,8 @@ COMMANDS = {
     "input-test": cmd_input_test,
     "pause-test": cmd_pause_test,
     "latency": cmd_latency,
+    "quality-test": cmd_quality_test,
+    "watch-state": cmd_watch_state,
     "probe": cmd_probe,
     "multi": cmd_multi,
     "exit-test": cmd_exit_test,
@@ -1282,6 +1508,9 @@ def main(argv=None):
         return 2
     if args.command == "probe" and not args.phone and not args.target:
         sys.stderr.write("deckctl: error: probe needs a package or --phone\n")
+        return 2
+    if args.command == "quality-test" and not args.phone and not args.target:
+        sys.stderr.write("deckctl: error: quality-test needs a package or --phone\n")
         return 2
     if args.command == "frame-png":
         try:

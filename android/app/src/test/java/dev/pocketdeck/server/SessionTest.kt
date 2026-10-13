@@ -350,6 +350,71 @@ class SessionTest {
     }
 
     @Test
+    fun stateIsSentOnlyOnChange() {
+        addAndAuthenticate()
+        readUntil("state")
+        // A repeated value from the platform must not produce a second message.
+        platform.pushState(platform.deviceState)
+        client.soTimeout = 300
+        try {
+            readJson()
+            error("a duplicate state was sent")
+        } catch (_: java.net.SocketTimeoutException) {
+            // expected: nothing arrived
+        }
+        client.soTimeout = 5_000
+        platform.pushState(DeviceState(false, 43, true))
+        assertEquals(43L, readUntil("state")["battery"])
+    }
+
+    @Test
+    fun stateSubscriptionIsClosedWithTheSession() {
+        addAndAuthenticate()
+        readUntil("state")
+        assertEquals(1, platform.stateSubscriberCount)
+        client.close()
+        await { platform.stateSubscriberCount == 0 }
+    }
+
+    @Test
+    fun windowQualityIsForwardedToTheDisplay() {
+        addAndAuthenticate()
+        send(mapOf("t" to "window.open", "stream" to 1, "w" to 640, "h" to 480, "dpi" to 160, "mode" to "phone"))
+        readUntil("window.opened")
+        send(mapOf("t" to "window.quality", "stream" to 1, "bitrate" to 1_000_000, "maxFps" to 30))
+        await { platform.qualities.isNotEmpty() }
+        assertEquals(FakePlatform.QualityCall(1, 1_000_000, 30), platform.qualities.last())
+        // One field alone is allowed; both missing is a no-op.
+        send(mapOf("t" to "window.quality", "stream" to 1, "bitrate" to 2_000_000))
+        await { platform.qualities.size == 2 }
+        assertEquals(FakePlatform.QualityCall(1, 2_000_000, null), platform.qualities.last())
+        send(mapOf("t" to "window.quality", "stream" to 1))
+        send(mapOf("t" to "ping", "ts" to 9))
+        assertEquals(9L, readUntil("pong")["ts"])
+        assertEquals(2, platform.qualities.size)
+    }
+
+    @Test
+    fun windowQualityOnAnUnknownStreamReportsNoStream() {
+        addAndAuthenticate()
+        send(mapOf("t" to "window.quality", "stream" to 7, "bitrate" to 1_000_000))
+        assertEquals("no_stream", readUntil("error")["code"])
+        assertTrue(platform.qualities.isEmpty())
+    }
+
+    @Test
+    fun backpressureLowersTheStreamBitrate() {
+        addAndAuthenticate()
+        send(mapOf("t" to "window.open", "stream" to 1, "w" to 640, "h" to 480, "dpi" to 160, "mode" to "phone"))
+        readUntil("window.opened")
+        // One frame bigger than the ~250 ms delta budget: the queue drops it and
+        // tells the display to lower the stream's bitrate.
+        session!!.onFrame(1, 0, false, ByteArray(SendQueue.DEFAULT_MAX_DELTA_BYTES + 1))
+        await { platform.backpressures.contains(1) }
+        assertTrue(platform.keyframeRequests.contains(1))
+    }
+
+    @Test
     fun unknownStreamReportsNoStreamWithoutClosing() {
         addAndAuthenticate()
         send(mapOf("t" to "window.resize", "stream" to 42, "w" to 640, "h" to 480, "dpi" to 160))
@@ -387,10 +452,11 @@ class SessionTest {
     @Test
     fun appExitClosesWindowWithReason() {
         addAndAuthenticate()
+        // The app's task is already there when the window opens, so the watch
+        // loop cannot miss it between two polls.
+        taskPresent = true
         send(mapOf("t" to "window.open", "stream" to 4, "w" to 640, "h" to 480, "dpi" to 160, "pkg" to "com.android.settings"))
         readUntil("window.opened")
-        // The app's task appears…
-        taskPresent = true
         Thread.sleep(300)
         // …and the user backs out of it.
         taskPresent = false
@@ -403,9 +469,9 @@ class SessionTest {
     @Test
     fun phoneModeWindowIsNotAutoClosed() {
         addAndAuthenticate()
+        taskPresent = true
         send(mapOf("t" to "window.open", "stream" to 5, "w" to 400, "h" to 800, "dpi" to 160, "mode" to "phone"))
         readUntil("window.opened")
-        taskPresent = true
         Thread.sleep(200)
         taskPresent = false
         Thread.sleep(200)

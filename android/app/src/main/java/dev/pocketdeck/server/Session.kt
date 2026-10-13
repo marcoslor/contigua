@@ -73,8 +73,13 @@ class Session(
     private val loggedUnknown = HashSet<String>()
 
     private var writerThread: Thread? = null
-    private var stateThread: Thread? = null
+    private var stateHandle: AutoCloseable? = null
     private var watchThread: Thread? = null
+
+    /** The protocol's `state` stream: one emission per real change. */
+    private val stateTracker = DeviceStateTracker { state ->
+        sendJson(mapOf("t" to "state", "locked" to state.locked, "battery" to state.battery, "charging" to state.charging))
+    }
 
     val isClosed: Boolean get() = closed.get()
 
@@ -92,6 +97,12 @@ class Session(
         writerThread = Thread({ writerLoop() }, "pocketdeck-writer").also { it.start() }
         try {
             socket.tcpNoDelay = true
+            // The protocol promises at most ~250 ms of queued video per stream.
+            // Without a bound the kernel (and any forwarder on the path) happily
+            // buffers megabytes, the send queue never fills and the drop rule
+            // never fires; 128 KB is still far above a LAN's bandwidth-delay
+            // product, so throughput is unaffected.
+            runCatching { socket.sendBufferSize = SEND_BUFFER_BYTES }
             socket.soTimeout = handshakeTimeoutMs
             val reader = FrameReader(socket.getInputStream())
             while (!closed.get() && !closeRequested) {
@@ -301,6 +312,7 @@ class Session(
             "window.pause" -> onWindowPause(obj, frame)
             "window.resume" -> onWindowResume(obj, frame)
             "window.keyframe" -> onWindowKeyframe(obj, frame)
+            "window.quality" -> onWindowQuality(obj, frame)
             "window.launch" -> onWindowLaunch(obj, frame)
             "nav" -> onNav(obj, frame)
             "text" -> onText(obj, frame)
@@ -401,6 +413,15 @@ class Session(
         display.requestKeyframe(state.stream)
     }
 
+    /** Optional runtime quality request; a phone without the knob ignores it. */
+    private fun onWindowQuality(obj: Map<String, Any?>, frame: Frame) {
+        val state = requireState(streamOf(obj, frame)) ?: return
+        val bitrate = Json.int(obj["bitrate"])?.takeIf { it > 0 }
+        val maxFps = Json.int(obj["maxFps"])?.takeIf { it > 0 }
+        if (bitrate == null && maxFps == null) return
+        display.setQuality(state.stream, bitrate, maxFps)
+    }
+
     private fun onWindowLaunch(obj: Map<String, Any?>, frame: Frame) {
         val state = requireState(streamOf(obj, frame)) ?: return
         val pkg = Json.str(obj["pkg"]) ?: return
@@ -477,12 +498,13 @@ class Session(
     override fun onFrame(stream: Int, ptsUs: Long, key: Boolean, data: ByteArray) {
         val payload = Frames.encodeVideoFrame(VideoFramePayload(ptsUs, key, data))
         val bytes = Frames.encode(Frames.TYPE_VIDEO_FRAME, stream, payload)
-        if (key) queue.enqueueControl(stream, bytes) else queue.enqueueDelta(stream, bytes)
+        if (key) queue.enqueueControl(stream, bytes) else queue.enqueueDelta(stream, ptsUs, bytes)
     }
 
     private fun onDeltaDrop(stream: Int) {
         log("stream $stream backpressure: dropping deltas, requesting keyframe")
         runCatching { display.requestKeyframe(stream) }
+        runCatching { display.onBackpressure(stream) }
     }
 
     // ------------------------------------------------------------------
@@ -521,26 +543,21 @@ class Session(
     // ------------------------------------------------------------------
 
     private fun startStateWatch() {
-        if (stateThread != null) return
-        stateThread = Thread({
-            var last: DeviceState? = null
-            while (!closed.get()) {
-                val s = runCatching { device.state() }.getOrNull()
-                if (s != null && s != last) {
-                    last = s
-                    sendJson(mapOf("t" to "state", "locked" to s.locked, "battery" to s.battery, "charging" to s.charging))
-                }
-                synchronized(pairLock) {
-                    if (!closed.get()) runCatching { pairLock.wait(3_000) }
-                }
-            }
-        }, "pocketdeck-state").also { it.start() }
+        if (stateHandle != null) return
+        val handle = runCatching { device.subscribeState { stateTracker.update(it) } }.getOrNull()
+        if (handle == null) {
+            // No push source on this platform: the protocol still wants one
+            // state right after welcome, but there are no updates to poll for.
+            runCatching { device.state() }.getOrNull()?.let(stateTracker::update)
+            return
+        }
+        stateHandle = handle
     }
 
     private fun stopStateWatch() {
-        synchronized(pairLock) { pairLock.notifyAll() }
-        runCatching { stateThread?.interrupt() }
-        stateThread = null
+        val handle = stateHandle ?: return
+        stateHandle = null
+        runCatching { handle.close() }
     }
 
     // ------------------------------------------------------------------
@@ -657,6 +674,9 @@ class Session(
         const val OWN_PACKAGE = "dev.pocketdeck"
         const val LAUNCHER_ACTIVITY = "dev.pocketdeck.launcher.LauncherActivity"
         const val KEYCODE_BACK = 4
+
+        /** Bounds the kernel's video backlog so the delta-drop rule can fire. */
+        const val SEND_BUFFER_BYTES = 128 * 1024
 
         /** Virtual displays and encoders need dimensions that are multiples of 16. */
         fun floor16(v: Int): Int = if (v <= 0) 0 else (v / 16) * 16

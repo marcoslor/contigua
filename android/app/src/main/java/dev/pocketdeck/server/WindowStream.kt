@@ -8,6 +8,7 @@ import android.media.MediaCodecInfo
 import android.media.MediaFormat
 import android.os.Build
 import android.os.Bundle
+import android.os.SystemClock
 import android.view.Surface
 import dev.pocketdeck.proto.Frames
 import java.io.ByteArrayOutputStream
@@ -32,6 +33,9 @@ internal class WindowStream(
         const val MIN_BITRATE = 500_000
 
         const val VIRTUAL_DISPLAY_CONFIG = "android.hardware.display.VirtualDisplayConfig"
+
+        /** `MediaFormat.KEY_MAX_FPS_TO_ENCODER`, kept as a string: some builds' encoders reject it. */
+        const val KEY_MAX_FPS = "max-fps-to-encoder"
 
         // @hide DisplayManager flags, verified against AOSP. Deliberately absent:
         // the system-decorations flag (bit 9) and the device display-group flag
@@ -61,6 +65,20 @@ internal class WindowStream(
     @Volatile private var paused = false
     @Volatile private var width = 0
     @Volatile private var height = 0
+
+    /** Live bitrate policy: computed target or `window.quality`, drops and recovery. */
+    private val quality = QualityAdaptation()
+
+    /** Explicit `window.quality` bitrate; null means "computed from the pixels". */
+    @Volatile private var requestedBitrate: Int? = null
+
+    /** `window.quality` fps cap; frames above it are dropped before queueing. */
+    @Volatile private var maxFps: Int? = null
+
+    /** Encoder pts of the last frame actually queued, for the fps cap. */
+    @Volatile private var lastForwardedUs = -1L
+
+    private var appliedBitrate = 0
 
     @Volatile private var displayIdValue = -1
 
@@ -117,6 +135,35 @@ internal class WindowStream(
         }
     }
 
+    /** Runtime quality: bitrate target in bps and/or an fps cap (both optional). */
+    fun setQuality(bitrate: Int?, maxFps: Int?) {
+        // A Mac may repeat a value; only a real change is logged and applied.
+        if (maxFps != null && maxFps > 0 && maxFps != this.maxFps) {
+            this.maxFps = maxFps
+            log(
+                "stream $stream quality: maxFps=$maxFps " +
+                    "(encoder cap at the next configure; frames above it are dropped)",
+            )
+        }
+        if (bitrate != null && bitrate > 0 && bitrate != requestedBitrate) {
+            requestedBitrate = bitrate
+            val target = quality.setTarget(bitrate)
+            log("stream $stream quality: target bitrate ${mbps(target)} (${bitrate} bps requested)")
+            applyBitrate()
+        }
+    }
+
+    /**
+     * The session dropped delta frames for this stream: take 25% off the bitrate
+     * (floor 1 Mbps). Recovery happens in the drain loop, 10% every 5 s without
+     * a drop, back up to the target.
+     */
+    fun onBackpressure() {
+        val bps = quality.onDrop(SystemClock.elapsedRealtime()) ?: return
+        log("stream $stream backpressure: bitrate -> ${mbps(bps)} (-25%)")
+        applyBitrate()
+    }
+
     fun close() {
         released = true
         detachEncoder()
@@ -147,17 +194,31 @@ internal class WindowStream(
     }
 
     private fun configure(w: Int, h: Int): MediaCodec {
+        // The bitrate target: an explicit window.quality request wins, otherwise
+        // it is computed from the pixels (~0.12 bpp·fps).
+        quality.setTarget(requestedBitrate ?: bitrateFor(w, h))
         val format = MediaFormat.createVideoFormat(MIME, w, h)
         format.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
-        format.setInteger(MediaFormat.KEY_BIT_RATE, bitrateFor(w, h))
+        format.setInteger(MediaFormat.KEY_BIT_RATE, quality.bitrate)
         format.setInteger(MediaFormat.KEY_FRAME_RATE, FPS)
         format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, I_FRAME_INTERVAL_S)
         format.setInteger(MediaFormat.KEY_PRIORITY, 0) // realtime
         format.setInteger(MediaFormat.KEY_MAX_B_FRAMES, 0)
         format.setInteger(MediaFormat.KEY_BITRATE_MODE, MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR)
         runCatching { format.setInteger(MediaFormat.KEY_LATENCY, 1) }
+        // Where the encoder supports the key it caps the frame rate itself;
+        // where it does not, the drain loop drops frames above the cap.
+        maxFps?.let { runCatching { format.setInteger(KEY_MAX_FPS, it) } }
+        appliedBitrate = quality.bitrate
         val codec = MediaCodec.createEncoderByType(MIME)
-        codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+        try {
+            codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+        } catch (e: Throwable) {
+            if (!format.containsKey(KEY_MAX_FPS)) throw e
+            log("stream $stream: encoder refused $KEY_MAX_FPS=$maxFps; dropping frames instead")
+            format.removeKey(KEY_MAX_FPS)
+            codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+        }
         return codec
     }
 
@@ -286,6 +347,12 @@ internal class WindowStream(
             } catch (_: Throwable) {
                 break
             }
+            // Bitrate recovery rides on the drain loop: no extra timer, and it
+            // only grows the bitrate when the stream is alive anyway.
+            quality.maybeRecover(SystemClock.elapsedRealtime())?.let { bps ->
+                log("stream $stream quality: bitrate recovered to ${mbps(bps)} (+10%)")
+                applyBitrate()
+            }
             if (idx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
                 readCsd(codec.outputFormat)?.let { sink.onConfig(stream, Frames.CODEC_H264, width, height, it) }
                 continue
@@ -294,12 +361,16 @@ internal class WindowStream(
             try {
                 val buf = codec.getOutputBuffer(idx)
                 if (buf != null && info.size > 0 && (info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) == 0) {
-                    buf.position(info.offset)
-                    buf.limit(info.offset + info.size)
-                    val bytes = ByteArray(info.size)
-                    buf.get(bytes)
-                    val key = (info.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0
-                    sink.onFrame(stream, info.presentationTimeUs, key, bytes)
+                    if (dropForFps(info.presentationTimeUs)) {
+                        // Above the fps cap: never queued, so the socket sees less.
+                    } else {
+                        buf.position(info.offset)
+                        buf.limit(info.offset + info.size)
+                        val data = ByteArray(info.size)
+                        buf.get(data)
+                        val key = (info.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0
+                        sink.onFrame(stream, info.presentationTimeUs, key, data)
+                    }
                 }
             } catch (_: Throwable) {
             } finally {
@@ -307,6 +378,36 @@ internal class WindowStream(
             }
         }
     }
+
+    /** @return true when the frame is above the fps cap and must not be queued. */
+    private fun dropForFps(ptsUs: Long): Boolean {
+        val cap = maxFps ?: return false
+        val previous = lastForwardedUs
+        if (previous < 0 || ptsUs <= previous) { // fresh stream or a restarted pts base
+            lastForwardedUs = ptsUs
+            return false
+        }
+        if (ptsUs - previous < 1_000_000L / cap) return true
+        lastForwardedUs = ptsUs
+        return false
+    }
+
+    /** Applies the current bitrate through `setParameters`; logs each change once. */
+    private fun applyBitrate() {
+        val bps = quality.bitrate
+        if (bps == appliedBitrate) return
+        val codec = encoder
+        val ok = codec != null && runCatching {
+            val params = Bundle()
+            params.putInt(MediaCodec.PARAMETER_KEY_VIDEO_BITRATE, bps)
+            codec.setParameters(params)
+            true
+        }.getOrDefault(false)
+        appliedBitrate = bps
+        log("stream $stream bitrate ${mbps(bps)}${if (ok) " (live)" else " (encoder not running)"}")
+    }
+
+    private fun mbps(bps: Int): String = "%.1f Mbps".format(bps / 1_000_000.0)
 
     private fun readCsd(format: MediaFormat): ByteArray? {
         val csd0 = runCatching { format.getByteBuffer("csd-0") }.getOrNull() ?: return null
@@ -358,6 +459,14 @@ internal class AndroidDisplayLayer(
 
     override fun requestKeyframe(stream: Int) {
         synchronized(streams) { streams[stream] }?.requestKeyframe()
+    }
+
+    override fun setQuality(stream: Int, bitrate: Int?, maxFps: Int?) {
+        synchronized(streams) { streams[stream] }?.setQuality(bitrate, maxFps)
+    }
+
+    override fun onBackpressure(stream: Int) {
+        synchronized(streams) { streams[stream] }?.onBackpressure()
     }
 
     override fun close(stream: Int) {
