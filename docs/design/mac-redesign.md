@@ -1,0 +1,427 @@
+# macOS app — redesign spec
+
+Companion to [mac-audit.md](mac-audit.md) (the problems, `A##`), [../UX.md](../UX.md) (principles,
+copy rules) and [../DESIGN.md](../DESIGN.md) (tokens, Liquid Glass rules). This spec is what
+Phase B implements. Where it overrides UX.md/DESIGN.md it says so (§9). Target: macOS 26,
+SwiftUI + Liquid Glass, system frameworks only. Wire protocol unchanged.
+
+## 0. Direction in one paragraph
+
+One home window (the **Deck**) that is *always the phone you own*, not a state-switching
+pane. A remembered phone is shown immediately, from cache, and reconnects silently; the user only
+ever sees a pairing screen when they have no phone or the phone rejected the key. The connection
+is a small status chip, never a screen. Errors are one sentence, in place, and never loop. Pairing
+is a short, user-driven flow (Nearby → code or QR) in sheets. App windows stay content-only. All
+connection logic moves out of the views into one testable `ConnectionController` with a pure state
+machine (§4), which also fixes the root causes of A01–A03.
+
+## 1. Principles (extends UX.md)
+
+1. **Only what's necessary.** No raw ids, ports, reason codes or "Nearby"/"Paired" jargon on primary surfaces.
+2. **The phone is remembered.** The app never shows a first-run screen to someone who has paired.
+3. **Status is a chip, not a screen.** A dropped link dims the grid and shows "Reconnecting…"; it
+   never replaces the content, never closes windows.
+4. **One line, one place, once.** One banner at a time; the same cause updates in place; nothing flashes.
+5. **Nothing loops visibly.** Retries are invisible until 15 s of failure, then one calm "Offline" state.
+6. **User-driven pairing only.** The Mac never starts a pairing handshake (and so never makes the phone
+   prompt) unless the user pressed Pair / showed a QR.
+7. **Glass on the floating layer only** (toolbar, chips, banners, sheets' controls); content (grid, rows) is plain.
+
+## 2. Information architecture and window inventory
+
+| Window | Kind | Opens | Notes |
+|---|---|---|---|
+| **Deck** | SwiftUI `Window("PocketDeck", id: "deck")` | launch; Dock click; ⌘K; menu-bar "Open PocketDeck" | The only main window. Default 760×560, min 560×420, single instance. Closing hides it; the app keeps running. |
+| **App window** | AppKit `NSWindow` per stream (`AppWindowController`) | click an app in the Deck / ↩ | Content only (§3.7). |
+| **Phone window** | AppKit `NSWindow` (`PhoneWindowController`) | Deck toolbar **Phone**, ⌘P | Aspect-locked, glass hover bar. |
+| **Settings** | SwiftUI `Settings` scene | ⌘, | Tabs General · Devices. |
+| *Sheets over the Deck* | SwiftUI `.sheet` | | Nearby (Add phone), Code, QR, Manual connect. |
+| **Menu-bar item** | SwiftUI `MenuBarExtra` | always (toggle in Settings) | Status + 5 items (§3.8). |
+
+There is no separate Welcome window and no floating launcher panel in v0 (§9): both are states of the
+Deck. The Deck has three content modes, chosen **only** by what the profile remembers:
+
+```
+profile has no remembered phone, first run ever      → Welcome   (hero + "Find my phone")
+profile has no remembered phone, after Welcome seen  → Nearby    (list of phones, the pairing entry point)
+profile has ≥1 remembered phone                      → Phone     (header + app grid, §3.3)
+```
+
+"Remembered" = a `RememberedPhone` record (§6.3) exists. A record whose key is missing/rejected is
+still "remembered"; it renders the Phone mode with the `needsPairing` banner (**Pair again**), so
+losing a key never looks like a fresh install (A04, A19).
+
+## 3. Screens
+
+Tokens, radii, type, motion are DESIGN.md §1 unless stated. All screens must work in light and dark
+and with Reduce Transparency / Increase Contrast (system fallbacks only).
+
+### 3.1 Welcome (Deck, first run only)
+
+- Window background: `containerBackground(for: .window)` with the brand gradient (DESIGN.md tokens),
+  toolbar hidden. Content frame 560×520 (window `contentSize` for this mode; the Deck animates to its
+  resizable size when it leaves Welcome).
+- Centered glass card, 440 wide, padding 32, `glassEffect(.regular, in: .rect(cornerRadius: 28))`,
+  VStack spacing 24: app icon 96 · "PocketDeck" `.largeTitle.bold()` · "Your Android apps, on your Mac."
+  `.title3 .secondary` · three step rows (`iphone.and.arrow.forward` "Install PocketDeck on your phone",
+  `bolt.badge.checkmark` "Start Shizuku" + `Link("How?")`, `wifi` "Be on the same Wi-Fi") ·
+  **Find my phone** `.glassProminent .controlSize(.large)`, full width.
+- Action → Nearby (cross-fade, 0.3 s `.smooth`). ↩ triggers the primary button.
+
+### 3.2 Nearby (pairing entry point)
+
+Shown as the Deck content when nothing is remembered, and as a **sheet** (title "Add a phone",
+size 480×460) from Settings → Devices → **Add phone…** and ⇧⌘N when a phone is already remembered.
+
+- Header: "Nearby" `.headline`. Body: list of phones from Discovery, **deduplicated by TXT `id`**
+  across interfaces; a result without a TXT `id` is ignored until one arrives (A10). Sorted by name.
+- Row (`glassEffect(.regular.interactive(), in: .rect(cornerRadius: 14))`, ≥ 52 pt): `iphone.gen3`
+  22 pt · VStack(name `.body`, model `.subheadline .secondary`) · Spacer · **Pair** `.glassProminent
+  .controlSize(.small)`. A phone that is already remembered shows "Paired" (`.secondary`) instead of the button
+  and is not pairable here (a rejected one shows **Pair again** `.orange` text + button).
+  Whole row is also clickable (= Pair). No device ids.
+- Footer (`GlassEffectContainer`): **Pair with QR** (`qrcode`) · **Connect manually…** (`network`), `.glass`.
+- **Empty/searching:** centered `ProgressView().controlSize(.small)`, "Looking for phones on this
+  network…", `.callout .tertiary` "Make sure PocketDeck is open on your phone." Appears 0.4 s after the
+  view (no flash for phones that are found instantly). After 15 s with nothing, line 2 becomes
+  "Still nothing? Try Pair with QR." (no error).
+- **Browse failure** (Local Network denied: `NWBrowser` `.failed`/`.waiting(PolicyDenied)`): one red-less
+  `.callout` line replacing the empty-state text: "PocketDeck needs Local Network access. Open System
+  Settings → Privacy & Security → Local Network." with a **Open Settings** `.glass` button (opens the pane).
+- Tapping **Pair** → §4.3 (code flow). The sheet-hosted variant dismisses itself on success.
+- Esc closes the sheet variant.
+
+### 3.3 Phone mode (the Deck, daily use)
+
+Layout: standard titled window with unified toolbar (macOS 26 glass toolbar items; no custom
+backgrounds), window background default.
+
+```
+┌ ● ● ●   Pixel Walk                         [● Connected · 🔒 87%]  [📱 Phone]  [🔍 Search apps ⌘K] ┐
+│ ┌ banner (only when needed) ───────────────────────────────────────────────────────────────────┐ │
+│ └──────────────────────────────────────────────────────────────────────────────────────────────┘ │
+│   ▢ Camera  ▢ Chrome  ▢ Gallery  …   (adaptive grid, 96 pt cells, 24 pt row gap)                │
+```
+
+- `navigationTitle(phone.name)`; no subtitle. Toolbar: `ToolbarItem(placement: .status)` **chip**;
+  `ToolbarItem(.primaryAction)` **Phone** button (`iphone.gen3`, label "Phone"); `.searchable(text:
+  placement: .toolbar, prompt: "Search apps")` + `.searchFocused($searchFocused)`.
+- **Chip** (one capsule, `.caption`, system glass via toolbar): dot (6 pt `circle.fill`) + text,
+  then secondary details when connected.
+
+  | Link | Dot | Text | Details |
+  |---|---|---|---|
+  | online | green | Connected | `lock.fill`/`lock.open.fill` · battery SF Symbol + "87%" (`.monospacedDigit()`); tooltip "Phone locked, 87%, charging" |
+  | connecting (no success this run yet) | secondary | Connecting… | — |
+  | reconnecting (was online this run) | orange, `.symbolEffect(.pulse)` | Reconnecting… | — |
+  | offline (≥ 15 s) | secondary | Offline | — |
+  | needsPairing | orange | Pair again | — |
+  | pairing | — | chip hidden (the sheet is up) | |
+
+- **Grid:** `LazyVGrid(columns: [GridItem(.adaptive(minimum: 96, maximum: 96), spacing: 8)], spacing: 8)`,
+  padding 16 (toolbar inset applies). Cell 96×100: icon 56×56 `.clipShape(.rect(cornerRadius: 13, style: .continuous))`,
+  label `.caption` 1 line `.truncationMode(.middle)`, spacing 6. Hover `.fill(.quaternary)`; keyboard/mouse
+  selection `.fill(Color.accentColor.opacity(0.22))`, both `RoundedRectangle(cornerRadius: 14)`. **Single click opens**
+  (↩ opens the selected one, or the first match when none is selected).
+- **Data:** apps and icons come from `AppsCache` (§6.3) first, then refresh from the phone, so the grid
+  is populated at launch before the first connection. Offline/reconnecting: grid `.opacity(0.5)`,
+  `.allowsHitTesting(false)`.
+- **Loading** (no cache, apps not yet received): 12 placeholder cells `.redacted(reason: .placeholder)`.
+- **No matches:** centered "No apps match “query”" `.callout .secondary`, height 120.
+- **Banner** (§4.4): `Label(msg, systemImage:)` `.callout`, glass capsule/rect (cornerRadius 14, padding 12), full
+  width minus 16, below the toolbar, with at most one trailing button (`.glass .controlSize(.small)`). Appears
+  with `.transition(.opacity.combined(with: .move(edge: .top)))`. Only one banner exists at a time.
+
+  | Cause | Text | Button |
+  |---|---|---|
+  | offline (≥ 15 s) | "Can't reach *name*. Check that it's on the same Wi-Fi." | Try now |
+  | busy | "Another Mac is connected to *name*." | Try now |
+  | needsPairing | "*name* no longer trusts this Mac." | **Pair again** (`.glassProminent`) |
+  | versionMismatch | "*name* runs an incompatible version of PocketDeck." | — |
+  | Local Network denied | as §3.2 | Open Settings |
+  | open failed (`launch_failed`) | "Couldn't open *app* on the phone." (auto-clears 5 s) | — |
+
+- **Phone** button: opens the Phone window (disabled unless online).
+- **No selection of phones here.** Switching/adding phones is in Settings → Devices (§3.6).
+- Window title bar has no document icon. Frame autosave `deck`.
+
+### 3.4 Code sheet
+
+`.sheet`, width 400, padding 32, VStack spacing 24. **Title:** "Enter the code shown on *phone name*"
+`.title3.weight(.semibold)` (the name comes from the Nearby row, so it is known *before* `welcome`; fixes A05).
+
+- Digit row exactly as DESIGN.md (6 boxes, 48×60, 3+3 grouping, focus ring, hidden single `TextField`,
+  paste fills, auto-submit on 6th digit). No placeholder digits.
+- Below the row, one line (`.callout`), exactly one of:
+
+  | Pairing state | Line | Boxes |
+  |---|---|---|
+  | `waitingForCode` | "Allow on your phone, then type the code." `.secondary` | focused, empty |
+  | `verifying` | "Checking…" `.secondary` | `ProgressView().controlSize(.small)` replaces the title icon; boxes disabled |
+  | `stillWaiting` (3 s with no answer) | "Still waiting. Check the code, and tap Allow on your phone." `.secondary` | re-enabled, cleared, focus box 1 |
+  | `denied` (3 tries used or Deny) | "Pairing was denied." `.red` | boxes hidden; **Try again** `.glassProminent` |
+  | `timedOut` (socket closed before a code was accepted — the phone's own window) | "The phone stopped waiting. Try again." `.secondary` | boxes hidden; **Try again** `.glassProminent` |
+
+  The protocol has no "wrong code" frame: a mismatch is indistinguishable from "Allow not tapped yet"
+  until the third try (`pair_denied`). So the UI never claims "wrong code" before `denied`; the 3 s
+  `stillWaiting` line is the honest equivalent, with the DESIGN.md shake + `NSHapticFeedbackManager` on
+  that transition. (Question for the architect: an optional `pair.mismatch` frame would let this say
+  "That code didn't match." — see ask.md; not required.)
+- **Cancel** `.glass` (Esc) always present except in `verifying`; it aborts the session cleanly (no
+  reconnect) and closes the sheet.
+- Success: boxes cross-fade to `checkmark.circle.fill` 64 pt `.green` `.symbolEffect(.bounce)`, sheet closes
+  after 0.6 s, the Deck is already in Phone mode behind it. ↩ never submits partial codes.
+- **Try again** = new handshake (§4.3), user driven, so the phone prompts once per press.
+
+### 3.5 QR sheet, Manual sheet
+
+**QR sheet:** as DESIGN.md (width 360, QR 220×220 on a white tile in both appearances, countdown
+"Expires in 4:59" `.monospacedDigit()`), with these changes:
+- It probes **only phones that are not remembered by this Mac and that are not busy**, one attempt per phone
+  per 4 s, each probe closed ≤ 3 s after `challenge` unless it authenticates (A13). Probing stops the instant
+  one succeeds. (Implementation: `QRPairingModel`, §6.)
+- Status line under the QR: "Waiting for your phone…" only. No counts.
+- Success: QR cross-fades to green checkmark (as DESIGN.md), sheet closes after 0.8 s, Deck shows the phone.
+- Expiry: QR `.blur(radius: 8)` + **Show new code** `.glassProminent`.
+- **Cancel/Done** `.glass`, Esc.
+
+**Manual sheet** ("Connect manually…", width 400): two fields — "Address" (placeholder `192.168.1.20`) and "Port"
+(placeholder `47000`, `.monospacedDigit()`) in a `Form`, **Connect** `.glassProminent` (↩, disabled until
+valid), **Cancel** `.glass`. Failure to reach: one `.red` `.callout` line under the fields, "Couldn't reach
+that address." (no codes). On success it continues into the code sheet (§4.3). This is the only place "port" appears.
+
+### 3.6 Settings (⌘,)
+
+`Settings { TabView }`, width 480, `Form` + `.formStyle(.grouped)`, tabs **General** (`gearshape`) and **Devices**
+(`iphone.gen3`):
+
+- **General:** `Toggle("Launch at login")` (`SMAppService.mainApp`), `Toggle("Show in menu bar")`,
+  `Picker("Default window density")` (75 % · 100 % · 125 % · 150 %, `.menu`). Nothing else.
+- **Devices:** one row per remembered phone, `LabeledContent`: name + secondary "*model* · Last seen *relative*"
+  and trailing state text ("Connected" green / "Offline" secondary / "Pair again" orange), buttons: **Use**
+  `.glass` (only on a non-active phone: makes it the active phone and connects) and **Forget** `.glass`
+  `role: .destructive` → `confirmationDialog("Forget *name*?", message "You'll need to pair it again.")`
+  with **Forget** (destructive) / Cancel. Footer: **Add phone…** `.glass` (opens the Nearby sheet).
+  Empty: "No phones yet." + **Add phone…**.
+- Forget = delete key (Keychain, profile-scoped), `RememberedPhone`, cached address, Spotlight items, apps cache;
+  if it was active: close its windows (they would be dead), drop to Nearby (or to the next remembered phone).
+
+### 3.7 Stream windows (AppKit)
+
+- `NSWindow` styleMask `[.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]`,
+  `titlebarAppearsTransparent = true`, title = app label (no icon), video fills the content view (the first ≈28 pt sits
+  under the titlebar, as in DESIGN.md). Corner radius = system.
+- **Placement (A09):** restore the frame saved for that package (`setFrameAutosaveName("app.<pkg>")`); otherwise cascade
+  from the last opened stream window (`cascadeTopLeft(from:)`, 28 pt steps), never `center()` over the Deck. New
+  windows become key but do not hide the Deck (they open on the Deck's screen, offset right of it when it fits).
+- **Link-down state:** the layer keeps its last frame; a **status pill** (`NSGlassEffectView`, cornerRadius 18, 36 pt
+  high, SwiftUI content "Reconnecting…" `.caption` + small `ProgressView`; "Phone offline" after 15 s) fades in at the
+  bottom center after 1 s of link loss and out when the link returns. Input is dropped while down (no queueing).
+  Windows are re-opened on reconnect with the existing `reopenAll()` (unchanged protocol behaviour).
+- **Phone window:** the hover bar becomes an `NSGlassEffectView` capsule (cornerRadius 18, 144×36; Back/Home/Recents,
+  `chevron.backward` · `circle` · `square.on.square`, 15 pt semibold, tooltips), shown when the pointer is in the top
+  56 pt, fade in 0.2 s, out 0.3 s after 1 s idle (DESIGN.md), replacing the hand-drawn layer (A18).
+- Unchanged: `VideoLayerView`, `AVSampleBufferDisplayLayer`, `InputMapper`, `DebugInput`, gestures, resize debounce,
+  pause/resume, density, edge swipe.
+
+### 3.8 Menu bar item and app menu
+
+- `MenuBarExtra(isInserted: showMenuBar) { … } label: { Image(systemName: "apps.iphone") }`,
+  `.menuBarExtraStyle(.menu)`. Icon: online `apps.iphone` · reconnecting `apps.iphone` (pulse) · offline `iphone.slash`.
+- Items: disabled status line ("● Connected to *name*" / "Reconnecting…" / "Offline" / "No phone paired") · Divider ·
+  "Open PocketDeck" ⌘K · "Phone screen" ⌘P · Divider · "Settings…" ⌘, · Divider · "Quit PocketDeck" ⌘Q.
+- **App menu bar** (AppKit `NSMenu`, kept because stream-window key equivalents rely on the responder chain; A07):
+  *PocketDeck* (About, Settings… ⌘,, Hide ⌘H, Hide Others ⌥⌘H, Quit ⌘Q) · *File* (Add Phone… ⇧⌘N, Close Window ⌘W) ·
+  *Edit* (standard Undo/Redo/Cut/Copy/Paste/Select All, so paste works in the code and search fields) · *View*
+  (Find Apps ⌘K, Phone Window ⌘P, Zoom In ⌘+, Zoom Out ⌘−, Actual Size ⌘0, Enter Full Screen ⌃⌘F) · *Navigate* (Back ⌘[,
+  Home ⇧⌘H, Recents ⌘↑ — unchanged) · *Window* (Minimize ⌘M, Zoom, Bring All to Front, window list).
+
+### 3.9 Dock / lifecycle
+
+Closing the Deck hides it; `applicationShouldHandleReopen` shows it (Dock click, A08). The app quits only on ⌘Q or
+"Quit". Stream windows are independent of the Deck. Quit closes sessions cleanly (existing `beginShutdown`).
+
+## 4. Connection and pairing — the state machine the UI sees
+
+### 4.1 Inputs and what the UI never sees
+
+The UI never sees `SessionState`, reason strings, or socket events. `ConnectionController` consumes them and
+publishes one value, `Link` (below). A new `Session` per attempt, owned by the controller; at most one
+live `Session` per phone plus at most one pairing session (§4.3) plus QR probes (§3.5).
+
+```swift
+struct PhoneRef: Equatable { var id: String; var name: String; var model: String }
+
+enum Link: Equatable {
+    case idle                                       // nothing remembered and nothing in progress
+    case connecting(PhoneRef)                       // first attempt(s) this run, never online yet
+    case online(PhoneRef)
+    case reconnecting(PhoneRef)                     // was online this run, link lost, < 15 s
+    case offline(PhoneRef, Cause)                   // ≥ 15 s without a live session
+    case needsPairing(PhoneRef)                     // key missing or rejected (auth_failed)
+    case pairing(PhoneRef, Pairing)                 // user-driven, sheet is up
+}
+enum Cause: Equatable { case unreachable, busy, versionMismatch, localNetworkDenied }
+enum Pairing: Equatable { case waitingForCode, verifying, stillWaiting, denied, timedOut, viaQR }
+```
+
+### 4.2 Silent reconnect of a remembered phone
+
+1. **Launch:** load `RememberedPhone`s; `active` = last used. If none → `.idle` (Welcome/Nearby). Else
+   `Link = .connecting(active)` **at once** and the Deck renders Phone mode from `AppsCache` (no list flash, A11).
+   Start Discovery and the first attempt in parallel:
+   - phone in Discovery (TXT id matches) → connect through its service endpoint (interface policy below);
+   - not (yet) discovered → after 1.5 s connect to the cached IPv4 (if any). Discovery appearing later preempts a
+     cached attempt that has not authenticated yet.
+2. **Attempt:** 6 s budget from `start()` to `welcome`. On budget expiry the attempt's `NWConnection` is **cancelled**
+   (not just dropped; A01) and a failure is recorded. An attempt that completes TCP after cancellation cannot exist.
+3. **Backoff:** failures retry after 1, 2, 4, 8, 15 s, then every 15 s indefinitely, with these immediate retries (delay 0,
+   counter reset): remembered phone newly discovered/updated · `NWPathMonitor` becomes satisfied or changes interface ·
+   system wake · user **Try now**. Never two attempts in flight.
+4. **Interface policy:** Bonjour-endpoint attempts use `prohibitedInterfaceTypes = [.loopback, .other]` (A03); if the
+   attempt is still `waiting` after 4 s, the next attempt uses the TXT-resolved IPv4. `--connect host:port` (tests) keeps
+   plain `host:port` parameters (loopback allowed).
+5. **Auth:** handshake uses the stored key (protocol unchanged). `welcome` → `.online`, `apps.list`, apps/icons refresh,
+   window reopen if this is a reconnect. A second `auth_failed` within one attempt ⇒ `.needsPairing` (no retry loop).
+6. **Link loss while online:** `Link = .reconnecting` immediately; windows stay open (§3.7); steps 2–4 run.
+7. **Timers (single source):** `.connecting`/`.reconnecting` → `.offline(unreachable)` after **15 s** with no live
+   session. Retries continue at the 15 s cadence while `.offline`; success returns to `.online` with no navigation.
+
+### 4.3 Transition table
+
+| From | Event | To | UI effect |
+|---|---|---|---|
+| `.idle` | user presses Pair on a Nearby row | `.pairing(p, .waitingForCode)` | Code sheet |
+| any | launch with remembered phone | `.connecting(active)` | Deck/Phone mode, chip "Connecting…" |
+| `.connecting` / `.reconnecting` / `.offline` | `welcome` | `.online` | chip green, grid enabled, banner cleared |
+| `.online` | socket closed / ping timeout / receive error | `.reconnecting` | chip orange, grid dimmed, window pills after 1 s |
+| `.connecting` / `.reconnecting` | 15 s without live session | `.offline(.unreachable)` | chip "Offline", banner "Can't reach…" |
+| any non-pairing | `error{busy}` | `.offline(.busy)` after 15 s total, banner immediately | banner "Another Mac is connected…" |
+| any non-pairing | `error{auth_failed}` (key rejected) | `.needsPairing` | banner + **Pair again**; reconnect loop stops |
+| any non-pairing | `error{version}` | `.offline(.versionMismatch)` | banner, loop stops |
+| `.needsPairing` | **Pair again** | `.pairing(p, .waitingForCode)` | Code sheet |
+| `.pairing(.waitingForCode)` | `pair.code_shown` | (same) | focus box 1 |
+| `.pairing(.waitingForCode)` | 6th digit entered → `pair.confirm` | `.verifying` | "Checking…" |
+| `.verifying` | no answer within 3 s | `.stillWaiting` | shake, "Still waiting…" (digits cleared) |
+| `.verifying`/`.stillWaiting` | `pair.ok`+`welcome` | `.online` | checkmark, sheet closes 0.6 s |
+| `.verifying`/`.stillWaiting` | `error{pair_denied}` | `.pairing(.denied)` | "Pairing was denied." + **Try again** |
+| `.pairing(.waitingForCode)`/`.stillWaiting` | socket closed (phone's code window) | `.pairing(.timedOut)` | "The phone stopped waiting. Try again." |
+| `.pairing(.denied/.timedOut)` | **Try again** | `.pairing(p, .waitingForCode)` | new handshake |
+| `.pairing` | Cancel / Esc | `.idle` or previous remembered `Link` | sheet closes, session cancelled |
+| `.pairing(.viaQR)` | probe authenticates | `.online` | QR success state |
+| any | **Forget** (Settings) | `.idle` or next phone | windows closed |
+| any | identity mismatch on cached address | (stay) | drop the cached address only; discovery path continues |
+
+Pairing sessions have `autoReconnect = false`; every pairing attempt is one explicit user action.
+The controller guarantees: **while `.pairing`, no automatic attempt runs** (so the phone never gets two competing sessions
+and never shows a second prompt).
+
+### 4.4 Errors: one line, never loops
+
+- A single `Banner?` value derived from `Link` (table in §3.3). It is `nil` while `online`, `connecting`, `reconnecting`.
+- Reasons map through `ConnectionFailure.message(for:)` (landed by the profile task; Phase B reconciles copy with the
+  strings in §3.3/§3.4 and updates its tests). Transient reasons (`closed-by-peer`, `timeout`, `receive`, `failed`,
+  `cancelled`, `framing`) have **no message**: they only move `Link`.
+- The banner for a cause updates in place (e.g. elapsed time is *not* shown); a repeated identical cause never re-animates.
+- Nothing modal. The "Pairing failed" alert from UX.md is dropped (§9): denial is inline in the code sheet.
+- Raw reasons/ids go to `os.Logger` only (Console), never to the UI.
+
+### 4.5 Forget → pair again
+
+Forget (Settings) removes the key, `RememberedPhone`, cached address, apps cache and Spotlight items for that phone, closes
+its windows, and leaves `Link = .idle` (Nearby) or the next remembered phone. The phone side sees `auth_failed` if the Mac ever
+tries again; that Mac has nothing to try with. Pairing again goes through §4.3 and the phone's own list replaces the old entry
+(same `clientId`).
+
+## 5. Keyboard map
+
+| Where | Keys |
+|---|---|
+| Global (any window) | ⌘K Find Apps (shows the Deck, focuses search) · ⌘P Phone window · ⇧⌘N Add phone… · ⌘, Settings · ⌘W close window · ⌘M minimize · ⌘H hide · ⌥⌘H hide others · ⌘Q quit · ⌃⌘F full screen |
+| Deck (Phone mode) | typing goes to search (focused on show) · ←→↑↓ move selection (grid) · ↩ open selected / first match · Esc clears search, then does nothing · ⌘F = ⌘K |
+| Deck (Welcome) | ↩ Find my phone |
+| Nearby | ↑↓ move · ↩ Pair the selected row · ⌘R rescan (restarts Discovery) |
+| Code sheet | 0–9 digits · ⌫ delete · ⌘V paste 6 digits · Esc Cancel · ⇥ moves between Cancel and the boxes |
+| QR sheet | Esc Cancel/Done |
+| Manual sheet | ⇥ fields · ↩ Connect · Esc Cancel |
+| Settings | ⌘W closes |
+| App window | everything is forwarded to the phone as before (`InputMapper`); menu key equivalents win: ⌘[ Back · ⌘+ ⌘− ⌘0 density · ⌘W close; Esc rules unchanged (`escapeAllowed`) |
+| Phone window | additionally ⇧⌘H Home · ⌘↑ Recents |
+
+Existing menu shortcuts and their tests (`NavShortcutTests`) are kept verbatim.
+
+## 6. Architecture: SwiftUI vs AppKit
+
+### 6.1 Split
+
+| Piece | Tech | Why |
+|---|---|---|
+| `@main PocketDeckApp: App` with `@NSApplicationDelegateAdaptor(AppDelegate)`; scenes: `Window` Deck, `Settings`, `MenuBarExtra` | SwiftUI | scenes, sheets, glass, `.searchable`, `SMAppService` |
+| Deck / Welcome / Nearby / Phone grid / Code / QR / Manual / Settings / banner / chip | SwiftUI | pure view state |
+| Stream windows (`StreamWindowController`, `AppWindow`, `PhoneWindow`), `VideoLayerView`, `InputMapper`, `DebugInput`, gestures | **AppKit (unchanged)** | NSEvent fidelity, `AVSampleBufferDisplayLayer`, resize/occlusion |
+| Link-down pill, phone hover bar | AppKit host (`NSGlassEffectView`) + SwiftUI content | lives inside the video window |
+| App menu bar (`NSMenu`) | AppKit | responder-chain key equivalents (`navigateBack` etc.) |
+| `AppDelegate` | AppKit | reopen, Spotlight `NSUserActivity`, terminate hooks, launch-option hooks |
+| Networking (`Session`, `Discovery`, `Protocol`) | Network.framework, **no UI imports** | testable, unchanged wire behaviour |
+
+### 6.2 New / reshaped types (all `@MainActor @Observable` unless noted)
+
+- `ConnectionController` — owns `Discovery`, the live `Session`, `ReconnectPolicy` (pure struct, §4.2 timings), `NWPathMonitor`;
+  publishes `link: Link`, `banner: Banner?`, `phones: [NearbyPhone]`, `apps`, `icons`, `phoneState` (lock/battery), and
+  methods `connect(remembered)`, `pair(nearby)`, `tryNow()`, `cancelPairing()`, `forget(id)`. **The only owner of `NWConnection`**:
+  every path ends in `cancel()`; a connection that is not `current` is cancelled in its state handler (A01). Replaces the
+  connection half of `AppModel` (`App.swift`).
+- `Link`, `Pairing`, `Banner`, `ReconnectPolicy`, `ConnectionTimeline` — pure value types so the whole §4.3 table is unit-tested without sockets
+  (feed `ConnectionEvent`s, assert `Link` and `Banner`, advance a fake clock).
+- `PairingModel` — digits, `verifying/stillWaiting` timer (3 s), success/denied/timedOut mapping; `QRPairingModel` — payload, remaining, probe scheduling (one probe per un-remembered, non-busy phone, 4 s cadence, ≤ 3 s per probe).
+- `DeckModel` — filter, selection, grid navigation, enabled state; `DevicesModel` (Settings).
+- `RememberedPhone` (`id, name, model, lastSeen, lastAddress?`) + `RememberedPhones` store and `AppsCache` (apps + icon PNGs per phone), both
+  **inside the profile** the profile task added (never raw `UserDefaults.standard`/fixed Keychain service); non-secret, so a missing key never
+  erases the memory of the phone.
+- `Session` changes (networking, behaviour-preserving for the protocol): cancel on every exit; 6 s attempt watchdog that cancels;
+  `prohibitedInterfaceTypes` for service endpoints; no internal auto-reconnect (the controller schedules attempts, one at a time).
+  `Discovery` changes: coalesce by TXT id, ignore results without TXT id (A10), expose browse failure.
+- `WindowManager` keeps its job; it gains `linkState` (for the pills) and the cascade/autosave placement.
+- Test hooks (`LaunchOptions`, `--connect`, `--pair-code-file`, `--open`, `--open-phone`, `--resize-stream`, `--minimize-stream`,
+  `--deminimize-stream`, `--quit-after`, `--reset-pairing`, `--qr-sheet`, `--qr-payload-file`, `--debug-input-script`) keep working
+  (`check-e2e.sh` depends on them). Added: `--appearance light|dark` (sets `NSApp.appearance`), and `--preview <state>` that
+  drives `ConnectionController` with a scripted `Link`/`Banner` for states that cannot be staged (offline, reconnecting, needsPairing,
+  code `timedOut`/`denied`, loading) — used only for the screenshot set.
+
+### 6.3 Files (suggested)
+
+`App/PocketDeckApp.swift`, `App/AppDelegate.swift`, `App/MenuBuilder.swift` · `Connection/{ConnectionController, Link, ReconnectPolicy, Session, Discovery, ConnectionFailure}.swift` ·
+`Store/{Profile, RememberedPhones, AppsCache, PairKeyStore}.swift` · `Deck/{DeckView, WelcomeView, NearbyView, AppGridView, StatusChip, BannerView}.swift` ·
+`Pairing/{CodeSheet, QRSheet, ManualSheet, PairingModel, QRPairingModel}.swift` · `Settings/{SettingsView, DevicesTab}.swift` · `Windows/` (existing stream files + `LinkPill`, `GlassHoverBar`).
+Phase B may keep the flat layout if moving files would make the diff hard to review.
+
+## 7. Tests (Phase B, D1)
+
+- `ConnectionTimelineTests`: every row of §4.3, backoff sequence, 15 s offline threshold, `Try now`/discovery/network/wake resets, pairing blocks automatic attempts, busy/auth/version loops stop or slow.
+- `PairingModelTests`: 6th digit submits once, paste, 3 s `stillWaiting`, `pair_denied`, closed-before-accept = `timedOut`.
+- `QRPairingModelTests`: probe scheduling skips remembered/busy phones, expiry, success closes probes.
+- `DiscoveryCoalesceTests`: results without TXT id ignored; multi-interface duplicates merge.
+- `RememberedPhonesTests`: key loss ≠ forgotten phone; forget removes everything; profile isolation.
+- Session lifecycle test (loopback `NWListener`): after a fail/cancel/timeout, **no connection stays open** (listener sees exactly one accept per attempt and EOF on abandoned ones) — regression for A01.
+- Existing tests unchanged; count must not drop.
+
+## 8. Screenshot set for D3 (light and dark, each ≥ 1x)
+
+1 Welcome · 2 Nearby empty/searching · 3 Nearby with 2 phones (one remembered) · 4 Code sheet empty · 5 verifying · 6 stillWaiting · 7 denied · 8 timedOut · 9 QR sheet · 10 QR success · 11 Manual sheet ·
+12 Deck loading (skeleton) · 13 Deck connected (≥ 14 apps) · 14 search with matches · 15 no matches · 16 selection state · 17 Connecting… (launch, cached grid) · 18 Reconnecting… · 19 Offline banner ·
+20 needsPairing banner · 21 busy banner · 22 Settings General · 23 Settings Devices (2 phones) · 24 Forget confirmation · 25 App window (with link pill visible) · 26 Phone window (hover bar visible) · 27 menu-bar menu ·
+28 Reduce Transparency variant of 13.
+
+## 9. Revisions to existing docs (proposed here; Phase B applies them to UX.md/DESIGN.md after approval)
+
+1. **docs/UX.md / DESIGN.md — Welcome and Devices windows and the floating launcher panel are removed from v0.** They become Deck
+   states (§2). Reason: three windows plus a panel was the cause of the state-flipping and unreachable Forget (A06, A08, A11); one
+   window cannot be hidden by another. The floating panel is deferred, not abandoned: the Deck is the same grid and ⌘K already
+   summons it.
+2. **UX.md "Pairing failed alert is the only modal" is dropped.** Denial/timeout are inline in the code sheet (§3.4) — consistent with "errors are one line, inline".
+3. **DESIGN.md "Devices" section** is replaced by §3.2; the launcher panel section by §3.3; "App windows" gains cascade/autosave and the link pill (§3.7); the "Code-entry sheet" gains the §3.4 state lines.
+   Tokens, Liquid Glass rules, motion, QR sheet geometry, settings and menu-bar sections stand.
+4. **UX.md pairing table**: unchanged flows. One clarification: the Mac probes only phones it has no pairing with during a QR sheet.
+
+No protocol change is required. One optional, non-blocking proposal: a phone→Mac `pair.mismatch` JSON frame so the code sheet
+can say "That code didn't match." immediately instead of the 3 s "Still waiting" line (§3.4).

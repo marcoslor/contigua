@@ -19,11 +19,17 @@ enum SpotlightIndexer {
     /// The phone name for the description line, e.g. "Android app on Pixel".
     static func contentDescription(phoneName: String) -> String { "Android app on \(phoneName)" }
 
-    /// "<deviceId>/<pkg>" — pkg may contain dots but never a slash.
-    static func uniqueIdentifier(deviceId: String, pkg: String) -> String { "\(deviceId)/\(pkg)" }
+    /// "<domainPrefix><deviceId>/<pkg>" — pkg may contain dots but never a slash.
+    /// The prefix is the profile's (empty for the default profile).
+    static func uniqueIdentifier(deviceId: String, pkg: String, domainPrefix: String = "") -> String {
+        "\(domainPrefix)\(deviceId)/\(pkg)"
+    }
 
-    static func parse(identifier: String) -> SpotlightOpenRequest? {
-        let parts = identifier.split(separator: "/", maxSplits: 1, omittingEmptySubsequences: false)
+    /// nil for identifiers that belong to another profile or are malformed.
+    static func parse(identifier: String, domainPrefix: String = "") -> SpotlightOpenRequest? {
+        guard identifier.hasPrefix(domainPrefix) else { return nil }
+        let parts = identifier.dropFirst(domainPrefix.count)
+            .split(separator: "/", maxSplits: 1, omittingEmptySubsequences: false)
         guard parts.count == 2, !parts[0].isEmpty, !parts[1].isEmpty else { return nil }
         return SpotlightOpenRequest(deviceId: String(parts[0]), pkg: String(parts[1]))
     }
@@ -34,24 +40,25 @@ enum SpotlightIndexer {
             .joined(separator: "\n")
     }
 
-    static func items(apps: [AppInfo], deviceId: String, phoneName: String,
+    static func items(apps: [AppInfo], deviceId: String, phoneName: String, domainPrefix: String = "",
                       iconData: (String) -> Data?) -> [CSSearchableItem] {
         apps.map { app in
             let attributes = CSSearchableItemAttributeSet(contentType: .application)
             attributes.title = app.label
             attributes.contentDescription = contentDescription(phoneName: phoneName)
             attributes.thumbnailData = iconData(app.pkg)
-            return CSSearchableItem(uniqueIdentifier: uniqueIdentifier(deviceId: deviceId, pkg: app.pkg),
-                                    domainIdentifier: deviceId,
+            return CSSearchableItem(uniqueIdentifier: uniqueIdentifier(deviceId: deviceId, pkg: app.pkg,
+                                                                       domainPrefix: domainPrefix),
+                                    domainIdentifier: domainPrefix + deviceId,
                                     attributeSet: attributes)
         }
     }
 
     /// The Spotlight result the user clicked, if the activity is one of ours.
-    static func request(from activity: NSUserActivity) -> SpotlightOpenRequest? {
+    static func request(from activity: NSUserActivity, domainPrefix: String = "") -> SpotlightOpenRequest? {
         guard activity.activityType == CSSearchableItemActionType,
               let identifier = activity.userInfo?[CSSearchableItemActivityIdentifier] as? String else { return nil }
-        return parse(identifier: identifier)
+        return parse(identifier: identifier, domainPrefix: domainPrefix)
     }
 }
 
@@ -67,10 +74,15 @@ extension CSSearchableIndex: SearchIndexing {}
 
 final class SpotlightIndex {
     private let index: SearchIndexing
+    /// The profile's prefix on every identifier and domain (see `Profile`).
+    private let domainPrefix: String
     /// Last indexed signature per device id; a reconnect re-sends `apps`.
     private var signatures: [String: String] = [:]
 
-    init(index: SearchIndexing = CSSearchableIndex.default()) { self.index = index }
+    init(index: SearchIndexing = CSSearchableIndex.default(), domainPrefix: String = "") {
+        self.index = index
+        self.domainPrefix = domainPrefix
+    }
 
     func index(apps: [AppInfo], deviceId: String, phoneName: String, iconData: (String) -> Data?) {
         guard !deviceId.isEmpty else { return }
@@ -78,7 +90,8 @@ final class SpotlightIndex {
         guard signatures[deviceId] != signature else { return }
         signatures[deviceId] = signature
 
-        let items = SpotlightIndexer.items(apps: apps, deviceId: deviceId, phoneName: phoneName, iconData: iconData)
+        let items = SpotlightIndexer.items(apps: apps, deviceId: deviceId, phoneName: phoneName,
+                                           domainPrefix: domainPrefix, iconData: iconData)
         Log.app.notice("spotlight: indexing \(items.count, privacy: .public) apps for \(deviceId, privacy: .public)")
         index.indexSearchableItems(items) { error in
             if let error {
@@ -90,7 +103,7 @@ final class SpotlightIndex {
     /// The device is gone (forgotten): its results must go with it.
     func remove(deviceId: String) {
         signatures.removeValue(forKey: deviceId)
-        index.deleteSearchableItems(withDomainIdentifiers: [deviceId]) { error in
+        index.deleteSearchableItems(withDomainIdentifiers: [domainPrefix + deviceId]) { error in
             if let error {
                 Log.app.error("spotlight: delete failed: \(String(describing: error), privacy: .public)")
             }
@@ -98,6 +111,6 @@ final class SpotlightIndex {
     }
 
     func continuationRequest(from activity: NSUserActivity) -> SpotlightOpenRequest? {
-        SpotlightIndexer.request(from: activity)
+        SpotlightIndexer.request(from: activity, domainPrefix: domainPrefix)
     }
 }

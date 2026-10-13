@@ -135,4 +135,12 @@ final class SpotlightTests: XCTestCase {
         index.index(apps: apps, deviceId: "a1b2c3", phoneName: "FakePhone", iconData: { _ in nil })
         XCTAssertEqual(spy.indexedCalls.count, 2)
     }
+
+    func testForgetRemovesOnlyThePrefixedDomainOfItsProfile() {
+        let spy = SpyIndex()
+        let index = SpotlightIndex(index: spy, domainPrefix: "e2e.")
+        index.index(apps: apps, deviceId: "a1b2c3", phoneName: "FakePhone", iconData: { _ in nil })
+        index.remove(deviceId: "a1b2c3")
+        XCTAssertEqual(spy.deletedDomains, [["e2e.a1b2c3"]])
+    }
 }

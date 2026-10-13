@@ -31,7 +31,9 @@ final class CachedDeviceStore {
 
     private let defaults: UserDefaults
 
-    init(defaults: UserDefaults = .standard) { self.defaults = defaults }
+    init(defaults: UserDefaults) { self.defaults = defaults }
+
+    convenience init(profile: Profile) { self.init(defaults: profile.defaults) }
 
     var deviceIds: [String] {
         (defaults.dictionary(forKey: Self.addressesKey) as? [String: String])?.keys.sorted() ?? []

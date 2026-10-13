@@ -331,7 +331,7 @@ final class LauncherView: NSView, NSTableViewDataSource, NSTableViewDelegate, NS
 
     func refresh() {
         let state = model.uiState
-        devicesPane.isHidden = !(state == .discovering || state == .connecting
+        devicesPane.isHidden = !(state == .discovering || state == .connecting || state == .reconnecting
             || state == .awaitingCode || isFailure(state))
         appsPane.isHidden = state != .connected
         if state != .awaitingCode { onDismissCodeSheet?() }
@@ -354,9 +354,10 @@ final class LauncherView: NSView, NSTableViewDataSource, NSTableViewDelegate, NS
                 : "Select a phone and press Connect."
         case .connecting:
             hintLabel.stringValue = "Connecting…"
-        case .failed(let reason):
-            hintLabel.stringValue = model.errorText.map { "Connection failed: \($0) (\(reason))" }
-                ?? "Connection failed (\(reason))"
+        case .reconnecting:
+            hintLabel.stringValue = model.errorText ?? "Reconnecting…"
+        case .failed:
+            hintLabel.stringValue = model.errorText ?? "Connection failed."
         case .awaitingCode:
             hintLabel.stringValue = "Waiting for the pairing code…"
         case .connected:
@@ -378,10 +379,7 @@ final class LauncherView: NSView, NSTableViewDataSource, NSTableViewDelegate, NS
         return rows[index]
     }
 
-    private func isFailure(_ state: UIState) -> Bool {
-        if case .failed = state { return true }
-        return false
-    }
+    private func isFailure(_ state: UIState) -> Bool { state == .failed }
 
     private func filteredApps() -> [AppInfo] {
         let query = searchField.stringValue.trimmingCharacters(in: .whitespaces)

@@ -142,16 +142,16 @@ final class WindowManager {
     }
 }
 
-/// App icons: memory first, disk under ~/Library/Caches/PocketDeck.
+/// App icons: memory first, disk under ~/Library/Caches/<profile folder>.
 final class IconCache {
-    static let shared = IconCache()
+    static let shared = IconCache(profile: .active)
     private let directory: URL
     private let lock = NSLock()
 
-    private init() {
+    private init(profile: Profile) {
         let base = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
             ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Caches")
-        directory = base.appendingPathComponent("PocketDeck", isDirectory: true)
+        directory = base.appendingPathComponent(profile.supportDirectoryName, isDirectory: true)
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     }
 
