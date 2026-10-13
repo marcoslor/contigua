@@ -16,6 +16,9 @@ final class VideoLayerView: NSView {
     /// Size (px) of the last VIDEO_CONFIG; drives aspect-fit letterboxing.
     private(set) var videoSize: CGSize = .zero
 
+    /// Posted on the main queue once a VIDEO_CONFIG size is applied (object: the view).
+    static let videoSizeDidChange = Notification.Name("dev.pocketdeck.videoSizeDidChange")
+
     /// The decoder needs an IDR (window.keyframe) when the layer fails.
     var onRequestKeyframe: (() -> Void)?
 
@@ -86,6 +89,7 @@ final class VideoLayerView: NSView {
                 self.videoSize = size
                 self.needsLayout = true
                 self.needsDisplay = true
+                NotificationCenter.default.post(name: Self.videoSizeDidChange, object: self)
             }
         }
     }
