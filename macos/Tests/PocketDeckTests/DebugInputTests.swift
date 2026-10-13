@@ -10,6 +10,8 @@ final class DebugInputTests: XCTestCase {
         rightclick 0.5 0.5
         drag 0.1 0.2 0.8 0.9
         scroll 3 0.4 0.6
+        pinch 0.5 0.5 1.5
+        rotate 0.4 0.6 -90
         type hi
         key esc
         """)
@@ -18,6 +20,8 @@ final class DebugInputTests: XCTestCase {
             .rightClick(NormalizedPoint(nx: 0.5, ny: 0.5)),
             .drag(from: NormalizedPoint(nx: 0.1, ny: 0.2), to: NormalizedPoint(nx: 0.8, ny: 0.9)),
             .scroll(dy: 3, at: NormalizedPoint(nx: 0.4, ny: 0.6)),
+            .pinch(at: NormalizedPoint(nx: 0.5, ny: 0.5), scale: 1.5),
+            .rotate(at: NormalizedPoint(nx: 0.4, ny: 0.6), degrees: -90),
             .type("hi"),
             .key(KeyStroke(keyCode: 53, characters: "\u{1b}")),
         ])
@@ -73,8 +77,18 @@ final class DebugInputTests: XCTestCase {
         XCTAssertThrowsError(try DebugInputScript.parse("drag 0.1 0.2 0.3"))
         XCTAssertThrowsError(try DebugInputScript.parse("scroll"))
         XCTAssertThrowsError(try DebugInputScript.parse("scroll 3 0.5"))
+        XCTAssertThrowsError(try DebugInputScript.parse("pinch 0.5 0.5"))
+        XCTAssertThrowsError(try DebugInputScript.parse("rotate 0.5 0.5"))
         XCTAssertThrowsError(try DebugInputScript.parse("type"))
         XCTAssertThrowsError(try DebugInputScript.parse("key"))
+    }
+
+    func testRejectsANonPositivePinchScale() {
+        XCTAssertThrowsError(try DebugInputScript.parse("pinch 0.5 0.5 0")) { error in
+            XCTAssertEqual((error as? DebugInputParseError)?.message, "pinch needs NX NY SCALE (SCALE > 0)")
+        }
+        XCTAssertThrowsError(try DebugInputScript.parse("pinch 0.5 0.5 -2"))
+        XCTAssertThrowsError(try DebugInputScript.parse("pinch 0.5 0.5 big"))
     }
 
     func testRejectsUnknownKeysAndModifiers() {
