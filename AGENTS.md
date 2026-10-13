@@ -22,3 +22,35 @@ expected result). Work in loops until every check passes:
 5. If a check failed, diagnose the root cause from the output and loop. Do not weaken, skip or rewrite a check to make it pass. If you think a check is wrong, log why and report it instead.
 
 Exit when all checks pass (then do one cleanup pass: remove leftovers, re-run all checks), or when the iteration cap is hit, or when the same check fails 3 iterations in a row for the same reason (**stuck**: stop and report the evidence and your hypotheses). The final reply must be the last progress entry plus a short summary. "Done" claims without check output are rejected in review.
+
+### Ask the architect (direct line)
+
+When you are blocked, don't loop and don't guess. Write the question to
+`.agent/<task-id>/ask.md` (what you tried, the evidence, 2–3 options and the one you
+recommend), then wait for the answer with a single blocking command:
+
+```sh
+until [ -f .agent/<task-id>/answer.md ]; do sleep 5; done; cat .agent/<task-id>/answer.md
+```
+
+Re-run that command if it times out. When the answer arrives, delete both files and continue.
+Ask when any of these happens:
+- A check fails **twice** for the same reason.
+- An external dependency (device offline, network, another dev's broken build) blocks a check.
+- The fix would break a rule in `docs/ARCHITECTURE.md` or a product promise (locked phone,
+  battery, no competitor names, LAN/E2E security), or would change docs to justify a trade-off.
+- You need to edit files outside your assigned scope.
+- You have spent 2 iterations on test tooling instead of the product.
+
+### Shared machine rules
+
+Other devs run on the same Mac at the same time.
+- Use only the ports, emulator serial and work directory your task names. Without one, use
+  `mktemp -d` and a random port in 47100–47999.
+- Never `pkill` by a generic pattern. Kill only the PIDs you started.
+- The physical phone is shared. Hold `.agent/device.lock` while installing or streaming
+  (`mkdir .agent/device.lock`, remove it when done; if it exists, ask).
+- Never end your turn while your own background job is still running. Wait for it, or stop
+  it and report.
+- Append to your progress log at least every 20 minutes of work, even mid-iteration.
+- On exit, stop every process you started (emulators, fakephone, the app, watchers).
