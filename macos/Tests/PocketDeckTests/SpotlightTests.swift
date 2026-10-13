@@ -8,16 +8,20 @@ import XCTest
 private final class SpyIndex: SearchIndexing {
     var indexedCalls: [[CSSearchableItem]] = []
     var deletedDomains: [[String]] = []
+    /// Every call in order, so a test can tell a delete-then-add from an add alone.
+    var calls: [String] = []
 
     func indexSearchableItems(_ items: [CSSearchableItem],
                               completionHandler: (@Sendable (Error?) -> Void)?) {
         indexedCalls.append(items)
+        calls.append("index")
         completionHandler?(nil)
     }
 
     func deleteSearchableItems(withDomainIdentifiers domainIdentifiers: [String],
                                completionHandler: (@Sendable (Error?) -> Void)?) {
         deletedDomains.append(domainIdentifiers)
+        calls.append("delete")
         completionHandler?(nil)
     }
 }
@@ -47,11 +51,45 @@ final class SpotlightTests: XCTestCase {
         let png = Data([0x89, 0x50, 0x4e, 0x47])
         let items = SpotlightIndexer.items(apps: apps, deviceId: "a1b2c3", phoneName: "FakePhone",
                                            iconData: { pkg in pkg == "com.spotify.music" ? png : nil })
-        XCTAssertEqual(items[0].attributeSet.title, "Settings")
-        XCTAssertEqual(items[1].attributeSet.title, "Spotify")
+        XCTAssertEqual(items[0].attributeSet.title, "Settings (FakePhone)")
+        XCTAssertEqual(items[1].attributeSet.title, "Spotify (FakePhone)")
         XCTAssertEqual(items[0].attributeSet.contentDescription, "Android app on FakePhone")
         XCTAssertNil(items[0].attributeSet.thumbnailData)
         XCTAssertEqual(items[1].attributeSet.thumbnailData, png)
+    }
+
+    func testTitleNamesTheAppThenThePhone() {
+        let items = SpotlightIndexer.items(apps: apps, deviceId: "a1b2c3", phoneName: "Galaxy S25 de Marcos",
+                                           iconData: { _ in nil })
+        XCTAssertEqual(items[1].attributeSet.title, "Spotify (Galaxy S25 de Marcos)")
+        XCTAssertEqual(items[1].attributeSet.displayName, "Spotify (Galaxy S25 de Marcos)")
+    }
+
+    func testKeywordsHoldLabelPackagePhoneAndAndroid() {
+        let items = SpotlightIndexer.items(apps: apps, deviceId: "a1b2c3", phoneName: "Galaxy S25 de Marcos",
+                                           iconData: { _ in nil })
+        XCTAssertEqual(items[1].attributeSet.keywords,
+                       ["Spotify", "com.spotify.music", "Galaxy S25 de Marcos", "Android"])
+    }
+
+    func testRenamingThePhoneReplacesItsItemsWithTheNewTitles() {
+        let spy = SpyIndex()
+        let index = SpotlightIndex(index: spy)
+        index.index(apps: apps, deviceId: "a1b2c3", phoneName: "FakePhone", iconData: { _ in nil })
+        index.index(apps: apps, deviceId: "a1b2c3", phoneName: "Galaxy S25 de Marcos", iconData: { _ in nil })
+        XCTAssertEqual(spy.calls, ["index", "delete", "index"])
+        XCTAssertEqual(spy.deletedDomains, [["a1b2c3"]])
+        XCTAssertEqual(spy.indexedCalls[1].map { $0.attributeSet.title },
+                       ["Settings (Galaxy S25 de Marcos)", "Spotify (Galaxy S25 de Marcos)"])
+        XCTAssertEqual(spy.indexedCalls[1].map(\.uniqueIdentifier),
+                       ["a1b2c3/com.android.settings", "a1b2c3/com.spotify.music"])
+    }
+
+    func testFirstIndexOfAPhoneDeletesNothing() {
+        let spy = SpyIndex()
+        let index = SpotlightIndex(index: spy)
+        index.index(apps: apps, deviceId: "a1b2c3", phoneName: "FakePhone", iconData: { _ in nil })
+        XCTAssertEqual(spy.calls, ["index"])
     }
 
     func testSignatureChangesWithLabelOrPhoneName() {
