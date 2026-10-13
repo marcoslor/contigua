@@ -5,15 +5,27 @@ import AppKit
 
 enum PreviewData {
     private static let names = ["Camera", "Chrome", "Gallery", "Gmail", "Maps", "Messages", "Phone",
-                                "Play Store", "Settings", "Spotify", "Telegram", "WhatsApp", "YouTube", "Clock"]
+                                "Play Store", "Settings", "Spotify", "Telegram", "WhatsApp", "YouTube", "Clock",
+                                "Authenticator", "Calculator", "Calendar", "Contacts", "Drive", "Files", "Fitbit",
+                                "Keep Notes", "RootlessJamesDSP", "Netflix", "Slack", "Signal", "Uber", "Waze",
+                                "Wallet", "Weather", "Zoom", "Duolingo", "Notion", "Podcasts", "Reddit", "Shizuku",
+                                "Translate", "Tuner", "Bitwarden", "Authy", "Discord", "Dropbox", "Firefox", "Home",
+                                "Instagram", "Lens", "Linear", "Mastodon", "Obsidian", "OneNote", "Pocket Casts",
+                                "Proton Mail", "Revolut", "Snapseed", "Speedtest", "Strava", "Tasker", "Termux",
+                                "Threema", "Todoist", "Wise", "Xodo PDF", "Z Launcher"]
 
-    static let apps: [AppInfo] = names.compactMap {
+    /// Every 7th app has no icon (the phone answered with an empty png).
+    static let iconless: Set<String> = Set(apps.enumerated().filter { $0.offset % 7 == 4 }.map(\.element.pkg))
+
+    static let apps: [AppInfo] = names.sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }.compactMap {
         AppInfo(json: ["pkg": "preview.\($0.lowercased().replacingOccurrences(of: " ", with: ""))", "label": $0])
     }
 
     static let icons: [String: NSImage] = {
         var result: [String: NSImage] = [:]
-        for (index, app) in apps.enumerated() { result[app.pkg] = icon(letter: app.label.first ?? "?", index: index) }
+        for (index, app) in apps.enumerated() where !iconless.contains(app.pkg) {
+            result[app.pkg] = icon(letter: app.label.first ?? "?", index: index)
+        }
         return result
     }()
 

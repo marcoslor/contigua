@@ -35,7 +35,7 @@ struct DeckRoot: View {
             }
         }
         .animation(.smooth(duration: 0.3), value: controller.deckMode)
-        .frame(minWidth: 560, minHeight: 420)
+        .frame(minWidth: 640, minHeight: 420)
         .task {
             // A launch hook's sheet waits for the window: presented while the
             // window is still being created, SwiftUI sometimes drops it.
@@ -54,20 +54,6 @@ struct DeckRoot: View {
 }
 
 // MARK: - Welcome
-
-struct BrandGradient: View {
-    @Environment(\.colorScheme) private var scheme
-
-    var body: some View {
-        let stops: [Gradient.Stop] = scheme == .dark
-            ? [.init(color: Color(hex: 0x1E2470), location: 0), .init(color: Color(hex: 0x3B1F73), location: 0.55),
-               .init(color: Color(hex: 0x0D4E5C), location: 1)]
-            : [.init(color: Color(hex: 0x6A7BFF), location: 0), .init(color: Color(hex: 0x9B6BFF), location: 0.55),
-               .init(color: Color(hex: 0x3FD0E0), location: 1)]
-        LinearGradient(stops: stops, startPoint: .topLeading, endPoint: .bottomTrailing)
-            .ignoresSafeArea()
-    }
-}
 
 struct WelcomeView: View {
     @Environment(ConnectionController.self) private var controller
@@ -106,7 +92,6 @@ struct WelcomeView: View {
         .frame(width: 440)
         .glassEffect(.regular, in: .rect(cornerRadius: 28))
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .containerBackground(for: .window) { BrandGradient() }
     }
 
     private func step<Content: View>(_ symbol: String, @ViewBuilder _ content: () -> Content) -> some View {
@@ -267,48 +252,9 @@ extension Banner {
     }
 }
 
-struct StatusChip: View {
-    @Environment(ConnectionController.self) private var controller
-
-    var body: some View {
-        if let chip = controller.link.chip {
-            HStack(spacing: 6) {
-                Image(systemName: "circle.fill")
-                    .font(.system(size: 6))
-                    .foregroundStyle(color(chip.style))
-                    .symbolEffect(.pulse, isActive: chip.style == .pulsingOrange)
-                Text(chip.text)
-                if controller.link.isOnline, let status = controller.status {
-                    Image(systemName: status.locked ? "lock.fill" : "lock.open.fill").foregroundStyle(.secondary)
-                    if let battery = status.battery {
-                        Image(systemName: batterySymbol(battery, charging: status.charging)).foregroundStyle(.secondary)
-                        Text("\(battery)%").monospacedDigit().foregroundStyle(.secondary)
-                    }
-                }
-            }
-            .font(.caption)
-            .contentTransition(.opacity)
-            .animation(.smooth(duration: 0.3), value: chip)
-            .help(helpText)
-        }
-    }
-
-    private var helpText: String {
-        guard controller.link.isOnline, let status = controller.status else { return "" }
-        var parts = [status.locked ? "Phone locked" : "Phone unlocked"]
-        if let battery = status.battery { parts.append("\(battery)%" + (status.charging ? ", charging" : "")) }
-        return parts.joined(separator: ", ")
-    }
-
-    private func color(_ style: ChipStyle) -> Color {
-        switch style {
-        case .green: return .green
-        case .orange, .pulsingOrange: return .orange
-        case .grey: return .secondary
-        }
-    }
-
-    private func batterySymbol(_ level: Int, charging: Bool) -> String {
+/// Which battery glyph a level gets: the nearest quarter, a bolt while charging.
+enum BatterySymbol {
+    static func name(level: Int, charging: Bool) -> String {
         if charging { return "battery.100percent.bolt" }
         switch level {
         case 88...: return "battery.100percent"
@@ -316,6 +262,68 @@ struct StatusChip: View {
         case 38...: return "battery.50percent"
         case 13...: return "battery.25percent"
         default: return "battery.0percent"
+        }
+    }
+
+    static func isLow(level: Int, charging: Bool) -> Bool { !charging && level < 13 }
+}
+
+/// The toolbar's status pill. Connected is the green dot alone (the title
+/// already names the phone); every other state says what it is. Lock shows
+/// only while the phone is locked, which is the state PocketDeck promises to
+/// work in; the battery shows its level in the glyph and the number.
+struct StatusChip: View {
+    @Environment(ConnectionController.self) private var controller
+
+    var body: some View {
+        if let chip = controller.link.chip {
+            HStack(spacing: 6) {
+                Image(systemName: "circle.fill")
+                    .font(.system(size: 7))
+                    .foregroundStyle(color(chip.style))
+                    .symbolEffect(.pulse, isActive: chip.style == .pulsingOrange)
+                if chip.style != .green { Text(chip.text) }
+                if controller.link.isOnline, let status = controller.status {
+                    if status.locked {
+                        Image(systemName: "lock.fill").foregroundStyle(.secondary)
+                    }
+                    if let battery = status.battery {
+                        let low = BatterySymbol.isLow(level: battery, charging: status.charging)
+                        HStack(spacing: 3) {
+                            Image(systemName: BatterySymbol.name(level: battery, charging: status.charging))
+                            Text("\(battery)%").monospacedDigit()
+                        }
+                        .foregroundStyle(low ? AnyShapeStyle(.red) : AnyShapeStyle(.secondary))
+                    }
+                }
+            }
+            .font(.caption)
+            .padding(.horizontal, 10)
+            .frame(minHeight: 28)
+            .contentTransition(.opacity)
+            .animation(.smooth(duration: 0.3), value: chip)
+            .help(helpText)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(accessibilityText(chip))
+        }
+    }
+
+    private var helpText: String {
+        guard controller.link.isOnline, let status = controller.status else { return "" }
+        var parts = ["Connected", status.locked ? "phone locked" : "phone unlocked"]
+        if let battery = status.battery { parts.append("battery \(battery)%" + (status.charging ? ", charging" : "")) }
+        return parts.joined(separator: ", ")
+    }
+
+    private func accessibilityText(_ chip: Chip) -> String {
+        chip.style == .green ? helpText : chip.text
+    }
+
+    private func color(_ style: ChipStyle) -> Color {
+        switch style {
+        case .green: return .green
+        case .orange, .pulsingOrange: return .orange
+        case .grey: return .secondary
         }
     }
 }
@@ -456,36 +464,63 @@ final class GridNavigator {
     }
 }
 
+/// The grid's geometry. Tiles keep their size; the gaps between columns grow
+/// to fill the row, so the first tile starts and the last one ends exactly one
+/// inset from the window's edges (the toolbar's own leading edge) at any width.
+enum GridMetrics {
+    static let cellWidth: CGFloat = 96
+    static let cellHeight: CGFloat = 100
+    static let minGap: CGFloat = 8
+    static let inset: CGFloat = 20
+
+    static func columns(forWidth width: CGFloat) -> Int {
+        max(Int((width - 2 * inset + minGap) / (cellWidth + minGap)), 1)
+    }
+
+    static func gap(forWidth width: CGFloat) -> CGFloat {
+        let count = columns(forWidth: width)
+        guard count > 1 else { return minGap }
+        return max((width - 2 * inset - CGFloat(count) * cellWidth) / CGFloat(count - 1), minGap)
+    }
+}
+
 struct AppGrid: View {
     @Environment(ConnectionController.self) private var controller
     let apps: [AppInfo]
     let query: String
     let navigator: GridNavigator
-
-    private let cell: CGFloat = 96
+    @State private var width: CGFloat = 760
 
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                if apps.isEmpty && !controller.appsLoaded && query.isEmpty {
-                    grid { ForEach(0..<12, id: \.self) { _ in PlaceholderCell() } }
-                        .redacted(reason: .placeholder)
-                } else if apps.isEmpty {
-                    Text("No apps match “\(query)”")
-                        .font(.callout).foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, minHeight: 120)
-                } else {
-                    grid {
-                        ForEach(apps, id: \.pkg) { app in
-                            AppCell(app: app, icon: controller.icons[app.pkg],
-                                    selected: navigator.selection == app.pkg) { controller.openApp(app) }
-                                .id(app.pkg)
+                Group {
+                    if apps.isEmpty && !controller.appsLoaded && query.isEmpty {
+                        grid { ForEach(0..<12, id: \.self) { _ in PlaceholderCell() } }
+                            .redacted(reason: .placeholder)
+                    } else if apps.isEmpty {
+                        Text("No apps match “\(query)”")
+                            .font(.callout).foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, minHeight: 120)
+                    } else {
+                        grid {
+                            ForEach(apps, id: \.pkg) { app in
+                                AppCell(app: app, icon: controller.icons[app.pkg],
+                                        iconIsMissing: iconIsMissing(app),
+                                        selected: navigator.selection == app.pkg) { controller.openApp(app) }
+                                    .id(app.pkg)
+                            }
                         }
                     }
                 }
+                .frame(maxWidth: .infinity)
             }
-            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width in
-                navigator.columns = max(Int((width - 32 + 8) / (cell + 8)), 1)
+            // The scroll view's own width (the grid must not size itself, or it would never
+            // shrink with the window) minus the space a legacy scroller takes.
+            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { outer in
+                let scroller = NSScroller.scrollerWidth(for: .regular, scrollerStyle: NSScroller.preferredScrollerStyle)
+                width = outer - scroller
+                navigator.columns = GridMetrics.columns(forWidth: width)
             }
             .onChange(of: navigator.selection) { _, pkg in
                 if let pkg { withAnimation(.smooth(duration: 0.15)) { proxy.scrollTo(pkg) } }
@@ -493,17 +528,28 @@ struct AppGrid: View {
         }
     }
 
+    /// Nothing more is coming for this icon: the phone said it has none, or
+    /// the link is down.
+    private func iconIsMissing(_ app: AppInfo) -> Bool {
+        controller.missingIcons.contains(app.pkg) || !controller.link.isOnline
+    }
+
     private func grid<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
-        LazyVGrid(columns: [GridItem(.adaptive(minimum: cell, maximum: cell), spacing: 8)], spacing: 8) {
+        let count = GridMetrics.columns(forWidth: width)
+        let gap = GridMetrics.gap(forWidth: width)
+        return LazyVGrid(columns: Array(repeating: GridItem(.fixed(GridMetrics.cellWidth), spacing: gap), count: count),
+                         alignment: .leading, spacing: 8) {
             content()
         }
-        .padding(16)
+        .padding(.horizontal, GridMetrics.inset)
+        .padding(.vertical, 16)
     }
 }
 
 struct AppCell: View {
     let app: AppInfo
     let icon: NSImage?
+    let iconIsMissing: Bool
     let selected: Bool
     let open: () -> Void
     @State private var hovering = false
@@ -511,23 +557,15 @@ struct AppCell: View {
     var body: some View {
         Button(action: open) {
             VStack(spacing: 6) {
-                Group {
-                    if let icon {
-                        Image(nsImage: icon).resizable().interpolation(.high)
-                    } else {
-                        Image(systemName: "app.dashed").font(.title).foregroundStyle(.tertiary)
-                            .frame(maxWidth: .infinity, maxHeight: .infinity).background(.quaternary)
-                    }
-                }
-                .frame(width: 56, height: 56)
-                .clipShape(.rect(cornerRadius: 13, style: .continuous))
+                AppIconView(app: app, image: icon, isMissing: iconIsMissing)
                 Text(app.label)
                     .font(.caption)
                     .lineLimit(1)
                     .truncationMode(.middle)
+                    .padding(.horizontal, 6)
                     .foregroundStyle(selected ? .primary : .secondary)
             }
-            .frame(width: 96, height: 100)
+            .frame(width: GridMetrics.cellWidth, height: GridMetrics.cellHeight)
             .background(selected ? AnyShapeStyle(Color.accentColor.opacity(0.22))
                                  : hovering ? AnyShapeStyle(.quaternary) : AnyShapeStyle(.clear),
                         in: .rect(cornerRadius: 14))
@@ -546,6 +584,6 @@ struct PlaceholderCell: View {
             RoundedRectangle(cornerRadius: 13, style: .continuous).fill(.quaternary).frame(width: 56, height: 56)
             Text("Loading").font(.caption)
         }
-        .frame(width: 96, height: 100)
+        .frame(width: GridMetrics.cellWidth, height: GridMetrics.cellHeight)
     }
 }
