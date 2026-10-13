@@ -23,6 +23,25 @@ cd macos && swift build && ./scripts/bundle.sh && open build/PocketDeck.app
 7. Closing a window closes the app's virtual display; relaunching the Mac app
    reconnects silently to the last phone.
 
+## No phone? Use the emulator rig
+
+`tools/emulator/` boots the real server on a local Android 16 emulator (the
+Shizuku shell service, uid 2000) and runs the same steps — pair, lock, list apps,
+two windows, non-16:9 resizes, input — while saving the last decoded frame of
+each phase as a PNG. It talks to the phone by address (`adb forward`), never over
+mDNS, and pins `emulator-5554` so a real phone stays untouched.
+
+```bash
+tools/emulator/setup.sh    # SDK packages + AVD (idempotent)
+tools/emulator/start.sh    # boot, Shizuku, build+install, prints 127.0.0.1:47811
+tools/emulator/flow.sh     # the POC check; frames in .agent/emu/frames/
+python3 tools/fakephone/deckctl.py --host 127.0.0.1 --port 47811 \
+    --state tools/emulator/.cache/deckctl-state.json apps
+```
+
+Details (pairing without a camera, port discovery, timings, what fails on a
+loaded machine) are in `tools/emulator/README.md`.
+
 ## Known limitations (SM-S936B, Android 16)
 
 - This Samsung build puts the virtual display in the panel's display group, so
