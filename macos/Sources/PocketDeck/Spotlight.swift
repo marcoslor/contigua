@@ -4,7 +4,8 @@
 // the item; we open that app in a new window, connecting first if needed.
 //
 // The item builder is pure so the unit tests pin identifiers, domain and copy;
-// re-indexing is throttled to when the app list actually changes.
+// re-indexing is throttled to when the app list or the phone's name changes,
+// and a change replaces the phone's whole domain so no stale title survives.
 
 import AppKit
 import CoreSpotlight
@@ -18,6 +19,14 @@ struct SpotlightOpenRequest: Equatable {
 enum SpotlightIndexer {
     /// The phone name for the description line, e.g. "Android app on Pixel".
     static func contentDescription(phoneName: String) -> String { "Android app on \(phoneName)" }
+
+    /// "WhatsApp (Galaxy S25 de Marcos)": the phone says which of the user's phones has the app.
+    static func title(label: String, phoneName: String) -> String { "\(label) (\(phoneName))" }
+
+    /// Lets a search for the app, its package, the phone or "Android" find it.
+    static func keywords(app: AppInfo, phoneName: String) -> [String] {
+        [app.label, app.pkg, phoneName, "Android"]
+    }
 
     /// "<domainPrefix><deviceId>/<pkg>" — pkg may contain dots but never a slash.
     /// The prefix is the profile's (empty for the default profile).
@@ -44,7 +53,9 @@ enum SpotlightIndexer {
                       iconData: (String) -> Data?) -> [CSSearchableItem] {
         apps.map { app in
             let attributes = CSSearchableItemAttributeSet(contentType: .application)
-            attributes.title = app.label
+            attributes.title = title(label: app.label, phoneName: phoneName)
+            attributes.displayName = attributes.title
+            attributes.keywords = keywords(app: app, phoneName: phoneName)
             attributes.contentDescription = contentDescription(phoneName: phoneName)
             attributes.thumbnailData = iconData(app.pkg)
             return CSSearchableItem(uniqueIdentifier: uniqueIdentifier(deviceId: deviceId, pkg: app.pkg,
@@ -88,7 +99,9 @@ final class SpotlightIndex {
         guard !deviceId.isEmpty else { return }
         let signature = SpotlightIndexer.signature(apps: apps, phoneName: phoneName)
         guard signatures[deviceId] != signature else { return }
+        let wasIndexed = signatures[deviceId] != nil
         signatures[deviceId] = signature
+        if wasIndexed { deleteDomain(deviceId: deviceId) }
 
         let items = SpotlightIndexer.items(apps: apps, deviceId: deviceId, phoneName: phoneName,
                                            domainPrefix: domainPrefix, iconData: iconData)
@@ -103,6 +116,10 @@ final class SpotlightIndex {
     /// The device is gone (forgotten): its results must go with it.
     func remove(deviceId: String) {
         signatures.removeValue(forKey: deviceId)
+        deleteDomain(deviceId: deviceId)
+    }
+
+    private func deleteDomain(deviceId: String) {
         index.deleteSearchableItems(withDomainIdentifiers: [domainPrefix + deviceId]) { error in
             if let error {
                 Log.app.error("spotlight: delete failed: \(String(describing: error), privacy: .public)")
