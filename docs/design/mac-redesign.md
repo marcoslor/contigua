@@ -178,7 +178,7 @@ backgrounds), window background default.
 **QR sheet:** as DESIGN.md (width 360, QR 220×220 on a white tile in both appearances, countdown
 "Expires in 4:59" `.monospacedDigit()`), with these changes:
 - It probes **only phones that are not remembered by this Mac and that are not busy**, one attempt per phone
-  per 4 s, each probe closed ≤ 3 s after `challenge` unless it authenticates (A13). Probing stops the instant
+  per 4 s, each probe closed 4 s after it started unless it authenticates (A13). Probing stops the instant
   one succeeds. (Implementation: `QRPairingModel`, §6.)
 - Status line under the QR: "Waiting for your phone…" only. No counts.
 - Success: QR cross-fades to green checkmark (as DESIGN.md), sheet closes after 0.8 s, Deck shows the phone.
@@ -233,7 +233,7 @@ that address." (no codes). On success it continues into the code sheet (§4.3). 
 - **App menu bar** (AppKit `NSMenu`, kept because stream-window key equivalents rely on the responder chain; A07):
   *PocketDeck* (About, Settings… ⌘,, Hide ⌘H, Hide Others ⌥⌘H, Quit ⌘Q) · *File* (Add Phone… ⇧⌘N, Close Window ⌘W) ·
   *Edit* (standard Undo/Redo/Cut/Copy/Paste/Select All, so paste works in the code and search fields) · *View*
-  (Find Apps ⌘K, Phone Window ⌘P, Zoom In ⌘+, Zoom Out ⌘−, Actual Size ⌘0, Enter Full Screen ⌃⌘F) · *Navigate* (Back ⌘[,
+  (Find Apps ⌘K, Phone Window ⌘P, Enter Full Screen ⌃⌘F; ⌘+ ⌘− ⌘0 are handled by the stream window itself, as before) · *Navigate* (Back ⌘[,
   Home ⇧⌘H, Recents ⌘↑ — unchanged) · *Window* (Minimize ⌘M, Zoom, Bring All to Front, window list).
 
 ### 3.9 Dock / lifecycle
@@ -262,7 +262,7 @@ enum Link: Equatable {
     case pairing(PhoneRef, Pairing)                 // user-driven, sheet is up
 }
 enum Cause: Equatable { case unreachable, busy, versionMismatch, localNetworkDenied }
-enum Pairing: Equatable { case waitingForCode, verifying, stillWaiting, denied, timedOut, viaQR }
+enum Pairing: Equatable { case waitingForCode, verifying, stillWaiting, denied, timedOut, unreachable }
 ```
 
 ### 4.2 Silent reconnect of a remembered phone
@@ -278,9 +278,9 @@ enum Pairing: Equatable { case waitingForCode, verifying, stillWaiting, denied, 
 3. **Backoff:** failures retry after 1, 2, 4, 8, 15 s, then every 15 s indefinitely, with these immediate retries (delay 0,
    counter reset): remembered phone newly discovered/updated · `NWPathMonitor` becomes satisfied or changes interface ·
    system wake · user **Try now**. Never two attempts in flight.
-4. **Interface policy:** Bonjour-endpoint attempts use `prohibitedInterfaceTypes = [.loopback, .other]` (A03); if the
-   attempt is still `waiting` after 4 s, the next attempt uses the TXT-resolved IPv4. `--connect host:port` (tests) keeps
-   plain `host:port` parameters (loopback allowed).
+4. **Interface policy (as built):** the first Bonjour attempt is pinned (`requiredInterface`) to the interface the browser found the phone on,
+   Wi-Fi/Ethernet ranked first (A03); after a failed service attempt the next one is unpinned, then the remembered IPv4 address is used. (Prohibiting
+   bridge/loopback interfaces was tried and rejected: a fake phone on this Mac is only reachable over a bridge.) `--connect host:port` keeps plain parameters.
 5. **Auth:** handshake uses the stored key (protocol unchanged). `welcome` → `.online`, `apps.list`, apps/icons refresh,
    window reopen if this is a reconnect. A second `auth_failed` within one attempt ⇒ `.needsPairing` (no retry loop).
 6. **Link loss while online:** `Link = .reconnecting` immediately; windows stay open (§3.7); steps 2–4 run.
@@ -306,6 +306,7 @@ enum Pairing: Equatable { case waitingForCode, verifying, stillWaiting, denied, 
 | `.verifying`/`.stillWaiting` | `pair.ok`+`welcome` | `.online` | checkmark, sheet closes 0.6 s |
 | `.verifying`/`.stillWaiting` | `error{pair_denied}` | `.pairing(.denied)` | "Pairing was denied." + **Try again** |
 | `.pairing(.waitingForCode)`/`.stillWaiting` | socket closed (phone's code window) | `.pairing(.timedOut)` | "The phone stopped waiting. Try again." |
+| `.pairing` | any other failure (nothing answered) | `.pairing(.unreachable)` | "Couldn't reach *name*. Try again." |
 | `.pairing(.denied/.timedOut)` | **Try again** | `.pairing(p, .waitingForCode)` | new handshake |
 | `.pairing` | Cancel / Esc | `.idle` or previous remembered `Link` | sheet closes, session cancelled |
 | `.pairing(.viaQR)` | probe authenticates | `.online` | QR success state |
@@ -386,7 +387,7 @@ Existing menu shortcuts and their tests (`NavShortcutTests`) are kept verbatim.
   `--deminimize-stream`, `--quit-after`, `--reset-pairing`, `--qr-sheet`, `--qr-payload-file`, `--debug-input-script`) keep working
   (`check-e2e.sh` depends on them). Added: `--appearance light|dark` (sets `NSApp.appearance`), and `--preview <state>` that
   drives `ConnectionController` with a scripted `Link`/`Banner` for states that cannot be staged (offline, reconnecting, needsPairing,
-  code `timedOut`/`denied`, loading) — used only for the screenshot set.
+  code `timedOut`/`denied`, loading) — used only for the screenshot set. States: welcome, nearby-empty, nearby-phones, code, code-verifying, code-stillwaiting, code-denied, code-timedout, qr, qr-success, qr-expired, manual, loading, deck, connecting, reconnecting, offline, busy, needspairing, add-phone, devices.
 
 ### 6.3 Files (suggested)
 

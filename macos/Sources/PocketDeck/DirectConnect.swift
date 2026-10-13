@@ -6,9 +6,9 @@
 // successful session (UserDefaults — reachability data, not a secret; pairing
 // keys stay in the Keychain) and fall back to it after a short discovery grace.
 //
-// Discovery always wins over the cache when both are available, and the cached
-// address is never trusted blindly: the handshake challenge names the phone, so
-// a cached address that now answers with a different device id is dropped.
+// Discovery wins over the cache (`EndpointPlanner`), and the cached address is
+// never trusted blindly: the handshake challenge names the phone, so a cached
+// address that now answers with a different device id is dropped.
 
 import Foundation
 import Network
@@ -112,61 +112,9 @@ extension NWEndpoint {
     /// The resolved IPv4 `host:port` of a connected endpoint, when there is one.
     var resolvedIPv4Address: CachedAddress? {
         guard case let .hostPort(host, port) = self else { return nil }
-        let literal = "\(host)"
+        // A scoped address prints as "192.168.1.20%en0".
+        let literal = "\(host)".split(separator: "%").first.map(String.init) ?? ""
         guard CachedDeviceStore.isIPv4(literal) else { return nil }
         return CachedAddress(host: literal, port: port.rawValue)
-    }
-}
-
-/// Decides what to connect to: a discovered service endpoint always wins over
-/// a cached address; the cache only fills the discovery gap.
-struct DirectConnectPolicy {
-    /// Give mDNS this long before trusting the cache (~3 s per the task).
-    var discoveryGrace: TimeInterval = 3
-
-    enum Decision: Equatable {
-        case useDiscovery(deviceId: String)
-        case useCached(CachedDevice)
-        case none
-    }
-
-    /// Launch decision: no session yet.
-    ///
-    /// - Parameters:
-    ///   - discoveredPaired: paired phones currently visible over mDNS, in order.
-    ///   - cached: paired devices with a remembered address, most relevant first.
-    ///   - activeDeviceId: the device of the current session (nil = none).
-    ///   - activeReady: the current session finished the handshake.
-    ///   - elapsedSinceLaunch: seconds since discovery started.
-    func decide(discoveredPaired: [String],
-                cached: [CachedDevice],
-                activeDeviceId: String?,
-                activeReady: Bool,
-                elapsedSinceLaunch: TimeInterval) -> Decision {
-        if activeReady { return .none }
-        if let first = discoveredPaired.first {
-            // Already on it (connecting or retrying); discovery does not restart it.
-            if activeDeviceId == first { return .none }
-            return .useDiscovery(deviceId: first) // discovery overrides the cache
-        }
-        guard let candidate = cached.first else { return .none }
-        // A session is already retrying its own endpoint; don't replace it.
-        if activeDeviceId != nil { return .none }
-        guard elapsedSinceLaunch >= discoveryGrace else { return .none }
-        return .useCached(candidate)
-    }
-
-    /// Decision after the discovery session to `deviceId` failed: the phone may
-    /// still be listening on its last known address even though mDNS is gone.
-    func failureDecision(deviceId: String?,
-                         cached: [CachedDevice],
-                         discoveredPaired: [String]) -> Decision {
-        if let deviceId, let remembered = cached.first(where: { $0.deviceId == deviceId }) {
-            return .useCached(remembered)
-        }
-        if let first = discoveredPaired.first, first != deviceId {
-            return .useDiscovery(deviceId: first)
-        }
-        return .none
     }
 }

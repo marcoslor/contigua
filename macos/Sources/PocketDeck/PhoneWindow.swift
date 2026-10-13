@@ -6,7 +6,7 @@ import AppKit
 final class PhoneWindowController: StreamWindowController {
     let phoneScreen: CGSize
     let phoneDpi: Double
-    private let chrome = NSView()
+    private var chrome: PhoneBarView?
     private var chromeVisible = false
 
     static let fallbackScreen = CGSize(width: 1080, height: 2340)
@@ -21,9 +21,9 @@ final class PhoneWindowController: StreamWindowController {
         let width = (height * self.phoneScreen.width / self.phoneScreen.height).rounded()
         super.init(stream: stream, contentSize: NSSize(width: width, height: height), manager: manager)
         window?.title = phone?.name ?? "Phone"
-        window?.contentAspectRatio = NSSize(width: self.phoneScreen.width, height: self.phoneScreen.height)
+        window?.aspectRatio = NSSize(width: self.phoneScreen.width, height: self.phoneScreen.height)
         window?.minSize = NSSize(width: 240, height: 240 * self.phoneScreen.height / self.phoneScreen.width)
-        videoView.hoverZoneHeight = 90
+        videoView.hoverZoneHeight = 84
         videoView.onHoverChange = { [weak self] visible in self?.showChrome(visible) }
         videoView.inputMapper?.isPhoneMode = true
         buildChrome()
@@ -60,52 +60,51 @@ final class PhoneWindowController: StreamWindowController {
         window?.title = label
     }
 
+    override var frameKey: String { "phone" }
+
     // MARK: Chrome
 
     private func buildChrome() {
-        chrome.wantsLayer = true
-        chrome.layer?.backgroundColor = NSColor(calibratedWhite: 0.12, alpha: 0.78).cgColor
-        chrome.layer?.cornerRadius = 12
-        let buttons = [
-            makeButton(symbol: "chevron.backward", tip: "Back", action: #selector(navBack)),
-            makeButton(symbol: "circle", tip: "Home", action: #selector(navHome)),
-            makeButton(symbol: "square.on.square", tip: "Recents", action: #selector(navRecents)),
-        ]
-        for button in buttons { chrome.addSubview(button) }
-        videoView.addSubview(chrome, positioned: .above, relativeTo: nil)
-        chrome.frame = NSRect(x: videoView.bounds.midX - 110, y: videoView.bounds.height - 54,
-                              width: 220, height: 44)
-        let width: CGFloat = 60
-        for (index, button) in buttons.enumerated() {
-            button.frame = NSRect(x: 10 + CGFloat(index) * (width + 5), y: 6, width: width, height: 32)
-        }
-        chrome.autoresizingMask = [.minYMargin]
+        let bar = PhoneBarView(back: { [weak self] in self?.navBack() },
+                               home: { [weak self] in self?.navHome() },
+                               recents: { [weak self] in self?.navRecents() })
+        videoView.addSubview(bar, positioned: .above, relativeTo: nil)
+        // 8 pt under the titlebar, centred; follows the top edge on resize.
+        bar.frame = NSRect(x: (videoView.bounds.width - PhoneBarView.size.width) / 2,
+                           y: videoView.bounds.height - 28 - 8 - PhoneBarView.size.height,
+                           width: PhoneBarView.size.width, height: PhoneBarView.size.height)
+        bar.autoresizingMask = [.minXMargin, .maxXMargin, .minYMargin]
+        chrome = bar
     }
 
-    private func makeButton(symbol: String, tip: String, action: Selector) -> NSButton {
-        let button = NSButton(title: "", target: self, action: action)
-        button.isBordered = false
-        button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: tip)
-        button.imagePosition = .imageOnly
-        button.contentTintColor = .white
-        button.toolTip = tip
-        return button
-    }
+    private var hideChromeWork: DispatchWorkItem?
 
     private func showChrome(_ visible: Bool, animated: Bool = true) {
+        hideChromeWork?.cancel()
         guard chromeVisible != visible || !animated else { return }
+        if visible || !animated {
+            apply(visible, animated: animated)
+        } else {
+            // Fades out 1 s after the pointer leaves the top strip.
+            let work = DispatchWorkItem { [weak self] in self?.apply(false, animated: true) }
+            hideChromeWork = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1, execute: work)
+        }
+    }
+
+    private func apply(_ visible: Bool, animated: Bool) {
         chromeVisible = visible
         guard animated else {
-            chrome.alphaValue = visible ? 1 : 0
+            chrome?.alphaValue = visible ? 1 : 0
             return
         }
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.15
-            chrome.animator().alphaValue = visible ? 1 : 0
+            context.duration = visible ? 0.2 : 0.3
+            chrome?.animator().alphaValue = visible ? 1 : 0
         }
     }
 
-    @objc private func navBack() { session.nav(stream: stream, action: "back") }
-    @objc private func navHome() { session.nav(stream: stream, action: "home") }
-    @objc private func navRecents() { session.nav(stream: stream, action: "recents") }
+    private func navBack() { session.nav(stream: stream, action: "back") }
+    private func navHome() { session.nav(stream: stream, action: "home") }
+    private func navRecents() { session.nav(stream: stream, action: "recents") }
 }

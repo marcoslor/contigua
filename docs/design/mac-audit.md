@@ -182,4 +182,38 @@ is stale while the link is down.
 
 ## Phase B re-walk
 
-*(filled in at the end of Phase B)*
+Walked again on 2026-10-13 against fakephone (port 47510, mDNS on) with a release bundle of the redesigned app
+(profile `redesign`). Screenshots: `.agent/redesign/shots/rewalk/`, plus the light/dark set in `.agent/redesign/shots/final/`.
+
+| Step | Result | Evidence |
+|---|---|---|
+| First launch | Welcome card, traffic lights, one primary button | `final/*/welcome.png`, `rewalk/01-first-launch.png` |
+| Find phone → pair (code) | Nearby row (name + model, no ids) → code sheet titled with the phone's name, Cancel visible → connected | `rewalk/02-nearby.png`, `03-code-sheet.png`, `04-connected.png` |
+| Pair (QR) | e2e `qr` check: sheet up, probe authenticates, stored key reconnects (68/68 pass) | `scripts/check-e2e.sh qr` |
+| App list, open 2 apps | Cascade at 28 pt steps, Deck stays visible (A09) | `rewalk/05-app-window.png` |
+| Resize | Clean video after resize on the release build (a debug build drops frames and corrupts) | `rewalk/06-resized.png` |
+| Type / scroll / close | Input frames reach the phone; ⌘W closes (A07) | fakephone events |
+| Quit → relaunch | Phone mode with the cached grid and "Connected" within 1.5 s, no list flash (A11) | `rewalk/07-relaunch-t1.png` |
+| Phone away | Chip "Offline" and one banner "Can't reach Pixel Walk…" with **Try now** after 15 s; grid dimmed, not replaced (A02) | `rewalk/08-phone-gone-t17.png` |
+| Phone back | Reconnected silently, banner gone, no click (A01) | `rewalk/09-phone-back-t9.png` |
+| Forget | Settings → Devices → Forget → confirmation → Nearby (A06) | `rewalk/10…13` |
+| Pair again | Nearby → code → connected | `rewalk/14-paired-again.png` |
+
+No bug found on the happy path in this walk. Not covered: **the emulator rig** — `emulator-5554` has Shizuku stopped ("Shizuku not running" on the phone app),
+so there is no PocketDeck server to talk to; restarting it means `start.sh`, which rebuilds and installs Android (out of scope). The `--no-mdns`/`--connect` path is
+covered by `check-e2e.sh all`.
+
+Issues found while re-walking and fixed in the same pass: the Bonjour connection was stuck for a same-host service (see A03 below), the search field
+lost focus after the pairing sheet closed on some runs (⌘K always focuses it), ⌘P was shadowed by the default Print item,
+the Forget button was not red, "Last seen" showed seconds-ago for a connected phone, and a window opened by a build whose Keychain items were created by
+another binary blocks on the system Keychain prompt (see "Known risk").
+
+### A03 follow-up (what actually fixed it)
+Prohibiting interface types was wrong for a same-host fake phone (its only reachable interface is a VM bridge). The attempt is now **pinned to the interface the browser found the
+service on** (Wi-Fi/Ethernet ranked first), and the next attempt after a failure is unpinned, alternating until one gets through; a remembered IPv4 address is the next fallback.
+The cache now stores the address of service connections too (the scoped `192.168.1.74%en0` literal is stripped), so a remembered phone has an address after its first session (A04).
+
+### Known risk (not fixed here)
+Release builds are ad-hoc signed; a binary that did not create a Keychain item makes macOS show a blocking "wants to use confidential information"
+dialog, and the app waits behind it. The e2e harness avoids it with its own profile, and a developer reinstalling over their own copy hits it once. A stable signing identity
+fixes it; out of scope.

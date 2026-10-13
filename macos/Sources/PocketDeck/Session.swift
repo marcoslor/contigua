@@ -85,7 +85,8 @@ enum SessionEvent {    case state(SessionState, String?)
 final class Session {
     enum Endpoint {
         case hostPort(host: String, port: UInt16)
-        case service(NWEndpoint)
+        /// `pinnedTo`: connect only over the interface the service was found on.
+        case service(NWEndpoint, pinnedTo: NWInterface? = nil)
     }
 
     private let endpoint: Endpoint
@@ -102,7 +103,9 @@ final class Session {
     private let queue = DispatchQueue(label: "dev.pocketdeck.session")
     private var pingTimer: Timer?
     private var connectWatchdog: DispatchWorkItem?
-    private var reconnectAttempt = 0
+    /// `connection` is swapped from the session queue and from the main queue
+    /// (watchdog, close); every swap goes through `takeConnection`.
+    private let connectionLock = NSLock()
     private var pendingPairKey: Data?
     private var awaitingPairCode = false
     /// The session-level `error` code the phone sent on this connection, if any.
@@ -118,8 +121,12 @@ final class Session {
     private var qrKey: Data?
     private var authedWithQRKey = false
 
-    /// QR probes connect once and stop; the launcher's session reconnects.
-    var autoReconnect = true
+    /// What a handshake may do when the phone asks for a pairing and we hold
+    /// no key for it. Automatic reconnects must never ask the phone to show a
+    /// code (it would prompt for a Mac the user is not pairing); only a
+    /// user-driven session may send `pair.request`.
+    enum PairingPolicy { case never, allowed }
+    var pairingPolicy: PairingPolicy = .allowed
 
     private(set) var state: SessionState = .idle
     private(set) var phone: PhoneInfo?
@@ -132,11 +139,10 @@ final class Session {
     var onVideoEvent: ((VideoEvent) -> Void)?
 
     static let pingInterval: TimeInterval = 15
-    static let backoff: [TimeInterval] = [1, 2, 4, 8, 15]
-    /// A Bonjour connection can stay in `waiting` forever when the phone stops
-    /// answering mDNS; the caller needs a failure event to fall back to its
-    /// cached address.
-    static let connectTimeout: TimeInterval = 10
+    /// One attempt gets this long to reach `welcome`. A Bonjour connection can
+    /// stay in `waiting` forever (an interface that cannot reach the phone); the
+    /// owner needs a failure to try again, and the socket must be cancelled.
+    static let connectTimeout: TimeInterval = 6
 
     init(endpoint: Endpoint, knownDeviceId: String?, strictDeviceId: String? = nil,
          clientId: String, keyStore: PairKeyStore) {
@@ -158,17 +164,19 @@ final class Session {
     func start() {
         intentionalClose = false
         transition(.connecting, nil)
-        let options = Self.tcpParameters()
+        let options = Self.tcpParameters(for: endpoint)
         let conn: NWConnection
         switch endpoint {
         case .hostPort(let host, let port):
             conn = NWConnection(host: NWEndpoint.Host(host),
                                 port: NWEndpoint.Port(rawValue: port) ?? 1, using: options)
-        case .service(let service):
+        case .service(let service, _):
             conn = NWConnection(to: service, using: options)
         }
         Log.session.info("connecting (\(self.describeEndpoint(), privacy: .public))")
+        connectionLock.lock()
         connection = conn
+        connectionLock.unlock()
         decoder = FrameDecoder()
         awaitingPairCode = false
         phoneErrorCode = nil
@@ -185,9 +193,39 @@ final class Session {
         connectWatchdog = nil
         pingTimer?.invalidate()
         pingTimer = nil
-        connection?.cancel()
-        connection = nil
+        retire(takeConnection(ifCurrent: nil))
         transition(.closed, nil)
+    }
+
+    /// Detaches the live connection (only if `conn` still is it; nil = whichever
+    /// is live) so the caller can cancel it exactly once.
+    private func takeConnection(ifCurrent conn: NWConnection?) -> NWConnection? {
+        connectionLock.lock()
+        defer { connectionLock.unlock() }
+        guard let current = connection, conn == nil || conn === current else { return nil }
+        connection = nil
+        return current
+    }
+
+    private var currentConnection: NWConnection? {
+        connectionLock.lock()
+        defer { connectionLock.unlock() }
+        return connection
+    }
+
+    private func isCurrent(_ conn: NWConnection) -> Bool {
+        connectionLock.lock()
+        defer { connectionLock.unlock() }
+        return connection === conn
+    }
+
+    /// Every dropped connection is cancelled: the phone serves one session, and a
+    /// socket that is merely forgotten keeps its slot (or lets a late TCP
+    /// completion open a session nobody speaks on).
+    private func retire(_ conn: NWConnection?) {
+        guard let conn else { return }
+        conn.stateUpdateHandler = nil
+        conn.cancel()
     }
 
     /// A session that has not reached `ready` in time is treated as failed, so
@@ -203,7 +241,13 @@ final class Session {
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.connectTimeout, execute: work)
     }
 
-    private static func tcpParameters() -> NWParameters {
+    /// A Bonjour service is advertised on every interface the phone's Wi-Fi
+    /// reaches and on any VM/VPN bridge the Mac has; Network.framework may pick
+    /// an interface that cannot reach it and wait there forever. The first
+    /// attempt is pinned to the interface the browser found the phone on (Wi-Fi
+    /// first); the owner alternates with an unpinned attempt after a failure. A
+    /// plain host:port keeps the defaults (tests connect over loopback).
+    static func tcpParameters(for endpoint: Endpoint) -> NWParameters {
         let parameters = NWParameters.tcp
         if let tcp = parameters.defaultProtocolStack.transportProtocol as? NWProtocolTCP.Options {
             tcp.noDelay = true
@@ -211,13 +255,16 @@ final class Session {
             tcp.enableKeepalive = true
             tcp.keepaliveIdle = 15
         }
+        if case .service(_, let interface?) = endpoint {
+            parameters.requiredInterface = interface
+        }
         return parameters
     }
 
     private func describeEndpoint() -> String {
         switch endpoint {
         case .hostPort(let host, let port): return "\(host):\(port)"
-        case .service(let service): return String(describing: service)
+        case .service(let service, _): return String(describing: service)
         }
     }
 
@@ -230,28 +277,29 @@ final class Session {
 
     private func receive(on conn: NWConnection) {
         conn.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, isComplete, error in
-            guard let self else { return }
+            guard let self, self.isCurrent(conn) else { return }
             if let data, !data.isEmpty {
                 do {
                     for frame in try self.decoder.append(data) { self.handleFrame(frame) }
                 } catch {
                     Log.session.error("framing error: \(String(describing: error), privacy: .public)")
                     self.emit(.protocolViolation(String(describing: error)))
-                    self.fail("framing")
+                    self.fail("framing", on: conn)
                     return
                 }
             }
             if let error {
                 Log.session.error("receive error: \(String(describing: error), privacy: .public)")
-                self.fail("receive")
+                self.fail("receive", on: conn)
                 return
             }
-            if isComplete { self.fail("closed-by-peer"); return }
+            if isComplete { self.fail("closed-by-peer", on: conn); return }
             self.receive(on: conn)
         }
     }
 
     private func handleConnectionState(_ newState: NWConnection.State, on conn: NWConnection) {
+        guard isCurrent(conn) else { retire(conn); return }
         switch newState {
         case .ready:
             Log.session.info("tcp ready; sending hello")
@@ -261,23 +309,25 @@ final class Session {
             Log.session.notice("connection waiting: \(String(describing: error), privacy: .public)")
         case .failed(let error):
             Log.session.error("connection failed: \(String(describing: error), privacy: .public)")
-            fail("failed")
+            fail("failed", on: conn)
         case .cancelled:
-            if !intentionalClose { fail("cancelled") } else { transition(.closed, nil) }
+            if !intentionalClose { fail("cancelled", on: conn) } else { transition(.closed, nil) }
         default:
             break
         }
     }
 
     /// `transportReason` says what the socket did; the phone's error frame, or
-    /// a close while the code was awaited, says more and wins.
-    private func fail(_ transportReason: String) {
+    /// a close while the code was awaited, says more and wins. Fails once per
+    /// connection: a second report for the same (or an already replaced)
+    /// connection is ignored. Never retries: the owner decides when to try again.
+    private func fail(_ transportReason: String, on conn: NWConnection? = nil) {
+        guard let dead = takeConnection(ifCurrent: conn) else { return }
+        retire(dead)
         connectWatchdog?.cancel()
         connectWatchdog = nil
         pingTimer?.invalidate()
         pingTimer = nil
-        connection?.stateUpdateHandler = nil
-        connection = nil
         let reason = phoneErrorCode ?? (awaitingPairCode ? ConnectionFailure.pairingTimeout : transportReason)
         phoneErrorCode = nil
         awaitingPairCode = false
@@ -289,14 +339,6 @@ final class Session {
         }
         guard !intentionalClose else { transition(.closed, nil); return }
         transition(.failed(reason), reason)
-        guard autoReconnect, ConnectionFailure.retriesAutomatically(reason) else { return }
-        let delay = Self.backoff[min(reconnectAttempt, Self.backoff.count - 1)]
-        reconnectAttempt += 1
-        Log.session.notice("reconnect in \(delay, privacy: .public)s")
-        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
-            guard let self, !self.intentionalClose else { return }
-            self.start()
-        }
     }
 
     /// The endpoint belongs to a different phone now: never authenticate and
@@ -305,9 +347,7 @@ final class Session {
         intentionalClose = true
         connectWatchdog?.cancel()
         connectWatchdog = nil
-        connection?.stateUpdateHandler = nil
-        connection?.cancel()
-        connection = nil
+        retire(takeConnection(ifCurrent: nil))
         transition(.failed(ConnectionFailure.identityMismatch), ConnectionFailure.identityMismatch)
     }
 
@@ -371,6 +411,14 @@ final class Session {
                 authInFlight = true
                 authAttempts += 1
                 sendJSON(["t": "auth", "mac": PairCrypto.hmacHex(key: candidate.key, nonceHex: nonce)])
+            } else if pairingPolicy == .never {
+                // Nothing to authenticate with and nobody asked to pair: do not
+                // make the phone show a code.
+                authDeviceId = nil
+                authInFlight = false
+                authAttempts = 0
+                phoneErrorCode = "auth_failed"
+                fail("no-key")
             } else {
                 authDeviceId = nil
                 authInFlight = false
@@ -404,7 +452,6 @@ final class Session {
             }
             knownDeviceId = info.id
             phone = info
-            reconnectAttempt = 0
             authAttempts = 0
             authInFlight = false
             connectWatchdog?.cancel()
@@ -412,7 +459,7 @@ final class Session {
             startPing()
             let isReconnect = everReady
             everReady = true
-            let address = connection?.currentPath?.remoteEndpoint?.resolvedIPv4Address
+            let address = currentConnection?.currentPath?.remoteEndpoint?.resolvedIPv4Address
             transition(.ready, nil)
             emit(.ready(info, isReconnect: isReconnect, address: address))
         case "apps":
@@ -507,7 +554,7 @@ final class Session {
     }
 
     func sendBytes(_ bytes: [UInt8]) {
-        guard let connection else { return }
+        guard let connection = currentConnection else { return }
         connection.send(content: Data(bytes), completion: .contentProcessed { _ in })
     }
 
