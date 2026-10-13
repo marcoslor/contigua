@@ -37,9 +37,17 @@ internal class SendQueue(
         lock.notifyAll()
     }
 
-    /** Config frames and keyframes: high priority, and they clear a dropping stream. */
+    /**
+     * Config frames and keyframes: high priority, and they clear a dropping
+     * stream. They also discard the stream's queued deltas: control is served
+     * first, so those deltas would otherwise reach the Mac *after* the new
+     * config (a resize: old-size frames against the new format description).
+     */
     fun enqueueControl(stream: Int, bytes: ByteArray) = synchronized(lock) {
-        if (stream != 0) dropping.remove(stream)
+        if (stream != 0) {
+            dropping.remove(stream)
+            discardDeltas(stream)
+        }
         control.addLast(bytes)
         lock.notifyAll()
     }
@@ -59,11 +67,7 @@ internal class SendQueue(
         val firstPts = deltaFirstPtsUs[stream] ?: ptsUs
         if (used + bytes.size > maxDeltaBytesPerStream || ptsUs - firstPts > maxDeltaDurationUs) {
             // Stalled consumer: drop the backlog and ask for a fresh keyframe.
-            q.clear()
-            deltas.remove(stream)
-            deltaOrder.remove(stream)
-            deltaBytes[stream] = 0
-            deltaFirstPtsUs.remove(stream)
+            discardDeltas(stream)
             dropping.add(stream)
             if (stream != 0) onDeltaDrop(stream)
             return
@@ -72,6 +76,13 @@ internal class SendQueue(
         deltaBytes[stream] = used + bytes.size
         deltaFirstPtsUs[stream] = firstPts
         lock.notifyAll()
+    }
+
+    private fun discardDeltas(stream: Int) {
+        deltas.remove(stream)?.clear()
+        deltaOrder.remove(stream)
+        deltaBytes[stream] = 0
+        deltaFirstPtsUs.remove(stream)
     }
 
     /** Non-blocking dequeue; null when nothing is queued. */

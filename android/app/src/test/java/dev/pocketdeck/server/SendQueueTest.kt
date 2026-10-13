@@ -32,6 +32,29 @@ class SendQueueTest {
     }
 
     @Test
+    fun aConfigDropsTheDeltasQueuedBeforeIt() {
+        val q = SendQueue()
+        q.enqueueDelta(1, pts(0), bytes(0xD1))
+        q.enqueueDelta(1, pts(1), bytes(0xD2))
+        q.enqueueControl(1, bytes(0xC1)) // new size: the old-size deltas are stale
+        q.enqueueDelta(1, pts(2), bytes(0xD3))
+        assertEquals(0xC1, q.pollNow()!![0].toInt() and 0xFF)
+        assertEquals(0xD3, q.pollNow()!![0].toInt() and 0xFF)
+        assertNull(q.pollNow())
+    }
+
+    @Test
+    fun aConfigLeavesOtherStreamsDeltasAlone() {
+        val q = SendQueue()
+        q.enqueueDelta(2, pts(0), bytes(0xE1))
+        q.enqueueDelta(1, pts(0), bytes(0xD1))
+        q.enqueueControl(1, bytes(0xC1))
+        assertEquals(0xC1, q.pollNow()!![0].toInt() and 0xFF)
+        assertEquals(0xE1, q.pollNow()!![0].toInt() and 0xFF)
+        assertNull(q.pollNow())
+    }
+
+    @Test
     fun jsonOvertakesControl() {
         val q = SendQueue()
         q.enqueueControl(1, bytes(0xC1))
