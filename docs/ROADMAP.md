@@ -20,28 +20,26 @@ Status: `[ ]` todo · `[~]` in progress · `[x]` done (verified on device).
 - [ ] Device QA on the S25+ with the phone locked: latency ≤ 80 ms p50, #6007 clean, battery drain per hour measured idle vs. one window
 - [ ] Repo polish: README with GIF, LICENSE, build docs, CI (gradle build + swift build/test + fakephone selfcheck)
 
-## v0.1 — after the core flow works (build in this order, small → large)
+## v0.1 — after the core flow works
 
-Ordered by priority (closest to the core POC first), then by size. Each item is one
-looped dev task with its own checks; the next starts only after review.
+Done: accurate lock state, nav shortcuts, orphan cleanup watchdog, display-scoped keep-awake,
+live quality knob, Spotlight for apps ("WhatsApp (Phone name)"), trackpad pinch/rotate.
+
+Remaining, in build order (very simple items first, then the ones that make Android apps feel
+like Mac apps). Each item is one looped dev task with its own checks.
 
 | # | Feature | Approach | Size |
 |---|---|---|---|
-| 1 | Accurate lock state | hidden `IKeyguardLockedStateListener` → `state.locked` on change (no polling) | S |
-| 2 | Nav shortcuts | ⌘[ / esc = back, ⌘H-style home, ⌘↑ recents in phone mode; two-finger swipe from the left edge = back (KEYCODE_BACK on the VD, never decorations) | S |
-| 3 | Orphan cleanup watchdog | tiny second shell process with a lock file + heartbeat; if the server dies, release VDs, wake locks and power state | S‑M |
-| 4 | Display-scoped keep-awake | hidden 3-arg `newWakeLock(…, displayId)` bound to the VD instead of a timer poke where available | S |
-| 5 | Live quality knob | `window.quality` (bitrate/max fps) → `PARAMETER_KEY_VIDEO_BITRATE` at runtime; auto-lower on backlog | S |
-| 6 | Clipboard text, both ways | shell `IClipboard` listener ⇄ NSPasteboard; locked-phone reads via the focused VD | S‑M |
-| 7 | Spotlight for apps | index the app list into CoreSpotlight; open result = `window.open` | S |
-| 8 | Links Mac → phone | `pocketdeck://open?url=` + macOS Services "Open on phone" → `am start VIEW` on a new window | S‑M |
-| 9 | APK install | drop an .apk on the launcher → stream → `pm install-create/write/commit` | S‑M |
-| 10 | Trackpad pinch/rotate | 2-pointer synthetic touch from NSEvent magnify/rotate | M |
-| 11 | Phone → Mac app handoff | "Continue on Mac": move the phone's top task onto a new VD window | M |
-| 12 | Clipboard images | stage PNG/JPEG files both ways, size-limited | M |
-| 13 | Drag & drop files | drag-in: push to Downloads + share intent; drag-out: file promises | M |
-| 14 | Audio phone → Mac | `AudioPlaybackCapture`/REMOTE_SUBMIX at shell UID → AAC/Opus on the session | M |
-| 15 | Notifications + media controls | read at shell UID → UserNotifications; media sessions → Now Playing | M‑L |
+| 1 | Phone nickname | rename a phone in Settings → Devices (Mac-side, per device); used everywhere the phone is named | S |
+| 2 | Titles name the phone | app windows and their Dock/⌘-Tab entries read "WhatsApp (Nickname)" | S |
+| 3 | Clipboard text, both ways | shell `IClipboard` listener ⇄ NSPasteboard polling; `clip.set`, no echo, skips concealed items | S‑M |
+| 4 | Audio phone → Mac | `AudioPlaybackCapture`/REMOTE_SUBMIX at shell UID → Opus/AAC on the session | M |
+| 5 | Links Mac → phone | `pocketdeck://open?url=` + Share menu / Services "Open on phone" → `am start VIEW` in a new window | S‑M |
+| 6 | Dock and Launchpad apps | per-app shim bundles: Dock icon, Launchpad, ⌘-Tab; launching opens that app's window | M |
+| 7 | Notifications + media controls | read at shell UID → UserNotifications (click opens the app window); media sessions → Now Playing | M‑L |
+| 8 | Drag & drop files, clipboard images | drag-in: push + share intent; drag-out: file promises; images staged both ways, size-limited | M |
+| 9 | Phone → Mac app handoff | "Continue on Mac": move the phone's top task onto a new VD window | M |
+| 10 | APK install | drop an .apk on the Deck → stream → `pm install-create/write/commit` | S‑M |
 
 ## v0.x — later native features
 
