@@ -43,6 +43,12 @@ final class LaunchOptionsTests: XCTestCase {
         XCTAssertEqual(options.resizes.first?.size.height, 768)
     }
 
+    func testDebugInputScriptPath() {
+        let options = LaunchOptions.parse(["PocketDeck", "--debug-input-script", "/tmp/pd-input.txt"])
+        XCTAssertEqual(options.debugInputScript, "/tmp/pd-input.txt")
+        XCTAssertNil(LaunchOptions.parse(["PocketDeck"]).debugInputScript)
+    }
+
     func testResetPairingFlag() {
         XCTAssertTrue(LaunchOptions.parse(["PocketDeck", "--reset-pairing"]).resetPairing)
     }

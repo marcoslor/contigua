@@ -1,12 +1,20 @@
 #!/usr/bin/env bash
-# End-to-end checks C4-C8 for the macOS client against tools/fakephone.
+# End-to-end checks C3-C12 for the macOS client against tools/fakephone.
 #
-#   ./scripts/check-e2e.sh [pair|render|resize|input|pause|direct|nav|spotlight|all]
+#   ./scripts/check-e2e.sh [qr|pair|render|resize|input|input-global|pause|direct|nav|spotlight|all]
 #
-# Every check starts from a clean slate: no PocketDeck/fakephone processes, a
-# fresh fakephone state file and no pairing key in the Keychain (a key created
-# by a *different* build would make macOS prompt for Keychain access, which is
-# why C4 asks for the key to be deleted first).
+# Every check starts from a clean slate: no PocketDeck or fakephone processes
+# left by an earlier run, a fresh fakephone state file and no pairing key in
+# the Keychain (a key created by a *different* build would make macOS prompt
+# for Keychain access, which is why C4 asks for the key to be deleted first).
+#
+# Runs are serialized by a lock: they share the port, the work dir and the
+# PocketDeck/fakephone processes, so an overlapping run would kill the other.
+#
+# Input (C7, C11) is scripted in-process (--debug-input-script): the NSEvents
+# are delivered to the stream's view, so no focus change, window stacking or
+# window position can swallow them. `input-global` posts real CGEvents at the
+# window instead; it needs a visible, unobstructed window and focus.
 set -uo pipefail
 
 MACOS="$(cd "$(dirname "$0")/.." && pwd)"
@@ -14,8 +22,9 @@ ROOT="$(cd "$MACOS/.." && pwd)"
 FAKEPHONE="$ROOT/tools/fakephone/fakephone.py"
 APP="$MACOS/build/PocketDeck.app/Contents/MacOS/PocketDeck"
 CGINPUT="$MACOS/scripts/cgevent-input.swift"
-WORK="/tmp/pocketdeck-e2e"
-PORT=47000
+TOOLS="/tmp/pocketdeck-e2e-tools"
+CGBIN="$TOOLS/cgevent"
+LOCK_DIR="/tmp/pocketdeck-e2e.lock"
 KEYCHAIN_SERVICE="dev.pocketdeck.mac"
 
 PASS=0
@@ -25,7 +34,8 @@ FAIL=0
 # `screencapture -l`) while the display is asleep, so keep it awake for the run.
 caffeinate -d -u -t 900 &
 CAFFEINATE_PID=$!
-trap 'kill "$CAFFEINATE_PID" >/dev/null 2>&1' EXIT
+disown "$CAFFEINATE_PID"
+trap 'kill "$CAFFEINATE_PID" >/dev/null 2>&1; release_lock' EXIT
 caffeinate -u -t 1
 
 say()  { printf '%s\n' "$*"; }
@@ -33,12 +43,14 @@ ok()   { PASS=$((PASS + 1)); printf 'PASS %s\n' "$*"; }
 bad()  { FAIL=$((FAIL + 1)); printf 'FAIL %s\n' "$*"; }
 
 clean() {
-    pkill -f "PocketDeck.app/Contents/MacOS/PocketDeck" >/dev/null 2>&1
-    pkill -f fakephone.py >/dev/null 2>&1
+    pkill -f "PocketDeck.app/Contents/MacOS/PocketDeck .*--quit-after" >/dev/null 2>&1
+    stop_fakephone
     sleep 1
     rm -rf "$WORK"
     mkdir -p "$WORK"
-    security delete-generic-password -s "$KEYCHAIN_SERVICE" >/dev/null 2>&1
+    # A key created by a *different* build makes macOS show a modal Keychain
+    # permission dialog, which hangs the app; remove every item, not just one.
+    while security delete-generic-password -s "$KEYCHAIN_SERVICE" >/dev/null 2>&1; do :; done
     defaults delete dev.pocketdeck.mac cachedAddresses >/dev/null 2>&1
     defaults delete dev.pocketdeck.mac cachedDeviceNames >/dev/null 2>&1
 }
@@ -67,22 +79,132 @@ wait_app() {
     wait "$APP_PID" 2>/dev/null
 }
 
-windows() { swift "$CGINPUT" list; }
+# stop_app — the checks are done once their events arrived; the app's own
+# --quit-after is only a safety bound.
+stop_app() {
+    kill "$APP_PID" >/dev/null 2>&1
+    wait "$APP_PID" 2>/dev/null
+}
+
+acquire_lock() {
+    local waited=0 holder
+    until mkdir "$LOCK_DIR" 2>/dev/null; do
+        holder="$(cat "$LOCK_DIR/pid" 2>/dev/null || true)"
+        if [ -n "$holder" ] && ! kill -0 "$holder" 2>/dev/null; then
+            rm -rf "$LOCK_DIR"
+            continue
+        fi
+        if [ "$waited" -ge 600 ]; then
+            say "e2e lock still held by pid ${holder:-unknown} after 10 minutes"
+            exit 3
+        fi
+        sleep 2
+        waited=$((waited + 2))
+    done
+    echo $$ > "$LOCK_DIR/pid"
+}
+
+release_lock() {
+    [ "$(cat "$LOCK_DIR/pid" 2>/dev/null)" = "$$" ] && rm -rf "$LOCK_DIR"
+    return 0
+}
+
+# A run from another checkout or an older copy of this script does not take
+# the lock, and its clean-up kills every PocketDeck process it finds. Wait for
+# any such run to finish before starting one of our own.
+wait_for_other_runs() {
+    local waited=0 others
+    while :; do
+        others="$(ps -axo pid=,ppid=,command= | awk -v me="$$" \
+            '$1 != me && $2 != me && $3 ~ /bash$/ && /check-e2e\.sh/ {print $1}')"
+        [ -z "$others" ] && return 0
+        if [ "$waited" -ge 600 ]; then
+            say "other check-e2e runs still active after 10 minutes: $others"
+            exit 3
+        fi
+        sleep 5
+        waited=$((waited + 5))
+    done
+}
+
+# Each run gets its own port and work dir: other harnesses on this Mac use the
+# fixed 47000 and /tmp/pocketdeck-e2e, and their clean-up would break this run.
+pick_run() {
+    PORT="${PD_E2E_PORT:-$(python3 - <<'PY'
+import socket
+for port in range(47000, 47200):
+    probe = socket.socket()
+    try:
+        probe.bind(("127.0.0.1", port))
+    except OSError:
+        continue
+    finally:
+        probe.close()
+    print(port)
+    break
+PY
+)}"
+    WORK="/tmp/pocketdeck-e2e-$PORT"
+}
+
+# Only this run's fakephones (every one is started with this run's --events).
+stop_fakephone() { pkill -f -- "--events $WORK/events.jsonl" >/dev/null 2>&1; }
+
+# The CGEvent helper is compiled once: `swift file.swift` re-interprets the
+# source on every call, which is seconds per window lookup.
+build_cgevent() {
+    if [ ! -x "$CGBIN" ] || [ "$CGINPUT" -nt "$CGBIN" ]; then
+        mkdir -p "$TOOLS"
+        swiftc -O "$CGINPUT" -o "$CGBIN" >/dev/null 2>&1 || { say "could not build $CGINPUT"; return 1; }
+    fi
+}
+
+windows() { "$CGBIN" list; }
+
+windows_at_least() { [ "$(windows | wc -l | tr -d ' ')" -ge "$1" ]; }
+
+# wait_until <seconds> <command...> — polls every 0.25 s until the command succeeds.
+wait_until() {
+    local tries=$(($1 * 4))
+    shift
+    while [ "$tries" -gt 0 ]; do
+        "$@" && return 0
+        sleep 0.25
+        tries=$((tries - 1))
+    done
+    return 1
+}
+
+# events_have <text> — the fakephone event log contains the text.
+events_have() { grep -qF -- "$1" "$WORK/events.jsonl" 2>/dev/null; }
+
+# await_window <awk-condition> — prints the id of the first PocketDeck window
+# matching the condition, once it exists.
+await_window() {
+    local condition="$1" tries=160 id
+    while [ "$tries" -gt 0 ]; do
+        id="$(windows | awk "$condition {print \$1; exit}")"
+        if [ -n "$id" ]; then
+            echo "$id"
+            return 0
+        fi
+        sleep 0.25
+        tries=$((tries - 1))
+    done
+    return 1
+}
 
 # screenshot <width> <file> — capture the app's window of that point width.
 screenshot() {
-    local width="$1" file="$2"
-    local id
-    id="$(windows | awk -v w="$width" '$4 == w {print $1; exit}')"
-    [ -n "$id" ] || { say "no window of width $width"; return 1; }
+    local width="$1" file="$2" id
+    id="$(await_window "\$4 == $width")" || { say "no window of width $width"; return 1; }
     screencapture -x -l"$id" "$file"
 }
 
 # screenshot_portrait <file> — capture the phone (portrait) window.
 screenshot_portrait() {
     local file="$1" id
-    id="$(windows | awk '$5 > $4 {print $1; exit}')"
-    [ -n "$id" ] || { say "no portrait window"; return 1; }
+    id="$(await_window '$5 > $4')" || { say "no portrait window"; return 1; }
     screencapture -x -l"$id" "$file"
 }
 
@@ -99,6 +221,31 @@ screenshot_widest() {
 brightness() {
     ffmpeg -hide_banner -i "$1" -vf signalstats,metadata=print -f null - 2>&1 \
         | grep -oE 'YMIN=[0-9]+|YMAX=[0-9]+' | head -2 | tr '\n' ' '
+}
+
+# spread <brightness> — YMAX-YMIN from a brightness reading.
+spread() {
+    local lo hi
+    lo="$(echo "$1" | grep -oE 'YMIN=[0-9]+' | cut -d= -f2)"
+    hi="$(echo "$1" | grep -oE 'YMAX=[0-9]+' | cut -d= -f2)"
+    echo $(( ${hi:-0} - ${lo:-0} ))
+}
+
+# lit_screenshot <window-id> <file> — captures until the window shows a picture.
+# The first decoded frame can arrive a moment after the video config, so this
+# polls for it rather than sampling once. Sets STATS to the last reading.
+lit_screenshot() {
+    local id="$1" file="$2" tries=40
+    STATS="no capture"
+    while [ "$tries" -gt 0 ]; do
+        if screencapture -x -l"$id" "$file" 2>/dev/null; then
+            STATS="$(brightness "$file")"
+            [ "$(spread "$STATS")" -gt 60 ] && return 0
+        fi
+        sleep 0.25
+        tries=$((tries - 1))
+    done
+    return 1
 }
 
 count_events() { grep -c "$1" "$WORK/events.jsonl" 2>/dev/null || echo 0; }
@@ -119,7 +266,7 @@ check_qr() {
         return 1
     fi
     say "QR payload: $(cat "$WORK/qr.txt")"
-    [ "$(windows | wc -l | tr -d ' ')" -ge 2 ] \
+    wait_until 15 windows_at_least 2 \
         && ok "C3 QR sheet is on screen (launcher + sheet)" \
         || bad "C3 no sheet window: $(windows | tr '\n' ' ')"
     case "$(cat "$WORK/qr.txt")" in
@@ -135,7 +282,7 @@ check_qr() {
 
     # The phone now "scans": a second fakephone on the same port/state, with the
     # client+key from the QR registered as paired.
-    pkill -f fakephone.py >/dev/null 2>&1
+    stop_fakephone
     sleep 1
     python3 "$FAKEPHONE" --port "$PORT" --no-mdns --auto-allow \
         --state "$WORK/state.json" --events "$WORK/events.jsonl" \
@@ -153,7 +300,7 @@ check_qr() {
     # Two auth_ok: the probe (QR key) and the reconnect from the stored Keychain key.
     [ "$(grep -c '"state":"auth_ok"' "$WORK/events.jsonl")" -ge 2 ] \
         && ok "C3 key stored, reconnect authenticated" || bad "C3 no reconnect auth_ok"
-    pkill -f fakephone.py >/dev/null 2>&1
+    stop_fakephone
 }
 
 # --- C4: pairing, auth, window.open, configs -------------------------------
@@ -184,7 +331,7 @@ check_pair() {
         && ok "C4 second launch auth_ok" || bad "C4 second launch did not auth"
     grep -q '"t":"pair.request"' "$WORK/events.jsonl" \
         && bad "C4 second launch tried to pair again" || ok "C4 second launch skipped pairing"
-    pkill -f fakephone.py >/dev/null 2>&1
+    stop_fakephone
 }
 
 # --- C5: rendering --------------------------------------------------------
@@ -193,31 +340,25 @@ check_render() {
     clean
     start_fake || return 1
     launch --connect "127.0.0.1:$PORT" --pair-code-file "$WORK/pd.code" \
-        --open com.android.settings --open-phone --quit-after 20
-    sleep 9
-    local app_shot="$WORK/render-app.png" phone_shot="$WORK/render-phone.png"
-    if screenshot 900 "$app_shot"; then
-        local stats; stats="$(brightness "$app_shot")"
-        say "app window $stats"
-        local ymin ymax
-        ymin="$(echo "$stats" | grep -oE 'YMIN=[0-9]+' | cut -d= -f2)"
-        ymax="$(echo "$stats" | grep -oE 'YMAX=[0-9]+' | cut -d= -f2)"
-        [ $((ymax - ymin)) -gt 60 ] && ok "C5 app window not black ($stats)" || bad "C5 app window black ($stats)"
-    else
-        bad "C5 could not screenshot the app window"
+        --open com.android.settings --open-phone --quit-after 40
+    local app_shot="$WORK/render-app.png" phone_shot="$WORK/render-phone.png" id
+    if ! wait_until 30 events_have '"ev":"video","stream":1,' \
+        || ! wait_until 30 events_have '"ev":"video","stream":2,'; then
+        bad "C5 video was not configured for both windows"
     fi
-    if screenshot_portrait "$phone_shot"; then
-        local stats; stats="$(brightness "$phone_shot")"
-        local ymin ymax
-        ymin="$(echo "$stats" | grep -oE 'YMIN=[0-9]+' | cut -d= -f2)"
-        ymax="$(echo "$stats" | grep -oE 'YMAX=[0-9]+' | cut -d= -f2)"
-        [ $((ymax - ymin)) -gt 60 ] && ok "C5 phone window not black ($stats)" || bad "C5 phone window black ($stats)"
+    if id="$(await_window '$4 == 900')" && lit_screenshot "$id" "$app_shot"; then
+        ok "C5 app window not black ($STATS)"
     else
-        bad "C5 could not screenshot the phone window"
+        bad "C5 app window not captured or black (${STATS:-no window})"
+    fi
+    if id="$(await_window '$5 > $4')" && lit_screenshot "$id" "$phone_shot"; then
+        ok "C5 phone window not black ($STATS)"
+    else
+        bad "C5 phone window not captured or black (${STATS:-no window})"
     fi
     say "screenshots: $app_shot $phone_shot"
-    wait_app
-    pkill -f fakephone.py >/dev/null 2>&1
+    stop_app
+    stop_fakephone
 }
 
 # --- C6: resize -----------------------------------------------------------
@@ -226,60 +367,41 @@ check_resize() {
     clean
     start_fake || return 1
     launch --connect "127.0.0.1:$PORT" --pair-code-file "$WORK/pd.code" \
-        --open com.android.settings --resize-stream 1:800x600-pt --quit-after 16
-    sleep 10
-    grep -q '"t":"window.resize"' "$WORK/events.jsonl" \
-        && ok "C6 window.resize sent" || bad "C6 no window.resize"
-    grep '"ev":"video"' "$WORK/events.jsonl" | grep -q '"w":1600,"h":1200' \
+        --open com.android.settings --resize-stream 1:800x600-pt --quit-after 60
+    wait_until 30 events_have '"ev":"video","stream":1,"config":true,"w":1600,"h":1200' \
         && ok "C6 new video config 1600x1200" || bad "C6 no new config"
+    events_have '"t":"window.resize"' \
+        && ok "C6 window.resize sent" || bad "C6 no window.resize"
     screenshot 800 "$WORK/resize.png" && say "screenshot: $WORK/resize.png"
-    wait_app
+    stop_app
 
     # Non-16:9 shapes: tall, then ultra-wide (capped at 2560 px, aspect kept).
     launch --connect "127.0.0.1:$PORT" --open com.android.settings \
-        --resize-stream 1:600x1000-pt --quit-after 16
-    sleep 10
-    grep '"ev":"video"' "$WORK/events.jsonl" | grep -q '"w":1200,"h":2000' \
+        --resize-stream 1:600x1000-pt --quit-after 60
+    wait_until 30 events_have '"ev":"video","stream":1,"config":true,"w":1200,"h":2000' \
         && ok "C6 tall shape resized to 1200x2000" || bad "C6 no tall config"
     screenshot 600 "$WORK/resize-tall.png" && say "screenshot: $WORK/resize-tall.png"
-    wait_app
+    stop_app
 
     launch --connect "127.0.0.1:$PORT" --open com.android.settings \
-        --resize-stream 1:1600x500-pt --quit-after 16
-    sleep 10
-    grep '"ev":"video"' "$WORK/events.jsonl" | grep -q '"w":2560,"h":800' \
+        --resize-stream 1:1600x500-pt --quit-after 60
+    wait_until 30 events_have '"ev":"video","stream":1,"config":true,"w":2560,"h":800' \
         && ok "C6 ultra-wide capped to 2560x800 (aspect kept)" || bad "C6 no capped config"
-    grep -q '"dpi":256' "$WORK/events.jsonl" \
+    events_have '"dpi":256' \
         && ok "C6 capped size lowers the dpi to 256" || bad "C6 dpi did not follow the cap"
     screenshot 1600 "$WORK/resize-wide.png" || screenshot_widest "$WORK/resize-wide.png" \
         && say "screenshot: $WORK/resize-wide.png"
-    wait_app
-    pkill -f fakephone.py >/dev/null 2>&1
+    stop_app
+    stop_fakephone
 }
 
 # --- C7: input ------------------------------------------------------------
 
-check_input() {
-    clean
-    start_fake || return 1
-    launch --connect "127.0.0.1:$PORT" --pair-code-file "$WORK/pd.code" \
-        --open com.android.settings --quit-after 26
-    sleep 8
-    local win
-    win="$(windows | awk '$4 == 900 {print $1; exit}')"
-    [ -n "$win" ] || { bad "C7 no app window"; wait_app; return 1; }
-    swift "$CGINPUT" click --window "$win" >/dev/null
-    sleep 1
-    swift "$CGINPUT" drag --window "$win" --dx 200 --dy 0 --steps 20 >/dev/null
-    sleep 1
-    swift "$CGINPUT" scroll --window "$win" --dy 3 >/dev/null
-    sleep 1
-    swift "$CGINPUT" type --text hi >/dev/null
-    sleep 1
-    swift "$CGINPUT" rclick --window "$win" >/dev/null
-    sleep 1
-
-    local down moves up
+# The same assertions for both input modes: the events the phone logged for
+# the script (or the CGEvents) must show the press at the centre, the drag,
+# the scroll, the text and the right-click's nav back.
+assert_input() {
+    local down moves up first nx ny
     down="$(grep -c '"kind":"touch","stream":1,"action":0' "$WORK/events.jsonl" || true)"
     moves="$(grep -c '"kind":"touch","stream":1,"action":2' "$WORK/events.jsonl" || true)"
     up="$(grep -c '"kind":"touch","stream":1,"action":1' "$WORK/events.jsonl" || true)"
@@ -287,9 +409,7 @@ check_input() {
     [ "${moves:-0}" -ge 5 ] && ok "C7 drag moves ($moves)" || bad "C7 only $moves move events"
     [ "${up:-0}" -ge 1 ] && ok "C7 touch up ($up)" || bad "C7 no touch up"
 
-    local first
     first="$(grep '"kind":"touch","stream":1,"action":0' "$WORK/events.jsonl" | head -1)"
-    local nx ny
     nx="$(echo "$first" | grep -oE '"nx":[-0-9.]+' | cut -d: -f2)"
     ny="$(echo "$first" | grep -oE '"ny":[-0-9.]+' | cut -d: -f2)"
     python3 - "$nx" "$ny" <<'PY' && ok "C7 down at center (nx=$nx ny=$ny)" || bad "C7 down not centered (nx=$nx ny=$ny)"
@@ -300,12 +420,48 @@ PY
 
     [ "$(grep -c '"kind":"scroll","stream":1' "$WORK/events.jsonl")" -ge 1 ] \
         && ok "C7 scroll event" || bad "C7 no scroll event"
-    grep -q '"t":"text"' "$WORK/events.jsonl" \
+    events_have '"text":"hi"' \
         && ok "C7 typed text" || bad "C7 no text event"
-    grep -q '"t":"nav"' "$WORK/events.jsonl" && grep -q '"action":"back"' "$WORK/events.jsonl" \
+    events_have '"t":"nav"' && events_have '"action":"back"' \
         && ok "C7 right click -> nav back" || bad "C7 no nav back"
-    wait_app
-    pkill -f fakephone.py >/dev/null 2>&1
+}
+
+# check_input — scripted in-process input (default). The script runs as soon
+# as the first video frame size arrives; the last action's nav back is the
+# signal that the whole script has been delivered.
+check_input() {
+    clean
+    start_fake || return 1
+    printf '%s\n' "click 0.5 0.5" "drag 0.5 0.5 0.7 0.5" "scroll 3" "type hi" \
+        "rightclick 0.5 0.5" > "$WORK/input.txt"
+    launch --connect "127.0.0.1:$PORT" --pair-code-file "$WORK/pd.code" \
+        --open com.android.settings --debug-input-script "$WORK/input.txt" --quit-after 60
+    wait_until 30 events_have '"action":"back"' \
+        || { bad "C7 scripted input did not reach the phone"; say "app log: $(tail -3 "$WORK/app.log")"; }
+    assert_input
+    stop_app
+    stop_fakephone
+}
+
+# check_input_global — real CGEvents at the window (needs the window visible and
+# focused, and nothing covering it). Optional sanity check of the global path.
+check_input_global() {
+    clean
+    start_fake || return 1
+    launch --connect "127.0.0.1:$PORT" --pair-code-file "$WORK/pd.code" \
+        --open com.android.settings --quit-after 60
+    wait_until 30 events_have '"ev":"video","stream":1,' || bad "C7 no video config"
+    local win
+    win="$(await_window '$4 == 900')" || { bad "C7 no app window"; stop_app; return 1; }
+    "$CGBIN" click --window "$win" >/dev/null
+    "$CGBIN" drag --window "$win" --dx 200 --dy 0 --steps 20 >/dev/null
+    "$CGBIN" scroll --window "$win" --dy 3 >/dev/null
+    "$CGBIN" type --text hi >/dev/null
+    "$CGBIN" rclick --window "$win" >/dev/null
+    wait_until 15 events_have '"action":"back"'
+    assert_input
+    stop_app
+    stop_fakephone
 }
 
 # --- C8: pause/resume -----------------------------------------------------
@@ -320,7 +476,7 @@ check_pause() {
         && ok "C8 exactly one window.pause" || bad "C8 pause count $(count_events '"t":"window.pause"')"
     [ "$(count_events '"t":"window.resume"')" = "1" ] \
         && ok "C8 exactly one window.resume" || bad "C8 resume count $(count_events '"t":"window.resume"')"
-    pkill -f fakephone.py >/dev/null 2>&1
+    stop_fakephone
 }
 
 # --- C10: direct reconnect to a dozing phone (no mDNS) ---------------------
@@ -342,7 +498,7 @@ check_direct() {
         *127.0.0.1:$PORT*) ok "C10a cached address stored ($cached)" ;;
         *) bad "C10a no cached address: $cached" ;;
     esac
-    pkill -f fakephone.py >/dev/null 2>&1
+    stop_fakephone
     sleep 1
 
     # Phase B: same phone, same port, no mDNS, app launched without --connect.
@@ -356,7 +512,7 @@ check_direct() {
     grep -q '"t":"pair.request"' "$WORK/events.jsonl" \
         && bad "C10b paired again instead of using the stored key" \
         || ok "C10b used the stored key"
-    pkill -f fakephone.py >/dev/null 2>&1
+    stop_fakephone
     sleep 1
 
     # Phase C: a different device id now answers on that address.
@@ -377,7 +533,7 @@ check_direct() {
         *127.0.0.1:$PORT*) bad "C10c cached address kept after the mismatch" ;;
         *) ok "C10c cached address dropped after the mismatch" ;;
     esac
-    pkill -f fakephone.py >/dev/null 2>&1
+    stop_fakephone
 }
 
 # --- C11: navigation shortcuts --------------------------------------------
@@ -388,9 +544,8 @@ check_direct() {
 # can land on the other in front.
 check_nav() {
     clean
-    local attempts="${PD_NAV_ATTEMPTS:-3}"
 
-    nav_counts() {
+    nav_count() {
         python3 - "$WORK/events.jsonl" "$1" "$2" <<'PY'
 import json, sys
 stream, action = int(sys.argv[2]), sys.argv[3]
@@ -408,65 +563,49 @@ print(count)
 PY
     }
 
-    # The runner (a terminal or an IDE) can steal activation at any moment, so
-    # re-activate and retry a dropped key press instead of failing on focus.
-    press_nav() {
-        local stream="$1" action="$2" keycode="$3" extra="${4:-}"
-        local before after attempt
-        for ((attempt = 1; attempt <= attempts; attempt++)); do
-            before="$(nav_counts "$stream" "$action")"
-            osascript -e 'tell application "System Events" to tell process "PocketDeck" to set frontmost to true' >/dev/null 2>&1
-            sleep 0.3
-            swift "$CGINPUT" key --keycode "$keycode" $extra >/dev/null
-            sleep 1
-            after="$(nav_counts "$stream" "$action")"
-            [ "$after" -gt "$before" ] && return 0
-        done
-        return 1
-    }
+    # nav_at_least <count> <action> — stream 1 has received that many nav actions.
+    nav_at_least() { [ "$(nav_count 1 "$2")" -ge "$1" ]; }
 
     # Phase A: an app window -> ⌘[ and Esc are `nav back` on stream 1.
     start_fake || return 1
+    printf '%s\n' "key cmd+[" "key esc" > "$WORK/input-back.txt"
     launch --connect "127.0.0.1:$PORT" --pair-code-file "$WORK/pd.code" \
-        --open com.android.settings --quit-after 60
-    sleep 9
-    local app_win
-    app_win="$(windows | awk '$4 == 900 {print $1; exit}')"
-    if [ -z "$app_win" ]; then
-        bad "C11 no app window: $(windows | tr '\n' ' ')"
-    else
-        swift "$CGINPUT" click --window "$app_win" --dx 200 >/dev/null; sleep 1
-        press_nav 1 back 33 --cmd \
-            && ok "C11 ⌘[ in an app window -> nav back" || bad "C11 no nav back after ⌘["
-        press_nav 1 back 53 \
-            && ok "C11 Esc in an app window -> nav back" || bad "C11 no second nav back after Esc"
-    fi
-    wait_app
-    cp "$WORK/events.jsonl" "$WORK/events-nav-app.jsonl"
-    pkill -f fakephone.py >/dev/null 2>&1
-    sleep 1
+        --open com.android.settings --debug-input-script "$WORK/input-back.txt" --quit-after 60
+    wait_until 30 nav_at_least 1 back \
+        && ok "C11 ⌘[ in an app window -> nav back" || bad "C11 no nav back after ⌘["
+    wait_until 30 nav_at_least 2 back \
+        && ok "C11 Esc in an app window -> nav back" || bad "C11 no second nav back after Esc"
+    stop_app
+    stop_fakephone
+    wait_until 5 no_fakephone
 
     # Phase B: a phone-mode window -> ⇧⌘H home, ⌘↑ recents (both stream 1).
     : > "$WORK/events.jsonl"
     start_fake || return 1
-    launch --connect "127.0.0.1:$PORT" --open-phone --quit-after 60
-    sleep 9
-    local phone_win
-    phone_win="$(windows | awk '$5 > $4 {print $1; exit}')"
-    if [ -z "$phone_win" ]; then
-        bad "C11 no phone window: $(windows | tr '\n' ' ')"
-    else
-        swift "$CGINPUT" click --window "$phone_win" >/dev/null; sleep 1
-        press_nav 1 home 4 "--cmd --shift" \
-            && ok "C11 ⇧⌘H in the phone window -> nav home" || bad "C11 no nav home"
-        press_nav 1 recents 126 --cmd \
-            && ok "C11 ⌘↑ in the phone window -> nav recents" || bad "C11 no nav recents"
-    fi
-    wait_app
-    pkill -f fakephone.py >/dev/null 2>&1
+    printf '%s\n' "key cmd+shift+h" "key cmd+up" > "$WORK/input-phone.txt"
+    launch --connect "127.0.0.1:$PORT" --open-phone \
+        --debug-input-script "$WORK/input-phone.txt" --quit-after 60
+    wait_until 30 nav_at_least 1 home \
+        && ok "C11 ⇧⌘H in the phone window -> nav home" || bad "C11 no nav home"
+    wait_until 30 nav_at_least 1 recents \
+        && ok "C11 ⌘↑ in the phone window -> nav recents" || bad "C11 no nav recents"
+    stop_app
+    stop_fakephone
 }
 
+# no_fakephone — true once no fakephone process is left (its port is free).
+no_fakephone() { ! pgrep -f -- "--events $WORK/events.jsonl" >/dev/null; }
+
 # --- C12: Spotlight for phone apps ----------------------------------------
+
+# spotlight_log_line — the app's index log line from the last two minutes.
+spotlight_log_line() {
+    log show --last 2m --info \
+        --predicate 'subsystem == "dev.pocketdeck.mac" AND process == "PocketDeck"' 2>/dev/null \
+        | grep -o 'spotlight: indexing [0-9]* apps' | tail -1
+}
+
+spotlight_logged() { [ -n "$(spotlight_log_line)" ]; }
 
 # check_spotlight — after an app list arrives the apps are indexed. mdfind is
 # tried first; an unsigned dev bundle may not be able to write the Spotlight
@@ -477,7 +616,11 @@ check_spotlight() {
     start_fake || return 1
     launch --connect "127.0.0.1:$PORT" --pair-code-file "$WORK/pd.code" --quit-after 18
     wait_app
-    local hit
+    # Read the app's index log line now: the log window is relative to the
+    # time of the query, and the unit tests below can take minutes.
+    wait_until 10 spotlight_logged
+    local logged hit
+    logged="$(spotlight_log_line)"
     hit="$(mdfind 'kMDItemContentDescription == "Android app on FakePhone"' 2>/dev/null | head -3 || true)"
     if [ -n "$hit" ]; then
         ok "C12 mdfind found indexed phone apps: $(echo "$hit" | tr '\n' ' ')"
@@ -490,15 +633,13 @@ check_spotlight() {
         else
             bad "C12 Spotlight unit tests failed"
         fi
-        if log show --last 4m --info \
-            --predicate 'subsystem == "dev.pocketdeck.mac" AND process == "PocketDeck"' 2>/dev/null \
-            | grep -q "spotlight: indexing"; then
-            ok "C12 the app logged the index attempt ($(log show --last 4m --info --predicate 'subsystem == "dev.pocketdeck.mac" AND process == "PocketDeck"' 2>/dev/null | grep -o 'spotlight: indexing [0-9]* apps' | tail -1))"
+        if [ -n "$logged" ]; then
+            ok "C12 the app logged the index attempt ($logged)"
         else
             bad "C12 no spotlight log line from the app (indexing never attempted)"
         fi
     fi
-    pkill -f fakephone.py >/dev/null 2>&1
+    stop_fakephone
 }
 
 # --- C9: no leftovers -----------------------------------------------------
@@ -506,26 +647,35 @@ check_spotlight() {
 check_orphans() {
     sleep 1
     local n
-    n="$(pgrep -f "PocketDeck.app/Contents/MacOS/PocketDeck" | wc -l | tr -d ' ')"
+    n="$(pgrep -f "PocketDeck.app/Contents/MacOS/PocketDeck .*--quit-after" | wc -l | tr -d ' ')"
     [ "$n" = "0" ] && ok "C9 no orphan PocketDeck processes" || bad "C9 $n orphan PocketDeck processes"
-    n="$(pgrep -f fakephone.py | wc -l | tr -d ' ')"
+    n="$(pgrep -f -- "--events $WORK/events.jsonl" | wc -l | tr -d ' ')"
     [ "$n" = "0" ] && ok "C9 no orphan fakephone processes" || bad "C9 $n orphan fakephone processes"
 }
 
 which_check="${1:-all}"
+case "$which_check" in
+    qr|pair|render|resize|input|input-global|pause|direct|nav|spotlight|all) ;;
+    *) say "usage: check-e2e.sh [qr|pair|render|resize|input|input-global|pause|direct|nav|spotlight|all]"; exit 2 ;;
+esac
+acquire_lock
+wait_for_other_runs
+pick_run
+say "run: port $PORT, work $WORK"
+build_cgevent || exit 1
 case "$which_check" in
     qr)       check_qr ;;
     pair)     check_pair ;;
     render)   check_render ;;
     resize)   check_resize ;;
     input)    check_input ;;
+    input-global) check_input_global ;;
     pause)    check_pause ;;
     direct)   check_direct ;;
     nav)      check_nav ;;
     spotlight) check_spotlight ;;
     all)      check_qr; check_pair; check_render; check_resize; check_input; check_pause
               check_direct; check_nav; check_spotlight; check_orphans ;;
-    *)        say "usage: check-e2e.sh [qr|pair|render|resize|input|pause|direct|nav|spotlight|all]"; exit 2 ;;
 esac
 
 say ""

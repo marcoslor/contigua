@@ -17,6 +17,7 @@ struct LaunchOptions {
     var resetPairing = false
     var qrSheet = false
     var qrPayloadFile: String?
+    var debugInputScript: String?
 
     static func parse(_ arguments: [String]) -> LaunchOptions {
         var options = LaunchOptions()
@@ -54,6 +55,8 @@ struct LaunchOptions {
                 options.qrSheet = true
             case "--qr-payload-file":
                 options.qrPayloadFile = next()
+            case "--debug-input-script":
+                options.debugInputScript = next()
             default:
                 break
             }
@@ -151,6 +154,7 @@ final class AppModel {
     private var pendingOpen: SpotlightOpenRequest?
     private var qrProbes: [QRProbe] = []
     private var qrTimer: Timer?
+    private var debugInput: DebugInputDriver?
 
     private struct QRProbe {
         let session: Session
@@ -170,6 +174,15 @@ final class AppModel {
             self?.onChange?()
         }
         launchAt = Date()
+        if let path = options.debugInputScript {
+            do {
+                debugInput = try DebugInputDriver(scriptPath: path)
+                debugInput?.arm()
+            } catch {
+                FileHandle.standardError.write(Data("debug-input-script \(path): \(error)\n".utf8))
+                exit(2)
+            }
+        }
         // Before any connection: a QR sheet must own the first handshake, so
         // the phone never sees a `pair.request` for a Mac that is showing a QR.
         if options.qrSheet { startQRPairing() }
@@ -293,7 +306,7 @@ final class AppModel {
         directFallback?.cancel()
         let work = DispatchWorkItem { [weak self] in
             guard let self, self.sessionSource == .discovery else { return }
-            if let state = self.session?.state, case .failed = state {} else { return }
+            guard let state = self.session?.state, case .failed = state else { return }
             Log.session.notice("falling back to the cached address for \(device.deviceId, privacy: .public)")
             self.begin(endpoint: .hostPort(host: device.address.host, port: device.address.port),
                        deviceId: device.deviceId, source: .cached)
