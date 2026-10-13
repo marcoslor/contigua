@@ -171,6 +171,9 @@ class DeckService(private val appContext: Context?) :
     override fun onPairingRequest(requestId: String, macName: String, code: String) =
         sendToApp { it.onPairingRequest(requestId, macName, code) }
 
+    override fun onPairingEnded(requestId: String) =
+        sendToApp { it.onPairingEnded(requestId) }
+
     override fun onPaired(clientId: String, name: String, keyHex: String) =
         sendToApp { it.onPaired(clientId, name, keyHex) }
 

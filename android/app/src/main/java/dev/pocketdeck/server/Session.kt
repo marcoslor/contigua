@@ -35,8 +35,7 @@ class Session(
     private val now: () -> Long = { System.nanoTime() / 1_000_000 },
     private val log: (String) -> Unit = {},
     private val handshakeTimeoutMs: Int = 15_000,
-    /** Read timeout once a code is shown: a person is reading and typing it. */
-    private val pairingTimeoutMs: Int = 120_000,
+    /** How long a person has to tap Allow or Deny before the request expires. */
     private val pairDecisionTimeoutMs: Long = 120_000,
     private val exitPollIntervalMs: Long = 2_000,
     maxDeltaBytesPerStream: Int = SendQueue.DEFAULT_MAX_DELTA_BYTES,
@@ -66,10 +65,10 @@ class Session(
     private var clientId = ""
     private var clientName = "Mac"
     private var nonce = ""
+
+    /** Guarded by [pairLock]: the open pairing request and whether it was already settled. */
     private var pendingPairId: String? = null
-    private var pairCode = ""
-    private var pairAttempts = 0
-    private var pairAllowed: Boolean? = null
+    private var pairSettled = false
     private var currentMacName: String? = null
 
     private val loggedUnknown = HashSet<String>()
@@ -126,6 +125,15 @@ class Session(
 
     private fun shutdown() {
         if (!closed.compareAndSet(false, true)) return
+        val abandoned = synchronized(pairLock) {
+            val open = if (pairSettled) null else pendingPairId
+            pairSettled = true
+            pairLock.notifyAll()
+            open
+        }
+        // The Mac went away (Cancel, network) before anyone answered: the
+        // phone's prompt must not linger.
+        abandoned?.let { runCatching { callback.onPairingEnded(it) } }
         stopStateWatch()
         stopStreamWatch()
         synchronized(streams) {
@@ -148,6 +156,8 @@ class Session(
                 out.write(bytes)
                 out.flush()
             }
+            // Drained after a close request (e.g. pair_denied): wake the reader.
+            runCatching { socket.close() }
         } catch (e: Throwable) {
             log("writer ended: ${e.message}")
             closeRequested = true
@@ -186,7 +196,6 @@ class Session(
                 "hello" -> onHello(obj)
                 "auth" -> onAuth(obj)
                 "pair.request" -> onPairRequest()
-                "pair.confirm" -> onPairConfirm(obj)
                 else -> rejectProtocol("expected handshake, got '$t'")
             }
             Phase.READY -> dispatch(obj, frame, t)
@@ -234,35 +243,63 @@ class Session(
     }
 
     private fun onPairRequest() {
-        pendingPairId = Crypto.toHex(Crypto.randomBytes(8))
-        pairCode = "%06d".format((0..999999).random())
-        pairAttempts = 0
-        pairAllowed = null
-        synchronized(pairLock) { pairLock.notifyAll() }
-        val id = pendingPairId!!
-        runCatching { socket.soTimeout = pairingTimeoutMs }
-        runCatching { callback.onPairingRequest(id, clientName, pairCode) }
-        sendJson(mapOf("t" to "pair.code_shown"))
+        val id = Crypto.toHex(Crypto.randomBytes(8))
+        synchronized(pairLock) {
+            if (pendingPairId != null) {
+                log("pair.request ignored: one is already open")
+                return
+            }
+            pendingPairId = id
+            pairSettled = false
+        }
+        val code = "%06d".format((0..999999).random())
+        // A person decides on the phone while this thread only watches for the
+        // Mac going away, so no read timeout applies; the watchdog below bounds
+        // the wait instead.
+        runCatching { socket.soTimeout = 0 }
+        sendJson(mapOf("t" to "pair.code_shown", "code" to code))
+        runCatching { callback.onPairingRequest(id, clientName, code) }
+        Thread({ expirePairing(id) }, "pocketdeck-pair-timeout").also {
+            it.isDaemon = true
+            it.start()
+        }
     }
 
-    private fun onPairConfirm(obj: Map<String, Any?>) {
-        if (pendingPairId == null) return
-        val code = Json.str(obj["code"]) ?: ""
-        if (code != pairCode) {
-            pairAttempts++
-            log("pair code mismatch ($pairAttempts)")
-            if (pairAttempts >= 3) denyPairing()
-            return
-        }
-        if (pairAllowed == null) {
-            synchronized(pairLock) {
-                val deadline = System.currentTimeMillis() + pairDecisionTimeoutMs
-                while (pairAllowed == null && !closed.get() && System.currentTimeMillis() < deadline) {
-                    pairLock.wait(250)
+    private fun expirePairing(id: String) {
+        val deadline = System.currentTimeMillis() + pairDecisionTimeoutMs
+        val expired = synchronized(pairLock) {
+            while (!pairSettled && pendingPairId == id) {
+                val left = deadline - System.currentTimeMillis()
+                if (left <= 0) {
+                    pairSettled = true
+                    return@synchronized true
                 }
+                pairLock.wait(left)
+            }
+            false
+        }
+        if (!expired) return
+        runCatching { callback.onPairingEnded(id) }
+        finishWithError("pair_timeout", "no decision on the phone")
+    }
+
+    /**
+     * Called from the app process (binder thread) when the user answers the
+     * prompt. Allow completes the pairing right here: the reader thread is
+     * only watching the socket.
+     */
+    fun respondPairing(requestId: String, allow: Boolean) {
+        val mine = synchronized(pairLock) {
+            if (requestId != pendingPairId || pairSettled || closed.get()) {
+                false
+            } else {
+                pairSettled = true
+                pairLock.notifyAll()
+                true
             }
         }
-        if (pairAllowed == true) completePairing() else denyPairing()
+        if (!mine) return
+        if (allow) completePairing() else finishWithError("pair_denied", "pairing denied")
     }
 
     private fun completePairing() {
@@ -276,13 +313,18 @@ class Session(
         welcome()
     }
 
-    private fun denyPairing() {
-        sendError("pair_denied", "pairing denied")
+    /** Sends [code], lets it flush, then ends the session. */
+    private fun finishWithError(code: String, message: String) {
+        sendError(code, message)
         closeRequested = true
+        queue.close()
     }
 
     private fun welcome() {
         val d = device.info()
+        // Set before the welcome is queued: after a pairing the reader thread
+        // may see the Mac's first request as soon as the frame is on the wire.
+        phase = Phase.READY
         sendJson(
             mapOf(
                 "t" to "welcome",
@@ -296,7 +338,6 @@ class Session(
                 ),
             ),
         )
-        phase = Phase.READY
         // The read timeout only guards the handshake; a live session may be
         // silent for long stretches (static content, no input).
         runCatching { socket.soTimeout = 0 }
@@ -526,19 +567,6 @@ class Session(
         log("protocol error: $why")
         sendError("protocol", why)
         closeRequested = true
-    }
-
-    /** Called from the app process (binder thread) when the user answers a prompt. */
-    fun respondPairing(requestId: String, allow: Boolean) {
-        synchronized(pairLock) {
-            if (requestId == pendingPairId) {
-                pairAllowed = allow
-                pairLock.notifyAll()
-            }
-        }
-        if (!allow && requestId == pendingPairId) {
-            // Let the (possibly blocked) reader thread produce pair_denied promptly.
-        }
     }
 
     // ------------------------------------------------------------------

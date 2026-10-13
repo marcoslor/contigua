@@ -8,7 +8,6 @@ import SwiftUI
 
 struct LaunchOptions {
     var connect: (host: String, port: UInt16)?
-    var pairCodeFile: String?
     var openPackages: [String] = []
     var openPhone = false
     var resizes: [(stream: UInt32, size: NSSize, after: TimeInterval)] = []
@@ -42,8 +41,6 @@ struct LaunchOptions {
                    let port = UInt16(value[value.index(after: colon)...]) {
                     options.connect = (String(value[..<colon]), port)
                 }
-            case "--pair-code-file":
-                options.pairCodeFile = next()
             case "--open":
                 if let value = next() {
                     options.openPackages += value.split(separator: ",").map(String.init)

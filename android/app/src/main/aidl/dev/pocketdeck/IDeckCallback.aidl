@@ -11,4 +11,7 @@ oneway interface IDeckCallback {
 
     /** Session state changed: connected, which Mac, how many windows are open. */
     void onSessionChanged(boolean connected, String macName, int windows);
+
+    /** The pairing request ended unanswered; the app should dismiss its prompt. */
+    void onPairingEnded(String requestId);
 }

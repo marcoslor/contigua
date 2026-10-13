@@ -90,11 +90,11 @@ PIN), `start.sh --window` (visible emulator window), `start.sh --no-build`
 
 ## Pairing in the rig
 
-Pairing is the real code flow: `pair.request` → prompt with a 6-digit code →
-`pair.confirm` → `pair.ok`, and the phone waits for someone to tap **Allow**.
+Pairing is the real flow: `pair.request` → `pair.code_shown` (with the code) and
+a prompt showing the same code → someone taps **Allow** → `pair.ok`.
 `flow.sh` runs it through `poc.py pair`: it reads the code from the pairing
 prompt (the app dialog, or the notification — whichever appears first, ignoring
-a code left over from an earlier request), taps **Allow** over adb and writes the
+a code left over from an earlier request), checks it against the announced one, taps **Allow** over adb and writes the
 key into deckctl's own state file under the same `clientId`, so every later
 `deckctl` call just authenticates with `--state`.
 
@@ -103,16 +103,14 @@ Two things make this harder on a loaded machine, and both are handled:
 - the app must be *drawing* for the prompt to exist, so `flow.sh` wakes the rig
   (`unlock.sh` — a screen that slept can report "keyguard not showing") and waits
   until `dev.pocketdeck` is the resumed activity before pairing;
-- the phone only waits ~15 s for `pair.confirm`, so on a slow boot the real flow
-  can time out. After two failed attempts `flow.sh` seeds a client instead
+- on a slow boot the prompt can take long to appear, so the real flow can time out. After two failed attempts `flow.sh` seeds a client instead
   (`poc.py seed`): it writes the same `paired` entry a real pairing stores into
   the app's prefs with `run-as`, restarts the app (which pushes it to the shell
   service) and puts the matching key in deckctl's state file. Callers cannot tell
   the difference afterwards; the README says so instead of hiding it.
 
-To pair by hand instead (the `--code-file` path deckctl supports):
-`deckctl --code-file F apps` with `poc.py wait-prompt --code-file F` running in
-the background.
+To pair by hand instead: `deckctl --pair apps` (prints the announced code) with
+`poc.py wait-prompt` running in the background to tap Allow.
 
 ## What flow.sh checks
 

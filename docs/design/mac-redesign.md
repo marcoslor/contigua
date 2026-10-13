@@ -111,7 +111,7 @@ backgrounds), window background default.
 
   | Link | Dot | Text | Details |
   |---|---|---|---|
-  | online | green | Connected | `lock.fill`/`lock.open.fill` · battery SF Symbol + "87%" (`.monospacedDigit()`); tooltip "Phone locked, 87%, charging" |
+  | online | green | (dot alone; the title names the phone) | `lock.fill` only while locked · battery glyph by nearest quarter + "87%" (`.monospacedDigit()`, red below 13 %); tooltip "Connected, phone locked, battery 87%, charging" |
   | connecting (no success this run yet) | secondary | Connecting… | — |
   | reconnecting (was online this run) | orange, `.symbolEffect(.pulse)` | Reconnecting… | — |
   | offline (≥ 15 s) | secondary | Offline | — |
@@ -147,29 +147,26 @@ backgrounds), window background default.
 
 ### 3.4 Code sheet
 
-`.sheet`, width 400, padding 32, VStack spacing 24. **Title:** "Enter the code shown on *phone name*"
+`.sheet`, width 400, padding 32, VStack spacing 24. **Title:** "Pair with *phone name*"
 `.title3.weight(.semibold)` (the name comes from the Nearby row, so it is known *before* `welcome`; fixes A05).
 
-- Digit row exactly as DESIGN.md (6 boxes, 48×60, 3+3 grouping, focus ring, hidden single `TextField`,
-  paste fills, auto-submit on 6th digit). No placeholder digits.
-- Below the row, one line (`.callout`), exactly one of:
+- Numeric comparison, nothing is typed: the code the phone announced in `pair.code_shown`, large and monospaced, grouped
+  "482 913" (DESIGN.md "Pairing-code sheet"). No fields, no boxes.
+- Below it, one line (`.callout`), exactly one of:
 
-  | Pairing state | Line | Boxes |
+  | Pairing state | Line | Code |
   |---|---|---|
-  | `waitingForCode` | "Allow on your phone, then type the code." `.secondary` | focused, empty |
-  | `verifying` | "Checking…" `.secondary` | `ProgressView().controlSize(.small)` replaces the title icon; boxes disabled |
-  | `stillWaiting` (3 s with no answer) | "Still waiting. Check the code, and tap Allow on your phone." `.secondary` | re-enabled, cleared, focus box 1 |
-  | `denied` (3 tries used or Deny) | "Pairing was denied." `.red` | boxes hidden; **Try again** `.glassProminent` |
-  | `timedOut` (socket closed before a code was accepted — the phone's own window) | "The phone stopped waiting. Try again." `.secondary` | boxes hidden; **Try again** `.glassProminent` |
+  | `contacting` | spinner + "Contacting *phone name*…" `.secondary` | hidden |
+  | `comparing(code)` | "Tap Allow on your phone if it shows the same code." `.secondary` | shown |
+  | `verifying` (`pair.ok` received) | spinner + "Pairing…" `.secondary` | hidden |
+  | `denied` (`error{pair_denied}`) | "Pairing was denied on the phone." `.red` | hidden; **Try again** `.glassProminent` |
+  | `timedOut` (`error{pair_timeout}`, the phone's 120 s) | "Nobody tapped Allow in time. Try again." `.secondary` | hidden; **Try again** `.glassProminent` |
+  | `unreachable` (connect failed or the connection dropped) | "Couldn't reach *phone name*. Try again." `.secondary` | hidden; **Try again** `.glassProminent` |
 
-  The protocol has no "wrong code" frame: a mismatch is indistinguishable from "Allow not tapped yet"
-  until the third try (`pair_denied`). So the UI never claims "wrong code" before `denied`; the 3 s
-  `stillWaiting` line is the honest equivalent, with the DESIGN.md shake + `NSHapticFeedbackManager` on
-  that transition. (Question for the architect: an optional `pair.mismatch` frame would let this say
-  "That code didn't match." — see ask.md; not required.)
+  The Mac never gives up on its own while the code is up (it keeps a 125 s backstop, 5 s past the phone's window).
 - **Cancel** `.glass` (Esc) always present except in `verifying`; it aborts the session cleanly (no
   reconnect) and closes the sheet.
-- Success: boxes cross-fade to `checkmark.circle.fill` 64 pt `.green` `.symbolEffect(.bounce)`, sheet closes
+- Success: the code cross-fades to `checkmark.circle.fill` 64 pt `.green` `.symbolEffect(.bounce)`, sheet closes
   after 0.6 s, the Deck is already in Phone mode behind it. ↩ never submits partial codes.
 - **Try again** = new handshake (§4.3), user driven, so the phone prompts once per press.
 
@@ -262,7 +259,7 @@ enum Link: Equatable {
     case pairing(PhoneRef, Pairing)                 // user-driven, sheet is up
 }
 enum Cause: Equatable { case unreachable, busy, versionMismatch, localNetworkDenied }
-enum Pairing: Equatable { case waitingForCode, verifying, stillWaiting, denied, timedOut, unreachable }
+enum Pairing: Equatable { case contacting, comparing(code: String), verifying, denied, timedOut, unreachable }
 ```
 
 ### 4.2 Silent reconnect of a remembered phone
@@ -291,7 +288,7 @@ enum Pairing: Equatable { case waitingForCode, verifying, stillWaiting, denied, 
 
 | From | Event | To | UI effect |
 |---|---|---|---|
-| `.idle` | user presses Pair on a Nearby row | `.pairing(p, .waitingForCode)` | Code sheet |
+| `.idle` | user presses Pair on a Nearby row | `.pairing(p, .contacting)` | Code sheet |
 | any | launch with remembered phone | `.connecting(active)` | Deck/Phone mode, chip "Connecting…" |
 | `.connecting` / `.reconnecting` / `.offline` | `welcome` | `.online` | chip green, grid enabled, banner cleared |
 | `.online` | socket closed / ping timeout / receive error | `.reconnecting` | chip orange, grid dimmed, window pills after 1 s |
@@ -299,15 +296,14 @@ enum Pairing: Equatable { case waitingForCode, verifying, stillWaiting, denied, 
 | any non-pairing | `error{busy}` | `.offline(.busy)` after 15 s total, banner immediately | banner "Another Mac is connected…" |
 | any non-pairing | `error{auth_failed}` (key rejected) | `.needsPairing` | banner + **Pair again**; reconnect loop stops |
 | any non-pairing | `error{version}` | `.offline(.versionMismatch)` | banner, loop stops |
-| `.needsPairing` | **Pair again** | `.pairing(p, .waitingForCode)` | Code sheet |
-| `.pairing(.waitingForCode)` | `pair.code_shown` | (same) | focus box 1 |
-| `.pairing(.waitingForCode)` | 6th digit entered → `pair.confirm` | `.verifying` | "Checking…" |
-| `.verifying` | no answer within 3 s | `.stillWaiting` | shake, "Still waiting…" (digits cleared) |
-| `.verifying`/`.stillWaiting` | `pair.ok`+`welcome` | `.online` | checkmark, sheet closes 0.6 s |
-| `.verifying`/`.stillWaiting` | `error{pair_denied}` | `.pairing(.denied)` | "Pairing was denied." + **Try again** |
-| `.pairing(.waitingForCode)`/`.stillWaiting` | socket closed (phone's code window) | `.pairing(.timedOut)` | "The phone stopped waiting. Try again." |
+| `.needsPairing` | **Pair again** | `.pairing(p, .contacting)` | Code sheet |
+| `.pairing(.contacting)` | `pair.code_shown{code}` | `.pairing(.comparing(code))` | code shown |
+| `.pairing(.comparing)` | `pair.ok` | `.pairing(.verifying)` | "Pairing…" |
+| `.pairing(.comparing/.verifying)` | `pair.ok`+`welcome` | `.online` | checkmark, sheet closes 0.6 s |
+| `.pairing(.comparing/.verifying)` | `error{pair_denied}` | `.pairing(.denied)` | "Pairing was denied on the phone." + **Try again** |
+| `.pairing(.comparing)` | `error{pair_timeout}` | `.pairing(.timedOut)` | "Nobody tapped Allow in time. Try again." |
 | `.pairing` | any other failure (nothing answered) | `.pairing(.unreachable)` | "Couldn't reach *name*. Try again." |
-| `.pairing(.denied/.timedOut)` | **Try again** | `.pairing(p, .waitingForCode)` | new handshake |
+| `.pairing(.denied/.timedOut/.unreachable)` | **Try again** | `.pairing(p, .contacting)` | new handshake |
 | `.pairing` | Cancel / Esc | `.idle` or previous remembered `Link` | sheet closes, session cancelled |
 | `.pairing(.viaQR)` | probe authenticates | `.online` | QR success state |
 | any | **Forget** (Settings) | `.idle` or next phone | windows closed |
@@ -342,7 +338,7 @@ tries again; that Mac has nothing to try with. Pairing again goes through §4.3 
 | Deck (Phone mode) | typing goes to search (focused on show) · ←→↑↓ move selection (grid) · ↩ open selected / first match · Esc clears search, then does nothing · ⌘F = ⌘K |
 | Deck (Welcome) | ↩ Find my phone |
 | Nearby | ↑↓ move · ↩ Pair the selected row · ⌘R rescan (restarts Discovery) |
-| Code sheet | 0–9 digits · ⌫ delete · ⌘V paste 6 digits · Esc Cancel · ⇥ moves between Cancel and the boxes |
+| Code sheet | Esc Cancel |
 | QR sheet | Esc Cancel/Done |
 | Manual sheet | ⇥ fields · ↩ Connect · Esc Cancel |
 | Settings | ⌘W closes |
@@ -374,7 +370,7 @@ Existing menu shortcuts and their tests (`NavShortcutTests`) are kept verbatim.
   connection half of `AppModel` (`App.swift`).
 - `Link`, `Pairing`, `Banner`, `ReconnectPolicy`, `ConnectionTimeline` — pure value types so the whole §4.3 table is unit-tested without sockets
   (feed `ConnectionEvent`s, assert `Link` and `Banner`, advance a fake clock).
-- `PairingModel` — digits, `verifying/stillWaiting` timer (3 s), success/denied/timedOut mapping; `QRPairingModel` — payload, remaining, probe scheduling (one probe per un-remembered, non-busy phone, 4 s cadence, ≤ 3 s per probe).
+- `PairingModel` — comparing/verifying, success/denied/timedOut mapping; `QRPairingModel` — payload, remaining, probe scheduling (one probe per un-remembered, non-busy phone, 4 s cadence, ≤ 3 s per probe).
 - `DeckModel` — filter, selection, grid navigation, enabled state; `DevicesModel` (Settings).
 - `RememberedPhone` (`id, name, model, lastSeen, lastAddress?`) + `RememberedPhones` store and `AppsCache` (apps + icon PNGs per phone), both
   **inside the profile** the profile task added (never raw `UserDefaults.standard`/fixed Keychain service); non-secret, so a missing key never
@@ -383,7 +379,7 @@ Existing menu shortcuts and their tests (`NavShortcutTests`) are kept verbatim.
   `prohibitedInterfaceTypes` for service endpoints; no internal auto-reconnect (the controller schedules attempts, one at a time).
   `Discovery` changes: coalesce by TXT id, ignore results without TXT id (A10), expose browse failure.
 - `WindowManager` keeps its job; it gains `linkState` (for the pills) and the cascade/autosave placement.
-- Test hooks (`LaunchOptions`, `--connect`, `--pair-code-file`, `--open`, `--open-phone`, `--resize-stream`, `--minimize-stream`,
+- Test hooks (`LaunchOptions`, `--connect`, `--open`, `--open-phone`, `--resize-stream`, `--minimize-stream`,
   `--deminimize-stream`, `--quit-after`, `--reset-pairing`, `--qr-sheet`, `--qr-payload-file`, `--debug-input-script`) keep working
   (`check-e2e.sh` depends on them). Added: `--appearance light|dark` (sets `NSApp.appearance`), and `--preview <state>` that
   drives `ConnectionController` with a scripted `Link`/`Banner` for states that cannot be staged (offline, reconnecting, needsPairing,
@@ -399,7 +395,7 @@ Phase B may keep the flat layout if moving files would make the diff hard to rev
 ## 7. Tests (Phase B, D1)
 
 - `ConnectionTimelineTests`: every row of §4.3, backoff sequence, 15 s offline threshold, `Try now`/discovery/network/wake resets, pairing blocks automatic attempts, busy/auth/version loops stop or slow.
-- `PairingModelTests`: 6th digit submits once, paste, 3 s `stillWaiting`, `pair_denied`, closed-before-accept = `timedOut`.
+- `PairingModelTests`: code shown, Allow reaches `verifying`, `pair_denied`, `pair_timeout` = `timedOut`, a dropped connection = `unreachable`, no timer ends `comparing`.
 - `QRPairingModelTests`: probe scheduling skips remembered/busy phones, expiry, success closes probes.
 - `DiscoveryCoalesceTests`: results without TXT id ignored; multi-interface duplicates merge.
 - `RememberedPhonesTests`: key loss ≠ forgotten phone; forget removes everything; profile isolation.
@@ -408,7 +404,7 @@ Phase B may keep the flat layout if moving files would make the diff hard to rev
 
 ## 8. Screenshot set for D3 (light and dark, each ≥ 1x)
 
-1 Welcome · 2 Nearby empty/searching · 3 Nearby with 2 phones (one remembered) · 4 Code sheet empty · 5 verifying · 6 stillWaiting · 7 denied · 8 timedOut · 9 QR sheet · 10 QR success · 11 Manual sheet ·
+1 Welcome · 2 Nearby empty/searching · 3 Nearby with 2 phones (one remembered) · 4 Code sheet (comparing) · 5 verifying · 6 contacting · 7 denied · 8 timedOut · 9 QR sheet · 10 QR success · 11 Manual sheet ·
 12 Deck loading (skeleton) · 13 Deck connected (≥ 14 apps) · 14 search with matches · 15 no matches · 16 selection state · 17 Connecting… (launch, cached grid) · 18 Reconnecting… · 19 Offline banner ·
 20 needsPairing banner · 21 busy banner · 22 Settings General · 23 Settings Devices (2 phones) · 24 Forget confirmation · 25 App window (with link pill visible) · 26 Phone window (hover bar visible) · 27 menu-bar menu ·
 28 Reduce Transparency variant of 13.

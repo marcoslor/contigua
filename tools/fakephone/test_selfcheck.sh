@@ -31,7 +31,7 @@ trap cleanup EXIT
 # which makes orphan detection unambiguous.
 TMPDIR="$WORK" "$PY" "$HERE/fakephone.py" \
     --port 0 --no-mdns --auto-allow \
-    --state "$WORK/state.json" --code-file "$WORK/code" --events "$WORK/events.jsonl" \
+    --state "$WORK/state.json" --events "$WORK/events.jsonl" \
     >"$WORK/fh.out" 2>"$WORK/fh.err" &
 FH_PID=$!
 
@@ -48,7 +48,7 @@ print(m.group(1) if m else '')
 note "fakephone pid=$FH_PID port=$PORT"
 
 DECK=("$PY" "$HERE/deckctl.py" --host 127.0.0.1 --port "$PORT" \
-      --state "$WORK/deck.json" --code-file "$WORK/code")
+      --state "$WORK/deck.json" --pair)
 
 # --- deckctl subcommands ---------------------------------------------------
 note "apps (pairs, writes the key)"

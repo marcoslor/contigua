@@ -74,7 +74,10 @@ enum SessionEvent {    case state(SessionState, String?)
     case windowTitle(stream: UInt32, label: String, pkg: String)
     case phoneState(locked: Bool, battery: Int, charging: Bool)
     case phoneError(code: String, message: String?, stream: UInt32)
-    case pairCodeRequired(deviceId: String?)
+    /// The phone showed this code for the person to compare with its screen.
+    case pairCodeShown(deviceId: String?, code: String)
+    /// The person tapped Allow; the key and `welcome` follow.
+    case pairApproved
     /// The phone accepted the key we were showing in a QR: it is stored now.
     case qrPaired(deviceId: String)
     /// A cached address answered with a different device id: refuse it.
@@ -103,11 +106,13 @@ final class Session {
     private let queue = DispatchQueue(label: "dev.pocketdeck.session")
     private var pingTimer: Timer?
     private var connectWatchdog: DispatchWorkItem?
+    /// Armed while a person decides on the phone; the phone's own 120 s limit
+    /// normally answers first, this covers a phone that vanished mid-prompt.
+    private var pairingDeadline: DispatchWorkItem?
     /// `connection` is swapped from the session queue and from the main queue
     /// (watchdog, close); every swap goes through `takeConnection`.
     private let connectionLock = NSLock()
     private var pendingPairKey: Data?
-    private var awaitingPairCode = false
     /// The session-level `error` code the phone sent on this connection, if any.
     private var phoneErrorCode: String?
     private var authDeviceId: String?
@@ -139,18 +144,28 @@ final class Session {
     var onVideoEvent: ((VideoEvent) -> Void)?
 
     static let pingInterval: TimeInterval = 15
-    /// One attempt gets this long to reach `welcome`. A Bonjour connection can
-    /// stay in `waiting` forever (an interface that cannot reach the phone); the
-    /// owner needs a failure to try again, and the socket must be cancelled.
-    static let connectTimeout: TimeInterval = 6
+    /// One attempt gets this long to reach `welcome` (or, when pairing, the
+    /// phone's code). A Bonjour connection can stay in `waiting` forever (an
+    /// interface that cannot reach the phone); the owner needs a failure to try
+    /// again, and the socket must be cancelled.
+    static let defaultConnectTimeout: TimeInterval = 6
+    /// The phone gives a person 120 s to answer (docs/PROTOCOL.md "Pairing").
+    static let defaultPairingTimeout: TimeInterval = 125
+
+    private let connectTimeout: TimeInterval
+    private let pairingTimeout: TimeInterval
 
     init(endpoint: Endpoint, knownDeviceId: String?, strictDeviceId: String? = nil,
-         clientId: String, keyStore: PairKeyStore) {
+         clientId: String, keyStore: PairKeyStore,
+         connectTimeout: TimeInterval = Session.defaultConnectTimeout,
+         pairingTimeout: TimeInterval = Session.defaultPairingTimeout) {
         self.endpoint = endpoint
         self.knownDeviceId = knownDeviceId
         self.strictDeviceId = strictDeviceId
         self.clientId = clientId
         self.keyStore = keyStore
+        self.connectTimeout = connectTimeout
+        self.pairingTimeout = pairingTimeout
     }
 
     convenience init(host: String, port: UInt16, knownDeviceId: String? = nil,
@@ -178,7 +193,6 @@ final class Session {
         connection = conn
         connectionLock.unlock()
         decoder = FrameDecoder()
-        awaitingPairCode = false
         phoneErrorCode = nil
         authedWithQRKey = false
         conn.stateUpdateHandler = { [weak self] newState in self?.handleConnectionState(newState, on: conn) }
@@ -189,10 +203,7 @@ final class Session {
 
     func close() {
         intentionalClose = true
-        connectWatchdog?.cancel()
-        connectWatchdog = nil
-        pingTimer?.invalidate()
-        pingTimer = nil
+        cancelTimers()
         retire(takeConnection(ifCurrent: nil))
         transition(.closed, nil)
     }
@@ -234,11 +245,36 @@ final class Session {
         connectWatchdog?.cancel()
         let work = DispatchWorkItem { [weak self] in
             guard let self, !self.intentionalClose, self.state != .ready else { return }
-            Log.session.notice("connect timed out after \(Self.connectTimeout, privacy: .public)s")
+            Log.session.notice("connect timed out after \(self.connectTimeout, privacy: .public)s")
             self.fail("timeout")
         }
         connectWatchdog = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + Self.connectTimeout, execute: work)
+        DispatchQueue.main.asyncAfter(deadline: .now() + connectTimeout, execute: work)
+    }
+
+    /// The phone showed its code: from here the person, not the network, sets
+    /// the pace, so the connect watchdog gives way to the pairing deadline.
+    private func armPairingDeadline() {
+        connectWatchdog?.cancel()
+        connectWatchdog = nil
+        pairingDeadline?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, !self.intentionalClose, self.state != .ready else { return }
+            Log.session.notice("no answer from the phone after \(self.pairingTimeout, privacy: .public)s")
+            self.phoneErrorCode = "pair_timeout"
+            self.fail("pair_timeout")
+        }
+        pairingDeadline = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + pairingTimeout, execute: work)
+    }
+
+    private func cancelTimers() {
+        connectWatchdog?.cancel()
+        connectWatchdog = nil
+        pairingDeadline?.cancel()
+        pairingDeadline = nil
+        pingTimer?.invalidate()
+        pingTimer = nil
     }
 
     /// A Bonjour service is advertised on every interface the phone's Wi-Fi
@@ -317,20 +353,16 @@ final class Session {
         }
     }
 
-    /// `transportReason` says what the socket did; the phone's error frame, or
-    /// a close while the code was awaited, says more and wins. Fails once per
+    /// `transportReason` says what the socket did; the phone's error frame
+    /// says more and wins. Fails once per
     /// connection: a second report for the same (or an already replaced)
     /// connection is ignored. Never retries: the owner decides when to try again.
     private func fail(_ transportReason: String, on conn: NWConnection? = nil) {
         guard let dead = takeConnection(ifCurrent: conn) else { return }
         retire(dead)
-        connectWatchdog?.cancel()
-        connectWatchdog = nil
-        pingTimer?.invalidate()
-        pingTimer = nil
-        let reason = phoneErrorCode ?? (awaitingPairCode ? ConnectionFailure.pairingTimeout : transportReason)
+        cancelTimers()
+        let reason = phoneErrorCode ?? transportReason
         phoneErrorCode = nil
-        awaitingPairCode = false
         // Some servers close right after rejecting auth without the error frame
         // surviving the close; two failed auth handshakes mean the key is stale.
         if authInFlight, authAttempts >= 2 {
@@ -345,8 +377,7 @@ final class Session {
     /// never reconnect to it. The owner drops the cached address on the event.
     private func refuseIdentityMismatch() {
         intentionalClose = true
-        connectWatchdog?.cancel()
-        connectWatchdog = nil
+        cancelTimers()
         retire(takeConnection(ifCurrent: nil))
         transition(.failed(ConnectionFailure.identityMismatch), ConnectionFailure.identityMismatch)
     }
@@ -426,14 +457,19 @@ final class Session {
                 sendJSON(["t": "pair.request"])
             }
         case "pair.code_shown":
-            awaitingPairCode = true
-            // The phone times the code entry itself (its own 15 s window); the
-            // connect watchdog must not cut the user off in the meantime.
-            connectWatchdog?.cancel()
-            connectWatchdog = nil
-            emit(.pairCodeRequired(deviceId: knownDeviceId))
+            // The phone waits for its person (up to 120 s); the connect
+            // watchdog must not cut them off in the meantime.
+            guard let code = message.string("code"), !code.isEmpty else {
+                // A phone that predates the shown-code protocol expects the code to be typed.
+                phoneErrorCode = "version"
+                fail("version")
+                return
+            }
+            armPairingDeadline()
+            emit(.pairCodeShown(deviceId: knownDeviceId, code: code))
         case "pair.ok":
             if let hex = message.string("key") { pendingPairKey = Data(hexString: hex) }
+            emit(.pairApproved)
         case "welcome":
             guard let device = message.object("device"), let info = PhoneInfo(device: device) else {
                 Log.session.error("welcome without device")
@@ -456,6 +492,8 @@ final class Session {
             authInFlight = false
             connectWatchdog?.cancel()
             connectWatchdog = nil
+            pairingDeadline?.cancel()
+            pairingDeadline = nil
             startPing()
             let isReconnect = everReady
             everReady = true
@@ -534,13 +572,6 @@ final class Session {
         knownDeviceId = nil
         authInFlight = false
         authAttempts = 0
-    }
-
-    /// Called by the UI (or the `--pair-code-file` hook) once a code exists.
-    func providePairCode(_ code: String) {
-        guard awaitingPairCode else { return }
-        awaitingPairCode = false
-        sendJSON(["t": "pair.confirm", "code": code])
     }
 
     // MARK: Send

@@ -192,7 +192,8 @@ class Client(object):
         self.send_json({"t": "auth", "mac": mac})
         self._welcome()
 
-    def pair(self, code_provider):
+    def pair(self, on_code, decision_timeout=130.0):
+        """Numeric comparison: the phone shows the code, a person taps Allow there."""
         nonce = self._hello_challenge()
         self.send_json({"t": "pair.request"})
         frame = self.recv(HANDSHAKE_TIMEOUT)
@@ -201,16 +202,15 @@ class Client(object):
         msg = proto.unpack_json(frame)
         if msg.get("t") == "error":
             raise DeckError("phone refused pairing: %s" % msg.get("code"))
-        if msg.get("t") != "pair.code_shown":
-            raise DeckError("expected pair.code_shown, got %r" % msg.get("t"))
-        code = code_provider()
-        self.send_json({"t": "pair.confirm", "code": str(code)})
-        frame = self.recv(HANDSHAKE_TIMEOUT)
+        if msg.get("t") != "pair.code_shown" or not msg.get("code"):
+            raise DeckError("expected pair.code_shown with a code, got %r" % msg.get("t"))
+        on_code(str(msg["code"]))
+        frame = self.recv(decision_timeout)
         if frame is TIMEOUT or frame is None:
             raise DeckError("no pair.ok from phone")
         msg = proto.unpack_json(frame)
         if msg.get("t") == "error":
-            raise DeckError("pairing denied (%s)" % msg.get("code"))
+            raise DeckError("pairing refused (%s)" % msg.get("code"))
         if msg.get("t") != "pair.ok" or "key" not in msg:
             raise DeckError("expected pair.ok with key, got %r" % msg.get("t"))
         self._welcome()
@@ -226,7 +226,7 @@ def _connect_raw(host, port, timeout=DEFAULT_TIMEOUT):
         raise DeckError("cannot connect to %s:%s (%s)" % (host, port, exc))
 
 
-def open_session(host, port, state, code_provider, device_hint=None, busy_retries=1):
+def open_session(host, port, state, on_code, device_hint=None, busy_retries=1):
     """Return an authenticated Client. Tries stored keys, then pairing."""
     candidates = state.candidates(device_hint)
     last_error = None
@@ -251,15 +251,15 @@ def open_session(host, port, state, code_provider, device_hint=None, busy_retrie
             except DeckError as exc:
                 client.close()
                 raise exc
-    if code_provider is None:
+    if on_code is None:
         if last_error:
             raise last_error
-        raise DeckError("not paired with this phone; pass --code/--code-file")
+        raise DeckError("not paired with this phone; pass --pair")
     for attempt in range(busy_retries):
         sock = _connect_raw(host, port)
         client = Client(sock, state)
         try:
-            client.pair(code_provider)
+            client.pair(on_code)
             return client
         except Busy:
             client.close()
@@ -467,6 +467,10 @@ class StreamRecorder(object):
         self.messages = []
         self.opened = {}
         self.closed_reason = {}
+        # Per stream: when the latest VIDEO_CONFIG arrived and when the first
+        # VIDEO_FRAME after it did, as (time, is_keyframe).
+        self.config_at = {}
+        self.first_frame_at = {}
         self.error = None
         self.reader_closed = False
         self._stop = threading.Event()
@@ -572,6 +576,8 @@ class StreamRecorder(object):
                 _codec, w, h, csd = proto.unpack_video_config(frame)
                 self.sizes[frame.stream] = (w, h)
                 self.csd[frame.stream] = csd
+                self.config_at[frame.stream] = time.time()
+                self.first_frame_at.pop(frame.stream, None)
                 fp = self.files.get(frame.stream)
                 if fp is not None:
                     fp.write(csd)
@@ -582,6 +588,8 @@ class StreamRecorder(object):
                 self.total_frames[frame.stream] = self.total_frames.get(frame.stream, 0) + 1
                 if flags & proto.FRAME_FLAG_KEY:
                     self.keys_seen[frame.stream] = self.keys_seen.get(frame.stream, 0) + 1
+                if frame.stream not in self.first_frame_at:
+                    self.first_frame_at[frame.stream] = (time.time(), bool(flags & proto.FRAME_FLAG_KEY))
                 fp = self.files.get(frame.stream)
                 if fp is None:
                     return
@@ -1287,6 +1295,108 @@ def cmd_multi(client, args):
     rec.stop()
     return 0
 
+def _png_size(path):
+    with open(path, "rb") as fp:
+        head = fp.read(24)
+    if head[:8] != b"\x89PNG\r\n\x1a\n":
+        raise DeckError("%s is not a PNG" % path)
+    return int.from_bytes(head[16:20], "big"), int.from_bytes(head[20:24], "big")
+
+
+def _stream_size_ok(got, want):
+    """The phone may shrink a request to what its encoder takes: never larger,
+    16-aligned, and the same shape within 10%."""
+    if got is None or got[0] > want[0] or got[1] > want[1] or got[0] % 16 or got[1] % 16:
+        return False
+    return abs((got[0] / float(got[1])) / (want[0] / float(want[1])) - 1.0) < 0.10
+
+
+def cmd_resize_stress(client, args):
+    """Resize each app's window repeatedly across several sizes.
+
+    Every resize must deliver a VIDEO_CONFIG of the new size and a decodable
+    frame of that size within --deadline seconds, even when the app is idle
+    (PROTOCOL.md: a resize is always answered with CONFIG + keyframe). One PNG
+    per resize is written next to --out-prefix and its pixel size is checked.
+    """
+    sizes = [_parse_resize("1:" + spec)[1] for spec in args.sizes]
+    if len(set(sizes)) < 2:
+        raise DeckError("--sizes needs at least two distinct sizes")
+    prefix = args.out_prefix or "/tmp/deckctl-stress"
+    rec = StreamRecorder(client).start()
+    results = []
+    try:
+        for index, pkg in enumerate(args.apps):
+            stream = index + 1
+            client.send_json({"t": "window.open", "stream": stream, "w": args.w, "h": args.h,
+                              "dpi": args.dpi, "pkg": pkg})
+            rec.wait_for_size(stream, 25.0)
+            deadline = time.time() + 25.0
+            while stream not in rec.first_frame_at and time.time() < deadline:
+                rec.raise_if_broken("waiting for the first frame")
+                time.sleep(0.05)
+            if stream not in rec.first_frame_at:
+                raise DeckError("%s: no frame after window.open" % pkg)
+            time.sleep(args.launch_settle)
+            current = rec.sizes[stream]
+            for i in range(args.resizes):
+                size = sizes[i % len(sizes)]
+                if size == current:
+                    size = sizes[(i + 1) % len(sizes)]
+                tag = "%s-%02d-%dx%d" % (pkg.replace(".", "_"), i, size[0], size[1])
+                path = "%s-%s.h264" % (prefix, tag)
+                png = "%s-%s.png" % (prefix, tag)
+                rec.begin_phase(stream, path)
+                started = time.time()
+                client.send_json({"t": "window.resize", "stream": stream,
+                                  "w": size[0], "h": size[1], "dpi": args.dpi})
+                give_up = started + args.deadline + args.grace
+                while time.time() < give_up:
+                    rec.raise_if_broken("waiting for the resized frame")
+                    with rec.lock:
+                        arrived = (_stream_size_ok(rec.sizes.get(stream), size)
+                                   and rec.config_at.get(stream, 0) >= started
+                                   and stream in rec.first_frame_at)
+                    if arrived:
+                        break
+                    time.sleep(0.005)
+                with rec.lock:
+                    got_size = rec.sizes.get(stream)
+                    fresh = rec.config_at.get(stream, 0) >= started
+                    config_ms = (rec.config_at.get(stream, started) - started) * 1000.0
+                    first = rec.first_frame_at.get(stream)
+                got_ok = fresh and _stream_size_ok(got_size, size)
+                frame_ms = (first[0] - started) * 1000.0 if first and got_ok else None
+                time.sleep(args.settle)
+                rec.end_phase(stream)
+                decoded = None
+                if frame_ms is not None:
+                    try:
+                        dump_last_frame(path, png)
+                        decoded = _png_size(png)
+                    except DeckError:
+                        decoded = None
+                key = bool(first and first[1] and frame_ms is not None)
+                ok = (frame_ms is not None and frame_ms <= args.deadline * 1000.0
+                      and key and decoded == got_size)
+                results.append(ok)
+                print("%-4s %-28s %2d -> %dx%d got=%s config=%s frame=%s key=%s png=%s" % (
+                    "PASS" if ok else "FAIL", pkg, i, size[0], size[1],
+                    ("%dx%d" % got_size) if got_ok else "-",
+                    ("%.0fms" % config_ms) if got_ok else "none",
+                    ("%.0fms" % frame_ms) if frame_ms is not None else "none",
+                    key if frame_ms is not None else "-",
+                    ("%dx%d" % decoded) if decoded else "-"))
+                current = got_size if got_ok else current
+                time.sleep(args.gap)
+            client.send_json({"t": "window.close", "stream": stream})
+            time.sleep(0.5)
+    finally:
+        rec.stop()
+    failed = results.count(False)
+    print("resize-stress: %d resizes, %d passed, %d failed" % (len(results), len(results) - failed, failed))
+    return 1 if failed else 0
+
 
 def cmd_exit_test(client, args):
     """Back out of the app until it leaves its display; require app_exited."""
@@ -1332,27 +1442,20 @@ def cmd_frame_png(_client, args):
 
 
 # --- CLI -------------------------------------------------------------------
-def make_code_provider(args):
-    if args.code is None and not args.code_file:
+def make_code_sink(args):
+    """Pairing is on with --pair or --code-file; the shown code goes to stderr
+    (and to --code-file, for a helper that taps Allow on the phone)."""
+    if not args.pair and not args.code_file:
         return None
 
-    def provider():
-        if args.code is not None:
-            return args.code
-        # A human reads the code off the phone screen: allow enough time for
-        # that (and for a poller that writes the file from outside).
-        for _ in range(100):
-            try:
-                with open(args.code_file) as fp:
-                    value = fp.read().strip()
-                if value:
-                    return value
-            except (IOError, OSError):
-                pass
-            time.sleep(0.1)
-        raise DeckError("could not read pairing code from %s" % args.code_file)
+    def sink(code):
+        sys.stderr.write("deckctl: phone shows code %s; tap Allow on the phone\n" % code)
+        sys.stderr.flush()
+        if args.code_file:
+            with open(args.code_file, "w") as fp:
+                fp.write(code + "\n")
 
-    return provider
+    return sink
 
 
 def build_parser():
@@ -1362,8 +1465,9 @@ def build_parser():
     p.add_argument("--port", type=int, help="phone port")
     p.add_argument("--discover", action="store_true", help="find the phone over mDNS")
     p.add_argument("--instance", help="mDNS instance name to use with --discover")
-    p.add_argument("--code", help="pairing code (pairs instead of using a stored key)")
-    p.add_argument("--code-file", help="read the pairing code from this file")
+    p.add_argument("--pair", action="store_true",
+                   help="pair when no stored key works: print the code the phone shows and wait for Allow")
+    p.add_argument("--code-file", help="like --pair, and also write the code the phone shows to this file")
     p.add_argument("--state", default=DEFAULT_STATE, help="state file (default: %(default)s)")
     p.add_argument("--name", help="client name sent in hello")
     p.add_argument("--wait-for-free", type=float, default=0.0, metavar="SECONDS",
@@ -1468,6 +1572,21 @@ def build_parser():
     sp.add_argument("--settle", type=float, default=0.5)
     sp.add_argument("--key-wait", type=float, default=4.0, help="max wait for the requested IDR")
 
+    sp = sub.add_parser("resize-stress", help="resize apps repeatedly; every resize needs a new-size frame in time", **spp)
+    sp.add_argument("--apps", nargs="+", required=True, metavar="PKG")
+    sp.add_argument("--w", type=int, default=1792)
+    sp.add_argument("--h", type=int, default=1200)
+    sp.add_argument("--dpi", type=int, default=320)
+    sp.add_argument("--sizes", nargs="+", default=["1280x800", "2320x1200", "1024x1200", "2080x1200", "1600x900"],
+                    metavar="WxH")
+    sp.add_argument("--resizes", type=int, default=20, help="resizes per app")
+    sp.add_argument("--deadline", type=float, default=1.0, help="max seconds from window.resize to a frame")
+    sp.add_argument("--grace", type=float, default=4.0, help="extra wait so a late frame is reported, not just missing")
+    sp.add_argument("--gap", type=float, default=0.5, help="idle seconds between resizes")
+    sp.add_argument("--settle", type=float, default=0.3, help="seconds recorded after the first frame")
+    sp.add_argument("--launch-settle", type=float, default=2.0)
+    sp.add_argument("--out-prefix", default="/tmp/deckctl-stress")
+
     sp = sub.add_parser("exit-test", help="back out of the app; require app_exited", **spp)
     sp.add_argument("target")
     sp.add_argument("--w", type=int, default=1080)
@@ -1496,6 +1615,7 @@ COMMANDS = {
     "watch-state": cmd_watch_state,
     "probe": cmd_probe,
     "multi": cmd_multi,
+    "resize-stress": cmd_resize_stress,
     "exit-test": cmd_exit_test,
     "frame-png": cmd_frame_png,
 }
@@ -1535,7 +1655,7 @@ def main(argv=None):
                 raise DeckError("need --host and --port, or --discover")
             host, port = args.host, args.port
         client = open_session(host, port, state,
-                              code_provider=make_code_provider(args), device_hint=device_hint,
+                              on_code=make_code_sink(args), device_hint=device_hint,
                               busy_retries=max(1, int(args.wait_for_free / BUSY_RETRY_SLEEP) + 1))
     except (DeckError, proto.ProtocolError) as exc:
         sys.stderr.write("deckctl: error: %s\n" % exc)

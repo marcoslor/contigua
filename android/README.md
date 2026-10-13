@@ -206,9 +206,9 @@ Runs the real `Session` against the Python fake client
 
 ```bash
 ffmpeg -f lavfi -i testsrc2=size=640x480:rate=30 -t 3 -c:v libx264 -bf 0 -f h264 /tmp/c4.h264
-./gradlew :app:c4Harness -Pc4args="--code-file /tmp/code.txt --h264 /tmp/c4.h264"   # prints PORT=<n>
-python3 tools/fakephone/deckctl.py --host 127.0.0.1 --port <n> --code-file /tmp/code.txt apps
-python3 tools/fakephone/deckctl.py --host 127.0.0.1 --port <n> --code-file /tmp/code.txt \
+./gradlew :app:c4Harness -Pc4args="--h264 /tmp/c4.h264"   # prints PORT=<n>
+python3 tools/fakephone/deckctl.py --host 127.0.0.1 --port <n> --pair apps
+python3 tools/fakephone/deckctl.py --host 127.0.0.1 --port <n> --pair \
     open com.android.settings --w 640 --h 480 --seconds 2 --out /tmp/a.h264
 ```
 

@@ -30,6 +30,8 @@ class DeckForegroundService : Service() {
         override fun onPairingRequest(requestId: String, macName: String, code: String) =
             handlePairingRequest(requestId, macName, code)
 
+        override fun onPairingEnded(requestId: String) = handlePairingEnded(requestId)
+
         override fun onPaired(clientId: String, name: String, keyHex: String) =
             handlePaired(clientId, name, keyHex)
 
@@ -144,6 +146,13 @@ class DeckForegroundService : Service() {
         DeckState.pending = DeckState.PendingPairing(requestId, macName, code)
         DeckState.notifyChanged()
         showPairingNotification(requestId, macName, code)
+    }
+
+    private fun handlePairingEnded(requestId: String) {
+        if (DeckState.pending?.requestId != requestId) return
+        DeckState.pending = null
+        getSystemService(NotificationManager::class.java).cancel(NOTIF_PAIRING)
+        DeckState.notifyChanged()
     }
 
     private fun handlePaired(clientId: String, name: String, keyHex: String) {

@@ -13,12 +13,10 @@ not invent styling. No hard-coded colors except where a hex is given below.
 | Radii | panel/window content 26 · card 20 · row 14 · cell 14 · app icon 13 (`.continuous`) · digit box 12 · chips/bars `Capsule()` |
 | Type | Welcome title `.largeTitle.bold()` · tagline `.title3` + `.secondary` · section headers `.headline` · rows `.body` / subtitle `.subheadline` + `.secondary` · helper/error `.callout` · chips/labels `.caption` · all numbers `.monospacedDigit()` |
 | Color | `Color.accentColor`, `.primary/.secondary/.tertiary`, `.quaternary` fills, system `.green/.orange/.red` for status only. Vibrancy comes from glass; never set text color on glass beyond hierarchical styles |
-| Brand gradient (Welcome backdrop only) | `LinearGradient(stops:, startPoint: .topLeading, endPoint: .bottomTrailing)` light: `#6A7BFF` 0 · `#9B6BFF` 0.55 · `#3FD0E0` 1; dark: `#1E2470` 0 · `#3B1F73` 0.55 · `#0D4E5C` 1 |
 
 ### Liquid Glass rules
 - Glass is for the **floating/navigation layer** only: cards, rows in lists over a backdrop, the launcher panel, chips, hover bar, footer buttons. Never put glass on glass: content *inside* a glass surface uses `.quaternary` fills or accent tints, not another `.glassEffect`.
 - Static surfaces: `.glassEffect(.regular, in: .rect(cornerRadius: R))`. Things the user clicks/hovers that are themselves glass (rows, chips): `.glassEffect(.regular.interactive(), in: …)`.
-- Over the brand gradient use `.regular`; never `.clear` (contrast).
 - Group adjacent glass elements in `GlassEffectContainer(spacing: 8)`; give morphing elements `.glassEffectID(id, in: ns)` with a `@Namespace var ns`.
 - Buttons: the one primary action per screen = `.buttonStyle(.glassProminent)` (accent-tinted); everything else = `.buttonStyle(.glass)`. Destructive = `.glass` + `role: .destructive`. Primary uses `.controlSize(.large)`, row buttons `.controlSize(.small)`.
 - AppKit-hosted bits (launcher `NSPanel`, app-window hover bar): `NSGlassEffectView` with `cornerRadius` set, SwiftUI content as its `contentView` via `NSHostingView`. Multiple adjacent ones go in `NSGlassEffectContainerView`.
@@ -33,9 +31,9 @@ not invent styling. No hard-coded colors except where a hex is given below.
 
 ### Deck (one window; Welcome, Nearby and Phone are its states)
 Spec of every state, copy and transitions: [design/mac-redesign.md](design/mac-redesign.md) §3. Values:
-- `Window("PocketDeck", id: "deck")`, default 760×560, min 560×420, `.windowResizability(.contentMinSize)`; the standard titled
+- `Window("PocketDeck", id: "deck")`, default 760×560, min 640×420 (below that the toolbar's pill and Phone button fall into the overflow menu), `.windowResizability(.contentMinSize)`; the standard titled
   window with the macOS 26 glass toolbar. No custom window backgrounds except Welcome.
-- **Welcome:** `containerBackground(for: .window)` = brand gradient, toolbar hidden; centered card 440 wide, padding 32,
+- **Welcome:** plain system window background (no gradient), toolbar hidden; centered card 440 wide, padding 32,
   `.glassEffect(.regular, in: .rect(cornerRadius: 28))`, VStack spacing 24: app icon 96 · title · tagline · three step rows
   (`iphone.and.arrow.forward`, `bolt.badge.checkmark` + "How?" `Link`, `wifi`; symbols `.hierarchical`, `.tint`) · **Find my phone**
   `.glassProminent .controlSize(.large)`, full width.
@@ -44,24 +42,28 @@ Spec of every state, copy and transitions: [design/mac-redesign.md](design/mac-r
   rejected: "Pair again" `.orange` + button). Row padding 12, ≥ 52 pt, `.glassEffect(.regular.interactive(), in: .rect(cornerRadius: 14))`.
   Footer: **Pair with QR** · **Connect manually…** `.glass` in a `GlassEffectContainer`. Empty state: `ProgressView().controlSize(.small)` +
   "Looking for phones on this network…" `.body .secondary` + "Make sure PocketDeck is open on your phone." `.callout .tertiary`, shown after 0.4 s.
-- **Phone mode toolbar:** `navigationTitle` = phone name; `ToolbarItem(.status)` chip: 6 pt `circle.fill` (green connected, secondary connecting/offline,
-  orange reconnecting with `.symbolEffect(.pulse)` or pair again) + `.caption` text, then lock and battery symbols with `%` `.monospacedDigit()` when connected;
+- **Phone mode toolbar:** `navigationTitle` = the phone's user-visible name (Settings > About phone; the model only when the phone has none — it arrives as `welcome.device.name`);
+  `ToolbarItem(.status)` pill, `.caption`, 10 pt horizontal padding, ≥ 28 pt high: 7 pt `circle.fill` (green connected, secondary connecting/offline, orange reconnecting with
+  `.symbolEffect(.pulse)` or pair again). **Connected shows the dot alone** (the title names the phone); every other state adds its text. When connected: `lock.fill` `.secondary` only
+  while the phone is locked (unlocked shows nothing), then the battery glyph for the level — `battery.0/25/50/75/100percent` by nearest quarter, `battery.100percent.bolt` while
+  charging — and the `%` `.monospacedDigit()`, `.secondary`, `.red` below 13 % when not charging. Tooltip: "Connected, phone locked, battery 24 %".
   `ToolbarItem(.primaryAction)` **Phone** (`iphone.gen3`); `.searchable(placement: .toolbar, prompt: "Search apps")`.
 - **Banner:** `Label(text, systemImage: "exclamationmark.circle.fill")` `.callout`, padding 12, `.glassEffect(.regular, in: .rect(cornerRadius: 14))`, at most
   one trailing `.glass .controlSize(.small)` button (`.glassProminent` for **Pair again**), below the toolbar; one banner at a time.
-- **Grid:** `LazyVGrid(columns: [GridItem(.adaptive(minimum: 96, maximum: 96), spacing: 8)], spacing: 8)`, padding 16. Cell 96×100: icon 56×56
-  `.clipShape(.rect(cornerRadius: 13, style: .continuous))`, label `.caption` 1 line `.truncationMode(.middle)`, spacing 6. Hover `.fill(.quaternary)`;
-  selected `.fill(Color.accentColor.opacity(0.22))`, both `RoundedRectangle(cornerRadius: 14)` (no glass inside the grid). Loading: 12 `.redacted(reason: .placeholder)` cells.
+- **Grid:** `LazyVGrid` of `GridItem(.fixed(96))` columns; the column count is `floor((width − 2·20 + 8) / 104)` and the gap between columns grows to fill the row
+  (≥ 8), so the first tile starts and the last one ends exactly 20 pt from the window edges at any width; rows spacing 8, vertical padding 16 (`GridMetrics`).
+  Cell 96×100: icon 56×56 `.clipShape(.rect(cornerRadius: 13, style: .continuous))`, label `.caption` 1 line `.truncationMode(.middle)` with 6 pt side padding, spacing 6.
+  Hover `.fill(.quaternary)`; selected `.fill(Color.accentColor.opacity(0.22))`, both `RoundedRectangle(cornerRadius: 14)` (no glass inside the grid). Loading: 12
+  `.redacted(reason: .placeholder)` cells. **Icons** come from the phone, cached per phone (device id + package). While one is on its way: a 56 pt `.quaternary` rounded square.
+  When the phone has none (or the link is down): a generated tile — rounded square (13, continuous) with a top→bottom gradient of a hue derived from the package name
+  (FNV-1a, so it is stable), the app's initial in `.system(size: 26, weight: .semibold, design: .rounded)` white. Never pixel art.
   Offline/reconnecting: `.opacity(0.5)`, not clickable. No matches: "No apps match “query”" `.callout .secondary`, height 120.
 
-### Code-entry sheet
-- `.sheet`, frame width 400, padding 32, VStack spacing 24: title "Enter the code shown on *phone name*" `.title3.weight(.semibold)` · digit row · one line `.callout`
-  (state text, see design/mac-redesign.md §3.4) · **Cancel** `.glass` (Esc), or **Try again** `.glassProminent` after denial/timeout.
-- Digit row: HStack(spacing 8) of 6 boxes, extra 8 pt gap after box 3. Box 48×60, `.glassEffect(.regular, in: .rect(cornerRadius: 12))`; digit
-  `.system(size: 30, weight: .semibold, design: .rounded).monospacedDigit()`. Focused box: accent `strokeBorder` 2 pt. One hidden `TextField` drives all boxes;
-  paste of 6 digits fills all; auto-submit on the 6th; no placeholder digits.
-- "No answer in 3 s" (the protocol has no wrong-code frame): shake (`keyframeAnimator` on x-offset `[0, -10, 10, -8, 8, -4, 4, 0]`, 0.4 s) + `NSHapticFeedbackManager`,
-  boxes cleared, "Still waiting. Check the code, and tap Allow on your phone."
+### Pairing-code sheet (numeric comparison)
+- `.sheet`, frame width 400, padding 32, VStack spacing 24: title "Pair with *phone name*" `.title3.weight(.semibold)` · the code · one line `.callout`
+  (state text, see docs/UX.md) · **Cancel** `.glass` (Esc), or **Try again** `.glassProminent` after denial/timeout.
+- Code: "482 913" (3+3, one space), `.system(size: 52, weight: .semibold, design: .monospaced)`, `.kerning(4)`, `.primary`, height 60. Nothing is typed: no field, no boxes, no submit.
+- Line while comparing: "Tap Allow on your phone if it shows the same code." Before the code arrives: spinner + "Contacting *phone name*…".
 - Success: `checkmark.circle.fill` 64 pt `.green` `.symbolEffect(.bounce)`, sheet closes after 0.6 s.
 
 ### QR sheet
@@ -144,11 +146,11 @@ Spec of every state, copy and transitions: [design/mac-redesign.md](design/mac-r
 
 ## 4. QA checklist (verify from screenshots, light **and** dark)
 
-**Mac — Welcome:** gradient backdrop, no toolbar · one glass card, centered · icon + "PocketDeck" + "Your Android apps, on your Mac." · 3 steps with symbols, "How?" link · single prominent **Find my phone**.
+**Mac — Welcome:** plain window background, no toolbar · one glass card, centered · icon + "PocketDeck" + "Your Android apps, on your Mac." · 3 steps with symbols, "How?" link · single prominent **Find my phone**.
 **Mac — Nearby:** "Nearby" glass rows with name, model, **Pair** (prominent), no device ids · footer has exactly **Pair with QR** + **Connect manually…** (glass, secondary) · empty state shows spinner + two lines, no other content.
-**Mac — Code sheet:** title names the phone · 6 boxes, 3+3 grouping, focused box outlined in accent · one state line under the boxes, no raw error codes · **Cancel** always reachable (except while checking) · no OK/submit button.
+**Mac — Code sheet:** title names the phone · the code large and monospaced, 3+3 grouping · one state line under it, no raw error codes · **Cancel** always reachable (except while pairing finishes) · no input fields, no OK/submit button.
 **Mac — QR sheet:** QR on white tile in dark mode too · countdown visible · success shows green checkmark · expired QR blurred with **Show new code**.
-**Mac — Deck (phone):** toolbar: phone name, one status chip (dot + text, lock and battery when connected), **Phone**, search with caret · grid ≤ 56 pt icons, one-line labels · at most one cell highlighted in accent tint · offline/reconnecting: dimmed grid + chip, banner only when action is needed.
+**Mac — Deck (phone):** toolbar: the phone's own name (not the model), one status pill (green dot alone when connected, plus lock while locked and the battery glyph + %), **Phone**, search with caret · grid ≤ 56 pt icons (generated initial tile when the phone has none), one-line labels, equal 20 pt side insets, the scroll bar never over a tile · at most one cell highlighted in accent tint · offline/reconnecting: dimmed grid + chip, banner only when action is needed.
 **Mac — Banner:** one line, one trailing button at most, never a reason code.
 **Mac — App window:** video fills window under a transparent titlebar, traffic lights visible, title = app name, no toolbar · "Reconnecting…" pill over the last frame while the link is down · phone mode only: glass capsule with 3 buttons appears on top hover.
 **Mac — Settings:** exactly two tabs (General, Devices) · General has exactly 3 controls · Forget is red.

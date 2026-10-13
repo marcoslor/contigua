@@ -1,47 +1,34 @@
-// The three pairing sheets over the Deck: the 6-digit code, the QR, and the
-// manual address (docs/design/mac-redesign.md §3.4–3.5).
+// The three pairing sheets over the Deck: the 6-digit code to compare, the QR,
+// and the manual address (docs/design/mac-redesign.md §3.4–3.5).
 
 import AppKit
 import SwiftUI
 
-/// The text of the code field, reduced to what the boxes show.
-struct CodeEntry: Equatable {
-    static let length = 6
-    private(set) var digits = ""
-
-    /// Keeps digits only (a paste of "482 913" works), at most six. Returns the
-    /// code exactly once, when the sixth digit arrives.
-    mutating func update(_ text: String) -> String? {
-        let filtered = String(text.filter(\.isASCII).filter(\.isNumber).prefix(Self.length))
-        let completed = filtered.count == Self.length && digits.count != Self.length
-        digits = filtered
-        return completed ? filtered : nil
-    }
-
-    mutating func clear() { digits = "" }
-
-    func digit(at index: Int) -> Character? {
-        index < digits.count ? digits[digits.index(digits.startIndex, offsetBy: index)] : nil
-    }
+/// "123456" as "123 456": the grouping both screens use, so the eye can match them.
+func groupedPairingCode(_ code: String) -> String {
+    guard code.count == 6 else { return code }
+    return "\(code.prefix(3)) \(code.suffix(3))"
 }
 
+/// Numeric comparison: the phone and this sheet show the same code and the
+/// person taps Allow on the phone. Nothing is typed here.
 struct CodeSheet: View {
     @Environment(ConnectionController.self) private var controller
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var entry = CodeEntry()
-    @State private var text = ""
-    @State private var shake = 0
-    @FocusState private var focused: Bool
 
-    private var phone: PhoneRef? { controller.link.phone }
     private var state: Pairing? {
         if case .pairing(_, let state) = controller.link { return state }
         return nil
     }
 
+    private var displayName: String {
+        // A manual connection only knows an address, which is no name to show.
+        guard let phone = controller.link.phone, !phone.id.isEmpty, !phone.name.isEmpty else { return "your phone" }
+        return phone.name
+    }
+
     var body: some View {
         VStack(spacing: 24) {
-            Text("Enter the code shown on \(displayName)")
+            Text("Pair with \(displayName)")
                 .font(.title3.weight(.semibold))
                 .multilineTextAlignment(.center)
             if controller.pairingSucceeded {
@@ -50,113 +37,45 @@ struct CodeSheet: View {
                     .foregroundStyle(.green)
                     .symbolEffect(.bounce, value: controller.pairingSucceeded)
                     .frame(height: 60)
-            } else if showsBoxes {
-                digitRow
+            } else if case .comparing(let code) = state {
+                codeView(code)
             }
             line
             actions
         }
         .padding(32)
         .frame(width: 400)
-        .onChange(of: state) { old, new in
-            if new == .stillWaiting {
-                entry.clear()
-                text = ""
-                if !reduceMotion { shake += 1 }
-                NSHapticFeedbackManager.defaultPerformer.perform(.generic, performanceTime: .default)
-                focused = true
-            }
-            if new == .waitingForCode, old != .waitingForCode { entry.clear(); text = "" }
-        }
-        .onChange(of: controller.codeShown) { _, shown in if shown { focused = true } }
-        .onAppear { focused = true }
     }
 
-    private var displayName: String {
-        // A manual connection only knows an address, which is no name to show.
-        guard let phone, !phone.id.isEmpty, !phone.name.isEmpty else { return "your phone" }
-        return phone.name
-    }
-
-    private var showsBoxes: Bool {
-        switch state {
-        case .denied, .timedOut, .unreachable: return false
-        default: return true
-        }
-    }
-
-    private var digitRow: some View {
-        ZStack {
-            TextField("", text: $text)
-                .focused($focused)
-                .textFieldStyle(.plain)
-                .opacity(0.01)
-                .frame(width: 1, height: 1)
-                .disabled(!controller.codeShown || state == .verifying)
-                .onChange(of: text) { _, new in
-                    if let code = entry.update(new) { controller.submitCode(code) }
-                    if text != entry.digits { text = entry.digits }
-                }
-            HStack(spacing: 8) {
-                ForEach(0..<CodeEntry.length, id: \.self) { index in
-                    box(index)
-                    if index == 2 { Spacer().frame(width: 8) }
-                }
-            }
-            .opacity(controller.codeShown ? 1 : 0.5)
-            .keyframeAnimator(initialValue: 0.0, trigger: shake) { view, offset in
-                view.offset(x: offset)
-            } keyframes: { _ in
-                KeyframeTrack {
-                    for step in [-10.0, 10, -8, 8, -4, 4, 0] { LinearKeyframe(step, duration: 0.057) }
-                }
-            }
-        }
-        .contentShape(Rectangle())
-        .onTapGesture { focused = true }
-    }
-
-    private func box(_ index: Int) -> some View {
-        let isCurrent = focused && index == min(entry.digits.count, CodeEntry.length - 1)
-        return ZStack {
-            if let digit = entry.digit(at: index) {
-                Text(String(digit))
-                    .font(.system(size: 30, weight: .semibold, design: .rounded).monospacedDigit())
-            }
-        }
-        .frame(width: 48, height: 60)
-        .glassEffect(.regular, in: .rect(cornerRadius: 12))
-        .overlay {
-            if isCurrent {
-                RoundedRectangle(cornerRadius: 12).strokeBorder(Color.accentColor, lineWidth: 2)
-            }
-        }
+    private func codeView(_ code: String) -> some View {
+        Text(groupedPairingCode(code))
+            .font(.system(size: 52, weight: .semibold, design: .monospaced))
+            .kerning(4)
+            .foregroundStyle(.primary)
+            .accessibilityLabel("Pairing code \(code.map(String.init).joined(separator: " "))")
+            .frame(height: 60)
     }
 
     @ViewBuilder
     private var line: some View {
         switch state {
-        case .waitingForCode:
-            if controller.codeShown {
-                Text("Allow on your phone, then type the code.").font(.callout).foregroundStyle(.secondary)
-            } else {
-                HStack(spacing: 8) {
-                    ProgressView().controlSize(.small)
-                    Text("Contacting \(displayName)…").font(.callout).foregroundStyle(.secondary)
-                }
+        case .contacting:
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                Text("Contacting \(displayName)…").font(.callout).foregroundStyle(.secondary)
             }
+        case .comparing:
+            Text("Tap Allow on your phone if it shows the same code.")
+                .font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
         case .verifying:
             HStack(spacing: 8) {
                 ProgressView().controlSize(.small)
-                Text("Checking…").font(.callout).foregroundStyle(.secondary)
+                Text("Pairing…").font(.callout).foregroundStyle(.secondary)
             }
-        case .stillWaiting:
-            Text("Still waiting. Check the code, and tap Allow on your phone.")
-                .font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
         case .denied:
-            Text("Pairing was denied.").font(.callout).foregroundStyle(.red)
+            Text("Pairing was denied on the phone.").font(.callout).foregroundStyle(.red)
         case .timedOut:
-            Text("The phone stopped waiting. Try again.").font(.callout).foregroundStyle(.secondary)
+            Text("Nobody tapped Allow in time. Try again.").font(.callout).foregroundStyle(.secondary)
         case .unreachable:
             Text("Couldn't reach \(displayName). Try again.").font(.callout).foregroundStyle(.secondary)
         case nil:

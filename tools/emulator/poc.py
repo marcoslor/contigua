@@ -6,11 +6,11 @@ or touch the phone's screen, so this tool covers the rig's local bits:
 
   check          connect + authenticate + print the welcome (exit 0 paired,
                  2 not paired, 3 the phone is busy with another session).
-  pair           real code pairing: reads the 6-digit code from the pairing
-                 prompt, taps Allow over adb, stores the key in deckctl's own
+  pair           real pairing: checks the 6-digit code the phone announced
+                 against its prompt, taps Allow over adb, stores the key in deckctl's own
                  state file (under the same clientId, so deckctl authenticates
                  with `--state` afterwards).
-  wait-prompt    the same code reading/tapping for `deckctl --code-file F`.
+  wait-prompt    wait for a new prompt and tap Allow (pair with `deckctl --pair`).
   seed           deterministic pairing for a machine that cannot drive the real
                  flow: writes the same `paired` entry a pairing stores into the
                  app prefs with `run-as`, restarts the app, stores the key.
@@ -130,7 +130,7 @@ def read_new_code(adb, timeout, interval=0.4, stale=None):
 def tap_allow(adb, timeout):
     """Tap the prompt's Allow: app dialog first, then the notification shade.
 
-    Not time-critical: the phone waits ~30 s for the decision after pair.confirm.
+    Not time-critical: the phone waits 120 s for the decision.
     """
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -291,11 +291,12 @@ def cmd_check(args):
 
 
 def cmd_pair(args):
-    """Real code pairing: hello -> pair.request -> code -> pair.confirm -> Allow.
+    """Real pairing: hello -> pair.request -> code on both screens -> Allow.
 
-    The confirm goes out as soon as the code is known (the phone only waits ~15 s
-    for it); the Allow tap follows (the phone waits ~30 s for that decision). The
-    key lands in deckctl's state file under the clientId deckctl will use.
+    The Mac side learns the code from pair.code_shown; the phone shows the same
+    one in its prompt, which this helper confirms against before it taps Allow
+    (the phone waits 120 s for that decision). The key lands in deckctl's state
+    file under the clientId deckctl will use.
     """
     adb = Adb(args.adb, args.serial)
     state = load_state(args.state)
@@ -308,35 +309,18 @@ def cmd_pair(args):
     sess.hello(client_id, name)
     stale = notification_code(adb) or dialog_code(ui_dump(adb))
     sess.send_json({"t": "pair.request"})
-    sess.expect_json("pair.code_shown", timeout=20.0)
-    print("pair: code requested, watching for the prompt")
+    shown = sess.expect_json("pair.code_shown", timeout=20.0).get("code")
+    print("pair: phone announced code %s, watching for the prompt" % shown)
 
-    if args.code:
-        code = args.code
-    elif args.code_file:
-        code = None
-        deadline = time.time() + 30
-        while time.time() < deadline and not code:
-            try:
-                with open(args.code_file) as fp:
-                    code = fp.read().strip() or None
-            except (IOError, OSError):
-                code = None
-            if not code:
-                time.sleep(0.2)
-        if not code:
-            raise PocError("no code in %s" % args.code_file)
-    else:
-        code = read_new_code(adb, args.timeout, stale=stale)
-        if code is None:
-            raise PocError("no new pairing code within %.0fs" % args.timeout)
-        print("pair: code %s read from the prompt" % code)
-        sess.send_json({"t": "pair.confirm", "code": str(code)})
-        if not tap_allow(adb, args.tap_timeout):
-            raise PocError("pairing prompt found (code %s) but Allow was not reachable" % code)
+    code = read_new_code(adb, args.timeout, stale=stale)
+    if code is None:
+        raise PocError("no new pairing code within %.0fs" % args.timeout)
+    if code != shown:
+        raise PocError("the prompt shows %s but the Mac was told %s" % (code, shown))
+    print("pair: code %s matches on both screens" % code)
+    if not tap_allow(adb, args.tap_timeout):
+        raise PocError("pairing prompt found (code %s) but Allow was not reachable" % code)
 
-    if args.code or args.code_file:
-        sess.send_json({"t": "pair.confirm", "code": str(code)})
     msg = sess.expect_json("pair.ok", timeout=40.0)
     key = msg["key"]
     device_id = sess.expect_json("welcome").get("device", {}).get("id", "")
@@ -346,72 +330,17 @@ def cmd_pair(args):
     return 0
 
 
-def cmd_seed(args):
-    """Deterministic pairing, for when the real code flow cannot be driven.
-
-    The rig writes the same `paired` entry a real pairing stores into the app's
-    prefs (debug build -> `run-as`), restarts the app so it pushes the client to
-    the shell service, and puts the matching key into deckctl's state file.
-    `pair` remains the real flow; flow.sh tries it first.
-    """
-    adb = Adb(args.adb, args.serial)
-    state = load_state(args.state)
-    client_id = state.get("clientId") or str(uuid.uuid4())
-    name = args.name or state.get("name") or socket.gethostname()
-    key = os.urandom(32).hex()
-    device_id = args.device_id
-
-    adb.sh("am", "force-stop", APP_PKG)
-    prefs = adb.out("run-as", APP_PKG, "cat", "shared_prefs/pocketdeck.xml")
-    if "<map>" not in prefs:
-        raise PocError("cannot read %s prefs (run start.sh first)" % APP_PKG)
-    m = re.search(r'<string name="paired">(.*?)</string>', prefs, re.S)
-    paired = []
-    if m:
-        try:
-            paired = json.loads(xml_unescape(m.group(1)))
-        except ValueError as exc:
-            raise PocError("existing `paired` prefs entry is not JSON: %s" % exc)
-    paired = [e for e in paired if e.get("clientId") != client_id]
-    paired.append({"clientId": client_id, "name": name, "key": key,
-                   "lastConnected": int(time.time() * 1000)})
-    entry = '<string name="paired">%s</string>' % xml_escape(json.dumps(paired))
-    if m:
-        prefs = prefs[:m.start()] + entry + prefs[m.end():]
-    else:
-        prefs = prefs.replace("</map>", "    %s\n</map>" % entry)
-
-    written = subprocess.run(
-        [adb.adb, "-s", adb.serial, "shell",
-         "run-as %s sh -c 'cat > shared_prefs/pocketdeck.xml'" % APP_PKG],
-        input=prefs, capture_output=True, text=True, timeout=60)
-    if written.returncode != 0:
-        raise PocError("cannot write %s prefs: %s" % (APP_PKG, (written.stderr or "").strip()))
-
-    state["clientId"] = client_id
-    state["name"] = name
-    remember_key(state, device_id, key, args.state)
-    adb.sh("am", "start", "-n", MAIN_ACTIVITY)
-    print("seed: client %s stored (device %s), app restarted, key in %s" %
-          (client_id, device_id, args.state))
-    return 0
-
-
 def cmd_wait_prompt(args):
-    """Read a new code, write it for `deckctl --code-file`, then tap Allow.
+    """Wait for a new pairing prompt and tap Allow.
 
-    The manual path: `deckctl --code-file F apps` in one terminal and this helper
-    in another. flow.sh pairs through `pair` instead.
+    The manual path: `deckctl --pair apps` in one terminal (it prints the code the
+    phone announces) and this helper in another. flow.sh pairs through `pair`.
     """
     adb = Adb(args.adb, args.serial)
     code = read_new_code(adb, args.timeout, args.interval)
     if code is None:
         raise PocError("no new pairing code within %.0fs" % args.timeout)
-    tmp = args.code_file + ".tmp"
-    with open(tmp, "w") as fp:
-        fp.write(code + "\n")
-    os.replace(tmp, args.code_file)
-    print("wait-prompt: code %s -> %s" % (code, args.code_file))
+    print("wait-prompt: prompt shows code %s" % code)
     return 0 if tap_allow(adb, args.tap_timeout) else 1
 
 
@@ -482,8 +411,6 @@ def main(argv=None):
     sp.set_defaults(func=cmd_check)
 
     sp = sub.add_parser("pair", help="real code pairing (reads the prompt, taps Allow)")
-    sp.add_argument("--code", help="use this code instead of reading the prompt")
-    sp.add_argument("--code-file", help="read the code from this file (deckctl-style)")
     sp.add_argument("--name", help="client name to store (must match deckctl --name)")
     sp.add_argument("--timeout", type=float, default=60.0, help="how long to watch for the prompt")
     sp.add_argument("--tap-timeout", type=float, default=25.0,
@@ -496,8 +423,7 @@ def main(argv=None):
     sp.add_argument("--name", help="client name to store")
     sp.set_defaults(func=cmd_seed)
 
-    sp = sub.add_parser("wait-prompt", help="read a new pairing code, write it, tap Allow")
-    sp.add_argument("--code-file", required=True, help="write the code here (deckctl --code-file)")
+    sp = sub.add_parser("wait-prompt", help="wait for a new pairing prompt, tap Allow")
     sp.add_argument("--timeout", type=float, default=90.0)
     sp.add_argument("--interval", type=float, default=0.4)
     sp.add_argument("--tap-timeout", type=float, default=25.0)

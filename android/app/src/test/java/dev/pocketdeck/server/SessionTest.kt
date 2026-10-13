@@ -32,6 +32,10 @@ class SessionTest {
     @Before
     fun setUp() {
         platform = FakePlatform()
+        connect(pairDecisionTimeoutMs = 30_000)
+    }
+
+    private fun connect(pairDecisionTimeoutMs: Long) {
         serverSocket = ServerSocket(0)
         val accept = Thread {
             val s = serverSocket.accept()
@@ -51,8 +55,7 @@ class SessionTest {
                 now = { clock++ },
                 log = {},
                 handshakeTimeoutMs = 3_000,
-                pairingTimeoutMs = 10_000,
-                pairDecisionTimeoutMs = 2_000,
+                pairDecisionTimeoutMs = pairDecisionTimeoutMs,
                 exitPollIntervalMs = 50,
             )
             session = sess
@@ -167,44 +170,87 @@ class SessionTest {
     }
 
     @Test
-    fun typingTheCodeMayTakeLongerThanTheHandshakeTimeout() {
+    fun pairingShowsTheCodeToTheMacAndThePhone() {
         hello("c2", "NewMac")
         send(mapOf("t" to "pair.request"))
-        readUntil("pair.code_shown")
+        val shown = readUntil("pair.code_shown")
         val request = platform.pairRequests.first()
-        session!!.respondPairing(request.requestId, true)
-        Thread.sleep(3_500) // past handshakeTimeoutMs, well inside pairingTimeoutMs
-        send(mapOf("t" to "pair.confirm", "code" to request.code))
-        readUntil("pair.ok")
-        readUntil("welcome")
+        assertEquals(request.code, shown["code"])
+        assertTrue(Regex("\\d{6}").matches(request.code))
     }
 
     @Test
-    fun pairingHappyPathStoresClientAndWelcomes() {
+    fun allowAfterFiveSecondsPairsWithoutAnyConfirm() {
+        // The wait is far longer than the handshake timeout (3 s) on purpose:
+        // a person reading two screens must not be cut off by it.
+        client.soTimeout = 15_000
+        platform.onPairingRequestHandler = { req ->
+            Thread {
+                Thread.sleep(5_000)
+                session!!.respondPairing(req.requestId, true)
+            }.start()
+        }
         hello("c2", "NewMac")
         send(mapOf("t" to "pair.request"))
         readUntil("pair.code_shown")
-        val request = platform.pairRequests.first()
-        session!!.respondPairing(request.requestId, true)
-        send(mapOf("t" to "pair.confirm", "code" to request.code))
         val ok = readUntil("pair.ok")
-        val key = ok["key"] as String
-        assertEquals(64, key.length)
+        assertEquals(64, (ok["key"] as String).length)
         readUntil("welcome")
         assertTrue(platform.clients.any { it.clientId == "c2" })
         assertTrue(platform.paired.any { it.clientId == "c2" })
+        send(mapOf("t" to "ping", "ts" to 7))
+        assertEquals(7, (readUntil("pong")["ts"] as Number).toInt())
     }
 
     @Test
-    fun threeWrongCodesDenyPairing() {
+    fun denyReportsPairDeniedAndCloses() {
         hello("c3", "Bad")
         send(mapOf("t" to "pair.request"))
         readUntil("pair.code_shown")
-        val code = platform.pairRequests.first().code
-        val wrong = if (code == "000000") "111111" else "000000"
-        repeat(3) { send(mapOf("t" to "pair.confirm", "code" to wrong)) }
-        val error = readUntil("error")
-        assertEquals("pair_denied", error["code"])
+        session!!.respondPairing(platform.pairRequests.first().requestId, false)
+        assertEquals("pair_denied", readUntil("error")["code"])
+        assertEquals(null, reader.readFrame())
+        assertTrue(platform.clients.none { it.clientId == "c3" })
+    }
+
+    @Test
+    fun noDecisionTimesOutWithPairTimeout() {
+        runCatching { client.close() }
+        runCatching { serverSocket.close() }
+        connect(pairDecisionTimeoutMs = 500)
+        hello("c4", "Slow")
+        send(mapOf("t" to "pair.request"))
+        readUntil("pair.code_shown")
+        assertEquals("pair_timeout", readUntil("error")["code"])
+        assertEquals(null, reader.readFrame())
+        assertEquals(listOf(platform.pairRequests.first().requestId), platform.pairEnded.toList())
+    }
+
+    @Test
+    fun macHangingUpDismissesThePhonePrompt() {
+        hello("c5", "Cancelling")
+        send(mapOf("t" to "pair.request"))
+        readUntil("pair.code_shown")
+        val id = platform.pairRequests.first().requestId
+        client.close()
+        val deadline = System.currentTimeMillis() + 3_000
+        while (platform.pairEnded.isEmpty() && System.currentTimeMillis() < deadline) Thread.sleep(20)
+        assertEquals(listOf(id), platform.pairEnded.toList())
+        session!!.respondPairing(id, true)
+        assertTrue(platform.clients.none { it.clientId == "c5" })
+    }
+
+    @Test
+    fun answeringAfterAllowIsIgnored() {
+        hello("c6", "Twice")
+        send(mapOf("t" to "pair.request"))
+        readUntil("pair.code_shown")
+        val id = platform.pairRequests.first().requestId
+        session!!.respondPairing(id, true)
+        session!!.respondPairing(id, false)
+        readUntil("pair.ok")
+        readUntil("welcome")
+        assertEquals(1, platform.paired.count { it.clientId == "c6" })
     }
 
     @Test

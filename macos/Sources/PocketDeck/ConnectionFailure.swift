@@ -8,8 +8,6 @@
 // because each retry would make the phone ask for a new code.
 
 enum ConnectionFailure {
-    /// The phone stopped waiting for the pairing code (its 15 s window).
-    static let pairingTimeout = "pairing-timeout"
     /// A cached address now answers as a different phone.
     static let identityMismatch = "identity-mismatch"
 
@@ -23,7 +21,7 @@ enum ConnectionFailure {
         case "protocol": return "The phone rejected a message from this Mac"
         case "no_stream": return "That window is no longer open on the phone"
         case "launch_failed": return "The app could not be started on the phone"
-        case pairingTimeout: return "The phone stopped waiting for the code. Try again."
+        case "pair_timeout": return "Nobody tapped Allow on the phone in time. Try again."
         case identityMismatch: return "Another phone is using the remembered address."
         default: return nil
         }
@@ -32,7 +30,7 @@ enum ConnectionFailure {
     /// Whether the session should back off and connect again by itself.
     static func retriesAutomatically(_ reason: String) -> Bool {
         switch reason {
-        case "pair_denied", "version", pairingTimeout, identityMismatch: return false
+        case "pair_denied", "pair_timeout", "version", identityMismatch: return false
         default: return true
         }
     }

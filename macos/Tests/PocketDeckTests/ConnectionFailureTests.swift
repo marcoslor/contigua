@@ -19,14 +19,14 @@ final class ConnectionFailureTests: XCTestCase {
     }
 
     func testEveryPhoneErrorCodeInTheProtocolHasAMessage() {
-        for code in ["busy", "auth_failed", "pair_denied", "version", "protocol", "no_stream", "launch_failed"] {
+        for code in ["busy", "auth_failed", "pair_denied", "pair_timeout", "version", "protocol", "no_stream", "launch_failed"] {
             XCTAssertNotNil(ConnectionFailure.message(for: code), code)
         }
     }
 
-    func testPairingCodeTimeoutSaysWhatHappened() {
-        XCTAssertEqual(ConnectionFailure.message(for: ConnectionFailure.pairingTimeout),
-                       "The phone stopped waiting for the code. Try again.")
+    func testPairingTimeoutSaysWhatHappened() {
+        XCTAssertEqual(ConnectionFailure.message(for: "pair_timeout"),
+                       "Nobody tapped Allow on the phone in time. Try again.")
     }
 
     func testIdentityMismatchExplainsTheRememberedAddress() {
@@ -49,7 +49,7 @@ final class ConnectionFailureTests: XCTestCase {
 
     func testPairingFailuresDoNotRetryBecauseEveryRetryPromptsThePhone() {
         XCTAssertFalse(ConnectionFailure.retriesAutomatically("pair_denied"))
-        XCTAssertFalse(ConnectionFailure.retriesAutomatically(ConnectionFailure.pairingTimeout))
+        XCTAssertFalse(ConnectionFailure.retriesAutomatically("pair_timeout"))
         XCTAssertFalse(ConnectionFailure.retriesAutomatically("version"))
         XCTAssertFalse(ConnectionFailure.retriesAutomatically(ConnectionFailure.identityMismatch))
     }
