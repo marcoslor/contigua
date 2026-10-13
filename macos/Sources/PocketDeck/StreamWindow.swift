@@ -9,7 +9,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     unowned let manager: WindowManager
 
     /// UI scale: dpi = 160 × backingScale × density (0.75…1.5).
-    var density: Double = 1.0
+    var density: Double = WindowDensity.current
     private(set) var isPaused = false
     private var resizeWork: DispatchWorkItem?
     private var closingFromRemote = false
@@ -18,11 +18,16 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         self.stream = stream
         self.manager = manager
         self.videoView = VideoLayerView(frame: NSRect(origin: .zero, size: contentSize))
+        // The video fills the whole window, under a transparent titlebar, so the
+        // window's frame size *is* the video size.
         let window = NSWindow(contentRect: NSRect(origin: .zero, size: contentSize),
-                              styleMask: [.titled, .closable, .miniaturizable, .resizable],
+                              styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
                               backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.acceptsMouseMovedEvents = true
+        window.titlebarAppearsTransparent = true
+        window.titleVisibility = .visible
+        window.setFrame(NSRect(origin: window.frame.origin, size: contentSize), display: false)
         super.init(window: window)
         window.delegate = self
         window.contentView = videoView
@@ -70,18 +75,39 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         session.resizeWindow(stream: stream, width: Int(pixels.width), height: Int(pixels.height), dpi: dpi())
     }
 
-    /// Programmatic content-size change (test hook + chrome actions).
+    /// Programmatic size change (test hook + chrome actions); the top-left stays put.
     func setContentSize(_ size: NSSize) {
-        window?.setContentSize(size)
+        guard let window else { return }
+        let top = window.frame.maxY
+        window.setFrame(NSRect(x: window.frame.minX, y: top - size.height, width: size.width, height: size.height),
+                        display: true)
     }
 
     // MARK: Presence
 
+    /// Where this window opens: the frame it had last time, else a cascade
+    /// step from the previous stream window (never on top of the Deck).
     func present() {
-        window?.center()
+        if let window {
+            if let saved = manager.savedFrame(forKey: frameKey), saved.size.width >= 240, saved.size.height >= 160 {
+                window.setFrame(manager.clampedToScreen(saved), display: false)
+            } else {
+                window.setFrameTopLeftPoint(manager.nextCascadeOrigin(for: window))
+            }
+        }
         window?.makeKeyAndOrderFront(nil)
         window?.makeFirstResponder(videoView)
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    /// Frames are remembered per app (or "phone") in the profile's defaults.
+    var frameKey: String { "stream" }
+
+    func windowDidMove(_ notification: Notification) { rememberFrame() }
+
+    private func rememberFrame() {
+        guard let window, window.isVisible, !closingFromRemote else { return }
+        manager.saveFrame(window.frame, forKey: frameKey)
     }
 
     func closeFromRemote() {
@@ -103,6 +129,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
 
     func windowDidEndLiveResize(_ notification: Notification) {
         scheduleResize(after: 0)
+        rememberFrame()
     }
 
     private func scheduleResize(after delay: TimeInterval) {
@@ -139,6 +166,50 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         guard paused != isPaused else { return }
         isPaused = paused
         if paused { session.pauseWindow(stream: stream) } else { session.resumeWindow(stream: stream) }
+    }
+
+    // MARK: Link state
+
+    private var pill: GlassPillView?
+    private var pillShowWork: DispatchWorkItem?
+    private var pillOfflineWork: DispatchWorkItem?
+
+    /// The link dropped or came back: a pill over the last frame says so after
+    /// 1 s (a blip shows nothing), and "Phone offline" after 15 s.
+    func setLinkDown(_ down: Bool) {
+        pillShowWork?.cancel()
+        pillOfflineWork?.cancel()
+        guard down else {
+            pill?.fade(to: 0)
+            return
+        }
+        let show = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            let pill = self.pill ?? GlassPillView(text: "Reconnecting…", showsProgress: true)
+            if self.pill == nil {
+                self.pill = pill
+                self.videoView.addSubview(pill)
+                pill.alphaValue = 0
+            }
+            pill.setText("Reconnecting…", showsProgress: true)
+            self.layoutPill()
+            pill.fade(to: 1)
+        }
+        let offline = DispatchWorkItem { [weak self] in
+            self?.pill?.setText("Phone offline", showsProgress: false)
+            self?.layoutPill()
+        }
+        pillShowWork = show
+        pillOfflineWork = offline
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1, execute: show)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 15, execute: offline)
+    }
+
+    private func layoutPill() {
+        guard let pill else { return }
+        let size = pill.fittingSize
+        pill.frame = NSRect(x: (videoView.bounds.width - size.width) / 2, y: 24, width: size.width, height: size.height)
+        pill.autoresizingMask = [.minXMargin, .maxXMargin, .maxYMargin]
     }
 
     // MARK: Density

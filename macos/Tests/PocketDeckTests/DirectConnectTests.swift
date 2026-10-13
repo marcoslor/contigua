@@ -1,6 +1,7 @@
 // Cached-address store + the direct-connect policy (discovery beats the cache;
 // the cache fills the discovery gap; a mismatched phone drops the address).
 
+import Network
 import XCTest
 @testable import PocketDeck
 
@@ -92,78 +93,51 @@ final class DirectConnectTests: XCTestCase {
         XCTAssertTrue(cache.deviceIds.isEmpty)
     }
 
-    func testMismatchPathDropsTheCandidate() {
+    func testMismatchDropsOnlyThatDevicesAddress() {
         let cache = store()
         cache.store(CachedAddress(host: "127.0.0.1", port: 47000), deviceId: "aaa")
-        let policy = DirectConnectPolicy()
-        var decision = policy.decide(discoveredPaired: [], cached: cache.devices, activeDeviceId: nil,
-                                     activeReady: false, elapsedSinceLaunch: 10)
-        XCTAssertEqual(decision, .useCached(CachedDevice(deviceId: "aaa",
-                                                         address: CachedAddress(host: "127.0.0.1", port: 47000))))
+        cache.store(CachedAddress(host: "127.0.0.2", port: 47001), deviceId: "bbb")
         // The phone behind the address answered with another id.
         cache.forget(deviceId: "aaa")
-        decision = policy.decide(discoveredPaired: [], cached: cache.devices, activeDeviceId: nil,
-                                 activeReady: false, elapsedSinceLaunch: 10)
-        XCTAssertEqual(decision, .none)
+        XCTAssertNil(cache.address(forDeviceId: "aaa"))
+        XCTAssertEqual(cache.address(forDeviceId: "bbb")?.port, 47001)
     }
 
-    // MARK: Policy
-
-    private let cached = [CachedDevice(deviceId: "aaa", address: CachedAddress(host: "10.0.0.5", port: 47000))]
-
-    func testDiscoveryOverridesTheCache() {
-        let decision = DirectConnectPolicy().decide(discoveredPaired: ["aaa"], cached: cached,
-                                                    activeDeviceId: nil, activeReady: false,
-                                                    elapsedSinceLaunch: 0)
-        XCTAssertEqual(decision, .useDiscovery(deviceId: "aaa"))
+    func testScopedAddressesResolveToTheirIPv4Literal() {
+        let endpoint = NWEndpoint.hostPort(host: NWEndpoint.Host("192.168.1.20%en0"), port: 47000)
+        XCTAssertEqual(endpoint.resolvedIPv4Address, CachedAddress(host: "192.168.1.20", port: 47000))
     }
 
-    func testWaitsOutTheDiscoveryGraceWithNoService() {
-        let policy = DirectConnectPolicy()
-        XCTAssertEqual(policy.decide(discoveredPaired: [], cached: cached, activeDeviceId: nil,
-                                     activeReady: false, elapsedSinceLaunch: 0), .none)
-        XCTAssertEqual(policy.decide(discoveredPaired: [], cached: cached, activeDeviceId: nil,
-                                     activeReady: false, elapsedSinceLaunch: 2.9), .none)
-        XCTAssertEqual(policy.decide(discoveredPaired: [], cached: cached, activeDeviceId: nil,
-                                     activeReady: false, elapsedSinceLaunch: 3), .useCached(cached[0]))
+    // MARK: Endpoint planner
+
+    private let address = CachedAddress(host: "10.0.0.5", port: 47000)
+
+    func testDiscoveryIsTheFirstChoice() {
+        XCTAssertEqual(EndpointPlanner().choose(discovered: true, cached: address, lastAttemptWasService: false,
+                                                lastAttemptFailed: false, sinceLaunch: 0), .service)
     }
 
-    func testNoCacheNoCandidate() {
-        XCTAssertEqual(DirectConnectPolicy().decide(discoveredPaired: [], cached: [], activeDeviceId: nil,
-                                                    activeReady: false, elapsedSinceLaunch: 30), .none)
+    func testFailedServiceAttemptFallsBackToTheCachedAddress() {
+        XCTAssertEqual(EndpointPlanner().choose(discovered: true, cached: address, lastAttemptWasService: true,
+                                                lastAttemptFailed: true, sinceLaunch: 30), .cached(address))
+        // Nothing remembered: keep using the service.
+        XCTAssertEqual(EndpointPlanner().choose(discovered: true, cached: nil, lastAttemptWasService: true,
+                                                lastAttemptFailed: true, sinceLaunch: 30), .service)
     }
 
-    func testReadySessionIsNeverReplaced() {
-        XCTAssertEqual(DirectConnectPolicy().decide(discoveredPaired: ["bbb"], cached: cached,
-                                                    activeDeviceId: "aaa", activeReady: true,
-                                                    elapsedSinceLaunch: 30), .none)
-        XCTAssertEqual(DirectConnectPolicy().decide(discoveredPaired: [], cached: cached,
-                                                    activeDeviceId: "somebody-else", activeReady: true,
-                                                    elapsedSinceLaunch: 30), .none)
+    func testWaitsOutTheDiscoveryGraceBeforeTheCachedAddress() {
+        let planner = EndpointPlanner()
+        XCTAssertEqual(planner.choose(discovered: false, cached: address, lastAttemptWasService: false,
+                                      lastAttemptFailed: false, sinceLaunch: 0), .wait(1.5))
+        XCTAssertEqual(planner.choose(discovered: false, cached: address, lastAttemptWasService: false,
+                                      lastAttemptFailed: false, sinceLaunch: 1.0), .wait(0.5))
+        XCTAssertEqual(planner.choose(discovered: false, cached: address, lastAttemptWasService: false,
+                                      lastAttemptFailed: false, sinceLaunch: 1.5), .cached(address))
     }
 
-    func testRetryingSessionIsNotReplacedByTheLaunchWait() {
-        XCTAssertEqual(DirectConnectPolicy().decide(discoveredPaired: [], cached: cached,
-                                                    activeDeviceId: "aaa", activeReady: false,
-                                                    elapsedSinceLaunch: 30), .none)
-    }
-
-    func testFailureFallsBackToTheCachedAddress() {
-        let policy = DirectConnectPolicy()
-        // The discovery session to aaa failed although mDNS is gone.
-        XCTAssertEqual(policy.failureDecision(deviceId: "aaa", cached: cached, discoveredPaired: []),
-                       .useCached(cached[0]))
-        // Still visible in discovery results: the just-used address is tried.
-        XCTAssertEqual(policy.failureDecision(deviceId: "aaa", cached: cached, discoveredPaired: ["aaa"]),
-                       .useCached(cached[0]))
-    }
-
-    func testFailureWithoutACachePrefersDiscovery() {
-        let policy = DirectConnectPolicy()
-        XCTAssertEqual(policy.failureDecision(deviceId: "aaa", cached: [], discoveredPaired: ["bbb"]),
-                       .useDiscovery(deviceId: "bbb"))
-        XCTAssertEqual(policy.failureDecision(deviceId: "bbb", cached: [], discoveredPaired: ["bbb"]), .none)
-        XCTAssertEqual(policy.failureDecision(deviceId: nil, cached: [], discoveredPaired: []), .none)
+    func testNothingToConnectTo() {
+        XCTAssertEqual(EndpointPlanner().choose(discovered: false, cached: nil, lastAttemptWasService: false,
+                                                lastAttemptFailed: false, sinceLaunch: 30), .none)
     }
 
     func testLastPairedDeviceComesFirst() {
@@ -173,7 +147,7 @@ final class DirectConnectTests: XCTestCase {
         let keys = PairKeyStore(defaults: defaults, keychain: Keychain(service: suiteName))
         keys.lastDeviceId = "bbb"
         XCTAssertEqual(cache.deviceIds, ["aaa", "bbb"])
-        // AppModel orders by lastDeviceId; the store itself has no opinion.
+        // The store itself has no opinion about order.
         XCTAssertEqual(cache.address(forDeviceId: "bbb")?.host, "10.0.0.2")
     }
 }

@@ -4,7 +4,7 @@
 import AppKit
 
 final class WindowManager {
-    let session: Session
+    private(set) var session: Session
     private var nextStream: UInt32 = 1
     private var streams: [UInt32: StreamWindowController] = [:]
     /// Guards `streams`: video is routed from the session queue, windows are
@@ -23,8 +23,71 @@ final class WindowManager {
 
     func beginShutdown() { shuttingDown = true }
 
-    init(session: Session) {
+    /// The controller owns one `Session` per attempt; windows outlive them and
+    /// talk to whichever is current.
+    func attach(_ session: Session) {
+        lock.lock(); self.session = session; lock.unlock()
+    }
+
+    /// True while the link is down: stream windows show a "Reconnecting…" pill
+    /// over their last frame and drop input (docs/design/mac-redesign.md §3.7).
+    private(set) var linkIsDown = false
+
+    func linkLost() {
+        linkIsDown = true
+        for controller in allControllers() { controller.setLinkDown(true) }
+    }
+
+    func linkRestored() {
+        linkIsDown = false
+        for controller in allControllers() { controller.setLinkDown(false) }
+    }
+
+    private let frames: UserDefaults
+    private var cascadePoint = NSPoint.zero
+    private static let framesKey = "streamFrames"
+
+    init(session: Session, defaults: UserDefaults = .standard) {
         self.session = session
+        frames = defaults
+    }
+
+    // MARK: Placement
+
+    func savedFrame(forKey key: String) -> NSRect? {
+        guard let raw = (frames.dictionary(forKey: Self.framesKey) as? [String: String])?[key] else { return nil }
+        let rect = NSRectFromString(raw)
+        return rect.isEmpty ? nil : rect
+    }
+
+    func saveFrame(_ frame: NSRect, forKey key: String) {
+        var all = frames.dictionary(forKey: Self.framesKey) as? [String: String] ?? [:]
+        all[key] = NSStringFromRect(frame)
+        frames.set(all, forKey: Self.framesKey)
+    }
+
+    /// A remembered frame may belong to a display that is gone.
+    func clampedToScreen(_ frame: NSRect) -> NSRect {
+        let screens = NSScreen.screens.map(\.visibleFrame)
+        guard let area = screens.first(where: { $0.intersects(frame) }) ?? screens.first else { return frame }
+        var result = frame
+        result.size.width = min(result.width, area.width)
+        result.size.height = min(result.height, area.height)
+        result.origin.x = min(max(result.minX, area.minX), area.maxX - result.width)
+        result.origin.y = min(max(result.minY, area.minY), area.maxY - result.height)
+        return result
+    }
+
+    /// Top-left for a window with no remembered frame: a 28 pt cascade from the
+    /// top-left of the main screen, so new windows never stack exactly and never
+    /// open centred over the Deck.
+    func nextCascadeOrigin(for window: NSWindow) -> NSPoint {
+        let area = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+        let start = NSPoint(x: area.minX + 48, y: area.maxY - 48)
+        var point = cascadePoint == .zero ? start : NSPoint(x: cascadePoint.x + 28, y: cascadePoint.y - 28)
+        if point.x + window.frame.width > area.maxX || point.y - window.frame.height < area.minY { point = start }
+        cascadePoint = point
+        return point
     }
 
     // MARK: Windows
@@ -117,7 +180,9 @@ final class WindowManager {
 
     /// Video arrives on the session queue; hand it straight to the display
     /// layer's queue without a main-thread hop.
-    func handleVideo(_ event: VideoEvent) {
+    func handleVideo(_ event: VideoEvent, from source: Session) {
+        lock.lock(); let current = session; lock.unlock()
+        guard source === current else { return }
         switch event {
         case .config(let stream, let config):
             controller(for: stream)?.videoView.configure(config)

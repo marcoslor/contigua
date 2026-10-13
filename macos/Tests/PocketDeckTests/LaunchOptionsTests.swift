@@ -79,14 +79,21 @@ final class LaunchOptionsTests: XCTestCase {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("pd-code-test.txt")
         try "123456\n".write(to: url, atomically: true, encoding: .utf8)
         defer { try? FileManager.default.removeItem(at: url) }
-        XCTAssertEqual(AppModel.readCode(url.path), "123456")
+        XCTAssertEqual(ConnectionController.readCode(url.path), "123456")
     }
 
     func testReadCodeMissingOrEmpty() throws {
-        XCTAssertNil(AppModel.readCode("/tmp/pd-code-does-not-exist.txt"))
+        XCTAssertNil(ConnectionController.readCode("/tmp/pd-code-does-not-exist.txt"))
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("pd-code-empty.txt")
         try "".write(to: url, atomically: true, encoding: .utf8)
         defer { try? FileManager.default.removeItem(at: url) }
-        XCTAssertNil(AppModel.readCode(url.path))
+        XCTAssertNil(ConnectionController.readCode(url.path))
+    }
+
+    func testParsesPreviewAndAppearance() {
+        let options = LaunchOptions.parse(["PocketDeck", "--preview", "offline", "--appearance", "light"])
+        XCTAssertEqual(options.preview, "offline")
+        XCTAssertEqual(options.appearance, "light")
+        XCTAssertNil(LaunchOptions.parse(["PocketDeck"]).preview)
     }
 }

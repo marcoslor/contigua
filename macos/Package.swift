@@ -3,7 +3,7 @@ import PackageDescription
 
 let package = Package(
     name: "PocketDeck",
-    platforms: [.macOS("15.0")],
+    platforms: [.macOS("26.0")],
     targets: [
         // The app is a single executable target so its wiring (AppKit views,
         // windows, session) can be exercised directly by the test target.

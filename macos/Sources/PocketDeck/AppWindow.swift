@@ -25,6 +25,8 @@ final class AppWindowController: StreamWindowController {
                         width: Int(pixels.width), height: Int(pixels.height), dpi: dpi())
     }
 
+    override var frameKey: String { "app.\(pkg)" }
+
     func setTitle(_ label: String) {
         window?.title = label
     }

@@ -28,35 +28,32 @@ on either side removes the key; the other side gets `auth_failed` next time and 
 
 ## macOS app
 
-Menu-bar presence + Dock icon. Windows:
+Menu-bar presence + Dock icon. One home window, the **Deck**, plus the app windows.
+Detail, states, copy and the connection state machine: [design/mac-redesign.md](design/mac-redesign.md).
 
-1. **Welcome** (first run only, one window, glass card over a soft gradient):
-   - Hero: app icon, "PocketDeck", one line: "Your Android apps, on your Mac."
-   - Three compact steps with SF Symbols: *Install PocketDeck on your phone* ·
-     *Start Shizuku* (link "How?") · *Be on the same Wi-Fi*.
-   - Primary button **Find my phone** → Devices view.
-2. **Devices** (also the window shown when nothing is paired):
-   - "Nearby" list (glass rows: phone name, model; paired phones show "Paired" or
-     "Pair again" if their key was rejected), each unpaired row with **Pair**.
-   - Footer buttons (glass, secondary): **Pair with QR** · **Connect manually…**
-   - Empty state: subtle spinner "Looking for phones on this network…" + "Make sure
-     PocketDeck is open on your phone."
-   - Code entry sheet: six digit boxes, auto-advance, auto-submit on the 6th digit;
-     wrong code shakes; 3 failures → back to list with a one-line inline error (not the
-     "Pairing failed" alert, which is only for denied/unreachable).
-3. **Launcher** (main window once paired; ⌘K / menu-bar click toggles it, Spotlight-like):
-   - Floating glass panel: search field (focused), app grid with icons, phone name +
-     one status chip (connection · lock · battery combined) in the header, **Phone** button (opens phone mode).
-   - Typing filters; ↩ opens the first match; arrows move selection; esc hides.
-4. **App windows**: content only — video edge to edge, standard traffic lights,
-   title = app name with its icon. No toolbar. A thin glass bar appears on hover at
-   the top for phone mode only (Back · Home · Recents).
-5. **Settings** (⌘,): tabs **General** (launch at login, show in menu bar, default
-   window density) · **Devices** (pairing manager). Nothing else.
+1. **Deck** (the only main window; closing it hides it, the Dock icon and ⌘K bring it back). What it shows is chosen by
+   what this Mac remembers:
+   - **Welcome** (first run only): glass card over a soft gradient. App icon, "PocketDeck", "Your Android apps, on your
+     Mac.", three compact steps (*Install PocketDeck on your phone* · *Start Shizuku* with "How?" · *Be on the same
+     Wi-Fi*), primary **Find my phone**.
+   - **Nearby** (nothing paired yet; also the "Add a phone" sheet): phones on the network as glass rows (name, model,
+     **Pair**), footer **Pair with QR** · **Connect manually…**. Empty: spinner "Looking for phones on this network…" +
+     "Make sure PocketDeck is open on your phone." Pairing runs in sheets: the 6-digit code (inline errors, Cancel) or the QR
+     (countdown, success check).
+   - **Phone** (a phone is paired, including while it is away): toolbar with the phone's name, one status chip
+     (Connected · lock · battery / Connecting… / Reconnecting… / Offline / Pair again), **Phone** button and search; the app
+     grid (single click opens, arrows move, ↩ opens, esc clears). The grid is there at launch from the last session and is dimmed
+     while the phone is away. A problem is one banner line with at most one button (Try now / Pair again).
+2. **App windows**: content only — video edge to edge under a transparent titlebar, standard traffic lights, title = app name.
+   New windows cascade (never on top of the Deck) and remember their frame. While the connection is down a small glass pill
+   ("Reconnecting…") sits over the last frame; the window stays open. Phone mode: a glass bar (Back · Home · Recents)
+   appears on hover at the top.
+3. **Settings** (⌘,): tabs **General** (launch at login, show in menu bar, default window density) · **Devices** (paired phones:
+   name, model, last seen, **Use**, **Forget**; **Add phone…**). Nothing else.
 
-Status/feedback: a single connection chip (Connected · Reconnecting… · Offline) in the
-launcher header and the menu-bar menu. Errors are one line, inline, never modal except
-"Pairing failed".
+Status/feedback: a single connection chip in the Deck toolbar and the menu-bar menu. Reconnecting is silent: a remembered phone
+connects by itself at launch and after any drop, with back-off, and the UI shows "Offline" (never an error code) only after 15 s
+without a connection. Errors are one line, inline, never modal.
 
 ## Android app
 

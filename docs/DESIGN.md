@@ -31,55 +31,63 @@ not invent styling. No hard-coded colors except where a hex is given below.
 - Wrong-code shake: `keyframeAnimator` on x-offset `[0, -10, 10, -8, 8, -4, 4, 0]`, total 0.4 s, plus `NSHapticFeedbackManager.defaultPerformer.perform(.generic, …)`.
 - `@Environment(\.accessibilityReduceMotion)`: replace moves/scales/shake with opacity-only.
 
-### Welcome window
-- `Window("Welcome", id: "welcome")`, `.windowStyle(.hiddenTitleBar)`, `.windowResizability(.contentSize)`, `.windowBackgroundDragBehavior(.enabled)`; content frame 560×520; background = brand gradient `.ignoresSafeArea()`.
-- Centered card 440 wide, padding 32, `.glassEffect(.regular, in: .rect(cornerRadius: 28))`, VStack spacing 24:
-  - App icon 96×96 (`NSApp.applicationIconImage`), title, tagline.
-  - Steps: 3 rows, `Label` with SF Symbols `iphone.and.arrow.forward` · `bolt.badge.checkmark` · `wifi`, `.font(.body)`, symbol `.foregroundStyle(.tint)`, `.symbolRenderingMode(.hierarchical)`, row spacing 12. "How?" = `Link` in `.callout`.
-  - **Find my phone**: `.glassProminent`, `.controlSize(.large)`, full card width.
-
-### Devices window
-- `Window("Devices", id: "devices")`, default size 480×560, min 420×420, standard titlebar, `.toolbarBackgroundVisibility(.hidden, for: .windowToolbar)`, default window background (no custom material).
-- Section header "Nearby" `.headline`, padding 16.
-- Rows in `GlassEffectContainer(spacing: 8)`: HStack(spacing 12) — `iphone.gen3` 22 pt `.secondary` · VStack(name `.body`, model `.subheadline .secondary`) · Spacer · state text ("Paired" `.secondary` / "Pair again" `.orange`) when applicable · **Pair** `.glassProminent .controlSize(.small)`. Row padding 12, height ≥ 52, `.glassEffect(.regular.interactive(), in: .rect(cornerRadius: 14))`.
-- Footer HStack(spacing 8), padding 16, in a `GlassEffectContainer`: **Pair with QR** (`qrcode`) · **Connect manually…** (`network`), both `.glass`.
-- Empty: centered VStack(spacing 8): `ProgressView().controlSize(.small)`, "Looking for phones on this network…" `.body .secondary`, "Make sure PocketDeck is open on your phone." `.callout .tertiary`.
-- Inline error (e.g. after 3 failed codes): `Label(msg, systemImage: "exclamationmark.circle.fill")`, `.callout`, `.foregroundStyle(.red)`, above the list, auto-clears on next action.
-- "Pair again" state (after `auth_failed`): row subtitle "Pair again" `.orange` and button label **Pair again**.
+### Deck (one window; Welcome, Nearby and Phone are its states)
+Spec of every state, copy and transitions: [design/mac-redesign.md](design/mac-redesign.md) §3. Values:
+- `Window("PocketDeck", id: "deck")`, default 760×560, min 560×420, `.windowResizability(.contentMinSize)`; the standard titled
+  window with the macOS 26 glass toolbar. No custom window backgrounds except Welcome.
+- **Welcome:** `containerBackground(for: .window)` = brand gradient, toolbar hidden; centered card 440 wide, padding 32,
+  `.glassEffect(.regular, in: .rect(cornerRadius: 28))`, VStack spacing 24: app icon 96 · title · tagline · three step rows
+  (`iphone.and.arrow.forward`, `bolt.badge.checkmark` + "How?" `Link`, `wifi`; symbols `.hierarchical`, `.tint`) · **Find my phone**
+  `.glassProminent .controlSize(.large)`, full width.
+- **Nearby rows** in `GlassEffectContainer(spacing: 8)`: HStack(spacing 12) `iphone.gen3` 22 pt `.secondary` · name `.body` + model
+  `.subheadline .secondary` · Spacer · **Pair** `.glassProminent .controlSize(.small)` (remembered phones: "Paired" `.secondary`;
+  rejected: "Pair again" `.orange` + button). Row padding 12, ≥ 52 pt, `.glassEffect(.regular.interactive(), in: .rect(cornerRadius: 14))`.
+  Footer: **Pair with QR** · **Connect manually…** `.glass` in a `GlassEffectContainer`. Empty state: `ProgressView().controlSize(.small)` +
+  "Looking for phones on this network…" `.body .secondary` + "Make sure PocketDeck is open on your phone." `.callout .tertiary`, shown after 0.4 s.
+- **Phone mode toolbar:** `navigationTitle` = phone name; `ToolbarItem(.status)` chip: 6 pt `circle.fill` (green connected, secondary connecting/offline,
+  orange reconnecting with `.symbolEffect(.pulse)` or pair again) + `.caption` text, then lock and battery symbols with `%` `.monospacedDigit()` when connected;
+  `ToolbarItem(.primaryAction)` **Phone** (`iphone.gen3`); `.searchable(placement: .toolbar, prompt: "Search apps")`.
+- **Banner:** `Label(text, systemImage: "exclamationmark.circle.fill")` `.callout`, padding 12, `.glassEffect(.regular, in: .rect(cornerRadius: 14))`, at most
+  one trailing `.glass .controlSize(.small)` button (`.glassProminent` for **Pair again**), below the toolbar; one banner at a time.
+- **Grid:** `LazyVGrid(columns: [GridItem(.adaptive(minimum: 96, maximum: 96), spacing: 8)], spacing: 8)`, padding 16. Cell 96×100: icon 56×56
+  `.clipShape(.rect(cornerRadius: 13, style: .continuous))`, label `.caption` 1 line `.truncationMode(.middle)`, spacing 6. Hover `.fill(.quaternary)`;
+  selected `.fill(Color.accentColor.opacity(0.22))`, both `RoundedRectangle(cornerRadius: 14)` (no glass inside the grid). Loading: 12 `.redacted(reason: .placeholder)` cells.
+  Offline/reconnecting: `.opacity(0.5)`, not clickable. No matches: "No apps match “query”" `.callout .secondary`, height 120.
 
 ### Code-entry sheet
-- `.sheet`, frame width 400, padding 32, VStack spacing 24: title "Enter the code shown on *phone name*" `.title3.weight(.semibold)` · digit row · helper `.callout .secondary` / error `.callout .red` · **Cancel** `.glass`.
-- Digit row: HStack(spacing 8) of 6 boxes, extra 16 pt gap after box 3. Box 48×60, `.glassEffect(.regular, in: .rect(cornerRadius: 12))`; digit `.system(size: 30, weight: .semibold, design: .rounded).monospacedDigit()`. Focused box: `.overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color.accentColor, lineWidth: 2))`. Single hidden `TextField` drives all boxes; paste of 6 digits fills all; auto-submit on 6th → boxes show `ProgressView().controlSize(.small)` in place of title icon.
-- Wrong code: shake, clear, refocus box 1, error "That code didn't match. Try again."
+- `.sheet`, frame width 400, padding 32, VStack spacing 24: title "Enter the code shown on *phone name*" `.title3.weight(.semibold)` · digit row · one line `.callout`
+  (state text, see design/mac-redesign.md §3.4) · **Cancel** `.glass` (Esc), or **Try again** `.glassProminent` after denial/timeout.
+- Digit row: HStack(spacing 8) of 6 boxes, extra 8 pt gap after box 3. Box 48×60, `.glassEffect(.regular, in: .rect(cornerRadius: 12))`; digit
+  `.system(size: 30, weight: .semibold, design: .rounded).monospacedDigit()`. Focused box: accent `strokeBorder` 2 pt. One hidden `TextField` drives all boxes;
+  paste of 6 digits fills all; auto-submit on the 6th; no placeholder digits.
+- "No answer in 3 s" (the protocol has no wrong-code frame): shake (`keyframeAnimator` on x-offset `[0, -10, 10, -8, 8, -4, 4, 0]`, 0.4 s) + `NSHapticFeedbackManager`,
+  boxes cleared, "Still waiting. Check the code, and tap Allow on your phone."
+- Success: `checkmark.circle.fill` 64 pt `.green` `.symbolEffect(.bounce)`, sheet closes after 0.6 s.
 
 ### QR sheet
-- `.sheet`, width 360, padding 32, VStack spacing 16: title "Scan with PocketDeck on your phone" `.title3.weight(.semibold)`; QR 220×220 rendered via `CIFilter.qrCodeGenerator()` (correctionLevel "M"), `.interpolation(.none)`, on a **white** `RoundedRectangle(cornerRadius: 16)` with 16 pt padding in both appearances (scan reliability); "Expires in 4:59" `.caption .secondary .monospacedDigit()`; **Done** `.glass`.
-- On success: QR crossfades to `checkmark.circle.fill` 64 pt `.green` with `.symbolEffect(.bounce)`, sheet closes after 0.8 s. On expiry: QR `.blur(radius: 8)` + **Show new code** `.glassProminent`.
-
-### Launcher panel
-- `NSPanel` styleMask `[.nonactivatingPanel, .fullSizeContentView, .borderless]`, `level = .floating`, `isOpaque = false`, `backgroundColor = .clear`, `hasShadow = true`, centered horizontally at 22 % from the screen top. Root = `NSGlassEffectView(cornerRadius: 26)` hosting SwiftUI.
-- Size: width 640 fixed; height = content, max 480 (grid scrolls). Padding 16, VStack spacing 12.
-- Header (height 28): phone name `.headline` · Spacer · chip group in `GlassEffectContainer(spacing: 6)`: connection chip, lock chip (`lock.fill` / `lock.open.fill`), battery chip (`battery.100percent`…`battery.0percent`, `battery.100percent.bolt` when charging, % `.monospacedDigit()`); chips `.caption`, padding h8 v4, `.glassEffect(.regular, in: Capsule())` · **Phone** button (`iphone.gen3`, `.glass`, `.controlSize(.small)`).
-- Connection chip: 6 pt `Circle` + text. Connected `.green` · Reconnecting… `.orange` + dot `.symbolEffect(.pulse)` (use `circle.fill` symbol) · Offline `.secondary`.
-- Search: `TextField("Search apps", …)`, `.textFieldStyle(.plain)`, `.font(.title3)`, leading `magnifyingglass` `.secondary`, height 44, padding h12, background `.quaternary` in `.rect(cornerRadius: 12)`, `@FocusState` focused on show.
-- Grid: `LazyVGrid(columns: Array(repeating: GridItem(.fixed(96), spacing: 8), count: 6), spacing: 8)` → max 6 columns. Cell 96×100: icon 56×56 `.clipShape(.rect(cornerRadius: 13, style: .continuous))`, label `.caption`, 1 line, `.truncationMode(.middle)`, spacing 6.
-- Cell states (no glass inside the panel): hover `.fill(.quaternary)`; selected `.fill(Color.accentColor.opacity(0.22))` + label `.primary`; both `RoundedRectangle(cornerRadius: 14)`. Selection moves with `.smooth(duration: 0.15)`.
-- Show: opacity 0→1 + scale 0.96→1 with the appear spring; hide: dismiss curve. Esc / click outside / ⌘K hides.
-- Loading: 12 placeholder cells `.redacted(reason: .placeholder)`. No matches: "No apps match "query"" `.callout .secondary`, centered, height 120. Offline: `ContentUnavailableView("Phone is offline", systemImage: "iphone.slash", description: Text("Reconnecting automatically."))`.
+- `.sheet`, width 360, padding 32, VStack spacing 16: title "Scan with PocketDeck on your phone" `.title3.weight(.semibold)`; QR rendered via `CIFilter.qrCodeGenerator()`
+  (correctionLevel "M"), `.interpolation(.none)`, on a **white** `RoundedRectangle(cornerRadius: 16)` with 16 pt padding in both appearances (scan reliability);
+  "Expires in 4:59" `.caption .secondary .monospacedDigit()`; "Waiting for your phone…" `.callout .secondary`; **Cancel** `.glass`.
+- Success: QR crossfades to `checkmark.circle.fill` 64 pt `.green` `.symbolEffect(.bounce)`, sheet closes after 0.8 s. Expiry: QR `.blur(radius: 8)` + **Show new code** `.glassProminent`.
 
 ### App windows
-- `NSWindow` styleMask `[.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]`, `titlebarAppearsTransparent = true`, `titleVisibility = .visible`, title = app name, `representedURL` unset, title icon via `standardWindowButton(.documentIconButton)` with the app icon. No toolbar. Video layer fills the whole content view (edge to edge, under the titlebar). Corner radius = system.
-- Phone-mode hover bar: `NSGlassEffectView` capsule (cornerRadius 18), 3 buttons × 44 wide + padding 6 → 144×36, centered horizontally, 8 pt below the titlebar. Symbols `chevron.backward` · `circle` · `square.on.square`, 15 pt semibold, `.primary`. Shows when the pointer is in the top 56 pt (`NSTrackingArea`), fade in 0.2 s, fade out 0.3 s after 1 s idle. Each button has a tooltip (Back / Home / Recents).
+- `NSWindow` styleMask `[.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]`, `titlebarAppearsTransparent = true`, title = app name. No toolbar. The video layer
+  fills the whole frame, so the frame size *is* the video size. New windows cascade 28 pt from the top-left of the main screen (never centred over the Deck) and
+  restore their saved frame per app.
+- **Link pill:** `NSGlassEffectView` (cornerRadius 18), 36 pt high, "Reconnecting…" `.caption` + `ProgressView().controlSize(.small)`, bottom centre 24 pt above the edge,
+  fades in after 1 s of link loss, "Phone offline" after 15 s, fades out (0.3 s) when the link returns.
+- **Phone-mode hover bar:** `NSGlassEffectView` capsule (cornerRadius 18), 3 buttons × 44 wide + padding 6 → 144×36, centered horizontally, 8 pt below the titlebar. Symbols
+  `chevron.backward` · `circle` · `square.on.square`, 15 pt semibold, `.primary`. Shows when the pointer is in the top 84 pt, fade in 0.2 s, fade out 0.3 s after 1 s idle. Each button has a tooltip.
 
 ### Settings
 - `Settings { TabView { Tab("General", systemImage: "gearshape") {…}; Tab("Devices", systemImage: "iphone.gen3") {…} } }`, frame width 480. `Form` + `.formStyle(.grouped)`.
 - General: `Toggle` "Launch at login", `Toggle` "Show in menu bar", `Picker` "Default window density" (`.menu`).
-- Devices: rows `LabeledContent` (name; model + "Last seen *relative*" `.secondary`) with **Forget** `.glass` `role: .destructive` → `confirmationDialog`.
+- Devices: rows `LabeledContent` (name; model + "Last seen *relative*" `.secondary`; state text) with **Use** `.glass` (non-active phones) and **Forget** `.glass` `role: .destructive` → `confirmationDialog`; **Add phone…** `.glass` below the list.
 
 ### Menu bar
 - `MenuBarExtra { … } label: { Image(systemName: icon) }`, `.menuBarExtraStyle(.menu)`. Icon: Connected `apps.iphone` · Reconnecting `apps.iphone` (`.symbolEffect(.pulse)`) · Offline `iphone.slash`.
-- Items: disabled status line "● Connected to *phone*" / "Reconnecting…" / "Offline" · Divider · "Open launcher" ⌘K · "Phone screen" · Divider · "Devices…" · "Settings…" ⌘, · Divider · "Quit PocketDeck" ⌘Q.
-- "Pairing failed" is the only modal: `.alert("Pairing failed", …)` with one-line message and **OK**.
+- Items: disabled status line "● Connected to *phone*" / "Connecting…" / "Reconnecting…" / "Offline" / "No phone paired" · Divider · "Open PocketDeck" ⌘K · "Phone screen" ⌘P · Divider · "Settings…" ⌘, · Divider · "Quit PocketDeck" ⌘Q.
+- Nothing is modal: pairing failures are inline in the code sheet.
 
 ## 2. Android (Compose + Material 3, minSdk 30)
 
@@ -136,12 +144,13 @@ not invent styling. No hard-coded colors except where a hex is given below.
 
 ## 4. QA checklist (verify from screenshots, light **and** dark)
 
-**Mac — Welcome:** gradient backdrop, no titlebar text · one glass card, centered · icon + "PocketDeck" + "Your Android apps, on your Mac." · 3 steps with symbols, "How?" link · single prominent **Find my phone**.
-**Mac — Devices:** "Nearby" glass rows with name, model, wifi bars, **Pair** (prominent) · footer has exactly **Pair with QR** + **Connect manually…** (glass, secondary) · empty state shows spinner + two lines, no other content.
-**Mac — Code sheet:** 6 boxes, 3+3 grouping, focused box outlined in accent · error line in red under boxes after wrong code · no OK/submit button.
-**Mac — QR sheet:** QR on white tile in dark mode too · countdown visible · success shows green checkmark.
-**Mac — Launcher:** floating rounded glass panel, 640 wide, no titlebar · header: phone name, connection chip, lock, battery, **Phone** · search focused with caret · ≤6 columns, 56 pt icons, one-line labels · exactly one cell highlighted in accent tint · offline shows "Phone is offline".
-**Mac — App window:** video fills window under titlebar, traffic lights visible, title = app name + icon, no toolbar · phone mode only: glass capsule with 3 buttons appears on top hover.
+**Mac — Welcome:** gradient backdrop, no toolbar · one glass card, centered · icon + "PocketDeck" + "Your Android apps, on your Mac." · 3 steps with symbols, "How?" link · single prominent **Find my phone**.
+**Mac — Nearby:** "Nearby" glass rows with name, model, **Pair** (prominent), no device ids · footer has exactly **Pair with QR** + **Connect manually…** (glass, secondary) · empty state shows spinner + two lines, no other content.
+**Mac — Code sheet:** title names the phone · 6 boxes, 3+3 grouping, focused box outlined in accent · one state line under the boxes, no raw error codes · **Cancel** always reachable (except while checking) · no OK/submit button.
+**Mac — QR sheet:** QR on white tile in dark mode too · countdown visible · success shows green checkmark · expired QR blurred with **Show new code**.
+**Mac — Deck (phone):** toolbar: phone name, one status chip (dot + text, lock and battery when connected), **Phone**, search with caret · grid ≤ 56 pt icons, one-line labels · at most one cell highlighted in accent tint · offline/reconnecting: dimmed grid + chip, banner only when action is needed.
+**Mac — Banner:** one line, one trailing button at most, never a reason code.
+**Mac — App window:** video fills window under a transparent titlebar, traffic lights visible, title = app name, no toolbar · "Reconnecting…" pill over the last frame while the link is down · phone mode only: glass capsule with 3 buttons appears on top hover.
 **Mac — Settings:** exactly two tabs (General, Devices) · General has exactly 3 controls · Forget is red.
 **Mac — Menu bar:** status line first · items in the order listed · icon changes with connection state.
 **Android — Onboarding:** progress bar at top advances per step · no swipe between pages · one primary button per page · Shizuku row shows current state text + matching button · Scan QR is outlined.
