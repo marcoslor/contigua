@@ -52,6 +52,8 @@ internal class AndroidInjector(private val log: (String) -> Unit) : Injector {
     private val clipboardScheduler: ScheduledExecutorService =
         Executors.newSingleThreadScheduledExecutor { r -> Thread(r, "pocketdeck-clipboard").apply { isDaemon = true } }
 
+    private val touches = TouchTracker(log)
+
     private var loggedFailure = false
     private var loggedClipboard = false
 
@@ -65,17 +67,43 @@ internal class AndroidInjector(private val log: (String) -> Unit) : Injector {
         downTime: Long,
         eventTime: Long,
     ) {
-        // The wire action enum matches MotionEvent's ACTION_* constants.
-        val x = nx.coerceIn(0f, 1f) * size.w
-        val y = ny.coerceIn(0f, 1f) * size.h
-        val e = MotionEvent.obtain(downTime, eventTime, action, x, y, 0)
+        val ev = touches.onTouch(displayId, action, pointerId, nx, ny, downTime, eventTime) ?: return
+        val count = ev.pointers.size
+        val properties = Array(count) { i ->
+            MotionEvent.PointerProperties().apply {
+                id = ev.pointers[i].id
+                toolType = MotionEvent.TOOL_TYPE_FINGER
+            }
+        }
+        val coords = Array(count) { i ->
+            MotionEvent.PointerCoords().apply {
+                x = ev.pointers[i].nx.coerceIn(0f, 1f) * size.w
+                y = ev.pointers[i].ny.coerceIn(0f, 1f) * size.h
+                pressure = 1f
+                this.size = 1f
+            }
+        }
+        val e = MotionEvent.obtain(
+            ev.downTime, ev.eventTime, motionAction(ev), count, properties, coords,
+            0, 0, 1f, 1f, 0, 0, InputDevice.SOURCE_TOUCHSCREEN, 0,
+        )
         try {
-            e.setSource(InputDevice.SOURCE_TOUCHSCREEN)
             setDisplay(e, displayId)
             inject(e)
         } finally {
             e.recycle()
         }
+    }
+
+    private fun motionAction(ev: TouchTracker.Event): Int = when (ev.kind) {
+        TouchTracker.Kind.DOWN -> MotionEvent.ACTION_DOWN
+        TouchTracker.Kind.POINTER_DOWN ->
+            MotionEvent.ACTION_POINTER_DOWN or (ev.actionIndex shl MotionEvent.ACTION_POINTER_INDEX_SHIFT)
+        TouchTracker.Kind.MOVE -> MotionEvent.ACTION_MOVE
+        TouchTracker.Kind.POINTER_UP ->
+            MotionEvent.ACTION_POINTER_UP or (ev.actionIndex shl MotionEvent.ACTION_POINTER_INDEX_SHIFT)
+        TouchTracker.Kind.UP -> MotionEvent.ACTION_UP
+        TouchTracker.Kind.CANCEL -> MotionEvent.ACTION_CANCEL
     }
 
     override fun scroll(displayId: Int, nx: Float, ny: Float, hscroll: Float, vscroll: Float, size: IntSize) {
