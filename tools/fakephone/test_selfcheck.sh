@@ -99,6 +99,16 @@ note "latency"
     || die "latency failed: $(cat "$WORK/latency.err")"
 cat "$WORK/latency.txt"
 
+note "quality-test (window.quality + a socket stall)"
+"${DECK[@]}" quality-test com.android.settings --w 720 --h 1280 --dpi 320 \
+    --base-seconds 2 --seconds 2 --stall 1.5 --recover-seconds 2 --motion 0 \
+    > "$WORK/quality.txt" 2>"$WORK/quality.err" \
+    || die "quality-test failed: $(cat "$WORK/quality.err")"
+cat "$WORK/quality.txt"
+grep -q "phase quality" "$WORK/quality.txt" || die "quality-test printed no quality phase"
+grep -q "phase stall" "$WORK/quality.txt" || die "quality-test printed no stall phase"
+grep -q "window.quality" "$WORK/fh.err" || die "fakephone did not log window.quality"
+
 # --- second simultaneous session must be rejected --------------------------
 note "busy: a second session is rejected while the first keeps streaming"
 "${DECK[@]}" open --phone --w 720 --h 1280 --dpi 320 --seconds 4 \
@@ -134,6 +144,10 @@ for e in touches:
 configs = [(e["w"], e["h"]) for e in events if e["ev"] == "video" and e.get("config")]
 assert (1072, 2336) in configs, "no VIDEO_CONFIG for 1072x2336: %r" % configs
 assert (720, 1280) in configs, "no VIDEO_CONFIG for 720x1280 after resize: %r" % configs
+
+qualities = [e for e in events if e["ev"] == "quality"]
+assert qualities, "no quality event from window.quality"
+assert qualities[0]["bitrate"] == 1000000, "quality event bitrate: %r" % qualities[0]
 
 print("  %d events, session states=%s" % (len(events), states))
 print("  touch actions=%s video configs=%s" % (sorted(actions), sorted(set(configs))))

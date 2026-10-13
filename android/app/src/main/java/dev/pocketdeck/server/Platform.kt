@@ -66,6 +66,18 @@ interface DisplayLayer {
     fun resume(stream: Int)
     fun requestKeyframe(stream: Int)
     fun close(stream: Int)
+
+    /**
+     * Runtime quality for one stream: a bitrate target in bps and/or an fps cap.
+     * Both are optional and best-effort; implementations may ignore them.
+     */
+    fun setQuality(stream: Int, bitrate: Int?, maxFps: Int?) {}
+
+    /**
+     * The session dropped delta frames for this stream because its backlog
+     * exceeded the protocol's budget; the encoder should lower its bitrate.
+     */
+    fun onBackpressure(stream: Int) {}
 }
 
 interface AppCatalog {
@@ -112,6 +124,15 @@ interface PairingStore {
 interface DeviceSource {
     fun info(): DeviceInfo
     fun state(): DeviceState
+
+    /**
+     * Event-driven state updates for the session: registers the platform's
+     * listeners and calls [onChange] once with the current state, then only on
+     * change. Returns a handle the session closes on teardown, or null when the
+     * platform has no push source (the protocol's single post-welcome `state`
+     * still goes out).
+     */
+    fun subscribeState(onChange: (DeviceState) -> Unit): AutoCloseable?
 }
 
 /** Events pushed to the app process (pairing prompt, session state). */

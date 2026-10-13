@@ -2,9 +2,6 @@ package dev.pocketdeck.server
 
 import android.app.KeyguardManager
 import android.content.Context
-import android.content.Intent
-import android.content.IntentFilter
-import android.os.BatteryManager
 import android.os.Build
 import android.os.SystemClock
 import android.util.Log
@@ -33,9 +30,18 @@ class DeckService(private val appContext: Context?) :
     @Volatile private var deviceName: String = "Android"
 
     @Volatile private var server: Server? = null
+    @Volatile private var power: AndroidPower? = null
+
+    /** Last battery reading relayed by the app process (this process cannot receive it). */
+    @Volatile private var batteryPercent = 0
+    @Volatile private var batteryCharging = false
+
+    /** The live state watcher of the current session, if any. */
+    @Volatile private var stateWatcher: AndroidDeviceState? = null
 
     override fun destroy() {
         log("destroy")
+        runCatching { power?.shutdown() }
         runCatching { stopServer() }
         System.exit(0)
     }
@@ -52,6 +58,7 @@ class DeckService(private val appContext: Context?) :
         val injector = AndroidInjector(::log)
         val launcher = AndroidLauncher(shell, ::log)
         val power = AndroidPower(base, ::log)
+        this.power = power
         val titles = AndroidWindowObserver(shell, ::log)
 
         val factory = SessionFactory { socket ->
@@ -135,9 +142,28 @@ class DeckService(private val appContext: Context?) :
         )
     }
 
-    override fun state(): DeviceState {
-        val (battery, charging) = battery()
-        return DeviceState(isLocked(), battery, charging)
+    override fun state(): DeviceState = DeviceState(isLocked(), batteryPercent, batteryCharging)
+
+    /** Event-driven updates; null when the service has no context to register with. */
+    override fun subscribeState(onChange: (DeviceState) -> Unit): AutoCloseable? {
+        val base = appContext ?: return null
+        val watcher = AndroidDeviceState(base, { batteryPercent to batteryCharging }, ::log)
+        stateWatcher = watcher
+        return runCatching { watcher.start(onChange) }
+            .onFailure { stateWatcher = null }
+            .getOrNull()
+    }
+
+    /** Battery relay from the app process: cache it and forward to a live session. */
+    override fun setBatteryState(percent: Int, charging: Boolean) {
+        batteryPercent = percent
+        batteryCharging = charging
+        stateWatcher?.onBatteryEvent(percent, charging)
+    }
+
+    /** Keyguard relay from the app process, used when the shell has no listener. */
+    override fun setLockedState(locked: Boolean) {
+        stateWatcher?.onLockEvent(locked)
     }
 
     // ---- DeckCallback (to the app process) ----------------------------
@@ -159,20 +185,8 @@ class DeckService(private val appContext: Context?) :
     }
 
     private fun isLocked(): Boolean = runCatching {
-        (appContext?.getSystemService(Context.KEYGUARD_SERVICE) as? KeyguardManager)?.isKeyguardLocked ?: false
+        (appContext?.getSystemService(Context.KEYGUARD_SERVICE) as? KeyguardManager)?.isDeviceLocked ?: false
     }.getOrDefault(false)
-
-    private fun battery(): Pair<Int, Boolean> {
-        val ctx = appContext ?: return 0 to false
-        val intent = runCatching { ctx.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED)) }.getOrNull()
-            ?: return 0 to false
-        val level = intent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1)
-        val scale = intent.getIntExtra(BatteryManager.EXTRA_SCALE, -1)
-        val percent = if (level >= 0 && scale > 0) level * 100 / scale else 0
-        val status = intent.getIntExtra(BatteryManager.EXTRA_STATUS, -1)
-        val charging = status == BatteryManager.BATTERY_STATUS_CHARGING || status == BatteryManager.BATTERY_STATUS_FULL
-        return percent to charging
-    }
 
     private fun log(message: String) {
         Log.i(TAG, message)

@@ -1,6 +1,8 @@
 package dev.pocketdeck.server
 
 import android.os.IBinder
+import android.os.PowerManager
+import android.os.SystemClock
 import java.lang.reflect.Method
 
 /**
@@ -108,4 +110,31 @@ internal class PanelPower(private val log: (String) -> Unit) {
         loadLibrary0.invoke(Runtime.getRuntime(), cls, "android_servers")
         cls
     }.getOrNull()
+}
+
+/**
+ * `IPowerManager.goToSleep(long, int, int)` — puts the default display group back
+ * to sleep. Shared by the normal end-of-session restore and the crash watchdog,
+ * which must work with no session state at all.
+ */
+internal object SystemSleep {
+
+    private val powerManager: Any? = Hidden.proxy("android.os.IPowerManager", "power")
+
+    private val goToSleep: Method? =
+        Hidden.method(Hidden.iface("android.os.IPowerManager"), "goToSleep", Hidden.T_LONG, Hidden.T_INT, Hidden.T_INT)
+
+    /** `PowerManager.GO_TO_SLEEP_REASON_APPLICATION`, read reflectively; 0 is its stable value. */
+    private val reason: Int = runCatching {
+        PowerManager::class.java.getField("GO_TO_SLEEP_REASON_APPLICATION").getInt(null)
+    }.getOrDefault(0)
+
+    fun goToSleep(): Boolean {
+        val m = goToSleep ?: return false
+        val pm = powerManager ?: return false
+        return runCatching {
+            m.invoke(pm, SystemClock.uptimeMillis(), reason, 0)
+            true
+        }.getOrDefault(false)
+    }
 }

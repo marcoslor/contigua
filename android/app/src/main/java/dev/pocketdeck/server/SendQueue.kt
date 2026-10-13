@@ -6,11 +6,19 @@ package dev.pocketdeck.server
  * video per stream (deltas are dropped until the next keyframe, at which point
  * a sync frame is requested from the encoder).
  *
+ * "250 ms" is enforced two ways: a byte budget (~250 ms at the 8 Mbps cap) and
+ * the *video duration* between the oldest queued delta and the frame being
+ * enqueued. The byte budget alone lets a low-bitrate stream queue seconds of
+ * video (at 1 Mbps, 256 KB is two seconds), so the duration rule is what keeps
+ * the promise for slow streams — and what makes the drop visible on devices
+ * whose renderer produces few, large frames.
+ *
  * Delta frames rotate between streams so a busy stream cannot starve a quiet
  * one. Entries are pre-framed byte arrays ready for the socket.
  */
 internal class SendQueue(
     private val maxDeltaBytesPerStream: Int = DEFAULT_MAX_DELTA_BYTES,
+    private val maxDeltaDurationUs: Long = DEFAULT_MAX_DELTA_DURATION_US,
     private val onDeltaDrop: (stream: Int) -> Unit = {},
 ) {
     private val lock = Object()
@@ -20,6 +28,7 @@ internal class SendQueue(
     private val deltas = HashMap<Int, ArrayDeque<ByteArray>>()
     private val deltaOrder = ArrayDeque<Int>()
     private val deltaBytes = HashMap<Int, Int>()
+    private val deltaFirstPtsUs = HashMap<Int, Long>()
     private val dropping = HashSet<Int>()
     private var closed = false
 
@@ -35,7 +44,7 @@ internal class SendQueue(
         lock.notifyAll()
     }
 
-    fun enqueueDelta(stream: Int, bytes: ByteArray) = synchronized(lock) {
+    fun enqueueDelta(stream: Int, ptsUs: Long, bytes: ByteArray) = synchronized(lock) {
         if (stream in dropping) return
         val existing = deltas[stream]
         val q: ArrayDeque<ByteArray>
@@ -47,18 +56,21 @@ internal class SendQueue(
             q = existing
         }
         val used = deltaBytes[stream] ?: 0
-        if (used + bytes.size > maxDeltaBytesPerStream) {
+        val firstPts = deltaFirstPtsUs[stream] ?: ptsUs
+        if (used + bytes.size > maxDeltaBytesPerStream || ptsUs - firstPts > maxDeltaDurationUs) {
             // Stalled consumer: drop the backlog and ask for a fresh keyframe.
             q.clear()
             deltas.remove(stream)
             deltaOrder.remove(stream)
             deltaBytes[stream] = 0
+            deltaFirstPtsUs.remove(stream)
             dropping.add(stream)
             if (stream != 0) onDeltaDrop(stream)
             return
         }
         q.addLast(bytes)
         deltaBytes[stream] = used + bytes.size
+        deltaFirstPtsUs[stream] = firstPts
         lock.notifyAll()
     }
 
@@ -92,12 +104,14 @@ internal class SendQueue(
             if (bytes == null) {
                 deltas.remove(stream)
                 deltaBytes.remove(stream)
+                deltaFirstPtsUs.remove(stream)
                 return@repeat
             }
             deltaBytes[stream] = (deltaBytes[stream] ?: bytes.size) - bytes.size
             if (q.isEmpty()) {
                 deltas.remove(stream)
                 deltaBytes.remove(stream)
+                deltaFirstPtsUs.remove(stream)
             } else {
                 deltaOrder.addLast(stream)
             }
@@ -108,5 +122,8 @@ internal class SendQueue(
 
     companion object {
         const val DEFAULT_MAX_DELTA_BYTES = 256 * 1024 // ~250 ms at 8 Mbps
+
+        /** The protocol's ~250 ms of queued video, independent of the bitrate. */
+        const val DEFAULT_MAX_DELTA_DURATION_US = 250_000L
     }
 }

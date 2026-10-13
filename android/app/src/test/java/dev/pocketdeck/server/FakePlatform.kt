@@ -20,6 +20,7 @@ class FakePlatform : DisplayLayer, AppCatalog, Launcher, Injector, Power, Device
     data class KeyCall(val displayId: Int, val action: Int, val keycode: Int, val metaState: Int, val downTime: Long, val eventTime: Long)
     data class PairingReq(val requestId: String, val macName: String, val code: String)
     data class SessionChange(val connected: Boolean, val macName: String?, val windows: Int)
+    data class QualityCall(val stream: Int, val bitrate: Int?, val maxFps: Int?)
 
     val opens = CopyOnWriteArrayList<OpenCall>()
     val resizes = CopyOnWriteArrayList<ResizeCall>()
@@ -34,6 +35,8 @@ class FakePlatform : DisplayLayer, AppCatalog, Launcher, Injector, Power, Device
     val texts = CopyOnWriteArrayList<String>()
     val activeStreams = CopyOnWriteArrayList<List<Int>>()
     val inputs = CopyOnWriteArrayList<Int>()
+    val qualities = CopyOnWriteArrayList<QualityCall>()
+    val backpressures = CopyOnWriteArrayList<Int>()
 
     val clients = CopyOnWriteArrayList<PairedClient>()
     val pairRequests = CopyOnWriteArrayList<PairingReq>()
@@ -85,6 +88,14 @@ class FakePlatform : DisplayLayer, AppCatalog, Launcher, Injector, Power, Device
         sizes.remove(stream)
     }
 
+    override fun setQuality(stream: Int, bitrate: Int?, maxFps: Int?) {
+        qualities.add(QualityCall(stream, bitrate, maxFps))
+    }
+
+    override fun onBackpressure(stream: Int) {
+        backpressures.add(stream)
+    }
+
     // ---- AppCatalog ---------------------------------------------------
 
     override fun list(): List<AppEntry> = apps
@@ -130,9 +141,25 @@ class FakePlatform : DisplayLayer, AppCatalog, Launcher, Injector, Power, Device
 
     // ---- DeviceSource -------------------------------------------------
 
+    private val stateSubscribers = CopyOnWriteArrayList<(DeviceState) -> Unit>()
+
     override fun info(): DeviceInfo = deviceInfo
 
     override fun state(): DeviceState = deviceState
+
+    override fun subscribeState(onChange: (DeviceState) -> Unit): AutoCloseable? {
+        stateSubscribers.add(onChange)
+        onChange(deviceState)
+        return AutoCloseable { stateSubscribers.remove(onChange) }
+    }
+
+    /** Pushes a state to the session like the platform watcher would. */
+    fun pushState(state: DeviceState) {
+        deviceState = state
+        for (subscriber in stateSubscribers) subscriber(state)
+    }
+
+    val stateSubscriberCount: Int get() = stateSubscribers.size
 
     // ---- PairingStore -------------------------------------------------
 

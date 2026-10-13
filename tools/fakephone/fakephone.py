@@ -239,6 +239,10 @@ class EventLog(object):
         self._emit({"ev": "video", "stream": stream, "config": True, "w": w, "h": h,
                     "ts": time.time()})
 
+    def quality(self, stream, bitrate, max_fps):
+        self._emit({"ev": "quality", "stream": stream, "bitrate": bitrate,
+                    "maxFps": max_fps, "ts": time.time()})
+
     def close(self):
         with self._lock:
             if self._fp is not None:
@@ -703,6 +707,7 @@ class Session(object):
             "window.pause": self._on_window_pause,
             "window.resume": self._on_window_resume,
             "window.keyframe": self._on_window_keyframe,
+            "window.quality": self._on_window_quality,
             "window.launch": self._on_window_launch,
             "nav": self._on_nav,
             "text": self._on_noop,
@@ -793,6 +798,17 @@ class Session(object):
         window = self._stream_or_error(msg)
         if window is not None:
             window.start()
+
+    def _on_window_quality(self, msg):
+        # Accepted for protocol completeness; the fake's ffmpeg pipeline keeps
+        # its bitrate. The event log records it so tests can assert delivery.
+        window = self._stream_or_error(msg)
+        if window is None:
+            return
+        self.phone.events.quality(msg.get("stream", 0),
+                                  msg.get("bitrate"), msg.get("maxFps"))
+        sys.stderr.write("fakephone: window.quality stream=%s bitrate=%s maxFps=%s (accepted)\n"
+                         % (msg.get("stream"), msg.get("bitrate"), msg.get("maxFps")))
 
     def _on_window_launch(self, msg):
         window = self._stream_or_error(msg)

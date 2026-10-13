@@ -49,6 +49,7 @@ class DeckForegroundService : Service() {
         DeckState.enabled = Prefs.isEnabled(this)
         DeckState.paired = Prefs.paired(this)
         updateShizukuState()
+        DeviceStateRelay.start(this)
         ShizukuClient.addListener(clientListener)
         ShizukuClient.ensureBound(this)
         startForeground(NOTIF_ONGOING, ongoingNotification("Starting…"))
@@ -91,6 +92,10 @@ class DeckForegroundService : Service() {
             updateShizukuState()
             advertise(port)
             updateOngoing()
+            // The shell process cannot read the battery itself: hand it the last
+            // reading (and the keyguard state) as soon as it is reachable.
+            DeviceStateRelay.push(svc)
+            DeviceStateRelay.pushLocked(svc)
         } catch (e: Throwable) {
             Log.i(TAG, "startServer failed: ${e.message}")
         }

@@ -14,7 +14,9 @@ import hashlib
 import hmac
 import json
 import os
+import socket
 import struct
+import time
 
 # --- frame types -----------------------------------------------------------
 TYPE_JSON = 0x01
@@ -119,6 +121,51 @@ def recv_frame(sock):
         raise ProtocolError("connection closed mid-frame")
     type_, stream = struct.unpack_from(">BI", rest, 0)
     return Frame(type_, stream, rest[5:])
+
+
+class FrameReader(object):
+    """Incremental frame reader for sockets that are read with a timeout.
+
+    A timed read can split a frame, and `recv_exact` forgets the partial bytes,
+    so the next read mistakes a frame's tail for a length header. This reader
+    keeps them until the frame is complete, and reports a timeout only when no
+    complete frame arrived.
+    """
+
+    def __init__(self):
+        self._buf = bytearray()
+
+    def read(self, sock, timeout=None):
+        """Return the next Frame, None on clean EOF, or raise socket.timeout."""
+        deadline = None if timeout is None else time.time() + timeout
+        while True:
+            frame = self._try()
+            if frame is not None:
+                return frame
+            if deadline is not None:
+                remaining = deadline - time.time()
+                if remaining <= 0:
+                    raise socket.timeout("frame not complete")
+                sock.settimeout(remaining)
+            chunk = sock.recv(65536)
+            if not chunk:
+                if not self._buf:
+                    return None
+                raise ProtocolError("connection closed mid-frame")
+            self._buf += chunk
+
+    def _try(self):
+        if len(self._buf) < 4:
+            return None
+        total = struct.unpack(">I", bytes(self._buf[:4]))[0]
+        if total < HEADER or total > MAX_FRAME:
+            raise ProtocolError("bad frame length %d" % total)
+        if len(self._buf) < 4 + total:
+            return None
+        rest = bytes(self._buf[4:4 + total])
+        del self._buf[:4 + total]
+        type_, stream = struct.unpack_from(">BI", rest, 0)
+        return Frame(type_, stream, rest[5:])
 
 
 # --- JSON ------------------------------------------------------------------
