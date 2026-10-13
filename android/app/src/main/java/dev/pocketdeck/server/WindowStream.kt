@@ -66,6 +66,26 @@ internal class WindowStream(
     @Volatile private var width = 0
     @Volatile private var height = 0
 
+    /** The density last asked for by the Mac; redraw nudges are offsets from it. */
+    @Volatile private var baseDpi = 0
+
+    /** An encoder built for the next attach, and the one it replaces. */
+    private var prepared: Prepared? = null
+    private var previous: MediaCodec? = null
+    private var limits = EncoderLimits()
+    private var caps: MediaCodecInfo.VideoCapabilities? = null
+
+    private class Prepared(val codec: MediaCodec, val surface: Surface)
+
+    private val guard = RedrawGuard()
+    private val sequencer = ResizeSequencer(object : ResizeSteps {
+        override fun fit(w: Int, h: Int): IntSize = fitToEncoder(w, h)
+        override fun prepare(size: IntSize): IntSize? = prepareEncoder(size.w, size.h)
+        override fun resizeDisplay(size: IntSize, dpi: Int) = applyDisplaySize(size, dpi)
+        override fun attachPrepared() = swapInPrepared()
+        override fun releasePrevious() = releasePreviousEncoder()
+    })
+
     /** Live bitrate policy: computed target or `window.quality`, drops and recovery. */
     private val quality = QualityAdaptation()
 
@@ -86,44 +106,52 @@ internal class WindowStream(
     val size: IntSize get() = IntSize(width, height)
 
     fun start(w: Int, h: Int, dpi: Int): Int {
-        width = w
-        height = h
-        val codec = configure(w, h)
-        val surface = codec.createInputSurface()
-        codec.start()
-        val created = createDisplay(w, h, dpi, surface)
+        baseDpi = dpi
+        val size = checkNotNull(prepareEncoder(w, h)) { "no encoder for ${w}x$h" }
+        val next = prepared!!
+        prepared = null
+        val created = createDisplay(size.w, size.h, dpi, next.surface)
         val display = created.display
         displayIdValue = display.display.displayId
         vd = display
-        encoder = codec
-        startDrain(codec)
+        encoder = next.codec
+        startDrain(next.codec)
         hideIme(displayIdValue)
         val requested = flags()
-        log("stream $stream vd=$displayIdValue ${w}x$h dpi=$dpi path=${created.path}")
+        log("stream $stream vd=$displayIdValue ${size.w}x${size.h} dpi=$dpi path=${created.path}")
         log("stream $stream vd=$displayIdValue requested flags=0x${requested.toString(16)} (${virtualFlagNames(requested)})")
         log("stream $stream vd=$displayIdValue ${DisplayProbe.describe(displayIdValue)}")
         return displayIdValue
     }
 
+    @Synchronized
     fun resize(w: Int, h: Int, dpi: Int) {
-        width = w
-        height = h
-        detachEncoder()
-        runCatching { vd?.resize(w, h, dpi) }
-        if (!paused) attachEncoder(w, h)
-        log("stream $stream resize ${w}x$h dpi=$dpi")
+        if (released) return
+        val result = sequencer.resize(w, h, dpi, paused, IntSize(width, height))
+        when (result.outcome) {
+            ResizeSequencer.Outcome.RESIZED, ResizeSequencer.Outcome.DISPLAY_ONLY ->
+                log("stream $stream resize ${result.size.w}x${result.size.h} dpi=$dpi" +
+                    if (result.size.w != w || result.size.h != h) " (asked ${w}x$h)" else "")
+            ResizeSequencer.Outcome.KEPT ->
+                log("stream $stream resize ${w}x$h refused by the encoder; staying at ${width}x$height")
+        }
     }
 
+    @Synchronized
     fun pause() {
         if (paused) return
         paused = true
         detachEncoder()
     }
 
+    @Synchronized
     fun resume() {
-        if (!paused) return
+        if (!paused || released) return
         paused = false
-        attachEncoder(width, height)
+        val result = sequencer.resume(width, height, baseDpi, IntSize(width, height))
+        if (result.outcome == ResizeSequencer.Outcome.KEPT) {
+            log("stream $stream resume: no encoder for ${width}x$height")
+        }
     }
 
     fun requestKeyframe() {
@@ -164,9 +192,12 @@ internal class WindowStream(
         applyBitrate()
     }
 
+    @Synchronized
     fun close() {
         released = true
         detachEncoder()
+        runCatching { prepared?.codec?.release() }
+        prepared = null
         runCatching { vd?.release() }
         vd = null
         displayIdValue = -1
@@ -174,13 +205,74 @@ internal class WindowStream(
 
     // ------------------------------------------------------------------
 
-    private fun attachEncoder(w: Int, h: Int) {
-        val codec = configure(w, h)
-        val surface = codec.createInputSurface()
-        codec.start()
-        encoder = codec
-        runCatching { vd?.setSurface(surface) }
-        startDrain(codec)
+    /**
+     * Builds the next encoder (configured, input surface made, started) at the
+     * size the codec will actually take. Leaves the current stream untouched.
+     */
+    private fun prepareEncoder(w: Int, h: Int): IntSize? {
+        val codec = try {
+            MediaCodec.createEncoderByType(MIME)
+        } catch (e: Throwable) {
+            log("stream $stream: no H.264 encoder: ${e.message}")
+            return null
+        }
+        try {
+            learnLimits(codec)
+            val size = fitToEncoder(w, h)
+            configure(codec, size.w, size.h)
+            val surface = codec.createInputSurface()
+            codec.start()
+            width = size.w
+            height = size.h
+            prepared = Prepared(codec, surface)
+            return size
+        } catch (e: Throwable) {
+            log("stream $stream: encoder for ${w}x$h failed: ${e.message}")
+            runCatching { codec.release() }
+            return null
+        }
+    }
+
+    private fun learnLimits(codec: MediaCodec) {
+        val found = runCatching { codec.codecInfo.getCapabilitiesForType(MIME).videoCapabilities }.getOrNull() ?: return
+        caps = found
+        limits = EncoderLimits(
+            maxW = found.supportedWidths.upper,
+            maxH = found.supportedHeights.upper,
+            align = maxOf(found.widthAlignment, found.heightAlignment),
+        )
+    }
+
+    private fun fitToEncoder(w: Int, h: Int): IntSize {
+        val known = caps
+        return EncoderSizes.fit(w, h, limits) { sw, sh -> known?.isSizeSupported(sw, sh) ?: true }
+    }
+
+    private fun applyDisplaySize(size: IntSize, dpi: Int) {
+        width = size.w
+        height = size.h
+        baseDpi = dpi
+        runCatching { vd?.resize(size.w, size.h, dpi) }
+            .onFailure { log("stream $stream: VirtualDisplay.resize failed: ${it.message}") }
+    }
+
+    /** Points the display at the prepared encoder; the old one is released afterwards. */
+    private fun swapInPrepared() {
+        val next = prepared ?: return
+        prepared = null
+        previous = encoder
+        encoder = next.codec
+        runCatching { vd?.setSurface(next.surface) }
+            .onFailure { log("stream $stream: VirtualDisplay.setSurface failed: ${it.message}") }
+        guard.onAttached(SystemClock.elapsedRealtime())
+        startDrain(next.codec)
+    }
+
+    private fun releasePreviousEncoder() {
+        val codec = previous ?: return
+        previous = null
+        runCatching { codec.stop() }
+        runCatching { codec.release() }
     }
 
     private fun detachEncoder() {
@@ -193,7 +285,19 @@ internal class WindowStream(
         }
     }
 
-    private fun configure(w: Int, h: Int): MediaCodec {
+    /**
+     * No frame arrived after an attach, so the app has nothing to redraw: change
+     * the density by one dpi, which every app answers with a relayout and draw.
+     */
+    private fun nudgeRedraw(codec: MediaCodec, offset: Int) {
+        synchronized(this) {
+            if (released || encoder !== codec) return
+            log("stream $stream: no frame since the encoder attached, redraw nudge ${guard.nudgeCount} (dpi=${baseDpi + offset})")
+            runCatching { vd?.resize(width, height, baseDpi + offset) }
+        }
+    }
+
+    private fun configure(codec: MediaCodec, w: Int, h: Int) {
         // The bitrate target: an explicit window.quality request wins, otherwise
         // it is computed from the pixels (~0.12 bpp·fps).
         quality.setTarget(requestedBitrate ?: bitrateFor(w, h))
@@ -210,7 +314,6 @@ internal class WindowStream(
         // where it does not, the drain loop drops frames above the cap.
         maxFps?.let { runCatching { format.setInteger(KEY_MAX_FPS, it) } }
         appliedBitrate = quality.bitrate
-        val codec = MediaCodec.createEncoderByType(MIME)
         try {
             codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
         } catch (e: Throwable) {
@@ -219,7 +322,6 @@ internal class WindowStream(
             format.removeKey(KEY_MAX_FPS)
             codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
         }
-        return codec
     }
 
     private fun bitrateFor(w: Int, h: Int): Int {
@@ -347,6 +449,7 @@ internal class WindowStream(
             } catch (_: Throwable) {
                 break
             }
+            guard.poll(SystemClock.elapsedRealtime())?.let { nudgeRedraw(codec, it) }
             // Bitrate recovery rides on the drain loop: no extra timer, and it
             // only grows the bitrate when the stream is alive anyway.
             quality.maybeRecover(SystemClock.elapsedRealtime())?.let { bps ->
@@ -361,7 +464,9 @@ internal class WindowStream(
             try {
                 val buf = codec.getOutputBuffer(idx)
                 if (buf != null && info.size > 0 && (info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) == 0) {
-                    if (dropForFps(info.presentationTimeUs)) {
+                    if (encoder !== codec) {
+                        // Switched away mid-buffer: its size is no longer the stream's.
+                    } else if (dropForFps(info.presentationTimeUs)) {
                         // Above the fps cap: never queued, so the socket sees less.
                     } else {
                         buf.position(info.offset)
@@ -370,6 +475,9 @@ internal class WindowStream(
                         buf.get(data)
                         val key = (info.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0
                         sink.onFrame(stream, info.presentationTimeUs, key, data)
+                        guard.onFrame(SystemClock.elapsedRealtime())?.let {
+                            log("stream $stream first frame ${it}ms after the encoder attached (nudges=${guard.nudgeCount})")
+                        }
                     }
                 }
             } catch (_: Throwable) {
