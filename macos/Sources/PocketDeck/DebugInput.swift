@@ -10,6 +10,8 @@
 //   rightclick NX NY         right click (nav back)
 //   drag NX1 NY1 NX2 NY2     left-button drag
 //   scroll DY [NX NY]        wheel scroll, default at the centre
+//   pinch NX NY SCALE        trackpad pinch around NX NY (SCALE > 0, e.g. 1.5)
+//   rotate NX NY DEGREES     trackpad rotate around NX NY (positive = counter-clockwise)
 //   type TEXT                text typed as key presses (rest of the line)
 //   key [cmd+][shift+][ctrl+][opt+]NAME
 // NX/NY are video-space coordinates in 0...1 with a top-left origin.
@@ -37,6 +39,8 @@ enum DebugInputAction: Equatable {
     case rightClick(NormalizedPoint)
     case drag(from: NormalizedPoint, to: NormalizedPoint)
     case scroll(dy: Int, at: NormalizedPoint)
+    case pinch(at: NormalizedPoint, scale: Double)
+    case rotate(at: NormalizedPoint, degrees: Double)
     case type(String)
     case key(KeyStroke)
 }
@@ -87,6 +91,16 @@ enum DebugInputScript {
             }
             let at = try args.count == 3 ? point(Array(args[1...2]), count: 2) : .center
             return .scroll(dy: dy, at: at)
+        case "pinch":
+            guard args.count == 3, let scale = Double(args[2]), scale > 0 else {
+                throw LineError(message: "pinch needs NX NY SCALE (SCALE > 0)")
+            }
+            return .pinch(at: try point(Array(args[0...1]), count: 2), scale: scale)
+        case "rotate":
+            guard args.count == 3, let degrees = Double(args[2]) else {
+                throw LineError(message: "rotate needs NX NY DEGREES")
+            }
+            return .rotate(at: try point(Array(args[0...1]), count: 2), degrees: degrees)
         case "type":
             guard !rest.isEmpty else { throw LineError(message: "type needs text") }
             return .type(rest)
@@ -165,6 +179,10 @@ enum DebugInputScript {
 /// session is ready and the view has a layout to aim at.
 final class DebugInputDriver {
     static let dragSteps = 20
+    /// Changed events per gesture. They are paced one display refresh apart so
+    /// the coalesced moves (InputMapper) reach the phone.
+    static let gestureSteps = 8
+    static var gestureStepInterval: TimeInterval { InputMapper.displayRefreshInterval * 1.5 }
 
     private let actions: [DebugInputAction]
     private var observer: NSObjectProtocol?
@@ -233,6 +251,26 @@ final class DebugInputDriver {
             if let scroll = scrollEvent(dy: dy, at: location(target, in: view), in: view) {
                 view.scrollWheel(with: scroll)
             }
+        case .pinch(let target, let scale):
+            let point = location(target, in: view)
+            view.magnifyGesture(phase: .began, magnification: 0, at: point)
+            for _ in 1...Self.gestureSteps {
+                view.magnifyGesture(phase: .changed,
+                                    magnification: (scale - 1) / Double(Self.gestureSteps),
+                                    at: point)
+                pumpRunLoop()
+            }
+            view.magnifyGesture(phase: .ended, magnification: 0, at: point)
+        case .rotate(let target, let degrees):
+            let point = location(target, in: view)
+            view.rotateGesture(phase: .began, rotation: 0, at: point)
+            for _ in 1...Self.gestureSteps {
+                view.rotateGesture(phase: .changed,
+                                   rotation: degrees / Double(Self.gestureSteps),
+                                   at: point)
+                pumpRunLoop()
+            }
+            view.rotateGesture(phase: .ended, rotation: 0, at: point)
         case .type(let text):
             guard let window = view.window else { return }
             focus(window)
@@ -259,6 +297,12 @@ final class DebugInputDriver {
         guard !window.isKeyWindow else { return }
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
+    }
+
+    /// The whole script runs in one run-loop turn; gesture steps hand the
+    /// loop back briefly so the display-refresh move flush can run between them.
+    private func pumpRunLoop() {
+        RunLoop.current.run(until: Date(timeIntervalSinceNow: Self.gestureStepInterval))
     }
 
     private func location(_ target: NormalizedPoint, in view: VideoLayerView) -> CGPoint {

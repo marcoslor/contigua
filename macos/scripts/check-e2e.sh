@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# End-to-end checks C3-C12 for the macOS client against tools/fakephone.
+# End-to-end checks C3-C13 for the macOS client against tools/fakephone.
 #
-#   ./scripts/check-e2e.sh [qr|pair|render|resize|input|input-global|pause|direct|nav|spotlight|all]
+#   ./scripts/check-e2e.sh [qr|pair|render|resize|input|input-global|pause|direct|nav|spotlight|pinch|all]
 #
 # Every check starts from a clean slate: no PocketDeck or fakephone processes
 # left by an earlier run, a fresh fakephone state file and no pairing key in
@@ -13,8 +13,10 @@
 #
 # Input (C7, C11) is scripted in-process (--debug-input-script): the NSEvents
 # are delivered to the stream's view, so no focus change, window stacking or
-# window position can swallow them. `input-global` posts real CGEvents at the
-# window instead; it needs a visible, unobstructed window and focus.
+# window position can swallow them. Gestures (C13) use the same driver, which
+# hands the run loop back between steps so the coalesced moves flush. `input-global`
+# posts real CGEvents at the window instead; it needs a visible, unobstructed
+# window and focus.
 set -uo pipefail
 
 MACOS="$(cd "$(dirname "$0")/.." && pwd)"
@@ -464,6 +466,191 @@ check_input_global() {
     stop_fakephone
 }
 
+# --- C13: pinch / rotate gestures ------------------------------------------
+
+# check_pinch — trackpad pinch and rotate are synthesized as a two-pointer
+# TOUCH sequence: down(0), down(1), coalesced moves, up(1), up(0). The pair's
+# distance follows the pinch scale, its pixel-space angle follows the rotation;
+# the right click at the end of the script says the whole script was delivered.
+check_pinch() {
+    clean
+    start_fake || return 1
+    printf '%s\n' "pinch 0.5 0.5 1.5" "pinch 0.5 0.5 0.6" "rotate 0.5 0.5 90" \
+        "rightclick 0.5 0.5" > "$WORK/pinch.txt"
+    launch --connect "127.0.0.1:$PORT" --pair-code-file "$WORK/pd.code" \
+        --open com.android.settings --debug-input-script "$WORK/pinch.txt" --quit-after 60
+    wait_until 30 events_have '"action":"back"' \
+        || { bad "C13 scripted gestures did not reach the phone"; say "app log: $(tail -3 "$WORK/app.log")"; }
+    local verdicts
+    verdicts="$(python3 - "$WORK/events.jsonl" <<'PY' || true
+import json, math, sys
+
+path = sys.argv[1]
+touches = []
+video = (0.0, 0.0)
+for line in open(path):
+    try:
+        event = json.loads(line)
+    except ValueError:
+        continue
+    if event.get("ev") == "video" and event.get("config") and event.get("stream") == 1:
+        video = (float(event["w"]), float(event["h"]))
+    if event.get("ev") != "input" or event.get("kind") != "touch" or event.get("stream") != 1:
+        continue
+    touches.append({
+        "action": int(event["action"]),
+        "pointer": int(event.get("pointer", event.get("pointerId"))),
+        "nx": float(event["nx"]),
+        "ny": float(event["ny"]),
+    })
+
+if video == (0.0, 0.0):
+    video = (1000.0, 1000.0)
+
+
+def verdict(good, label, detail=""):
+    print(("ok: " if good else "bad: ") + label + ((": " + detail) if detail else ""))
+
+
+def gestures(events):
+    """One gesture per pointer-0 down; everything after it belongs to it."""
+    found, current = [], None
+    for event in events:
+        if event["action"] == 0 and event["pointer"] == 0:
+            current = []
+            found.append(current)
+        if current is not None:
+            current.append(event)
+    return found
+
+
+def move_pairs(events):
+    """(pointer 0, pointer 1) pairs in order: one pair per coalesced move."""
+    pairs, pending = [], None
+    for event in events:
+        if event["action"] != 2:
+            continue
+        if event["pointer"] == 0:
+            pending = event
+        elif pending is not None:
+            pairs.append((pending, event))
+            pending = None
+    return pairs
+
+
+def pixel_span(a, b):
+    return math.hypot((a["nx"] - b["nx"]) * video[0], (a["ny"] - b["ny"]) * video[1])
+
+
+def pixel_angle(a, b):
+    return math.degrees(math.atan2((a["ny"] - b["ny"]) * video[1], (a["nx"] - b["nx"]) * video[0]))
+
+
+def normalized_span(a, b):
+    return math.hypot(a["nx"] - b["nx"], a["ny"] - b["ny"])
+
+
+def midpoint(a, b):
+    return ((a["nx"] + b["nx"]) / 2, (a["ny"] + b["ny"]) / 2)
+
+
+def near(a, b, tolerance):
+    return abs(a - b) <= tolerance
+
+
+def ordered(events):
+    actions = [e["action"] for e in events]
+    pointers = [e["pointer"] for e in events]
+    head = actions[:2] == [0, 0] and pointers[:2] == [0, 1]
+    tail = len(actions) >= 4 and actions[-2:] == [1, 1] and pointers[-2:] == [1, 0]
+    return actions, pointers, head and tail
+
+
+def check_gesture(events, label):
+    actions, pointers, good = ordered(events)
+    verdict(good, "C13 %s: down(0), down(1) ... up(1), up(0)" % label,
+            "actions=%s pointers=%s" % (actions, pointers))
+    return good
+
+
+def check_pinch(events, scale, label):
+    if not check_gesture(events, label):
+        return
+    down, first = events[0], events[1]
+    start = normalized_span(down, first)
+    verdict(near(start, 0.16, 0.02), "C13 %s: starts 0.16 apart (0.08 half-span)" % label,
+            "%.3f" % start)
+    mid = midpoint(down, first)
+    verdict(near(mid[0], 0.5, 0.005) and near(mid[1], 0.5, 0.005),
+            "C13 %s: pair is symmetric around the cursor" % label, "midpoint=%.3f,%.3f" % mid)
+    pairs = move_pairs(events)
+    if len(pairs) < 2:
+        verdict(False, "C13 %s: several coalesced move pairs" % label, "got %d" % len(pairs))
+        return
+    verdict(True, "C13 %s: coalesced move pairs" % label, "got %d" % len(pairs))
+    spans = [normalized_span(a, b) for a, b in pairs]
+    ascending = all(b >= a - 1e-6 for a, b in zip(spans, spans[1:]))
+    monotonic = ascending if scale > 1 else all(b <= a + 1e-6 for a, b in zip(spans, spans[1:]))
+    expected = 0.16 * scale
+    detail = "spans=%.3f..%.3f expected=%.3f" % (spans[0], spans[-1], expected)
+    verdict(monotonic, "C13 %s: distance %s across the moves" % (label, "grows" if scale > 1 else "shrinks"),
+            detail)
+    verdict(near(spans[-1], expected, 0.012), "C13 %s: final distance is 0.16 x %.2f" % (label, scale), detail)
+    up = (events[-2], events[-1])  # up(1), up(0)
+    verdict(near(normalized_span(*up), normalized_span(*pairs[-1]), 0.01),
+            "C13 %s: ups at the last move's position" % label,
+            "up=%.3f last=%.3f" % (normalized_span(*up), normalized_span(*pairs[-1])))
+
+
+def check_rotate(events, degrees, label):
+    if not check_gesture(events, label):
+        return
+    down, first = events[0], events[1]
+    pairs = move_pairs(events)
+    if len(pairs) < 2:
+        verdict(False, "C13 %s: several coalesced move pairs" % label, "got %d" % len(pairs))
+        return
+    verdict(True, "C13 %s: coalesced move pairs" % label, "got %d" % len(pairs))
+    start = pixel_span(down, first)
+    spans = [pixel_span(a, b) for a, b in pairs]
+    worst = max(abs(s - start) for s in spans)
+    verdict(worst <= 0.08 * start, "C13 %s: rotation keeps the pair's distance" % label,
+            "start=%.0fpx worst=%.0fpx" % (start, worst))
+    turned = pixel_angle(pairs[-1][0], pairs[-1][1]) - pixel_angle(down, first)
+    turned = (turned + 180) % 360 - 180
+    verdict(near(turned, -degrees, 12),
+            "C13 %s: pair turns %.0f deg counter-clockwise" % (label, degrees),
+            "turned=%.1f" % turned)
+    for pair in pairs:
+        mid = midpoint(*pair)
+        if not (near(mid[0], 0.5, 0.01) and near(mid[1], 0.5, 0.01)):
+            verdict(False, "C13 %s: pair stays around the cursor" % label, "midpoint=%.3f,%.3f" % mid)
+            return
+    verdict(True, "C13 %s: pair stays around the cursor" % label)
+
+
+found = gestures(touches)
+verdict(len(found) == 3, "C13 three gesture TOUCH sequences", "got %d" % len(found))
+if len(found) == 3:
+    check_pinch(found[0], 1.5, "pinch 1.5")
+    check_pinch(found[1], 0.6, "pinch 0.6")
+    check_rotate(found[2], 90, "rotate 90")
+PY
+)"
+    if [ -z "$verdicts" ]; then
+        bad "C13 the gesture checker produced no verdicts"
+    else
+        while IFS= read -r line; do
+            case "$line" in
+                "ok: "*)  ok "${line#ok: }" ;;
+                "bad: "*) bad "${line#bad: }" ;;
+            esac
+        done <<< "$verdicts"
+    fi
+    stop_app
+    stop_fakephone
+}
+
 # --- C8: pause/resume -----------------------------------------------------
 
 check_pause() {
@@ -655,8 +842,8 @@ check_orphans() {
 
 which_check="${1:-all}"
 case "$which_check" in
-    qr|pair|render|resize|input|input-global|pause|direct|nav|spotlight|all) ;;
-    *) say "usage: check-e2e.sh [qr|pair|render|resize|input|input-global|pause|direct|nav|spotlight|all]"; exit 2 ;;
+    qr|pair|render|resize|input|input-global|pause|direct|nav|spotlight|pinch|all) ;;
+    *) say "usage: check-e2e.sh [qr|pair|render|resize|input|input-global|pause|direct|nav|spotlight|pinch|all]"; exit 2 ;;
 esac
 acquire_lock
 wait_for_other_runs
@@ -670,12 +857,13 @@ case "$which_check" in
     resize)   check_resize ;;
     input)    check_input ;;
     input-global) check_input_global ;;
+    pinch)    check_pinch ;;
     pause)    check_pause ;;
     direct)   check_direct ;;
     nav)      check_nav ;;
     spotlight) check_spotlight ;;
-    all)      check_qr; check_pair; check_render; check_resize; check_input; check_pause
-              check_direct; check_nav; check_spotlight; check_orphans ;;
+    all)      check_qr; check_pair; check_render; check_resize; check_input; check_pinch
+              check_pause; check_direct; check_nav; check_spotlight; check_orphans ;;
 esac
 
 say ""

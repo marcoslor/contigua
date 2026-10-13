@@ -1,12 +1,13 @@
 // NSEvent -> protocol message mapping. Nothing is coalesced except ASCII text,
 // which is batched for up to 8 ms so a fast typist produces one `text` frame
-// instead of one per character. Touch/scroll/keys are sent immediately.
+// instead of one per character, and trackpad-gesture moves, which are held to
+// at most one per display refresh. Touch/scroll/keys are sent immediately.
 
 import AppKit
 
 final class InputMapper {
     enum Command {
-        case touch(TouchAction, Float, Float)
+        case touch(TouchEvent)
         case scroll(ScrollEvent)
         case key(KeyEvent)
         case text(String)
@@ -52,6 +53,29 @@ final class InputMapper {
     var isPhoneMode = false
     /// Esc reaches the phone only from the focused window with no sheet open.
     var escapeAllowed: () -> Bool = { true }
+    /// Video pixel size; the gesture geometry keeps its aspect ratio.
+    var videoSizeProvider: () -> CGSize = { .zero }
+    /// A mouse button in use (a click-drag) wins: gestures are ignored then.
+    var mouseButtonIsDown: () -> Bool = { NSEvent.pressedMouseButtons != 0 }
+    /// Schedules the coalesced gesture move. The default waits one display
+    /// refresh on the main run loop; tests and the scripted-input driver drive
+    /// it by hand.
+    var scheduleGestureMove: (@escaping () -> Void) -> Void = { work in
+        InputMapper.onMainRunLoop(after: InputMapper.displayRefreshInterval, work)
+    }
+    /// Schedules the second tap of a smart zoom a moment after the first, so
+    /// the phone's tap detector counts two taps.
+    var scheduleSecondTap: (@escaping () -> Void) -> Void = { work in
+        InputMapper.onMainRunLoop(after: InputMapper.doubleTapInterval, work)
+    }
+
+    /// A one-shot timer, not a main-queue block: timers still fire while the
+    /// scripted driver runs a nested run loop between gesture steps, dispatch
+    /// blocks queued on the busy main queue do not.
+    static func onMainRunLoop(after delay: TimeInterval, _ work: @escaping () -> Void) {
+        let timer = Timer(timeInterval: delay, repeats: false) { _ in work() }
+        RunLoop.main.add(timer, forMode: .common)
+    }
 
     static let keyCodeEscape: UInt16 = 53
     static let keyCodeH: UInt16 = 4
@@ -74,17 +98,17 @@ final class InputMapper {
         flushText()
         let (nx, ny) = normalized(locationProvider(event))
         LatencyLog.shared.noteTouchDown(stream: stream)
-        send?(.touch(.down, nx, ny))
+        send?(.touch(TouchEvent(action: .down, nx: nx, ny: ny)))
     }
 
     func mouseDragged(_ event: NSEvent) {
         let (nx, ny) = normalized(locationProvider(event))
-        send?(.touch(.move, nx, ny))
+        send?(.touch(TouchEvent(action: .move, nx: nx, ny: ny)))
     }
 
     func mouseUp(_ event: NSEvent) {
         let (nx, ny) = normalized(locationProvider(event))
-        send?(.touch(.up, nx, ny))
+        send?(.touch(TouchEvent(action: .up, nx: nx, ny: ny)))
     }
 
     func rightMouseDown(_ event: NSEvent) {
@@ -122,6 +146,119 @@ final class InputMapper {
         guard dx != 0 || dy != 0 else { return }
         let (nx, ny) = normalized(locationProvider(event))
         send?(.scroll(ScrollEvent(nx: nx, ny: ny, hscroll: Float(dx), vscroll: Float(dy))))
+    }
+
+    // MARK: Trackpad gestures
+
+    /// One gesture move per display refresh at most, like the mouse-drag stream
+    /// AppKit already coalesces.
+    static var displayRefreshInterval: TimeInterval {
+        let fps = NSScreen.main?.maximumFramesPerSecond ?? 60
+        return fps > 0 ? 1 / TimeInterval(fps) : 1.0 / 60.0
+    }
+
+    /// Between the two taps of a smart zoom: above a tap detector's minimum
+    /// double-tap time, well below its timeout.
+    static let doubleTapInterval: TimeInterval = 0.05
+
+    private enum GestureComponent { case magnify, rotate }
+
+    private var pointerGesture: PointerGesture?
+    /// Gesture kinds seen in the active gesture; it ends when they all have.
+    private var gestureComponents: Set<GestureComponent> = []
+    private var pendingGestureMove: (zero: (nx: Float, ny: Float), one: (nx: Float, ny: Float))?
+    private var gestureMoveScheduled = false
+
+    func magnify(phase: NSEvent.Phase, magnification: CGFloat, at point: CGPoint) {
+        gesture(.magnify, phase: phase, delta: Double(magnification), at: point)
+    }
+
+    func rotate(phase: NSEvent.Phase, rotation: CGFloat, at point: CGPoint) {
+        gesture(.rotate, phase: phase, delta: Double(rotation), at: point)
+    }
+
+    private func gesture(_ component: GestureComponent, phase: NSEvent.Phase,
+                         delta: Double, at point: CGPoint) {
+        if phase.contains(.cancelled) {
+            finishGesture(cancelled: true)
+            return
+        }
+        if phase.contains(.ended) {
+            guard pointerGesture != nil else { return }
+            gestureComponents.remove(component)
+            if gestureComponents.isEmpty { finishGesture(cancelled: false) }
+            return
+        }
+        guard phase.contains(.began) || phase.contains(.changed) else { return }
+        if pointerGesture == nil {
+            // An ongoing mouse drag owns the stream; a pinch during it is not ours.
+            guard phase.contains(.began), !mouseButtonIsDown() else { return }
+            startGesture(at: point)
+        }
+        guard pointerGesture != nil else { return }
+        // Magnify and rotate run as separate began/ended sequences over one
+        // pair of pointers.
+        gestureComponents.insert(component)
+        switch component {
+        case .magnify: pointerGesture?.add(magnification: delta)
+        case .rotate: pointerGesture?.add(rotation: delta)
+        }
+        if phase.contains(.changed) { queueGestureMove() }
+    }
+
+    private func startGesture(at point: CGPoint) {
+        flushText()
+        let (nx, ny) = normalized(point)
+        pointerGesture = PointerGesture(anchorNx: Double(nx), anchorNy: Double(ny),
+                                        videoSize: videoSizeProvider())
+        gestureComponents = []
+        pendingGestureMove = nil
+        LatencyLog.shared.noteTouchDown(stream: stream)
+        guard let points = pointerGesture?.points else { return }
+        send?(.touch(TouchEvent(action: .down, pointerId: 0, nx: points.zero.nx, ny: points.zero.ny)))
+        send?(.touch(TouchEvent(action: .down, pointerId: 1, nx: points.one.nx, ny: points.one.ny)))
+    }
+
+    /// Holds the latest geometry until the next display refresh; a burst of
+    /// changed events still costs one move per pointer.
+    private func queueGestureMove() {
+        guard let gesture = pointerGesture else { return }
+        pendingGestureMove = gesture.points
+        guard !gestureMoveScheduled else { return }
+        gestureMoveScheduled = true
+        scheduleGestureMove { [weak self] in self?.flushGestureMove() }
+    }
+
+    private func flushGestureMove() {
+        gestureMoveScheduled = false
+        guard let points = pendingGestureMove else { return }
+        pendingGestureMove = nil
+        send?(.touch(TouchEvent(action: .move, pointerId: 0, nx: points.zero.nx, ny: points.zero.ny)))
+        send?(.touch(TouchEvent(action: .move, pointerId: 1, nx: points.one.nx, ny: points.one.ny)))
+    }
+
+    private func finishGesture(cancelled: Bool) {
+        guard let gesture = pointerGesture else { return }
+        let points = gesture.points
+        pointerGesture = nil
+        gestureComponents = []
+        flushGestureMove() // the last changed move may still be pending; it precedes the ups
+        let action: TouchAction = cancelled ? .cancel : .up
+        send?(.touch(TouchEvent(action: action, pointerId: 1, nx: points.one.nx, ny: points.one.ny)))
+        send?(.touch(TouchEvent(action: action, pointerId: 0, nx: points.zero.nx, ny: points.zero.ny)))
+    }
+
+    /// Two-finger double tap: down/up/down/up at the cursor.
+    func smartMagnify(at point: CGPoint) {
+        flushText()
+        let (nx, ny) = normalized(point)
+        tap(nx: nx, ny: ny)
+        scheduleSecondTap { [weak self] in self?.tap(nx: nx, ny: ny) }
+    }
+
+    private func tap(nx: Float, ny: Float) {
+        send?(.touch(TouchEvent(action: .down, nx: nx, ny: ny)))
+        send?(.touch(TouchEvent(action: .up, nx: nx, ny: ny)))
     }
 
     // MARK: Keyboard

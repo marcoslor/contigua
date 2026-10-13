@@ -178,6 +178,38 @@ final class VideoLayerView: NSView {
     override func keyDown(with event: NSEvent) { inputMapper?.keyDown(event) }
     override func keyUp(with event: NSEvent) { inputMapper?.keyUp(event) }
 
+    // MARK: Trackpad gestures
+
+    // AppKit has no public way to synthesize a magnify/rotate NSEvent, so the
+    // scripted-input driver calls these seams; the overrides below only unwrap
+    // the event (location conversion included).
+
+    func magnifyGesture(phase: NSEvent.Phase, magnification: Double, at point: CGPoint) {
+        inputMapper?.magnify(phase: phase, magnification: CGFloat(magnification), at: point)
+    }
+
+    func rotateGesture(phase: NSEvent.Phase, rotation: Double, at point: CGPoint) {
+        inputMapper?.rotate(phase: phase, rotation: CGFloat(rotation), at: point)
+    }
+
+    func smartMagnifyGesture(at point: CGPoint) {
+        inputMapper?.smartMagnify(at: point)
+    }
+
+    override func magnify(with event: NSEvent) {
+        magnifyGesture(phase: event.phase, magnification: Double(event.magnification),
+                       at: convert(event.locationInWindow, from: nil))
+    }
+
+    override func rotate(with event: NSEvent) {
+        rotateGesture(phase: event.phase, rotation: Double(event.rotation),
+                      at: convert(event.locationInWindow, from: nil))
+    }
+
+    override func smartMagnify(with event: NSEvent) {
+        smartMagnifyGesture(at: convert(event.locationInWindow, from: nil))
+    }
+
     // MARK: Edge swipe
 
     /// Two-finger trackpad scrolls arrive with phases; only a gesture that

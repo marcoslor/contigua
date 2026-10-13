@@ -32,6 +32,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
             self?.videoView.convert(event.locationInWindow, from: nil) ?? .zero
         }
         mapper.viewIsFlipped = { [weak self] in self?.videoView.isFlipped ?? false }
+        mapper.videoSizeProvider = { [weak self] in self?.videoView.videoSize ?? .zero }
         mapper.escapeAllowed = { [weak self] in
             guard let window = self?.window else { return false }
             return window.isKeyWindow && window.attachedSheet == nil
@@ -163,8 +164,8 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
 
     private func handle(_ command: InputMapper.Command) {
         switch command {
-        case .touch(let action, let nx, let ny):
-            session.touch(TouchEvent(action: action, nx: nx, ny: ny), stream: stream)
+        case .touch(let event):
+            session.touch(event, stream: stream)
         case .scroll(let event):
             session.scroll(event, stream: stream)
         case .key(let event):
