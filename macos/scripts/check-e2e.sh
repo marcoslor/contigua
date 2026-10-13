@@ -17,17 +17,25 @@
 # hands the run loop back between steps so the coalesced moves flush. `input-global`
 # posts real CGEvents at the window instead; it needs a visible, unobstructed
 # window and focus.
+#
+# The app runs under its own profile (`--profile e2e`) from its own bundle,
+# build/e2e/PocketDeck.app, rebuilt from the current tree on every run. The
+# default profile (the user's pairings, cached phones and defaults) and the
+# user's build/PocketDeck.app are never read, rebuilt or killed here.
 set -uo pipefail
 
 MACOS="$(cd "$(dirname "$0")/.." && pwd)"
 ROOT="$(cd "$MACOS/.." && pwd)"
 FAKEPHONE="$ROOT/tools/fakephone/fakephone.py"
-APP="$MACOS/build/PocketDeck.app/Contents/MacOS/PocketDeck"
+PROFILE="e2e"
+E2E_BUNDLE="$MACOS/build/e2e/PocketDeck.app"
+APP="$E2E_BUNDLE/Contents/MacOS/PocketDeck"
 CGINPUT="$MACOS/scripts/cgevent-input.swift"
 TOOLS="/tmp/pocketdeck-e2e-tools"
 CGBIN="$TOOLS/cgevent"
 LOCK_DIR="/tmp/pocketdeck-e2e.lock"
-KEYCHAIN_SERVICE="dev.pocketdeck.mac"
+KEYCHAIN_SERVICE="dev.pocketdeck.mac.$PROFILE"
+DEFAULTS_SUITE="dev.pocketdeck.mac.$PROFILE"
 
 PASS=0
 FAIL=0
@@ -37,24 +45,60 @@ FAIL=0
 caffeinate -d -u -t 900 &
 CAFFEINATE_PID=$!
 disown "$CAFFEINATE_PID"
-trap 'kill "$CAFFEINATE_PID" >/dev/null 2>&1; release_lock' EXIT
+trap 'finish' EXIT
 caffeinate -u -t 1
 
 say()  { printf '%s\n' "$*"; }
 ok()   { PASS=$((PASS + 1)); printf 'PASS %s\n' "$*"; }
 bad()  { FAIL=$((FAIL + 1)); printf 'FAIL %s\n' "$*"; }
 
+# PIDs of the e2e app only: the command line must start with the e2e executable.
+# The user's build/PocketDeck.app is a different path and never matches.
+e2e_app_pids() {
+    ps -axww -o pid=,command= | awk -v exe="$APP --profile $PROFILE" '{
+        pid = $1
+        sub(/^ *[0-9]+ +/, "")
+        if (index($0, exe) == 1) print pid
+    }'
+}
+
+kill_e2e_app() {
+    local pids
+    pids="$(e2e_app_pids)"
+    [ -n "$pids" ] && kill $pids >/dev/null 2>&1
+    return 0
+}
+
+# Only a run that holds the lock may stop processes: a run that gave up waiting
+# for the lock must leave the running one's app and fakephone alone.
+finish() {
+    if [ -n "${HOLDS_LOCK:-}" ]; then
+        kill_e2e_app
+        stop_fakephone
+    fi
+    kill "$CAFFEINATE_PID" >/dev/null 2>&1
+    release_lock
+}
+
+# clear_profile_state — the e2e profile's pairing keys and defaults, nothing else.
+clear_profile_state() {
+    case "$PROFILE" in
+        default|"") say "refusing to clear profile '$PROFILE'"; exit 3 ;;
+    esac
+    # A key created by a *different* build makes macOS show a modal Keychain
+    # permission dialog, which hangs the app; remove every item, not just one.
+    while security delete-generic-password -s "$KEYCHAIN_SERVICE" >/dev/null 2>&1; do :; done
+    defaults delete "$DEFAULTS_SUITE" >/dev/null 2>&1
+    return 0
+}
+
 clean() {
-    pkill -f "PocketDeck.app/Contents/MacOS/PocketDeck .*--quit-after" >/dev/null 2>&1
+    kill_e2e_app
     stop_fakephone
     sleep 1
     rm -rf "$WORK"
     mkdir -p "$WORK"
-    # A key created by a *different* build makes macOS show a modal Keychain
-    # permission dialog, which hangs the app; remove every item, not just one.
-    while security delete-generic-password -s "$KEYCHAIN_SERVICE" >/dev/null 2>&1; do :; done
-    defaults delete dev.pocketdeck.mac cachedAddresses >/dev/null 2>&1
-    defaults delete dev.pocketdeck.mac cachedDeviceNames >/dev/null 2>&1
+    clear_profile_state
 }
 
 # start_fake [state-file] — same port every time, never mDNS.
@@ -73,7 +117,7 @@ start_fake() {
 
 # launch <args...> — starts the app as a direct child so `wait` works.
 launch() {
-    "$APP" "$@" > "$WORK/app.log" 2>&1 &
+    "$APP" --profile "$PROFILE" "$@" > "$WORK/app.log" 2>&1 &
     APP_PID=$!
 }
 
@@ -104,6 +148,7 @@ acquire_lock() {
         waited=$((waited + 2))
     done
     echo $$ > "$LOCK_DIR/pid"
+    HOLDS_LOCK=1
 }
 
 release_lock() {
@@ -680,7 +725,7 @@ check_direct() {
     grep -q '"state":"paired"' "$WORK/events.jsonl" \
         && ok "C10a paired" || bad "C10a first launch did not pair"
     local cached
-    cached="$(defaults read dev.pocketdeck.mac cachedAddresses 2>/dev/null || true)"
+    cached="$(defaults read "$DEFAULTS_SUITE" cachedAddresses 2>/dev/null || true)"
     case "$cached" in
         *127.0.0.1:$PORT*) ok "C10a cached address stored ($cached)" ;;
         *) bad "C10a no cached address: $cached" ;;
@@ -715,7 +760,7 @@ check_direct() {
         || ok "C10c refused the different device id (no auth_ok)"
     grep -q '"t":"auth"' "$WORK/events.jsonl" \
         && bad "C10c sent auth for the wrong device" || ok "C10c sent no auth for the wrong device"
-    cached="$(defaults read dev.pocketdeck.mac cachedAddresses 2>/dev/null || true)"
+    cached="$(defaults read "$DEFAULTS_SUITE" cachedAddresses 2>/dev/null || true)"
     case "$cached" in
         *127.0.0.1:$PORT*) bad "C10c cached address kept after the mismatch" ;;
         *) ok "C10c cached address dropped after the mismatch" ;;
@@ -834,10 +879,17 @@ check_spotlight() {
 check_orphans() {
     sleep 1
     local n
-    n="$(pgrep -f "PocketDeck.app/Contents/MacOS/PocketDeck .*--quit-after" | wc -l | tr -d ' ')"
+    n="$(e2e_app_pids | wc -l | tr -d ' ')"
     [ "$n" = "0" ] && ok "C9 no orphan PocketDeck processes" || bad "C9 $n orphan PocketDeck processes"
     n="$(pgrep -f -- "--events $WORK/events.jsonl" | wc -l | tr -d ' ')"
     [ "$n" = "0" ] && ok "C9 no orphan fakephone processes" || bad "C9 $n orphan fakephone processes"
+}
+
+# build_e2e_app — bundles the current tree to build/e2e/PocketDeck.app.
+build_e2e_app() {
+    if ! "$MACOS/scripts/bundle.sh" "$E2E_BUNDLE" > "$WORK/bundle.log" 2>&1; then
+        say "could not bundle $E2E_BUNDLE:"; tail -20 "$WORK/bundle.log"; return 1
+    fi
 }
 
 which_check="${1:-all}"
@@ -848,7 +900,9 @@ esac
 acquire_lock
 wait_for_other_runs
 pick_run
-say "run: port $PORT, work $WORK"
+mkdir -p "$WORK"
+say "run: port $PORT, work $WORK, profile $PROFILE, app $E2E_BUNDLE"
+build_e2e_app || exit 1
 build_cgevent || exit 1
 case "$which_check" in
     qr)       check_qr ;;

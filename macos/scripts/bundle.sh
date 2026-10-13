@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
 # Builds PocketDeck.app from the SwiftPM package and ad-hoc codesigns it.
+#
+#   ./scripts/bundle.sh [APP]     APP defaults to build/PocketDeck.app; only that
+#                                 path is ever replaced.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 swift build -c release
 BIN="$(swift build -c release --show-bin-path)/PocketDeck"
 
-APP="build/PocketDeck.app"
+APP="${1:-build/PocketDeck.app}"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/PocketDeck"

@@ -6,8 +6,8 @@ Same Wi-Fi; Shizuku running on the phone and "Allow connections" on.
 # phone (USB or wireless debugging)
 cd android && export JAVA_HOME=/opt/homebrew/opt/openjdk@17 ANDROID_HOME=$HOME/Library/Android/sdk
 ./gradlew :app:assembleDebug && adb install -r app/build/outputs/apk/debug/app-debug.apk
-# Mac
-cd macos && swift build && ./scripts/bundle.sh && open build/PocketDeck.app
+# Mac: build a release copy and install it to ~/Applications (quits a running copy first)
+cd macos && ./scripts/install.sh && open ~/Applications/PocketDeck.app
 ```
 
 1. Phone: PocketDeck → **Pair new Mac** (first run: onboarding → **Scan QR code**).

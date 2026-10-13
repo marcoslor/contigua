@@ -96,6 +96,7 @@ final class Session {
     /// have been handed to another phone).
     private let strictDeviceId: String?
 
+    private let clientId: String
     private var connection: NWConnection?
     private var decoder = FrameDecoder()
     private let queue = DispatchQueue(label: "dev.pocketdeck.session")
@@ -104,6 +105,8 @@ final class Session {
     private var reconnectAttempt = 0
     private var pendingPairKey: Data?
     private var awaitingPairCode = false
+    /// The session-level `error` code the phone sent on this connection, if any.
+    private var phoneErrorCode: String?
     private var authDeviceId: String?
     private var authInFlight = false
     private var authAttempts = 0
@@ -136,16 +139,18 @@ final class Session {
     static let connectTimeout: TimeInterval = 10
 
     init(endpoint: Endpoint, knownDeviceId: String?, strictDeviceId: String? = nil,
-         keyStore: PairKeyStore = PairKeyStore()) {
+         clientId: String, keyStore: PairKeyStore) {
         self.endpoint = endpoint
         self.knownDeviceId = knownDeviceId
         self.strictDeviceId = strictDeviceId
+        self.clientId = clientId
         self.keyStore = keyStore
     }
 
     convenience init(host: String, port: UInt16, knownDeviceId: String? = nil,
-                     keyStore: PairKeyStore = PairKeyStore()) {
-        self.init(endpoint: .hostPort(host: host, port: port), knownDeviceId: knownDeviceId, keyStore: keyStore)
+                     clientId: String, keyStore: PairKeyStore) {
+        self.init(endpoint: .hostPort(host: host, port: port), knownDeviceId: knownDeviceId,
+                  clientId: clientId, keyStore: keyStore)
     }
 
     // MARK: Lifecycle
@@ -166,6 +171,7 @@ final class Session {
         connection = conn
         decoder = FrameDecoder()
         awaitingPairCode = false
+        phoneErrorCode = nil
         authedWithQRKey = false
         conn.stateUpdateHandler = { [weak self] newState in self?.handleConnectionState(newState, on: conn) }
         conn.start(queue: queue)
@@ -250,7 +256,7 @@ final class Session {
         case .ready:
             Log.session.info("tcp ready; sending hello")
             transition(.handshaking, nil)
-            sendJSON(["t": "hello", "v": 1, "clientId": ClientIdentity.clientId, "name": ClientIdentity.name])
+            sendJSON(["t": "hello", "v": 1, "clientId": clientId, "name": ClientIdentity.name])
         case .waiting(let error):
             Log.session.notice("connection waiting: \(String(describing: error), privacy: .public)")
         case .failed(let error):
@@ -263,13 +269,18 @@ final class Session {
         }
     }
 
-    private func fail(_ reason: String) {
+    /// `transportReason` says what the socket did; the phone's error frame, or
+    /// a close while the code was awaited, says more and wins.
+    private func fail(_ transportReason: String) {
         connectWatchdog?.cancel()
         connectWatchdog = nil
         pingTimer?.invalidate()
         pingTimer = nil
         connection?.stateUpdateHandler = nil
         connection = nil
+        let reason = phoneErrorCode ?? (awaitingPairCode ? ConnectionFailure.pairingTimeout : transportReason)
+        phoneErrorCode = nil
+        awaitingPairCode = false
         // Some servers close right after rejecting auth without the error frame
         // surviving the close; two failed auth handshakes mean the key is stale.
         if authInFlight, authAttempts >= 2 {
@@ -278,7 +289,7 @@ final class Session {
         }
         guard !intentionalClose else { transition(.closed, nil); return }
         transition(.failed(reason), reason)
-        guard autoReconnect else { return }
+        guard autoReconnect, ConnectionFailure.retriesAutomatically(reason) else { return }
         let delay = Self.backoff[min(reconnectAttempt, Self.backoff.count - 1)]
         reconnectAttempt += 1
         Log.session.notice("reconnect in \(delay, privacy: .public)s")
@@ -297,7 +308,7 @@ final class Session {
         connection?.stateUpdateHandler = nil
         connection?.cancel()
         connection = nil
-        transition(.failed("identity-mismatch"), "identity-mismatch")
+        transition(.failed(ConnectionFailure.identityMismatch), ConnectionFailure.identityMismatch)
     }
 
     // MARK: Frame dispatch
@@ -368,6 +379,10 @@ final class Session {
             }
         case "pair.code_shown":
             awaitingPairCode = true
+            // The phone times the code entry itself (its own 15 s window); the
+            // connect watchdog must not cut the user off in the meantime.
+            connectWatchdog?.cancel()
+            connectWatchdog = nil
             emit(.pairCodeRequired(deviceId: knownDeviceId))
         case "pair.ok":
             if let hex = message.string("key") { pendingPairKey = Data(hexString: hex) }
@@ -430,6 +445,8 @@ final class Session {
             if code == "auth_failed", !authedWithQRKey {
                 forgetAuthKey()
             }
+            // Errors about one stream leave the session up; the rest end it.
+            if message.int("stream") == nil { phoneErrorCode = code }
             emit(.phoneError(code: code, message: message.string("message"),
                              stream: UInt32(message.int("stream") ?? 0)))
         default:

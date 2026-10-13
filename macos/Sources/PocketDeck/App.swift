@@ -18,6 +18,10 @@ struct LaunchOptions {
     var qrSheet = false
     var qrPayloadFile: String?
     var debugInputScript: String?
+    var profileName = Profile.defaultName
+
+    /// nil when `--profile` was missing or not a usable name.
+    var profile: Profile? { Profile(name: profileName) }
 
     static func parse(_ arguments: [String]) -> LaunchOptions {
         var options = LaunchOptions()
@@ -57,6 +61,8 @@ struct LaunchOptions {
                 options.qrPayloadFile = next()
             case "--debug-input-script":
                 options.debugInputScript = next()
+            case "--profile":
+                options.profileName = next() ?? ""
             default:
                 break
             }
@@ -91,7 +97,10 @@ enum UIState: Equatable {
     case connecting
     case awaitingCode
     case connected
-    case failed(String)
+    /// The session is backing off before its next attempt; one line, no retries shown.
+    case reconnecting
+    /// Stopped trying; the user presses Retry. The text is `errorText`.
+    case failed
 }
 
 /// One row of the Devices list: a discovered phone, a paired phone we only
@@ -106,10 +115,13 @@ struct DeviceRow: Equatable {
 
 final class AppModel {
     let options: LaunchOptions
-    let keyStore = PairKeyStore()
-    let cache = CachedDeviceStore()
+    let profile: Profile
+    /// Our id toward the phone, from this profile's defaults.
+    let clientId: String
+    let keyStore: PairKeyStore
+    let cache: CachedDeviceStore
     let discovery = Discovery()
-    let spotlight = SpotlightIndex()
+    let spotlight: SpotlightIndex
 
     private(set) var session: Session?
     private(set) var windows: WindowManager?
@@ -163,7 +175,14 @@ final class AppModel {
         let startedAt: Date
     }
 
-    init(options: LaunchOptions) { self.options = options }
+    init(options: LaunchOptions, profile: Profile) {
+        self.options = options
+        self.profile = profile
+        clientId = ClientIdentity.clientId(in: profile)
+        keyStore = PairKeyStore(profile: profile)
+        cache = CachedDeviceStore(profile: profile)
+        spotlight = SpotlightIndex(domainPrefix: profile.spotlightDomainPrefix)
+    }
 
     // MARK: Lifecycle
 
@@ -419,8 +438,7 @@ final class AppModel {
     /// see (every 2 s, for 5 minutes).
     func startQRPairing() {
         guard qrPayload == nil else { return }
-        guard let payload = PairingQRPayload.random(clientId: ClientIdentity.clientId,
-                                                    name: ClientIdentity.name) else {
+        guard let payload = PairingQRPayload.random(clientId: clientId, name: ClientIdentity.name) else {
             errorText = "Could not generate a pairing key"
             onChange?()
             return
@@ -482,7 +500,7 @@ final class AppModel {
     }
 
     private func startProbe(id: String, endpoint: Session.Endpoint, deviceId: String?, key: Data) {
-        let probe = Session(endpoint: endpoint, knownDeviceId: deviceId, keyStore: keyStore)
+        let probe = Session(endpoint: endpoint, knownDeviceId: deviceId, clientId: clientId, keyStore: keyStore)
         probe.autoReconnect = false
         probe.usePairingKey(key)
         probe.onEvent = { [weak self, weak probe] event in
@@ -526,8 +544,8 @@ final class AppModel {
         activeDeviceId = deviceId
         session?.close()
         let strictId = source == .cached ? deviceId : nil
-        let newSession = Session(endpoint: endpoint, knownDeviceId: deviceId,
-                                 strictDeviceId: strictId, keyStore: keyStore)
+        let newSession = Session(endpoint: endpoint, knownDeviceId: deviceId, strictDeviceId: strictId,
+                                 clientId: clientId, keyStore: keyStore)
         let manager = WindowManager(session: newSession)
         session = newSession
         windows = manager
@@ -535,7 +553,12 @@ final class AppModel {
         errorText = nil
         uiState = .connecting
         if let key = qrPayload?.key { newSession.usePairingKey(key) }
-        newSession.onEvent = { [weak self] event in self?.handle(event) }
+        // Events of a session that has been replaced (its close, a late failure)
+        // must not change the state of the one in charge now.
+        newSession.onEvent = { [weak self, weak newSession] event in
+            guard let self, let newSession, newSession === self.session else { return }
+            self.handle(event)
+        }
         newSession.onVideoEvent = { [weak self] event in self?.windows?.handleVideo(event) }
         onChange?()
         newSession.start()
@@ -549,11 +572,14 @@ final class AppModel {
             switch state {
             case .ready:
                 uiState = .connected
+                errorText = nil
             case .connecting, .handshaking:
-                if uiState != .awaitingCode { uiState = .connecting }
+                // A retry in the background keeps the one "Reconnecting…" line.
+                if uiState != .awaitingCode && uiState != .reconnecting { uiState = .connecting }
             case .failed:
-                uiState = .failed(detail ?? "connection failed")
-                errorText = detail
+                let reason = detail ?? "closed"
+                errorText = ConnectionFailure.message(for: reason)
+                uiState = ConnectionFailure.retriesAutomatically(reason) ? .reconnecting : .failed
                 scheduleCachedFallback()
             case .closed, .idle:
                 uiState = .discovering
@@ -572,6 +598,7 @@ final class AppModel {
                 cache.store(name: info.name, deviceId: info.id)
             }
             uiState = .connected
+            errorText = nil
             session?.requestApps()
             if !didAutoOpen {
                 didAutoOpen = true
@@ -619,10 +646,10 @@ final class AppModel {
             Log.session.notice("dropping cached address for \(expected, privacy: .public) (answers as \(actual, privacy: .public))")
             cache.forget(deviceId: expected)
             offlineDeviceIds.insert(expected)
-            errorText = "Another phone is using the remembered address."
+            errorText = ConnectionFailure.message(for: ConnectionFailure.identityMismatch)
             uiState = .discovering
         case .phoneError(let code, let message, _):
-            errorText = message ?? code
+            errorText = ConnectionFailure.message(for: code) ?? message ?? code
             if code == "auth_failed" { uiState = .discovering }
         default:
             break
@@ -685,13 +712,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let options = LaunchOptions.parse(CommandLine.arguments)
-        if options.resetPairing {
-            Keychain.deleteAll()
-            UserDefaults.standard.removeObject(forKey: "lastDeviceId")
-            let cache = CachedDeviceStore()
-            cache.removeAll()
+        // A profile name that does not parse must not fall back to the default
+        // profile: a test run would then use the user's data.
+        guard let profile = options.profile else {
+            FileHandle.standardError.write(Data("--profile \(options.profileName): use 1-32 of a-z, 0-9 and -\n".utf8))
+            exit(2)
         }
-        let model = AppModel(options: options)
+        Profile.active = profile
+        Log.app.notice("profile \(profile.name, privacy: .public): keychain \(profile.keychainService, privacy: .public), defaults \(profile.defaultsSuiteName ?? "standard", privacy: .public)")
+        if options.resetPairing {
+            profile.keychain.deleteAll()
+            PairKeyStore(profile: profile).lastDeviceId = nil
+            CachedDeviceStore(profile: profile).removeAll()
+        }
+        let model = AppModel(options: options, profile: profile)
         let launcher = LauncherWindowController(model: model)
         self.model = model
         self.launcher = launcher

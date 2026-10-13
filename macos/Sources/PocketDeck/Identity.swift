@@ -1,9 +1,10 @@
 // Identity, key storage and logging.
 //
-// - clientId: stable per-install UUID in UserDefaults (sent in `hello`).
-// - Pair keys: one generic-password item per device id in the login Keychain.
+// - clientId: stable per-install UUID in the profile's defaults (sent in `hello`).
+// - Pair keys: one generic-password item per device id in the login Keychain,
+//   under the profile's service.
 // - Logging: os.Logger only (no `print`); the optional latency log is a file
-//   under ~/Library/Logs/PocketDeck because it is sampled by the tests.
+//   under ~/Library/Logs/<profile folder> because it is sampled by the tests.
 
 import CryptoKit
 import Foundation
@@ -21,8 +22,8 @@ enum ClientIdentity {
     private static let clientIdKey = "clientId"
 
     /// Stable per-install id; the phone remembers us by this.
-    static var clientId: String {
-        let defaults = UserDefaults.standard
+    static func clientId(in profile: Profile) -> String {
+        let defaults = profile.defaults
         if let existing = defaults.string(forKey: clientIdKey), !existing.isEmpty { return existing }
         let fresh = UUID().uuidString.lowercased()
         defaults.set(fresh, forKey: clientIdKey)
@@ -32,19 +33,18 @@ enum ClientIdentity {
     static var name: String { Host.current().localizedName ?? "Mac" }
 }
 
-/// Generic-password items for pairing keys. Reads/creates only items this app
-/// owns, so the Keychain never prompts during a normal run.
-enum Keychain {
-    static let service = "dev.pocketdeck.mac"
+/// Generic-password items for pairing keys, all under one service (see `Profile`).
+struct Keychain {
+    let service: String
 
-    private static func baseQuery(account: String) -> [String: Any] {
+    private func baseQuery(account: String) -> [String: Any] {
         [kSecClass as String: kSecClassGenericPassword,
          kSecAttrService as String: service,
          kSecAttrAccount as String: account]
     }
 
     @discardableResult
-    static func store(_ secret: Data, account: String) -> Bool {
+    func store(_ secret: Data, account: String) -> Bool {
         let query = baseQuery(account: account)
         SecItemDelete(query as CFDictionary)
         var add = query
@@ -52,7 +52,7 @@ enum Keychain {
         return SecItemAdd(add as CFDictionary, nil) == errSecSuccess
     }
 
-    static func load(account: String) -> Data? {
+    func load(account: String) -> Data? {
         var query = baseQuery(account: account)
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
@@ -61,18 +61,18 @@ enum Keychain {
         return result as? Data
     }
 
-    static func delete(account: String) {
+    func delete(account: String) {
         SecItemDelete(baseQuery(account: account) as CFDictionary)
     }
 
-    /// Removes every PocketDeck item (used by the `--reset-pairing` test hook).
-    static func deleteAll() {
+    /// Removes every item of this service (used by the `--reset-pairing` test hook).
+    func deleteAll() {
         let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
                                     kSecAttrService as String: service]
         SecItemDelete(query as CFDictionary)
     }
 
-    static func accounts() -> [String] {
+    func accounts() -> [String] {
         let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
                                     kSecAttrService as String: service,
                                     kSecReturnAttributes as String: true,
@@ -89,9 +89,17 @@ enum Keychain {
 /// last-known device id is used to pick the right key before `welcome`.
 final class PairKeyStore {
     private let defaults: UserDefaults
+    private let keychain: Keychain
     private let lastDeviceIdKey = "lastDeviceId"
 
-    init(defaults: UserDefaults = .standard) { self.defaults = defaults }
+    init(defaults: UserDefaults, keychain: Keychain) {
+        self.defaults = defaults
+        self.keychain = keychain
+    }
+
+    convenience init(profile: Profile) {
+        self.init(defaults: profile.defaults, keychain: profile.keychain)
+    }
 
     var lastDeviceId: String? {
         get { defaults.string(forKey: lastDeviceIdKey) }
@@ -102,25 +110,25 @@ final class PairKeyStore {
     }
 
     func key(forDeviceId deviceId: String) -> Data? {
-        Keychain.load(account: deviceId)
+        keychain.load(account: deviceId)
     }
 
     /// The key we should try before `welcome` when the device id is unknown.
     func candidateKey(knownDeviceId: String?) -> (deviceId: String, key: Data)? {
         if let id = knownDeviceId, let key = key(forDeviceId: id) { return (id, key) }
         if let id = lastDeviceId, let key = key(forDeviceId: id) { return (id, key) }
-        let accounts = Keychain.accounts()
-        if accounts.count == 1, let key = Keychain.load(account: accounts[0]) { return (accounts[0], key) }
+        let accounts = keychain.accounts()
+        if accounts.count == 1, let key = keychain.load(account: accounts[0]) { return (accounts[0], key) }
         return nil
     }
 
     func store(key: Data, deviceId: String) {
-        Keychain.store(key, account: deviceId)
+        keychain.store(key, account: deviceId)
         lastDeviceId = deviceId
     }
 
     func forget(deviceId: String) {
-        Keychain.delete(account: deviceId)
+        keychain.delete(account: deviceId)
         if lastDeviceId == deviceId { lastDeviceId = nil }
     }
 }
@@ -142,19 +150,20 @@ enum CryptoKitHmac {
 }
 
 /// Optional latency sampling: TOUCH down send -> next VIDEO_FRAME for that
-/// stream. Enabled with `defaults write dev.pocketdeck.mac debugLatency -bool YES`.
+/// stream. Enabled with `defaults write dev.pocketdeck.mac debugLatency -bool YES`
+/// (for the default profile; other profiles use their own suite).
 final class LatencyLog {
-    static let shared = LatencyLog()
+    static let shared = LatencyLog(profile: .active)
 
     private let enabled: Bool
     private let lock = NSLock()
     private var lastTouchDown: [UInt32: Date] = [:]
     private let url: URL?
 
-    private init() {
-        enabled = UserDefaults.standard.bool(forKey: "debugLatency")
+    private init(profile: Profile) {
+        enabled = profile.defaults.bool(forKey: "debugLatency")
         let dir = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Logs/PocketDeck", isDirectory: true)
+            .appendingPathComponent("Library/Logs/\(profile.supportDirectoryName)", isDirectory: true)
         if enabled {
             try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
             url = dir.appendingPathComponent("latency.log")

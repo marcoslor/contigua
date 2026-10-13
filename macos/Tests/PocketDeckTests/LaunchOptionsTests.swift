@@ -53,6 +53,19 @@ final class LaunchOptionsTests: XCTestCase {
         XCTAssertTrue(LaunchOptions.parse(["PocketDeck", "--reset-pairing"]).resetPairing)
     }
 
+    func testProfileDefaultsToTheUsersOwn() {
+        XCTAssertEqual(LaunchOptions.parse(["PocketDeck"]).profile, Profile.default)
+    }
+
+    func testParsesProfile() {
+        XCTAssertEqual(LaunchOptions.parse(["PocketDeck", "--profile", "e2e-4242"]).profile?.name, "e2e-4242")
+    }
+
+    func testUnusableProfileIsNilNotTheDefault() {
+        XCTAssertNil(LaunchOptions.parse(["PocketDeck", "--profile", "../default"]).profile)
+        XCTAssertNil(LaunchOptions.parse(["PocketDeck", "--profile"]).profile)
+    }
+
     func testEmptyArgumentsGiveDefaults() {
         let options = LaunchOptions.parse(["PocketDeck"])
         XCTAssertNil(options.connect)
