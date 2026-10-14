@@ -288,14 +288,18 @@ internal class AudioCapture(
 
         val policyBuilderCl = Class.forName("android.media.audiopolicy.AudioPolicy\$Builder")
         val policyBuilder = policyBuilderCl.getDeclaredConstructor(Context::class.java).newInstance(ctx)
-        policyBuilderCl.getMethod("addMix", mix.javaClass.interfaces.firstOrNull() ?: mix.javaClass)
-            .let { addMix ->
-                runCatching { addMix.invoke(policyBuilder, mix) }.getOrElse {
-                    // Fallback: exact parameter type lookup.
-                    policyBuilderCl.methods.firstOrNull { it.name == "addMix" }
-                        ?.invoke(policyBuilder, mix)
-                }
+        val audioMixClass = runCatching { Class.forName("android.media.audiopolicy.AudioMix") }.getOrNull()
+            ?: (mix.javaClass.interfaces.firstOrNull() ?: mix.javaClass)
+        val addMixMethod = runCatching {
+            policyBuilderCl.getMethod("addMix", audioMixClass)
+        }.getOrNull()
+            ?: policyBuilderCl.methods.firstOrNull { it.name == "addMix" }
+        addMixMethod?.let { m ->
+            runCatching { m.invoke(policyBuilder, mix) }.getOrElse {
+                // Fallback: try any addMix overload with the mix argument.
+                policyBuilderCl.methods.firstOrNull { it.name == "addMix" }?.invoke(policyBuilder, mix)
             }
+        }
         val pol = policyBuilderCl.getMethod("build").invoke(policyBuilder)
         val am = ctx.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return false
         val register = am.javaClass.methods.firstOrNull {
