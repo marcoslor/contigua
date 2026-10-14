@@ -2,6 +2,7 @@ package dev.pocketdeck.server
 
 import android.content.Context
 import android.media.AudioAttributes
+import android.media.AudioDeviceInfo
 import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioRecord
@@ -9,20 +10,21 @@ import android.media.MediaCodec
 import android.media.MediaCodecInfo
 import android.media.MediaFormat
 import android.media.MediaRecorder
+import android.os.Build
 import android.os.SystemClock
 import dev.pocketdeck.proto.Frames
 
 /**
  * Device-wide audio capture over REMOTE_SUBMIX.
  *
- * Proven on API 36 at shell UID: AudioPlaybackCapture needs a MediaProjection
- * (MANAGE_MEDIA_PROJECTION, signature) which the shell lacks, while the shell
- * holds CAPTURE_AUDIO_OUTPUT + MANAGE_AUDIO_POLICY + MODIFY_AUDIO_ROUTING and
- * REMOTE_SUBMIX AudioRecord init/start works. Routing media usages to the
- * submix silences the phone speaker for those usages.
+ * Opening a REMOTE_SUBMIX input from the shell UID (which holds
+ * CAPTURE_AUDIO_OUTPUT) makes the framework route media playback to the
+ * submix output instead of the speaker, so the phone goes silent while we
+ * stream and no AudioPolicy is needed. Approach adapted from scrcpy's
+ * "output" audio source (Apache-2.0).
  *
- * AudioMix/AudioMixingRule/AudioPolicy are hidden (@SystemApi), so the policy
- * below is built reflectively (same pattern as PanelPower/Hidden elsewhere).
+ * The submix device keeps its own music volume index (often mid-scale), which
+ * attenuates the capture; once routing has switched we raise that index only.
  */
 internal class AudioCapture(
     private val ctx: Context,
@@ -39,11 +41,13 @@ internal class AudioCapture(
         const val MIME_AAC = "audio/mp4a-latm"
         /** 20 ms stereo 16-bit at 48 kHz. */
         const val CHUNK_BYTES = SAMPLE_RATE * CHANNELS * 2 * FRAME_MS / 1000
+        const val MAX_AHEAD_NS = 40_000_000L
+        const val OUTPUT_WAIT_US = 10_000L
+        const val MAX_BEHIND_NS = 200_000_000L
     }
 
     @Volatile private var running = false
     @Volatile private var thread: Thread? = null
-    @Volatile private var policy: Any? = null
     @Volatile private var record: AudioRecord? = null
     @Volatile private var codec: MediaCodec? = null
     override val isRunning: Boolean get() = running
@@ -65,33 +69,35 @@ internal class AudioCapture(
             log("audio: no encoder for $preferredCodecs")
             return
         }
-        if (!registerPolicy()) {
-            log("audio: policy registration failed")
-            return
-        }
         val minBuf = AudioRecord.getMinBufferSize(
             SAMPLE_RATE, AudioFormat.CHANNEL_IN_STEREO, AudioFormat.ENCODING_PCM_16BIT,
         )
         if (minBuf <= 0) {
             log("audio: bad min buffer $minBuf")
-            unregisterPolicy()
             return
         }
         val rec = try {
-            AudioRecord(
-                MediaRecorder.AudioSource.REMOTE_SUBMIX, SAMPLE_RATE,
-                AudioFormat.CHANNEL_IN_STEREO, AudioFormat.ENCODING_PCM_16BIT,
-                maxOf(minBuf, CHUNK_BYTES * 4),
-            )
+            // The record's attribution must be uid 2000 + com.android.shell (from
+            // the ShellContext); our own package at the shell UID is rejected.
+            AudioRecord.Builder()
+                .apply { if (Build.VERSION.SDK_INT >= 31) setContext(ctx) }
+                .setAudioSource(MediaRecorder.AudioSource.REMOTE_SUBMIX)
+                .setAudioFormat(
+                    AudioFormat.Builder()
+                        .setSampleRate(SAMPLE_RATE)
+                        .setChannelMask(AudioFormat.CHANNEL_IN_STEREO)
+                        .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                        .build(),
+                )
+                .setBufferSizeInBytes(maxOf(minBuf, CHUNK_BYTES * 4))
+                .build()
         } catch (t: Throwable) {
             log("audio: record init failed: ${t.message}")
-            unregisterPolicy()
             return
         }
         if (rec.state != AudioRecord.STATE_INITIALIZED) {
             log("audio: record not initialized")
             runCatching { rec.release() }
-            unregisterPolicy()
             return
         }
         val enc = try {
@@ -99,7 +105,6 @@ internal class AudioCapture(
         } catch (t: Throwable) {
             log("audio: no $mime encoder: ${t.message}")
             runCatching { rec.release() }
-            unregisterPolicy()
             return
         }
         try {
@@ -121,7 +126,6 @@ internal class AudioCapture(
             log("audio: encoder configure failed: ${t.message}")
             runCatching { enc.release() }
             runCatching { rec.release() }
-            unregisterPolicy()
             return
         }
         running = true
@@ -131,6 +135,7 @@ internal class AudioCapture(
         log("audio: capturing codec=$codecId ($mime)")
         thread = Thread({ loop(sink, codecId, rec, enc) }, "pocketdeck-audio").also { it.start() }
         runCatching { rec.startRecording() }
+            .onSuccess { Thread(::raiseSubmixVolume, "pocketdeck-audio-vol").start() }
             .onFailure {
                 log("audio: startRecording failed: ${it.message}")
                 stop()
@@ -139,10 +144,7 @@ internal class AudioCapture(
 
     @Synchronized
     override fun stop() {
-        if (!running && thread == null) {
-            unregisterPolicy()
-            return
-        }
+        if (!running && thread == null) return
         running = false
         runCatching { record?.stop() }
         runCatching { Thread.sleep(20) }
@@ -151,7 +153,6 @@ internal class AudioCapture(
         runCatching { record?.release() }
         codec = null
         record = null
-        unregisterPolicy()
         val t = thread
         thread = null
         if (t != null && t !== Thread.currentThread()) runCatching { t.join(1000) }
@@ -162,6 +163,8 @@ internal class AudioCapture(
         val info = MediaCodec.BufferInfo()
         val chunk = ByteArray(CHUNK_BYTES)
         var sentAacSetup = false
+        var clockBaseNs = 0L
+        var producedNs = 0L
         while (running) {
             val n = try {
                 rec.read(chunk, 0, chunk.size)
@@ -169,7 +172,18 @@ internal class AudioCapture(
                 break
             }
             if (n <= 0) continue
-            val ptsUs = SystemClock.elapsedRealtimeNanos() / 1000
+            val nowNs = SystemClock.elapsedRealtimeNanos()
+            // With nothing playing, the submix input synthesizes silence faster
+            // than realtime; drop chunks that run ahead of the wall clock so the
+            // Mac's queue (and so latency) cannot grow.
+            if (clockBaseNs == 0L || clockBaseNs + producedNs < nowNs - MAX_BEHIND_NS) {
+                clockBaseNs = nowNs
+                producedNs = 0L
+            }
+            val chunkNs = n * 1_000_000_000L / (SAMPLE_RATE * CHANNELS * 2)
+            if (clockBaseNs + producedNs + chunkNs > nowNs + MAX_AHEAD_NS) continue
+            producedNs += chunkNs
+            val ptsUs = nowNs / 1000
             try {
                 val idx = enc.dequeueInputBuffer(10_000)
                 if (idx >= 0) {
@@ -181,9 +195,11 @@ internal class AudioCapture(
             } catch (_: Throwable) {
                 break
             }
+            // Wait briefly for this chunk's packet so it leaves now, not one read later.
+            var waitUs = OUTPUT_WAIT_US
             while (running) {
                 val out = try {
-                    enc.dequeueOutputBuffer(info, 0)
+                    enc.dequeueOutputBuffer(info, waitUs).also { waitUs = 0 }
                 } catch (_: Throwable) {
                     break
                 }
@@ -233,100 +249,26 @@ internal class AudioCapture(
     }.getOrDefault(false)
 
     /**
-     * Routes USAGE_MEDIA/GAME/UNKNOWN players to REMOTE_SUBMIX, reflectively:
-     * AudioMix.Builder(AudioMixingRule) → setDevice(REMOTE_SUBMIX,"0") →
-     * setFormat → setRouteFlags(RENDER) → AudioPolicy.Builder(ctx).addMix →
-     * AudioManager.registerAudioPolicy. Constants read reflectively so the
-     * build needs no hidden SDK.
+     * Sets STREAM_MUSIC to max while media is routed to the submix, which
+     * changes the submix device's index and leaves the speaker's untouched.
+     * AudioManager.getDevicesForAttributes is a hidden API, hence reflection.
      */
-    private fun registerPolicy(): Boolean = runCatching {
-        val ruleBuilderCl = Class.forName("android.media.audiopolicy.AudioMixingRule\$Builder")
-        val ruleBuilder = ruleBuilderCl.getDeclaredConstructor().newInstance()
-        val addRule = ruleBuilderCl.getMethod(
-            "addRule", AudioAttributes::class.java, Int::class.javaPrimitiveType,
-        )
-        val setTargetMixRole = runCatching {
-            ruleBuilderCl.getMethod("setTargetMixRole", Int::class.javaPrimitiveType)
-        }.getOrNull()
-        val mixRolePlayers = runCatching {
-            Class.forName("android.media.audiopolicy.AudioMixingRule")
-                .getField("MIX_ROLE_PLAYERS").getInt(null)
-        }.getOrDefault(0)
-        val matchUsage = runCatching {
-            Class.forName("android.media.audiopolicy.AudioMixingRule")
-                .getField("RULE_MATCH_ATTRIBUTE_USAGE").getInt(null)
-        }.getOrDefault(1)
-        setTargetMixRole?.invoke(ruleBuilder, mixRolePlayers)
-        for (usage in intArrayOf(
-            AudioAttributes.USAGE_MEDIA, AudioAttributes.USAGE_GAME, AudioAttributes.USAGE_UNKNOWN,
-        )) {
-            val attr = AudioAttributes.Builder().setUsage(usage).build()
-            addRule.invoke(ruleBuilder, attr, matchUsage)
-        }
-        val rule = ruleBuilderCl.getMethod("build").invoke(ruleBuilder)
-
-        val mixBuilderCl = Class.forName("android.media.audiopolicy.AudioMix\$Builder")
-        val mixBuilder = mixBuilderCl.getDeclaredConstructor(rule.javaClass).newInstance(rule)
-        val remoteSubmix = runCatching {
-            android.media.AudioDeviceInfo::class.java.getField("TYPE_REMOTE_SUBMIX").getInt(null)
-        }.getOrDefault(8)
-        val routeRender = runCatching {
-            Class.forName("android.media.audiopolicy.AudioMix")
-                .getField("ROUTE_FLAG_RENDER").getInt(null)
-        }.getOrDefault(1)
-        mixBuilderCl.getMethod("setDevice", Int::class.javaPrimitiveType, String::class.java)
-            .invoke(mixBuilder, remoteSubmix, "0")
-        val format = AudioFormat.Builder()
-            .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-            .setSampleRate(SAMPLE_RATE)
-            .setChannelMask(AudioFormat.CHANNEL_OUT_STEREO)
-            .build()
-        mixBuilderCl.getMethod("setFormat", AudioFormat::class.java).invoke(mixBuilder, format)
-        mixBuilderCl.getMethod("setRouteFlags", Int::class.javaPrimitiveType)
-            .invoke(mixBuilder, routeRender)
-        val mix = mixBuilderCl.getMethod("build").invoke(mixBuilder)
-
-        val policyBuilderCl = Class.forName("android.media.audiopolicy.AudioPolicy\$Builder")
-        val policyBuilder = policyBuilderCl.getDeclaredConstructor(Context::class.java).newInstance(ctx)
-        val audioMixClass = runCatching { Class.forName("android.media.audiopolicy.AudioMix") }.getOrNull()
-            ?: (mix.javaClass.interfaces.firstOrNull() ?: mix.javaClass)
-        val addMixMethod = runCatching {
-            policyBuilderCl.getMethod("addMix", audioMixClass)
-        }.getOrNull()
-            ?: policyBuilderCl.methods.firstOrNull { it.name == "addMix" }
-        addMixMethod?.let { m ->
-            runCatching { m.invoke(policyBuilder, mix) }.getOrElse {
-                // Fallback: try any addMix overload with the mix argument.
-                policyBuilderCl.methods.firstOrNull { it.name == "addMix" }?.invoke(policyBuilder, mix)
+    private fun raiseSubmixVolume() = runCatching {
+        val am = ctx.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        val media = AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).build()
+        val devicesFor = AudioManager::class.java.getMethod("getDevicesForAttributes", AudioAttributes::class.java)
+        val deadline = SystemClock.uptimeMillis() + 2000
+        while (running && SystemClock.uptimeMillis() < deadline) {
+            val devices = devicesFor.invoke(am, media) as List<*>
+            val routed = devices.any {
+                it!!.javaClass.getMethod("getType").invoke(it) == AudioDeviceInfo.TYPE_REMOTE_SUBMIX
             }
+            if (routed) {
+                am.setStreamVolume(AudioManager.STREAM_MUSIC, am.getStreamMaxVolume(AudioManager.STREAM_MUSIC), 0)
+                return@runCatching
+            }
+            Thread.sleep(20)
         }
-        val pol = policyBuilderCl.getMethod("build").invoke(policyBuilder)
-        val am = ctx.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return false
-        val register = am.javaClass.methods.firstOrNull {
-            it.name == "registerAudioPolicy" && it.parameterTypes.size == 1
-        } ?: return false
-        val rc = (register.invoke(am, pol) as? Int) ?: -1
-        if (rc == 0) {
-            policy = pol
-            log("audio: policy registered (media/game -> submix)")
-            true
-        } else {
-            log("audio: registerAudioPolicy rc=$rc")
-            false
-        }
-    }.getOrElse {
-        log("audio: policy failed: ${it.message}")
-        false
-    }
-
-    private fun unregisterPolicy() {
-        val pol = policy ?: return
-        policy = null
-        val am = runCatching { ctx.getSystemService(Context.AUDIO_SERVICE) as? AudioManager }?.getOrNull()
-            ?: return
-        val unregister = am.javaClass.methods.firstOrNull {
-            it.name == "unregisterAudioPolicy" && it.parameterTypes.size == 1
-        } ?: return
-        runCatching { unregister.invoke(am, pol) }
-    }
+        log("audio: media not routed to submix")
+    }.onFailure { log("audio: submix volume: ${it.message}") }
 }
