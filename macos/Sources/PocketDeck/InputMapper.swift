@@ -1,7 +1,8 @@
 // NSEvent -> protocol message mapping. Nothing is coalesced except ASCII text,
 // which is batched for up to 8 ms so a fast typist produces one `text` frame
-// instead of one per character, and trackpad-gesture moves, which are held to
-// at most one per display refresh. Touch/scroll/keys are sent immediately.
+// instead of one per character, and the moves of the coarse pinch emulation,
+// which are held to at most one per display refresh. Touch/scroll/keys are sent
+// immediately.
 
 import AppKit
 
@@ -82,6 +83,18 @@ final class InputMapper {
     static let keyCodeUpArrow: UInt16 = 126
 
     private var scrollMapping = ScrollMapping()
+    private var gestures = TrackpadGestures()
+
+    /// The pointers a trackpad gesture is holding on the phone, for the Show
+    /// Touches overlay (normalized video coordinates). Empty when none is down.
+    var touchPointsChanged: (([TouchPoint]) -> Void)?
+    private var livePointers: [UInt8: TouchPoint] = [:]
+
+    struct TouchPoint: Equatable {
+        var id: UInt8
+        var nx: Float
+        var ny: Float
+    }
     private var pendingText = ""
     private var textFlush: DispatchWorkItem?
 
@@ -97,6 +110,7 @@ final class InputMapper {
 
     func mouseDown(_ event: NSEvent) {
         flushText()
+        cancelTrackpadGestures()
         let (nx, ny) = normalized(locationProvider(event))
         LatencyLog.shared.noteTouchDown(stream: stream)
         send?(.touch(TouchEvent(action: .down, nx: nx, ny: ny)))
@@ -114,12 +128,14 @@ final class InputMapper {
 
     func rightMouseDown(_ event: NSEvent) {
         flushText()
+        cancelTrackpadGestures()
         send?(.nav("back"))
     }
 
     /// Middle button -> home, extra buttons 3/4 (the usual side buttons) -> back.
     func otherMouseDown(_ event: NSEvent) {
         flushText()
+        cancelTrackpadGestures()
         switch event.buttonNumber {
         case 2: send?(.nav("home"))
         case 3, 4: send?(.nav("back"))
@@ -134,11 +150,61 @@ final class InputMapper {
     }
 
     func scrollWheel(_ event: NSEvent) {
+        scroll(ScrollSample(phase: event.phase, momentum: event.momentumPhase,
+                            precise: event.hasPreciseScrollingDeltas,
+                            deltaX: Double(event.scrollingDeltaX), deltaY: Double(event.scrollingDeltaY)),
+               at: locationProvider(event))
+    }
+
+    /// A wheel stays a SCROLL frame; a two-finger trackpad scroll becomes a
+    /// one-finger drag (see ScrollDrag and TrackpadGestures).
+    func scroll(_ sample: ScrollSample, at point: CGPoint) {
         flushText()
-        guard let units = scrollMapping.map(deltaX: Double(event.scrollingDeltaX), deltaY: Double(event.scrollingDeltaY),
-                                            precise: event.hasPreciseScrollingDeltas, phase: event.phase) else { return }
-        let (nx, ny) = normalized(locationProvider(event))
-        send?(.scroll(ScrollEvent(nx: nx, ny: ny, hscroll: units.hscroll, vscroll: units.vscroll)))
+        let output = gestures.scroll(sample, cursor: point, space: gestureSpace)
+        if output.wheel {
+            guard let units = scrollMapping.map(deltaX: sample.deltaX, deltaY: sample.deltaY,
+                                                precise: sample.precise, phase: sample.phase) else { return }
+            let (nx, ny) = normalized(point)
+            send?(.scroll(ScrollEvent(nx: nx, ny: ny, hscroll: units.hscroll, vscroll: units.vscroll)))
+        }
+        sendTrackpad(output.touches)
+    }
+
+    // MARK: Raw trackpad fingers
+
+    private var gestureSpace: TrackpadGestures.Space {
+        TrackpadGestures.Space(videoRect: videoRectProvider(), flipped: viewIsFlipped())
+    }
+
+    /// The fingers on the trackpad (NSTouch, resting ones left out), with the
+    /// cursor in view points.
+    func trackpadFingers(_ fingers: [TrackpadFinger], surface: TrackpadSurface, cursor: CGPoint) {
+        if gestures.fingerCount < 2, fingers.count >= 2 { flushText() }
+        sendTrackpad(gestures.fingersChanged(fingers, surface: surface, cursor: cursor, space: gestureSpace))
+    }
+
+    /// A click, a key window change or anything else that takes the stream
+    /// from a trackpad gesture: Android is told to drop the touch.
+    func cancelTrackpadGestures() {
+        sendTrackpad(gestures.cancel())
+        if pointerGesture != nil { finishGesture(cancelled: true) }
+    }
+
+    /// Trackpad-made touches go through here so the overlay knows what the
+    /// phone is holding.
+    private func sendTrackpad(_ events: [TouchEvent]) {
+        guard !events.isEmpty else { return }
+        for event in events {
+            if event.action == .down, event.pointerId == 0 { LatencyLog.shared.noteTouchDown(stream: stream) }
+            send?(.touch(event))
+            switch event.action {
+            case .down, .move:
+                livePointers[event.pointerId] = TouchPoint(id: event.pointerId, nx: event.nx, ny: event.ny)
+            case .up, .cancel:
+                livePointers[event.pointerId] = nil
+            }
+        }
+        touchPointsChanged?(livePointers.values.sorted { $0.id < $1.id })
     }
 
     // MARK: Trackpad gestures
@@ -163,11 +229,24 @@ final class InputMapper {
     private var gestureMoveScheduled = false
 
     func magnify(phase: NSEvent.Phase, magnification: CGFloat, at point: CGPoint) {
+        guard !fingersOwnPinch() else { return }
         gesture(.magnify, phase: phase, delta: Double(magnification), at: point)
     }
 
     func rotate(phase: NSEvent.Phase, rotation: CGFloat, at point: CGPoint) {
+        guard !fingersOwnPinch() else { return }
         gesture(.rotate, phase: phase, delta: Double(rotation), at: point)
+    }
+
+    /// With two raw fingers on the trackpad the pointers come from them, not
+    /// from the magnify and rotate events that describe the same gesture; the
+    /// events only settle a pinch the fingers have not classified yet. Without
+    /// raw fingers (no trackpad, or a view that gets no touches) the coarse
+    /// emulation below stays the way a pinch reaches the phone.
+    private func fingersOwnPinch() -> Bool {
+        guard gestures.fingerCount >= 2 else { return false }
+        sendTrackpad(gestures.pinchHinted(space: gestureSpace))
+        return true
     }
 
     private func gesture(_ component: GestureComponent, phase: NSEvent.Phase,
@@ -206,10 +285,9 @@ final class InputMapper {
                                         videoSize: videoSizeProvider())
         gestureComponents = []
         pendingGestureMove = nil
-        LatencyLog.shared.noteTouchDown(stream: stream)
         guard let points = pointerGesture?.points else { return }
-        send?(.touch(TouchEvent(action: .down, pointerId: 0, nx: points.zero.nx, ny: points.zero.ny)))
-        send?(.touch(TouchEvent(action: .down, pointerId: 1, nx: points.one.nx, ny: points.one.ny)))
+        sendTrackpad([TouchEvent(action: .down, pointerId: 0, nx: points.zero.nx, ny: points.zero.ny),
+                      TouchEvent(action: .down, pointerId: 1, nx: points.one.nx, ny: points.one.ny)])
     }
 
     /// Holds the latest geometry until the next display refresh; a burst of
@@ -226,8 +304,8 @@ final class InputMapper {
         gestureMoveScheduled = false
         guard let points = pendingGestureMove else { return }
         pendingGestureMove = nil
-        send?(.touch(TouchEvent(action: .move, pointerId: 0, nx: points.zero.nx, ny: points.zero.ny)))
-        send?(.touch(TouchEvent(action: .move, pointerId: 1, nx: points.one.nx, ny: points.one.ny)))
+        sendTrackpad([TouchEvent(action: .move, pointerId: 0, nx: points.zero.nx, ny: points.zero.ny),
+                      TouchEvent(action: .move, pointerId: 1, nx: points.one.nx, ny: points.one.ny)])
     }
 
     private func finishGesture(cancelled: Bool) {
@@ -237,8 +315,8 @@ final class InputMapper {
         gestureComponents = []
         flushGestureMove() // the last changed move may still be pending; it precedes the ups
         let action: TouchAction = cancelled ? .cancel : .up
-        send?(.touch(TouchEvent(action: action, pointerId: 1, nx: points.one.nx, ny: points.one.ny)))
-        send?(.touch(TouchEvent(action: action, pointerId: 0, nx: points.zero.nx, ny: points.zero.ny)))
+        sendTrackpad([TouchEvent(action: action, pointerId: 1, nx: points.one.nx, ny: points.one.ny),
+                      TouchEvent(action: action, pointerId: 0, nx: points.zero.nx, ny: points.zero.ny)])
     }
 
     /// Two-finger double tap: down/up/down/up at the cursor.

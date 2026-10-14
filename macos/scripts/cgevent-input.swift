@@ -46,7 +46,8 @@ func pocketDeckWindows(owner: String, pid: Int? = nil) -> [Target] {
     var targets: [Target] = []
     for entry in list {
         guard (entry[kCGWindowOwnerName as String] as? String) == owner,
-              (entry[kCGWindowLayer as String] as? Int) == 0,
+              // 0 = normal; 3 = floating, the level `--float-windows` gives stream windows.
+              [0, 3].contains(entry[kCGWindowLayer as String] as? Int ?? -1),
               let number = entry[kCGWindowNumber as String] as? Int,
               let boundsDict = entry[kCGWindowBounds as String] as? [String: Any],
               let bounds = CGRect(dictionaryRepresentation: boundsDict as CFDictionary) else { continue }

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # End-to-end checks C3-C13 for the macOS client against tools/fakephone.
 #
-#   ./scripts/check-e2e.sh [qr|pair|render|resize|input|input-global|pause|direct|nav|spotlight|pinch|all]
+#   ./scripts/check-e2e.sh [qr|pair|render|resize|input|input-global|pause|direct|nav|spotlight|pinch|strip|trackpad|clip|all]
 #
 # Every check starts from a clean slate: no PocketDeck or fakephone processes
 # left by an earlier run, a fresh fakephone state file and no pairing key in
@@ -18,6 +18,12 @@
 # posts real CGEvents at the window instead; it needs a visible, unobstructed
 # window and focus.
 #
+# The windows reserve a 32 pt title strip above the video: the virtual display is
+# sized from the window minus the strip, so the size checks (C6, C14) subtract 32 pt
+# from the window height they ask for. The trackpad checks (C15) feed the driver's
+# phased scroll events and a model of the raw trackpad fingers (AppKit cannot
+# synthesize NSTouch); the phone-side timestamps in the event log give the cadence.
+#
 # The app runs under its own profile (`--profile e2e`) from its own bundle,
 # build/e2e/PocketDeck.app, rebuilt from the current tree on every run. The
 # default profile (the user's pairings, cached phones and defaults) and the
@@ -32,7 +38,9 @@ E2E_BUNDLE="$MACOS/build/e2e/PocketDeck.app"
 APP="$E2E_BUNDLE/Contents/MacOS/PocketDeck"
 CGINPUT="$MACOS/scripts/cgevent-input.swift"
 TOOLS="/tmp/pocketdeck-e2e-tools"
-CGBIN="$TOOLS/cgevent"
+# Named by the source's hash: other checkouts share $TOOLS, and a helper built from
+# their (older or newer) source must not be taken for this one.
+CGBIN="$TOOLS/cgevent-$(shasum "$CGINPUT" | cut -c1-12)"
 LOCK_DIR="/tmp/pocketdeck-e2e.lock"
 KEYCHAIN_SERVICE="dev.pocketdeck.mac.$PROFILE"
 DEFAULTS_SUITE="dev.pocketdeck.mac.$PROFILE"
@@ -88,6 +96,9 @@ clear_profile_state() {
     # A key created by a *different* build makes macOS show a modal Keychain
     # permission dialog, which hangs the app; remove every item, not just one.
     while security delete-generic-password -s "$KEYCHAIN_SERVICE" >/dev/null 2>&1; do :; done
+    # Pair keys now live in a file in the profile's folder; a stale one would make
+    # the app authenticate instead of pairing with a fresh fakephone.
+    rm -f "$HOME/Library/Application Support/PocketDeck-$PROFILE/pairkeys.json"
     defaults delete "$DEFAULTS_SUITE" >/dev/null 2>&1
     return 0
 }
@@ -196,12 +207,13 @@ PY
 }
 
 # Only this run's fakephones (every one is started with this run's --events).
-stop_fakephone() { pkill -f -- "--events $WORK/events.jsonl" >/dev/null 2>&1; }
+# WORK is unset if the run gave up waiting for the lock before choosing a port.
+stop_fakephone() { [ -n "${WORK:-}" ] && pkill -f -- "--events $WORK/events.jsonl" >/dev/null 2>&1; }
 
 # The CGEvent helper is compiled once: `swift file.swift` re-interprets the
 # source on every call, which is seconds per window lookup.
 build_cgevent() {
-    if [ ! -x "$CGBIN" ] || [ "$CGINPUT" -nt "$CGBIN" ]; then
+    if [ ! -x "$CGBIN" ]; then
         mkdir -p "$TOOLS"
         swiftc -O "$CGINPUT" -o "$CGBIN" >/dev/null 2>&1 || { say "could not build $CGINPUT"; return 1; }
     fi
@@ -395,7 +407,7 @@ check_render() {
     clean
     start_fake || return 1
     launch --connect "127.0.0.1:$PORT" \
-        --open com.android.settings --open-phone --quit-after 40
+        --open com.android.settings --open-phone --float-windows --quit-after 40
     local app_shot="$WORK/render-app.png" phone_shot="$WORK/render-phone.png" id
     if ! wait_until 30 events_have '"ev":"video","stream":1,' \
         || ! wait_until 30 events_have '"ev":"video","stream":2,'; then
@@ -423,8 +435,9 @@ check_resize() {
     start_fake || return 1
     launch --connect "127.0.0.1:$PORT" \
         --open com.android.settings --resize-stream 1:800x600-pt --quit-after 60
-    wait_until 30 events_have '"ev":"video","stream":1,"config":true,"w":1600,"h":1200' \
-        && ok "C6 new video config 1600x1200" || bad "C6 no new config"
+    # The window is 800x600 pt; the video is the part below the 32 pt title strip.
+    wait_until 30 events_have '"ev":"video","stream":1,"config":true,"w":1600,"h":1136' \
+        && ok "C6 new video config 1600x1136 (600 - 32 pt strip, at 2x)" || bad "C6 no new config"
     events_have '"t":"window.resize"' \
         && ok "C6 window.resize sent" || bad "C6 no window.resize"
     screenshot 800 "$WORK/resize.png" && say "screenshot: $WORK/resize.png"
@@ -433,15 +446,15 @@ check_resize() {
     # Non-16:9 shapes: tall, then ultra-wide (capped at 2560 px, aspect kept).
     launch --connect "127.0.0.1:$PORT" --open com.android.settings \
         --resize-stream 1:600x1000-pt --quit-after 60
-    wait_until 30 events_have '"ev":"video","stream":1,"config":true,"w":1200,"h":2000' \
-        && ok "C6 tall shape resized to 1200x2000" || bad "C6 no tall config"
+    wait_until 30 events_have '"ev":"video","stream":1,"config":true,"w":1200,"h":1936' \
+        && ok "C6 tall shape resized to 1200x1936 (1000 - 32 pt strip)" || bad "C6 no tall config"
     screenshot 600 "$WORK/resize-tall.png" && say "screenshot: $WORK/resize-tall.png"
     stop_app
 
     launch --connect "127.0.0.1:$PORT" --open com.android.settings \
         --resize-stream 1:1600x500-pt --quit-after 60
-    wait_until 30 events_have '"ev":"video","stream":1,"config":true,"w":2560,"h":800' \
-        && ok "C6 ultra-wide capped to 2560x800 (aspect kept)" || bad "C6 no capped config"
+    wait_until 30 events_have '"ev":"video","stream":1,"config":true,"w":2560,"h":736' \
+        && ok "C6 ultra-wide capped to 2560x736 (aspect kept, strip excluded)" || bad "C6 no capped config"
     events_have '"dpi":256' \
         && ok "C6 capped size lowers the dpi to 256" || bad "C6 dpi did not follow the cap"
     screenshot 1600 "$WORK/resize-wide.png" || screenshot_widest "$WORK/resize-wide.png" \
@@ -726,6 +739,247 @@ PY
     stop_fakephone
 }
 
+# --- C14: title strip ---------------------------------------------------
+
+# check_strip — the video the phone is asked for is the window minus the 32 pt
+# strip; View > Show Title Strip (scripted as `strip off|on`) gives the whole
+# window back and sends a resize; the choice is remembered per app package.
+check_strip() {
+    clean
+    start_fake || return 1
+    printf '%s\n' "strip off" "strip on" "strip off" "rightclick 0.5 0.5" > "$WORK/strip.txt"
+    launch --connect "127.0.0.1:$PORT" \
+        --open com.android.settings --debug-input-script "$WORK/strip.txt" --quit-after 60
+    wait_until 30 events_have '"action":"back"' \
+        || { bad "C14 scripted strip toggles did not finish"; say "app log: $(tail -3 "$WORK/app.log")"; }
+    local sizes
+    sizes="$(python3 - "$WORK/events.jsonl" <<'PY' || true
+import json, sys
+
+opened, resizes = None, []
+for line in open(sys.argv[1]):
+    try:
+        event = json.loads(line)
+    except ValueError:
+        continue
+    msg = event.get("msg") if event.get("ev") == "rx" else None
+    if not isinstance(msg, dict) or msg.get("stream") != 1:
+        continue
+    if msg.get("t") == "window.open" and opened is None:
+        opened = (msg["w"], msg["h"], msg["dpi"])
+    if msg.get("t") == "window.resize":
+        resizes.append((msg["w"], msg["h"], msg["dpi"]))
+print("open=%s resizes=%s" % (opened, resizes[-3:]))
+PY
+)"
+    say "C14 $sizes"
+    case "$sizes" in
+        "open=(1792, 1200, "*) ok "C14 window.open is 1792x1200: the 632 pt window minus the 32 pt strip, at 2x" ;;
+        *) bad "C14 window.open size: $sizes" ;;
+    esac
+    case "$sizes" in
+        *"resizes=[(1792, 1264, "*"), (1792, 1200, "*"), (1792, 1264, "*")]") \
+            ok "C14 strip off -> 1264, on -> 1200, off -> 1264 (window.resize heights)" ;;
+        *) bad "C14 window.resize heights: $sizes" ;;
+    esac
+    case "$(defaults read "$DEFAULTS_SUITE" titleStrips 2>/dev/null | tr -d '\n ')" in
+        *'"app.com.android.settings"=0'*) ok "C14 the choice is stored per app package in the profile's defaults" ;;
+        *) bad "C14 titleStrips not stored: $(defaults read "$DEFAULTS_SUITE" titleStrips 2>&1 | tr -d '\n')" ;;
+    esac
+    stop_app
+    stop_fakephone
+    wait_until 5 no_fakephone
+
+    # A second launch: the remembered app opens without the strip, another app with it.
+    : > "$WORK/events.jsonl"
+    start_fake || return 1
+    launch --connect "127.0.0.1:$PORT" --open com.android.settings,com.whatsapp --quit-after 30
+    wait_until 30 events_have '"pkg":"com.whatsapp"' || bad "C14 second launch opened no second window"
+    sleep 1
+    local pkgs
+    pkgs="$(python3 - "$WORK/events.jsonl" <<'PY' || true
+import json, sys
+
+rows = {}
+for line in open(sys.argv[1]):
+    try:
+        event = json.loads(line)
+    except ValueError:
+        continue
+    msg = event.get("msg") if event.get("ev") == "rx" else None
+    if isinstance(msg, dict) and msg.get("t") == "window.open" and "pkg" in msg:
+        rows[msg["pkg"]] = msg["h"]
+print("settings=%s whatsapp=%s" % (rows.get("com.android.settings"), rows.get("com.whatsapp")))
+PY
+)"
+    [ "$pkgs" = "settings=1264 whatsapp=1200" ] \
+        && ok "C14 remembered per app: settings without the strip (1264), whatsapp with it (1200)" \
+        || bad "C14 per-app strip: $pkgs"
+    stop_app
+    stop_fakephone
+}
+
+# --- C15: trackpad gestures ---------------------------------------------------
+
+# check_trackpad — a two-finger scroll is a one-finger touch drag, a wheel is
+# still SCROLL, and raw trackpad fingers (modelled by the scripted driver) make
+# the pinch and rotate pointers. Momentum events must reach the phone as nothing.
+check_trackpad() {
+    clean
+    start_fake || return 1
+    # The script starts at the first video config. The main thread is busy with
+    # the opening frames for a few hundred ms after that, which would stretch one
+    # step of the first gesture past the cadence C15 measures. Settle first: the
+    # first frame is shown within milliseconds, and the rest is margin.
+    printf '%s\n' "wait 1.5" "trackscroll 200" "scroll 3" "fingerscroll -200" "fingerpinch 0.5 0.5 1.8" \
+        "fingerrotate 0.5 0.5 90" "rightclick 0.5 0.5" > "$WORK/trackpad.txt"
+    launch --connect "127.0.0.1:$PORT" \
+        --open com.android.settings --debug-input-script "$WORK/trackpad.txt" --quit-after 60
+    wait_until 40 events_have '"action":"back"' \
+        || { bad "C15 scripted trackpad gestures did not reach the phone"; say "app log: $(tail -3 "$WORK/app.log")"; }
+    local verdicts
+    verdicts="$(python3 - "$WORK/events.jsonl" <<'PY' || true
+import json, math, sys
+
+touches, scrolls = [], []
+video = (1000.0, 1000.0)
+for line in open(sys.argv[1]):
+    try:
+        event = json.loads(line)
+    except ValueError:
+        continue
+    if event.get("ev") == "video" and event.get("config") and event.get("stream") == 1:
+        video = (float(event["w"]), float(event["h"]))
+    if event.get("ev") != "input" or event.get("stream") != 1:
+        continue
+    if event.get("kind") == "touch":
+        touches.append({"action": int(event["action"]), "pointer": int(event["pointer"]),
+                        "nx": float(event["nx"]), "ny": float(event["ny"]), "ts": float(event["ts"])})
+    elif event.get("kind") == "scroll":
+        scrolls.append(event)
+
+DOWN, UP, MOVE, CANCEL = 0, 1, 2, 3
+
+
+def verdict(good, label, detail=""):
+    print(("ok: " if good else "bad: ") + label + ((": " + detail) if detail else ""))
+
+
+def near(a, b, tolerance):
+    return abs(a - b) <= tolerance
+
+
+gestures, current = [], None
+for event in touches:
+    if event["action"] == DOWN and event["pointer"] == 0:
+        current = []
+        gestures.append(current)
+    if current is not None:
+        current.append(event)
+
+verdict(len(gestures) == 4, "C15 four touch gestures (2 drags, pinch, rotate)", "got %d" % len(gestures))
+verdict(len(scrolls) == 1 and scrolls[0]["v"] > 0, "C15 the wheel is one SCROLL frame, the trackpad scrolls none",
+        "scroll frames=%s" % [round(s["v"], 2) for s in scrolls])
+if len(gestures) != 4:
+    sys.exit(0)
+
+# Video height in points is half its pixels (2x backing); 200 pt of scroll moves
+# the finger by 200 / that, normalized.
+height_pt = video[1] / 2
+expected = 200.0 / height_pt
+
+
+def check_drag(events, sign, label):
+    actions = [e["action"] for e in events]
+    moves = [e for e in events if e["action"] == MOVE]
+    verdict(events[0]["action"] == DOWN and actions[-1] == UP and CANCEL not in actions,
+            "C15 %s: DOWN, MOVEs, UP (no cancel)" % label, "actions=%s" % actions[:3] + "..." + str(actions[-2:]))
+    verdict(all(e["pointer"] == 0 for e in events), "C15 %s: one finger only" % label)
+    verdict(near(events[0]["nx"], 0.5, 0.03) and near(events[0]["ny"], 0.5, 0.03),
+            "C15 %s: DOWN at the cursor" % label, "nx=%.3f ny=%.3f" % (events[0]["nx"], events[0]["ny"]))
+    verdict(len(moves) >= 10, "C15 %s: a MOVE per scroll event" % label, "moves=%d" % len(moves))
+    ys = [e["ny"] for e in moves]
+    mono = all(b * sign >= a * sign - 1e-6 for a, b in zip(ys, ys[1:]))
+    verdict(mono and near(events[-1]["ny"], 0.5 + sign * expected, 0.02),
+            "C15 %s: the finger travels %s by 200 pt, 1:1" % (label, "down" if sign > 0 else "up"),
+            "end ny=%.3f expected %.3f" % (events[-1]["ny"], 0.5 + sign * expected))
+    # The phone stamps events on arrival: the cadence and the lift are what its
+    # velocity tracker sees.
+    gaps = [b["ts"] - a["ts"] for a, b in zip(moves, moves[1:])]
+    lift = events[-1]["ts"] - moves[-1]["ts"]
+    verdict(gaps and max(gaps) < 0.1 and lift < 0.05,
+            "C15 %s: MOVEs a display refresh apart, UP right after the last (fling-compatible)" % label,
+            "max gap %.0f ms, lift %.0f ms" % (max(gaps) * 1000 if gaps else -1, lift * 1000))
+
+
+check_drag(gestures[0], +1, "trackscroll")
+check_drag(gestures[1], -1, "fingerscroll")
+
+
+def span_and_angle(a, b):
+    dx, dy = (a["nx"] - b["nx"]) * video[0], (a["ny"] - b["ny"]) * video[1]
+    return math.hypot(dx, dy), math.degrees(math.atan2(dy, dx))
+
+
+def pairs(events):
+    out, pending = [], None
+    for e in events:
+        if e["action"] != MOVE:
+            continue
+        if e["pointer"] == 0:
+            pending = e
+        elif pending is not None:
+            out.append((pending, e))
+            pending = None
+    return out
+
+
+def check_pair(events, label):
+    actions = [e["action"] for e in events]
+    pointers = [e["pointer"] for e in events]
+    ordered = actions[:2] == [DOWN, DOWN] and pointers[:2] == [0, 1] and actions[-2:] == [UP, UP] and pointers[-2:] == [1, 0]
+    verdict(ordered, "C15 %s: DOWN(0) DOWN(1) ... UP(1) UP(0)" % label, "actions=%s pointers=%s" % (actions[:3], pointers[-2:]))
+    return ordered
+
+
+down_span, down_angle = None, None
+if check_pair(gestures[2], "fingerpinch"):
+    g = gestures[2]
+    down_span, _ = span_and_angle(g[0], g[1])
+    moves = pairs(g)
+    last_span, _ = span_and_angle(*moves[-1])
+    verdict(len(moves) >= 4 and near(last_span / down_span, 1.8, 0.12), "C15 fingerpinch: spread x1.8 from the landing",
+            "ratio %.2f over %d pairs" % (last_span / down_span, len(moves)))
+    mid = ((moves[-1][0]["nx"] + moves[-1][1]["nx"]) / 2, (moves[-1][0]["ny"] + moves[-1][1]["ny"]) / 2)
+    verdict(near(mid[0], 0.5, 0.01) and near(mid[1], 0.5, 0.01), "C15 fingerpinch: anchored at the cursor",
+            "mid=%.3f,%.3f" % mid)
+    verdict(down_span > 60 and down_span < 400, "C15 fingerpinch: the landing span is 32 mm x 4 pt/mm = 128 pt", "%.0f px" % down_span)
+
+if check_pair(gestures[3], "fingerrotate"):
+    g = gestures[3]
+    start_span, start_angle = span_and_angle(g[0], g[1])
+    moves = pairs(g)
+    end_span, end_angle = span_and_angle(*moves[-1])
+    turned = (end_angle - start_angle + 180) % 360 - 180
+    verdict(near(end_span, start_span, 0.06 * start_span), "C15 fingerrotate: the pair keeps its span",
+            "%.0f -> %.0f px" % (start_span, end_span))
+    verdict(near(turned, -90, 8), "C15 fingerrotate: turns 90 deg counter-clockwise", "turned=%.1f" % turned)
+PY
+)"
+    if [ -z "$verdicts" ]; then
+        bad "C15 the trackpad checker produced no verdicts"
+    else
+        while IFS= read -r line; do
+            case "$line" in
+                "ok: "*)  ok "${line#ok: }" ;;
+                "bad: "*) bad "${line#bad: }" ;;
+            esac
+        done <<< "$verdicts"
+    fi
+    stop_app
+    stop_fakephone
+}
+
 # --- C8: pause/resume -----------------------------------------------------
 
 check_pause() {
@@ -734,10 +988,50 @@ check_pause() {
     launch --connect "127.0.0.1:$PORT" \
         --open com.android.settings --minimize-stream 1:6 --deminimize-stream 1:11 --quit-after 16
     wait_app
-    [ "$(count_events '"t":"window.pause"')" = "1" ] \
-        && ok "C8 exactly one window.pause" || bad "C8 pause count $(count_events '"t":"window.pause"')"
-    [ "$(count_events '"t":"window.resume"')" = "1" ] \
-        && ok "C8 exactly one window.resume" || bad "C8 resume count $(count_events '"t":"window.resume"')"
+    # Another window passing over the test window makes macOS report it occluded,
+    # which is a pause/resume pair of its own. The scripted minimize holds the
+    # stream paused for the 5 s between the two timers; count that pair, require
+    # every pause to be answered by a resume, and report any short pair that is
+    # not ours instead of letting it decide the verdict.
+    local verdict
+    verdict="$(python3 - "$WORK/events.jsonl" <<'PY' || true
+import json, sys
+
+marks = []
+for line in open(sys.argv[1]):
+    try:
+        event = json.loads(line)
+    except ValueError:
+        continue
+    msg = event.get("msg") if event.get("ev") == "rx" else None
+    if isinstance(msg, dict) and msg.get("stream") == 1 and msg.get("t") in ("window.pause", "window.resume"):
+        marks.append((msg["t"], event["ts"]))
+
+pairs, open_pause, stray = [], None, 0
+for kind, ts in marks:
+    if kind == "window.pause":
+        if open_pause is not None:
+            stray += 1
+        open_pause = ts
+    elif open_pause is not None:
+        pairs.append(ts - open_pause)
+        open_pause = None
+    else:
+        stray += 1
+scripted = [gap for gap in pairs if 3.5 <= gap <= 6.5]
+others = [gap for gap in pairs if not 3.5 <= gap <= 6.5]
+print("scripted=%d others=%d unanswered=%d stray=%d" % (len(scripted), len(others), 1 if open_pause is not None else 0, stray))
+PY
+)"
+    say "C8 pause/resume pairs: $verdict"
+    case "$verdict" in
+        *"scripted=1 "*) ok "C8 exactly one scripted window.pause/window.resume pair (5 s apart)" ;;
+        *) bad "C8 scripted pair: $verdict" ;;
+    esac
+    case "$verdict" in
+        *"unanswered=0 stray=0"*) ok "C8 every window.pause is answered by a window.resume" ;;
+        *) bad "C8 unbalanced pause/resume: $verdict" ;;
+    esac
     stop_fakephone
 }
 
@@ -906,6 +1200,49 @@ check_spotlight() {
 
 # --- C9: no leftovers -----------------------------------------------------
 
+# check_clip — plain-text clipboard sync both ways (docs/PROTOCOL.md "Clipboard
+# sync"). The fakephone sends pd-clip-1 right after welcome: the Mac's pasteboard
+# must show it, and the Mac must not send it back. Then the Mac copies pd-clip-2
+# and the fakephone must log it. The person's pasteboard is saved first and put
+# back when this check returns, failures included (text only: other types are lost).
+check_clip() {
+    clean
+    local saved="$WORK/pasteboard.saved"
+    pbpaste > "$saved" 2>/dev/null
+    trap 'pbcopy < "$saved"; trap - RETURN' RETURN
+
+    clip_is() { [ "$(pbpaste)" = "$1" ]; }
+
+    # A sentinel, so pd-clip-1 can only have come from the phone.
+    printf '%s' pd-clip-0 | pbcopy
+    python3 "$FAKEPHONE" --port "$PORT" --no-mdns --auto-allow \
+        --events "$WORK/events.jsonl" --state "$WORK/state.json" \
+        --clip-on-welcome pd-clip-1 > "$WORK/fake.log" 2>&1 &
+    FAKE_PID=$!
+    for _ in $(seq 1 40); do
+        grep -q "listening" "$WORK/fake.log" && break
+        sleep 0.25
+    done
+    grep -q "listening" "$WORK/fake.log" || { bad "CLIP fakephone did not start"; return 1; }
+
+    launch --connect "127.0.0.1:$PORT" --quit-after 60
+    wait_until 30 clip_is pd-clip-1 \
+        && ok "CLIP phone -> Mac: pbpaste shows pd-clip-1" \
+        || bad "CLIP pbpaste shows '$(pbpaste)', not pd-clip-1"
+    sleep 2
+    ! events_have '"dir":"rx","text":"pd-clip-1"' \
+        && ok "CLIP the Mac does not send pd-clip-1 back" \
+        || bad "CLIP the Mac echoed pd-clip-1 to the phone"
+
+    printf '%s' pd-clip-2 | pbcopy
+    wait_until 30 events_have '"dir":"rx","text":"pd-clip-2"' \
+        && ok "CLIP Mac -> phone: fakephone logs clip.set pd-clip-2" \
+        || bad "CLIP fakephone did not log clip.set pd-clip-2"
+    stop_app
+    stop_fakephone
+    wait_until 5 no_fakephone
+}
+
 check_orphans() {
     sleep 1
     local n
@@ -924,8 +1261,8 @@ build_e2e_app() {
 
 which_check="${1:-all}"
 case "$which_check" in
-    qr|pair|render|resize|input|input-global|pause|direct|nav|spotlight|pinch|all) ;;
-    *) say "usage: check-e2e.sh [qr|pair|render|resize|input|input-global|pause|direct|nav|spotlight|pinch|all]"; exit 2 ;;
+    qr|pair|render|resize|input|input-global|pause|direct|nav|spotlight|pinch|strip|trackpad|clip|all) ;;
+    *) say "usage: check-e2e.sh [qr|pair|render|resize|input|input-global|pause|direct|nav|spotlight|pinch|strip|trackpad|clip|all]"; exit 2 ;;
 esac
 acquire_lock
 wait_for_other_runs
@@ -942,12 +1279,15 @@ case "$which_check" in
     input)    check_input ;;
     input-global) check_input_global ;;
     pinch)    check_pinch ;;
+    strip)    check_strip ;;
+    trackpad) check_trackpad ;;
     pause)    check_pause ;;
     direct)   check_direct ;;
     nav)      check_nav ;;
     spotlight) check_spotlight ;;
+    clip)     check_clip ;;
     all)      check_qr; check_pair; check_render; check_resize; check_input; check_pinch
-              check_pause; check_direct; check_nav; check_spotlight; check_orphans ;;
+              check_strip; check_trackpad; check_pause; check_direct; check_nav; check_spotlight; check_clip; check_orphans ;;
 esac
 
 say ""

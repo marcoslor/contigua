@@ -1,5 +1,6 @@
 // Phone-mode window: shows the phone's own launcher (PocketDeck launcher
-// activity) in a phone-shaped, aspect-locked window with hover chrome.
+// activity) in a phone-shaped window whose video keeps the phone's aspect
+// ratio, with hover chrome.
 
 import AppKit
 
@@ -17,21 +18,54 @@ final class PhoneWindowController: StreamWindowController {
         self.phoneScreen = screen.width > 0 && screen.height > 0 ? screen : Self.fallbackScreen
         self.phoneDpi = Double(phone?.screenDpi ?? Int(Self.fallbackDpi))
         let visibleHeight = NSScreen.main?.visibleFrame.height ?? 900
-        let height = (visibleHeight * 0.75).rounded()
-        let width = (height * self.phoneScreen.width / self.phoneScreen.height).rounded()
-        super.init(stream: stream, contentSize: NSSize(width: width, height: height), manager: manager)
+        let videoHeight = (visibleHeight * 0.75).rounded()
+        let width = (videoHeight * self.phoneScreen.width / self.phoneScreen.height).rounded()
+        let reserved = TitleStrip.reservedHeight(titlebar: TitleStrip.fallbackHeight,
+                                                 enabled: manager.titleStrip(forKey: "phone"))
+        super.init(stream: stream, contentSize: NSSize(width: width, height: videoHeight + reserved), manager: manager)
         window?.title = phone?.name ?? "Phone"
-        window?.aspectRatio = NSSize(width: self.phoneScreen.width, height: self.phoneScreen.height)
-        window?.minSize = NSSize(width: 240, height: 240 * self.phoneScreen.height / self.phoneScreen.width)
-        videoView.hoverZoneHeight = 84
+        updateMinSize()
         videoView.onHoverChange = { [weak self] visible in self?.showChrome(visible) }
         videoView.inputMapper?.isPhoneMode = true
         buildChrome()
+        layoutChrome()
         showChrome(false, animated: false)
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+    private static let minVideoWidth: CGFloat = 240
+
+    /// The strip is not part of the picture: the window is as much taller than
+    /// the video as the strip, and the video keeps the phone's aspect ratio.
+    func windowWillResize(_ sender: NSWindow, to frameSize: NSSize) -> NSSize {
+        TitleStrip.phoneFrame(proposed: frameSize, current: sender.frame.size, phone: phoneScreen,
+                              reserved: reservedHeight)
+    }
+
+    private var reservedHeight: CGFloat {
+        TitleStrip.reservedHeight(titlebar: titlebarHeight, enabled: strip.titleStrip)
+    }
+
+    private func updateMinSize() {
+        window?.minSize = NSSize(width: Self.minVideoWidth,
+                                 height: Self.minVideoWidth * phoneScreen.height / phoneScreen.width + reservedHeight)
+    }
+
+    /// Toggling the strip keeps the video the size it was: the window grows or
+    /// shrinks by the strip, from its top edge.
+    override func titleStripDidChange() {
+        guard let window else { return }
+        let delta = TitleStrip.reservedHeight(titlebar: titlebarHeight, enabled: true)
+        var frame = window.frame
+        let change = strip.titleStrip ? delta : -delta
+        frame.size.height += change
+        frame.origin.y -= change
+        window.setFrame(frame, display: true)
+        updateMinSize()
+        layoutChrome()
+    }
 
     /// dpi = phoneDpi × vdWidth / phoneScreenWidth, so the phone's dp width is
     /// preserved whatever the Mac window size is.
@@ -69,12 +103,20 @@ final class PhoneWindowController: StreamWindowController {
                                home: { [weak self] in self?.navHome() },
                                recents: { [weak self] in self?.navRecents() })
         videoView.addSubview(bar, positioned: .above, relativeTo: nil)
-        // 8 pt under the titlebar, centred; follows the top edge on resize.
-        bar.frame = NSRect(x: (videoView.bounds.width - PhoneBarView.size.width) / 2,
-                           y: videoView.bounds.height - 28 - 8 - PhoneBarView.size.height,
-                           width: PhoneBarView.size.width, height: PhoneBarView.size.height)
         bar.autoresizingMask = [.minXMargin, .maxXMargin, .minYMargin]
         chrome = bar
+    }
+
+    /// 8 pt under the titlebar, centred; follows the top edge on resize. With
+    /// the strip on, the video starts under the titlebar already.
+    private func layoutChrome() {
+        let video = videoBounds()
+        let covered = strip.titleStrip ? 0 : titlebarHeight
+        chrome?.frame = NSRect(x: (video.width - PhoneBarView.size.width) / 2,
+                               y: video.height - covered - 8 - PhoneBarView.size.height,
+                               width: PhoneBarView.size.width, height: PhoneBarView.size.height)
+        // The top 84 pt of the window, as the titlebar counts for it.
+        videoView.hoverZoneHeight = 84 - (strip.titleStrip ? titlebarHeight : 0)
     }
 
     private var hideChromeWork: DispatchWorkItem?

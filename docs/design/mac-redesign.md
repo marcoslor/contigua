@@ -206,8 +206,8 @@ that address." (no codes). On success it continues into the code sheet (§4.3). 
 ### 3.7 Stream windows (AppKit)
 
 - `NSWindow` styleMask `[.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]`,
-  `titlebarAppearsTransparent = true`, title = app label (no icon), video fills the content view (the first ≈28 pt sits
-  under the titlebar, as in DESIGN.md). Corner radius = system.
+  `titlebarAppearsTransparent = true`, title = app label (no icon), a title strip of titlebar height above the video, filled with a
+  colour taken from the video's own top edge (DESIGN.md "App windows"; View → Show Title Strip turns it off, and the video then fills the content view). Corner radius = system.
 - **Placement (A09):** restore the frame saved for that package (`setFrameAutosaveName("app.<pkg>")`); otherwise cascade
   from the last opened stream window (`cascadeTopLeft(from:)`, 28 pt steps), never `center()` over the Deck. New
   windows become key but do not hide the Deck (they open on the Deck's screen, offset right of it when it fits).

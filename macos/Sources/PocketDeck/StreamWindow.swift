@@ -1,11 +1,14 @@
 // Shared behaviour for the two window kinds: video routing, resize debounce,
-// pause/resume on occlusion, close, and the ⌘+/⌘-/⌘0 density control.
+// pause/resume on occlusion, close, the ⌘+/⌘-/⌘0 density control and the title
+// strip (TitleStrip.swift).
 
 import AppKit
+import SwiftUI
 
 class StreamWindowController: NSWindowController, NSWindowDelegate {
     let stream: UInt32
     let videoView: VideoLayerView
+    let strip = StripState(titleStrip: true)
     unowned let manager: WindowManager
 
     /// UI scale: dpi = 160 × backingScale × density (0.75…1.5).
@@ -13,13 +16,17 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     private(set) var isPaused = false
     private var resizeWork: DispatchWorkItem?
     private var closingFromRemote = false
+    private var fader: TitlebarFader?
+    private var stripColors: StripColorSampler?
+    private var lightAppearance: Bool?
 
     init(stream: UInt32, contentSize: NSSize, manager: WindowManager) {
         self.stream = stream
         self.manager = manager
         self.videoView = VideoLayerView(frame: NSRect(origin: .zero, size: contentSize))
-        // The video fills the whole window, under a transparent titlebar, so the
-        // window's frame size *is* the video size.
+        // The content view fills the whole window, under a transparent titlebar,
+        // so the window's frame size is the content size. With the title strip
+        // on, the video is the part below the titlebar (TitleStrip.swift).
         let window = NSWindow(contentRect: NSRect(origin: .zero, size: contentSize),
                               styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
                               backing: .buffered, defer: false)
@@ -30,7 +37,13 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         window.setFrame(NSRect(origin: window.frame.origin, size: contentSize), display: false)
         super.init(window: window)
         window.delegate = self
-        window.contentView = videoView
+        strip.titleStrip = manager.titleStrip(forKey: frameKey)
+        let host = NSHostingView(rootView: StreamContent(strip: strip, video: videoView))
+        // The window's size is the person's to choose, not the content's.
+        host.sizingOptions = []
+        window.contentView = host
+        stripColors = StripColorSampler(source: { [weak self] in self?.videoView.displayedPixelBuffer() },
+                                        onColor: { [weak self] color in self?.apply(stripColor: color) })
         let mapper = InputMapper(stream: stream)
         mapper.videoRectProvider = { [weak self] in self?.videoView.videoRect() ?? .zero }
         mapper.locationProvider = { [weak self] event in
@@ -43,7 +56,9 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
             return window.isKeyWindow && window.attachedSheet == nil
         }
         mapper.send = { [weak self] command in self?.handle(command) }
+        mapper.touchPointsChanged = { [weak self] points in self?.videoView.showTouchPoints(points) }
         videoView.inputMapper = mapper
+        videoView.showsTouches = manager.showTouches
         videoView.onRequestKeyframe = { [weak self] in
             guard let self else { return }
             self.manager.session.requestKeyframe(stream: self.stream)
@@ -57,16 +72,30 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
 
     var session: Session { manager.session }
 
-    /// Virtual-display pixels for the current content size.
+    /// The titlebar's height now: zero in full screen, where there is no strip.
+    var titlebarHeight: CGFloat {
+        guard let window, let content = window.contentView else { return 0 }
+        return max(content.bounds.height - window.contentLayoutRect.height, 0)
+    }
+
+    /// The video area in points: the window's content minus the strip. This is
+    /// what the virtual display is sized from; the video view's own bounds are
+    /// the same rectangle once SwiftUI has laid it out.
+    func videoBounds() -> CGSize {
+        guard let content = window?.contentView else { return .zero }
+        return TitleStrip.videoSize(content: content.bounds.size, titlebar: titlebarHeight,
+                                    enabled: strip.titleStrip)
+    }
+
+    /// Virtual-display pixels for the video area (the strip excluded).
     func displayPixels() -> CGSize {
         guard let window else { return .zero }
-        let bounds = videoView.bounds.size
-        return VideoSize.displayPixels(bounds: bounds, backingScale: Double(window.backingScaleFactor))
+        return VideoSize.displayPixels(bounds: videoBounds(), backingScale: Double(window.backingScaleFactor))
     }
 
     func dpi() -> Double {
         guard window != nil else { return 160 * density }
-        return VideoSize.dpi(pixels: displayPixels(), bounds: videoView.bounds.size, density: density)
+        return VideoSize.dpi(pixels: displayPixels(), bounds: videoBounds(), density: density)
     }
 
     func sendOpen() {}
@@ -95,9 +124,13 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
                 window.setFrameTopLeftPoint(manager.nextCascadeOrigin(for: window))
             }
         }
+        if manager.floatWindows { window?.level = .floating }
         window?.makeKeyAndOrderFront(nil)
+        if manager.floatWindows { window?.orderFrontRegardless() }
         window?.makeFirstResponder(videoView)
         NSApp.activate(ignoringOtherApps: true)
+        syncTitlebarFader()
+        syncStripColor()
     }
 
     /// Frames are remembered per app (or "phone") in the profile's defaults.
@@ -116,6 +149,8 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     }
 
     func windowWillClose(_ notification: Notification) {
+        fader?.stop()
+        stripColors?.stop()
         resizeWork?.cancel()
         if !closingFromRemote { session.closeWindow(stream: stream) }
         manager.remove(stream: stream)
@@ -151,7 +186,10 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     func windowDidDeminiaturize(_ notification: Notification) { setPaused(shouldPause) }
 
     func windowDidChangeOcclusionState(_ notification: Notification) {
-        setPaused(shouldPause)
+        let w = window
+        let sp = shouldPause
+        Log.video.info("occlusion changed: visible=\(w?.isVisible ?? false) mini=\(w?.isMiniaturized ?? false) occl.hasVisible=\(w?.occlusionState.contains(.visible) ?? false) raw=\(String(describing: w?.occlusionState.rawValue)) -> pause=\(sp)")
+        setPaused(sp)
     }
 
     /// Minimized windows are never "visible", and AppKit can briefly report a
@@ -162,10 +200,94 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     }
 
     func setPaused(_ paused: Bool) {
+        let changed = paused != self.isPaused
+        Log.video.info("setPaused paused=\(paused) was=\(self.isPaused) changed=\(changed) mini=\(self.window?.isMiniaturized ?? false) key=\(self.window?.isKeyWindow ?? false)")
         guard !manager.shuttingDown, !closingFromRemote else { return }
-        guard paused != isPaused else { return }
-        isPaused = paused
+        guard changed else { return }
+        self.isPaused = paused
         if paused { session.pauseWindow(stream: stream) } else { session.resumeWindow(stream: stream) }
+    }
+
+    // MARK: Focus
+
+    func windowDidBecomeKey(_ notification: Notification) {
+        let state = StreamMenuState.shared
+        state.hasStream = true
+        state.titleStrip = strip.titleStrip
+        state.showTouches = manager.showTouches
+    }
+
+    func windowDidResignKey(_ notification: Notification) {
+        StreamMenuState.shared.hasStream = false
+        videoView.windowResignedKey()
+    }
+
+    // MARK: Title strip
+
+    /// View → Show Title Strip (⌥⌘T); key window's controller answers.
+    @objc func toggleTitleStrip(_ sender: Any?) {
+        setTitleStrip(!strip.titleStrip)
+    }
+
+    /// View → Show Touches: one setting for every stream window.
+    @objc func toggleShowTouches(_ sender: Any?) {
+        manager.showTouches.toggle()
+    }
+
+    func setTitleStrip(_ enabled: Bool) {
+        guard enabled != strip.titleStrip else { return }
+        strip.titleStrip = enabled
+        manager.setTitleStrip(enabled, forKey: frameKey)
+        if window?.isKeyWindow == true { StreamMenuState.shared.titleStrip = enabled }
+        titleStripDidChange()
+        syncTitlebarFader()
+        syncStripColor()
+        // The app now has a taller or shorter display to lay out on.
+        scheduleResize(after: 0)
+    }
+
+    /// The pointer moved to a point in the window (also the scripted driver's hover).
+    func pointerMoved(toWindowPoint point: CGPoint) {
+        fader?.pointerMoved(toWindowY: point.y)
+    }
+
+    /// Hook for the window kinds that lay chrome out against the titlebar.
+    func titleStripDidChange() {}
+
+    /// The strip's colour is sampled while the strip shows and the stream runs:
+    /// a paused or hidden window has no new frames to look at.
+    private func syncStripColor() {
+        if strip.titleStrip, !isPaused, window?.isVisible == true {
+            stripColors?.start()
+        } else {
+            stripColors?.stop()
+        }
+        if !strip.titleStrip {
+            lightAppearance = nil
+            window?.appearance = nil
+        }
+    }
+
+    /// The colour the strip eases to, and the titlebar appearance that reads on it.
+    private func apply(stripColor color: StripColor) {
+        if color.isNoticeablyDifferent(from: strip.color) { strip.color = color }
+        let light = color.prefersLightAppearance(wasLight: lightAppearance)
+        guard light != lightAppearance else { return }
+        lightAppearance = light
+        window?.appearance = NSAppearance(named: light ? .aqua : .darkAqua)
+    }
+
+    /// With the strip off the traffic lights float over the app and hide
+    /// themselves when the pointer is away.
+    private func syncTitlebarFader() {
+        guard let window else { return }
+        if strip.titleStrip {
+            fader?.stop()
+            fader = nil
+        } else if fader == nil {
+            fader = TitlebarFader(window: window)
+            fader?.start()
+        }
     }
 
     // MARK: Link state

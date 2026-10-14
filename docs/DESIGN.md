@@ -73,13 +73,70 @@ Spec of every state, copy and transitions: [design/mac-redesign.md](design/mac-r
 - Success: QR crossfades to `checkmark.circle.fill` 64 pt `.green` `.symbolEffect(.bounce)`, sheet closes after 0.8 s. Expiry: QR `.blur(radius: 8)` + **Show new code** `.glassProminent`.
 
 ### App windows
-- `NSWindow` styleMask `[.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]`, `titlebarAppearsTransparent = true`, title = app name. No toolbar. The video layer
-  fills the whole frame, so the frame size *is* the video size. New windows cascade 28 pt from the top-left of the main screen (never centred over the Deck) and
-  restore their saved frame per app.
+- `NSWindow` styleMask `[.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]`, `titlebarAppearsTransparent = true`, title = app name. No toolbar. The content view is
+  `NSHostingView` (`sizingOptions = []`: the person sizes the window, not the content) around the video `NSView`; the window's frame is the content size, titlebar included. New windows
+  cascade 28 pt from the top-left of the main screen (never centred over the Deck) and restore their saved frame per app.
+- **Title strip** (View → Show Title Strip, ⌥⌘T; on by default, remembered per app package). A band of titlebar height above the video, so the Android app lays out fully *below* the
+  traffic lights instead of under them: a back arrow, a toolbar or tabs are never covered.
+  - **Geometry** (`TitleStrip`): strip = the titlebar's height, 32 pt on macOS 26, read from the window (`contentLayoutRect`), 0 in full screen. The video area is the content minus the strip.
+    The virtual display is that area × backing scale (multiple of 16, clamped to 320–2560, aspect kept), so `window.open` and `window.resize` carry a height without the strip, and the dpi
+    keeps the window's dp width. Input and scroll are mapped against the video view's bounds, so the strip is excluded by construction (a point above the video clamps to its top edge).
+    A phone window keeps the *video's* aspect ratio, not the frame's: frame = video + strip (`TitleStrip.phoneFrame`), and toggling the strip grows or shrinks the window by 32 pt so the
+    video keeps its size. An app window keeps its size and the display grows or shrinks (one `window.resize`).
+  - **What fills the strip: one colour taken from the app's own top edge**, so the strip reads as the app's header continuing up under the traffic lights. The average of the top 8 rows of the frame on
+    screen (`AVSampleBufferVideoRenderer.copyDisplayedPixelBuffer()`, then Core Image `CIAreaAverage` on the GPU into one pixel) is sampled **four times a second**, never per frame (`StripColorSampler`), and only
+    while the strip shows and the stream is not paused. The strip eases to a new colour over 0.25 s (`.animation(.easeInOut(duration: 0.25))`); a change under 2/255 per channel is ignored. The colour is
+    painted behind the video and reaches up through the titlebar's safe area (`.background { color.ignoresSafeArea(.container, edges: .top) }`); there is no content in the strip, so no glass is laid over it.
+    **Contrast:** the colour's relative luminance picks the window's appearance, so the title and the traffic lights read on it: lighter than luminance 0.179 (the point where black and white text have equal contrast)
+    takes the light appearance (dark title text), darker the dark one, with a ±0.03 band so a colour on the line does not flicker. Before the first frame the strip is black, the video view's own colour.
+  - **Mirroring was tried and replaced.** `backgroundExtensionEffect()` (the content mirrored and blurred into the safe area) works on an `NSViewRepresentable` and costs no CPU, but a band of the app's own
+    pixels behind the title is busy; one calm colour is what the strip is for.
+  - **Measured:** see "CPU" below.
+  - **Off:** the video ignores the top safe area (`ignoresSafeArea(.container, edges: .top)`) and fills the window as before, the display is the whole window, and the traffic lights and the title
+    float over the app. They fade out (0.4 s) after 2 s without the pointer within 48 pt of the top edge and back in (0.2 s) when it comes there, like the controls of full-screen video. Never
+    hidden in full screen. The choice is stored per app package (`titleStrips`, keys `app.<package>` and `phone`) in the profile's defaults. There is no toolbar in a stream window, so ⌥⌘T is free.
 - **Link pill:** `NSGlassEffectView` (cornerRadius 18), 36 pt high, "Reconnecting…" `.caption` + `ProgressView().controlSize(.small)`, bottom centre 24 pt above the edge,
   fades in after 1 s of link loss, "Phone offline" after 15 s, fades out (0.3 s) when the link returns.
 - **Phone-mode hover bar:** `NSGlassEffectView` capsule (cornerRadius 18), 3 buttons × 44 wide + padding 6 → 144×36, centered horizontally, 8 pt below the titlebar. Symbols
   `chevron.backward` · `circle` · `square.on.square`, 15 pt semibold, `.primary`. Shows when the pointer is in the top 84 pt, fade in 0.2 s, fade out 0.3 s after 1 s idle. Each button has a tooltip.
+
+### Trackpad input (stream windows)
+The phone is a touch screen, the Mac has a pointer and a trackpad. Everything reaches it as the touches, scroll and key frames of docs/PROTOCOL.md; the aim is that the trackpad feels like
+using the phone with fingers.
+
+| On the Mac | The phone sees |
+|---|---|
+| Click, click-drag | one finger (TOUCH pointer 0) |
+| Mouse wheel (line units, or no gesture phase) | SCROLL (`ACTION_SCROLL`, `SOURCE_MOUSE`), one notch per wheel unit |
+| Two-finger scroll (phased) | **one finger dragging**: DOWN at the cursor, one MOVE per scroll event, UP when the fingers lift. Android's own slop, drag, overscroll and fling apply; the momentum events are dropped because Android flings by itself |
+| Pinch / rotate / two-finger gestures | **two pointers from the raw fingers** (below) |
+| Pinch / rotate without raw fingers | the coarse emulation: two pointers symmetric around the cursor, scaled by the magnification, turned by the rotation (`PointerGesture`) |
+| Two-finger double tap (smart zoom) | a double tap at the cursor |
+| Three or more fingers | nothing: Spaces, Mission Control and the rest stay the system's |
+
+- **Scroll as a drag** (`ScrollDrag`). The finger moves 1:1 with the scroll deltas, in window points (a point is a dp on the phone at the default density), in the direction AppKit reports them (the
+  deltas already follow natural scrolling: the content follows the fingers). A drag that travels less than 12 pt ends as CANCEL, not UP, so a resting two-finger touch never becomes a tap. The finger
+  stops at the video's edge and comes back the moment the scroll reverses. Events are sent as they arrive, none merged or delayed: the phone stamps each one when it arrives, so the Mac's cadence
+  and the lift (UP right after the last MOVE) are the velocity Android computes its fling from.
+- **Raw fingers** (`allowedTouchTypes = [.indirect]`, `touchesBegan/Moved/Ended/Cancelled`). NSTouch gives each finger's `normalizedPosition` and the surface's `deviceSize` (points of 1/72 in), so the
+  fingers are converted to millimetres. Pointer *i* = cursor + (finger *i* − the fingers' centroid when the second one landed) × 4 pt per mm (`TrackpadPinch`, tunable), clamped to the video. The cursor,
+  not the finger position on the pad, says where in the app it happens; a spread of 20 → 60 mm becomes 80 → 240 pt. Resting touches are not reported (`wantsRestingTouches = false`).
+- **How the two paths share two fingers** (`TrackpadGestures`; exactly one of them reaches the phone). Two fingers landing starts a classification; the scroll events that arrive meanwhile are held.
+  Once the fingers have travelled 2 mm, translation of their centroid against change of their distance or angle (the larger wins) decides: *pan* releases everything held as one MOVE after the DOWN and
+  lets the scroll events drive the drag; *pinch* puts down two pointers where the fingers landed, moves them to where they are, and ignores the scroll, magnify and rotate events of that gesture.
+  A pinch ends when one finger lifts (both pointers go up) and nothing more happens until all fingers are off. A magnify or rotate event while two fingers are down only settles a pinch the fingers have
+  not classified yet. A scroll that ends before the verdict still scrolls if it travelled 12 pt. Without raw touches (`touchesAvailable` false) scroll goes straight to the drag and magnify/rotate use the
+  coarse emulation.
+- **Cancelled, not released:** a click or right click in the middle of a gesture, the window losing key, a third finger, and a `cancelled` scroll phase all send CANCEL for every pointer, and the rest of that
+  gesture is ignored.
+- **Show Touches** (View → Show Touches; off by default; one setting for every window, kept in the profile's defaults). While a trackpad gesture holds pointers on the phone, a 34 pt dot per pointer
+  (`white` 32 % fill, 1.5 pt `white` 85 % border, soft shadow) is drawn over the video at the position the phone was told, fading out in 0.2 s when the pointer goes up. It shows what Android sees, including
+  the one finger of a scroll; mouse clicks are not drawn.
+- **Compared with the Xcode Simulator.** The Simulator has a pointer and a trackpad too, and settles it differently: a click is a finger; holding Option shows two mirrored fingers around the centre for
+  pinch, and moving them (Shift locks them together) is its two-finger gesture; a trackpad scroll is converted into a drag. PocketDeck keeps the click-is-a-finger and scroll-is-a-drag parts (but keeps the
+  wheel a wheel) and drops the modifier: the trackpad's own pinch, rotate and two-finger gestures are the gestures, because the raw fingers are available, so a pinch needs no mode, follows the real finger
+  distance and rotation, pans while it zooms, and is anchored at the cursor like a thumb on the glass. The Option-drag dots are what Show Touches draws, for any gesture. The mirrored-dots mode remains the
+  fallback for a Mac without trackpad touches, as the magnify/rotate emulation.
 
 ### Settings
 - `Settings { TabView { Tab("General", systemImage: "gearshape") {…}; Tab("Devices", systemImage: "iphone.gen3") {…} } }`, frame width 480. `Form` + `.formStyle(.grouped)`.
@@ -152,7 +209,7 @@ Spec of every state, copy and transitions: [design/mac-redesign.md](design/mac-r
 **Mac — QR sheet:** QR on white tile in dark mode too · countdown visible · success shows green checkmark · expired QR blurred with **Show new code**.
 **Mac — Deck (phone):** toolbar: the phone's own name (not the model), one status pill (green dot alone when connected, plus lock while locked and the battery glyph + %), **Phone**, search with caret · grid ≤ 56 pt icons (generated initial tile when the phone has none), one-line labels, equal 20 pt side insets, the scroll bar never over a tile · at most one cell highlighted in accent tint · offline/reconnecting: dimmed grid + chip, banner only when action is needed.
 **Mac — Banner:** one line, one trailing button at most, never a reason code.
-**Mac — App window:** video fills window under a transparent titlebar, traffic lights visible, title = app name, no toolbar · "Reconnecting…" pill over the last frame while the link is down · phone mode only: glass capsule with 3 buttons appears on top hover.
+**Mac — App window:** the title strip on by default: one colour taken from the app's own top edge (eased in 0.25 s, light or dark title to suit it) behind the traffic lights and the title, the app's toolbar below them and never covered; View → Show Title Strip (⌥⌘T) off = video under a transparent titlebar, traffic lights and title fading out after 2 s and back near the top edge · title = app name, no toolbar · "Reconnecting…" pill over the last frame while the link is down · phone mode only: glass capsule with 3 buttons appears on top hover.
 **Mac — Settings:** exactly two tabs (General, Devices) · General has exactly 3 controls · Forget is red.
 **Mac — Menu bar:** status line first · items in the order listed · icon changes with connection state.
 **Android — Onboarding:** progress bar at top advances per step · no swipe between pages · one primary button per page · Shizuku row shows current state text + matching button · Scan QR is outlined.
