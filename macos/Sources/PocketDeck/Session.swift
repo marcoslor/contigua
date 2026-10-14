@@ -73,6 +73,7 @@ enum SessionEvent {    case state(SessionState, String?)
     case windowClosed(stream: UInt32, reason: String)
     case windowTitle(stream: UInt32, label: String, pkg: String)
     case phoneState(locked: Bool, battery: Int, charging: Bool)
+    case audioState(on: Bool, codec: UInt8)
     case phoneError(code: String, message: String?, stream: UInt32)
     /// The phone showed this code for the person to compare with its screen.
     case pairCodeShown(deviceId: String?, code: String)
@@ -163,6 +164,9 @@ final class Session {
     /// Video is delivered synchronously on the session queue: frames never hop
     /// through the main thread before reaching their display layer.
     var onVideoEvent: ((VideoEvent) -> Void)?
+
+    /// Audio is delivered synchronously on the session queue, like video.
+    var onAudioEvent: ((AudioEvent) -> Void)?
 
     static let pingInterval: TimeInterval = 15
     /// One attempt gets this long to reach `welcome` (or, when pairing, the
@@ -428,6 +432,18 @@ final class Session {
             onVideoEvent?(.frame(stream: frame.stream, frame: data))
         case .shareData:
             emit(.shareFileData(id: frame.stream, bytes: frame.payload))
+        case .audioConfig:
+            guard let config = try? AudioConfig(payload: frame.payload) else {
+                Log.session.error("bad AUDIO_CONFIG payload")
+                return
+            }
+            onAudioEvent?(.config(config))
+        case .audioFrame:
+            guard let data = try? AudioFrameData(payload: frame.payload) else {
+                Log.session.error("bad AUDIO_FRAME payload")
+                return
+            }
+            onAudioEvent?(.frame(data))
         default:
             Log.session.notice("ignoring phone->mac frame type \(frame.type, privacy: .public)")
         }
@@ -546,6 +562,9 @@ final class Session {
             emit(.phoneState(locked: message.bool("locked") ?? false,
                              battery: message.int("battery") ?? 0,
                              charging: message.bool("charging") ?? false))
+        case "audio.state":
+            emit(.audioState(on: message.bool("on") ?? false,
+                             codec: UInt8(message.int("codec") ?? 0)))
         case "pong":
             break
         case "clip.set":
@@ -682,6 +701,14 @@ final class Session {
 
     func nav(stream: UInt32, action: String) {
         sendJSON(["t": "nav", "stream": Int(stream), "action": action])
+    }
+
+    func startAudio(codecs: [Int] = [Int(AudioConfig.codecOpus), Int(AudioConfig.codecAAC)]) {
+        sendJSON(["t": "audio.start", "codecs": codecs])
+    }
+
+    func stopAudio() {
+        sendJSON(["t": "audio.stop"])
     }
 
     func text(stream: UInt32, text: String) {

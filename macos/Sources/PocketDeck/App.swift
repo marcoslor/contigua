@@ -24,6 +24,7 @@ struct LaunchOptions {
     var floatWindows = false
     /// `--debug-chrome-state FILE`: stream windows write their header state here (e2e).
     var debugChromeState: String?
+    var audioStatsFile: String?
     var profileName = Profile.defaultName
     /// `--share-dir DIR`: where images shared from the phone are saved (default ~/Downloads/PocketDeck).
     var shareDirectory: String?
@@ -85,6 +86,8 @@ struct LaunchOptions {
                 options.floatWindows = true
             case "--debug-chrome-state":
                 options.debugChromeState = next()
+            case "--audio-stats":
+                options.audioStatsFile = next()
             case "--profile":
                 options.profileName = next() ?? ""
             case "--share-dir":
