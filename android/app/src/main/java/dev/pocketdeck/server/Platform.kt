@@ -135,6 +135,22 @@ interface DeviceSource {
     fun subscribeState(onChange: (DeviceState) -> Unit): AutoCloseable?
 }
 
+/**
+ * The device clipboard as plain text. [listen] callbacks arrive on a platform
+ * thread and fire for every primary-clip change, including our own [setText].
+ */
+interface ClipboardPort {
+    /** Text of the primary clip, or null when it holds no text. */
+    fun getText(): String?
+    fun setText(text: String)
+
+    /** Starts delivering text changes to [onChange]; replaces any earlier listener. */
+    fun listen(onChange: (String) -> Unit)
+
+    /** Stops delivery. Safe to call more than once and without [listen]. */
+    fun stop()
+}
+
 /** Events pushed to the app process (pairing prompt, session state). */
 interface DeckCallback {
     fun onPairingRequest(requestId: String, macName: String, code: String)

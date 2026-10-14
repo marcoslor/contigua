@@ -1106,6 +1106,31 @@ def cmd_watch_state(client, args):
     return 0
 
 
+def cmd_clip_set(client, args):
+    """Send `clip.set` as the Mac: the phone's clipboard takes the text."""
+    client.send_json({"t": "clip.set", "text": args.text})
+    print("sent clip.set %s" % json.dumps(args.text, ensure_ascii=False))
+    return 0
+
+
+def cmd_clip_watch(client, args):
+    """Print every `clip.set` the phone sends, for `--seconds`."""
+    deadline = time.time() + args.seconds
+    while time.time() < deadline:
+        frame = client.recv(0.25)
+        if frame is TIMEOUT:
+            continue
+        if frame is None:
+            raise DeckError("phone closed during clip-watch")
+        if frame.type != proto.TYPE_JSON:
+            continue
+        msg = proto.unpack_json(frame)
+        if msg.get("t") == "clip.set":
+            print("%s clip.set %s" % (time.strftime("%H:%M:%S"),
+                                      json.dumps(msg.get("text"), ensure_ascii=False)))
+    return 0
+
+
 def cmd_latency(client, args):
     samples = []
     for i in range(args.count):
@@ -1545,6 +1570,12 @@ def build_parser():
     sp = sub.add_parser("watch-state", help="print every state message; lock/unlock while it runs", **spp)
     sp.add_argument("--seconds", type=float, default=30.0)
 
+    sp = sub.add_parser("clip-set", help="send clip.set TEXT: put TEXT on the phone's clipboard", **spp)
+    sp.add_argument("text")
+
+    sp = sub.add_parser("clip-watch", help="print every clip.set the phone sends", **spp)
+    sp.add_argument("--seconds", type=float, default=30.0)
+
     sp = sub.add_parser("probe", help="open, run steps, record one phase file per step", **spp)
     sp.add_argument("target", nargs="?", help="package to launch")
     sp.add_argument("--phone", action="store_true", help="phone mode instead of an app")
@@ -1613,6 +1644,8 @@ COMMANDS = {
     "latency": cmd_latency,
     "quality-test": cmd_quality_test,
     "watch-state": cmd_watch_state,
+    "clip-set": cmd_clip_set,
+    "clip-watch": cmd_clip_watch,
     "probe": cmd_probe,
     "multi": cmd_multi,
     "resize-stress": cmd_resize_stress,

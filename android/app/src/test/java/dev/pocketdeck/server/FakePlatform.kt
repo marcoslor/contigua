@@ -11,7 +11,7 @@ fun interface CannedVideo {
  * A fully recording fake of every platform seam. Shared by the session tests
  * and the C4 loopback harness.
  */
-class FakePlatform : DisplayLayer, AppCatalog, Launcher, Injector, Power, DeviceSource, PairingStore, DeckCallback {
+class FakePlatform : DisplayLayer, AppCatalog, Launcher, Injector, Power, DeviceSource, PairingStore, DeckCallback, ClipboardPort {
 
     data class OpenCall(val stream: Int, val w: Int, val h: Int, val dpi: Int, val displayId: Int)
     data class ResizeCall(val stream: Int, val w: Int, val h: Int, val dpi: Int)
@@ -161,6 +161,42 @@ class FakePlatform : DisplayLayer, AppCatalog, Launcher, Injector, Power, Device
     }
 
     val stateSubscriberCount: Int get() = stateSubscribers.size
+
+    // ---- ClipboardPort ------------------------------------------------
+
+    @Volatile var clipText: String? = null
+    val clipWrites = CopyOnWriteArrayList<String>()
+    @Volatile private var clipListener: ((String) -> Unit)? = null
+
+    override fun getText(): String? = clipText
+
+    /**
+     * Like the platform, a write notifies the listener, which is the echo the
+     * session must not send back. The write is recorded last, so a test that
+     * sees it knows the echo has already been handled.
+     */
+    override fun setText(text: String) {
+        clipText = text
+        clipListener?.invoke(text)
+        clipWrites.add(text)
+    }
+
+    override fun listen(onChange: (String) -> Unit) {
+        clipListener = onChange
+    }
+
+    override fun stop() {
+        clipListener = null
+    }
+
+    /** Whether the session has started listening; it does so just after `welcome` is queued. */
+    val clipListening: Boolean get() = clipListener != null
+
+    /** Simulates the person copying [text] on the phone. */
+    fun changeClip(text: String) {
+        clipText = text
+        clipListener?.invoke(text)
+    }
 
     // ---- PairingStore -------------------------------------------------
 

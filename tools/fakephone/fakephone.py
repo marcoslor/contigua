@@ -272,6 +272,9 @@ class EventLog(object):
         self._emit({"ev": "quality", "stream": stream, "bitrate": bitrate,
                     "maxFps": max_fps, "ts": time.time()})
 
+    def clip(self, direction, text):
+        self._emit({"ev": "clip", "dir": direction, "text": text, "ts": time.time()})
+
     def close(self):
         with self._lock:
             if self._fp is not None:
@@ -705,6 +708,10 @@ class Session(object):
             "locked": True,
         }})
         self._send({"t": "state", "locked": True, "battery": BATTERY, "charging": False})
+        if self.phone.args.clip_on_welcome is not None:
+            text = self.phone.args.clip_on_welcome
+            self._send({"t": "clip.set", "text": text})
+            self.phone.events.clip("tx", text)
 
     # -- steady state --
     def _main_loop(self):
@@ -745,7 +752,7 @@ class Session(object):
             "window.launch": self._on_window_launch,
             "nav": self._on_nav,
             "text": self._on_noop,
-            "clipboard.set": self._on_noop,
+            "clip.set": self._on_clip_set,
         }.get(kind)
         if handler is None:
             if kind not in self._unknown_types:
@@ -756,6 +763,9 @@ class Session(object):
 
     def _on_ping(self, msg):
         self._send({"t": "pong", "ts": msg.get("ts")})
+
+    def _on_clip_set(self, msg):
+        self.phone.events.clip("rx", msg.get("text"))
 
     def _on_apps_list(self, _msg):
         apps = sorted(APPS, key=lambda a: a["label"].lower())
@@ -1066,6 +1076,8 @@ def build_parser():
     p.add_argument("--qr-uri", metavar="URI",
                    help="simulate a QR scan: register the client+key from a "
                         "pocketdeck://pair URI as paired, then authenticate normally")
+    p.add_argument("--clip-on-welcome", metavar="TEXT", default=None,
+                   help="send TEXT as clip.set right after welcome (the phone's clipboard)")
     return p
 
 
