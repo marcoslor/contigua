@@ -102,6 +102,16 @@ final class ConnectionController {
     private(set) var transientBanner: Banner?
     /// APK installs (docs/design/apk.md); the Deck shows its phase.
     let apkInstaller = ApkInstaller()
+    /// Shares from the phone (docs/design/sharein.md).
+    @ObservationIgnored private lazy var shareInbox: ShareInbox = {
+        let directory = options.shareDirectory.map { URL(fileURLWithPath: $0, isDirectory: true) }
+            ?? ShareInbox.defaultDirectory
+        let actions = SystemShareActions(log: options.shareLog.map { URL(fileURLWithPath: $0) }) { [weak self] text in
+            // Through the clipboard sync, so the shared text is not sent back as clip.set.
+            if let sync = self?.clipboardSync { sync.adopt(text) } else { SystemPasteboard().write(text: text) }
+        }
+        return ShareInbox(directory: directory, actions: actions)
+    }()
     var banner: Banner? { transientBanner ?? link.banner }
 
     private(set) var discovered: [DiscoveredPhone] = []
@@ -694,10 +704,12 @@ final class ConnectionController {
             case .failed:
                 stopClipboardSync()
                 apkInstaller.connectionLost()
+                shareInbox.connectionLost()
                 attemptEnded(reason: detail ?? "closed")
             case .closed:
                 stopClipboardSync()
                 apkInstaller.connectionLost()
+                shareInbox.connectionLost()
             default:
                 break
             }
@@ -707,6 +719,18 @@ final class ConnectionController {
             apkInstaller.progress(id: id, bytes: bytes)
         case .apkResult(let result):
             apkInstaller.result(result)
+        case .shareText(let text):
+            shareInbox.phoneName = session?.phone?.name ?? "your phone"
+            shareInbox.text(text)
+        case .shareFileBegin(let id, let name, let mime):
+            shareInbox.phoneName = session?.phone?.name ?? "your phone"
+            shareInbox.fileBegin(id: id, name: name, mime: mime)
+        case .shareFileData(let id, let bytes):
+            shareInbox.fileData(id: id, bytes: bytes)
+        case .shareFileEnd(let id, let size, let sha256):
+            shareInbox.fileEnd(id: id, size: size, sha256: sha256)
+        case .shareFileAbort(let id):
+            shareInbox.fileAbort(id: id)
         case .ready(let info, _, let address):
             ready(info, address: address)
         case .apps(let list):

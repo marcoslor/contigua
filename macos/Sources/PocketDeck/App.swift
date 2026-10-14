@@ -23,6 +23,10 @@ struct LaunchOptions {
     /// checks that look at them are not defeated by whatever the person has open.
     var floatWindows = false
     var profileName = Profile.defaultName
+    /// `--share-dir DIR`: where images shared from the phone are saved (default ~/Downloads/PocketDeck).
+    var shareDirectory: String?
+    /// `--share-log FILE`: record shared links and notifications instead of acting (e2e).
+    var shareLog: String?
     /// `--preview STATE`: drive the UI with a scripted state (screenshots).
     var preview: String?
     /// `--appearance light|dark`: force the appearance (screenshots).
@@ -73,6 +77,10 @@ struct LaunchOptions {
                 options.floatWindows = true
             case "--profile":
                 options.profileName = next() ?? ""
+            case "--share-dir":
+                options.shareDirectory = next()
+            case "--share-log":
+                options.shareLog = next()
             case "--preview":
                 options.preview = next()
             case "--appearance":

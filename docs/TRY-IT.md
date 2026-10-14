@@ -35,6 +35,11 @@ cd macos && ./scripts/install.sh && open /Applications/PocketDeck.app
    or use the menu bar's **Install APK…** (also: Finder → Open With → PocketDeck, or
    right-click → Services → Install on Phone). The Deck shows the progress and the result
    ("Installed Example 1.2", or why the phone refused it).
+10. Send something from the phone to the Mac: in any Android app, **Share → Send to Mac**.
+   A link opens in the Mac's default browser; other text goes on the Mac clipboard
+   ("Copied from <phone>"); an image (one or several, up to 50 MB each) is saved to
+   `~/Downloads/PocketDeck/` and put on the clipboard, with a "Show in Finder" notification.
+   With no Mac connected the phone says "No Mac connected".
 
 ## No phone? Use the emulator rig
 

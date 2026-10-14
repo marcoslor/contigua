@@ -14,11 +14,14 @@ package dev.pocketdeck.server
  * whose renderer produces few, large frames.
  *
  * Delta frames rotate between streams so a busy stream cannot starve a quiet
- * one. Entries are pre-framed byte arrays ready for the socket.
+ * one. Bulk data (shared files) comes last, and its producer blocks while
+ * [maxBulkBytes] are queued, so a large file is never held in memory and never
+ * delays replies or video. Entries are pre-framed byte arrays ready for the socket.
  */
 internal class SendQueue(
     private val maxDeltaBytesPerStream: Int = DEFAULT_MAX_DELTA_BYTES,
     private val maxDeltaDurationUs: Long = DEFAULT_MAX_DELTA_DURATION_US,
+    private val maxBulkBytes: Int = DEFAULT_MAX_BULK_BYTES,
     private val onDeltaDrop: (stream: Int) -> Unit = {},
 ) {
     private val lock = Object()
@@ -30,6 +33,8 @@ internal class SendQueue(
     private val deltaBytes = HashMap<Int, Int>()
     private val deltaFirstPtsUs = HashMap<Int, Long>()
     private val dropping = HashSet<Int>()
+    private val bulk = ArrayDeque<ByteArray>()
+    private var bulkBytes = 0
     private var closed = false
 
     fun enqueueJson(bytes: ByteArray) = synchronized(lock) {
@@ -76,6 +81,19 @@ internal class SendQueue(
         deltaBytes[stream] = used + bytes.size
         deltaFirstPtsUs[stream] = firstPts
         lock.notifyAll()
+    }
+
+    /**
+     * Lowest priority. Blocks while the bulk lane holds [maxBulkBytes] (one entry is
+     * always accepted); false once the queue is closed.
+     */
+    fun enqueueBulk(bytes: ByteArray): Boolean = synchronized(lock) {
+        while (!closed && bulkBytes > 0 && bulkBytes + bytes.size > maxBulkBytes) lock.wait()
+        if (closed) return false
+        bulk.addLast(bytes)
+        bulkBytes += bytes.size
+        lock.notifyAll()
+        true
     }
 
     private fun discardDeltas(stream: Int) {
@@ -128,7 +146,10 @@ internal class SendQueue(
             }
             return bytes
         }
-        return null
+        val bytes = bulk.removeFirstOrNull() ?: return null
+        bulkBytes -= bytes.size
+        lock.notifyAll()
+        return bytes
     }
 
     companion object {
@@ -136,5 +157,7 @@ internal class SendQueue(
 
         /** The protocol's ~250 ms of queued video, independent of the bitrate. */
         const val DEFAULT_MAX_DELTA_DURATION_US = 250_000L
+
+        const val DEFAULT_MAX_BULK_BYTES = 1024 * 1024
     }
 }

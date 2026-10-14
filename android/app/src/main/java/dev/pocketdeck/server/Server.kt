@@ -51,6 +51,13 @@ class Server(
         active?.respondPairing(requestId, allow)
     }
 
+    /** The one session serves shares; with none ready the share is refused, never queued. */
+    fun shareText(text: String): Int =
+        active?.takeIf { it.isReady }?.shareText(text) ?: ShareStatus.NO_SESSION
+
+    fun shareFile(name: String, mime: String, input: java.io.InputStream): Int =
+        active?.takeIf { it.isReady }?.shareFile(name, mime, input) ?: ShareStatus.NO_SESSION
+
     private fun acceptLoop() {
         while (running.get()) {
             val socket = try {

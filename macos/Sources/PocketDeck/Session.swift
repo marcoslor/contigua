@@ -87,6 +87,12 @@ enum SessionEvent {    case state(SessionState, String?)
     case clipboard(String)
     case apkProgress(id: UInt32, bytes: Int)
     case apkResult(ApkResult)
+    /// Share phone → Mac (docs/design/sharein.md).
+    case shareText(String)
+    case shareFileBegin(id: UInt32, name: String, mime: String)
+    case shareFileData(id: UInt32, bytes: [UInt8])
+    case shareFileEnd(id: UInt32, size: Int, sha256: String)
+    case shareFileAbort(id: UInt32)
 }
 
 /// The phone's `apk.result` (docs/design/apk.md).
@@ -420,6 +426,8 @@ final class Session {
             }
             LatencyLog.shared.noteVideoFrame(stream: frame.stream)
             onVideoEvent?(.frame(stream: frame.stream, frame: data))
+        case .shareData:
+            emit(.shareFileData(id: frame.stream, bytes: frame.payload))
         default:
             Log.session.notice("ignoring phone->mac frame type \(frame.type, privacy: .public)")
         }
@@ -553,6 +561,20 @@ final class Session {
                                           pkg: message.string("pkg"), label: message.string("label"),
                                           version: message.string("version"))))
             }
+        case "share.text":
+            if let text = message.string("text") { emit(.shareText(text)) }
+        case "share.file":
+            if let id = message.int("id") {
+                emit(.shareFileBegin(id: UInt32(truncatingIfNeeded: id), name: message.string("name") ?? "",
+                                     mime: message.string("mime") ?? ""))
+            }
+        case "share.end":
+            if let id = message.int("id") {
+                emit(.shareFileEnd(id: UInt32(truncatingIfNeeded: id), size: message.int("size") ?? -1,
+                                   sha256: message.string("sha256") ?? ""))
+            }
+        case "share.abort":
+            if let id = message.int("id") { emit(.shareFileAbort(id: UInt32(truncatingIfNeeded: id))) }
         case "error":
             let code = message.string("code") ?? "unknown"
             if code == "auth_failed", !authedWithQRKey {

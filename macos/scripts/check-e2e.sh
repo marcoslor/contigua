@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # End-to-end checks C3-C13 for the macOS client against tools/fakephone.
 #
-#   ./scripts/check-e2e.sh [qr|pair|render|resize|input|input-global|pause|direct|nav|spotlight|pinch|strip|trackpad|clip|links|share|apk|all]
+#   ./scripts/check-e2e.sh [qr|pair|render|resize|input|input-global|pause|direct|nav|spotlight|pinch|strip|trackpad|clip|sharein|links|share|apk|all]
 #
 # Every check starts from a clean slate: no PocketDeck or fakephone processes
 # left by an earlier run, a fresh fakephone state file and no pairing key in
@@ -1244,6 +1244,69 @@ check_clip() {
     wait_until 5 no_fakephone
 }
 
+# check_sharein — Share phone -> Mac (docs/design/sharein.md). The fakephone shares a
+# link, an image, a file: URL and a plain text. The app runs with --share-log (links are
+# recorded as "would open", never opened; notifications recorded, not shown) and
+# --share-dir in the work dir, so the person's browser and ~/Downloads are never touched.
+# The pasteboard is saved first and put back when this check returns (text only).
+check_sharein() {
+    clean
+    local saved="$WORK/pasteboard.saved" dir="$WORK/share-dir" log="$WORK/share.log" image="$WORK/pd-share.png"
+    pbpaste > "$saved" 2>/dev/null
+    trap 'pbcopy < "$saved"; trap - RETURN' RETURN
+    printf '%s' pd-share-0 | pbcopy
+    python3 - "$image" <<'PY2'
+import struct, sys, zlib
+def chunk(kind, data):
+    return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data) & 0xffffffff)
+rows = b"".join(b"\x00" + bytes((x * 7 + y * 3) % 256 for x in range(64 * 3)) for y in range(64))
+png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 64, 64, 8, 2, 0, 0, 0)) \
+    + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b"")
+open(sys.argv[1], "wb").write(png)
+PY2
+    python3 "$FAKEPHONE" --port "$PORT" --no-mdns --auto-allow \
+        --events "$WORK/events.jsonl" --state "$WORK/state.json" \
+        --share "text:https://example.com/sharein" --share "image:$image" \
+        --share "text:file:///etc/hosts" --share "text:pd-share-text-1" > "$WORK/fake.log" 2>&1 &
+    FAKE_PID=$!
+    for _ in $(seq 1 40); do
+        grep -q "listening" "$WORK/fake.log" && break
+        sleep 0.25
+    done
+    grep -q "listening" "$WORK/fake.log" || { bad "SHAREIN fakephone did not start"; return 1; }
+
+    launch --connect "127.0.0.1:$PORT" --quit-after 60 --share-dir "$dir" --share-log "$log"
+    log_has() { grep -qF -- "$1" "$log" 2>/dev/null; }
+    clip_is() { [ "$(pbpaste)" = "$1" ]; }
+    saved_image() { [ -f "$dir/pd-share.png" ]; }
+
+    wait_until 30 log_has "would open https://example.com/sharein" \
+        && ok "SHAREIN url -> the Mac would open https://example.com/sharein" \
+        || bad "SHAREIN no 'would open https://example.com/sharein' in the share log"
+    wait_until 30 saved_image && [ "$(shasum -a 256 < "$dir/pd-share.png" | cut -d' ' -f1)" = "$(shasum -a 256 < "$image" | cut -d' ' -f1)" ] \
+        && ok "SHAREIN image -> share dir has pd-share.png with the same sha256" \
+        || bad "SHAREIN image missing or different in $dir ($(ls -a "$dir" 2>/dev/null | tr '\n' ' '))"
+    wait_until 30 clip_is pd-share-text-1 \
+        && ok "SHAREIN text -> pbpaste shows pd-share-text-1" \
+        || bad "SHAREIN pbpaste shows '$(pbpaste)', not pd-share-text-1"
+    log_has "notify Copied from FakePhone: file:///etc/hosts" && ! log_has "would open file:" \
+        && ok "SHAREIN a file: URL is copied as text, never opened" \
+        || bad "SHAREIN file: URL handling wrong: $(cat "$log" 2>/dev/null | tr '\n' '|')"
+    log_has "notify Image from FakePhone: pd-share.png" \
+        && ok "SHAREIN notifications recorded (Copied from / Image from FakePhone)" \
+        || bad "SHAREIN no image notification in the share log"
+    sleep 2
+    ! events_have '"dir":"rx","text":"pd-share-text-1"' \
+        && ok "SHAREIN the shared text is not echoed back as clip.set" \
+        || bad "SHAREIN the Mac echoed the shared text to the phone"
+    [ -z "$(ls -A "$dir" | grep '^\.')" ] \
+        && ok "SHAREIN no partial files left in the share dir" \
+        || bad "SHAREIN leftovers in $dir: $(ls -A "$dir" | tr '\n' ' ')"
+    stop_app
+    stop_fakephone
+    wait_until 5 no_fakephone
+}
+
 # check_links — links Mac -> phone (docs/design/links.md). A pocketdeck://open URL
 # goes to the running e2e app, which sends link.open: the fakephone logs it and a
 # stream window opens with video. A file: link is refused on the Mac and never
@@ -1515,8 +1578,8 @@ build_e2e_app() {
 
 which_check="${1:-all}"
 case "$which_check" in
-    qr|pair|render|resize|input|input-global|pause|direct|nav|spotlight|pinch|strip|trackpad|clip|links|share|apk|all) ;;
-    *) say "usage: check-e2e.sh [qr|pair|render|resize|input|input-global|pause|direct|nav|spotlight|pinch|strip|trackpad|clip|links|share|apk|all]"; exit 2 ;;
+    qr|pair|render|resize|input|input-global|pause|direct|nav|spotlight|pinch|strip|trackpad|clip|sharein|links|share|apk|all) ;;
+    *) say "usage: check-e2e.sh [qr|pair|render|resize|input|input-global|pause|direct|nav|spotlight|pinch|strip|trackpad|clip|sharein|links|share|apk|all]"; exit 2 ;;
 esac
 acquire_lock
 wait_for_other_runs
@@ -1541,11 +1604,12 @@ case "$which_check" in
     nav)      check_nav ;;
     spotlight) check_spotlight ;;
     clip)     check_clip ;;
+    sharein)  check_sharein ;;
     links)    check_links ;;
     share)    check_share ;;
     apk)      check_apk ;;
     all)      check_qr; check_pair; check_render; check_resize; check_input; check_pinch
-              check_strip; check_trackpad; check_pause; check_direct; check_nav; check_spotlight; check_clip; check_links; check_share; check_apk; check_orphans ;;
+              check_strip; check_trackpad; check_pause; check_direct; check_nav; check_spotlight; check_clip; check_sharein; check_links; check_share; check_apk; check_orphans ;;
 esac
 
 say ""

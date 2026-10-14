@@ -72,6 +72,7 @@ One JSON object per line, exactly:
 {"ev":"video","stream":N,"config":true,"w":W,"h":H,"ts":..}
 {"ev":"quality","stream":N,"bitrate":N|null,"maxFps":N|null,"ts":..}
 {"ev":"link","stream":N,"url":"...","ts":..}
+{"ev":"share","kind":"text"|"image","value":"<text or path>","size":N,"sha256":"..","ts":..}  (--share text:<text> / image:<path>, sent after welcome like Share → Send to Mac)
 {"ev":"apk","id":N,"files":[{"name","size","sha256","match"}],"ok":bool,"code":..,"ts":..}  (acts like pm; a part containing PD_FAKE_DOWNGRADE fails with INSTALL_FAILED_VERSION_DOWNGRADE)
 ```
 
