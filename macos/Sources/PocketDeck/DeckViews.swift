@@ -566,6 +566,7 @@ struct AppGrid: View {
                                         iconIsMissing: iconIsMissing(app),
                                         selected: navigator.selection == app.pkg) { controller.openApp(app) }
                                     .id(app.pkg)
+                                    .contextMenu { DockMenuItems(app: app) }
                             }
                         }
                     }
@@ -632,6 +633,21 @@ struct AppCell: View {
         .onHover { hovering = $0 }
         .animation(.smooth(duration: 0.15), value: selected)
         .accessibilityLabel(app.label)
+    }
+}
+
+/// "Add to Dock" on an app (docs/design/dock.md).
+struct DockMenuItems: View {
+    @Environment(ConnectionController.self) private var controller
+    let app: AppInfo
+
+    var body: some View {
+        if controller.isInDock(app) {
+            Button("Remove from Dock App") { controller.removeFromDock(app) }
+        } else {
+            Button("Add to Dock") { controller.addToDock(app) }
+                .disabled(!controller.canAddToDock)
+        }
     }
 }
 

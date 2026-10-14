@@ -18,6 +18,9 @@ final class WindowManager {
     /// Fired when the set of open windows or the icon cache changes.
     var onChange: (() -> Void)?
 
+    /// Fired once per window that closed, whoever closed it (Dock apps follow their window).
+    var onStreamClosed: ((UInt32) -> Void)?
+
     /// Test hook (`--float-windows`): new stream windows float above other apps.
     var floatWindows = false
 
@@ -178,7 +181,8 @@ final class WindowManager {
     }
 
     func remove(stream: UInt32) {
-        lock.lock(); streams.removeValue(forKey: stream); lock.unlock()
+        lock.lock(); let removed = streams.removeValue(forKey: stream) != nil; lock.unlock()
+        if removed { onStreamClosed?(stream) }
         onChange?()
     }
 
@@ -187,7 +191,10 @@ final class WindowManager {
         let controllers = Array(streams.values)
         streams.removeAll()
         lock.unlock()
-        for controller in controllers { controller.closeFromRemote() }
+        for controller in controllers {
+            onStreamClosed?(controller.stream)
+            controller.closeFromRemote()
+        }
         onChange?()
     }
 

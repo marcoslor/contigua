@@ -40,6 +40,12 @@ cd macos && ./scripts/install.sh && open /Applications/PocketDeck.app
    ("Copied from <phone>"); an image (one or several, up to 50 MB each) is saved to
    `~/Downloads/PocketDeck/` and put on the clipboard, with a "Show in Finder" notification.
    With no Mac connected the phone says "No Mac connected".
+11. Give a phone app its own Mac app: in the Deck, right-click it → **Add to Dock**. "WhatsApp
+   (Phone)" appears in the Dock with the app's icon (Options → Keep in Dock to pin it), in
+   Launchpad, Spotlight and ⌘-Tab (it lives in `~/Applications/PocketDeck Apps/`). Launching it
+   opens that app's window, or brings it forward; quitting it closes the window. Right-click →
+   **Remove from Dock App** removes it; uninstalling the app on the phone or forgetting the phone
+   removes it too.
 
 ## No phone? Use the emulator rig
 

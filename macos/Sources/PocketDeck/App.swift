@@ -31,6 +31,12 @@ struct LaunchOptions {
     var preview: String?
     /// `--appearance light|dark`: force the appearance (screenshots).
     var appearance: String?
+    /// `--dock-dir DIR`: where Dock apps are created (e2e: a temp folder).
+    var dockDirectory: String?
+    /// `--dock-add PKG` / `--dock-remove PKG`: create or remove that app's Dock app once
+    /// the phone's app list arrives (e2e).
+    var dockAdd: String?
+    var dockRemove: String?
 
     /// nil when `--profile` was missing or not a usable name.
     var profile: Profile? { Profile(name: profileName) }
@@ -85,6 +91,12 @@ struct LaunchOptions {
                 options.preview = next()
             case "--appearance":
                 options.appearance = next()
+            case "--dock-dir":
+                options.dockDirectory = next()
+            case "--dock-add":
+                options.dockAdd = next()
+            case "--dock-remove":
+                options.dockRemove = next()
             default:
                 break
             }
