@@ -40,6 +40,8 @@ cd macos && ./scripts/install.sh && open /Applications/PocketDeck.app
    A link opens in the Mac's default browser; other text goes on the Mac clipboard
    ("Copied from <phone>"); an image (one or several, up to 50 MB each) is saved to
    `~/Downloads/PocketDeck/` and put on the clipboard, with a "Show in Finder" notification.
+   Select text (or long-press a link) → **Open on Mac** in the text menu does the same; when an
+   app offers a choice of browsers for a link, **Open on Mac** opens it on the Mac.
    With no Mac connected the phone says "No Mac connected".
 11. Give a phone app its own Mac app: in the Deck, right-click it → **Add to Dock**. "WhatsApp
    (Phone)" appears in the Dock with the app's icon (Options → Keep in Dock to pin it), in

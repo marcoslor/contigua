@@ -83,6 +83,35 @@
             </intent-filter>
         </activity>
 
+        <!-- "Open on Mac" (docs/design/sharein.md): aliases of ShareActivity so the share
+             sheet keeps its label. The theme, noHistory etc. come from the target. -->
+        <activity-alias
+            android:name=".app.OpenOnMacText"
+            android:exported="true"
+            android:label="@string/open_on_mac_label"
+            android:targetActivity=".app.ShareActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.PROCESS_TEXT" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+        </activity-alias>
+
+        <!-- Open with / browser chooser: http(s) without a host, no autoVerify (never claims a domain). -->
+        <activity-alias
+            android:name=".app.OpenOnMacLink"
+            android:exported="true"
+            android:label="@string/open_on_mac_label"
+            android:targetActivity=".app.ShareActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="http" />
+                <data android:scheme="https" />
+            </intent-filter>
+        </activity-alias>
+
         <service
             android:name=".app.DeckForegroundService"
             android:exported="false"

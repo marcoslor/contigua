@@ -1,6 +1,7 @@
 <resources>
     <string name="app_name">PocketDeck</string>
     <string name="share_label">Send to Mac</string>
+    <string name="open_on_mac_label">Open on Mac</string>
 
     <!-- ongoing + pairing notifications -->
     <string name="channel_ongoing">Service</string>

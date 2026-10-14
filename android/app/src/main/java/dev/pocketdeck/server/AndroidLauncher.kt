@@ -3,6 +3,7 @@ package dev.pocketdeck.server
 import android.app.ActivityOptions
 import android.content.ComponentName
 import android.content.Context
+import android.content.pm.PackageManager
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Canvas
@@ -48,14 +49,29 @@ internal class AndroidLauncher(private val ctx: Context, private val log: (Strin
 
     override fun view(displayId: Int, url: String): Boolean {
         if (displayId < 0) return false
-        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
-            addCategory(Intent.CATEGORY_BROWSABLE)
+        // Never let the system resolve this: if PocketDeck is the default
+        // browser ("Open on Mac") the link would bounce back to the Mac.
+        val probe = Intent(Intent.ACTION_VIEW, Uri.parse(url)).addCategory(Intent.CATEGORY_BROWSABLE)
+        val handlers = runCatching { pm.queryIntentActivities(probe, PackageManager.MATCH_DEFAULT_ONLY) }
+            .getOrDefault(emptyList()).mapNotNull { it.activityInfo }
+        val preferred = runCatching { pm.resolveActivity(probe, PackageManager.MATCH_DEFAULT_ONLY) }
+            .getOrNull()?.activityInfo?.packageName
+        val pkg = LoopGuard.pick(preferred, handlers.map { it.packageName })
+        if (pkg == null) {
+            log("view: no handler other than us")
+            return false
+        }
+        val target = handlers.first { it.packageName == pkg }
+        val component = ComponentName(target.packageName, target.name)
+        val intent = Intent(probe).apply {
+            setComponent(component)
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
         if (startViaBinder(intent, displayId)) return true
         // An argv array, not `sh -c`: the URL must never be parsed by a shell.
         return runAm(arrayOf("am", "start", "--display", displayId.toString(),
-            "-a", Intent.ACTION_VIEW, "-c", Intent.CATEGORY_BROWSABLE, "-d", url), displayId)
+            "-a", Intent.ACTION_VIEW, "-c", Intent.CATEGORY_BROWSABLE, "-d", url,
+            "-n", component.flattenToShortString()), displayId)
     }
 
     override fun list(): List<AppEntry> {
