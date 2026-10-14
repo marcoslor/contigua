@@ -24,7 +24,8 @@ import dev.pocketdeck.proto.Frames
  * "output" audio source (Apache-2.0).
  *
  * The submix device keeps its own music volume index (often mid-scale), which
- * attenuates the capture; once routing has switched we raise that index only.
+ * attenuates the capture; [levelSubmix] undoes that without touching the
+ * speaker's volume.
  */
 internal class AudioCapture(
     private val ctx: Context,
@@ -43,10 +44,13 @@ internal class AudioCapture(
         const val CHUNK_BYTES = SAMPLE_RATE * CHANNELS * 2 * FRAME_MS / 1000
         const val MAX_AHEAD_NS = 40_000_000L
         const val OUTPUT_WAIT_US = 10_000L
+        /** AudioDeviceAttributes.ROLE_OUTPUT (hidden). */
+        const val ROLE_OUTPUT = 2
         const val MAX_BEHIND_NS = 200_000_000L
     }
 
     @Volatile private var running = false
+    @Volatile private var gain = 1f
     @Volatile private var thread: Thread? = null
     @Volatile private var record: AudioRecord? = null
     @Volatile private var codec: MediaCodec? = null
@@ -128,6 +132,7 @@ internal class AudioCapture(
             runCatching { rec.release() }
             return
         }
+        gain = 1f
         running = true
         record = rec
         codec = enc
@@ -135,7 +140,7 @@ internal class AudioCapture(
         log("audio: capturing codec=$codecId ($mime)")
         thread = Thread({ loop(sink, codecId, rec, enc) }, "pocketdeck-audio").also { it.start() }
         runCatching { rec.startRecording() }
-            .onSuccess { Thread(::raiseSubmixVolume, "pocketdeck-audio-vol").start() }
+            .onSuccess { Thread(::levelSubmix, "pocketdeck-audio-level").start() }
             .onFailure {
                 log("audio: startRecording failed: ${it.message}")
                 stop()
@@ -172,6 +177,7 @@ internal class AudioCapture(
                 break
             }
             if (n <= 0) continue
+            SubmixLevel.applyGain(chunk, n, gain)
             val nowNs = SystemClock.elapsedRealtimeNanos()
             // With nothing playing, the submix input synthesizes silence faster
             // than realtime; drop chunks that run ahead of the wall clock so the
@@ -249,26 +255,56 @@ internal class AudioCapture(
     }.getOrDefault(false)
 
     /**
-     * Sets STREAM_MUSIC to max while media is routed to the submix, which
-     * changes the submix device's index and leaves the speaker's untouched.
-     * AudioManager.getDevicesForAttributes is a hidden API, hence reflection.
+     * Brings the capture to full scale without ever setting the music stream
+     * volume (see [SubmixLevel]): first the submix device's own index via the
+     * hidden AudioDeviceVolumeManager.setDeviceVolume (allowed for shell on
+     * API 34-36, verified to leave the speaker index alone); if that fails, a
+     * software gain from the submix index measured once media is routed there.
      */
-    private fun raiseSubmixVolume() = runCatching {
+    private fun levelSubmix() {
         val am = ctx.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        val max = am.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+        val deviceSet = runCatching { setSubmixDeviceVolume(max) }
+            .onFailure { log("audio: submix device volume: ${it.cause?.message ?: it.message}") }
+            .isSuccess
+        val plan = SubmixLevel.plan(deviceSet, if (deviceSet) null else routedSubmixDb(am))
+        if (plan is SubmixLevel.Plan.SoftwareGain) gain = plan.gain
+        log("audio: submix level $plan")
+    }
+
+    private fun setSubmixDeviceVolume(index: Int) {
+        val infoBuilder = Class.forName("android.media.VolumeInfo\$Builder")
+            .getConstructor(Int::class.javaPrimitiveType).newInstance(AudioManager.STREAM_MUSIC)
+        infoBuilder.javaClass.getMethod("setVolumeIndex", Int::class.javaPrimitiveType).invoke(infoBuilder, index)
+        val info = infoBuilder.javaClass.getMethod("build").invoke(infoBuilder)
+        val deviceClass = Class.forName("android.media.AudioDeviceAttributes")
+        val device = deviceClass
+            .getConstructor(Int::class.javaPrimitiveType, Int::class.javaPrimitiveType, String::class.java)
+            .newInstance(ROLE_OUTPUT, AudioDeviceInfo.TYPE_REMOTE_SUBMIX, "0")
+        val managerClass = Class.forName("android.media.AudioDeviceVolumeManager")
+        val manager = managerClass.getConstructor(Context::class.java).newInstance(ctx)
+        managerClass.getMethod("setDeviceVolume", info.javaClass, deviceClass).invoke(manager, info, device)
+    }
+
+    /**
+     * dB the submix device's music index applies, read only (getStreamVolume
+     * reports the routed device's index) once routing has switched; null if it
+     * never does.
+     */
+    private fun routedSubmixDb(am: AudioManager): Float? = runCatching {
         val media = AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).build()
         val devicesFor = AudioManager::class.java.getMethod("getDevicesForAttributes", AudioAttributes::class.java)
         val deadline = SystemClock.uptimeMillis() + 2000
         while (running && SystemClock.uptimeMillis() < deadline) {
-            val devices = devicesFor.invoke(am, media) as List<*>
-            val routed = devices.any {
+            val routed = (devicesFor.invoke(am, media) as List<*>).any {
                 it!!.javaClass.getMethod("getType").invoke(it) == AudioDeviceInfo.TYPE_REMOTE_SUBMIX
             }
             if (routed) {
-                am.setStreamVolume(AudioManager.STREAM_MUSIC, am.getStreamMaxVolume(AudioManager.STREAM_MUSIC), 0)
-                return@runCatching
+                val index = am.getStreamVolume(AudioManager.STREAM_MUSIC)
+                return@runCatching am.getStreamVolumeDb(AudioManager.STREAM_MUSIC, index, AudioDeviceInfo.TYPE_REMOTE_SUBMIX)
             }
             Thread.sleep(20)
         }
-        log("audio: media not routed to submix")
-    }.onFailure { log("audio: submix volume: ${it.message}") }
+        null
+    }.getOrNull()
 }
