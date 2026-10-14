@@ -4,45 +4,6 @@
 
 import AppKit
 
-enum LinkPolicy {
-    static let allowedSchemes: Set<String> = ["http", "https", "geo", "tel", "mailto"]
-    /// UTF-8 bytes; the phone applies the same limit.
-    static let maxBytes = 8 * 1024
-
-    /// The trimmed URL when the phone may open it, else nil. Mirrors the
-    /// phone's `LinkPolicy` (the phone re-checks; it never trusts the Mac).
-    static func validate(_ raw: String?) -> String? {
-        guard let url = raw?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !url.isEmpty, url.utf8.count <= maxBytes else { return nil }
-        if url.unicodeScalars.contains(where: {
-            CharacterSet.whitespacesAndNewlines.contains($0) || CharacterSet.controlCharacters.contains($0)
-        }) { return nil }
-        guard let colon = url.firstIndex(of: ":"), colon > url.startIndex else { return nil }
-        let scheme = url[..<colon]
-        guard let first = scheme.unicodeScalars.first, first.isASCIILetter,
-              scheme.unicodeScalars.allSatisfy({ $0.isASCIILetter || $0.isASCIIDigit || "+-.".unicodeScalars.contains($0) })
-        else { return nil }
-        let lower = scheme.lowercased()
-        guard allowedSchemes.contains(lower) else { return nil }
-        let rest = url[url.index(after: colon)...]
-        if lower == "http" || lower == "https" {
-            guard rest.hasPrefix("//") else { return nil }
-            var host = rest.dropFirst(2).prefix { $0 != "/" && $0 != "?" && $0 != "#" }
-            if let at = host.lastIndex(of: "@") { host = host[host.index(after: at)...] }
-            if let port = host.firstIndex(of: ":") { host = host[..<port] }
-            guard !host.isEmpty else { return nil }
-        } else if rest.isEmpty {
-            return nil
-        }
-        return url
-    }
-}
-
-private extension Unicode.Scalar {
-    var isASCIILetter: Bool { ("a"..."z").contains(self) || ("A"..."Z").contains(self) }
-    var isASCIIDigit: Bool { ("0"..."9").contains(self) }
-}
-
 /// One link to open, optionally on a named phone.
 struct OpenLinkRequest: Equatable {
     var url: String
@@ -63,12 +24,7 @@ struct OpenLinkRequest: Equatable {
 
     /// The scheme URL for a link (used by tests and anything that forwards links to the app).
     static func schemeURL(for url: String, deviceId: String? = nil) -> URL? {
-        var components = URLComponents()
-        components.scheme = scheme
-        components.host = "open"
-        components.queryItems = [URLQueryItem(name: "url", value: url)]
-            + (deviceId.map { [URLQueryItem(name: "phone", value: $0)] } ?? [])
-        return components.url
+        ShareHandoff.schemeURL(for: url, deviceId: deviceId)
     }
 
     /// A link from a pasteboard (Services, drag): a URL item, else text holding one URL.

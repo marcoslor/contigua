@@ -37,7 +37,7 @@ like Mac apps). Each item is one looped dev task with its own checks.
 | 2 | Titles name the phone | app windows and their Dock/⌘-Tab entries read "WhatsApp (Nickname)" | S |
 | 3 | Clipboard text, both ways | shell `IClipboard` listener ⇄ NSPasteboard polling; `clip.set`, no echo, skips concealed items | S‑M |
 | 4 | Audio phone → Mac | `AudioPlaybackCapture`/REMOTE_SUBMIX at shell UID → Opus/AAC on the session | M |
-| 5 | [x] Links Mac → phone | `pocketdeck://open?url=`, Services "Open on Phone", drop on the Deck → `link.open` → `ACTION_VIEW` in a new window (docs/design/links.md); Share-menu extension later | S‑M |
+| 5 | [x] Links Mac → phone | Share → "Open on Phone" (Share extension), Services, drop on the Deck → `link.open` → `ACTION_VIEW` in a new window (docs/design/links.md) | S‑M |
 | 6 | Dock and Launchpad apps | per-app shim bundles: Dock icon, Launchpad, ⌘-Tab; launching opens that app's window | M |
 | 7 | Notifications + media controls | read at shell UID → UserNotifications (click opens the app window); media sessions → Now Playing | M‑L |
 | 8 | Drag & drop files, clipboard images | drag-in: push + share intent; drag-out: file promises; images staged both ways, size-limited | M |

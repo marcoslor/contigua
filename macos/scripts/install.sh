@@ -24,7 +24,7 @@ if [ -d "$E2E_LOCK" ] && kill -0 "$(cat "$E2E_LOCK/pid" 2>/dev/null)" 2>/dev/nul
     exit 1
 fi
 
-./scripts/bundle.sh "$STAGE"
+./scripts/bundle.sh "$STAGE" --variant release
 
 if is_running; then
     echo "quitting the running PocketDeck at $DEST"
