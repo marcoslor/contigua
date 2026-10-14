@@ -75,7 +75,7 @@ enum LinkRoute: Equatable {
 /// "Open on which phone?": a small modal with the remembered phones, the first preselected.
 enum PhonePicker {
     @MainActor
-    static func choose(_ phones: [RememberedPhone], title: String, detail: String) -> String? {
+    static func choose(_ phones: [RememberedPhone], title: String, detail: String, confirm: String = "Open") -> String? {
         guard !phones.isEmpty else { return nil }
         let alert = NSAlert()
         alert.messageText = title
@@ -83,7 +83,7 @@ enum PhonePicker {
         let popup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 260, height: 26), pullsDown: false)
         popup.addItems(withTitles: phones.map(\.name))
         alert.accessoryView = popup
-        alert.addButton(withTitle: "Open")
+        alert.addButton(withTitle: confirm)
         alert.addButton(withTitle: "Cancel")
         NSApp.activate(ignoringOtherApps: true)
         guard alert.runModal() == .alertFirstButtonReturn else { return nil }
@@ -102,5 +102,16 @@ final class LinkService: NSObject {
             return
         }
         AppEnvironment.shared.controller.openLink(request)
+    }
+
+    /// "Install on Phone" for .apk / .apks / .xapk files (docs/design/apk.md).
+    @MainActor @objc
+    func installOnPhone(_ pasteboard: NSPasteboard, userData: String?, error: AutoreleasingUnsafeMutablePointer<NSString?>) {
+        let files = (pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL]) ?? []
+        guard let file = files.first(where: { ApkBundle.kind(of: $0) != nil }) else {
+            error.pointee = ApkBundleError.notAnApp.message as NSString
+            return
+        }
+        AppEnvironment.shared.controller.installApk(file)
     }
 }

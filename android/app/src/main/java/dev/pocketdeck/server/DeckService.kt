@@ -75,6 +75,7 @@ class DeckService(private val appContext: Context?) :
                 titleObserver = titles,
                 taskPresence = titles,
                 clipboard = ShellClipboard(::log),
+                packages = ShellPackages(shell, ::log),
                 now = { SystemClock.uptimeMillis() },
                 log = ::log,
                 autoApprovePairing = dev.pocketdeck.BuildConfig.DEBUG,

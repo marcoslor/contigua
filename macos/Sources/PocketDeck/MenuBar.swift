@@ -41,6 +41,8 @@ struct MenuBarContent: View {
         Button("Phone screen") { controller.openPhoneWindow() }
             .keyboardShortcut("p")
             .disabled(!controller.link.isOnline)
+        Button("Install APK…") { controller.chooseApk() }
+            .disabled(controller.apkInstaller.isBusy)
         Divider()
         SettingsLink { Text("Settings…") }
         Divider()

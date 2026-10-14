@@ -26,7 +26,7 @@ Status: `[ ]` todo · `[~]` in progress · `[x]` done (verified on device).
 
 Done: accurate lock state, nav shortcuts, orphan cleanup watchdog, display-scoped keep-awake,
 live quality knob, Spotlight for apps ("WhatsApp (Phone name)"), trackpad pinch/rotate,
-links Mac → phone (#5).
+links Mac → phone (#5), APK install (#10).
 
 Remaining, in build order (very simple items first, then the ones that make Android apps feel
 like Mac apps). Each item is one looped dev task with its own checks.
@@ -42,7 +42,7 @@ like Mac apps). Each item is one looped dev task with its own checks.
 | 7 | Notifications + media controls | read at shell UID → UserNotifications (click opens the app window); media sessions → Now Playing | M‑L |
 | 8 | Drag & drop files, clipboard images | drag-in: push + share intent; drag-out: file promises; images staged both ways, size-limited | M |
 | 9 | Phone → Mac app handoff | "Continue on Mac": move the phone's top task onto a new VD window | M |
-| 10 | APK install | drop an .apk on the Deck → stream → `pm install-create/write/commit` | S‑M |
+| 10 | [x] APK install | drop / Open With / Services / menu bar an .apk, .apks or .xapk → `apk.install` + `APK_DATA` → `pm install-create/write/commit` at shell UID (docs/design/apk.md) | S‑M |
 
 ## v0.x — later native features
 

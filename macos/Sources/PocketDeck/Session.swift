@@ -85,6 +85,19 @@ enum SessionEvent {    case state(SessionState, String?)
     case protocolViolation(String)
     /// The phone's clipboard now holds this text (`clip.set`).
     case clipboard(String)
+    case apkProgress(id: UInt32, bytes: Int)
+    case apkResult(ApkResult)
+}
+
+/// The phone's `apk.result` (docs/design/apk.md).
+struct ApkResult: Equatable {
+    var id: UInt32
+    var ok: Bool
+    var code: String?
+    var message: String?
+    var pkg: String?
+    var label: String?
+    var version: String?
 }
 
 final class Session {
@@ -529,6 +542,17 @@ final class Session {
             break
         case "clip.set":
             if let text = message.string("text") { emit(.clipboard(text)) }
+        case "apk.progress":
+            if let id = message.int("id"), let bytes = message.int("bytes") {
+                emit(.apkProgress(id: UInt32(truncatingIfNeeded: id), bytes: bytes))
+            }
+        case "apk.result":
+            if let id = message.int("id") {
+                emit(.apkResult(ApkResult(id: UInt32(truncatingIfNeeded: id), ok: message.bool("ok") ?? false,
+                                          code: message.string("code"), message: message.string("message"),
+                                          pkg: message.string("pkg"), label: message.string("label"),
+                                          version: message.string("version"))))
+            }
         case "error":
             let code = message.string("code") ?? "unknown"
             if code == "auth_failed", !authedWithQRKey {
@@ -640,6 +664,20 @@ final class Session {
 
     func text(stream: UInt32, text: String) {
         sendJSON(["t": "text", "stream": Int(stream), "text": text])
+    }
+
+    func installApk(id: UInt32, files: [[String: Any]]) {
+        sendJSON(["t": "apk.install", "id": Int(id), "files": files])
+    }
+
+    func cancelApk(id: UInt32) { sendJSON(["t": "apk.cancel", "id": Int(id)]) }
+
+    /// One `APK_DATA` chunk; `sent` runs (on any thread) once the network took it,
+    /// false when there is no connection, so the sender paces itself.
+    func sendApkData(id: UInt32, bytes: [UInt8], sent: @escaping @Sendable (Bool) -> Void) {
+        guard let connection = currentConnection else { return sent(false) }
+        connection.send(content: Frame(type: .apkData, stream: id, payload: bytes).encodedData(),
+                        completion: .contentProcessed { error in sent(error == nil) })
     }
 
     func sendClipboard(_ text: String) {

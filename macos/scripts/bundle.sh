@@ -94,6 +94,101 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 			<key>NSRequiredContext</key>
 			<dict/>
 		</dict>
+		<dict>
+			<key>NSMenuItem</key>
+			<dict>
+				<key>default</key>
+				<string>Install on Phone</string>
+			</dict>
+			<key>NSMessage</key>
+			<string>installOnPhone</string>
+			<key>NSPortName</key>
+			<string>PocketDeck</string>
+			<key>NSSendFileTypes</key>
+			<array>
+				<string>com.android.package-archive</string>
+				<string>dev.pocketdeck.apks</string>
+				<string>dev.pocketdeck.xapk</string>
+			</array>
+			<key>NSRequiredContext</key>
+			<dict/>
+		</dict>
+	</array>
+	<key>UTImportedTypeDeclarations</key>
+	<array>
+		<dict>
+			<key>UTTypeIdentifier</key>
+			<string>com.android.package-archive</string>
+			<key>UTTypeDescription</key>
+			<string>Android app</string>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.data</string>
+				<string>public.zip-archive</string>
+			</array>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>apk</string>
+				</array>
+				<key>public.mime-type</key>
+				<string>application/vnd.android.package-archive</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>UTTypeIdentifier</key>
+			<string>dev.pocketdeck.apks</string>
+			<key>UTTypeDescription</key>
+			<string>Android app bundle (split APKs)</string>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.data</string>
+				<string>public.zip-archive</string>
+			</array>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>apks</string>
+				</array>
+			</dict>
+		</dict>
+		<dict>
+			<key>UTTypeIdentifier</key>
+			<string>dev.pocketdeck.xapk</string>
+			<key>UTTypeDescription</key>
+			<string>Android app bundle (XAPK)</string>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.data</string>
+				<string>public.zip-archive</string>
+			</array>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>xapk</string>
+				</array>
+			</dict>
+		</dict>
+	</array>
+	<key>CFBundleDocumentTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>Android app</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>com.android.package-archive</string>
+				<string>dev.pocketdeck.apks</string>
+				<string>dev.pocketdeck.xapk</string>
+			</array>
+		</dict>
 	</array>
 	<key>NSBonjourServices</key>
 	<array>

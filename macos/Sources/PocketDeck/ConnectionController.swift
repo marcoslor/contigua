@@ -8,6 +8,7 @@
 // - A remembered phone is reconnected silently; the UI shows a chip, not a screen.
 
 import AppKit
+import UniformTypeIdentifiers
 import Observation
 
 /// What an attempt connects to. Pure so the choice is unit-tested.
@@ -99,6 +100,8 @@ final class ConnectionController {
     private(set) var machine = LinkMachine()
     var link: Link { machine.link }
     private(set) var transientBanner: Banner?
+    /// APK installs (docs/design/apk.md); the Deck shows its phase.
+    let apkInstaller = ApkInstaller()
     var banner: Banner? { transientBanner ?? link.banner }
 
     private(set) var discovered: [DiscoveredPhone] = []
@@ -158,6 +161,8 @@ final class ConnectionController {
     private var pendingOpen: SpotlightOpenRequest?
     /// A link waiting for its phone to become ready (nil phone = whichever comes first).
     private var pendingLink: (request: OpenLinkRequest, until: Date)?
+    /// An app file waiting for its phone to become ready (nil phone = whichever comes first).
+    private var pendingApk: (file: URL, deviceId: String?, until: Date)?
     private var debugInput: DebugInputDriver?
     private var pairingTarget: PairingTarget?
     private var qrTimer: Timer?
@@ -423,6 +428,60 @@ final class ConnectionController {
         windows.openLink(pending.request.url)
     }
 
+    // MARK: APK install (docs/design/apk.md)
+
+    /// Installs an .apk / .apks / .xapk on a phone (drop, Open With, Services, menu bar).
+    func installApk(_ file: URL, deviceId requested: String? = nil) {
+        guard ApkBundle.kind(of: file) != nil else {
+            showTransient(ApkBundleError.notAnApp.message)
+            return
+        }
+        let ids = rememberedPhones.map(\.id)
+        let online = link.isOnline ? link.phone?.id : nil
+        switch LinkRoute.route(requested: requested, remembered: ids, online: online) {
+        case .open(let id):
+            installApk(file, on: id)
+        case .pick(let candidates):
+            let phones = candidates.compactMap { remembered.phone(id: $0) }
+            guard let id = PhonePicker.choose(phones, title: "Install on which phone?", detail: file.lastPathComponent,
+                                              confirm: "Install") else { return }
+            installApk(file, on: id)
+        case .wait:
+            pendingApk = (file, nil, Date().addingTimeInterval(Self.pendingLinkLifetime))
+            if !link.isOnline { showTransient("Pair a phone to install apps on it.") }
+        }
+    }
+
+    /// Lets the person pick an app file (menu bar "Install APK…").
+    func chooseApk() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = ApkBundle.fileExtensions.compactMap { UTType(filenameExtension: $0) }
+        panel.allowsMultipleSelection = false
+        panel.message = "Choose an Android app (.apk, .apks or .xapk) to install on the phone."
+        NSApp.activate(ignoringOtherApps: true)
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        installApk(url)
+    }
+
+    private func installApk(_ file: URL, on deviceId: String) {
+        Log.app.info("install app file on \(deviceId, privacy: .public)")
+        if link.isOnline, link.phone?.id == deviceId, let session {
+            apkInstaller.onInstalled = { [weak self] in self?.session?.requestApps() }
+            apkInstaller.install(file, session: session)
+            return
+        }
+        pendingApk = (file, deviceId, Date().addingTimeInterval(Self.pendingLinkLifetime))
+        if let phone = remembered.phone(id: deviceId), link.phone?.id != deviceId { use(phone) }
+    }
+
+    private func installPendingApk(readyPhone id: String) {
+        guard let pending = pendingApk else { return }
+        guard pending.until > Date() else { pendingApk = nil; return }
+        guard pending.deviceId == nil || pending.deviceId == id else { return }
+        pendingApk = nil
+        installApk(pending.file, on: id)
+    }
+
     // MARK: Phone data
 
     private func resetPhoneData(for ref: PhoneRef) {
@@ -634,14 +693,20 @@ final class ConnectionController {
             switch state {
             case .failed:
                 stopClipboardSync()
+                apkInstaller.connectionLost()
                 attemptEnded(reason: detail ?? "closed")
             case .closed:
                 stopClipboardSync()
+                apkInstaller.connectionLost()
             default:
                 break
             }
         case .clipboard(let text):
             clipboardSync?.receive(text)
+        case .apkProgress(let id, let bytes):
+            apkInstaller.progress(id: id, bytes: bytes)
+        case .apkResult(let result):
+            apkInstaller.result(result)
         case .ready(let info, _, let address):
             ready(info, address: address)
         case .apps(let list):
@@ -737,6 +802,7 @@ final class ConnectionController {
             windows.openApp(pkg: request.pkg)
         }
         openPendingLink(readyPhone: info.id)
+        installPendingApk(readyPhone: info.id)
         transientBanner = nil
     }
 
