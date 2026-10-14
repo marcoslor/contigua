@@ -8,6 +8,8 @@ enum MessageType: UInt8 {
     case json = 0x01
     case videoConfig = 0x02
     case videoFrame = 0x03
+    case audioConfig = 0x04
+    case audioFrame = 0x05
     case touch = 0x10
     case scroll = 0x11
     case key = 0x12
@@ -225,6 +227,70 @@ struct VideoFrameData: Equatable {
         out.appendBE(ptsUs)
         out.append(flags)
         out.append(contentsOf: annexB)
+        return out
+    }
+}
+
+/// AUDIO_CONFIG: u8 codec (2 Opus, 3 AAC) · u32 sampleRate · u8 channels ·
+/// u16 frameMs · codec setup bytes.
+struct AudioConfig: Equatable {
+    static let codecOpus: UInt8 = 2
+    static let codecAAC: UInt8 = 3
+
+    var codec: UInt8
+    var sampleRate: UInt32
+    var channels: UInt8
+    var frameMs: UInt16
+    var setup: [UInt8]
+
+    init(codec: UInt8, sampleRate: UInt32, channels: UInt8, frameMs: UInt16, setup: [UInt8]) {
+        self.codec = codec
+        self.sampleRate = sampleRate
+        self.channels = channels
+        self.frameMs = frameMs
+        self.setup = setup
+    }
+
+    init(payload: [UInt8]) throws {
+        var r = ByteReader(payload)
+        codec = try r.u8()
+        sampleRate = try r.u32()
+        channels = try r.u8()
+        frameMs = try r.u16()
+        setup = r.rest()
+    }
+
+    var payload: [UInt8] {
+        var out = [UInt8]()
+        out.append(codec)
+        out.appendBE(sampleRate)
+        out.append(channels)
+        out.appendBE(frameMs)
+        out.append(contentsOf: setup)
+        return out
+    }
+}
+
+/// AUDIO_FRAME: u64 ptsUs · one encoder packet.
+struct AudioFrameData: Equatable {
+    var ptsUs: UInt64
+    var packet: [UInt8]
+
+    init(ptsUs: UInt64, packet: [UInt8]) {
+        self.ptsUs = ptsUs
+        self.packet = packet
+    }
+
+    init(payload: [UInt8]) throws {
+        var r = ByteReader(payload)
+        ptsUs = try r.u64()
+        packet = r.rest()
+    }
+
+    var payload: [UInt8] {
+        var out = [UInt8]()
+        out.appendBE(ptsUs)
+        out.append(contentsOf: packet)
         return out
     }
 }

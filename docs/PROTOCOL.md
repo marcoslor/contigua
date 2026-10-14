@@ -35,6 +35,8 @@ Max frame size 8 MiB; a receiver that sees a larger `len` closes the session.
 | `0x01` | JSON | both | UTF-8 JSON object, always has string field `"t"` |
 | `0x02` | VIDEO_CONFIG | phone→mac | `u8 codec` (1 = H.264) · `u16 width` · `u16 height` · Annex-B SPS+PPS bytes |
 | `0x03` | VIDEO_FRAME | phone→mac | `u64 ptsUs` · `u8 flags` (bit0 = keyframe) · Annex-B access unit |
+| `0x04` | AUDIO_CONFIG | phone→mac | `u8 codec` (2 = Opus, 3 = AAC-LC) · `u32 sampleRate` · `u8 channels` · `u16 frameMs` · codec setup bytes (Opus: empty; AAC: ASC) |
+| `0x05` | AUDIO_FRAME | phone→mac | `u64 ptsUs` · one encoder packet (one Opus frame or one AAC access unit) |
 | `0x10` | TOUCH | mac→phone | `u8 action` (0 down, 1 up, 2 move, 3 cancel) · `u8 pointerId` · `f32 nx` · `f32 ny` — one frame per pointer; the phone stamps each event with its arrival time, so the Mac sends them as they happen (a drag's cadence is its fling velocity) |
 | `0x11` | SCROLL | mac→phone | `f32 nx` · `f32 ny` · `f32 hscroll` · `f32 vscroll` — mouse-wheel units, injected as `ACTION_SCROLL` (`SOURCE_MOUSE`) with these as `AXIS_HSCROLL` / `AXIS_VSCROLL` at (nx, ny). `vscroll > 0` = content moves down (wheel up), `hscroll > 0` = content moves left (wheel right). One unit is one wheel notch (Android's default 64 dp scroll factor); fractions are fine. The Mac sends SCROLL for mouse wheels only: a trackpad's two-finger scroll is a one-finger drag in TOUCH (DOWN, MOVEs, UP), so Android's own drag, overscroll and fling apply |
 | `0x12` | KEY | mac→phone | `u8 action` (0 down, 1 up) · `u32 keycode` (Android `KEYCODE_*`) · `u32 metaState` |
@@ -69,6 +71,21 @@ display id on every injected event.
   message (older phones do). After a backpressure drop the phone lowers a
   stream's bitrate on its own (with a floor) and grows it back once frames keep
   up, so an explicit `bitrate` is a target to recover to, not a guarantee.
+
+### Audio rules
+
+- Device-wide, session-level (`stream` 0): one mixer tap, not per window.
+  Mac → `audio.start {"codecs":[2,3]}` after `welcome`; phone answers one
+  AUDIO_CONFIG (chosen codec, Opus preferred) then AUDIO_FRAMEs. Mac →
+  `audio.stop` ends it; phone may also send `audio.state {"on":bool,
+  "codec":int}` for the UI dot. Unknown codecs are ignored.
+- No audio with no windows, and none while all streams are paused. Start on
+  the first unpaused `window.open`, stop on the last close/pause.
+- One AUDIO_FRAME = exactly one encoder output packet. The first frame after
+  CONFIG is decodable without prior state.
+- Backpressure: at most ~250 ms of queued audio; older packets are dropped,
+  never blocking JSON/video (send-queue priority: JSON > keyframes/config >
+  audio > video deltas).
 
 ## Session handshake
 
@@ -145,6 +162,8 @@ Mac → phone (after `welcome`):
 | `clip.set` | `text` | plain-text clipboard, either direction; see "Clipboard sync" |
 | `apk.install` | `id`, `files`: `[{"name","size","sha256"}]` | start an APK install; `APK_DATA` frames follow; see "APK install" |
 | `apk.cancel` | `id` | abandon that install |
+| `audio.start` | `codecs` (array of int, e.g. `[2,3]`) | start device-wide audio; phone answers AUDIO_CONFIG + frames |
+| `audio.stop` | — | stop device-wide audio |
 
 Phone → Mac:
 
@@ -158,6 +177,7 @@ Phone → Mac:
 | `window.closed` | `stream`, `reason` (`requested`/`app_exited`/`error`) |
 | `window.title` | `stream`, `label`, `pkg` — top app changed on that display (phone mode) |
 | `state` | `locked`: bool, `battery`: int, `charging`: bool — sent on change |
+| `audio.state` | `on`: bool, `codec`: int — audio capture on/off (for the UI dot) |
 | `error` | `code`, `message`, optional `stream` |
 | `apk.progress` | `id`, `bytes` — bytes written into the install so far |
 | `apk.result` | `id`, `ok`; success: `pkg`, `label`, `version`; failure: `code`, `message` |
