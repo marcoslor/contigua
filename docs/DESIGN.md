@@ -74,24 +74,28 @@ Spec of every state, copy and transitions: [design/mac-redesign.md](design/mac-r
 
 ### App windows
 - `NSWindow` styleMask `[.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]`, `titlebarAppearsTransparent = true`, `titleVisibility = .hidden` (the title = app
-  name still names the window in the Window menu and Mission Control). No toolbar. New windows cascade 28 pt from the top-left of the main screen (never centred over the Deck) and
+  name still names the window in the Window menu and Mission Control). An empty, non-customizable `.unified` `NSToolbar` (no items) only sizes the title area like a
+  standard toolbar window, so the traffic lights sit where Finder's do (centre 26 pt from the left and the top). New windows cascade 28 pt from the top-left of the main screen (never centred over the Deck) and
   restore their saved frame per app.
 - **Frameless at rest.** The window is only the stream: the system's rounded corners and window shadow, no title bar, no title text, no band above the video. The content view
   (`StreamContainerView`, plain AppKit) holds the video view, which fills it, so the window's frame is the video. The virtual display is that area × backing scale (multiple of 16,
   clamped to 320–2560, aspect kept). Because of the 16 px floor the video can be up to 15 px narrower or shorter than the view; when the aspect ratios differ by ≤ 2 % the layer
   stretches over it (`videoGravity = .resize`, `Letterbox.fills`) instead of showing thin black bars, and input is mapped against the same rectangle. A real mismatch (a frame of the
   old shape mid-resize) is still aspect-fitted.
-- **Hover chrome** (`WindowChrome.swift`; inspired by Apple's iPhone Mirroring). The window is larger than the stream: a 40 pt header band above it and an 8 pt bezel on the
-  other sides (none in full screen). The stream sits inside with 16 pt continuous corners and is never covered, moved or resized by the chrome; the virtual display is sized
-  from the stream rect only. At rest the padding is fully transparent and the window shadow follows the stream (`invalidateShadow` on every fade).
-  - Hover the top 24 pt of the stream or the hidden header band: the padding fades in as one clear `NSGlassEffectView` (cornerRadius 24) with the window's own traffic lights at the
-    header's left and the window's actions at its right (phone window: Back `chevron.backward` · Home `circle` · Recents `square.on.square`, 13 pt semibold `.secondary`, 32×28 each,
-    tooltips; app windows: none). Fade 0.2 s; it hides 1 s after the pointer leaves. An open menu or a drag (moving the window, a live resize) keeps it shown but never brings it in.
-  - At rest, clicks in the padding pass through to whatever is behind (a transparent titled window still takes clicks, so `ignoresMouseEvents` is set while the pointer is over the
-    hidden padding; global mouse-move monitors notice it coming back). The traffic lights are `isHidden` at rest (alpha stays 1 so ⌘W/⌘M keep working). While shown, a drag on the
-    padding moves the window (`performDrag`), double-click zooms; resizing works from the shown bezel's edges.
+- **Hover chrome** (`WindowChrome.swift`; inspired by Apple's iPhone Mirroring). The window is the stream plus a 52 pt header band above it (none in full screen); its left,
+  right and bottom edges are the stream's, so the system resize edges are at the visible picture at rest. The stream has 16 pt continuous corners and is never covered, moved or
+  resized by the chrome; the virtual display is sized from the stream rect only. At rest the band is fully transparent and the window shadow follows the stream
+  (`invalidateShadow` on every fade). The thin dark line around a resting window is the system window border, drawn by the window server along the visible shape.
+  - Hover the top 12 pt of the stream or the hidden band: the band fades in at once (0.1 s, no delay) as a clear `NSGlassEffectView` (cornerRadius 16) with the window's own
+    traffic lights at its left and the window's actions at its right on the same centre line, 12 pt in (phone window: Back `chevron.backward` · Home `circle` · Recents
+    `square.on.square`, 13 pt semibold `.primary`, 32×28 each, tooltips; app windows: none). It fades out (0.15 s) as soon as the pointer leaves the band and the zone. An open
+    menu or a drag (moving the window, a live resize) keeps it shown but never brings it in.
+  - At rest, clicks in the band pass through to whatever is behind (a transparent titled window still takes clicks, so `ignoresMouseEvents` is set while the pointer is over the
+    hidden band; global mouse-move monitors notice it coming). The traffic lights are `isHidden` at rest (alpha stays 1 so ⌘W/⌘M keep working). While shown, a drag on the
+    band moves the window (`performDrag`), double-click zooms. Resizing from the top uses the band's top edge, which is there as soon as the pointer reaches the stream's top
+    edge; the stream's own top edge is not a resize edge at rest (the window's frame starts at the band).
   - The state machine (`HeaderHover`) is pure with the time passed in; `HeaderController` runs it on a one-shot timer. `--debug-chrome-state FILE` writes
-    `header=shown|hidden lights=shown|hidden clicks=N` (N = clicks the padding received) there for the e2e check.
+    `header=shown|hidden lights=shown|hidden clicks=N` (N = clicks the band's background received) there for the e2e check.
   - Idle cost: no timers at rest, only mouse-move monitors.
 - **Link pill:** `NSGlassEffectView` (cornerRadius 18), 36 pt high, "Reconnecting…" `.caption` + `ProgressView().controlSize(.small)`, bottom centre 24 pt above the edge,
   fades in after 1 s of link loss, "Phone offline" after 15 s, fades out (0.3 s) when the link returns.
@@ -205,7 +209,7 @@ using the phone with fingers.
 **Mac — QR sheet:** QR on white tile in dark mode too · countdown visible · success shows green checkmark · expired QR blurred with **Show new code**.
 **Mac — Deck (phone):** toolbar: the phone's own name (not the model), one status pill (green dot alone when connected, plus lock while locked and the battery glyph + %), **Phone**, search with caret · grid ≤ 56 pt icons (generated initial tile when the phone has none), one-line labels, equal 20 pt side insets, the scroll bar never over a tile · at most one cell highlighted in accent tint · offline/reconnecting: dimmed grid + chip, banner only when action is needed.
 **Mac — Banner:** one line, one trailing button at most, never a reason code.
-**Mac — App window:** frameless: only the stream, rounded corners and the system shadow · a glass header (with the traffic lights) and bezel fade in around the stream, outside it, on hover and out 1 s after the pointer leaves, the stream never moves · title = app name (Window menu only), no toolbar · "Reconnecting…" pill over the last frame while the link is down · phone window: Back · Home · Recents at the header's right.
+**Mac — App window:** frameless: only the stream, rounded corners and the system shadow · a glass header (with the traffic lights) fades in above the stream, outside it, at once on hover and out as soon as the pointer leaves, the stream never moves; the window's sides and bottom are the stream's edges · title = app name (Window menu only), no visible toolbar · "Reconnecting…" pill over the last frame while the link is down · phone window: Back · Home · Recents at the header's right.
 **Mac — Settings:** exactly two tabs (General, Devices) · General has exactly 3 controls · Forget is red.
 **Mac — Menu bar:** status line first · items in the order listed · icon changes with connection state.
 **Android — Onboarding:** progress bar at top advances per step · no swipe between pages · one primary button per page · Shizuku row shows current state text + matching button · Scan QR is outlined.

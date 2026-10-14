@@ -18,9 +18,9 @@
 # posts real CGEvents at the window instead; it needs a visible, unobstructed
 # window and focus.
 #
-# A stream window is the stream plus invisible padding (a 40 pt header band and an
-# 8 pt bezel, 16 pt wider and 48 pt taller); `--resize-stream` sizes the stream, so
-# the size checks (C6) ask for exactly it and windows are found by width + 16. The trackpad checks (C15) feed the driver's
+# A stream window is the stream plus an invisible 52 pt header band above it (as
+# wide as the stream, 52 pt taller); `--resize-stream` sizes the stream, so the
+# size checks (C6) ask for exactly it and windows are found by the stream's width. The trackpad checks (C15) feed the driver's
 # phased scroll events and a model of the raw trackpad fingers (AppKit cannot
 # synthesize NSTouch); the phone-side timestamps in the event log give the cadence.
 #
@@ -415,7 +415,7 @@ check_render() {
         || ! wait_until 30 events_have '"ev":"video","stream":2,'; then
         bad "C5 video was not configured for both windows"
     fi
-    if id="$(await_window '$4 == 916')" && lit_screenshot "$id" "$app_shot"; then
+    if id="$(await_window '$4 == 900')" && lit_screenshot "$id" "$app_shot"; then
         ok "C5 app window not black ($STATS)"
     else
         bad "C5 app window not captured or black (${STATS:-no window})"
@@ -442,7 +442,7 @@ check_resize() {
         && ok "C6 new video config 1600x1200 (the whole 800x600 pt window, at 2x)" || bad "C6 no new config"
     events_have '"t":"window.resize"' \
         && ok "C6 window.resize sent" || bad "C6 no window.resize"
-    screenshot 816 "$WORK/resize.png" && say "screenshot: $WORK/resize.png"
+    screenshot 800 "$WORK/resize.png" && say "screenshot: $WORK/resize.png"
     stop_app
 
     # Non-16:9 shapes: tall, then ultra-wide (capped at 2560 px, aspect kept).
@@ -450,7 +450,7 @@ check_resize() {
         --resize-stream 1:600x900-pt --quit-after 60
     wait_until 30 events_have '"ev":"video","stream":1,"config":true,"w":1200,"h":1792' \
         && ok "C6 tall shape resized to 1200x1792 (900 pt at 2x, floored to 16)" || bad "C6 no tall config"
-    screenshot 616 "$WORK/resize-tall.png" && say "screenshot: $WORK/resize-tall.png"
+    screenshot 600 "$WORK/resize-tall.png" && say "screenshot: $WORK/resize-tall.png"
     stop_app
 
     launch --connect "127.0.0.1:$PORT" --open com.android.settings \
@@ -459,7 +459,7 @@ check_resize() {
         && ok "C6 ultra-wide capped to 2560x800 (aspect kept)" || bad "C6 no capped config"
     events_have '"dpi":256' \
         && ok "C6 capped size lowers the dpi to 256" || bad "C6 dpi did not follow the cap"
-    screenshot 1616 "$WORK/resize-wide.png" || screenshot_widest "$WORK/resize-wide.png" \
+    screenshot 1600 "$WORK/resize-wide.png" || screenshot_widest "$WORK/resize-wide.png" \
         && say "screenshot: $WORK/resize-wide.png"
     stop_app
     stop_fakephone
@@ -544,7 +544,7 @@ check_input_global() {
         --open com.android.settings --quit-after 60
     wait_until 30 events_have '"ev":"video","stream":1,' || bad "C7 no video config"
     local win
-    win="$(await_window '$4 == 916')" || { bad "C7 no app window"; stop_app; return 1; }
+    win="$(await_window '$4 == 900')" || { bad "C7 no app window"; stop_app; return 1; }
     "$CGBIN" click --window "$win" >/dev/null
     "$CGBIN" drag --window "$win" --dx 200 --dy 0 --steps 20 >/dev/null
     "$CGBIN" scroll --window "$win" --dy 3 >/dev/null
@@ -777,12 +777,81 @@ region_shot() {
     screencapture -x -R"$((x - 40)),$((y - 40)),$((w + 80)),$((h + 80))" "$2"
 }
 
-# check_chrome — a 900x600 pt stream sits in a 916x648 window: a 40 pt header
-# band above it and an 8 pt bezel, invisible at rest. A known window behind ours
-# (the helper's backdrop) shows that a click in the invisible band falls through.
-# Real pointer moves (CGEvents) to the stream's top edge or onto the band bring
-# the glass in; it goes ~1 s after the pointer leaves; none of it changes the
-# virtual display the phone was asked for.
+# chrome_within <seconds> <state-prefix> — prints how long (s) the state file
+# took to start with the prefix, polling every 10 ms; fails past the limit.
+chrome_within() {
+    python3 - "$WORK/chrome.txt" "$1" "$2" <<'PY'
+import sys, time
+path, limit, want = sys.argv[1], float(sys.argv[2]), sys.argv[3]
+start = time.monotonic()
+while True:
+    elapsed = time.monotonic() - start
+    try:
+        state = open(path).read()
+    except OSError:
+        state = ""
+    if state.startswith(want):
+        print("%.2f" % elapsed)
+        sys.exit(0)
+    if elapsed > limit:
+        print("over %.2f (%s)" % (limit, state.strip()))
+        sys.exit(1)
+    time.sleep(0.01)
+PY
+}
+
+# edge_pixels <png> <width-pt> <height-pt> — the window's own pixels just inside
+# its left, right and bottom edges and in the middle of its header band, as
+# "left=… right=… bottom=… band=…" with each "backdrop" or "stream".
+edge_pixels() {
+    python3 - "$@" <<'PY'
+import subprocess, sys
+path, wpt, hpt = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
+size = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "stream=width,height", "-of", "csv=p=0", path],
+                      capture_output=True, text=True).stdout.strip().split(",")
+w, h = int(size[0]), int(size[1])
+scale = w / wpt
+raw = subprocess.run(["ffmpeg", "-v", "error", "-i", path, "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
+                     capture_output=True).stdout
+def kind(x, y):
+    i = (int(y) * w + int(x)) * 3
+    r, g, b = raw[i], raw[i + 1], raw[i + 2]
+    # The backdrop is (46, 115, 217); the samples avoid the test pattern's blue bar.
+    return "backdrop" if b > 170 and r < 110 and g < 160 else "stream"
+mid = h - 300 * scale
+print("left=%s right=%s bottom=%s band=%s" % (kind(2 * scale, mid), kind(w - 2 * scale - 1, mid),
+                                             kind(w / 10, h - 2 * scale - 1), kind(w / 2, 26 * scale)))
+PY
+}
+
+# last_resize_width — the width of the last window.resize for stream 1 (0 if none).
+last_resize_width() {
+    python3 - "$WORK/events.jsonl" <<'PY' || true
+import json, sys
+
+width = 0
+for line in open(sys.argv[1]):
+    try:
+        event = json.loads(line)
+    except ValueError:
+        continue
+    msg = event.get("msg") if event.get("ev") == "rx" else None
+    if isinstance(msg, dict) and msg.get("stream") == 1 and msg.get("t") == "window.resize":
+        width = msg["w"]
+print(width)
+PY
+}
+resize_width_is() { [ "$(last_resize_width)" = "$1" ]; }
+
+# check_chrome — a 900x600 pt stream sits in a 900x652 window: the window's left,
+# right and bottom edges are the stream's, and a 52 pt header band above it is
+# invisible at rest (a known window behind ours, the helper's backdrop, shows
+# through it). The band brings the header in as soon as the pointer arrives, so
+# a real click never lands on it at rest; the unit tests cover the pass-through
+# flag. Real pointer moves (CGEvents) to
+# the stream's top edge or onto the band bring the glass in within 0.2 s; it is
+# gone within 0.3 s of the pointer leaving; none of it changes the virtual
+# display. A drag on the right edge at rest resizes the window and the display.
 check_chrome() {
     clean
     start_fake || return 1
@@ -793,8 +862,8 @@ check_chrome() {
         --debug-chrome-state "$WORK/chrome.txt" --quit-after 60
     wait_until 30 events_have '"ev":"video","stream":1,' || { bad "C14 no video config"; kill "$backdrop"; stop_app; stop_fakephone; return 1; }
     local win
-    win="$(await_window '$4 == 916 && $5 == 648')" || { bad "C14 no 916x648 pt window (900x600 stream + padding)"; kill "$backdrop"; stop_app; stop_fakephone; return 1; }
-    ok "C14 the window is the 900x600 pt stream plus a 40 pt header band and an 8 pt bezel (916x648)"
+    win="$(await_window '$4 == 900 && $5 == 652')" || { bad "C14 no 900x652 pt window (900x600 stream + header band)"; kill "$backdrop"; stop_app; stop_fakephone; return 1; }
+    ok "C14 the window is the 900x600 pt stream plus a 52 pt header band, nothing at the sides or bottom (900x652)"
     # Park the pointer in the middle of the stream (an earlier check may have
     # left it where the new window's header band now is) and let it settle.
     "$CGBIN" move --window "$win" --dy 100 >/dev/null
@@ -811,28 +880,23 @@ check_chrome() {
         && ok "C14 at rest: no header, no traffic lights ($(chrome_state))" \
         || bad "C14 at rest: $(chrome_state)"
     region_shot "$win" "$WORK/chrome-rest.png" && say "screenshot: $WORK/chrome-rest.png"
-
-    : > "$WORK/backdrop.txt"
-    # The bottom bezel: the header band itself brings the glass in as soon as the
-    # pointer arrives, so a click there is never "at rest".
-    "$CGBIN" move --window "$win" --top 644 >/dev/null
-    sleep 0.3
-    "$CGBIN" click --window "$win" --top 644 >/dev/null
-    sleep 0.5
-    if [ -s "$WORK/backdrop.txt" ] && chrome_is "header=hidden lights=hidden clicks=0"; then
-        ok "C14 at rest a click in the invisible bezel falls through to the window behind"
-    else
-        bad "C14 click in the bezel: behind got '$(tr '\n' ';' < "$WORK/backdrop.txt")', ours: $(chrome_state)"
-    fi
+    local x y w h edges
+    read -r x y w h <<< "$(windows | awk -v id="$win" '$1 == id {print $2, $3, $4, $5}')"
+    screencapture -x -R"$x,$y,$w,$h" "$WORK/chrome-frame.png"
+    edges="$(edge_pixels "$WORK/chrome-frame.png" "$w" "$h")"
+    [ "$edges" = "left=stream right=stream bottom=stream band=backdrop" ] \
+        && ok "C14 at rest the window frame is the stream's frame on the left, right and bottom ($edges)" \
+        || bad "C14 window edges at rest: $edges"
 
     # A pointer comes up to the edge in a run of moves, not one jump.
-    local top
-    for top in 150 110 80 60 50; do "$CGBIN" move --window "$win" --top "$top" >/dev/null; sleep 0.05; done
-    wait_until 3 chrome_is "header=shown lights=shown" \
-        && ok "C14 pointer at the stream's top edge: the glass padding and traffic lights fade in" \
-        || bad "C14 hover did not show the header: $(chrome_state)"
-    "$CGBIN" move --window "$win" --top 20 >/dev/null
-    sleep 1.5
+    local top took
+    for top in 200 150 120 90 70; do "$CGBIN" move --window "$win" --top "$top" >/dev/null; sleep 0.03; done
+    "$CGBIN" move --window "$win" --top 58 >/dev/null
+    took="$(chrome_within 0.2 "header=shown lights=shown")" \
+        && ok "C14 pointer at the stream's top edge: the glass and traffic lights are in after ${took} s" \
+        || bad "C14 hover did not show the header within 0.2 s: $took"
+    "$CGBIN" move --window "$win" --top 26 >/dev/null
+    sleep 1
     chrome_is "header=shown lights=shown" \
         && ok "C14 stays while the pointer is on the header" || bad "C14 header hid under the pointer: $(chrome_state)"
     region_shot "$win" "$WORK/chrome-hover.png" && say "screenshot: $WORK/chrome-hover.png"
@@ -840,20 +904,16 @@ check_chrome() {
     during="$(window_opens_resizes)"
 
     "$CGBIN" move --window "$win" --dy 120 >/dev/null
-    sleep 0.6
-    chrome_is "header=shown lights=shown" \
-        && ok "C14 still shown 0.6 s after the pointer left" || bad "C14 hid too early: $(chrome_state)"
-    wait_until 3 chrome_is "header=hidden lights=hidden" \
-        && ok "C14 hidden again about 1 s after the pointer left" \
-        || bad "C14 header did not hide: $(chrome_state)"
+    took="$(chrome_within 0.3 "header=hidden lights=hidden")" \
+        && ok "C14 gone ${took} s after the pointer left" \
+        || bad "C14 header did not hide within 0.3 s: $took"
 
-    for top in 90 60 30 20; do "$CGBIN" move --window "$win" --top "$top" >/dev/null; sleep 0.05; done
+    for top in 90 60 30 20; do "$CGBIN" move --window "$win" --top "$top" >/dev/null; sleep 0.03; done
     wait_until 3 chrome_is "header=shown lights=shown" \
         && ok "C14 hovering the hidden header band brings it in too" \
         || bad "C14 the hidden band did not react: $(chrome_state)"
     # Out past a side edge (the window can sit right under the menu bar).
-    local x w side
-    read -r x w <<< "$(windows | awk -v id="$win" '$1 == id {print $2, $4}')"
+    local side
     if [ "${x:-0}" -gt 60 ]; then side=$(( -w / 2 - 40 )); else side=$(( w / 2 + 40 )); fi
     "$CGBIN" move --window "$win" --top 20 --dx "$side" >/dev/null
     wait_until 3 chrome_is "header=hidden lights=hidden" \
@@ -864,6 +924,23 @@ check_chrome() {
     [ "$during" = "$before" ] && [ "$after" = "$before" ] \
         && ok "C14 the stream and its virtual display are the same at rest and hovered ($after)" \
         || bad "C14 the virtual display changed on hover: $before -> $during -> $after"
+
+    # Resize from the right edge at rest: the edge is the stream's visible edge.
+    "$CGBIN" move --window "$win" --dy 120 >/dev/null
+    wait_until 3 chrome_is "header=hidden lights=hidden"
+    "$CGBIN" drag --window "$win" --right-edge --dx 100 --steps 25 >/dev/null
+    local rw rh want vd
+    read -r rw rh <<< "$(windows | awk -v id="$win" '$1 == id {print $4, $5}')"
+    # The edge is grabbed a few points in, so the window grows by about the drag.
+    [ "${rw:-0}" -ge 980 ] && [ "${rw:-0}" -le 1010 ] && [ "$rh" = 652 ] \
+        && ok "C14 a drag on the right edge at rest resizes the window (900x652 -> ${rw}x$rh)" \
+        || bad "C14 right-edge drag at rest: window is ${rw}x$rh"
+    want=$(( rw * 2 / 16 * 16 ))
+    wait_until 3 resize_width_is "$want"
+    vd="$(last_resize_width)"
+    [ "$vd" = "$want" ] \
+        && ok "C14 and the virtual display follows: window.resize w=$vd ($rw pt at 2x, floored to 16)" \
+        || bad "C14 no window.resize to $want px wide after the edge drag (last w=$vd)"
     kill "$backdrop" 2>/dev/null; wait "$backdrop" 2>/dev/null
     stop_app
     stop_fakephone

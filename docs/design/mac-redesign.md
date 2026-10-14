@@ -207,8 +207,9 @@ that address." (no codes). On success it continues into the code sheet (§4.3). 
 
 - `NSWindow` styleMask `[.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]`,
   `titlebarAppearsTransparent = true`, title = app label (no icon, hidden: Window menu only). Frameless like Apple's iPhone Mirroring: at rest only the
-  stream with rounded corners and its shadow; the window carries a hidden 40 pt band above the stream and an 8 pt bezel, which fade in as glass
-  (traffic lights in the band) on hover and out 1 s after the pointer leaves, never covering or moving the stream or resizing the virtual display
+  stream with rounded corners and its shadow, the window's sides and bottom being the stream's edges; the window carries a hidden 52 pt band above
+  the stream, which fades in as glass (traffic lights where a standard toolbar window has them) at once on hover and out as soon as the pointer
+  leaves, never covering or moving the stream or resizing the virtual display
   (DESIGN.md "App windows").
 - **Placement (A09):** restore the frame saved for that package (`setFrameAutosaveName("app.<pkg>")`); otherwise cascade
   from the last opened stream window (`cascadeTopLeft(from:)`, 28 pt steps), never `center()` over the Deck. New

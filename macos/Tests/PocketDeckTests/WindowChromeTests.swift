@@ -37,6 +37,16 @@ final class HeaderHoverTests: XCTestCase {
         XCTAssertNil(hover.hideAt)
     }
 
+    func testByDefaultItHidesAsSoonAsThePointerLeaves() {
+        var hover = HeaderHover()
+        hover.pointerOver = true
+        hover.update(now: 0)
+        hover.pointerOver = false
+        hover.update(now: 0.01)
+        XCTAssertFalse(hover.visible, "no grace period")
+        XCTAssertNil(hover.hideAt)
+    }
+
     func testComingBackBeforeTheDelayCancelsTheHide() {
         var hover = HeaderHover(hideDelay: 1)
         hover.pointerOver = true
@@ -87,18 +97,19 @@ final class HeaderHoverTests: XCTestCase {
     }
 
     func testTheHoverZoneIsTheStreamsTopEdge() {
-        XCTAssertEqual(WindowChrome.hoverZone, 24)
-        XCTAssertEqual(WindowChrome.hideDelay, 1)
-        XCTAssertEqual(WindowChrome.fadeDuration, 0.2)
+        XCTAssertEqual(WindowChrome.hoverZone, 12)
+        XCTAssertEqual(WindowChrome.hideDelay, 0)
+        XCTAssertLessThanOrEqual(WindowChrome.fadeInDuration, 0.1)
+        XCTAssertLessThanOrEqual(WindowChrome.fadeOutDuration, 0.15)
         XCTAssertTrue(WindowChrome.isInHoverZone(y: 599, height: 600))
-        XCTAssertTrue(WindowChrome.isInHoverZone(y: 576, height: 600))
-        XCTAssertFalse(WindowChrome.isInHoverZone(y: 575, height: 600))
+        XCTAssertTrue(WindowChrome.isInHoverZone(y: 588, height: 600))
+        XCTAssertFalse(WindowChrome.isInHoverZone(y: 587, height: 600))
         XCTAssertFalse(WindowChrome.isInHoverZone(y: 601, height: 600), "above the stream")
     }
 
-    func testThePaddingIsAHeaderBandAndABezel() {
-        XCTAssertEqual(WindowChrome.windowSize(stream: CGSize(width: 900, height: 600)), CGSize(width: 916, height: 648))
-        XCTAssertEqual(WindowChrome.streamSize(window: CGSize(width: 916, height: 648)), CGSize(width: 900, height: 600))
+    func testThePaddingIsOnlyTheHeaderBand() {
+        XCTAssertEqual(WindowChrome.windowSize(stream: CGSize(width: 900, height: 600)), CGSize(width: 900, height: 652))
+        XCTAssertEqual(WindowChrome.streamSize(window: CGSize(width: 900, height: 652)), CGSize(width: 900, height: 600))
         XCTAssertEqual(WindowChrome.streamSize(window: CGSize(width: 1440, height: 900), fullScreen: true),
                        CGSize(width: 1440, height: 900), "no padding in full screen")
     }
@@ -155,10 +166,11 @@ final class StreamChromeWindowTests: XCTestCase {
         let window = try XCTUnwrap(controller.window)
         window.orderFront(nil)
         let content = try XCTUnwrap(window.contentView)
-        XCTAssertEqual(window.frame.size, NSSize(width: 916, height: 648))
+        XCTAssertEqual(window.frame.size, NSSize(width: 900, height: 652))
         XCTAssertFalse(window.isOpaque)
-        XCTAssertEqual(controller.videoView.frame, NSRect(x: 8, y: 8, width: 900, height: 600), "inset by the bezel")
-        XCTAssertEqual(controller.header.frame, NSRect(x: 0, y: 608, width: 916, height: 40), "the band above it")
+        XCTAssertEqual(controller.videoView.frame, NSRect(x: 0, y: 0, width: 900, height: 600),
+                       "the window's sides and bottom are the stream's")
+        XCTAssertEqual(controller.header.frame, NSRect(x: 0, y: 600, width: 900, height: 52), "the band above it")
         XCTAssertEqual(controller.videoBounds(), CGSize(width: 900, height: 600))
         XCTAssertEqual(window.titleVisibility, .hidden)
         XCTAssertFalse(controller.headerController?.isVisible ?? true, "hidden at rest")
@@ -167,7 +179,7 @@ final class StreamChromeWindowTests: XCTestCase {
         let atRest = (controller.videoView.frame, controller.displayPixels(), controller.dpi())
 
         controller.pointerMoved(toWindowPoint: content.convert(NSPoint(x: 450, y: 600), to: nil))
-        pump(0.4)
+        pump(0.2)
         XCTAssertTrue(controller.headerController?.isVisible ?? false)
         XCTAssertTrue(trafficLightsShown(window))
         XCTAssertEqual(controller.header.alphaValue, 1, accuracy: 0.01)
@@ -176,23 +188,36 @@ final class StreamChromeWindowTests: XCTestCase {
         XCTAssertEqual(controller.dpi(), atRest.2)
     }
 
-    func testThePaddingLetsClicksThroughOnlyAtRest() throws {
+    func testTheTrafficLightsSitWhereAStandardWindowHasThem() throws {
         let manager = makeManager()
         let controller = AppWindowController(stream: 1, pkg: "com.example.app", activity: nil,
                                              label: "Example", manager: manager)
         defer { controller.window?.close() }
         let window = try XCTUnwrap(controller.window)
         window.orderFront(nil)
-        controller.pointerMoved(toWindowPoint: NSPoint(x: 4, y: 300))
-        XCTAssertTrue(window.ignoresMouseEvents, "the invisible bezel belongs to what is behind")
+        let close = try XCTUnwrap(window.standardWindowButton(.closeButton))
+        let frame = close.convert(close.bounds, to: nil)
+        XCTAssertEqual(frame.midX, 26, accuracy: 0.5)
+        XCTAssertEqual(window.frame.height - frame.midY, WindowChrome.trafficLightCentre, accuracy: 0.5)
+    }
+
+    func testTheBandLetsClicksThroughOnlyAtRest() throws {
+        let manager = makeManager()
+        let controller = AppWindowController(stream: 1, pkg: "com.example.app", activity: nil,
+                                             label: "Example", manager: manager)
+        defer { controller.window?.close() }
+        let window = try XCTUnwrap(controller.window)
+        window.orderFront(nil)
+        controller.pointerMoved(toWindowPoint: NSPoint(x: 1, y: 300))
+        XCTAssertFalse(window.ignoresMouseEvents, "the stream reaches the window's edge (resize)")
         XCTAssertFalse(controller.headerController?.isVisible ?? true, "and does not bring the glass in")
-        controller.pointerMoved(toWindowPoint: NSPoint(x: 450, y: 300))
-        XCTAssertFalse(window.ignoresMouseEvents, "the stream takes its clicks")
         controller.pointerMoved(toWindowPoint: NSPoint(x: 450, y: 630))
         XCTAssertTrue(controller.headerController?.isVisible ?? false, "the hidden band brings it in")
         XCTAssertFalse(window.ignoresMouseEvents, "and then the header is clickable")
-        controller.pointerMoved(toWindowPoint: NSPoint(x: 4, y: 300))
-        XCTAssertFalse(window.ignoresMouseEvents, "the glass bezel is the window's while shown (resize)")
+        controller.pointerMoved(toWindowPoint: NSPoint(x: 450, y: 300))
+        XCTAssertFalse(controller.headerController?.isVisible ?? true)
+        controller.pointerMoved(toWindowPoint: NSPoint(x: 900, y: 300))
+        XCTAssertFalse(window.ignoresMouseEvents, "just outside the right edge stays the window's (resize)")
     }
 
     func testItFadesOutAfterThePointerLeaves() throws {
@@ -203,12 +228,10 @@ final class StreamChromeWindowTests: XCTestCase {
         let window = try XCTUnwrap(controller.window)
         window.orderFront(nil)
         controller.pointerMoved(toWindowPoint: CGPoint(x: 450, y: 600))
-        pump(0.3)
+        pump(0.2)
         controller.pointerMoved(toWindowPoint: CGPoint(x: 450, y: 300))
-        pump(0.6)
-        XCTAssertTrue(controller.headerController?.isVisible ?? false, "still there half a second later")
-        pump(0.9)
-        XCTAssertFalse(controller.headerController?.isVisible ?? true)
+        XCTAssertFalse(controller.headerController?.isVisible ?? true, "no grace period")
+        pump(0.3)
         XCTAssertEqual(controller.header.alphaValue, 0, accuracy: 0.01)
         XCTAssertFalse(trafficLightsShown(window), "and the traffic lights go with it")
     }
@@ -220,9 +243,9 @@ final class StreamChromeWindowTests: XCTestCase {
         let window = try XCTUnwrap(controller.window)
         window.orderFront(nil)
         controller.pointerMoved(toWindowPoint: CGPoint(x: 450, y: 600))
-        pump(0.3)
+        pump(0.2)
         controller.pointerMoved(toWindowPoint: CGPoint(x: 450, y: 300))
-        pump(1.6)
+        pump(0.3)
         XCTAssertFalse(trafficLightsShown(window))
         // ⌘M and ⌘W simulate a click on the buttons, which AppKit refuses for a transparent one.
         XCTAssertEqual(window.standardWindowButton(.closeButton)?.alphaValue, 1)

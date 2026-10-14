@@ -23,8 +23,8 @@ cd macos && ./scripts/install.sh && open /Applications/PocketDeck.app
    On a trackpad, two-finger scroll drags the page like a finger (with fling),
    pinch and rotate are two fingers around the pointer. Windows are just the
    app: move the pointer to the top edge and a glass header with the traffic
-   lights fades in above the stream, with a thin glass rim around it (drag it
-   to move the window, its edges to resize); it goes a second after you leave. In the phone window it also has Back · Home · Recents.
+   lights appears above the stream (drag it to move the window; the stream's
+   edges resize it); it goes as soon as you leave. In the phone window it also has Back · Home · Recents.
 7. Closing a window closes the app's virtual display; relaunching the Mac app
    reconnects silently to the last phone.
 8. Send a link to the phone: in Safari, Chrome, Notes or any app, **Share → Open on

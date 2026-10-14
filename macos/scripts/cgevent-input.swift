@@ -7,6 +7,7 @@
 //   swift scripts/cgevent-input.swift all
 //   swift scripts/cgevent-input.swift click  --window ID [--dx N --dy N]
 //   swift scripts/cgevent-input.swift drag   --window ID --dx 200 --dy 0 [--steps 20]
+//   swift scripts/cgevent-input.swift drag   --window ID --right-edge --dx 100   (resize from the right edge)
 //   swift scripts/cgevent-input.swift scroll --window ID [--dy 3 --dx 0]
 //   swift scripts/cgevent-input.swift rclick --window ID
 //   swift scripts/cgevent-input.swift move   --window ID --top N   (N pt below the window's top edge, centred)
@@ -179,7 +180,10 @@ case "click", "rclick", "drag", "scroll", "move":
             click(point, button: .left)
         }
     case "rclick": click(point, button: .right)
-    case "drag": drag(from: center, dx: dx, dy: dy, steps: numberArgument("--steps") ?? 20)
+    case "drag":
+        // `--right-edge`: grab the window's right edge (a resize) instead of its centre.
+        let start = hasFlag("--right-edge") ? CGPoint(x: target.x + target.width, y: center.y) : center
+        drag(from: start, dx: dx, dy: dy, steps: numberArgument("--steps") ?? 20)
     case "scroll": scroll(point, dx: dx, dy: dy)
     case "move":
         if let top = doubleArgument("--top") {
