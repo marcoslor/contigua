@@ -53,9 +53,9 @@ Detail, states, copy and the connection state machine: [design/mac-redesign.md](
      grid (single click opens, arrows move, ↩ opens, esc clears). The grid is there at launch from the last session and is dimmed
      while the phone is away. A problem is one banner line with at most one button (Try now / Pair again).
 2. **App windows**: only the stream, with rounded corners and a shadow; no title bar, and the desktop shows right up to the stream. Bring
-   the pointer to the stream's top edge and a glass header (with the traffic lights) and thin bezel fade in *around* the stream, never over it; drag
-   the glass to move the window or its edges to resize. It fades out a second after the pointer leaves, and clicks around a resting window reach what is
-   behind it. The stream never moves or changes size for it. The trackpad works like a touch screen: a two-finger scroll is a finger dragging
+   the pointer to the stream's top edge and a glass header (with the traffic lights) appears at once *above* the stream, never over it; drag
+   the glass to move the window. The stream's own edges resize the window. The header goes as soon as the pointer leaves, and clicks above a resting
+   window reach what is behind it. The stream never moves or changes size for it. The trackpad works like a touch screen: a two-finger scroll is a finger dragging
    (Android's own scrolling, overscroll and fling), a pinch or rotate is two fingers around the pointer, the mouse wheel stays a wheel and three or more
    fingers stay the system's; **View → Show Touches** draws a dot where the phone is being touched (off by default).
    New windows cascade (never on top of the Deck) and remember their frame. While the connection is down a small glass pill

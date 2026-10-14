@@ -25,7 +25,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         self.stream = stream
         self.manager = manager
         self.videoView = VideoLayerView(frame: NSRect(origin: .zero, size: contentSize))
-        // `contentSize` is the stream's; the window adds the padding around it
+        // `contentSize` is the stream's; the window adds the header band above it
         // (WindowChrome.swift). The content view fills the whole window, under a
         // transparent titlebar, and is transparent itself outside the stream.
         let frameSize = WindowChrome.windowSize(stream: contentSize)
@@ -37,6 +37,12 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         window.titlebarAppearsTransparent = true
         // The title still names the window in the Window menu and Mission Control.
         window.titleVisibility = .hidden
+        // An empty unified toolbar gives the title area a standard toolbar
+        // window's height, which puts the traffic lights where other apps have them.
+        let toolbar = NSToolbar(identifier: "stream-header")
+        toolbar.allowsUserCustomization = false
+        window.toolbar = toolbar
+        window.toolbarStyle = .unified
         window.isOpaque = false
         window.backgroundColor = .clear
         window.setFrame(NSRect(origin: window.frame.origin, size: frameSize), display: false)
@@ -77,7 +83,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
 
     var session: Session { manager.session }
 
-    /// The stream in points: the window minus the padding, whether the glass
+    /// The stream in points: the window minus the header band, whether the glass
     /// shows or not. This is what the virtual display is sized from.
     func videoBounds() -> CGSize {
         guard let window, let content = window.contentView else { return .zero }
@@ -241,7 +247,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     func windowDidEnterFullScreen(_ notification: Notification) { chromeLayoutChanged() }
     func windowDidExitFullScreen(_ notification: Notification) { chromeLayoutChanged() }
 
-    /// Full screen drops the padding: the stream is then the whole screen.
+    /// Full screen drops the header band: the stream is then the whole screen.
     private func chromeLayoutChanged() {
         (window?.contentView as? StreamContainerView)?.layoutChrome()
         scheduleResize(after: 0)

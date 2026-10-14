@@ -1,9 +1,10 @@
 // Stream window chrome: at rest the window shows only the stream (rounded
-// corners and its shadow). The window is larger than the stream: a header band
-// above it and a thin bezel around it, fully transparent at rest so clicks there
-// fall through to whatever is behind. When the pointer comes to the stream's top
-// edge or onto the band, the padding fades in as glass with the traffic lights
-// and the window's actions in the header.
+// corners and its shadow). The window's left, right and bottom edges are the
+// stream's, so the system resize edges sit right at the visible picture. Above
+// the stream is a header band, fully transparent at rest so clicks there fall
+// through to whatever is behind. When the pointer comes to the stream's top
+// edge or onto the band, the band fades in as glass with the traffic lights
+// and the window's actions.
 //
 // The stream never moves, resizes or gets covered: the virtual display is sized
 // from the stream rectangle alone, so hovering changes nothing on the phone.
@@ -12,21 +13,25 @@ import AppKit
 import SwiftUI
 
 enum WindowChrome {
-    /// The band above the stream that holds the traffic lights and the actions.
-    static let headerHeight: CGFloat = 40
-    /// The glass rim around the other three sides of the stream.
-    static let bezel: CGFloat = 8
-    /// The stream's own corners, as a window's; the glass follows them outside.
+    /// The band above the stream that holds the traffic lights and the actions:
+    /// a standard toolbar window's title area, so the traffic lights sit where
+    /// they do in every other app (centred 26 pt from the left and the top).
+    static let headerHeight: CGFloat = 52
+    /// Where the traffic lights' centre line is, from the window's top edge.
+    static let trafficLightCentre: CGFloat = 26
+    /// The stream's own corners, as a window's; the glass follows them.
     static let streamCornerRadius: CGFloat = 16
     /// How close to the stream's top edge the pointer has to come to bring the header in.
-    static let hoverZone: CGFloat = 24
-    static let fadeDuration: TimeInterval = 0.2
-    /// The header stays this long after the pointer leaves it.
-    static let hideDelay: TimeInterval = 1
+    static let hoverZone: CGFloat = 12
+    static let fadeInDuration: TimeInterval = 0.1
+    static let fadeOutDuration: TimeInterval = 0.15
+    /// The header stays this long after the pointer leaves it (nothing holds it then).
+    static let hideDelay: TimeInterval = 0
 
-    /// The padding between the window's frame and the stream (none in full screen).
+    /// The padding between the window's frame and the stream: the header band
+    /// only (none in full screen).
     static func insets(fullScreen: Bool) -> NSEdgeInsets {
-        fullScreen ? NSEdgeInsets() : NSEdgeInsets(top: headerHeight, left: bezel, bottom: bezel, right: bezel)
+        fullScreen ? NSEdgeInsets() : NSEdgeInsets(top: headerHeight, left: 0, bottom: 0, right: 0)
     }
 
     /// The window that holds a stream `stream` big.
@@ -48,7 +53,7 @@ enum WindowChrome {
     }
 
     /// A phone window keeps its phone's aspect ratio in the stream, not in the
-    /// frame (the padding is not part of the picture). The dimension the user
+    /// frame (the header band is not part of the picture). The dimension the user
     /// moved more leads; the other follows. Sizes are window frames.
     static func phoneFrame(proposed: CGSize, current: CGSize, phone: CGSize) -> CGSize {
         guard phone.width > 0, phone.height > 0 else { return proposed }
@@ -65,7 +70,7 @@ enum WindowChrome {
 
 /// When the header shows. The pointer at the top brings it in; an open menu or
 /// a drag only keeps it (a menu-bar menu must not summon it); once nothing
-/// holds it, it goes `hideDelay` later. Time is passed in, so tests need no clock.
+/// holds it, it goes `hideDelay` later (at once by default). Time is passed in, so tests need no clock.
 struct HeaderHover: Equatable {
     var pointerOver = false
     var menuOpen = false
@@ -86,11 +91,12 @@ struct HeaderHover: Equatable {
             visible = true
             hideAt = nil
         } else if visible {
-            if let hideAt, now >= hideAt {
+            let due = hideAt ?? now + hideDelay
+            if now >= due {
                 visible = false
-                self.hideAt = nil
-            } else if hideAt == nil {
-                hideAt = now + hideDelay
+                hideAt = nil
+            } else {
+                hideAt = due
             }
         }
     }
@@ -107,7 +113,7 @@ private struct HeaderControls: View {
                 Button(action: action.perform) {
                     Image(systemName: action.symbol)
                         .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.primary)
                         .frame(width: Self.buttonWidth, height: Self.buttonHeight)
                         .contentShape(Rectangle())
                 }
@@ -117,8 +123,6 @@ private struct HeaderControls: View {
                 .accessibilityLabel(action.help)
             }
         }
-        // The header sits under the titlebar; its safe area would push the buttons down.
-        .ignoresSafeArea()
     }
 }
 
@@ -141,6 +145,8 @@ final class HeaderView: NSView {
         controls = NSHostingView(rootView: HeaderControls(actions: actions))
         super.init(frame: .zero)
         controls.sizingOptions = []
+        // The header sits under the toolbar area; its safe area would push the buttons down.
+        controls.safeAreaRegions = []
         addSubview(controls)
         setAccessibilityElement(true)
         setAccessibilityRole(.toolbar)
@@ -160,9 +166,10 @@ final class HeaderView: NSView {
 
     override func layout() {
         super.layout()
-        // On the traffic lights' line: their centre is 16 pt below the top edge.
+        // On the traffic lights' line, as far in from the right as they are from the left.
         let width = CGFloat(actionCount) * HeaderControls.buttonWidth
-        controls.frame = NSRect(x: bounds.width - width - 8, y: bounds.height - 16 - HeaderControls.buttonHeight / 2,
+        let centre = bounds.height - WindowChrome.trafficLightCentre
+        controls.frame = NSRect(x: bounds.width - width - 12, y: centre - HeaderControls.buttonHeight / 2,
                                 width: width, height: HeaderControls.buttonHeight)
     }
 
@@ -181,22 +188,22 @@ final class HeaderView: NSView {
     }
 }
 
-/// The window's content: the stream inset by the padding, the glass that fills
-/// the padding (header band and bezel) behind it, and the header band on top.
-/// At rest the glass and the header are fully transparent, so the window shows
-/// only the stream and clicks in the padding fall through to what is behind.
+/// The window's content: the stream below the header band, the glass behind
+/// both, and the header band on top. At rest the glass and the header are fully
+/// transparent, so the window shows only the stream and clicks in the band fall
+/// through to what is behind.
 final class StreamContainerView: NSView {
     let video: VideoLayerView
     let header: HeaderView
     let glass = NSGlassEffectView()
-    /// A click reached the padding (the e2e check wants none at rest).
+    /// A click reached the header band (the e2e check wants none at rest).
     var onPaddingClick: (() -> Void)?
 
     init(video: VideoLayerView, header: HeaderView) {
         self.video = video
         self.header = header
         super.init(frame: NSRect(origin: .zero, size: WindowChrome.windowSize(stream: video.frame.size)))
-        glass.cornerRadius = WindowChrome.streamCornerRadius + WindowChrome.bezel
+        glass.cornerRadius = WindowChrome.streamCornerRadius
         glass.style = .clear
         addSubview(glass)
         video.wantsLayer = true
@@ -212,14 +219,14 @@ final class StreamContainerView: NSView {
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
 
     /// Where a window point is, for the hover and the click pass-through.
-    enum Region { case outside, streamTop, stream, header, bezel }
+    enum Region { case outside, streamTop, stream, header }
 
     func region(of point: NSPoint) -> Region {
         guard bounds.contains(point) else { return .outside }
         if video.frame.contains(point) {
             return WindowChrome.isInHoverZone(y: point.y - video.frame.minY, height: video.frame.height) ? .streamTop : .stream
         }
-        return !header.isHidden && header.frame.contains(point) ? .header : .bezel
+        return .header
     }
 
     /// The views that fade in and out.
@@ -287,7 +294,7 @@ final class HeaderController {
     }
 
     /// Follows the pointer wherever it is. At rest the window ignores the mouse
-    /// while the pointer is over the invisible padding (a transparent titled
+    /// while the pointer is over the invisible band (a transparent titled
     /// window still takes those clicks), so it gets no events there: the global
     /// monitor sees the moves instead. Mouse moves need no special permission.
     func start() {
@@ -317,10 +324,10 @@ final class HeaderController {
         refresh()
     }
 
-    /// Clicks over the invisible padding belong to whatever is behind the window.
+    /// Clicks over the invisible band belong to whatever is behind the window.
     private func updateClickThrough() {
         guard let window else { return }
-        let through = !state.visible && (region == .bezel || region == .header)
+        let through = !state.visible && region == .header
         if window.ignoresMouseEvents != through { window.ignoresMouseEvents = through }
     }
 
@@ -393,7 +400,7 @@ final class HeaderController {
             return
         }
         NSAnimationContext.runAnimationGroup({ context in
-            context.duration = WindowChrome.fadeDuration
+            context.duration = visible ? WindowChrome.fadeInDuration : WindowChrome.fadeOutDuration
             views.forEach { $0.animator().alphaValue = alpha }
         }, completionHandler: finish)
     }
