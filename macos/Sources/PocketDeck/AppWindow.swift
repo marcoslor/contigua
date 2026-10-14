@@ -6,15 +6,15 @@ final class AppWindowController: StreamWindowController {
     let pkg: String
     let activity: String?
 
-    /// The video is 900 × 600; the title strip adds the titlebar's height on top.
-    static let defaultContentSize = NSSize(width: 900, height: 600 + TitleStrip.fallbackHeight)
+    /// The stream is 900 × 600; the window adds the hover padding around it.
+    static let defaultContentSize = NSSize(width: 900, height: 600)
 
     init(stream: UInt32, pkg: String, activity: String?, label: String, manager: WindowManager) {
         self.pkg = pkg
         self.activity = activity
         super.init(stream: stream, contentSize: Self.defaultContentSize, manager: manager)
         window?.title = label
-        window?.minSize = NSSize(width: 320, height: 240)
+        window?.minSize = WindowChrome.windowSize(stream: NSSize(width: 320, height: 240))
     }
 
     @available(*, unavailable)
@@ -42,7 +42,7 @@ final class LinkWindowController: StreamWindowController {
         self.url = url
         super.init(stream: stream, contentSize: AppWindowController.defaultContentSize, manager: manager)
         window?.title = Self.title(for: url)
-        window?.minSize = NSSize(width: 320, height: 240)
+        window?.minSize = WindowChrome.windowSize(stream: NSSize(width: 320, height: 240))
     }
 
     @available(*, unavailable)

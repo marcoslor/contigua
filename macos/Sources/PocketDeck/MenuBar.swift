@@ -92,11 +92,6 @@ struct AppCommands: Commands {
             Button("Phone Window") { controller.openPhoneWindow() }
                 .keyboardShortcut("p")
             Divider()
-            Toggle("Show Title Strip", isOn: Binding(
-                get: { streamMenu.titleStrip },
-                set: { _ in send(#selector(StreamWindowController.toggleTitleStrip(_:))) }))
-                .keyboardShortcut("t", modifiers: [.command, .option])
-                .disabled(!streamMenu.hasStream)
             Toggle("Show Touches", isOn: Binding(
                 get: { streamMenu.showTouches },
                 set: { controller.windows.showTouches = $0 }))

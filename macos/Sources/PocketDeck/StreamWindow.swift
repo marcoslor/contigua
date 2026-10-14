@@ -1,6 +1,6 @@
 // Shared behaviour for the two window kinds: video routing, resize debounce,
-// pause/resume on occlusion, close, the ⌘+/⌘-/⌘0 density control and the title
-// strip (TitleStrip.swift).
+// pause/resume on occlusion, close, the ⌘+/⌘-/⌘0 density control and the hover
+// header (WindowChrome.swift).
 
 import AppKit
 import SwiftUI
@@ -8,7 +8,8 @@ import SwiftUI
 class StreamWindowController: NSWindowController, NSWindowDelegate {
     let stream: UInt32
     let videoView: VideoLayerView
-    let strip = StripState(titleStrip: true)
+    let header: HeaderView
+    private(set) var headerController: HeaderController?
     unowned let manager: WindowManager
 
     /// UI scale: dpi = 160 × backingScale × density (0.75…1.5).
@@ -16,34 +17,38 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     private(set) var isPaused = false
     private var resizeWork: DispatchWorkItem?
     private var closingFromRemote = false
-    private var fader: TitlebarFader?
-    private var stripColors: StripColorSampler?
-    private var lightAppearance: Bool?
+
+    /// The actions at the header's right; the window kinds add their own.
+    func headerActions() -> [HeaderAction] { [] }
 
     init(stream: UInt32, contentSize: NSSize, manager: WindowManager) {
         self.stream = stream
         self.manager = manager
         self.videoView = VideoLayerView(frame: NSRect(origin: .zero, size: contentSize))
-        // The content view fills the whole window, under a transparent titlebar,
-        // so the window's frame size is the content size. With the title strip
-        // on, the video is the part below the titlebar (TitleStrip.swift).
-        let window = NSWindow(contentRect: NSRect(origin: .zero, size: contentSize),
+        // `contentSize` is the stream's; the window adds the padding around it
+        // (WindowChrome.swift). The content view fills the whole window, under a
+        // transparent titlebar, and is transparent itself outside the stream.
+        let frameSize = WindowChrome.windowSize(stream: contentSize)
+        let window = NSWindow(contentRect: NSRect(origin: .zero, size: frameSize),
                               styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
                               backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.acceptsMouseMovedEvents = true
         window.titlebarAppearsTransparent = true
-        window.titleVisibility = .visible
-        window.setFrame(NSRect(origin: window.frame.origin, size: contentSize), display: false)
+        // The title still names the window in the Window menu and Mission Control.
+        window.titleVisibility = .hidden
+        window.isOpaque = false
+        window.backgroundColor = .clear
+        window.setFrame(NSRect(origin: window.frame.origin, size: frameSize), display: false)
+        header = HeaderView(actions: [])
         super.init(window: window)
         window.delegate = self
-        strip.titleStrip = manager.titleStrip(forKey: frameKey)
-        let host = NSHostingView(rootView: StreamContent(strip: strip, video: videoView))
-        // The window's size is the person's to choose, not the content's.
-        host.sizingOptions = []
-        window.contentView = host
-        stripColors = StripColorSampler(source: { [weak self] in self?.videoView.displayedPixelBuffer() },
-                                        onColor: { [weak self] color in self?.apply(stripColor: color) })
+        header.setActions(headerActions())
+        let container = StreamContainerView(video: videoView, header: header)
+        window.contentView = container
+        let headerController = HeaderController(window: window, container: container)
+        self.headerController = headerController
+        headerController.stateFile = manager.chromeStateFile
         let mapper = InputMapper(stream: stream)
         mapper.videoRectProvider = { [weak self] in self?.videoView.videoRect() ?? .zero }
         mapper.locationProvider = { [weak self] event in
@@ -72,22 +77,14 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
 
     var session: Session { manager.session }
 
-    /// The titlebar's height now: zero in full screen, where there is no strip.
-    var titlebarHeight: CGFloat {
-        guard let window, let content = window.contentView else { return 0 }
-        return max(content.bounds.height - window.contentLayoutRect.height, 0)
-    }
-
-    /// The video area in points: the window's content minus the strip. This is
-    /// what the virtual display is sized from; the video view's own bounds are
-    /// the same rectangle once SwiftUI has laid it out.
+    /// The stream in points: the window minus the padding, whether the glass
+    /// shows or not. This is what the virtual display is sized from.
     func videoBounds() -> CGSize {
-        guard let content = window?.contentView else { return .zero }
-        return TitleStrip.videoSize(content: content.bounds.size, titlebar: titlebarHeight,
-                                    enabled: strip.titleStrip)
+        guard let window, let content = window.contentView else { return .zero }
+        return WindowChrome.streamSize(window: content.bounds.size, fullScreen: window.styleMask.contains(.fullScreen))
     }
 
-    /// Virtual-display pixels for the video area (the strip excluded).
+    /// Virtual-display pixels for the video area.
     func displayPixels() -> CGSize {
         guard let window else { return .zero }
         return VideoSize.displayPixels(bounds: videoBounds(), backingScale: Double(window.backingScaleFactor))
@@ -104,9 +101,10 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         session.resizeWindow(stream: stream, width: Int(pixels.width), height: Int(pixels.height), dpi: dpi())
     }
 
-    /// Programmatic size change (test hook + chrome actions); the top-left stays put.
-    func setContentSize(_ size: NSSize) {
+    /// Programmatic stream size change (test hook); the top-left stays put.
+    func setContentSize(_ streamSize: NSSize) {
         guard let window else { return }
+        let size = WindowChrome.windowSize(stream: streamSize)
         let top = window.frame.maxY
         window.setFrame(NSRect(x: window.frame.minX, y: top - size.height, width: size.width, height: size.height),
                         display: true)
@@ -129,8 +127,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         if manager.floatWindows { window?.orderFrontRegardless() }
         window?.makeFirstResponder(videoView)
         NSApp.activate(ignoringOtherApps: true)
-        syncTitlebarFader()
-        syncStripColor()
+        headerController?.start()
     }
 
     /// Frames are remembered per app (or "phone") in the profile's defaults.
@@ -149,8 +146,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     }
 
     func windowWillClose(_ notification: Notification) {
-        fader?.stop()
-        stripColors?.stop()
+        headerController?.stop()
         resizeWork?.cancel()
         if !closingFromRemote { session.closeWindow(stream: stream) }
         manager.remove(stream: stream)
@@ -162,7 +158,12 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         scheduleResize(after: 0.3)
     }
 
+    func windowWillStartLiveResize(_ notification: Notification) {
+        headerController?.setDragging(true)
+    }
+
     func windowDidEndLiveResize(_ notification: Notification) {
+        headerController?.setDragging(false)
         scheduleResize(after: 0)
         rememberFrame()
     }
@@ -217,7 +218,6 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     func windowDidBecomeKey(_ notification: Notification) {
         let state = StreamMenuState.shared
         state.hasStream = true
-        state.titleStrip = strip.titleStrip
         state.showTouches = manager.showTouches
     }
 
@@ -226,72 +226,25 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         videoView.windowResignedKey()
     }
 
-    // MARK: Title strip
-
-    /// View → Show Title Strip (⌥⌘T); key window's controller answers.
-    @objc func toggleTitleStrip(_ sender: Any?) {
-        setTitleStrip(!strip.titleStrip)
-    }
+    // MARK: View menu
 
     /// View → Show Touches: one setting for every stream window.
     @objc func toggleShowTouches(_ sender: Any?) {
         manager.showTouches.toggle()
     }
 
-    func setTitleStrip(_ enabled: Bool) {
-        guard enabled != strip.titleStrip else { return }
-        strip.titleStrip = enabled
-        manager.setTitleStrip(enabled, forKey: frameKey)
-        if window?.isKeyWindow == true { StreamMenuState.shared.titleStrip = enabled }
-        titleStripDidChange()
-        syncTitlebarFader()
-        syncStripColor()
-        // The app now has a taller or shorter display to lay out on.
-        scheduleResize(after: 0)
-    }
-
     /// The pointer moved to a point in the window (also the scripted driver's hover).
     func pointerMoved(toWindowPoint point: CGPoint) {
-        fader?.pointerMoved(toWindowY: point.y)
+        headerController?.pointerMoved(toWindowPoint: point)
     }
 
-    /// Hook for the window kinds that lay chrome out against the titlebar.
-    func titleStripDidChange() {}
+    func windowDidEnterFullScreen(_ notification: Notification) { chromeLayoutChanged() }
+    func windowDidExitFullScreen(_ notification: Notification) { chromeLayoutChanged() }
 
-    /// The strip's colour is sampled while the strip shows and the stream runs:
-    /// a paused or hidden window has no new frames to look at.
-    private func syncStripColor() {
-        if strip.titleStrip, !isPaused, window?.isVisible == true {
-            stripColors?.start()
-        } else {
-            stripColors?.stop()
-        }
-        if !strip.titleStrip {
-            lightAppearance = nil
-            window?.appearance = nil
-        }
-    }
-
-    /// The colour the strip eases to, and the titlebar appearance that reads on it.
-    private func apply(stripColor color: StripColor) {
-        if color.isNoticeablyDifferent(from: strip.color) { strip.color = color }
-        let light = color.prefersLightAppearance(wasLight: lightAppearance)
-        guard light != lightAppearance else { return }
-        lightAppearance = light
-        window?.appearance = NSAppearance(named: light ? .aqua : .darkAqua)
-    }
-
-    /// With the strip off the traffic lights float over the app and hide
-    /// themselves when the pointer is away.
-    private func syncTitlebarFader() {
-        guard let window else { return }
-        if strip.titleStrip {
-            fader?.stop()
-            fader = nil
-        } else if fader == nil {
-            fader = TitlebarFader(window: window)
-            fader?.start()
-        }
+    /// Full screen drops the padding: the stream is then the whole screen.
+    private func chromeLayoutChanged() {
+        (window?.contentView as? StreamContainerView)?.layoutChrome()
+        scheduleResize(after: 0)
     }
 
     // MARK: Link state

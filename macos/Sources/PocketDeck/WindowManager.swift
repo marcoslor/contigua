@@ -23,6 +23,8 @@ final class WindowManager {
 
     /// Test hook (`--float-windows`): new stream windows float above other apps.
     var floatWindows = false
+    /// Where the stream windows write their header state (e2e), if anywhere.
+    var chromeStateFile: URL?
 
     /// Test hook (`--dump-video`): the streams' H.264 written to disk.
     var videoDump: VideoDump?
@@ -55,7 +57,6 @@ final class WindowManager {
     private let frames: UserDefaults
     private var cascadePoint = NSPoint.zero
     private static let framesKey = "streamFrames"
-    private static let titleStripsKey = "titleStrips"
     private static let showTouchesKey = "showTouches"
 
     init(session: Session, defaults: UserDefaults = .standard) {
@@ -79,17 +80,6 @@ final class WindowManager {
     }
 
     // MARK: Chrome preferences
-
-    /// The title strip is on unless the person turned it off for that app.
-    func titleStrip(forKey key: String) -> Bool {
-        (frames.dictionary(forKey: Self.titleStripsKey) as? [String: Bool])?[key] ?? true
-    }
-
-    func setTitleStrip(_ enabled: Bool, forKey key: String) {
-        var all = frames.dictionary(forKey: Self.titleStripsKey) as? [String: Bool] ?? [:]
-        all[key] = enabled
-        frames.set(all, forKey: Self.titleStripsKey)
-    }
 
     /// View → Show Touches: the fingers Android sees while a trackpad gesture runs. Off by default.
     var showTouches: Bool {

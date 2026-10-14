@@ -27,10 +27,6 @@ final class VideoLayerView: NSView {
 
     var isPaused = false
 
-    /// Height (pt) of the top strip that reveals hover chrome (0 = disabled).
-    var hoverZoneHeight: CGFloat = 0
-    var onHoverChange: ((Bool) -> Void)?
-    private var hoverTrackingArea: NSTrackingArea?
 
     /// Edge-swipe back gesture (two fingers from the left strip).
     private var edgeSwipe = EdgeSwipeClassifier()
@@ -61,17 +57,21 @@ final class VideoLayerView: NSView {
     override func layout() {
         super.layout()
         displayLayer.frame = bounds
+        updateGravity()
         edgeHint.position = CGPoint(x: edgeHint.position.x, y: bounds.midY)
     }
 
     override func setFrameSize(_ newSize: NSSize) {
         super.setFrameSize(newSize)
         displayLayer.frame = bounds
+        updateGravity()
     }
 
-    /// The frame on screen right now, for the title strip's colour.
-    func displayedPixelBuffer() -> CVPixelBuffer? {
-        displayLayer.sampleBufferRenderer.displayedPixelBuffer()
+    /// Stretches over the 16 px quantisation instead of showing thin black bars;
+    /// `videoRect()` follows the same rule, so input maps to what is drawn.
+    private func updateGravity() {
+        let gravity: AVLayerVideoGravity = Letterbox.fills(video: videoSize, bounds: bounds.size) ? .resize : .resizeAspect
+        if displayLayer.videoGravity != gravity { displayLayer.videoGravity = gravity }
     }
 
     /// Aspect-fit rect of the current video inside the view.
@@ -98,6 +98,7 @@ final class VideoLayerView: NSView {
             self.handOff(.flush)
             DispatchQueue.main.async {
                 self.videoSize = size
+                self.updateGravity()
                 self.needsLayout = true
                 self.needsDisplay = true
                 NotificationCenter.default.post(name: Self.videoSizeDidChange, object: self)
@@ -461,26 +462,5 @@ final class VideoLayerView: NSView {
         group.animations = [slide, fade]
         group.duration = 0.15
         edgeHint.add(group, forKey: "edgeSwipeHint")
-    }
-
-    override func updateTrackingAreas() {
-        super.updateTrackingAreas()
-        if let hoverTrackingArea { removeTrackingArea(hoverTrackingArea) }
-        let area = NSTrackingArea(rect: bounds,
-                                  options: [.mouseMoved, .mouseEnteredAndExited, .activeAlways, .inVisibleRect],
-                                  owner: self, userInfo: nil)
-        addTrackingArea(area)
-        hoverTrackingArea = area
-    }
-
-    override func mouseMoved(with event: NSEvent) {
-        guard hoverZoneHeight > 0 else { return }
-        let point = convert(event.locationInWindow, from: nil)
-        onHoverChange?(point.y > bounds.height - hoverZoneHeight)
-    }
-
-    override func mouseExited(with event: NSEvent) {
-        guard hoverZoneHeight > 0 else { return }
-        onHoverChange?(false)
     }
 }

@@ -15,11 +15,11 @@ not invent styling. No hard-coded colors except where a hex is given below.
 | Color | `Color.accentColor`, `.primary/.secondary/.tertiary`, `.quaternary` fills, system `.green/.orange/.red` for status only. Vibrancy comes from glass; never set text color on glass beyond hierarchical styles |
 
 ### Liquid Glass rules
-- Glass is for the **floating/navigation layer** only: cards, rows in lists over a backdrop, the launcher panel, chips, hover bar, footer buttons. Never put glass on glass: content *inside* a glass surface uses `.quaternary` fills or accent tints, not another `.glassEffect`.
+- Glass is for the **floating/navigation layer** only: cards, rows in lists over a backdrop, the launcher panel, chips, the stream hover header, footer buttons. Never put glass on glass: content *inside* a glass surface uses `.quaternary` fills or accent tints, not another `.glassEffect`.
 - Static surfaces: `.glassEffect(.regular, in: .rect(cornerRadius: R))`. Things the user clicks/hovers that are themselves glass (rows, chips): `.glassEffect(.regular.interactive(), in: …)`.
 - Group adjacent glass elements in `GlassEffectContainer(spacing: 8)`; give morphing elements `.glassEffectID(id, in: ns)` with a `@Namespace var ns`.
 - Buttons: the one primary action per screen = `.buttonStyle(.glassProminent)` (accent-tinted); everything else = `.buttonStyle(.glass)`. Destructive = `.glass` + `role: .destructive`. Primary uses `.controlSize(.large)`, row buttons `.controlSize(.small)`.
-- AppKit-hosted bits (launcher `NSPanel`, app-window hover bar): `NSGlassEffectView` with `cornerRadius` set, SwiftUI content as its `contentView` via `NSHostingView`. Multiple adjacent ones go in `NSGlassEffectContainerView`.
+- AppKit-hosted bits (launcher `NSPanel`, stream-window hover header): `NSGlassEffectView` with `cornerRadius` set, SwiftUI content as its `contentView` via `NSHostingView`. Multiple adjacent ones go in `NSGlassEffectContainerView`.
 - Reduce Transparency / Increase Contrast: rely on system fallback; do not add custom fallbacks.
 
 ### Motion
@@ -73,32 +73,28 @@ Spec of every state, copy and transitions: [design/mac-redesign.md](design/mac-r
 - Success: QR crossfades to `checkmark.circle.fill` 64 pt `.green` `.symbolEffect(.bounce)`, sheet closes after 0.8 s. Expiry: QR `.blur(radius: 8)` + **Show new code** `.glassProminent`.
 
 ### App windows
-- `NSWindow` styleMask `[.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]`, `titlebarAppearsTransparent = true`, title = app name. No toolbar. The content view is
-  `NSHostingView` (`sizingOptions = []`: the person sizes the window, not the content) around the video `NSView`; the window's frame is the content size, titlebar included. New windows
-  cascade 28 pt from the top-left of the main screen (never centred over the Deck) and restore their saved frame per app.
-- **Title strip** (View → Show Title Strip, ⌥⌘T; on by default, remembered per app package). A band of titlebar height above the video, so the Android app lays out fully *below* the
-  traffic lights instead of under them: a back arrow, a toolbar or tabs are never covered.
-  - **Geometry** (`TitleStrip`): strip = the titlebar's height, 32 pt on macOS 26, read from the window (`contentLayoutRect`), 0 in full screen. The video area is the content minus the strip.
-    The virtual display is that area × backing scale (multiple of 16, clamped to 320–2560, aspect kept), so `window.open` and `window.resize` carry a height without the strip, and the dpi
-    keeps the window's dp width. Input and scroll are mapped against the video view's bounds, so the strip is excluded by construction (a point above the video clamps to its top edge).
-    A phone window keeps the *video's* aspect ratio, not the frame's: frame = video + strip (`TitleStrip.phoneFrame`), and toggling the strip grows or shrinks the window by 32 pt so the
-    video keeps its size. An app window keeps its size and the display grows or shrinks (one `window.resize`).
-  - **What fills the strip: one colour taken from the app's own top edge**, so the strip reads as the app's header continuing up under the traffic lights. The average of the top 8 rows of the frame on
-    screen (`AVSampleBufferVideoRenderer.copyDisplayedPixelBuffer()`, then Core Image `CIAreaAverage` on the GPU into one pixel) is sampled **four times a second**, never per frame (`StripColorSampler`), and only
-    while the strip shows and the stream is not paused. The strip eases to a new colour over 0.25 s (`.animation(.easeInOut(duration: 0.25))`); a change under 2/255 per channel is ignored. The colour is
-    painted behind the video and reaches up through the titlebar's safe area (`.background { color.ignoresSafeArea(.container, edges: .top) }`); there is no content in the strip, so no glass is laid over it.
-    **Contrast:** the colour's relative luminance picks the window's appearance, so the title and the traffic lights read on it: lighter than luminance 0.179 (the point where black and white text have equal contrast)
-    takes the light appearance (dark title text), darker the dark one, with a ±0.03 band so a colour on the line does not flicker. Before the first frame the strip is black, the video view's own colour.
-  - **Mirroring was tried and replaced.** `backgroundExtensionEffect()` (the content mirrored and blurred into the safe area) works on an `NSViewRepresentable` and costs no CPU, but a band of the app's own
-    pixels behind the title is busy; one calm colour is what the strip is for.
-  - **Measured:** see "CPU" below.
-  - **Off:** the video ignores the top safe area (`ignoresSafeArea(.container, edges: .top)`) and fills the window as before, the display is the whole window, and the traffic lights and the title
-    float over the app. They fade out (0.4 s) after 2 s without the pointer within 48 pt of the top edge and back in (0.2 s) when it comes there, like the controls of full-screen video. Never
-    hidden in full screen. The choice is stored per app package (`titleStrips`, keys `app.<package>` and `phone`) in the profile's defaults. There is no toolbar in a stream window, so ⌥⌘T is free.
+- `NSWindow` styleMask `[.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]`, `titlebarAppearsTransparent = true`, `titleVisibility = .hidden` (the title = app
+  name still names the window in the Window menu and Mission Control). No toolbar. New windows cascade 28 pt from the top-left of the main screen (never centred over the Deck) and
+  restore their saved frame per app.
+- **Frameless at rest.** The window is only the stream: the system's rounded corners and window shadow, no title bar, no title text, no band above the video. The content view
+  (`StreamContainerView`, plain AppKit) holds the video view, which fills it, so the window's frame is the video. The virtual display is that area × backing scale (multiple of 16,
+  clamped to 320–2560, aspect kept). Because of the 16 px floor the video can be up to 15 px narrower or shorter than the view; when the aspect ratios differ by ≤ 2 % the layer
+  stretches over it (`videoGravity = .resize`, `Letterbox.fills`) instead of showing thin black bars, and input is mapped against the same rectangle. A real mismatch (a frame of the
+  old shape mid-resize) is still aspect-fitted.
+- **Hover chrome** (`WindowChrome.swift`; inspired by Apple's iPhone Mirroring). The window is larger than the stream: a 40 pt header band above it and an 8 pt bezel on the
+  other sides (none in full screen). The stream sits inside with 16 pt continuous corners and is never covered, moved or resized by the chrome; the virtual display is sized
+  from the stream rect only. At rest the padding is fully transparent and the window shadow follows the stream (`invalidateShadow` on every fade).
+  - Hover the top 24 pt of the stream or the hidden header band: the padding fades in as one clear `NSGlassEffectView` (cornerRadius 24) with the window's own traffic lights at the
+    header's left and the window's actions at its right (phone window: Back `chevron.backward` · Home `circle` · Recents `square.on.square`, 13 pt semibold `.secondary`, 32×28 each,
+    tooltips; app windows: none). Fade 0.2 s; it hides 1 s after the pointer leaves. An open menu or a drag (moving the window, a live resize) keeps it shown but never brings it in.
+  - At rest, clicks in the padding pass through to whatever is behind (a transparent titled window still takes clicks, so `ignoresMouseEvents` is set while the pointer is over the
+    hidden padding; global mouse-move monitors notice it coming back). The traffic lights are `isHidden` at rest (alpha stays 1 so ⌘W/⌘M keep working). While shown, a drag on the
+    padding moves the window (`performDrag`), double-click zooms; resizing works from the shown bezel's edges.
+  - The state machine (`HeaderHover`) is pure with the time passed in; `HeaderController` runs it on a one-shot timer. `--debug-chrome-state FILE` writes
+    `header=shown|hidden lights=shown|hidden clicks=N` (N = clicks the padding received) there for the e2e check.
+  - Idle cost: no timers at rest, only mouse-move monitors.
 - **Link pill:** `NSGlassEffectView` (cornerRadius 18), 36 pt high, "Reconnecting…" `.caption` + `ProgressView().controlSize(.small)`, bottom centre 24 pt above the edge,
   fades in after 1 s of link loss, "Phone offline" after 15 s, fades out (0.3 s) when the link returns.
-- **Phone-mode hover bar:** `NSGlassEffectView` capsule (cornerRadius 18), 3 buttons × 44 wide + padding 6 → 144×36, centered horizontally, 8 pt below the titlebar. Symbols
-  `chevron.backward` · `circle` · `square.on.square`, 15 pt semibold, `.primary`. Shows when the pointer is in the top 84 pt, fade in 0.2 s, fade out 0.3 s after 1 s idle. Each button has a tooltip.
 
 ### Trackpad input (stream windows)
 The phone is a touch screen, the Mac has a pointer and a trackpad. Everything reaches it as the touches, scroll and key frames of docs/PROTOCOL.md; the aim is that the trackpad feels like
@@ -209,7 +205,7 @@ using the phone with fingers.
 **Mac — QR sheet:** QR on white tile in dark mode too · countdown visible · success shows green checkmark · expired QR blurred with **Show new code**.
 **Mac — Deck (phone):** toolbar: the phone's own name (not the model), one status pill (green dot alone when connected, plus lock while locked and the battery glyph + %), **Phone**, search with caret · grid ≤ 56 pt icons (generated initial tile when the phone has none), one-line labels, equal 20 pt side insets, the scroll bar never over a tile · at most one cell highlighted in accent tint · offline/reconnecting: dimmed grid + chip, banner only when action is needed.
 **Mac — Banner:** one line, one trailing button at most, never a reason code.
-**Mac — App window:** the title strip on by default: one colour taken from the app's own top edge (eased in 0.25 s, light or dark title to suit it) behind the traffic lights and the title, the app's toolbar below them and never covered; View → Show Title Strip (⌥⌘T) off = video under a transparent titlebar, traffic lights and title fading out after 2 s and back near the top edge · title = app name, no toolbar · "Reconnecting…" pill over the last frame while the link is down · phone mode only: glass capsule with 3 buttons appears on top hover.
+**Mac — App window:** frameless: only the stream, rounded corners and the system shadow · a glass header (with the traffic lights) and bezel fade in around the stream, outside it, on hover and out 1 s after the pointer leaves, the stream never moves · title = app name (Window menu only), no toolbar · "Reconnecting…" pill over the last frame while the link is down · phone window: Back · Home · Recents at the header's right.
 **Mac — Settings:** exactly two tabs (General, Devices) · General has exactly 3 controls · Forget is red.
 **Mac — Menu bar:** status line first · items in the order listed · icon changes with connection state.
 **Android — Onboarding:** progress bar at top advances per step · no swipe between pages · one primary button per page · Shizuku row shows current state text + matching button · Scan QR is outlined.
