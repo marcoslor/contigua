@@ -35,7 +35,7 @@ class SessionTest {
         connect(pairDecisionTimeoutMs = 30_000)
     }
 
-    private fun connect(pairDecisionTimeoutMs: Long) {
+    private fun connect(pairDecisionTimeoutMs: Long, autoApprovePairing: Boolean = false) {
         serverSocket = ServerSocket(0)
         val accept = Thread {
             val s = serverSocket.accept()
@@ -52,11 +52,13 @@ class SessionTest {
                 callback = platform,
                 titleObserver = { topApp },
                 taskPresence = { taskPresent },
+                clipboard = platform,
                 now = { clock++ },
                 log = {},
                 handshakeTimeoutMs = 3_000,
                 pairDecisionTimeoutMs = pairDecisionTimeoutMs,
                 exitPollIntervalMs = 50,
+                autoApprovePairing = autoApprovePairing,
             )
             session = sess
             sess.run()
@@ -119,6 +121,9 @@ class SessionTest {
         val keyHex = Crypto.toHex(Crypto.randomBytes(32))
         platform.clients.add(PairedClient("c1", "MacBook", keyHex))
         authenticate("c1", keyHex)
+        // The session starts the clipboard listener after queuing welcome, so a
+        // test that copies right after reading welcome must wait for it.
+        await { platform.clipListening }
         return keyHex
     }
 
@@ -251,6 +256,33 @@ class SessionTest {
         readUntil("pair.ok")
         readUntil("welcome")
         assertEquals(1, platform.paired.count { it.clientId == "c6" })
+    }
+
+    @Test
+    fun autoApproveFalseStillWaitsForDecision() {
+        runCatching { client.close() }
+        runCatching { serverSocket.close() }
+        connect(pairDecisionTimeoutMs = 1000, autoApprovePairing = false)
+        hello("cAutoFalse", "MacAutoFalse")
+        send(mapOf("t" to "pair.request"))
+        readUntil("pair.code_shown")
+        assertEquals(1, platform.pairRequests.size)
+        assertEquals("pair_timeout", readUntil("error")["code"])
+        assertEquals(0, platform.paired.count { it.clientId == "cAutoFalse" })
+    }
+
+    @Test
+    fun autoApprovePairsWithoutAskingThePhone() {
+        runCatching { client.close() }
+        runCatching { serverSocket.close() }
+        connect(pairDecisionTimeoutMs = 30_000, autoApprovePairing = true)
+        hello("cAuto", "MacAuto")
+        send(mapOf("t" to "pair.request"))
+        readUntil("pair.code_shown")
+        readUntil("pair.ok")
+        readUntil("welcome")
+        assertEquals(0, platform.pairRequests.size)
+        assertEquals(1, platform.paired.count { it.clientId == "cAuto" })
     }
 
     @Test
@@ -538,5 +570,68 @@ class SessionTest {
         // Still open: the phone-mode window runs our own launcher.
         send(mapOf("t" to "ping", "ts" to 9))
         assertEquals(9L, readUntil("pong")["ts"])
+    }
+
+    // ------------------------------------------------------------------
+    // clipboard sync
+    // ------------------------------------------------------------------
+
+    @Test
+    fun phoneClipboardChangeIsSent() {
+        addAndAuthenticate()
+        platform.changeClip("from phone")
+        assertEquals("from phone", readUntil("clip.set")["text"])
+    }
+
+    @Test
+    fun repeatedPhoneClipboardTextIsSentOnce() {
+        addAndAuthenticate()
+        platform.changeClip("same")
+        platform.changeClip("same")
+        platform.changeClip("next")
+        assertEquals("same", readUntil("clip.set")["text"])
+        assertEquals("next", readUntil("clip.set")["text"])
+    }
+
+    @Test
+    fun clipAtOneMiBIsSentAndLargerIsNot() {
+        addAndAuthenticate()
+        platform.changeClip("x".repeat(CLIP_MAX_BYTES))
+        platform.changeClip("x".repeat(CLIP_MAX_BYTES + 1))
+        platform.changeClip("small")
+        assertEquals(CLIP_MAX_BYTES, (readUntil("clip.set")["text"] as String).length)
+        assertEquals("small", readUntil("clip.set")["text"])
+    }
+
+    @Test
+    fun receivedClipIsWrittenToClipboard() {
+        addAndAuthenticate()
+        send(mapOf("t" to "clip.set", "text" to "from mac"))
+        await { platform.clipWrites.contains("from mac") }
+        assertEquals("from mac", platform.clipText)
+    }
+
+    @Test
+    fun receivedClipIsNotEchoedBack() {
+        addAndAuthenticate()
+        send(mapOf("t" to "clip.set", "text" to "from mac"))
+        await { platform.clipWrites.contains("from mac") }
+        // The write notified the clipboard listener; the next clip.set has to be
+        // the phone's own copy, not the text that just arrived.
+        platform.changeClip("from phone")
+        assertEquals("from phone", readUntil("clip.set")["text"])
+    }
+
+    @Test
+    fun oversizedReceivedClipIsIgnored() {
+        addAndAuthenticate()
+        send(mapOf("t" to "clip.set", "text" to "x".repeat(CLIP_MAX_BYTES + 1)))
+        send(mapOf("t" to "clip.set", "text" to "ok"))
+        await { platform.clipWrites.contains("ok") }
+        assertEquals(listOf("ok"), platform.clipWrites.toList())
+    }
+
+    private companion object {
+        const val CLIP_MAX_BYTES = 1_048_576
     }
 }

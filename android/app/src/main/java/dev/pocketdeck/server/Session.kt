@@ -32,6 +32,8 @@ class Session(
     private val callback: DeckCallback,
     private val titleObserver: WindowObserver? = null,
     private val taskPresence: TaskPresence? = null,
+    /** Plain-text clipboard sync; null leaves the clipboard alone. */
+    private val clipboard: ClipboardPort? = null,
     private val now: () -> Long = { System.nanoTime() / 1_000_000 },
     private val log: (String) -> Unit = {},
     private val handshakeTimeoutMs: Int = 15_000,
@@ -39,6 +41,7 @@ class Session(
     private val pairDecisionTimeoutMs: Long = 120_000,
     private val exitPollIntervalMs: Long = 2_000,
     maxDeltaBytesPerStream: Int = SendQueue.DEFAULT_MAX_DELTA_BYTES,
+    private val autoApprovePairing: Boolean = false,
 ) : VideoSink {
 
     private enum class Phase { HELLO, AUTH, READY }
@@ -61,6 +64,7 @@ class Session(
     @Volatile private var closeRequested = false
 
     private val streams = LinkedHashMap<Int, StreamState>()
+    private val clipSync = ClipSync()
 
     private var clientId = ""
     private var clientName = "Mac"
@@ -135,6 +139,7 @@ class Session(
         // phone's prompt must not linger.
         abandoned?.let { runCatching { callback.onPairingEnded(it) } }
         stopStateWatch()
+        stopClipboardSync()
         stopStreamWatch()
         synchronized(streams) {
             for (s in streams.values.toList()) runCatching { display.close(s.stream) }
@@ -258,6 +263,12 @@ class Session(
         // the wait instead.
         runCatching { socket.soTimeout = 0 }
         sendJson(mapOf("t" to "pair.code_shown", "code" to code))
+        if (autoApprovePairing) {
+            log("debug build: auto-approved pairing for $clientName")
+            synchronized(pairLock) { pairSettled = true }
+            completePairing()
+            return
+        }
         runCatching { callback.onPairingRequest(id, clientName, code) }
         Thread({ expirePairing(id) }, "pocketdeck-pair-timeout").also {
             it.isDaemon = true
@@ -343,6 +354,7 @@ class Session(
         runCatching { socket.soTimeout = 0 }
         runCatching { callback.onSessionChanged(true, currentMacName ?: clientName, windowCount()) }
         startStateWatch()
+        startClipboardSync()
     }
 
     private fun dispatch(obj: Map<String, Any?>, frame: Frame, t: String) {
@@ -360,7 +372,7 @@ class Session(
             "window.launch" -> onWindowLaunch(obj, frame)
             "nav" -> onNav(obj, frame)
             "text" -> onText(obj, frame)
-            "clipboard.set" -> logOnce("clipboard.set ignored (not in v0)")
+            "clip.set" -> onClipSet(obj)
             else -> logOnce("unknown message '$t'")
         }
     }
@@ -484,6 +496,32 @@ class Session(
             "recents" -> log("recents: no-op in v0")
             else -> logOnce("unknown nav action")
         }
+    }
+
+    // ------------------------------------------------------------------
+    // clipboard sync
+    // ------------------------------------------------------------------
+
+    /** Local changes after welcome go out as `clip.set`; the text present at welcome does not. */
+    private fun startClipboardSync() {
+        val port = clipboard ?: return
+        port.listen { text ->
+            if (clipSync.shouldSend(text)) sendJson(mapOf("t" to "clip.set", "text" to text))
+        }
+    }
+
+    private fun stopClipboardSync() {
+        runCatching { clipboard?.stop() }
+    }
+
+    private fun onClipSet(obj: Map<String, Any?>) {
+        val port = clipboard ?: return
+        val text = Json.str(obj["text"]) ?: return
+        if (!clipSync.accept(text)) {
+            log("clip.set ignored (empty or over ${ClipSync.MAX_BYTES} bytes)")
+            return
+        }
+        port.setText(text)
     }
 
     private fun onText(obj: Map<String, Any?>, frame: Frame) {

@@ -83,6 +83,8 @@ enum SessionEvent {    case state(SessionState, String?)
     /// A cached address answered with a different device id: refuse it.
     case identityMismatch(expected: String, actual: String)
     case protocolViolation(String)
+    /// The phone's clipboard now holds this text (`clip.set`).
+    case clipboard(String)
 }
 
 final class Session {
@@ -525,6 +527,8 @@ final class Session {
                              charging: message.bool("charging") ?? false))
         case "pong":
             break
+        case "clip.set":
+            if let text = message.string("text") { emit(.clipboard(text)) }
         case "error":
             let code = message.string("code") ?? "unknown"
             if code == "auth_failed", !authedWithQRKey {
@@ -633,6 +637,10 @@ final class Session {
         sendJSON(["t": "text", "stream": Int(stream), "text": text])
     }
 
+    func sendClipboard(_ text: String) {
+        sendJSON(["t": "clip.set", "text": text])
+    }
+
     func touch(_ event: TouchEvent, stream: UInt32) {
         sendBytes(Frame(type: .touch, stream: stream, payload: event.payload).encoded)
     }
@@ -660,5 +668,9 @@ extension Data {
             index = next
         }
         self = Data(bytes)
+    }
+
+    var hexString: String {
+        map { String(format: "%02x", $0) }.joined()
     }
 }
