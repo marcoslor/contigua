@@ -25,6 +25,20 @@ final class ProtocolTests: XCTestCase {
         XCTAssertTrue(try VideoFrameData(payload: decoded.payload).isKeyframe)
     }
 
+    func testAudioConfigRoundTrip() throws {
+        let config = AudioConfig(codec: AudioConfig.codecOpus, sampleRate: 48000, channels: 2, frameMs: 20, setup: [0x12, 0x10])
+        let frame = Frame(type: .audioConfig, stream: 0, payload: config.payload)
+        let decoded = try assertRoundTrip(frame, chunks: [5, 1, 100])
+        XCTAssertEqual(try AudioConfig(payload: decoded.payload), config)
+    }
+
+    func testAudioFrameRoundTrip() throws {
+        let audio = AudioFrameData(ptsUs: 987_654_321, packet: [0x4F, 0x70, 0x75, 0x73, 1, 2])
+        let frame = Frame(type: .audioFrame, stream: 0, payload: audio.payload)
+        let decoded = try assertRoundTrip(frame, chunks: [8, 1, 4])
+        XCTAssertEqual(try AudioFrameData(payload: decoded.payload), audio)
+    }
+
     func testTouchFrameRoundTrip() throws {
         let touch = TouchEvent(action: .move, pointerId: 0, nx: 0.25, ny: 0.75)
         let frame = Frame(type: .touch, stream: 1, payload: touch.payload)

@@ -44,9 +44,30 @@ struct MenuBarContent: View {
         Button("Install APK…") { controller.chooseApk() }
             .disabled(controller.apkInstaller.isBusy)
         Divider()
+        audioSection
+        Divider()
         SettingsLink { Text("Settings…") }
         Divider()
         Button("Quit PocketDeck") { NSApp.terminate(nil) }.keyboardShortcut("q")
+    }
+
+    @ViewBuilder
+    private var audioSection: some View {
+        if controller.audioOn {
+            Text("Phone audio: on")
+            Slider(value: Binding(
+                get: { Double(controller.audioVolume) },
+                set: { controller.audioVolume = Float($0) },
+            ), in: 0...1) {
+                Text("Volume")
+            }
+            Toggle("Mute", isOn: Binding(
+                get: { controller.audioMuted },
+                set: { controller.audioMuted = $0 },
+            ))
+        } else {
+            Text("Phone audio: off")
+        }
     }
 
     private var statusLine: String {

@@ -95,7 +95,9 @@ final class ConnectionController {
     /// Dock and Launchpad apps (docs/design/dock.md).
     let dockApps: DockApps
     let windows: WindowManager
+    let audio = AudioEngine()
     private let discovery = Discovery()
+    private var audioStarted = false
 
     // MARK: Published state
 
@@ -115,6 +117,7 @@ final class ConnectionController {
         return ShareInbox(directory: directory, actions: actions)
     }()
     var banner: Banner? { transientBanner ?? link.banner }
+    private(set) var audioOn = false
 
     private(set) var discovered: [DiscoveredPhone] = []
     private(set) var rememberedPhones: [RememberedPhone] = []
@@ -222,6 +225,38 @@ final class ConnectionController {
         welcomeSeen = remembered.welcomeSeen
         remembered.adoptExistingPairings(keyAccounts: PairKeyStore(profile: profile).accounts()) { [cache] in cache.name(forDeviceId: $0) }
         rememberedPhones = remembered.all
+        audio.statsFile = options.audioStatsFile
+        windows.onChange = { [weak self] in
+            MainActor.assumeIsolated { self?.syncAudio() }
+        }
+    }
+
+    var audioVolume: Float {
+        get { audio.volume }
+        set { audio.volume = newValue }
+    }
+
+    var audioMuted: Bool {
+        get { audio.muted }
+        set { audio.muted = newValue }
+    }
+
+    /// Start device audio when online with ≥1 window; stop otherwise.
+    /// Mac-side gain only — the phone is silenced by its submix routing.
+    func syncAudio() {
+        guard link.isOnline, !windows.openStreams.isEmpty else {
+            if audioStarted {
+                audioStarted = false
+                session?.stopAudio()
+                audio.stop()
+                audioOn = false
+            }
+            return
+        }
+        if !audioStarted {
+            audioStarted = true
+            session?.startAudio()
+        }
     }
 
     // MARK: Lifecycle
@@ -286,6 +321,12 @@ final class ConnectionController {
         stopQR()
         attemptTimer?.cancel()
         stopClipboardSync()
+        if audioStarted {
+            audioStarted = false
+            session?.stopAudio()
+        }
+        audio.stop()
+        audioOn = false
         session?.close()
         session = nil
     }
@@ -740,6 +781,14 @@ final class ConnectionController {
             guard let self, let newSession else { return }
             self.windows.handleVideo(event, from: newSession)
         }
+        newSession.onAudioEvent = { [weak self, weak newSession] event in
+            guard let self, let newSession else { return }
+            guard newSession === self.session else { return }
+            switch event {
+            case .config(let config): self.audio.configure(config)
+            case .frame(let frame): self.audio.receive(frame)
+            }
+        }
         newSession.start()
     }
 
@@ -831,6 +880,10 @@ final class ConnectionController {
             runDockHooks()
         case .phoneState(let locked, let battery, let charging):
             status = PhoneStatus(locked: locked, battery: battery, charging: charging)
+        case .audioState(let on, _):
+            audioOn = on
+        case .windowClosed:
+            syncAudio()
         case .pairCodeShown(let deviceId, let code):
             codeShown(deviceId: deviceId, code: code)
         case .pairApproved:
@@ -915,6 +968,7 @@ final class ConnectionController {
         openPendingDock(readyPhone: info.id)
         installPendingApk(readyPhone: info.id)
         transientBanner = nil
+        syncAudio()
     }
 
     private func appsReceived(_ list: [AppInfo]) {
