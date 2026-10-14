@@ -6,7 +6,8 @@ final class AppWindowController: StreamWindowController {
     let pkg: String
     let activity: String?
 
-    static let defaultContentSize = NSSize(width: 900, height: 600)
+    /// The video is 900 × 600; the title strip adds the titlebar's height on top.
+    static let defaultContentSize = NSSize(width: 900, height: 600 + TitleStrip.fallbackHeight)
 
     init(stream: UInt32, pkg: String, activity: String?, label: String, manager: WindowManager) {
         self.pkg = pkg

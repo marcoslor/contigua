@@ -6,8 +6,8 @@ Same Wi-Fi; Shizuku running on the phone and "Allow connections" on.
 # phone (USB or wireless debugging)
 cd android && export JAVA_HOME=/opt/homebrew/opt/openjdk@17 ANDROID_HOME=$HOME/Library/Android/sdk
 ./gradlew :app:assembleDebug && adb install -r app/build/outputs/apk/debug/app-debug.apk
-# Mac: build a release copy and install it to ~/Applications (quits a running copy first)
-cd macos && ./scripts/install.sh && open ~/Applications/PocketDeck.app
+# Mac: build a release copy and install it to /Applications (quits a running copy first)
+cd macos && ./scripts/install.sh && open /Applications/PocketDeck.app
 ```
 
 1. Phone: PocketDeck → **Pair new Mac** (first run: onboarding → **Scan QR code**).
@@ -20,6 +20,10 @@ cd macos && ./scripts/install.sh && open ~/Applications/PocketDeck.app
    runs. The app re-lays out to the new shape.
 6. Type into the focused window, click/drag, scroll the wheel. Right-click =
    Android back, middle-click = home. Click a window first if keys seem ignored.
+   On a trackpad, two-finger scroll drags the page like a finger (with fling),
+   pinch and rotate are two fingers around the pointer. The strip above the
+   video takes the colour of the app's header; View → Show Title Strip (⌥⌘T)
+   turns it off.
 7. Closing a window closes the app's virtual display; relaunching the Mac app
    reconnects silently to the last phone.
 

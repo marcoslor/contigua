@@ -66,6 +66,16 @@ enum Letterbox {
         return (clamp(u), clamp(rawY))
     }
 
+    /// The view point of a video-space point (0...1, top-left origin): the
+    /// inverse of `normalized`, for drawing at a position the phone knows.
+    static func viewPoint(nx: Float, ny: Float, videoRect: CGRect, flipped: Bool) -> CGPoint {
+        let x = videoRect.minX + CGFloat(nx) * videoRect.width
+        let y = flipped
+            ? videoRect.minY + CGFloat(ny) * videoRect.height
+            : videoRect.minY + (1 - CGFloat(ny)) * videoRect.height
+        return CGPoint(x: x, y: y)
+    }
+
     private static func clamp(_ value: CGFloat) -> Float {
         Float(min(max(value, 0), 1))
     }

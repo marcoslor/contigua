@@ -12,6 +12,16 @@ final class DebugInputTests: XCTestCase {
         scroll 3 0.4 0.6
         pinch 0.5 0.5 1.5
         rotate 0.4 0.6 -90
+        trackscroll 240 0.4 0.6
+        fingerscroll -120
+        fingerpinch 0.5 0.5 1.8
+        fingerpinch 0.5 0.5 0.5 3
+        fingerrotate 0.5 0.5 45
+        showtouches on
+        strip off
+        strip on
+        hover 0.5 0
+        wait 2.5
         type hi
         key esc
         """)
@@ -22,6 +32,16 @@ final class DebugInputTests: XCTestCase {
             .scroll(dy: 3, at: NormalizedPoint(nx: 0.4, ny: 0.6)),
             .pinch(at: NormalizedPoint(nx: 0.5, ny: 0.5), scale: 1.5),
             .rotate(at: NormalizedPoint(nx: 0.4, ny: 0.6), degrees: -90),
+            .trackScroll(dy: 240, at: NormalizedPoint(nx: 0.4, ny: 0.6)),
+            .fingerScroll(dy: -120, at: .center),
+            .fingerPinch(at: .center, scale: 1.8, hold: 0),
+            .fingerPinch(at: .center, scale: 0.5, hold: 3),
+            .fingerRotate(at: .center, degrees: 45, hold: 0),
+            .showTouches(true),
+            .strip(false),
+            .strip(true),
+            .hover(NormalizedPoint(nx: 0.5, ny: 0)),
+            .wait(2.5),
             .type("hi"),
             .key(KeyStroke(keyCode: 53, characters: "\u{1b}")),
         ])
@@ -81,6 +101,18 @@ final class DebugInputTests: XCTestCase {
         XCTAssertThrowsError(try DebugInputScript.parse("rotate 0.5 0.5"))
         XCTAssertThrowsError(try DebugInputScript.parse("type"))
         XCTAssertThrowsError(try DebugInputScript.parse("key"))
+        XCTAssertThrowsError(try DebugInputScript.parse("trackscroll"))
+        XCTAssertThrowsError(try DebugInputScript.parse("fingerpinch 0.5 0.5"))
+        XCTAssertThrowsError(try DebugInputScript.parse("strip")) { error in
+            XCTAssertEqual((error as? DebugInputParseError)?.message, "strip needs on or off")
+        }
+        XCTAssertThrowsError(try DebugInputScript.parse("strip maybe"))
+        XCTAssertThrowsError(try DebugInputScript.parse("showtouches"))
+        XCTAssertThrowsError(try DebugInputScript.parse("fingerpinch 0.5 0.5 2 -1"))
+        XCTAssertThrowsError(try DebugInputScript.parse("pinch 0.5 0.5 2 3"))
+        XCTAssertThrowsError(try DebugInputScript.parse("hover 0.5"))
+        XCTAssertThrowsError(try DebugInputScript.parse("wait"))
+        XCTAssertThrowsError(try DebugInputScript.parse("wait 600"))
     }
 
     func testRejectsANonPositivePinchScale() {

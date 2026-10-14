@@ -68,6 +68,7 @@ struct MenuBarContent: View {
 
 struct AppCommands: Commands {
     let controller: ConnectionController
+    private let streamMenu = StreamMenuState.shared
     @Environment(\.openWindow) private var openWindow
 
     var body: some Commands {
@@ -88,6 +89,15 @@ struct AppCommands: Commands {
             .keyboardShortcut("k")
             Button("Phone Window") { controller.openPhoneWindow() }
                 .keyboardShortcut("p")
+            Divider()
+            Toggle("Show Title Strip", isOn: Binding(
+                get: { streamMenu.titleStrip },
+                set: { _ in send(#selector(StreamWindowController.toggleTitleStrip(_:))) }))
+                .keyboardShortcut("t", modifiers: [.command, .option])
+                .disabled(!streamMenu.hasStream)
+            Toggle("Show Touches", isOn: Binding(
+                get: { streamMenu.showTouches },
+                set: { controller.windows.showTouches = $0 }))
         }
         CommandMenu("Navigate") {
             Button("Back") { send(#selector(StreamWindowController.navigateBack(_:))) }

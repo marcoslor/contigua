@@ -7,7 +7,7 @@ Visual system: [DESIGN.md](DESIGN.md).
 
 ## Pairing model (both sides)
 
-Three ways to pair; all end in the same stored pairing (Mac Keychain key ⇄ phone
+Three ways to pair; all end in the same stored pairing (Mac pair key ⇄ phone
 paired-clients list). Pairings are remembered; reconnection is automatic and silent.
 
 | Method | Mac | Phone |
@@ -52,7 +52,12 @@ Detail, states, copy and the connection state machine: [design/mac-redesign.md](
      (green dot · lock while locked · battery / Connecting… / Reconnecting… / Offline / Pair again), **Phone** button and search; the app
      grid (single click opens, arrows move, ↩ opens, esc clears). The grid is there at launch from the last session and is dimmed
      while the phone is away. A problem is one banner line with at most one button (Try now / Pair again).
-2. **App windows**: content only — video edge to edge under a transparent titlebar, standard traffic lights, title = app name.
+2. **App windows**: content only. A title strip of titlebar height sits above the video: one colour taken from the app's own top edge
+   (it eases when the app's header changes), behind the standard traffic lights and the title (= app name, light or dark to suit the colour), so the app's toolbar and back arrow are never covered. **View → Show Title Strip**
+   (⌥⌘T, per app, on by default) turns it off: the video then runs edge to edge under a transparent titlebar, and the traffic lights fade out after
+   2 s without the pointer and back in when it comes near the top edge. The trackpad works like a touch screen: a two-finger scroll is a finger dragging
+   (Android's own scrolling, overscroll and fling), a pinch or rotate is two fingers around the pointer, the mouse wheel stays a wheel and three or more
+   fingers stay the system's; **View → Show Touches** draws a dot where the phone is being touched (off by default).
    New windows cascade (never on top of the Deck) and remember their frame. While the connection is down a small glass pill
    ("Reconnecting…") sits over the last frame; the window stays open. Phone mode: a glass bar (Back · Home · Recents)
    appears on hover at the top.

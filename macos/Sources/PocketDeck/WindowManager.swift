@@ -18,6 +18,12 @@ final class WindowManager {
     /// Fired when the set of open windows or the icon cache changes.
     var onChange: (() -> Void)?
 
+    /// Test hook (`--float-windows`): new stream windows float above other apps.
+    var floatWindows = false
+
+    /// Test hook (`--dump-video`): the streams' H.264 written to disk.
+    var videoDump: VideoDump?
+
     /// Set while the app is terminating so windows stop emitting pause/resume.
     private(set) var shuttingDown = false
 
@@ -46,10 +52,13 @@ final class WindowManager {
     private let frames: UserDefaults
     private var cascadePoint = NSPoint.zero
     private static let framesKey = "streamFrames"
+    private static let titleStripsKey = "titleStrips"
+    private static let showTouchesKey = "showTouches"
 
     init(session: Session, defaults: UserDefaults = .standard) {
         self.session = session
         frames = defaults
+        StreamMenuState.shared.showTouches = defaults.bool(forKey: Self.showTouchesKey)
     }
 
     // MARK: Placement
@@ -64,6 +73,29 @@ final class WindowManager {
         var all = frames.dictionary(forKey: Self.framesKey) as? [String: String] ?? [:]
         all[key] = NSStringFromRect(frame)
         frames.set(all, forKey: Self.framesKey)
+    }
+
+    // MARK: Chrome preferences
+
+    /// The title strip is on unless the person turned it off for that app.
+    func titleStrip(forKey key: String) -> Bool {
+        (frames.dictionary(forKey: Self.titleStripsKey) as? [String: Bool])?[key] ?? true
+    }
+
+    func setTitleStrip(_ enabled: Bool, forKey key: String) {
+        var all = frames.dictionary(forKey: Self.titleStripsKey) as? [String: Bool] ?? [:]
+        all[key] = enabled
+        frames.set(all, forKey: Self.titleStripsKey)
+    }
+
+    /// View → Show Touches: the fingers Android sees while a trackpad gesture runs. Off by default.
+    var showTouches: Bool {
+        get { frames.bool(forKey: Self.showTouchesKey) }
+        set {
+            frames.set(newValue, forKey: Self.showTouchesKey)
+            for controller in allControllers() { controller.videoView.showsTouches = newValue }
+            StreamMenuState.shared.showTouches = newValue
+        }
     }
 
     /// A remembered frame may belong to a display that is gone.
@@ -185,8 +217,10 @@ final class WindowManager {
         guard source === current else { return }
         switch event {
         case .config(let stream, let config):
+            videoDump?.write(config: config, stream: stream)
             controller(for: stream)?.videoView.configure(config)
         case .frame(let stream, let frame):
+            videoDump?.write(frame: frame, stream: stream)
             controller(for: stream)?.videoView.enqueue(frame)
         }
     }

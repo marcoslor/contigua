@@ -10,8 +10,20 @@
 //   rightclick NX NY         right click (nav back)
 //   drag NX1 NY1 NX2 NY2     left-button drag
 //   scroll DY [NX NY]        wheel scroll, default at the centre
-//   pinch NX NY SCALE        trackpad pinch around NX NY (SCALE > 0, e.g. 1.5)
+//   trackscroll DY [NX NY]   two-finger trackpad scroll (phased, then momentum events)
+//                            of DY points; positive moves the content down
+//   fingerscroll DY [NX NY]  the same with the raw fingers on the pad as well
+//   pinch NX NY SCALE        trackpad pinch around NX NY (SCALE > 0, e.g. 1.5); the
+//                            coarse magnify-event emulation
 //   rotate NX NY DEGREES     trackpad rotate around NX NY (positive = counter-clockwise)
+//   fingerpinch NX NY SCALE [HOLD]  the same pinch from raw trackpad fingers; HOLD seconds
+//                            with the fingers down at the end (for looking at the overlay)
+//   fingerrotate NX NY DEGREES [HOLD]  the same rotate from raw trackpad fingers
+//   showtouches on|off       View > Show Touches
+//   strip on|off             View > Show Title Strip
+//   hover NX NY              the pointer moves to NX NY (the traffic lights of a window
+//                            without the strip fade in when it is near the top edge)
+//   wait SECONDS             let the app run (timers, animations) before the next action
 //   type TEXT                text typed as key presses (rest of the line)
 //   key [cmd+][shift+][ctrl+][opt+]NAME
 // NX/NY are video-space coordinates in 0...1 with a top-left origin.
@@ -39,8 +51,16 @@ enum DebugInputAction: Equatable {
     case rightClick(NormalizedPoint)
     case drag(from: NormalizedPoint, to: NormalizedPoint)
     case scroll(dy: Int, at: NormalizedPoint)
+    case trackScroll(dy: Int, at: NormalizedPoint)
+    case fingerScroll(dy: Int, at: NormalizedPoint)
     case pinch(at: NormalizedPoint, scale: Double)
     case rotate(at: NormalizedPoint, degrees: Double)
+    case fingerPinch(at: NormalizedPoint, scale: Double, hold: Double)
+    case fingerRotate(at: NormalizedPoint, degrees: Double, hold: Double)
+    case showTouches(Bool)
+    case strip(Bool)
+    case hover(NormalizedPoint)
+    case wait(Double)
     case type(String)
     case key(KeyStroke)
 }
@@ -91,16 +111,47 @@ enum DebugInputScript {
             }
             let at = try args.count == 3 ? point(Array(args[1...2]), count: 2) : .center
             return .scroll(dy: dy, at: at)
-        case "pinch":
-            guard args.count == 3, let scale = Double(args[2]), scale > 0 else {
-                throw LineError(message: "pinch needs NX NY SCALE (SCALE > 0)")
+        case "trackscroll", "fingerscroll":
+            guard args.count == 1 || args.count == 3, let dy = Int(args[0]) else {
+                throw LineError(message: "\(verb) needs DY and optionally NX NY")
             }
-            return .pinch(at: try point(Array(args[0...1]), count: 2), scale: scale)
-        case "rotate":
-            guard args.count == 3, let degrees = Double(args[2]) else {
-                throw LineError(message: "rotate needs NX NY DEGREES")
+            let at = try args.count == 3 ? point(Array(args[1...2]), count: 2) : .center
+            return verb == "trackscroll" ? .trackScroll(dy: dy, at: at) : .fingerScroll(dy: dy, at: at)
+        case "pinch", "fingerpinch":
+            let maxArgs = verb == "pinch" ? 3 : 4
+            guard (3...maxArgs).contains(args.count), let scale = Double(args[2]), scale > 0 else {
+                throw LineError(message: "\(verb) needs NX NY SCALE (SCALE > 0)\(verb == "pinch" ? "" : " and optionally HOLD")")
             }
-            return .rotate(at: try point(Array(args[0...1]), count: 2), degrees: degrees)
+            let at = try point(Array(args[0...1]), count: 2)
+            if verb == "pinch" { return .pinch(at: at, scale: scale) }
+            return .fingerPinch(at: at, scale: scale, hold: try hold(args, index: 3))
+        case "rotate", "fingerrotate":
+            let maxArgs = verb == "rotate" ? 3 : 4
+            guard (3...maxArgs).contains(args.count), let degrees = Double(args[2]) else {
+                throw LineError(message: "\(verb) needs NX NY DEGREES\(verb == "rotate" ? "" : " and optionally HOLD")")
+            }
+            let at = try point(Array(args[0...1]), count: 2)
+            if verb == "rotate" { return .rotate(at: at, degrees: degrees) }
+            return .fingerRotate(at: at, degrees: degrees, hold: try hold(args, index: 3))
+        case "showtouches":
+            switch args.first {
+            case "on" where args.count == 1: return .showTouches(true)
+            case "off" where args.count == 1: return .showTouches(false)
+            default: throw LineError(message: "showtouches needs on or off")
+            }
+        case "hover":
+            return .hover(try point(args, count: 2))
+        case "wait":
+            guard args.count == 1, let seconds = Double(args[0]), (0...60).contains(seconds) else {
+                throw LineError(message: "wait needs SECONDS (0...60)")
+            }
+            return .wait(seconds)
+        case "strip":
+            switch args.first {
+            case "on" where args.count == 1: return .strip(true)
+            case "off" where args.count == 1: return .strip(false)
+            default: throw LineError(message: "strip needs on or off")
+            }
         case "type":
             guard !rest.isEmpty else { throw LineError(message: "type needs text") }
             return .type(rest)
@@ -110,6 +161,14 @@ enum DebugInputScript {
         default:
             throw LineError(message: "unknown action '\(verb)'")
         }
+    }
+
+    private static func hold(_ args: [String], index: Int) throws -> Double {
+        guard args.count > index else { return 0 }
+        guard let seconds = Double(args[index]), (0...60).contains(seconds) else {
+            throw LineError(message: "HOLD is seconds, 0...60")
+        }
+        return seconds
     }
 
     private static func point(_ args: [String], count: Int) throws -> NormalizedPoint {
@@ -183,6 +242,13 @@ final class DebugInputDriver {
     /// the coalesced moves (InputMapper) reach the phone.
     static let gestureSteps = 8
     static var gestureStepInterval: TimeInterval { InputMapper.displayRefreshInterval * 1.5 }
+    /// A trackpad scroll event arrives about once per display refresh; Android
+    /// computes its fling velocity from that cadence.
+    static let scrollSteps = 12
+    static var scrollStepInterval: TimeInterval { InputMapper.displayRefreshInterval }
+    /// The trackpad as the raw-finger actions imagine it: a Magic Trackpad,
+    /// fingers 32 mm apart.
+    static let fingerSpanMillimetres = 32.0
 
     private let actions: [DebugInputAction]
     private var observer: NSObjectProtocol?
@@ -202,7 +268,11 @@ final class DebugInputDriver {
         ) { [weak self] note in
             guard let self, let view = note.object as? VideoLayerView else { return }
             self.disarm()
-            self.run(on: view)
+            // The note is posted from a main-queue block, and the script's waits
+            // spin the run loop: inside that block the main queue cannot drain, so
+            // the video frames enqueued on it would wait for the whole script.
+            // A run-loop block starts the script outside any main-queue block.
+            RunLoop.main.perform { self.run(on: view) }
         }
     }
 
@@ -218,12 +288,7 @@ final class DebugInputDriver {
     /// The view-space point of a video-space point; the inverse of
     /// `Letterbox.normalized`, so InputMapper recovers the same coordinates.
     static func viewPoint(_ point: NormalizedPoint, videoRect: CGRect, flipped: Bool) -> CGPoint {
-        let x = videoRect.minX + CGFloat(point.nx) * videoRect.width
-        let fraction = CGFloat(point.ny)
-        let y = flipped
-            ? videoRect.minY + fraction * videoRect.height
-            : videoRect.minY + (1 - fraction) * videoRect.height
-        return CGPoint(x: x, y: y)
+        Letterbox.viewPoint(nx: Float(point.nx), ny: Float(point.ny), videoRect: videoRect, flipped: flipped)
     }
 
     private func perform(_ action: DebugInputAction, on view: VideoLayerView) {
@@ -251,6 +316,32 @@ final class DebugInputDriver {
             if let scroll = scrollEvent(dy: dy, at: location(target, in: view), in: view) {
                 view.scrollWheel(with: scroll)
             }
+        case .trackScroll(let dy, let target):
+            trackScroll(dy: dy, at: location(target, in: view), in: view, fingers: false)
+        case .fingerScroll(let dy, let target):
+            trackScroll(dy: dy, at: location(target, in: view), in: view, fingers: true)
+        case .fingerPinch(let target, let scale, let hold):
+            let span = Self.fingerSpanMillimetres
+            fingerGesture(at: location(target, in: view), in: view, hold: hold) { fraction in
+                Self.fingers(spanMillimetres: span * (1 + (scale - 1) * fraction), degrees: 0)
+            }
+        case .fingerRotate(let target, let degrees, let hold):
+            let span = Self.fingerSpanMillimetres
+            fingerGesture(at: location(target, in: view), in: view, hold: hold) { fraction in
+                Self.fingers(spanMillimetres: span, degrees: degrees * fraction)
+            }
+        case .showTouches(let enabled):
+            (view.window?.windowController as? StreamWindowController)?.manager.showTouches = enabled
+        case .strip(let enabled):
+            (view.window?.windowController as? StreamWindowController)?.setTitleStrip(enabled)
+            // SwiftUI lays the video out again on the next pass; later actions aim at that.
+            view.window?.contentView?.layoutSubtreeIfNeeded()
+            RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.15))
+        case .hover(let target):
+            let point = view.convert(location(target, in: view), to: nil)
+            (view.window?.windowController as? StreamWindowController)?.pointerMoved(toWindowPoint: point)
+        case .wait(let seconds):
+            RunLoop.current.run(until: Date(timeIntervalSinceNow: seconds))
         case .pinch(let target, let scale):
             let point = location(target, in: view)
             view.magnifyGesture(phase: .began, magnification: 0, at: point)
@@ -291,6 +382,67 @@ final class DebugInputDriver {
         }
     }
 
+    /// A two-finger scroll the way a trackpad delivers it: began, changed events a
+    /// display refresh apart, ended, then the momentum the system adds after a
+    /// flick (which must reach nobody). With `fingers` the raw fingers travel
+    /// along, so the arbitration between the two paths is exercised too.
+    private func trackScroll(dy: Int, at point: CGPoint, in view: VideoLayerView, fingers: Bool) {
+        let step = Double(dy) / Double(Self.scrollSteps)
+        // Content moving down is the fingers moving down the pad, about 4 points per millimetre.
+        let padTravel = -Double(dy) / TrackpadPinch.defaultPointsPerMillimetre
+        func land(_ fraction: Double) {
+            guard fingers else { return }
+            let list = Self.fingers(spanMillimetres: Self.fingerSpanMillimetres, degrees: 0,
+                                    shiftMillimetres: padTravel * fraction)
+            view.trackpadFingers(list, surface: .fallback, cursor: point)
+        }
+        land(0)
+        if let began = scrollEvent(phase: 1, momentum: 0, dy: 0, at: point, in: view) { view.scrollWheel(with: began) }
+        for index in 1...Self.scrollSteps {
+            land(Double(index) / Double(Self.scrollSteps))
+            if let changed = scrollEvent(phase: 2, momentum: 0, dy: step, at: point, in: view) {
+                view.scrollWheel(with: changed)
+            }
+            RunLoop.current.run(until: Date(timeIntervalSinceNow: Self.scrollStepInterval))
+        }
+        if let ended = scrollEvent(phase: 4, momentum: 0, dy: 0, at: point, in: view) { view.scrollWheel(with: ended) }
+        if fingers { view.trackpadFingers([], surface: .fallback, cursor: point) }
+        for (momentum, factor) in [(Int64(1), 2.0), (2, 1.5), (2, 1.0), (3, 0.0)] {
+            if let event = scrollEvent(phase: 0, momentum: momentum, dy: step * factor, at: point, in: view) {
+                view.scrollWheel(with: event)
+            }
+        }
+    }
+
+    /// Two fingers centred on the pad, `spanMillimetres` apart, the pair turned
+    /// by `degrees` (counter-clockwise on the pad) and moved up by `shiftMillimetres`.
+    static func fingers(spanMillimetres: Double, degrees: Double, shiftMillimetres: Double = 0) -> [TrackpadFinger] {
+        let surface = TrackpadSurface.fallback
+        let width = surface.widthPoints * TrackpadSurface.millimetresPerPoint
+        let height = surface.heightPoints * TrackpadSurface.millimetresPerPoint
+        let radians = degrees * .pi / 180
+        let half = spanMillimetres / 2
+        let dx = cos(radians) * half, dy = sin(radians) * half
+        let cx = width / 2, cy = height / 2 + shiftMillimetres
+        return [TrackpadFinger(id: 1, x: (cx - dx) / width, y: (cy - dy) / height),
+                TrackpadFinger(id: 2, x: (cx + dx) / width, y: (cy + dy) / height)]
+    }
+
+    /// Fingers land, travel along `path` (fraction 0...1) in steps a display
+    /// refresh apart, and lift.
+    private func fingerGesture(at point: CGPoint, in view: VideoLayerView, hold: Double = 0,
+                               path: (Double) -> [TrackpadFinger]) {
+        view.trackpadFingers(path(0), surface: .fallback, cursor: point)
+        for step in 1...Self.gestureSteps {
+            view.trackpadFingers(path(Double(step) / Double(Self.gestureSteps)), surface: .fallback, cursor: point)
+            pumpRunLoop()
+        }
+        if hold > 0 { RunLoop.current.run(until: Date(timeIntervalSinceNow: hold)) }
+        let last = path(1)
+        view.trackpadFingers([last[0]], surface: .fallback, cursor: point)
+        view.trackpadFingers([], surface: .fallback, cursor: point)
+    }
+
     /// Escape is only forwarded to a key window, so the window is made key
     /// first. Activation is in-process; the other app's focus is not involved.
     private func focus(_ window: NSWindow) {
@@ -314,6 +466,25 @@ final class DebugInputDriver {
                            modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
                            windowNumber: view.window?.windowNumber ?? 0, context: nil,
                            eventNumber: 0, clickCount: 1, pressure: 1)
+    }
+
+    /// A continuous (pixel) scroll event with a gesture phase, in the values
+    /// CGEvent uses: phase 1 began, 2 changed, 4 ended; momentum 1 begin, 2
+    /// continue, 3 end.
+    private func scrollEvent(phase: Int64, momentum: Int64, dy: Double, at point: CGPoint,
+                             in view: VideoLayerView) -> NSEvent? {
+        guard view.window != nil,
+              let cgEvent = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 2,
+                                    wheel1: Int32(dy.rounded()), wheel2: 0, wheel3: 0) else { return nil }
+        cgEvent.setIntegerValueField(.scrollWheelEventIsContinuous, value: 1)
+        cgEvent.setIntegerValueField(.scrollWheelEventScrollPhase, value: phase)
+        cgEvent.setIntegerValueField(.scrollWheelEventMomentumPhase, value: momentum)
+        cgEvent.setDoubleValueField(.scrollWheelEventPointDeltaAxis1, value: dy)
+        cgEvent.setDoubleValueField(.scrollWheelEventFixedPtDeltaAxis1, value: dy)
+        let inWindow = view.convert(point, to: nil)
+        let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
+        cgEvent.location = CGPoint(x: inWindow.x, y: primaryHeight - inWindow.y)
+        return NSEvent(cgEvent: cgEvent)
     }
 
     /// A line-unit wheel event. A window-less NSEvent(cgEvent:) reports its
