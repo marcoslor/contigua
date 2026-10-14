@@ -77,10 +77,10 @@ final class RememberedPhonesTests: XCTestCase {
     }
 
     func testAPhoneWithoutAKeyIsStillRemembered() {
-        // The key lives in the Keychain; losing it must not erase the phone.
+        // The key lives in the pair-key file; losing it must not erase the phone.
         let store = RememberedPhones(defaults: defaults)
         store.remember(phone)
-        let keys = PairKeyStore(defaults: defaults, keychain: Keychain(service: suite))
+        let keys = PairKeyStore(defaults: defaults, keys: .scratch())
         XCTAssertNil(keys.key(forDeviceId: "aaa"))
         XCTAssertEqual(store.active?.id, "aaa")
     }

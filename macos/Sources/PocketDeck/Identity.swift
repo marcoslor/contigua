@@ -1,8 +1,10 @@
 // Identity, key storage and logging.
 //
 // - clientId: stable per-install UUID in the profile's defaults (sent in `hello`).
-// - Pair keys: one generic-password item per device id in the login Keychain,
-//   under the profile's service.
+// - Pair keys: one JSON file, ~/Library/Application Support/<profile folder>/pairkeys.json,
+//   mode 0600 in a 0700 folder. Not the Keychain: every re-signed build made
+//   macOS ask for the login password. Keychain storage returns with proper
+//   code signing before release.
 // - Logging: os.Logger only (no `print`); the optional latency log is a file
 //   under ~/Library/Logs/<profile folder> because it is sampled by the tests.
 
@@ -33,54 +35,64 @@ enum ClientIdentity {
     static var name: String { Host.current().localizedName ?? "Mac" }
 }
 
-/// Generic-password items for pairing keys, all under one service (see `Profile`).
-struct Keychain {
-    let service: String
-
-    private func baseQuery(account: String) -> [String: Any] {
-        [kSecClass as String: kSecClassGenericPassword,
-         kSecAttrService as String: service,
-         kSecAttrAccount as String: account]
-    }
+/// Pairing keys by device id (hex), protected by file permissions only.
+struct PairKeyFile {
+    let url: URL
 
     @discardableResult
     func store(_ secret: Data, account: String) -> Bool {
-        let query = baseQuery(account: account)
-        SecItemDelete(query as CFDictionary)
-        var add = query
-        add[kSecValueData as String] = secret
-        return SecItemAdd(add as CFDictionary, nil) == errSecSuccess
+        var all = readAll()
+        all[account] = secret.hexString
+        return write(all)
     }
 
     func load(account: String) -> Data? {
-        var query = baseQuery(account: account)
-        query[kSecReturnData as String] = true
-        query[kSecMatchLimit as String] = kSecMatchLimitOne
-        var result: CFTypeRef?
-        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess else { return nil }
-        return result as? Data
+        readAll()[account].flatMap { Data(hexString: $0) }
     }
 
     func delete(account: String) {
-        SecItemDelete(baseQuery(account: account) as CFDictionary)
+        var all = readAll()
+        guard all.removeValue(forKey: account) != nil else { return }
+        write(all)
     }
 
-    /// Removes every item of this service (used by the `--reset-pairing` test hook).
+    /// Removes every key of this profile (used by the `--reset-pairing` test hook).
     func deleteAll() {
-        let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
-                                    kSecAttrService as String: service]
-        SecItemDelete(query as CFDictionary)
+        try? FileManager.default.removeItem(at: url)
     }
 
     func accounts() -> [String] {
-        let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
-                                    kSecAttrService as String: service,
-                                    kSecReturnAttributes as String: true,
-                                    kSecMatchLimit as String: kSecMatchLimitAll]
-        var result: CFTypeRef?
-        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
-              let items = result as? [[String: Any]] else { return [] }
-        return items.compactMap { $0[kSecAttrAccount as String] as? String }
+        readAll().keys.sorted()
+    }
+
+    private func readAll() -> [String: String] {
+        guard let data = try? Data(contentsOf: url),
+              let all = try? JSONSerialization.jsonObject(with: data) as? [String: String] else { return [:] }
+        return all
+    }
+
+    @discardableResult
+    private func write(_ all: [String: String]) -> Bool {
+        let fm = FileManager.default
+        let dir = url.deletingLastPathComponent()
+        do {
+            try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+            try fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: dir.path)
+            let data = try JSONSerialization.data(withJSONObject: all, options: [.sortedKeys])
+            // Created 0600 before any key is written, then renamed over the old file.
+            let tmp = dir.appendingPathComponent(".\(url.lastPathComponent).\(UUID().uuidString)")
+            guard fm.createFile(atPath: tmp.path, contents: data, attributes: [.posixPermissions: 0o600]) else {
+                return false
+            }
+            guard rename(tmp.path, url.path) == 0 else {
+                try? fm.removeItem(at: tmp)
+                return false
+            }
+            return true
+        } catch {
+            Log.app.error("pair keys not saved: \(error.localizedDescription, privacy: .public)")
+            return false
+        }
     }
 }
 
@@ -89,16 +101,16 @@ struct Keychain {
 /// last-known device id is used to pick the right key before `welcome`.
 final class PairKeyStore {
     private let defaults: UserDefaults
-    private let keychain: Keychain
+    private let keys: PairKeyFile
     private let lastDeviceIdKey = "lastDeviceId"
 
-    init(defaults: UserDefaults, keychain: Keychain) {
+    init(defaults: UserDefaults, keys: PairKeyFile) {
         self.defaults = defaults
-        self.keychain = keychain
+        self.keys = keys
     }
 
     convenience init(profile: Profile) {
-        self.init(defaults: profile.defaults, keychain: profile.keychain)
+        self.init(defaults: profile.defaults, keys: profile.pairKeys)
     }
 
     var lastDeviceId: String? {
@@ -110,26 +122,34 @@ final class PairKeyStore {
     }
 
     func key(forDeviceId deviceId: String) -> Data? {
-        keychain.load(account: deviceId)
+        keys.load(account: deviceId)
     }
 
     /// The key we should try before `welcome` when the device id is unknown.
     func candidateKey(knownDeviceId: String?) -> (deviceId: String, key: Data)? {
         if let id = knownDeviceId, let key = key(forDeviceId: id) { return (id, key) }
         if let id = lastDeviceId, let key = key(forDeviceId: id) { return (id, key) }
-        let accounts = keychain.accounts()
-        if accounts.count == 1, let key = keychain.load(account: accounts[0]) { return (accounts[0], key) }
+        let accounts = keys.accounts()
+        if accounts.count == 1, let key = keys.load(account: accounts[0]) { return (accounts[0], key) }
         return nil
     }
 
     func store(key: Data, deviceId: String) {
-        keychain.store(key, account: deviceId)
+        keys.store(key, account: deviceId)
         lastDeviceId = deviceId
     }
 
     func forget(deviceId: String) {
-        keychain.delete(account: deviceId)
+        keys.delete(account: deviceId)
         if lastDeviceId == deviceId { lastDeviceId = nil }
+    }
+
+    func deleteAll() {
+        keys.deleteAll()
+    }
+
+    func accounts() -> [String] {
+        keys.accounts()
     }
 }
 

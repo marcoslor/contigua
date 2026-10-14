@@ -1,6 +1,6 @@
 // Profiles: every piece of persistent state is namespaced by the profile, and
 // the default profile keeps the storage of earlier builds. Nothing here writes
-// to the standard defaults or to the Keychain: the checks are on the names.
+// to the standard defaults or to the pair-key file: the checks are on the names.
 
 import CoreSpotlight
 import XCTest
@@ -22,7 +22,6 @@ final class ProfileTests: XCTestCase {
         let profile = Profile.default
         XCTAssertEqual(profile.name, "default")
         XCTAssertTrue(profile.isDefault)
-        XCTAssertEqual(profile.keychainService, "dev.pocketdeck.mac")
         XCTAssertNil(profile.defaultsSuiteName)
         XCTAssertTrue(profile.defaults === UserDefaults.standard)
         XCTAssertEqual(profile.spotlightDomainPrefix, "")
@@ -31,12 +30,11 @@ final class ProfileTests: XCTestCase {
 
     // MARK: Named profiles are namespaced
 
-    func testNamedProfileNamespacesKeychainService() {
+    func testNamedProfileHasItsOwnPairKeyFile() {
         let profile = Profile(name: "e2e")!
         XCTAssertFalse(profile.isDefault)
-        XCTAssertEqual(profile.keychainService, "dev.pocketdeck.mac.e2e")
-        XCTAssertNotEqual(profile.keychainService, Profile.default.keychainService)
-        XCTAssertEqual(profile.keychain.service, "dev.pocketdeck.mac.e2e")
+        XCTAssertTrue(profile.pairKeys.url.path.hasSuffix("Application Support/PocketDeck-e2e/pairkeys.json"))
+        XCTAssertTrue(Profile.default.pairKeys.url.path.hasSuffix("Application Support/PocketDeck/pairkeys.json"))
     }
 
     func testNamedProfileUsesItsOwnDefaultsSuite() {

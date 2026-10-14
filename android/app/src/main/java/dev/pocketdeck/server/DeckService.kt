@@ -74,8 +74,10 @@ class DeckService(private val appContext: Context?) :
                 callback = this,
                 titleObserver = titles,
                 taskPresence = titles,
+                clipboard = ShellClipboard(::log),
                 now = { SystemClock.uptimeMillis() },
                 log = ::log,
+                autoApprovePairing = dev.pocketdeck.BuildConfig.DEBUG,
             )
         }
         val srv = Server(factory, ::log)

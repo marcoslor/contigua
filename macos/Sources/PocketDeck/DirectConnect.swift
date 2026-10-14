@@ -4,7 +4,7 @@
 // listening, and after a disconnect discovery may take a while to come back.
 // For each paired device we remember the resolved IPv4 address of the last
 // successful session (UserDefaults — reachability data, not a secret; pairing
-// keys stay in the Keychain) and fall back to it after a short discovery grace.
+// keys stay in the pair-key file) and fall back to it after a short discovery grace.
 //
 // Discovery wins over the cache (`EndpointPlanner`), and the cached address is
 // never trusted blindly: the handshake challenge names the phone, so a cached

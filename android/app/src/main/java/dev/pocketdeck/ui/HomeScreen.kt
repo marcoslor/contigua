@@ -153,6 +153,15 @@ fun HomeScreen(
                     }
                 }
             }
+            if (dev.pocketdeck.BuildConfig.DEBUG) {
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    text = "Debug build: any Mac on this network can connect",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(vertical = 8.dp),
+                )
+            }
             Spacer(Modifier.height(24.dp))
         }
     }

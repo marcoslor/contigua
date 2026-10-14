@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Builds a release PocketDeck.app from this tree and installs it to
-# ~/Applications/PocketDeck.app. The build happens first, so a failed build
+# /Applications/PocketDeck.app. The build happens first, so a failed build
 # leaves the installed copy alone; a running copy of *that bundle* is quit
 # gracefully, never killed, and no other copy is touched.
 #
@@ -9,7 +9,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-DEST_DIR="${POCKETDECK_INSTALL_DIR:-$HOME/Applications}"
+DEST_DIR="${POCKETDECK_INSTALL_DIR:-/Applications}"
 DEST="$DEST_DIR/PocketDeck.app"
 STAGE="build/install/PocketDeck.app"
 E2E_LOCK="/tmp/pocketdeck-e2e.lock"

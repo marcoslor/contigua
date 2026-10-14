@@ -17,6 +17,8 @@ Status: `[ ]` todo · `[~]` in progress · `[x]` done (verified on device).
 - [ ] **End-to-end encryption (P0):** mutual TLS 1.3 with keys pinned at pairing (QR/code exchanges
       certificate fingerprints); the same encrypted stream runs over LAN, P2P and relay, so no
       relay can read it. Replaces plaintext + HMAC; protocol v2.
+      Mac pairing keys are protected only by file permissions for now (`pairkeys.json`, 0600);
+      Keychain storage returns with proper code signing before release.
 - [ ] Device QA on the S25+ with the phone locked: latency ≤ 80 ms p50, #6007 clean, battery drain per hour measured idle vs. one window
 - [ ] Repo polish: README with GIF, LICENSE, build docs, CI (gradle build + swift build/test + fakephone selfcheck)
 
