@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # End-to-end checks C3-C13 for the macOS client against tools/fakephone.
 #
-#   ./scripts/check-e2e.sh [qr|pair|render|resize|input|input-global|pause|direct|nav|spotlight|pinch|strip|trackpad|clip|sharein|links|share|apk|all]
+#   ./scripts/check-e2e.sh [qr|pair|render|resize|input|input-global|pause|direct|nav|spotlight|pinch|strip|trackpad|clip|sharein|links|share|apk|dock|all]
 #
 # Every check starts from a clean slate: no PocketDeck or fakephone processes
 # left by an earlier run, a fresh fakephone state file and no pairing key in
@@ -84,6 +84,7 @@ finish() {
         kill_e2e_app
         stop_fakephone
         unregister_share
+        remove_dock_apps
     fi
     kill "$CAFFEINATE_PID" >/dev/null 2>&1
     release_lock
@@ -1560,6 +1561,95 @@ check_share() {
         && ok "SHARE $SHARE_ID unregistered after the check" || bad "SHARE $SHARE_ID still registered"
 }
 
+# --- Dock apps (docs/design/dock.md) --------------------------------------
+
+# Dock apps of this run live only in $WORK/dock-apps, never in ~/Applications.
+dock_dir() { echo "$WORK/dock-apps"; }
+
+dock_shim_pids() { [ -n "${WORK:-}" ] && pgrep -f -- "$(dock_dir)/.*/Contents/MacOS/PocketDeckShim"; }
+
+# remove_dock_apps — this run's shims stop, leave LaunchServices and the disk.
+remove_dock_apps() {
+    [ -n "${WORK:-}" ] || return 0
+    local pids app
+    pids="$(dock_shim_pids)"
+    [ -n "$pids" ] && kill $pids >/dev/null 2>&1
+    for app in "$(dock_dir)"/*.app; do
+        [ -d "$app" ] || continue
+        "$LSREGISTER" -u "$app" >/dev/null 2>&1
+        rm -rf "$app"
+    done
+    return 0
+}
+
+# window_rx <t> <pkg-or-empty> — the fakephone received a JSON message of type t
+# (for window.open: for that package).
+window_rx() {
+    python3 - "$WORK/events.jsonl" "$1" "${2:-}" <<'PY'
+import json, sys
+for line in open(sys.argv[1]):
+    try:
+        event = json.loads(line)
+    except ValueError:
+        continue
+    msg = event.get("msg") or {}
+    if event.get("ev") == "rx" and msg.get("t") == sys.argv[2] and (not sys.argv[3] or msg.get("pkg") == sys.argv[3]):
+        sys.exit(0)
+sys.exit(1)
+PY
+}
+
+# Read the whole dump first: under pipefail, `grep -q` closing the pipe early fails the pipeline.
+registered_in_ls() { local dump; dump="$("$LSREGISTER" -dump 2>/dev/null)"; grep -qF -- "$1" <<< "$dump"; }
+
+# check_dock — K3: the app creates a Dock app for a fakephone app in a temp folder;
+# `open` on it -> window.open for that package and a window; quitting the shim -> the
+# window closes; a second run with --dock-remove -> the bundle is gone and unregistered.
+check_dock() {
+    clean
+    local dir pkg="com.whatsapp" shim id
+    dir="$(dock_dir)"
+    remove_dock_apps
+    mkdir -p "$dir"
+    start_fake || return 1
+    launch --connect "127.0.0.1:$PORT" --dock-dir "$dir" --dock-add "$pkg" --quit-after 120
+    shim_made() { ls -d "$dir"/*.app >/dev/null 2>&1; }
+    wait_until 30 shim_made || { bad "DOCK no Dock app created in $dir"; stop_app; stop_fakephone; return 1; }
+    shim="$(ls -d "$dir"/*.app | head -1)"
+    id="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$shim/Contents/Info.plist" 2>/dev/null)"
+    [ "$(basename "$shim")" = "WhatsApp (FakePhone).app" ] && [ "$id" = "dev.pocketdeck.dock.$PROFILE.$(/usr/libexec/PlistBuddy -c 'Print :PDDeviceId' "$shim/Contents/Info.plist").com-whatsapp" ] \
+        && ok "DOCK created $(basename "$shim") ($id)" || bad "DOCK unexpected bundle $(basename "$shim") ($id)"
+    [ -s "$shim/Contents/Resources/AppIcon.icns" ] && codesign --verify --strict "$shim" 2>/dev/null \
+        && ok "DOCK has AppIcon.icns from the phone's icon and is signed" || bad "DOCK no icon or bad signature"
+    wait_until 10 registered_in_ls "$id" && ok "DOCK registered with LaunchServices" || bad "DOCK not registered with LaunchServices"
+
+    local before
+    before="$(windows | wc -l | tr -d ' ')"
+    open "$shim"
+    wait_until 20 window_rx window.open "$pkg" \
+        && ok "DOCK open -> fakephone got window.open for $pkg" || bad "DOCK no window.open for $pkg"
+    wait_until 15 windows_at_least $((before + 1)) \
+        && ok "DOCK the app window appeared ($(windows | wc -l | tr -d ' ') windows)" || bad "DOCK no new window"
+    wait_until 5 eval '[ -n "$(dock_shim_pids)" ]' \
+        && ok "DOCK the shim runs as its own app (pid $(dock_shim_pids | tr '\n' ' '))" || bad "DOCK the shim is not running"
+
+    kill $(dock_shim_pids) >/dev/null 2>&1
+    wait_until 15 window_rx window.close \
+        && ok "DOCK quitting the shim -> window.close" || bad "DOCK quitting the shim did not close the window"
+    wait_until 10 eval '[ "$(windows | wc -l | tr -d " ")" -le "$before" ]' \
+        && ok "DOCK the window is gone" || bad "DOCK the window is still open"
+    stop_app
+
+    launch --connect "127.0.0.1:$PORT" --dock-dir "$dir" --dock-remove "$pkg" --quit-after 60
+    wait_until 30 eval '! shim_made' && ok "DOCK --dock-remove deleted the bundle" || bad "DOCK the bundle is still there"
+    wait_until 10 eval '! registered_in_ls "$id"' \
+        && ok "DOCK unregistered from LaunchServices" || bad "DOCK still registered with LaunchServices"
+    stop_app
+    stop_fakephone
+    remove_dock_apps
+    wait_until 5 no_fakephone
+}
+
 check_orphans() {
     sleep 1
     local n
@@ -1578,8 +1668,8 @@ build_e2e_app() {
 
 which_check="${1:-all}"
 case "$which_check" in
-    qr|pair|render|resize|input|input-global|pause|direct|nav|spotlight|pinch|strip|trackpad|clip|sharein|links|share|apk|all) ;;
-    *) say "usage: check-e2e.sh [qr|pair|render|resize|input|input-global|pause|direct|nav|spotlight|pinch|strip|trackpad|clip|sharein|links|share|apk|all]"; exit 2 ;;
+    qr|pair|render|resize|input|input-global|pause|direct|nav|spotlight|pinch|strip|trackpad|clip|sharein|links|share|apk|dock|all) ;;
+    *) say "usage: check-e2e.sh [qr|pair|render|resize|input|input-global|pause|direct|nav|spotlight|pinch|strip|trackpad|clip|sharein|links|share|apk|dock|all]"; exit 2 ;;
 esac
 acquire_lock
 wait_for_other_runs
@@ -1608,8 +1698,9 @@ case "$which_check" in
     links)    check_links ;;
     share)    check_share ;;
     apk)      check_apk ;;
+    dock)     check_dock ;;
     all)      check_qr; check_pair; check_render; check_resize; check_input; check_pinch
-              check_strip; check_trackpad; check_pause; check_direct; check_nav; check_spotlight; check_clip; check_sharein; check_links; check_share; check_apk; check_orphans ;;
+              check_strip; check_trackpad; check_pause; check_direct; check_nav; check_spotlight; check_clip; check_sharein; check_links; check_share; check_apk; check_dock; check_orphans ;;
 esac
 
 say ""

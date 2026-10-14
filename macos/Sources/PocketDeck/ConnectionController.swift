@@ -92,6 +92,8 @@ final class ConnectionController {
     let remembered: RememberedPhones
     let appsCache: AppsCache
     let spotlight: SpotlightIndex
+    /// Dock and Launchpad apps (docs/design/dock.md).
+    let dockApps: DockApps
     let windows: WindowManager
     private let discovery = Discovery()
 
@@ -169,6 +171,12 @@ final class ConnectionController {
     private var didAutoOpen = false
     private var everOnline = false
     private var pendingOpen: SpotlightOpenRequest?
+    /// A Dock app asked for its window before its phone was ready.
+    private var pendingDockOpen: (deviceId: String, pkg: String, pid: Int)?
+    /// `--dock-add` / `--dock-remove` still to run (e2e).
+    private var dockHooksPending = true
+    /// Bumped when Dock apps are added or removed, so menus re-read the folder.
+    private(set) var dockRevision = 0
     /// A link waiting for its phone to become ready (nil phone = whichever comes first).
     private var pendingLink: (request: OpenLinkRequest, until: Date)?
     /// An app file waiting for its phone to become ready (nil phone = whichever comes first).
@@ -206,6 +214,8 @@ final class ConnectionController {
         remembered = RememberedPhones(profile: profile)
         appsCache = AppsCache(profile: profile)
         spotlight = SpotlightIndex(domainPrefix: profile.spotlightDomainPrefix)
+        dockApps = DockApps(folder: DockApps.defaultFolder(profile: profile, override: options.dockDirectory),
+                            profile: profile)
         windows = WindowManager(session: Session(endpoint: .hostPort(host: "127.0.0.1", port: 1),
                                                  knownDeviceId: nil, clientId: "", keyStore: keyStore),
                                 defaults: profile.defaults)
@@ -233,6 +243,12 @@ final class ConnectionController {
             applyPreview(preview)
             return
         }
+        windows.onStreamClosed = { [weak self] stream in
+            DispatchQueue.main.async { self?.dockApps.streamClosed(stream) }
+        }
+        dockApps.onOpen = { [weak self] deviceId, pkg, pid in self?.openFromDock(deviceId: deviceId, pkg: pkg, pid: pid) }
+        dockApps.onShimQuit = { [weak self] stream in self?.windows.controller(for: stream)?.window?.close() }
+        dockApps.start()
         discovery.onChange = { [weak self] phones in self?.discoveryChanged(phones) }
         discovery.onDenied = { [weak self] denied in self?.discoveryDenied(denied) }
         discovery.start()
@@ -358,6 +374,8 @@ final class ConnectionController {
         remembered.forget(id: phone.id)
         appsCache.remove(deviceId: phone.id)
         spotlight.remove(deviceId: phone.id)
+        dockApps.forget(deviceId: phone.id)
+        dockRevision += 1
         rememberedPhones = remembered.all
         if link.phone?.id == phone.id {
             windows.closeAll()
@@ -394,6 +412,72 @@ final class ConnectionController {
         }
         pendingOpen = request
         use(phone)
+    }
+
+    // MARK: Dock apps (docs/design/dock.md)
+
+    func isInDock(_ app: AppInfo) -> Bool {
+        _ = dockRevision
+        guard let id = link.phone?.id else { return false }
+        return dockApps.hasShim(deviceId: id, pkg: app.pkg)
+    }
+
+    var canAddToDock: Bool { dockApps.isAvailable && link.phone != nil }
+
+    func addToDock(_ app: AppInfo) {
+        guard let phone = link.phone else { return }
+        if dockApps.add(deviceId: phone.id, pkg: app.pkg, label: app.label, phoneName: phone.name, launch: true) == nil {
+            showTransient("Couldn't add \(app.label) to the Dock.")
+        }
+        dockRevision += 1
+    }
+
+    func removeFromDock(_ app: AppInfo) {
+        guard let id = link.phone?.id else { return }
+        dockApps.remove(deviceId: id, pkg: app.pkg)
+        dockRevision += 1
+    }
+
+    /// A Dock app was launched, clicked or ⌘-Tabbed to: its window opens or comes forward.
+    private func openFromDock(deviceId: String, pkg: String, pid: Int) {
+        if let stream = dockApps.stream(forPid: pid), let window = windows.controller(for: stream)?.window {
+            dockApps.acknowledge(pid: pid)
+            NSApp.activate(ignoringOtherApps: true)
+            if window.isMiniaturized { window.deminiaturize(nil) }
+            window.makeKeyAndOrderFront(nil)
+            return
+        }
+        if link.isOnline, link.phone?.id == deviceId {
+            dockApps.bind(pid: pid, stream: windows.openApp(pkg: pkg).stream)
+            return
+        }
+        guard let phone = remembered.phone(id: deviceId) else {
+            dockApps.acknowledge(pid: pid)
+            showTransient("That phone isn't paired.")
+            return
+        }
+        dockApps.acknowledge(pid: pid)
+        pendingDockOpen = (deviceId, pkg, pid)
+        if link.phone?.id != deviceId { use(phone) }
+    }
+
+    private func openPendingDock(readyPhone id: String) {
+        guard let pending = pendingDockOpen, pending.deviceId == id else { return }
+        pendingDockOpen = nil
+        dockApps.bind(pid: pending.pid, stream: windows.openApp(pkg: pending.pkg).stream)
+    }
+
+    /// Test hooks: once the app list (and the app's icon) is in.
+    private func runDockHooks() {
+        guard dockHooksPending, let phone = link.phone, appsLoaded else { return }
+        if let pkg = options.dockAdd {
+            guard IconCache.shared.loadData(pkg: pkg, deviceId: phone.id) != nil || missingIcons.contains(pkg) else { return }
+            let label = apps.first { $0.pkg == pkg }?.label ?? pkg
+            dockApps.add(deviceId: phone.id, pkg: pkg, label: label, phoneName: phone.name, launch: false)
+        }
+        if let pkg = options.dockRemove { dockApps.remove(deviceId: phone.id, pkg: pkg) }
+        dockHooksPending = false
+        dockRevision += 1
     }
 
     // MARK: Links (docs/design/links.md)
@@ -743,6 +827,7 @@ final class ConnectionController {
             } else {
                 missingIcons.insert(pkg)
             }
+            runDockHooks()
         case .phoneState(let locked, let battery, let charging):
             status = PhoneStatus(locked: locked, battery: battery, charging: charging)
         case .pairCodeShown(let deviceId, let code):
@@ -826,6 +911,7 @@ final class ConnectionController {
             windows.openApp(pkg: request.pkg)
         }
         openPendingLink(readyPhone: info.id)
+        openPendingDock(readyPhone: info.id)
         installPendingApk(readyPhone: info.id)
         transientBanner = nil
     }
@@ -847,7 +933,9 @@ final class ConnectionController {
         if let ref = link.phone {
             spotlight.index(apps: list, deviceId: ref.id, phoneName: ref.name,
                             iconData: { IconCache.shared.loadData(pkg: $0, deviceId: ref.id) })
+            dockApps.reconcile(deviceId: ref.id, apps: list, phoneName: ref.name)
         }
+        runDockHooks()
     }
 
     private func codeShown(deviceId: String?, code: String) {

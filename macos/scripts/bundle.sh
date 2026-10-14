@@ -4,7 +4,8 @@
 #   ./scripts/bundle.sh [APP] [--variant NAME]
 #
 # APP defaults to build/PocketDeck.app; only that path is ever replaced.
-# The app carries the "Open on Phone" Share extension (Contents/PlugIns/Share.appex).
+# The app carries the "Open on Phone" Share extension (Contents/PlugIns/Share.appex)
+# and the Dock app executable (Contents/MacOS/PocketDeckShim).
 # Only `--variant release` (install.sh) gets the real extension id; every other
 # bundle (default `dev`, check-e2e's `e2e`) gets `dev.pocketdeck.mac.share-NAME` and
 # a "(NAME)" title, so a test copy never competes with the installed app's extension.
@@ -250,5 +251,9 @@ cat > "$APPEX/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 codesign --force --sign - --entitlements Extensions/Share/Share.entitlements "$APPEX"
+
+# Dock app executable (docs/design/dock.md): copied into each per-app shim bundle.
+swiftc -O -module-name PocketDeckShim -target "$(uname -m)-apple-macos26.0" -swift-version 5 \
+    Shim/main.swift Sources/PocketDeck/DockMessages.swift -o "$APP/Contents/MacOS/PocketDeckShim"
 codesign --force --sign - "$APP"
 echo "built $APP"
