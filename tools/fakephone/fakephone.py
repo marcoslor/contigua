@@ -304,6 +304,11 @@ class EventLog(object):
         self._emit({"ev": "video", "stream": stream, "config": True, "w": w, "h": h,
                     "ts": time.time()})
 
+    def audio_config(self, codec, sample_rate, channels):
+        self._emit({"ev": "audio", "config": True, "codec": codec,
+                    "sampleRate": sample_rate, "channels": channels,
+                    "ts": time.time()})
+
     def quality(self, stream, bitrate, max_fps):
         self._emit({"ev": "quality", "stream": stream, "bitrate": bitrate,
                     "maxFps": max_fps, "ts": time.time()})
@@ -440,6 +445,12 @@ class Sender(object):
 
     def send_frame(self, stream, pts_us, flags, access_unit):
         return self._put(2, stream, proto.pack_video_frame(stream, pts_us, flags, access_unit))
+
+    def send_audio_config(self, codec, sample_rate, channels, frame_ms, setup=b""):
+        return self._put(1, 0, proto.pack_audio_config(codec, sample_rate, channels, frame_ms, setup))
+
+    def send_audio_frame(self, pts_us, packet):
+        return self._put(2, 0, proto.pack_audio_frame(pts_us, packet))
 
     def forget_stream(self, stream):
         with self._cv:
@@ -613,6 +624,114 @@ class WindowStream(object):
         self.phone.sender.send_frame(self.stream_id, pts, flags, access_unit)
 
 
+# --- device-wide audio tone (440 Hz sine → AAC, 48 kHz stereo) ---------------
+class AudioTone(object):
+    """One 440 Hz sine encoded to AAC-ADTS by ffmpeg, split into raw frames.
+
+    Started on `audio.start`, stopped on `audio.stop` or session teardown.
+    The ASC for AAC-LC 48 kHz stereo is 0x1190. pts advances 20 ms per frame.
+    """
+
+    SAMPLE_RATE = 48000
+    CHANNELS = 2
+    FRAME_MS = 20
+    CODEC = 3  # AAC-LC
+    ASC = b"\x11\x90"
+
+    def __init__(self, phone):
+        self.phone = phone
+        self._thread = None
+        self._stop = threading.Event()
+        self._proc = None
+
+    @property
+    def running(self):
+        return self._thread is not None and self._thread.is_alive()
+
+    def start(self):
+        if self.running:
+            return
+        self._stop.clear()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def stop(self):
+        self._stop.set()
+        proc = self._proc
+        if proc is not None:
+            try:
+                proc.kill()
+            except OSError:
+                pass
+        thread = self._thread
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=3.0)
+        self._thread = None
+
+    def _run(self):
+        cmd = [FFMPEG, "-hide_banner", "-loglevel", "error",
+               "-f", "lavfi", "-i",
+               "sine=frequency=440:sample_rate=%d" % self.SAMPLE_RATE,
+               "-c:a", "aac", "-b:a", "64k", "-ac", str(self.CHANNELS),
+               "-ar", str(self.SAMPLE_RATE), "-f", "adts", "-"]
+        try:
+            self._proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
+                                          stderr=subprocess.DEVNULL,
+                                          stdin=subprocess.DEVNULL, bufsize=0)
+        except OSError as exc:
+            sys.stderr.write("fakephone: audio ffmpeg failed: %s\n" % exc)
+            return
+        sender = self.phone.sender
+        if sender is None:
+            return
+        sender.send_audio_config(self.CODEC, self.SAMPLE_RATE, self.CHANNELS,
+                                 self.FRAME_MS, self.ASC)
+        self.phone.events.audio_config(self.CODEC, self.SAMPLE_RATE, self.CHANNELS)
+        buf = bytearray()
+        pts = 0
+        proc = self._proc
+        while not self._stop.is_set():
+            if self.phone.sender is not sender:
+                break
+            try:
+                chunk = proc.stdout.read(4096)
+            except (OSError, ValueError):
+                break
+            if not chunk:
+                break
+            buf += chunk
+            for frame in self._split_adts(buf):
+                if self._stop.is_set() or self.phone.sender is not sender:
+                    break
+                sender.send_audio_frame(pts, frame)
+                pts += self.FRAME_MS * 1000
+                self._stop.wait(self.FRAME_MS / 1000.0)
+            del buf[:self._consumed]
+        try:
+            proc.kill()
+        except OSError:
+            pass
+
+    _consumed = 0
+
+    def _split_adts(self, buf):
+        """Yield raw AAC frames from ADTS bytes; sets self._consumed."""
+        out = []
+        pos = 0
+        n = len(buf)
+        while pos + 7 <= n:
+            if buf[pos] != 0xFF or (buf[pos + 1] & 0xF0) != 0xF0:
+                pos += 1
+                continue
+            length = ((buf[pos + 3] & 0x03) << 11) | (buf[pos + 4] << 3) | ((buf[pos + 5] & 0xE0) >> 5)
+            if length < 7 or pos + length > n:
+                break
+            out.append(bytes(buf[pos + 7:pos + length]))
+            pos += length
+        self._consumed = pos
+        return out
+
+
 # --- session ---------------------------------------------------------------
 class Session(object):
     def __init__(self, phone, conn, addr, on_end):
@@ -626,6 +745,7 @@ class Session(object):
         self.nonce = None
         self.windows = {}
         self._unknown_types = set()
+        self.audio = AudioTone(phone)
         self._thread = threading.Thread(target=self._run, daemon=True)
     def start(self):
         self._thread.start()
@@ -656,6 +776,10 @@ class Session(object):
             self._teardown()
 
     def _teardown(self):
+        try:
+            self.audio.stop()
+        except Exception:
+            pass
         for stream_id in list(self.windows):
             self.windows[stream_id].stop()
         self.windows.clear()
@@ -837,6 +961,8 @@ class Session(object):
             "clip.set": self._on_clip_set,
             "apk.install": self._on_apk_install,
             "apk.cancel": self._on_apk_cancel,
+            "audio.start": self._on_audio_start,
+            "audio.stop": self._on_audio_stop,
         }.get(kind)
         if handler is None:
             if kind not in self._unknown_types:
@@ -987,6 +1113,8 @@ class Session(object):
         del self.windows[msg["stream"]]
         self.sender.forget_stream(msg["stream"])
         self._send({"t": "window.closed", "stream": msg["stream"], "reason": "requested"})
+        if not self.windows:
+            self.audio.stop()
 
     def _on_window_pause(self, msg):
         window = self._stream_or_error(msg)
@@ -1039,6 +1167,29 @@ class Session(object):
 
     def _on_noop(self, _msg):
         return
+
+    def _on_audio_start(self, msg):
+        codecs = msg.get("codecs") or []
+        if self.CODEC_CHOICE(codecs) is None:
+            return
+        if not self.windows:
+            return
+        self.audio.start()
+        self._send({"t": "audio.state", "on": True, "codec": AudioTone.CODEC})
+
+    def _on_audio_stop(self, _msg):
+        self.audio.stop()
+        self._send({"t": "audio.state", "on": False, "codec": 0})
+
+    @staticmethod
+    def CODEC_CHOICE(codecs):
+        try:
+            offered = [int(c) for c in codecs]
+        except (TypeError, ValueError):
+            return None
+        if AudioTone.CODEC in offered:
+            return AudioTone.CODEC
+        return None
 
 
 # --- mDNS registration -----------------------------------------------------
