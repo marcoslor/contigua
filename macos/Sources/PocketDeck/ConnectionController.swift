@@ -146,6 +146,7 @@ final class ConnectionController {
     // MARK: Private state
 
     private var session: Session?
+    private var clipboardSync: ClipboardSync?
     private var attemptTimer: DispatchWorkItem?
     private var tickTimer: Timer?
     private var launchAt = Date()
@@ -192,7 +193,7 @@ final class ConnectionController {
                                                  knownDeviceId: nil, clientId: "", keyStore: keyStore),
                                 defaults: profile.defaults)
         welcomeSeen = remembered.welcomeSeen
-        remembered.adoptExistingPairings(keyAccounts: profile.keychain.accounts()) { [cache] in cache.name(forDeviceId: $0) }
+        remembered.adoptExistingPairings(keyAccounts: PairKeyStore(profile: profile).accounts()) { [cache] in cache.name(forDeviceId: $0) }
         rememberedPhones = remembered.all
     }
 
@@ -200,6 +201,8 @@ final class ConnectionController {
 
     func start() {
         launchAt = Date()
+        if let directory = options.dumpVideoDirectory { windows.videoDump = VideoDump(directory: directory) }
+        windows.floatWindows = options.floatWindows
         if let path = options.debugInputScript {
             do {
                 debugInput = try DebugInputDriver(scriptPath: path)
@@ -248,6 +251,7 @@ final class ConnectionController {
         windows.beginShutdown()
         stopQR()
         attemptTimer?.cancel()
+        stopClipboardSync()
         session?.close()
         session = nil
     }
@@ -461,6 +465,7 @@ final class ConnectionController {
     private func closeSession() {
         attemptTimer?.cancel()
         attemptTimer = nil
+        stopClipboardSync()
         session?.close()
         session = nil
     }
@@ -521,6 +526,7 @@ final class ConnectionController {
     }
 
     private func start(_ newSession: Session, policy: Session.PairingPolicy) {
+        stopClipboardSync()
         session?.close()
         session = newSession
         newSession.pairingPolicy = policy
@@ -581,7 +587,17 @@ final class ConnectionController {
     private func handle(_ event: SessionEvent) {
         switch event {
         case .state(let state, let detail):
-            if case .failed = state { attemptEnded(reason: detail ?? "closed") }
+            switch state {
+            case .failed:
+                stopClipboardSync()
+                attemptEnded(reason: detail ?? "closed")
+            case .closed:
+                stopClipboardSync()
+            default:
+                break
+            }
+        case .clipboard(let text):
+            clipboardSync?.receive(text)
         case .ready(let info, _, let address):
             ready(info, address: address)
         case .apps(let list):
@@ -620,6 +636,24 @@ final class ConnectionController {
         send(.attemptFailed(reason: reason))
     }
 
+    /// Plain-text clipboard sync for the session that just became ready. The
+    /// send path is bound to that session, so a later session never gets its text.
+    private func startClipboardSync(on session: Session) {
+        stopClipboardSync()
+        let defaults = profile.defaults
+        let sync = ClipboardSync(pasteboard: SystemPasteboard(),
+                                 isEnabled: { ClipboardSync.isEnabled(in: defaults) },
+                                 send: { [weak session] text in session?.sendClipboard(text) },
+                                 clock: ClipboardSync.timerClock)
+        sync.start()
+        clipboardSync = sync
+    }
+
+    private func stopClipboardSync() {
+        clipboardSync?.stop()
+        clipboardSync = nil
+    }
+
     private func ready(_ info: PhoneInfo, address: CachedAddress?) {
         let ref = PhoneRef(id: info.id, name: info.name, model: info.model)
         let wasPairing = isPairing
@@ -637,6 +671,7 @@ final class ConnectionController {
         if apps.isEmpty || link.phone?.id != info.id { resetPhoneData(for: ref) }
         send(.welcome(ref))
         everOnline = true
+        if let session { startClipboardSync(on: session) }
         session?.requestApps()
         if hadWindows { windows.reopenAll() }
         if wasPairing {
@@ -856,7 +891,7 @@ final class ConnectionController {
     // MARK: Preview states (screenshots only)
 
     /// `--preview NAME`: drives the UI with a scripted state, without sockets,
-    /// the Keychain or the profile. Used for the screenshots of states that
+    /// the pair keys or the profile. Used for the screenshots of states that
     /// cannot be staged against a fake phone.
     private func applyPreview(_ name: String) {
         isPreview = true

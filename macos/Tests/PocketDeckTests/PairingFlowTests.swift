@@ -38,8 +38,7 @@ final class PairingFlowTests: XCTestCase {
         controller.shutdown()
         server.stop()
         if let suite = profile.defaultsSuiteName { profile.defaults.removePersistentDomain(forName: suite) }
-        let keychain = profile.keychain
-        for account in keychain.accounts() { keychain.delete(account: account) }
+        try? FileManager.default.removeItem(at: profile.pairKeys.url.deletingLastPathComponent())
     }
 
     private func spin(until condition: () -> Bool, timeout: TimeInterval = 5) -> Bool {

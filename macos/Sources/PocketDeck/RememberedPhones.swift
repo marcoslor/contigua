@@ -1,5 +1,5 @@
 // What this Mac remembers about the phones it has paired with, apart from the
-// secret keys (Keychain) and reachability hints (`CachedDeviceStore`): name,
+// secret keys (`PairKeyFile`) and reachability hints (`CachedDeviceStore`): name,
 // model, last seen. The UI is driven by this list, so a missing or rejected key
 // reads as "pair again" for a named phone, never as a fresh install.
 //

@@ -60,7 +60,8 @@ phone stays locked**. LAN only. Open source.
 6. **Input** is binary frames on the same TCP session, sent immediately per
    NSEvent (moves coalesced to at most one per display refresh). The phone
    injects synchronously on the socket reader thread with cached reflection
-   handles. No sleeps in the touch path.
+   handles. No sleeps in the touch path. A trackpad's two-finger scroll is a touch drag (so Android
+   flings), its pinch and rotate are two pointers from the raw fingers; only a mouse wheel is a SCROLL.
 
 ## Power / battery rules (acceptance criteria, not suggestions)
 
@@ -114,7 +115,7 @@ android/                 Gradle project, single :app module (dev.pocketdeck)
     proto/               Frame codec (mirrors docs/PROTOCOL.md)
 macos/                   SwiftPM package (macOS 26+) → PocketDeck.app (scripts/bundle.sh)
   Sources/PocketDeck/    App, Discovery, Session, Protocol, WindowManager,
-                         AppWindow, VideoLayerView, InputMapper, Launcher UI, Keychain
+                         AppWindow, VideoLayerView, InputMapper, Launcher UI, pair keys
 tools/fakephone/         Python fake phone (protocol-complete, ffmpeg testsrc video)
 docs/                    ARCHITECTURE, PROTOCOL, research/
 ```

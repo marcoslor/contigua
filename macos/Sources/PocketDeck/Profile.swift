@@ -1,7 +1,7 @@
 // The namespace for everything PocketDeck keeps on this Mac.
 //
 // `default` is the user's own app and keeps today's storage (standard
-// defaults, the bundle-id Keychain service, the same folders), so existing
+// defaults, the same folders), so existing
 // pairings and caches stay where they are. Any other name is a separate copy
 // of that state: the test harness runs under its own profile and can never
 // read or delete the user's pairings, cached phones or icons.
@@ -21,8 +21,8 @@ struct Profile: Equatable {
 
     private init(validatedName: String) { name = validatedName }
 
-    /// nil when the name cannot be used in a Keychain service, a defaults
-    /// suite or a folder name: lowercase letters, digits and `-`, 1–32 chars.
+    /// nil when the name cannot be used in a defaults suite or a folder name:
+    /// lowercase letters, digits and `-`, 1–32 chars.
     init?(name: String) {
         guard Self.isValidName(name) else { return nil }
         self.name = name
@@ -35,10 +35,12 @@ struct Profile: Equatable {
 
     var isDefault: Bool { name == Self.defaultName }
 
-    /// Generic-password service for the pairing keys.
-    var keychainService: String { isDefault ? Self.bundleId : "\(Self.bundleId).\(name)" }
-
-    var keychain: Keychain { Keychain(service: keychainService) }
+    /// Pairing keys, in this profile's Application Support folder.
+    var pairKeys: PairKeyFile {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        return PairKeyFile(url: base.appendingPathComponent(supportDirectoryName, isDirectory: true)
+            .appendingPathComponent("pairkeys.json"))
+    }
 
     /// Name of the UserDefaults suite; nil means the standard defaults.
     var defaultsSuiteName: String? { isDefault ? nil : "\(Self.bundleId).\(name)" }
@@ -54,6 +56,7 @@ struct Profile: Equatable {
     /// index entries never replace or delete another profile's.
     var spotlightDomainPrefix: String { isDefault ? "" : "\(name)." }
 
-    /// Folder name under ~/Library/Caches (icons) and ~/Library/Logs (latency).
+    /// Folder name under ~/Library/Caches (icons), ~/Library/Logs (latency) and
+    /// ~/Library/Application Support (pair keys).
     var supportDirectoryName: String { isDefault ? "PocketDeck" : "PocketDeck-\(name)" }
 }

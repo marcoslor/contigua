@@ -18,6 +18,10 @@ struct LaunchOptions {
     var qrSheet = false
     var qrPayloadFile: String?
     var debugInputScript: String?
+    var dumpVideoDirectory: String?
+    /// `--float-windows`: stream windows stay above other apps' windows, so the
+    /// checks that look at them are not defeated by whatever the person has open.
+    var floatWindows = false
     var profileName = Profile.defaultName
     /// `--preview STATE`: drive the UI with a scripted state (screenshots).
     var preview: String?
@@ -63,6 +67,10 @@ struct LaunchOptions {
                 options.qrPayloadFile = next()
             case "--debug-input-script":
                 options.debugInputScript = next()
+            case "--dump-video":
+                options.dumpVideoDirectory = next()
+            case "--float-windows":
+                options.floatWindows = true
             case "--profile":
                 options.profileName = next() ?? ""
             case "--preview":
@@ -115,9 +123,9 @@ final class AppEnvironment {
             exit(2)
         }
         Profile.active = profile
-        Log.app.notice("profile \(profile.name, privacy: .public): keychain \(profile.keychainService, privacy: .public), defaults \(profile.defaultsSuiteName ?? "standard", privacy: .public)")
+        Log.app.notice("profile \(profile.name, privacy: .public): pair keys \(profile.pairKeys.url.path, privacy: .public), defaults \(profile.defaultsSuiteName ?? "standard", privacy: .public)")
         if options.resetPairing {
-            profile.keychain.deleteAll()
+            PairKeyStore(profile: profile).deleteAll()
             PairKeyStore(profile: profile).lastDeviceId = nil
             CachedDeviceStore(profile: profile).removeAll()
             RememberedPhones(profile: profile).removeAll()

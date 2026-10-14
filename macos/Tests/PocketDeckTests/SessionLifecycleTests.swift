@@ -12,10 +12,9 @@ final class SessionLifecycleTests: XCTestCase {
         // A pairing stores its key: every session gets its own store so one test's key
         // never makes another authenticate instead of pair.
         let name = "dev.pocketdeck.tests.session.\(UUID().uuidString)"
-        let keys = PairKeyStore(defaults: UserDefaults(suiteName: name)!, keychain: Keychain(service: name))
+        let keys = PairKeyStore(defaults: UserDefaults(suiteName: name)!, keys: .scratch())
         addTeardownBlock {
             UserDefaults().removePersistentDomain(forName: name)
-            while Keychain(service: name).accounts().first.map({ Keychain(service: name).delete(account: $0); return true }) == true {}
         }
         return Session(endpoint: .hostPort(host: "127.0.0.1", port: port), knownDeviceId: nil,
                        clientId: "test-client", keyStore: keys,
