@@ -47,6 +47,11 @@ cd macos && ./scripts/install.sh && open /Applications/PocketDeck.app
    opens that app's window, or brings it forward; quitting it closes the window. Right-click →
    **Remove from Dock App** removes it; uninstalling the app on the phone or forgetting the phone
    removes it too.
+12. Audio phone → Mac: with a window open, PocketDeck captures the phone's media/game audio
+   (REMOTE_SUBMIX, via Shizuku at shell UID) and plays it on the Mac through AVAudioEngine (Opus
+   or AAC, 20 ms frames) with the per-device volume slider and mute in the menu bar. Media apps
+   playing on the phone are silenced on the phone speaker; added latency is under 150 ms. Try it
+   by opening a music or video app in a PocketDeck window and playing something.
 
 ## No phone? Use the emulator rig
 
