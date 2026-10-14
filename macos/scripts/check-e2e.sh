@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # End-to-end checks C3-C13 for the macOS client against tools/fakephone.
 #
-#   ./scripts/check-e2e.sh [qr|pair|render|resize|input|input-global|pause|direct|nav|spotlight|pinch|strip|trackpad|clip|sharein|links|share|apk|dock|all]
+#   ./scripts/check-e2e.sh [qr|pair|render|resize|input|input-global|pause|direct|nav|spotlight|pinch|chrome|trackpad|clip|sharein|links|share|apk|dock|all]
 #
 # Every check starts from a clean slate: no PocketDeck or fakephone processes
 # left by an earlier run, a fresh fakephone state file and no pairing key in
@@ -18,9 +18,9 @@
 # posts real CGEvents at the window instead; it needs a visible, unobstructed
 # window and focus.
 #
-# The windows reserve a 32 pt title strip above the video: the virtual display is
-# sized from the window minus the strip, so the size checks (C6, C14) subtract 32 pt
-# from the window height they ask for. The trackpad checks (C15) feed the driver's
+# A stream window is the stream plus invisible padding (a 40 pt header band and an
+# 8 pt bezel, 16 pt wider and 48 pt taller); `--resize-stream` sizes the stream, so
+# the size checks (C6) ask for exactly it and windows are found by width + 16. The trackpad checks (C15) feed the driver's
 # phased scroll events and a model of the raw trackpad fingers (AppKit cannot
 # synthesize NSTouch); the phone-side timestamps in the event log give the cadence.
 #
@@ -415,7 +415,7 @@ check_render() {
         || ! wait_until 30 events_have '"ev":"video","stream":2,'; then
         bad "C5 video was not configured for both windows"
     fi
-    if id="$(await_window '$4 == 900')" && lit_screenshot "$id" "$app_shot"; then
+    if id="$(await_window '$4 == 916')" && lit_screenshot "$id" "$app_shot"; then
         ok "C5 app window not black ($STATS)"
     else
         bad "C5 app window not captured or black (${STATS:-no window})"
@@ -437,29 +437,29 @@ check_resize() {
     start_fake || return 1
     launch --connect "127.0.0.1:$PORT" \
         --open com.android.settings --resize-stream 1:800x600-pt --quit-after 60
-    # The window is 800x600 pt; the video is the part below the 32 pt title strip.
-    wait_until 30 events_have '"ev":"video","stream":1,"config":true,"w":1600,"h":1136' \
-        && ok "C6 new video config 1600x1136 (600 - 32 pt strip, at 2x)" || bad "C6 no new config"
+    # The window is 800x600 pt and the video is all of it.
+    wait_until 30 events_have '"ev":"video","stream":1,"config":true,"w":1600,"h":1200' \
+        && ok "C6 new video config 1600x1200 (the whole 800x600 pt window, at 2x)" || bad "C6 no new config"
     events_have '"t":"window.resize"' \
         && ok "C6 window.resize sent" || bad "C6 no window.resize"
-    screenshot 800 "$WORK/resize.png" && say "screenshot: $WORK/resize.png"
+    screenshot 816 "$WORK/resize.png" && say "screenshot: $WORK/resize.png"
     stop_app
 
     # Non-16:9 shapes: tall, then ultra-wide (capped at 2560 px, aspect kept).
     launch --connect "127.0.0.1:$PORT" --open com.android.settings \
-        --resize-stream 1:600x1000-pt --quit-after 60
-    wait_until 30 events_have '"ev":"video","stream":1,"config":true,"w":1200,"h":1936' \
-        && ok "C6 tall shape resized to 1200x1936 (1000 - 32 pt strip)" || bad "C6 no tall config"
-    screenshot 600 "$WORK/resize-tall.png" && say "screenshot: $WORK/resize-tall.png"
+        --resize-stream 1:600x900-pt --quit-after 60
+    wait_until 30 events_have '"ev":"video","stream":1,"config":true,"w":1200,"h":1792' \
+        && ok "C6 tall shape resized to 1200x1792 (900 pt at 2x, floored to 16)" || bad "C6 no tall config"
+    screenshot 616 "$WORK/resize-tall.png" && say "screenshot: $WORK/resize-tall.png"
     stop_app
 
     launch --connect "127.0.0.1:$PORT" --open com.android.settings \
         --resize-stream 1:1600x500-pt --quit-after 60
-    wait_until 30 events_have '"ev":"video","stream":1,"config":true,"w":2560,"h":736' \
-        && ok "C6 ultra-wide capped to 2560x736 (aspect kept, strip excluded)" || bad "C6 no capped config"
+    wait_until 30 events_have '"ev":"video","stream":1,"config":true,"w":2560,"h":800' \
+        && ok "C6 ultra-wide capped to 2560x800 (aspect kept)" || bad "C6 no capped config"
     events_have '"dpi":256' \
         && ok "C6 capped size lowers the dpi to 256" || bad "C6 dpi did not follow the cap"
-    screenshot 1600 "$WORK/resize-wide.png" || screenshot_widest "$WORK/resize-wide.png" \
+    screenshot 1616 "$WORK/resize-wide.png" || screenshot_widest "$WORK/resize-wide.png" \
         && say "screenshot: $WORK/resize-wide.png"
     stop_app
     stop_fakephone
@@ -544,7 +544,7 @@ check_input_global() {
         --open com.android.settings --quit-after 60
     wait_until 30 events_have '"ev":"video","stream":1,' || bad "C7 no video config"
     local win
-    win="$(await_window '$4 == 900')" || { bad "C7 no app window"; stop_app; return 1; }
+    win="$(await_window '$4 == 916')" || { bad "C7 no app window"; stop_app; return 1; }
     "$CGBIN" click --window "$win" >/dev/null
     "$CGBIN" drag --window "$win" --dx 200 --dy 0 --steps 20 >/dev/null
     "$CGBIN" scroll --window "$win" --dy 3 >/dev/null
@@ -741,24 +741,19 @@ PY
     stop_fakephone
 }
 
-# --- C14: title strip ---------------------------------------------------
+# --- C14: window chrome ----------------------------------------------------
 
-# check_strip — the video the phone is asked for is the window minus the 32 pt
-# strip; View > Show Title Strip (scripted as `strip off|on`) gives the whole
-# window back and sends a resize; the choice is remembered per app package.
-check_strip() {
-    clean
-    start_fake || return 1
-    printf '%s\n' "strip off" "strip on" "strip off" "rightclick 0.5 0.5" > "$WORK/strip.txt"
-    launch --connect "127.0.0.1:$PORT" \
-        --open com.android.settings --debug-input-script "$WORK/strip.txt" --quit-after 60
-    wait_until 30 events_have '"action":"back"' \
-        || { bad "C14 scripted strip toggles did not finish"; say "app log: $(tail -3 "$WORK/app.log")"; }
-    local sizes
-    sizes="$(python3 - "$WORK/events.jsonl" <<'PY' || true
+# chrome_state — the header state the app last wrote (--debug-chrome-state):
+# "header=shown|hidden lights=shown|hidden clicks=N" (N = clicks that reached the padding).
+chrome_state() { cat "$WORK/chrome.txt" 2>/dev/null; }
+chrome_is() { case "$(chrome_state)" in "$1"*) return 0 ;; *) return 1 ;; esac; }
+
+# window_opens_resizes — "open=WxH resizes=N" for stream 1, from the phone's log.
+window_opens_resizes() {
+    python3 - "$WORK/events.jsonl" <<'PY' || true
 import json, sys
 
-opened, resizes = None, []
+opened, resizes = None, 0
 for line in open(sys.argv[1]):
     try:
         event = json.loads(line)
@@ -768,55 +763,108 @@ for line in open(sys.argv[1]):
     if not isinstance(msg, dict) or msg.get("stream") != 1:
         continue
     if msg.get("t") == "window.open" and opened is None:
-        opened = (msg["w"], msg["h"], msg["dpi"])
+        opened = "%dx%d" % (msg["w"], msg["h"])
     if msg.get("t") == "window.resize":
-        resizes.append((msg["w"], msg["h"], msg["dpi"]))
-print("open=%s resizes=%s" % (opened, resizes[-3:]))
+        resizes += 1
+print("open=%s resizes=%d" % (opened, resizes))
 PY
-)"
-    say "C14 $sizes"
-    case "$sizes" in
-        "open=(1792, 1200, "*) ok "C14 window.open is 1792x1200: the 632 pt window minus the 32 pt strip, at 2x" ;;
-        *) bad "C14 window.open size: $sizes" ;;
-    esac
-    case "$sizes" in
-        *"resizes=[(1792, 1264, "*"), (1792, 1200, "*"), (1792, 1264, "*")]") \
-            ok "C14 strip off -> 1264, on -> 1200, off -> 1264 (window.resize heights)" ;;
-        *) bad "C14 window.resize heights: $sizes" ;;
-    esac
-    case "$(defaults read "$DEFAULTS_SUITE" titleStrips 2>/dev/null | tr -d '\n ')" in
-        *'"app.com.android.settings"=0'*) ok "C14 the choice is stored per app package in the profile's defaults" ;;
-        *) bad "C14 titleStrips not stored: $(defaults read "$DEFAULTS_SUITE" titleStrips 2>&1 | tr -d '\n')" ;;
-    esac
-    stop_app
-    stop_fakephone
-    wait_until 5 no_fakephone
+}
 
-    # A second launch: the remembered app opens without the strip, another app with it.
-    : > "$WORK/events.jsonl"
+# region_shot <window-id> <file> — the window and 40 pt of what is behind it.
+region_shot() {
+    local x y w h
+    read -r x y w h <<< "$(windows | awk -v id="$1" '$1 == id {print $2, $3, $4, $5}')"
+    screencapture -x -R"$((x - 40)),$((y - 40)),$((w + 80)),$((h + 80))" "$2"
+}
+
+# check_chrome — a 900x600 pt stream sits in a 916x648 window: a 40 pt header
+# band above it and an 8 pt bezel, invisible at rest. A known window behind ours
+# (the helper's backdrop) shows that a click in the invisible band falls through.
+# Real pointer moves (CGEvents) to the stream's top edge or onto the band bring
+# the glass in; it goes ~1 s after the pointer leaves; none of it changes the
+# virtual display the phone was asked for.
+check_chrome() {
+    clean
     start_fake || return 1
-    launch --connect "127.0.0.1:$PORT" --open com.android.settings,com.whatsapp --quit-after 30
-    wait_until 30 events_have '"pkg":"com.whatsapp"' || bad "C14 second launch opened no second window"
-    sleep 1
-    local pkgs
-    pkgs="$(python3 - "$WORK/events.jsonl" <<'PY' || true
-import json, sys
+    rm -f "$WORK/chrome.txt"
+    "$CGBIN" backdrop --file "$WORK/backdrop.txt" --seconds 60 &
+    local backdrop=$!
+    launch --connect "127.0.0.1:$PORT" --open com.android.settings --float-windows \
+        --debug-chrome-state "$WORK/chrome.txt" --quit-after 60
+    wait_until 30 events_have '"ev":"video","stream":1,' || { bad "C14 no video config"; kill "$backdrop"; stop_app; stop_fakephone; return 1; }
+    local win
+    win="$(await_window '$4 == 916 && $5 == 648')" || { bad "C14 no 916x648 pt window (900x600 stream + padding)"; kill "$backdrop"; stop_app; stop_fakephone; return 1; }
+    ok "C14 the window is the 900x600 pt stream plus a 40 pt header band and an 8 pt bezel (916x648)"
+    # Park the pointer in the middle of the stream (an earlier check may have
+    # left it where the new window's header band now is) and let it settle.
+    "$CGBIN" move --window "$win" --dy 100 >/dev/null
+    sleep 0.2
+    "$CGBIN" move --window "$win" --dy 120 >/dev/null
+    wait_until 4 chrome_is "header=hidden lights=hidden clicks=0"
+    local before
+    before="$(window_opens_resizes)"
+    case "$before" in
+        "open=1792x1200 "*) ok "C14 window.open is 1792x1200: the 900x600 pt stream at 2x, no padding in it" ;;
+        *) bad "C14 window.open size: $before" ;;
+    esac
+    chrome_is "header=hidden lights=hidden clicks=0" \
+        && ok "C14 at rest: no header, no traffic lights ($(chrome_state))" \
+        || bad "C14 at rest: $(chrome_state)"
+    region_shot "$win" "$WORK/chrome-rest.png" && say "screenshot: $WORK/chrome-rest.png"
 
-rows = {}
-for line in open(sys.argv[1]):
-    try:
-        event = json.loads(line)
-    except ValueError:
-        continue
-    msg = event.get("msg") if event.get("ev") == "rx" else None
-    if isinstance(msg, dict) and msg.get("t") == "window.open" and "pkg" in msg:
-        rows[msg["pkg"]] = msg["h"]
-print("settings=%s whatsapp=%s" % (rows.get("com.android.settings"), rows.get("com.whatsapp")))
-PY
-)"
-    [ "$pkgs" = "settings=1264 whatsapp=1200" ] \
-        && ok "C14 remembered per app: settings without the strip (1264), whatsapp with it (1200)" \
-        || bad "C14 per-app strip: $pkgs"
+    : > "$WORK/backdrop.txt"
+    # The bottom bezel: the header band itself brings the glass in as soon as the
+    # pointer arrives, so a click there is never "at rest".
+    "$CGBIN" move --window "$win" --top 644 >/dev/null
+    sleep 0.3
+    "$CGBIN" click --window "$win" --top 644 >/dev/null
+    sleep 0.5
+    if [ -s "$WORK/backdrop.txt" ] && chrome_is "header=hidden lights=hidden clicks=0"; then
+        ok "C14 at rest a click in the invisible bezel falls through to the window behind"
+    else
+        bad "C14 click in the bezel: behind got '$(tr '\n' ';' < "$WORK/backdrop.txt")', ours: $(chrome_state)"
+    fi
+
+    # A pointer comes up to the edge in a run of moves, not one jump.
+    local top
+    for top in 150 110 80 60 50; do "$CGBIN" move --window "$win" --top "$top" >/dev/null; sleep 0.05; done
+    wait_until 3 chrome_is "header=shown lights=shown" \
+        && ok "C14 pointer at the stream's top edge: the glass padding and traffic lights fade in" \
+        || bad "C14 hover did not show the header: $(chrome_state)"
+    "$CGBIN" move --window "$win" --top 20 >/dev/null
+    sleep 1.5
+    chrome_is "header=shown lights=shown" \
+        && ok "C14 stays while the pointer is on the header" || bad "C14 header hid under the pointer: $(chrome_state)"
+    region_shot "$win" "$WORK/chrome-hover.png" && say "screenshot: $WORK/chrome-hover.png"
+    local during
+    during="$(window_opens_resizes)"
+
+    "$CGBIN" move --window "$win" --dy 120 >/dev/null
+    sleep 0.6
+    chrome_is "header=shown lights=shown" \
+        && ok "C14 still shown 0.6 s after the pointer left" || bad "C14 hid too early: $(chrome_state)"
+    wait_until 3 chrome_is "header=hidden lights=hidden" \
+        && ok "C14 hidden again about 1 s after the pointer left" \
+        || bad "C14 header did not hide: $(chrome_state)"
+
+    for top in 90 60 30 20; do "$CGBIN" move --window "$win" --top "$top" >/dev/null; sleep 0.05; done
+    wait_until 3 chrome_is "header=shown lights=shown" \
+        && ok "C14 hovering the hidden header band brings it in too" \
+        || bad "C14 the hidden band did not react: $(chrome_state)"
+    # Out past a side edge (the window can sit right under the menu bar).
+    local x w side
+    read -r x w <<< "$(windows | awk -v id="$win" '$1 == id {print $2, $4}')"
+    if [ "${x:-0}" -gt 60 ]; then side=$(( -w / 2 - 40 )); else side=$(( w / 2 + 40 )); fi
+    "$CGBIN" move --window "$win" --top 20 --dx "$side" >/dev/null
+    wait_until 3 chrome_is "header=hidden lights=hidden" \
+        && ok "C14 leaving the header out of the window hides it" || bad "C14 still shown after leaving the window: $(chrome_state)"
+    sleep 1
+    local after
+    after="$(window_opens_resizes)"
+    [ "$during" = "$before" ] && [ "$after" = "$before" ] \
+        && ok "C14 the stream and its virtual display are the same at rest and hovered ($after)" \
+        || bad "C14 the virtual display changed on hover: $before -> $during -> $after"
+    kill "$backdrop" 2>/dev/null; wait "$backdrop" 2>/dev/null
     stop_app
     stop_fakephone
 }
@@ -1668,8 +1716,8 @@ build_e2e_app() {
 
 which_check="${1:-all}"
 case "$which_check" in
-    qr|pair|render|resize|input|input-global|pause|direct|nav|spotlight|pinch|strip|trackpad|clip|sharein|links|share|apk|dock|all) ;;
-    *) say "usage: check-e2e.sh [qr|pair|render|resize|input|input-global|pause|direct|nav|spotlight|pinch|strip|trackpad|clip|sharein|links|share|apk|dock|all]"; exit 2 ;;
+    qr|pair|render|resize|input|input-global|pause|direct|nav|spotlight|pinch|chrome|trackpad|clip|sharein|links|share|apk|dock|all) ;;
+    *) say "usage: check-e2e.sh [qr|pair|render|resize|input|input-global|pause|direct|nav|spotlight|pinch|chrome|trackpad|clip|sharein|links|share|apk|dock|all]"; exit 2 ;;
 esac
 acquire_lock
 wait_for_other_runs
@@ -1687,7 +1735,7 @@ case "$which_check" in
     input)    check_input ;;
     input-global) check_input_global ;;
     pinch)    check_pinch ;;
-    strip)    check_strip ;;
+    chrome)   check_chrome ;;
     trackpad) check_trackpad ;;
     pause)    check_pause ;;
     direct)   check_direct ;;
@@ -1700,7 +1748,7 @@ case "$which_check" in
     apk)      check_apk ;;
     dock)     check_dock ;;
     all)      check_qr; check_pair; check_render; check_resize; check_input; check_pinch
-              check_strip; check_trackpad; check_pause; check_direct; check_nav; check_spotlight; check_clip; check_sharein; check_links; check_share; check_apk; check_dock; check_orphans ;;
+              check_chrome; check_trackpad; check_pause; check_direct; check_nav; check_spotlight; check_clip; check_sharein; check_links; check_share; check_apk; check_dock; check_orphans ;;
 esac
 
 say ""

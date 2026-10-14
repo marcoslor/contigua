@@ -52,15 +52,15 @@ Detail, states, copy and the connection state machine: [design/mac-redesign.md](
      (green dot · lock while locked · battery / Connecting… / Reconnecting… / Offline / Pair again), **Phone** button and search; the app
      grid (single click opens, arrows move, ↩ opens, esc clears). The grid is there at launch from the last session and is dimmed
      while the phone is away. A problem is one banner line with at most one button (Try now / Pair again).
-2. **App windows**: content only. A title strip of titlebar height sits above the video: one colour taken from the app's own top edge
-   (it eases when the app's header changes), behind the standard traffic lights and the title (= app name, light or dark to suit the colour), so the app's toolbar and back arrow are never covered. **View → Show Title Strip**
-   (⌥⌘T, per app, on by default) turns it off: the video then runs edge to edge under a transparent titlebar, and the traffic lights fade out after
-   2 s without the pointer and back in when it comes near the top edge. The trackpad works like a touch screen: a two-finger scroll is a finger dragging
+2. **App windows**: only the stream, with rounded corners and a shadow; no title bar, and the desktop shows right up to the stream. Bring
+   the pointer to the stream's top edge and a glass header (with the traffic lights) and thin bezel fade in *around* the stream, never over it; drag
+   the glass to move the window or its edges to resize. It fades out a second after the pointer leaves, and clicks around a resting window reach what is
+   behind it. The stream never moves or changes size for it. The trackpad works like a touch screen: a two-finger scroll is a finger dragging
    (Android's own scrolling, overscroll and fling), a pinch or rotate is two fingers around the pointer, the mouse wheel stays a wheel and three or more
    fingers stay the system's; **View → Show Touches** draws a dot where the phone is being touched (off by default).
    New windows cascade (never on top of the Deck) and remember their frame. While the connection is down a small glass pill
-   ("Reconnecting…") sits over the last frame; the window stays open. Phone mode: a glass bar (Back · Home · Recents)
-   appears on hover at the top.
+   ("Reconnecting…") sits over the last frame; the window stays open. Phone mode: Back · Home · Recents sit at the right
+   of the hover header.
 3. **Settings** (⌘,): tabs **General** (launch at login, show in menu bar, default window density) · **Devices** (paired phones:
    name, model, last seen, **Use**, **Forget**; **Add phone…**). Nothing else.
 

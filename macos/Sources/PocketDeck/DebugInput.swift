@@ -20,9 +20,8 @@
 //                            with the fingers down at the end (for looking at the overlay)
 //   fingerrotate NX NY DEGREES [HOLD]  the same rotate from raw trackpad fingers
 //   showtouches on|off       View > Show Touches
-//   strip on|off             View > Show Title Strip
-//   hover NX NY              the pointer moves to NX NY (the traffic lights of a window
-//                            without the strip fade in when it is near the top edge)
+//   hover NX NY              the pointer moves to NX NY (the header fades in when it
+//                            is near the top edge)
 //   wait SECONDS             let the app run (timers, animations) before the next action
 //   type TEXT                text typed as key presses (rest of the line)
 //   key [cmd+][shift+][ctrl+][opt+]NAME
@@ -58,7 +57,6 @@ enum DebugInputAction: Equatable {
     case fingerPinch(at: NormalizedPoint, scale: Double, hold: Double)
     case fingerRotate(at: NormalizedPoint, degrees: Double, hold: Double)
     case showTouches(Bool)
-    case strip(Bool)
     case hover(NormalizedPoint)
     case wait(Double)
     case type(String)
@@ -146,12 +144,6 @@ enum DebugInputScript {
                 throw LineError(message: "wait needs SECONDS (0...60)")
             }
             return .wait(seconds)
-        case "strip":
-            switch args.first {
-            case "on" where args.count == 1: return .strip(true)
-            case "off" where args.count == 1: return .strip(false)
-            default: throw LineError(message: "strip needs on or off")
-            }
         case "type":
             guard !rest.isEmpty else { throw LineError(message: "type needs text") }
             return .type(rest)
@@ -332,11 +324,6 @@ final class DebugInputDriver {
             }
         case .showTouches(let enabled):
             (view.window?.windowController as? StreamWindowController)?.manager.showTouches = enabled
-        case .strip(let enabled):
-            (view.window?.windowController as? StreamWindowController)?.setTitleStrip(enabled)
-            // SwiftUI lays the video out again on the next pass; later actions aim at that.
-            view.window?.contentView?.layoutSubtreeIfNeeded()
-            RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.15))
         case .hover(let target):
             let point = view.convert(location(target, in: view), to: nil)
             (view.window?.windowController as? StreamWindowController)?.pointerMoved(toWindowPoint: point)

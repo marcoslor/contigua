@@ -9,7 +9,6 @@ final class StreamMenuState {
 
     /// A stream window is key: the per-window items are enabled.
     var hasStream = false
-    var titleStrip = true
     var showTouches = false
 
     private init() {}

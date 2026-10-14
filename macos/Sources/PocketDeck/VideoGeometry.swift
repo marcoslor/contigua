@@ -45,10 +45,23 @@ enum VideoSize {
 }
 
 enum Letterbox {
-    /// Aspect-fit rect of the video inside `bounds`, centered. Origin is the
-    /// bottom-left (AppKit view coordinates) because callers pass view bounds.
+    /// Aspect ratios closer than this are the same picture: the virtual display
+    /// is the window floored to 16 px, which would otherwise leave thin bars.
+    static let fillTolerance = 0.02
+
+    /// True when the video is stretched over the whole of `bounds`.
+    static func fills(video: CGSize, bounds: CGSize) -> Bool {
+        guard video.width > 0, video.height > 0, bounds.width > 0, bounds.height > 0 else { return false }
+        let ratio = (video.width / video.height) / (bounds.width / bounds.height)
+        return abs(ratio - 1) <= fillTolerance
+    }
+
+    /// Where the video is drawn inside `bounds`: all of it when the aspect
+    /// ratios only differ by the 16 px quantisation, else aspect-fit and centred.
+    /// Origin is the bottom-left (AppKit view coordinates) because callers pass view bounds.
     static func videoRect(video: CGSize, in bounds: CGRect) -> CGRect {
         guard video.width > 0, video.height > 0, bounds.width > 0, bounds.height > 0 else { return bounds }
+        if fills(video: video, bounds: bounds.size) { return bounds }
         let scale = min(bounds.width / video.width, bounds.height / video.height)
         let size = CGSize(width: video.width * scale, height: video.height * scale)
         return CGRect(x: bounds.midX - size.width / 2, y: bounds.midY - size.height / 2,

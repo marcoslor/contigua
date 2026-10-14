@@ -9,6 +9,13 @@
 //   swift scripts/cgevent-input.swift drag   --window ID --dx 200 --dy 0 [--steps 20]
 //   swift scripts/cgevent-input.swift scroll --window ID [--dy 3 --dx 0]
 //   swift scripts/cgevent-input.swift rclick --window ID
+//   swift scripts/cgevent-input.swift move   --window ID --top N   (N pt below the window's top edge, centred)
+//   swift scripts/cgevent-input.swift move   --window ID [--dx N --dy N]
+//   swift scripts/cgevent-input.swift click  --window ID --top N [--dx N]   (N pt below the top edge)
+//   swift scripts/cgevent-input.swift backdrop --file F --seconds N
+//       a plain window over the main screen just below the floating level: above every
+//       normal window (the Deck included), behind `--float-windows` stream windows;
+//       every click it receives is appended to F as "x y" (Quartz points)
 //   swift scripts/cgevent-input.swift type   --text hi
 //   swift scripts/cgevent-input.swift key    --keycode 36 [--cmd] [--shift]
 //
@@ -16,6 +23,7 @@
 // default `--inset 28` skips the standard title bar so the click lands in the
 // window's content area.
 
+import AppKit
 import ApplicationServices
 import CoreGraphics
 import Foundation
@@ -153,7 +161,7 @@ case "all":
     for entry in (CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]]) ?? [] {
         print("owner=\(entry[kCGWindowOwnerName as String] ?? "?") pid=\(entry[kCGWindowOwnerPID as String] ?? "?") id=\(entry[kCGWindowNumber as String] ?? "?") layer=\(entry[kCGWindowLayer as String] ?? "?") bounds=\(entry[kCGWindowBounds as String] ?? "?")")
     }
-case "click", "rclick", "drag", "scroll":
+case "click", "rclick", "drag", "scroll", "move":
     guard let id = numberArgument("--window"), let target = windowWithID(CGWindowID(id), owner: owner, pid: pid) else {
         FileHandle.standardError.write(Data("cgevent-input: no such window\n".utf8))
         exit(1)
@@ -164,12 +172,54 @@ case "click", "rclick", "drag", "scroll":
     let center = CGPoint(x: target.x + target.width / 2, y: centerY)
     let point = CGPoint(x: center.x + dx, y: center.y + dy)
     switch CommandLine.arguments[1] {
-    case "click": click(point, button: .left)
+    case "click":
+        if let top = doubleArgument("--top") {
+            click(CGPoint(x: center.x + dx, y: target.y + top), button: .left)
+        } else {
+            click(point, button: .left)
+        }
     case "rclick": click(point, button: .right)
     case "drag": drag(from: center, dx: dx, dy: dy, steps: numberArgument("--steps") ?? 20)
     case "scroll": scroll(point, dx: dx, dy: dy)
+    case "move":
+        if let top = doubleArgument("--top") {
+            move(to: CGPoint(x: center.x + dx, y: target.y + top))
+        } else {
+            move(to: point)
+        }
     default: break
     }
+case "backdrop":
+    guard let file = argument("--file") else { exit(1) }
+    let seconds = doubleArgument("--seconds") ?? 30
+    final class Catcher: NSView {
+        let file: String
+        init(file: String) { self.file = file; super.init(frame: .zero) }
+        required init?(coder: NSCoder) { fatalError() }
+        override func draw(_ dirtyRect: NSRect) {
+            NSColor(srgbRed: 0.18, green: 0.45, blue: 0.85, alpha: 1).setFill()
+            dirtyRect.fill()
+        }
+        override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+        override func mouseDown(with event: NSEvent) {
+            let p = NSEvent.mouseLocation
+            let height = NSScreen.screens.first?.frame.height ?? 0
+            let line = "\(Int(p.x)) \(Int(height - p.y))\n"
+            if let handle = FileHandle(forWritingAtPath: file) {
+                handle.seekToEndOfFile(); handle.write(Data(line.utf8)); handle.closeFile()
+            }
+        }
+    }
+    FileManager.default.createFile(atPath: file, contents: nil)
+    let app = NSApplication.shared
+    app.setActivationPolicy(.accessory)
+    let frame = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 800, height: 600)
+    let window = NSWindow(contentRect: frame, styleMask: [.borderless], backing: .buffered, defer: false)
+    window.contentView = Catcher(file: file)
+    window.level = NSWindow.Level(rawValue: NSWindow.Level.floating.rawValue - 1)
+    window.orderFrontRegardless()
+    DispatchQueue.main.asyncAfter(deadline: .now() + seconds) { exit(0) }
+    app.run()
 case "type":
     typeText(argument("--text") ?? "")
 case "key":

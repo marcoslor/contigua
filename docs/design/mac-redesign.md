@@ -33,7 +33,7 @@ machine (§4), which also fixes the root causes of A01–A03.
 |---|---|---|---|
 | **Deck** | SwiftUI `Window("PocketDeck", id: "deck")` | launch; Dock click; ⌘K; menu-bar "Open PocketDeck" | The only main window. Default 760×560, min 560×420, single instance. Closing hides it; the app keeps running. |
 | **App window** | AppKit `NSWindow` per stream (`AppWindowController`) | click an app in the Deck / ↩ | Content only (§3.7). |
-| **Phone window** | AppKit `NSWindow` (`PhoneWindowController`) | Deck toolbar **Phone**, ⌘P | Aspect-locked, glass hover bar. |
+| **Phone window** | AppKit `NSWindow` (`PhoneWindowController`) | Deck toolbar **Phone**, ⌘P | Aspect-locked, glass hover header with Back/Home/Recents. |
 | **Settings** | SwiftUI `Settings` scene | ⌘, | Tabs General · Devices. |
 | *Sheets over the Deck* | SwiftUI `.sheet` | | Nearby (Add phone), Code, QR, Manual connect. |
 | **Menu-bar item** | SwiftUI `MenuBarExtra` | always (toggle in Settings) | Status + 5 items (§3.8). |
@@ -206,8 +206,10 @@ that address." (no codes). On success it continues into the code sheet (§4.3). 
 ### 3.7 Stream windows (AppKit)
 
 - `NSWindow` styleMask `[.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]`,
-  `titlebarAppearsTransparent = true`, title = app label (no icon), a title strip of titlebar height above the video, filled with a
-  colour taken from the video's own top edge (DESIGN.md "App windows"; View → Show Title Strip turns it off, and the video then fills the content view). Corner radius = system.
+  `titlebarAppearsTransparent = true`, title = app label (no icon, hidden: Window menu only). Frameless like Apple's iPhone Mirroring: at rest only the
+  stream with rounded corners and its shadow; the window carries a hidden 40 pt band above the stream and an 8 pt bezel, which fade in as glass
+  (traffic lights in the band) on hover and out 1 s after the pointer leaves, never covering or moving the stream or resizing the virtual display
+  (DESIGN.md "App windows").
 - **Placement (A09):** restore the frame saved for that package (`setFrameAutosaveName("app.<pkg>")`); otherwise cascade
   from the last opened stream window (`cascadeTopLeft(from:)`, 28 pt steps), never `center()` over the Deck. New
   windows become key but do not hide the Deck (they open on the Deck's screen, offset right of it when it fits).
@@ -215,9 +217,8 @@ that address." (no codes). On success it continues into the code sheet (§4.3). 
   high, SwiftUI content "Reconnecting…" `.caption` + small `ProgressView`; "Phone offline" after 15 s) fades in at the
   bottom center after 1 s of link loss and out when the link returns. Input is dropped while down (no queueing).
   Windows are re-opened on reconnect with the existing `reopenAll()` (unchanged protocol behaviour).
-- **Phone window:** the hover bar becomes an `NSGlassEffectView` capsule (cornerRadius 18, 144×36; Back/Home/Recents,
-  `chevron.backward` · `circle` · `square.on.square`, 15 pt semibold, tooltips), shown when the pointer is in the top
-  56 pt, fade in 0.2 s, out 0.3 s after 1 s idle (DESIGN.md), replacing the hand-drawn layer (A18).
+- **Phone window:** Back/Home/Recents (`chevron.backward` · `circle` · `square.on.square`, tooltips) sit at the right of
+  the same hover header band (DESIGN.md), replacing the hand-drawn layer (A18) and the separate capsule.
 - Unchanged: `VideoLayerView`, `AVSampleBufferDisplayLayer`, `InputMapper`, `DebugInput`, gestures, resize debounce,
   pause/resume, density, edge swipe.
 
@@ -356,7 +357,7 @@ Existing menu shortcuts and their tests (`NavShortcutTests`) are kept verbatim.
 | `@main PocketDeckApp: App` with `@NSApplicationDelegateAdaptor(AppDelegate)`; scenes: `Window` Deck, `Settings`, `MenuBarExtra` | SwiftUI | scenes, sheets, glass, `.searchable`, `SMAppService` |
 | Deck / Welcome / Nearby / Phone grid / Code / QR / Manual / Settings / banner / chip | SwiftUI | pure view state |
 | Stream windows (`StreamWindowController`, `AppWindow`, `PhoneWindow`), `VideoLayerView`, `InputMapper`, `DebugInput`, gestures | **AppKit (unchanged)** | NSEvent fidelity, `AVSampleBufferDisplayLayer`, resize/occlusion |
-| Link-down pill, phone hover bar | AppKit host (`NSGlassEffectView`) + SwiftUI content | lives inside the video window |
+| Link-down pill, stream hover chrome | AppKit host (`NSGlassEffectView`) + SwiftUI content | lives inside the video window |
 | App menu bar (`NSMenu`) | AppKit | responder-chain key equivalents (`navigateBack` etc.) |
 | `AppDelegate` | AppKit | reopen, Spotlight `NSUserActivity`, terminate hooks, launch-option hooks |
 | Networking (`Session`, `Discovery`, `Protocol`) | Network.framework, **no UI imports** | testable, unchanged wire behaviour |
@@ -389,7 +390,7 @@ Existing menu shortcuts and their tests (`NavShortcutTests`) are kept verbatim.
 
 `App/PocketDeckApp.swift`, `App/AppDelegate.swift`, `App/MenuBuilder.swift` · `Connection/{ConnectionController, Link, ReconnectPolicy, Session, Discovery, ConnectionFailure}.swift` ·
 `Store/{Profile, RememberedPhones, AppsCache, PairKeyStore}.swift` · `Deck/{DeckView, WelcomeView, NearbyView, AppGridView, StatusChip, BannerView}.swift` ·
-`Pairing/{CodeSheet, QRSheet, ManualSheet, PairingModel, QRPairingModel}.swift` · `Settings/{SettingsView, DevicesTab}.swift` · `Windows/` (existing stream files + `LinkPill`, `GlassHoverBar`).
+`Pairing/{CodeSheet, QRSheet, ManualSheet, PairingModel, QRPairingModel}.swift` · `Settings/{SettingsView, DevicesTab}.swift` · `Windows/` (existing stream files + `LinkPill`, `WindowChrome`).
 Phase B may keep the flat layout if moving files would make the diff hard to review.
 
 ## 7. Tests (Phase B, D1)
@@ -406,7 +407,7 @@ Phase B may keep the flat layout if moving files would make the diff hard to rev
 
 1 Welcome · 2 Nearby empty/searching · 3 Nearby with 2 phones (one remembered) · 4 Code sheet (comparing) · 5 verifying · 6 contacting · 7 denied · 8 timedOut · 9 QR sheet · 10 QR success · 11 Manual sheet ·
 12 Deck loading (skeleton) · 13 Deck connected (≥ 14 apps) · 14 search with matches · 15 no matches · 16 selection state · 17 Connecting… (launch, cached grid) · 18 Reconnecting… · 19 Offline banner ·
-20 needsPairing banner · 21 busy banner · 22 Settings General · 23 Settings Devices (2 phones) · 24 Forget confirmation · 25 App window (with link pill visible) · 26 Phone window (hover bar visible) · 27 menu-bar menu ·
+20 needsPairing banner · 21 busy banner · 22 Settings General · 23 Settings Devices (2 phones) · 24 Forget confirmation · 25 App window (with link pill visible) · 26 Phone window (hover header visible) · 27 menu-bar menu ·
 28 Reduce Transparency variant of 13.
 
 ## 9. Revisions to existing docs (proposed here; Phase B applies them to UX.md/DESIGN.md after approval)

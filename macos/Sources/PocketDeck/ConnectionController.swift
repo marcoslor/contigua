@@ -230,6 +230,7 @@ final class ConnectionController {
         launchAt = Date()
         if let directory = options.dumpVideoDirectory { windows.videoDump = VideoDump(directory: directory) }
         windows.floatWindows = options.floatWindows
+        windows.chromeStateFile = options.debugChromeState.map { URL(fileURLWithPath: $0) }
         if let path = options.debugInputScript {
             do {
                 debugInput = try DebugInputDriver(scriptPath: path)

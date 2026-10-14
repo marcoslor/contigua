@@ -18,8 +18,6 @@ final class DebugInputTests: XCTestCase {
         fingerpinch 0.5 0.5 0.5 3
         fingerrotate 0.5 0.5 45
         showtouches on
-        strip off
-        strip on
         hover 0.5 0
         wait 2.5
         type hi
@@ -38,8 +36,6 @@ final class DebugInputTests: XCTestCase {
             .fingerPinch(at: .center, scale: 0.5, hold: 3),
             .fingerRotate(at: .center, degrees: 45, hold: 0),
             .showTouches(true),
-            .strip(false),
-            .strip(true),
             .hover(NormalizedPoint(nx: 0.5, ny: 0)),
             .wait(2.5),
             .type("hi"),
@@ -103,11 +99,8 @@ final class DebugInputTests: XCTestCase {
         XCTAssertThrowsError(try DebugInputScript.parse("key"))
         XCTAssertThrowsError(try DebugInputScript.parse("trackscroll"))
         XCTAssertThrowsError(try DebugInputScript.parse("fingerpinch 0.5 0.5"))
-        XCTAssertThrowsError(try DebugInputScript.parse("strip")) { error in
-            XCTAssertEqual((error as? DebugInputParseError)?.message, "strip needs on or off")
-        }
-        XCTAssertThrowsError(try DebugInputScript.parse("strip maybe"))
         XCTAssertThrowsError(try DebugInputScript.parse("showtouches"))
+        XCTAssertThrowsError(try DebugInputScript.parse("strip on"), "the title strip is gone")
         XCTAssertThrowsError(try DebugInputScript.parse("fingerpinch 0.5 0.5 2 -1"))
         XCTAssertThrowsError(try DebugInputScript.parse("pinch 0.5 0.5 2 3"))
         XCTAssertThrowsError(try DebugInputScript.parse("hover 0.5"))

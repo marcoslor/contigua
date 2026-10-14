@@ -21,9 +21,10 @@ cd macos && ./scripts/install.sh && open /Applications/PocketDeck.app
 6. Type into the focused window, click/drag, scroll the wheel. Right-click =
    Android back, middle-click = home. Click a window first if keys seem ignored.
    On a trackpad, two-finger scroll drags the page like a finger (with fling),
-   pinch and rotate are two fingers around the pointer. The strip above the
-   video takes the colour of the app's header; View → Show Title Strip (⌥⌘T)
-   turns it off.
+   pinch and rotate are two fingers around the pointer. Windows are just the
+   app: move the pointer to the top edge and a glass header with the traffic
+   lights fades in above the stream, with a thin glass rim around it (drag it
+   to move the window, its edges to resize); it goes a second after you leave. In the phone window it also has Back · Home · Recents.
 7. Closing a window closes the app's virtual display; relaunching the Mac app
    reconnects silently to the last phone.
 8. Send a link to the phone: in Safari, Chrome, Notes or any app, **Share → Open on

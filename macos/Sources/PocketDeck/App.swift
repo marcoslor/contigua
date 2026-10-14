@@ -22,6 +22,8 @@ struct LaunchOptions {
     /// `--float-windows`: stream windows stay above other apps' windows, so the
     /// checks that look at them are not defeated by whatever the person has open.
     var floatWindows = false
+    /// `--debug-chrome-state FILE`: stream windows write their header state here (e2e).
+    var debugChromeState: String?
     var profileName = Profile.defaultName
     /// `--share-dir DIR`: where images shared from the phone are saved (default ~/Downloads/PocketDeck).
     var shareDirectory: String?
@@ -81,6 +83,8 @@ struct LaunchOptions {
                 options.dumpVideoDirectory = next()
             case "--float-windows":
                 options.floatWindows = true
+            case "--debug-chrome-state":
+                options.debugChromeState = next()
             case "--profile":
                 options.profileName = next() ?? ""
             case "--share-dir":
