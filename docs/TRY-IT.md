@@ -31,6 +31,10 @@ cd macos && ./scripts/install.sh && open /Applications/PocketDeck.app
    opens in its Android app (Maps, YouTube, the browser…) in a new window; with several
    phones PocketDeck asks which. If "Open on Phone" isn't in the Share menu, turn it on in
    System Settings → General → Login Items & Extensions → Sharing.
+9. Install an Android app: drop an `.apk` (or an `.apks` / `.xapk` split bundle) on the Deck,
+   or use the menu bar's **Install APK…** (also: Finder → Open With → PocketDeck, or
+   right-click → Services → Install on Phone). The Deck shows the progress and the result
+   ("Installed Example 1.2", or why the phone refused it).
 
 ## No phone? Use the emulator rig
 

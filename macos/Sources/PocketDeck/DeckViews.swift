@@ -36,13 +36,16 @@ struct DeckRoot: View {
         }
         .animation(.smooth(duration: 0.3), value: controller.deckMode)
         .frame(minWidth: 640, minHeight: 420)
-        // A link dropped on the Deck opens on the phone (a .webloc file carries one too).
+        // A link dropped on the Deck opens on the phone (a .webloc file carries one too);
+        // an app file (.apk, .apks, .xapk) installs on it.
         .dropDestination(for: URL.self) { urls, _ in
+            let apps = urls.filter { $0.isFileURL && ApkBundle.kind(of: $0) != nil }
             let links = urls.compactMap { url in
                 url.isFileURL ? OpenLinkRequest.webloc(at: url) : LinkPolicy.validate(url.absoluteString)
             }
+            if let app = apps.first { controller.installApk(app) }
             for link in links { controller.openLink(OpenLinkRequest(url: link)) }
-            return !links.isEmpty
+            return !links.isEmpty || !apps.isEmpty
         }
         .task {
             // A launch hook's sheet waits for the window: presented while the
@@ -221,6 +224,45 @@ struct NearbyRow: View {
 
 // MARK: - Phone mode
 
+/// An app install in progress or just finished (docs/design/apk.md).
+struct ApkInstallView: View {
+    let installer: ApkInstaller
+
+    var body: some View {
+        HStack(spacing: 10) {
+            switch installer.phase {
+            case .idle:
+                EmptyView()
+            case .preparing(let name):
+                ProgressView().controlSize(.small)
+                Text("Preparing \(name)…").font(.callout)
+            case .sending(let name, let fraction):
+                Image(systemName: "arrow.down.app").foregroundStyle(.tint)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Sending \(name) to the phone…").font(.callout)
+                    ProgressView(value: fraction).progressViewStyle(.linear)
+                }
+            case .installing(let name):
+                ProgressView().controlSize(.small)
+                Text("Installing \(name)…").font(.callout)
+            case .finished(let text, let ok):
+                Image(systemName: ok ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
+                    .foregroundStyle(ok ? .green : .orange)
+                Text(text).font(.callout)
+            }
+            Spacer(minLength: 8)
+            if installer.isBusy {
+                Button("Cancel") { installer.cancel() }.buttonStyle(.glass).controlSize(.small)
+            } else {
+                Button("Dismiss", systemImage: "xmark") { installer.dismiss() }
+                    .labelStyle(.iconOnly).buttonStyle(.borderless)
+            }
+        }
+        .padding(12)
+        .glassEffect(.regular, in: .rect(cornerRadius: 14))
+    }
+}
+
 struct BannerView: View {
     @Environment(ConnectionController.self) private var controller
     let banner: Banner
@@ -352,12 +394,19 @@ struct PhoneDeckView: View {
                     .padding(.top, 8)
                     .transition(.opacity.combined(with: .move(edge: .top)))
             }
+            if controller.apkInstaller.phase != .idle {
+                ApkInstallView(installer: controller.apkInstaller)
+                    .padding(.horizontal, 16)
+                    .padding(.top, 8)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+            }
             AppGrid(apps: filtered, query: query, navigator: navigator)
                 .opacity(controller.link.isOnline ? 1 : 0.5)
                 .allowsHitTesting(controller.link.isOnline)
                 .animation(.smooth(duration: 0.3), value: controller.link.isOnline)
         }
         .animation(.smooth(duration: 0.3), value: controller.banner)
+        .animation(.smooth(duration: 0.3), value: controller.apkInstaller.phase)
         .navigationTitle(controller.activePhone?.name ?? "PocketDeck")
         .toolbar {
             ToolbarItem(placement: .status) { StatusChip() }

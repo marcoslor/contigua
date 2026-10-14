@@ -34,6 +34,8 @@ class Session(
     private val taskPresence: TaskPresence? = null,
     /** Plain-text clipboard sync; null leaves the clipboard alone. */
     private val clipboard: ClipboardPort? = null,
+    /** APK installs at shell UID; null refuses them (docs/design/apk.md). */
+    private val packages: PackageShell? = null,
     private val now: () -> Long = { System.nanoTime() / 1_000_000 },
     private val log: (String) -> Unit = {},
     private val handshakeTimeoutMs: Int = 15_000,
@@ -65,6 +67,7 @@ class Session(
 
     private val streams = LinkedHashMap<Int, StreamState>()
     private val clipSync = ClipSync()
+    private val apk = packages?.let { ApkInstaller(it, ::sendJson, log) }
 
     private var clientId = ""
     private var clientName = "Mac"
@@ -140,6 +143,7 @@ class Session(
         abandoned?.let { runCatching { callback.onPairingEnded(it) } }
         stopStateWatch()
         stopClipboardSync()
+        runCatching { apk?.close() }
         stopStreamWatch()
         synchronized(streams) {
             for (s in streams.values.toList()) runCatching { display.close(s.stream) }
@@ -374,6 +378,8 @@ class Session(
             "nav" -> onNav(obj, frame)
             "text" -> onText(obj, frame)
             "clip.set" -> onClipSet(obj)
+            "apk.install" -> onApkInstall(obj)
+            "apk.cancel" -> (obj["id"] as? Number)?.let { apk?.cancel(it.toLong()) }
             else -> logOnce("unknown message '$t'")
         }
     }
@@ -540,6 +546,15 @@ class Session(
         port.setText(text)
     }
 
+    private fun onApkInstall(obj: Map<String, Any?>) {
+        val installer = apk ?: run {
+            sendJson(mapOf("t" to "apk.result", "id" to obj["id"], "ok" to false, "code" to "failed",
+                "message" to "this phone can't install apps"))
+            return
+        }
+        installer.begin(obj)
+    }
+
     private fun onText(obj: Map<String, Any?>, frame: Frame) {
         val state = requireState(streamOf(obj, frame)) ?: return
         val text = Json.str(obj["text"]) ?: return
@@ -564,6 +579,7 @@ class Session(
                 injector.scroll(state.displayId, p.nx, p.ny, p.hscroll, p.vscroll, display.size(state.stream))
                 power.onInput(state.displayId)
             }
+            Frames.TYPE_APK_DATA -> apk?.data(frame.stream.toLong() and 0xFFFF_FFFFL, frame.payload)
             Frames.TYPE_KEY -> {
                 val p = Frames.decodeKey(frame.payload)
                 val state = requireState(frame.stream) ?: return

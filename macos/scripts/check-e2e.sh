@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # End-to-end checks C3-C13 for the macOS client against tools/fakephone.
 #
-#   ./scripts/check-e2e.sh [qr|pair|render|resize|input|input-global|pause|direct|nav|spotlight|pinch|strip|trackpad|clip|links|share|all]
+#   ./scripts/check-e2e.sh [qr|pair|render|resize|input|input-global|pause|direct|nav|spotlight|pinch|strip|trackpad|clip|links|share|apk|all]
 #
 # Every check starts from a clean slate: no PocketDeck or fakephone processes
 # left by an earlier run, a fresh fakephone state file and no pairing key in
@@ -1306,6 +1306,109 @@ PY
     wait_until 5 no_fakephone
 }
 
+# check_apk — APK install from the Mac (docs/design/apk.md). Small .apk/.apks files are
+# opened with `open -a` on the e2e bundle; the fakephone acts like pm (a part holding
+# PD_FAKE_DOWNGRADE fails with INSTALL_FAILED_VERSION_DOWNGRADE).
+apk_log() {
+    log show --last 3m --info \
+        --predicate "subsystem == \"dev.pocketdeck.mac\" AND processID == $APP_PID" 2>/dev/null \
+        | grep -o 'apk: .*'
+}
+
+check_apk() {
+    clean
+    start_fake || return 1
+    launch --connect "127.0.0.1:$PORT" --quit-after 120
+
+    authenticated() { events_have '"state":"auth_ok"' || events_have '"state":"paired"'; }
+    wait_until 30 authenticated \
+        || { bad "APK the app never authenticated"; stop_app; stop_fakephone; return 1; }
+
+    python3 - "$WORK" <<'PY'
+import os, sys, zipfile
+work = sys.argv[1]
+def apk(path, marker=b""):
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_STORED) as z:
+        z.writestr("AndroidManifest.xml", b"\x03\x00\x08\x00" + marker)
+        z.writestr("classes.dex", os.urandom(3 * 1024 * 1024))
+apk(os.path.join(work, "tiny.apk"))
+apk(os.path.join(work, "old.apk"), b"PD_FAKE_DOWNGRADE")
+split = os.path.join(work, "split.apk")
+apk(split)
+with zipfile.ZipFile(os.path.join(work, "bundle.apks"), "w", zipfile.ZIP_DEFLATED) as z:
+    z.write(os.path.join(work, "tiny.apk"), "splits/base-master.apk")
+    z.write(split, "splits/base-arm64_v8a.apk")
+    z.writestr("toc.pb", b"\x00")
+PY
+
+    apk_event() {
+        python3 - "$WORK/events.jsonl" "$1" "$2" <<'PY'
+import json, sys
+want_ok = sys.argv[3] == "ok"
+n = 0
+for line in open(sys.argv[1]):
+    try:
+        e = json.loads(line)
+    except ValueError:
+        continue
+    if e.get("ev") == "apk" and e.get("ok") == want_ok:
+        n += 1
+        if n == int(sys.argv[2]):
+            print(json.dumps(e))
+            sys.exit(0)
+sys.exit(1)
+PY
+    }
+    apk_found() { apk_event "$@" >/dev/null; }
+    apps_lists() { grep -c '"t":"apps.list"' "$WORK/events.jsonl" 2>/dev/null || echo 0; }
+    log_has() { apk_log | grep -qF -- "$1"; }
+
+    local before event want
+    before="$(apps_lists)"
+    open -a "$E2E_BUNDLE" "$WORK/tiny.apk"
+    if wait_until 30 apk_found 1 ok; then
+        event="$(apk_event 1 ok)"
+        want="$(shasum -a 256 "$WORK/tiny.apk" | cut -c1-64)"
+        echo "$event" | python3 -c 'import json,sys; f=json.load(sys.stdin)["files"]; sys.exit(0 if len(f)==1 and f[0]["match"] and f[0]["sha256"]==sys.argv[1] else 1)' "$want" \
+            && ok "APK fakephone got tiny.apk with a matching sha256 (${want:0:12}…)" \
+            || bad "APK sha256 mismatch: $event (want $want)"
+    else
+        bad "APK fakephone never received the install"
+    fi
+    wait_until 15 log_has "apk: phone received all" && log_has "apk: sending 1 part(s)" \
+        && ok "APK progress shown ($(apk_log | grep -m1 'apk: sending'); $(apk_log | grep -m1 'received all'))" \
+        || bad "APK no progress logged: $(apk_log | tail -3)"
+    wait_until 15 log_has "apk: result ok: Installed Tiny Demo 1.0." \
+        && ok "APK result message: Installed Tiny Demo 1.0." \
+        || bad "APK no success message: $(apk_log | tail -2)"
+    apps_refreshed() { [ "$(apps_lists)" -gt "$before" ]; }
+    wait_until 10 apps_refreshed \
+        && ok "APK the app list was refreshed after the install" \
+        || bad "APK no apps.list after the install"
+
+    open -a "$E2E_BUNDLE" "$WORK/old.apk"
+    wait_until 30 log_has "apk: result failed: A newer version of this app is already on the phone." \
+        && ok "APK downgrade failure reads: A newer version of this app is already on the phone." \
+        || bad "APK no downgrade message: $(apk_log | tail -2)"
+
+    open -a "$E2E_BUNDLE" "$WORK/bundle.apks"
+    if wait_until 30 apk_found 2 ok; then
+        event="$(apk_event 2 ok)"
+        echo "$event" | python3 -c 'import json,sys; e=json.load(sys.stdin); f=e["files"]; sys.exit(0 if [x["name"] for x in f]==["base-master.apk","base-arm64_v8a.apk"] and all(x["match"] for x in f) else 1)' \
+            && ok "APK .apks sent base + split, both sha256 match" \
+            || bad "APK .apks parts wrong: $event"
+    else
+        bad "APK the .apks install never arrived"
+    fi
+
+    [ "$(e2e_app_pids | wc -l | tr -d ' ')" = "1" ] \
+        && ok "APK the files went to the running e2e app (one instance)" \
+        || bad "APK open started another PocketDeck instance"
+    stop_app
+    stop_fakephone
+    wait_until 5 no_fakephone
+}
+
 # --- Share extension ------------------------------------------------------
 
 SHARE_ID="dev.pocketdeck.mac.share-e2e"
@@ -1412,8 +1515,8 @@ build_e2e_app() {
 
 which_check="${1:-all}"
 case "$which_check" in
-    qr|pair|render|resize|input|input-global|pause|direct|nav|spotlight|pinch|strip|trackpad|clip|links|share|all) ;;
-    *) say "usage: check-e2e.sh [qr|pair|render|resize|input|input-global|pause|direct|nav|spotlight|pinch|strip|trackpad|clip|links|share|all]"; exit 2 ;;
+    qr|pair|render|resize|input|input-global|pause|direct|nav|spotlight|pinch|strip|trackpad|clip|links|share|apk|all) ;;
+    *) say "usage: check-e2e.sh [qr|pair|render|resize|input|input-global|pause|direct|nav|spotlight|pinch|strip|trackpad|clip|links|share|apk|all]"; exit 2 ;;
 esac
 acquire_lock
 wait_for_other_runs
@@ -1440,8 +1543,9 @@ case "$which_check" in
     clip)     check_clip ;;
     links)    check_links ;;
     share)    check_share ;;
+    apk)      check_apk ;;
     all)      check_qr; check_pair; check_render; check_resize; check_input; check_pinch
-              check_strip; check_trackpad; check_pause; check_direct; check_nav; check_spotlight; check_clip; check_links; check_share; check_orphans ;;
+              check_strip; check_trackpad; check_pause; check_direct; check_nav; check_spotlight; check_clip; check_links; check_share; check_apk; check_orphans ;;
 esac
 
 say ""

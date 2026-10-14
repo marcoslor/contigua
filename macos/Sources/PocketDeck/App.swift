@@ -163,6 +163,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @MainActor
     func application(_ application: NSApplication, open urls: [URL]) {
         for url in urls {
+            if url.isFileURL {
+                AppEnvironment.shared.controller.installApk(url)
+                continue
+            }
             guard let request = OpenLinkRequest.parse(schemeURL: url) else {
                 Log.app.notice("ignored an unsupported or invalid pocketdeck URL")
                 continue

@@ -11,6 +11,7 @@ enum MessageType: UInt8 {
     case touch = 0x10
     case scroll = 0x11
     case key = 0x12
+    case apkData = 0x20
 }
 
 enum ProtocolError: Error, Equatable {

@@ -164,3 +164,31 @@ interface DeckCallback {
     fun onPaired(clientId: String, name: String, keyHex: String)
     fun onSessionChanged(connected: Boolean, macName: String?, windows: Int)
 }
+
+/** The app a successful install left on the phone. */
+data class InstalledApp(val pkg: String, val label: String, val version: String)
+
+/** One `pm install-write` in progress: bytes go to pm's stdin. */
+interface PartWriter {
+    fun write(bytes: ByteArray, offset: Int, length: Int)
+
+    /** Closes stdin and returns pm's output. */
+    fun finish(): String
+
+    fun abort()
+}
+
+/**
+ * `pm` install sessions at shell UID (docs/design/apk.md). Outputs are pm's own
+ * text so [ApkPolicy] can parse success and failure codes in one place.
+ */
+interface PackageShell {
+    /** `pm install-create -S <totalBytes>`; returns pm's output. */
+    fun create(totalBytes: Long): String
+    fun write(session: Int, name: String, size: Long): PartWriter
+    fun commit(session: Int): String
+    fun abandon(session: Int)
+
+    /** The package updated most recently at or after [sinceMs] (wall clock), if any. */
+    fun newestSince(sinceMs: Long): InstalledApp?
+}

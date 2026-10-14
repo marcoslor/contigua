@@ -34,6 +34,7 @@ object Frames {
     const val TYPE_TOUCH = 0x10
     const val TYPE_SCROLL = 0x11
     const val TYPE_KEY = 0x12
+    const val TYPE_APK_DATA = 0x20
 
     const val CODEC_H264 = 1
 

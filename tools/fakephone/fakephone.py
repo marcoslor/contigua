@@ -227,6 +227,11 @@ def pkg_color(pkg):
 LINK_SCHEMES = ("http", "https", "geo", "tel", "mailto")
 LINK_MAX_BYTES = 8 * 1024
 
+APK_NAME = re.compile(r"^[A-Za-z0-9._-]{1,100}$")
+APK_MAX_BYTES = 1 << 30
+APK_FAKE_PKG = "dev.pocketdeck.fake.installed"
+APK_FAKE_LABEL = "Tiny Demo"
+
 
 def valid_link(raw):
     """The trimmed URL when link.open may view it (docs/design/links.md), else None."""
@@ -308,6 +313,10 @@ class EventLog(object):
 
     def link(self, stream, url):
         self._emit({"ev": "link", "stream": stream, "url": url, "ts": time.time()})
+
+    def apk(self, install_id, files, ok, code):
+        self._emit({"ev": "apk", "id": install_id, "files": files, "ok": ok, "code": code,
+                    "ts": time.time()})
 
     def close(self):
         with self._lock:
@@ -766,6 +775,8 @@ class Session(object):
             elif frame.type == proto.TYPE_KEY:
                 action, keycode, meta = proto.unpack_key(frame)
                 self.phone.events.key(frame.stream, action, keycode, meta)
+            elif frame.type == proto.TYPE_APK_DATA:
+                self._on_apk_data(frame.stream, frame.payload)
             elif frame.type not in self._unknown_types:
                 self._unknown_types.add(frame.type)
                 sys.stderr.write("fakephone: ignoring unknown frame type 0x%02x\n" % frame.type)
@@ -788,6 +799,8 @@ class Session(object):
             "nav": self._on_nav,
             "text": self._on_noop,
             "clip.set": self._on_clip_set,
+            "apk.install": self._on_apk_install,
+            "apk.cancel": self._on_apk_cancel,
         }.get(kind)
         if handler is None:
             if kind not in self._unknown_types:
@@ -798,6 +811,72 @@ class Session(object):
 
     def _on_ping(self, msg):
         self._send({"t": "pong", "ts": msg.get("ts")})
+
+    # -- APK install (docs/design/apk.md): acts like pm; a part holding the bytes
+    # PD_FAKE_DOWNGRADE fails the commit with INSTALL_FAILED_VERSION_DOWNGRADE.
+    def _on_apk_install(self, msg):
+        files = msg.get("files") or []
+        install_id = msg.get("id")
+        if getattr(self, "_apk", None) is not None:
+            self._send({"t": "apk.result", "id": install_id, "ok": False, "code": "busy",
+                        "message": "another install is running"})
+            return
+        ok_names = all(isinstance(f, dict) and APK_NAME.match(str(f.get("name", "")))
+                       and str(f.get("name")).endswith(".apk") for f in files)
+        total = sum(int(f.get("size") or 0) for f in files) if ok_names else 0
+        if not files or not ok_names or total <= 0 or total > APK_MAX_BYTES:
+            self._send({"t": "apk.result", "id": install_id, "ok": False,
+                        "code": "too_large" if total > APK_MAX_BYTES else "bad_request", "message": ""})
+            return
+        self._apk = {"id": install_id, "files": files, "total": total, "data": bytearray(),
+                     "last": 0.0}
+
+    def _on_apk_cancel(self, msg):
+        apk = getattr(self, "_apk", None)
+        if apk and apk["id"] == msg.get("id"):
+            self._apk = None
+            self.phone.events.apk(apk["id"], [], False, "cancelled")
+            self._send({"t": "apk.result", "id": apk["id"], "ok": False, "code": "cancelled",
+                        "message": "cancelled"})
+
+    def _on_apk_data(self, install_id, payload):
+        apk = getattr(self, "_apk", None)
+        if not apk or apk["id"] != install_id:
+            return
+        apk["data"] += payload
+        got = len(apk["data"])
+        now = time.time()
+        if got < apk["total"] and now - apk["last"] >= 0.25:
+            apk["last"] = now
+            self._send({"t": "apk.progress", "id": install_id, "bytes": got})
+        if got < apk["total"]:
+            return
+        self._apk = None
+        self._send({"t": "apk.progress", "id": install_id, "bytes": got})
+        data, offset, report, code = bytes(apk["data"]), 0, [], None
+        for f in apk["files"]:
+            part = data[offset:offset + int(f["size"])]
+            offset += int(f["size"])
+            digest = hashlib.sha256(part).hexdigest()
+            report.append({"name": f["name"], "size": len(part), "sha256": digest,
+                           "match": digest == str(f.get("sha256", "")).lower()})
+            if digest != str(f.get("sha256", "")).lower():
+                code = code or "checksum"
+            if b"PD_FAKE_DOWNGRADE" in part:
+                code = code or "INSTALL_FAILED_VERSION_DOWNGRADE"
+        if len(data) > apk["total"]:
+            code = "failed"
+        sys.stderr.write("fakephone: apk %r %d bytes -> %s\n" % (install_id, len(data), code or "Success"))
+        self.phone.events.apk(install_id, report, code is None, code)
+        if code:
+            self._send({"t": "apk.result", "id": install_id, "ok": False, "code": code,
+                        "message": "Downgrade detected" if code.startswith("INSTALL_") else code})
+            return
+        if not any(a["pkg"] == APK_FAKE_PKG for a in APPS):
+            APPS.append({"pkg": APK_FAKE_PKG, "label": APK_FAKE_LABEL, "activity": APK_FAKE_PKG + "/.Main"})
+            APPS.sort(key=lambda a: a["label"].lower())
+        self._send({"t": "apk.result", "id": install_id, "ok": True, "pkg": APK_FAKE_PKG,
+                    "label": APK_FAKE_LABEL, "version": "1.0"})
 
     def _on_clip_set(self, msg):
         self.phone.events.clip("rx", msg.get("text"))

@@ -38,6 +38,7 @@ Max frame size 8 MiB; a receiver that sees a larger `len` closes the session.
 | `0x10` | TOUCH | mac→phone | `u8 action` (0 down, 1 up, 2 move, 3 cancel) · `u8 pointerId` · `f32 nx` · `f32 ny` — one frame per pointer; the phone stamps each event with its arrival time, so the Mac sends them as they happen (a drag's cadence is its fling velocity) |
 | `0x11` | SCROLL | mac→phone | `f32 nx` · `f32 ny` · `f32 hscroll` · `f32 vscroll` — mouse-wheel units, injected as `ACTION_SCROLL` (`SOURCE_MOUSE`) with these as `AXIS_HSCROLL` / `AXIS_VSCROLL` at (nx, ny). `vscroll > 0` = content moves down (wheel up), `hscroll > 0` = content moves left (wheel right). One unit is one wheel notch (Android's default 64 dp scroll factor); fractions are fine. The Mac sends SCROLL for mouse wheels only: a trackpad's two-finger scroll is a one-finger drag in TOUCH (DOWN, MOVEs, UP), so Android's own drag, overscroll and fling apply |
 | `0x12` | KEY | mac→phone | `u8 action` (0 down, 1 up) · `u32 keycode` (Android `KEYCODE_*`) · `u32 metaState` |
+| `0x20` | APK_DATA | mac→phone | the next bytes (≤ 1 MiB) of an APK install; `stream` = the install `id`; see "APK install" |
 
 `nx`,`ny` are normalized `[0,1]` in the stream's video coordinates (top-left
 origin). The phone maps them to the stream's current virtual display size.
@@ -141,6 +142,8 @@ Mac → phone (after `welcome`):
 | `nav` | `stream`, `action`: `back`/`home`/`recents` | back = KEYCODE_BACK on that display; home/recents meaningful in phone mode |
 | `text` | `stream`, `text` | type text into the focused field of that display |
 | `clip.set` | `text` | plain-text clipboard, either direction; see "Clipboard sync" |
+| `apk.install` | `id`, `files`: `[{"name","size","sha256"}]` | start an APK install; `APK_DATA` frames follow; see "APK install" |
+| `apk.cancel` | `id` | abandon that install |
 
 Phone → Mac:
 
@@ -155,6 +158,8 @@ Phone → Mac:
 | `window.title` | `stream`, `label`, `pkg` — top app changed on that display (phone mode) |
 | `state` | `locked`: bool, `battery`: int, `charging`: bool — sent on change |
 | `error` | `code`, `message`, optional `stream` |
+| `apk.progress` | `id`, `bytes` — bytes written into the install so far |
+| `apk.result` | `id`, `ok`; success: `pkg`, `label`, `version`; failure: `code`, `message` |
 
 Unknown `t` values and unknown binary frame types are ignored (log once). Unknown
 fields are ignored. `activity` is a component string `pkg/fully.qualified.Class`.
@@ -194,6 +199,26 @@ link from the Mac in a new window. The replies are those of `window.open`
 - The phone starts `ACTION_VIEW` with `CATEGORY_BROWSABLE` on the new display, so
   verified app links open their app and other web links the default browser. No
   handler → `launch_failed` (the window stays open, like a failed app launch).
+
+## APK install
+
+Installs an app sent from the Mac (docs/design/apk.md). One install at a time.
+
+1. Mac → `{"t":"apk.install","id":N,"files":[{"name":"base.apk","size":..,"sha256":"<64 hex>"},…]}`.
+   `id` is a u32 ≠ 0 chosen by the Mac. `name` matches `[A-Za-z0-9._-]{1,100}`, ends in
+   `.apk` and is unique; at most 64 files, at most 1 GiB (1 073 741 824 bytes) in total.
+2. Mac → `APK_DATA` frames with `stream` = `id`: the files' bytes back to back, in the order
+   listed, each frame ≤ 1 MiB. The phone drops frames for any other `id`.
+3. Phone → `apk.progress` (at most 4 per second, and once with every byte received), then
+   exactly one `apk.result`. Success: `{"ok":true,"pkg","label","version"}`. Failure:
+   `{"ok":false,"code","message"}` where `code` is the package manager's own
+   `INSTALL_FAILED_*` / `INSTALL_PARSE_FAILED_*` token or one of `bad_request`, `too_large`,
+   `busy`, `checksum` (a file's SHA-256 differs; nothing is committed), `cancelled`, `failed`.
+4. Mac → `apk.cancel` at any time; the phone abandons the install and replies
+   `apk.result` with `code` `cancelled`. A session that ends abandons its install.
+
+The phone streams each file into a package-manager session and commits only after every
+file arrived with its SHA-256; it stores no copy of its own.
 
 ## Error codes
 

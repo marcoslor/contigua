@@ -25,6 +25,7 @@ TYPE_VIDEO_FRAME = 0x03
 TYPE_TOUCH = 0x10
 TYPE_SCROLL = 0x11
 TYPE_KEY = 0x12
+TYPE_APK_DATA = 0x20
 
 TYPE_NAMES = {
     TYPE_JSON: "JSON",
@@ -33,6 +34,7 @@ TYPE_NAMES = {
     TYPE_TOUCH: "TOUCH",
     TYPE_SCROLL: "SCROLL",
     TYPE_KEY: "KEY",
+    TYPE_APK_DATA: "APK_DATA",
 }
 
 HEADER = 5                 # type (1) + stream (4)
