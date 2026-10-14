@@ -26,6 +26,9 @@ cd macos && ./scripts/install.sh && open /Applications/PocketDeck.app
    turns it off.
 7. Closing a window closes the app's virtual display; relaunching the Mac app
    reconnects silently to the last phone.
+8. Send a link to the phone: right-click a link or selected URL → **Services →
+   Open on Phone**, drop a link on the Deck, or `open "pocketdeck://open?url=https://example.com"`.
+   It opens in its Android app (Maps, YouTube, the browser…) in a new window.
 
 ## No phone? Use the emulator rig
 

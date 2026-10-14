@@ -18,6 +18,7 @@ import hmac
 import json
 import os
 import random
+import re
 import select
 import shutil
 import signal
@@ -223,6 +224,36 @@ def pkg_color(pkg):
     return (r, g, b)
 
 
+LINK_SCHEMES = ("http", "https", "geo", "tel", "mailto")
+LINK_MAX_BYTES = 8 * 1024
+
+
+def valid_link(raw):
+    """The trimmed URL when link.open may view it (docs/design/links.md), else None."""
+    if not isinstance(raw, str):
+        return None
+    url = raw.strip()
+    if not url or len(url.encode("utf-8")) > LINK_MAX_BYTES:
+        return None
+    if any(c.isspace() or ord(c) < 32 or ord(c) == 127 for c in url):
+        return None
+    scheme, sep, rest = url.partition(":")
+    if not sep or not re.fullmatch(r"[A-Za-z][A-Za-z0-9+.-]*", scheme):
+        return None
+    scheme = scheme.lower()
+    if scheme not in LINK_SCHEMES:
+        return None
+    if scheme in ("http", "https"):
+        if not rest.startswith("//"):
+            return None
+        host = re.split(r"[/?#]", rest[2:], 1)[0].rpartition("@")[2].partition(":")[0]
+        if not host:
+            return None
+    elif not rest:
+        return None
+    return url
+
+
 def round16(value):
     value = int(value)
     if value < 16:
@@ -274,6 +305,9 @@ class EventLog(object):
 
     def clip(self, direction, text):
         self._emit({"ev": "clip", "dir": direction, "text": text, "ts": time.time()})
+
+    def link(self, stream, url):
+        self._emit({"ev": "link", "stream": stream, "url": url, "ts": time.time()})
 
     def close(self):
         with self._lock:
@@ -743,6 +777,7 @@ class Session(object):
             "apps.list": self._on_apps_list,
             "apps.icon": self._on_apps_icon,
             "window.open": self._on_window_open,
+            "link.open": self._on_link_open,
             "window.resize": self._on_window_resize,
             "window.close": self._on_window_close,
             "window.pause": self._on_window_pause,
@@ -791,10 +826,20 @@ class Session(object):
             obj["stream"] = stream
         self._send(obj)
 
+    def _on_link_open(self, msg):
+        url = valid_link(msg.get("url"))
+        if url is None:
+            self._send_error("bad_url", "link.open needs an http, https, geo, tel or mailto URL",
+                             msg.get("stream"))
+            return
+        sys.stderr.write("fakephone: link.open stream %r %s\n" % (msg.get("stream"), url))
+        self.phone.events.link(msg.get("stream"), url)
+        self._on_window_open(dict(msg, pkg="link"))
+
     def _on_window_open(self, msg):
         stream_id = msg.get("stream")
         if stream_id is None:
-            self._send_error("bad_request", "window.open needs stream")
+            self._send_error("bad_request", "%s needs stream" % msg.get("t"))
             return
         if stream_id in self.windows:
             self._send_error("bad_request", "stream %r already open" % (stream_id,), stream_id)

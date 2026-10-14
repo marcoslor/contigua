@@ -156,6 +156,8 @@ final class ConnectionController {
     private var didAutoOpen = false
     private var everOnline = false
     private var pendingOpen: SpotlightOpenRequest?
+    /// A link waiting for its phone to become ready (nil phone = whichever comes first).
+    private var pendingLink: (request: OpenLinkRequest, until: Date)?
     private var debugInput: DebugInputDriver?
     private var pairingTarget: PairingTarget?
     private var qrTimer: Timer?
@@ -377,6 +379,48 @@ final class ConnectionController {
         }
         pendingOpen = request
         use(phone)
+    }
+
+    // MARK: Links (docs/design/links.md)
+
+    /// Opens a link from the URL scheme, Services or a drop in a new window on a phone.
+    func openLink(_ request: OpenLinkRequest) {
+        let ids = rememberedPhones.map(\.id)
+        let online = link.isOnline ? link.phone?.id : nil
+        switch LinkRoute.route(requested: request.deviceId, remembered: ids, online: online) {
+        case .open(let id):
+            openLink(request.url, on: id)
+        case .pick(let candidates):
+            let phones = candidates.compactMap { remembered.phone(id: $0) }
+            guard let id = PhonePicker.choose(phones, title: "Open on which phone?",
+                                              detail: request.url) else { return }
+            openLink(request.url, on: id)
+        case .wait:
+            pendingLink = (request, Date().addingTimeInterval(Self.pendingLinkLifetime))
+            if !link.isOnline { showTransient("Pair a phone to open links on it.") }
+        }
+    }
+
+    /// A link that waits for a phone is dropped after this long rather than
+    /// popping up much later.
+    private static let pendingLinkLifetime: TimeInterval = 120
+
+    private func openLink(_ url: String, on deviceId: String) {
+        Log.app.info("open link on \(deviceId, privacy: .public)")
+        if link.isOnline, link.phone?.id == deviceId {
+            windows.openLink(url)
+            return
+        }
+        pendingLink = (OpenLinkRequest(url: url, deviceId: deviceId), Date().addingTimeInterval(Self.pendingLinkLifetime))
+        if let phone = remembered.phone(id: deviceId), link.phone?.id != deviceId { use(phone) }
+    }
+
+    private func openPendingLink(readyPhone id: String) {
+        guard let pending = pendingLink else { return }
+        guard pending.until > Date() else { pendingLink = nil; return }
+        guard pending.request.deviceId == nil || pending.request.deviceId == id else { return }
+        pendingLink = nil
+        windows.openLink(pending.request.url)
     }
 
     // MARK: Phone data
@@ -692,6 +736,7 @@ final class ConnectionController {
             pendingOpen = nil
             windows.openApp(pkg: request.pkg)
         }
+        openPendingLink(readyPhone: info.id)
         transientBanner = nil
     }
 

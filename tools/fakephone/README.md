@@ -71,6 +71,7 @@ One JSON object per line, exactly:
 {"ev":"input","kind":"key","stream":N,"action":0|1,"keycode":N,"meta":N,"ts":..}
 {"ev":"video","stream":N,"config":true,"w":W,"h":H,"ts":..}
 {"ev":"quality","stream":N,"bitrate":N|null,"maxFps":N|null,"ts":..}
+{"ev":"link","stream":N,"url":"...","ts":..}
 ```
 
 ## deckctl

@@ -29,6 +29,8 @@ data class DeviceState(val locked: Boolean, val battery: Int, val charging: Bool
 sealed class WindowContent {
     data class App(val pkg: String, val activity: String?) : WindowContent()
     object Phone : WindowContent()
+    /** A link opened with `ACTION_VIEW`; Android picks the app (docs/design/links.md). */
+    data class Link(val url: String) : WindowContent()
 }
 
 /** Receives encoded video from a display stream. */
@@ -88,6 +90,9 @@ interface AppCatalog {
 interface Launcher {
     /** @return true when the launch was accepted; false means report `launch_failed`. */
     fun launch(displayId: Int, pkg: String, activity: String?): Boolean
+
+    /** Starts `ACTION_VIEW` for an already validated URL; false means `launch_failed`. */
+    fun view(displayId: Int, url: String): Boolean
 }
 
 /**

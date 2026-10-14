@@ -675,7 +675,10 @@ def cmd_icon(client, args):
 
 def _open_request(args, stream):
     req = {"t": "window.open", "stream": stream, "w": args.w, "h": args.h, "dpi": args.dpi}
-    if args.phone:
+    if getattr(args, "url", None):
+        req["t"] = "link.open"
+        req["url"] = args.url
+    elif args.phone:
         req["mode"] = "phone"
     else:
         req["pkg"] = args.target
@@ -1511,6 +1514,7 @@ def build_parser():
     sp = sub.add_parser("open", help="open a window and record video", **spp)
     sp.add_argument("target", nargs="?", help="package to launch")
     sp.add_argument("--phone", action="store_true", help="phone mode instead of an app")
+    sp.add_argument("--url", help="open this link (link.open) instead of an app")
     sp.add_argument("--w", type=int, required=True)
     sp.add_argument("--h", type=int, required=True)
     sp.add_argument("--dpi", type=int, default=450)
@@ -1656,8 +1660,8 @@ COMMANDS = {
 
 def main(argv=None):
     args = build_parser().parse_args(argv)
-    if args.command == "open" and not args.phone and not args.target:
-        sys.stderr.write("deckctl: error: open needs a package or --phone\n")
+    if args.command == "open" and not args.phone and not args.target and not args.url:
+        sys.stderr.write("deckctl: error: open needs a package, --phone or --url\n")
         return 2
     if args.command == "probe" and not args.phone and not args.target:
         sys.stderr.write("deckctl: error: probe needs a package or --phone\n")

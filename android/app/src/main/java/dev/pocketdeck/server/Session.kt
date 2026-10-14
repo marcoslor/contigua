@@ -363,6 +363,7 @@ class Session(
             "apps.list" -> onAppsList()
             "apps.icon" -> onAppsIcon(obj)
             "window.open" -> onWindowOpen(obj, frame)
+            "link.open" -> onLinkOpen(obj, frame)
             "window.resize" -> onWindowResize(obj, frame)
             "window.close" -> onWindowClose(obj, frame)
             "window.pause" -> onWindowPause(obj, frame)
@@ -389,13 +390,6 @@ class Session(
 
     private fun onWindowOpen(obj: Map<String, Any?>, frame: Frame) {
         val stream = streamOf(obj, frame)
-        val w = floor16(Json.int(obj["w"]) ?: 0)
-        val h = floor16(Json.int(obj["h"]) ?: 0)
-        val dpi = Json.int(obj["dpi"]) ?: 160
-        if (w <= 0 || h <= 0) {
-            sendError("bad_size", "window.open needs w,h", stream)
-            return
-        }
         val content: WindowContent = if (Json.str(obj["mode"]) == "phone") {
             WindowContent.Phone
         } else {
@@ -405,6 +399,27 @@ class Session(
             }
             WindowContent.App(pkg, Json.str(obj["activity"]))
         }
+        openStream(obj, stream, content)
+    }
+
+    private fun onLinkOpen(obj: Map<String, Any?>, frame: Frame) {
+        val stream = streamOf(obj, frame)
+        val url = LinkPolicy.validate(Json.str(obj["url"])) ?: run {
+            sendError("bad_url", "link.open needs an http, https, geo, tel or mailto URL", stream)
+            return
+        }
+        openStream(obj, stream, WindowContent.Link(url))
+    }
+
+    /** Creates the display for a `window.open` / `link.open` and starts its content. */
+    private fun openStream(obj: Map<String, Any?>, stream: Int, content: WindowContent) {
+        val w = floor16(Json.int(obj["w"]) ?: 0)
+        val h = floor16(Json.int(obj["h"]) ?: 0)
+        val dpi = Json.int(obj["dpi"]) ?: 160
+        if (w <= 0 || h <= 0) {
+            sendError("bad_size", "${obj["t"]} needs w,h", stream)
+            return
+        }
         if (streams.containsKey(stream)) display.close(stream)
         val displayId = display.open(stream, w, h, dpi, this)
         val state = StreamState(stream, displayId, IntSize(w, h)).also { it.content = content }
@@ -413,6 +428,7 @@ class Session(
         when (content) {
             is WindowContent.App -> launchOn(stream, displayId, content.pkg, content.activity)
             WindowContent.Phone -> launchOn(stream, displayId, OWN_PACKAGE, LAUNCHER_ACTIVITY)
+            is WindowContent.Link -> viewOn(stream, displayId, content.url)
         }
         power.setActiveStreams(activeDisplayIds())
         runCatching { callback.onSessionChanged(true, currentMacName ?: clientName, windowCount()) }
@@ -681,7 +697,7 @@ class Session(
         val current = HashMap<Int, Boolean>()
         for (s in candidates) {
             // Phone-mode windows run our own launcher and never auto-close.
-            if (s.content !is WindowContent.App) continue
+            if (s.content == null || s.content == WindowContent.Phone) continue
             val hasTask = runCatching { presence.hasTask(s.displayId) }.getOrNull() ?: continue
             previous[s.stream] = s.hadTask
             current[s.stream] = hasTask
@@ -731,6 +747,15 @@ class Session(
         if (!ok) {
             sendError("launch_failed", "could not launch $pkg", stream)
             log("launch $pkg failed on display $displayId")
+        }
+    }
+
+    private fun viewOn(stream: Int, displayId: Int, url: String) {
+        if (displayId < 0) return
+        val ok = runCatching { launcher.view(displayId, url) }.getOrDefault(false)
+        if (!ok) {
+            sendError("launch_failed", "no app opens this link", stream)
+            log("view link failed on display $displayId")
         }
     }
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # End-to-end checks C3-C13 for the macOS client against tools/fakephone.
 #
-#   ./scripts/check-e2e.sh [qr|pair|render|resize|input|input-global|pause|direct|nav|spotlight|pinch|strip|trackpad|clip|all]
+#   ./scripts/check-e2e.sh [qr|pair|render|resize|input|input-global|pause|direct|nav|spotlight|pinch|strip|trackpad|clip|links|all]
 #
 # Every check starts from a clean slate: no PocketDeck or fakephone processes
 # left by an earlier run, a fresh fakephone state file and no pairing key in
@@ -1243,6 +1243,68 @@ check_clip() {
     wait_until 5 no_fakephone
 }
 
+# check_links — links Mac -> phone (docs/design/links.md). A pocketdeck://open URL
+# goes to the running e2e app, which sends link.open: the fakephone logs it and a
+# stream window opens with video. A file: link is refused on the Mac and never
+# reaches the phone. `open -a` names the e2e bundle so LaunchServices cannot hand the
+# URL to another PocketDeck copy; the check first makes sure LaunchServices knows the
+# running e2e process by that bundle, so `open` delivers to it instead of starting a
+# second instance (which would run without --profile).
+check_links() {
+    clean
+    start_fake || return 1
+    launch --connect "127.0.0.1:$PORT" --quit-after 90
+
+    authenticated() { events_have '"state":"auth_ok"' || events_have '"state":"paired"'; }
+    wait_until 30 authenticated \
+        || { bad "LINKS the app never authenticated"; stop_app; stop_fakephone; return 1; }
+
+    local registered
+    registered="$(lsappinfo info -only bundlepath "$(lsappinfo find pid="$APP_PID" 2>/dev/null)" 2>/dev/null)"
+    case "$registered" in
+        *"$E2E_BUNDLE"*) ;;
+        *) bad "LINKS LaunchServices does not list pid $APP_PID as $E2E_BUNDLE ($registered)"
+           stop_app; stop_fakephone; return 1 ;;
+    esac
+
+    link_logged() {
+        python3 - "$WORK/events.jsonl" "$1" <<'PY'
+import json, sys
+for line in open(sys.argv[1]):
+    try:
+        event = json.loads(line)
+    except ValueError:
+        continue
+    if event.get("ev") == "link" and event.get("url") == sys.argv[2]:
+        sys.exit(0)
+sys.exit(1)
+PY
+    }
+    stream_video() { events_have '"ev":"video"'; }
+
+    open -a "$E2E_BUNDLE" "pocketdeck://open?url=https%3A%2F%2Fexample.com"
+    wait_until 30 link_logged "https://example.com" \
+        && ok "LINKS fakephone logs link.open https://example.com" \
+        || bad "LINKS fakephone did not log link.open https://example.com"
+    wait_until 30 stream_video && wait_until 15 windows_at_least 2 \
+        && ok "LINKS a stream window opened with video ($(windows | wc -l | tr -d ' ') windows)" \
+        || bad "LINKS no stream window/video for the link"
+
+    open -a "$E2E_BUNDLE" "pocketdeck://open?url=file%3A%2F%2F%2Fetc%2Fhosts"
+    sleep 3
+    ! events_have 'file:///etc/hosts' \
+        && ok "LINKS a file: link never reaches the phone" \
+        || bad "LINKS the Mac sent a file: link to the phone"
+
+    [ "$(e2e_app_pids | wc -l | tr -d ' ')" = "1" ] && ! pgrep -fx "$APP" >/dev/null \
+        && ok "LINKS the URL went to the running e2e app (one instance)" \
+        || bad "LINKS open started another PocketDeck instance"
+    pkill -fx "$APP" >/dev/null 2>&1
+    stop_app
+    stop_fakephone
+    wait_until 5 no_fakephone
+}
+
 check_orphans() {
     sleep 1
     local n
@@ -1261,8 +1323,8 @@ build_e2e_app() {
 
 which_check="${1:-all}"
 case "$which_check" in
-    qr|pair|render|resize|input|input-global|pause|direct|nav|spotlight|pinch|strip|trackpad|clip|all) ;;
-    *) say "usage: check-e2e.sh [qr|pair|render|resize|input|input-global|pause|direct|nav|spotlight|pinch|strip|trackpad|clip|all]"; exit 2 ;;
+    qr|pair|render|resize|input|input-global|pause|direct|nav|spotlight|pinch|strip|trackpad|clip|links|all) ;;
+    *) say "usage: check-e2e.sh [qr|pair|render|resize|input|input-global|pause|direct|nav|spotlight|pinch|strip|trackpad|clip|links|all]"; exit 2 ;;
 esac
 acquire_lock
 wait_for_other_runs
@@ -1286,8 +1348,9 @@ case "$which_check" in
     nav)      check_nav ;;
     spotlight) check_spotlight ;;
     clip)     check_clip ;;
+    links)    check_links ;;
     all)      check_qr; check_pair; check_render; check_resize; check_input; check_pinch
-              check_strip; check_trackpad; check_pause; check_direct; check_nav; check_spotlight; check_clip; check_orphans ;;
+              check_strip; check_trackpad; check_pause; check_direct; check_nav; check_spotlight; check_clip; check_links; check_orphans ;;
 esac
 
 say ""

@@ -16,6 +16,7 @@ class FakePlatform : DisplayLayer, AppCatalog, Launcher, Injector, Power, Device
     data class OpenCall(val stream: Int, val w: Int, val h: Int, val dpi: Int, val displayId: Int)
     data class ResizeCall(val stream: Int, val w: Int, val h: Int, val dpi: Int)
     data class LaunchCall(val displayId: Int, val pkg: String, val activity: String?)
+    data class ViewCall(val displayId: Int, val url: String)
     data class TouchCall(val displayId: Int, val action: Int, val pointerId: Int, val nx: Float, val ny: Float, val downTime: Long, val eventTime: Long)
     data class KeyCall(val displayId: Int, val action: Int, val keycode: Int, val metaState: Int, val downTime: Long, val eventTime: Long)
     data class PairingReq(val requestId: String, val macName: String, val code: String)
@@ -29,6 +30,7 @@ class FakePlatform : DisplayLayer, AppCatalog, Launcher, Injector, Power, Device
     val keyframeRequests = CopyOnWriteArrayList<Int>()
     val closes = CopyOnWriteArrayList<Int>()
     val launches = CopyOnWriteArrayList<LaunchCall>()
+    val views = CopyOnWriteArrayList<ViewCall>()
     val touches = CopyOnWriteArrayList<TouchCall>()
     val keys = CopyOnWriteArrayList<KeyCall>()
     val scrolls = CopyOnWriteArrayList<Int>()
@@ -107,6 +109,11 @@ class FakePlatform : DisplayLayer, AppCatalog, Launcher, Injector, Power, Device
 
     override fun launch(displayId: Int, pkg: String, activity: String?): Boolean {
         launches.add(LaunchCall(displayId, pkg, activity))
+        return launchResult
+    }
+
+    override fun view(displayId: Int, url: String): Boolean {
+        views.add(ViewCall(displayId, url))
         return launchResult
     }
 
