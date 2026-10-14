@@ -72,18 +72,26 @@ fun OnboardingScreen(
         label = "onboardingProgress",
     )
 
-    val input = state.onboarding
-    LaunchedEffect(pagerState.currentPage, input, autoAdvance) {
-        if (!autoAdvance) return@LaunchedEffect
-        val step = steps[pagerState.currentPage]
-        if (!isOnboardingComplete(step, input)) return@LaunchedEffect
-        if (step == OnboardingStep.PAIR) {
+    // Keyed on the settled page and a Boolean, not the whole input: any input change used to
+    // restart this effect mid-animation, cancelling the scroll and leaving the pager stuck
+    // between two pages.
+    val settled = pagerState.settledPage
+    val stepComplete = isOnboardingComplete(steps[settled], state.onboarding)
+    LaunchedEffect(settled, stepComplete, autoAdvance) {
+        if (!autoAdvance || !stepComplete) return@LaunchedEffect
+        if (steps[settled] == OnboardingStep.PAIR) {
             onFinished()
         } else {
             pagerState.animateScrollToPage(
-                pagerState.currentPage + 1,
+                settled + 1,
                 animationSpec = tween(500, easing = EmphasizedDecelerate),
             )
+        }
+    }
+    // Safety net: if a scroll is ever interrupted, finish it to the nearest page.
+    LaunchedEffect(pagerState.isScrollInProgress) {
+        if (!pagerState.isScrollInProgress && pagerState.currentPageOffsetFraction != 0f) {
+            pagerState.animateScrollToPage(pagerState.currentPage)
         }
     }
 
