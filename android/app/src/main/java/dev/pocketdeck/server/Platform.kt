@@ -39,6 +39,19 @@ interface VideoSink {
     fun onFrame(stream: Int, ptsUs: Long, key: Boolean, data: ByteArray)
 }
 
+/** Receives encoded device-wide audio (one mixer tap, stream 0). */
+interface AudioSink {
+    fun onAudioConfig(codec: Int, sampleRate: Int, channels: Int, frameMs: Int, setup: ByteArray)
+    fun onAudioFrame(ptsUs: Long, data: ByteArray)
+}
+
+/** Owns the REMOTE_SUBMIX capture + encoder for the session's audio stream. */
+interface AudioCaptureLayer {
+    val isRunning: Boolean
+    fun start(sink: AudioSink, preferredCodecs: List<Int> = listOf(2, 3))
+    fun stop()
+}
+
 /** Reports the top app on a display, for phone-mode `window.title` updates. */
 data class TopApp(val pkg: String, val label: String)
 

@@ -81,6 +81,32 @@ class FramesTest {
     }
 
     @Test
+    fun audioConfigRoundTrip() {
+        val setup = byteArrayOf(0x12, 0x10)
+        val payload = Frames.encodeAudioConfig(AudioConfigPayload(Frames.CODEC_OPUS, 48000, 2, 20, setup))
+        val frame = roundTrip(Frames.encode(Frames.TYPE_AUDIO_CONFIG, 0, payload))
+        assertEquals(Frames.TYPE_AUDIO_CONFIG, frame.type)
+        assertEquals(0, frame.stream)
+        val decoded = Frames.decodeAudioConfig(frame.payload)
+        assertEquals(Frames.CODEC_OPUS, decoded.codec)
+        assertEquals(48000, decoded.sampleRate)
+        assertEquals(2, decoded.channels)
+        assertEquals(20, decoded.frameMs)
+        assertArrayEquals(setup, decoded.setup)
+    }
+
+    @Test
+    fun audioFrameRoundTrip() {
+        val packet = byteArrayOf(0x4F, 0x70, 0x75, 0x73, 0x01, 0x02)
+        val payload = Frames.encodeAudioFrame(AudioFramePayload(987654321L, packet))
+        val frame = roundTrip(Frames.encode(Frames.TYPE_AUDIO_FRAME, 0, payload))
+        assertEquals(Frames.TYPE_AUDIO_FRAME, frame.type)
+        val decoded = Frames.decodeAudioFrame(frame.payload)
+        assertEquals(987654321L, decoded.ptsUs)
+        assertArrayEquals(packet, decoded.data)
+    }
+
+    @Test
     fun oversizeFrameRejected() {
         val header = byteArrayOf(
             0x00, 0x80.toByte(), 0x00, 0x01, // len = 8 MiB + 1

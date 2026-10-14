@@ -61,6 +61,7 @@ class DeckService(private val appContext: Context?) :
         val power = AndroidPower(base, ::log)
         this.power = power
         val titles = AndroidWindowObserver(shell, ::log)
+        val audio = AudioCapture(shell, ::log)
 
         val factory = SessionFactory { socket ->
             Session(
@@ -80,6 +81,7 @@ class DeckService(private val appContext: Context?) :
                 now = { SystemClock.uptimeMillis() },
                 log = ::log,
                 autoApprovePairing = dev.pocketdeck.BuildConfig.DEBUG,
+                audioCapture = audio,
             )
         }
         val srv = Server(factory, ::log)

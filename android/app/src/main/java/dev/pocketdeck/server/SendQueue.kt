@@ -2,9 +2,10 @@ package dev.pocketdeck.server
 
 /**
  * Outbound send queue with the protocol's priority and backpressure rules:
- * JSON > keyframes/config > delta frames, and no more than ~250 ms of queued
+ * JSON > keyframes/config > audio > delta frames, and no more than ~250 ms of queued
  * video per stream (deltas are dropped until the next keyframe, at which point
- * a sync frame is requested from the encoder).
+ * a sync frame is requested from the encoder). Audio has its own ~250 ms
+ * budget; oldest packets are dropped first so the stream stays realtime.
  *
  * "250 ms" is enforced two ways: a byte budget (~250 ms at the 8 Mbps cap) and
  * the *video duration* between the oldest queued delta and the frame being
@@ -22,12 +23,15 @@ internal class SendQueue(
     private val maxDeltaBytesPerStream: Int = DEFAULT_MAX_DELTA_BYTES,
     private val maxDeltaDurationUs: Long = DEFAULT_MAX_DELTA_DURATION_US,
     private val maxBulkBytes: Int = DEFAULT_MAX_BULK_BYTES,
+    private val maxAudioBytes: Int = DEFAULT_MAX_AUDIO_BYTES,
     private val onDeltaDrop: (stream: Int) -> Unit = {},
 ) {
     private val lock = Object()
 
     private val json = ArrayDeque<ByteArray>()
     private val control = ArrayDeque<ByteArray>()
+    private val audio = ArrayDeque<ByteArray>()
+    private var audioBytes = 0
     private val deltas = HashMap<Int, ArrayDeque<ByteArray>>()
     private val deltaOrder = ArrayDeque<Int>()
     private val deltaBytes = HashMap<Int, Int>()
@@ -40,6 +44,21 @@ internal class SendQueue(
     fun enqueueJson(bytes: ByteArray) = synchronized(lock) {
         json.addLast(bytes)
         lock.notifyAll()
+    }
+
+    /** Device-wide audio (Opus/AAC packets): after control, before video deltas. */
+    fun enqueueAudio(bytes: ByteArray) = synchronized(lock) {
+        audio.addLast(bytes)
+        audioBytes += bytes.size
+        while (audioBytes > maxAudioBytes && audio.isNotEmpty()) {
+            audioBytes -= audio.removeFirst().size
+        }
+        lock.notifyAll()
+    }
+
+    fun clearAudio() = synchronized(lock) {
+        audio.clear()
+        audioBytes = 0
     }
 
     /**
@@ -125,6 +144,10 @@ internal class SendQueue(
     private fun takeLocked(): ByteArray? {
         json.removeFirstOrNull()?.let { return it }
         control.removeFirstOrNull()?.let { return it }
+        audio.removeFirstOrNull()?.let {
+            audioBytes -= it.size
+            return it
+        }
         val n = deltaOrder.size
         repeat(n) {
             val stream = deltaOrder.removeFirst()
@@ -159,5 +182,8 @@ internal class SendQueue(
         const val DEFAULT_MAX_DELTA_DURATION_US = 250_000L
 
         const val DEFAULT_MAX_BULK_BYTES = 1024 * 1024
+
+        /** ~250 ms of Opus at 64 kbps is 2 KB; 32 KB leaves headroom for AAC. */
+        const val DEFAULT_MAX_AUDIO_BYTES = 32 * 1024
     }
 }

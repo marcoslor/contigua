@@ -7,6 +7,8 @@ import dev.pocketdeck.proto.Frames
 import dev.pocketdeck.proto.Json
 import dev.pocketdeck.proto.VideoConfigPayload
 import dev.pocketdeck.proto.VideoFramePayload
+import dev.pocketdeck.proto.AudioConfigPayload
+import dev.pocketdeck.proto.AudioFramePayload
 import java.io.BufferedOutputStream
 import java.net.Socket
 import java.net.SocketTimeoutException
@@ -44,7 +46,8 @@ class Session(
     private val exitPollIntervalMs: Long = 2_000,
     maxDeltaBytesPerStream: Int = SendQueue.DEFAULT_MAX_DELTA_BYTES,
     private val autoApprovePairing: Boolean = false,
-) : VideoSink {
+    private val audioCapture: AudioCaptureLayer? = null,
+) : VideoSink, AudioSink {
 
     private enum class Phase { HELLO, AUTH, READY }
 
@@ -154,6 +157,8 @@ class Session(
         stopClipboardSync()
         runCatching { apk?.close() }
         stopStreamWatch()
+        runCatching { audioCapture?.stop() }
+        queue.clearAudio()
         synchronized(streams) {
             for (s in streams.values.toList()) runCatching { display.close(s.stream) }
             streams.clear()
@@ -389,6 +394,8 @@ class Session(
             "clip.set" -> onClipSet(obj)
             "apk.install" -> onApkInstall(obj)
             "apk.cancel" -> (obj["id"] as? Number)?.let { apk?.cancel(it.toLong()) }
+            "audio.start" -> onAudioStart(obj)
+            "audio.stop" -> onAudioStop()
             else -> logOnce("unknown message '$t'")
         }
     }
@@ -473,6 +480,7 @@ class Session(
         display.close(stream)
         sendJson(mapOf("t" to "window.closed", "stream" to stream, "reason" to "requested"))
         power.setActiveStreams(activeDisplayIds())
+        stopAudioIfIdle()
         runCatching { callback.onSessionChanged(true, currentMacName ?: clientName, windowCount()) }
         log("closed stream $stream (display ${state.displayId})")
     }
@@ -622,6 +630,53 @@ class Session(
         val payload = Frames.encodeVideoFrame(VideoFramePayload(ptsUs, key, data))
         val bytes = Frames.encode(Frames.TYPE_VIDEO_FRAME, stream, payload)
         if (key) queue.enqueueControl(stream, bytes) else queue.enqueueDelta(stream, ptsUs, bytes)
+    }
+
+    // ------------------------------------------------------------------
+    // audio sink (device-wide, stream 0)
+    // ------------------------------------------------------------------
+
+    override fun onAudioConfig(codec: Int, sampleRate: Int, channels: Int, frameMs: Int, setup: ByteArray) {
+        val payload = Frames.encodeAudioConfig(AudioConfigPayload(codec, sampleRate, channels, frameMs, setup))
+        queue.enqueueControl(0, Frames.encode(Frames.TYPE_AUDIO_CONFIG, 0, payload))
+        sendJson(mapOf("t" to "audio.state", "on" to true, "codec" to codec))
+    }
+
+    override fun onAudioFrame(ptsUs: Long, data: ByteArray) {
+        val payload = Frames.encodeAudioFrame(AudioFramePayload(ptsUs, data))
+        queue.enqueueAudio(Frames.encode(Frames.TYPE_AUDIO_FRAME, 0, payload))
+    }
+
+    private fun onAudioStart(obj: Map<String, Any?>) {
+        val capture = audioCapture ?: return
+        if (capture.isRunning) return
+        if (windowCount() == 0) {
+            log("audio.start with no windows: ignoring")
+            return
+        }
+        val codecs = (obj["codecs"] as? List<*>)?.mapNotNull {
+            when (it) {
+                is Number -> it.toInt()
+                is String -> it.toIntOrNull()
+                else -> null
+            }
+        }?.filter { it == Frames.CODEC_OPUS || it == Frames.CODEC_AAC } ?: emptyList()
+        runCatching { capture.start(this, codecs.ifEmpty { listOf(Frames.CODEC_OPUS, Frames.CODEC_AAC) }) }
+            .onFailure { log("audio start failed: ${it.message}") }
+    }
+
+    private fun onAudioStop() {
+        runCatching { audioCapture?.stop() }
+        queue.clearAudio()
+        sendJson(mapOf("t" to "audio.state", "on" to false, "codec" to 0))
+    }
+
+    /** Power rule: no windows left means no audio capture. */
+    private fun stopAudioIfIdle() {
+        if (windowCount() == 0 && (audioCapture?.isRunning == true)) {
+            runCatching { audioCapture?.stop() }
+            queue.clearAudio()
+        }
     }
 
     private fun onDeltaDrop(stream: Int) {
