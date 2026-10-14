@@ -3,31 +3,32 @@
 Goal: phone playback (apps streamed to the Mac) plays on the Mac with <150ms
 added latency. Phone speaker silent while streaming when feasible.
 
-## Emulator proof (API 36, UID 2000, emulator-5564, 2026-10-14)
+## Emulator proof (API 36, UID 2000, emulator-5576, 2026-10-14)
 
-All probes ran as shell (`adb -s emulator-5564 shell`, `app_process` dex):
+Probes ran as shell (`app_process` dex), tone = AudioTrack USAGE_MEDIA 440 Hz
+at amplitude 8000 (RMS 5657) in a separate process:
 
-- `AudioRecord(REMOTE_SUBMIX, 48k, stereo)` → `STATE_INITIALIZED`, `startRecording`
-  ok, `read` returns bytes. Silence when nothing plays (expected).
-- Tone test (AudioTrack 440Hz sine + simultaneous REMOTE_SUBMIX record, no
-  policy): 192000 bytes, rms 34, 4088/96000 nonzero → effectively silent.
-  Conclusion: a routing policy is required; raw submix does not mirror speaker.
-- `AudioPlaybackCaptureConfiguration.Builder()` on API 36 takes a mandatory
-  `MediaProjection` arg (compile error without one). No-projection capture is
-  impossible on this API level.
-- `IMediaProjectionManager.createProjection(2000, com.android.shell, type, …)`
-  fails for all types 0–2 with `Requires MANAGE_MEDIA_PROJECTION`
-  (protectionLevel `signature`; shell lacks it). So AudioPlaybackCapture is
-  unreachable from the shell service without user consent — rejected.
-- Shell grants (verified): `CAPTURE_AUDIO_OUTPUT`, `MANAGE_AUDIO_POLICY`,
-  `MODIFY_AUDIO_ROUTING` all `granted=true`; priv-app flags include
-  `ALLOW_AUDIO_PLAYBACK_CAPTURE`, `PRIVILEGED`. `REMOTE_SUBMIX` input device
-  exists in `dumpsys media.audio_policy`.
-- Codecs on device: `c2.android.opus.encoder (audio/opus)`,
-  `c2.android.aac.encoder`, `OMX.google.aac.encoder`. Opus encode on-device OK.
+- Plain `AudioRecord(REMOTE_SUBMIX, 48k, stereo)` with no AudioPolicy: opening
+  the input routes media to the submix output (`dumpsys audio`: `Devices:
+  remote_submix(8000)`; audio_flinger: speaker thread `0 active` tracks while
+  the submix thread has the tone). Same technique as scrcpy's "output" source.
+- Captured RMS 134 at first, then 5656 after raising the music volume: the
+  submix device has its own volume index (was 5/15 → −32 dB). An earlier probe
+  read that attenuation as "silent" and wrongly concluded a policy was needed;
+  the AudioPolicy/AudioMix route then failed on API 36 (`legacy2aidl_AudioMix
+  BAD_VALUE`) and is gone.
+- The record's attribution must be uid 2000 + `com.android.shell`
+  (`AudioRecord.Builder().setContext(ShellContext)`); `dev.pocketdeck` at uid
+  2000 is rejected by AudioFlinger (`invalid attr`).
+- With nothing playing the submix input synthesizes silence ~25% faster than
+  realtime; the capture loop drops chunks that run >40 ms ahead of the clock.
+- `AudioPlaybackCaptureConfiguration` needs a MediaProjection
+  (`MANAGE_MEDIA_PROJECTION`, signature) at shell UID — not used.
+- Codecs on device: `c2.android.opus.encoder`, `c2.android.aac.encoder`.
 
-Decision: **REMOTE_SUBMIX + AudioPolicy routing + Opus**. This is the only
-route proven reachable at shell UID without user interaction.
+Measured (5 runs, tone write on the phone → buffer played by the Mac,
+including the phone mixer, Opus, adb forward, Mac queue and output; clocks
+aligned per run, ±30 ms): 79, 81, 95, 103, 126 ms; 0 dropped.
 
 ## Approach
 
@@ -38,12 +39,11 @@ Phone (shell service, `dev.pocketdeck:…`):
   unpaused `window.open`, stop when no unpaused streams remain or session ends.
   `window.pause`/`resume`/`close` drive refcount; no capture when idle (power
   rules).
-- Routing: `AudioPolicy` with one `AudioMix` (`ROUTE_FLAG_RENDER`,
-  device `TYPE_REMOTE_SUBMIX`, 48k stereo PCM16) + `AudioMixingRule`
-  matching `USAGE_MEDIA`, `USAGE_GAME`, `USAGE_UNKNOWN` (players only).
-  Register on start, unregister on stop. Routing to submix silences the phone
-  speaker for routed usages — the required "silent while streaming".
-  Do NOT touch stream volumes; Mac-side gain only.
+- Routing: none of our own. Opening the REMOTE_SUBMIX input makes the
+  framework route media to the submix output, which silences the speaker —
+  the required "silent while streaming". Once routed, STREAM_MUSIC is set to
+  max, which only changes the submix device's index (the speaker's is kept);
+  user-facing volume is Mac-side gain.
 - Capture: `AudioRecord(REMOTE_SUBMIX, 48000, stereo, PCM16)` in a dedicated
   thread, 20ms reads (1920 frames). Feed `MediaCodec audio/opus` encoder
   (48k, stereo, ~64kbps, 20ms frames, `KEY_PRIORITY realtime`).
@@ -104,10 +104,13 @@ Opus encoder missing). Mac `audio.stop` on session end. Unknown codecs ignored.
 
 - Emulator rig uses `-no-audio`; audio e2e needs a boot without it (this
   design's rig) or fakephone-only coverage on shared runs.
-- `AudioPolicy` routing scope: must match only media/game usages or calls and
-  notifications leak into the Mac; mixing rule needs device verification.
-- Mac Opus decode via AudioToolbox must be verified on macOS 26 SDK; fallback
-  to AAC covers failure but adds latency.
+- Routing scope is the framework's: which usages (notifications, calls) follow
+  media to the submix is decided by the device's audio policy; verify on the
+  real phone.
+- Mac Opus decode via AudioToolbox works on macOS 27 (verified, emulator run);
+  AAC fallback stays for decoders without Opus.
+- One capture per service: a second Mac session while another streams gets
+  no audio until the first stops.
 - Speaker silence depends on routing actually muting speaker for routed usages
   on Samsung One UI (AOSP behavior; verify on S25 when available).
 - Jitter tuning: 60ms target keeps budget (<20 opus + <30 net + 60 jitter +
