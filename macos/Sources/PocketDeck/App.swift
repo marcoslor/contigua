@@ -155,7 +155,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         default: break
         }
         NSApp.activate(ignoringOtherApps: true)
+        NSApp.servicesProvider = LinkService.shared
         environment.controller.start()
+    }
+
+    /// `pocketdeck://open?url=…` (docs/design/links.md).
+    @MainActor
+    func application(_ application: NSApplication, open urls: [URL]) {
+        for url in urls {
+            guard let request = OpenLinkRequest.parse(schemeURL: url) else {
+                Log.app.notice("ignored an unsupported or invalid pocketdeck URL")
+                continue
+            }
+            AppEnvironment.shared.controller.openLink(request)
+        }
     }
 
     /// Spotlight results for indexed phone apps arrive as an NSUserActivity.

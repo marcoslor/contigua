@@ -609,6 +609,11 @@ final class Session {
         sendJSON(message)
     }
 
+    func openLink(stream: UInt32, url: String, width: Int, height: Int, dpi: Double) {
+        sendJSON(["t": "link.open", "stream": Int(stream), "w": width, "h": height,
+                  "dpi": Int(dpi.rounded()), "url": url])
+    }
+
     func openPhone(stream: UInt32, width: Int, height: Int, dpi: Double) {
         sendJSON(["t": "window.open", "stream": Int(stream), "w": width, "h": height,
                   "dpi": Int(dpi.rounded()), "mode": "phone"])

@@ -148,6 +148,17 @@ final class WindowManager {
     }
 
     @discardableResult
+    func openLink(_ url: String) -> LinkWindowController {
+        let stream = allocateStream()
+        let controller = LinkWindowController(stream: stream, url: url, manager: self)
+        store(controller, stream: stream)
+        controller.present()
+        controller.sendOpen()
+        onChange?()
+        return controller
+    }
+
+    @discardableResult
     func openPhoneWindow() -> PhoneWindowController {
         let stream = allocateStream()
         let controller = PhoneWindowController(stream: stream, phone: phone, manager: self)
@@ -230,6 +241,7 @@ final class WindowManager {
         case .windowTitle(let stream, let label, _):
             (controller(for: stream) as? PhoneWindowController)?.setTitle(label)
             (controller(for: stream) as? AppWindowController)?.setTitle(label)
+            (controller(for: stream) as? LinkWindowController)?.setTitle(label)
         case .windowClosed(let stream, let reason):
             Log.app.info("phone closed stream \(stream, privacy: .public) (\(reason, privacy: .public))")
             controller(for: stream)?.closeFromRemote()

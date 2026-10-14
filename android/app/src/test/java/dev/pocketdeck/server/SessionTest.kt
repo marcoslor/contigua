@@ -631,6 +631,42 @@ class SessionTest {
         assertEquals(listOf("ok"), platform.clipWrites.toList())
     }
 
+    @Test
+    fun linkOpenViewsTheUrlOnANewDisplay() {
+        addAndAuthenticate()
+        send(mapOf("t" to "link.open", "stream" to 9, "w" to 640, "h" to 480, "dpi" to 160, "url" to " https://example.com/a?b=1 "))
+        val opened = readUntil("window.opened")
+        assertEquals(9L, opened["stream"])
+        val open = platform.opens.first()
+        await { platform.views.isNotEmpty() }
+        assertEquals(FakePlatform.ViewCall(open.displayId, "https://example.com/a?b=1"), platform.views.first())
+        assertTrue(platform.launches.isEmpty())
+    }
+
+    @Test
+    fun linkOpenRejectsDisallowedSchemesWithoutADisplay() {
+        addAndAuthenticate()
+        for (url in listOf("intent://x#Intent;component=a/b;end", "file:///sdcard/x", "content://a/b", "javascript:alert(1)", "")) {
+            send(mapOf("t" to "link.open", "stream" to 2, "w" to 640, "h" to 480, "dpi" to 160, "url" to url))
+            val error = readUntil("error")
+            assertEquals("bad_url", error["code"])
+            assertEquals(2L, error["stream"])
+        }
+        send(mapOf("t" to "ping", "ts" to 4))
+        assertEquals(4L, readUntil("pong")["ts"])
+        assertTrue(platform.opens.isEmpty())
+        assertTrue(platform.views.isEmpty())
+    }
+
+    @Test
+    fun linkWithoutAHandlerReportsLaunchFailed() {
+        addAndAuthenticate()
+        platform.launchResult = false
+        send(mapOf("t" to "link.open", "stream" to 3, "w" to 640, "h" to 480, "dpi" to 160, "url" to "geo:0,0?q=Lisbon"))
+        readUntil("window.opened")
+        assertEquals("launch_failed", readUntil("error")["code"])
+    }
+
     private companion object {
         const val CLIP_MAX_BYTES = 1_048_576
     }

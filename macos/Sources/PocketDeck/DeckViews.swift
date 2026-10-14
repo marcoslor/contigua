@@ -36,6 +36,14 @@ struct DeckRoot: View {
         }
         .animation(.smooth(duration: 0.3), value: controller.deckMode)
         .frame(minWidth: 640, minHeight: 420)
+        // A link dropped on the Deck opens on the phone (a .webloc file carries one too).
+        .dropDestination(for: URL.self) { urls, _ in
+            let links = urls.compactMap { url in
+                url.isFileURL ? OpenLinkRequest.webloc(at: url) : LinkPolicy.validate(url.absoluteString)
+            }
+            for link in links { controller.openLink(OpenLinkRequest(url: link)) }
+            return !links.isEmpty
+        }
         .task {
             // A launch hook's sheet waits for the window: presented while the
             // window is still being created, SwiftUI sometimes drops it.

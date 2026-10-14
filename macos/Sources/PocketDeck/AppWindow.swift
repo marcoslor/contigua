@@ -32,3 +32,36 @@ final class AppWindowController: StreamWindowController {
         window?.title = label
     }
 }
+
+/// A window opened for a link: the phone picks the app (`link.open`), and the
+/// title follows whichever app ends up on top of its display.
+final class LinkWindowController: StreamWindowController {
+    let url: String
+
+    init(stream: UInt32, url: String, manager: WindowManager) {
+        self.url = url
+        super.init(stream: stream, contentSize: AppWindowController.defaultContentSize, manager: manager)
+        window?.title = Self.title(for: url)
+        window?.minSize = NSSize(width: 320, height: 240)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+    /// The host for web links ("example.com"), the whole link otherwise ("tel:+351…").
+    static func title(for url: String) -> String {
+        URLComponents(string: url)?.host.flatMap { $0.isEmpty ? nil : $0 } ?? url
+    }
+
+    override func sendOpen() {
+        let pixels = displayPixels()
+        session.openLink(stream: stream, url: url,
+                         width: Int(pixels.width), height: Int(pixels.height), dpi: dpi())
+    }
+
+    override var frameKey: String { "link" }
+
+    func setTitle(_ label: String) {
+        window?.title = label
+    }
+}

@@ -136,6 +136,7 @@ Mac → phone (after `welcome`):
 | `window.resume` | `stream` | resume; phone sends CONFIG + keyframe |
 | `window.keyframe` | `stream` | request IDR (decoder error recovery) |
 | `window.quality` | `stream`, `bitrate` (bps, optional), `maxFps` (optional) | live encoder quality; optional, the phone may ignore it |
+| `link.open` | `stream`, `w`, `h`, `dpi`, `url` | like `window.open`, but the phone starts `ACTION_VIEW` for `url` on the new display and Android picks the app; see "Links" |
 | `window.launch` | `stream`, `pkg` (+`activity`) | launch an app onto an existing window's display (phone mode) |
 | `nav` | `stream`, `action`: `back`/`home`/`recents` | back = KEYCODE_BACK on that display; home/recents meaningful in phone mode |
 | `text` | `stream`, `text` | type text into the focused field of that display |
@@ -178,11 +179,27 @@ Plain text only, in both directions, while a session is ready
 - Either side may turn sync off. While it is off the side neither sends nor
   applies `clip.set`.
 
+## Links
+
+`{"t":"link.open","stream":N,"w":..,"h":..,"dpi":..,"url":"https://example.com"}` opens a
+link from the Mac in a new window. The replies are those of `window.open`
+(`window.opened`, VIDEO_CONFIG, frames, `window.title`, `window.closed`).
+
+- `url` is UTF-8, at most 8 KiB (8192 bytes) after trimming surrounding whitespace, and
+  contains no whitespace or control characters.
+- Allowed schemes (case-insensitive): `http`, `https` (both need a host), `geo`, `tel`,
+  `mailto`. Every other scheme (`intent:`, `file:`, `content:`, `javascript:` …) is refused.
+- Both sides validate. The phone refuses an invalid `url` with
+  `{"t":"error","code":"bad_url","stream":N}` and creates no display.
+- The phone starts `ACTION_VIEW` with `CATEGORY_BROWSABLE` on the new display, so
+  verified app links open their app and other web links the default browser. No
+  handler → `launch_failed` (the window stays open, like a failed app launch).
+
 ## Error codes
 
 `{"t":"error","code":...}` codes: `busy` (another session is active; sent instead of
 `challenge`, then close), `auth_failed`, `pair_denied`, `version`, `protocol` (message not
-allowed in the current state; then close), `pair_timeout` (nobody answered the pairing prompt in 120 s; then close), `no_stream` (unknown `stream`), `launch_failed`.
+allowed in the current state; then close), `pair_timeout` (nobody answered the pairing prompt in 120 s; then close), `no_stream` (unknown `stream`), `launch_failed`, `bad_url` (a `link.open` URL that is not allowed).
 Oversized frames close the session without a reply.
 
 ## Versioning

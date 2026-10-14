@@ -6,6 +6,7 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Canvas
+import android.net.Uri
 import android.os.Bundle
 import android.util.Base64
 import java.io.ByteArrayOutputStream
@@ -43,6 +44,18 @@ internal class AndroidLauncher(private val ctx: Context, private val log: (Strin
         }
         if (startViaBinder(intent, displayId)) return true
         return startViaAm(displayId, component)
+    }
+
+    override fun view(displayId: Int, url: String): Boolean {
+        if (displayId < 0) return false
+        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
+            addCategory(Intent.CATEGORY_BROWSABLE)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        if (startViaBinder(intent, displayId)) return true
+        // An argv array, not `sh -c`: the URL must never be parsed by a shell.
+        return runAm(arrayOf("am", "start", "--display", displayId.toString(),
+            "-a", Intent.ACTION_VIEW, "-c", Intent.CATEGORY_BROWSABLE, "-d", url), displayId)
     }
 
     override fun list(): List<AppEntry> {
@@ -140,10 +153,12 @@ internal class AndroidLauncher(private val ctx: Context, private val log: (Strin
         else -> null
     }
 
-    private fun startViaAm(displayId: Int, component: ComponentName): Boolean {
-        val cmd = "am start --display $displayId -n ${component.flattenToShortString()}"
+    private fun startViaAm(displayId: Int, component: ComponentName): Boolean =
+        runAm(arrayOf("am", "start", "--display", displayId.toString(), "-n", component.flattenToShortString()), displayId)
+
+    private fun runAm(argv: Array<String>, displayId: Int): Boolean {
         return try {
-            val p = Runtime.getRuntime().exec(arrayOf("sh", "-c", cmd))
+            val p = Runtime.getRuntime().exec(argv)
             val out = p.inputStream.use { it.readBytes() }.toString(Charsets.UTF_8)
             val err = p.errorStream.use { it.readBytes() }.toString(Charsets.UTF_8)
             val code = p.waitFor()

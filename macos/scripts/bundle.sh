@@ -45,6 +45,38 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 	<string>NSApplication</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>PocketDeck connects to Android phones on your local network to run their apps in Mac windows.</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>dev.pocketdeck.mac.open</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>pocketdeck</string>
+			</array>
+		</dict>
+	</array>
+	<key>NSServices</key>
+	<array>
+		<dict>
+			<key>NSMenuItem</key>
+			<dict>
+				<key>default</key>
+				<string>Open on Phone</string>
+			</dict>
+			<key>NSMessage</key>
+			<string>openOnPhone</string>
+			<key>NSPortName</key>
+			<string>PocketDeck</string>
+			<key>NSSendTypes</key>
+			<array>
+				<string>public.url</string>
+				<string>public.utf8-plain-text</string>
+			</array>
+			<key>NSRequiredContext</key>
+			<dict/>
+		</dict>
+	</array>
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_pocketdeck._tcp</string>
