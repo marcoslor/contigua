@@ -25,7 +25,7 @@ internal object SubmixLevel {
     }
 
     /**
-     * @param deviceVolumeSet the per-device call succeeded
+     * @param deviceVolumeSet the submix device index read back at max
      * @param submixDb attenuation of the submix device's current index in dB
      *   (≤ 0), null when unknown
      */
