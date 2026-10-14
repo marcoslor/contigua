@@ -33,7 +33,7 @@ set -uo pipefail
 MACOS="$(cd "$(dirname "$0")/.." && pwd)"
 ROOT="$(cd "$MACOS/.." && pwd)"
 FAKEPHONE="$ROOT/tools/fakephone/fakephone.py"
-PROFILE="e2e"
+PROFILE="${PD_E2E_PROFILE:-e2e}"
 E2E_BUNDLE="$MACOS/build/e2e/PocketDeck.app"
 APP="$E2E_BUNDLE/Contents/MacOS/PocketDeck"
 CGINPUT="$MACOS/scripts/cgevent-input.swift"
@@ -1325,6 +1325,47 @@ check_spotlight() {
     stop_fakephone
 }
 
+# --- C14: audio phone -> Mac -------------------------------------------------
+# check_audio — the Mac opens a window (which starts device audio), the
+# fakephone streams a 440 Hz AAC tone, and the Mac's audio stats file must show
+# a config plus frames/bytes (buffer counters count as capture evidence).
+
+audio_stats_ok() {
+    python3 - "$WORK/audio.json" <<'PY'
+import json, sys
+try:
+    stats = json.load(open(sys.argv[1]))
+except (OSError, ValueError):
+    sys.exit(1)
+sys.exit(0 if stats.get("configs", 0) >= 1 and stats.get("frames", 0) >= 10 else 1)
+PY
+}
+
+check_audio() {
+    clean
+    start_fake || return 1
+    launch --connect "127.0.0.1:$PORT" \
+        --open com.android.settings --audio-stats "$WORK/audio.json" --quit-after 30
+    if wait_until 20 audio_stats_ok; then
+        ok "C14 Mac received audio (config + >=10 frames)"
+    else
+        bad "C14 no audio at the Mac: $(cat "$WORK/audio.json" 2>/dev/null || echo 'no stats file')"
+    fi
+    python3 - "$WORK/audio.json" <<'PY' && ok "C14 AAC 48k stereo tone" || bad "C14 unexpected audio format: $(cat "$WORK/audio.json" 2>/dev/null)"
+import json, sys
+stats = json.load(open(sys.argv[1]))
+assert stats.get("codec") == 3, stats
+assert stats.get("sampleRate") == 48000, stats
+assert stats.get("channels", 2) == 2, stats
+PY
+    grep -q '"t":"audio.start"' "$WORK/events.jsonl" \
+        && ok "C14 audio.start sent" || bad "C14 no audio.start in phone log"
+    grep -q '"ev":"audio"' "$WORK/events.jsonl" \
+        && ok "C14 phone streamed audio" || bad "C14 no audio event in phone log"
+    stop_app
+    stop_fakephone
+}
+
 # --- C9: no leftovers -----------------------------------------------------
 
 # check_clip — plain-text clipboard sync both ways (docs/PROTOCOL.md "Clipboard
@@ -1793,8 +1834,8 @@ build_e2e_app() {
 
 which_check="${1:-all}"
 case "$which_check" in
-    qr|pair|render|resize|input|input-global|pause|direct|nav|spotlight|pinch|chrome|trackpad|clip|sharein|links|share|apk|dock|all) ;;
-    *) say "usage: check-e2e.sh [qr|pair|render|resize|input|input-global|pause|direct|nav|spotlight|pinch|chrome|trackpad|clip|sharein|links|share|apk|dock|all]"; exit 2 ;;
+    qr|pair|render|resize|input|input-global|pause|direct|nav|spotlight|pinch|chrome|trackpad|clip|sharein|links|share|apk|dock|audio|all) ;;
+    *) say "usage: check-e2e.sh [qr|pair|render|resize|input|input-global|pause|direct|nav|spotlight|pinch|chrome|trackpad|clip|sharein|links|share|apk|dock|audio|all]"; exit 2 ;;
 esac
 acquire_lock
 wait_for_other_runs
@@ -1824,8 +1865,10 @@ case "$which_check" in
     share)    check_share ;;
     apk)      check_apk ;;
     dock)     check_dock ;;
+    audio)    check_audio ;;
     all)      check_qr; check_pair; check_render; check_resize; check_input; check_pinch
-              check_chrome; check_trackpad; check_pause; check_direct; check_nav; check_spotlight; check_clip; check_sharein; check_links; check_share; check_apk; check_dock; check_orphans ;;
+              check_chrome; check_trackpad; check_pause; check_direct; check_nav; check_spotlight; check_clip; check_sharein; check_links; check_share; check_apk; check_dock
+              check_audio; check_orphans ;;
 esac
 
 say ""
