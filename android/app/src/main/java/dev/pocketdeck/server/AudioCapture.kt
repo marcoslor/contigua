@@ -1,7 +1,6 @@
 package dev.pocketdeck.server
 
 import android.content.Context
-import android.media.AudioAttributes
 import android.media.AudioDeviceInfo
 import android.media.AudioFormat
 import android.media.AudioManager
@@ -132,7 +131,7 @@ internal class AudioCapture(
             runCatching { rec.release() }
             return
         }
-        gain = 1f
+        levelSubmix()
         running = true
         record = rec
         codec = enc
@@ -140,7 +139,6 @@ internal class AudioCapture(
         log("audio: capturing codec=$codecId ($mime)")
         thread = Thread({ loop(sink, codecId, rec, enc) }, "pocketdeck-audio").also { it.start() }
         runCatching { rec.startRecording() }
-            .onSuccess { Thread(::levelSubmix, "pocketdeck-audio-level").start() }
             .onFailure {
                 log("audio: startRecording failed: ${it.message}")
                 stop()
@@ -256,55 +254,58 @@ internal class AudioCapture(
 
     /**
      * Brings the capture to full scale without ever setting the music stream
-     * volume (see [SubmixLevel]): first the submix device's own index via the
-     * hidden AudioDeviceVolumeManager.setDeviceVolume (allowed for shell on
-     * API 34-36, verified to leave the speaker index alone); if that fails, a
-     * software gain from the submix index measured once media is routed there.
+     * volume (see [SubmixLevel]). Sets the submix device's own index to max
+     * via the hidden AudioDeviceVolumeManager.setDeviceVolume (allowed for
+     * shell on API 34-36), then reads that device's index back. Runs before
+     * recording starts: AudioService skips setDeviceVolume for the device
+     * music currently plays on, so it can only change the idle submix device,
+     * never the speaker. If the index is not at max afterwards, the PCM is
+     * boosted by the submix attenuation instead.
      */
     private fun levelSubmix() {
         val am = ctx.getSystemService(Context.AUDIO_SERVICE) as AudioManager
         val max = am.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
-        val deviceSet = runCatching { setSubmixDeviceVolume(max) }
-            .onFailure { log("audio: submix device volume: ${it.cause?.message ?: it.message}") }
-            .isSuccess
-        val plan = SubmixLevel.plan(deviceSet, if (deviceSet) null else routedSubmixDb(am))
-        if (plan is SubmixLevel.Plan.SoftwareGain) gain = plan.gain
-        log("audio: submix level $plan")
+        val index = runCatching {
+            val volume = DeviceVolume(ctx)
+            volume.set(max)
+            volume.get()
+        }.onFailure { log("audio: submix device volume: ${it.cause?.message ?: it.message}") }.getOrNull()
+        val plan = SubmixLevel.plan(
+            deviceVolumeSet = index == max,
+            submixDb = index?.let {
+                am.getStreamVolumeDb(AudioManager.STREAM_MUSIC, it, AudioDeviceInfo.TYPE_REMOTE_SUBMIX)
+            },
+        )
+        gain = if (plan is SubmixLevel.Plan.SoftwareGain) plan.gain else 1f
+        log("audio: submix index=$index level $plan")
     }
 
-    private fun setSubmixDeviceVolume(index: Int) {
-        val infoBuilder = Class.forName("android.media.VolumeInfo\$Builder")
-            .getConstructor(Int::class.javaPrimitiveType).newInstance(AudioManager.STREAM_MUSIC)
-        infoBuilder.javaClass.getMethod("setVolumeIndex", Int::class.javaPrimitiveType).invoke(infoBuilder, index)
-        val info = infoBuilder.javaClass.getMethod("build").invoke(infoBuilder)
-        val deviceClass = Class.forName("android.media.AudioDeviceAttributes")
-        val device = deviceClass
+    /** STREAM_MUSIC index of the remote-submix output device only (hidden APIs). */
+    private class DeviceVolume(ctx: Context) {
+        private val infoClass = Class.forName("android.media.VolumeInfo")
+        private val deviceClass = Class.forName("android.media.AudioDeviceAttributes")
+        private val managerClass = Class.forName("android.media.AudioDeviceVolumeManager")
+        private val manager = managerClass.getConstructor(Context::class.java).newInstance(ctx)
+        private val device = deviceClass
             .getConstructor(Int::class.javaPrimitiveType, Int::class.javaPrimitiveType, String::class.java)
             .newInstance(ROLE_OUTPUT, AudioDeviceInfo.TYPE_REMOTE_SUBMIX, "0")
-        val managerClass = Class.forName("android.media.AudioDeviceVolumeManager")
-        val manager = managerClass.getConstructor(Context::class.java).newInstance(ctx)
-        managerClass.getMethod("setDeviceVolume", info.javaClass, deviceClass).invoke(manager, info, device)
-    }
 
-    /**
-     * dB the submix device's music index applies, read only (getStreamVolume
-     * reports the routed device's index) once routing has switched; null if it
-     * never does.
-     */
-    private fun routedSubmixDb(am: AudioManager): Float? = runCatching {
-        val media = AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).build()
-        val devicesFor = AudioManager::class.java.getMethod("getDevicesForAttributes", AudioAttributes::class.java)
-        val deadline = SystemClock.uptimeMillis() + 2000
-        while (running && SystemClock.uptimeMillis() < deadline) {
-            val routed = (devicesFor.invoke(am, media) as List<*>).any {
-                it!!.javaClass.getMethod("getType").invoke(it) == AudioDeviceInfo.TYPE_REMOTE_SUBMIX
+        private fun info(index: Int?): Any {
+            val builder = Class.forName("android.media.VolumeInfo\$Builder")
+                .getConstructor(Int::class.javaPrimitiveType).newInstance(AudioManager.STREAM_MUSIC)
+            if (index != null) {
+                builder.javaClass.getMethod("setVolumeIndex", Int::class.javaPrimitiveType).invoke(builder, index)
             }
-            if (routed) {
-                val index = am.getStreamVolume(AudioManager.STREAM_MUSIC)
-                return@runCatching am.getStreamVolumeDb(AudioManager.STREAM_MUSIC, index, AudioDeviceInfo.TYPE_REMOTE_SUBMIX)
-            }
-            Thread.sleep(20)
+            return builder.javaClass.getMethod("build").invoke(builder)
         }
-        null
-    }.getOrNull()
+
+        fun set(index: Int) {
+            managerClass.getMethod("setDeviceVolume", infoClass, deviceClass).invoke(manager, info(index), device)
+        }
+
+        fun get(): Int {
+            val got = managerClass.getMethod("getDeviceVolume", infoClass, deviceClass).invoke(manager, info(null), device)
+            return infoClass.getMethod("getVolumeIndex").invoke(got) as Int
+        }
+    }
 }
