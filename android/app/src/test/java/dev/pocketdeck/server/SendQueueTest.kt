@@ -118,4 +118,27 @@ class SendQueueTest {
         q.close()
         assertNull(q.poll())
     }
+
+    @Test
+    fun audioOvertakesDeltasButNotControl() {
+        val q = SendQueue()
+        q.enqueueDelta(2, pts(0), bytes(0xD1))
+        q.enqueueAudio(bytes(0xA1))
+        q.enqueueControl(1, bytes(0xC1))
+        q.enqueueAudio(bytes(0xA2))
+        assertEquals(0xC1, q.pollNow()!![0].toInt() and 0xFF)
+        assertEquals(0xA1, q.pollNow()!![0].toInt() and 0xFF)
+        assertEquals(0xA2, q.pollNow()!![0].toInt() and 0xFF)
+        assertEquals(0xD1, q.pollNow()!![0].toInt() and 0xFF)
+    }
+
+    @Test
+    fun audioDropsOldestBeyondBudget() {
+        val q = SendQueue(maxAudioBytes = 10)
+        q.enqueueAudio(bytes(1, 2, 3, 4, 5, 6))
+        q.enqueueAudio(bytes(7, 8, 9, 10, 11, 12))
+        // Oldest dropped first; newest survives.
+        assertEquals(6, q.pollNow()!!.size)
+        assertNull(q.pollNow())
+    }
 }
