@@ -107,6 +107,22 @@ internal class DarkPanelPolicy(private val forced: Boolean) {
     }
 
     /**
+     * The panel left ON while we held it dark: the user pressed power (our pokes
+     * hold off the timeout). The phone is theirs from here, exactly as after a
+     * hand-back in [step]: no darkening until their screen goes off again.
+     *
+     * @return true when this ends a dark episode, i.e. the caller must give the
+     * panel back now.
+     */
+    fun userPressedPower(): Boolean {
+        if (phase != Phase.DARK) return false
+        phase = Phase.USER
+        // The caller wakes the phone for the user, so the screen is now on.
+        sawPanelOn = true
+        return true
+    }
+
+    /**
      * The last stream paused/closed or the session ended.
      *
      * @return true when we forced the panel dark and must restore it and put the
@@ -117,5 +133,39 @@ internal class DarkPanelPolicy(private val forced: Boolean) {
         phase = Phase.INIT
         sawPanelOn = false
         return owned
+    }
+
+    companion object {
+        /** No display wake lock: shorter than any user screen-off timeout. */
+        const val TIMER_INTERVAL_MS = 10_000L
+
+        /** Own display group holding a display wake lock: the step is only a safety net. */
+        const val GROUP_LOCK_INTERVAL_MS = 60_000L
+
+        /**
+         * The VD shares the panel's group. The display-scoped wake lock does not
+         * hold that group on the SM-S936B (its wake history shows `OFF timeout`
+         * 7-13 s into a stream while the lock was held), and with the keyguard up
+         * the platform shortens the group's timeout to 6 s. Once the group sleeps
+         * the VD stops compositing until the next step, so the step has to beat
+         * that 6 s: a user-activity poke every 2 s keeps the group awake without a
+         * new wake, so the panel is never re-lit.
+         */
+        const val SHARED_GROUP_INTERVAL_MS = 2_000L
+
+        /**
+         * Whether a step may call the platform wake. An own group can always be
+         * woken: the panel is not involved. A shared group is a full phone wake,
+         * which would undo the user's power press and start face unlock, so it
+         * is only woken when [step] takes the panel over (`transitional`).
+         */
+        fun wakesGroup(strategy: PanelStrategy, plan: PanelPlan): Boolean =
+            plan.wake && (strategy == PanelStrategy.GROUP_ONLY || plan.transitional)
+
+        fun keepAliveIntervalMs(strategy: PanelStrategy, displayLockHeld: Boolean): Long = when {
+            strategy == PanelStrategy.PANEL_DARK -> SHARED_GROUP_INTERVAL_MS
+            displayLockHeld -> GROUP_LOCK_INTERVAL_MS
+            else -> TIMER_INTERVAL_MS
+        }
     }
 }
