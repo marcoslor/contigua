@@ -1,5 +1,6 @@
 package dev.pocketdeck.app
 
+import dev.pocketdeck.server.LinkPolicy
 import dev.pocketdeck.server.ShareSender
 import dev.pocketdeck.server.ShareStatus
 import java.io.InputStream
@@ -62,6 +63,25 @@ object ShareIntent {
         ShareStatus.TOO_LARGE -> "Too large to send (max 50 MB)"
         else -> "Couldn't send to your Mac"
     }
+    /**
+     * "Open on Mac" from the text-selection menu: EXTRA_PROCESS_TEXT, same rules
+     * as shared text. Never return a result, so the source text is never changed.
+     */
+    fun parseProcessText(text: CharSequence?): ShareItem<Nothing> {
+        val body = text?.toString()?.trim().orEmpty()
+        if (body.isEmpty()) return ShareItem.Unsupported("empty")
+        if (body.toByteArray(Charsets.UTF_8).size > ShareSender.MAX_TEXT_BYTES) return ShareItem.Unsupported(TOO_LARGE)
+        return ShareItem.Text(body, isLink(body))
+    }
+
+    /** "Open on Mac" from Open with / the browser chooser: an http(s) data URI, else null (ignored). */
+    fun parseView(uri: String?): ShareItem.Text? {
+        val url = LinkPolicy.validate(uri) ?: return null
+        val scheme = url.substringBefore(':').lowercase()
+        if (scheme != "http" && scheme != "https") return null
+        return ShareItem.Text(url, true)
+    }
+
 }
 
 /** The shell service's share calls as the dispatcher sees them (null: not bound). */

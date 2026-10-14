@@ -30,12 +30,23 @@ class ShareActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val intent = intent
-        val item = ShareIntent.parse(
-            intent.action,
-            intent.type,
-            intent.getCharSequenceExtra(Intent.EXTRA_TEXT),
-            streams(intent),
-        )
+        // The "Open on Mac" aliases read only their string extra / data URI, never streams.
+        val item = when (intent.component?.className) {
+            PROCESS_TEXT_ALIAS -> {
+                if (intent.action != Intent.ACTION_PROCESS_TEXT) return finish()
+                ShareIntent.parseProcessText(intent.getCharSequenceExtra(Intent.EXTRA_PROCESS_TEXT))
+            }
+            VIEW_ALIAS -> {
+                if (intent.action != Intent.ACTION_VIEW) return finish()
+                ShareIntent.parseView(intent.dataString) ?: return finish()
+            }
+            else -> ShareIntent.parse(
+                intent.action,
+                intent.type,
+                intent.getCharSequenceExtra(Intent.EXTRA_TEXT),
+                streams(intent),
+            )
+        }
         val images = (item as? ShareItem.Images<Uri>)?.let { open(it) }.orEmpty()
         val app = applicationContext
         finish()
@@ -123,6 +134,8 @@ class ShareActivity : Activity() {
     private companion object {
         const val TAG = "PocketDeckApp"
         const val BIND_TIMEOUT_S = 5L
+        const val PROCESS_TEXT_ALIAS = "dev.pocketdeck.app.OpenOnMacText"
+        const val VIEW_ALIAS = "dev.pocketdeck.app.OpenOnMacLink"
         const val PUMP_JOIN_MS = 2_000L
 
         fun toast(context: Context, text: String) {

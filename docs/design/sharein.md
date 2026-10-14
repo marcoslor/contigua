@@ -49,6 +49,22 @@ saved to `~/Downloads/PocketDeck/` and put on the clipboard.
 - Folder: `~/Downloads/PocketDeck/` (created on demand); `--share-dir DIR` overrides it.
   `--share-log FILE` records "would open <url>" / notifications instead of acting (e2e).
 
+## "Open on Mac": text menu and Open with
+Two `activity-alias`es of `ShareActivity` labelled "Open on Mac" (the share sheet keeps "Send to
+Mac"); both send through the same `share.text` pipeline, so the Mac classifies as above.
+- `OpenOnMacText` (`PROCESS_TEXT`, `text/plain`): reads `EXTRA_PROCESS_TEXT` only, same rules as
+  shared text; never calls `setResult`, so the source text is never replaced.
+- `OpenOnMacLink` (`VIEW` + `BROWSABLE` + `DEFAULT`, schemes http/https, no host): shows up in
+  Open with and in Settings → Default browser. The data URI must pass `LinkPolicy` (≤ 8 KiB) and
+  be http/https, else the activity finishes silently.
+- Both are exported, so the intent is untrusted: the activity dispatches on the alias name, reads
+  only that string extra / data URI, and never opens streams.
+- No `autoVerify`, no host: we never claim a domain, we're just one more browser choice.
+- Loop guard: if the user makes PocketDeck the default browser, a Mac → phone `link.open` must not
+  come back. `AndroidLauncher.view` resolves the handlers itself and `LoopGuard.pick` drops our
+  package and the resolver, keeping the default when it's another app; the launch (binder or
+  `am start -n`) is always explicit. Only us → `view` fails and the Mac gets the usual error.
+
 ## Alternatives rejected
 - Image bytes in AIDL / JSON base64: binder transactions cap at ~1 MB; base64 hits the 8 MiB
   frame cap and inflates 33 %.

@@ -15,8 +15,9 @@ android {
         // Shizuku user-service version: it is the daemon's version marker, so it
         // must be bumped on every install or the previously-bound service keeps
         // running instead of being replaced.
-        versionCode = 89
-        versionName = "0.1.0"    }
+        versionCode = 90
+        versionName = "0.1.0"
+    }
 
     buildFeatures {
         aidl = true
