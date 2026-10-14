@@ -21,6 +21,8 @@ data class ScrollPayload(val nx: Float, val ny: Float, val hscroll: Float, val v
 data class KeyPayload(val action: Int, val keycode: Int, val metaState: Int)
 data class VideoConfigPayload(val codec: Int, val width: Int, val height: Int, val csd: ByteArray)
 data class VideoFramePayload(val ptsUs: Long, val key: Boolean, val data: ByteArray)
+data class AudioConfigPayload(val codec: Int, val sampleRate: Int, val channels: Int, val frameMs: Int, val setup: ByteArray)
+data class AudioFramePayload(val ptsUs: Long, val data: ByteArray)
 
 /** Frame framing + payload codecs. Big-endian everywhere. */
 object Frames {
@@ -31,6 +33,8 @@ object Frames {
     const val TYPE_JSON = 0x01
     const val TYPE_VIDEO_CONFIG = 0x02
     const val TYPE_VIDEO_FRAME = 0x03
+    const val TYPE_AUDIO_CONFIG = 0x04
+    const val TYPE_AUDIO_FRAME = 0x05
     const val TYPE_TOUCH = 0x10
     const val TYPE_SCROLL = 0x11
     const val TYPE_KEY = 0x12
@@ -38,6 +42,8 @@ object Frames {
     const val TYPE_SHARE_DATA = 0x21
 
     const val CODEC_H264 = 1
+    const val CODEC_OPUS = 2
+    const val CODEC_AAC = 3
 
     const val TOUCH_DOWN = 0
     const val TOUCH_UP = 1
@@ -142,6 +148,46 @@ object Frames {
         val data = ByteArray(bb.remaining())
         bb.get(data)
         return VideoFramePayload(pts, flags and 1 != 0, data)
+    }
+
+    /** `u8 codec · u32 sampleRate · u8 channels · u16 frameMs · setup`. */
+    fun encodeAudioConfig(p: AudioConfigPayload): ByteArray {
+        val bb = ByteBuffer.allocate(8 + p.setup.size).order(ByteOrder.BIG_ENDIAN)
+        bb.put(p.codec.toByte())
+        bb.putInt(p.sampleRate)
+        bb.put(p.channels.toByte())
+        bb.putShort(p.frameMs.toShort())
+        bb.put(p.setup)
+        return bb.array()
+    }
+
+    fun decodeAudioConfig(payload: ByteArray): AudioConfigPayload {
+        requireSize(payload, 8, "audio config")
+        val bb = ByteBuffer.wrap(payload).order(ByteOrder.BIG_ENDIAN)
+        val codec = bb.get().toInt() and 0xFF
+        val sampleRate = bb.int
+        val channels = bb.get().toInt() and 0xFF
+        val frameMs = bb.short.toInt() and 0xFFFF
+        val setup = ByteArray(bb.remaining())
+        bb.get(setup)
+        return AudioConfigPayload(codec, sampleRate, channels, frameMs, setup)
+    }
+
+    /** `u64 ptsUs · packet`. */
+    fun encodeAudioFrame(p: AudioFramePayload): ByteArray {
+        val bb = ByteBuffer.allocate(8 + p.data.size).order(ByteOrder.BIG_ENDIAN)
+        bb.putLong(p.ptsUs)
+        bb.put(p.data)
+        return bb.array()
+    }
+
+    fun decodeAudioFrame(payload: ByteArray): AudioFramePayload {
+        requireSize(payload, 8, "audio frame")
+        val bb = ByteBuffer.wrap(payload).order(ByteOrder.BIG_ENDIAN)
+        val pts = bb.long
+        val data = ByteArray(bb.remaining())
+        bb.get(data)
+        return AudioFramePayload(pts, data)
     }
 
     private fun requireSize(payload: ByteArray, min: Int, what: String) {

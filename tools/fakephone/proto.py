@@ -22,6 +22,8 @@ import time
 TYPE_JSON = 0x01
 TYPE_VIDEO_CONFIG = 0x02
 TYPE_VIDEO_FRAME = 0x03
+TYPE_AUDIO_CONFIG = 0x04
+TYPE_AUDIO_FRAME = 0x05
 TYPE_TOUCH = 0x10
 TYPE_SCROLL = 0x11
 TYPE_KEY = 0x12
@@ -32,6 +34,8 @@ TYPE_NAMES = {
     TYPE_JSON: "JSON",
     TYPE_VIDEO_CONFIG: "VIDEO_CONFIG",
     TYPE_VIDEO_FRAME: "VIDEO_FRAME",
+    TYPE_AUDIO_CONFIG: "AUDIO_CONFIG",
+    TYPE_AUDIO_FRAME: "AUDIO_FRAME",
     TYPE_TOUCH: "TOUCH",
     TYPE_SCROLL: "SCROLL",
     TYPE_KEY: "KEY",
@@ -43,6 +47,8 @@ HEADER = 5                 # type (1) + stream (4)
 MAX_FRAME = 8 * 1024 * 1024  # PROTOCOL.md: a larger len closes the session
 
 CODEC_H264 = 1
+CODEC_OPUS = 2
+CODEC_AAC = 3
 
 TOUCH_DOWN, TOUCH_UP, TOUCH_MOVE, TOUCH_CANCEL = 0, 1, 2, 3
 KEY_DOWN, KEY_UP = 0, 1
@@ -214,6 +220,35 @@ def unpack_video_frame(frame):
 
 
 FRAME_FLAG_KEY = 0x01
+
+
+# --- AUDIO_CONFIG ----------------------------------------------------------
+def pack_audio_config(codec, sample_rate, channels, frame_ms, setup=b""):
+    payload = struct.pack(">BI BH", codec, sample_rate, channels, frame_ms) + setup
+    return pack_frame(TYPE_AUDIO_CONFIG, 0, payload)
+
+
+def unpack_audio_config(frame):
+    if frame.type != TYPE_AUDIO_CONFIG:
+        raise ProtocolError("expected AUDIO_CONFIG, got %s" % frame.name)
+    if len(frame.payload) < 8:
+        raise ProtocolError("AUDIO_CONFIG payload too short")
+    codec, sample_rate, channels, frame_ms = struct.unpack_from(">BI BH", frame.payload, 0)
+    return codec, sample_rate, channels, frame_ms, frame.payload[8:]
+
+
+# --- AUDIO_FRAME -----------------------------------------------------------
+def pack_audio_frame(pts_us, packet):
+    return pack_frame(TYPE_AUDIO_FRAME, 0, struct.pack(">Q", pts_us) + packet)
+
+
+def unpack_audio_frame(frame):
+    if frame.type != TYPE_AUDIO_FRAME:
+        raise ProtocolError("expected AUDIO_FRAME, got %s" % frame.name)
+    if len(frame.payload) < 8:
+        raise ProtocolError("AUDIO_FRAME payload too short")
+    pts_us = struct.unpack_from(">Q", frame.payload, 0)[0]
+    return pts_us, frame.payload[8:]
 
 
 # --- input -----------------------------------------------------------------
