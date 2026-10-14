@@ -45,6 +45,10 @@ final class VideoLayerView: NSView {
         layer?.backgroundColor = NSColor.black.cgColor
         layer?.addSublayer(displayLayer)
         installEdgeHint()
+        // Raw fingers of the trackpad (not the screen: there is none) for the
+        // pinch and rotate pointers; resting palms and thumbs are not reported.
+        allowedTouchTypes = [.indirect]
+        wantsRestingTouches = false
     }
 
     @available(*, unavailable)
@@ -63,6 +67,11 @@ final class VideoLayerView: NSView {
     override func setFrameSize(_ newSize: NSSize) {
         super.setFrameSize(newSize)
         displayLayer.frame = bounds
+    }
+
+    /// The frame on screen right now, for the title strip's colour.
+    func displayedPixelBuffer() -> CVPixelBuffer? {
+        displayLayer.sampleBufferRenderer.displayedPixelBuffer()
     }
 
     /// Aspect-fit rect of the current video inside the view.
@@ -84,7 +93,9 @@ final class VideoLayerView: NSView {
             guard let self else { return }
             self.formatDescription = format
             self.lastPtsUs = 0
-            self.displayLayer.sampleBufferRenderer.flush()
+            // The flush rides the same ordered hand-off as the samples, so a
+            // drain can never put new-format samples ahead of it.
+            self.handOff(.flush)
             DispatchQueue.main.async {
                 self.videoSize = size
                 self.needsLayout = true
@@ -102,14 +113,61 @@ final class VideoLayerView: NSView {
             let pts = max(frame.ptsUs, self.lastPtsUs &+ 1)
             self.lastPtsUs = pts
             guard let sample = Self.makeSampleBuffer(avcc: avcc, format: format, ptsUs: pts) else { return }
-            if self.displayLayer.sampleBufferRenderer.status == .failed || self.displayLayer.sampleBufferRenderer.requiresFlushToResumeDecoding {
-                self.displayLayer.sampleBufferRenderer.flush()
-            }
-            self.displayLayer.sampleBufferRenderer.enqueue(sample)
-            if self.displayLayer.sampleBufferRenderer.status == .failed {
-                Log.video.error("display layer failed; flush + keyframe")
-                self.displayLayer.sampleBufferRenderer.flush()
-                DispatchQueue.main.async { self.onRequestKeyframe?() }
+            // The byte work above is the expensive part and stays off the main
+            // thread, but CALayer is main-thread-only: reading or mutating the
+            // display layer from here is undefined and leaves it accepting
+            // buffers it never composites (the window stays black until a resize
+            // dirties the layer). Hand the finished buffer over and enqueue there.
+            self.handOff(.sample(sample))
+        }
+    }
+
+    private enum PendingVideo {
+        case flush
+        case sample(CMSampleBuffer)
+    }
+
+    /// Filled on `videoQueue`, drained on main; guarded by `pendingLock`.
+    private var pendingVideo: [PendingVideo] = []
+    private var drainScheduled = false
+    private let pendingLock = NSLock()
+
+    /// Queues work for the display layer with at most one main-queue block in
+    /// flight: a burst of frames (the first second of a window, a fast scroll)
+    /// costs main one drain, not one block per frame. Samples are never dropped:
+    /// each H.264 frame depends on the one before it.
+    private func handOff(_ item: PendingVideo) {
+        pendingLock.lock()
+        pendingVideo.append(item)
+        let schedule = !drainScheduled
+        drainScheduled = true
+        pendingLock.unlock()
+        if schedule {
+            DispatchQueue.main.async { [weak self] in self?.drainPendingVideo() }
+        }
+    }
+
+    private func drainPendingVideo() {
+        pendingLock.lock()
+        let items = pendingVideo
+        pendingVideo.removeAll(keepingCapacity: true)
+        drainScheduled = false
+        pendingLock.unlock()
+        let renderer = displayLayer.sampleBufferRenderer
+        for item in items {
+            switch item {
+            case .flush:
+                renderer.flush()
+            case .sample(let sample):
+                if renderer.status == .failed || renderer.requiresFlushToResumeDecoding {
+                    renderer.flush()
+                }
+                renderer.enqueue(sample)
+                if renderer.status == .failed {
+                    Log.video.error("display layer failed; flush + keyframe")
+                    renderer.flush()
+                    onRequestKeyframe?()
+                }
             }
         }
     }
@@ -147,8 +205,15 @@ final class VideoLayerView: NSView {
         }
         guard copyStatus == noErr else { return nil }
 
+        // The phone stamps frames with its own uptime, which has no relation to
+        // this Mac's host clock (the layer's default timebase) and drifts from
+        // it whenever either side sleeps. A frame stamped in the host clock's
+        // future is held until then, so the window stays black, or repaints
+        // only now and then. Present every frame at the host time it arrives;
+        // the phone's PTS only kept them ordered, which arrival order already is.
+        _ = ptsUs
         var timing = CMSampleTimingInfo(duration: .invalid,
-                                        presentationTimeStamp: CMTime(value: Int64(ptsUs), timescale: 1_000_000),
+                                        presentationTimeStamp: CMClockGetTime(CMClockGetHostTimeClock()),
                                         decodeTimeStamp: .invalid)
         var sampleSize = count
         var sampleBuffer: CMSampleBuffer?
@@ -159,8 +224,15 @@ final class VideoLayerView: NSView {
                                         sampleBufferOut: &sampleBuffer) == noErr,
               let sample = sampleBuffer else { return nil }
 
-        CMSetAttachment(sample, key: kCMSampleAttachmentKey_DisplayImmediately,
-                        value: kCFBooleanTrue, attachmentMode: kCMAttachmentMode_ShouldPropagate)
+        // DisplayImmediately is a per-sample attachment: set on the buffer
+        // itself (CMSetAttachment) the renderer does not read it.
+        if let attachments = CMSampleBufferGetSampleAttachmentsArray(sample, createIfNecessary: true),
+           CFArrayGetCount(attachments) > 0 {
+            let dict = unsafeBitCast(CFArrayGetValueAtIndex(attachments, 0), to: CFMutableDictionary.self)
+            CFDictionarySetValue(dict,
+                                 Unmanaged.passUnretained(kCMSampleAttachmentKey_DisplayImmediately).toOpaque(),
+                                 Unmanaged.passUnretained(kCFBooleanTrue).toOpaque())
+        }
         return sample
     }
 
@@ -177,6 +249,108 @@ final class VideoLayerView: NSView {
     override func otherMouseDown(with event: NSEvent) { inputMapper?.otherMouseDown(event) }
     override func keyDown(with event: NSEvent) { inputMapper?.keyDown(event) }
     override func keyUp(with event: NSEvent) { inputMapper?.keyUp(event) }
+
+    // MARK: Trackpad fingers
+
+    override func touchesBegan(with event: NSEvent) { reportTouches(of: event) }
+    override func touchesMoved(with event: NSEvent) { reportTouches(of: event) }
+    override func touchesEnded(with event: NSEvent) { reportTouches(of: event) }
+    override func touchesCancelled(with event: NSEvent) { reportTouches(of: event) }
+
+    private var seenIndirectTouches = false
+
+    private func reportTouches(of event: NSEvent) {
+        let touching = event.touches(matching: .touching, in: self).filter { $0.type == .indirect && !$0.isResting }
+        if !seenIndirectTouches, !touching.isEmpty {
+            seenIndirectTouches = true
+            Log.input.info("trackpad touches reach the stream view: pinch and rotate use the raw fingers")
+        }
+        let surface = touching.first.map {
+            TrackpadSurface(widthPoints: Double($0.deviceSize.width), heightPoints: Double($0.deviceSize.height))
+        } ?? .fallback
+        let fingers = touching.map {
+            TrackpadFinger(id: $0.identity.hash, x: Double($0.normalizedPosition.x), y: Double($0.normalizedPosition.y))
+        }
+        trackpadFingers(fingers, surface: surface, cursor: cursorLocation())
+    }
+
+    private func cursorLocation() -> CGPoint {
+        guard let window else { return .zero }
+        return convert(window.mouseLocationOutsideOfEventStream, from: nil)
+    }
+
+    /// The scripted-input driver reaches the same path with a model of the
+    /// fingers, since AppKit cannot synthesize NSTouch events.
+    func trackpadFingers(_ fingers: [TrackpadFinger], surface: TrackpadSurface, cursor: CGPoint) {
+        inputMapper?.trackpadFingers(fingers, surface: surface, cursor: cursor)
+    }
+
+    /// The window lost focus: a gesture in flight must not outlive it.
+    func windowResignedKey() {
+        inputMapper?.cancelTrackpadGestures()
+    }
+
+    // MARK: Show Touches
+
+    /// View → Show Touches: a dot where the phone is being touched by a
+    /// trackpad gesture.
+    var showsTouches = false {
+        didSet {
+            guard !showsTouches else { return }
+            showTouchPoints([])
+        }
+    }
+
+    private var touchDots: [UInt8: CALayer] = [:]
+    private static let dotSize: CGFloat = 34
+
+    /// `points` are normalized video coordinates; none removes every dot.
+    func showTouchPoints(_ points: [InputMapper.TouchPoint]) {
+        let shown = showsTouches ? points : []
+        let live = Set(shown.map(\.id))
+        for (id, dot) in touchDots where !live.contains(id) {
+            touchDots[id] = nil
+            fadeOut(dot)
+        }
+        let rect = videoRect()
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        for point in shown {
+            let dot = touchDots[point.id] ?? makeDot(id: point.id)
+            dot.position = Letterbox.viewPoint(nx: point.nx, ny: point.ny, videoRect: rect, flipped: isFlipped)
+            dot.opacity = 1
+        }
+        CATransaction.commit()
+    }
+
+    private func makeDot(id: UInt8) -> CALayer {
+        let dot = CALayer()
+        dot.bounds = CGRect(x: 0, y: 0, width: Self.dotSize, height: Self.dotSize)
+        dot.cornerRadius = Self.dotSize / 2
+        dot.backgroundColor = NSColor.white.withAlphaComponent(0.32).cgColor
+        dot.borderColor = NSColor.white.withAlphaComponent(0.85).cgColor
+        dot.borderWidth = 1.5
+        dot.shadowColor = NSColor.black.cgColor
+        dot.shadowOpacity = 0.25
+        dot.shadowRadius = 3
+        dot.shadowOffset = .zero
+        dot.zPosition = 20
+        layer?.addSublayer(dot)
+        touchDots[id] = dot
+        return dot
+    }
+
+    private func fadeOut(_ dot: CALayer) {
+        let fade = CABasicAnimation(keyPath: "opacity")
+        fade.fromValue = dot.opacity
+        fade.toValue = 0
+        fade.duration = 0.2
+        dot.opacity = 0
+        CATransaction.begin()
+        CATransaction.setCompletionBlock { dot.removeFromSuperlayer() }
+        dot.add(fade, forKey: "fadeOut")
+        CATransaction.commit()
+    }
 
     // MARK: Trackpad gestures
 

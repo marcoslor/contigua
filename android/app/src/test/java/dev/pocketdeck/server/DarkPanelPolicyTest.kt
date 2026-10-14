@@ -192,4 +192,72 @@ class DarkPanelPolicyTest {
         assertTrue(policy(forced = true).isForced)
         assertFalse(policy().isForced)
     }
+
+    @Test
+    fun `a shared group is poked faster than the keyguard's 6 s timeout`() {
+        for (lock in listOf(true, false)) {
+            val ms = DarkPanelPolicy.keepAliveIntervalMs(PanelStrategy.PANEL_DARK, displayLockHeld = lock)
+            assertTrue("interval $ms must beat the 6 s keyguard timeout", ms < 6_000)
+        }
+    }
+
+    @Test
+    fun `an own group with a display lock keeps the slow safety-net cadence`() {
+        assertEquals(60_000L, DarkPanelPolicy.keepAliveIntervalMs(PanelStrategy.GROUP_ONLY, displayLockHeld = true))
+        assertEquals(10_000L, DarkPanelPolicy.keepAliveIntervalMs(PanelStrategy.GROUP_ONLY, displayLockHeld = false))
+    }
+
+    @Test
+    fun `a shared group is woken only when the panel is taken over`() {
+        val p = policy()
+        p.streamsStarted()
+        val first = p.step(panelOn = false, strategy = PanelStrategy.PANEL_DARK)
+        assertTrue(DarkPanelPolicy.wakesGroup(PanelStrategy.PANEL_DARK, first))
+        // Steady state: poke only. A wake here would undo a power press made
+        // since the last step and start face unlock.
+        val steady = p.step(panelOn = true, strategy = PanelStrategy.PANEL_DARK)
+        assertTrue(steady.wake)
+        assertFalse(DarkPanelPolicy.wakesGroup(PanelStrategy.PANEL_DARK, steady))
+        // The user's power press: the group stays asleep and the phone is theirs.
+        val pressed = p.step(panelOn = false, strategy = PanelStrategy.PANEL_DARK)
+        assertFalse(DarkPanelPolicy.wakesGroup(PanelStrategy.PANEL_DARK, pressed))
+    }
+
+    @Test
+    fun `an own group is woken on every step`() {
+        val p = policy()
+        p.streamsStarted()
+        repeat(3) {
+            val plan = p.step(panelOn = false, strategy = PanelStrategy.GROUP_ONLY)
+            assertTrue(DarkPanelPolicy.wakesGroup(PanelStrategy.GROUP_ONLY, plan))
+        }
+    }
+
+    @Test
+    fun `a power press while dark hands the phone back until its screen goes off again`() {
+        val p = policy()
+        p.streamsStarted()
+        p.step(panelOn = false, strategy = PanelStrategy.PANEL_DARK)
+        assertTrue(p.userPressedPower())
+        // The user is using the phone: never darken it, never wake it.
+        repeat(3) {
+            val plan = p.step(panelOn = true, strategy = PanelStrategy.PANEL_DARK)
+            assertFalse(plan.panelOff)
+            assertFalse(plan.wake)
+        }
+        // Their own screen-off: resume keeping the stream lit.
+        val off = p.step(panelOn = false, strategy = PanelStrategy.PANEL_DARK)
+        assertTrue(off.panelOff)
+        assertTrue(off.transitional)
+        // The episode was the user's at the end: nothing of ours to restore.
+        assertFalse(policy().also { it.streamsStarted() }.userPressedPower())
+    }
+
+    @Test
+    fun `a power press is only ours to handle while dark`() {
+        val p = policy()
+        p.streamsStarted()
+        p.step(panelOn = true, strategy = PanelStrategy.PANEL_DARK) // user already had it
+        assertFalse(p.userPressedPower())
+    }
 }
