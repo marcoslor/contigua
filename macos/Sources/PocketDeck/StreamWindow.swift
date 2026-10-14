@@ -194,9 +194,13 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
 
     /// Minimized windows are never "visible", and AppKit can briefly report a
     /// visible occlusion state while miniaturizing; both fold into one flag.
+    /// `occlusionState` can spuriously report !visible for the frontmost window,
+    /// which would detach its encoder; the key/main window never pauses.
     private var shouldPause: Bool {
         guard let window else { return false }
-        return window.isMiniaturized || !window.occlusionState.contains(.visible)
+        if window.isMiniaturized { return true }
+        if window.isKeyWindow || window.isMainWindow { return false }
+        return !window.occlusionState.contains(.visible)
     }
 
     func setPaused(_ paused: Bool) {
