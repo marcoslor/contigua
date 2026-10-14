@@ -1,15 +1,33 @@
 #!/usr/bin/env bash
 # Builds PocketDeck.app from the SwiftPM package and ad-hoc codesigns it.
 #
-#   ./scripts/bundle.sh [APP]     APP defaults to build/PocketDeck.app; only that
-#                                 path is ever replaced.
+#   ./scripts/bundle.sh [APP] [--variant NAME]
+#
+# APP defaults to build/PocketDeck.app; only that path is ever replaced.
+# The app carries the "Open on Phone" Share extension (Contents/PlugIns/Share.appex).
+# Only `--variant release` (install.sh) gets the real extension id; every other
+# bundle (default `dev`, check-e2e's `e2e`) gets `dev.pocketdeck.mac.share-NAME` and
+# a "(NAME)" title, so a test copy never competes with the installed app's extension.
 set -euo pipefail
 cd "$(dirname "$0")/.."
+
+APP="build/PocketDeck.app"
+VARIANT="dev"
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --variant) VARIANT="${2:?--variant needs a name}"; shift 2 ;;
+        *) APP="$1"; shift ;;
+    esac
+done
+case "$VARIANT" in
+    release) SHARE_ID="dev.pocketdeck.mac.share"; SHARE_TITLE="Open on Phone" ;;
+    *[!a-z0-9]*|"") echo "bundle.sh: --variant must be a-z0-9" >&2; exit 2 ;;
+    *) SHARE_ID="dev.pocketdeck.mac.share-$VARIANT"; SHARE_TITLE="Open on Phone ($VARIANT)" ;;
+esac
 
 swift build -c release
 BIN="$(swift build -c release --show-bin-path)/PocketDeck"
 
-APP="${1:-build/PocketDeck.app}"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/PocketDeck"
@@ -85,5 +103,57 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 </plist>
 PLIST
 
+# Share extension: swiftc, because SwiftPM cannot link an app extension's entry point.
+APPEX="$APP/Contents/PlugIns/Share.appex"
+mkdir -p "$APPEX/Contents/MacOS"
+swiftc -O -application-extension -module-name Share -target "$(uname -m)-apple-macos26.0" \
+    -swift-version 5 Extensions/Share/ShareViewController.swift Sources/PocketDeck/LinkShare.swift \
+    -Xlinker -e -Xlinker _NSExtensionMain -o "$APPEX/Contents/MacOS/Share"
+cat > "$APPEX/Contents/Info.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleExecutable</key>
+	<string>Share</string>
+	<key>CFBundleIdentifier</key>
+	<string>$SHARE_ID</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>$SHARE_TITLE</string>
+	<key>CFBundleDisplayName</key>
+	<string>$SHARE_TITLE</string>
+	<key>CFBundlePackageType</key>
+	<string>XPC!</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.1.0</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>26.0</string>
+	<key>NSExtension</key>
+	<dict>
+		<key>NSExtensionPointIdentifier</key>
+		<string>com.apple.share-services</string>
+		<key>NSExtensionPrincipalClass</key>
+		<string>ShareViewController</string>
+		<key>NSExtensionAttributes</key>
+		<dict>
+			<key>NSExtensionActivationRule</key>
+			<dict>
+				<key>NSExtensionActivationSupportsWebURLWithMaxCount</key>
+				<integer>1</integer>
+				<key>NSExtensionActivationSupportsText</key>
+				<true/>
+			</dict>
+		</dict>
+	</dict>
+</dict>
+</plist>
+PLIST
+codesign --force --sign - --entitlements Extensions/Share/Share.entitlements "$APPEX"
 codesign --force --sign - "$APP"
 echo "built $APP"

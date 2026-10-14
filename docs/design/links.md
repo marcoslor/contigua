@@ -4,13 +4,19 @@ Send a link from any Mac app to a phone; it opens in the Android app that handle
 in a new PocketDeck window (its own virtual display).
 
 ## Entry points (Mac)
-- **URL scheme** `pocketdeck://open?url=<percent-encoded URL>[&phone=<deviceId>]`, registered
-  in Info.plist (`CFBundleURLTypes`). Scripts, Shortcuts and other apps use this.
-- **Services** "Open on Phone" (`NSServices`, send types: URL and plain text). Appears in
-  the context menu of selected links/text in any app, and in the app menu → Services.
-- **Drag** a URL (or a `.webloc`) onto the Deck window.
-- The Share menu needs an app extension bundle; the SwiftPM build has none yet. Services
-  covers the same "from any app" need; a share extension can call the URL scheme later.
+- **Share menu** "Open on Phone": a Share extension (`Share.appex`, `com.apple.share-services`)
+  in `Contents/PlugIns`, built by `scripts/bundle.sh` with swiftc (SwiftPM cannot link an
+  extension entry point). Sandboxed, ad-hoc signed, no UI: it takes the first web URL item
+  (or text that is / contains exactly one link), hands it to the app and closes. Activation:
+  `SupportsWebURLWithMaxCount 1` + `SupportsText`; text without a link cancels the request.
+- **Services** "Open on Phone" and **dragging** a URL / `.webloc` onto the Deck.
+- **Hand-off (internal pipe)**: the extension opens `pocketdeck://open?url=…[&phone=id]` with
+  `NSWorkspace.open(_:withApplicationAt:)` naming its *containing* app, so LaunchServices can
+  never route it to another PocketDeck copy. The sandbox allows this (verified), and it needs no
+  app group, XPC service or shared container. The scheme is plumbing, not a user feature.
+- Only `bundle.sh --variant release` (install.sh) uses the id `dev.pocketdeck.mac.share`; other
+  bundles get `dev.pocketdeck.mac.share-<variant>` titled "Open on Phone (<variant>)", and
+  check-e2e unregisters its copy (`pluginkit -r`, `lsregister -u`) on exit.
 
 ## Validation (both sides, same rules)
 Allowed schemes: `http`, `https`, `geo`, `tel`, `mailto` (case-insensitive). Rejected:
@@ -50,3 +56,4 @@ back to `am start --display N -a android.intent.action.VIEW -d <url>` run as an 
 - `am start` through `sh -c`: shell injection via the URL.
 - Sending to the phone's default display: unlocks/lights the phone; breaks the locked-phone promise.
 - Allowing `intent:`: arbitrary component launch with shell privileges.
+- Extension → app over an app group / XPC: needs a team-signed app group; the URL pipe works ad-hoc.

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # End-to-end checks C3-C13 for the macOS client against tools/fakephone.
 #
-#   ./scripts/check-e2e.sh [qr|pair|render|resize|input|input-global|pause|direct|nav|spotlight|pinch|strip|trackpad|clip|links|all]
+#   ./scripts/check-e2e.sh [qr|pair|render|resize|input|input-global|pause|direct|nav|spotlight|pinch|strip|trackpad|clip|links|share|all]
 #
 # Every check starts from a clean slate: no PocketDeck or fakephone processes
 # left by an earlier run, a fresh fakephone state file and no pairing key in
@@ -83,6 +83,7 @@ finish() {
     if [ -n "${HOLDS_LOCK:-}" ]; then
         kill_e2e_app
         stop_fakephone
+        unregister_share
     fi
     kill "$CAFFEINATE_PID" >/dev/null 2>&1
     release_lock
@@ -1305,6 +1306,94 @@ PY
     wait_until 5 no_fakephone
 }
 
+# --- Share extension ------------------------------------------------------
+
+SHARE_ID="dev.pocketdeck.mac.share-e2e"
+SHARE_TITLE="Open on Phone (e2e)"
+LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+
+# The share driver links the extension's own hand-off code (LinkShare.swift), so its
+# name hashes both sources.
+build_share_driver() {
+    local hash
+    hash="$(cat "$MACOS/scripts/share-driver.swift" "$MACOS/Sources/PocketDeck/LinkShare.swift" | shasum | cut -c1-12)"
+    SHAREBIN="$TOOLS/share-driver-$hash"
+    if [ ! -x "$SHAREBIN" ]; then
+        mkdir -p "$TOOLS"
+        swiftc -O -parse-as-library "$MACOS/scripts/share-driver.swift" "$MACOS/Sources/PocketDeck/LinkShare.swift" \
+            -o "$SHAREBIN" >/dev/null 2>&1 || { say "could not build share-driver.swift"; return 1; }
+    fi
+}
+
+share_listed() { pluginkit -m -i "$SHARE_ID" 2>/dev/null | grep -q "$SHARE_ID"; }
+
+# unregister_share — the e2e bundle and its extension leave LaunchServices and
+# PlugInKit, so nothing of the test copy stays in the person's share menu.
+unregister_share() {
+    [ -d "$E2E_BUNDLE/Contents/PlugIns/Share.appex" ] && pluginkit -r "$E2E_BUNDLE/Contents/PlugIns/Share.appex" >/dev/null 2>&1
+    "$LSREGISTER" -u "$E2E_BUNDLE" >/dev/null 2>&1
+    return 0
+}
+
+# check_share — the "Open on Phone" Share extension (docs/design/links.md).
+# K6: the e2e bundle carries Share.appex under its own id, signs strictly, and PlugInKit
+# lists it while registered. K7a: the extension's hand-off code (share-driver handoff)
+# sends a link found in shared text -> link.open; non-link text sends nothing.
+# K7b: the real sandboxed extension through AppKit's share services (the same entry
+# the Share menu uses; the menu UI itself is not scripted) -> link.open.
+check_share() {
+    clean
+    local appex="$E2E_BUNDLE/Contents/PlugIns/Share.appex"
+    [ "$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPointIdentifier' "$appex/Contents/Info.plist" 2>/dev/null)" = "com.apple.share-services" ] \
+        && [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$appex/Contents/Info.plist" 2>/dev/null)" = "$SHARE_ID" ] \
+        && ok "SHARE bundle has Share.appex ($SHARE_ID, com.apple.share-services)" \
+        || bad "SHARE Share.appex missing or wrong Info.plist"
+    codesign --verify --deep --strict "$E2E_BUNDLE" 2>/dev/null \
+        && codesign -d --entitlements - "$appex" 2>/dev/null | grep -q app-sandbox \
+        && ok "SHARE codesign --deep --strict passes; the extension is sandboxed" \
+        || bad "SHARE codesign verify failed or the extension is not sandboxed"
+
+    "$LSREGISTER" -f "$E2E_BUNDLE" >/dev/null 2>&1
+    pluginkit -a "$appex" >/dev/null 2>&1
+    pluginkit -e use -i "$SHARE_ID" >/dev/null 2>&1
+    wait_until 10 share_listed \
+        && ok "SHARE pluginkit lists $SHARE_ID" || bad "SHARE pluginkit does not list $SHARE_ID"
+
+    start_fake || return 1
+    launch --connect "127.0.0.1:$PORT" --quit-after 120
+    authenticated() { events_have '"state":"auth_ok"' || events_have '"state":"paired"'; }
+    wait_until 30 authenticated \
+        || { bad "SHARE the app never authenticated"; stop_app; stop_fakephone; unregister_share; return 1; }
+
+    link_event() { grep -F '"ev": "link"' "$WORK/events.jsonl" 2>/dev/null | grep -qF "\"url\": \"$1\"" \
+        || grep -F '"ev":"link"' "$WORK/events.jsonl" 2>/dev/null | grep -qF "\"url\":\"$1\""; }
+
+    "$SHAREBIN" handoff "$E2E_BUNDLE" "look at https://example.com/handoff please" > "$WORK/share-a.log" 2>&1
+    wait_until 20 link_event "https://example.com/handoff" \
+        && ok "SHARE hand-off: text with a link -> fakephone logs link.open" \
+        || bad "SHARE hand-off did not reach the phone ($(cat "$WORK/share-a.log"))"
+    ! "$SHAREBIN" handoff "$E2E_BUNDLE" "no link in here" >/dev/null 2>&1 \
+        && ! "$SHAREBIN" handoff "$E2E_BUNDLE" "file:///etc/hosts" >/dev/null 2>&1 \
+        && ok "SHARE hand-off refuses text without a link and file: URLs" \
+        || bad "SHARE hand-off accepted non-link text or a file: URL"
+
+    "$SHAREBIN" service "$SHARE_TITLE" "https://example.com/extension" > "$WORK/share-b.log" 2>&1
+    wait_until 20 link_event "https://example.com/extension" \
+        && ok "SHARE the sandboxed extension -> fakephone logs link.open" \
+        || bad "SHARE the extension did not reach the phone ($(tr '\n' ' ' < "$WORK/share-b.log"))"
+
+    [ "$(e2e_app_pids | wc -l | tr -d ' ')" = "1" ] && ! pgrep -fx "$APP" >/dev/null \
+        && ok "SHARE the links went to the running e2e app (one instance)" \
+        || bad "SHARE the hand-off started another PocketDeck instance"
+    pkill -fx "$APP" >/dev/null 2>&1
+    stop_app
+    stop_fakephone
+    wait_until 5 no_fakephone
+    unregister_share
+    wait_until 10 eval '! share_listed' \
+        && ok "SHARE $SHARE_ID unregistered after the check" || bad "SHARE $SHARE_ID still registered"
+}
+
 check_orphans() {
     sleep 1
     local n
@@ -1316,15 +1405,15 @@ check_orphans() {
 
 # build_e2e_app — bundles the current tree to build/e2e/PocketDeck.app.
 build_e2e_app() {
-    if ! "$MACOS/scripts/bundle.sh" "$E2E_BUNDLE" > "$WORK/bundle.log" 2>&1; then
+    if ! "$MACOS/scripts/bundle.sh" "$E2E_BUNDLE" --variant e2e > "$WORK/bundle.log" 2>&1; then
         say "could not bundle $E2E_BUNDLE:"; tail -20 "$WORK/bundle.log"; return 1
     fi
 }
 
 which_check="${1:-all}"
 case "$which_check" in
-    qr|pair|render|resize|input|input-global|pause|direct|nav|spotlight|pinch|strip|trackpad|clip|links|all) ;;
-    *) say "usage: check-e2e.sh [qr|pair|render|resize|input|input-global|pause|direct|nav|spotlight|pinch|strip|trackpad|clip|links|all]"; exit 2 ;;
+    qr|pair|render|resize|input|input-global|pause|direct|nav|spotlight|pinch|strip|trackpad|clip|links|share|all) ;;
+    *) say "usage: check-e2e.sh [qr|pair|render|resize|input|input-global|pause|direct|nav|spotlight|pinch|strip|trackpad|clip|links|share|all]"; exit 2 ;;
 esac
 acquire_lock
 wait_for_other_runs
@@ -1333,6 +1422,7 @@ mkdir -p "$WORK"
 say "run: port $PORT, work $WORK, profile $PROFILE, app $E2E_BUNDLE"
 build_e2e_app || exit 1
 build_cgevent || exit 1
+build_share_driver || exit 1
 case "$which_check" in
     qr)       check_qr ;;
     pair)     check_pair ;;
@@ -1349,8 +1439,9 @@ case "$which_check" in
     spotlight) check_spotlight ;;
     clip)     check_clip ;;
     links)    check_links ;;
+    share)    check_share ;;
     all)      check_qr; check_pair; check_render; check_resize; check_input; check_pinch
-              check_strip; check_trackpad; check_pause; check_direct; check_nav; check_spotlight; check_clip; check_links; check_orphans ;;
+              check_strip; check_trackpad; check_pause; check_direct; check_nav; check_spotlight; check_clip; check_links; check_share; check_orphans ;;
 esac
 
 say ""
