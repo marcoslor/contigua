@@ -68,6 +68,7 @@ class Session(
     private val streams = LinkedHashMap<Int, StreamState>()
     private val clipSync = ClipSync()
     private val apk = packages?.let { ApkInstaller(it, ::sendJson, log) }
+    private val share = ShareSender(::sendJson, queue::enqueueBulk, log)
 
     private var clientId = ""
     private var clientName = "Mac"
@@ -90,6 +91,14 @@ class Session(
     }
 
     val isClosed: Boolean get() = closed.get()
+
+    /** Authenticated and still open: shares may go out (docs/design/sharein.md). */
+    val isReady: Boolean get() = phase == Phase.READY && !closed.get() && !closeRequested
+
+    fun shareText(text: String): Int = if (isReady) share.text(text) else ShareStatus.NO_SESSION
+
+    fun shareFile(name: String, mime: String, input: java.io.InputStream): Int =
+        if (isReady) share.file(name, mime, input) else ShareStatus.NO_SESSION
 
     // ------------------------------------------------------------------
     // lifecycle

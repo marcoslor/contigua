@@ -314,6 +314,11 @@ class EventLog(object):
     def link(self, stream, url):
         self._emit({"ev": "link", "stream": stream, "url": url, "ts": time.time()})
 
+    def share(self, kind, value, **extra):
+        event = {"ev": "share", "kind": kind, "value": value, "ts": time.time()}
+        event.update(extra)
+        self._emit(event)
+
     def apk(self, install_id, files, ok, code):
         self._emit({"ev": "apk", "id": install_id, "files": files, "ok": ok, "code": code,
                     "ts": time.time()})
@@ -424,6 +429,11 @@ class Sender(object):
 
     def send_json(self, obj):
         return self._put(0, obj.get("stream", 0) or 0, proto.pack_json(obj, obj.get("stream", 0) or 0))
+
+    def send_in_order(self, data):
+        """A pre-framed frame on the key lane: never dropped, FIFO with other key-lane frames
+        (a shared file's JSON and SHARE_DATA must not overtake each other)."""
+        return self._put(1, 0, data)
 
     def send_config(self, stream, codec, w, h, sps_pps):
         return self._put(1, stream, proto.pack_video_config(stream, codec, w, h, sps_pps))
@@ -755,6 +765,32 @@ class Session(object):
             text = self.phone.args.clip_on_welcome
             self._send({"t": "clip.set", "text": text})
             self.phone.events.clip("tx", text)
+        if self.phone.args.share:
+            threading.Thread(target=self._send_shares, daemon=True).start()
+
+    def _send_shares(self):
+        """--share: what a person shares with "Send to Mac" (docs/design/sharein.md)."""
+        time.sleep(self.phone.args.share_delay)
+        for share_id, spec in enumerate(self.phone.args.share, start=1):
+            kind, _, value = spec.partition(":")
+            sender = self.sender
+            if sender is None:
+                return
+            if kind == "text":
+                sender.send_json({"t": "share.text", "text": value})
+                self.phone.events.share("text", value)
+            elif kind == "image":
+                with open(value, "rb") as handle:
+                    data = handle.read()
+                name = os.path.basename(value)
+                mime = "image/png" if name.lower().endswith(".png") else "image/jpeg"
+                sender.send_in_order(proto.pack_json({"t": "share.file", "id": share_id, "name": name, "mime": mime}))
+                for offset in range(0, len(data), 256 * 1024):
+                    sender.send_in_order(proto.pack_frame(proto.TYPE_SHARE_DATA, share_id, data[offset:offset + 256 * 1024]))
+                digest = hashlib.sha256(data).hexdigest()
+                sender.send_in_order(proto.pack_json({"t": "share.end", "id": share_id, "size": len(data), "sha256": digest}))
+                self.phone.events.share("image", value, size=len(data), sha256=digest)
+            time.sleep(0.5)
 
     # -- steady state --
     def _main_loop(self):
@@ -1202,6 +1238,11 @@ def build_parser():
                         "pocketdeck://pair URI as paired, then authenticate normally")
     p.add_argument("--clip-on-welcome", metavar="TEXT", default=None,
                    help="send TEXT as clip.set right after welcome (the phone's clipboard)")
+    p.add_argument("--share", metavar="KIND:VALUE", action="append", default=[],
+                   help="after welcome, share with the Mac like Share -> Send to Mac: "
+                        "text:<text or URL> or image:<path to .png/.jpg>; repeatable, sent in order")
+    p.add_argument("--share-delay", type=float, default=2.0, metavar="SECONDS",
+                   help="wait this long after welcome before the first --share")
     return p
 
 

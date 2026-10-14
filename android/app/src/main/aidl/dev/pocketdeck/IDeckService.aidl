@@ -50,4 +50,17 @@ interface IDeckService {
      * delivered either).
      */
     void setLockedState(boolean locked) = 8;
+
+    /**
+     * Share text with the connected Mac (`share.text`). Blocks until queued;
+     * returns a ShareStatus code (0 ok, 1 no session, 2 too large, 3 failed).
+     */
+    int shareText(String text) = 9;
+
+    /**
+     * Share a file with the connected Mac (`share.file` + SHARE_DATA + `share.end`),
+     * read from `data` until EOF. Blocks until the last byte is queued; returns a
+     * ShareStatus code. The service closes its copy of `data`.
+     */
+    int shareFile(String name, String mime, in ParcelFileDescriptor data) = 10;
 }

@@ -573,6 +573,50 @@ class SessionTest {
     }
 
     // ------------------------------------------------------------------
+    // share phone -> Mac (docs/design/sharein.md)
+    // ------------------------------------------------------------------
+
+    @Test
+    fun shareBeforeWelcomeIsNoSession() {
+        await { session != null }
+        assertEquals(ShareStatus.NO_SESSION, session!!.shareText("hi"))
+        assertEquals(ShareStatus.NO_SESSION, session!!.shareFile("a.png", "image/png", java.io.ByteArrayInputStream(ByteArray(1))))
+    }
+
+    @Test
+    fun serverWithoutSessionIsNoSession() {
+        val server = Server({ error("no sessions here") })
+        assertEquals(ShareStatus.NO_SESSION, server.shareText("hi"))
+        assertEquals(ShareStatus.NO_SESSION, server.shareFile("a.png", "image/png", java.io.ByteArrayInputStream(ByteArray(1))))
+    }
+
+    @Test
+    fun sharedTextAndFileReachTheMac() {
+        addAndAuthenticate()
+        assertEquals(ShareStatus.OK, session!!.shareText("https://example.com"))
+        assertEquals("https://example.com", readUntil("share.text")["text"])
+        val data = ByteArray(300_000) { (it % 251).toByte() }
+        assertEquals(ShareStatus.OK, session!!.shareFile("a.png", "image/png", java.io.ByteArrayInputStream(data)))
+        val begin = readUntil("share.file")
+        val id = (begin["id"] as Number).toInt()
+        var got = ByteArray(0)
+        while (true) {
+            val frame = reader.readFrame() ?: error("closed")
+            if (frame.type == Frames.TYPE_SHARE_DATA) {
+                assertEquals(id, frame.stream)
+                got += frame.payload
+                continue
+            }
+            val m = Json.parseObject(String(frame.payload))
+            if (m["t"] == "share.end") {
+                assertEquals(data.size.toLong(), (m["size"] as Number).toLong())
+                break
+            }
+        }
+        assertTrue(data.contentEquals(got))
+    }
+
+    // ------------------------------------------------------------------
     // clipboard sync
     // ------------------------------------------------------------------
 

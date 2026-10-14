@@ -103,6 +103,14 @@ final class ClipboardSync {
         lastCount = pasteboard.changeCount
     }
 
+    /// Writes text the person sent from the phone (Share → Send to Mac), whether or
+    /// not sync is on; recorded like `receive` so it is not sent back.
+    func adopt(_ text: String) {
+        if let hash = Self.digest(text) { syncedHash = hash }
+        pasteboard.write(text: text)
+        lastCount = pasteboard.changeCount
+    }
+
     /// nil for empty text and for text over the protocol's 1 MiB limit.
     private static func digest(_ text: String) -> SHA256.Digest? {
         let bytes = Data(text.utf8)

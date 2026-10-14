@@ -3,6 +3,7 @@ package dev.pocketdeck.server
 import android.app.KeyguardManager
 import android.content.Context
 import android.os.Build
+import android.os.ParcelFileDescriptor
 import android.os.SystemClock
 import android.util.Log
 import dev.pocketdeck.IDeckCallback
@@ -118,6 +119,17 @@ class DeckService(private val appContext: Context?) :
         val srv = server
         return "uid=${android.system.Os.getuid()} pid=${android.system.Os.getpid()} " +
             "port=${srv?.port ?: -1} clients=${clients.size} ctx=${appContext != null}"
+    }
+
+    override fun shareText(text: String?): Int =
+        server?.shareText(text ?: "") ?: ShareStatus.NO_SESSION
+
+    override fun shareFile(name: String?, mime: String?, data: ParcelFileDescriptor?): Int {
+        val pfd = data ?: return ShareStatus.FAILED
+        val srv = server ?: return ShareStatus.NO_SESSION
+        return ParcelFileDescriptor.AutoCloseInputStream(pfd).use {
+            srv.shareFile(name ?: "image", mime ?: "application/octet-stream", it)
+        }
     }
 
     // ---- PairingStore -------------------------------------------------

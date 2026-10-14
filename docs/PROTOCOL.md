@@ -39,6 +39,7 @@ Max frame size 8 MiB; a receiver that sees a larger `len` closes the session.
 | `0x11` | SCROLL | mac→phone | `f32 nx` · `f32 ny` · `f32 hscroll` · `f32 vscroll` — mouse-wheel units, injected as `ACTION_SCROLL` (`SOURCE_MOUSE`) with these as `AXIS_HSCROLL` / `AXIS_VSCROLL` at (nx, ny). `vscroll > 0` = content moves down (wheel up), `hscroll > 0` = content moves left (wheel right). One unit is one wheel notch (Android's default 64 dp scroll factor); fractions are fine. The Mac sends SCROLL for mouse wheels only: a trackpad's two-finger scroll is a one-finger drag in TOUCH (DOWN, MOVEs, UP), so Android's own drag, overscroll and fling apply |
 | `0x12` | KEY | mac→phone | `u8 action` (0 down, 1 up) · `u32 keycode` (Android `KEYCODE_*`) · `u32 metaState` |
 | `0x20` | APK_DATA | mac→phone | the next bytes (≤ 1 MiB) of an APK install; `stream` = the install `id`; see "APK install" |
+| `0x21` | SHARE_DATA | phone→mac | the next bytes (≤ 1 MiB) of a shared file; `stream` = the share `id`; see "Share phone → Mac" |
 
 `nx`,`ny` are normalized `[0,1]` in the stream's video coordinates (top-left
 origin). The phone maps them to the stream's current virtual display size.
@@ -160,6 +161,10 @@ Phone → Mac:
 | `error` | `code`, `message`, optional `stream` |
 | `apk.progress` | `id`, `bytes` — bytes written into the install so far |
 | `apk.result` | `id`, `ok`; success: `pkg`, `label`, `version`; failure: `code`, `message` |
+| `share.text` | `text` — shared from an Android app; see "Share phone → Mac" |
+| `share.file` | `id`, `name`, `mime` — a shared file follows in `SHARE_DATA` frames |
+| `share.end` | `id`, `size`, `sha256` — the file is complete |
+| `share.abort` | `id` — the phone gave up on that file; the Mac discards it |
 
 Unknown `t` values and unknown binary frame types are ignored (log once). Unknown
 fields are ignored. `activity` is a component string `pkg/fully.qualified.Class`.
@@ -219,6 +224,27 @@ Installs an app sent from the Mac (docs/design/apk.md). One install at a time.
 
 The phone streams each file into a package-manager session and commits only after every
 file arrived with its SHA-256; it stores no copy of its own.
+
+## Share phone → Mac
+
+What a person shares from an Android app with **Send to Mac** (docs/design/sharein.md).
+Only the phone sends these; the Mac never answers them.
+
+- `{"t":"share.text","text":"..."}`: UTF-8, not empty, at most 1 MiB. The Mac decides what
+  it is: text that is, or contains exactly one, `http`/`https` URL with a host (same syntax
+  rules as "Links") opens in the Mac's default browser; anything else — other schemes
+  (`file:`, `javascript:`, `intent:`, custom), several URLs, plain text — goes on the Mac
+  clipboard. The Mac never opens a non-web URL.
+- A file: `{"t":"share.file","id":N,"name":"IMG_1.jpg","mime":"image/jpeg"}`, then
+  `SHARE_DATA` frames (`stream` = `id`, ≤ 1 MiB each), then
+  `{"t":"share.end","id":N,"size":..,"sha256":"<64 hex>"}` — or `{"t":"share.abort","id":N}`.
+  `id` is a u32 ≠ 0 chosen by the phone. One file at a time: a new `share.file` abandons an
+  unfinished one, and so does the end of the session.
+- The phone sends a file's JSON messages and its data in order on the lowest send priority
+  (after video), so they never overtake each other and never delay other replies.
+- The Mac accepts only `mime` `image/*`, at most 50 MiB (52 428 800 bytes); larger, a size or
+  SHA-256 mismatch, or `share.abort` → nothing is kept. `name` is untrusted: the Mac keeps
+  only `[A-Za-z0-9 ._-]`, never a path, and numbers it on collision.
 
 ## Error codes
 
