@@ -70,6 +70,9 @@ final class PhoneWindowController: StreamWindowController {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
 
+    /// The phone window's style lives under its own key.
+    override var styleKey: String? { WindowStyleStore.phoneKey }
+
     private static let minVideoWidth: CGFloat = 240
 
     override func headerActions() -> [HeaderAction] {

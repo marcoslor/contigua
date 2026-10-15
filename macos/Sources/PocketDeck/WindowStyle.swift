@@ -60,8 +60,10 @@ enum ChromeBar {
     /// The stream's own corners, as the window's in the immersive style.
     static let cornerRadius: CGFloat = 16
     /// Traffic lights: the standard 20 pt in from the window's left edge,
-    /// centred on the bar's own line.
+    /// centred on the bar's own line. 14 pt square buttons, 23 pt apart.
     static let trafficLightInset: CGFloat = 20
+    static let trafficLightButtonSide: CGFloat = 14
+    static let trafficLightSpacing: CGFloat = 23
     /// The style toggle, 8 pt right of the zoom light.
     static let toggleSymbol = "rectangle.on.rectangle"
     static let toggleFontSize: CGFloat = 12
@@ -85,13 +87,28 @@ enum DwellChrome {
     /// its width follows what is in it.
     static let pillHeight: CGFloat = 28
     static let pillCornerRadius: CGFloat = 8
-    /// The pointer has to rest this long, without drifting more than
+    /// The dwell has to rest this long, without drifting more than
     /// `tolerance` pt, before the pill fades in over `fadeIn`.
     static let dwell: TimeInterval = 0.35
     static let tolerance: CGFloat = 3
     static let fadeIn: TimeInterval = 0.12
     /// And it fades out this long after the pointer leaves the pill.
     static let hideDelay: TimeInterval = 0.6
+    /// The pill sits this far in from the stream's top-left corner.
+    static let pillInset: CGFloat = 6
+    /// The lights ride the pill 8 pts in from its edge, on the pill's centre
+    /// line, 23 pt apart like the bar's 20/43/66.
+    static let pillLightInset: CGFloat = pillInset + 8
+    static let pillLightSpacing: CGFloat = 23
+    /// The style toggle follows 8 pts right of the zoom light's slot.
+    static let pillToggleX: CGFloat = pillLightInset + 2 * pillLightSpacing + ChromeBar.trafficLightButtonSide + 8
+    /// The window kind's actions after the toggle.
+    static let pillActionsX: CGFloat = pillToggleX + ChromeBar.toggleSize + 8
+    /// The pill is as tall as the framed bar and as wide as its contents.
+    static func pillWidth(actionCount: Int) -> CGFloat {
+        guard actionCount > 0 else { return pillToggleX + ChromeBar.toggleSize + 8 - pillInset }
+        return pillActionsX + CGFloat(actionCount) * HeaderControls.buttonWidth + 6
+    }
 }
 
 /// The phone window's shape rules: the stream keeps the phone's aspect ratio;

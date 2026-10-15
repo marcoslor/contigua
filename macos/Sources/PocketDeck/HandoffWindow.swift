@@ -24,6 +24,10 @@ final class HandoffWindowController: StreamWindowController {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
 
+    /// The handoff window shows one app once the phone names it; that app's
+    /// remembered style applies.
+    override var styleKey: String? { pkg.map { WindowStyleStore.key(forPackage: $0) } }
+
     override func sendOpen() {
         let pixels = displayPixels()
         if let pkg {
@@ -45,10 +49,12 @@ final class HandoffWindowController: StreamWindowController {
         window?.title = manager.titled(label)
     }
 
-    /// The phone reported the app that ended up on this display.
+    /// The phone reported the app that ended up on this display: even the
+    /// style follows the package's remembered choice.
     func adopt(pkg: String) {
         guard self.pkg == nil, !pkg.isEmpty, pkg != "dev.pocketdeck" else { return }
         self.pkg = pkg
+        reapplyStoredStyle()
     }
 
     override func retitle() {

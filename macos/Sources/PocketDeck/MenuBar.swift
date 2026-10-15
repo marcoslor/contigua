@@ -121,6 +121,28 @@ struct AppCommands: Commands {
             Toggle("Show Touches", isOn: Binding(
                 get: { streamMenu.showTouches },
                 set: { controller.windows.showTouches = $0 }))
+            Divider()
+            // The key stream window's style: radio state from the window
+            // controllers through StreamMenuState, switch through the
+            // responder chain, remembered per app (WindowStyleStore).
+            Picker("Window Style", selection: Binding(
+                get: { streamMenu.style },
+                set: { style in
+                    NSApp.sendAction(style == .framed
+                        ? #selector(StreamWindowController.useFramedStyle(_:))
+                        : #selector(StreamWindowController.useImmersiveStyle(_:)),
+                                     to: nil, from: nil)
+                })) {
+                Text(WindowStyle.framed.label).tag(WindowStyle.framed)
+                Text(WindowStyle.immersive.label).tag(WindowStyle.immersive)
+            }
+            .pickerStyle(.inline)
+            .disabled(!streamMenu.hasStream)
+            Button("Toggle Window Style") {
+                send(#selector(StreamWindowController.toggleStyleMenuAction(_:)))
+            }
+            .keyboardShortcut("f", modifiers: [.command, .option])
+            .disabled(!streamMenu.hasStream)
         }
         CommandMenu("Navigate") {
             Button("Back") { send(#selector(StreamWindowController.navigateBack(_:))) }
