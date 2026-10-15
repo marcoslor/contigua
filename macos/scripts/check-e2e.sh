@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # End-to-end checks C3-C13 for the macOS client against tools/fakephone.
 #
-#   ./scripts/check-e2e.sh [qr|pair|render|resize|input|mouseback|input-global|pause|direct|nav|spotlight|pinch|chrome|trackpad|clip|sharein|links|share|apk|dock|nickname|audio|handoff|all]
+#   ./scripts/check-e2e.sh [qr|pair|render|resize|input|mouseback|input-global|pause|direct|nav|mirror|spotlight|pinch|chrome|trackpad|clip|sharein|links|share|apk|dock|nickname|audio|handoff|all]
 #
 # Every check starts from a clean slate: no PocketDeck or fakephone processes
 # left by an earlier run, a fresh fakephone state file and no pairing key in
@@ -116,10 +116,11 @@ clean() {
 }
 
 # start_fake [state-file] — same port every time, never mDNS. FAKE_ALLOW_DELAY
-# makes the "person" take that many seconds to tap Allow.
+# makes the "person" take that many seconds to tap Allow; FAKE_ARGS adds flags.
 start_fake() {
     local state="${1:-$WORK/state.json}"
-    python3 "$FAKEPHONE" --port "$PORT" --no-mdns --auto-allow --allow-delay "${FAKE_ALLOW_DELAY:-0}" \
+    # shellcheck disable=SC2086
+    python3 "$FAKEPHONE" --port "$PORT" --no-mdns --auto-allow --allow-delay "${FAKE_ALLOW_DELAY:-0}" ${FAKE_ARGS:-} \
         --events "$WORK/events.jsonl" \
         --state "$state" > "$WORK/fake.log" 2>&1 &
     FAKE_PID=$!
@@ -1401,6 +1402,74 @@ PY
     stop_fakephone
 }
 
+# --- MIRROR: the phone window mirrors display 0 and turns with it -----------
+
+# mirror_aspect — "WxH ok|off": stream 1's first VIDEO_CONFIG and whether it
+# has the fake screen's 1080x2340 aspect (within the 16 px alignment).
+mirror_aspect() {
+    python3 - "$WORK/events.jsonl" <<'PY' || true
+import json, sys
+for line in open(sys.argv[1]):
+    try:
+        e = json.loads(line)
+    except ValueError:
+        continue
+    if e.get("ev") == "video" and e.get("stream") == 1 and e.get("config"):
+        w, h = e["w"], e["h"]
+        print("%dx%d %s" % (w, h, "ok" if abs(h / w - 2340 / 1080) < 0.05 else "off"))
+        break
+PY
+}
+
+# check_mirror — the phone window shows display 0 at the screen's aspect; when
+# the phone turns to landscape the stream and the window turn with it.
+check_mirror() {
+    clean
+    FAKE_ARGS="--rotate-after 6" start_fake || return 1
+    launch --connect "127.0.0.1:$PORT" --open-phone --float-windows \
+        --debug-chrome-state "$WORK/chrome.txt" --quit-after 40
+    local portrait landscape shot="$WORK/mirror-glass.png"
+    if portrait="$(await_window '$5 > $4 * 1.5')"; then
+        ok "MIRROR phone window is portrait ($(windows | awk -v i="$portrait" '$1 == i {print $4 "x" $5}'))"
+    else
+        bad "MIRROR no portrait phone window"; stop_app; stop_fakephone; return 1
+    fi
+    wait_until 15 events_have '"ev":"video"' || true
+    case "$(mirror_aspect)" in
+        *" ok") ok "MIRROR stream has the phone screen's aspect ($(mirror_aspect))" ;;
+        *) bad "MIRROR stream aspect is not the phone's ($(mirror_aspect))" ;;
+    esac
+    # Bring the header in (the pointer at the top edge) to show the glass nav buttons.
+    for top in 200 150 120 90 70; do "$CGBIN" move --window "$portrait" --top "$top" >/dev/null; sleep 0.03; done
+    "$CGBIN" move --window "$portrait" --top 58 >/dev/null
+    wait_until 3 chrome_is "header=shown" && sleep 0.4
+    region_shot "$portrait" "$shot" && say "glass nav screenshot ($(chrome_state)): $shot"
+    if landscape="$(await_window "\$1 == $portrait && \$4 > \$5 * 1.5")"; then
+        ok "MIRROR window turned with the phone ($(windows | awk -v i="$landscape" '$1 == i {print $4 "x" $5}'))"
+    else
+        bad "MIRROR window did not turn to landscape"
+    fi
+    wait_until 10 landscape_config \
+        && ok "MIRROR landscape VIDEO_CONFIG sent" || bad "MIRROR no landscape VIDEO_CONFIG"
+    stop_app
+    stop_fakephone
+}
+
+# landscape_config — stream 1 has had a VIDEO_CONFIG wider than tall.
+landscape_config() {
+    python3 - "$WORK/events.jsonl" <<'PY'
+import json, sys
+for line in open(sys.argv[1]):
+    try:
+        e = json.loads(line)
+    except ValueError:
+        continue
+    if e.get("ev") == "video" and e.get("stream") == 1 and e.get("config") and e["w"] > e["h"]:
+        sys.exit(0)
+sys.exit(1)
+PY
+}
+
 # no_fakephone — true once no fakephone process is left (its port is free).
 no_fakephone() { ! pgrep -f -- "--events $WORK/events.jsonl" >/dev/null; }
 
@@ -2162,8 +2231,8 @@ build_e2e_app() {
 
 which_check="${1:-all}"
 case "$which_check" in
-    qr|pair|render|resize|input|mouseback|input-global|pause|direct|nav|spotlight|pinch|chrome|trackpad|clip|sharein|links|share|apk|dock|nickname|audio|handoff|all) ;;
-    *) say "usage: check-e2e.sh [qr|pair|render|resize|input|mouseback|input-global|pause|direct|nav|spotlight|pinch|chrome|trackpad|clip|sharein|links|share|apk|dock|nickname|audio|handoff|all]"; exit 2 ;;
+    qr|pair|render|resize|input|mouseback|input-global|pause|direct|nav|mirror|spotlight|pinch|chrome|trackpad|clip|sharein|links|share|apk|dock|nickname|audio|handoff|all) ;;
+    *) say "usage: check-e2e.sh [qr|pair|render|resize|input|mouseback|input-global|pause|direct|nav|mirror|spotlight|pinch|chrome|trackpad|clip|sharein|links|share|apk|dock|nickname|audio|handoff|all]"; exit 2 ;;
 esac
 acquire_lock
 wait_for_other_runs
@@ -2176,6 +2245,7 @@ build_share_driver || exit 1
 case "$which_check" in
     qr)       check_qr ;;
     pair)     check_pair ;;
+    mirror)   check_mirror ;;
     render)   check_render ;;
     resize)   check_resize ;;
     input)    check_input ;;
@@ -2198,7 +2268,7 @@ case "$which_check" in
     audio)    check_audio ;;
     handoff)  check_handoff ;;
     all)      check_qr; check_pair; check_render; check_resize; check_input; check_mouseback; check_pinch
-              check_chrome; check_trackpad; check_pause; check_direct; check_nav; check_spotlight; check_clip; check_sharein; check_links; check_share; check_apk; check_dock; check_nickname
+              check_chrome; check_trackpad; check_pause; check_direct; check_nav; check_mirror; check_spotlight; check_clip; check_sharein; check_links; check_share; check_apk; check_dock; check_nickname
               check_audio; check_handoff; check_orphans ;;
 esac
 
