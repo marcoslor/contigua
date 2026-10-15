@@ -2,85 +2,73 @@
 
 Drag files from Finder onto a phone window → the phone writes them to
 `/sdcard/Download/PocketDeck/`, media-scans them and offers a SEND chooser; clipboard
-images travel both ways. Dragging **out** of a phone window is designed only (§7).
+images travel both ways. Dragging **out** of a phone window is design only (§Drag out).
 
 ## Entry points (Mac)
-- **Drop** on any stream window (app, link, phone mode) and on the Deck.
-- The drop handler routes: a lone `.apk`/`.apks`/`.xapk` keeps going to the APK installer
-  (docs/design/apk.md); anything else is a transfer. Several files queue, one at a time.
-- **Open With / Services** for a generic file are not new entry points: `application(_:open:)`
-  keeps sending files only through the APK route. `--debug-input-script` gains `dropfile PATH`
-  (e2e): it feeds the same handler the drag ends in.
+- **Drop** on any stream window (app, link, phone mode) and on the Deck. A lone
+  `.apk`/`.apks`/`.xapk` keeps going to the APK installer (docs/design/apk.md); anything
+  else is a transfer. Several files queue, one at a time.
+- `--debug-input-script` gains `dropfile PATH` (e2e): it feeds the same handler the drag
+  ends in. `application(_:open:)` is left APK-only (Open With stays an APK path).
 
-## Protocol (Mac → phone) — mirrors `apk.install` + `APK_DATA`
-1. Mac → `{"t":"drop.start","id":N,"name,"mime,"size","sha256", ("resume":bytes)}`, `id` u32 ≠ 0;
-   `name` `[A-Za-z0-9 ._-]{1,100}`. Phone → `drop.result` `bad_request` for anything else.
-2. Mac → binary `0x22 DROP_DATA`, `stream` = `id`, chunks ≤ 1 MiB, sent like APK parts
-   (≤ 256 KiB, ≤ 4 in flight, completion-paced) so video and replies never stall.
-3. Phone → `drop.progress {id, bytes}` ≤ 4/s plus once with the last byte, then exactly one
-   `drop.result {id, ok:true, path}` or `{id, ok:false, code:"too_large"|"busy"|"checksum"|
-   "cancelled"|"failed","message"}`.
+## Protocol — mirrors `apk.install` + `APK_DATA`
+1. Mac → `{"t":"drop.start","id":N,"name","mime","size","sha256","resume":bytes?}`,
+   `id` u32 ≠ 0; anything the phone rejects → `drop.result {ok:false,code:"bad_request"}`.
+2. Mac → binary `0x22 DROP_DATA`, `stream` = `id`, chunks ≤ 1 MiB, paced like APK parts
+   (≤ 256 KiB, ≤ 4 in flight) so video and replies never stall.
+3. Phone → `drop.progress {id, bytes}` ≤ 4/s (and once with the last byte), then exactly
+   one `drop.result {id, ok:true, path}` / `{id, ok:false, code:"too_large"|"busy"|
+   "checksum"|"cancelled"|"failed","message"}`.
 4. Mac → `drop.cancel {id}` any time; session end abandons (partial file removed).
-5. Size cap 200 MiB counted while receiving; one drop at a time (a new `drop.start` → `busy`).
-6. **Resume**: `drop.start` may carry `resume:bytes`; when the phone still holds a partial
-   temp file for that exact `(name,size,sha256)` it replies `drop.progress` with the verified
-   offset and the Mac streams from there; anything else restarts from zero.
+5. Cap 200 MiB counted while receiving; one drop per phone (a second `start` → `busy`).
+6. **Resume**: `resume:bytes` + a partial temp file for the same `(name,size,sha256)` →
+   the phone answers `drop.progress` with the verified offset and the Mac streams on;
+   otherwise it restarts from zero. Name: `[A-Za-z0-9 ._-]`, ≤ 100 chars, no leading dot,
+   collisions " 2", " 3"… — same rules as the share-in receiver, on both sides.
 
 ## Phone side (shell UID, like the APK path)
-- All bytes stream into a hidden temp file in `/sdcard/Download/PocketDeck/` (`mkdir -p` on
-  demand), renamed only after a SHA-256 match. Names: the Mac's `name` is reduced to
-  `[A-Za-z0-9 ._-]`, no leading dot, ≤ 100 chars; collisions get " 2", " 3"… The folder is
-  the only thing we touch (the app may not assume anything else exists).
-- After the rename: media scan (`MediaScannerConnection.scanFile`, best effort) so the file
-  is visible in Files/Photos; then, "where sensible" (one file, a context and our provider
-  available): `am start -a android.intent.action.SEND -t <mime> --grant-read-uri-permission
-  --eu android.intent.extra.STREAM <content-uri>` run as argv (never `sh -c`; shell UID may
-  background-start activities, the app process may not). The URI is the **app's**
-  `dev.pocketdeck.fileprovider` (`external-path` → `/storage/emulated/0`); because the
-  provider has `android:grantUriPermissions="true"`, the system honours the flag for a
-  shell caller too. No chooser extras; the phone's person picks the app.
-- The phone never trusts the frame payload beyond the announced sha256.
+All bytes stream into a hidden temp file in `/sdcard/Download/PocketDeck/` (`mkdir -p` on
+demand; the only path we create), renamed after a SHA-256 match. Then a media scan
+(`MediaScannerConnection.scanFile`, best effort) and — where sensible: one file, a context
+and our provider available — `am start -a android.intent.action.SEND -t <mime>
+--grant-read-uri-permission --eu android.intent.extra.STREAM <uri>`, as argv (never
+`sh -c`; shell UID may background-start activities, the app process may not). The URI is
+the **app's** `dev.pocketdeck.fileprovider` (`external-path` → `/storage/emulated/0`); with
+the provider's `grantUriPermissions="true"` the system honours the flag for a shell caller
+too. The phone never trusts payload or name beyond `sha256` and the sanitised name.
 
-## Clipboard images both ways — extends `clip.set` (one way: text)
-- New binary type `0x23 CLIP_DATA` (both directions) with the same announce/end shape:
-  `{"t":"clip.image.start","id":N,"mime":"image/png","size":S}` → `0x23` chunks →
-  `{"t":"clip.image.end","id":N,"size","sha256"}` or `{"t":"clip.image.abort","id":N}`.
-  JPEG stays JPEG; anything else the phone's clipboard serves becomes PNG.
-- Cap 8 MiB each way: over it the sender stays silent and the receiver ignores, exactly like
-  the 1 MiB `clip.set` rule. One image per side at a time; a new start replaces the old.
-- Mac: the poll that watches for text also picks up an image item (PNG taken verbatim, TIFF
-  converted) when the item has no text; received images are written to the pasteboard as
-  PNG. A hash of the bytes prevents echo, like `syncedHash`.
-- Phone: `ShellClipboard` gains image read (the first item's stream, shell may read the clip)
-  and write (`ClipData.newUri` on a FileProvider URI under Downloads/PocketDeck, media-scanned).
-  Known risk: whether other apps can paste a shell-made clip depends on ClipboardService URI
-  grants; verified on the emulator, worst case the folder still has the image.
-- Concealed/secret/autogen pasteboard items are still never sent.
+## Clipboard images — extends `clip.set` (text only today)
+- Binary `0x23 CLIP_DATA`, both directions, same shape as the drop:
+  `{"t":"clip.image.start","id","mime","size"}` → `0x23` chunks →
+  `{"t":"clip.image.end","size","sha256"}` / `{"t":"clip.image.abort","id"}`.
+- Cap 8 MiB each way: over it the sender is silent, the receiver ignores — exactly the
+  `clip.set` rule at 1 MiB. JPEG stays JPEG; other phone formats become PNG.
+- Mac: the text poll also picks up an image item (PNG verbatim, TIFF converted) when the
+  item has no text; received images are written back as PNG. A hash of the bytes prevents
+  echo like `syncedHash`; secret/concealed items are still never sent.
+- Phone: `ShellClipboard` gains image read (first item's stream) and write
+  (`ClipData.newUri` on a FileProvider URI under Downloads/PocketDeck, media-scanned). Risk:
+  other apps pasting a shell-made clip depends on ClipboardService URI grants — verified on
+  the emulator; worst case the image still exists in the folder.
 
 ## Progress in the window (Mac)
-Stream windows (and the Deck) show a glass pill like the reconnect pill: "Sending
-`report.pdf`… 43 %", success/failure for 5 s; a transfer is one per session (busy otherwise).
+A glass pill like the reconnect pill: "Sending report.pdf… 43 %", then the outcome for 5 s.
 
 ## Drag out (design only, not built)
-Finder-style promotion: window calls `beginDraggingSession` with a file promise
-(`NSDraggingItem` `writePasteboardTypeFilePromise`) when the pointer drags from a long-press
-onto Finder; the phone would then push `share.file` chunks on demand (a heartbeat-pumped
-`share.out` request + SHARE_DATA on a second stream id) into a temp promise file. Kept out of
-scope: the input mapper owns ordinary pointer drags, so a drag-out needs a qualifying gesture
-(a button-2 long-press) plus a pasteboard demand loop; lands in a later milestone.
+The window exposes a file-promise drag (`NSDraggingItem` promise, qualifier: a mouse-side
+long-press, since the input mapper owns ordinary drags). On demand the phone sends
+`share.file` + `SHARE_DATA` on a fresh share id into the promise temp file. Deferred: the
+pasteboard demand loop and the gesture arbitration.
 
 ## Alternatives rejected
-- File bytes in JSON/base64: +33 % and the 8 MiB JSON frame cap; a binary frame is free.
-- Reusing `APK_DATA` for drops: it routes to pm; a parallel id-space invites wrecks.
-- Writing straight to `/data/local/tmp` or `am push`: world-readable leftovers, and the
-  Downloads folder is what the person can find.
-- Background-activity-launch from the app process: Android 10+ blocks it; `am` from shell is
-  the documented exemption, and no grant dance is needed for `MediaStore` URIs we do not own.
-- Clipboard image sync above 8 MiB: pasteboards hold screenshots, not videos; a bigger cap
-  would stream through the same queue that carries video and stall the session.
+- Base64 in JSON (share.text style): +33 % and the 8 MiB JSON cap; a binary frame is free.
+- Reusing `APK_DATA`: it routes to pm; a second meaning of the same ids invites wrecks.
+- App-process activity start for SEND: Android 10+ background-activity-launch blocks it;
+  `am` from shell is the documented exemption.
+- Clipboard sync over 8 MiB: pasteboards hold screenshots, not videos; a larger cap would
+  stream through the queue that carries video and stall the session.
 
 ## Risks
-- Emulator `SEND` grant from shell: verified with a live `am start`; if a vendor ROM refuses,
-  the file is still written and the toast says where.
-- Phone→Mac image read: content URIs under the shell's clipboard may not resolve; best effort,
-  mirrored to the Mac only when the bytes are readable.
+- The shell `SEND` grant is verified with a live `am start` on the emulator; a vendor ROM
+  that refuses leaves the file written and a told-off toast instead.
+- Phone→Mac image reads through other apps' content URIs may not resolve; best effort.
