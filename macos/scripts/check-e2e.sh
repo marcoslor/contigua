@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # End-to-end checks C3-C13 for the macOS client against tools/fakephone.
 #
-#   ./scripts/check-e2e.sh [qr|pair|render|resize|input|mouseback|input-global|pause|direct|nav|spotlight|pinch|chrome|trackpad|clip|sharein|links|share|apk|dock|all]
+#   ./scripts/check-e2e.sh [qr|pair|render|resize|input|mouseback|input-global|pause|direct|nav|spotlight|pinch|chrome|trackpad|clip|sharein|links|share|apk|dock|nickname|audio|all]
 #
 # Every check starts from a clean slate: no PocketDeck or fakephone processes
 # left by an earlier run, a fresh fakephone state file and no pairing key in
@@ -222,7 +222,15 @@ build_cgevent() {
     fi
 }
 
+# windows() — the CGWindow list of PocketDeck's own windows without a title:
 windows() { "$CGBIN" list; }
+
+# window_titles() — the Dock/⌘-Tab-style AX title of each window, one per line.
+window_titles() { "$CGBIN" titles; }
+
+titles_have() { window_titles | grep -qF -- "$1"; }
+
+titles_line() { window_titles | grep -qxF -- "$1"; }
 
 windows_at_least() { [ "$(windows | wc -l | tr -d ' ')" -ge "$1" ]; }
 
@@ -1980,6 +1988,80 @@ check_dock() {
     wait_until 5 no_fakephone
 }
 
+# --- Phone nickname (docs/ROADMAP.md #1, #2) --------------------------------
+
+# check_nickname — a nickname names the phone everywhere. It is set the way
+# Settings stores it (a `phoneNicknames` map in the profile's defaults, written
+# before launch) and through the real rename path (--set-nickname calls the
+# same method the Rename dialog's button does). Assertions: the app window's
+# title is "Settings (Nicky)" (the Dock/⌘-Tab identity), the Dock shim is
+# "WhatsApp (Nicky).app", the phone window is titled with the nickname, and a
+# rename retitles the window and rebuilds the shim.
+check_nickname() {
+    clean
+    local dir pkg="com.whatsapp" devid
+    dir="$(dock_dir)"
+    remove_dock_apps
+    mkdir -p "$dir"
+    # A fixed device id in the fresh state file, so the nickname exists before
+    # the phone is ever met.
+    devid="e2e0nick0name0001"
+    printf '{"id": "%s", "clients": {}}' "$devid" > "$WORK/state.json"
+    defaults write "$DEFAULTS_SUITE" phoneNicknames "{\"$devid\": \"Nicky\"}"
+
+    start_fake || return 1
+    launch --connect "127.0.0.1:$PORT" --dock-dir "$dir" --dock-add "$pkg" \
+        --open com.android.settings --open-phone --quit-after 120
+    wait_until 30 events_have '"state":"auth_ok"' \
+        || wait_until 30 events_have '"state":"paired"' \
+        || { bad "NICK the app never authenticated"; stop_app; stop_fakephone; return 1; }
+
+    # The Dock shim carries the nickname in its name, not the phone's own.
+    shim_name_is() { ls -d "$dir"/*.app 2>/dev/null | head -1 | grep -qF "$1"; }
+    wait_until 30 shim_name_is "WhatsApp (Nicky).app" \
+        && ok "NICK the Dock shim is \"WhatsApp (Nicky).app\"" \
+        || bad "NICK no renamed shim in $dir: $(ls -d "$dir"/*.app 2>/dev/null | tr '\n' ' ')"
+    local shim
+    shim="$(ls -d "$dir"/*.app 2>/dev/null | head -1)"
+    [ -n "$shim" ] && [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleName' "$shim/Contents/Info.plist" 2>/dev/null)" = "WhatsApp (Nicky)" ] \
+        && ok "NICK the shim's CFBundleName is \"WhatsApp (Nicky)\"" \
+        || bad "NICK unexpected shim Info.plist: $(cat "$shim/Contents/Info.plist" 2>/dev/null | grep -A1 BundleName | head -2)"
+
+    # The app window title (and with it the Dock/⌘-Tab entry).
+    wait_until 20 titles_have "Settings (Nicky)" \
+        && ok "NICK the app window is titled \"Settings (Nicky)\"" \
+        || bad "NICK no \"Settings (Nicky)\" window: ($(window_titles | tr '\n' '|'))"
+    # The phone window names the phone with the nickname alone.
+    wait_until 20 titles_line "Nicky" \
+        && ok "NICK the phone window is titled with the nickname" \
+        || bad "NICK no \"Nicky\" title: ($(window_titles | tr '\n' '|'))"
+    stop_app
+
+    # A rename through the real code path retitles the open window and rebuilds
+    # the shim. The app list still runs this app; no new shim may appear.
+    local before
+    before="$(ls -d "$dir"/*.app 2>/dev/null | wc -l | tr -d ' ')"
+    launch --connect "127.0.0.1:$PORT" --dock-dir "$dir" --dock-add "$pkg" \
+        --open com.android.settings --set-nickname "Nicky 2" --quit-after 120
+    wait_until 30 events_have '"state":"auth_ok"' \
+        && ok "NICK second launch reconnected" || bad "NICK second launch did not authenticate"
+    wait_until 30 titles_have "Settings (Nicky 2)" \
+        && ok "NICK the rename retitled the app window" \
+        || bad "NICK the rename did not retitle: ($(window_titles | tr '\n' '|'))"
+    wait_until 30 shim_name_is "WhatsApp (Nicky 2).app" \
+        && ok "NICK the rename rebuilt the Dock shim" \
+        || bad "NICK no rebuilt shim: $(ls -d "$dir"/*.app 2>/dev/null | tr '\n' ' ')"
+    [ "$(ls -d "$dir"/*.app 2>/dev/null | wc -l | tr -d ' ')" -le "$before" ] \
+        && ok "NICK the old-named shim is gone, not left behind ($(ls "$dir" 2>/dev/null | tr '\n' ' '))" \
+        || bad "NICK the old-shim survived the rename"
+    stop_app
+
+    defaults delete "$DEFAULTS_SUITE" phoneNicknames >/dev/null 2>&1
+    stop_fakephone
+    remove_dock_apps
+    wait_until 5 no_fakephone
+}
+
 check_orphans() {
     sleep 1
     local n
@@ -1998,8 +2080,8 @@ build_e2e_app() {
 
 which_check="${1:-all}"
 case "$which_check" in
-    qr|pair|render|resize|input|mouseback|input-global|pause|direct|nav|spotlight|pinch|chrome|trackpad|clip|sharein|links|share|apk|dock|audio|all) ;;
-    *) say "usage: check-e2e.sh [qr|pair|render|resize|input|mouseback|input-global|pause|direct|nav|spotlight|pinch|chrome|trackpad|clip|sharein|links|share|apk|dock|audio|all]"; exit 2 ;;
+    qr|pair|render|resize|input|mouseback|input-global|pause|direct|nav|spotlight|pinch|chrome|trackpad|clip|sharein|links|share|apk|dock|nickname|audio|all) ;;
+    *) say "usage: check-e2e.sh [qr|pair|render|resize|input|mouseback|input-global|pause|direct|nav|spotlight|pinch|chrome|trackpad|clip|sharein|links|share|apk|dock|nickname|audio|all]"; exit 2 ;;
 esac
 acquire_lock
 wait_for_other_runs
@@ -2030,9 +2112,10 @@ case "$which_check" in
     share)    check_share ;;
     apk)      check_apk ;;
     dock)     check_dock ;;
+    nickname) check_nickname ;;
     audio)    check_audio ;;
     all)      check_qr; check_pair; check_render; check_resize; check_input; check_mouseback; check_pinch
-              check_chrome; check_trackpad; check_pause; check_direct; check_nav; check_spotlight; check_clip; check_sharein; check_links; check_share; check_apk; check_dock
+              check_chrome; check_trackpad; check_pause; check_direct; check_nav; check_spotlight; check_clip; check_sharein; check_links; check_share; check_apk; check_dock; check_nickname
               check_audio; check_orphans ;;
 esac
 
