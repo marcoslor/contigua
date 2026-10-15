@@ -225,12 +225,13 @@ build_cgevent() {
 # windows() — the CGWindow list of PocketDeck's own windows without a title:
 windows() { "$CGBIN" list; }
 
-# window_titles() — the Dock/⌘-Tab-style AX title of each window, one per line.
-window_titles() { "$CGBIN" titles; }
+# window_titles [pid>0] — the Dock/⌘-Tab-style AX title of each window, one per
+# line. A pid pins this run's app: other checkouts run their own PocketDeck.
+window_titles() { if [ -n "$1" ]; then "$CGBIN" titles --pid "$1"; else "$CGBIN" titles; fi; }
 
-titles_have() { window_titles | grep -qF -- "$1"; }
+titles_have() { window_titles "$APP_PID" | grep -qF -- "$1"; }
 
-titles_line() { window_titles | grep -qxF -- "$1"; }
+titles_line() { window_titles "$APP_PID" | grep -qxF -- "$1"; }
 
 windows_at_least() { [ "$(windows | wc -l | tr -d ' ')" -ge "$1" ]; }
 
@@ -2007,7 +2008,10 @@ check_nickname() {
     # the phone is ever met.
     devid="e2e0nick0name0001"
     printf '{"id": "%s", "clients": {}}' "$devid" > "$WORK/state.json"
-    defaults write "$DEFAULTS_SUITE" phoneNicknames "{\"$devid\": \"Nicky\"}"
+    # A [String: String] map, as Settings stores it (old-style plist for `defaults`).
+    defaults write "$DEFAULTS_SUITE" phoneNicknames "{ $devid = Nicky; }"
+    grep -q "$devid" <(defaults read "$DEFAULTS_SUITE" phoneNicknames 2>/dev/null) \
+        || { bad "NICK the nickname never reached the defaults suite"; return 1; }
 
     start_fake || return 1
     launch --connect "127.0.0.1:$PORT" --dock-dir "$dir" --dock-add "$pkg" \
@@ -2017,15 +2021,15 @@ check_nickname() {
         || { bad "NICK the app never authenticated"; stop_app; stop_fakephone; return 1; }
 
     # The Dock shim carries the nickname in its name, not the phone's own.
-    shim_name_is() { ls -d "$dir"/*.app 2>/dev/null | head -1 | grep -qF "$1"; }
+    shim_name_is() { ls -d "$dir"/*.app 2>/dev/null | grep -qF -- "$1"; }
     wait_until 30 shim_name_is "WhatsApp (Nicky).app" \
         && ok "NICK the Dock shim is \"WhatsApp (Nicky).app\"" \
         || bad "NICK no renamed shim in $dir: $(ls -d "$dir"/*.app 2>/dev/null | tr '\n' ' ')"
     local shim
-    shim="$(ls -d "$dir"/*.app 2>/dev/null | head -1)"
+    shim="$(ls -d "$dir/WhatsApp ("*.app 2>/dev/null | head -1)"
     [ -n "$shim" ] && [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleName' "$shim/Contents/Info.plist" 2>/dev/null)" = "WhatsApp (Nicky)" ] \
         && ok "NICK the shim's CFBundleName is \"WhatsApp (Nicky)\"" \
-        || bad "NICK unexpected shim Info.plist: $(cat "$shim/Contents/Info.plist" 2>/dev/null | grep -A1 BundleName | head -2)"
+        || bad "NICK unexpected shim Info.plist in ${shim:-none}"
 
     # The app window title (and with it the Dock/⌘-Tab entry).
     wait_until 20 titles_have "Settings (Nicky)" \
@@ -2052,8 +2056,8 @@ check_nickname() {
         && ok "NICK the rename rebuilt the Dock shim" \
         || bad "NICK no rebuilt shim: $(ls -d "$dir"/*.app 2>/dev/null | tr '\n' ' ')"
     [ "$(ls -d "$dir"/*.app 2>/dev/null | wc -l | tr -d ' ')" -le "$before" ] \
-        && ok "NICK the old-named shim is gone, not left behind ($(ls "$dir" 2>/dev/null | tr '\n' ' '))" \
-        || bad "NICK the old-shim survived the rename"
+        && ok "NICK no shim was left behind by the rename ($(ls "$dir" 2>/dev/null | tr '\n' ' '))" \
+        || bad "NICK more shims than before: $(ls "$dir" 2>/dev/null | tr '\n' ' ')"
     stop_app
 
     defaults delete "$DEFAULTS_SUITE" phoneNicknames >/dev/null 2>&1

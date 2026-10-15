@@ -79,9 +79,11 @@ struct DevicesSettings: View {
         }
         .formStyle(.grouped)
         // A rename in progress: which device, and the staged text (previews set
-        // both; a row's Rename… button sets the device).
-        .onChange(of: controller.renamingDeviceId) { _, id in
-            renameText = id.map { controller.previewRenameText ?? controller.nickname(for: $0) } ?? ""
+        // both; a row's Rename… button sets the device). The task also fires on
+        // appear, so a state staged before the window existed fills the field.
+        .task(id: controller.renamingDeviceId) {
+            guard let id = controller.renamingDeviceId else { return }
+            renameText = controller.previewRenameText ?? controller.nickname(for: id)
         }
         .alert("Rename", isPresented: renaming) {
             TextField("Nickname", text: $renameText, prompt: alertPrompt)
