@@ -1,5 +1,7 @@
 package dev.pocketdeck.e2ee
 
+import android.net.ssl.SSLSockets
+
 import java.nio.ByteBuffer
 import java.security.MessageDigest
 import javax.crypto.Mac
@@ -71,16 +73,10 @@ object TlsExporter {
      * guarded by
      *   android.net.ssl.SSLSockets.isSupportedSocket(sslSocket)
      */
-    fun tryExportKeyingMaterial(socket: Any): ByteArray? {
+    fun tryExportKeyingMaterial(socket: javax.net.ssl.SSLSocket): ByteArray? {
+        if (!SSLSockets.isSupportedSocket(socket)) return null
         return try {
-            val cls = Class.forName("android.net.ssl.SSLSockets")
-            val supported = cls.getMethod("isSupportedSocket",
-                Class.forName("javax.net.ssl.SSLSocket")).invoke(null, socket) as? Boolean ?: false
-            if (!supported) return null
-            cls.getMethod("exportKeyingMaterial",
-                Class.forName("javax.net.ssl.SSLSocket"), String::class.java,
-                ByteArray::class.java, Int::class.javaPrimitiveType)
-                .invoke(null, socket, LABEL, ByteArray(0), 32) as? ByteArray
+            SSLSockets.exportKeyingMaterial(socket, LABEL, ByteArray(0), 32)
         } catch (e: Throwable) {
             null
         }
