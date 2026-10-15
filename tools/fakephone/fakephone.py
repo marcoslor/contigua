@@ -90,6 +90,22 @@ _EXTRA_LABELS = [
 ]
 
 
+# The notifications the phone posts once the Mac opts in, and the media session
+# that shows in the Mac's Now Playing (docs/design/notify.md). The titles/texts
+# are markers the e2e check greps every log for to prove they never leave the
+# wire; the event log carries ids, package names and lengths only.
+NOTIFY_POSTS = [
+    {"id": "pd-n1", "pkg": "com.android.settings",
+     "title": "pd-notify-title-1", "text": "pd-notify-text-1"},
+    {"id": "pd-n2", "pkg": "com.whatsapp",
+     "title": "pd-notify-title-2", "text": "pd-notify-text-2"},
+]
+NOTIFY_REMOVE = "pd-n2"
+NOTIFY_MEDIA_STATE = {"playing": True, "pkg": "com.spotify.music", "title": "Fake Song",
+                      "artist": "Fake Artist", "album": "Fake Album", "durationMs": 30000,
+                      "positionMs": 0, "rate": 1.0}
+
+
 def add_demo_apps(count, no_icon_every):
     """Grow APPS to `count` entries (screenshots of a full grid); every
     `no_icon_every`-th app of the whole list gets no icon."""
@@ -356,6 +372,16 @@ class EventLog(object):
         event = {"ev": "clipimage", "dir": direction, "name": name, "ts": time.time()}
         event.update(extra)
         self._emit(event)
+
+    def notify(self, kind, **fields):
+        """notification events the phone sent: ids, packages and lengths only,
+        never the notification's title or text (privacy, docs/design/notify.md)."""
+        event = {"ev": "notify", "kind": kind, "ts": time.time()}
+        event.update(fields)
+        self._emit(event)
+
+    def media(self, cmd):
+        self._emit({"ev": "media", "cmd": cmd, "ts": time.time()})
 
     def close(self):
         with self._lock:
@@ -1007,6 +1033,8 @@ class Session(object):
             "clip.image.abort": self._on_clip_image_abort,
             "audio.start": self._on_audio_start,
             "audio.stop": self._on_audio_stop,
+            "notify.enable": self._on_notify_enable,
+            "media.command": self._on_media_command,
         }.get(kind)
         if handler is None:
             if kind not in self._unknown_types:
@@ -1203,6 +1231,29 @@ class Session(object):
 
     def _on_clip_set(self, msg):
         self.phone.events.clip("rx", msg.get("text"))
+
+    # -- notifications + media (docs/design/notify.md): the Mac's per-session
+    # opt-in is what makes the phone post; the phone's own toggle gates it in the
+    # app. On opting in the phone posts two notifications, takes one away again
+    # and reports its playing session. Titles and texts never reach any log.
+    def _on_notify_enable(self, msg):
+        on = msg.get("on") is True
+        self.phone.events.notify("enable", on=on)
+        if not on:
+            return
+        for post in NOTIFY_POSTS:
+            self._send(dict(post, t="notify.post", when=int(time.time() * 1000)))
+            self.phone.events.notify("post", id=post["id"], pkg=post["pkg"],
+                                     titleLen=len(post["title"]), bodyLen=len(post["text"]))
+        self._send({"t": "notify.remove", "id": NOTIFY_REMOVE})
+        self.phone.events.notify("remove", id=NOTIFY_REMOVE)
+        self._send(dict(NOTIFY_MEDIA_STATE, t="media.state"))
+        self.phone.events.notify("media.state", playing=NOTIFY_MEDIA_STATE["playing"],
+                                 titleLen=len(NOTIFY_MEDIA_STATE["title"]),
+                                 durationMs=NOTIFY_MEDIA_STATE["durationMs"])
+
+    def _on_media_command(self, msg):
+        self.phone.events.media(msg.get("action"))
 
     def _on_apps_list(self, _msg):
         apps = sorted(APPS, key=lambda a: a["label"].lower())
