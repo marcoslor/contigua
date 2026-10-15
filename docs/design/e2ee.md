@@ -99,21 +99,16 @@ Evidence (spike s1-mac, two rounds):
   subset the Swift spike proved round-1; pinned tests for round-trip parse on
   Java/BoringSSL validate it). Spike S2 used `sun.security.x509` (JDK-only) to
   keep the spike cheap, as the phase-1 document is the only place that notes it.
-- **Exporter on the phone (rev 2)**: the platform `SSLContext` provider
-  (`com.android.org.conscrypt`, UID 2000) exposes no exporter through the SDK,
-  and reflection into it is hidden-API roulette with no stability guarantee. The
-  phone therefore ships **`org.conscrypt:conscrypt-android`** and creates its
-  handshake `SSLContext` from `Conscrypt.newProvider()`, so the public facade
-  `org.conscrypt.Conscrypt.exportKeyingMaterial(socket|engine, label, context,
-  length)` works (spike-proven on the JVM, see below). Cost: the AAR's dex +
-  per-ABI BoringSSL `.so` (order 5–7 MB APK); the same native engine
-  (BoringSSL) as the Mac side. The service code in the shell process
-  class-loads from the APK, so the provider and its native library load there
-  for free. Verification is K4 (emulator step): a real Conscrypt TLS 1.3
-  handshake with the Mac e2e app, exporter bytes equal on both ends. If the
-  shell process cannot load the AAR's native code, that lands in ask.md, not a
-  silent fallback; reflection into the platform stack is not a fallback we
-  build.
+- **Exporter on the phone (rev 2)**: Android exposes the TLS exporter through a
+  public API since API 29 (`minSdk` is 30): `android.net.ssl.SSLSockets
+  .exportKeyingMaterial(socket, label, context, length)`, guarded by
+  `SSLSockets.isSupportedSocket(socket)`. It operates on the platform
+  `SSLSocket`, so the shell-UID server terminates each session on a
+  **`SSLSocket`** (not `SSLEngine`) and asks that same socket for the 32 bytes
+  after the handshake (§4b). No additional dependency — the `org.conscrypt:
+  conscrypt-android` AAR route was rejected for size. The K1 JVM tests pin the
+  §4b HKDF math as vectors (no TLS engine needed); the platform call itself is
+  verified in K4 (emulator step 10).
 
 ## 3. Mac private key at rest
 
@@ -230,9 +225,10 @@ Acquisition per stack (both are named by the review):
   carries `exporter_secret` for the session; the `exportSecret(...)` helper runs
   the two HKDF-Expand-Label steps above with CryptoKit. Pure math = unit vectors
   (K2). Use: only on the freshly-completed pairing session, consumed in memory.
-- **Phone (Conscrypt)**: `org.conscrypt.Conscrypt.exportKeyingMaterial(
-  SSLSocket/SSLEngine, "EXPORTER-pocketdeck-pair", new byte[0], 32)` on the
-  AAR-created engine/socket (section 2). JVM unit vector (K1) pins the HKDF
+- **Phone (Conscrypt)**: `android.net.ssl.SSLSockets.exportKeyingMaterial(
+  sslSocket, "EXPORTER-pocketdeck-pair", empty context, 32)` on the platform
+  `SSLSocket` (public SDK API, API 29+; `isSupportedSocket` guard). JVM unit
+  vector (K1) pins the HKDF
   math; the on-device engine call is K4.
 
 ## 5. Cost on the video path: negligible at 20 Mbit/s
@@ -255,7 +251,8 @@ above (Conscrypt ships BoringSSL, the same engine that hit 3.5 Gbit/s on the Mac
 ## 6. Everything that changes (component list)
 
 - **Phone server** (`android/.../server/`): Server.kt wraps each accepted Socket
-  in TLS (Conscrypt provider, section 2); Session.kt's phases HELLO/AUTH collapse
+  in TLS (platform Conscrypt/JSSE, section 2); Session.kt's phases HELLO/AUTH
+  collapse
   to HELLO-READY (no challenge, no HMAC, no auth_failed); a **pairing path**
   appears (section 4): `pair.commit` → `pair.nonce` → `pair.reveal` for code
   pairing; QR pairing accepts the phone's `pair.qr` HMAC instead.
@@ -282,8 +279,8 @@ above (Conscrypt ships BoringSSL, the same engine that hit 3.5 Gbit/s on the Mac
 - **Mac key store**: pairkeys.json → identity.json (section 3); Mac-side identity
   files keep the QR secret `s` in RAM only (never written — regenerate per QR).
 - **Exporter on both stacks**: section 4b (Mac: keylog EXPORTER_SECRET + HKDF;
-  phone: Conscrypt AAR facade). The label is carried in protocol code as a
-  constant.
+  phone: `android.net.ssl.SSLSockets` on the platform SSLSocket). The label is
+  carried in protocol code as a constant.
 - **QR flow reworked (R2)**: the Mac's **QRPairing.swift keeps generating** the
   QR (now with c/n/f/s); the phone's QrScan.kt keeps scanning; after the scan the
   phone connects and MUST authenticate by sending
@@ -357,13 +354,15 @@ swift test`; e2e = `PD_E2E_PORT=... ./scripts/check-e2e.sh <check>`.
    off, and the `exportSecret(...)` helper (§4b) with unit vectors. Check:
    swift test with a loopback mock (reuse the spike harness) + K2 green.
 4. **App-side identity gen + AIDL push (`setPairedClients` self)** — K1.
-5. **Server TLS wrapper at shell UID** (SSLEngine/SSLSocket wrapper, Conscrypt
-   provider for the exporter, KeyManager from binder material, TrustManager
-   pin; never write the key, never log it — hygiene test) — K1's JVM tests with
-   an in-memory harness (S2-style).
+5. **Server TLS wrapper at shell UID** (SSLSocket wrapper using platform
+   Conscrypt via the SDK TLS stack, KeyManager from binder material,
+   TrustManager pin; never write the key, never log it — hygiene test) — K1's
+   JVM tests with an in-memory harness (S2-style).
 6. **v2 handshake in Session.kt** (deviceId in hello; no challenge/HMAC; error
    `version` for v1) + code-derivation (Kotlin implementation of §4 with the
-   **identical constants**) + Conscrypt-exporter acquisition — K1.
+   **identical constants**) + the exporter acquisition helper (platform
+   `SSLSockets.exportKeyingMaterial`, guarded; JVM HKDF vectors as the K1
+   check) — K1.
 7. **Pairing state machine v2** on the phone (commit/nonce/reveal, Allow prompt,
    code display, `pair.qr` HMAC accept path, `pair.ok` gains `"macFP"`,
    `"relay"` unchanged; error `pair_commit` on a bad reveal) — K1 + `pair` e2e
@@ -373,9 +372,10 @@ swift test`; e2e = `PD_E2E_PORT=... ./scripts/check-e2e.sh <check>`.
 9. **fakephone TLS mode + `tls` check matrix** (the 8 cases of section 6,
    including resumption-full-handshake and the log-hygiene grep); needs the
    python3.11 baseline check-e2e precondition (`PD_FAKE_TLS_PYTHON`).
-10. **K4 emulator**: real Conscrypt TLS 1.3 handshake + exporter bytes equal on
-    both ends (the AAR path from section 2) + code pairing with the Mac e2e
-    app; the step that proves the phone's `exportKeyingMaterial` on-device.
+10. **K4 emulator**: real TLS 1.3 handshake on the platform Conscrypt stack and
+    exporter bytes equal on both ends via `SSLSockets.exportKeyingMaterial`
+    (§2) + code pairing with the Mac e2e app; the step that proves the phone's
+    exporter call on-device.
 11. **check-e2e.sh all green** (fakephone): the remaining checks re-pointed off
     HMAC (`nickname`, `notify`, `audio`, `handoff`, `direct` …; `direct` C10
     keeps the "different device id refused" semantics via a pin mismatch).
@@ -401,14 +401,15 @@ Spike modes added (kept in .agent/e2ee/spikes/, uncommitted):
   `s1 exporter= <64 hex>`( + rereads the keylog once from a second derivations
   route for stability).
 - s2-jvm: `java -cp .:conscrypt-openjdk-uber-2.5.2.jar Spike2 exporter-server
-  [port]` — Conscrypt provider (AAR's JVM twin), mutual TLS 1.3, prints
+  [port]` — Conscrypt provider (the phone engine's JVM proxy; the production
+  route is `android.net.ssl.SSLSockets`), mutual TLS 1.3, prints
   `s2 exporter= <64 hex>` via `Conscrypt.exportKeyingMaterial(..., 32)`.
 - Result (this machine, JDK 17, SwiftNIO-SSL 2.37.5 vs Conscrypt 2.5.2-uber):
   **same 64-hex string** on both lines for the same session (log kept in
   spike-logs/), across repeated runs. This is the proof the phase-2 export
-  paths (Mac: keylog+HKDF / phone: Conscrypt facade) are RFC-equal; the
-  destination for production code is steps 3/6, and K4 re-proves the phone
-  on-device.
+  paths (Mac: keylog+HKDF / phone: `SSLSockets.exportKeyingMaterial`) are
+  RFC-equal; the destination for production code is steps 3/6, and K4 re-proves
+  the phone on-device.
 
 ## Spike artifacts + record of what failed (phase 1)
 
