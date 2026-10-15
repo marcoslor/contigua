@@ -37,6 +37,10 @@ final class WindowManager {
     /// Test hook (`--dump-video`): the streams' H.264 written to disk.
     var videoDump: VideoDump?
 
+    /// Files a Finder drag dropped on a stream window (docs/design/dragdrop.md).
+    /// The owner (ConnectionController) routes them; an .apk keeps its own route.
+    var onFilesDropped: (([URL]) -> Void)?
+
     /// Set while the app is terminating so windows stop emitting pause/resume.
     private(set) var shuttingDown = false
 
@@ -60,6 +64,11 @@ final class WindowManager {
     func linkRestored() {
         linkIsDown = false
         for controller in allControllers() { controller.setLinkDown(false) }
+    }
+
+    /// The drop pill's state on every stream window; nil hides them all.
+    func setDropPill(_ state: (text: String, showsProgress: Bool)?) {
+        for controller in allControllers() { controller.setDropPill(state) }
     }
 
     private let frames: UserDefaults

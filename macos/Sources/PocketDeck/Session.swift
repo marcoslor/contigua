@@ -100,12 +100,30 @@ enum SessionEvent {
     case clipboard(String)
     case apkProgress(id: UInt32, bytes: Int)
     case apkResult(ApkResult)
+    /// The phone saved a dropped file (docs/design/dragdrop.md).
+    case dropProgress(id: UInt32, bytes: Int)
+    case dropResult(DropResult)
+    /// The phone shares a clipboard image (`clip.image.*` + CLIP_DATA).
+    case clipImageBegin(id: UInt32, mime: String, size: Int)
+    case clipImageData(id: UInt32, bytes: [UInt8])
+    case clipImageEnd(id: UInt32, size: Int, sha256: String)
+    case clipImageAbort(id: UInt32)
     /// Share phone → Mac (docs/design/sharein.md).
     case shareText(String)
     case shareFileBegin(id: UInt32, name: String, mime: String)
     case shareFileData(id: UInt32, bytes: [UInt8])
     case shareFileEnd(id: UInt32, size: Int, sha256: String)
     case shareFileAbort(id: UInt32)
+}
+
+/// The phone's `drop.result` (docs/design/dragdrop.md).
+struct DropResult: Equatable {
+    var id: UInt32
+    var ok: Bool
+    var code: String?
+    var message: String?
+    /// Where the file landed on the phone (success only).
+    var path: String?
 }
 
 /// The phone's `apk.result` (docs/design/apk.md).
@@ -444,6 +462,8 @@ final class Session {
             onVideoEvent?(.frame(stream: frame.stream, frame: data))
         case .shareData:
             emit(.shareFileData(id: frame.stream, bytes: frame.payload))
+        case .clipData:
+            emit(.clipImageData(id: frame.stream, bytes: frame.payload))
         case .audioConfig:
             guard let config = try? AudioConfig(payload: frame.payload) else {
                 Log.session.error("bad AUDIO_CONFIG payload")
@@ -607,6 +627,29 @@ final class Session {
             }
         case "share.abort":
             if let id = message.int("id") { emit(.shareFileAbort(id: UInt32(truncatingIfNeeded: id))) }
+        case "drop.progress":
+            if let id = message.int("id"), let bytes = message.int("bytes") {
+                emit(.dropProgress(id: UInt32(truncatingIfNeeded: id), bytes: bytes))
+            }
+        case "drop.result":
+            if let id = message.int("id") {
+                emit(.dropResult(DropResult(id: UInt32(truncatingIfNeeded: id), ok: message.bool("ok") ?? false,
+                                            code: message.string("code"), message: message.string("message"),
+                                            path: message.string("path"))))
+            }
+        case "clip.image.start":
+            if let id = message.int("id") {
+                emit(.clipImageBegin(id: UInt32(truncatingIfNeeded: id),
+                                     mime: message.string("mime") ?? "",
+                                     size: message.int("size") ?? -1))
+            }
+        case "clip.image.end":
+            if let id = message.int("id") {
+                emit(.clipImageEnd(id: UInt32(truncatingIfNeeded: id), size: message.int("size") ?? -1,
+                                   sha256: message.string("sha256") ?? ""))
+            }
+        case "clip.image.abort":
+            if let id = message.int("id") { emit(.clipImageAbort(id: UInt32(truncatingIfNeeded: id))) }
         case "error":
             let code = message.string("code") ?? "unknown"
             if code == "auth_failed", !authedWithQRKey {
@@ -745,8 +788,46 @@ final class Session {
     /// One `APK_DATA` chunk; `sent` runs (on any thread) once the network took it,
     /// false when there is no connection, so the sender paces itself.
     func sendApkData(id: UInt32, bytes: [UInt8], sent: @escaping @Sendable (Bool) -> Void) {
+        sendData(.apkData, id: id, bytes: bytes, sent: sent)
+    }
+
+    /// `drop.start` begins a chunked file stream that [sendDropData] fills.
+    func dropStart(id: UInt32, name: String, mime: String, size: Int, sha256: String, resume: Int = 0) {
+        var message: [String: Any] = ["t": "drop.start", "id": Int(id), "name": name,
+                                      "mime": mime, "size": size, "sha256": sha256]
+        if resume > 0 { message["resume"] = resume }
+        sendJSON(message)
+    }
+
+    func cancelDrop(id: UInt32) { sendJSON(["t": "drop.cancel", "id": Int(id)]) }
+
+    /// One `DROP_DATA` chunk, paced like an APK part.
+    func sendDropData(id: UInt32, bytes: [UInt8], sent: @escaping @Sendable (Bool) -> Void) {
+        sendData(.dropData, id: id, bytes: bytes, sent: sent)
+    }
+
+    /// `clip.image.start` begins a clipboard image stream; [sendClipData] fills it.
+    func clipImageStart(id: UInt32, mime: String, size: Int) {
+        sendJSON(["t": "clip.image.start", "id": Int(id), "mime": mime, "size": size])
+    }
+
+    func clipImageEnd(id: UInt32, size: Int, sha256: String) {
+        sendJSON(["t": "clip.image.end", "id": Int(id), "size": size, "sha256": sha256])
+    }
+
+    func clipImageAbort(id: UInt32) { sendJSON(["t": "clip.image.abort", "id": Int(id)]) }
+
+    /// One `CLIP_DATA` chunk of the direction the caller chose.
+    func sendClipData(id: UInt32, bytes: [UInt8], sent: @escaping @Sendable (Bool) -> Void) {
+        sendData(.clipData, id: id, bytes: bytes, sent: sent)
+    }
+
+    /// One binary chunk of [kind]. `sent` runs (on any thread) once the network
+    /// took it, false when there is no connection, so the sender paces itself.
+    private func sendData(_ kind: MessageType, id: UInt32, bytes: [UInt8],
+                          sent: @escaping @Sendable (Bool) -> Void) {
         guard let connection = currentConnection else { return sent(false) }
-        connection.send(content: Frame(type: .apkData, stream: id, payload: bytes).encodedData(),
+        connection.send(content: Frame(type: kind, stream: id, payload: bytes).encodedData(),
                         completion: .contentProcessed { error in sent(error == nil) })
     }
 

@@ -68,6 +68,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         }
         mapper.send = { [weak self] command in self?.handle(command) }
         mapper.touchPointsChanged = { [weak self] points in self?.videoView.showTouchPoints(points) }
+        videoView.onDroppedFiles = { [weak manager] urls in manager?.onFilesDropped?(urls) }
         videoView.inputMapper = mapper
         videoView.showsTouches = manager.showTouches
         videoView.onRequestKeyframe = { [weak self] in
@@ -290,6 +291,34 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         pillOfflineWork = offline
         DispatchQueue.main.asyncAfter(deadline: .now() + 1, execute: show)
         DispatchQueue.main.asyncAfter(deadline: .now() + 15, execute: offline)
+    }
+
+    // MARK: File-drop pill (docs/design/dragdrop.md)
+
+    private var dropPill: GlassPillView?
+
+    /// Over the last frame: "Sending report.pdf… 43 %", then the outcome.
+    /// nil hides the pill (a finished transfer fades when the state times out).
+    func setDropPill(_ state: (text: String, showsProgress: Bool)?) {
+        guard let state else { dropPill?.fade(to: 0); return }
+        let pill = dropPill ?? GlassPillView(text: state.text, showsProgress: state.showsProgress)
+        if dropPill == nil {
+            dropPill = pill
+            videoView.addSubview(pill)
+            pill.alphaValue = 0
+        }
+        pill.setText(state.text, showsProgress: state.showsProgress)
+        layoutDropPill()
+        pill.fade(to: 1)
+    }
+
+    private func layoutDropPill() {
+        guard let dropPill else { return }
+        let size = dropPill.fittingSize
+        dropPill.frame = NSRect(x: (videoView.bounds.width - size.width) / 2,
+                                y: videoView.bounds.height - size.height - 24,
+                                width: size.width, height: size.height)
+        dropPill.autoresizingMask = [.minXMargin, .maxXMargin, .minYMargin]
     }
 
     private func layoutPill() {

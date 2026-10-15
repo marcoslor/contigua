@@ -20,6 +20,9 @@
 //                            with the fingers down at the end (for looking at the overlay)
 //   fingerrotate NX NY DEGREES [HOLD]  the same rotate from raw trackpad fingers
 //   showtouches on|off       View > Show Touches
+//   dropfile PATH            the Finder drag that would land here: the absolute
+//                            file path (the drag destination's own handler runs;
+//                            an .apk keeps its install route)
 //   hover NX NY              the pointer moves to NX NY (the header fades in when it
 //                            is near the top edge)
 //   wait SECONDS             let the app run (timers, animations) before the next action
@@ -57,6 +60,7 @@ enum DebugInputAction: Equatable {
     case fingerPinch(at: NormalizedPoint, scale: Double, hold: Double)
     case fingerRotate(at: NormalizedPoint, degrees: Double, hold: Double)
     case showTouches(Bool)
+    case dropFile(String)
     case hover(NormalizedPoint)
     case wait(Double)
     case type(String)
@@ -139,6 +143,23 @@ enum DebugInputScript {
             }
         case "hover":
             return .hover(try point(args, count: 2))
+        case "dropfile":
+            guard args.count == 1, !args[0].isEmpty else {
+                throw LineError(message: "dropfile needs an absolute PATH")
+            }
+            var path = args[0]
+            if path.hasPrefix("~") {
+                path = String(path.dropFirst(1))
+                let home = FileManager.default.homeDirectoryForCurrentUser.path
+                path = home + path
+            }
+            guard path.hasPrefix("/") else {
+                throw LineError(message: "dropfile needs an absolute PATH (got relative '\(args[0])')")
+            }
+            guard FileManager.default.fileExists(atPath: path) else {
+                throw LineError(message: "dropfile: no such file: \(path)")
+            }
+            return .dropFile(path)
         case "wait":
             guard args.count == 1, let seconds = Double(args[0]), (0...60).contains(seconds) else {
                 throw LineError(message: "wait needs SECONDS (0...60)")
@@ -324,6 +345,8 @@ final class DebugInputDriver {
             }
         case .showTouches(let enabled):
             (view.window?.windowController as? StreamWindowController)?.manager.showTouches = enabled
+        case .dropFile(let path):
+            view.onDroppedFiles?([URL(fileURLWithPath: path)])
         case .hover(let target):
             let point = view.convert(location(target, in: view), to: nil)
             (view.window?.windowController as? StreamWindowController)?.pointerMoved(toWindowPoint: point)

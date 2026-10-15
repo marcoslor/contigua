@@ -41,15 +41,18 @@ struct DeckRoot: View {
         // the Settings window from here.
         .onChange(of: controller.settingsRequest) { _, _ in openSettings() }
         // A link dropped on the Deck opens on the phone (a .webloc file carries one too);
-        // an app file (.apk, .apks, .xapk) installs on it.
+        // an app file (.apk, .apks, .xapk) installs on it; other files transfer
+        // (docs/design/dragdrop.md).
         .dropDestination(for: URL.self) { urls, _ in
             let apps = urls.filter { $0.isFileURL && ApkBundle.kind(of: $0) != nil }
             let links = urls.compactMap { url in
                 url.isFileURL ? OpenLinkRequest.webloc(at: url) : LinkPolicy.validate(url.absoluteString)
             }
+            let files = urls.filter { $0.isFileURL && ApkBundle.kind(of: $0) == nil }
             if let app = apps.first { controller.installApk(app) }
             for link in links { controller.openLink(OpenLinkRequest(url: link)) }
-            return !links.isEmpty || !apps.isEmpty
+            if !files.isEmpty { controller.dropFiles(files) }
+            return !links.isEmpty || !apps.isEmpty || !files.isEmpty
         }
         .task {
             // A launch hook's sheet waits for the window: presented while the

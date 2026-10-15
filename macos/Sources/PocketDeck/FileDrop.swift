@@ -1,0 +1,309 @@
+// File drops off a Finder drag (docs/design/dragdrop.md): one file at a time
+// streams to the phone's Downloads/PocketDeck as `drop.start` + DROP_DATA
+// chunks. The flow waits for the phone's opening `drop.progress` before data
+// goes out (it carries the resume offset the phone verified), paces chunks on
+// their completion like the APK installer, and stops when the person asks.
+
+import AppKit
+import CryptoKit
+import Foundation
+
+/// What one dropped URL becomes on the wire: name, mime, size and hash.
+struct PreparedDrop: Sendable {
+    var url: URL
+    var name: String
+    var mime: String
+    var size: Int
+    var sha256: String
+}
+
+/// The phone's own rules for `name` (docs/design/dragdrop.md "Names"), applied
+/// before the announcement so the Mac and the phone agree on what arrives.
+enum DropName {
+    static let maxLength = 100
+
+    struct Name: Sendable, Equatable {
+        var stem: String
+        var ext: String
+        var file: String { ext.isEmpty ? stem : "\(stem).\(ext)" }
+    }
+
+    /// `[A-Za-z0-9 ._-]`, no leading dot, ≤ 100 chars, extension from the mime
+    /// when the name has none — the share-in receiver's rules, Mac side.
+    static func sanitize(_ raw: String, mime: String) -> Name {
+        func clean(_ part: String) -> String {
+            let kept = part.filter {
+                $0.isASCII && ($0.isLetter || $0.isNumber) || " ._-".contains($0)
+            }.trimmingCharacters(in: CharacterSet(charactersIn: ". "))
+            return kept
+        }
+        let last = raw.split { $0 == "/" || $0 == "\\" }.last.map(String.init) ?? "file"
+        var stem = clean(last)
+        var ext = ""
+        if let dot = last.lastIndex(of: "."), last.distance(from: dot, to: last.endIndex) <= 7 {
+            stem = clean(String(last[..<dot]))
+            ext = clean(String(last[last.index(after: dot)...])).lowercased()
+        }
+        if ext.isEmpty, let fromMime = mimeAndExtension[mime.lowercased()] { ext = fromMime }
+        if stem.isEmpty { stem = "file" }
+        let room = maxLength - (ext.isEmpty ? 0 : ext.count + 1)
+        stem = String(stem.prefix(room)).trimmingCharacters(in: .whitespaces)
+        if stem.isEmpty { stem = "file" }
+        return Name(stem: stem, ext: ext)
+    }
+
+    private static let mimeAndExtension: [String: String] = [
+        "application/pdf": "pdf", "text/plain": "txt", "application/zip": "zip",
+        "image/jpeg": "jpg", "image/png": "png", "image/gif": "gif", "image/webp": "webp",
+        "video/mp4": "mp4", "audio/mpeg": "mp3",
+        "application/vnd.android.package-archive": "apk",
+    ]
+}
+
+/// Counts and hashes a queue of dropped URLs off the main thread.
+enum DropPreparation {
+    static func prepare(_ urls: [URL]) throws -> [PreparedDrop] {
+        try urls.map { url in
+            guard let handle = try? FileHandle(forReadingFrom: url) else {
+                throw CocoaError(.fileReadUnknown, userInfo: [NSFilePathErrorKey: url.path])
+            }
+            defer { try? handle.close() }
+            let size = Int(try handle.seekToEnd())
+            let mime = mimeGuess(fromURL: url)
+            var hash = SHA256()
+            try handle.seek(toOffset: 0)
+            while let chunk = try handle.read(upToCount: 1 << 20), !chunk.isEmpty { hash.update(data: chunk) }
+            let name = DropName.sanitize(url.lastPathComponent, mime: mime).file
+            return PreparedDrop(url: url, name: name, mime: mime, size: size,
+                                sha256: hash.finalize().map { String(format: "%02x", $0) }.joined())
+        }
+    }
+
+    /// A content-type guess from the extension (mimes are for the SEND chooser).
+    private static func mimeGuess(fromURL url: URL) -> String {
+        switch url.pathExtension.lowercased() {
+        case "pdf": return "application/pdf"
+        case "png": return "image/png"
+        case "jpg", "jpeg": return "image/jpeg"
+        case "gif": return "image/gif"
+        case "webp": return "image/webp"
+        case "mp4": return "video/mp4"
+        case "mp3": return "audio/mpeg"
+        case "zip": return "application/zip"
+        case "txt", "md", "log": return "text/plain"
+        case "apk": return "application/vnd.android.package-archive"
+        default: return "application/octet-stream"
+        }
+    }
+}
+
+/// The wire's caps (docs/PROTOCOL.md "Drop Mac → phone").
+enum DropLimits {
+    static let maxBytes = 200 * 1024 * 1024
+    static var maxMegabytes: Int { maxBytes / (1024 * 1024) }
+    /// Tests shorten the cap instead of writing a 200 MB file.
+    static var testCap: Int?
+    /// The cap checks read this, so a test's small file can be "too large".
+    static var current: Int { testCap ?? maxBytes }
+}
+
+/// What the sender needs from a session — the wire is a detail here.
+protocol DropChannel: AnyObject {
+    func dropStart(id: UInt32, name: String, mime: String, size: Int, sha256: String, resume: Int)
+    func cancelDrop(id: UInt32)
+    func sendDropData(id: UInt32, bytes: [UInt8], sent: @escaping @Sendable (Bool) -> Void)
+}
+
+extension Session: DropChannel {}
+
+/// One drop at a time; the stream windows show its phase as a pill.
+@MainActor
+@Observable
+final class FileDropSender {
+    enum Phase: Equatable {
+        case idle
+        /// The file in flight; `fraction` is the phone's confirmed bytes.
+        case sending(String, fraction: Double)
+        case finished(String, ok: Bool)
+    }
+
+    private(set) var phase: Phase = .idle
+    var isBusy: Bool { if case .sending = phase { true } else { false } }
+
+    /// Frames are ≤ 1 MiB on the wire; smaller chunks keep input responsive.
+    static let chunkSize = 256 * 1024
+    private static let inFlightLimit = 4
+
+    private weak var session: (any DropChannel)?
+    private var queue: [PreparedDrop] = []
+    private var current: PreparedDrop?
+    private var id: UInt32 = 0
+    private var reader: FileHandle?
+    /// What the phone has confirmed so far (its opening progress may resume).
+    private var offset = 0
+    /// Between `drop.start` and the phone's opening progress no chunk is sent.
+    private var awaitingOffset = false
+    private var inFlight = 0
+    private var cancelled = false
+    private var clearTask: Task<Void, Never>?
+    /// A transfer that died with the connection: the phone kept a temp, so a
+    /// re-drag of a file with this sha resumes at (bytes) for this long.
+    private var resumeHints: [String: (bytes: Int, until: Date)] = [:]
+
+    func send(_ urls: [URL], session: any DropChannel) {
+        guard !isBusy else { return finish("The phone is still taking a file.", ok: false, keepState: true) }
+        clearTask?.cancel()
+        self.session = session
+        cancelled = false
+        phase = .sending("", fraction: 0)
+        Task.detached(priority: .userInitiated) { [weak self] in
+            let prepared = Result { try DropPreparation.prepare(urls) }
+            await MainActor.run { self?.begin(prepared) }
+        }
+    }
+
+    private func begin(_ prepared: Result<[PreparedDrop], Error>) {
+        switch prepared {
+        case .failure(let error):
+            finish("Couldn't read those files: \(error.localizedDescription)", ok: false)
+        case .success(let drops):
+            guard !drops.isEmpty, let session else { return finish("Nothing to send.", ok: false) }
+            if let big = drops.first(where: { $0.size <= 0 || $0.size > DropLimits.current }) {
+                let why = big.size <= 0 ? "is empty" : "is bigger than the phone's \(DropLimits.maxMegabytes) MB cap"
+                return finish("\(big.name) \(why), nothing was sent.", ok: false)
+            }
+            queue = drops
+            next()
+        }
+    }
+
+    /// Streams the next queued file.
+    private func next() {
+        guard let next = queue.first else { return }
+        guard let session else { return fail("Lost the connection to the phone.") }
+        current = next
+        queue.removeFirst()
+        id = UInt32.random(in: 1...UInt32.max)
+        offset = 0
+        let resume = self.resume(sha256: next.sha256)
+        Log.app.notice("drop: sending \(next.name, privacy: .public) (\(next.size, privacy: .public) bytes\(resume > 0 ? ", resumes at \(resume)" : ""))")
+        phase = .sending(next.name, fraction: resume > 0 ? Double(resume) / Double(next.size) : 0)
+        awaitingOffset = true
+        session.dropStart(id: id, name: next.name, mime: next.mime, size: next.size,
+                          sha256: next.sha256, resume: resume)
+    }
+
+    private func resume(sha256: String) -> Int {
+        guard let hint = resumeHints[sha256], hint.until > Date() else { return 0 }
+        resumeHints.removeValue(forKey: sha256)
+        return hint.bytes
+    }
+
+    /// Keeps at most [inFlightLimit] chunks queued on the connection.
+    private func pump() {
+        guard case .sending = phase, !cancelled, !awaitingOffset,
+              let session, let current else { return }
+        while inFlight < Self.inFlightLimit && offset < current.size {
+            if reader == nil {
+                reader = try? FileHandle(forReadingFrom: current.url)
+                try? reader?.seek(toOffset: UInt64(offset))
+            }
+            let chunk = (try? reader?.read(upToCount: Self.chunkSize)) ?? nil
+            guard let chunk, !chunk.isEmpty else {
+                try? reader?.close()
+                reader = nil
+                break
+            }
+            inFlight += 1
+            let id = self.id
+            session.sendDropData(id: id, bytes: [UInt8](chunk)) { [weak self] ok in
+                Task { @MainActor in
+                    guard let self, id == self.id else { return }
+                    self.inFlight -= 1
+                    if ok { self.pump() } else { self.failNow("Lost the connection to the phone.") }
+                }
+            }
+        }
+    }
+
+    func cancel() {
+        guard isBusy else { return }
+        cancelled = true
+        if id != 0 { session?.cancelDrop(id: id) }
+        finish("Transfer cancelled.", ok: false)
+    }
+
+    /// The phone's confirmed byte count: the fraction the pill shows.
+    func progress(id: UInt32, bytes: Int) {
+        guard id == self.id, let current, current.size > 0 else { return }
+        offset = max(offset, bytes)
+        awaitingOffset = false
+        if case .sending = phase { phase = .sending(current.name, fraction: Double(min(offset, current.size)) / Double(current.size)) }
+        pump()
+    }
+
+    /// The phone's one answer per drop.
+    func result(_ result: DropResult) {
+        guard result.id == id else { return }
+        id = 0
+        try? reader?.close()
+        reader = nil
+        current = nil
+        if result.ok, let path = result.path {
+            let name = path.split(separator: "/").last.map(String.init) ?? ""
+            if queue.isEmpty {
+                finish("Saved on the phone: \(name)", ok: true)
+            } else {
+                finish("Saved \(name), sending the next file…", ok: true, keepState: true)
+                next()
+            }
+        } else {
+            switch result.code {
+            case "busy": finish("The phone is busy with another file.", ok: false)
+            case "checksum": finish("The phone could not verify that file.", ok: false)
+            case "cancelled": finish("Cancelled.", ok: false)
+            default: finish("The phone refused it: \(result.message ?? result.code ?? "failed").", ok: false)
+            }
+        }
+    }
+
+    /// The connection went away mid-transfer; the phone keeps its temp for a resume.
+    func connectionLost() {
+        guard isBusy, let current else { return }
+        if offset > 0 {
+            resumeHints[current.sha256] = (offset, Date().addingTimeInterval(Self.resumeLifetime))
+        }
+        fail("Lost the connection; drop that file again to resume.", keepTemp: true)
+    }
+
+    private static let resumeLifetime: TimeInterval = 600
+
+    private func fail(_ text: String, keepTemp: Bool = false) {
+        if id != 0, !cancelled, !keepTemp { session?.cancelDrop(id: id) }
+        cancelled = true
+        finish(text, ok: false)
+    }
+
+    private func failNow(_ text: String) {
+        if id != 0 { session?.cancelDrop(id: id) }
+        cancelled = true
+        finish(text, ok: false)
+    }
+
+    private func finish(_ text: String, ok: Bool, keepState: Bool = false) {
+        Log.app.notice("drop: \(ok ? "ok" : "failed", privacy: .public): \(text, privacy: .public)")
+        if keepState { return }
+        queue = []
+        current = nil
+        try? reader?.close()
+        reader = nil
+        id = 0
+        inFlight = 0
+        phase = .finished(text, ok: ok)
+        clearTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(5))
+            guard !Task.isCancelled else { return }
+            self?.phase = .idle
+        }
+    }
+}

@@ -1,6 +1,7 @@
 // Plain-text clipboard sync with the phone (`clip.set`, docs/PROTOCOL.md
 // "Clipboard sync"). While a session is ready, a poll of the general pasteboard
-// sends text that changed, and a text from the phone is written to it.
+// sends text that changed, and a text from the phone is written to it. Images
+// travel the same rules at 8 MiB (`clip.image.*`, docs/design/dragdrop.md).
 //
 // The pasteboard and the timer are injected, so the rules are tested with a
 // fake pasteboard and a manual clock.
@@ -17,11 +18,18 @@ protocol ClipboardPasteboard: AnyObject {
     func currentItem() -> (text: String?, types: Set<String>)
     /// Replaces the contents with plain text.
     func write(text: String)
+    /// The item's image (PNG bytes, or TIFF converted) when it holds one and no
+    /// text; nil otherwise. Text items stay with the text path.
+    func currentImage() -> (data: Data, mime: String)?
+    /// Replaces the contents with image bytes (PNG, plus TIFF for reading).
+    func writeImage(data: Data, mime: String)
 }
 
 final class ClipboardSync {
     static let enabledKey = "shareClipboard"
     static let maxBytes = 1_048_576
+    /// The image cap (docs/PROTOCOL.md "Clipboard images"): 8 MiB each way.
+    static let maxImageBytes = 8 * 1024 * 1024
     static let pollInterval: TimeInterval = 0.5
 
     /// Set by password managers on secrets; items carrying any of them are never sent.
@@ -48,25 +56,30 @@ final class ClipboardSync {
     private let pasteboard: ClipboardPasteboard
     private let isEnabled: () -> Bool
     private let send: (String) -> Void
+    private let sendImage: (Data, String) -> Void
     private let clock: Clock
     private var stopClock: (() -> Void)?
     private var lastCount = 0
     /// SHA-256 of the text last sent or received. A change to this text is not sent back.
     private var syncedHash: SHA256.Digest?
+    /// Same hash rule for clipboard images.
+    private var syncedImageHash: SHA256.Digest?
 
     var isRunning: Bool { stopClock != nil }
 
     init(pasteboard: ClipboardPasteboard,
          isEnabled: @escaping () -> Bool,
          send: @escaping (String) -> Void,
+         sendImage: @escaping (Data, String) -> Void = { _, _ in },
          clock: @escaping Clock) {
         self.pasteboard = pasteboard
         self.isEnabled = isEnabled
         self.send = send
+        self.sendImage = sendImage
         self.clock = clock
     }
 
-    /// Starts polling. Text already on the pasteboard is not sent.
+    /// Starts polling. Content already on the pasteboard is not sent.
     func start() {
         guard stopClock == nil else { return }
         lastCount = pasteboard.changeCount
@@ -78,7 +91,8 @@ final class ClipboardSync {
         stopClock = nil
     }
 
-    /// Sends the pasteboard text when the pasteboard changed to text that is new.
+    /// Sends the pasteboard item when the pasteboard changed to content that is new:
+    /// an image without text first, the image cap dropping oversized ones; text otherwise.
     func poll() {
         let count = pasteboard.changeCount
         guard count != lastCount else { return }
@@ -86,10 +100,15 @@ final class ClipboardSync {
         // Changes made while sync is off are skipped, not sent once it is back on.
         guard isEnabled() else { return }
         let item = pasteboard.currentItem()
-        guard item.types.isDisjoint(with: Self.secretTypes),
-              let text = item.text,
-              let hash = Self.digest(text),
-              hash != syncedHash else { return }
+        guard item.types.isDisjoint(with: Self.secretTypes) else { return }
+        if item.text == nil, let image = pasteboard.currentImage(), !image.data.isEmpty {
+            guard image.data.count <= Self.maxImageBytes, let hash = digest(image.data) else { return }
+            guard hash != syncedImageHash else { return }
+            syncedImageHash = hash
+            sendImage(image.data, image.mime)
+            return
+        }
+        guard let text = item.text, let hash = Self.digest(text), hash != syncedHash else { return }
         syncedHash = hash
         send(text)
     }
@@ -103,6 +122,15 @@ final class ClipboardSync {
         lastCount = pasteboard.changeCount
     }
 
+    /// Writes an image from the phone with the same echo rule as `receive`.
+    func receiveImage(_ data: Data, mime: String) {
+        guard isRunning, isEnabled(), data.count <= Self.maxImageBytes,
+              let hash = digest(data) else { return }
+        syncedImageHash = hash
+        pasteboard.writeImage(data: data, mime: mime)
+        lastCount = pasteboard.changeCount
+    }
+
     /// Writes text the person sent from the phone (Share → Send to Mac), whether or
     /// not sync is on; recorded like `receive` so it is not sent back.
     func adopt(_ text: String) {
@@ -111,10 +139,15 @@ final class ClipboardSync {
         lastCount = pasteboard.changeCount
     }
 
-    /// nil for empty text and for text over the protocol's 1 MiB limit.
+    /// nil for empty content and for anything over the protocol's limits.
     private static func digest(_ text: String) -> SHA256.Digest? {
         let bytes = Data(text.utf8)
         guard !bytes.isEmpty, bytes.count <= maxBytes else { return nil }
+        return SHA256.hash(data: bytes)
+    }
+
+    private func digest(_ bytes: Data) -> SHA256.Digest? {
+        guard !bytes.isEmpty, bytes.count <= Self.maxImageBytes else { return nil }
         return SHA256.hash(data: bytes)
     }
 }
@@ -135,5 +168,44 @@ final class SystemPasteboard: ClipboardPasteboard {
     func write(text: String) {
         pasteboard.clearContents()
         pasteboard.setString(text, forType: .string)
+    }
+
+    func currentImage() -> (data: Data, mime: String)? {
+        var text = pasteboard.string(forType: .string)
+        if text?.isEmpty == true { text = nil }
+        if text != nil { return nil }
+        if let png = pasteboard.data(forType: .png) { return (png, "image/png") }
+        if let jpeg = pasteboard.data(forType: Self.jpegType) { return (jpeg, "image/jpeg") }
+        guard let tiff = pasteboard.data(forType: .tiff),
+              let image = NSImage(data: tiff), let png = image.pngData() else { return nil }
+        return (png, "image/png")
+    }
+
+    /// PNG verbatim (the phone's PNG arrives unchanged and hashes the same);
+    /// JPEG verbatim. Tiff representations round-trip as converted PNG.
+    func writeImage(data: Data, mime: String) {
+        pasteboard.clearContents()
+        let item = NSPasteboardItem()
+        switch mime.lowercased() {
+        case "image/jpeg":
+            item.setData(data, forType: Self.jpegType)
+            item.setData(data, forType: .png) // readers that only take PNG still work
+        default:
+            item.setData(data, forType: .png)
+            if let image = NSImage(data: data), let tiff = image.tiffRepresentation {
+                item.setData(tiff, forType: .tiff)
+            }
+        }
+        pasteboard.writeObjects([item])
+    }
+
+    private static let jpegType = NSPasteboard.PasteboardType(rawValue: "public.jpeg")
+}
+
+extension NSImage {
+    /// The PNG form of this image, for bytes the sync can hash the same way later.
+    func pngData() -> Data? {
+        guard let tiff = tiffRepresentation, let rep = NSBitmapImageRep(data: tiff) else { return nil }
+        return rep.representation(using: .png, properties: [:])
     }
 }

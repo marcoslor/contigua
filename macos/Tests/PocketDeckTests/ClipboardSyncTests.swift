@@ -28,6 +28,20 @@ final class ClipboardSyncTests: XCTestCase {
             types = []
             changeCount += 1
         }
+
+        /// (Clipboard images) the item's image when it has one and no text.
+        func currentImage() -> (data: Data, mime: String)? { image }
+
+        func writeImage(data: Data, mime: String) {
+            imageWrites.append((data, mime))
+            image = (data, mime)
+            self.text = nil
+            changeCount += 1
+        }
+
+        /// An image on the copy side: `copy(image:)`.
+        var image: (data: Data, mime: String)?
+        private(set) var imageWrites: [(data: Data, mime: String)] = []
     }
 
     private final class ManualClock {
