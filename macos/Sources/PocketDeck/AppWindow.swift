@@ -8,8 +8,11 @@ final class AppWindowController: StreamWindowController {
     /// The app label the window title names (WindowManager appends the phone).
     private(set) var subject: String
 
-    /// The stream is 900 × 600; the window adds the hover padding around it.
+    /// The stream is 900 × 600; the window adds the bar above it.
     static let defaultContentSize = NSSize(width: 900, height: 600)
+
+    /// This window's style is remembered for the app it shows.
+    override var styleKey: String? { WindowStyleStore.key(forPackage: pkg) }
 
     init(stream: UInt32, pkg: String, activity: String?, label: String, manager: WindowManager) {
         self.pkg = pkg
@@ -52,8 +55,11 @@ final class LinkWindowController: StreamWindowController {
 
     /// The package the phone displays for the link, once its `window.title`
     /// names it: the window's Dock identity stands for that app
-    /// (docs/design/dock.md §Lifecycle).
+    /// (docs/design/dock.md §Lifecycle). Even the style follows then.
     private(set) var pkg: String?
+
+    /// The link wears the style the package remembers, once it is known.
+    override var styleKey: String? { pkg.map { WindowStyleStore.key(forPackage: $0) } }
 
     init(stream: UInt32, url: String, manager: WindowManager) {
         self.url = url
@@ -89,6 +95,7 @@ final class LinkWindowController: StreamWindowController {
     func adopt(pkg: String) {
         guard self.pkg == nil, !pkg.isEmpty else { return }
         self.pkg = pkg
+        reapplyStoredStyle()
     }
 
     override func retitle() {

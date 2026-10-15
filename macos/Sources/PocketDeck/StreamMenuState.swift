@@ -9,6 +9,8 @@ final class StreamMenuState {
 
     /// A stream window is key: the per-window items are enabled.
     var hasStream = false
+    /// The key stream window's style (the Window Style radio items follow it).
+    var style: WindowStyle = .standard
     var showTouches = false
 
     private init() {}

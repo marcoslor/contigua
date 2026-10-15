@@ -6,8 +6,10 @@
 // material whose maskImage carries the brief's alpha gradient (mirror alpha
 // stable at the seam, fading toward the window's top edge), so the bar melts
 // into the app at the seam and into the material at its top. Immersive: no
-// chrome at rest; the window is exactly the stream. Full screen has no bar in
-// either style.
+// chrome at rest; the window is exactly the stream, and the traffic lights live
+// on a dwell pill that fades in at the stream's top-left corner when the
+// pointer rests there (DwellChrome, DwellPill in WindowStyle.swift). Full
+// screen has no bar in either style.
 //
 // The mask is the mirrored strip's alpha made concrete: NSVisualEffectView
 // takes one opacity per row through NSImage.maskImage, and the material shows
@@ -45,10 +47,55 @@ func barMaskImage(mirror: BarMirror, height: CGFloat) -> NSImage {
     return image
 }
 
+/// The style-toggle button (⌥⌘F, View ▸ Window Style): one icon right of the
+/// zoom light in the framed bar, in the pill in immersive.
+struct ToggleIcon: View {
+    var perform: () -> Void = {}
+
+    var body: some View {
+        Button(action: perform) {
+            Image(systemName: ChromeBar.toggleSymbol)
+                .font(.system(size: ChromeBar.toggleFontSize, weight: .medium))
+                .foregroundStyle(.secondary)
+        }
+        .buttonStyle(.plain)
+        .focusable(false)
+        .help("Toggle Window Style")
+        .accessibilityLabel("Toggle Window Style")
+        .frame(width: ChromeBar.toggleSize, height: ChromeBar.toggleSize)
+    }
+}
+
+/// The immersive dwell pill (DwellChrome): a blur-material pill at the stream's
+/// top-left corner; its empty areas drag the window; the toggle, the window
+/// kind's actions and the real traffic lights (which ride the window's title
+/// area above this view) sit on top.
+final class DwellPillView: NSGlassEffectView {
+    /// A click that reached the pill (the e2e check counts them).
+    var onPress: (() -> Void)?
+
+    init() {
+        super.init(frame: NSRect(origin: .zero, size: CGSize(width: DwellChrome.pillWidth(actionCount: 0),
+                                                             height: DwellChrome.pillHeight)))
+        cornerRadius = DwellChrome.pillCornerRadius
+        alphaValue = 0
+        isHidden = true
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+    override func mouseDown(with event: NSEvent) {
+        onPress?()
+        window?.performDrag(with: event)
+    }
+}
+
 /// The window's content for both styles: the stream, and above it (framed)
 /// the bar — the extension view's mirror under the masked window material,
-/// with the traffic lights riding it and the window kind's actions at its
-/// right end. Clicks on the bar move the window.
+/// with the traffic lights riding it and the toggle + window kind's actions
+/// beside them. In immersive the same toggle and actions ride the dwell pill
+/// instead, and the whole chrome is out of sight until the pointer dwells.
 final class StreamChromeView: NSView {
     let video: VideoLayerView
     /// The bar's mirror: the extension view spans the whole window, so the
@@ -57,19 +104,33 @@ final class StreamChromeView: NSView {
     /// The bar material, masked by `barMaskImage` so the mirror shows through
     /// at the seam and the window material takes the top.
     private let bar = NSVisualEffectView()
-    /// The window kind's actions at the bar's right end (the phone window's
-    /// Back/Home/Recents); hidden with the bar.
-    private let actions: NSHostingView<HeaderControls>
+    /// The immersive dwell pill; only a background: the buttons above it are
+    /// the chrome's own subviews so they can move between bar and pill frames.
+    private let pillView = DwellPillView()
+    /// The style toggle (⌥⌘F) in both styles.
+    private let toggle = NSHostingView(rootView: ToggleIcon())
+    /// The window kind's actions at the right end (the phone window's
+    /// Back/Home/Recents); hidden in the bar and shown in the pill alike.
+    private let actions = NSHostingView(rootView: HeaderControls(actions: []))
     private(set) var style: WindowStyle
     var mirror: BarMirror = .standard { didSet { refreshBarMask() } }
 
-    /// A click on the bar (the window moves with it); the e2e check counts them.
+    /// The pill's fade state; only `setPill` moves it.
+    private(set) var showsPill = false
+    /// The pill's frame in the toolbar area while it is up.
+    private var pillFrame: NSRect?
+
+    /// A bar or pill click that is the window's own (a drag or a double-click
+    /// zoom); the e2e check counts them.
     var onBarPress: (() -> Void)?
+    /// The style toggle's tap (⌥⌘F's same action).
+    var onToggleStyle: (() -> Void)? {
+        didSet { toggle.rootView.perform = { [onToggleStyle] in onToggleStyle?() } }
+    }
 
     init(video: VideoLayerView, style: WindowStyle) {
         self.video = video
         self.style = style
-        actions = NSHostingView(rootView: HeaderControls(actions: []))
         super.init(frame: NSRect(origin: .zero, size: style.windowSize(stream: video.frame.size)))
         wantsLayer = true
         ext.automaticallyPlacesContentView = false
@@ -78,11 +139,19 @@ final class StreamChromeView: NSView {
         bar.material = .titlebar
         bar.blendingMode = .behindWindow
         bar.state = .active
+        toggle.sizingOptions = []
         actions.sizingOptions = []
-        // The bar is a window overlay; its safe area would push the buttons down.
+        // The bar and the pill are window overlays; their safe areas would push
+        // the buttons down.
+        toggle.safeAreaRegions = []
         actions.safeAreaRegions = []
+        actions.isHidden = true
+        toggle.isHidden = true
+        pillView.onPress = { [weak self] in self?.onBarPress?() }
         addSubview(ext)
         addSubview(bar)
+        addSubview(pillView)
+        addSubview(toggle)
         addSubview(actions)
         refreshBarMask()
         layoutChrome()
@@ -91,6 +160,17 @@ final class StreamChromeView: NSView {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
 
+    /// The pill, for the window tests (they look inside).
+    var pill: DwellPillView { pillView }
+
+    /// The dwell pill's own rect in the stream's coordinates, top-left origin
+    /// (DwellPill's feeding geometry): the pill sits `pillInset` in from the
+    /// stream's top-left corner and is as wide as its contents.
+    var pillStreamRect: CGRect {
+        CGRect(x: DwellChrome.pillInset, y: DwellChrome.pillInset,
+               width: DwellChrome.pillWidth(actionCount: actionCount), height: DwellChrome.pillHeight)
+    }
+
     func setActions(_ actions: [HeaderAction]) {
         self.actions.rootView = HeaderControls(actions: actions)
         needsLayout = true
@@ -98,11 +178,25 @@ final class StreamChromeView: NSView {
 
     var actionCount: Int { actions.rootView.actions.count }
 
+    /// The toggle's parked state, for the window tests (it returns from a pill
+    /// round-trip to the bar).
+    var toggleHidden: Bool { toggle.isHidden }
+
     /// Right now: the framed bar above the stream, or nothing in immersive and
     /// in full screen.
     var barHeight: CGFloat {
         guard style == .framed, !(window?.styleMask.contains(.fullScreen) ?? false) else { return 0 }
         return ChromeBar.height
+    }
+
+    /// The stream's corners are the window's: rounded at the bottom in both
+    /// styles, and at the top too wherever the stream is the top edge
+    /// (immersive at rest and full screen); in framed the top edge is the seam,
+    /// so only the bottom two round.
+    private var cornerMask: CACornerMask {
+        barHeight == 0
+            ? [.layerMinXMinYCorner, .layerMaxXMinYCorner, .layerMinXMaxYCorner, .layerMaxXMaxYCorner]
+            : [.layerMinXMinYCorner, .layerMaxXMinYCorner]
     }
 
     override func layout() {
@@ -115,6 +209,15 @@ final class StreamChromeView: NSView {
         layoutChrome()
     }
 
+    /// The pill's frame in this view (the window's content): `pillInset` in
+    /// from the stream's top-left corner, as tall as the framed bar, wide
+    /// enough for its contents. nil when it cannot show (framed, full screen).
+    private func newPillFrame() -> NSRect? {
+        guard style == .immersive, !(window?.styleMask.contains(.fullScreen) ?? false) else { return nil }
+        return NSRect(x: DwellChrome.pillInset, y: bounds.height - DwellChrome.pillInset - DwellChrome.pillHeight,
+                      width: DwellChrome.pillWidth(actionCount: actionCount), height: DwellChrome.pillHeight)
+    }
+
     func layoutChrome() {
         ext.frame = bounds
         let bar = barHeight
@@ -122,22 +225,44 @@ final class StreamChromeView: NSView {
         self.bar.frame = NSRect(x: 0, y: bounds.height - bar, width: bounds.width, height: bar)
         self.bar.isHidden = bar == 0
         ext.isHidden = bar == 0
-        // The stream's corners are the window's: rounded at the bottom in both
-        // styles, and at the top too in immersive (the at-rest window shape);
-        // in framed the top edge is the seam, so only the bottom two round.
         if let layer = video.layer {
             layer.cornerRadius = ChromeBar.cornerRadius
             layer.cornerCurve = .continuous
             layer.masksToBounds = true
-            layer.maskedCorners = bar == 0
-                ? [.layerMinXMinYCorner, .layerMaxXMinYCorner, .layerMinXMaxYCorner, .layerMaxXMaxYCorner]
-                : [.layerMinXMinYCorner, .layerMaxXMinYCorner]
+            layer.maskedCorners = cornerMask
         }
-        self.actions.isHidden = bar == 0
-        if bar > 0, actionCount > 0 {
-            let width = CGFloat(actionCount) * HeaderControls.buttonWidth
-            self.actions.frame = NSRect(x: bounds.width - width - 12, y: bounds.height - bar,
-                                        width: width, height: bar)
+        layoutControls()
+        if newPillFrame() != nil {
+            pillFrame = newPillFrame()
+            if showsPill { pillView.frame = pillFrame.map { $0 } ?? .zero }
+        }
+    }
+
+    /// The style toggle and the kind's actions over the framed bar or, while
+    /// the pill shows, inside it. Positions only: show/hide is the style's and
+    /// the dwell's business (setStyle, setPill).
+    private func layoutControls() {
+        let barVisible = barHeight > 0
+        if barVisible {
+            toggle.isHidden = false
+            actions.isHidden = actionCount == 0
+            if actionCount > 0 {
+                let width = CGFloat(actionCount) * HeaderControls.buttonWidth
+                actions.frame = NSRect(x: bounds.width - width - 12, y: bounds.height - barHeight,
+                                       width: width, height: barHeight)
+            }
+            // 8 pt right of the zoom light (20/43/66 set in placeTrafficLights).
+            toggle.frame = ChromeBar.toggleFrame(zoom: CGRect(x: 20 + 2 * 23, y: bounds.height - 21,
+                                                              width: 14, height: 14))
+        } else if showsPill, let pill = pillFrame {
+            actions.isHidden = actionCount == 0
+            if actionCount > 0 {
+                let width = CGFloat(actionCount) * HeaderControls.buttonWidth
+                actions.frame = NSRect(x: pill.minX + DwellChrome.pillActionsX, y: pill.minY,
+                                       width: width, height: pill.height)
+            }
+            toggle.frame = NSRect(x: pill.minX + DwellChrome.pillToggleX, y: pill.minY + 6,
+                                  width: ChromeBar.toggleSize, height: ChromeBar.toggleSize)
         }
     }
 
@@ -151,26 +276,91 @@ final class StreamChromeView: NSView {
     override func hitTest(_ point: NSPoint) -> NSView? {
         guard barHeight > 0, let hit = super.hitTest(point) else { return super.hitTest(point) }
         // The bar's two layers are the window's own: a click on the bar is a
-        // drag (and counts), while the kind's action buttons keep their clicks.
+        // drag (and counts), while the toggle and the kind's actions keep
+        // their clicks.
         return hit === bar || hit === ext ? self : hit
     }
 
     override func mouseDown(with event: NSEvent) {
         guard let window else { return }
-        if barHeight > 0 { onBarPress?() }
-        if barHeight > 0, event.clickCount == 2 {
-            window.performZoom(nil)
-            return
+        if barHeight > 0 {
+            onBarPress?()
+            if event.clickCount == 2 {
+                window.performZoom(nil)
+                return
+            }
         }
         window.performDrag(with: event)
     }
 
-    /// The traffic lights on the bar's line while the bar shows (the standard
-    /// 20 pt inset, 14 pt buttons centred 14 pt from the window's top edge); out
-    /// of sight otherwise (immersive's dwell pill or fullscreen's overlay shows
-    /// them when needed). The lights live in the title area above the
-    /// full-size content, so they are placed there in window coordinates and
-    /// converted.
+    /// The dwell pill came or went (the controller folds time in): fade it and
+    /// its buttons in over `fadeIn`, move the controls and the lights to its
+    /// slots, and on the way out park everything hidden again. The real lights
+    /// live in the title area above this view, so only their frames change.
+    func setPill(_ shown: Bool) {
+        guard showsPill != shown else { return }
+        showsPill = shown
+        let controlViews: [NSView] = [pillView, toggle, actions]
+        let lights = trafficLights
+        if shown {
+            controlViews.forEach { $0.alphaValue = 0 }
+            pillView.isHidden = false
+            toggle.isHidden = false
+            actions.isHidden = actionCount == 0
+            lights.forEach { $0.alphaValue = 0; $0.isHidden = false }
+            layoutControls()
+            pillFrame = newPillFrame()
+            if let frame = pillFrame { pillView.frame = frame }
+            placeTrafficLights()
+            window?.invalidateShadow()
+            NSAnimationContext.runAnimationGroup({ context in
+                context.duration = DwellChrome.fadeIn
+                controlViews.forEach { $0.animator().alphaValue = 1 }
+                lights.forEach { $0.animator().alphaValue = 1 }
+            }, completionHandler: {
+                self.placeTrafficLights()
+            })
+            // Unhiding a title-area button makes AppKit assert its standard
+            // slot on the next titlebar layout pass; this comes after it.
+            DispatchQueue.main.async { [weak self] in
+                if let self, self.showsPill { self.placeTrafficLights() }
+            }
+        } else {
+            NSAnimationContext.runAnimationGroup({ context in
+                context.duration = DwellChrome.fadeIn
+                controlViews.forEach { $0.animator().alphaValue = 0 }
+                lights.forEach { $0.animator().alphaValue = 0 }
+            }, completionHandler: {
+                // Still hidden: park everything for the next dwell. The buttons
+                // keep alpha 1 hidden so ⌘W/⌘M still "click" them.
+                if !self.showsPill {
+                    self.pillView.isHidden = true
+                    self.toggle.isHidden = true
+                    self.actions.isHidden = true
+                    self.toggle.alphaValue = 1
+                    self.actions.alphaValue = 1
+                    self.lightsHide()
+                    self.window?.invalidateShadow()
+                }
+            })
+        }
+    }
+
+    private func lightsHide() {
+        // Only park when no chrome owns the lights: the bar does too.
+        guard barHeight == 0 else { return }
+        trafficLights.forEach {
+            if !showsPill {
+                $0.isHidden = true
+                $0.alphaValue = 1
+            }
+        }
+    }
+
+    /// Where the traffic lights ride: the framed bar's line while that bar
+    /// shows, the pill's lights row while the dwell pill shows, out of sight
+    /// otherwise. The lights live in the title area above the full-size
+    /// content, so they are placed there in window coordinates and converted.
     func placeTrafficLights() {
         guard let window else { return }
         let height = window.frame.height
@@ -180,14 +370,41 @@ final class StreamChromeView: NSView {
             if barHeight > 0 {
                 light.isHidden = false
                 light.alphaValue = 1
-                // x 20/43/66, y from the window's bottom edge (titlebar views do not
-                // overlap the full-size content), measured by the demo.
-                let frame = NSRect(x: 20 + CGFloat(i) * 23, y: height - 21, width: 14, height: 14)
+                // x 20/43/66, y from the window's bottom edge (titlebar views do
+                // not overlap the full-size content), measured by the demo.
+                let frame = NSRect(x: ChromeBar.trafficLightInset + CGFloat(i) * ChromeBar.trafficLightSpacing, y: height - 21, width: ChromeBar.trafficLightButtonSide, height: ChromeBar.trafficLightButtonSide)
+                light.frame = superview.convert(frame, from: nil)
+            } else if showsPill {
+                light.isHidden = false
+                // The pill's row: 8 pt in from its edge, 14x14 centred on the
+                // pill's centre line.
+                let x = DwellChrome.pillLightInset + CGFloat(i) * DwellChrome.pillLightSpacing
+                let frame = NSRect(x: x, y: height - DwellChrome.pillInset - DwellChrome.pillHeight / 2 - ChromeBar.trafficLightButtonSide / 2,
+                                   width: ChromeBar.trafficLightButtonSide, height: ChromeBar.trafficLightButtonSide)
                 light.frame = superview.convert(frame, from: nil)
             } else {
                 light.isHidden = true
                 light.alphaValue = 1
             }
         }
+    }
+
+    private var trafficLights: [NSButton] {
+        [.closeButton, .miniaturizeButton, .zoomButton].compactMap { window?.standardWindowButton($0) }
+    }
+
+    /// The style itself changed (⌥⌘F / View menu): relayout, re-mask, re-place
+    /// the lights; the pill never survives a switch.
+    func setStyle(_ new: WindowStyle) {
+        guard style != new else { return }
+        style = new
+        if showsPill { setPill(false) }
+        pillView.isHidden = true
+        pillView.alphaValue = 0
+        toggle.isHidden = true
+        actions.isHidden = true
+        refreshBarMask()
+        layoutChrome()
+        placeTrafficLights()
     }
 }

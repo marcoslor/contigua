@@ -19,12 +19,14 @@
 //   fingerpinch NX NY SCALE [HOLD]  the same pinch from raw trackpad fingers; HOLD seconds
 //                            with the fingers down at the end (for looking at the overlay)
 //   fingerrotate NX NY DEGREES [HOLD]  the same rotate from raw trackpad fingers
-//   showtouches on|off       View > Show Touches
-//   dropfile PATH            the Finder drag that would land here: the absolute
-//                            file path (the drag destination's own handler runs;
-//                            an .apk keeps its install route)
-//   hover NX NY              the pointer moves to NX NY (the header fades in when it
-//                            is near the top edge)
+//   showtouches on|off             View > Show Touches
+//   windowstyle framed|immersive|toggle   the key window's chrome style
+//                                  (View > Window Style / its ⌥⌘F toggle)
+//   dropfile PATH                  the Finder drag that would land here: the absolute
+//                                  file path (the drag destination's own handler runs;
+//                                  an .apk keeps its install route)
+//   hover NX NY                    the pointer moves to NX NY (in immersive, the window
+//                                  in the dwell pill's hot zone)
 //   notifyclick ID           the same routing a click on that phone notification runs
 //                            (opens the app's window); not a stream action
 //   mediacmd ACTION          the same routing a Now Playing control runs: play, pause,
@@ -64,6 +66,7 @@ enum DebugInputAction: Equatable {
     case fingerPinch(at: NormalizedPoint, scale: Double, hold: Double)
     case fingerRotate(at: NormalizedPoint, degrees: Double, hold: Double)
     case showTouches(Bool)
+    case windowStyle(String)
     case dropFile(String)
     case hover(NormalizedPoint)
     case notifyClick(String)
@@ -146,6 +149,13 @@ enum DebugInputScript {
             case "on" where args.count == 1: return .showTouches(true)
             case "off" where args.count == 1: return .showTouches(false)
             default: throw LineError(message: "showtouches needs on or off")
+            }
+        case "windowstyle":
+            switch args.first {
+            case "framed" where args.count == 1: return .windowStyle("framed")
+            case "immersive" where args.count == 1: return .windowStyle("immersive")
+            case "toggle" where args.count == 1: return .windowStyle("toggle")
+            default: throw LineError(message: "windowstyle needs framed, immersive or toggle")
             }
         case "hover":
             return .hover(try point(args, count: 2))
@@ -364,6 +374,13 @@ final class DebugInputDriver {
             }
         case .showTouches(let enabled):
             (view.window?.windowController as? StreamWindowController)?.manager.showTouches = enabled
+        case .windowStyle(let target):
+            guard let controller = view.window?.windowController as? StreamWindowController else { return }
+            switch target {
+            case "framed": controller.setStyle(.framed)
+            case "immersive": controller.setStyle(.immersive)
+            default: controller.toggleStyle()
+            }
         case .dropFile(let path):
             view.onDroppedFiles?([URL(fileURLWithPath: path)])
         case .hover(let target):
@@ -542,13 +559,26 @@ final class DebugInputDriver {
     private func press(keyCode: UInt16, characters: String, ignoring: String,
                        flags: NSEvent.ModifierFlags, in view: VideoLayerView) {
         let windowNumber = view.window?.windowNumber ?? 0
+        var menuAte = false
         for type in [NSEvent.EventType.keyDown, .keyUp] {
             guard let event = NSEvent.keyEvent(with: type, location: .zero, modifierFlags: flags,
                                                timestamp: ProcessInfo.processInfo.systemUptime,
                                                windowNumber: windowNumber, context: nil,
                                                characters: characters, charactersIgnoringModifiers: ignoring,
                                                isARepeat: false, keyCode: keyCode) else { continue }
-            if type == .keyDown { view.keyDown(with: event) } else { view.keyUp(with: event) }
+            if type == .keyDown {
+                // A real press runs through the menu bar first: its key
+                // equivalents (⌥⌘F's Toggle Window Style) are AppKit's own
+                // dispatch. An equivalent, not matched by any menu, goes on to
+                // the view as before.
+                if !flags.isEmpty, NSApp.mainMenu?.performKeyEquivalent(with: event) == true {
+                    menuAte = true
+                    continue
+                }
+                view.keyDown(with: event)
+            } else if !menuAte {
+                view.keyUp(with: event)
+            }
         }
     }
 }
