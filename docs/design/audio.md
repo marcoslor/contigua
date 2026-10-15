@@ -73,6 +73,32 @@ Negotiation: Mac sends `audio.start {codec:[opus,aac]}` after `welcome`;
 phone answers `AUDIO_CONFIG` with the chosen codec (Opus preferred, AAC if
 Opus encoder missing). Mac `audio.stop` on session end. Unknown codecs ignored.
 
+## Audio follows the window
+
+Capture has two modes, chosen by `AudioFollow.plan(windows, uidOf)` from the
+session's open windows:
+
+- **Per-app** (the goal): one shell-uid `android.media.audiopolicy` AudioPolicy
+  with one loop-back mix filtering the UIDs of the apps shown in open app
+  windows (RULE_MATCH_UID per app). Only those apps play on the Mac; every
+  other app keeps playing on the phone speaker — nothing is muted.
+- **All-audio** (today's REMOTE_SUBMIX path): the speaker goes silent and the
+  whole device streams. Reached when (a) a phone-mode window is open (the
+  whole-phone mirror means "all audio"), (b) a window cannot be attributed
+  (a link whose app Android has not picked yet, a uid lookup failure), or
+  (c) the policy registration fails — one log line, then today's path.
+
+Only one path is ever registered: the swap (unregister + register + sink
+rebuild, sub-second capture gap, speaker unaffected; keep the Mac jitter
+buffer as is) goes through a full stop, and `stop()` always unregisters —
+a policy never outlives the session or the server process. The mix output is
+not volume-indexed, so only the submix path runs SubmixLevel; per-device
+volume stays Mac-side gain either way. Caveats: apps may opt out of capture
+(`setAllowedCapturePolicy`; we register non-privileged), an app without a
+mediaPlayback foreground service is background-muted by the platform and
+feeds nothing while backgrounded, and shared-UID apps ride one rule (rules
+match UIDs, not windows).
+
 ## Protocol changes (docs/PROTOCOL.md v1 + audio)
 
 - New types: `0x04 AUDIO_CONFIG`, `0x05 AUDIO_FRAME` (next free after video).
