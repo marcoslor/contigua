@@ -26,16 +26,17 @@ Status: `[ ]` todo · `[~]` in progress · `[x]` done (verified on device).
 
 Done: accurate lock state, nav shortcuts, orphan cleanup watchdog, display-scoped keep-awake,
 live quality knob, Spotlight for apps ("WhatsApp (Phone name)"), trackpad pinch/rotate,
-links Mac → phone (#5), APK install (#10), share phone → Mac (#11), Dock and Launchpad apps (#6).
+links Mac → phone (#5), APK install (#10), share phone → Mac (#11), Dock and Launchpad apps (#6),
+phone nickname + titles (#1, #2), clipboard text both ways (#3).
 
 Remaining, in build order (very simple items first, then the ones that make Android apps feel
 like Mac apps). Each item is one looped dev task with its own checks.
 
 | # | Feature | Approach | Size |
 |---|---|---|---|
-| 1 | Phone nickname | rename a phone in Settings → Devices (Mac-side, per device); used everywhere the phone is named | S |
-| 2 | Titles name the phone | app windows and their Dock/⌘-Tab entries read "WhatsApp (Nickname)" | S |
-| 3 | Clipboard text, both ways | shell `IClipboard` listener ⇄ NSPasteboard polling; `clip.set`, no echo, skips concealed items | S‑M |
+| 1 | [x] Phone nickname | rename a phone in Settings → Devices (Mac-side, per device); used everywhere the phone is named; e2e `nickname` (shim name, window title, rename reorder) | S |
+| 2 | [x] Titles name the phone | app windows and their Dock/⌘-Tab entries read "WhatsApp (Nickname)"; a rename retitles the open windows | S |
+| 3 | [x] Clipboard text, both ways | shell `IClipboard` listener ⇄ NSPasteboard polling; `clip.set`, no echo, skips concealed items | S‑M |
 | 4 | [x] Audio phone → Mac | REMOTE_SUBMIX at shell UID → Opus/AAC on the session → AVAudioEngine on the Mac, <150 ms added latency, per-device volume/mute (docs/design/audio.md); verified end to end on the API 36 emulator (~80–125 ms tone → Mac, speaker idle), API 34/35 and the real phone still to check | M |
 | 5 | [x] Links Mac → phone | Share → "Open on Phone" (Share extension), Services, drop on the Deck → `link.open` → `ACTION_VIEW` in a new window (docs/design/links.md) | S‑M |
 | 6 | [x] Dock and Launchpad apps | Deck → right-click an app → Add to Dock: a per-app shim bundle in ~/Applications/PocketDeck Apps (real icon, "App (Phone)" in Dock, Launchpad, ⌘-Tab); launching opens/focuses the window, quitting closes it (docs/design/dock.md) | M |
