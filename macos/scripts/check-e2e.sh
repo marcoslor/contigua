@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # End-to-end checks C3-C13 for the macOS client against tools/fakephone.
 #
-#   ./scripts/check-e2e.sh [qr|pair|render|resize|input|mouseback|input-global|pause|direct|nav|mirror|spotlight|pinch|chrome|trackpad|clip|sharein|links|share|apk|drop|dock|nickname|audio|handoff|all]
+#   ./scripts/check-e2e.sh [qr|pair|render|resize|input|mouseback|input-global|pause|direct|nav|mirror|spotlight|pinch|chrome|trackpad|clip|sharein|links|share|apk|drop|dock|nickname|notify|audio|handoff|all]
 #
 # Every check starts from a clean slate: no PocketDeck or fakephone processes
 # left by an earlier run, a fresh fakephone state file and no pairing key in
@@ -2312,6 +2312,138 @@ check_handoff() {
     wait_until 5 no_fakephone
 }
 
+# --- Notifications + media controls ---------------------------------------
+
+# check_notify — phone notifications + media controls (docs/design/notify.md).
+# With the per-phone opt-in on, the phone's two posts and its removal are
+# recorded by the Mac's --share-log (ids, package names and field lengths only --
+# never the text); `notifyclick` runs the same routing a banner click runs and
+# opens that app's window on the Mac; `mediacmd` drives what a Now Playing
+# control drives. With the opt-in off (the default) the Mac forwards nothing and
+# never asks the phone to enable.
+check_notify() {
+    clean
+    local log="$WORK/notify.log" offlog="$WORK/notify-off.log" script="$WORK/notify-input.txt" device
+    log_has() { grep -qF -- "$1" "$log" 2>/dev/null; }
+    off_log_has() { grep -qF -- "$1" "$offlog" 2>/dev/null; }
+    # The phone was asked to share (the strict JSON form; key order is the app's).
+    notify_enable_on() {
+        python3 - "$WORK/events.jsonl" <<'PY'
+import json, sys
+for line in open(sys.argv[1]):
+    try:
+        event = json.loads(line)
+    except ValueError:
+        continue
+    msg = event.get("msg") or {}
+    if event.get("ev") == "rx" and msg.get("t") == "notify.enable" and msg.get("on") is True:
+        sys.exit(0)
+sys.exit(1)
+PY
+    }
+    # Privacy: the fake's notification text must never reach a log (the media
+    # title may; nothing here records it either).
+    no_notify_text() {
+        local file
+        for file in "$@"; do
+            if grep -qE 'pd-notify-(title|text)-[12]' "$file" 2>/dev/null; then
+                say "  notification text in $file"
+                return 1
+            fi
+        done
+        return 0
+    }
+
+    start_fake || return 1
+    device="$(sed -n 's/^fakephone \([^ ]*\) listening.*/\1/p' "$WORK/fake.log" | head -1)"
+    [ -n "$device" ] || { bad "NOTIFY no device id in the fakephone listening line"; stop_fakephone; return 1; }
+    # The per-phone opt-in is a stored default of the e2e profile, off by default
+    # (check_dock seeds showAppsInDock the same way).
+    defaults write "$DEFAULTS_SUITE" "notify.$device" -bool YES
+
+    # The click and the command go through the same handlers the banner click
+    # and the Now Playing control run; both arrive after the window's video.
+    cat > "$script" <<'EOF'
+wait 3
+notifyclick pd-n1
+mediacmd play
+EOF
+    launch --connect "127.0.0.1:$PORT" --quit-after 60 --share-log "$log" \
+        --open com.whatsapp --debug-input-script "$script"
+
+    # (a) opt-in on: the Mac asks, the posts and the remove are recorded.
+    wait_until 20 notify_enable_on \
+        && ok "NOTIFY the Mac asked the phone to share (notify.enable on)" \
+        || bad "NOTIFY the Mac never sent notify.enable on"
+    wait_until 20 log_has "notify post id=pd-n1 pkg=com.android.settings" \
+        && ok "NOTIFY pd-n1 (com.android.settings) recorded" \
+        || bad "NOTIFY pd-n1 not recorded: $(cat "$log" 2>/dev/null | tr '\n' '|')"
+    wait_until 20 log_has "notify post id=pd-n2 pkg=com.whatsapp" \
+        && ok "NOTIFY pd-n2 (com.whatsapp) recorded" \
+        || bad "NOTIFY pd-n2 not recorded"
+    wait_until 20 log_has "notify remove id=pd-n2" \
+        && ok "NOTIFY the removal of pd-n2 was recorded" \
+        || bad "NOTIFY the remove was not recorded"
+    log_has "thread=$device" \
+        && ok "NOTIFY the posts are grouped under the phone ($device)" \
+        || bad "NOTIFY the records are not grouped per phone"
+    grep -qE 'titleLen=[0-9]+ bodyLen=[0-9]+' "$log" 2>/dev/null \
+        && ok "NOTIFY the records carry field lengths, not the text" \
+        || bad "NOTIFY the posts were recorded without lengths"
+    log_has "media set playing=true" && log_has "durationMs=30000" \
+        && ok "NOTIFY media.state drove Now Playing (playing, 30 s)" \
+        || bad "NOTIFY no Now Playing set: $(cat "$log" 2>/dev/null | tr '\n' '|')"
+
+    # (c) the click opens that app's window, through the phone's window.open.
+    wait_until 30 log_has "notify click id=pd-n1 pkg=com.android.settings" \
+        && ok "NOTIFY the click recorded pd-n1 -> com.android.settings" \
+        || bad "NOTIFY no click record: $(cat "$log" 2>/dev/null | tr '\n' '|')"
+    wait_until 30 window_rx window.open "com.android.settings" \
+        && ok "NOTIFY the click sent window.open for com.android.settings" \
+        || bad "NOTIFY the click never reached the phone"
+    wait_until 20 events_have '"ev":"video","stream":2,' \
+        && ok "NOTIFY the Mac opened the clicked app's stream window (stream 2)" \
+        || bad "NOTIFY no stream 2 for the clicked app"
+
+    # (d) a Now Playing command reaches the phone as media.command.
+    wait_until 20 events_have '"ev":"media","cmd":"play"' \
+        && ok "NOTIFY the Now Playing control reached the phone (media.command play)" \
+        || bad "NOTIFY no media.command play at the phone"
+    log_has "media command play" \
+        && ok "NOTIFY the command went through the Now Playing handler" \
+        || bad "NOTIFY the command was not recorded"
+
+    # (e) privacy: no notification text in any log.
+    no_notify_text "$WORK/app.log" "$log" "$WORK/fake.log" "$WORK/events.jsonl" \
+        && ok "NOTIFY no notification text in the app log, share log, fake log or event log" \
+        || bad "NOTIFY notification text leaked"
+
+    # (b) opt-in off (the default): nothing is forwarded, nothing is asked.
+    stop_app
+    stop_fakephone
+    wait_until 5 no_fakephone
+    defaults delete "$DEFAULTS_SUITE" "notify.$device" >/dev/null 2>&1
+    : > "$WORK/events.jsonl"
+    # The same phone and pairing, so only the opt-in differs between the phases.
+    start_fake "$WORK/state.json" || return 1
+    launch --connect "127.0.0.1:$PORT" --quit-after 60 --share-log "$offlog" --open com.whatsapp
+    wait_until 30 window_rx window.open "com.whatsapp" \
+        || { bad "NOTIFY off: the app never got online"; stop_app; stop_fakephone; return 1; }
+    sleep 8
+    ! notify_enable_on \
+        && ok "NOTIFY off: the phone was not sent notify.enable on" \
+        || bad "NOTIFY off: notify.enable on was sent anyway"
+    ! off_log_has "notify post" && ! off_log_has "notify remove" && ! off_log_has "notify click" \
+        && ok "NOTIFY off: no post, remove or click reached the share log" \
+        || bad "NOTIFY off: $(cat "$offlog" 2>/dev/null | tr '\n' '|')"
+    no_notify_text "$WORK/app.log" "$offlog" "$WORK/fake.log" "$WORK/events.jsonl" \
+        && ok "NOTIFY off: no notification text anywhere" \
+        || bad "NOTIFY off: notification text leaked"
+    stop_app
+    stop_fakephone
+    wait_until 5 no_fakephone
+}
+
 check_orphans() {
     sleep 1
     local n
@@ -2330,8 +2462,8 @@ build_e2e_app() {
 
 which_check="${1:-all}"
 case "$which_check" in
-    qr|pair|render|resize|input|mouseback|input-global|pause|direct|nav|mirror|spotlight|pinch|chrome|trackpad|clip|sharein|links|share|apk|drop|dock|nickname|audio|handoff|all) ;;
-    *) say "usage: check-e2e.sh [qr|pair|render|resize|input|mouseback|input-global|pause|direct|nav|mirror|spotlight|pinch|chrome|trackpad|clip|sharein|links|share|apk|drop|dock|nickname|audio|handoff|all]"; exit 2 ;;
+    qr|pair|render|resize|input|mouseback|input-global|pause|direct|nav|mirror|spotlight|pinch|chrome|trackpad|clip|sharein|links|share|apk|drop|dock|nickname|notify|audio|handoff|all) ;;
+    *) say "usage: check-e2e.sh [qr|pair|render|resize|input|mouseback|input-global|pause|direct|nav|mirror|spotlight|pinch|chrome|trackpad|clip|sharein|links|share|apk|drop|dock|nickname|notify|audio|handoff|all]"; exit 2 ;;
 esac
 acquire_lock
 wait_for_other_runs
@@ -2365,11 +2497,12 @@ case "$which_check" in
     drop)     check_drop ;;
     dock)     check_dock ;;
     nickname) check_nickname ;;
+    notify)   check_notify ;;
     audio)    check_audio ;;
     handoff)  check_handoff ;;
     all)      check_qr; check_pair; check_render; check_resize; check_input; check_mouseback; check_pinch
               check_chrome; check_trackpad; check_pause; check_direct; check_nav; check_mirror; check_spotlight; check_clip; check_sharein; check_links; check_share; check_apk; check_drop; check_dock; check_nickname
-              check_audio; check_handoff; check_orphans ;;
+              check_notify; check_audio; check_handoff; check_orphans ;;
 esac
 
 say ""
