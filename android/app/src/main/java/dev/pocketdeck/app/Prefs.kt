@@ -101,7 +101,7 @@ object Prefs {
     fun serviceStateJson(ctx: Context): String {
         val self = runCatching {
             val id = dev.pocketdeck.e2ee.PhoneIdentity.ensure(ctx)
-            mapOf("certPem" to id.certPem, "keyP8" to id.keyP8, "keyB64" to id.keyP8)
+            mapOf("certPem" to id.certPem, "keyP8" to id.keyP8)
         }.getOrNull()
         return Json.encode(
             mapOf(
