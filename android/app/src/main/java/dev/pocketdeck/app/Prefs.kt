@@ -98,11 +98,18 @@ object Prefs {
     }
 
     /** The payload pushed to the shell service via setPairedClients. */
-    fun serviceStateJson(ctx: Context): String = Json.encode(
-        mapOf(
-            "deviceId" to deviceId(ctx),
-            "deviceName" to deviceName(ctx),
-            "clients" to paired(ctx).map { mapOf("clientId" to it.clientId, "name" to it.name, "key" to it.keyHex) },
-        ),
-    )
+    fun serviceStateJson(ctx: Context): String {
+        val self = runCatching {
+            val id = dev.pocketdeck.e2ee.PhoneIdentity.ensure(ctx)
+            mapOf("certPem" to id.certPem, "keyP8" to id.keyP8, "keyB64" to id.keyP8)
+        }.getOrNull()
+        return Json.encode(
+            mapOf(
+                "deviceId" to deviceId(ctx),
+                "deviceName" to deviceName(ctx),
+                "clients" to paired(ctx).map { mapOf("clientId" to it.clientId, "name" to it.name, "key" to it.keyHex) },
+                "self" to self,
+            ),
+        )
+    }
 }
