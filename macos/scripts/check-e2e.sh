@@ -949,6 +949,30 @@ print("spread=%d seam=%d" % (series(bar), round(seam)))
 PY
 }
 
+# stream_spread <png> <w-pt> <h-pt> — "NN": how much colour varies across the
+# picture's mid row. A live fake app's columns move the row apart; a blank
+# stream (hidden video layer) reads 0.
+stream_spread() {
+    python3 - "$@" <<'PY'
+import subprocess, sys
+path, wpt, hpt = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
+size = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "stream=width,height",
+                       "-of", "csv=p=0", path], capture_output=True, text=True).stdout.strip().split(",")
+w, h = int(size[0]), int(size[1])
+raw = subprocess.run(["ffmpeg", "-v", "error", "-i", path, "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
+                     capture_output=True).stdout
+row = h // 2
+cols = range(int(w * 0.2), int(w * 0.9), 4)
+lo, hi = [255] * 3, [0] * 3
+for x in cols:
+    i = (row * w + x) * 3
+    pixel = tuple(raw[i:i + 3])
+    for c, v in enumerate(pixel):
+        lo[c] = min(lo[c], v); hi[c] = max(hi[c], v)
+print(max(hi[c] - lo[c] for c in range(3)))
+PY
+}
+
 # edge_pixels <png> <width-pt> <height-pt> — the window's own pixels just inside
 # its left, right and bottom edges, as "left=… right=… bottom=…" with each
 # "backdrop" or "stream".
@@ -1116,6 +1140,13 @@ check_chrome() {
         && ok "C14 the hot zone's early click reached the app as ordinary touch ($touches tap)" \
         || bad "C14 no touch from the hot zone's early click"
     screencapture -x -o -l"$win" "$WORK/chrome-pill.png" && say "screenshot: $WORK/chrome-pill.png"
+    # The immersive window's stream is the live app: the fake app's coloured
+    # columns are still on screen under the pill (a hidden video layer would
+    # blank them and read 0).
+    spread="$(stream_spread "$WORK/chrome-pill.png" 900 600)"
+    [ "${spread:-0}" -ge 40 ] \
+        && ok "C14 the immersive stream is the live app (mid-row spread $spread)" \
+        || bad "C14 the immersive stream is blank (mid-row spread ${spread:-0})"
 
     # The pill's minimise light is a real click on the window's chrome.
     "$CGBIN" click --window "$win" --dx -406 --top 20 >/dev/null
