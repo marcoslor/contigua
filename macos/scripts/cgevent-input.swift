@@ -4,6 +4,7 @@
 //
 // Usage:
 //   swift scripts/cgevent-input.swift list
+//   swift scripts/cgevent-input.swift titles
 //   swift scripts/cgevent-input.swift all
 //   swift scripts/cgevent-input.swift click  --window ID [--dx N --dy N]
 //   swift scripts/cgevent-input.swift drag   --window ID --dx 200 --dy 0 [--steps 20]
@@ -74,6 +75,22 @@ func pocketDeckWindows(owner: String, pid: Int? = nil) -> [Target] {
 
 func windowWithID(_ id: CGWindowID, owner: String, pid: Int?) -> Target? {
     pocketDeckWindows(owner: owner, pid: pid).first { $0.id == id }
+}
+
+/// The accessible titles (the Dock/⌘-Tab names) of the app's on-screen windows.
+func axTitles(appName: String, pid: Int?) -> [String] {
+    let process = pid ?? NSRunningApplication.runningApplications.first { $0.localizedName == appName }?.processIdentifier
+    guard let process else { return [] }
+    let app = AXUIElementCreateApplication(process)
+    var windows: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(app, kAXWindowsAttribute as CFString, &windows) == .success,
+          let axWindows = (windows as? [AXUIElement]) else { return [] }
+    return axWindows.map { window -> String in
+        var title: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(window, kAXTitleAttribute as CFString, &title) == .success,
+              let name = title as? String else { return "" }
+        return name
+    }
 }
 
 func post(_ event: CGEvent?) {
@@ -189,6 +206,12 @@ switch CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : "" {
 case "list":
     for target in pocketDeckWindows(owner: owner, pid: pid) {
         print("\(target.id)\t\(Int(target.x)) \(Int(target.y)) \(Int(target.width)) \(Int(target.height))")
+    }
+case "titles":
+    // The AX title of every window of the app (the Dock/⌘-Tab name the
+    // window carries): one per line, so checks can grep for it.
+    for title in axTitles(appName: owner, pid: pid) {
+        print(title.isEmpty ? "-" : title)
     }
 case "all":
     // Debug aid: every on-screen window with owner, pid, layer and bounds.
