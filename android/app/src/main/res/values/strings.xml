@@ -66,6 +66,10 @@
     <string name="action_retry">Retry</string>
 
     <string name="home_allow_connections">Allow connections</string>
+    <string name="home_notify_share">Show notifications on the Mac</string>
+    <string name="home_notify_granting">Granting notification access…</string>
+    <string name="home_notify_grant_failed">Couldn\'t grant notification access. Enable PocketDeck in Settings → Notification access.</string>
+    <string name="home_notify_granted_hint">Notifications and the media session on this phone reach your Macs while a Mac is connected.</string>
     <string name="home_paired_title">Paired Macs</string>
     <string name="home_last_connected">Last connected %1$s</string>
     <string name="home_forget">Forget</string>

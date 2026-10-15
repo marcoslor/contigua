@@ -14,4 +14,10 @@ oneway interface IDeckCallback {
 
     /** The pairing request ended unanswered; the app should dismiss its prompt. */
     void onPairingEnded(String requestId);
+
+    /** The Mac asked to start (or stop) notification sharing for this session. */
+    void onNotifySession(boolean forwarding);
+
+    /** The Mac pressed a Now Playing transport control (play, pause, next, prev). */
+    void onMediaCommand(String action);
 }

@@ -10,6 +10,7 @@ import dev.pocketdeck.IDeckCallback
 import dev.pocketdeck.IDeckService
 import dev.pocketdeck.proto.Crypto
 import dev.pocketdeck.proto.Json
+import java.util.concurrent.TimeUnit
 
 /**
  * The Shizuku user-service entry point. Runs as shell (UID 2000), owns the TCP
@@ -32,6 +33,9 @@ class DeckService(private val appContext: Context?) :
 
     @Volatile private var server: Server? = null
     @Volatile private var power: AndroidPower? = null
+
+    /** Mirror of the app's per-phone notify toggle (pushed via setNotifyShared). */
+    @Volatile private var notifySharedStore = false
 
     /** Last battery reading relayed by the app process (this process cannot receive it). */
     @Volatile private var batteryPercent = 0
@@ -88,6 +92,8 @@ class DeckService(private val appContext: Context?) :
                 log = ::log,
                 autoApprovePairing = dev.pocketdeck.BuildConfig.DEBUG,
                 audioCapture = audio,
+                notifyShared = { notifySharedStore },
+                mediaCommand = { action -> sendToApp { it.onMediaCommand(action) } },
             )
         }
         val srv = Server(factory, ::log)
@@ -139,6 +145,42 @@ class DeckService(private val appContext: Context?) :
             srv.shareFile(name ?: "image", mime ?: "application/octet-stream", it)
         }
     }
+
+    /** The app's per-phone opt-in for notification sharing (privacy default OFF). */
+    override fun setNotifyShared(shared: Boolean) {
+        notifySharedStore = shared
+        server?.recomputeNotify()
+    }
+
+    /**
+     * The app listener's event push (notifications + the media session). Text is
+     * never logged; the session validates and forwards.
+     */
+    override fun pushDeviceEvent(json: String?) {
+        if (json.isNullOrEmpty() || notifySharedStore.not()) return
+        val obj = runCatching { Json.parseObject(json) }.getOrNull() ?: return
+        val t = Json.str(obj["t"]) ?: return
+        server?.onDeviceEvent(t, obj)
+    }
+
+    /** `cmd notification allow_listener` at shell UID (docs/design/notify.md). */
+    override fun grantListenerAccess(): Boolean {
+        val component = "${dev.pocketdeck.BuildConfig.APPLICATION_ID}/dev.pocketdeck.app.PdNotificationListener"
+        run("cmd", "notification", "allow_listener", component)
+        // The grant command is silent; the listener list is the truth.
+        val granted = run("settings", "get", "secure", "enabled_notification_listeners")
+            .contains(component)
+        log("notify: listener grant=$granted component=$component")
+        return granted
+    }
+
+    /** Runs argv (no shell) and returns its output; "" on any failure. */
+    private fun run(vararg argv: String): String = runCatching {
+        val process = ProcessBuilder(*argv).redirectErrorStream(true).start()
+        val out = process.inputStream.bufferedReader().readText()
+        process.waitFor(10, TimeUnit.SECONDS)
+        out.trim()
+    }.getOrDefault("")
 
     // ---- PairingStore -------------------------------------------------
 

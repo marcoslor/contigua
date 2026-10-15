@@ -200,6 +200,7 @@ class ScreenshotTest {
             HomeScreen(
                 state = state,
                 onToggleEnabled = {},
+                onToggleNotify = {},
                 onStatusAction = {},
                 onForget = { "" },
                 onUndoForget = {},

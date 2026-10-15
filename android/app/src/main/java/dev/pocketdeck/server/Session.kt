@@ -1,5 +1,6 @@
 package dev.pocketdeck.server
 
+import dev.pocketdeck.app.NotifyEvents
 import dev.pocketdeck.proto.Crypto
 import dev.pocketdeck.proto.Frame
 import dev.pocketdeck.proto.FrameReader
@@ -53,6 +54,9 @@ class Session(
     maxDeltaBytesPerStream: Int = SendQueue.DEFAULT_MAX_DELTA_BYTES,
     private val autoApprovePairing: Boolean = false,
     private val audioCapture: AudioCaptureLayer? = null,
+    private val notifyShared: () -> Boolean = { false },
+    private val mediaCommand: ((String) -> Unit)? = null,
+    private val notifyForward: ((Boolean) -> Unit)? = null,
 ) : VideoSink, AudioSink {
 
     private enum class Phase { HELLO, AUTH, READY }
@@ -94,6 +98,10 @@ class Session(
     private var currentMacName: String? = null
 
     private val loggedUnknown = HashSet<String>()
+
+    /** Notification sharing: the Mac asked for it and the phone's toggle is on. */
+    @Volatile private var notifyWanted = false
+    @Volatile private var notifyForwarding = false
 
     private var writerThread: Thread? = null
     private var stateHandle: AutoCloseable? = null
@@ -155,6 +163,12 @@ class Session(
 
     private fun shutdown() {
         if (!closed.compareAndSet(false, true)) return
+        // The Mac's session ended: stop forwarding and tell the app.
+        notifyWanted = false
+        if (notifyForwarding) {
+            notifyForwarding = false
+            runCatching { notifyForward?.invoke(false) }
+        }
         val abandoned = synchronized(pairLock) {
             val open = if (pairSettled) null else pendingPairId
             pairSettled = true
@@ -416,6 +430,8 @@ class Session(
             "clip.image.abort" -> onClipImageAbort(obj)
             "audio.start" -> onAudioStart(obj)
             "audio.stop" -> onAudioStop()
+            "notify.enable" -> onNotifyEnable(obj)
+            "media.command" -> onMediaCommand(obj)
             else -> logOnce("unknown message '$t'")
         }
     }
@@ -652,6 +668,120 @@ class Session(
 
     private fun stopClipboardSync() {
         runCatching { clipboard?.stop() }
+    }
+
+    // ------------------------------------------------------------------
+    // notifications + media controls (docs/design/notify.md)
+    // ------------------------------------------------------------------
+
+    /** `notify.enable`: the Mac's per-session opt-in; the phone's toggle adds to it. */
+    private fun onNotifyEnable(obj: Map<String, Any?>) {
+        val on = Json.bool(obj["on"]) ?: run {
+            sendError("bad_request", "notify.enable needs a boolean on", 0)
+            return
+        }
+        notifyWanted = on
+        reconcileNotify()
+    }
+
+    /** Re-evaluates the forwarding gate (also runs when the phone toggle changes). */
+    fun reconcileNotify() {
+        val forward = notifyWanted && notifyShared() && phase == Phase.READY && !closed.get()
+        if (forward != notifyForwarding) {
+            notifyForwarding = forward
+            runCatching { notifyForward?.invoke(forward) }
+        }
+        sendJson(mapOf("t" to "notify.state", "on" to forward))
+    }
+
+    private fun onMediaCommand(obj: Map<String, Any?>) {
+        val action = Json.str(obj["action"])
+        val command = action?.let { NotifyEvents.validMediaCommand(it) }
+        if (command == null) {
+            logOnce("media.command dropped (unknown action)")
+            return
+        }
+        val driver = mediaCommand ?: run {
+            logOnce("media.command dropped (no consumer)")
+            return
+        }
+        driver(command)
+    }
+
+    /**
+     * An event pushed by the app-process listener after both gates. Everything is
+     * re-validated here: the phone side is not trusted either, and the wire must
+     * never carry oversized or malformed values.
+     */
+    fun onDeviceEvent(t: String, obj: Map<String, Any?>) {
+        if (phase != Phase.READY || !notifyForwarding) return
+        when (t) {
+            "notify.post" -> deviceNotifyPost(obj)
+            "notify.remove" -> deviceNotifyRemove(obj)
+            "media.state" -> deviceMedia(obj)
+            else -> logOnce("device event '$t' ignored")
+        }
+    }
+
+    private fun deviceNotifyPost(obj: Map<String, Any?>) {
+        val id = validToken(Json.str(obj["id"]), 64) ?: return dropNotifyPost("id")
+        // The system package (com.android.shell) or another system package
+        // holding this notification is not the person's app; only real
+        // application packages are forwarded.
+        val pkg = validToken(Json.str(obj["pkg"]), 255) ?: return dropNotifyPost("pkg")
+        val title = Json.str(obj["title"])?.takeIf { it.isNotEmpty() && it.length <= NotifyEvents.MAX_CHARS }
+        val text = Json.str(obj["text"])?.takeIf { it.isNotEmpty() && it.length <= NotifyEvents.MAX_CHARS }
+        if (title == null && text == null) return dropNotifyPost("empty content")
+        val whenMs = Json.long(obj["when"])?.takeIf { it > 0 }
+        val message = LinkedHashMap<String, Any?>()
+        message["t"] = "notify.post"
+        message["id"] = id
+        message["pkg"] = pkg
+        if (title != null) message["title"] = title
+        if (text != null) message["text"] = text
+        if (whenMs != null) message["when"] = whenMs
+        sendJson(message)
+    }
+
+    /** Drops a notification event; the reason names a field, never the content. */
+    private fun dropNotifyPost(why: String) {
+        log("notify.post dropped: $why")
+    }
+
+    private fun deviceNotifyRemove(obj: Map<String, Any?>) {
+        val id = validToken(Json.str(obj["id"]), 64) ?: run {
+            log("notify.remove dropped: id")
+            return
+        }
+        sendJson(mapOf("t" to "notify.remove", "id" to id))
+    }
+
+    private fun deviceMedia(obj: Map<String, Any?>) {
+        val playing = Json.bool(obj["playing"]) ?: run {
+            log("media.state dropped: playing")
+            return
+        }
+        val message = LinkedHashMap<String, Any?>()
+        message["t"] = "media.state"
+        message["playing"] = playing
+        Json.str(obj["pkg"])?.let { validToken(it, 255) }?.let { message["pkg"] = it }
+        for (key in listOf("title", "artist", "album")) {
+            Json.str(obj[key])?.takeIf { it.isNotEmpty() && it.length <= NotifyEvents.MAX_CHARS }?.let { message[key] = it }
+        }
+        Json.long(obj["durationMs"])?.takeIf { it in 1..(36L * 24 * 3600 * 1000) }?.let { message["durationMs"] = it }
+        Json.long(obj["positionMs"])?.takeIf { it >= 0 }?.let { message["positionMs"] = it }
+        if (playing) {
+            val rate = (obj["rate"] as? Number)?.toDouble()
+                ?: run { log("media.state dropped: rate"); return }
+            if (rate !in 0.05..8.0) { log("media.state dropped: rate range"); return }
+            message["rate"] = rate
+        }
+        sendJson(message)
+    }
+
+    private fun validToken(v: String?, maxLength: Int): String? {
+        if (v == null || v.isEmpty() || v.length > maxLength) return null
+        return if (v.all { it.isLetterOrDigit() || it in "._-" }) v else null
     }
 
     private fun onClipSet(obj: Map<String, Any?>) {

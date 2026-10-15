@@ -76,6 +76,8 @@ data class PendingPairingUi(val requestId: String, val macName: String, val code
 data class DeckUiState(
     val onboardingDone: Boolean = false,
     val enabled: Boolean = false,
+    val notifyShared: Boolean = false,
+    val notifyGrantFailed: Boolean = false,
     val shizukuInstalled: Boolean = false,
     val shizukuRunning: Boolean = false,
     val shizukuGranted: Boolean = false,
