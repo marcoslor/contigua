@@ -432,8 +432,10 @@ final class DebugInputDriver {
             if stroke.shift { flags.insert(.shift) }
             if stroke.control { flags.insert(.control) }
             if stroke.option { flags.insert(.option) }
+            // AppKit's charactersIgnoringModifiers keeps Shift ("H" for ⇧⌘H);
+            // a lowercased one would match ⌘H (Hide) in the menu instead.
             press(keyCode: stroke.keyCode, characters: stroke.characters,
-                  ignoring: stroke.characters.lowercased(), flags: flags, in: view)
+                  ignoring: stroke.characters, flags: flags, in: view)
         }
     }
 
