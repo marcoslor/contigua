@@ -12,6 +12,7 @@ import org.junit.Before
 import org.junit.Test
 import java.net.ServerSocket
 import java.net.Socket
+import java.util.concurrent.CopyOnWriteArrayList
 
 /**
  * Drives [Session] over a real loopback TCP connection with a fake platform,
@@ -35,7 +36,8 @@ class SessionTest {
         connect(pairDecisionTimeoutMs = 30_000)
     }
 
-    private fun connect(pairDecisionTimeoutMs: Long, autoApprovePairing: Boolean = false) {
+    private fun connect(pairDecisionTimeoutMs: Long, autoApprovePairing: Boolean = false,
+                        taskMove: TaskMove? = null) {
         serverSocket = ServerSocket(0)
         val accept = Thread {
             val s = serverSocket.accept()
@@ -53,6 +55,8 @@ class SessionTest {
                 titleObserver = { topApp },
                 taskPresence = { taskPresent },
                 clipboard = platform,
+                packages = null,
+                taskMove = taskMove,
                 now = { clock++ },
                 log = {},
                 handshakeTimeoutMs = 3_000,
@@ -68,6 +72,16 @@ class SessionTest {
         client = Socket("127.0.0.1", serverSocket.localPort)
         client.soTimeout = 5_000
         reader = FrameReader(client.getInputStream())
+    }
+
+    /** A canned task list; records the move calls. */
+    private class FakeTaskMove(var list: List<SystemTask>?, var moveResult: Boolean = true) : TaskMove {
+        val moves = CopyOnWriteArrayList<Pair<Int, Int>>()
+        override fun tasks(): List<SystemTask>? = list
+        override fun move(taskId: Int, displayId: Int): Boolean {
+            moves.add(taskId to displayId)
+            return moveResult
+        }
     }
 
     @After
@@ -709,6 +723,90 @@ class SessionTest {
         send(mapOf("t" to "link.open", "stream" to 3, "w" to 640, "h" to 480, "dpi" to 160, "url" to "geo:0,0?q=Lisbon"))
         readUntil("window.opened")
         assertEquals("launch_failed", readUntil("error")["code"])
+    }
+
+    // ---- task.continue -----------------------------------------------------
+
+    @Test
+    fun taskContinueMovesTheForegroundTaskAndGoesHome() {
+        val mover = FakeTaskMove(
+            listOf(
+                SystemTask(21, "com.android.systemui", null, 0, false, true),
+                SystemTask(30, "com.example.reader", "com.example.reader.Reader", 0, false, false),
+            ),
+        )
+        reconnectWith(mover)
+        send(mapOf("t" to "task.continue", "stream" to 4, "w" to 900, "h" to 600, "dpi" to 160))
+        val opened = readUntil("window.opened")
+        assertEquals("moved", opened["started"])
+        await { mover.moves.isNotEmpty() }
+        assertEquals(listOf(30 to platform.opens.first().displayId), mover.moves)
+        // The move is the handoff; the fallback launch must not also fire.
+        assertTrue(platform.launches.isEmpty())
+        // The phone's own screen returns home (KEYCODE_HOME on display 0).
+        await { platform.keys.isNotEmpty() }
+        assertEquals(0, platform.keys.first().displayId)
+        assertEquals(Session.KEYCODE_HOME, platform.keys.first().keycode)
+    }
+
+    @Test
+    fun taskContinueRelaunchesFreshWhenTheMoveIsRefused() {
+        val mover = FakeTaskMove(listOf(SystemTask(31, "com.example.reader", null, 0, false, false)), moveResult = false)
+        reconnectWith(mover)
+        send(mapOf("t" to "task.continue", "stream" to 5, "w" to 900, "h" to 600, "dpi" to 160))
+        val opened = readUntil("window.opened")
+        assertEquals("fresh", opened["started"])
+        await { platform.launches.isNotEmpty() }
+        assertEquals("com.example.reader", platform.launches.first().pkg)
+        // Not moved: the phone's own screen still shows the app, no home press.
+        assertTrue(platform.keys.none { it.keycode == Session.KEYCODE_HOME })
+    }
+
+    @Test
+    fun taskContinueWithNothingContinuableAnswersNothingToContinue() {
+        val mover = FakeTaskMove(
+            listOf(
+                SystemTask(21, "com.android.systemui", null, 0, false, true),
+                SystemTask(22, Session.OWN_PACKAGE, null, 0, false, false),
+                SystemTask(23, "com.android.launcher3", null, 0, true, false),
+            ),
+        )
+        reconnectWith(mover)
+        send(mapOf("t" to "task.continue", "stream" to 6, "w" to 900, "h" to 600, "dpi" to 160))
+        val error = readUntil("error")
+        assertEquals("nothing_to_continue", error["code"])
+        assertEquals(6L, error["stream"])
+        assertTrue(platform.opens.isEmpty())
+        assertTrue(mover.moves.isEmpty())
+    }
+
+    @Test
+    fun taskContinueWithoutTheSeamAnswersNotAvailable() {
+        reconnectWith(null)
+        send(mapOf("t" to "task.continue", "stream" to 7, "w" to 900, "h" to 600, "dpi" to 160))
+        assertEquals("not_available", readUntil("error")["code"])
+    }
+
+    @Test
+    fun taskContinueKeepsTheStreamsWatchAliveLikeOtherWindows() {
+        val mover = FakeTaskMove(listOf(SystemTask(40, "com.example.reader", null, 0, false, false)))
+        reconnectWith(mover)
+        send(mapOf("t" to "task.continue", "stream" to 8, "w" to 480, "h" to 320, "dpi" to 160))
+        readUntil("window.opened")
+        // The window's subject follows the top app on its display, like every window.
+        topApp = TopApp("com.example.reader", "Reader")
+        val title = readUntil("window.title")
+        assertEquals(8L, title["stream"])
+        assertEquals("Reader", title["label"])
+    }
+
+    /** Tears down the current session, reconnects with [taskMove]. */
+    @Suppress("SameParameterValue")
+    private fun reconnectWith(taskMove: TaskMove?) {
+        runCatching { client.close() }
+        runCatching { serverSocket.close() }
+        connect(pairDecisionTimeoutMs = 30_000, taskMove = taskMove)
+        addAndAuthenticate()
     }
 
     private companion object {

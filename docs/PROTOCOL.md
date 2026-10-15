@@ -157,6 +157,7 @@ Mac → phone (after `welcome`):
 | `window.quality` | `stream`, `bitrate` (bps, optional), `maxFps` (optional) | live encoder quality; optional, the phone may ignore it |
 | `link.open` | `stream`, `w`, `h`, `dpi`, `url` | like `window.open`, but the phone starts `ACTION_VIEW` for `url` on the new display and Android picks the app; see "Links" |
 | `window.launch` | `stream`, `pkg` (+`activity`) | launch an app onto an existing window's display (phone mode) |
+| `task.continue` | `stream`, `w`, `h`, `dpi` | "Continue on Mac" (docs/design/handoff.md): open a virtual display for [stream] like `window.open` and move the app that is in the foreground on the phone's own screen onto it, keeping the task. On success `window.opened` (see below) with `"started":"moved"`; when the move is refused the package is relaunched on the display instead and `started` is `"fresh"`; when nothing continuable runs in the foreground the phone answers `error code nothing_to_continue` and opens nothing |
 | `nav` | `stream`, `action`: `back`/`home`/`recents` | back = KEYCODE_BACK on that display; home/recents meaningful in phone mode |
 | `text` | `stream`, `text` | type text into the focused field of that display |
 | `clip.set` | `text` | plain-text clipboard, either direction; see "Clipboard sync" |
@@ -173,7 +174,7 @@ Phone → Mac:
 | `clip.set` | `text` | plain-text clipboard, either direction; see "Clipboard sync" |
 | `apps` | `apps`: `[{"pkg","label","activity"}]` — launchable activities, sorted by label |
 | `icon` | `pkg`, `png` (base64, 96×96 px) |
-| `window.opened` | `stream`, `displayId`, `w`, `h` |
+| `window.opened` | `stream`, `displayId`, `w`, `h` — `started`: `"moved"` (default; the task the display shows was moved to it, state kept) or `"fresh"` (the phone couldn't move the task and relaunched the same package; the app's state may be lost) |
 | `window.closed` | `stream`, `reason` (`requested`/`app_exited`/`error`) |
 | `window.title` | `stream`, `label`, `pkg` — top app changed on that display (phone mode) |
 | `state` | `locked`: bool, `battery`: int, `charging`: bool — sent on change |
@@ -270,7 +271,7 @@ Only the phone sends these; the Mac never answers them.
 
 `{"t":"error","code":...}` codes: `busy` (another session is active; sent instead of
 `challenge`, then close), `auth_failed`, `pair_denied`, `version`, `protocol` (message not
-allowed in the current state; then close), `pair_timeout` (nobody answered the pairing prompt in 120 s; then close), `no_stream` (unknown `stream`), `launch_failed`, `bad_url` (a `link.open` URL that is not allowed).
+allowed in the current state; then close), `pair_timeout` (nobody answered the pairing prompt in 120 s; then close), `no_stream` (unknown `stream`), `launch_failed`, `bad_url` (a `link.open` URL that is not allowed), `bad_size` (`task.continue` without w/h), `not_available` (the phone can't report its foreground app, e.g. no task manager access), `nothing_to_continue` (the foreground is our app, the launcher/home or SystemUI).
 Oversized frames close the session without a reply.
 
 ## Versioning
