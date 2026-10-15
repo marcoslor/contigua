@@ -48,11 +48,9 @@ phone stays locked**. LAN only. Open source.
    - `ALWAYS_UNLOCKED` keeps apps (not the keyguard) on the VD while the phone
      is locked. This is the whole "locked phone" feature.
    - Display IME policy = HIDE (no soft keyboard on the VD; Mac keyboard types).
-4. **Phone mode** = a phone-aspect VD showing **PocketDeck's own launcher
-   activity** (app grid + search, `dev.pocketdeck.launcher`) — not the system
-   launcher (that needs decorations → #6007). Apps launched from it open on the
-   same display. Home = relaunch our launcher on that display. Mirroring the
-   physical screen is out of scope for v0 (it would require unlocking).
+4. **Phone mode** = a mirror of the phone's own screen (display 0), at its
+   aspect, following rotation; input and Back/Home/Recents go to display 0.
+   The mirror never touches power or the keyguard (docs/design/phone-mirror.md).
 5. **Mac rendering:** compressed H.264 → `CMSampleBuffer` →
    `AVSampleBufferDisplayLayer` with `DisplayImmediately`. No CPU readback, no
    `CGImage`/`NSImage`, no `draw(_:)`. (The old client's VT→CIImage→CGImage→
@@ -111,7 +109,6 @@ android/                 Gradle project, single :app module (dev.pocketdeck)
                          AppLauncher, Power, PanelPower (panel off through
                          SurfaceFlinger), DisplayProbe, Hidden (reflection cache),
                          ShellContext
-    launcher/            LauncherActivity (phone mode)
     proto/               Frame codec (mirrors docs/PROTOCOL.md)
 macos/                   SwiftPM package (macOS 26+) → PocketDeck.app (scripts/bundle.sh)
   Sources/PocketDeck/    App, Discovery, Session, Protocol, WindowManager,

@@ -148,7 +148,7 @@ Mac → phone (after `welcome`):
 | `ping` | `ts` | phone replies `pong` with same `ts` |
 | `apps.list` | — | phone replies `apps` |
 | `apps.icon` | `pkg` | phone replies `icon` |
-| `window.open` | `stream`, `w`, `h`, `dpi`, and `pkg` (+ optional `activity`) **or** `"mode":"phone"` | create VD + encoder, launch app (or the PocketDeck launcher for phone mode) on it |
+| `window.open` | `stream`, `w`, `h`, `dpi`, and `pkg` (+ optional `activity`) **or** `"mode":"phone"` | create VD + encoder, launch app on it; `mode: phone` mirrors display 0 instead (`window.opened` has `displayId` 0 and the size at the phone screen's aspect inside `w`×`h`; a rotation sends a new VIDEO_CONFIG with the turned size; error `mirror_unavailable` if the phone can't) |
 | `window.resize` | `stream`, `w`, `h`, `dpi` | resize VD + reconfigure encoder; phone sends new VIDEO_CONFIG |
 | `window.close` | `stream` | tear down that VD/encoder |
 | `window.pause` | `stream` | Mac window hidden/minimized/occluded: stop encoding (keep VD + app alive) |
@@ -158,7 +158,7 @@ Mac → phone (after `welcome`):
 | `link.open` | `stream`, `w`, `h`, `dpi`, `url` | like `window.open`, but the phone starts `ACTION_VIEW` for `url` on the new display and Android picks the app; see "Links" |
 | `window.launch` | `stream`, `pkg` (+`activity`) | launch an app onto an existing window's display (phone mode) |
 | `task.continue` | `stream`, `w`, `h`, `dpi` | "Continue on Mac" (docs/design/handoff.md): open a virtual display for [stream] like `window.open` and move the app that is in the foreground on the phone's own screen onto it, keeping the task. On success `window.opened` (see below) with `"started":"moved"`; when the move is refused the package is relaunched on the display instead and `started` is `"fresh"`; when nothing continuable runs in the foreground the phone answers `error code nothing_to_continue` and opens nothing |
-| `nav` | `stream`, `action`: `back`/`home`/`recents` | back = KEYCODE_BACK on that display; home/recents meaningful in phone mode |
+| `nav` | `stream`, `action`: `back`/`home`/`recents` | back = KEYCODE_BACK on that display; home/recents (HOME / APP_SWITCH on display 0) only in phone mode |
 | `text` | `stream`, `text` | type text into the focused field of that display |
 | `clip.set` | `text` | plain-text clipboard, either direction; see "Clipboard sync" |
 | `apk.install` | `id`, `files`: `[{"name","size","sha256"}]` | start an APK install; `APK_DATA` frames follow; see "APK install" |

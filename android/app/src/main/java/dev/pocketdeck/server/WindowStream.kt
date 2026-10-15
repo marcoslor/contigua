@@ -338,6 +338,9 @@ internal class WindowStream(
         width = size.w
         height = size.h
         baseDpi = dpi
+        // A mirror's projection is fixed when it is created; it is rebuilt at
+        // the new size when the prepared encoder is attached.
+        if (mirrorScreen != null) return
         runCatching { vd?.resize(size.w, size.h, dpi) }
             .onFailure { log("stream $stream: VirtualDisplay.resize failed: ${it.message}") }
     }
@@ -348,7 +351,11 @@ internal class WindowStream(
         prepared = null
         previous = encoder
         encoder = next.codec
-        runCatching { vd?.setSurface(next.surface) }
+        if (mirrorScreen != null) {
+            runCatching { vd?.release() }
+            vd = runCatching { createMirror(width, height, next.surface) }
+                .onFailure { log("stream $stream: mirror rebuild failed: ${it.message}") }.getOrNull()
+        } else runCatching { vd?.setSurface(next.surface) }
             .onFailure { log("stream $stream: VirtualDisplay.setSurface failed: ${it.message}") }
         guard.onAttached(SystemClock.elapsedRealtime())
         startDrain(next.codec)
