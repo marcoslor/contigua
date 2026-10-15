@@ -245,21 +245,75 @@ extension String {
 // MARK: - The pinned phone (the pin store the TLS layer feeds from)
 
 /// One phone's pin record (§6: "the pin store feeds `trustRoots` per phone").
-/// `-fp` hex IS the pin identity.json carries; the cert PEM is the same
-/// self-signed cert the phone presents, kept so the TLS layer can verify
-/// against it (chain = that cert, no other). Persistence is the pairing state
-/// machine's job (step 7); this type is the in-memory record.
+/// `-fp` hex is the fingerprint the pin store carries; the cert PEM is the same
+/// self-signed cert the phone presented, kept so the TLS layer can build the
+/// trust chain. Persistence is `pins.json` (0600); the in-memory store
+/// write-through saves on every change (step 7).
 struct PinnedPhoneV2: Codable, Equatable {
     var deviceId: String
     var phoneFingerprintHex: String
     var certPem: String
 }
 
-/// deviceId → pin record. In-memory until the pairing state machine wires it
-/// (step 7).
+extension PhonePinStoreV2 {
+    /// pins.json in the profile's support folder, next to identity.json.
+    static func fileUrl(in profile: Profile) -> URL {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        return base.appendingPathComponent(profile.supportDirectoryName, isDirectory: true)
+            .appendingPathComponent("pins.json")
+    }
+}
+
+enum PhonePinsFileV2 {
+    /// Loads the store's records; an unreadable file means none.
+    static func load(url: URL) -> [PinnedPhoneV2] {
+        guard let data = try? Data(contentsOf: url),
+              let list = try? JSONDecoder().decode([PinnedPhoneV2].self, from: data) else { return [] }
+        return list
+    }
+
+    /// 0600 atomic write like identity.json (pins are phone→trust data).
+    @discardableResult
+    static func save(_ records: [PinnedPhoneV2], url: URL) -> Bool {
+        let fm = FileManager.default
+        let dir = url.deletingLastPathComponent()
+        do {
+            try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+            try fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: dir.path)
+            let data = try JSONEncoder().encode(records)
+            let tmp = dir.appendingPathComponent(".\(url.lastPathComponent).\(UUID().uuidString)")
+            guard fm.createFile(atPath: tmp.path, contents: data, attributes: [.posixPermissions: 0o600]) else {
+                return false
+            }
+            guard rename(tmp.path, url.path) == 0 else {
+                try? fm.removeItem(at: tmp)
+                return false
+            }
+            return true
+        } catch {
+            Log.app.error("pins not saved: \(error.localizedDescription, privacy: .public)")
+            return false
+        }
+    }
+}
+
+/// deviceId → pin record, write-through to `pins.json` (0600) when the owner
+/// supplies the file URL. In-memory only otherwise (tests).
 final class PhonePinStoreV2 {
     private var phones: [String: PinnedPhoneV2] = [:]
     private let lock = NSLock()
+    private let fileUrl: URL?
+
+    init(fileUrl: URL? = nil) {
+        self.fileUrl = fileUrl
+        if let fileUrl {
+            for record in PhonePinsFileV2.load(url: fileUrl) { phones[record.deviceId] = record }
+        }
+    }
+    private static func saveAll(_ phones: [String: PinnedPhoneV2], fileUrl: URL?) {
+        guard let fileUrl else { return }
+        _ = PhonePinsFileV2.save(Array(phones.values), url: fileUrl)
+    }
 
     func record(for deviceId: String) -> PinnedPhoneV2? {
         lock.lock(); defer { lock.unlock() }
@@ -274,12 +328,32 @@ final class PhonePinStoreV2 {
     func store(_ record: PinnedPhoneV2) {
         lock.lock(); defer { lock.unlock() }
         phones[record.deviceId] = record
+        Self.saveAll(phones, fileUrl: fileUrl)
     }
 
     /// §7: the old pin is deleted on successful re-pair; `forget` removes it.
     func forget(deviceId: String) {
         lock.lock(); defer { lock.unlock() }
-        phones.removeValue(forKey: deviceId)
+        guard phones.removeValue(forKey: deviceId) != nil else { return }
+        Self.saveAll(phones, fileUrl: fileUrl)
+    }
+
+    /// Whether a record's fingerprint is the one identity.json mirrors.
+    func isMirrored(_ deviceId: String, pin mirror: String) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        return phones[deviceId]?.phoneFingerprintHex == mirror
+    }
+
+    /// Every record's fingerprint.
+    func fingerprints() -> [String] {
+        lock.lock(); defer { lock.unlock() }
+        return phones.values.map(\.phoneFingerprintHex).sorted()
+    }
+
+    func clear() {
+        lock.lock(); defer { lock.unlock() }
+        phones.removeAll()
+        Self.saveAll(phones, fileUrl: fileUrl)
     }
 
     var all: [PinnedPhoneV2] {
@@ -374,7 +448,8 @@ final class TlsConnectorV2: @unchecked Sendable {
     func connect(host: String, port: Int,
                  onFrame: @escaping @Sendable (Frame) -> Void,
                  onError: @escaping @Sendable (String) -> Void,
-                 onPeerPin: (@Sendable (String) -> Void)? = nil) throws -> (channel: Channel, exporter: () -> [UInt8]?, send: @Sendable (Frame) -> Void) {
+                 onPeerPin: (@Sendable (String) -> Void)? = nil,
+                 onPeerCert: (@Sendable (NIOSSLCertificate) -> Void)? = nil) throws -> (channel: Channel, exporter: () -> [UInt8]?, send: @Sendable (Frame) -> Void) {
         // Throws TlsV2Error.noPin / .pinMismatch / .incompleteIdentity BEFORE
         // any dial when the pin rules cannot be met (§8 step 3 gate).
         let tlsConfig = try configuration()
@@ -382,12 +457,14 @@ final class TlsConnectorV2: @unchecked Sendable {
         let capture = keyLog
         let sslHandler = try NIOSSLClientHandler(context: context, serverHostname: nil)
         let learn = onPeerPin
+        let learnCert = onPeerCert
         do {
             let channel = try ClientBootstrap(group: group)
                 .connect(to: try SocketAddress(ipAddress: host, port: port))
                 .flatMap { ch -> EventLoopFuture<Channel> in ch.pipeline.addHandler(sslHandler).map { _ in ch } }
                 .flatMap { ch -> EventLoopFuture<Channel> in
-                    ch.pipeline.addHandler(HandshakeLearnHandler(handshakeCompleted: { fps in learn?(fps) })).map { _ in ch }
+                    ch.pipeline.addHandler(HandshakeLearnHandler(handshakeCompleted: { fps in learn?(fps) },
+                                                              peerCertificate: { cert in learnCert?(cert) })).map { _ in ch }
                 }
                 .flatMap { ch -> EventLoopFuture<Channel> in
                     ch.pipeline.addHandler(FrameDeliveryHandler(onFrame: onFrame, onError: onError)).map { _ in ch }
@@ -414,10 +491,13 @@ final class HandshakeLearnHandler: ChannelInboundHandler, @unchecked Sendable {
     typealias InboundIn = ByteBuffer
 
     private let handshakeCompleted: @Sendable (String) -> Void
+    private let peerCertificate: @Sendable (NIOSSLCertificate) -> Void
     private var fired = false
 
-    init(handshakeCompleted: @escaping @Sendable (String) -> Void) {
+    init(handshakeCompleted: @escaping @Sendable (String) -> Void,
+         peerCertificate: @escaping @Sendable (NIOSSLCertificate) -> Void = { _ in }) {
         self.handshakeCompleted = handshakeCompleted
+        self.peerCertificate = peerCertificate
     }
 
     func userInboundEventTriggered(context: ChannelHandlerContext, event: Any) {
@@ -427,6 +507,9 @@ final class HandshakeLearnHandler: ChannelInboundHandler, @unchecked Sendable {
             // NEVER block the event loop with a synchronous pipeline lookup:
             // the future form resolves on the same loop, cleanly.
             _ = context.pipeline.handler(type: NIOSSLHandler.self).whenSuccess { handler in
+                if let cert = handler.peerCertificate {
+                    self.peerCertificate(cert)
+                }
                 if let peerFp = handler.peerCertificate.flatMap({ PinCheckV2.pointFingerprint(cert: $0) }) {
                     report(Data(peerFp).hexString)
                 }
@@ -478,6 +561,14 @@ final class FrameDeliveryHandler: ChannelInboundHandler, @unchecked Sendable {
 
     func errorCaught(context: ChannelHandlerContext, error: Error) {
         onError("tls: \(String(describing: error))")
+        context.close(promise: nil)
+    }
+
+    func channelInactive(context: ChannelHandlerContext) {
+        // The phone hung up (pair_denied close, phone restart, network loss):
+        // the session must hear about it, not sit silent like v1's receive loop
+        // never did.
+        onError("closed-by-peer")
         context.close(promise: nil)
     }
 }

@@ -80,6 +80,7 @@ class SessionAudioFollowTest {
                 log = {},
                 handshakeTimeoutMs = 3_000,
                 audioCapture = capture,
+                tlsView = TlsV2Fixture.view,
             )
             session = sess
             sess.run()
@@ -125,12 +126,8 @@ class SessionAudioFollowTest {
     }
 
     private fun authenticate() {
-        val keyHex = Crypto.toHex(Crypto.randomBytes(32))
-        platform.clients.add(PairedClient("c1", "MacBook", keyHex))
-        send(mapOf("t" to "hello", "v" to 1, "clientId" to "c1", "name" to "MacBook"))
-        val nonce = readUntil("challenge")["nonce"] as String
-        val mac = Crypto.hmacSha256Hex(Crypto.fromHex(keyHex), nonce.toByteArray(Charsets.UTF_8))
-        send(mapOf("t" to "auth", "mac" to mac))
+        platform.clients.add(PairedClient("c1", "MacBook", TlsV2Fixture.MAC_FP_HEX))
+        send(mapOf("t" to "hello", "v" to 2, "clientId" to "c1", "name" to "MacBook"))
         readUntil("welcome")
     }
 

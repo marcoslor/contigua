@@ -53,15 +53,22 @@ object ShellTls {
 
             val trustStore = KeyStore.getInstance("PKCS12")
             trustStore.load(null, PASSWORD.toCharArray())
-            if (trustedPeerCertPem != null && trustedPeerCertPem.isNotBlank()) {
+            val tm: Array<javax.net.ssl.TrustManager> = if (trustedPeerCertPem != null && trustedPeerCertPem.isNotBlank()) {
                 val peerCert = certFactory.generateCertificate(ByteArrayInputStream(trustedPeerCertPem.toByteArray(Charsets.UTF_8)))
                 trustStore.setCertificateEntry("peer", peerCert)
+                val tmf = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm())
+                tmf.init(trustStore)
+                tmf.trustManagers
+            } else {
+                arrayOf(object : javax.net.ssl.X509TrustManager {
+                    override fun checkClientTrusted(chain: Array<java.security.cert.X509Certificate>?, authType: String?) {}
+                    override fun checkServerTrusted(chain: Array<java.security.cert.X509Certificate>?, authType: String?) {}
+                    override fun getAcceptedIssuers(): Array<java.security.cert.X509Certificate> = emptyArray()
+                })
             }
-            val tmf = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm())
-            tmf.init(trustStore)
 
             SSLContext.getInstance("TLS").apply {
-                init(kmf.keyManagers, tmf.trustManagers, SecureRandom())
+                init(kmf.keyManagers, tm, SecureRandom())
             }
         } catch (e: Throwable) {
             null

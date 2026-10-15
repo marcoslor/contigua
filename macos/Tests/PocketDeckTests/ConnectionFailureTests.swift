@@ -6,8 +6,12 @@ import XCTest
 final class ConnectionFailureTests: XCTestCase {
 
     func testPhoneErrorCodesReadAsTheirMeaning() {
-        XCTAssertEqual(ConnectionFailure.message(for: "auth_failed"),
+        XCTAssertEqual(ConnectionFailure.message(for: "no-pin"),
                        "Pairing was removed on the phone, pair again")
+        XCTAssertEqual(ConnectionFailure.message(for: "bad_pin"),
+                       "This phone's identity changed. Pair again.")
+        XCTAssertEqual(ConnectionFailure.message(for: "pin-mismatch"),
+                       "This phone's identity changed. Pair again.")
         XCTAssertEqual(ConnectionFailure.message(for: "busy"), "Another Mac is connected")
         XCTAssertEqual(ConnectionFailure.message(for: "pair_denied"), "Pairing was denied")
         XCTAssertEqual(ConnectionFailure.message(for: "version"),
@@ -19,7 +23,7 @@ final class ConnectionFailureTests: XCTestCase {
     }
 
     func testEveryPhoneErrorCodeInTheProtocolHasAMessage() {
-        for code in ["busy", "auth_failed", "pair_denied", "pair_timeout", "version", "protocol", "no_stream", "launch_failed"] {
+        for code in ["busy", "bad_pin", "pair_denied", "pair_timeout", "version", "protocol", "no_stream", "launch_failed"] {
             XCTAssertNotNil(ConnectionFailure.message(for: code), code)
         }
     }
@@ -42,7 +46,7 @@ final class ConnectionFailureTests: XCTestCase {
     }
 
     func testTransientFailuresRetry() {
-        for reason in ["closed-by-peer", "timeout", "receive", "failed", "busy", "auth_failed"] {
+        for reason in ["closed-by-peer", "timeout", "receive", "failed", "busy", "tls", "no-pin"] {
             XCTAssertTrue(ConnectionFailure.retriesAutomatically(reason), reason)
         }
     }
@@ -51,6 +55,8 @@ final class ConnectionFailureTests: XCTestCase {
         XCTAssertFalse(ConnectionFailure.retriesAutomatically("pair_denied"))
         XCTAssertFalse(ConnectionFailure.retriesAutomatically("pair_timeout"))
         XCTAssertFalse(ConnectionFailure.retriesAutomatically("version"))
+        XCTAssertFalse(ConnectionFailure.retriesAutomatically("pin-mismatch"))
+        XCTAssertFalse(ConnectionFailure.retriesAutomatically("bad_pin"))
         XCTAssertFalse(ConnectionFailure.retriesAutomatically(ConnectionFailure.identityMismatch))
     }
 }

@@ -114,9 +114,8 @@ final class PhoneNicknamesTests: XCTestCase {
 final class WindowManagerPhoneTitleTests: XCTestCase {
     /// "WhatsApp (Nicky)": titles append the display name; a change retitles.
     func testTitlesCarryThePhoneName() {
-        let keys = PairKeyStore(defaults: UserDefaults(suiteName: "wm-tests-\(UUID().uuidString)")!, keys: .scratch())
         let manager = WindowManager(session: Session(endpoint: .hostPort(host: "127.0.0.1", port: 1),
-                                                     knownDeviceId: nil, clientId: "", keyStore: keys))
+                                                     knownDeviceId: nil, clientId: ""))
         XCTAssertEqual(manager.titled("WhatsApp"), "WhatsApp", "no name: the bare subject")
         manager.setPhoneName("Nicky")
         XCTAssertEqual(manager.titled("WhatsApp"), "WhatsApp (Nicky)")

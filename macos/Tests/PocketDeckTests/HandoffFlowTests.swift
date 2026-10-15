@@ -1,65 +1,61 @@
 // "Continue on Mac" (docs/ROADMAP.md #9): the command only does anything with
 // a live connection, the phone's answer puts the window up (started fresh or
 // moved), and `nothing_to_continue` removes the never-opened window and shows
-// the notice.
+// the notice. v2 peer = TLS fake phone with a scripted §4 pairing.
 
-import Network
 import XCTest
 @testable import PocketDeck
 
 @MainActor
 final class HandoffFlowTests: XCTestCase {
     private var server: FakeServer!
+    private var brain: FakeV2PhoneBrain!
     private var controller: ConnectionController!
     private var profile: Profile!
-    private var received = ""
+    private var received: [JSONMessage] = []
 
     override func setUp() async throws {
         profile = Profile(name: "unit-handoff-\(UUID().uuidString.prefix(8).lowercased())")!
-        server = try FakeServer()
-        var challenged = false
-        server.onData = { [server, weak self] connection, data in
-            self?.received = (self?.received ?? "") + String(decoding: data, as: UTF8.self)
-            guard let self, !challenged, self.received.contains("\"hello\"") else { return }
-            challenged = true
-            server?.send(connection, JSONFrame.encode(["t": "challenge",
-                                                       "nonce": String(repeating: "a", count: 32),
-                                                       "id": "phone-1"]))
-        }
         controller = ConnectionController(options: LaunchOptions.parse(["PocketDeck"]), profile: profile)
         controller.connectTimeout = 0.4
         controller.pairingTimeout = 30
+        server = try FakeServer(trustingClientPem: controller.identity.certPem)
+        brain = FakeV2PhoneBrain(identity: server.phoneIdentity, deviceId: "phone-1")
+        brain.autoAllow = true
+        server.brain = brain
+        server.onFrame = { [weak self] _, frame in
+            guard frame.messageType == .json,
+                  let message = JSONFrame.decode(payload: frame.payload) else { return }
+            self?.received.append(message)
+        }
     }
 
     override func tearDown() async throws {
         controller.shutdown()
         server.stop()
         if let suite = profile.defaultsSuiteName { profile.defaults.removePersistentDomain(forName: suite) }
-        try? FileManager.default.removeItem(at: profile.pairKeys.url.deletingLastPathComponent())
+        try? FileManager.default.removeItem(at: profile.pairKeysFileUrl.deletingLastPathComponent())
     }
 
     private func spin(until condition: () -> Bool, timeout: TimeInterval = 5) -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
-        while !condition(), Date() < deadline { RunLoop.main.run(until: Date().addingTimeInterval(0.02)) }
+        while !condition(), Date() < deadline { RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.02)) }
         return condition()
     }
 
     private func phone(_ json: [String: Any]) {
         guard let connection = try? XCTUnwrap(server.accepted.first) else { return }
-        server.send(connection, JSONFrame.encode(json))
+        connection.sendJSON(json)
     }
 
-    /// connectManually -> the session pairs (the app is a debug build on the
-    /// real phone, so Allow is automatic) -> `welcome` -> ready.
+    /// connectManually -> the session pairs (the fake phone's Allow is on) ->
+    /// `welcome` -> ready.
     private func goOnline() {
-        received = ""
+        received = []
         controller.connectManually(host: "127.0.0.1", port: server.port)
-        XCTAssertTrue(spin { received.contains("pair.request") }, "never asked to pair: \(controller.link)")
-        phone(["t": "pair.ok", "key": String(repeating: "ab", count: 32)])
-        phone(["t": "welcome", "device": [
-            "id": "phone-1", "name": "Pixel", "model": "Pixel", "sdk": 36,
-            "screen": ["w": 1080, "h": 2340, "dpi": 450], "locked": true]])
+        XCTAssertTrue(spin { self.brain.sawPairRequest }, "never asked to pair: \(controller.link)")
         XCTAssertTrue(spin { controller.link.isOnline }, "not online: \(controller.link)")
+        XCTAssertTrue(spin { received.contains { $0.t == "hello" } }, "hello never reached the phone")
     }
 
     private var handoffStream: UInt32? {
@@ -87,10 +83,10 @@ final class HandoffFlowTests: XCTestCase {
         goOnline()
         controller.continueOnMac()
         let stream = try XCTUnwrap(waitStream(), "no handoff window online")
-        XCTAssertTrue(spin { received.contains("task.continue") }, "task.continue never reached the phone")
+        XCTAssertTrue(spin { received.contains { $0.t == "task.continue" } }, "task.continue never reached the phone")
         controller.windows.controller(for: stream)?.window?.performClose(nil)
         XCTAssertTrue(spin { handoffStream == nil })
-        XCTAssertTrue(spin { received.contains("window.close") }, "window.close never reached the phone")
+        XCTAssertTrue(spin { received.contains { $0.t == "window.close" } }, "window.close never reached the phone")
     }
 
     /// `started: "fresh"`: the phone relaunched the package (the move was

@@ -15,6 +15,11 @@ import java.net.Socket
 import java.net.SocketTimeoutException
 import java.util.concurrent.atomic.AtomicBoolean
 
+import dev.pocketdeck.e2ee.KeyPin
+import dev.pocketdeck.e2ee.PairingCodeV2
+import dev.pocketdeck.e2ee.TlsExporter
+import javax.net.ssl.SSLSocket
+import java.security.cert.X509Certificate
 /**
  * One Mac ⇄ phone session, multiplexed over a single TCP socket.
  *
@@ -53,14 +58,46 @@ class Session(
     private val exitPollIntervalMs: Long = 2_000,
     maxDeltaBytesPerStream: Int = SendQueue.DEFAULT_MAX_DELTA_BYTES,
     private val autoApprovePairing: Boolean = false,
+    private val selfCertProvider: () -> String = { "" },
+    /** The TLS session view: the Mac's point fingerprint and the exporter. Production
+     * derives both from this session's SSLSocket; the JVM tests inject deterministic
+     * values (docs/design/e2ee.md §4b: the HKDF math is pinned without an engine). */
+    private val tlsView: TlsView? = null,
     private val audioCapture: AudioCaptureLayer? = null,
     private val notifyShared: () -> Boolean = { false },
     private val mediaCommand: ((String) -> Unit)? = null,
     private val notifyForward: ((Boolean) -> Unit)? = null,
 ) : VideoSink, AudioSink {
 
-    private enum class Phase { HELLO, AUTH, READY }
+    /** What the TLS layer knows about this connection (§1/§4b). */
+    class TlsView(
+        val peerFingerprint: () -> ByteArray = { ByteArray(0) },
+        /** The phone's own fingerprint; null falls back to [selfCertProvider]. */
+        val selfFingerprint: (() -> ByteArray)? = null,
+        val exporter: () -> ByteArray? = { null },
+    ) {
+        companion object {
+            /** The real view: read both from the platform SSLSocket. */
+            fun from(socket: Socket): TlsView = TlsView(
+                peerFingerprint = {
+                    val s = socket as? SSLSocket ?: return@TlsView ByteArray(0)
+                    runCatching {
+                        val cert = s.session.peerCertificates.firstOrNull() as? X509Certificate
+                            ?: return@runCatching ByteArray(0)
+                        val pub = cert.publicKey as? java.security.interfaces.ECPublicKey
+                            ?: return@runCatching ByteArray(0)
+                        KeyPin.fingerprint(pub)
+                    }.getOrDefault(ByteArray(0))
+                },
+                exporter = {
+                    val s = socket as? SSLSocket ?: return@TlsView null
+                    TlsExporter.tryExportKeyingMaterial(s)
+                },
+            )
+        }
+    }
 
+    private enum class Phase { HELLO, PAIR, READY }
     private class StreamState(val stream: Int, val displayId: Int, var size: IntSize) {
         var paused = false
         var content: WindowContent? = null
@@ -90,11 +127,13 @@ class Session(
 
     private var clientId = ""
     private var clientName = "Mac"
-    private var nonce = ""
 
-    /** Guarded by [pairLock]: the open pairing request and whether it was already settled. */
+    /** The v2 pairing room; read/written on the reader thread only. */
     private var pendingPairId: String? = null
     private var pairSettled = false
+    private var pendingNp: ByteArray? = null
+    private var pendingMacFp = ByteArray(32)
+    private var pendingPhoneFp = ByteArray(32)
     private var currentMacName: String? = null
 
     private val loggedUnknown = HashSet<String>()
@@ -242,10 +281,10 @@ class Session(
         }
         when (phase) {
             Phase.HELLO -> if (t == "hello") onHello(obj) else rejectProtocol("expected hello, got '$t'")
-            Phase.AUTH -> when (t) {
+            Phase.PAIR -> when (t) {
                 "hello" -> onHello(obj)
-                "auth" -> onAuth(obj)
                 "pair.request" -> onPairRequest()
+                "pair.nonce" -> onPairNonce(obj)
                 else -> rejectProtocol("expected handshake, got '$t'")
             }
             Phase.READY -> dispatch(obj, frame, t)
@@ -261,30 +300,24 @@ class Session(
         }
         clientId = Json.str(obj["clientId"]) ?: ""
         clientName = Json.str(obj["name"]) ?: "Mac"
-        nonce = Crypto.toHex(Crypto.randomBytes(16))
-        // `id` lets a Mac that connected by address pick the right stored key.
-        sendJson(mapOf("t" to "challenge", "nonce" to nonce, "id" to device.info().id))
-        phase = Phase.AUTH
-    }
-
-    private fun onAuth(obj: Map<String, Any?>) {
-        val mac = Json.str(obj["mac"]) ?: ""
+        // The iPad named itself by a stable id on the phone's memory; the TLS
+        // channel now has to prove it is still that Mac (a rotated cert means
+        // the Mac reinstalled: pair again — docs/design/e2ee.md §7).
         val client = store.snapshot().firstOrNull { it.clientId == clientId }
         if (client == null) {
-            sendError("auth_failed", "unknown client")
-            closeRequested = true
+            phase = Phase.PAIR
             return
         }
-        val key = try {
-            Crypto.fromHex(client.keyHex)
+        val peer = tlsFacts.peerFingerprint()
+        val stored = try {
+            hexToBytes(client.macFpHex)
         } catch (e: Exception) {
-            sendError("auth_failed", "bad stored key")
+            sendError("bad_pin", "bad stored pin")
             closeRequested = true
             return
         }
-        val expected = Crypto.hmacSha256Hex(key, nonce.toByteArray(Charsets.UTF_8))
-        if (!Crypto.constantTimeEquals(expected, mac.lowercase())) {
-            sendError("auth_failed", "bad mac")
+        if (peer.size != 32 || stored.size != 32 || !peer.contentEquals(stored)) {
+            sendError("bad_pin", "this Mac's certificate changed; pair again")
             closeRequested = true
             return
         }
@@ -292,6 +325,11 @@ class Session(
         welcome()
     }
 
+    /**
+     * `pair.request`: the phone STARTS the code pairing (§4 step 1): it commits
+     * to a fresh Np before the Mac releases its nonce, so a MITM can grind the
+     * code only with a prompt per attempt.
+     */
     private fun onPairRequest() {
         val id = Crypto.toHex(Crypto.randomBytes(8))
         synchronized(pairLock) {
@@ -302,23 +340,48 @@ class Session(
             pendingPairId = id
             pairSettled = false
         }
-        val code = "%06d".format((0..999999).random())
+        val np = Crypto.randomBytes(16)
+        pendingNp = np
+        pendingPhoneFp = tlsView?.selfFingerprint?.invoke() ?: selfFingerprintBytes()
+        pendingMacFp = tlsFacts.peerFingerprint()
         // A person decides on the phone while this thread only watches for the
-        // Mac going away, so no read timeout applies; the watchdog below bounds
-        // the wait instead.
+        // Mac going away, so no read timeout applies.
         runCatching { socket.soTimeout = 0 }
-        sendJson(mapOf("t" to "pair.code_shown", "code" to code))
-        if (autoApprovePairing) {
-            log("debug build: auto-approved pairing for $clientName")
-            synchronized(pairLock) { pairSettled = true }
-            completePairing()
-            return
-        }
-        runCatching { callback.onPairingRequest(id, clientName, code) }
+        val commit = PairingCodeV2.commit(np, pendingPhoneFp, pendingMacFp)
+        sendJson(mapOf("t" to "pair.commit", "c" to PairingCodeV2.hex(commit)))
+        phase = Phase.PAIR
         Thread({ expirePairing(id) }, "pocketdeck-pair-timeout").also {
             it.isDaemon = true
             it.start()
         }
+    }
+
+    private fun onPairNonce(obj: Map<String, Any?>) {
+        val id = pendingPairId ?: return onPairingMissingState()
+        val nmHex = Json.str(obj["n"]) ?: return onPairingMissingState()
+        val np = pendingNp ?: return onPairingMissingState()
+        val nmBytes = try {
+            hexToBytes(nmHex)
+        } catch (e: Exception) {
+            return onPairingMissingState()
+        }
+        if (nmBytes.size != 16) return onPairingMissingState()
+        // §4 steps 3-4: reveal what we committed to; both sides derive the code.
+        sendJson(mapOf("t" to "pair.reveal", "n" to PairingCodeV2.hex(np)))
+        val exporter = tlsFacts.exporter() ?: ByteArray(32)
+        val code = PairingCodeV2.code(exporter, pendingMacFp, pendingPhoneFp, nmBytes, np)
+        val codeStr = PairingCodeV2.codeHex(code)
+        log("pair code shown on the phone: $codeStr")
+        if (autoApprovePairing) {
+            synchronized(pairLock) { pairSettled = true }
+            completePairing()
+            return
+        }
+        runCatching { callback.onPairingRequest(id, clientName, codeStr) }
+    }
+
+    private fun onPairingMissingState() {
+        finishWithError("pair_commit", "no pending pairing")
     }
 
     private fun expirePairing(id: String) {
@@ -358,15 +421,45 @@ class Session(
         if (allow) completePairing() else finishWithError("pair_denied", "pairing denied")
     }
 
+    /** §4: `pair.ok` carries what each side pins; the phone keeps the Mac's. */
     private fun completePairing() {
-        val key = Crypto.randomBytes(32)
-        val keyHex = Crypto.toHex(key)
-        val client = PairedClient(clientId, clientName, keyHex)
+        val client = PairedClient(clientId, clientName, KeyPin.toHex(pendingMacFp))
         store.add(client)
         currentMacName = clientName
-        sendJson(mapOf("t" to "pair.ok", "key" to keyHex))
-        runCatching { callback.onPaired(clientId, clientName, keyHex) }
+        sendJson(mapOf(
+            "t" to "pair.ok",
+            "phoneFP" to KeyPin.toHex(pendingPhoneFp),
+            "macFP" to KeyPin.toHex(pendingMacFp),
+        ))
+        runCatching { callback.onPaired(clientId, clientName, client.macFpHex) }
         welcome()
+    }
+
+    private fun selfFingerprintBytes(): ByteArray {
+        val pem = selfCertProvider()
+        if (pem.isBlank()) return ByteArray(32)
+        return try {
+            val cf = java.security.cert.CertificateFactory.getInstance("X.509")
+            val cert = cf.generateCertificate(pem.byteInputStream()) as X509Certificate
+            val pub = cert.publicKey as java.security.interfaces.ECPublicKey
+            KeyPin.fingerprint(pub)
+        } catch (e: Throwable) {
+            ByteArray(32)
+        }
+    }
+
+    private val tlsFacts: TlsView get() = tlsView ?: TlsView()
+    // NB: `tlsFacts` forces the injected view; without one the production
+    // default reads the SSLSocket.
+
+    private fun hexToBytes(hex: String): ByteArray {
+        val clean = hex.trim().lowercase()
+        if (clean.length % 2 != 0) return ByteArray(0)
+        val out = ByteArray(clean.length / 2)
+        for (i in out.indices) {
+            out[i] = clean.substring(i * 2, i * 2 + 2).toInt(16).toByte()
+        }
+        return out
     }
 
     /** Sends [code], lets it flush, then ends the session. */
@@ -1217,7 +1310,7 @@ class Session(
     }
 
     companion object {
-        const val PROTOCOL_VERSION = 1
+        const val PROTOCOL_VERSION = 2
         const val OWN_PACKAGE = "dev.pocketdeck"
         const val PHONE_DISPLAY = 0
         const val KEYCODE_BACK = 4

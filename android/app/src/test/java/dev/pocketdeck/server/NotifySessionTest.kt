@@ -60,6 +60,7 @@ class NotifySessionTest {
                 handshakeTimeoutMs = 3_000,
                 pairDecisionTimeoutMs = 30_000,
                 autoApprovePairing = true,
+                tlsView = TlsV2Fixture.view,
                 notifyShared = { phoneShared },
                 mediaCommand = { action -> mediaCommands.add(action) },
                 notifyForward = { forward -> forwards.add(forward) },
@@ -131,10 +132,10 @@ class NotifySessionTest {
     }
 
     private fun authenticate() {
-        send(mapOf("t" to "hello", "v" to 1, "clientId" to "c1", "name" to "Mac"))
-        readUntil("challenge")
+        send(mapOf("t" to "hello", "v" to 2, "clientId" to "c1", "name" to "Mac"))
         send(mapOf("t" to "pair.request"))
-        // auto-approve: code shown, then pair.ok + welcome
+        readUntil("pair.commit")
+        send(mapOf("t" to "pair.nonce", "n" to "0".repeat(32)))
         readUntil("welcome")
     }
 

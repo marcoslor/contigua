@@ -1,6 +1,6 @@
 package dev.pocketdeck.server
 
-import dev.pocketdeck.proto.Crypto
+import dev.pocketdeck.e2ee.PairingCodeV2
 import dev.pocketdeck.proto.FrameReader
 import dev.pocketdeck.proto.Frames
 import dev.pocketdeck.proto.Json
@@ -63,6 +63,7 @@ class SessionTest {
                 pairDecisionTimeoutMs = pairDecisionTimeoutMs,
                 exitPollIntervalMs = 50,
                 autoApprovePairing = autoApprovePairing,
+                tlsView = TlsV2Fixture.view,
             )
             session = sess
             sess.run()
@@ -119,26 +120,25 @@ class SessionTest {
         error("never received '$t'")
     }
 
-    private fun hello(clientId: String, name: String): String {
-        send(mapOf("t" to "hello", "v" to 1, "clientId" to clientId, "name" to name))
-        return readUntil("challenge")["nonce"] as String
+    private fun hello(clientId: String, name: String) {
+        send(mapOf("t" to "hello", "v" to 2, "clientId" to clientId, "name" to name))
     }
 
-    private fun authenticate(clientId: String, keyHex: String, name: String = "MacBook"): Map<String, Any?> {
-        val nonce = hello(clientId, name)
-        val mac = Crypto.hmacSha256Hex(Crypto.fromHex(keyHex), nonce.toByteArray(Charsets.UTF_8))
-        send(mapOf("t" to "auth", "mac" to mac))
+    private fun authenticate(clientId: String, name: String = "MacBook"): Map<String, Any?> {
+        hello(clientId, name)
         return readUntil("welcome")
     }
-
     private fun addAndAuthenticate(): String {
-        val keyHex = Crypto.toHex(Crypto.randomBytes(32))
-        platform.clients.add(PairedClient("c1", "MacBook", keyHex))
-        authenticate("c1", keyHex)
+        platform.clients.add(PairedClient("c1", "MacBook", TlsV2Fixture.MAC_FP_HEX))
+        addAndAuthenticateCommon()
+        return TlsV2Fixture.MAC_FP_HEX
+    }
+
+    private fun addAndAuthenticateCommon() {
+        authenticate("c1")
         // The session starts the clipboard listener after queuing welcome, so a
         // test that copies right after reading welcome must wait for it.
         await { platform.clipListening }
-        return keyHex
     }
 
     private fun await(timeoutMs: Long = 2_000, condition: () -> Boolean) {
@@ -153,18 +153,9 @@ class SessionTest {
     // ------------------------------------------------------------------
 
     @Test
-    fun challengeCarriesDeviceId() {
-        send(mapOf("t" to "hello", "v" to 1, "clientId" to "cX", "name" to "Mac"))
-        val challenge = readUntil("challenge")
-        assertEquals("dev1", challenge["id"])
-        assertTrue((challenge["nonce"] as String).isNotEmpty())
-    }
-
-    @Test
     fun authSuccessSendsWelcome() {
-        val keyHex = Crypto.toHex(Crypto.randomBytes(32))
-        platform.clients.add(PairedClient("c1", "MacBook", keyHex))
-        val welcome = authenticate("c1", keyHex)
+        platform.clients.add(PairedClient("c1", "MacBook", TlsV2Fixture.MAC_FP_HEX))
+        val welcome = authenticate("c1")
         @Suppress("UNCHECKED_CAST")
         val device = welcome["device"] as Map<String, Any?>
         assertEquals("dev1", device["id"])
@@ -178,28 +169,54 @@ class SessionTest {
     }
 
     @Test
-    fun authFailureSendsAuthFailedAndCloses() {
-        val keyHex = Crypto.toHex(Crypto.randomBytes(32))
-        platform.clients.add(PairedClient("c1", "MacBook", keyHex))
-        val nonce = hello("c1", "MacBook")
-        send(mapOf("t" to "auth", "mac" to "0".repeat(64)))
+    fun versionOneIsRefusedWithTheVersionError() {
+        send(mapOf("t" to "hello", "v" to 1, "clientId" to "cX", "name" to "Old"))
         val error = readUntil("error")
-        assertEquals("auth_failed", error["code"])
-        assertTrue(nonce.isNotEmpty())
+        assertEquals("version", error["code"])
+        assertEquals(null, reader.readFrame())
     }
 
+    /**
+     * A paired clientId whose TLS fingerprint no longer matches the stored pin
+     * cannot welcome (§7: reinstalled Mac → pair again).
+     */
     @Test
-    fun pairingShowsTheCodeToTheMacAndThePhone() {
+    fun stalePinOnHelloIsRefusedWithBadPin() {
+        platform.clients.add(PairedClient("c1", "MacBook", "9".repeat(64)))
+        hello("c1", "Rotated")
+        val error = readUntil("error")
+        assertEquals("bad_pin", error["code"])
+    }
+
+    /**
+     * The phone-side §4 machine, end to end: commit → (nonce) → reveal, then the
+     * app prompt with the code derived from the exact inputs (vector B fixture).
+     */
+    @Test
+    fun pairingCommitsThenRevealsAndTheCodeMatchesTheInputs() {
         hello("c2", "NewMac")
         send(mapOf("t" to "pair.request"))
-        val shown = readUntil("pair.code_shown")
+        val commit = readUntil("pair.commit")
+        send(mapOf("t" to "pair.nonce", "n" to "3fb962da6c0eaaee44a7a16a2bcf9c97")) // vector B Nm
+        val reveal = readUntil("pair.reveal")
+        val np = TlsV2Fixture.bytesOf(reveal["n"] as String)
+        assertEquals(16, np.size)
+        // The commitment binds exactly what the design says (§4): Np, phoneFP, macFP.
+        val expectedCommit = PairingCodeV2.hex(
+            PairingCodeV2.commit(np, TlsV2Fixture.phoneFpBytes, TlsV2Fixture.macFpBytes))
+        assertEquals(expectedCommit, commit["c"])
+        // The prompt's code: §4 formula over the fixture exporter + both Ns.
+        val expectedCode = PairingCodeV2.codeHex(
+            PairingCodeV2.code(TlsV2Fixture.exporterBytes, TlsV2Fixture.macFpBytes, TlsV2Fixture.phoneFpBytes,
+                               TlsV2Fixture.bytesOf("3fb962da6c0eaaee44a7a16a2bcf9c97"), np))
+        await { platform.pairRequests.isNotEmpty() }
         val request = platform.pairRequests.first()
-        assertEquals(request.code, shown["code"])
+        assertEquals(expectedCode, request.code)
         assertTrue(Regex("\\d{6}").matches(request.code))
     }
 
     @Test
-    fun allowAfterFiveSecondsPairsWithoutAnyConfirm() {
+    fun allowingAfterFiveSecondsPairsAndCarriesThePins() {
         // The wait is far longer than the handshake timeout (3 s) on purpose:
         // a person reading two screens must not be cut off by it.
         client.soTimeout = 15_000
@@ -211,12 +228,15 @@ class SessionTest {
         }
         hello("c2", "NewMac")
         send(mapOf("t" to "pair.request"))
-        readUntil("pair.code_shown")
+        readUntil("pair.commit")
+        send(mapOf("t" to "pair.nonce", "n" to "0".repeat(32)))
+        readUntil("pair.reveal")
         val ok = readUntil("pair.ok")
-        assertEquals(64, (ok["key"] as String).length)
+        assertEquals(TlsV2Fixture.MAC_FP_HEX, ok["macFP"])
+        assertEquals(TlsV2Fixture.PHONE_FP_HEX, ok["phoneFP"])
         readUntil("welcome")
-        assertTrue(platform.clients.any { it.clientId == "c2" })
-        assertTrue(platform.paired.any { it.clientId == "c2" })
+        assertEquals(TlsV2Fixture.MAC_FP_HEX, platform.clients.first { it.clientId == "c2" }.macFpHex)
+        assertEquals(TlsV2Fixture.MAC_FP_HEX, platform.paired.first { it.clientId == "c2" }.macFpHex)
         send(mapOf("t" to "ping", "ts" to 7))
         assertEquals(7, (readUntil("pong")["ts"] as Number).toInt())
     }
@@ -225,7 +245,10 @@ class SessionTest {
     fun denyReportsPairDeniedAndCloses() {
         hello("c3", "Bad")
         send(mapOf("t" to "pair.request"))
-        readUntil("pair.code_shown")
+        readUntil("pair.commit")
+        send(mapOf("t" to "pair.nonce", "n" to "0".repeat(32)))
+        readUntil("pair.reveal")
+        await { platform.pairRequests.isNotEmpty() }
         session!!.respondPairing(platform.pairRequests.first().requestId, false)
         assertEquals("pair_denied", readUntil("error")["code"])
         assertEquals(null, reader.readFrame())
@@ -239,7 +262,9 @@ class SessionTest {
         connect(pairDecisionTimeoutMs = 500)
         hello("c4", "Slow")
         send(mapOf("t" to "pair.request"))
-        readUntil("pair.code_shown")
+        readUntil("pair.commit")
+        send(mapOf("t" to "pair.nonce", "n" to "0".repeat(32)))
+        readUntil("pair.reveal")
         assertEquals("pair_timeout", readUntil("error")["code"])
         assertEquals(null, reader.readFrame())
         assertEquals(listOf(platform.pairRequests.first().requestId), platform.pairEnded.toList())
@@ -249,7 +274,10 @@ class SessionTest {
     fun macHangingUpDismissesThePhonePrompt() {
         hello("c5", "Cancelling")
         send(mapOf("t" to "pair.request"))
-        readUntil("pair.code_shown")
+        readUntil("pair.commit")
+        send(mapOf("t" to "pair.nonce", "n" to "0".repeat(32)))
+        readUntil("pair.reveal")
+        await { platform.pairRequests.isNotEmpty() }
         val id = platform.pairRequests.first().requestId
         client.close()
         val deadline = System.currentTimeMillis() + 3_000
@@ -263,7 +291,10 @@ class SessionTest {
     fun answeringAfterAllowIsIgnored() {
         hello("c6", "Twice")
         send(mapOf("t" to "pair.request"))
-        readUntil("pair.code_shown")
+        readUntil("pair.commit")
+        send(mapOf("t" to "pair.nonce", "n" to "0".repeat(32)))
+        readUntil("pair.reveal")
+        await { platform.pairRequests.isNotEmpty() }
         val id = platform.pairRequests.first().requestId
         session!!.respondPairing(id, true)
         session!!.respondPairing(id, false)
@@ -279,8 +310,10 @@ class SessionTest {
         connect(pairDecisionTimeoutMs = 1000, autoApprovePairing = false)
         hello("cAutoFalse", "MacAutoFalse")
         send(mapOf("t" to "pair.request"))
-        readUntil("pair.code_shown")
-        assertEquals(1, platform.pairRequests.size)
+        readUntil("pair.commit")
+        send(mapOf("t" to "pair.nonce", "n" to "0".repeat(32)))
+        readUntil("pair.reveal")
+        await { platform.pairRequests.size == 1 }
         assertEquals("pair_timeout", readUntil("error")["code"])
         assertEquals(0, platform.paired.count { it.clientId == "cAutoFalse" })
     }
@@ -292,7 +325,9 @@ class SessionTest {
         connect(pairDecisionTimeoutMs = 30_000, autoApprovePairing = true)
         hello("cAuto", "MacAuto")
         send(mapOf("t" to "pair.request"))
-        readUntil("pair.code_shown")
+        readUntil("pair.commit")
+        send(mapOf("t" to "pair.nonce", "n" to "0".repeat(32)))
+        readUntil("pair.reveal")
         readUntil("pair.ok")
         readUntil("welcome")
         assertEquals(0, platform.pairRequests.size)

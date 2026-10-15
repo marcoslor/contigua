@@ -15,7 +15,10 @@ enum ConnectionFailure {
     static func message(for reason: String) -> String? {
         switch reason {
         case "busy": return "Another Mac is connected"
-        case "auth_failed": return "Pairing was removed on the phone, pair again"
+        case "pin-mismatch", "bad_pin":
+            return "This phone's identity changed. Pair again."
+        case "no-pin":
+            return "Pairing was removed on the phone, pair again"
         case "pair_denied": return "Pairing was denied"
         case "version": return "This phone runs an incompatible version of PocketDeck"
         case "protocol": return "The phone rejected a message from this Mac"
@@ -30,7 +33,7 @@ enum ConnectionFailure {
     /// Whether the session should back off and connect again by itself.
     static func retriesAutomatically(_ reason: String) -> Bool {
         switch reason {
-        case "pair_denied", "pair_timeout", "version", identityMismatch: return false
+        case "pair_denied", "pair_timeout", "version", identityMismatch, "pin-mismatch", "bad_pin": return false
         default: return true
         }
     }

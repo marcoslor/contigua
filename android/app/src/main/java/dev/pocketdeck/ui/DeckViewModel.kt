@@ -264,22 +264,11 @@ class DeckViewModel(app: Application) : AndroidViewModel(app) {
     fun onQrScanned(raw: String) {
         val ctx = getApplication<Application>()
         when (val result = QrPairing.parse(raw)) {
-            is QrPairing.Result.Pairing -> {
-                Prefs.addPaired(
-                    ctx,
-                    Prefs.PairedMac(
-                        clientId = result.clientId,
-                        name = result.name,
-                        keyHex = result.keyHex,
-                        lastConnected = System.currentTimeMillis(),
-                    ),
-                )
-                DeckState.paired = Prefs.paired(ctx)
-                pushPaired()
-                DeckState.notifyChanged()
-                postSnackbar(ctx.getString(R.string.qr_paired, result.name))
-                refresh()
-            }
+            // v2 (docs/design/e2ee.md R2): the QR {f,s} is a transient pin input,
+            // not a stored secret; the phone answers the Mac over the TLS
+            // connection with pair.qr (phase-2 step 8). Nothing lands in Prefs
+            // from a scan.
+            is QrPairing.Result.Pairing -> postSnackbar(ctx.getString(R.string.qr_repair))
             QrPairing.Result.BadKey -> postSnackbar(ctx.getString(R.string.qr_bad_key))
             QrPairing.Result.Malformed -> postSnackbar(ctx.getString(R.string.qr_incomplete))
             QrPairing.Result.NotPairing -> postSnackbar(ctx.getString(R.string.qr_not_pairing))

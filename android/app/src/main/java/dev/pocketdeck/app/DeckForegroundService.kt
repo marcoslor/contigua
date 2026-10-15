@@ -32,8 +32,8 @@ class DeckForegroundService : Service() {
 
         override fun onPairingEnded(requestId: String) = handlePairingEnded(requestId)
 
-        override fun onPaired(clientId: String, name: String, keyHex: String) =
-            handlePaired(clientId, name, keyHex)
+        override fun onPaired(clientId: String, name: String, macFp: String) =
+            handlePaired(clientId, name, macFp)
 
         override fun onSessionChanged(connected: Boolean, macName: String?, windows: Int) =
             handleSessionChanged(connected, macName, windows)
@@ -174,8 +174,8 @@ class DeckForegroundService : Service() {
         DeckState.notifyChanged()
     }
 
-    private fun handlePaired(clientId: String, name: String, keyHex: String) {
-        Prefs.addPaired(this, Prefs.PairedMac(clientId, name, keyHex, System.currentTimeMillis()))
+    private fun handlePaired(clientId: String, name: String, macFp: String) {
+        Prefs.addPaired(this, Prefs.PairedMac(clientId, name, macFp, System.currentTimeMillis()))
         DeckState.paired = Prefs.paired(this)
         DeckState.pending = null
         getSystemService(NotificationManager::class.java).cancel(NOTIF_PAIRING)

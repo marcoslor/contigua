@@ -119,7 +119,7 @@ final class LinkMachineTests: XCTestCase {
     func testHintsDoNothingWhileOnlineOrWaitingForTheUser() {
         var machine = online()
         XCTAssertEqual(machine.handle(.reachabilityHint, at: at(5)), [])
-        machine.handle(.attemptFailed(reason: "auth_failed"), at: at(6))
+        machine.handle(.attemptFailed(reason: "pin-mismatch"), at: at(6))
         XCTAssertEqual(machine.link, .needsPairing(phone))
         XCTAssertEqual(machine.handle(.reachabilityHint, at: at(7)), [])
         XCTAssertEqual(machine.handle(.tryNow, at: at(8)), [])
@@ -129,7 +129,7 @@ final class LinkMachineTests: XCTestCase {
 
     func testRejectedKeyNeedsPairingAndStopsRetrying() {
         var machine = online()
-        XCTAssertEqual(machine.handle(.attemptFailed(reason: "auth_failed"), at: at(5)), [.stopAttempts])
+        XCTAssertEqual(machine.handle(.attemptFailed(reason: "pin-mismatch"), at: at(5)), [.stopAttempts])
         XCTAssertEqual(machine.link, .needsPairing(phone))
         XCTAssertEqual(machine.link.banner, Banner(text: "Pixel 9 no longer trusts this Mac.", action: .pairAgain))
         XCTAssertEqual(machine.link.chip, Chip(text: "Pair again", style: .orange))
@@ -241,7 +241,7 @@ final class LinkMachineTests: XCTestCase {
 
     func testCancelReturnsToWhereTheUserWas() {
         var remembered = online()
-        remembered.handle(.attemptFailed(reason: "auth_failed"), at: at(5))
+        remembered.handle(.attemptFailed(reason: "pin-mismatch"), at: at(5))
         remembered.handle(.beginPairing(phone), at: at(6))
         XCTAssertEqual(remembered.handle(.cancelPairing, at: at(7)), [])
         XCTAssertEqual(remembered.link, .needsPairing(phone))
@@ -295,7 +295,7 @@ final class LinkMachineTests: XCTestCase {
                              .offline(phone, .localNetworkDenied), .needsPairing(phone)]
         for link in links {
             let text = link.banner?.text ?? ""
-            for forbidden in ["closed-by-peer", "timeout", "auth_failed", "busy)", "(", "port"] {
+            for forbidden in ["closed-by-peer", "timeout", "pin-mismatch", "busy)", "(", "port"] {
                 XCTAssertFalse(text.contains(forbidden), "\(link): \(text)")
             }
         }

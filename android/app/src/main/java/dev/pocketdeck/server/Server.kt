@@ -5,6 +5,7 @@ import dev.pocketdeck.proto.Json
 import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
+import javax.net.ssl.SSLContext
 import java.util.concurrent.atomic.AtomicBoolean
 
 /** Builds a [Session] for an accepted socket (wired up by DeckService). */
@@ -19,12 +20,36 @@ fun interface SessionFactory {
 class Server(
     private val factory: SessionFactory,
     private val log: (String) -> Unit = {},
+    private val selfCertProvider: () -> String = { "" },
+    private val selfKeyProvider: () -> String = { "" },
 ) {
     private val serverSocket = ServerSocket()
     private val running = AtomicBoolean(false)
-
     @Volatile private var acceptThread: Thread? = null
     @Volatile private var active: Session? = null
+    /** The TLS context built from the current pushed identity; rebuilt only
+     * when the PEMs change (setPairedClients may run at any time). */
+    private var cachedContext: String = ""
+    private var cachedTlsContext: SSLContext? = null
+    private val contextLock = Object()
+
+    private fun tlsContext(): SSLContext? {
+        val cert = selfCertProvider()
+        val key = selfKeyProvider()
+        val identity = "$cert\n\u0000$key"
+        synchronized(contextLock) {
+            if (identity != cachedContext || cachedTlsContext == null) {
+                val built = try {
+                    ShellTls.serverContext(cert, key, null)
+                } catch (t: Throwable) {
+                    null
+                }
+                cachedTlsContext = built
+                cachedContext = identity
+            }
+            return cachedTlsContext
+        }
+    }
 
     val port: Int get() = serverSocket.localPort
 
@@ -70,13 +95,39 @@ class Server(
 
     private fun acceptLoop() {
         while (running.get()) {
-            val socket = try {
+            val rawSocket = try {
                 serverSocket.accept()
             } catch (e: Throwable) {
                 if (running.get()) log("accept failed: ${e.message}")
                 break
             }
-            runCatching { socket.tcpNoDelay = true }
+            runCatching { rawSocket.tcpNoDelay = true }
+            // TLS 1.3 only (docs/design/e2ee.md §2, fixed decision): every
+            // connection is wrapped before any byte of the session protocol is
+            // exchanged. A failed wrap is closed, never downgraded to plaintext.
+            val socket: Socket? = try {
+                val ctx = tlsContext()
+                if (ctx == null) {
+                    log("tls identity missing: closing connection")
+                    runCatching { rawSocket.close() }
+                    null
+                } else {
+                    val ssl = ShellTls.wrapAccepted(rawSocket, ctx)
+                    val handshake = runCatching { ssl.startHandshake() }
+                    if (handshake.isFailure) {
+                        log("tls handshake failed: ${handshake.exceptionOrNull()?.message}")
+                        runCatching { ssl.close() }
+                        null
+                    } else {
+                        ssl
+                    }
+                }
+            } catch (e: Throwable) {
+                log("tls wrap failed: ${e.message}")
+                runCatching { rawSocket.close() }
+                null
+            }
+            if (socket == null) continue
             val current = active
             if (current != null && !current.isClosed) {
                 rejectBusy(socket)

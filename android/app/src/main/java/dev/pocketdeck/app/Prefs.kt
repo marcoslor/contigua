@@ -19,7 +19,8 @@ object Prefs {
     data class PairedMac(
         val clientId: String,
         val name: String,
-        val keyHex: String,
+        /** v2: the Mac cert's point fingerprint (64 lowercase hex), not a key. */
+        val macFp: String,
         /** Local epoch millis of the last successful pairing, 0 if unknown. */
         val lastConnected: Long = 0,
     )
@@ -69,8 +70,11 @@ object Prefs {
         return list.mapNotNull { entry ->
             val m = Json.asObject(entry) ?: return@mapNotNull null
             val id = Json.str(m["clientId"]) ?: return@mapNotNull null
-            val key = Json.str(m["key"]) ?: return@mapNotNull null
-            PairedMac(id, Json.str(m["name"]) ?: "Mac", key, Json.long(m["lastConnected"]) ?: 0)
+            // v2 only: entries without a pin are v1 leftovers and are dropped
+            // (docs/design/e2ee.md §7 — the forced re-pair, no reverse path).
+            val pin = Json.str(m["macFp"]) ?: return@mapNotNull null
+            if (pin.length != 64) return@mapNotNull null
+            PairedMac(id, Json.str(m["name"]) ?: "Mac", pin.lowercase(), Json.long(m["lastConnected"]) ?: 0)
         }
     }
 
@@ -89,7 +93,7 @@ object Prefs {
                 mapOf(
                     "clientId" to it.clientId,
                     "name" to it.name,
-                    "key" to it.keyHex,
+                    "macFp" to it.macFp,
                     "lastConnected" to it.lastConnected,
                 )
             },
@@ -107,7 +111,7 @@ object Prefs {
             mapOf(
                 "deviceId" to deviceId(ctx),
                 "deviceName" to deviceName(ctx),
-                "clients" to paired(ctx).map { mapOf("clientId" to it.clientId, "name" to it.name, "key" to it.keyHex) },
+                "clients" to paired(ctx).map { mapOf("clientId" to it.clientId, "name" to it.name, "macFp" to it.macFp) },
                 "self" to self,
             ),
         )

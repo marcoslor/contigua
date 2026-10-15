@@ -10,13 +10,11 @@ import XCTest
 final class IdentityV2Tests: XCTestCase {
     private var dir: URL!
     private var file: IdentityFileV2!
-    private var keys: PairKeyFile!
 
     override func setUp() {
         dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("pocketdeck-idv2-\(UUID().uuidString)", isDirectory: true)
         file = IdentityFileV2(url: dir.appendingPathComponent("identity.json"))
-        keys = PairKeyFile(url: dir.appendingPathComponent("pairkeys.json"))
     }
 
     override func tearDown() {
@@ -91,12 +89,41 @@ final class IdentityV2Tests: XCTestCase {
 
     // MARK: Migration
 
-    func testWipePairKeysDeletesTheFileAndIsIdempotent() {
-        keys.store(Data([1, 2, 3]), account: "phone-a")
-        XCTAssertTrue(FileManager.default.fileExists(atPath: keys.url.path))
-        XCTAssertTrue(IdentityMigrationV2.wipePairKeys(keys))
-        XCTAssertFalse(FileManager.default.fileExists(atPath: keys.url.path))
-        XCTAssertFalse(IdentityMigrationV2.wipePairKeys(keys)) // already gone
+    func testWipePairKeysDeletesTheFileAndIsIdempotent() throws {
+        let keysUrl = dir.appendingPathComponent("pairkeys.json")
+        // Any pre-v2 file content works: v1 keys authenticate nothing in v2.
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try Data("{}".utf8).write(to: keysUrl)
+        XCTAssertTrue(IdentityMigrationV2.wipePairKeys(at: keysUrl))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: keysUrl.path))
+        XCTAssertFalse(IdentityMigrationV2.wipePairKeys(at: keysUrl)) // already gone
+    }
+
+    // MARK: The pin store file
+
+    func testPinStorePersistsRecordsWithRestrictivePermissions() throws {
+        let pinsFile = dir.appendingPathComponent("pins.json")
+        let store = PhonePinStoreV2(fileUrl: pinsFile)
+        let record = PinnedPhoneV2(deviceId: "phone-1", phoneFingerprintHex: String(repeating: "7a", count: 32),
+                                   certPem: "-----BEGIN CERTIFICATE-----\nCAFE\n-----END CERTIFICATE-----")
+        store.store(record)
+        XCTAssertEqual(store.record(for: "phone-1"), record)
+        // Reload from disk: the write-through landed.
+        let reopened = PhonePinStoreV2(fileUrl: pinsFile)
+        XCTAssertEqual(reopened.record(for: "phone-1"), record)
+        XCTAssertEqual(try mode(pinsFile), 0o600)
+        XCTAssertEqual(try mode(dir), 0o700)
+        // Forget is write-through too.
+        reopened.forget(deviceId: "phone-1")
+        XCTAssertNil(PhonePinStoreV2(fileUrl: pinsFile).record(for: "phone-1"))
+    }
+
+    func testPinStoreForgetAndClearAreIdempotent() {
+        let store = PhonePinStoreV2()
+        store.forget(deviceId: "nobody")
+        store.clear()
+        store.clear()
+        XCTAssertTrue(store.all.isEmpty)
     }
 
     // MARK: Re-pair rate limiting

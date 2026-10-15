@@ -35,11 +35,12 @@ struct Profile: Equatable {
 
     var isDefault: Bool { name == Self.defaultName }
 
-    /// Pairing keys, in this profile's Application Support folder.
-    var pairKeys: PairKeyFile {
+    /// The v1 pair keys file, in this profile's Application Support folder —
+    /// only used by the v2 migration that deletes it (§7 forced re-pair).
+    var pairKeysFileUrl: URL {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        return PairKeyFile(url: base.appendingPathComponent(supportDirectoryName, isDirectory: true)
-            .appendingPathComponent("pairkeys.json"))
+        return base.appendingPathComponent(supportDirectoryName, isDirectory: true)
+            .appendingPathComponent("pairkeys.json")
     }
 
     /// Name of the UserDefaults suite; nil means the standard defaults.
