@@ -93,7 +93,9 @@ rebuild, sub-second capture gap, speaker unaffected; keep the Mac jitter
 buffer as is) goes through a full stop, and `stop()` always unregisters —
 a policy never outlives the session or the server process. The mix output is
 not volume-indexed, so only the submix path runs SubmixLevel; per-device
-volume stays Mac-side gain either way. Caveats: apps may opt out of capture
+volume stays Mac-side gain either way. Measured (probe): the mix carries the
+app's samples 1:1 — a 12000/32767 tone (peak 0.3662) comes out at peak
+0.3662 — so the policy path applies no gain. Caveats: apps may opt out of capture
 (`setAllowedCapturePolicy`; we register non-privileged), an app without a
 mediaPlayback foreground service is background-muted by the platform and
 feeds nothing while backgrounded, and shared-UID apps ride one rule (rules
