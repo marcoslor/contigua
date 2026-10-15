@@ -564,7 +564,7 @@ check_input_global() {
 mb_nav_count() {
     python3 - "$WORK/events.jsonl" "$1" "$2" <<'PY'
 import json, sys
-stream, action = int(sys.argv[1]), sys.argv[2]
+stream, action = int(sys.argv[2]), sys.argv[3]
 n = 0
 for line in open(sys.argv[1]):
     try:
@@ -597,8 +597,10 @@ check_mouseback() {
     clean
     start_fake || return 1
 
-    # Phase A: an app window (the only stream window -> stream 1).
-    launch --connect "127.0.0.1:$PORT" --open com.android.settings --quit-after 60
+    # Phase A: an app window (the only stream window -> stream 1). Float it:
+    # the press is a real CGEvent and must land on the app window, not on the
+    # Deck in front of it.
+    launch --connect "127.0.0.1:$PORT" --open com.android.settings --float-windows --quit-after 60
     wait_until 30 events_have '"ev":"video","stream":1,' \
         || { bad "MB no video config for the app window"; stop_app; stop_fakephone; return 1; }
     local win navs touches
@@ -634,7 +636,7 @@ check_mouseback() {
 
     # Phase B: the phone-mode window (also a stream window -> stream 1 again).
     : > "$WORK/events.jsonl"
-    launch --connect "127.0.0.1:$PORT" --open-phone --quit-after 60
+    launch --connect "127.0.0.1:$PORT" --open-phone --float-windows --quit-after 60
     wait_until 30 events_have '"ev":"video","stream":1,' \
         || { bad "MB no video config for the phone window"; stop_app; stop_fakephone; return 1; }
     win="$(await_window '$5 > $4')" \
