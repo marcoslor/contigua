@@ -1,9 +1,13 @@
 package dev.pocketdeck.server
 
 import android.content.ClipData
+import android.content.Context
+import android.net.Uri
+import androidx.core.content.FileProvider
 import android.os.Binder
 import android.os.IBinder
 import android.os.Parcel
+import java.io.File
 import java.lang.reflect.Method
 import java.lang.reflect.Proxy
 
@@ -16,7 +20,10 @@ import java.lang.reflect.Proxy
  * probed by name and parameter shape (see [ClipboardApi]) instead of being
  * bound to one layout.
  */
-internal class ShellClipboard(private val log: (String) -> Unit) : ClipboardPort {
+internal class ShellClipboard(
+    private val ctx: Context?,
+    private val log: (String) -> Unit,
+) : ClipboardPort, ClipboardImagePort {
 
     private val service: Any? by lazy { Hidden.proxy(IFACE, "clipboard") }
 
@@ -39,6 +46,56 @@ internal class ShellClipboard(private val log: (String) -> Unit) : ClipboardPort
         val clip = ClipData.newPlainText(CLIP_LABEL, text)
         runCatching { set.invoke(svc, *argsFor(set, ClipData::class.java, clip)) }
             .onFailure { log("clipboard: setPrimaryClip failed: $it") }
+    }
+
+    // ---- images (docs/design/dragdrop.md): first image item only ---------------
+
+    private val resolver: android.content.ContentResolver?
+        get() = ctx?.contentResolver
+
+    /**
+     * The image bytes of the primary clip, or null when it holds none, its first
+     * item is text (text wins: the text sync owns it) or the item's URI is not
+     * readable at shell UID. A null is "nothing to sync", never an error.
+     */
+    override fun readImage(): ClipImage? {
+        val svc = service ?: return null
+        val get = ClipboardApi.calls(log).get ?: return null
+        val clip = runCatching { get.invoke(svc, *argsFor(get, null, null)) }
+            .onFailure { log("clipboard: getPrimaryClip failed: $it") }
+            .getOrNull() as? ClipData ?: return null
+        if (clip.itemCount == 0) return null
+        val item = clip.getItemAt(0)
+        if (item.text != null) return null
+        val contentUri = item.uri ?: return null
+        // API 29's filterMimeTypes avoids the per-index walk (countMimeTypes is a
+        // later call than this code's floor).
+        val mime = clip.description.filterMimeTypes("image/*").firstOrNull() ?: return null
+        val source = resolver ?: return null
+        val bytes = runCatching { source.openInputStream(contentUri)?.use { s -> s.readBytes() } }
+            .onFailure { log("clipboard: unreadable clip image ($mime, $contentUri): $it") }
+            .getOrNull() ?: return null
+        return ClipImage(bytes, mime.lowercase())
+    }
+
+    /**
+     * Puts an image file of [DIRECTORY] on the clipboard through a FileProvider
+     * URI of the app, which survives the paste into any app that ClipboardService
+     * grants the URI to (the provider is public and keyed by the grant flag).
+     */
+    override fun writeImage(file: File, mime: String, label: String) {
+        val context = ctx ?: run { log("clipboard: no context for an image clip"); return }
+        val uri = runCatching { FileProvider.getUriForFile(context, AUTHORITY, file) }
+            .onFailure { log("clipboard: fileprovider uri failed: ${it.message}") }
+            .getOrNull() ?: return
+        val clip = runCatching { ClipData.newUri(context.contentResolver, CLIP_LABEL, uri) }
+            .onFailure { log("clipboard: newUri failed: ${it.message}") }
+            .getOrNull() ?: return
+        val svc = service ?: return
+        val set = ClipboardApi.calls(log).set ?: return
+        runCatching { set.invoke(svc, *argsFor(set, ClipData::class.java, clip)) }
+            .onFailure { log("clipboard: setPrimaryClip(image) failed: $it") }
+        log("clipboard: image clip ${file.name} ($mime)")
     }
 
     override fun listen(onChange: (String) -> Unit) {
@@ -92,6 +149,10 @@ private const val IFACE = "android.content.IClipboard"
 private const val LISTENER_IFACE = "android.content.IOnPrimaryClipChangedListener"
 private const val SHELL_PACKAGE = "com.android.shell"
 private const val CLIP_LABEL = "PocketDeck"
+
+/** The app's FileProvider: a shell-written file is served through the app's provider. */
+const val FILE_PROVIDER_AUTHORITY = "dev.pocketdeck.fileprovider"
+private const val AUTHORITY = FILE_PROVIDER_AUTHORITY
 
 /**
  * The hidden calls, probed once per process. The chosen signatures are logged

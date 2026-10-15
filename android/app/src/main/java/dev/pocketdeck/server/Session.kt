@@ -40,6 +40,10 @@ class Session(
     private val packages: PackageShell? = null,
     /** Task list + task-to-display moves for `task.continue`; null refuses them. */
     private val taskMove: TaskMove? = null,
+    /** File drops into /sdcard/Download/PocketDeck (docs/design/dragdrop.md); null refuses. */
+    private val dropLanding: DropReceiver.Landing? = null,
+    /** Clipboard image port (read + write); null leaves images unsynced. */
+    private val clipImages: ClipboardImagePort? = null,
     private val now: () -> Long = { System.nanoTime() / 1_000_000 },
     private val log: (String) -> Unit = {},
     private val handshakeTimeoutMs: Int = 15_000,
@@ -74,6 +78,11 @@ class Session(
     private val clipSync = ClipSync()
     private val apk = packages?.let { ApkInstaller(it, ::sendJson, log) }
     private val share = ShareSender(::sendJson, queue::enqueueBulk, log)
+    private val drop = dropLanding?.let { DropReceiver(it, ::sendJson, log) }
+    private val clipImageSync = ClipImageSync()
+    private val clipImageSender = ClipImageSender(queue::enqueueBulk, log)
+    private val clipImageReceiver = ClipImageReceiver(ClipImageLand(clipImages, log), log)
+    private var clipImagePoll: Thread? = null
 
     private var clientId = ""
     private var clientName = "Mac"
@@ -157,7 +166,9 @@ class Session(
         abandoned?.let { runCatching { callback.onPairingEnded(it) } }
         stopStateWatch()
         stopClipboardSync()
+        stopClipImagePoll()
         runCatching { apk?.close() }
+        runCatching { drop?.close() }
         stopStreamWatch()
         runCatching { audioCapture?.stop() }
         queue.clearAudio()
@@ -375,6 +386,7 @@ class Session(
         runCatching { callback.onSessionChanged(true, currentMacName ?: clientName, windowCount()) }
         startStateWatch()
         startClipboardSync()
+        startClipImagePoll()
     }
 
     private fun dispatch(obj: Map<String, Any?>, frame: Frame, t: String) {
@@ -397,6 +409,11 @@ class Session(
             "clip.set" -> onClipSet(obj)
             "apk.install" -> onApkInstall(obj)
             "apk.cancel" -> (obj["id"] as? Number)?.let { apk?.cancel(it.toLong()) }
+            "drop.start" -> onDropStart(obj)
+            "drop.cancel" -> (obj["id"] as? Number)?.let { drop?.cancel(it.toLong()) }
+            "clip.image.start" -> onClipImageStart(obj)
+            "clip.image.end" -> onClipImageEnd(obj)
+            "clip.image.abort" -> onClipImageAbort(obj)
             "audio.start" -> onAudioStart(obj)
             "audio.stop" -> onAudioStop()
             else -> logOnce("unknown message '$t'")
@@ -652,6 +669,78 @@ class Session(
         installer.begin(obj)
     }
 
+    // ------------------------------------------------------------------
+    // file drops (docs/design/dragdrop.md)
+    // ------------------------------------------------------------------
+
+    private fun onDropStart(obj: Map<String, Any?>) {
+        val receiver = drop ?: run {
+            sendJson(mapOf("t" to "drop.result", "id" to obj["id"], "ok" to false,
+                "code" to "failed", "message" to "this phone can't receive files"))
+            return
+        }
+        receiver.begin(obj)
+    }
+
+    // ------------------------------------------------------------------
+    // clipboard images (docs/design/dragdrop.md)
+    // ------------------------------------------------------------------
+
+    private fun onClipImageStart(obj: Map<String, Any?>) {
+        val id = (obj["id"] as? Number)?.toInt() ?: return
+        val size = (obj["size"] as? Number)?.toLong() ?: -1L
+        clipImageReceiver.begin(id, Json.str(obj["mime"]), size)
+    }
+
+    private fun onClipImageEnd(obj: Map<String, Any?>) {
+        val id = (obj["id"] as? Number)?.toInt() ?: return
+        val size = (obj["size"] as? Number)?.toLong() ?: -1L
+        clipImageReceiver.end(id, size, Json.str(obj["sha256"]))
+    }
+
+    private fun onClipImageAbort(obj: Map<String, Any?>) {
+        ((obj["id"] as? Number)?.toInt())?.let(clipImageReceiver::abort)
+    }
+
+    /**
+     * A one-second poll of the clipboard for images: the text listener pushes text
+     * changes, but an image item gives no callback at shell UID, and the phone's
+     * clipboard needs no sub-second latency anyway.
+     */
+    private fun startClipImagePoll() {
+        if (clipImagePoll != null) return
+        val thread = Thread({ clipImageLoop() }, "pocketdeck-clippoll").also {
+            it.isDaemon = true
+            it.start()
+        }
+        clipImagePoll = thread
+    }
+
+    private fun stopClipImagePoll() {
+        val thread = clipImagePoll ?: return
+        clipImagePoll = null
+        runCatching { thread.interrupt() }
+    }
+
+    private fun clipImageLoop() {
+        while (!closed.get() && clipImagePoll === Thread.currentThread()) {
+            val port = clipImages
+            if (port != null) {
+                val image = runCatching { port.readImage() }.getOrNull()
+                if (image != null && clipImageSync.shouldSend(image) &&
+                    !clipImageSender.send(image)) {
+                    // The session died under the image; the poll ends with the thread.
+                    return
+                }
+            }
+            try {
+                Thread.sleep(CLIP_IMAGE_POLL_MS)
+            } catch (e: InterruptedException) {
+                return
+            }
+        }
+    }
+
     private fun onText(obj: Map<String, Any?>, frame: Frame) {
         val state = requireState(streamOf(obj, frame)) ?: return
         val text = Json.str(obj["text"]) ?: return
@@ -677,6 +766,8 @@ class Session(
                 if (state.content != WindowContent.Phone) power.onInput(state.displayId)
             }
             Frames.TYPE_APK_DATA -> apk?.data(frame.stream.toLong() and 0xFFFF_FFFFL, frame.payload)
+            Frames.TYPE_DROP_DATA -> drop?.data(frame.stream.toLong() and 0xFFFF_FFFFL, frame.payload)
+            Frames.TYPE_CLIP_DATA -> clipImageReceiver.data(frame.stream, frame.payload)
             Frames.TYPE_KEY -> {
                 val p = Frames.decodeKey(frame.payload)
                 val state = requireState(frame.stream) ?: return
@@ -934,6 +1025,9 @@ class Session(
 
         /** The phone's own screen: where "Continue on Mac" looks. */
         const val PHONE_DISPLAY_ID = 0
+
+        /** The clipboard-image poll: images are user-paced, not sub-second. */
+        const val CLIP_IMAGE_POLL_MS = 1_000L
 
         /** Bounds the kernel's video backlog so the delta-drop rule can fire. */
         const val SEND_BUFFER_BYTES = 128 * 1024

@@ -126,5 +126,19 @@
             android:exported="true"
             android:multiprocess="false"
             android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
+
+        <!-- Serves the shell-written files of drops and clipboard images as
+             content://dev.pocketdeck.fileprovider/… URIs. grantUriPermissions on a
+             not-exported provider is what lets a shell `am start` carry the grant
+             (docs/design/dragdrop.md); apps cannot list or fetch anything else. -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="dev.pocketdeck.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
     </application>
 </manifest>

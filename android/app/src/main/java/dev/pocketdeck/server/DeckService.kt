@@ -63,6 +63,7 @@ class DeckService(private val appContext: Context?) :
         val titles = AndroidWindowObserver(shell, ::log)
         val audio = AudioCapture(shell, ::log)
         val taskMove = AndroidTaskMove(shell, ::log)
+        val clip = ShellClipboard(shell, ::log)
 
         val factory = SessionFactory { socket ->
             Session(
@@ -77,9 +78,11 @@ class DeckService(private val appContext: Context?) :
                 callback = this,
                 titleObserver = titles,
                 taskPresence = titles,
-                clipboard = ShellClipboard(::log),
+                clipboard = clip,
+                clipImages = clip,
                 packages = ShellPackages(shell, ::log),
                 taskMove = taskMove,
+                dropLanding = ShellLanding(appContext, ::log),
                 now = { SystemClock.uptimeMillis() },
                 log = ::log,
                 autoApprovePairing = dev.pocketdeck.BuildConfig.DEBUG,

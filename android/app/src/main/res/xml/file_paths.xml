@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Paths the shell process may hand out as dev.pocketdeck.fileprovider URIs
+     (docs/design/dragdrop.md): drops and clipboard images live under
+     /sdcard/Download/PocketDeck, addressed as /external/Download/PocketDeck/… -->
+<paths>
+    <external-path name="external" path="." />
+</paths>
