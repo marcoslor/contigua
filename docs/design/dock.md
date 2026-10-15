@@ -60,12 +60,26 @@ window (`NSApp.applicationIconImage` is per process, not per window).
 
 ## Lifecycle
 
-- Create: Deck → app context menu → **Add to Dock**. The shim is created and launched,
-  so it appears in the Dock; the person chooses Options → Keep in Dock. PocketDeck never
-  writes the Dock's preferences. Remove: the same menu → **Remove from Dock App**.
+- Automatic: a phone app's window opening — from the Deck, Spotlight, a link,
+  anything — makes its Dock identity appear, while **Settings → General → "Show phone
+  apps in the Dock"** is on (default). The window never waits for it: the bundle is
+  built off the main thread, and only once the app's real icon is cached — or the
+  phone says it has none — so the Dock never shows a blank tile. An identity already
+  on disk (kept from Add to Dock) is simply launched. The phone mirror window gets
+  none. With the setting off nothing runs automatically and the menu item below
+  still works.
+- Manual: Deck → app context menu → **Add to Dock** creates and launches the shim
+  regardless of the setting; the person chooses Options → Keep in Dock. PocketDeck
+  never writes the Dock's preferences. Remove: the same menu → **Remove from Dock App**.
+- The shim's process lives while a window of its app is open: the host posts
+  `closed` when the window closes, and while two windows of one app are open the
+  identity follows the one that is left. The bundles stay on disk, so a later
+  window only launches the identity again.
 - One set per phone: the id and file name include the phone, so the same app on two phones
   gets two shims; re-adding replaces the bundle in place.
 - Cleanup: when a phone's app list arrives, shims of packages no longer on it are removed and
-  shims whose name changed (phone renamed, app relabelled) are rebuilt; forgetting a phone
-  removes all of its shims. Removal = `lsregister -u`, then delete. Decisions are a pure
-  function of (shims on disk, app list, phone name), unit-tested.
+  shims whose name changed (phone renamed, app relabelled) are rebuilt — except shims of
+  open windows, which follow when their window is gone; forgetting a phone removes all of
+  its shims. Removal = `lsregister -u`, then delete. Decisions are a pure function of
+  (shims on disk, app list, phone name), unit-tested; so is whether a window's identity
+  is created, relaunched, skipped or waits for its icon.

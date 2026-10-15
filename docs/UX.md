@@ -64,9 +64,12 @@ Detail, states, copy and the connection state machine: [design/mac-redesign.md](
    New windows cascade (never on top of the Deck) and remember their frame. While the connection is down a small glass pill
    ("Reconnecting…") sits over the last frame; the window stays open. Phone mode: Back · Home · Recents sit at the right
    of the hover header.
-3. **Settings** (⌘,; also the settings gear at the Deck header's right): tabs **General** (launch at login, show in
-   menu bar, default window density) · **Devices** (paired phones: name, model, last seen, **Use**, **Forget**;
-   **Add phone…**). Nothing else.
+   While an app window is open, its app appears in the Dock and ⌘-Tab as "App (Phone)" (a link window as the app that displays
+   the link; the phone mirror as nothing). It arrives on its own, ends when the window closes, and **Options → Keep in Dock**
+   makes it permanent ("Add to Dock" in the app's context menu does the same by hand; Settings → General switches it off).
+3. **Settings** (⌘,; also the settings gear at the Deck header's right): tabs **General** (launch at login, show in menu bar,
+   share clipboard with the phone, show phone apps in the Dock, default window density) · **Devices** (paired phones: name,
+   model, last seen, **Use**, **Forget**; **Add phone…**). Nothing else.
 
 Status/feedback: a single connection chip in the Deck toolbar and the menu-bar menu. Reconnecting is silent: a remembered phone
 connects by itself at launch and after any drop, with back-off, and the UI shows "Offline" (never an error code) only after 15 s
