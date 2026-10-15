@@ -591,8 +591,10 @@ mb_touch_count() {
 # press in a stream window, exactly like the header's Back: no repeat while
 # held (a held press drags and still counts one) and nothing on mouse-up. The
 # Forward button (4) does nothing, and no extra-button press, drag or release
-# ever becomes a TOUCH on that stream. Both window kinds get it: an app
-# window, then the phone-mode window.
+# ever becomes a TOUCH on that stream. Mouse utilities often deliver the Back
+# button as something else: a ⌘[ keystroke counts one Back and never a KEY
+# frame (a .swipe event has no CGEvent synthesizer; unit tests cover it). Both
+# window kinds get it: an app window, then the phone-mode window.
 check_mouseback() {
     clean
     start_fake || return 1
@@ -603,7 +605,7 @@ check_mouseback() {
     launch --connect "127.0.0.1:$PORT" --open com.android.settings --float-windows --quit-after 60
     wait_until 30 events_have '"ev":"video","stream":1,' \
         || { bad "MB no video config for the app window"; stop_app; stop_fakephone; return 1; }
-    local win navs touches
+    local win navs keys touches
     win="$(await_window '$4 == 900')" \
         || { bad "MB no 900 pt app window"; stop_app; stop_fakephone; return 1; }
 
@@ -632,6 +634,18 @@ check_mouseback() {
     [ "$touches" = "0" ] \
         && ok "MB the held press and its release made no touches" \
         || bad "MB the held press made $touches touch frames"
+
+    # Mouse utilities also turn a Back button into a ⌘[ keystroke; the event
+    # goes to the frontmost app's key window, which this floated window is.
+    "$CGBIN" move --window "$win" >/dev/null
+    "$CGBIN" key --keycode 33 --cmd >/dev/null
+    wait_until 10 eval '[ "$(mb_nav_count 1 back)" = "3" ]' \
+        && ok "MB Cmd-[ is exactly one more Back" \
+        || bad "MB Cmd-[: $(mb_nav_count 1 back) nav back"
+    keys="$(grep -c '"kind":"key","stream":1,' "$WORK/events.jsonl" 2>/dev/null || true)"
+    [ "$keys" = "0" ] \
+        && ok "MB Cmd-[ sent no key frames" \
+        || bad "MB Cmd-[ leaked $keys key frames"
     stop_app
 
     # Phase B: the phone-mode window (also a stream window -> stream 1 again).

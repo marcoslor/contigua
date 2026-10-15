@@ -255,6 +255,10 @@ final class VideoLayerView: NSView {
     override func keyDown(with event: NSEvent) { inputMapper?.keyDown(event) }
     override func keyUp(with event: NSEvent) { inputMapper?.keyUp(event) }
 
+    // Mouse utilities deliver a side Back button as a swipe event rather than
+    // otherMouseDown (deltaX = +1 back, −1 forward stays inert).
+    override func swipe(with event: NSEvent) { inputMapper?.swipe(deltaX: event.deltaX) }
+
     // MARK: Trackpad fingers
 
     override func touchesBegan(with event: NSEvent) { reportTouches(of: event) }

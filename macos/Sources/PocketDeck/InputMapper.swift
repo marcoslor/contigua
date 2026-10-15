@@ -58,6 +58,14 @@ final class InputMapper {
         }
     }
 
+    /// Which Android nav action a swipe event maps to: mouse utilities (e.g.
+    /// Logi Options+) deliver a Back button as NSEvent type .swipe instead of
+    /// otherMouseDown, with deltaX = +1 for back and −1 for forward. Forward
+    /// stays inert.
+    static func navAction(forSwipeDeltaX deltaX: CGFloat) -> String? {
+        deltaX > 0 ? "back" : nil
+    }
+
     let stream: UInt32
     var send: ((Command) -> Void)?
     var videoRectProvider: () -> CGRect = { .zero }
@@ -150,6 +158,17 @@ final class InputMapper {
         flushText()
         cancelTrackpadGestures()
         if let action = Self.navAction(forButton: Int(event.buttonNumber)) {
+            send?(.nav(action))
+        }
+    }
+
+    /// A swipe-back NSEvent from mouse utilities -> one Back, exactly like the
+    /// button press. The delta is the seam: NSEvent cannot synthesize a .swipe,
+    /// so unit tests drive this directly.
+    func swipe(deltaX: CGFloat) {
+        flushText()
+        cancelTrackpadGestures()
+        if let action = Self.navAction(forSwipeDeltaX: deltaX) {
             send?(.nav(action))
         }
     }
@@ -366,6 +385,11 @@ final class InputMapper {
             }
             switch event.charactersIgnoringModifiers?.lowercased() {
             case "[":
+                // One Back per press: a held ⌘[ fires keyDown repeats that
+                // must not repeat the nav. `[` is not in metaKeyMap, so this
+                // is consumed as Back, never also forwarded as a KEY, and the
+                // keyUp below has nothing to release.
+                guard !event.isARepeat else { return }
                 flushText()
                 send?(.nav("back"))
             case "v":
