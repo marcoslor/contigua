@@ -9,6 +9,7 @@ import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import java.io.File
 import java.security.MessageDigest
+import java.util.Collections
 
 /**
  * The `drop.*` rules (docs/design/dragdrop.md): validation, chunking, progress,
@@ -21,7 +22,10 @@ class DropReceiverTest {
     @get:Rule
     val tmp = TemporaryFolder()
 
-    private val frames = mutableListOf<Map<String, Any?>>()
+    private val frames = Collections.synchronizedList(mutableListOf<Map<String, Any?>>())
+
+    /** The writer appends from its own thread, so every read takes a stable copy. */
+    private fun snapshot(): List<Map<String, Any?>> = synchronized(frames) { frames.toList() }
 
     private val landing = DropReceiver.Landing { _, _ -> }
 
@@ -57,7 +61,7 @@ class DropReceiverTest {
     /** Polls until [count] progress frames have landed (the writer runs on its own thread). */
     private fun awaitProgress(count: Int = 1): List<Map<String, Any?>> {
         repeat(200) {
-            val found = frames.filter { it["t"] == "drop.progress" }
+            val found = snapshot().filter { it["t"] == "drop.progress" }
             if (found.size >= count) return found
             Thread.sleep(20)
         }
@@ -67,7 +71,7 @@ class DropReceiverTest {
     /** Polls until a `drop.result` shows up (the writer runs on its own thread). */
     private fun awaitResult(): Map<String, Any?> {
         repeat(200) {
-            frames.lastOrNull { it["t"] == "drop.result" }?.let { return it }
+            snapshot().lastOrNull { it["t"] == "drop.result" }?.let { return it }
             Thread.sleep(20)
         }
         throw AssertionError("no drop.result arrived")
@@ -84,7 +88,7 @@ class DropReceiverTest {
         assertEquals(true, result["ok"])
         assertEquals(tmp.root.resolve("report.pdf").path, result["path"])
         assertTrue(result.containsKey("code").not())
-        val progress = frames.filter { it["t"] == "drop.progress" }.map { it["bytes"] as Long }
+        val progress = snapshot().filter { it["t"] == "drop.progress" }.map { it["bytes"] as Long }
         assertEquals(0L, progress.first())
         assertEquals(12L, progress.last())
     }
@@ -157,7 +161,7 @@ class DropReceiverTest {
         second.data(7, full.copyOfRange(8, 12))
         val result = awaitResult()
         assertEquals(true, result["ok"])
-        assertEquals(listOf(8L, 12L), frames.filter { it["t"] == "drop.progress" }
+        assertEquals(listOf(8L, 12L), snapshot().filter { it["t"] == "drop.progress" }
             .map { it["bytes"] as Long }.distinct().sorted())
         assertTrue(full.contentEquals(tmp.root.resolve("tail.pdf").readBytes()))
     }
