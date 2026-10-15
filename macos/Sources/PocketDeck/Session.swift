@@ -114,6 +114,11 @@ enum SessionEvent {
     case shareFileData(id: UInt32, bytes: [UInt8])
     case shareFileEnd(id: UInt32, size: Int, sha256: String)
     case shareFileAbort(id: UInt32)
+    /// Notifications + media controls (docs/design/notify.md).
+    case notifyState(on: Bool)
+    case notifyPosted(id: String, pkg: String, when: Date?, title: String?, text: String?)
+    case notifyRemoved(id: String)
+    case mediaState(MediaState)
 }
 
 /// The phone's `drop.result` (docs/design/dragdrop.md).
@@ -650,6 +655,27 @@ final class Session {
             }
         case "clip.image.abort":
             if let id = message.int("id") { emit(.clipImageAbort(id: UInt32(truncatingIfNeeded: id))) }
+        case "notify.state":
+            emit(.notifyState(on: message.bool("on") ?? false))
+        case "notify.post":
+            let whenMs = message.double("when")
+            emit(.notifyPosted(id: message.string("id") ?? "", pkg: message.string("pkg") ?? "",
+                               when: whenMs.map { Date(timeIntervalSince1970: $0 / 1000) },
+                               title: message.string("title"), text: message.string("text")))
+        case "notify.remove":
+            emit(.notifyRemoved(id: message.string("id") ?? ""))
+        case "media.state":
+            emit(.mediaState(MediaState(
+                playing: message.bool("playing") ?? false,
+                pkg: message.string("pkg"),
+                title: message.string("title"),
+                artist: message.string("artist"),
+                album: message.string("album"),
+                durationMs: message.int("durationMs").map { Int64($0) },
+                positionMs: message.int("positionMs").map { Int64($0) },
+                rate: message.double("rate") ?? 0,
+                receivedAt: Date().timeIntervalSince1970,
+            )))
         case "error":
             let code = message.string("code") ?? "unknown"
             if code == "auth_failed", !authedWithQRKey {
@@ -784,6 +810,16 @@ final class Session {
     }
 
     func cancelApk(id: UInt32) { sendJSON(["t": "apk.cancel", "id": Int(id)]) }
+
+    /// `notify.enable`: the per-phone toggle change, sent again after `welcome`.
+    func enableNotifications(_ on: Bool) {
+        sendJSON(["t": "notify.enable", "on": on])
+    }
+
+    /// A Now Playing transport control (`play`, `pause`, `next`, `prev`).
+    func mediaCommand(_ action: String) {
+        sendJSON(["t": "media.command", "action": action])
+    }
 
     /// One `APK_DATA` chunk; `sent` runs (on any thread) once the network took it,
     /// false when there is no connection, so the sender paces itself.

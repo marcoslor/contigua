@@ -25,6 +25,10 @@
 //                            an .apk keeps its install route)
 //   hover NX NY              the pointer moves to NX NY (the header fades in when it
 //                            is near the top edge)
+//   notifyclick ID           the same routing a click on that phone notification runs
+//                            (opens the app's window); not a stream action
+//   mediacmd ACTION          the same routing a Now Playing control runs: play, pause,
+//                            next or prev (`media.command`); not a stream action
 //   wait SECONDS             let the app run (timers, animations) before the next action
 //   type TEXT                text typed as key presses (rest of the line)
 //   key [cmd+][shift+][ctrl+][opt+]NAME
@@ -62,6 +66,8 @@ enum DebugInputAction: Equatable {
     case showTouches(Bool)
     case dropFile(String)
     case hover(NormalizedPoint)
+    case notifyClick(String)
+    case mediaCommand(String)
     case wait(Double)
     case type(String)
     case key(KeyStroke)
@@ -160,6 +166,14 @@ enum DebugInputScript {
                 throw LineError(message: "dropfile: no such file: \(path)")
             }
             return .dropFile(path)
+        case "notifyclick":
+            guard args.count == 1, !args[0].isEmpty else { throw LineError(message: "notifyclick needs an id") }
+            return .notifyClick(args[0])
+        case "mediacmd":
+            guard args.count == 1, ["play", "pause", "next", "prev"].contains(args[0]) else {
+                throw LineError(message: "mediacmd needs play, pause, next or prev")
+            }
+            return .mediaCommand(args[0])
         case "wait":
             guard args.count == 1, let seconds = Double(args[0]), (0...60).contains(seconds) else {
                 throw LineError(message: "wait needs SECONDS (0...60)")
@@ -265,6 +279,11 @@ final class DebugInputDriver {
 
     private let actions: [DebugInputAction]
     private var observer: NSObjectProtocol?
+    /// `notifyclick ID`: true once that notification is known (it may not have
+    /// arrived yet, so the driver retries for a while).
+    var notifyClick: ((String) -> Bool)?
+    /// `mediacmd ACTION`: the Now Playing transport controls' target.
+    var mediaCommand: ((String) -> Void)?
 
     init(actions: [DebugInputAction]) {
         self.actions = actions
@@ -350,6 +369,15 @@ final class DebugInputDriver {
         case .hover(let target):
             let point = view.convert(location(target, in: view), to: nil)
             (view.window?.windowController as? StreamWindowController)?.pointerMoved(toWindowPoint: point)
+        case .notifyClick(let id):
+            // The phone's posts arrive on their own schedule; give a late one
+            // ~10 s, pumping the run loop so its frames can land.
+            for _ in 0..<40 {
+                if notifyClick?(id) == true { return }
+                RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.25))
+            }
+        case .mediaCommand(let action):
+            mediaCommand?(action)
         case .wait(let seconds):
             RunLoop.current.run(until: Date(timeIntervalSinceNow: seconds))
         case .pinch(let target, let scale):
