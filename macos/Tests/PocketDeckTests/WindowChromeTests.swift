@@ -324,11 +324,11 @@ final class StreamChromeImmersiveTests: XCTestCase {
         XCTAssertEqual(manager.styleStore.style(forKey: WindowStyleStore.key(forPackage: "com.example.app")),
                        .framed)
         XCTAssertTrue(trafficLightsShown(window), "framed shows the lights again")
-        XCTAssertFalse(controller.chrome.toggleHidden, "and the toggle rides the bar again")
         XCTAssertEqual(controller.chrome.pill.alphaValue, 0, "and the pill is gone")
     }
 
-    /// The toggle's action (bar and pill) is the same switch.
+    /// View ▸ Toggle Window Style (⌥⌘F, and the scripted driver's toggle) is
+    /// the same switch: the window size flips by the bar and the style with it.
     func testToggleFlipsTheStyleAndTheWindowSizeByTheBar() throws {
         let manager = makeManager()
         let controller = AppWindowController(stream: 1, pkg: "com.example.app", activity: nil,
@@ -355,6 +355,37 @@ final class StreamChromeImmersiveTests: XCTestCase {
         XCTAssertEqual(controller.style, .immersive)
         window.orderFront(nil)
         XCTAssertEqual(window.frame.size, NSSize(width: 900, height: 600))
+    }
+
+    /// The round trip the user asked for: switch an app's window, close it, and
+    /// the window that opens again for the same package comes back in the
+    /// switched style — one window's choice never reaches another's.
+    func testAReopenedAppComesBackInTheSwitchedStyle() throws {
+        let manager = makeManager()
+        let first = AppWindowController(stream: 1, pkg: "com.example.app", activity: nil,
+                                        label: "Example", manager: manager)
+        defer { first.window?.close() }
+        let window = try XCTUnwrap(first.window)
+        window.orderFront(nil)
+        XCTAssertEqual(first.style, .framed, "no stored choice opens framed")
+        first.setStyle(.immersive)
+        XCTAssertEqual(manager.styleStore.style(forKey: WindowStyleStore.key(forPackage: "com.example.app")),
+                       .immersive, "the switch wrote the package's key")
+
+        // Same manager (so the same profile defaults), a new window for the
+        // same package: it opens in the stored style. Another package in the
+        // same run still gets framed.
+        let second = AppWindowController(stream: 2, pkg: "com.example.app", activity: nil,
+                                         label: "Example", manager: manager)
+        defer { second.window?.close() }
+        XCTAssertEqual(second.style, .immersive)
+        let secondWindow = try XCTUnwrap(second.window)
+        XCTAssertEqual(secondWindow.frame.size, NSSize(width: 900, height: 600), "the window is the stream alone")
+
+        let other = AppWindowController(stream: 3, pkg: "com.example.other", activity: nil,
+                                        label: "Other", manager: manager)
+        defer { other.window?.close() }
+        XCTAssertEqual(other.style, .framed, "another package opens framed")
     }
 
     /// Full screen drops the chrome in both styles: the stream is the whole
