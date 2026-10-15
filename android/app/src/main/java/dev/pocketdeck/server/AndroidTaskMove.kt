@@ -1,27 +1,46 @@
 package dev.pocketdeck.server
 
+import android.content.Intent
+import android.content.pm.PackageManager
+
 /**
  * The system's task list and its task-to-display move, through reflection at
  * shell UID (docs/design/handoff.md).
  *
- * Listing goes through `IActivityTaskManager.getTasks` (service
- * "activity_task"), with the public `ActivityManager.getRunningTasks` behind
- * it. Moving goes through `IActivityTaskManager.moveRootTaskToDisplay`, which
- * is the binder call `am stack movetask`-style shell commands end up in; the
+ * Listing prefers `IActivityTaskManager.getTasks(int, boolean, boolean, int)`
+ * (the one-arg form of older versions and the public `getRunningTasks` behind
+ * it), falling back to `getAllRootTaskInfos`. The move is
+ * `IActivityTaskManager.moveRootTaskToDisplay(taskId, displayId)` — the binder
+ * call the `cmd activity display move-stack`-style shell commands end in; the
  * shell holds MANAGE_ACTIVITY_TASKS through the com.android.shell manifest.
- * A refusal is logged and returns false: the session relaunches the same
- * package on the new display instead ("fresh" handoff).
+ * A move is verified by re-reading the list (the service returns void and
+ * quietly ignores an unknown task id); a refusal logs and returns false, and
+ * the session relaunches the same package on the display instead ("fresh").
  */
-internal class AndroidTaskMove(private val log: (String) -> Unit) : TaskMove {
+internal class AndroidTaskMove(private val ctx: android.content.Context, private val log: (String) -> Unit) : TaskMove {
 
     private val taskManager: Any? = Hidden.proxy("android.app.IActivityTaskManager", "activity_task")
     private val taskManagerClass: Class<*>? = Hidden.iface("android.app.IActivityTaskManager")
 
     private var loggedTasksPath = false
-    private var loggedMovePath = false
+
+
+    /**
+     * Package(s) that answer CATEGORY_HOME. The task list's `isHomeTask` flag
+     * is not reliably set across API levels (verified: the launcher's task
+     * reports no flag on API 36), so the home surface is excluded by name too.
+     */
+    @Volatile private var homePackages: Set<String> = emptySet()
 
     override fun tasks(): List<SystemTask>? {
-        val raw = listViaTaskManager() ?: runGetRunningTasks() ?: return null
+        if (homePackages.isEmpty()) {
+            homePackages = resolveHomePackages()
+            log("home packages: $homePackages")
+        }
+        val raw = viaGetTasks() ?: viaAllRootTaskInfos() ?: run {
+            log("task list: no source answered (getTasks / getAllRootTaskInfos)")
+            return null
+        }
         val out = ArrayList<SystemTask>(raw.size)
         for (item in raw) {
             val info = item ?: continue
@@ -30,58 +49,69 @@ internal class AndroidTaskMove(private val log: (String) -> Unit) : TaskMove {
         }
         if (!loggedTasksPath) {
             loggedTasksPath = true
-            log("task list: ${raw.size} tasks -> ${out.size} continuable-shaped")
+            log("task list (first): ${raw.size} entries, ${out.size} with a package")
         }
+        log("picked pool: ${out.joinToString { "${it.pkg}#" + it.taskId + "@d" + it.displayId + (if (it.isHome) "(home)" else "") + (if (it.isSystemUi) "(sysui)" else "") }}")
         return out
     }
 
     override fun move(taskId: Int, displayId: Int): Boolean {
-        return try {
+        val ok = try {
             val tm = taskManager ?: return false
             val cls = taskManagerClass ?: return false
             val method = Hidden.method(cls, "moveRootTaskToDisplay", Hidden.T_INT, Hidden.T_INT)
-                ?: return false
+                ?: run { log("no IActivityTaskManager.moveRootTaskToDisplay"); return false }
             method.invoke(tm, taskId, displayId)
-            if (!loggedMovePath) {
-                loggedMovePath = true
-                log("moving task $taskId via IActivityTaskManager.moveRootTaskToDisplay")
-            }
+            log("moving task $taskId via IActivityTaskManager.moveRootTaskToDisplay")
             true
         } catch (e: Throwable) {
-            log("moveRootTaskToDisplay($taskId -> $displayId) failed: ${e.message ?: e}")
+            log("moveRootTaskToDisplay($taskId -> $displayId) refused: ${e.message ?: e}")
             false
         }
+        // The service returns void and logs-and-returns on an unknown id, so
+        // the reply alone is no proof: check where the task actually ended up.
+        if (!ok) return false
+        val landed = runCatching { tasks() }.getOrNull()
+        val verified = landed != null && landed.any { it.taskId == taskId && it.displayId == displayId }
+        if (!verified) log("move: task $taskId did not report display $displayId after the call")
+        return verified
     }
 
     // ------------------------------------------------------------------
 
-    /** `IActivityTaskManager.getTasks(maxNum)` -> the raw task list. */
-    private fun listViaTaskManager(): List<*>? = runCatching {
+    /** `IActivityTaskManager.getTasks(maxNum, filterOnlyVisible, keepIntentExtra, displayId)`; -1 = every display. */
+    private fun viaGetTasks(): List<*>? {
         val tm = taskManager ?: return null
         val cls = taskManagerClass ?: return null
         val method = cls.methods.firstOrNull {
-            it.name == "getTasks" && it.parameterTypes.size == 1 &&
-                it.parameterTypes[0] == Hidden.T_INT
-        } ?: return null
-        method.invoke(tm, MAX_TASKS) as? List<*>
-    }.getOrNull()
+            it.name == "getTasks" && it.parameterTypes.contentEquals(arrayOf(Hidden.T_INT, Hidden.T_BOOL, Hidden.T_BOOL, Hidden.T_INT))
+        }
+        if (method == null) return null
+        return runCatching { @Suppress("UNCHECKED_CAST") method.invoke(tm, MAX_TASKS, false, false, -1) as? List<*> }
+            .onFailure { log("getTasks failed: ${it.message ?: it}") }
+            .getOrNull()
+            ?.takeIf { it.isNotEmpty() }
+    }
 
-    /** The public (deprecated) API: full for shell UID, truncated for apps. */
-    private fun runGetRunningTasks(): List<*>? = runCatching {
-        val am = Class
-            .forName("android.app.ActivityManager")
-            .getMethod("getRunningTasks", Hidden.T_INT)
-            .invoke(null, MAX_TASKS) as? List<*>
-        if (am == null) null else am
-    }.getOrNull()
+    /** One entry per root task (a display's task stack); enough to find the top task. */
+    private fun viaAllRootTaskInfos(): List<*>? {
+        val tm = taskManager ?: return null
+        val cls = taskManagerClass ?: return null
+        val method = cls.methods.firstOrNull { it.name == "getAllRootTaskInfos" && it.parameterTypes.isEmpty() }
+            ?: return null
+        return runCatching { method.invoke(tm) as? List<*> }
+            .onFailure { log("getAllRootTaskInfos failed: ${it.message ?: it}") }
+            .getOrNull()
+            ?.takeIf { it.isNotEmpty() }
+    }
 
-    /** Reads a TaskInfo / RunningTaskInfo-shaped object (public fields, var names). */
+    /** Reads a TaskInfo / RunningTaskInfo-shaped object (public fields, then getters). */
     private fun toSystemTask(info: Any): SystemTask? {
         val id = intValue(info, "taskId") ?: return null
         val display = intValue(info, "displayId") ?: return null
         val component = componentValue(info, "topActivity") ?: componentValue(info, "baseActivity")
         val pkg = component?.packageName ?: ""
-        val home = boolValue(info, "isHomeTask")
+        val home = boolValue(info, "isHomeTask") || homePackages.contains(pkg)
         return SystemTask(
             taskId = id,
             pkg = pkg,
@@ -90,6 +120,18 @@ internal class AndroidTaskMove(private val log: (String) -> Unit) : TaskMove {
             isHome = home,
             isSystemUi = pkg == "com.android.systemui",
         )
+    }
+
+    /** The default package that answers CATEGORY_HOME. Only the default home:
+     *  queryIntentActivities also returns stray home declarations (Settings does on AOSP). */
+    private fun resolveHomePackages(): Set<String> {
+        val out = HashSet<String>()
+        runCatching {
+            val home = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME)
+            ctx.packageManager.resolveActivity(home, PackageManager.MATCH_DEFAULT_ONLY)
+                ?.activityInfo?.packageName?.let(out::add)
+        }.onFailure { log("home resolution failed: ${it.message ?: it}") }
+        return out
     }
 
     private fun intValue(info: Any, name: String): Int? = readMember(info, name) as? Int
