@@ -4,10 +4,29 @@ import PackageDescription
 let package = Package(
     name: "PocketDeck",
     platforms: [.macOS("26.0")],
+    dependencies: [
+        // v2 TLS transport (docs/design/e2ee.md §1): SwiftNIO-SSL vendoring
+        // BoringSSL in-memory, same major line the spikes proved.
+        .package(url: "https://github.com/apple/swift-nio.git", from: "2.77.0"),
+        .package(url: "https://github.com/apple/swift-nio-ssl.git", from: "2.30.0"),
+        .package(url: "https://github.com/apple/swift-certificates.git", from: "1.0.0"),
+        .package(url: "https://github.com/apple/swift-asn1.git", from: "1.0.0"),
+        // Pinned to the collection line the spikes run against: newer majors
+        // need newer compiler features than tools-version 5.10 allows.
+        .package(url: "https://github.com/apple/swift-collections.git", exact: "1.1.4"),
+    ],
     targets: [
         // The app is a single executable target so its wiring (AppKit views,
         // windows, session) can be exercised directly by the test target.
-        .executableTarget(name: "PocketDeck", path: "Sources/PocketDeck"),
+        .executableTarget(
+            name: "PocketDeck",
+            dependencies: [
+                .product(name: "NIOSSL", package: "swift-nio-ssl"),
+                .product(name: "X509", package: "swift-certificates"),
+                .product(name: "SwiftASN1", package: "swift-asn1"),
+            ],
+            path: "Sources/PocketDeck"
+        ),
         .testTarget(name: "PocketDeckTests", dependencies: ["PocketDeck"], path: "Tests/PocketDeckTests"),
     ]
 )
