@@ -15,10 +15,8 @@ images travel both ways. Dragging **out** of a phone window is design only (§Dr
   `drop.result {ok:true,path}` / `{ok:false,code:"bad_request"|"too_large"|"busy"|"checksum"|
   "cancelled"|"failed","message"}`. `drop.cancel {id}` any time; session end abandons (partial
   file removed). Cap 200 MiB counted while receiving; one drop per phone (a second `start` → `busy`).
-- **Resume**: `resume:bytes` + a partial temp file for the same `(name,size,sha256)` → the phone
-  answers `drop.progress` with the verified offset and the Mac streams on; otherwise from zero.
-- Names: `[A-Za-z0-9 ._-]`, ≤ 100 chars, no leading dot, collisions " 2", " 3"… — the share-in
-  receiver's rules, enforced on both sides.
+- **Resume**: `resume:bytes` + a partial temp for the same `(name,size,sha256)` → the phone answers `drop.progress` with the verified offset and the Mac streams on; otherwise from zero.
+- Names: `[A-Za-z0-9 ._-]`, ≤ 100 chars, no leading dot, collisions " 2", " 3"… — the share-in receiver's rules, on both sides.
 
 ## Phone side (shell UID, like the APK path) — progress in the window
 A glass pill like the reconnect pill shows "Sending report.pdf… 43 %" and the outcome for 5 s. All bytes stream into a hidden temp file in `/sdcard/Download/PocketDeck/` (`mkdir -p` on demand;
