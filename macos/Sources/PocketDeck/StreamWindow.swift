@@ -102,6 +102,8 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     }
 
     func sendOpen() {}
+    /// Reapply the window's title after the phone's display name changed.
+    func retitle() {}
     func sendResize() {
         let pixels = displayPixels()
         session.resizeWindow(stream: stream, width: Int(pixels.width), height: Int(pixels.height), dpi: dpi())

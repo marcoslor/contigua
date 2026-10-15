@@ -7,6 +7,9 @@ import AppKit
 final class PhoneWindowController: StreamWindowController {
     let phoneScreen: CGSize
     let phoneDpi: Double
+    /// What the phone last reported as this window's title (nil until it does):
+    /// before that the window names the phone itself.
+    private(set) var subject: String?
 
     static let fallbackScreen = CGSize(width: 1080, height: 2340)
     static let fallbackDpi: Double = 420
@@ -19,10 +22,19 @@ final class PhoneWindowController: StreamWindowController {
         let videoHeight = (visibleHeight * 0.75).rounded()
         let width = (videoHeight * self.phoneScreen.width / self.phoneScreen.height).rounded()
         super.init(stream: stream, contentSize: NSSize(width: width, height: videoHeight), manager: manager)
-        window?.title = phone?.name ?? "Phone"
+        // The phone window names the phone itself: its display name (the
+        // nickname, else the phone's own name), and what the phone reports
+        // once it sends `window.title` for this stream.
+        window?.title = Self.title(name: manager.phoneName, phone: phone)
         window?.minSize = WindowChrome.windowSize(stream: NSSize(
             width: Self.minVideoWidth, height: Self.minVideoWidth * phoneScreen.height / phoneScreen.width))
         videoView.inputMapper?.isPhoneMode = true
+    }
+
+    /// The display name, or the remembered phone name while unknown.
+    private static func title(name: String, phone: PhoneInfo?) -> String {
+        if !name.isEmpty { return name }
+        return phone?.name.isEmpty == false ? phone!.name : "Phone"
     }
 
     @available(*, unavailable)
@@ -61,9 +73,18 @@ final class PhoneWindowController: StreamWindowController {
         session.openPhone(stream: stream, width: Int(pixels.width), height: Int(pixels.height), dpi: dpi())
     }
 
-    func setTitle(_ label: String) {
+    func setSubject(_ label: String) {
         guard !label.isEmpty else { return }
-        window?.title = label
+        subject = label
+        window?.title = manager.titled(label)
+    }
+
+    override func retitle() {
+        if let subject {
+            window?.title = manager.titled(subject)
+            return
+        }
+        window?.title = Self.title(name: manager.phoneName, phone: manager.phone)
     }
 
     override var frameKey: String { "phone" }

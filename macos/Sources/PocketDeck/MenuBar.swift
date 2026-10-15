@@ -71,7 +71,8 @@ struct MenuBarContent: View {
     }
 
     private var statusLine: String {
-        guard let name = controller.activePhone?.name else { return "No phone paired" }
+        guard let phone = controller.activePhone else { return "No phone paired" }
+        let name = controller.displayName(for: phone, fallback: "your phone")
         switch controller.link {
         case .online: return "● Connected to \(name)"
         case .connecting: return "Connecting…"

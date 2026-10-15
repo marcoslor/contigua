@@ -7,6 +7,42 @@
 
 import Foundation
 
+/// The nickname a phone was given in Settings → Devices: per device id in the
+/// profile's defaults, separate from the phone's own (reported) name. Empty
+/// after normalizing means "no nickname": the phone's own name is used.
+enum PhoneNicknames {
+    static let key = "phoneNicknames"
+    /// A nickname never shows longer than this; longer input is clamped.
+    static let maxLength = 40
+
+    /// Trimmed, whitespace collapsed away, at most `maxLength` characters.
+    static func normalize(_ raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        let compact = trimmed.split(whereSeparator: { $0.isWhitespace || $0.isNewline })
+            .joined(separator: " ")
+        return String(compact.prefix(maxLength))
+    }
+
+    static func read(from defaults: UserDefaults, deviceId: String) -> String {
+        (defaults.dictionary(forKey: key) as? [String: String])?[deviceId] ?? ""
+    }
+
+    static func write(_ raw: String, for deviceId: String, to defaults: UserDefaults) {
+        guard !deviceId.isEmpty else { return }
+        var all = (defaults.dictionary(forKey: key) as? [String: String]) ?? [:]
+        let name = normalize(raw)
+        // No nickname stored is the same as an empty one: the phone's own name wins.
+        if name.isEmpty { all.removeValue(forKey: deviceId) } else { all[deviceId] = name }
+        if all.isEmpty { defaults.removeObject(forKey: key) } else { defaults.set(all, forKey: key) }
+    }
+
+    static func remove(for deviceId: String, from defaults: UserDefaults) {
+        var all = (defaults.dictionary(forKey: key) as? [String: String]) ?? [:]
+        guard all.removeValue(forKey: deviceId) != nil else { return }
+        if all.isEmpty { defaults.removeObject(forKey: key) } else { defaults.set(all, forKey: key) }
+    }
+}
+
 struct RememberedPhone: Codable, Equatable, Identifiable {
     var id: String
     var name: String
@@ -64,6 +100,7 @@ final class RememberedPhones {
 
     func forget(id: String) {
         save(all.filter { $0.id != id })
+        PhoneNicknames.remove(for: id, from: defaults)
         if defaults.string(forKey: Self.activeKey) == id { defaults.removeObject(forKey: Self.activeKey) }
     }
 
@@ -90,6 +127,22 @@ final class RememberedPhones {
 
     private func save(_ phones: [RememberedPhone]) {
         if let data = try? JSONEncoder().encode(phones) { defaults.set(data, forKey: Self.phonesKey) }
+    }
+}
+
+// MARK: The one phone name
+
+extension RememberedPhones {
+    /// THE name this Mac shows for a phone, everywhere it is named (Deck title,
+    /// menu bar, banners, notifications, Spotlight, window and Dock titles):
+    /// the nickname from Settings → Devices when one is set, else the phone's
+    /// own name (ref's reported one, or the remembered one), else `fallback`.
+    func displayName(for phone: PhoneRef, fallback: String = "Phone") -> String {
+        let nickname = PhoneNicknames.read(from: defaults, deviceId: phone.id)
+        if !nickname.isEmpty { return nickname }
+        if !phone.name.isEmpty { return phone.name }
+        if let remembered = self.phone(id: phone.id), !remembered.name.isEmpty { return remembered.name }
+        return fallback
     }
 }
 

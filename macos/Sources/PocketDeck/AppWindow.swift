@@ -5,6 +5,8 @@ import AppKit
 final class AppWindowController: StreamWindowController {
     let pkg: String
     let activity: String?
+    /// The app label the window title names (WindowManager appends the phone).
+    private(set) var subject: String
 
     /// The stream is 900 × 600; the window adds the hover padding around it.
     static let defaultContentSize = NSSize(width: 900, height: 600)
@@ -12,8 +14,9 @@ final class AppWindowController: StreamWindowController {
     init(stream: UInt32, pkg: String, activity: String?, label: String, manager: WindowManager) {
         self.pkg = pkg
         self.activity = activity
+        subject = label
         super.init(stream: stream, contentSize: Self.defaultContentSize, manager: manager)
-        window?.title = label
+        window?.title = manager.titled(label)
         window?.minSize = WindowChrome.windowSize(stream: NSSize(width: 320, height: 240))
     }
 
@@ -28,8 +31,14 @@ final class AppWindowController: StreamWindowController {
 
     override var frameKey: String { "app.\(pkg)" }
 
-    func setTitle(_ label: String) {
-        window?.title = label
+    /// A new subject (the app label, or what the phone reports as the title).
+    func setSubject(_ label: String) {
+        subject = label
+        window?.title = manager.titled(label)
+    }
+
+    override func retitle() {
+        window?.title = manager.titled(subject)
     }
 }
 
@@ -37,6 +46,8 @@ final class AppWindowController: StreamWindowController {
 /// title follows whichever app ends up on top of its display.
 final class LinkWindowController: StreamWindowController {
     let url: String
+    /// What the title names: the host, later the app the phone reported.
+    private(set) var subject: String
 
     /// The package the phone displays for the link, once its `window.title`
     /// names it: the window's Dock identity stands for that app
@@ -45,8 +56,9 @@ final class LinkWindowController: StreamWindowController {
 
     init(stream: UInt32, url: String, manager: WindowManager) {
         self.url = url
+        subject = Self.title(for: url)
         super.init(stream: stream, contentSize: AppWindowController.defaultContentSize, manager: manager)
-        window?.title = Self.title(for: url)
+        window?.title = manager.titled(subject)
         window?.minSize = WindowChrome.windowSize(stream: NSSize(width: 320, height: 240))
     }
 
@@ -66,13 +78,19 @@ final class LinkWindowController: StreamWindowController {
 
     override var frameKey: String { "link" }
 
-    func setTitle(_ label: String) {
-        window?.title = label
+    /// A new subject (the host, or the app title the phone reports).
+    func setSubject(_ label: String) {
+        subject = label
+        window?.title = manager.titled(label)
     }
 
     /// The phone reported the app that displays the link.
     func adopt(pkg: String) {
         guard self.pkg == nil, !pkg.isEmpty else { return }
         self.pkg = pkg
+    }
+
+    override func retitle() {
+        window?.title = manager.titled(subject)
     }
 }
