@@ -15,11 +15,11 @@ not invent styling. No hard-coded colors except where a hex is given below.
 | Color | `Color.accentColor`, `.primary/.secondary/.tertiary`, `.quaternary` fills, system `.green/.orange/.red` for status only. Vibrancy comes from glass; never set text color on glass beyond hierarchical styles |
 
 ### Liquid Glass rules
-- Glass is for the **floating/navigation layer** only: cards, rows in lists over a backdrop, the launcher panel, chips, the stream hover header, footer buttons. Never put glass on glass: content *inside* a glass surface uses `.quaternary` fills or accent tints, not another `.glassEffect`.
+- Glass is for the **floating/navigation layer** only: cards, rows in lists over a backdrop, the launcher panel, chips, the stream dwell pill, footer buttons. Never put glass on glass: content *inside* a glass surface uses `.quaternary` fills or accent tints, not another `.glassEffect`.
 - Static surfaces: `.glassEffect(.regular, in: .rect(cornerRadius: R))`. Things the user clicks/hovers that are themselves glass (rows, chips): `.glassEffect(.regular.interactive(), in: …)`.
 - Group adjacent glass elements in `GlassEffectContainer(spacing: 8)`; give morphing elements `.glassEffectID(id, in: ns)` with a `@Namespace var ns`.
 - Buttons: the one primary action per screen = `.buttonStyle(.glassProminent)` (accent-tinted); everything else = `.buttonStyle(.glass)`. Destructive = `.glass` + `role: .destructive`. Primary uses `.controlSize(.large)`, row buttons `.controlSize(.small)`.
-- AppKit-hosted bits (launcher `NSPanel`, stream-window hover header): `NSGlassEffectView` with `cornerRadius` set, SwiftUI content as its `contentView` via `NSHostingView`. Multiple adjacent ones go in `NSGlassEffectContainerView`.
+- AppKit-hosted bits (launcher `NSPanel`, stream-window dwell pill): `NSGlassEffectView` with `cornerRadius` set, SwiftUI content as its `contentView` via `NSHostingView`. Multiple adjacent ones go in `NSGlassEffectContainerView`.
 - Reduce Transparency / Increase Contrast: rely on system fallback; do not add custom fallbacks.
 
 ### Motion
@@ -89,21 +89,24 @@ Spec of every state, copy and transitions: [design/mac-redesign.md](design/mac-r
   clamped to 320–2560, aspect kept). Because of the 16 px floor the video can be up to 15 px narrower or shorter than the view; when the aspect ratios differ by ≤ 2 % the layer
   stretches over it (`videoGravity = .resize`, `Letterbox.fills`) instead of showing thin black bars, and input is mapped against the same rectangle. A real mismatch (a frame of the
   old shape mid-resize) is still aspect-fitted.
-- **Hover chrome** (`WindowChrome.swift`; inspired by Apple's iPhone Mirroring). The window is the stream plus a 52 pt header band above it (none in full screen); its left,
-  right and bottom edges are the stream's, so the system resize edges are at the visible picture at rest. The stream has 16 pt continuous corners and is never covered, moved or
-  resized by the chrome; the virtual display is sized from the stream rect only. At rest the band is fully transparent and the window shadow follows the stream
-  (`invalidateShadow` on every fade). The thin dark line around a resting window is the system window border, drawn by the window server along the visible shape.
-  - Hover the top 12 pt of the stream or the hidden band: the band fades in at once (0.1 s, no delay) as a clear `NSGlassEffectView` (cornerRadius 16) with the window's own
-    traffic lights at its left and the window's actions at its right on the same centre line, 12 pt in (phone window: Back `chevron.backward` · Home `circle` · Recents
-    `square.on.square`, 13 pt semibold `.primary`, 32×28 each, tooltips; app windows: none). It fades out (0.15 s) as soon as the pointer leaves the band and the zone. An open
-    menu or a drag (moving the window, a live resize) keeps it shown but never brings it in.
-  - At rest, clicks in the band pass through to whatever is behind (a transparent titled window still takes clicks, so `ignoresMouseEvents` is set while the pointer is over the
-    hidden band; global mouse-move monitors notice it coming). The traffic lights are `isHidden` at rest (alpha stays 1 so ⌘W/⌘M keep working). While shown, a drag on the
-    band moves the window (`performDrag`), double-click zooms. Resizing from the top uses the band's top edge, which is there as soon as the pointer reaches the stream's top
-    edge; the stream's own top edge is not a resize edge at rest (the window's frame starts at the band).
-  - The state machine (`HeaderHover`) is pure with the time passed in; `HeaderController` runs it on a one-shot timer. `--debug-chrome-state FILE` writes
-    `header=shown|hidden lights=shown|hidden clicks=N` (N = clicks the band's background received) there for the e2e check.
-  - Idle cost: no timers at rest, only mouse-move monitors.
+- **Window chrome by style** (`StreamChrome.swift` + `WindowStyle.swift`; View ▸ Window Style, ⌥⌘F toggles). The window is the stream plus a 28 pt bar above it in
+  Framed (the default, none in full screen); Immersive is exactly the stream. The other three edges are the stream's own; the corners round once on the window's
+  container (every child paints square so the bar's seam stays straight); 16 pt continuous corners on the window; the virtual display is sized from the stream
+  rect only, never the style.
+  - **Framed bar.** An `NSBackgroundExtensionView` has the video view as its `contentView` and fills the whole window, so the band above the video is the
+    stream's own top 28 pt mirrored there — live, with the system's progressive blur, no CPU readback and no second decode. An `NSVisualEffectView`
+    (`.menu`, within-window) lies over the bar and carries the alpha ramp itself via `NSImage.maskImage` (a plain stretched gradient): material 0.15 at the
+    seam → 0.75 at the top, i.e. mirror alpha 0.85 → 0.25. `chrome.bar.alphaSeam` / `chrome.bar.alphaTop` override each (the system blur replaces `chrome.bar.blur`; it isn't tunable).
+  - **Immersive.** A 72×32 pt hot zone at the stream's top-left. A click there before the dwell reaches the app as an ordinary touch (no added delay) and
+    restarts the rest; a 350 ms rest (moved < 3 pt) fades the pill in over 0.12 s — `NSGlassEffectView` corner 8 with the window's traffic lights on its
+    slots (8 pt in, 23 pt apart) and the kind's actions after them (app windows: none). It fades back 600 ms after the pointer leaves zone and pill; while
+    shown, a click on its empty area drags the window, a double-click zooms.
+  - **Switching.** View ▸ Window Style's Framed/Immersive radio items and Toggle Window Style (⌥⌘F): the window grows or shrinks by the bar above the stream
+    (`WindowStyle.frame` moves it down just enough when the bar would poke above the visible frame) and the choice lands per package under
+    `chrome.style.<package>` (`chrome.style.phone` for the phone window); a window with nothing stored opens Framed and re-applies the stored style when it
+    learns its package (link/handoff).
+  - `DebugInput windowstyle framed|immersive|toggle` drives it; `--debug-chrome-state FILE` writes `style=framed|immersive lights=shown|hidden pill=shown|hidden clicks=N`
+    (N = clicks the bar's or the pill's background received) there for the e2e check.
 - **Link pill:** `NSGlassEffectView` (cornerRadius 18), 36 pt high, "Reconnecting…" `.caption` + `ProgressView().controlSize(.small)`, bottom centre 24 pt above the edge,
   fades in after 1 s of link loss, "Phone offline" after 15 s, fades out (0.3 s) when the link returns.
 
@@ -220,7 +223,7 @@ right (**Phone**, the Settings `gearshape` opening Settings, ⌘,, then the sear
 the groups ·
 grid ≤ 56 pt icons (generated initial tile when the phone has none), one-line labels, equal 20 pt side insets, the scroll bar never over a tile · at most one cell highlighted in accent tint · offline/reconnecting: dimmed grid + chip, banner only when action is needed.
 **Mac — Banner:** one line, one trailing button at most, never a reason code.
-**Mac — App window:** frameless: only the stream, rounded corners and the system shadow · a glass header (with the traffic lights) fades in above the stream, outside it, at once on hover and out as soon as the pointer leaves, the stream never moves; the window's sides and bottom are the stream's edges · title = app name (Window menu only), no visible toolbar · "Reconnecting…" pill over the last frame while the link is down · phone window: Back · Home · Recents at the header's right.
+**Mac — App window:** two styles (View ▸ Window Style, ⌥⌘F; remembered per app package, no stored choice = Framed): **Framed** (default) = the stream plus a permanent 28 pt bar above it — the stream's own top rows mirrored there under the window material, traffic lights on the bar's line, phone window: Back · Home · Recents at the bar's right; **Immersive** = only the stream, rounded corners and the system shadow, a glass pill with the traffic lights at the stream's top-left after a 350 ms rest (a click in that corner before the dwell is the app's ordinary touch); switching grows or shrinks the window by the bar, the stream keeps its place; full screen has no chrome in either style · "Reconnecting…" pill over the last frame while the link is down.
 **Mac — Settings:** exactly two tabs (General, Devices) · General has exactly 3 controls · Forget is red.
 **Mac — Menu bar:** status line first · items in the order listed · icon changes with connection state.
 **Android — Onboarding:** progress bar at top advances per step · no swipe between pages · one primary button per page · Shizuku row shows current state text + matching button · Scan QR is outlined.

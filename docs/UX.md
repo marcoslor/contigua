@@ -55,18 +55,18 @@ Detail, states, copy and the connection state machine: [design/mac-redesign.md](
      The app grid (single click opens, arrows move, ↩ opens, esc clears).
      The grid is there at launch from the last session and is dimmed while the phone is away. A problem is one banner
      line with at most one button (Try now / Pair again).
-2. **App windows**: only the stream, with rounded corners and a shadow; no title bar, and the desktop shows right up to the stream. Bring
-   the pointer to the stream's top edge and a glass header (with the traffic lights) appears at once *above* the stream, never over it; drag
-   the glass to move the window. The stream's own edges resize the window. The header goes as soon as the pointer leaves, and clicks above a resting
-   window reach what is behind it. The stream never moves or changes size for it. The trackpad works like a touch screen: a two-finger scroll is a finger dragging
+2. **App windows**: two styles, View ▸ Window Style (⌥⌘F toggles), remembered per app: **Framed** (default) is the stream plus a permanent 28 pt bar
+   above it — the stream's own top rows mirrored under the window material, the traffic lights on that line; **Immersive** is only the stream, with rounded
+   corners and a shadow, no title bar, and the desktop shows right up to it; a 350 ms rest at its top-left fades in a small glass pill with the traffic
+   lights (Back · Home · Recents join it in phone mode), a click in that corner before the dwell reaches the app as an ordinary touch, and the pill fades
+   out 600 ms after the pointer leaves. Switching grows or shrinks the window by the bar, the stream keeps its place. The stream's own edges resize the window. The trackpad works like a touch screen: a two-finger scroll is a finger dragging
    (Android's own scrolling, overscroll and fling), a pinch or rotate is two fingers around the pointer, the mouse wheel stays a wheel, the mouse's side
    **Back** button (button 3) sends Android Back to that window once per press — never repeated while held, nothing on release, and never a touch —
    while **Forward** (button 4) does nothing for now, and three or more
    fingers stay the system's; Back also arrives as a right click, ⌘[, or a swipe-back event from mouse utilities (Logi Options+), once per gesture.
    **View → Show Touches** draws a dot where the phone is being touched (off by default).
    New windows cascade (never on top of the Deck) and remember their frame. While the connection is down a small glass pill
-   ("Reconnecting…") sits over the last frame; the window stays open. Phone mode: Back · Home · Recents sit at the right
-   of the hover header.
+   ("Reconnecting…") sits over the last frame; the window stays open.
    While an app window is open, its app appears in the Dock and ⌘-Tab as "App (Nickname)" (a link window as the app that
    displays the link; the phone mirror as nothing). It arrives on its own, ends when the window closes, and **Options → Keep in Dock**
    makes it permanent ("Add to Dock" in the app's context menu does the same by hand; Settings → General switches it off).
