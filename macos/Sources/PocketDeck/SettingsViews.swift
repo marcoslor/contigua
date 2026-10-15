@@ -70,6 +70,10 @@ struct DevicesSettings: View {
                 ForEach(controller.rememberedPhones) { phone in row(phone) }
             }
             Section {
+                Text("Notifications and the playing media session per phone stay off until you turn them on; the phone only shares with a paired Mac.")
+                    .font(.subheadline).foregroundStyle(.secondary)
+            }
+            Section {
                 Button("Add phone…") {
                     DeckWindow.show()
                     controller.sheet = .addPhone
@@ -129,13 +133,16 @@ struct DevicesSettings: View {
     private func row(_ phone: RememberedPhone) -> some View {
         let isActive = controller.activePhone?.id == phone.id
         return LabeledContent {
-            HStack(spacing: 8) {
-                stateText(phone, isActive: isActive)
-                Button("Rename…") { controller.beginRename(phone) }
-                if !isActive {
-                    Button("Use") { controller.use(phone) }.buttonStyle(.glass)
+            VStack(alignment: .trailing, spacing: 8) {
+                HStack(spacing: 8) {
+                    stateText(phone, isActive: isActive)
+                    Button("Rename…") { controller.beginRename(phone) }
+                    if !isActive {
+                        Button("Use") { controller.use(phone) }.buttonStyle(.glass)
+                    }
+                    Button("Forget", role: .destructive) { forgetting = phone }.buttonStyle(.glass).foregroundStyle(.red)
                 }
-                Button("Forget", role: .destructive) { forgetting = phone }.buttonStyle(.glass).foregroundStyle(.red)
+                PhoneNotifyToggle(deviceId: phone.id)
             }
         } label: {
             VStack(alignment: .leading, spacing: 2) {
@@ -160,5 +167,38 @@ struct DevicesSettings: View {
         let seen = isActive && controller.link.isOnline
             ? "now" : phone.lastSeen.formatted(.relative(presentation: .named))
         return [phone.model, "Last seen \(seen)"].filter { !$0.isEmpty }.joined(separator: " · ")
+    }
+}
+
+/// Per-phone notify toggle storage (privacy: default OFF, docs/design/notify.md).
+enum NotifyToggle {
+    static func key(deviceId: String) -> String { "notify.\(deviceId)" }
+
+    /// A phone has no stored value until a person opted in: off until then.
+    static func isEnabled(deviceId: String, defaults: UserDefaults) -> Bool {
+        defaults.bool(forKey: key(deviceId: deviceId))
+    }
+}
+
+/// The per-phone opt-in row (privacy default OFF; docs/design/notify.md). The
+/// change tells the live session right away; a fresh session picks it up from
+/// the stored flag.
+private struct PhoneNotifyToggle: View {
+    let deviceId: String
+
+    @Environment(ConnectionController.self) private var controller
+
+    private var defaults: UserDefaults { Profile.active.defaults }
+    private var key: String { NotifyToggle.key(deviceId: deviceId) }
+
+    var body: some View {
+        Toggle(isOn: Binding(
+            get: { defaults.bool(forKey: key) },
+            set: { controller.notifySettingChanged(deviceId: deviceId, on: $0) },
+        )) {
+            Text("Show notifications + Now Playing")
+        }
+        .toggleStyle(.switch)
+        .controlSize(.small)
     }
 }

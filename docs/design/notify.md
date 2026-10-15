@@ -58,18 +58,19 @@ One per-phone opt-in covers both features; default OFF on the Mac and the phone.
   when, title?, text?, ongoing?}`; `notify.remove {id}`; `media.state {playing, pkg?, title?,
   artist?, album?, durationMs?, positionMs, rate}` — empty media.state (no list fields) clears
   Now Playing.
-- Privacy: notification or media text is never logged (`--notify-log` records only pkg/count);
-  without an answered `notify.enable {on:true}` nothing is forwarded; disconnect clears the
-  Mac's local state.
+- Privacy: notification or media text is never logged (the e2e `--share-log` file records ids, package
+  names and field lengths only, and in that mode nothing is posted to Notification Center); without
+  an answered `notify.enable {on:true}` nothing is forwarded; disconnect clears the Mac's local state.
 
 ## Checks
 
 - Unit tests: notification mapping (title/text extraction incl. BIG_TEXT, caps, skip rules),
   gate (toggle off → nothing leaves), media-state → nowPlayingInfo mapping, command mapping.
-- e2e (`check_notify`, and in `all`): fakephone `--notify`/`--media` emit the phone→mac events
-  after welcome; the Mac's `--notify-log` shows posts; the click hook delivers the same handler
-  a UNNotification click would (fakephone logs `window.open`); media-command hooks deliver
-  play/pause/next/prev (fakephone logs rx `media.command`).
+- e2e (`check_notify`, and in `all`): fakephone emits the phone→mac events after the Mac's
+  `notify.enable {on:true}`; the Mac's `--share-log` shows posts/removals/clicks (sizes, never
+  text); the DebugInput `notifyclick` action delivers the same handler a UNNotification click would
+  (fakephone logs `window.open`); DebugInput `mediacmd` delivers play/pause/next/prev (fakephone logs
+  rx `media.command`).
 - Emulator end to end on emulator-5588: `cmd notification post` → Mac banner (screenshot);
   toggle off → no forwarding; Fossify player → Now Playing at the Mac (values logged); play/
   pause/next/prev from the Mac move the phone session (`dumpsys media_session`); click →

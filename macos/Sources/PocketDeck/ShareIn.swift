@@ -270,14 +270,16 @@ final class ShareInbox {
 }
 
 /// The browser, pasteboard and Notification Center. With a `log` file (`--share-log`,
-/// e2e) links and notifications are recorded there instead of shown.
-final class SystemShareActions: NSObject, ShareInActions, UNUserNotificationCenterDelegate {
+/// e2e) links and notifications are recorded there instead of shown. The UN
+/// delegate lives in NotificationRouter (NotifyCenter.swift), which routes share
+/// responses back here.
+final class SystemShareActions: NSObject, ShareInActions {
     static let category = "pocketdeck.share.image"
     static let showAction = "show"
 
     private let log: URL?
     private let copyText: (String) -> Void
-    private var authorized = false
+    private var registered = false
 
     /// `copyText` writes through the clipboard sync so the text is not echoed back.
     init(log: URL?, copyText: @escaping (String) -> Void) {
@@ -304,9 +306,8 @@ final class SystemShareActions: NSObject, ShareInActions, UNUserNotificationCent
     func notify(title: String, body: String, file: URL?) {
         if log != nil { return record("notify \(title): \(body)") }
         let center = UNUserNotificationCenter.current()
-        if !authorized {
-            authorized = true
-            center.delegate = self
+        if !registered {
+            registered = true
             let show = UNNotificationAction(identifier: Self.showAction, title: "Show in Finder")
             center.setNotificationCategories([UNNotificationCategory(identifier: Self.category, actions: [show],
                                                                      intentIdentifiers: [])])
@@ -324,21 +325,14 @@ final class SystemShareActions: NSObject, ShareInActions, UNUserNotificationCent
         }
     }
 
-    nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter,
-                                            didReceive response: UNNotificationResponse,
-                                            withCompletionHandler completionHandler: @escaping () -> Void) {
+    /// The share notification's response, routed by NotificationRouter.
+    @MainActor
+    func handleShareResponse(_ response: UNNotificationResponse) {
         if let path = response.notification.request.content.userInfo["file"] as? String,
            response.actionIdentifier == Self.showAction || response.actionIdentifier == UNNotificationDefaultActionIdentifier {
             let url = URL(fileURLWithPath: path)
             DispatchQueue.main.async { NSWorkspace.shared.activateFileViewerSelecting([url]) }
         }
-        completionHandler()
-    }
-
-    nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter,
-                                            willPresent notification: UNNotification,
-                                            withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
-        completionHandler([.banner])
     }
 
     private func record(_ line: String) {

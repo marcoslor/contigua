@@ -98,6 +98,10 @@ final class ConnectionController {
     let audio = AudioEngine()
     private let discovery = Discovery()
     private var audioStarted = false
+    /// Phone notifications on the Mac (docs/design/notify.md).
+    @ObservationIgnored let notifyCenter = NotifyCenter()
+    /// The phone's media session in macOS Now Playing.
+    @ObservationIgnored let nowPlaying = NowPlayingController()
 
     // MARK: Published state
 
@@ -111,14 +115,16 @@ final class ConnectionController {
     /// The phone's clipboard image assembly (docs/design/dragdrop.md).
     private let clipImageBuffer = ClipImageBuffer()
     /// Shares from the phone (docs/design/sharein.md).
-    @ObservationIgnored private lazy var shareInbox: ShareInbox = {
-        let directory = options.shareDirectory.map { URL(fileURLWithPath: $0, isDirectory: true) }
-            ?? ShareInbox.defaultDirectory
-        let actions = SystemShareActions(log: options.shareLog.map { URL(fileURLWithPath: $0) }) { [weak self] text in
+    @ObservationIgnored private lazy var shareActions: SystemShareActions = {
+        SystemShareActions(log: options.shareLog.map { URL(fileURLWithPath: $0) }) { [weak self] text in
             // Through the clipboard sync, so the shared text is not sent back as clip.set.
             if let sync = self?.clipboardSync { sync.adopt(text) } else { SystemPasteboard().write(text: text) }
         }
-        return ShareInbox(directory: directory, actions: actions)
+    }()
+    @ObservationIgnored private lazy var shareInbox: ShareInbox = {
+        let directory = options.shareDirectory.map { URL(fileURLWithPath: $0, isDirectory: true) }
+            ?? ShareInbox.defaultDirectory
+        return ShareInbox(directory: directory, actions: shareActions)
     }()
     var banner: Banner? { transientBanner ?? link.banner(naming: { displayName(for: $0) }) }
     private(set) var audioOn = false
@@ -305,6 +311,18 @@ final class ConnectionController {
         windows.onChange = { [weak self] in
             MainActor.assumeIsolated { self?.syncAudio() }
         }
+        // Notification sharing (docs/design/notify.md): the router owns the UN
+        // delegate and clicks; share notifications still route to their actions.
+        // The same `--share-log` file records what both halves would have shown.
+        let shareLog = options.shareLog.map { URL(fileURLWithPath: $0) }
+        notifyCenter.log = shareLog
+        notifyCenter.onOpen = { [weak self] pkg in
+            MainActor.assumeIsolated { self?.openFromNotification(pkg) }
+        }
+        nowPlaying.log = shareLog
+        nowPlaying.onCommand = { [weak self] action in
+            MainActor.assumeIsolated { self?.session?.mediaCommand(action) }
+        }
     }
 
     var audioVolume: Float {
@@ -345,6 +363,14 @@ final class ConnectionController {
         if let path = options.debugInputScript {
             do {
                 debugInput = try DebugInputDriver(scriptPath: path)
+                // The notify/media actions reach the same handlers a banner click
+                // and a Now Playing control do. The driver runs on the main thread.
+                debugInput?.notifyClick = { [weak self] id in
+                    MainActor.assumeIsolated { self?.notifyCenter.performOpen(id: id) ?? false }
+                }
+                debugInput?.mediaCommand = { [weak self] action in
+                    MainActor.assumeIsolated { self?.nowPlaying.perform(action) }
+                }
                 debugInput?.arm()
             } catch {
                 FileHandle.standardError.write(Data("debug-input-script \(path): \(error)\n".utf8))
@@ -384,6 +410,11 @@ final class ConnectionController {
             if let active = remembered.active { resetPhoneData(for: active.ref) }
             send(.launch(remembered.active?.ref))
         }
+        // The UN delegate is installed eagerly, before any notification from
+        // either side (share or phone); share responses route back to their
+        // actions through it.
+        notifyCenter.router.shareActions = shareActions
+        notifyCenter.install()
         if let quitAfter = options.quitAfter {
             DispatchQueue.main.asyncAfter(deadline: .now() + quitAfter) { [weak self] in
                 MainActor.assumeIsolated { self?.shutdownAndExit() }
@@ -411,6 +442,7 @@ final class ConnectionController {
         }
         audio.stop()
         audioOn = false
+        nowPlaying.clear()
         session?.close()
         session = nil
     }
@@ -1093,6 +1125,7 @@ final class ConnectionController {
                 dropSender.connectionLost()
                 clipImageBuffer.discard()
                 shareInbox.connectionLost()
+                nowPlaying.clear()
                 attemptEnded(reason: detail ?? "closed")
             case .closed:
                 stopClipboardSync()
@@ -1100,6 +1133,7 @@ final class ConnectionController {
                 dropSender.connectionLost()
                 clipImageBuffer.discard()
                 shareInbox.connectionLost()
+                nowPlaying.clear()
             default:
                 break
             }
@@ -1139,6 +1173,19 @@ final class ConnectionController {
         case .shareFileAbort(let id):
             shareInbox.fileAbort(id: id)        case .ready(let info, _, let address):
             ready(info, address: address)
+        case .notifyState(let on):
+            Log.app.notice("phone notify \(on ? "on" : "off", privacy: .public)")
+            if !on { nowPlaying.clear() }
+        case .notifyPosted(let id, let pkg, let when, let title, let text):
+            guard let phoneId = link.phone?.id.isEmpty == false ? link.phone?.id : session?.phone?.id else { break }
+            notifyCenter.post(
+                PhoneNotification(id: id, pkg: pkg, when: when, title: title, text: text),
+                phoneId: phoneId, labelFor: { [weak self] in self?.labelFor($0) ?? nil },
+            )
+        case .notifyRemoved(let id):
+            notifyCenter.remove(id: id)
+        case .mediaState(let media):
+            nowPlaying.apply(media)
         case .apps(let list):
             appsReceived(list)
         case .icon(let pkg, let png):
@@ -1211,6 +1258,30 @@ final class ConnectionController {
         clipboardSync = nil
     }
 
+    // MARK: Notification share (docs/design/notify.md)
+
+    /// Opens the app window a notification stands for; unknown packages are
+    /// refused politely (the phone's app list is the source of truth).
+    func openFromNotification(_ pkg: String) {
+        guard link.isOnline else { return }
+        if let app = windows.appsByPkg[pkg] ?? apps.first(where: { $0.pkg == pkg }) {
+            openApp(app)
+        } else {
+            showTransient("That app isn't openable from the Mac.")
+        }
+    }
+
+    /// The per-device opt-in toggle changed (Settings → Devices).
+    func notifySettingChanged(deviceId: String, on: Bool) {
+        profile.defaults.set(on, forKey: NotifyToggle.key(deviceId: deviceId))
+        if link.phone?.id == deviceId { session?.enableNotifications(on) }
+        if !on, link.phone?.id == deviceId { nowPlaying.clear() }
+    }
+
+    private func labelFor(_ pkg: String) -> String? {
+        windows.appsByPkg[pkg]?.label ?? apps.first { $0.pkg == pkg }?.label
+    }
+
     private func ready(_ info: PhoneInfo, address: CachedAddress?) {
         let ref = PhoneRef(id: info.id, name: info.name, model: info.model)
         let wasPairing = isPairing
@@ -1232,6 +1303,11 @@ final class ConnectionController {
         everOnline = true
         if let session { startClipboardSync(on: session) }
         session?.requestApps()
+        // The per-phone toggle: a freshly ready session learns the opt-in now
+        // (and after every reconnect, since the phone starts with gates off).
+        if let id = info.id.isEmpty ? nil : info.id, NotifyToggle.isEnabled(deviceId: id, defaults: profile.defaults) {
+            session?.enableNotifications(true)
+        }
         if hadWindows { windows.reopenAll() }
         if wasPairing {
             pairingSucceeded = true

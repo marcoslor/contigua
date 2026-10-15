@@ -19,6 +19,8 @@ final class DebugInputTests: XCTestCase {
         fingerrotate 0.5 0.5 45
         showtouches on
         hover 0.5 0
+        notifyclick pd-n1
+        mediacmd play
         wait 2.5
         type hi
         key esc
@@ -37,6 +39,8 @@ final class DebugInputTests: XCTestCase {
             .fingerRotate(at: .center, degrees: 45, hold: 0),
             .showTouches(true),
             .hover(NormalizedPoint(nx: 0.5, ny: 0)),
+            .notifyClick("pd-n1"),
+            .mediaCommand("play"),
             .wait(2.5),
             .type("hi"),
             .key(KeyStroke(keyCode: 53, characters: "\u{1b}")),
@@ -104,6 +108,9 @@ final class DebugInputTests: XCTestCase {
         XCTAssertThrowsError(try DebugInputScript.parse("fingerpinch 0.5 0.5 2 -1"))
         XCTAssertThrowsError(try DebugInputScript.parse("pinch 0.5 0.5 2 3"))
         XCTAssertThrowsError(try DebugInputScript.parse("hover 0.5"))
+        XCTAssertThrowsError(try DebugInputScript.parse("notifyclick"))
+        XCTAssertThrowsError(try DebugInputScript.parse("mediacmd"))
+        XCTAssertThrowsError(try DebugInputScript.parse("mediacmd rewind"))
         XCTAssertThrowsError(try DebugInputScript.parse("wait"))
         XCTAssertThrowsError(try DebugInputScript.parse("wait 600"))
     }
