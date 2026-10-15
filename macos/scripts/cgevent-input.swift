@@ -251,8 +251,16 @@ case "click", "rclick", "drag", "scroll", "move", "bpress":
                          dx: dx, dy: dy, steps: numberArgument("--steps") ?? 0,
                          hold: doubleArgument("--hold") ?? 0.08)
     case "drag":
-        // `--right-edge`: grab the window's right edge (a resize) instead of its centre.
-        let start = hasFlag("--right-edge") ? CGPoint(x: target.x + target.width, y: center.y) : center
+        // `--right-edge`: grab the window's right edge (a resize) instead of its centre;
+        // `--top N`: grab N pt below the window's top edge (the framed bar, a window move).
+        let start: CGPoint
+        if hasFlag("--right-edge") {
+            start = CGPoint(x: target.x + target.width, y: center.y)
+        } else if let top = doubleArgument("--top") {
+            start = CGPoint(x: center.x + dx, y: target.y + top)
+        } else {
+            start = center
+        }
         drag(from: start, dx: dx, dy: dy, steps: numberArgument("--steps") ?? 20)
     case "scroll": scroll(point, dx: dx, dy: dy)
     case "move":
