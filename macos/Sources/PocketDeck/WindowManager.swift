@@ -14,6 +14,9 @@ final class WindowManager {
     var appsByPkg: [String: AppInfo] = [:]
     private(set) var icons: [String: NSImage] = [:]
     var phone: PhoneInfo?
+    /// The active phone's display name (its nickname, else its own name):
+    /// app and link window titles carry it — "WhatsApp (Nicky)".
+    private(set) var phoneName = ""
 
     /// Fired when the set of open windows or the icon cache changes.
     var onChange: (() -> Void)?
@@ -187,6 +190,19 @@ final class WindowManager {
         icons[pkg] = image
     }
 
+    /// "WhatsApp (Nicky)": the subject of a stream window's title, with the
+    /// phone's display name appended; without a name just the subject.
+    func titled(_ subject: String) -> String {
+        phoneName.isEmpty ? subject : "\(subject) (\(phoneName))"
+    }
+
+    /// A new display name: remember it and retitle every open window.
+    func setPhoneName(_ name: String) {
+        guard name != phoneName else { return }
+        phoneName = name
+        for controller in allControllers() { controller.retitle() }
+    }
+
     func remove(stream: UInt32) {
         lock.lock(); let removed = streams.removeValue(forKey: stream) != nil; lock.unlock()
         if removed { onStreamClosed?(stream) }
@@ -215,7 +231,7 @@ final class WindowManager {
         for controller in allControllers() {
             guard let app = controller as? AppWindowController,
                   let info = appsByPkg[app.pkg] else { continue }
-            app.setTitle(info.label)
+            app.setSubject(info.label)
         }
     }
 
@@ -253,11 +269,11 @@ final class WindowManager {
     func handle(_ event: SessionEvent) {
         switch event {
         case .windowTitle(let stream, let label, let pkg):
-            (controller(for: stream) as? PhoneWindowController)?.setTitle(label)
-            (controller(for: stream) as? AppWindowController)?.setTitle(label)
+            (controller(for: stream) as? PhoneWindowController)?.setSubject(label)
+            (controller(for: stream) as? AppWindowController)?.setSubject(label)
             if let link = controller(for: stream) as? LinkWindowController {
                 let unknown = link.pkg == nil
-                link.setTitle(label)
+                link.setSubject(label)
                 link.adopt(pkg: pkg)
                 if unknown, !pkg.isEmpty {
                     onAppWindowOpened?(pkg, stream)

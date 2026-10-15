@@ -90,19 +90,26 @@ struct Banner: Equatable {
 }
 
 extension Link {
-    var banner: Banner? {
+    /// The failure messages, named by the phone's own (reported) name — what
+    /// the pure state machine shows. Nicknames enter through `banner(naming:)`.
+    var banner: Banner? { banner(naming: \.name) }
+
+    /// The failure messages. `naming` turns the phone's ref into the name to
+    /// show (its nickname, else its own name); every caller that can resolve
+    /// nicknames passes it, tests use the default.
+    func banner(naming: (PhoneRef) -> String = \.name) -> Banner? {
         switch self {
         case .offline(let p, .unreachable):
-            return Banner(text: "Can't reach \(p.name). Check that it's on the same Wi-Fi.", action: .tryNow)
+            return Banner(text: "Can't reach \(naming(p)). Check that it's on the same Wi-Fi.", action: .tryNow)
         case .offline(let p, .busy):
-            return Banner(text: "Another Mac is connected to \(p.name).", action: .tryNow)
+            return Banner(text: "Another Mac is connected to \(naming(p)).", action: .tryNow)
         case .offline(let p, .versionMismatch):
-            return Banner(text: "\(p.name) runs an incompatible version of PocketDeck.", action: nil)
+            return Banner(text: "\(naming(p)) runs an incompatible version of PocketDeck.", action: nil)
         case .offline(_, .localNetworkDenied):
             return Banner(text: "PocketDeck needs Local Network access. Open System Settings → Privacy & Security → Local Network.",
                           action: .openSettings)
         case .needsPairing(let p):
-            return Banner(text: "\(p.name) no longer trusts this Mac.", action: .pairAgain)
+            return Banner(text: "\(naming(p)) no longer trusts this Mac.", action: .pairAgain)
         default:
             return nil
         }

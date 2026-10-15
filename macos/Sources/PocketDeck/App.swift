@@ -42,6 +42,9 @@ struct LaunchOptions {
     /// the phone's app list arrives (e2e).
     var dockAdd: String?
     var dockRemove: String?
+    /// `--set-nickname NAME`: rename the active phone once its app list arrives,
+    /// through the same code the Settings → Devices → Rename dialog calls (e2e).
+    var setNickname: String?
 
     /// nil when `--profile` was missing or not a usable name.
     var profile: Profile? { Profile(name: profileName) }
@@ -108,6 +111,8 @@ struct LaunchOptions {
                 options.dockAdd = next()
             case "--dock-remove":
                 options.dockRemove = next()
+            case "--set-nickname":
+                options.setNickname = next()
             default:
                 break
             }

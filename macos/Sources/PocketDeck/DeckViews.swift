@@ -24,6 +24,7 @@ extension DeckSheet: Identifiable {
 
 struct DeckRoot: View {
     @Environment(ConnectionController.self) private var controller
+    @Environment(\.openSettings) private var openSettings
 
     var body: some View {
         @Bindable var controller = controller
@@ -36,6 +37,9 @@ struct DeckRoot: View {
         }
         .animation(.smooth(duration: 0.3), value: controller.deckMode)
         .frame(minWidth: 640, minHeight: 420)
+        // Previews stage the Settings → Devices screenshot; nothing else opens
+        // the Settings window from here.
+        .onChange(of: controller.settingsRequest) { _, _ in openSettings() }
         // A link dropped on the Deck opens on the phone (a .webloc file carries one too);
         // an app file (.apk, .apks, .xapk) installs on it.
         .dropDestination(for: URL.self) { urls, _ in
@@ -199,7 +203,7 @@ struct NearbyRow: View {
         HStack(spacing: 12) {
             Image(systemName: "iphone.gen3").font(.system(size: 22)).foregroundStyle(.secondary)
             VStack(alignment: .leading, spacing: 2) {
-                Text(phone.ref.name).font(.body)
+                Text(controller.displayName(for: phone.ref)).font(.body)
                 if !phone.ref.model.isEmpty { Text(phone.ref.model).font(.subheadline).foregroundStyle(.secondary) }
             }
             Spacer()
@@ -360,7 +364,8 @@ struct StatusChip: View {
 
     private var helpText: String {
         guard controller.link.isOnline, let status = controller.status else { return "" }
-        var parts = ["Connected", status.locked ? "phone locked" : "phone unlocked"]
+        let phone = controller.link.phone.map { controller.displayName(for: $0) } ?? "the phone"
+        var parts = ["Connected to \(phone)", status.locked ? "phone locked" : "phone unlocked"]
         if let battery = status.battery { parts.append("battery \(battery)%" + (status.charging ? ", charging" : "")) }
         return parts.joined(separator: ", ")
     }
@@ -407,7 +412,7 @@ struct PhoneDeckView: View {
         }
         .animation(.smooth(duration: 0.3), value: controller.banner)
         .animation(.smooth(duration: 0.3), value: controller.apkInstaller.phase)
-        .navigationTitle(controller.activePhone?.name ?? "PocketDeck")
+        .navigationTitle(controller.activePhone.map { controller.displayName(for: $0) } ?? "PocketDeck")
         .searchable(text: $query, placement: .toolbar, prompt: "Search apps")
         .searchFocused($searchFocused)
         .toolbar {

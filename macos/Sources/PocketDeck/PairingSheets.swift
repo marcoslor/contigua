@@ -22,8 +22,8 @@ struct CodeSheet: View {
 
     private var displayName: String {
         // A manual connection only knows an address, which is no name to show.
-        guard let phone = controller.link.phone, !phone.id.isEmpty, !phone.name.isEmpty else { return "your phone" }
-        return phone.name
+        guard let phone = controller.link.phone, !phone.id.isEmpty else { return "your phone" }
+        return controller.displayName(for: phone, fallback: "your phone")
     }
 
     var body: some View {

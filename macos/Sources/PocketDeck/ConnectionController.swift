@@ -116,8 +116,59 @@ final class ConnectionController {
         }
         return ShareInbox(directory: directory, actions: actions)
     }()
-    var banner: Banner? { transientBanner ?? link.banner }
+    var banner: Banner? { transientBanner ?? link.banner(naming: { displayName(for: $0) }) }
     private(set) var audioOn = false
+
+    // MARK: Nicknames (docs/ROADMAP.md #1)
+
+    /// Bumped on every nickname change; the views read it (through
+    /// `displayName`) so a rename re-renders every name-bearing string.
+    private(set) var nicknamesRevision = 0
+
+    /// The one name for a phone: its nickname, else its own name.
+    func displayName(for phone: PhoneRef, fallback: String = "Phone") -> String {
+        _ = nicknamesRevision
+        return remembered.displayName(for: phone, fallback: fallback)
+    }
+
+    /// The stored nickname for a device ("" when none, which shows its own name).
+    func nickname(for deviceId: String) -> String {
+        PhoneNicknames.read(from: profile.defaults, deviceId: deviceId)
+    }
+
+    /// Settings → Devices → Rename: store the trimmed nickname (empty clears
+    /// it) and refresh everything that names the phone — the views (via the
+    /// revision), open window titles, the Spotlight entries and the Dock shims
+    /// (the same rebuild a renamed phone gets from `reconcile`).
+    func setNickname(_ raw: String, for deviceId: String) {
+        guard !deviceId.isEmpty else { return }
+        PhoneNicknames.write(raw, for: deviceId, to: profile.defaults)
+        refreshNickname(deviceId: deviceId)
+    }
+
+    private func refreshNickname(deviceId: String) {
+        nicknamesRevision += 1
+        rememberedPhones = remembered.all
+        guard let phone = remembered.phone(id: deviceId)?.ref else { return }
+        let name = displayName(for: phone)
+        if link.phone?.id == deviceId { windows.setPhoneName(name) }
+        // The app list this Mac has for the phone: live for the current
+        // session's phone, the cached one otherwise.
+        let apps = link.phone?.id == deviceId && appsLoaded ? self.apps : appsCache.load(deviceId: deviceId)
+        guard !apps.isEmpty else { return }
+        spotlight.index(apps: apps, deviceId: deviceId, phoneName: name,
+                        iconData: { IconCache.shared.loadData(pkg: $0, deviceId: deviceId) })
+        dockApps.reconcile(deviceId: deviceId, apps: apps, phoneName: name,
+                           keep: deviceId == link.phone?.id ? dockPkgsOfOpenWindows : [])
+        dockRevision += 1
+    }
+
+    /// The name for a notification about the session's phone ("Copied from
+    /// Nicky"); before `welcome` keeps ShareInbox's neutral default.
+    private func shareName() -> String {
+        guard let phone = session?.phone else { return "your phone" }
+        return displayName(for: PhoneRef(id: phone.id, name: phone.name, model: phone.model), fallback: "your phone")
+    }
 
     private(set) var discovered: [DiscoveredPhone] = []
     private(set) var rememberedPhones: [RememberedPhone] = []
@@ -137,10 +188,31 @@ final class ConnectionController {
     /// A sheet requested before the Deck window exists (launch hooks, previews).
     private(set) var pendingSheet: DeckSheet?
 
+    /// Bumped to open the Settings window (previews stage the Devices
+    /// screenshot; the gear and ⌘, are the real entry points). Read by DeckRoot.
+    private(set) var settingsRequest = 0
+    /// The phone being renamed right now: Settings → Devices → Rename… presents
+    /// its dialog for this device; a preview stages the whole state.
+    private(set) var renamingDeviceId: String?
+    /// Preview only: the rename field's staged text (screenshots, never stored).
+    private(set) var previewRenameText: String?
+
     func presentPendingSheet() {
         guard let pending = pendingSheet else { return }
         pendingSheet = nil
         sheet = pending
+    }
+
+    /// Settings → Devices → Rename…: the dialog for this phone is presented
+    /// (and dismissed) in DevicesSettings.
+    func beginRename(_ phone: RememberedPhone) {
+        renamingDeviceId = phone.id
+        previewRenameText = nil
+    }
+
+    func endRename() {
+        renamingDeviceId = nil
+        previewRenameText = nil
     }
     /// Window and menu actions reach the Deck through this (focus the search field).
     var searchFocusRequest = 0
@@ -471,7 +543,7 @@ final class ConnectionController {
 
     func addToDock(_ app: AppInfo) {
         guard let phone = link.phone else { return }
-        if dockApps.add(deviceId: phone.id, pkg: app.pkg, label: app.label, phoneName: phone.name, launch: true) == nil {
+        if dockApps.add(deviceId: phone.id, pkg: app.pkg, label: app.label, phoneName: displayName(for: phone), launch: true) == nil {
             showTransient("Couldn't add \(app.label) to the Dock.")
         }
         dockRevision += 1
@@ -533,9 +605,12 @@ final class ConnectionController {
         if let pkg = options.dockAdd {
             guard IconCache.shared.loadData(pkg: pkg, deviceId: phone.id) != nil || missingIcons.contains(pkg) else { return }
             let label = apps.first { $0.pkg == pkg }?.label ?? pkg
-            dockApps.add(deviceId: phone.id, pkg: pkg, label: label, phoneName: phone.name, launch: false)
+            dockApps.add(deviceId: phone.id, pkg: pkg, label: label, phoneName: displayName(for: phone), launch: false)
         }
         if let pkg = options.dockRemove { dockApps.remove(deviceId: phone.id, pkg: pkg) }
+        // `--set-nickname`: the rename a person does in Settings → Devices →
+        // Rename, driven as a hook so the check runs the real code path.
+        if let name = options.setNickname { setNickname(name, for: phone.id) }
         dockHooksPending = false
         dockRevision += 1
     }
@@ -593,7 +668,7 @@ final class ConnectionController {
         case .createAndLaunch:
             bindWhenDockCleared(pkg: pkg, stream: stream) { launched in
                 self.dockApps.buildAndLaunch(
-                    DockShimSpec(deviceId: phone.id, pkg: pkg, label: label, phoneName: phone.name,
+                    DockShimSpec(deviceId: phone.id, pkg: pkg, label: label, phoneName: self.displayName(for: phone),
                                  profile: profile, hostPath: Bundle.main.bundleURL.path),
                     bind: stream, launched: launched)
             }
@@ -734,6 +809,7 @@ final class ConnectionController {
     // MARK: Phone data
 
     private func resetPhoneData(for ref: PhoneRef) {
+        windows.setPhoneName(displayName(for: ref))
         apps = appsCache.load(deviceId: ref.id)
         appsLoaded = !apps.isEmpty
         status = nil
@@ -967,10 +1043,10 @@ final class ConnectionController {
         case .apkResult(let result):
             apkInstaller.result(result)
         case .shareText(let text):
-            shareInbox.phoneName = session?.phone?.name ?? "your phone"
+            shareInbox.phoneName = shareName()
             shareInbox.text(text)
         case .shareFileBegin(let id, let name, let mime):
-            shareInbox.phoneName = session?.phone?.name ?? "your phone"
+            shareInbox.phoneName = shareName()
             shareInbox.fileBegin(id: id, name: name, mime: mime)
         case .shareFileData(let id, let bytes):
             shareInbox.fileData(id: id, bytes: bytes)
@@ -1053,6 +1129,8 @@ final class ConnectionController {
         lastAttemptFailed = false
         let hadWindows = !windows.openStreams.isEmpty
         windows.phone = info
+        // Every window title carries the display name from here on.
+        windows.setPhoneName(displayName(for: ref))
         status = PhoneStatus(locked: info.locked, battery: info.battery, charging: info.charging ?? false)
         if apps.isEmpty || link.phone?.id != info.id { resetPhoneData(for: ref) }
         send(.welcome(ref))
@@ -1100,9 +1178,9 @@ final class ConnectionController {
             }
         }
         if let ref = link.phone {
-            spotlight.index(apps: list, deviceId: ref.id, phoneName: ref.name,
+            spotlight.index(apps: list, deviceId: ref.id, phoneName: displayName(for: ref),
                             iconData: { IconCache.shared.loadData(pkg: $0, deviceId: ref.id) })
-            dockApps.reconcile(deviceId: ref.id, apps: list, phoneName: ref.name,
+            dockApps.reconcile(deviceId: ref.id, apps: list, phoneName: displayName(for: ref),
                                keep: dockPkgsOfOpenWindows)
         }
         runDockHooks()
@@ -1361,6 +1439,14 @@ final class ConnectionController {
             deck(.online(ref))
             rememberedPhones = [phone, RememberedPhone(id: other.id, name: other.name, model: other.model,
                                                        lastSeen: Date().addingTimeInterval(-86_400 * 2))]
+        case "devices-rename":
+            // The Settings → Devices → Rename dialog, staged for the screenshot.
+            deck(.online(ref))
+            renamingDeviceId = ref.id
+            previewRenameText = "Multipass"
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+                MainActor.assumeIsolated { self?.settingsRequest += 1 }
+            }
         default:
             FileHandle.standardError.write(Data("--preview \(name): unknown state\n".utf8))
             exit(2)

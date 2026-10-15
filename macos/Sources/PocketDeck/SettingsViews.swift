@@ -59,6 +59,7 @@ struct GeneralSettings: View {
 struct DevicesSettings: View {
     @Environment(ConnectionController.self) private var controller
     @State private var forgetting: RememberedPhone?
+    @State private var renameText = ""
 
     var body: some View {
         Form {
@@ -77,7 +78,19 @@ struct DevicesSettings: View {
             }
         }
         .formStyle(.grouped)
-        .confirmationDialog("Forget \(forgetting?.name ?? "this phone")?", isPresented: Binding(
+        // A rename in progress: which device, and the staged text (previews set
+        // both; a row's Rename… button sets the device).
+        .onChange(of: controller.renamingDeviceId) { _, id in
+            renameText = id.map { controller.previewRenameText ?? controller.nickname(for: $0) } ?? ""
+        }
+        .alert("Rename", isPresented: renaming) {
+            TextField("Nickname", text: $renameText, prompt: alertPrompt)
+            Button("Rename") { saveRename() }
+            Button("Cancel", role: .cancel) { controller.endRename() }
+        } message: {
+            Text("Up to 40 characters. Leave it empty to keep using the phone's own name.")
+        }
+        .confirmationDialog("Forget \(forgetTitle)?", isPresented: Binding(
             get: { forgetting != nil }, set: { if !$0 { forgetting = nil } }), titleVisibility: .visible) {
             Button("Forget", role: .destructive) {
                 if let phone = forgetting { controller.forget(phone) }
@@ -89,11 +102,34 @@ struct DevicesSettings: View {
         }
     }
 
+    /// The dialog's visibility lives in the controller, so previews can stage it.
+    private var renaming: Binding<Bool> {
+        Binding(get: { controller.renamingDeviceId != nil },
+                set: { if !$0 { controller.endRename() } })
+    }
+
+    private var forgetTitle: String {
+        forgetting.map { controller.displayName(for: $0.ref) } ?? "this phone"
+    }
+
+    private var alertPrompt: Text {
+        controller.rememberedPhones.first { $0.id == controller.renamingDeviceId }
+            .map { Text($0.ref.name) } ?? Text("Nickname")
+    }
+
+    private func saveRename() {
+        if let id = controller.renamingDeviceId {
+            controller.setNickname(renameText, for: id)
+        }
+        controller.endRename()
+    }
+
     private func row(_ phone: RememberedPhone) -> some View {
         let isActive = controller.activePhone?.id == phone.id
         return LabeledContent {
             HStack(spacing: 8) {
                 stateText(phone, isActive: isActive)
+                Button("Rename…") { controller.beginRename(phone) }
                 if !isActive {
                     Button("Use") { controller.use(phone) }.buttonStyle(.glass)
                 }
@@ -101,7 +137,7 @@ struct DevicesSettings: View {
             }
         } label: {
             VStack(alignment: .leading, spacing: 2) {
-                Text(phone.name)
+                Text(controller.displayName(for: phone.ref))
                 Text(detail(phone, isActive: isActive)).font(.subheadline).foregroundStyle(.secondary)
             }
         }
