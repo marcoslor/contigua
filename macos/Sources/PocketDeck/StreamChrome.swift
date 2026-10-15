@@ -192,7 +192,10 @@ final class StreamChromeView: NSView {
         video.frame = NSRect(x: 0, y: 0, width: bounds.width, height: max(bounds.height - bar, 0))
         self.bar.frame = NSRect(x: 0, y: bounds.height - bar, width: bounds.width, height: bar)
         self.bar.isHidden = bar == 0
-        ext.isHidden = bar == 0
+        // The ext is never hidden: it is the video view's parent (its contentView
+        // is the stream), and hiding NSBackgroundExtensionView blanks its
+        // contentView — a stream window left immersive then showed nothing. With
+        // the bar gone the ext's frame is the stream's own: nothing to fill.
         // The corners round exactly once, on this container: the children stay
         // square, so the bar's seam and the stream's top edge stay straight,
         // and the extension's mirror never copies a rounded corner (a rounded
