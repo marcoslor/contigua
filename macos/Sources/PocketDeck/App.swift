@@ -45,6 +45,9 @@ struct LaunchOptions {
     /// `--set-nickname NAME`: rename the active phone once its app list arrives,
     /// through the same code the Settings → Devices → Rename dialog calls (e2e).
     var setNickname: String?
+    /// `--continue-on-mac`: run the Continue on Mac command once the session is
+    /// ready (e2e, docs/design/handoff.md).
+    var continueOnMac = false
 
     /// nil when `--profile` was missing or not a usable name.
     var profile: Profile? { Profile(name: profileName) }
@@ -113,6 +116,8 @@ struct LaunchOptions {
                 options.dockRemove = next()
             case "--set-nickname":
                 options.setNickname = next()
+            case "--continue-on-mac":
+                options.continueOnMac = true
             default:
                 break
             }

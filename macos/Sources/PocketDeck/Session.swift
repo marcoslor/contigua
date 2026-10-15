@@ -16,6 +16,16 @@ enum SessionState: Equatable {
     case closed
 }
 
+/// How the display's content got there (`window.opened` `started`, used by
+/// `task.continue`; docs/design/handoff.md).
+enum HandoffStart: Equatable {
+    /// The task was moved to the display; its state is kept.
+    case moved
+    /// The phone couldn't move the task and relaunched the package instead: the
+    /// app's state may be lost, and the window says so.
+    case fresh
+}
+
 struct PhoneInfo: Equatable {
     var id: String
     var name: String
@@ -65,11 +75,13 @@ enum VideoEvent {
     case frame(stream: UInt32, frame: VideoFrameData)
 }
 
-enum SessionEvent {    case state(SessionState, String?)
+enum SessionEvent {
+    case state(SessionState, String?)
     case ready(PhoneInfo, isReconnect: Bool, address: CachedAddress?)
     case apps([AppInfo])
     case icon(pkg: String, png: Data)
-    case windowOpened(stream: UInt32, displayId: Int, width: Int, height: Int)
+    case windowOpened(stream: UInt32, displayId: Int, width: Int, height: Int,
+                      started: HandoffStart)
     case windowClosed(stream: UInt32, reason: String)
     case windowTitle(stream: UInt32, label: String, pkg: String)
     case phoneState(locked: Bool, battery: Int, charging: Bool)
@@ -550,7 +562,8 @@ final class Session {
             emit(.windowOpened(stream: UInt32(message.int("stream") ?? 0),
                                displayId: message.int("displayId") ?? 0,
                                width: message.int("w") ?? 0,
-                               height: message.int("h") ?? 0))
+                               height: message.int("h") ?? 0,
+                               started: message.string("started") == "fresh" ? .fresh : .moved))
         case "window.closed":
             emit(.windowClosed(stream: UInt32(message.int("stream") ?? 0),
                                reason: message.string("reason") ?? ""))
@@ -682,6 +695,14 @@ final class Session {
     func openPhone(stream: UInt32, width: Int, height: Int, dpi: Double) {
         sendJSON(["t": "window.open", "stream": Int(stream), "w": width, "h": height,
                   "dpi": Int(dpi.rounded()), "mode": "phone"])
+    }
+
+    /// `task.continue` (docs/design/handoff.md): the phone opens this stream's
+    /// display for the app that is in the foreground on its own screen and
+    /// moves the task onto it (or relaunches the package, `started: "fresh"`).
+    func continueTask(stream: UInt32, width: Int, height: Int, dpi: Double) {
+        sendJSON(["t": "task.continue", "stream": Int(stream), "w": width, "h": height,
+                  "dpi": Int(dpi.rounded())])
     }
 
     func resizeWindow(stream: UInt32, width: Int, height: Int, dpi: Double) {

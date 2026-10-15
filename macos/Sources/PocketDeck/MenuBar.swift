@@ -41,6 +41,8 @@ struct MenuBarContent: View {
         Button("Phone screen") { controller.openPhoneWindow() }
             .keyboardShortcut("p")
             .disabled(!controller.link.isOnline)
+        Button("Continue on Mac") { controller.continueOnMac() }
+            .disabled(!controller.link.isOnline)
         Button("Install APK…") { controller.chooseApk() }
             .disabled(controller.apkInstaller.isBusy)
         Divider()
@@ -113,6 +115,8 @@ struct AppCommands: Commands {
             .keyboardShortcut("k")
             Button("Phone Window") { controller.openPhoneWindow() }
                 .keyboardShortcut("p")
+            Button("Continue on Mac") { controller.continueOnMac() }
+                .keyboardShortcut("c", modifiers: [.command, .shift])
             Divider()
             Toggle("Show Touches", isOn: Binding(
                 get: { streamMenu.showTouches },

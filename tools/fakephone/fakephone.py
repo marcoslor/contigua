@@ -328,6 +328,10 @@ class EventLog(object):
         self._emit({"ev": "apk", "id": install_id, "files": files, "ok": ok, "code": code,
                     "ts": time.time()})
 
+    def task_continue(self, stream, mode, started):
+        self._emit({"ev": "task.continue", "stream": stream, "mode": mode,
+                    "started": started, "ts": time.time()})
+
     def close(self):
         with self._lock:
             if self._fp is not None:
@@ -956,6 +960,7 @@ class Session(object):
             "window.keyframe": self._on_window_keyframe,
             "window.quality": self._on_window_quality,
             "window.launch": self._on_window_launch,
+            "task.continue": self._on_task_continue,
             "nav": self._on_nav,
             "text": self._on_noop,
             "clip.set": self._on_clip_set,
@@ -1095,6 +1100,42 @@ class Session(object):
         self._send({"t": "window.opened", "stream": stream_id,
                     "displayId": window.display_id, "w": window.w, "h": window.h})
         window.start()
+
+    # -- task.continue (docs/design/handoff.md): the Mac wants a window for the
+    # app in the foreground on the phone. The default foreground is Settings;
+    # --handoff-mode stages moved/fresh/nothing so every answer shape is testable.
+    def _on_task_continue(self, msg):
+        stream_id = msg.get("stream")
+        if stream_id is None:
+            self._send_error("bad_request", "task.continue needs stream")
+            return
+        mode = self.phone.args.handoff_mode
+        pkg = self.phone.args.foreground_pkg
+        if mode == "nothing" or pkg == "none":
+            sys.stderr.write("fakephone: nothing continuable in the foreground\n")
+            self.phone.events.task_continue(stream_id, mode, None)
+            self._send_error("nothing_to_continue", "the phone's screen has nothing to continue",
+                             stream_id)
+            return
+        if stream_id in self.windows:
+            self._send_error("bad_request", "stream %r already open" % (stream_id,), stream_id)
+            return
+        started = "fresh" if mode == "fresh" else "moved"
+        sys.stderr.write("fakephone: task.continue stream %r -> %s (%s)\n"
+                         % (stream_id, pkg, mode))
+        w = msg.get("w", SCREEN_W)
+        h = msg.get("h", SCREEN_H)
+        dpi = msg.get("dpi", SCREEN_DPI)
+        window = WindowStream(self.phone, stream_id, w, h, dpi, "app", pkg=pkg)
+        self.windows[stream_id] = window
+        self.phone.events.task_continue(stream_id, mode, started)
+        self._send({"t": "window.opened", "stream": stream_id, "displayId": window.display_id,
+                    "w": window.w, "h": window.h, "started": started})
+        window.start()
+        # The real phone's title watcher reports the top app of every display;
+        # the Mac titles the window ("Settings (FakePhone)") from it.
+        self._send({"t": "window.title", "stream": stream_id,
+                    "label": window.label, "pkg": pkg})
 
     def _on_window_resize(self, msg):
         window = self._stream_or_error(msg)
@@ -1394,6 +1435,13 @@ def build_parser():
                         "text:<text or URL> or image:<path to .png/.jpg>; repeatable, sent in order")
     p.add_argument("--share-delay", type=float, default=2.0, metavar="SECONDS",
                    help="wait this long after welcome before the first --share")
+    p.add_argument("--handoff-mode", choices=["moved", "fresh", "nothing"], default="moved",
+                   help="what task.continue answers: the foreground app moved to the new "
+                        "display, relaunched fresh (the move was refused) or nothing "
+                        "continuable in the foreground")
+    p.add_argument("--foreground-pkg", default="com.android.settings", metavar="PKG",
+                   help="the package task.continue reports as the foreground app "
+                        "('none' means nothing continuable)")
     return p
 
 

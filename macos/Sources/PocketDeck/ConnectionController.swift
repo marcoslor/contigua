@@ -518,6 +518,15 @@ final class ConnectionController {
         windows.openPhoneWindow()
     }
 
+    /// "Continue on Mac" (docs/ROADMAP.md #9): a window for the app in the
+    /// foreground on the phone's screen. The phone answers with `window.opened`
+    /// (and the video) for the stream, or `nothing_to_continue` — which shows
+    /// as the transient banner.
+    func continueOnMac() {
+        guard link.isOnline else { return }
+        windows.openHandoffWindow()
+    }
+
     func openFromSpotlight(_ request: SpotlightOpenRequest) {
         if link.isOnline, link.phone?.id == request.deviceId {
             windows.openApp(pkg: request.pkg)
@@ -1084,7 +1093,11 @@ final class ConnectionController {
             Log.session.notice("dropping cached address for \(expected, privacy: .public) (answers as \(actual, privacy: .public))")
             cache.forget(deviceId: expected)
         case .phoneError(let code, _, let stream):
-            if code == "launch_failed" || (stream != 0 && code == "no_stream") {
+            if code == "nothing_to_continue" {
+                // The window never opened: it goes away, the notice is what stays.
+                windows.closeFailedHandoff(stream: stream)
+                showTransient("Nothing to continue.")
+            } else if code == "launch_failed" || (stream != 0 && code == "no_stream") {
                 showTransient(ConnectionFailure.message(for: code) ?? "Something went wrong.")
             }
         default:
@@ -1208,6 +1221,7 @@ final class ConnectionController {
     private func applyAutoOpen() {
         for pkg in options.openPackages { windows.openApp(pkg: pkg) }
         if options.openPhone { windows.openPhoneWindow() }
+        if options.continueOnMac { windows.openHandoffWindow() }
         for resize in options.resizes {
             DispatchQueue.main.asyncAfter(deadline: .now() + resize.after) { [weak self] in
                 MainActor.assumeIsolated { self?.windows.resize(stream: resize.stream, to: resize.size) }
