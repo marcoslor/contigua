@@ -223,6 +223,9 @@ final class DockApps: NSObject {
 
     /// Shim pid → the window (stream, pkg) it stands for.
     private(set) var bindings: [Int: Binding] = [:]
+    /// Pids the host answered while their window was not up yet (phone connecting);
+    /// their keep-alives stay answered until the window binds or the shim goes away.
+    private var acknowledgedPids: Set<Int> = []
     private let center = DistributedNotificationCenter.default()
     /// The file system and LaunchServices work of the automatic path runs here:
     /// creating a shim for the first time must never slow the window it stands for.
@@ -260,6 +263,8 @@ final class DockApps: NSObject {
 
     func start() {
         center.addObserver(self, selector: #selector(openRequested(_:)), name: DockMessage.open,
+                           object: profile.name, suspensionBehavior: .deliverImmediately)
+        center.addObserver(self, selector: #selector(pingRequested(_:)), name: DockMessage.ping,
                            object: profile.name, suspensionBehavior: .deliverImmediately)
         center.addObserver(self, selector: #selector(quitRequested(_:)), name: DockMessage.quit,
                            object: profile.name, suspensionBehavior: .deliverImmediately)
@@ -408,6 +413,7 @@ final class DockApps: NSObject {
     /// The shim is up and its pid now stands for the window of `stream`.
     func bind(pid: Int, stream: UInt32, pkg: String) {
         bindings[pid] = Binding(stream: stream, pkg: pkg)
+        acknowledgedPids.insert(pid)
         post(DockMessage.opened, pid: pid)
     }
 
@@ -431,16 +437,33 @@ final class DockApps: NSObject {
     func streamClosed(_ stream: UInt32) {
         for (pid, bound) in bindings where bound.stream == stream {
             bindings.removeValue(forKey: pid)
+            acknowledgedPids.remove(pid)
             post(DockMessage.closed, pid: pid)
         }
     }
 
-    /// Received, but no window can open yet (phone connecting): stop the shim's retries.
-    func acknowledge(pid: Int) { post(DockMessage.opened, pid: pid) }
+    /// Received, but no window can open yet (phone connecting): stop the shim's
+    /// retries. Its pings stay answered until the window binds or it goes away.
+    func acknowledge(pid: Int) {
+        acknowledgedPids.insert(pid)
+        post(DockMessage.opened, pid: pid)
+    }
 
     private func post(_ name: Notification.Name, pid: Int) {
         center.postNotificationName(name, object: profile.name, userInfo: [DockMessage.pidKey: pid],
                                     deliverImmediately: true)
+    }
+
+    /// A shim's keep-alive: answered while the host saw this shim (bound to a
+    /// window, or waiting for its phone); an unknown shim is on no authority —
+    /// its host died and was replaced, and it should not outlive that.
+    @objc private func pingRequested(_ notification: Notification) {
+        guard let pid = notification.userInfo?[DockMessage.pidKey] as? Int else { return }
+        guard bindings[pid] != nil || acknowledgedPids.contains(pid) else {
+            Log.app.notice("dock: unanswered ping from shim \(pid, privacy: .public) (host replaced?)")
+            return
+        }
+        post(DockMessage.opened, pid: pid)
     }
 
     @objc private func openRequested(_ notification: Notification) {
@@ -463,7 +486,11 @@ final class DockApps: NSObject {
     }
 
     private func shimGone(_ pid: Int) {
-        guard let bound = bindings.removeValue(forKey: pid) else { return }
+        guard let bound = bindings.removeValue(forKey: pid) else {
+            acknowledgedPids.remove(pid)
+            return
+        }
+        acknowledgedPids.remove(pid)
         Log.app.notice("dock: shim \(pid, privacy: .public) quit; closing stream \(bound.stream, privacy: .public)")
         onShimQuit?(bound.stream)
     }

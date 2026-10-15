@@ -1836,6 +1836,19 @@ check_dock() {
         && ok "DOCK auto: quitting the app leaves no shim behind" || bad "DOCK auto: a shim survived the app"
     remove_dock_apps
 
+    # A host that dies without notice (a crash posts no closed) must not leave the
+    # identity behind: it quits after the host stops answering its pings.
+    launch --connect "127.0.0.1:$PORT" --dock-dir "$dir" --open "$pkg" --quit-after 120
+    wait_until 20 window_rx window.open "$pkg" || bad "DOCK crash: no window.open"
+    wait_until 10 eval '[ -n "$(dock_shim_pids)" ]' \
+        && ok "DOCK crash: the shim runs (pid $(dock_shim_pids | tr '\n' ' '))" \
+        || bad "DOCK crash: the shim never started"
+    kill -9 "$APP_PID"
+    wait_until 20 eval '[ -z "$(dock_shim_pids)" ]' \
+        && ok "DOCK crash: after the host stopped answering, the shim quit" \
+        || bad "DOCK crash: the shim outlives its dead host"
+    remove_dock_apps
+
     # Setting off: the window opens, nothing is created.
     defaults write "$DEFAULTS_SUITE" showAppsInDock -bool NO
     launch --connect "127.0.0.1:$PORT" --dock-dir "$dir" --open "$pkg" --quit-after 25

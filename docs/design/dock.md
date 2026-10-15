@@ -34,6 +34,11 @@ answers `dev.pocketdeck.dock.opened` (pid) and opens the window, or brings an op
 the front. Until that answer arrives the shim re-posts every second; after 2 s with no host
 running from PDHostPath it launches that bundle (`--profile <profile>`); after 30 s it quits.
 
+While its window is open the shim pings `dev.pocketdeck.dock.ping` every 2 s; the host
+answers for the shims it knows (a bound window, or a request waiting for the phone), and
+a host that died without telling — a crash posts no `closed` — leaves it unanswered, which
+ends the identity after 3 misses.
+
 Why distributed notifications: both sides are unsandboxed, they need no registration or
 entitlement, and the profile name as `object` keeps a test copy from ever reaching the
 user's app. The `pocketdeck://` scheme was rejected because LaunchServices picks *one*
@@ -45,7 +50,8 @@ launchd job; Apple Events need an automation permission prompt.
 
 - Quitting the shim (Dock → Quit, ⌘Q while it is frontmost) posts `dev.pocketdeck.dock.quit`;
   the host also watches `NSWorkspace.didTerminateApplication` for the shim's pid, so a force
-  quit or crash closes the window too.
+  quit or crash closes the window too. The other direction — the host dying without notice —
+  ends the shim by the ping rule above, so no identity outlives its window either way.
 - Closing the window (or the phone closing the stream, forgetting the phone) posts
   `dev.pocketdeck.dock.closed` (pid) and the shim exits, so a Dock icon never outlives its window.
 

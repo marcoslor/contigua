@@ -12,6 +12,10 @@ enum DockMessage {
     static let closed = Notification.Name("dev.pocketdeck.dock.closed")
     /// Shim → host: the shim is quitting; close its window. userInfo: pid.
     static let quit = Notification.Name("dev.pocketdeck.dock.quit")
+    /// Shim → host: while its window is open, is the host still there? The host
+    /// answers `opened`; with no answer the shim quits (the host can die without
+    /// saying so: a crash posts no `closed`).
+    static let ping = Notification.Name("dev.pocketdeck.dock.ping")
 
     static let deviceIdKey = "deviceId"
     static let pkgKey = "pkg"

@@ -15,6 +15,11 @@ final class ShimDelegate: NSObject, NSApplicationDelegate {
     private var startedAt = Date()
     private var launchedHost = false
     private var retry: Timer?
+    private var ping: Timer?
+    /// Unanswered `ping`s while the window is open; the host dying without notice
+    /// ends here.
+    private var missedPings = 0
+    private static let maxMissedPings = 3
 
     override init() {
         let info = Bundle.main.infoDictionary ?? [:]
@@ -52,6 +57,9 @@ final class ShimDelegate: NSObject, NSApplicationDelegate {
     private func requestOpen() {
         acknowledged = false
         startedAt = Date()
+        missedPings = 0
+        ping?.invalidate()
+        ping = nil
         post(DockMessage.open)
         retry?.invalidate()
         retry = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
@@ -94,7 +102,23 @@ final class ShimDelegate: NSObject, NSApplicationDelegate {
     @objc private func opened(_ notification: Notification) {
         guard isMine(notification) else { return }
         acknowledged = true
+        missedPings = 0
         retry?.invalidate()
+        retry = nil
+        if ping == nil {
+            ping = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
+                MainActor.assumeIsolated { self?.watchHost() }
+            }
+        }
+    }
+
+    /// The window is open: the host keeps answering, and a host that died without
+    /// posting `closed` (a crash) ends the identity after a few misses.
+    private func watchHost() {
+        guard acknowledged else { return }
+        missedPings += 1
+        if missedPings > Self.maxMissedPings { NSApp.terminate(nil); return }
+        post(DockMessage.ping)
     }
 
     @objc private func closed(_ notification: Notification) {
