@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # End-to-end checks C3-C13 for the macOS client against tools/fakephone.
 #
-#   ./scripts/check-e2e.sh [qr|pair|render|resize|input|mouseback|input-global|pause|direct|nav|mirror|spotlight|pinch|chrome|trackpad|clip|sharein|links|share|apk|dock|nickname|audio|handoff|all]
+#   ./scripts/check-e2e.sh [qr|pair|render|resize|input|mouseback|input-global|pause|direct|nav|mirror|spotlight|pinch|chrome|trackpad|clip|sharein|links|share|apk|drop|dock|nickname|audio|handoff|all]
 #
 # Every check starts from a clean slate: no PocketDeck or fakephone processes
 # left by an earlier run, a fresh fakephone state file and no pairing key in
@@ -1833,6 +1833,105 @@ PY
     wait_until 5 no_fakephone
 }
 
+# check_drop — a file dropped on a window (docs/design/dragdrop.md). The scripted
+# `dropfile` feeds the same handler a Finder drag ends in, so the path under test
+# is the window's own drop destination -> FileDropSender; fakephone acts like
+# Downloads/PocketDeck (a chunk holding PD_FAKE_DOWNSIZE trips the 200 MiB rule).
+# Clipboard images have no DebugInput action, so nothing is scripted for them.
+drop_log() {
+    log show --last 3m --info \
+        --predicate "subsystem == \"dev.pocketdeck.mac\" AND processID == $APP_PID" 2>/dev/null \
+        | grep -o 'drop: .*'
+}
+
+check_drop() {
+    clean
+    start_fake || return 1
+
+    python3 - "$WORK" <<'PY'
+import os, sys
+work = sys.argv[1]
+# 3 MB of random bytes: a real chunked transfer, small enough to hash quickly.
+with open(os.path.join(work, "drop-3mb.bin"), "wb") as f:
+    f.write(os.urandom(3 * 1024 * 1024))
+# The negative case: the trip stands in for a file over the cap.
+with open(os.path.join(work, "tripped.bin"), "wb") as f:
+    f.write(b"PD_FAKE_DOWNSIZE" + os.urandom(64 * 1024))
+PY
+
+    drop_event() {
+        python3 - "$WORK/events.jsonl" "$1" "$2" <<'PY'
+import json, sys
+want_ok = sys.argv[3] == "ok"
+n = 0
+for line in open(sys.argv[1]):
+    try:
+        e = json.loads(line)
+    except ValueError:
+        continue
+    if e.get("ev") == "drop" and e.get("ok") == want_ok:
+        n += 1
+        if n == int(sys.argv[2]):
+            print(json.dumps(e))
+            sys.exit(0)
+sys.exit(1)
+PY
+    }
+    drop_found() { drop_event "$@" >/dev/null; }
+    log_has() { drop_log | grep -qF -- "$1"; }
+    fake_log_has() { grep -qF -- "$1" "$WORK/fake.log"; }
+
+    # The 8 s wait keeps the two drops apart: FileDropSender takes one file at a
+    # time and would refuse the second while the first is still in flight.
+    printf '%s\n' "dropfile $WORK/drop-3mb.bin" "wait 8" "dropfile $WORK/tripped.bin" "wait 5" \
+        > "$WORK/drop.txt"
+    launch --connect "127.0.0.1:$PORT" --open com.android.settings \
+        --debug-input-script "$WORK/drop.txt" --quit-after 120
+
+    local event want
+    if wait_until 60 drop_found 1 ok; then
+        event="$(drop_event 1 ok)"
+        want="$(shasum -a 256 "$WORK/drop-3mb.bin" | cut -c1-64)"
+        echo "$event" | python3 -c 'import json,sys; e=json.load(sys.stdin); f=e["files"]; sys.exit(0 if len(f)==1 and f[0]["name"]=="drop-3mb.bin" and f[0]["size"]==3*1024*1024 and f[0]["match"] and f[0]["sha256"]==sys.argv[1] else 1)' "$want" \
+            && ok "DROP fakephone got drop-3mb.bin (3 MB) with a matching sha256 (${want:0:12}…)" \
+            || bad "DROP sha256/size mismatch: $event (want $want)"
+    else
+        bad "DROP fakephone never received the file"
+    fi
+    # The log line's size is public, the (empty) resume tail is not: match up to "bytes".
+    wait_until 15 log_has "drop: sending drop-3mb.bin (3145728 bytes" \
+        && ok "DROP the window's handler announced the file and streamed it" \
+        || bad "DROP no drop: sending line: $(drop_log | tail -3)"
+    wait_until 15 log_has "drop: ok: Saved on the phone: drop-3mb.bin" \
+        && ok "DROP result message: Saved on the phone: drop-3mb.bin" \
+        || bad "DROP no success message: $(drop_log | tail -2)"
+    # No chunk leaves before the phone's opening drop.progress (the sender waits for
+    # it), so the whole file arriving proves the progress message was parsed; the
+    # byte count is the wire's DROP_DATA total.
+    wait_until 15 fake_log_has "3145728 bytes (drop-3mb.bin) -> sha ok" \
+        && ok "DROP fakephone received all 3145728 bytes over DROP_DATA" \
+        || bad "DROP fakephone did not log the full 3 MB: $(grep -i drop "$WORK/fake.log" | tail -2)"
+
+    if wait_until 60 drop_found 1 bad; then
+        event="$(drop_event 1 bad)"
+        echo "$event" | python3 -c 'import json,sys; e=json.load(sys.stdin); sys.exit(0 if e["code"]=="too_large" and not e["files"][0].get("match") else 1)' \
+            && ok "DROP the over-cap trip answered ok=false too_large" \
+            || bad "DROP the negative event is wrong: $event"
+    else
+        bad "DROP the PD_FAKE_DOWNSIZE trip never reached fakephone"
+    fi
+    wait_until 15 log_has "drop: failed: The phone refused it: the file is bigger than the phone's cap." \
+        && ok "DROP the refusal reads: The phone refused it: the file is bigger than the phone's cap." \
+        || bad "DROP no refusal message: $(drop_log | tail -2)"
+
+    [ "$(e2e_app_pids | wc -l | tr -d ' ')" = "1" ] \
+        && ok "DROP the app survived the failed drop (one instance)" \
+        || bad "DROP the app died or a second instance appeared"
+    stop_app
+    stop_fakephone
+    wait_until 5 no_fakephone
+}
+
 # --- Share extension ------------------------------------------------------
 
 SHARE_ID="dev.pocketdeck.mac.share-e2e"
@@ -2231,8 +2330,8 @@ build_e2e_app() {
 
 which_check="${1:-all}"
 case "$which_check" in
-    qr|pair|render|resize|input|mouseback|input-global|pause|direct|nav|mirror|spotlight|pinch|chrome|trackpad|clip|sharein|links|share|apk|dock|nickname|audio|handoff|all) ;;
-    *) say "usage: check-e2e.sh [qr|pair|render|resize|input|mouseback|input-global|pause|direct|nav|mirror|spotlight|pinch|chrome|trackpad|clip|sharein|links|share|apk|dock|nickname|audio|handoff|all]"; exit 2 ;;
+    qr|pair|render|resize|input|mouseback|input-global|pause|direct|nav|mirror|spotlight|pinch|chrome|trackpad|clip|sharein|links|share|apk|drop|dock|nickname|audio|handoff|all) ;;
+    *) say "usage: check-e2e.sh [qr|pair|render|resize|input|mouseback|input-global|pause|direct|nav|mirror|spotlight|pinch|chrome|trackpad|clip|sharein|links|share|apk|drop|dock|nickname|audio|handoff|all]"; exit 2 ;;
 esac
 acquire_lock
 wait_for_other_runs
@@ -2263,12 +2362,13 @@ case "$which_check" in
     links)    check_links ;;
     share)    check_share ;;
     apk)      check_apk ;;
+    drop)     check_drop ;;
     dock)     check_dock ;;
     nickname) check_nickname ;;
     audio)    check_audio ;;
     handoff)  check_handoff ;;
     all)      check_qr; check_pair; check_render; check_resize; check_input; check_mouseback; check_pinch
-              check_chrome; check_trackpad; check_pause; check_direct; check_nav; check_mirror; check_spotlight; check_clip; check_sharein; check_links; check_share; check_apk; check_dock; check_nickname
+              check_chrome; check_trackpad; check_pause; check_direct; check_nav; check_mirror; check_spotlight; check_clip; check_sharein; check_links; check_share; check_apk; check_drop; check_dock; check_nickname
               check_audio; check_handoff; check_orphans ;;
 esac
 
