@@ -45,6 +45,19 @@ final class InputMapper {
 
     static let metaStateCommand: UInt32 = 0x3000 // META_CTRL_ON | META_CTRL_LEFT_ON
 
+    /// Which Android nav action a mouse-button press maps to (NSEvent
+    /// buttonNumber for otherMouseDown): the middle button (2) is home, the
+    /// usual side Back button (3) is back. Forward (4) and anything else do
+    /// nothing. Only the down event maps, so one press is one Back — never
+    /// repeated while held and nothing on mouse-up.
+    static func navAction(forButton button: Int) -> String? {
+        switch button {
+        case 2: return "home"
+        case 3: return "back"
+        default: return nil
+        }
+    }
+
     let stream: UInt32
     var send: ((Command) -> Void)?
     var videoRectProvider: () -> CGRect = { .zero }
@@ -132,14 +145,12 @@ final class InputMapper {
         send?(.nav("back"))
     }
 
-    /// Middle button -> home, extra buttons 3/4 (the usual side buttons) -> back.
+    /// Middle button -> home, side button 3 -> back (button 4, Forward, is inert).
     func otherMouseDown(_ event: NSEvent) {
         flushText()
         cancelTrackpadGestures()
-        switch event.buttonNumber {
-        case 2: send?(.nav("home"))
-        case 3, 4: send?(.nav("back"))
-        default: break
+        if let action = Self.navAction(forButton: Int(event.buttonNumber)) {
+            send?(.nav(action))
         }
     }
 
