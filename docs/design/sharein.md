@@ -62,7 +62,7 @@ Mac"); both send through the same `share.text` pipeline, so the Mac classifies a
 - No `autoVerify`, no host: we never claim a domain, we're just one more browser choice.
 - Loop guard: if the user makes PocketDeck the default browser, a Mac → phone `link.open` must not
   come back. `AndroidLauncher.view` resolves the handlers itself and `LoopGuard.pick` drops our
-  package and the resolver, keeping the default when it's another app; the launch (binder or
+  package and the resolver, keeping the default when it's another app (`MATCH_ALL`: a default browser otherwise hides the rest); the launch (binder or
   `am start -n`) is always explicit. Only us → `view` fails and the Mac gets the usual error.
 
 ## Alternatives rejected
