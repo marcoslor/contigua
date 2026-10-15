@@ -84,6 +84,17 @@ final class WindowManager {
         StreamMenuState.shared.showTouches = defaults.bool(forKey: Self.showTouchesKey)
     }
 
+    /// The View menu's Window Style: toggle/switch the key stream window's
+    /// style directly (the menu cannot rely on the responder chain delivering
+    /// a nil-target action).
+    func toggleKeyWindowStyle() {
+        (NSApp.keyWindow?.windowController as? StreamWindowController)?.toggleStyleMenuAction(nil)
+    }
+
+    func setKeyWindowStyle(_ style: WindowStyle) {
+        (NSApp.keyWindow?.windowController as? StreamWindowController)?.setStyle(style)
+    }
+
     // MARK: Placement
 
     func savedFrame(forKey key: String) -> NSRect? {

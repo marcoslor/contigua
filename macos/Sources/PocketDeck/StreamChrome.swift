@@ -3,9 +3,10 @@
 // video view is its contentView and it fills the rest of its frame — here the
 // bar band — with a replica of the content's top edge, so nothing is read back
 // off the CPU and nothing is decoded twice. Over the bar sits the window
-// material whose maskImage carries the brief's alpha gradient (mirror alpha
-// stable at the seam, fading toward the window's top edge), so the bar melts
-// into the app at the seam and into the material at its top. Immersive: no
+// material (within-window blend: it blurs the mirror, not the desktop) whose
+// maskImage carries the brief's alpha gradient (mirror alpha stable at the
+// seam, fading toward the window's top edge), so the bar melts into the app at
+// the seam and into the material at its top. Immersive: no
 // chrome at rest; the window is exactly the stream, and the traffic lights live
 // on a dwell pill that fades in at the stream's top-left corner when the
 // pointer rests there (DwellChrome, DwellPill in WindowStyle.swift). Full
@@ -44,6 +45,10 @@ func barMaskImage(mirror: BarMirror, height: CGFloat) -> NSImage {
     }
     let image = NSImage(size: NSSize(width: CGFloat(width), height: height))
     image.addRepresentation(rep)
+    // A plain stretchable gradient: the whole 4 pt wide image stretches over
+    // the material's bounds (no caps, so no rounded corners of its own).
+    image.capInsets = NSEdgeInsets()
+    image.resizingMode = .stretch
     return image
 }
 
@@ -136,8 +141,14 @@ final class StreamChromeView: NSView {
         ext.automaticallyPlacesContentView = false
         ext.contentView = video
         video.wantsLayer = true
-        bar.material = .titlebar
-        bar.blendingMode = .behindWindow
+        // A plain material (not .titlebar: that one draws the window-chrome
+        // art with rounded translucent edges) within-window: it blurs the
+        // window's own content under it (the mirrored stream fill), not what
+        // is behind the window. Over a busy desktop the behind-window blend
+        // read as transparent glass along the bar's borders and corners; the
+        // mirror must own the bar.
+        bar.material = .menu
+        bar.blendingMode = .withinWindow
         bar.state = .active
         toggle.sizingOptions = []
         actions.sizingOptions = []
@@ -189,16 +200,6 @@ final class StreamChromeView: NSView {
         return ChromeBar.height
     }
 
-    /// The stream's corners are the window's: rounded at the bottom in both
-    /// styles, and at the top too wherever the stream is the top edge
-    /// (immersive at rest and full screen); in framed the top edge is the seam,
-    /// so only the bottom two round.
-    private var cornerMask: CACornerMask {
-        barHeight == 0
-            ? [.layerMinXMinYCorner, .layerMaxXMinYCorner, .layerMinXMaxYCorner, .layerMaxXMaxYCorner]
-            : [.layerMinXMinYCorner, .layerMaxXMinYCorner]
-    }
-
     override func layout() {
         super.layout()
         layoutChrome()
@@ -225,11 +226,14 @@ final class StreamChromeView: NSView {
         self.bar.frame = NSRect(x: 0, y: bounds.height - bar, width: bounds.width, height: bar)
         self.bar.isHidden = bar == 0
         ext.isHidden = bar == 0
-        if let layer = video.layer {
+        // The corners round exactly once, on this container: the children stay
+        // square, so the bar's seam and the stream's top edge stay straight,
+        // and the extension's mirror never copies a rounded corner (a rounded
+        // video corner mirrored into the bar read as a dark crescent).
+        if let layer = layer {
             layer.cornerRadius = ChromeBar.cornerRadius
             layer.cornerCurve = .continuous
             layer.masksToBounds = true
-            layer.maskedCorners = cornerMask
         }
         layoutControls()
         if newPillFrame() != nil {

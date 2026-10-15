@@ -78,10 +78,11 @@ final class StreamChromeWindowTests: XCTestCase {
         XCTAssertEqual(chrome.style, .framed)
         XCTAssertFalse(chrome.isOpaque)
         XCTAssertEqual(controller.chrome.actionCount, 0, "app windows have no actions")
-        // The seam is the stream's top edge: bottom corners rounded, top square.
-        XCTAssertEqual(controller.videoView.layer?.cornerRadius, ChromeBar.cornerRadius)
-        XCTAssertEqual(controller.videoView.layer?.maskedCorners,
-                       [.layerMinXMinYCorner, .layerMaxXMinYCorner])
+        // The corners round once, on the container (the chrome view): the video
+        // stays square so the seam is straight in framed.
+        XCTAssertEqual(chrome.layer?.cornerRadius, ChromeBar.cornerRadius)
+        XCTAssertEqual(chrome.layer?.masksToBounds, true)
+        XCTAssertEqual(controller.videoView.layer?.cornerRadius, 0)
     }
 
     func testTheTrafficLightsSitOnTheBarsLine() throws {

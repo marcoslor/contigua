@@ -123,26 +123,22 @@ struct AppCommands: Commands {
                 set: { controller.windows.showTouches = $0 }))
             Divider()
             // The key stream window's style: radio state from the window
-            // controllers through StreamMenuState, switch through the
-            // responder chain, remembered per app (WindowStyleStore).
+            // controllers through StreamMenuState, bonded straight to the
+            // key window's controller through the manager (remembered per
+            // app by WindowStyleStore).
             Picker("Window Style", selection: Binding(
                 get: { streamMenu.style },
-                set: { style in
-                    NSApp.sendAction(style == .framed
-                        ? #selector(StreamWindowController.useFramedStyle(_:))
-                        : #selector(StreamWindowController.useImmersiveStyle(_:)),
-                                     to: nil, from: nil)
-                })) {
+                set: { style in controller.windows.setKeyWindowStyle(style) })) {
                 Text(WindowStyle.framed.label).tag(WindowStyle.framed)
                 Text(WindowStyle.immersive.label).tag(WindowStyle.immersive)
             }
             .pickerStyle(.inline)
-            .disabled(!streamMenu.hasStream)
-            Button("Toggle Window Style") {
-                send(#selector(StreamWindowController.toggleStyleMenuAction(_:)))
-            }
-            .keyboardShortcut("f", modifiers: [.command, .option])
-            .disabled(!streamMenu.hasStream)
+            // No disabled gate here: key equivalents do not get re-evaluated
+            // when the state changes, and a disabled item eats its shortcut
+            // silently under NSEvent.performKeyEquivalent. The binding itself
+            // no-ops without a key stream window.
+            Button("Toggle Window Style") { controller.windows.toggleKeyWindowStyle() }
+                .keyboardShortcut("f", modifiers: [.command, .option])
         }
         CommandMenu("Navigate") {
             Button("Back") { send(#selector(StreamWindowController.navigateBack(_:))) }

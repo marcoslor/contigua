@@ -252,6 +252,10 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         }
         if manager.floatWindows { window?.level = .floating }
         window?.makeKeyAndOrderFront(nil)
+        if let forced = ProcessInfo.processInfo.environment["PD_APPEARANCE"], let window {
+            // Debug-only (bisect/screenshot runs): force the window's look.
+            window.appearance = NSAppearance(named: forced == "light" ? .aqua : .darkAqua)
+        }
         chrome.placeTrafficLights()
         if manager.floatWindows { window?.orderFrontRegardless() }
         window?.makeFirstResponder(videoView)
