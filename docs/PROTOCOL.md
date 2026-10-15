@@ -42,6 +42,8 @@ Max frame size 8 MiB; a receiver that sees a larger `len` closes the session.
 | `0x12` | KEY | mac→phone | `u8 action` (0 down, 1 up) · `u32 keycode` (Android `KEYCODE_*`) · `u32 metaState` |
 | `0x20` | APK_DATA | mac→phone | the next bytes (≤ 1 MiB) of an APK install; `stream` = the install `id`; see "APK install" |
 | `0x21` | SHARE_DATA | phone→mac | the next bytes (≤ 1 MiB) of a shared file; `stream` = the share `id`; see "Share phone → Mac" |
+| `0x22` | DROP_DATA | mac→phone | the next bytes (≤ 1 MiB) of a file dropped on a window; `stream` = the drop `id`; see "Drop Mac → phone" |
+| `0x23` | CLIP_DATA | both | the next bytes (≤ 1 MiB) of a clipboard image; `stream` = the image `id`; see "Clipboard images" |
 
 `nx`,`ny` are normalized `[0,1]` in the stream's video coordinates (top-left
 origin). The phone maps them to the stream's current virtual display size.
@@ -163,6 +165,11 @@ Mac → phone (after `welcome`):
 | `clip.set` | `text` | plain-text clipboard, either direction; see "Clipboard sync" |
 | `apk.install` | `id`, `files`: `[{"name","size","sha256"}]` | start an APK install; `APK_DATA` frames follow; see "APK install" |
 | `apk.cancel` | `id` | abandon that install |
+| `drop.start` | `id`, `name`, `mime`, `size`, `sha256`, optional `resume` | start a file drop (a Finder drag onto a phone window); `DROP_DATA` frames follow; see "Drop Mac → phone" |
+| `drop.cancel` | `id` | abandon that drop |
+| `clip.image.start` | `id`, `mime`, `size` | a clipboard image follows in `CLIP_DATA` frames; see "Clipboard images" |
+| `clip.image.end` | `id`, `size`, `sha256` | the image is complete |
+| `clip.image.abort` | `id` | the sender gave up; discard what arrived |
 | `audio.start` | `codecs` (array of int, e.g. `[2,3]`) | start device-wide audio; phone answers AUDIO_CONFIG + frames |
 | `audio.stop` | — | stop device-wide audio |
 
@@ -186,6 +193,9 @@ Phone → Mac:
 | `share.file` | `id`, `name`, `mime` — a shared file follows in `SHARE_DATA` frames |
 | `share.end` | `id`, `size`, `sha256` — the file is complete |
 | `share.abort` | `id` — the phone gave up on that file; the Mac discards it |
+| `drop.progress` | `id`, `bytes` — bytes written of a file drop |
+| `drop.result` | `id`, `ok`; success: `path`; failure: `code`, `message` |
+| `clip.image.start` | `id`, `mime`, `size` — sent by either side |
 
 Unknown `t` values and unknown binary frame types are ignored (log once). Unknown
 fields are ignored. `activity` is a component string `pkg/fully.qualified.Class`.
@@ -266,6 +276,53 @@ Only the phone sends these; the Mac never answers them.
 - The Mac accepts only `mime` `image/*`, at most 50 MiB (52 428 800 bytes); larger, a size or
   SHA-256 mismatch, or `share.abort` → nothing is kept. `name` is untrusted: the Mac keeps
   only `[A-Za-z0-9 ._-]`, never a path, and numbers it on collision.
+
+## Drop Mac → phone
+
+What a Finder drag onto a phone window delivers (docs/design/dragdrop.md). Only the Mac sends
+these; the phone never answers `drop.*` other than below.
+
+1. Mac → `{"t":"drop.start","id":N,"name":"report.pdf","mime":"application/pdf","size":S,"sha256":"<64 hex>"}`,
+   `id` a u32 ≠ 0 chosen by the Mac, optional `"resume":bytes` (see 3). One drop per phone:
+   while one is running a new `drop.start` answers `{"t":"drop.result","ok":false,"code":"busy"}`.
+   The phone validates (`name` `[A-Za-z0-9 ._-]{1,100}`, `size` > 0 and ≤ 200 MiB
+   (209 715 200 bytes), `mime` non-empty UTF-8, `sha256` 64 lowercase hex) and answers
+   `{"t":"drop.result","id":N,"ok":false,"code":"bad_request","message":...}` anything else.
+2. Mac → `DROP_DATA` frames with `stream` = `id` (each ≤ 1 MiB). The phone counts bytes against
+   the announced `size`; more, or a stalled sender, fails the drop.
+3. **Resume**: with `"resume":bytes` and a partial temp file from a same-`(name,size,sha256)`
+   drop, the phone replies `{"t":"drop.progress","id":N,"bytes":verified}` (the offset) and
+   appends from there; anything else answers `bytes:0` and restarts.
+4. Phone → `drop.progress {id, bytes}` at most 4 per second (plus once with the last byte),
+   then exactly one `drop.result`: success `{"ok":true,"path":"/sdcard/Download/PocketDeck/<name>"}`
+   (the sanitised name, " 2", " 3"… on collision), failure `code`/`message` from `bad_request`,
+   `too_large`, `busy`, `checksum` (the finished bytes' SHA-256 differs; the file is removed),
+   `cancelled`, `failed`.
+5. Mac → `drop.cancel {id}` any time; the phone abandons, removes partial data and replies
+   `drop.result` `cancelled`. A session that ends abandons its drop.
+
+The phone writes every byte to a hidden temp file in `/sdcard/Download/PocketDeck/`, renames
+only after the SHA-256 matches, media-scans the file and — where sensible — offers a SEND
+activity with the app's FileProvider content URI (docs/design/dragdrop.md).
+
+## Clipboard images
+
+Both directions while a session is ready; same announce → chunks → end as `share.file`, but
+the sender may be either side:
+
+- `{"t":"clip.image.start","id":N,"mime":"image/jpeg"|"image/png","size":S}` (id: the
+  Mac's start from 1, the phone's `share.file` id space continues past its own), then
+  `CLIP_DATA` frames (`stream` = `id`, ≤ 1 MiB each), then
+  `{"t":"clip.image.end","id":N,"size","sha256":"<64 hex>"}` — or `{"t":"clip.image.abort","id":N}`.
+- At most 8 MiB (8 388 608 bytes) per image. Larger: the sender stays silent, a receiver that
+  sees `size` over the cap ignores the image — the `clip.set` rule for bytes.
+- One image in flight per direction: a new `clip.image.start` replaces the unfinished one, and
+  session end discards it.
+- The Mac sends an image when the general pasteboard changes to an item with image data and no
+  text (PNG verbatim, TIFF converted to PNG) and it is not marked concealed by a password
+  manager. From the phone the image is read out of the clipboard's first item when its bytes
+  are readable. The receiver keeps the SHA-256 of the bytes it last sent or received, so images
+  are never echoed back, like `clip.set`.
 
 ## Error codes
 
