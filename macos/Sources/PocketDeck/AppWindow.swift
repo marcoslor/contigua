@@ -38,6 +38,11 @@ final class AppWindowController: StreamWindowController {
 final class LinkWindowController: StreamWindowController {
     let url: String
 
+    /// The package the phone displays for the link, once its `window.title`
+    /// names it: the window's Dock identity stands for that app
+    /// (docs/design/dock.md §Lifecycle).
+    private(set) var pkg: String?
+
     init(stream: UInt32, url: String, manager: WindowManager) {
         self.url = url
         super.init(stream: stream, contentSize: AppWindowController.defaultContentSize, manager: manager)
@@ -63,5 +68,11 @@ final class LinkWindowController: StreamWindowController {
 
     func setTitle(_ label: String) {
         window?.title = label
+    }
+
+    /// The phone reported the app that displays the link.
+    func adopt(pkg: String) {
+        guard self.pkg == nil, !pkg.isEmpty else { return }
+        self.pkg = pkg
     }
 }

@@ -21,6 +21,11 @@ final class WindowManager {
     /// Fired once per window that closed, whoever closed it (Dock apps follow their window).
     var onStreamClosed: ((UInt32) -> Void)?
 
+    /// Fired when a phone-app window becomes dockable (docs/design/dock.md
+    /// §Lifecycle): app windows at open, link windows once the phone reports
+    /// the package that displays the link. pkg, stream.
+    var onAppWindowOpened: ((String, UInt32) -> Void)?
+
     /// Test hook (`--float-windows`): new stream windows float above other apps.
     var floatWindows = false
     /// Where the stream windows write their header state (e2e), if anywhere.
@@ -137,6 +142,7 @@ final class WindowManager {
         controller.present()
         controller.sendOpen()
         onChange?()
+        onAppWindowOpened?(pkg, stream)
         return controller
     }
 
@@ -149,6 +155,17 @@ final class WindowManager {
         controller.sendOpen()
         onChange?()
         return controller
+    }
+
+    /// The open app and link windows — the ones a Dock identity stands for — as
+    /// (stream, package) pairs. A link window names its package once the phone
+    /// reports `window.title`.
+    var openAppWindows: [(stream: UInt32, pkg: String?)] {
+        allControllers().compactMap { controller -> (UInt32, String?)? in
+            if let app = controller as? AppWindowController { return (app.stream, app.pkg) }
+            if let link = controller as? LinkWindowController { return (link.stream, link.pkg) }
+            return nil
+        }
     }
 
     @discardableResult
@@ -235,10 +252,17 @@ final class WindowManager {
 
     func handle(_ event: SessionEvent) {
         switch event {
-        case .windowTitle(let stream, let label, _):
+        case .windowTitle(let stream, let label, let pkg):
             (controller(for: stream) as? PhoneWindowController)?.setTitle(label)
             (controller(for: stream) as? AppWindowController)?.setTitle(label)
-            (controller(for: stream) as? LinkWindowController)?.setTitle(label)
+            if let link = controller(for: stream) as? LinkWindowController {
+                let unknown = link.pkg == nil
+                link.setTitle(label)
+                link.adopt(pkg: pkg)
+                if unknown, !pkg.isEmpty {
+                    onAppWindowOpened?(pkg, stream)
+                }
+            }
         case .windowClosed(let stream, let reason):
             Log.app.info("phone closed stream \(stream, privacy: .public) (\(reason, privacy: .public))")
             controller(for: stream)?.closeFromRemote()

@@ -7,6 +7,48 @@ import AppKit
 import ImageIO
 import UniformTypeIdentifiers
 
+// MARK: - Automatic Dock identity (docs/design/dock.md §Lifecycle)
+
+/// The decision for one open app window whose Dock identity is not bound yet:
+/// the identity appears with the window, waits for the app's real icon, or is
+/// skipped when the person turned the setting off or nothing can act.
+enum DockFollow: Equatable {
+    /// Whether the phone's icon package state is known.
+    enum IconState: Equatable { case cached, reportedMissing, unknown }
+
+    /// The setting is off (menu "Add to Dock" still works), this build cannot
+    /// make shims, or an instance already represents the app.
+    case skip
+    /// The shim is on disk and idle: launch it for the window.
+    case launchExisting
+    /// Build the bundle and launch it.
+    case createAndLaunch
+    /// The icon is not cached yet: wait for it (or the phone saying there is
+    /// none) instead of putting a blank tile in the Dock.
+    case wait
+
+    static func decide(settingOn: Bool, shimBinary: Bool, phoneKnown: Bool,
+                       shimExists: Bool, shimRunning: Bool, shimHasIcon: Bool,
+                       icon: IconState) -> DockFollow {
+        guard settingOn, shimBinary, phoneKnown else { return .skip }
+        if shimRunning { return .skip }
+        // A bundle without its icon is rebuilt (or built) once the icon is known;
+        // an unknown icon waits, so the Dock never shows a blank tile.
+        if shimExists, shimHasIcon || icon == .reportedMissing { return .launchExisting }
+        return icon == .unknown ? .wait : .createAndLaunch
+    }
+}
+
+/// The Settings → General switch for the automatic Dock identity
+/// (docs/design/dock.md §Lifecycle). On unless the person turned it off.
+enum DockAutoSetting {
+    static let key = "showAppsInDock"
+
+    static func isEnabled(in defaults: UserDefaults) -> Bool {
+        defaults.object(forKey: key) as? Bool ?? true
+    }
+}
+
 /// Everything a shim bundle is made from.
 struct DockShimSpec: Equatable {
     var deviceId: String
@@ -173,9 +215,18 @@ final class DockApps: NSObject {
     /// Close the window bound to a shim that quit.
     var onShimQuit: ((UInt32) -> Void)?
 
-    /// Shim pid → the stream of the window it stands for.
-    private(set) var bindings: [Int: UInt32] = [:]
+    /// The window a running shim stands for: stream + the package that named it.
+    struct Binding: Equatable {
+        var stream: UInt32
+        var pkg: String
+    }
+
+    /// Shim pid → the window (stream, pkg) it stands for.
+    private(set) var bindings: [Int: Binding] = [:]
     private let center = DistributedNotificationCenter.default()
+    /// The file system and LaunchServices work of the automatic path runs here:
+    /// creating a shim for the first time must never slow the window it stands for.
+    private let workQueue = DispatchQueue(label: "dev.pocketdeck.dock", qos: .utility)
 
     static let lsregister = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
 
@@ -223,6 +274,78 @@ final class DockApps: NSObject {
         records().contains { $0.deviceId == deviceId && $0.pkg == pkg }
     }
 
+    /// A running instance made from this profile's shim bundle for the app.
+    func isRunning(deviceId: String, pkg: String) -> Bool {
+        records().contains { record in
+            record.deviceId == deviceId && record.pkg == pkg && isRunning(record.url)
+        }
+    }
+
+    private func isRunning(_ url: URL) -> Bool {
+        NSRunningApplication.runningApplications(withBundleIdentifier: bundleId(of: url) ?? "").contains {
+            $0.bundleURL?.standardizedFileURL == url.standardizedFileURL
+        }
+    }
+
+    /// Whether the shim bundle carries the phone's icon (docs/design/dock.md: no blank tiles).
+    func shimHasIcon(deviceId: String, pkg: String) -> Bool {
+        records().contains { record in
+            record.deviceId == deviceId && record.pkg == pkg
+                && FileManager.default.fileExists(atPath: record.url
+                    .appendingPathComponent("Contents/Resources/AppIcon.icns").path)
+        }
+    }
+
+    // MARK: Automatic identity (docs/design/dock.md §Lifecycle)
+
+    /// Builds the shim for a phone app whose window opened and launches it, bound
+    /// to `stream`'s window. The file work runs off the main thread: the window
+    /// never waits for the build; `launched` reports the shim pid once it is up.
+    func buildAndLaunch(_ spec: DockShimSpec, bind stream: UInt32, launched: @escaping (Int?) -> Void) {
+        workQueue.async { [self] in
+            guard let binary = Self.shimBinary, let url = make(spec, shellBinary: binary) else {
+                DispatchQueue.main.async { launched(nil) }
+                return
+            }
+            open(url) { pid in DispatchQueue.main.async { launched(pid) } }
+        }
+    }
+
+    /// The shim was built before (kept from "Add to Dock") but is idle: launch the
+    /// existing bundle for `stream`'s window and bind them.
+    func relaunch(deviceId: String, pkg: String, bind stream: UInt32, launched: @escaping (Int?) -> Void) {
+        workQueue.async { [self] in
+            guard let record = records().first(where: { $0.deviceId == deviceId && $0.pkg == pkg }) else {
+                DispatchQueue.main.async { launched(nil) }
+                return
+            }
+            open(record.url) { pid in DispatchQueue.main.async { launched(pid) } }
+        }
+    }
+
+    /// The synchronous bundle build and registration, shared by the "Add to Dock"
+    /// path and the automatic one. Runs on the caller's thread.
+    private func make(_ spec: DockShimSpec, shellBinary: URL) -> URL? {
+        do {
+            let url = try DockShimBuilder.build(spec, in: folder, shimBinary: shellBinary,
+                                                iconPNG: IconCache.shared.loadData(pkg: spec.pkg, deviceId: spec.deviceId))
+            Self.run("/usr/bin/codesign", ["--force", "--sign", "-", url.path])
+            LSRegisterURL(url as CFURL, true)
+            Log.app.notice("dock: created \(url.path, privacy: .public)")
+            return url
+        } catch {
+            Log.app.error("dock: could not create \(spec.fileName, privacy: .public): \(String(describing: error), privacy: .public)")
+            return nil
+        }
+    }
+
+    private func open(_ url: URL, launched: @escaping (Int?) -> Void) {
+        let configuration = NSWorkspace.OpenConfiguration()
+        NSWorkspace.shared.openApplication(at: url, configuration: configuration) { app, _ in
+            launched(app.map { Int($0.processIdentifier) })
+        }
+    }
+
     @discardableResult
     func add(deviceId: String, pkg: String, label: String, phoneName: String, launch: Bool) -> URL? {
         guard let binary = Self.shimBinary else {
@@ -233,21 +356,9 @@ final class DockApps: NSObject {
         for record in records() where record.deviceId == deviceId && record.pkg == pkg { remove(record.url) }
         let spec = DockShimSpec(deviceId: deviceId, pkg: pkg, label: label, phoneName: phoneName,
                                 profile: profile, hostPath: Bundle.main.bundleURL.path)
-        do {
-            let url = try DockShimBuilder.build(spec, in: folder, shimBinary: binary,
-                                                iconPNG: IconCache.shared.loadData(pkg: pkg, deviceId: deviceId))
-            Self.run("/usr/bin/codesign", ["--force", "--sign", "-", url.path])
-            LSRegisterURL(url as CFURL, true)
-            Log.app.notice("dock: created \(url.path, privacy: .public)")
-            if launch {
-                let configuration = NSWorkspace.OpenConfiguration()
-                NSWorkspace.shared.openApplication(at: url, configuration: configuration) { _, _ in }
-            }
-            return url
-        } catch {
-            Log.app.error("dock: could not create \(spec.fileName, privacy: .public): \(String(describing: error), privacy: .public)")
-            return nil
-        }
+        guard let url = make(spec, shellBinary: binary) else { return nil }
+        if launch { open(url) { _ in } }
+        return url
     }
 
     func remove(deviceId: String, pkg: String) {
@@ -265,8 +376,12 @@ final class DockApps: NSObject {
         Log.app.notice("dock: removed \(url.path, privacy: .public)")
     }
 
-    func reconcile(deviceId: String, apps: [AppInfo], phoneName: String) {
-        for decision in DockCleanup.plan(records: records(), deviceId: deviceId, apps: apps, phoneName: phoneName) {
+    /// Decisions for a phone's shims. `keep`: packages of open windows — a shim
+    /// is neither removed nor rebuilt while it stands for one (its label and
+    /// clean-up follow when the window is gone).
+    func reconcile(deviceId: String, apps: [AppInfo], phoneName: String, keep: Set<String> = []) {
+        let mine = records().filter { $0.deviceId == deviceId && !keep.contains($0.pkg) }
+        for decision in DockCleanup.plan(records: mine, deviceId: deviceId, apps: apps, phoneName: phoneName) {
             apply(decision, phoneName: phoneName)
         }
     }
@@ -290,16 +405,31 @@ final class DockApps: NSObject {
 
     // MARK: Shim messages
 
-    func bind(pid: Int, stream: UInt32) {
-        bindings[pid] = stream
+    /// The shim is up and its pid now stands for the window of `stream`.
+    func bind(pid: Int, stream: UInt32, pkg: String) {
+        bindings[pid] = Binding(stream: stream, pkg: pkg)
         post(DockMessage.opened, pid: pid)
     }
 
-    func stream(forPid pid: Int) -> UInt32? { bindings[pid] }
+    func stream(forPid pid: Int) -> UInt32? { bindings[pid]?.stream }
+
+    /// The shim standing for `stream`, if any.
+    func binding(stream: UInt32) -> (pid: Int, pkg: String)? {
+        bindings.first { $0.value.stream == stream }.map { ($0.key, $0.value.pkg) }
+    }
+
+    var boundStreams: Set<UInt32> { Set(bindings.values.map(\.stream)) }
+
+    /// The identity moves to another window of the same app instead of leaving.
+    func rebind(pid: Int, to stream: UInt32) {
+        guard var binding = bindings[pid] else { return }
+        binding.stream = stream
+        bindings[pid] = binding
+    }
 
     /// A window closed: its shim exits.
     func streamClosed(_ stream: UInt32) {
-        for (pid, bound) in bindings where bound == stream {
+        for (pid, bound) in bindings where bound.stream == stream {
             bindings.removeValue(forKey: pid)
             post(DockMessage.closed, pid: pid)
         }
@@ -333,9 +463,9 @@ final class DockApps: NSObject {
     }
 
     private func shimGone(_ pid: Int) {
-        guard let stream = bindings.removeValue(forKey: pid) else { return }
-        Log.app.notice("dock: shim \(pid, privacy: .public) quit; closing stream \(stream, privacy: .public)")
-        onShimQuit?(stream)
+        guard let bound = bindings.removeValue(forKey: pid) else { return }
+        Log.app.notice("dock: shim \(pid, privacy: .public) quit; closing stream \(bound.stream, privacy: .public)")
+        onShimQuit?(bound.stream)
     }
 
     @discardableResult

@@ -12,6 +12,7 @@ final class LaunchOptionsTests: XCTestCase {
             "--resize-stream", "1:800x600-pt",
             "--minimize-stream", "2:6",
             "--deminimize-stream", "2:11",
+            "--close-stream", "2:33",
             "--quit-after", "20",
             "--qr-sheet",
             "--qr-payload-file", "/tmp/pd.qr",
@@ -28,6 +29,8 @@ final class LaunchOptionsTests: XCTestCase {
         XCTAssertEqual(options.minimizes.first?.stream, 2)
         XCTAssertEqual(options.minimizes.first?.after, 6)
         XCTAssertEqual(options.deminimizes.first?.after, 11)
+        XCTAssertEqual(options.closeStreams.first?.stream, 2)
+        XCTAssertEqual(options.closeStreams.first?.after, 33)
         XCTAssertEqual(options.quitAfter, 20)
         XCTAssertFalse(options.resetPairing)
         XCTAssertTrue(options.qrSheet)

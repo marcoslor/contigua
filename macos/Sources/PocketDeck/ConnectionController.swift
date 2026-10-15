@@ -280,7 +280,10 @@ final class ConnectionController {
             return
         }
         windows.onStreamClosed = { [weak self] stream in
-            DispatchQueue.main.async { self?.dockApps.streamClosed(stream) }
+            DispatchQueue.main.async { self?.dockFollowWindowClosed(stream) }
+        }
+        windows.onAppWindowOpened = { [weak self] pkg, stream in
+            MainActor.assumeIsolated { self?.establishDockFollow(pkg: pkg, stream: stream) }
         }
         dockApps.onOpen = { [weak self] deviceId, pkg, pid in self?.openFromDock(deviceId: deviceId, pkg: pkg, pid: pid) }
         dockApps.onShimQuit = { [weak self] stream in self?.windows.controller(for: stream)?.window?.close() }
@@ -484,13 +487,21 @@ final class ConnectionController {
     private func openFromDock(deviceId: String, pkg: String, pid: Int) {
         if let stream = dockApps.stream(forPid: pid), let window = windows.controller(for: stream)?.window {
             dockApps.acknowledge(pid: pid)
-            NSApp.activate(ignoringOtherApps: true)
-            if window.isMiniaturized { window.deminiaturize(nil) }
-            window.makeKeyAndOrderFront(nil)
+            focusWindow(stream: stream)
             return
         }
         if link.isOnline, link.phone?.id == deviceId {
-            dockApps.bind(pid: pid, stream: windows.openApp(pkg: pkg).stream)
+            // The window this shim stood for can already be open (it was opened
+            // from the Deck or Spotlight while the shim was being built, or a
+            // kept identity was launched by hand): it takes that window instead
+            // of a second one.
+            let bound = dockApps.boundStreams
+            if let stream = windows.openAppWindows.first(where: { $0.pkg == pkg && !bound.contains($0.stream) })?.stream {
+                dockApps.bind(pid: pid, stream: stream, pkg: pkg)
+                focusWindow(stream: stream)
+                return
+            }
+            dockApps.bind(pid: pid, stream: windows.openApp(pkg: pkg).stream, pkg: pkg)
             return
         }
         guard let phone = remembered.phone(id: deviceId) else {
@@ -503,10 +514,17 @@ final class ConnectionController {
         if link.phone?.id != deviceId { use(phone) }
     }
 
+    private func focusWindow(stream: UInt32) {
+        NSApp.activate(ignoringOtherApps: true)
+        guard let window = windows.controller(for: stream)?.window else { return }
+        if window.isMiniaturized { window.deminiaturize(nil) }
+        window.makeKeyAndOrderFront(nil)
+    }
+
     private func openPendingDock(readyPhone id: String) {
         guard let pending = pendingDockOpen, pending.deviceId == id else { return }
         pendingDockOpen = nil
-        dockApps.bind(pid: pending.pid, stream: windows.openApp(pkg: pending.pkg).stream)
+        dockApps.bind(pid: pending.pid, stream: windows.openApp(pkg: pending.pkg).stream, pkg: pending.pkg)
     }
 
     /// Test hooks: once the app list (and the app's icon) is in.
@@ -520,6 +538,101 @@ final class ConnectionController {
         if let pkg = options.dockRemove { dockApps.remove(deviceId: phone.id, pkg: pkg) }
         dockHooksPending = false
         dockRevision += 1
+    }
+
+    // MARK: The Dock identity of open app windows (docs/design/dock.md §Lifecycle)
+
+    /// Keys of `{deviceId}/{pkg}` the automatic path is currently working on, so
+    /// one app identity is built at most once per moment.
+    private var dockEstablishing: Set<String> = []
+
+    /// Settings → General "Show phone apps in the Dock": on unless it is off.
+    var showAppsInDock: Bool { DockAutoSetting.isEnabled(in: profile.defaults) }
+
+    /// The setting changed: open windows follow immediately.
+    func showAppsInDockChanged() {
+        recheckOpenWindows()
+    }
+
+    /// Pkgs of open windows — shims standing for one are neither removed nor
+    /// rebuilt by the app-list reconciliation until their window is gone.
+    private var dockPkgsOfOpenWindows: Set<String> {
+        Set(windows.openAppWindows.compactMap(\.pkg))
+    }
+
+    /// A window closed: its shim exits — unless another window of the same app
+    /// is still open, which the identity moves to instead (docs/design/dock.md).
+    private func dockFollowWindowClosed(_ stream: UInt32) {
+        if let (pid, pkg) = dockApps.binding(stream: stream),
+           let next = windows.openAppWindows.first(where: { $0.pkg == pkg && $0.stream != stream })?.stream {
+            dockApps.rebind(pid: pid, to: next)
+            return
+        }
+        dockApps.streamClosed(stream)
+    }
+
+    /// An open app window has no Dock identity bound to it: decide what happens.
+    /// Cheap reads on the main thread; the file work is off it.
+    private func establishDockFollow(pkg: String, stream: UInt32) {
+        guard showAppsInDock, dockApps.isAvailable, let phone = link.phone else { return }
+        guard let label = appLabel(pkg), !dockEstablishing.contains("\(phone.id)/\(pkg)") else { return }
+        if dockApps.boundStreams.contains(stream) { return }
+        let decision = DockFollow.decide(
+            settingOn: showAppsInDock, shimBinary: dockApps.isAvailable, phoneKnown: true,
+            shimExists: dockApps.hasShim(deviceId: phone.id, pkg: pkg),
+            shimRunning: dockApps.isRunning(deviceId: phone.id, pkg: pkg),
+            shimHasIcon: dockApps.shimHasIcon(deviceId: phone.id, pkg: pkg),
+            icon: iconState(pkg: pkg, deviceId: phone.id))
+        switch decision {
+        case .skip, .wait:
+            return
+        case .launchExisting:
+            bindWhenDockCleared(pkg: pkg, stream: stream) { launched in
+                self.dockApps.relaunch(deviceId: phone.id, pkg: pkg, bind: stream, launched: launched)
+            }
+        case .createAndLaunch:
+            bindWhenDockCleared(pkg: pkg, stream: stream) { launched in
+                self.dockApps.buildAndLaunch(
+                    DockShimSpec(deviceId: phone.id, pkg: pkg, label: label, phoneName: phone.name,
+                                 profile: profile, hostPath: Bundle.main.bundleURL.path),
+                    bind: stream, launched: launched)
+            }
+        }
+    }
+
+    /// Runs the launch and clears the in-flight key and binds the pid when it is up.
+    private func bindWhenDockCleared(pkg: String, stream: UInt32,
+                                     work: (_ launched: @escaping (Int?) -> Void) -> Void) {
+        let key = "\(link.phone?.id ?? "")/\(pkg)"
+        dockEstablishing.insert(key)
+        work { [weak self] pid in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.dockEstablishing.remove(key)
+                if let pid {
+                    self.dockApps.bind(pid: pid, stream: stream, pkg: pkg)
+                }
+                self.recheckOpenWindows()
+            }
+        }
+    }
+
+    /// The automatic path reconsiders every open app window: after the app list,
+    /// the icons and the setting (a window may have waited for one of them).
+    private func recheckOpenWindows() {
+        for window in windows.openAppWindows {
+            guard let pkg = window.pkg else { continue }
+            establishDockFollow(pkg: pkg, stream: window.stream)
+        }
+    }
+
+    private func appLabel(_ pkg: String) -> String? {
+        windows.appsByPkg[pkg]?.label ?? apps.first { $0.pkg == pkg }?.label
+    }
+
+    private func iconState(pkg: String, deviceId: String) -> DockFollow.IconState {
+        if IconCache.shared.loadData(pkg: pkg, deviceId: deviceId) != nil { return .cached }
+        return missingIcons.contains(pkg) ? .reportedMissing : .unknown
     }
 
     // MARK: Links (docs/design/links.md)
@@ -878,6 +991,7 @@ final class ConnectionController {
                 missingIcons.insert(pkg)
             }
             runDockHooks()
+            recheckOpenWindows()
         case .phoneState(let locked, let battery, let charging):
             status = PhoneStatus(locked: locked, battery: battery, charging: charging)
         case .audioState(let on, _):
@@ -988,9 +1102,11 @@ final class ConnectionController {
         if let ref = link.phone {
             spotlight.index(apps: list, deviceId: ref.id, phoneName: ref.name,
                             iconData: { IconCache.shared.loadData(pkg: $0, deviceId: ref.id) })
-            dockApps.reconcile(deviceId: ref.id, apps: list, phoneName: ref.name)
+            dockApps.reconcile(deviceId: ref.id, apps: list, phoneName: ref.name,
+                               keep: dockPkgsOfOpenWindows)
         }
         runDockHooks()
+        recheckOpenWindows()
     }
 
     private func codeShown(deviceId: String?, code: String) {
@@ -1027,6 +1143,13 @@ final class ConnectionController {
         for deminimize in options.deminimizes {
             DispatchQueue.main.asyncAfter(deadline: .now() + deminimize.after) { [weak self] in
                 MainActor.assumeIsolated { self?.windows.controller(for: deminimize.stream)?.window?.deminiaturize(nil) }
+            }
+        }
+        // Closing a stream window like the person does (⌘W or the close button):
+        // the window goes through windowWillClose, so the Dock identity follows.
+        for close in options.closeStreams {
+            DispatchQueue.main.asyncAfter(deadline: .now() + close.after) { [weak self] in
+                MainActor.assumeIsolated { self?.windows.controller(for: close.stream)?.window?.performClose(nil) }
             }
         }
     }
