@@ -365,16 +365,51 @@ class SessionTest {
     }
 
     @Test
-    fun phoneModeLaunchesOwnLauncher() {
+    fun phoneModeMirrorsDisplayZeroAtItsAspect() {
         addAndAuthenticate()
         send(mapOf("t" to "window.open", "stream" to 3, "w" to 400, "h" to 800, "dpi" to 160, "mode" to "phone"))
+        val opened = readUntil("window.opened")
+        assertEquals(0, (opened["displayId"] as Number).toInt())
+        // 1080x2340 inside 400x800: height-bound, 16-aligned.
+        assertEquals(368, (opened["w"] as Number).toInt())
+        assertEquals(800, (opened["h"] as Number).toInt())
+        assertEquals(listOf(3), platform.mirrors.toList())
+        assertTrue(platform.opens.isEmpty())
+        assertTrue(platform.launches.isEmpty())
+        // The mirror leaves the phone's power alone.
+        assertTrue(platform.activeStreams.all { it.isEmpty() })
+    }
+
+    @Test
+    fun phoneModeInputGoesToDisplayZeroWithoutPoking() {
+        addAndAuthenticate()
+        send(mapOf("t" to "window.open", "stream" to 1, "w" to 400, "h" to 800, "dpi" to 160, "mode" to "phone"))
         readUntil("window.opened")
-        val open = platform.opens.first()
-        assertTrue(
-            platform.launches.any {
-                it.displayId == open.displayId && it.pkg == Session.OWN_PACKAGE && it.activity == Session.LAUNCHER_ACTIVITY
-            },
-        )
+        sendFrame(Frames.TYPE_TOUCH, 1, Frames.encodeTouch(TouchPayload(Frames.TOUCH_DOWN, 0, 0.5f, 0.5f)))
+        await { platform.touches.isNotEmpty() }
+        assertEquals(0, platform.touches[0].displayId)
+        assertTrue(platform.inputs.isEmpty())
+    }
+
+    @Test
+    fun phoneModeHomeAndRecentsAreKeysOnDisplayZero() {
+        addAndAuthenticate()
+        send(mapOf("t" to "window.open", "stream" to 1, "w" to 400, "h" to 800, "dpi" to 160, "mode" to "phone"))
+        readUntil("window.opened")
+        send(mapOf("t" to "nav", "stream" to 1, "action" to "home"))
+        send(mapOf("t" to "nav", "stream" to 1, "action" to "recents"))
+        await { platform.keys.size >= 4 }
+        assertEquals(listOf(Session.KEYCODE_HOME, Session.KEYCODE_HOME, Session.KEYCODE_APP_SWITCH, Session.KEYCODE_APP_SWITCH),
+            platform.keys.map { it.keycode })
+        assertTrue(platform.keys.all { it.displayId == 0 })
+    }
+
+    @Test
+    fun phoneModeWithoutMirrorSupportReportsAnError() {
+        addAndAuthenticate()
+        platform.mirrorFails = true
+        send(mapOf("t" to "window.open", "stream" to 1, "w" to 400, "h" to 800, "dpi" to 160, "mode" to "phone"))
+        assertEquals("mirror_unavailable", readUntil("error")["code"])
     }
 
     @Test
@@ -409,7 +444,7 @@ class SessionTest {
         addAndAuthenticate()
         send(mapOf("t" to "window.open", "stream" to 1, "w" to 640, "h" to 480, "dpi" to 160, "mode" to "phone"))
         readUntil("window.opened")
-        val displayId = platform.opens.first().displayId
+        val displayId = 0
         platform.keys.clear()
         send(mapOf("t" to "nav", "stream" to 1, "action" to "back"))
         await { platform.keys.size >= 2 }
@@ -581,7 +616,7 @@ class SessionTest {
         Thread.sleep(200)
         taskPresent = false
         Thread.sleep(200)
-        // Still open: the phone-mode window runs our own launcher.
+        // Still open: the phone mirror is not an app window.
         send(mapOf("t" to "ping", "ts" to 9))
         assertEquals(9L, readUntil("pong")["ts"])
     }

@@ -504,14 +504,25 @@ class Session(
             return
         }
         if (streams.containsKey(stream)) display.close(stream)
-        val displayId = display.open(stream, w, h, dpi, this)
-        val state = StreamState(stream, displayId, IntSize(w, h)).also { it.content = content }
-        synchronized(streams) { streams[stream] = state }
-        sendJson(mapOf("t" to "window.opened", "stream" to stream, "displayId" to displayId, "w" to w, "h" to h))
-        when (content) {
-            is WindowContent.App -> launchOn(stream, displayId, content.pkg, content.activity)
-            WindowContent.Phone -> launchOn(stream, displayId, OWN_PACKAGE, LAUNCHER_ACTIVITY)
-            is WindowContent.Link -> viewOn(stream, displayId, content.url)
+        if (content == WindowContent.Phone) {
+            val size = runCatching { display.openMirror(stream, w, h, this) }.getOrElse {
+                log("phone mirror failed: ${it.message}")
+                sendError("mirror_unavailable", "this phone can't mirror its screen", stream)
+                return
+            }
+            val state = StreamState(stream, PHONE_DISPLAY, size).also { it.content = content }
+            synchronized(streams) { streams[stream] = state }
+            sendJson(mapOf("t" to "window.opened", "stream" to stream, "displayId" to PHONE_DISPLAY, "w" to size.w, "h" to size.h))
+        } else {
+            val displayId = display.open(stream, w, h, dpi, this)
+            val state = StreamState(stream, displayId, IntSize(w, h)).also { it.content = content }
+            synchronized(streams) { streams[stream] = state }
+            sendJson(mapOf("t" to "window.opened", "stream" to stream, "displayId" to displayId, "w" to w, "h" to h))
+            when (content) {
+                is WindowContent.App -> launchOn(stream, displayId, content.pkg, content.activity)
+                is WindowContent.Link -> viewOn(stream, displayId, content.url)
+                WindowContent.Phone -> Unit
+            }
         }
         power.setActiveStreams(activeDisplayIds())
         runCatching { callback.onSessionChanged(true, currentMacName ?: clientName, windowCount()) }
@@ -592,10 +603,18 @@ class Session(
                 injector.key(state.displayId, Frames.ACTION_DOWN, KEYCODE_BACK, 0, t, t)
                 injector.key(state.displayId, Frames.ACTION_UP, KEYCODE_BACK, 0, t, t + 1)
             }
-            "home" -> launchOn(state.stream, state.displayId, OWN_PACKAGE, LAUNCHER_ACTIVITY)
-            "recents" -> log("recents: no-op in v0")
+            "home" -> tapKey(state, KEYCODE_HOME)
+            "recents" -> tapKey(state, KEYCODE_APP_SWITCH)
             else -> logOnce("unknown nav action")
         }
+    }
+
+    /** Home and Recents only mean something on the phone's own screen. */
+    private fun tapKey(state: StreamState, keycode: Int) {
+        if (state.content != WindowContent.Phone) return
+        val t = bumpTime(state)
+        injector.key(state.displayId, Frames.ACTION_DOWN, keycode, 0, t, t)
+        injector.key(state.displayId, Frames.ACTION_UP, keycode, 0, t, t + 1)
     }
 
     // ------------------------------------------------------------------
@@ -649,13 +668,13 @@ class Session(
                 val downTime = if (p.action == Frames.TOUCH_DOWN) t else state.gestureDownTime
                 if (p.action == Frames.TOUCH_DOWN) state.gestureDownTime = t
                 injector.touch(state.displayId, p.action, p.pointerId, p.nx, p.ny, size, downTime, t)
-                power.onInput(state.displayId)
+                if (state.content != WindowContent.Phone) power.onInput(state.displayId)
             }
             Frames.TYPE_SCROLL -> {
                 val p = Frames.decodeScroll(frame.payload)
                 val state = requireState(frame.stream) ?: return
                 injector.scroll(state.displayId, p.nx, p.ny, p.hscroll, p.vscroll, display.size(state.stream))
-                power.onInput(state.displayId)
+                if (state.content != WindowContent.Phone) power.onInput(state.displayId)
             }
             Frames.TYPE_APK_DATA -> apk?.data(frame.stream.toLong() and 0xFFFF_FFFFL, frame.payload)
             Frames.TYPE_KEY -> {
@@ -665,7 +684,7 @@ class Session(
                 val downTime = if (p.action == Frames.ACTION_DOWN) t else state.keyDownTime
                 if (p.action == Frames.ACTION_DOWN) state.keyDownTime = t
                 injector.key(state.displayId, p.action, p.keycode, p.metaState, downTime, t)
-                power.onInput(state.displayId)
+                if (state.content != WindowContent.Phone) power.onInput(state.displayId)
             }
             else -> logOnce("unknown frame type 0x${frame.type.toString(16)}")
         }
@@ -837,7 +856,7 @@ class Session(
         val previous = HashMap<Int, Boolean>()
         val current = HashMap<Int, Boolean>()
         for (s in candidates) {
-            // Phone-mode windows run our own launcher and never auto-close.
+            // The phone mirror shows display 0 and never auto-closes.
             if (s.content == null || s.content == WindowContent.Phone) continue
             val hasTask = runCatching { presence.hasTask(s.displayId) }.getOrNull() ?: continue
             previous[s.stream] = s.hadTask
@@ -875,8 +894,9 @@ class Session(
 
     private fun windowCount(): Int = synchronized(streams) { streams.size }
 
+    /** Displays the keep-alive owns. Never display 0: the mirror leaves the phone's power alone. */
     private fun activeDisplayIds(): List<Int> = synchronized(streams) {
-        streams.values.filter { !it.paused }.map { it.displayId }
+        streams.values.filter { !it.paused && it.content != WindowContent.Phone }.map { it.displayId }
     }
 
     private fun streamOf(obj: Map<String, Any?>, frame: Frame): Int =
@@ -907,9 +927,10 @@ class Session(
     companion object {
         const val PROTOCOL_VERSION = 1
         const val OWN_PACKAGE = "dev.pocketdeck"
-        const val LAUNCHER_ACTIVITY = "dev.pocketdeck.launcher.LauncherActivity"
+        const val PHONE_DISPLAY = 0
         const val KEYCODE_BACK = 4
         const val KEYCODE_HOME = 3
+        const val KEYCODE_APP_SWITCH = 187
 
         /** The phone's own screen: where "Continue on Mac" looks. */
         const val PHONE_DISPLAY_ID = 0

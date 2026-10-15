@@ -85,4 +85,11 @@ internal object DisplayProbe {
         if (flags and FLAG_OWN_FOCUS != 0) set.add("OWN_FOCUS")
         return if (set.isEmpty()) "none" else set.joinToString("|")
     }
+
+    /** The display's current logical size (rotation applied), or null when unknown. */
+    fun logicalSize(displayId: Int): IntSize? = runCatching {
+        val info = getDisplayInfo?.invoke(global, displayId) ?: return null
+        val c = info.javaClass
+        IntSize(c.getField("logicalWidth").getInt(info), c.getField("logicalHeight").getInt(info))
+    }.getOrNull()?.takeIf { it.w > 0 && it.h > 0 }
 }

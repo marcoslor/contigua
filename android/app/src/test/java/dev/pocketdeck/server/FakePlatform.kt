@@ -24,6 +24,9 @@ class FakePlatform : DisplayLayer, AppCatalog, Launcher, Injector, Power, Device
     data class QualityCall(val stream: Int, val bitrate: Int?, val maxFps: Int?)
 
     val opens = CopyOnWriteArrayList<OpenCall>()
+    val mirrors = CopyOnWriteArrayList<Int>()
+    var screenSize = IntSize(1080, 2340)
+    var mirrorFails = false
     val resizes = CopyOnWriteArrayList<ResizeCall>()
     val pauses = CopyOnWriteArrayList<Int>()
     val resumes = CopyOnWriteArrayList<Int>()
@@ -65,6 +68,15 @@ class FakePlatform : DisplayLayer, AppCatalog, Launcher, Injector, Power, Device
         sizes[stream] = IntSize(w, h)
         video?.start(stream, w, h, sink)
         return id
+    }
+
+    override fun openMirror(stream: Int, w: Int, h: Int, sink: VideoSink): IntSize {
+        check(!mirrorFails) { "no mirror on this phone" }
+        mirrors.add(stream)
+        sizes[stream] = screenSize
+        val fit = MirrorFit.fit(IntSize(w, h), screenSize)
+        video?.start(stream, fit.w, fit.h, sink)
+        return fit
     }
 
     override fun size(stream: Int): IntSize = sizes[stream] ?: IntSize(0, 0)
