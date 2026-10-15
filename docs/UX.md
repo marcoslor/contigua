@@ -48,10 +48,12 @@ Detail, states, copy and the connection state machine: [design/mac-redesign.md](
      **Pair**), footer **Pair with QR** · **Connect manually…**. Empty: spinner "Looking for phones on this network…" +
      "Make sure PocketDeck is open on your phone." Pairing runs in sheets: the 6-digit code to compare (inline errors, Cancel) or the QR
      (countdown, success check).
-   - **Phone** (a phone is paired, including while it is away): toolbar with the phone's name, one status chip
-     (green dot · lock while locked · battery / Connecting… / Reconnecting… / Offline / Pair again), **Phone** button and search; the app
-     grid (single click opens, arrows move, ↩ opens, esc clears). The grid is there at launch from the last session and is dimmed
-     while the phone is away. A problem is one banner line with at most one button (Try now / Pair again).
+   - **Phone** (a phone is paired, including while it is away): toolbar with one group packed at the left — the traffic
+     lights, the connection chip (green dot · lock while locked · battery / Connecting… / Reconnecting… / Offline /
+     Pair again) and the phone's name — and one at the right: **Phone** button, search and the Settings gear (⌘,);
+     nothing floats in the middle between them. The app grid (single click opens, arrows move, ↩ opens, esc clears).
+     The grid is there at launch from the last session and is dimmed while the phone is away. A problem is one banner
+     line with at most one button (Try now / Pair again).
 2. **App windows**: only the stream, with rounded corners and a shadow; no title bar, and the desktop shows right up to the stream. Bring
    the pointer to the stream's top edge and a glass header (with the traffic lights) appears at once *above* the stream, never over it; drag
    the glass to move the window. The stream's own edges resize the window. The header goes as soon as the pointer leaves, and clicks above a resting
@@ -61,8 +63,9 @@ Detail, states, copy and the connection state machine: [design/mac-redesign.md](
    New windows cascade (never on top of the Deck) and remember their frame. While the connection is down a small glass pill
    ("Reconnecting…") sits over the last frame; the window stays open. Phone mode: Back · Home · Recents sit at the right
    of the hover header.
-3. **Settings** (⌘,): tabs **General** (launch at login, show in menu bar, default window density) · **Devices** (paired phones:
-   name, model, last seen, **Use**, **Forget**; **Add phone…**). Nothing else.
+3. **Settings** (⌘,; also the settings gear at the Deck header's right): tabs **General** (launch at login, show in
+   menu bar, default window density) · **Devices** (paired phones: name, model, last seen, **Use**, **Forget**;
+   **Add phone…**). Nothing else.
 
 Status/feedback: a single connection chip in the Deck toolbar and the menu-bar menu. Reconnecting is silent: a remembered phone
 connects by itself at launch and after any drop, with back-off, and the UI shows "Offline" (never an error code) only after 15 s
