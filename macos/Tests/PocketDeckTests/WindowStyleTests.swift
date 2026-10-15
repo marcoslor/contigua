@@ -196,7 +196,7 @@ final class BarMirrorTests: XCTestCase {
 }
 
 final class DwellPillTests: XCTestCase {
-    /// The hot zone and a pill that covers it plus the toggle.
+    /// The hot zone and a pill that covers it.
     private func makePill() -> DwellPill {
         DwellPill(zone: CGRect(x: 0, y: 0, width: 72, height: 32),
                   pill: CGRect(x: 0, y: 0, width: 100, height: 28))
@@ -316,16 +316,11 @@ final class DwellPillTests: XCTestCase {
 }
 
 final class ChromeBarTests: XCTestCase {
-    func testTheBarIsTwentyEightPointsAndTheToggleSitsRightOfTheZoom() {
+    func testTheBarIsTwentyEightPointsWithTheLightsAtTheStandardInset() {
         XCTAssertEqual(ChromeBar.height, 28)
         XCTAssertEqual(ChromeBar.trafficLightInset, 20)
-        XCTAssertEqual(ChromeBar.toggleSymbol, "rectangle.on.rectangle")
-        // A standard zoom button's frame, as AppKit lays it out.
-        let zoom = CGRect(x: 53, y: 7, width: 14, height: 14)
-        let toggle = ChromeBar.toggleFrame(zoom: zoom)
-        XCTAssertEqual(toggle.minX, 67 + 8, accuracy: 0.001, "8 pt right of the light")
-        XCTAssertEqual(toggle.midY, zoom.midY, accuracy: 0.001, "on the lights' line")
-        XCTAssertEqual(toggle.size, CGSize(width: 16, height: 16))
+        XCTAssertEqual(ChromeBar.trafficLightButtonSide, 14)
+        XCTAssertEqual(ChromeBar.trafficLightSpacing, 23)
     }
 }
 

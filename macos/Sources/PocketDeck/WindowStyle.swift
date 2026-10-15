@@ -3,7 +3,7 @@
 // Framed (the default): a permanent 28 pt bar above the stream — window
 // material over the stream's own top 28 pt, which an NSBackgroundExtensionView
 // mirrors into the bar and fades into the material by the seam/top alphas —
-// holding the traffic lights and the style toggle. Immersive: the window is
+// holding the traffic lights. Immersive: the window is
 // exactly the stream, and the lights live behind a 350 ms dwell in a 72x32 pt
 // hot zone at the stream's top-left.
 //
@@ -64,18 +64,6 @@ enum ChromeBar {
     static let trafficLightInset: CGFloat = 20
     static let trafficLightButtonSide: CGFloat = 14
     static let trafficLightSpacing: CGFloat = 23
-    /// The style toggle, 8 pt right of the zoom light.
-    static let toggleSymbol = "rectangle.on.rectangle"
-    static let toggleFontSize: CGFloat = 12
-    static let toggleSize: CGFloat = 16
-    static let toggleInset: CGFloat = 8
-
-    /// The toggle's frame: `size` square, the standard 8 pt right of the zoom
-    /// light and on the same centre line.
-    static func toggleFrame(zoom: CGRect, size: CGSize = CGSize(width: toggleSize, height: toggleSize),
-                            inset: CGFloat = toggleInset) -> CGRect {
-        CGRect(x: zoom.maxX + inset, y: zoom.midY - size.height / 2, width: size.width, height: size.height)
-    }
 }
 
 /// The immersive style's hot zone, the dwell that brings the lights in and the
@@ -100,13 +88,11 @@ enum DwellChrome {
     /// line, 23 pt apart like the bar's 20/43/66.
     static let pillLightInset: CGFloat = pillInset + 8
     static let pillLightSpacing: CGFloat = 23
-    /// The style toggle follows 8 pts right of the zoom light's slot.
-    static let pillToggleX: CGFloat = pillLightInset + 2 * pillLightSpacing + ChromeBar.trafficLightButtonSide + 8
-    /// The window kind's actions after the toggle.
-    static let pillActionsX: CGFloat = pillToggleX + ChromeBar.toggleSize + 8
+    /// The window kind's actions 8 pts right of the zoom light's slot.
+    static let pillActionsX: CGFloat = pillLightInset + 2 * pillLightSpacing + ChromeBar.trafficLightButtonSide + 8
     /// The pill is as tall as the framed bar and as wide as its contents.
     static func pillWidth(actionCount: Int) -> CGFloat {
-        guard actionCount > 0 else { return pillToggleX + ChromeBar.toggleSize + 8 - pillInset }
+        guard actionCount > 0 else { return pillActionsX + 8 - pillInset }
         return pillActionsX + CGFloat(actionCount) * HeaderControls.buttonWidth + 6
     }
 }

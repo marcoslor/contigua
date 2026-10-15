@@ -53,7 +53,6 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         window.delegate = self
         window.contentView = chrome
         chrome.onBarPress = { [weak self] in self?.barPresses += 1; self?.writeChromeState() }
-        chrome.onToggleStyle = { [weak self] in self?.toggleStyle() }
         chrome.setActions(headerActions())
         stateFile = manager.chromeStateFile
         writeChromeState()
@@ -93,8 +92,8 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
 
     // MARK: Style switching
 
-    /// The style toggle and the View menu's switch: the window grows or
-    /// shrinks by the bar above the stream (the stream keeps its place;
+    /// View ▸ Window Style's switch (and the scripted driver's toggle): the
+    /// window grows or shrinks by the bar above the stream (the stream keeps its place;
     /// `WindowStyle.frame` nudges it down when the bar would poke above the
     /// screen), the choice is remembered under this window's key. In full
     /// screen only the memory moves: the layout applies on exit (no bar there
@@ -119,7 +118,8 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     @objc func useFramedStyle(_ sender: Any?) { setStyle(.framed) }
     @objc func useImmersiveStyle(_ sender: Any?) { setStyle(.immersive) }
 
-    /// View ▸ Toggle Window Style (⌥⌘F); the bar and pill's toggle lands here too.
+    /// View ▸ Toggle Window Style (⌥⌘F); the scripted driver's toggle is the
+    /// same action.
     @objc func toggleStyleMenuAction(_ sender: Any?) { toggleStyle() }
 
     func toggleStyle() { setStyle(style == .framed ? .immersive : .framed) }
