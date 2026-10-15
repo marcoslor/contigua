@@ -47,4 +47,13 @@ class PairingCodeV2Test {
         val hmac = PairingCodeV2.qrHmac(s, exporter, phone)
         assertEquals(32, hmac.size)
     }
+    @Test
+    fun qrHmacFixedVector() {
+        val s = ByteArray(16) { 0x42 }
+        val exporter = ByteArray(32) { 0x11 }
+        val phone = ByteArray(32) { 0x22 }
+        val hmac = PairingCodeV2.qrHmac(s, exporter, phone)
+        assertEquals("1d82caee8640b5e9829ad0f44033261622d29e54a0214b300ff5cd6850e74ece",
+            PairingCodeV2.hex(hmac))
+    }
 }
