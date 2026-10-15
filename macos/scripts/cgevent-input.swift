@@ -79,7 +79,7 @@ func windowWithID(_ id: CGWindowID, owner: String, pid: Int?) -> Target? {
 
 /// The accessible titles (the Dock/⌘-Tab names) of the app's on-screen windows.
 func axTitles(appName: String, pid: Int?) -> [String] {
-    let process = pid ?? NSRunningApplication.runningApplications.first { $0.localizedName == appName }?.processIdentifier
+    let process: pid_t? = pid.map(pid_t.init) ?? ownerPID(owner: appName)
     guard let process else { return [] }
     let app = AXUIElementCreateApplication(process)
     var windows: CFTypeRef?
@@ -91,6 +91,16 @@ func axTitles(appName: String, pid: Int?) -> [String] {
               let name = title as? String else { return "" }
         return name
     }
+}
+
+/// One on-screen window of `owner`: its owning pid.
+func ownerPID(owner: String) -> pid_t? {
+    let options: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
+    guard let list = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] else { return nil }
+    for entry in list where (entry[kCGWindowOwnerName as String] as? String) == owner {
+        return entry[kCGWindowOwnerPID as String] as? pid_t
+    }
+    return nil
 }
 
 func post(_ event: CGEvent?) {
