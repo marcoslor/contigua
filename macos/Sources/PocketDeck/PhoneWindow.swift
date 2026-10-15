@@ -1,11 +1,12 @@
-// Phone-mode window: shows the phone's own launcher (PocketDeck launcher
-// activity) in a phone-shaped window whose video keeps the phone's aspect
-// ratio. Back / Home / Recents sit at the right of the hover header.
+// Phone-mode window: a 1:1 mirror of the phone's own screen in a window whose
+// video keeps the phone's aspect ratio and turns when the phone rotates.
+// Back / Home / Recents are glass buttons at the right of the hover header.
 
 import AppKit
 
 final class PhoneWindowController: StreamWindowController {
-    let phoneScreen: CGSize
+    /// The phone's screen as it is turned now; the window's aspect follows it.
+    private(set) var phoneScreen: CGSize
     let phoneDpi: Double
     /// What the phone last reported as this window's title (nil until it does):
     /// before that the window names the phone itself.
@@ -29,6 +30,33 @@ final class PhoneWindowController: StreamWindowController {
         window?.minSize = WindowChrome.windowSize(stream: NSSize(
             width: Self.minVideoWidth, height: Self.minVideoWidth * phoneScreen.height / phoneScreen.width))
         videoView.inputMapper?.isPhoneMode = true
+        rotationObserver = NotificationCenter.default.addObserver(
+            forName: VideoLayerView.videoSizeDidChange, object: videoView, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.followRotation() }
+        }
+    }
+
+    deinit {
+        if let rotationObserver { NotificationCenter.default.removeObserver(rotationObserver) }
+    }
+
+    private var rotationObserver: NSObjectProtocol?
+
+    /// The phone turned: the stream now has the other orientation, so the window
+    /// turns too, keeping its top-left corner and its picture's area.
+    private func followRotation() {
+        let video = videoView.videoSize
+        guard let window, let turned = WindowChrome.turnedPhone(phone: phoneScreen, video: video) else { return }
+        phoneScreen = turned
+        let current = WindowChrome.streamSize(window: window.frame.size)
+        let size = WindowChrome.windowSize(stream: CGSize(width: current.height, height: current.width))
+        let frame = window.frame
+        window.minSize = WindowChrome.windowSize(stream: turned.width < turned.height
+            ? CGSize(width: Self.minVideoWidth, height: Self.minVideoWidth * turned.height / turned.width)
+            : CGSize(width: Self.minVideoWidth * turned.width / turned.height, height: Self.minVideoWidth))
+        window.setFrame(NSRect(x: frame.minX, y: frame.maxY - size.height, width: size.width, height: size.height),
+                        display: true, animate: false)
     }
 
     /// The display name, or the remembered phone name while unknown.
@@ -43,9 +71,9 @@ final class PhoneWindowController: StreamWindowController {
     private static let minVideoWidth: CGFloat = 240
 
     override func headerActions() -> [HeaderAction] {
-        [HeaderAction(symbol: "chevron.backward", help: "Back") { [weak self] in self?.nav("back") },
-         HeaderAction(symbol: "circle", help: "Home") { [weak self] in self?.nav("home") },
-         HeaderAction(symbol: "square.on.square", help: "Recents") { [weak self] in self?.nav("recents") }]
+        [HeaderAction(symbol: "chevron.backward", help: "Back", glass: true) { [weak self] in self?.nav("back") },
+         HeaderAction(symbol: "circle", help: "Home", glass: true) { [weak self] in self?.nav("home") },
+         HeaderAction(symbol: "square.on.square", help: "Recents", glass: true) { [weak self] in self?.nav("recents") }]
     }
 
     func windowWillResize(_ sender: NSWindow, to frameSize: NSSize) -> NSSize {

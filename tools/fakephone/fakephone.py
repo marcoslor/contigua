@@ -259,6 +259,17 @@ def valid_link(raw):
     return url
 
 
+def mirror_fit(w, h, screen_w, screen_h):
+    """The phone mirror's size: inside w x h at the screen's aspect, never above the screen."""
+    scale = min(float(w) / screen_w, float(h) / screen_h, 1.0)
+    return round16(screen_w * scale), round16(screen_h * scale)
+
+
+def turn_box(w, h, screen_w, screen_h):
+    """A Mac window box turned to the screen's current orientation."""
+    return (w, h) if (h >= w) == (screen_h >= screen_w) else (h, w)
+
+
 def round16(value):
     value = int(value)
     if value < 16:
@@ -510,8 +521,13 @@ class WindowStream(object):
         self.mode = mode
         self.pkg = pkg
         self.activity = activity
-        self.display_id = phone.next_display_id()
-        self.label = "PocketDeck Launcher" if mode == "phone" else (self._label_for(pkg) or pkg)
+        if mode == "phone":
+            # A mirror of the phone's own screen: display 0, at the screen's aspect.
+            self.w, self.h = mirror_fit(*turn_box(w, h, *phone.screen) + phone.screen)
+            self.display_id = 0
+        else:
+            self.display_id = phone.next_display_id()
+        self.label = "Home" if mode == "phone" else (self._label_for(pkg) or pkg)
         self._enc = None
         self._reader = None
         self._configured = False
@@ -1100,6 +1116,19 @@ class Session(object):
         self._send({"t": "window.opened", "stream": stream_id,
                     "displayId": window.display_id, "w": window.w, "h": window.h})
         window.start()
+        if mode == "phone" and self.phone.args.rotate_after > 0:
+            threading.Thread(target=self._rotate_later, args=(window,), daemon=True).start()
+
+    def _rotate_later(self, window):
+        """The phone turns to landscape: the mirror turns with it (new VIDEO_CONFIG)."""
+        time.sleep(self.phone.args.rotate_after)
+        if self.windows.get(window.stream_id) is not window:
+            return
+        screen_w, screen_h = self.phone.screen
+        self.phone.screen = (screen_h, screen_w)
+        box = turn_box(window.w, window.h, *self.phone.screen)
+        window.w, window.h = mirror_fit(*box + self.phone.screen)
+        window.start()
 
     # -- task.continue (docs/design/handoff.md): the Mac wants a window for the
     # app in the foreground on the phone. The default foreground is Settings;
@@ -1141,8 +1170,12 @@ class Session(object):
         window = self._stream_or_error(msg)
         if window is None:
             return
-        window.w = round16(msg.get("w", window.w))
-        window.h = round16(msg.get("h", window.h))
+        if window.mode == "phone":
+            box = turn_box(msg.get("w", window.w), msg.get("h", window.h), *self.phone.screen)
+            window.w, window.h = mirror_fit(*box + self.phone.screen)
+        else:
+            window.w = round16(msg.get("w", window.w))
+            window.h = round16(msg.get("h", window.h))
         window.dpi = msg.get("dpi", window.dpi)
         window.start()
 
@@ -1266,6 +1299,8 @@ class FakePhone(object):
     def __init__(self, args):
         self.args = args
         self.name = args.name
+        # The screen as it is turned now (the phone mirror follows it).
+        self.screen = (SCREEN_W, SCREEN_H)
         self.store = Store(args.state)
         if args.qr_uri:
             scan_qr_uri(self.store, args.qr_uri)
@@ -1425,6 +1460,8 @@ def build_parser():
                    help="pad the app list to N apps (grid screenshots)")
     p.add_argument("--no-icon-every", type=int, default=0, metavar="K",
                    help="with --demo-apps, every K-th app has no icon")
+    p.add_argument("--rotate-after", type=float, default=0.0, metavar="SECONDS",
+                   help="turn the screen to landscape this long after a phone window opens")
     p.add_argument("--qr-uri", metavar="URI",
                    help="simulate a QR scan: register the client+key from a "
                         "pocketdeck://pair URI as paired, then authenticate normally")

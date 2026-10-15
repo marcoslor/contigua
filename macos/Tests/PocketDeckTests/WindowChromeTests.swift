@@ -114,6 +114,14 @@ final class HeaderHoverTests: XCTestCase {
                        CGSize(width: 1440, height: 900), "no padding in full screen")
     }
 
+    func testThePhoneTurnsOnlyWhenTheStreamsOrientationDiffers() {
+        let phone = CGSize(width: 1080, height: 2340)
+        XCTAssertNil(WindowChrome.turnedPhone(phone: phone, video: CGSize(width: 368, height: 800)))
+        XCTAssertEqual(WindowChrome.turnedPhone(phone: phone, video: CGSize(width: 800, height: 368)),
+                       CGSize(width: 2340, height: 1080))
+        XCTAssertNil(WindowChrome.turnedPhone(phone: phone, video: .zero))
+    }
+
     func testPhoneFrameKeepsThePhonesAspectRatioInTheStream() {
         let phone = CGSize(width: 1080, height: 2400)
         let pad = WindowChrome.windowSize(stream: .zero)
