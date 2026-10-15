@@ -125,7 +125,7 @@ class DeckService(private val appContext: Context?) :
         val self = Json.asObject(obj["self"])
         if (self != null) {
             Json.str(self["certPem"])?.let { if (it.isNotEmpty()) selfCertPem = it }
-            (Json.str(self["keyP8"]) ?: Json.str(self["keyB64"]))?.let { if (it.isNotEmpty()) selfKeyP8 = it }
+            Json.str(self["keyP8"])?.let { if (it.isNotEmpty()) selfKeyP8 = it }
         }
         val list = Json.asList(obj["clients"]).orEmpty().mapNotNull { entry ->
             val m = Json.asObject(entry) ?: return@mapNotNull null
