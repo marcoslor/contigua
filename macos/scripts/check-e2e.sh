@@ -108,6 +108,7 @@ clear_profile_state() {
 clean() {
     kill_e2e_app
     stop_fakephone
+    remove_dock_apps
     sleep 1
     rm -rf "$WORK"
     mkdir -p "$WORK"
@@ -1734,13 +1735,19 @@ dock_dir() { echo "$WORK/dock-apps"; }
 
 dock_shim_pids() { [ -n "${WORK:-}" ] && pgrep -f -- "$(dock_dir)/.*/Contents/MacOS/PocketDeckShim"; }
 
+# Dock apps made from the profile folder are the automatic ones (a check that
+# opens app windows without --dock-dir). Every run cleans its own.
+profile_dock_dir() { echo "$HOME/Library/Application Support/PocketDeck-$PROFILE/Dock Apps"; }
+
 # remove_dock_apps — this run's shims stop, leave LaunchServices and the disk.
 remove_dock_apps() {
     [ -n "${WORK:-}" ] || return 0
     local pids app
     pids="$(dock_shim_pids)"
     [ -n "$pids" ] && kill $pids >/dev/null 2>&1
-    for app in "$(dock_dir)"/*.app; do
+    pids="$(pgrep -f -- "$(profile_dock_dir)/.*/Contents/MacOS/PocketDeckShim")"
+    [ -n "$pids" ] && kill $pids >/dev/null 2>&1
+    for app in "$(dock_dir)"/*.app "$(profile_dock_dir)"/*.app; do
         [ -d "$app" ] || continue
         "$LSREGISTER" -u "$app" >/dev/null 2>&1
         rm -rf "$app"
@@ -1771,6 +1778,10 @@ registered_in_ls() { local dump; dump="$("$LSREGISTER" -dump 2>/dev/null)"; grep
 # check_dock — K3: the app creates a Dock app for a fakephone app in a temp folder;
 # `open` on it -> window.open for that package and a window; quitting the shim -> the
 # window closes; a second run with --dock-remove -> the bundle is gone and unregistered.
+# And the automatic identity (docs/design/dock.md §Lifecycle): an app window the app
+# opens itself makes the shim exist and run while the window is open and brings it
+# down with the window; with the setting off nothing is created and "Add to Dock"
+# still works.
 check_dock() {
     clean
     local dir pkg="com.whatsapp" shim id
@@ -1805,12 +1816,50 @@ check_dock() {
     wait_until 10 eval '[ "$(windows | wc -l | tr -d " ")" -le "$before" ]' \
         && ok "DOCK the window is gone" || bad "DOCK the window is still open"
     stop_app
+    remove_dock_apps
 
+    # Automatic identity (default on): a window the app opens itself builds and
+    # launches its shim, and the shim exits when the window closes.
+    launch --connect "127.0.0.1:$PORT" --dock-dir "$dir" --open "$pkg" --close-stream 1:20 --quit-after 60
+    wait_until 30 window_rx window.open "$pkg" \
+        && ok "DOCK auto: window.open arrived for $pkg" || bad "DOCK auto: no window.open for $pkg"
+    wait_until 30 shim_made \
+        && ok "DOCK auto: the window's Dock app was created ($(ls "$dir" | head -1))" \
+        || bad "DOCK auto: no Dock app was created in $dir"
+    wait_until 10 eval '[ -n "$(dock_shim_pids)" ]' \
+        && ok "DOCK auto: the shim runs for the window (pid $(dock_shim_pids | tr '\n' ' '))" \
+        || bad "DOCK auto: the shim is not running"
+    wait_until 20 eval '[ -z "$(dock_shim_pids)" ]' \
+        && ok "DOCK auto: closing the window made the shim exit" || bad "DOCK auto: the shim outlives the window"
+    stop_app
+    wait_until 5 eval '[ -z "$(dock_shim_pids)" ]' \
+        && ok "DOCK auto: quitting the app leaves no shim behind" || bad "DOCK auto: a shim survived the app"
+    remove_dock_apps
+
+    # Setting off: the window opens, nothing is created.
+    defaults write "$DEFAULTS_SUITE" showAppsInDock -bool NO
+    launch --connect "127.0.0.1:$PORT" --dock-dir "$dir" --open "$pkg" --quit-after 25
+    wait_until 20 window_rx window.open "$pkg" \
+        && ok "DOCK off: window.open arrived for $pkg" || { bad "DOCK off: no window.open"; stop_app; stop_fakephone; return 1; }
+    sleep 15
+    [ -n "$(ls -d "$dir"/*.app 2>/dev/null)" ] \
+        && bad "DOCK off: a Dock app was created anyway" \
+        || ok "DOCK off: no Dock app is created automatically"
+    stop_app
+
+    # ... but the menu command keeps working.
+    launch --connect "127.0.0.1:$PORT" --dock-dir "$dir" --dock-add "$pkg" --quit-after 60
+    wait_until 30 shim_made && ok "DOCK off: Add to Dock still works" || bad "DOCK off: Add to Dock no longer works"
+    stop_app
+
+    # Removing by hand: --dock-remove unregisters and deletes the bundle.
     launch --connect "127.0.0.1:$PORT" --dock-dir "$dir" --dock-remove "$pkg" --quit-after 60
     wait_until 30 eval '! shim_made' && ok "DOCK --dock-remove deleted the bundle" || bad "DOCK the bundle is still there"
     wait_until 10 eval '! registered_in_ls "$id"' \
         && ok "DOCK unregistered from LaunchServices" || bad "DOCK still registered with LaunchServices"
     stop_app
+    defaults delete "$DEFAULTS_SUITE" showAppsInDock >/dev/null 2>&1
+
     stop_fakephone
     remove_dock_apps
     wait_until 5 no_fakephone
