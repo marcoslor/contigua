@@ -1,6 +1,6 @@
 // Shared behaviour for the two window kinds: video routing, resize debounce,
-// pause/resume on occlusion, close, the ⌘+/⌘-/⌘0 density control and the hover
-// header (WindowChrome.swift).
+// pause/resume on occlusion, close, the ⌘+/⌘-/⌘0 density control and the
+// window chrome (StreamChrome.swift).
 
 import AppKit
 import SwiftUI
@@ -8,27 +8,34 @@ import SwiftUI
 class StreamWindowController: NSWindowController, NSWindowDelegate {
     let stream: UInt32
     let videoView: VideoLayerView
-    let header: HeaderView
-    private(set) var headerController: HeaderController?
+    let chrome: StreamChromeView
     unowned let manager: WindowManager
 
+    /// This window's chrome style: read from the profile's per-package key on
+    /// open (WindowStyleStore); a window with nothing remembered opens framed.
+    private(set) var style: WindowStyle
+    /// The immersive dwell pill: pure state until its pill view exists (this
+    /// file feeds it; the scripted driver's hover reaches the same path).
+    private(set) var dwell = DwellPill()
+    
     /// UI scale: dpi = 160 × backingScale × density (0.75…1.5).
     var density: Double = WindowDensity.current
     private(set) var isPaused = false
     private var resizeWork: DispatchWorkItem?
     private var closingFromRemote = false
+    /// Folds the dwell's time in; `pointerMoved` also schedules a hide.
+    private var dwellTimer: Timer?
 
-    /// The actions at the header's right; the window kinds add their own.
-    func headerActions() -> [HeaderAction] { [] }
-
-    init(stream: UInt32, contentSize: NSSize, manager: WindowManager) {
+    init(stream: UInt32, contentSize: NSSize, manager: WindowManager, styleKey: String?) {
         self.stream = stream
         self.manager = manager
+        self.style = manager.styleStore.style(forKey: styleKey)
         self.videoView = VideoLayerView(frame: NSRect(origin: .zero, size: contentSize))
-        // `contentSize` is the stream's; the window adds the header band above it
-        // (WindowChrome.swift). The content view fills the whole window, under a
-        // transparent titlebar, and is transparent itself outside the stream.
-        let frameSize = WindowChrome.windowSize(stream: contentSize)
+        // `contentSize` is the stream's; the window adds the style's bar above
+        // it (WindowStyle.swift). The content view fills the whole window,
+        // under a transparent titlebar, and is transparent itself outside
+        // the stream.
+        let frameSize = style.windowSize(stream: contentSize)
         let window = NSWindow(contentRect: NSRect(origin: .zero, size: frameSize),
                               styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
                               backing: .buffered, defer: false)
@@ -37,24 +44,18 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         window.titlebarAppearsTransparent = true
         // The title still names the window in the Window menu and Mission Control.
         window.titleVisibility = .hidden
-        // An empty unified toolbar gives the title area a standard toolbar
-        // window's height, which puts the traffic lights where other apps have them.
-        let toolbar = NSToolbar(identifier: "stream-header")
-        toolbar.allowsUserCustomization = false
-        window.toolbar = toolbar
-        window.toolbarStyle = .unified
         window.isOpaque = false
         window.backgroundColor = .clear
         window.setFrame(NSRect(origin: window.frame.origin, size: frameSize), display: false)
-        header = HeaderView(actions: [])
+        chrome = StreamChromeView(video: videoView, style: style)
+        chrome.mirror = manager.barMirror
         super.init(window: window)
         window.delegate = self
-        header.setActions(headerActions())
-        let container = StreamContainerView(video: videoView, header: header)
-        window.contentView = container
-        let headerController = HeaderController(window: window, container: container)
-        self.headerController = headerController
-        headerController.stateFile = manager.chromeStateFile
+        window.contentView = chrome
+        chrome.onBarPress = { [weak self] in self?.barPresses += 1; self?.writeChromeState() }
+        chrome.setActions(headerActions())
+        stateFile = manager.chromeStateFile
+        writeChromeState()
         let mapper = InputMapper(stream: stream)
         mapper.videoRectProvider = { [weak self] in self?.videoView.videoRect() ?? .zero }
         mapper.locationProvider = { [weak self] event in
@@ -80,15 +81,19 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
 
+    /// The window kind's actions, at the bar's right end (the phone window's
+    /// Back/Home/Recents).
+    func headerActions() -> [HeaderAction] { [] }
+
     // MARK: Sizing
 
     var session: Session { manager.session }
 
-    /// The stream in points: the window minus the header band, whether the glass
+    /// The stream in points: the window minus the style's bar, whether the bar
     /// shows or not. This is what the virtual display is sized from.
     func videoBounds() -> CGSize {
-        guard let window, let content = window.contentView else { return .zero }
-        return WindowChrome.streamSize(window: content.bounds.size, fullScreen: window.styleMask.contains(.fullScreen))
+        guard let window, let chrome = window.contentView as? StreamChromeView else { return .zero }
+        return style.streamSize(window: chrome.bounds.size, fullScreen: window.styleMask.contains(.fullScreen))
     }
 
     /// Virtual-display pixels for the video area.
@@ -113,7 +118,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     /// Programmatic stream size change (test hook); the top-left stays put.
     func setContentSize(_ streamSize: NSSize) {
         guard let window else { return }
-        let size = WindowChrome.windowSize(stream: streamSize)
+        let size = style.windowSize(stream: streamSize)
         let top = window.frame.maxY
         window.setFrame(NSRect(x: window.frame.minX, y: top - size.height, width: size.width, height: size.height),
                         display: true)
@@ -133,10 +138,10 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         }
         if manager.floatWindows { window?.level = .floating }
         window?.makeKeyAndOrderFront(nil)
+        chrome.placeTrafficLights()
         if manager.floatWindows { window?.orderFrontRegardless() }
         window?.makeFirstResponder(videoView)
         NSApp.activate(ignoringOtherApps: true)
-        headerController?.start()
     }
 
     /// Frames are remembered per app (or "phone") in the profile's defaults.
@@ -155,7 +160,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     }
 
     func windowWillClose(_ notification: Notification) {
-        headerController?.stop()
+        dwellTimer?.invalidate()
         resizeWork?.cancel()
         if !closingFromRemote { session.closeWindow(stream: stream) }
         manager.remove(stream: stream)
@@ -164,15 +169,12 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     // MARK: Resize
 
     func windowDidResize(_ notification: Notification) {
+        chrome.placeTrafficLights()
         scheduleResize(after: 0.3)
-    }
-
-    func windowWillStartLiveResize(_ notification: Notification) {
-        headerController?.setDragging(true)
+        writeChromeState()
     }
 
     func windowDidEndLiveResize(_ notification: Notification) {
-        headerController?.setDragging(false)
         scheduleResize(after: 0)
         rememberFrame()
     }
@@ -242,18 +244,61 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         manager.showTouches.toggle()
     }
 
-    /// The pointer moved to a point in the window (also the scripted driver's hover).
+    /// The pointer moved to a point in the window (also the scripted driver's
+    /// hover): the immersive dwell's feed. Framed never dwells.
     func pointerMoved(toWindowPoint point: CGPoint) {
-        headerController?.pointerMoved(toWindowPoint: point)
+        guard style == .immersive else { return }
+        // DwellChrome's zone is in stream coordinates, top-left origin: in
+        // immersive the window is exactly the stream.
+        let height = chrome.bounds.height
+        dwell.pointerMoved(to: CGPoint(x: point.x, y: height - point.y), now: now())
+        refreshDwell()
     }
 
     func windowDidEnterFullScreen(_ notification: Notification) { chromeLayoutChanged() }
     func windowDidExitFullScreen(_ notification: Notification) { chromeLayoutChanged() }
 
-    /// Full screen drops the header band: the stream is then the whole screen.
+    /// Full screen drops the bar in either style: the stream is then the whole screen.
     private func chromeLayoutChanged() {
-        (window?.contentView as? StreamContainerView)?.layoutChrome()
+        chrome.layoutChrome()
+        chrome.placeTrafficLights()
         scheduleResize(after: 0)
+        writeChromeState()
+    }
+
+    /// Folds the dwell's time in now; also what the hide/show timers call.
+    private func refreshDwell() {
+        dwell.update(now: now())
+        dwellTimer?.invalidate()
+        if let hideAt = dwell.hideAt {
+            dwellTimer = Timer(timeInterval: max(hideAt - now(), 0), repeats: false) { [weak self] _ in
+                self?.refreshDwell()
+            }
+            RunLoop.main.add(dwellTimer!, forMode: .common)
+        } else if !dwell.shown, let start = dwell.restStart {
+            dwellTimer = Timer(timeInterval: max(start + dwell.dwell - now(), 0), repeats: false) { [weak self] _ in
+                self?.refreshDwell()
+            }
+            RunLoop.main.add(dwellTimer!, forMode: .common)
+        }
+        writeChromeState()
+    }
+
+    private func now() -> TimeInterval { ProcessInfo.processInfo.systemUptime }
+
+    // MARK: Chrome state (e2e)
+
+    private var barPresses = 0
+
+    /// The scripted check reads what the chrome is doing here; `--debug-chrome-state
+    /// FILE` puts the file on the manager.
+    var stateFile: URL? { didSet { writeChromeState() } }
+
+    private func writeChromeState() {
+        guard let stateFile else { return }
+        let shown = window?.standardWindowButton(.closeButton).map { !$0.isHidden } ?? false
+        let line = "style=\(style.rawValue) lights=\(shown ? "shown" : "hidden") clicks=\(barPresses)\n"
+        try? Data(line.utf8).write(to: stateFile, options: .atomic)
     }
 
     // MARK: Link state

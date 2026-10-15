@@ -1,8 +1,9 @@
 // The two window styles a stream window can wear, and the rules behind them.
 //
 // Framed (the default): a permanent 28 pt bar above the stream — window
-// material with the stream's own top 28 pt mirrored, blurred and faded into it
-// — holding the traffic lights and the style toggle. Immersive: the window is
+// material over the stream's own top 28 pt, which an NSBackgroundExtensionView
+// mirrors into the bar and fades into the material by the seam/top alphas —
+// holding the traffic lights and the style toggle. Immersive: the window is
 // exactly the stream, and the lights live behind a 350 ms dwell in a 72x32 pt
 // hot zone at the stream's top-left.
 //
@@ -93,6 +94,33 @@ enum DwellChrome {
     static let hideDelay: TimeInterval = 0.6
 }
 
+/// The phone window's shape rules: the stream keeps the phone's aspect ratio;
+/// the window adds the style's bar above it.
+enum PhoneChrome {
+    /// The phone's screen turned to match a stream whose orientation differs
+    /// from it (the phone rotated); nil while they agree.
+    static func turnedPhone(phone: CGSize, video: CGSize) -> CGSize? {
+        guard video.width > 0, video.height > 0, phone.width > 0, phone.height > 0 else { return nil }
+        guard (video.width > video.height) != (phone.width > phone.height) else { return nil }
+        return CGSize(width: phone.height, height: phone.width)
+    }
+
+    /// A phone window keeps its phone's aspect ratio in the stream, not in the
+    /// frame (the bar is not part of the picture). The dimension the user
+    /// moved more leads; the other follows. Sizes are window frames.
+    static func frame(proposed: CGSize, current: CGSize, phone: CGSize, style: WindowStyle) -> CGSize {
+        guard phone.width > 0, phone.height > 0 else { return proposed }
+        let ratio = phone.height / phone.width
+        let stream = style.streamSize(window: proposed)
+        let widthMoved = abs(proposed.width - current.width)
+        let heightMoved = abs(proposed.height - current.height)
+        if widthMoved * ratio >= heightMoved {
+            return style.windowSize(stream: CGSize(width: stream.width, height: (stream.width * ratio).rounded()))
+        }
+        return style.windowSize(stream: CGSize(width: (stream.height / ratio).rounded(), height: stream.height))
+    }
+}
+
 /// Where each window's style is remembered: one key per app package, one for
 /// the phone window. An app with no stored choice opens `WindowStyle.standard`.
 struct WindowStyleStore {
@@ -122,28 +150,26 @@ struct WindowStyleStore {
     }
 }
 
-/// The three numbers of the framed bar's mirror: how far the mirrored strip of
-/// the stream is blurred, and the alpha it fades from at the seam to at the
-/// window's top edge. The profile's defaults override each one
-/// (`chrome.bar.blur`, `chrome.bar.alphaSeam`, `chrome.bar.alphaTop`) for live
-/// tuning.
+/// The two alphas of the framed bar's mirror: the opacity the mirrored strip
+/// of the stream runs at the seam with the stream and at the window's top
+/// edge, over the window material (`1 - mirror`). The mirror itself is
+/// NSBackgroundExtensionView's fill, whose blur grows with distance from the
+/// seam — the brief's tunable `chrome.bar.blur` has no equivalent there and
+/// was given up (the system blur is not tunable). The profile's defaults
+/// still override each alpha (`chrome.bar.alphaSeam`, `chrome.bar.alphaTop`)
+/// for live tuning.
 struct BarMirror: Equatable {
-    var blur: CGFloat = 18
     var alphaSeam: CGFloat = 0.85
     var alphaTop: CGFloat = 0.25
 
     static let standard = BarMirror()
 
-    static let blurKey = "chrome.bar.blur"
     static let alphaSeamKey = "chrome.bar.alphaSeam"
     static let alphaTopKey = "chrome.bar.alphaTop"
 
     /// The values in use: a key the defaults do not set keeps the standard one.
     static func stored(in defaults: UserDefaults) -> BarMirror {
         var mirror = BarMirror()
-        if let value = defaults.object(forKey: blurKey) as? NSNumber {
-            mirror.blur = CGFloat(truncating: value).clamped(to: 0...64)
-        }
         if let value = defaults.object(forKey: alphaSeamKey) as? NSNumber {
             mirror.alphaSeam = CGFloat(truncating: value).clamped(to: 0...1)
         }

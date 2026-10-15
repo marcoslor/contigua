@@ -16,9 +16,9 @@ final class HandoffWindowController: StreamWindowController {
 
     init(stream: UInt32, manager: WindowManager) {
         subject = "Continue on Mac"
-        super.init(stream: stream, contentSize: AppWindowController.defaultContentSize, manager: manager)
+        super.init(stream: stream, contentSize: AppWindowController.defaultContentSize, manager: manager, styleKey: nil)
         window?.title = manager.titled(subject)
-        window?.minSize = WindowChrome.windowSize(stream: NSSize(width: 320, height: 240))
+        window?.minSize = style.windowSize(stream: NSSize(width: 320, height: 240))
     }
 
     @available(*, unavailable)

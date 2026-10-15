@@ -79,6 +79,8 @@ final class WindowManager {
     init(session: Session, defaults: UserDefaults = .standard) {
         self.session = session
         frames = defaults
+        styleStore = WindowStyleStore(defaults: defaults)
+        barMirror = BarMirror.stored(in: defaults)
         StreamMenuState.shared.showTouches = defaults.bool(forKey: Self.showTouchesKey)
     }
 
@@ -97,6 +99,11 @@ final class WindowManager {
     }
 
     // MARK: Chrome preferences
+
+    /// The per-package style keys (WindowStyleStore) over this profile's defaults.
+    let styleStore: WindowStyleStore
+    /// The framed bar's mirror alphas, as the profile's defaults set them.
+    let barMirror: BarMirror
 
     /// View → Show Touches: the fingers Android sees while a trackpad gesture runs. Off by default.
     var showTouches: Bool {

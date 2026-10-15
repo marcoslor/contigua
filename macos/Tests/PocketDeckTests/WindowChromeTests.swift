@@ -1,5 +1,6 @@
-// The hover header: when it shows and hides, and that it never changes the
-// stream area the virtual display is sized from.
+// The window chrome by style (WindowStyle.swift): the framed bar's frame, the
+// lights on its line, the phone window's actions, and that none of it changes
+// the stream area the virtual display is sized from.
 
 import AppKit
 import XCTest
@@ -114,25 +115,6 @@ final class HeaderHoverTests: XCTestCase {
                        CGSize(width: 1440, height: 900), "no padding in full screen")
     }
 
-    func testThePhoneTurnsOnlyWhenTheStreamsOrientationDiffers() {
-        let phone = CGSize(width: 1080, height: 2340)
-        XCTAssertNil(WindowChrome.turnedPhone(phone: phone, video: CGSize(width: 368, height: 800)))
-        XCTAssertEqual(WindowChrome.turnedPhone(phone: phone, video: CGSize(width: 800, height: 368)),
-                       CGSize(width: 2340, height: 1080))
-        XCTAssertNil(WindowChrome.turnedPhone(phone: phone, video: .zero))
-    }
-
-    func testPhoneFrameKeepsThePhonesAspectRatioInTheStream() {
-        let phone = CGSize(width: 1080, height: 2400)
-        let pad = WindowChrome.windowSize(stream: .zero)
-        XCTAssertEqual(WindowChrome.phoneFrame(proposed: CGSize(width: 540 + pad.width, height: 1100),
-                                               current: CGSize(width: 450 + pad.width, height: 1100), phone: phone),
-                       CGSize(width: 540 + pad.width, height: 1200 + pad.height), "the width led")
-        XCTAssertEqual(WindowChrome.phoneFrame(proposed: CGSize(width: 450 + pad.width, height: 1200 + pad.height),
-                                               current: CGSize(width: 450 + pad.width, height: 1000 + pad.height), phone: phone),
-                       CGSize(width: 540 + pad.width, height: 1200 + pad.height), "the height led")
-    }
-
     func testQuantisationBarsAreFilledButRealLetterboxesKept() {
         let bounds = CGRect(x: 0, y: 0, width: 900, height: 600)
         // 900 x 600 pt at 2x asks for 1792 x 1200: 4 px short each side.
@@ -166,104 +148,99 @@ final class StreamChromeWindowTests: XCTestCase {
         return !close.isHidden && close.alphaValue > 0.99
     }
 
-    func testTheStreamSitsInsideThePaddingAndHoverChangesNoSize() throws {
+    func testTheStreamFillsTheWindowUnderTheBar() throws {
         let manager = makeManager()
         let controller = AppWindowController(stream: 1, pkg: "com.example.app", activity: nil,
                                              label: "Example", manager: manager)
         defer { controller.window?.close() }
         let window = try XCTUnwrap(controller.window)
         window.orderFront(nil)
-        let content = try XCTUnwrap(window.contentView)
-        XCTAssertEqual(window.frame.size, NSSize(width: 900, height: 652))
+        XCTAssertEqual(window.frame.size, NSSize(width: 900, height: 628), "the window is the stream plus the bar")
         XCTAssertFalse(window.isOpaque)
         XCTAssertEqual(controller.videoView.frame, NSRect(x: 0, y: 0, width: 900, height: 600),
-                       "the window's sides and bottom are the stream's")
-        XCTAssertEqual(controller.header.frame, NSRect(x: 0, y: 600, width: 900, height: 52), "the band above it")
+                       "the stream fills the window minus the bar")
         XCTAssertEqual(controller.videoBounds(), CGSize(width: 900, height: 600))
-        XCTAssertEqual(window.titleVisibility, .hidden)
-        XCTAssertFalse(controller.headerController?.isVisible ?? true, "hidden at rest")
-        XCTAssertFalse(trafficLightsShown(window))
-        XCTAssertEqual(controller.header.alphaValue, 0)
+        XCTAssertEqual(controller.dwell.shown, false)
+        XCTAssertTrue(trafficLightsShown(window), "the framed bar holds the lights at once")
         let atRest = (controller.videoView.frame, controller.displayPixels(), controller.dpi())
 
-        controller.pointerMoved(toWindowPoint: content.convert(NSPoint(x: 450, y: 600), to: nil))
+        // The bar is permanent: no hover syntax can change the stream's geometry.
+        controller.windowDidEnterFullScreen(Notification(name: NSWindow.didEnterFullScreenNotification))
+        controller.windowDidExitFullScreen(Notification(name: NSWindow.didExitFullScreenNotification))
         pump(0.2)
-        XCTAssertTrue(controller.headerController?.isVisible ?? false)
-        XCTAssertTrue(trafficLightsShown(window))
-        XCTAssertEqual(controller.header.alphaValue, 1, accuracy: 0.01)
         XCTAssertEqual(controller.videoView.frame, atRest.0, "the stream does not move")
         XCTAssertEqual(controller.displayPixels(), atRest.1, "nor does the virtual display")
         XCTAssertEqual(controller.dpi(), atRest.2)
     }
 
-    func testTheTrafficLightsSitWhereAStandardWindowHasThem() throws {
+    func testTheBarIsTheWindowsMaterialAndTheStreamSquaresItsTopCorners() throws {
         let manager = makeManager()
         let controller = AppWindowController(stream: 1, pkg: "com.example.app", activity: nil,
                                              label: "Example", manager: manager)
         defer { controller.window?.close() }
         let window = try XCTUnwrap(controller.window)
         window.orderFront(nil)
+        let chrome = try XCTUnwrap(window.contentView as? StreamChromeView)
+        XCTAssertEqual(chrome.barHeight, ChromeBar.height)
+        XCTAssertEqual(chrome.style, .framed)
+        XCTAssertFalse(chrome.isOpaque)
+        XCTAssertEqual(controller.chrome.actionCount, 0, "app windows have no actions")
+        // The seam is the stream's top edge: bottom corners rounded, top square.
+        XCTAssertEqual(controller.videoView.layer?.cornerRadius, ChromeBar.cornerRadius)
+        XCTAssertEqual(controller.videoView.layer?.maskedCorners,
+                       [.layerMinXMinYCorner, .layerMaxXMinYCorner])
+    }
+
+    func testTheTrafficLightsSitOnTheBarsLine() throws {
+        let manager = makeManager()
+        let controller = AppWindowController(stream: 1, pkg: "com.example.app", activity: nil,
+                                             label: "Example", manager: manager)
+        defer { controller.window?.close() }
+        let window = try XCTUnwrap(controller.window)
+        window.orderFront(nil)
+        controller.windowDidResize(Notification(name: NSWindow.didResizeNotification))
         let close = try XCTUnwrap(window.standardWindowButton(.closeButton))
         let frame = close.convert(close.bounds, to: nil)
-        XCTAssertEqual(frame.midX, 26, accuracy: 0.5)
-        XCTAssertEqual(window.frame.height - frame.midY, WindowChrome.trafficLightCentre, accuracy: 0.5)
+        XCTAssertEqual(frame.midX, ChromeBar.trafficLightInset + 7, accuracy: 0.5)
+        XCTAssertEqual(window.frame.height - frame.midY, 14, accuracy: 0.5, "centred on the 28 pt bar")
+        XCTAssertFalse(close.isHidden)
     }
 
-    func testTheBandLetsClicksThroughOnlyAtRest() throws {
+    func testABarClickIsTheWindowsOwnAndNeverPassesThrough() throws {
         let manager = makeManager()
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("chrome-\(UUID().uuidString).txt")
+        addTeardownBlock { try? FileManager.default.removeItem(at: file) }
+        manager.chromeStateFile = file
         let controller = AppWindowController(stream: 1, pkg: "com.example.app", activity: nil,
                                              label: "Example", manager: manager)
         defer { controller.window?.close() }
         let window = try XCTUnwrap(controller.window)
         window.orderFront(nil)
-        controller.pointerMoved(toWindowPoint: NSPoint(x: 1, y: 300))
-        XCTAssertFalse(window.ignoresMouseEvents, "the stream reaches the window's edge (resize)")
-        XCTAssertFalse(controller.headerController?.isVisible ?? true, "and does not bring the glass in")
-        controller.pointerMoved(toWindowPoint: NSPoint(x: 450, y: 630))
-        XCTAssertTrue(controller.headerController?.isVisible ?? false, "the hidden band brings it in")
-        XCTAssertFalse(window.ignoresMouseEvents, "and then the header is clickable")
-        controller.pointerMoved(toWindowPoint: NSPoint(x: 450, y: 300))
-        XCTAssertFalse(controller.headerController?.isVisible ?? true)
-        controller.pointerMoved(toWindowPoint: NSPoint(x: 900, y: 300))
-        XCTAssertFalse(window.ignoresMouseEvents, "just outside the right edge stays the window's (resize)")
+        XCTAssertFalse(window.ignoresMouseEvents, "the framed bar is the window's (drag)")
+        controller.pointerMoved(toWindowPoint: NSPoint(x: 2, y: 20))
+        pump(0.4)
+        XCTAssertFalse(controller.dwell.shown)
+        XCTAssertEqual(try String(contentsOf: file, encoding: .utf8), "style=framed lights=shown clicks=0\n")
     }
 
-    func testItFadesOutAfterThePointerLeaves() throws {
-        let manager = makeManager()
-        let controller = AppWindowController(stream: 1, pkg: "com.example.app", activity: nil,
-                                             label: "Example", manager: manager)
-        defer { controller.window?.close() }
-        let window = try XCTUnwrap(controller.window)
-        window.orderFront(nil)
-        controller.pointerMoved(toWindowPoint: CGPoint(x: 450, y: 600))
-        pump(0.2)
-        controller.pointerMoved(toWindowPoint: CGPoint(x: 450, y: 300))
-        XCTAssertFalse(controller.headerController?.isVisible ?? true, "no grace period")
-        pump(0.3)
-        XCTAssertEqual(controller.header.alphaValue, 0, accuracy: 0.01)
-        XCTAssertFalse(trafficLightsShown(window), "and the traffic lights go with it")
-    }
-
-    func testCloseAndMinimiseWorkWhileTheTrafficLightsAreHidden() throws {
+    func testCloseAndMinimiseWorkWithTheBar() throws {
         let manager = makeManager()
         let controller = AppWindowController(stream: 1, pkg: "com.example.app", activity: nil,
                                              label: "Example", manager: manager)
         let window = try XCTUnwrap(controller.window)
         window.orderFront(nil)
-        controller.pointerMoved(toWindowPoint: CGPoint(x: 450, y: 600))
+        window.performMiniaturize(nil)
         pump(0.2)
-        controller.pointerMoved(toWindowPoint: CGPoint(x: 450, y: 300))
-        pump(0.3)
-        XCTAssertFalse(trafficLightsShown(window))
-        // ⌘M and ⌘W simulate a click on the buttons, which AppKit refuses for a transparent one.
-        XCTAssertEqual(window.standardWindowButton(.closeButton)?.alphaValue, 1)
-        XCTAssertEqual(window.standardWindowButton(.miniaturizeButton)?.alphaValue, 1)
+        XCTAssertTrue(window.isMiniaturized)
+        window.deminiaturize(nil)
+        pump(0.2)
+        XCTAssertFalse(window.isMiniaturized)
         window.performClose(nil)
         pump(0.2)
-        XCTAssertFalse(window.isVisible, "⌘W closes the window at rest")
+        XCTAssertFalse(window.isVisible, "⌘W closes the window")
     }
 
-    func testTheDebugStateFileFollowsTheHeader() throws {
+    func testTheDebugStateFileReportsTheStyleAndLights() throws {
         let manager = makeManager()
         let file = FileManager.default.temporaryDirectory.appendingPathComponent("chrome-\(UUID().uuidString).txt")
         addTeardownBlock { try? FileManager.default.removeItem(at: file) }
@@ -272,22 +249,19 @@ final class StreamChromeWindowTests: XCTestCase {
                                              label: "Example", manager: manager)
         defer { controller.window?.close() }
         controller.window?.orderFront(nil)
-        XCTAssertEqual(try String(contentsOf: file, encoding: .utf8), "header=hidden lights=hidden clicks=0\n")
-        controller.pointerMoved(toWindowPoint: CGPoint(x: 450, y: 600))
-        pump(0.4)
-        XCTAssertEqual(try String(contentsOf: file, encoding: .utf8), "header=shown lights=shown clicks=0\n")
+        XCTAssertEqual(try String(contentsOf: file, encoding: .utf8), "style=framed lights=shown clicks=0\n")
     }
 
-    func testThePhoneWindowIsThePhoneShapeWithItsNavInTheHeader() throws {
+    func testThePhoneWindowIsThePhoneShapeWithItsActionsOnTheBar() throws {
         let manager = makeManager()
         let phone = PhoneWindowController(stream: 1, phone: nil, manager: manager)
         defer { phone.window?.close() }
         let stream = phone.videoBounds()
         XCTAssertEqual(stream.width / stream.height, 1080 / 2340, accuracy: 0.005, "the stream is the phone's shape")
         XCTAssertEqual(phone.videoView.frame.size, stream)
-        XCTAssertEqual(phone.header.actionCount, 3, "back, home, recents")
+        XCTAssertEqual(phone.chrome.actionCount, 3, "back, home, recents on the bar")
         XCTAssertEqual(AppWindowController(stream: 2, pkg: "a", activity: nil, label: "A", manager: manager)
-            .header.actionCount, 0)
+            .chrome.actionCount, 0)
     }
 
     func testShowTouchesIsOffByDefaultAndRemembered() {
