@@ -75,6 +75,20 @@
             </intent-filter>
         </activity>
 
+        <!-- The grant half of a drop's SEND (docs/design/dragdrop.md): the shell
+             process (UID 2000) cannot grant one of our provider URIs, so it stages
+             the finished file in files/shared/ and starts this activity by name.
+             No UI: it copies the staged file into the share cache, shows the
+             chooser as this app's own UID and finishes at once. Only a bare file
+             name of a staged file is accepted (ShareRequest.parse). -->
+        <activity
+            android:name=".drop.ShareTrampoline"
+            android:excludeFromRecents="true"
+            android:exported="true"
+            android:noHistory="true"
+            android:taskAffinity=""
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+
         <!-- "Open on Mac" (docs/design/sharein.md): aliases of ShareActivity so the share
              sheet keeps its label. The theme, noHistory etc. come from the target. -->
         <activity-alias
@@ -127,10 +141,11 @@
             android:multiprocess="false"
             android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
 
-        <!-- Serves the shell-written files of drops and clipboard images as
-             content://dev.pocketdeck.fileprovider/… URIs. grantUriPermissions on a
-             not-exported provider is what lets a shell `am start` carry the grant
-             (docs/design/dragdrop.md); apps cannot list or fetch anything else. -->
+        <!-- Serves the copies a drop's SEND step puts in the app's share cache, and
+             the clipboard image files (docs/design/dragdrop.md). Only the folders
+             named in file_paths.xml are addressable, and the URI a receiver gets
+             carries a read grant built in the app's own process
+             (.drop.ShareTrampoline). -->
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="dev.pocketdeck.fileprovider"
