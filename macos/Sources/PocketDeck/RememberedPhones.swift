@@ -109,17 +109,6 @@ final class RememberedPhones {
         defaults.removeObject(forKey: Self.activeKey)
     }
 
-    /// Phones paired with an earlier build have a key (and maybe a cached name)
-    /// but no record here; adopt them once so an update never reads as "first run".
-    func adoptExistingPairings(keyAccounts: [String], names: (String) -> String?) {
-        let known = Set(all.map(\.id))
-        var phones = all
-        for account in keyAccounts where !known.contains(account) {
-            phones.append(RememberedPhone(id: account, name: names(account) ?? "Phone", model: "", lastSeen: Date()))
-        }
-        if phones.count != all.count { save(phones) }
-    }
-
     var welcomeSeen: Bool {
         get { defaults.bool(forKey: Self.welcomeKey) }
         set { defaults.set(newValue, forKey: Self.welcomeKey) }

@@ -144,8 +144,6 @@ final class DirectConnectTests: XCTestCase {
         let cache = store()
         cache.store(CachedAddress(host: "10.0.0.1", port: 1), deviceId: "aaa")
         cache.store(CachedAddress(host: "10.0.0.2", port: 2), deviceId: "bbb")
-        let keys = PairKeyStore(defaults: defaults, keys: .scratch())
-        keys.lastDeviceId = "bbb"
         XCTAssertEqual(cache.deviceIds, ["aaa", "bbb"])
         // The store itself has no opinion about order.
         XCTAssertEqual(cache.address(forDeviceId: "bbb")?.host, "10.0.0.2")

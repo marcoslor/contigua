@@ -276,8 +276,8 @@ final class TlsV2Tests: XCTestCase {
             refused.signal()
         }, onPeerPin: { _ in })
         XCTAssertTrue(waitForSignal(refused, seconds: 10))
-        XCTAssertTrue(message.get().contains("sslError") || message.get().contains("certificate") || message.get().contains("UNKNOWN_CA"),
-                      "a rejected client cert surfaces as a TLS error, not silence: \(message.get())")
+        XCTAssertTrue(message.get().contains("sslError") || message.get().contains("certificate") || message.get().contains("UNKNOWN_CA") || message.get().contains("closed-by-peer"),
+                      "a rejected client cert surfaces as a TLS error or a hangup, not silence: \(message.get())")
     }
 
     private func waitFor(_ what: () -> String?) -> String? {

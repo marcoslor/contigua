@@ -27,7 +27,8 @@ interface IDeckService {
     /**
      * Replace the paired-client set and identity the server should serve.
      * The app process owns persistence; the JSON is
-     * {"deviceId":..,"deviceName":..,"clients":[{"clientId":..,"name":..,"key":..}]}.
+     * {"deviceId":..,"deviceName":..,"clients":[{"clientId":..,"name":..,"macFp":..}],
+     * "self":{"certPem":..,"keyP8":..}} (docs/design/e2ee.md §2/§6).
      */
     void setPairedClients(String json) = 4;
 

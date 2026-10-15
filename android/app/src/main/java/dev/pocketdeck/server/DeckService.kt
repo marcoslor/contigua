@@ -95,15 +95,17 @@ class DeckService(private val appContext: Context?) :
                 now = { SystemClock.uptimeMillis() },
                 log = ::log,
                 autoApprovePairing = dev.pocketdeck.BuildConfig.DEBUG,
+                selfCertProvider = { selfCertPem },
                 audioCapture = audio,
                 notifyShared = { notifySharedStore },
                 // The session tells the app when the forwarding gate is open, so
                 // the listener's bridge knows when to push (DeckState relay).
                 notifyForward = { forward -> sendToApp { it.onNotifySession(forward) } },
                 mediaCommand = { action -> sendToApp { it.onMediaCommand(action) } },
+                tlsView = Session.TlsView.from(socket),
             )
         }
-        val srv = Server(factory, ::log)
+        val srv = Server(factory, ::log, { selfCertPem }, { selfKeyP8 })
         server = srv
         return srv.start()
     }
@@ -130,8 +132,14 @@ class DeckService(private val appContext: Context?) :
         val list = Json.asList(obj["clients"]).orEmpty().mapNotNull { entry ->
             val m = Json.asObject(entry) ?: return@mapNotNull null
             val id = Json.str(m["clientId"]) ?: return@mapNotNull null
-            val key = Json.str(m["key"]) ?: return@mapNotNull null
-            PairedClient(id, Json.str(m["name"]) ?: "Mac", key)
+            val pin = Json.str(m["macFp"]) ?: return@mapNotNull null
+            // v1 clients carry a shared key; without a 32-byte pin they are v1
+            // leftovers, refsed here (the §7 forced re-pair).
+            if (pin.length != 64) {
+                log("skipping client without a v2 pin")
+                return@mapNotNull null
+            }
+            PairedClient(id, Json.str(m["name"]) ?: "Mac", pin.lowercase())
         }
         clients = list
         log("paired clients: ${list.size}, device=$deviceId, self=${selfCertPem.isNotEmpty()}")
@@ -258,8 +266,8 @@ class DeckService(private val appContext: Context?) :
     override fun onPairingEnded(requestId: String) =
         sendToApp { it.onPairingEnded(requestId) }
 
-    override fun onPaired(clientId: String, name: String, keyHex: String) =
-        sendToApp { it.onPaired(clientId, name, keyHex) }
+    override fun onPaired(clientId: String, name: String, macFpHex: String) =
+        sendToApp { it.onPaired(clientId, name, macFpHex) }
 
     override fun onSessionChanged(connected: Boolean, macName: String?, windows: Int) =
         sendToApp { it.onSessionChanged(connected, macName, windows) }

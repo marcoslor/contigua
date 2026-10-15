@@ -299,7 +299,9 @@ struct LinkMachine {
         }
         guard let phone = link.phone else { return [] }
         switch reason {
-        case "auth_failed":
+        case "pin-mismatch", "bad_pin", "no-pin":
+            // v2: the TLS-level pairing state died; retries never fix it, the
+            // re-pair hint handles the person's next step.
             link = .needsPairing(phone)
             return [.stopAttempts]
         case "version":

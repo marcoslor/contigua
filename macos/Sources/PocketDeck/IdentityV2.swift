@@ -112,10 +112,23 @@ final class IdentityFileV2 {
 /// re-pair, no reverse path.
 enum IdentityMigrationV2 {
     @discardableResult
-    static func wipePairKeys(_ pairKeys: PairKeyFile) -> Bool {
-        guard FileManager.default.fileExists(atPath: pairKeys.url.path) else { return false }
-        pairKeys.deleteAll()
+    static func wipePairKeys(at url: URL) -> Bool {
+        guard FileManager.default.fileExists(atPath: url.path) else { return false }
+        try? FileManager.default.removeItem(at: url)
         return true
+    }
+}
+
+/// Resets pairing state without touching the Mac identity itself (`--reset-pairing`):
+/// clears pins.json and identity.json's §3 mirror pin.
+enum DeviceIdentityV2Reset {
+    static func resetPairingState(profile: Profile) {
+        let identityUrl = IdentityFileV2.fileUrl(in: profile)
+        if var identity = IdentityFileV2(url: identityUrl).load() {
+            identity.pin = ""
+            IdentityFileV2(url: identityUrl).save(identity)
+        }
+        PhonePinStoreV2(fileUrl: PhonePinStoreV2.fileUrl(in: profile)).clear()
     }
 }
 

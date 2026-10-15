@@ -76,13 +76,11 @@ final class RememberedPhonesTests: XCTestCase {
         XCTAssertEqual(store.active?.id, "aaa")
     }
 
-    func testAPhoneWithoutAKeyIsStillRemembered() {
-        // The key lives in the pair-key file; losing it must not erase the phone.
+    func testAPhoneWithoutAPinIsStillRemembered() {
+        // The pin lives in the pin store; losing it must not erase the phone.
         let store = RememberedPhones(defaults: defaults)
         store.remember(phone)
-        let keys = PairKeyStore(defaults: defaults, keys: .scratch())
-        XCTAssertNil(keys.key(forDeviceId: "aaa"))
-        XCTAssertEqual(store.active?.id, "aaa")
+        XCTAssertTrue(store.active?.id == "aaa")
     }
 
     func testForgetRemovesThePhoneAndTheActiveChoice() {
@@ -91,15 +89,6 @@ final class RememberedPhonesTests: XCTestCase {
         store.forget(id: "aaa")
         XCTAssertTrue(store.all.isEmpty)
         XCTAssertNil(store.active)
-    }
-
-    func testAnEarlierBuildsPairingsAreAdoptedOnce() {
-        let store = RememberedPhones(defaults: defaults)
-        store.adoptExistingPairings(keyAccounts: ["aaa", "bbb"]) { $0 == "aaa" ? "Pixel 9" : nil }
-        XCTAssertEqual(Set(store.all.map(\.name)), ["Pixel 9", "Phone"])
-        store.forget(id: "bbb")
-        store.adoptExistingPairings(keyAccounts: ["aaa"]) { _ in nil }
-        XCTAssertEqual(store.all.map(\.id), ["aaa"])
     }
 
     func testProfilesDoNotShareMemory() {

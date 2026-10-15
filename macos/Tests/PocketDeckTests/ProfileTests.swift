@@ -33,8 +33,8 @@ final class ProfileTests: XCTestCase {
     func testNamedProfileHasItsOwnPairKeyFile() {
         let profile = Profile(name: "e2e")!
         XCTAssertFalse(profile.isDefault)
-        XCTAssertTrue(profile.pairKeys.url.path.hasSuffix("Application Support/PocketDeck-e2e/pairkeys.json"))
-        XCTAssertTrue(Profile.default.pairKeys.url.path.hasSuffix("Application Support/PocketDeck/pairkeys.json"))
+        XCTAssertTrue(profile.pairKeysFileUrl.path.hasSuffix("Application Support/PocketDeck-e2e/pairkeys.json"))
+        XCTAssertTrue(Profile.default.pairKeysFileUrl.path.hasSuffix("Application Support/PocketDeck/pairkeys.json"))
     }
 
     func testNamedProfileUsesItsOwnDefaultsSuite() {

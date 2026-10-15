@@ -162,7 +162,9 @@ interface Power {
     fun onSessionEnded()
 }
 
-data class PairedClient(val clientId: String, val name: String, val keyHex: String)
+/** One paired Mac in v2: the pin is the Mac cert's point fingerprint (§3/§6);
+ * there is no shared secret any more. */
+data class PairedClient(val clientId: String, val name: String, val macFpHex: String)
 
 /** Paired-client storage; the app process owns the durable copy. */
 interface PairingStore {

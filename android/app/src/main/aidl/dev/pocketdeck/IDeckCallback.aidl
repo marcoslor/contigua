@@ -6,8 +6,8 @@ oneway interface IDeckCallback {
     /** A Mac asked to pair; the app should show `code` and let the user answer. */
     void onPairingRequest(String requestId, String macName, String code);
 
-    /** A Mac was paired; the app must persist {clientId,name,keyHex}. */
-    void onPaired(String clientId, String name, String keyHex);
+    /** A Mac was paired; the app must persist {clientId,name,macFp} (v2 pins). */
+    void onPaired(String clientId, String name, String macFp);
 
     /** Session state changed: connected, which Mac, how many windows are open. */
     void onSessionChanged(boolean connected, String macName, int windows);

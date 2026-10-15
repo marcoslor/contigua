@@ -87,7 +87,12 @@ final class ConnectionController {
     let options: LaunchOptions
     let profile: Profile
     let clientId: String
-    let keyStore: PairKeyStore
+    /// The v2 identity + pin store (docs/design/e2ee.md §3): identity.json is
+    /// the Mac's TLS identity, pins.json holds one record per phone; identity's
+    /// `pin` mirrors the current phone's fingerprint.
+    let identity: DeviceIdentityV2
+    let identityFile: IdentityFileV2
+    let pins: PhonePinStoreV2
     let cache: CachedDeviceStore
     let remembered: RememberedPhones
     let appsCache: AppsCache
@@ -243,7 +248,7 @@ final class ConnectionController {
         discovered.map { phone in
             let known = rememberedPhones.contains { $0.id == phone.deviceId }
             return NearbyPhone(ref: phone.ref, remembered: known,
-                               needsPairing: known && keyStore.key(forDeviceId: phone.deviceId) == nil)
+                               needsPairing: known && pins.record(for: phone.deviceId) == nil)
         }
     }
 
@@ -298,7 +303,18 @@ final class ConnectionController {
         self.options = options
         self.profile = profile
         clientId = ClientIdentity.clientId(in: profile)
-        keyStore = PairKeyStore(profile: profile)
+        // The first v2 run deletes the v1 pair keys (one forced re-pair, §7);
+        // identity.json is created when missing — no reverse path.
+        identityFile = IdentityFileV2(url: IdentityFileV2.fileUrl(in: profile))
+        if let existing = identityFile.load() {
+            identity = existing
+        } else {
+            let generated = IdentityGeneratorV2.make(deviceId: clientId)
+            identityFile.save(generated.identity)
+            identity = generated.identity
+        }
+        IdentityMigrationV2.wipePairKeys(at: profile.pairKeysFileUrl)
+        pins = PhonePinStoreV2(fileUrl: PhonePinStoreV2.fileUrl(in: profile))
         cache = CachedDeviceStore(profile: profile)
         remembered = RememberedPhones(profile: profile)
         appsCache = AppsCache(profile: profile)
@@ -306,10 +322,9 @@ final class ConnectionController {
         dockApps = DockApps(folder: DockApps.defaultFolder(profile: profile, override: options.dockDirectory),
                             profile: profile)
         windows = WindowManager(session: Session(endpoint: .hostPort(host: "127.0.0.1", port: 1),
-                                                 knownDeviceId: nil, clientId: "", keyStore: keyStore),
+                                                 knownDeviceId: nil, clientId: ""),
                                 defaults: profile.defaults)
         welcomeSeen = remembered.welcomeSeen
-        remembered.adoptExistingPairings(keyAccounts: PairKeyStore(profile: profile).accounts()) { [cache] in cache.name(forDeviceId: $0) }
         rememberedPhones = remembered.all
         audio.statsFile = options.audioStatsFile
         windows.onChange = { [weak self] in
@@ -531,7 +546,8 @@ final class ConnectionController {
 
     func forget(_ phone: RememberedPhone) {
         let wasActive = link.phone?.id == phone.id || remembered.active?.id == phone.id
-        keyStore.forget(deviceId: phone.id)
+        pins.forget(deviceId: phone.id)
+        syncIdentityPinMirrorAfterForget(deviceId: phone.id)
         cache.forget(deviceId: phone.id)
         remembered.forget(id: phone.id)
         appsCache.remove(deviceId: phone.id)
@@ -551,6 +567,18 @@ final class ConnectionController {
             resetPhoneData(for: next.ref)
             send(.activate(next.ref))
         }
+    }
+
+    /// When no record in the store holds the §3 mirror fingerprint, empty the
+    /// mirror (identity.json must never name a phone the store forgot).
+    private func syncIdentityPinMirrorAfterForget(deviceId: String) {
+        guard !identity.pin.isEmpty else { return }
+        if let holder = pins.all.first(where: { $0.phoneFingerprintHex == identity.pin }), holder.deviceId != deviceId {
+            return
+        }
+        var updated = identity
+        updated.pin = ""
+        identityFile.save(updated)
     }
 
     func openApp(_ app: AppInfo) {
@@ -1024,7 +1052,10 @@ final class ConnectionController {
         if found == nil, let connect = options.connect {
             lastAttemptWasService = false
             start(Session(endpoint: .hostPort(host: connect.host, port: connect.port),
-                          knownDeviceId: ref.id.isEmpty ? nil : ref.id, clientId: clientId, keyStore: keyStore),
+                          knownDeviceId: ref.id.isEmpty ? nil : ref.id, clientId: clientId,
+                          identity: identity, pinnedPhone: pins.record(for: ref.id),
+                          pinStore: pins,
+                          onPinEstablished: { [weak self] record in self?.mirrorIdentityPin(record: record) }),
                   policy: .never)
             return
         }
@@ -1054,7 +1085,19 @@ final class ConnectionController {
             return
         }
         start(Session(endpoint: endpoint, knownDeviceId: ref.id, strictDeviceId: strict,
-                      clientId: clientId, keyStore: keyStore), policy: .never)
+                      clientId: clientId, identity: identity, pinnedPhone: pins.record(for: ref.id),
+                      pinStore: pins,
+                      onPinEstablished: { [weak self] record in self?.mirrorIdentityPin(record: record) }),
+              policy: .never)
+    }
+
+    /// identity.json's §3 `pin` mirrors the fingerprint of the phone this
+    /// session just paired; re-saved after every successful pairing.
+    private func mirrorIdentityPin(record: PinnedPhoneV2) {
+        guard pins.record(for: record.deviceId)?.phoneFingerprintHex == record.phoneFingerprintHex else { return }
+        var updated = identity
+        updated.pin = record.phoneFingerprintHex
+        identityFile.save(updated)
     }
 
     /// Nothing to connect to (not discovered, no remembered address): count it as
@@ -1075,7 +1118,6 @@ final class ConnectionController {
         session = newSession
         newSession.pairingPolicy = policy
         windows.attach(newSession)
-        if let key = qr?.payload.key, policy == .allowed { newSession.usePairingKey(key) }
         newSession.onEvent = { [weak self, weak newSession] event in
             MainActor.assumeIsolated {
                 guard let self, let newSession, newSession === self.session else { return }
@@ -1104,6 +1146,12 @@ final class ConnectionController {
         pairingSucceeded = false
         windows.closeAll()
         closeSession()
+        // A person re-running the pairing revokes the old pin here (§7): the
+        // next connect lands in pairing mode (no record, no §3 mirror).
+        if case .discovered(let phone) = target {
+            pins.forget(deviceId: phone.deviceId)
+            syncIdentityPinMirrorAfterForget(deviceId: phone.deviceId)
+        }
         sheet = .code
         send(.beginPairing(ref))
         let endpoint: Session.Endpoint
@@ -1112,13 +1160,15 @@ final class ConnectionController {
         case .manual(let host, let port): endpoint = .hostPort(host: host, port: port)
         }
         let known: String? = { if case .discovered(let phone) = target { return phone.deviceId } else { return nil } }()
-        start(Session(endpoint: endpoint, knownDeviceId: known, clientId: clientId, keyStore: keyStore,
+        start(Session(endpoint: endpoint, knownDeviceId: known, clientId: clientId,
+                      identity: identity, pinnedPhone: nil, pinStore: pins,
+                      onPinEstablished: { [weak self] record in self?.mirrorIdentityPin(record: record) },
                       connectTimeout: connectTimeout, pairingTimeout: pairingTimeout),
               policy: .allowed)
     }
 
     /// `--connect host:port`: the test entry point. The session may pair (the
-    /// phone's Allow is the only step) or reconnect with a key.
+    /// phone's Allow is the only step) or reconnect with a pin.
     private func beginManualLaunch(host: String, port: UInt16) {
         let ref = remembered.active?.ref ?? PhoneRef(id: "", name: host, model: "")
         send(.launch(ref))
@@ -1130,7 +1180,9 @@ final class ConnectionController {
 
     private func startManual(host: String, port: UInt16, ref: PhoneRef) {
         start(Session(endpoint: .hostPort(host: host, port: port), knownDeviceId: ref.id.isEmpty ? nil : ref.id,
-                      clientId: clientId, keyStore: keyStore,
+                      clientId: clientId, identity: identity, pinnedPhone: pins.record(for: ref.id),
+                      pinStore: pins,
+                      onPinEstablished: { [weak self] record in self?.mirrorIdentityPin(record: record) },
                       connectTimeout: connectTimeout, pairingTimeout: pairingTimeout), policy: .allowed)
     }
 
@@ -1494,7 +1546,7 @@ final class ConnectionController {
         for probe in qrProbes where now.timeIntervalSince(probe.startedAt) > QRProbePlanner.probeInterval {
             probe.session.close()
         }
-        let paired = Set(rememberedPhones.map(\.id).filter { keyStore.key(forDeviceId: $0) != nil })
+        let paired = Set(rememberedPhones.map(\.id).filter { pins.record(for: $0) != nil })
         let busy = Set(qrProbes.map(\.id))
         for phone in QRProbePlanner.candidates(phones: discovered, paired: paired, active: busy,
                                                 lastProbe: qrLastProbe, busyUntil: qrBusyUntil, now: now) {
@@ -1512,9 +1564,12 @@ final class ConnectionController {
     }
 
     private func startProbe(id: String, endpoint: Session.Endpoint, deviceId: String?, key: Data, now: Date) {
-        let probe = Session(endpoint: endpoint, knownDeviceId: deviceId, clientId: clientId, keyStore: keyStore)
-        probe.pairingPolicy = .never
-        probe.usePairingKey(key)
+        // v2: the QR carries the identity the phone pins (step 8 wires the
+        // `pair.qr` HMAC answer). Until then a probe only opens the TLS pairing
+        // channel and waits; it never sends anything the phone could answer.
+        let probe = Session(endpoint: endpoint, knownDeviceId: deviceId, clientId: clientId,
+                            identity: identity, pinnedPhone: nil, pinStore: pins)
+        probe.pairingPolicy = .probe
         probe.onEvent = { [weak self, weak probe] event in
             MainActor.assumeIsolated {
                 guard let self, let probe else { return }

@@ -6,6 +6,10 @@
 
 import Foundation
 import Network
+import NIO
+import NIOCore
+import NIOSSL
+import NIOPosix
 
 enum SessionState: Equatable {
     case idle
@@ -146,162 +150,284 @@ struct ApkResult: Equatable {
 final class Session {
     enum Endpoint {
         case hostPort(host: String, port: UInt16)
-        /// `pinnedTo`: connect only over the interface the service was found on.
         case service(NWEndpoint, pinnedTo: NWInterface? = nil)
     }
 
     private let endpoint: Endpoint
-    private let keyStore: PairKeyStore
     private var knownDeviceId: String?
-    /// Set when the endpoint is a cached address for this exact device id: the
-    /// challenge must name it, or the connection is refused (the address may
-    /// have been handed to another phone).
     private let strictDeviceId: String?
-
     private let clientId: String
-    private var connection: NWConnection?
-    private var decoder = FrameDecoder()
+    /// The Mac's v2 TLS identity (docs/design/e2ee.md §3); loaded per profile by
+    /// the caller, or generated ad hoc (placeholder sessions, unit tests).
+    private let identity: DeviceIdentityV2
+    /// A pin record handed in by the owner (a reconnect to a phone the pin
+    /// store knows). nil = pairing mode; the store is only consulted for
+    /// automatic attempts through `resolvePinnedPhone`.
+    private let pinnedPhone: PinnedPhoneV2?
+    /// Shared, persisted when the owner wires it (`pins.json`); pair.ok keeps
+    /// the record the session learned.
+    private let phonePinStore: PhonePinStoreV2?
+    /// Called when pairing established a pin: lets the owner sync identity.json's
+    /// mirrored pin (§3) on the same event.
+    private let pinSessionEstablished: ((PinnedPhoneV2) -> Void)?
+
     private let queue = DispatchQueue(label: "dev.pocketdeck.session")
+    private let connectionLock = NSLock()
+    private var channel: Channel?
+    private var channelSend: (@Sendable (Frame) -> Void)?
+    private var exporterProvider: (() -> [UInt8]?)?
+    private var eventLoopGroup: EventLoopGroup?
+    private var ownsGroup: Bool = false
+
+    private var decoder = FrameDecoder()
+    /// The peer state the TLS layer learns: the phone's certificate fingerprint
+    /// and the cert itself. Set asynchronously by the handshake watcher, read
+    /// on demand (pairing happens well after the handshake completed).
+    private var learnedPinProvider: (() -> String)?
+    private var learnedCertProvider: (() -> NIOSSLCertificate?)?
+    private var learnedPeerPin: String { learnedPinProvider?() ?? "" }
+    private var aspectPeerCert: NIOSSLCertificate? { learnedCertProvider?() }
+    private var macFingerprintHex: String
+
     private var pingTimer: Timer?
     private var connectWatchdog: DispatchWorkItem?
-    /// Armed while a person decides on the phone; the phone's own 120 s limit
-    /// normally answers first, this covers a phone that vanished mid-prompt.
     private var pairingDeadline: DispatchWorkItem?
-    /// `connection` is swapped from the session queue and from the main queue
-    /// (watchdog, close); every swap goes through `takeConnection`.
-    private let connectionLock = NSLock()
-    private var pendingPairKey: Data?
     /// The session-level `error` code the phone sent on this connection, if any.
     private var phoneErrorCode: String?
-    private var authDeviceId: String?
-    private var authInFlight = false
-    private var authAttempts = 0
     private var everReady = false
     private var intentionalClose = false
     private var loggedUnknown: Set<String> = []
-    /// Key from an open QR sheet: tried before any stored key, and a rejection
-    /// never falls back to the code flow (`pair.request`).
-    private var qrKey: Data?
-    private var authedWithQRKey = false
 
-    /// What a handshake may do when the phone asks for a pairing and we hold
-    /// no key for it. Automatic reconnects must never ask the phone to show a
-    /// code (it would prompt for a Mac the user is not pairing); only a
-    /// user-driven session may send `pair.request`.
-    enum PairingPolicy { case never, allowed }
+    /// The v2 pairing room: the phone's committed hash, our nonce, the code
+    /// state. All used on the session queue only.
+    private var remoteCommit: Data?
+    private var ourNm: Data?
+    private var pendingNp: Data?
+    private var failedOnce = false
+
+    enum PairingPolicy { case never, allowed, probe }
     var pairingPolicy: PairingPolicy = .allowed
 
     private(set) var state: SessionState = .idle
     private(set) var phone: PhoneInfo?
 
-    /// All events, on the main queue.
     var onEvent: ((SessionEvent) -> Void)?
-
-    /// Video is delivered synchronously on the session queue: frames never hop
-    /// through the main thread before reaching their display layer.
     var onVideoEvent: ((VideoEvent) -> Void)?
-
-    /// Audio is delivered synchronously on the session queue, like video.
     var onAudioEvent: ((AudioEvent) -> Void)?
 
     static let pingInterval: TimeInterval = 15
-    /// One attempt gets this long to reach `welcome` (or, when pairing, the
-    /// phone's code). A Bonjour connection can stay in `waiting` forever (an
-    /// interface that cannot reach the phone); the owner needs a failure to try
-    /// again, and the socket must be cancelled.
     static let defaultConnectTimeout: TimeInterval = 6
-    /// The phone gives a person 120 s to answer (docs/PROTOCOL.md "Pairing").
     static let defaultPairingTimeout: TimeInterval = 125
 
     private let connectTimeout: TimeInterval
     private let pairingTimeout: TimeInterval
 
+    // MARK: Inits
+
+    /// The designated init: the owner decides the identity (profile-loaded),
+    /// the pin record (nil = pairing) and the shared pin store.
     init(endpoint: Endpoint, knownDeviceId: String?, strictDeviceId: String? = nil,
-         clientId: String, keyStore: PairKeyStore,
+         clientId: String, identity: DeviceIdentityV2? = nil,
+         pinnedPhone: PinnedPhoneV2? = nil, pinStore: PhonePinStoreV2? = nil,
+         onPinEstablished: ((PinnedPhoneV2) -> Void)? = nil,
+         group: EventLoopGroup? = nil,
          connectTimeout: TimeInterval = Session.defaultConnectTimeout,
          pairingTimeout: TimeInterval = Session.defaultPairingTimeout) {
         self.endpoint = endpoint
         self.knownDeviceId = knownDeviceId
         self.strictDeviceId = strictDeviceId
         self.clientId = clientId
-        self.keyStore = keyStore
+        if let identity {
+            self.identity = identity
+        } else {
+            // No profile in scope (placeholder sessions, unit tests): ad-hoc
+            // TNI identity, never persisted.
+            self.identity = IdentityGeneratorV2.make(
+                deviceId: clientId.isEmpty ? UUID().uuidString.lowercased() : clientId).identity
+        }
+        self.pinnedPhone = pinnedPhone
+        self.phonePinStore = pinStore
+        self.pinSessionEstablished = onPinEstablished
+        self.eventLoopGroup = group
         self.connectTimeout = connectTimeout
         self.pairingTimeout = pairingTimeout
+
+        if let cert = try? NIOSSLCertificate(bytes: [UInt8](self.identity.certPem.utf8), format: .pem),
+           let fp = PinCheckV2.pointFingerprint(cert: cert) {
+            self.macFingerprintHex = Data(fp).hexString
+        } else {
+            self.macFingerprintHex = ""
+        }
     }
 
-    convenience init(host: String, port: UInt16, knownDeviceId: String? = nil,
-                     clientId: String, keyStore: PairKeyStore) {
-        self.init(endpoint: .hostPort(host: host, port: port), knownDeviceId: knownDeviceId,
-                  clientId: clientId, keyStore: keyStore)
+    /// Placeholder sessions (WindowManager construction) and most unit tests:
+    /// an ad-hoc identity, no pin store.
+    convenience init(endpoint: Endpoint, knownDeviceId: String?, strictDeviceId: String? = nil,
+                     clientId: String,
+                     connectTimeout: TimeInterval = Session.defaultConnectTimeout,
+                     pairingTimeout: TimeInterval = Session.defaultPairingTimeout) {
+        self.init(endpoint: endpoint, knownDeviceId: knownDeviceId, strictDeviceId: strictDeviceId,
+                  clientId: clientId, identity: nil,
+                  connectTimeout: connectTimeout, pairingTimeout: pairingTimeout)
     }
 
     // MARK: Lifecycle
 
     func start() {
         intentionalClose = false
+        failedOnce = false
         transition(.connecting, nil)
-        let options = Self.tcpParameters(for: endpoint)
-        let conn: NWConnection
-        switch endpoint {
-        case .hostPort(let host, let port):
-            conn = NWConnection(host: NWEndpoint.Host(host),
-                                port: NWEndpoint.Port(rawValue: port) ?? 1, using: options)
-        case .service(let service, _):
-            conn = NWConnection(to: service, using: options)
-        }
-        Log.session.info("connecting (\(self.describeEndpoint(), privacy: .public))")
-        connectionLock.lock()
-        connection = conn
-        connectionLock.unlock()
-        decoder = FrameDecoder()
-        phoneErrorCode = nil
-        authedWithQRKey = false
-        conn.stateUpdateHandler = { [weak self] newState in self?.handleConnectionState(newState, on: conn) }
-        conn.start(queue: queue)
-        receive(on: conn)
         armConnectWatchdog()
+        queue.async { [weak self] in self?.doConnect() }
+    }
+
+    private func doConnect() {
+        guard !intentionalClose else { return }
+        guard let target = resolveTarget(endpoint) else {
+            fail("resolve"); return
+        }
+
+        // The pin record for a reconnect comes from the shared store; pairing
+        // attempts NEVER use one (§7: a stale pin must not block a person's
+        // re-pair), and an automatic attempt without any record cannot
+        // authenticate at all (v2 replaces the v1 key), so it fails up front.
+        var pinned = self.pinnedPhone
+        if pinned == nil, let store = phonePinStore {
+            if let id = knownDeviceId ?? strictDeviceId {
+                pinned = store.record(for: id)
+            }
+        }
+        if pinned == nil, pairingPolicy == .never {
+            Log.session.notice("no pin for \(self.describeEndpoint(), privacy: .public); not connecting automatically")
+            fail("no-pin"); return
+        }
+
+        if eventLoopGroup == nil {
+            eventLoopGroup = MultiThreadedEventLoopGroup(numberOfThreads: 1)
+            ownsGroup = true
+        }
+        let group = eventLoopGroup!
+
+        let connector = TlsConnectorV2(identity: identity, pinnedPhone: pinned, group: group)
+        let learned = SessionLockedBox(value: "")
+        let learnedCert = SessionLockedBox<NIOSSLCertificate?>(value: nil)
+        let connectResult: (channel: Channel, exporter: () -> [UInt8]?, send: @Sendable (Frame) -> Void)?
+        do {
+            connectResult = try connector.connect(host: target.host, port: target.port,
+                  onFrame: { [weak self] frame in
+                guard let self else { return }
+                self.queue.async { self.handleFrame(frame) }
+            }, onError: { [weak self] err in
+                guard let self else { return }
+                self.queue.async { self.handleTransportError(err) }
+            }, onPeerPin: { fp in learned.set(fp) },
+               onPeerCert: { cert in learnedCert.set(cert) })
+        } catch let error as TlsV2Error {
+            Log.session.error("tls connect refused: \(error.description, privacy: .public)")
+            switch error {
+            case .pinMismatch: fail("pin-mismatch")
+            case .noPin: fail("no-pin")
+            default: fail("tls")
+            }
+            return
+        } catch {
+            Log.session.error("tls connect failed: \(String(describing: error), privacy: .public)")
+            fail("tls"); return
+        }
+        guard let res = connectResult else {
+            fail("tls"); return
+        }
+        channel = res.channel
+        channelSend = res.send
+        exporterProvider = res.exporter
+        // The handshake watcher resolves asynchronously: the pin and the peer
+        // cert are read on demand (pairing time is well after the handshake).
+        learnedPinProvider = { learned.get() }
+        learnedCertProvider = { learnedCert.get() }
+        transition(.handshaking, nil)
+        Log.session.info("tls connected (\(self.describeEndpoint(), privacy: .public)); hello v2")
+        sendJSON(["t": "hello", "v": 2, "clientId": clientId, "name": ClientIdentity.name, "id": identity.deviceId])
+        // Unpaired target + a user-driven session: start the code pairing right
+        // away. A paired target answers `welcome` instead; policy .never stays
+        // silent (it would make the phone prompt for nobody), and a QR probe
+        // only opens the pairing channel for the phone to answer.
+        if pinned == nil, pairingPolicy == .allowed {
+            sendJSON(["t": "pair.request"])
+        }
     }
 
     func close() {
         intentionalClose = true
         cancelTimers()
-        retire(takeConnection(ifCurrent: nil))
+        closeChannel()
         transition(.closed, nil)
+        if ownsGroup {
+            try? eventLoopGroup?.syncShutdownGracefully()
+            eventLoopGroup = nil
+            ownsGroup = false
+        }
     }
 
-    /// Detaches the live connection (only if `conn` still is it; nil = whichever
-    /// is live) so the caller can cancel it exactly once.
-    private func takeConnection(ifCurrent conn: NWConnection?) -> NWConnection? {
+    private func closeChannel() {
         connectionLock.lock()
-        defer { connectionLock.unlock() }
-        guard let current = connection, conn == nil || conn === current else { return nil }
-        connection = nil
-        return current
+        let ch = channel
+        channel = nil
+        channelSend = nil
+        exporterProvider = nil
+        connectionLock.unlock()
+        if let ch { try? ch.close().wait() }
     }
 
-    private var currentConnection: NWConnection? {
-        connectionLock.lock()
-        defer { connectionLock.unlock() }
-        return connection
+    /// Bonjour services still resolve through Network.framework (NIO cannot
+    /// resolve `_pocketdeck._tcp` names); the resolver runs on its own queue so
+    /// the session queue is never blocked by it. The dial itself then goes to
+    /// the resolved host/port over NIO. Note the dial keeps no interface
+    /// pinning once resolved — a bridge-resolved address fails the TLS dial and
+    /// the owner's planner falls back to the cached address.
+    private func resolveTarget(_ endpoint: Endpoint) -> (host: String, port: Int)? {
+        switch endpoint {
+        case .hostPort(let host, let port):
+            return (host, Int(port))
+        case .service(let service, _):
+            let conn = NWConnection(to: service, using: Self.tcpParameters(for: endpoint))
+            let resolveQueue = DispatchQueue(label: "dev.pocketdeck.session.resolve")
+            let sem = DispatchSemaphore(value: 0)
+            var resolved: NWEndpoint?
+            conn.stateUpdateHandler = { state in
+                switch state {
+                case .ready:
+                    resolved = conn.currentPath?.remoteEndpoint
+                    sem.signal()
+                case .failed, .cancelled:
+                    sem.signal()
+                default:
+                    break
+                }
+            }
+            conn.start(queue: resolveQueue)
+            _ = sem.wait(timeout: .now() + 5)
+            conn.cancel()
+            guard let remote = resolved, case let .hostPort(host, port) = remote else { return nil }
+            let hostString: String
+            switch host {
+            case let .name(name, _): hostString = name
+            default:
+                guard let textual = Self.ipAddressString(host) else { return nil }
+                hostString = textual
+            }
+            return (hostString, Int(port.rawValue))
+        }
     }
 
-    private func isCurrent(_ conn: NWConnection) -> Bool {
-        connectionLock.lock()
-        defer { connectionLock.unlock() }
-        return connection === conn
+    /// The numeric form of a resolved NWEndpoint.Host (a dial needs an address
+    /// NIO can use; a name would resolve again and might answer differently).
+    private static func ipAddressString(_ host: NWEndpoint.Host) -> String? {
+        if case let .ipv4(ip) = host { return "\(ip)" }
+        if case let .ipv6(ip) = host { return "\(ip)" }
+        let parts = String(describing: host).components(separatedBy: CharacterSet(charactersIn: "()"))
+        return parts.count > 1 ? parts[1] : parts.first
     }
 
-    /// Every dropped connection is cancelled: the phone serves one session, and a
-    /// socket that is merely forgotten keeps its slot (or lets a late TCP
-    /// completion open a session nobody speaks on).
-    private func retire(_ conn: NWConnection?) {
-        guard let conn else { return }
-        conn.stateUpdateHandler = nil
-        conn.cancel()
-    }
-
-    /// A session that has not reached `ready` in time is treated as failed, so
-    /// the app can try the cached address; `waiting` alone never fails.
     private func armConnectWatchdog() {
         connectWatchdog?.cancel()
         let work = DispatchWorkItem { [weak self] in
@@ -313,8 +439,6 @@ final class Session {
         DispatchQueue.main.asyncAfter(deadline: .now() + connectTimeout, execute: work)
     }
 
-    /// The phone showed its code: from here the person, not the network, sets
-    /// the pace, so the connect watchdog gives way to the pairing deadline.
     private func armPairingDeadline() {
         connectWatchdog?.cancel()
         connectWatchdog = nil
@@ -338,12 +462,11 @@ final class Session {
         pingTimer = nil
     }
 
-    /// A Bonjour service is advertised on every interface the phone's Wi-Fi
-    /// reaches and on any VM/VPN bridge the Mac has; Network.framework may pick
-    /// an interface that cannot reach it and wait there forever. The first
-    /// attempt is pinned to the interface the browser found the phone on (Wi-Fi
-    /// first); the owner alternates with an unpinned attempt after a failure. A
-    /// plain host:port keeps the defaults (tests connect over loopback).
+    private func transition(_ newState: SessionState, _ detail: String?) {
+        state = newState
+        emit(.state(newState, detail))
+    }
+
     static func tcpParameters(for endpoint: Endpoint) -> NWParameters {
         let parameters = NWParameters.tcp
         if let tcp = parameters.defaultProtocolStack.transportProtocol as? NWProtocolTCP.Options {
@@ -365,85 +488,17 @@ final class Session {
         }
     }
 
-    private func transition(_ newState: SessionState, _ detail: String?) {
-        state = newState
-        emit(.state(newState, detail))
-    }
+    // MARK: Receive dispatch
 
-    // MARK: Receive
-
-    private func receive(on conn: NWConnection) {
-        conn.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, isComplete, error in
-            guard let self, self.isCurrent(conn) else { return }
-            if let data, !data.isEmpty {
-                do {
-                    for frame in try self.decoder.append(data) { self.handleFrame(frame) }
-                } catch {
-                    Log.session.error("framing error: \(String(describing: error), privacy: .public)")
-                    self.emit(.protocolViolation(String(describing: error)))
-                    self.fail("framing", on: conn)
-                    return
-                }
-            }
-            if let error {
-                Log.session.error("receive error: \(String(describing: error), privacy: .public)")
-                self.fail("receive", on: conn)
-                return
-            }
-            if isComplete { self.fail("closed-by-peer", on: conn); return }
-            self.receive(on: conn)
+    private func handleTransportError(_ message: String) {
+        // The pinned-reconnect paths surface the stale-pin case as a TLS verify
+        // failure inside the record's trustRoots (§7: "certificate changed").
+        if message.contains(TlsV2Error.pinMismatch(got: "", expected: "").description.prefix(18)) {
+            fail("pin-mismatch")
+            return
         }
+        fail("tls")
     }
-
-    private func handleConnectionState(_ newState: NWConnection.State, on conn: NWConnection) {
-        guard isCurrent(conn) else { retire(conn); return }
-        switch newState {
-        case .ready:
-            Log.session.info("tcp ready; sending hello")
-            transition(.handshaking, nil)
-            sendJSON(["t": "hello", "v": 1, "clientId": clientId, "name": ClientIdentity.name])
-        case .waiting(let error):
-            Log.session.notice("connection waiting: \(String(describing: error), privacy: .public)")
-        case .failed(let error):
-            Log.session.error("connection failed: \(String(describing: error), privacy: .public)")
-            fail("failed", on: conn)
-        case .cancelled:
-            if !intentionalClose { fail("cancelled", on: conn) } else { transition(.closed, nil) }
-        default:
-            break
-        }
-    }
-
-    /// `transportReason` says what the socket did; the phone's error frame
-    /// says more and wins. Fails once per
-    /// connection: a second report for the same (or an already replaced)
-    /// connection is ignored. Never retries: the owner decides when to try again.
-    private func fail(_ transportReason: String, on conn: NWConnection? = nil) {
-        guard let dead = takeConnection(ifCurrent: conn) else { return }
-        retire(dead)
-        cancelTimers()
-        let reason = phoneErrorCode ?? transportReason
-        phoneErrorCode = nil
-        // Some servers close right after rejecting auth without the error frame
-        // surviving the close; two failed auth handshakes mean the key is stale.
-        if authInFlight, authAttempts >= 2 {
-            Log.session.notice("auth rejected twice; forgetting pairing key")
-            forgetAuthKey()
-        }
-        guard !intentionalClose else { transition(.closed, nil); return }
-        transition(.failed(reason), reason)
-    }
-
-    /// The endpoint belongs to a different phone now: never authenticate and
-    /// never reconnect to it. The owner drops the cached address on the event.
-    private func refuseIdentityMismatch() {
-        intentionalClose = true
-        cancelTimers()
-        retire(takeConnection(ifCurrent: nil))
-        transition(.failed(ConnectionFailure.identityMismatch), ConnectionFailure.identityMismatch)
-    }
-
-    // MARK: Frame dispatch
 
     private func handleFrame(_ frame: Frame) {
         switch frame.messageType {
@@ -490,93 +545,87 @@ final class Session {
     private func handleJSON(_ message: JSONMessage) {
         switch message.t {
         case "challenge":
-            let nonce = message.string("nonce") ?? ""
-            // The challenge names the phone, which picks the right key even when
-            // we connected by address rather than through discovery.
-            if let id = message.string("id"), !id.isEmpty {
-                if let expected = strictDeviceId, id != expected {
-                    // A cached address must keep belonging to the same phone.
-                    Log.session.error("address answers as \(id, privacy: .public), expected \(expected, privacy: .public); dropping")
-                    emit(.identityMismatch(expected: expected, actual: id))
-                    refuseIdentityMismatch()
-                    return
-                }
-                knownDeviceId = id
+            // A v1 phone sends its challenge right after hello; none of v1
+            // survives in v2 (fixed decision), so surface the version mismatch.
+            phoneErrorCode = "version"
+            fail("version")
+        case "pair.commit":
+            // §4 step 1: the phone commits before the Mac releases its nonce.
+            guard let hex = message.string("c"), let commit = Data(hexString: hex), commit.count == 32 else {
+                phoneErrorCode = "pair_commit"
+                fail("pair_commit"); return
             }
-            // An open QR sheet takes precedence: the phone has the key as soon as
-            // the user scans, and until then `auth_failed` is the expected answer
-            // (never `pair.request`, which would spam the phone with prompts).
-            if let key = qrKey {
-                authDeviceId = knownDeviceId
-                authInFlight = false
-                authAttempts = 0
-                authedWithQRKey = true
-                sendJSON(["t": "auth", "mac": PairCrypto.hmacHex(key: key, nonceHex: nonce)])
-                return
+            remoteCommit = commit
+            let nm = (0..<16).map { _ in UInt8.random(in: 0...255) }
+            ourNm = Data(nm)
+            sendJSON(["t": "pair.nonce", "n": Data(nm).hexString])
+        case "pair.reveal":
+            // §4 steps 3-4: verify the commitment, then both derive the code.
+            guard let commit = remoteCommit, let nm = ourNm, nm.count == 16 else {
+                phoneErrorCode = "pair_commit"
+                fail("pair_commit"); return
             }
-            if let candidate = keyStore.candidateKey(knownDeviceId: knownDeviceId) {
-                authDeviceId = candidate.deviceId
-                authInFlight = true
-                authAttempts += 1
-                sendJSON(["t": "auth", "mac": PairCrypto.hmacHex(key: candidate.key, nonceHex: nonce)])
-            } else if pairingPolicy == .never {
-                // Nothing to authenticate with and nobody asked to pair: do not
-                // make the phone show a code.
-                authDeviceId = nil
-                authInFlight = false
-                authAttempts = 0
-                phoneErrorCode = "auth_failed"
-                fail("no-key")
-            } else {
-                authDeviceId = nil
-                authInFlight = false
-                authAttempts = 0
-                sendJSON(["t": "pair.request"])
+            guard let npHex = message.string("n"), let np = Data(hexString: npHex), np.count == 16 else {
+                phoneErrorCode = "pair_commit"
+                fail("pair_commit"); return
             }
-        case "pair.code_shown":
-            // The phone waits for its person (up to 120 s); the connect
-            // watchdog must not cut them off in the meantime.
-            guard let code = message.string("code"), !code.isEmpty else {
-                // A phone that predates the shown-code protocol expects the code to be typed.
-                phoneErrorCode = "version"
-                fail("version")
-                return
+            let macFp = Data(hexString: macFingerprintHex) ?? Data()
+            let phoneFp = Data(hexString: learnedPeerPin) ?? Data()
+            guard macFp.count == 32, phoneFp.count == 32 else {
+                // Either end's fingerprint is unknown (no handshake learning):
+                // a commit over unknown inputs cannot be trusted. §4: pair_commit.
+                phoneErrorCode = "pair_commit"
+                fail("pair_commit"); return
             }
+            let expected = PairingCodeV2.commit(Np: np, phoneFp: phoneFp, macFp: macFp)
+            guard expected == commit else {
+                Log.session.error("pair commit mismatch: the reveal rehash differs")
+                phoneErrorCode = "pair_commit"
+                fail("pair_commit"); return
+            }
+            pendingNp = np
+            guard let exporter = exporterProvider?() else {
+                Log.session.error("no exporter on a pairing session")
+                fail("tls"); return
+            }
+            let code = PairingCodeV2.code(exporter: Data(exporter), macFp: macFp, phoneFp: phoneFp, Nm: nm, Np: np)
             armPairingDeadline()
-            emit(.pairCodeShown(deviceId: knownDeviceId, code: code))
+            Log.session.notice("pairing code derived for this screen: \(PairingCodeV2.codeHex(code), privacy: .public)")
+            emit(.pairCodeShown(deviceId: knownDeviceId, code: PairingCodeV2.codeHex(code)))
         case "pair.ok":
-            if let hex = message.string("key") { pendingPairKey = Data(hexString: hex) }
+            // The person allowed on the phone. `phoneFP` cross-checks the pin we
+            // learned from the handshake with what the phone knows it shared
+            // ("pair.ok carrying what each side pins"); then `welcome` stores it.
+            if let fpHex = message.string("phoneFP"), !learnedPeerPin.isEmpty, fpHex != learnedPeerPin {
+                Log.session.error("pair.ok phoneFP disagrees with the handshake fingerprint")
+                phoneErrorCode = "pair_commit"
+                fail("pair_commit"); return
+            }
             emit(.pairApproved)
         case "welcome":
             guard let device = message.object("device"), let info = PhoneInfo(device: device) else {
                 Log.session.error("welcome without device")
                 return
             }
-            if let key = pendingPairKey {
-                keyStore.store(key: key, deviceId: info.id)
-                pendingPairKey = nil
+            if let strict = strictDeviceId, info.id != strict {
+                // A cached address must keep belonging to the same phone.
+                Log.session.error("address answers as \(info.id, privacy: .public), expected \(strict, privacy: .public); dropping")
+                emit(.identityMismatch(expected: strict, actual: info.id))
+                closeChannel()
+                cancelTimers()
+                intentionalClose = true
+                transition(.failed(ConnectionFailure.identityMismatch), ConnectionFailure.identityMismatch)
+                return
             }
-            if authedWithQRKey, let key = qrKey {
-                // Scanning is the consent: the phone already stored the same key.
-                keyStore.store(key: key, deviceId: info.id)
-                qrKey = nil
-                authedWithQRKey = false
-                emit(.qrPaired(deviceId: info.id))
-            }
+            storePinFor(info: info)
             knownDeviceId = info.id
             phone = info
-            authAttempts = 0
-            authInFlight = false
-            connectWatchdog?.cancel()
-            connectWatchdog = nil
-            pairingDeadline?.cancel()
-            pairingDeadline = nil
+            cancelTimers()
             startPing()
             let isReconnect = everReady
             everReady = true
-            let address = currentConnection?.currentPath?.remoteEndpoint?.resolvedIPv4Address
             transition(.ready, nil)
-            emit(.ready(info, isReconnect: isReconnect, address: address))
+            emit(.ready(info, isReconnect: isReconnect, address: nil))
         case "apps":
             let apps = (message.array("apps") ?? []).compactMap { AppInfo(json: $0) }
             emit(.apps(apps))
@@ -680,10 +729,6 @@ final class Session {
             )))
         case "error":
             let code = message.string("code") ?? "unknown"
-            if code == "auth_failed", !authedWithQRKey {
-                forgetAuthKey()
-            }
-            // Errors about one stream leave the session up; the rest end it.
             if message.int("stream") == nil { phoneErrorCode = code }
             emit(.phoneError(code: code, message: message.string("message"),
                              stream: UInt32(message.int("stream") ?? 0)))
@@ -695,6 +740,33 @@ final class Session {
         }
     }
 
+    /// Pairing ended with `pair.ok` + `welcome`: keep the phone's pin record (cert
+    /// + fingerprint learned at the handshake) and let the owner mirror §3's
+    /// identity.json pin. Only reached right after a pairing session's success.
+    private func storePinFor(info: PhoneInfo) {
+        let pin = learnedPeerPin
+        guard !pin.isEmpty else { return }
+        var certPem = ""
+        if let cert = aspectPeerCert, let der = try? cert.toDERBytes() {
+            let b64 = Data(der).base64EncodedString()
+            certPem = "-----BEGIN CERTIFICATE-----\n\(stripBase64Lines(b64))-----END CERTIFICATE-----\n"
+        }
+        let record = PinnedPhoneV2(deviceId: info.id, phoneFingerprintHex: pin, certPem: certPem)
+        phonePinStore?.store(record)
+        pinSessionEstablished?(record)
+    }
+
+    /// 76-char PEM body strip for the record's cert (base64 → lines).
+    private func stripBase64Lines(_ b64: String) -> String {
+        var out = ""
+        var i = b64.startIndex
+        while i < b64.endIndex {
+            let end = b64.index(i, offsetBy: 64, limitedBy: b64.endIndex) ?? b64.endIndex
+            out += b64[i..<end] + "\n"
+            i = end
+        }
+        return out
+    }
     // MARK: Ping
 
     private func startPing() {
@@ -706,26 +778,12 @@ final class Session {
         pingTimer = timer
     }
 
-    // MARK: Pairing
+    // MARK: Pairing API
 
-    /// The key currently shown in a QR sheet. While set, the handshake
-    /// authenticates with it and never asks the phone to show a code.
-    func usePairingKey(_ key: Data) { qrKey = key }
+    // MARK: Exporter
 
-    func clearPairingKey() {
-        qrKey = nil
-        authedWithQRKey = false
-    }
-
-    /// Drop the key we tried so the next handshake pairs instead of looping.
-    private func forgetAuthKey() {
-        guard !authedWithQRKey else { return }
-        if let id = authDeviceId ?? knownDeviceId { keyStore.forget(deviceId: id) }
-        authDeviceId = nil
-        knownDeviceId = nil
-        authInFlight = false
-        authAttempts = 0
-    }
+    /// The 32 exporter bytes of this connection attempt (pairing only).
+    func attemptedExporter() -> [UInt8]? { exporterProvider?() }
 
     // MARK: Send
 
@@ -738,8 +796,13 @@ final class Session {
     }
 
     func sendBytes(_ bytes: [UInt8]) {
-        guard let connection = currentConnection else { return }
-        connection.send(content: Data(bytes), completion: .contentProcessed { _ in })
+        connectionLock.lock()
+        let ch = channel
+        connectionLock.unlock()
+        guard let ch else { return }
+        var buf = ch.allocator.buffer(capacity: bytes.count)
+        buf.writeBytes(bytes)
+        _ = ch.writeAndFlush(buf)
     }
 
     func sendJSON(_ object: [String: Any]) {
@@ -747,40 +810,24 @@ final class Session {
     }
 
     func requestApps() { sendJSON(["t": "apps.list"]) }
-
     func requestIcon(pkg: String) { sendJSON(["t": "apps.icon", "pkg": pkg]) }
-
     func openApp(stream: UInt32, pkg: String, activity: String?, width: Int, height: Int, dpi: Double) {
-        var message: [String: Any] = ["t": "window.open", "stream": Int(stream),
-                                      "w": width, "h": height, "dpi": Int(dpi.rounded()),
-                                      "pkg": pkg]
+        var message: [String: Any] = ["t": "window.open", "stream": Int(stream), "w": width, "h": height, "dpi": Int(dpi.rounded()), "pkg": pkg]
         if let activity { message["activity"] = activity }
         sendJSON(message)
     }
-
     func openLink(stream: UInt32, url: String, width: Int, height: Int, dpi: Double) {
-        sendJSON(["t": "link.open", "stream": Int(stream), "w": width, "h": height,
-                  "dpi": Int(dpi.rounded()), "url": url])
+        sendJSON(["t": "link.open", "stream": Int(stream), "w": width, "h": height, "dpi": Int(dpi.rounded()), "url": url])
     }
-
     func openPhone(stream: UInt32, width: Int, height: Int, dpi: Double) {
-        sendJSON(["t": "window.open", "stream": Int(stream), "w": width, "h": height,
-                  "dpi": Int(dpi.rounded()), "mode": "phone"])
+        sendJSON(["t": "window.open", "stream": Int(stream), "w": width, "h": height, "dpi": Int(dpi.rounded()), "mode": "phone"])
     }
-
-    /// `task.continue` (docs/design/handoff.md): the phone opens this stream's
-    /// display for the app that is in the foreground on its own screen and
-    /// moves the task onto it (or relaunches the package, `started: "fresh"`).
     func continueTask(stream: UInt32, width: Int, height: Int, dpi: Double) {
-        sendJSON(["t": "task.continue", "stream": Int(stream), "w": width, "h": height,
-                  "dpi": Int(dpi.rounded())])
+        sendJSON(["t": "task.continue", "stream": Int(stream), "w": width, "h": height, "dpi": Int(dpi.rounded())])
     }
-
     func resizeWindow(stream: UInt32, width: Int, height: Int, dpi: Double) {
-        sendJSON(["t": "window.resize", "stream": Int(stream), "w": width, "h": height,
-                  "dpi": Int(dpi.rounded())])
+        sendJSON(["t": "window.resize", "stream": Int(stream), "w": width, "h": height, "dpi": Int(dpi.rounded())])
     }
-
     func closeWindow(stream: UInt32) { sendJSON(["t": "window.close", "stream": Int(stream)]) }
     func pauseWindow(stream: UInt32) { sendJSON(["t": "window.pause", "stream": Int(stream)]) }
     func resumeWindow(stream: UInt32) { sendJSON(["t": "window.resume", "stream": Int(stream)]) }
@@ -790,101 +837,60 @@ final class Session {
         if let activity { message["activity"] = activity }
         sendJSON(message)
     }
-
-    func nav(stream: UInt32, action: String) {
-        sendJSON(["t": "nav", "stream": Int(stream), "action": action])
-    }
-
-    func startAudio(codecs: [Int] = [Int(AudioConfig.codecOpus), Int(AudioConfig.codecAAC)]) {
-        sendJSON(["t": "audio.start", "codecs": codecs])
-    }
-
-    func stopAudio() {
-        sendJSON(["t": "audio.stop"])
-    }
-
-    func text(stream: UInt32, text: String) {
-        sendJSON(["t": "text", "stream": Int(stream), "text": text])
-    }
-
-    func installApk(id: UInt32, files: [[String: Any]]) {
-        sendJSON(["t": "apk.install", "id": Int(id), "files": files])
-    }
-
+    func nav(stream: UInt32, action: String) { sendJSON(["t": "nav", "stream": Int(stream), "action": action]) }
+    func startAudio(codecs: [Int] = [Int(AudioConfig.codecOpus), Int(AudioConfig.codecAAC)]) { sendJSON(["t": "audio.start", "codecs": codecs]) }
+    func stopAudio() { sendJSON(["t": "audio.stop"]) }
+    func text(stream: UInt32, text: String) { sendJSON(["t": "text", "stream": Int(stream), "text": text]) }
+    func installApk(id: UInt32, files: [[String: Any]]) { sendJSON(["t": "apk.install", "id": Int(id), "files": files]) }
     func cancelApk(id: UInt32) { sendJSON(["t": "apk.cancel", "id": Int(id)]) }
-
-    /// `notify.enable`: the per-phone toggle change, sent again after `welcome`.
-    func enableNotifications(_ on: Bool) {
-        sendJSON(["t": "notify.enable", "on": on])
-    }
-
-    /// A Now Playing transport control (`play`, `pause`, `next`, `prev`).
-    func mediaCommand(_ action: String) {
-        sendJSON(["t": "media.command", "action": action])
-    }
-
-    /// One `APK_DATA` chunk; `sent` runs (on any thread) once the network took it,
-    /// false when there is no connection, so the sender paces itself.
-    func sendApkData(id: UInt32, bytes: [UInt8], sent: @escaping @Sendable (Bool) -> Void) {
-        sendData(.apkData, id: id, bytes: bytes, sent: sent)
-    }
-
-    /// `drop.start` begins a chunked file stream that [sendDropData] fills.
+    func enableNotifications(_ on: Bool) { sendJSON(["t": "notify.enable", "on": on]) }
+    func mediaCommand(_ action: String) { sendJSON(["t": "media.command", "action": action]) }
+    func sendApkData(id: UInt32, bytes: [UInt8], sent: @escaping @Sendable (Bool) -> Void) { sendData(.apkData, id: id, bytes: bytes, sent: sent) }
     func dropStart(id: UInt32, name: String, mime: String, size: Int, sha256: String, resume: Int = 0) {
-        var message: [String: Any] = ["t": "drop.start", "id": Int(id), "name": name,
-                                      "mime": mime, "size": size, "sha256": sha256]
+        var message: [String: Any] = ["t": "drop.start", "id": Int(id), "name": name, "mime": mime, "size": size, "sha256": sha256]
         if resume > 0 { message["resume"] = resume }
         sendJSON(message)
     }
-
     func cancelDrop(id: UInt32) { sendJSON(["t": "drop.cancel", "id": Int(id)]) }
-
-    /// One `DROP_DATA` chunk, paced like an APK part.
-    func sendDropData(id: UInt32, bytes: [UInt8], sent: @escaping @Sendable (Bool) -> Void) {
-        sendData(.dropData, id: id, bytes: bytes, sent: sent)
-    }
-
-    /// `clip.image.start` begins a clipboard image stream; [sendClipData] fills it.
-    func clipImageStart(id: UInt32, mime: String, size: Int) {
-        sendJSON(["t": "clip.image.start", "id": Int(id), "mime": mime, "size": size])
-    }
-
-    func clipImageEnd(id: UInt32, size: Int, sha256: String) {
-        sendJSON(["t": "clip.image.end", "id": Int(id), "size": size, "sha256": sha256])
-    }
-
+    func sendDropData(id: UInt32, bytes: [UInt8], sent: @escaping @Sendable (Bool) -> Void) { sendData(.dropData, id: id, bytes: bytes, sent: sent) }
+    func clipImageStart(id: UInt32, mime: String, size: Int) { sendJSON(["t": "clip.image.start", "id": Int(id), "mime": mime, "size": size]) }
+    func clipImageEnd(id: UInt32, size: Int, sha256: String) { sendJSON(["t": "clip.image.end", "id": Int(id), "size": size, "sha256": sha256]) }
     func clipImageAbort(id: UInt32) { sendJSON(["t": "clip.image.abort", "id": Int(id)]) }
-
-    /// One `CLIP_DATA` chunk of the direction the caller chose.
-    func sendClipData(id: UInt32, bytes: [UInt8], sent: @escaping @Sendable (Bool) -> Void) {
-        sendData(.clipData, id: id, bytes: bytes, sent: sent)
+    func sendClipData(id: UInt32, bytes: [UInt8], sent: @escaping @Sendable (Bool) -> Void) { sendData(.clipData, id: id, bytes: bytes, sent: sent) }
+    private func sendData(_ kind: MessageType, id: UInt32, bytes: [UInt8], sent: @escaping @Sendable (Bool) -> Void) {
+        guard let ch = channel else { return sent(false) }
+        let frame = Frame(type: kind, stream: id, payload: bytes).encodedData()
+        var buf = ch.allocator.buffer(capacity: frame.count)
+        buf.writeBytes(frame)
+        ch.writeAndFlush(buf).whenComplete { result in
+            switch result {
+            case .success: sent(true)
+            case .failure: sent(false)
+            }
+        }
     }
+    func sendClipboard(_ text: String) { sendJSON(["t": "clip.set", "text": text]) }
+    func touch(_ event: TouchEvent, stream: UInt32) { sendBytes(Frame(type: .touch, stream: stream, payload: event.payload).encoded) }
+    func scroll(_ event: ScrollEvent, stream: UInt32) { sendBytes(Frame(type: .scroll, stream: stream, payload: event.payload).encoded) }
+    func key(_ event: KeyEvent, stream: UInt32) { sendBytes(Frame(type: .key, stream: stream, payload: event.payload).encoded) }
 
-    /// One binary chunk of [kind]. `sent` runs (on any thread) once the network
-    /// took it, false when there is no connection, so the sender paces itself.
-    private func sendData(_ kind: MessageType, id: UInt32, bytes: [UInt8],
-                          sent: @escaping @Sendable (Bool) -> Void) {
-        guard let connection = currentConnection else { return sent(false) }
-        connection.send(content: Frame(type: kind, stream: id, payload: bytes).encodedData(),
-                        completion: .contentProcessed { error in sent(error == nil) })
-    }
+    // MARK: Fail
 
-    func sendClipboard(_ text: String) {
-        sendJSON(["t": "clip.set", "text": text])
-    }
-
-    func touch(_ event: TouchEvent, stream: UInt32) {
-        sendBytes(Frame(type: .touch, stream: stream, payload: event.payload).encoded)
-    }
-
-    func scroll(_ event: ScrollEvent, stream: UInt32) {
-        sendBytes(Frame(type: .scroll, stream: stream, payload: event.payload).encoded)
-    }
-
-    func key(_ event: KeyEvent, stream: UInt32) {
-        sendBytes(Frame(type: .key, stream: stream, payload: event.payload).encoded)
+    private func fail(_ transportReason: String) {
+        if failedOnce { return }
+        failedOnce = true
+        closeChannel()
+        cancelTimers()
+        let reason = phoneErrorCode ?? transportReason
+        phoneErrorCode = nil
+        if !intentionalClose {
+            transition(.failed(reason), reason)
+        } else {
+            transition(.closed, nil)
+        }
     }
 }
+
 
 extension Data {
     /// Lowercase hex -> bytes (used for the pair.ok key).
@@ -905,4 +911,12 @@ extension Data {
     var hexString: String {
         map { String(format: "%02x", $0) }.joined()
     }
+}
+
+final class SessionLockedBox<T> {
+    private let lock = NSLock()
+    private var underlying: T
+    init(value: T) { underlying = value }
+    func set(_ newValue: T) { lock.lock(); underlying = newValue; lock.unlock() }
+    func get() -> T { lock.lock(); defer { lock.unlock() }; return underlying }
 }

@@ -8,6 +8,35 @@ fun interface CannedVideo {
 }
 
 /**
+ * Deterministic v2 TLS fixture for the loopback session tests: fingerprints and
+ * exporter from the design's vector B (docs/design/e2ee.md §4); the nonces are
+ * not fixtures — they flow through the live commit/nonce/reveal exchange.
+ */
+object TlsV2Fixture {
+    const val MAC_FP_HEX = "20ac3461fdd5af5cc0b6c0c7ca6cf2df8edb8eb1322096c3fc9e06297e97dc41"
+    const val PHONE_FP_HEX = "88227c41edbdf92b83c27bff6ae8570eb14144050a5b0903e351a777e09ecfe5"
+
+    private fun digest(hexOr: String): ByteArray =
+        java.security.MessageDigest.getInstance("SHA-256").digest(hexOr.toByteArray(Charsets.UTF_8))
+
+    val exporterBytes: ByteArray = digest("pd-v2-vector exporter")
+    val macFpBytes: ByteArray = bytesOf(MAC_FP_HEX)
+    val phoneFpBytes: ByteArray = bytesOf(PHONE_FP_HEX)
+
+    fun bytesOf(hex: String): ByteArray {
+        val clean = hex.trim().lowercase()
+        return ByteArray(clean.length / 2) { i -> clean.substring(i * 2, i * 2 + 2).toInt(16).toByte() }
+    }
+
+    /** The injected TlsView the JVM tests share (§4b: no engine needed). */
+    val view: dev.pocketdeck.server.Session.TlsView = Session.TlsView(
+        peerFingerprint = { macFpBytes },
+        selfFingerprint = { phoneFpBytes },
+        exporter = { exporterBytes },
+    )
+}
+
+/**
  * A fully recording fake of every platform seam. Shared by the session tests
  * and the C4 loopback harness.
  */
@@ -240,8 +269,8 @@ class FakePlatform : DisplayLayer, AppCatalog, Launcher, Injector, Power, Device
         pairEnded.add(requestId)
     }
 
-    override fun onPaired(clientId: String, name: String, keyHex: String) {
-        paired.add(PairedClient(clientId, name, keyHex))
+    override fun onPaired(clientId: String, name: String, macFp: String) {
+        paired.add(PairedClient(clientId, name, macFp))
     }
 
     override fun onSessionChanged(connected: Boolean, macName: String?, windows: Int) {

@@ -26,9 +26,8 @@ final class StreamChromeWindowTests: XCTestCase {
         let name = "dev.pocketdeck.tests.chrome.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: name)!
         addTeardownBlock { UserDefaults().removePersistentDomain(forName: name) }
-        let keys = PairKeyStore(defaults: defaults, keys: .scratch())
         let session = Session(endpoint: .hostPort(host: "127.0.0.1", port: 1), knownDeviceId: nil,
-                              clientId: "test-client", keyStore: keys)
+                              clientId: "test-client")
         return WindowManager(session: session, defaults: defaults)
     }
 
@@ -418,9 +417,8 @@ final class StreamMenuTests: XCTestCase {
             UserDefaults().removePersistentDomain(forName: name)
             StreamMenuState.shared.hasStream = false
         }
-        let keys = PairKeyStore(defaults: defaults, keys: .scratch())
         let session = Session(endpoint: .hostPort(host: "127.0.0.1", port: 1), knownDeviceId: nil,
-                              clientId: "test-client", keyStore: keys)
+                              clientId: "test-client")
         let manager = WindowManager(session: session, defaults: defaults)
         self.manager = manager
         let controller = AppWindowController(stream: 1, pkg: "com.example.app", activity: nil, label: "Example",
