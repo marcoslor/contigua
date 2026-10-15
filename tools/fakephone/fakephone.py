@@ -230,6 +230,11 @@ LINK_MAX_BYTES = 8 * 1024
 APK_NAME = re.compile(r"^[A-Za-z0-9._-]{1,100}$")
 APK_MAX_BYTES = 1 << 30
 APK_FAKE_PKG = "dev.pocketdeck.fake.installed"
+DROP_NAME = re.compile(r"^[A-Za-z0-9 ._\-]{1,100}$")
+DROP_MAX_BYTES = 200 * 1024 * 1024
+# The drop's PD_FAKE_DOWNGRADE: a chunk carrying these bytes answers too_large,
+# so the cap rule is testable without a 200 MiB file.
+DROP_FAKE_DOWNSIZE = b"PD_FAKE_DOWNSIZE"
 APK_FAKE_LABEL = "Tiny Demo"
 
 
@@ -342,6 +347,15 @@ class EventLog(object):
     def task_continue(self, stream, mode, started):
         self._emit({"ev": "task.continue", "stream": stream, "mode": mode,
                     "started": started, "ts": time.time()})
+
+    def drop(self, drop_id, files, ok, code):
+        self._emit({"ev": "drop", "id": drop_id, "files": files, "ok": ok, "code": code,
+                    "ts": time.time()})
+
+    def clip_image(self, direction, name, **extra):
+        event = {"ev": "clipimage", "dir": direction, "name": name, "ts": time.time()}
+        event.update(extra)
+        self._emit(event)
 
     def close(self):
         with self._lock:
@@ -957,6 +971,10 @@ class Session(object):
                 self.phone.events.key(frame.stream, action, keycode, meta)
             elif frame.type == proto.TYPE_APK_DATA:
                 self._on_apk_data(frame.stream, frame.payload)
+            elif frame.type == proto.TYPE_DROP_DATA:
+                self._on_drop_data(frame.stream, frame.payload)
+            elif frame.type == proto.TYPE_CLIP_DATA:
+                self._on_clip_data(frame.stream, frame.payload)
             elif frame.type not in self._unknown_types:
                 self._unknown_types.add(frame.type)
                 sys.stderr.write("fakephone: ignoring unknown frame type 0x%02x\n" % frame.type)
@@ -982,6 +1000,11 @@ class Session(object):
             "clip.set": self._on_clip_set,
             "apk.install": self._on_apk_install,
             "apk.cancel": self._on_apk_cancel,
+            "drop.start": self._on_drop_start,
+            "drop.cancel": self._on_drop_cancel,
+            "clip.image.start": self._on_clip_image_start,
+            "clip.image.end": self._on_clip_image_end,
+            "clip.image.abort": self._on_clip_image_abort,
             "audio.start": self._on_audio_start,
             "audio.stop": self._on_audio_stop,
         }.get(kind)
@@ -1060,6 +1083,123 @@ class Session(object):
             APPS.sort(key=lambda a: a["label"].lower())
         self._send({"t": "apk.result", "id": install_id, "ok": True, "pkg": APK_FAKE_PKG,
                     "label": APK_FAKE_LABEL, "version": "1.0"})
+
+    # -- file drops (docs/design/dragdrop.md): acts like Downloads/PocketDeck; a
+    # part whose bytes carry PD_FAKE_DOWNSIZE trips the size rule, and the
+    # announced sha256 decides the result like the real receiver.
+    def _on_drop_start(self, msg):
+        drop_id = msg.get("id")
+        name = msg.get("name")
+        size = msg.get("size")
+        sha = msg.get("sha256")
+        if getattr(self, "_drop", None) is not None:
+            self._send({"t": "drop.result", "id": drop_id, "ok": False, "code": "busy",
+                        "message": "another drop is running"})
+            return
+        if not isinstance(drop_id, int) or drop_id <= 0 or not DROP_NAME.match(str(name or "")) \
+                or not re.fullmatch(r"[0-9a-f]{64}", str(sha or "")):
+            self._send({"t": "drop.result", "id": drop_id, "ok": False, "code": "bad_request",
+                        "message": "drop.start needs id, name, size, sha256"})
+            return
+        if not isinstance(size, int) or size <= 0 or size > DROP_MAX_BYTES:
+            self._send({"t": "drop.result", "id": drop_id, "ok": False, "code": "too_large",
+                        "message": "size must be 1..%d bytes" % DROP_MAX_BYTES})
+            return
+        if int(msg.get("resume") or 0) > 0:
+            # The fake keeps no temp between drops, so it answers like a phone
+            # with an empty Downloads/PocketDeck: the Mac starts over at zero.
+            sys.stderr.write("fakephone: drop %r resume %r ignored (no temp)\n"
+                             % (drop_id, msg["resume"]))
+        self._drop = {"id": drop_id, "name": name, "mime": msg.get("mime") or "application/octet-stream",
+                      "size": size, "sha": sha, "data": bytearray(), "last": 0.0}
+        self._send({"t": "drop.progress", "id": drop_id, "bytes": 0})
+
+    def _on_drop_data(self, drop_id, payload):
+        drop = getattr(self, "_drop", None)
+        if not drop or drop["id"] != drop_id:
+            return
+        drop["data"] += payload
+        got = len(drop["data"])
+        if DROP_FAKE_DOWNSIZE in payload:
+            self._drop = None
+            sys.stderr.write("fakephone: drop %r tripped PD_FAKE_DOWNSIZE\n" % drop_id)
+            self.phone.events.drop(drop_id, [{"name": drop["name"], "size": got}], False, "too_large")
+            self._send({"t": "drop.result", "id": drop_id, "ok": False, "code": "too_large",
+                        "message": "the file is bigger than the phone's cap"})
+            return
+        now = time.time()
+        if got < drop["size"] and now - drop["last"] >= 0.25:
+            drop["last"] = now
+            self._send({"t": "drop.progress", "id": drop_id, "bytes": got})
+        if got < drop["size"]:
+            return
+        self._drop = None
+        data, sha = bytes(drop["data"]), drop["sha"]
+        digest = hashlib.sha256(data).hexdigest()
+        ok = digest == sha
+        sys.stderr.write("fakephone: drop %r %d bytes (%s) -> %s\n"
+                         % (drop_id, len(data), drop["name"], "sha ok" if ok else "checksum"))
+        if ok:
+            fake_path = "/sdcard/Download/PocketDeck/%s" % drop["name"]
+            self.phone.events.drop(drop_id, [{"name": drop["name"], "size": len(data),
+                                              "mime": drop["mime"], "sha256": digest,
+                                              "match": True}], True, None)
+            self._send({"t": "drop.result", "id": drop_id, "ok": True, "path": fake_path})
+        else:
+            self.phone.events.drop(drop_id, [{"name": drop["name"], "size": len(data),
+                                              "sha256": digest, "match": False,
+                                              "want": sha}], False, "checksum")
+            self._send({"t": "drop.result", "id": drop_id, "ok": False, "code": "checksum",
+                        "message": "the file arrived damaged"})
+
+    def _on_drop_cancel(self, msg):
+        drop = getattr(self, "_drop", None)
+        if drop and drop["id"] == msg.get("id"):
+            self._drop = None
+            self.phone.events.drop(drop["id"], [{"name": drop["name"],
+                                                 "size": len(drop["data"])}], False, "cancelled")
+            self._send({"t": "drop.result", "id": drop["id"], "ok": False, "code": "cancelled",
+                        "message": "cancelled"})
+
+    # -- clipboard images (docs/design/dragdrop.md): the fake receives like the
+    # shell does (cap 8 MiB, one per direction) and logs the outcome.
+    def _on_clip_image_start(self, msg):
+        clip_id = msg.get("id")
+        size = msg.get("size")
+        if not isinstance(clip_id, int) or not isinstance(size, int) or size <= 0 \
+                or size > (8 * 1024 * 1024) \
+                or msg.get("mime") not in ("image/png", "image/jpeg"):
+            sys.stderr.write("fakephone: clip.image.start refused (%r %r %r)\n"
+                             % (clip_id, msg.get("mime"), size))
+            self._clip = None
+            return
+        self._clip = {"id": clip_id, "mime": msg["mime"], "size": size, "data": bytearray()}
+
+    def _on_clip_data(self, clip_id, payload):
+        clip = getattr(self, "_clip", None)
+        if not clip or clip["id"] != clip_id:
+            return
+        clip["data"] += payload
+        if len(clip["data"]) >= clip["size"]:
+            data = bytes(clip["data"])
+            self._clip = None
+            digest = hashlib.sha256(data).hexdigest()
+            self.phone.events.clip_image("rx", "fake-%d.%s" % (clip_id, "png" if clip["mime"] == "image/png" else "jpg"),
+                                         size=len(data), sha256=digest, mime=clip["mime"])
+            sys.stderr.write("fakephone: clip image %r %d bytes -> %s\n" % (clip_id, len(data), digest))
+
+    def _on_clip_image_end(self, msg):
+        clip = getattr(self, "_clip", None)
+        if clip and clip["id"] == msg.get("id"):
+            # The tail arrived without enough chunks: drop it as the phone does.
+            sys.stderr.write("fakephone: clip.image.end for %r with %d/%s bytes\n"
+                             % (clip["id"], len(clip["data"]), clip["size"]))
+
+    def _on_clip_image_abort(self, msg):
+        clip = getattr(self, "_clip", None)
+        if clip and clip["id"] == msg.get("id"):
+            self._clip = None
+            self.phone.events.clip_image("abort", "clip-%d" % clip["id"])
 
     def _on_clip_set(self, msg):
         self.phone.events.clip("rx", msg.get("text"))
