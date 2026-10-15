@@ -47,10 +47,23 @@ interface AudioSink {
     fun onAudioFrame(ptsUs: Long, data: ByteArray)
 }
 
-/** Owns the REMOTE_SUBMIX capture + encoder for the session's audio stream. */
+/** One entry per currently open window, for the AudioFollow decision (AudioFollow.kt). */
 interface AudioCaptureLayer {
     val isRunning: Boolean
-    fun start(sink: AudioSink, preferredCodecs: List<Int> = listOf(2, 3))
+
+    /**
+     * Starts capture for the session. [windows] reads the open windows at any
+     * time; the capture follows their UID set while it runs (window open/close).
+     */
+    fun start(
+        sink: AudioSink,
+        preferredCodecs: List<Int> = listOf(2, 3),
+        windows: () -> List<CaptureWindow> = { emptyList() },
+    )
+
+    /** The open windows changed; the running (or planned) capture must follow. */
+    fun onWindowsChanged(owner: AudioSink?) {}
+
     fun stop()
 }
 

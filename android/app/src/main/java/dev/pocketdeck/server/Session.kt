@@ -544,6 +544,7 @@ class Session(
         power.setActiveStreams(activeDisplayIds())
         runCatching { callback.onSessionChanged(true, currentMacName ?: clientName, windowCount()) }
         startStreamWatch()
+        notifyAudioWindowsChanged()
     }
 
     private fun onWindowResize(obj: Map<String, Any?>, frame: Frame) {
@@ -570,6 +571,7 @@ class Session(
         sendJson(mapOf("t" to "window.closed", "stream" to stream, "reason" to "requested"))
         power.setActiveStreams(activeDisplayIds())
         stopAudioIfIdle()
+        notifyAudioWindowsChanged()
         runCatching { callback.onSessionChanged(true, currentMacName ?: clientName, windowCount()) }
         log("closed stream $stream (display ${state.displayId})")
     }
@@ -610,6 +612,8 @@ class Session(
         val state = requireState(streamOf(obj, frame)) ?: return
         val pkg = Json.str(obj["pkg"]) ?: return
         launchOn(state.stream, state.displayId, pkg, Json.str(obj["activity"]))
+        // The shown app changes: the audio follow decision refreshes once the
+        // top-app poll reports the new one (streamWatchLoop notifies).
     }
 
     private fun onNav(obj: Map<String, Any?>, frame: Frame) {
@@ -832,8 +836,13 @@ class Session(
                 else -> null
             }
         }?.filter { it == Frames.CODEC_OPUS || it == Frames.CODEC_AAC } ?: emptyList()
-        runCatching { capture.start(this, codecs.ifEmpty { listOf(Frames.CODEC_OPUS, Frames.CODEC_AAC) }) }
-            .onFailure { log("audio start failed: ${it.message}") }
+        runCatching {
+            capture.start(
+                sink = this,
+                preferredCodecs = codecs.ifEmpty { listOf(Frames.CODEC_OPUS, Frames.CODEC_AAC) },
+                windows = ::captureWindows,
+            )
+        }.onFailure { log("audio start failed: ${it.message}") }
     }
 
     private fun onAudioStop() {
@@ -848,6 +857,49 @@ class Session(
             runCatching { audioCapture?.stop() }
             queue.clearAudio()
         }
+    }
+
+    // ------------------------------------------------------------------
+    // audio follows the windows (docs/design/audio.md)
+    // ------------------------------------------------------------------
+
+    /**
+     * One [CaptureWindow] per open window, the input to the follow decision:
+     * phone-mode windows mean all audio, links fall back until Android picked
+     * their app, our own launcher on top of a window is [CaptureWindow.Silent].
+     */
+    internal fun captureWindows(): List<CaptureWindow> = synchronized(streams) {
+        streams.values.map { s ->
+            when (val content = s.content) {
+                WindowContent.Phone -> CaptureWindow.Phone
+                is WindowContent.App -> attribute(s, content.pkg)
+                is WindowContent.Link -> attribute(s, s.lastTitle?.pkg ?: "")
+                else -> CaptureWindow.Silent
+            }
+        }
+    }
+
+    private fun attribute(s: StreamState, contentPkg: String): CaptureWindow {
+        // A window the user re-launched (window.launch) shows the top app once
+        // the polygon arrives; the content package is the launch default.
+        val pkg = when {
+            contentPkg.isNotEmpty() && s.lastTitle?.pkg == null -> contentPkg
+            s.lastTitle?.pkg?.isNotEmpty() == true -> s.lastTitle!!.pkg
+            else -> contentPkg
+        }
+        if (pkg == OWN_PACKAGE || pkg.isEmpty()) {
+            return if (s.content is WindowContent.Link && pkg.isEmpty()) {
+                CaptureWindow.Unresolved("link app not selected yet")
+            } else {
+                CaptureWindow.Silent
+            }
+        }
+        return CaptureWindow.App(pkg)
+    }
+
+    /** Notifies the capture that the open windows changed (uid set / mode). */
+    private fun notifyAudioWindowsChanged() {
+        audioCapture?.let { runCatching { it.onWindowsChanged(this) } }
     }
 
     private fun onDeltaDrop(stream: Int) {
@@ -920,13 +972,19 @@ class Session(
                 val unpaused = snapshot.filter { !it.paused }
 
                 titleObserver?.let { observer ->
+                    var titlesChanged = false
                     for (s in unpaused) {
                         val top = runCatching { observer.topApp(s.displayId) }.getOrNull() ?: continue
                         if (top != s.lastTitle) {
                             s.lastTitle = top
+                            titlesChanged = true
                             sendJson(mapOf("t" to "window.title", "stream" to s.stream, "label" to top.label, "pkg" to top.pkg))
                         }
                     }
+                    // A window's top app changed: the audio follow plan does
+                    // too (e.g. a link's app just resolved, or window.launch
+                    // switched the shown app).
+                    if (titlesChanged) notifyAudioWindowsChanged()
                 }
 
                 if (taskPresence != null && unpaused.isNotEmpty()) {
@@ -962,6 +1020,8 @@ class Session(
         display.close(stream)
         sendJson(mapOf("t" to "window.closed", "stream" to stream, "reason" to "app_exited"))
         power.setActiveStreams(activeDisplayIds())
+        stopAudioIfIdle()
+        notifyAudioWindowsChanged()
         runCatching { callback.onSessionChanged(true, currentMacName ?: clientName, windowCount()) }
         log("closed stream $stream: app exited (display ${state.displayId})")
     }
