@@ -42,7 +42,7 @@ like Mac apps). Each item is one looped dev task with its own checks.
 | 6 | [x] Dock and Launchpad apps | Deck → right-click an app → Add to Dock: a per-app shim bundle in ~/Applications/PocketDeck Apps (real icon, "App (Phone)" in Dock, Launchpad, ⌘-Tab); launching opens/focuses the window, quitting closes it (docs/design/dock.md) | M |
 | 7 | Notifications + media controls | read at shell UID → UserNotifications (click opens the app window); media sessions → Now Playing | M‑L |
 | 8 | Drag & drop files, clipboard images | drag-in: push + share intent; drag-out: file promises; images staged both ways, size-limited | M |
-| 9 | Phone → Mac app handoff | "Continue on Mac": move the phone's top task onto a new VD window | M |
+| 9 | [x] Phone → Mac app handoff | "Continue on Mac" (menu bar, app menu, ⌘⇧C): move the phone's foreground task onto a new VD window — `task.continue` → `IActivityTaskManager.moveRootTaskToDisplay` at shell UID, verified on the API 36 emulator (docs/design/handoff.md) | M |
 | 10 | [x] APK install | drop / Open With / Services / menu bar an .apk, .apks or .xapk → `apk.install` + `APK_DATA` → `pm install-create/write/commit` at shell UID (docs/design/apk.md) | S‑M |
 | 11 | [x] Share phone → Mac | Android Share → "Send to Mac": links open in the Mac browser, text → clipboard, images → ~/Downloads/PocketDeck + clipboard; "Open on Mac" in the text menu and Open with (`share.text`, `share.file` + `SHARE_DATA`; docs/design/sharein.md) | S‑M |
 
