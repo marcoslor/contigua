@@ -1047,7 +1047,7 @@ check_chrome() {
         && ok "C14 framed: the bar is up with the traffic lights ($(chrome_state))" \
         || bad "C14 framed at rest: $(chrome_state)"
 
-    screencapture -x -l"$win" "$WORK/chrome-framed.png"
+    screencapture -x -o -l"$win" "$WORK/chrome-framed.png"
     local bar spread seam tries=40
     # The first frames of the stream can take a second to land; the bar's
     # mirror follows them (the e2e's stream is testsrc2, colourful per column).
@@ -1057,7 +1057,7 @@ check_chrome() {
         seam="$(echo "$bar" | sed -n 's/.*seam=\([0-9]*\).*/\1/p')"
         [ "${spread:-0}" -ge 40 ] && break
         sleep 0.25
-        screencapture -x -l"$win" "$WORK/chrome-framed.png"
+        screencapture -x -o -l"$win" "$WORK/chrome-framed.png"
         tries=$((tries - 1))
     done
     [ "${spread:-0}" -ge 40 ] \
@@ -1115,7 +1115,7 @@ check_chrome() {
     [ "$touches" -ge 1 ] \
         && ok "C14 the hot zone's early click reached the app as ordinary touch ($touches tap)" \
         || bad "C14 no touch from the hot zone's early click"
-    screencapture -x -l"$win" "$WORK/chrome-pill.png" && say "screenshot: $WORK/chrome-pill.png"
+    screencapture -x -o -l"$win" "$WORK/chrome-pill.png" && say "screenshot: $WORK/chrome-pill.png"
 
     # The pill's minimise light is a real click on the window's chrome.
     "$CGBIN" click --window "$win" --dx -406 --top 20 >/dev/null
