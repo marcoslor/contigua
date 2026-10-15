@@ -149,6 +149,12 @@ final class AppEnvironment {
             FileHandle.standardError.write(Data("--profile \(options.profileName): use 1-32 of a-z, 0-9 and -\n".utf8))
             exit(2)
         }
+        // The default profile holds the user's pairings; dev and test builds
+        // (and bare binaries) must name their own profile. Previews touch no data.
+        if profile.isDefault, options.preview == nil, Bundle.main.object(forInfoDictionaryKey: "PDBuildVariant") as? String != "release" {
+            FileHandle.standardError.write(Data("this build needs --profile NAME (the default profile is for the installed app)\n".utf8))
+            exit(2)
+        }
         Profile.active = profile
         Log.app.notice("profile \(profile.name, privacy: .public): pair keys \(profile.pairKeys.url.path, privacy: .public), defaults \(profile.defaultsSuiteName ?? "standard", privacy: .public)")
         if options.resetPairing {
