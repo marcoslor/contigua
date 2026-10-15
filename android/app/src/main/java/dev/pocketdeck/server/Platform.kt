@@ -25,7 +25,7 @@ data class DeviceInfo(
 
 data class DeviceState(val locked: Boolean, val battery: Int, val charging: Boolean)
 
-/** What a window shows: an app on the virtual display, or our phone-mode launcher. */
+/** What a window shows: an app on its own virtual display, or a mirror of the phone's screen. */
 sealed class WindowContent {
     data class App(val pkg: String, val activity: String?) : WindowContent()
     object Phone : WindowContent()
@@ -73,7 +73,14 @@ interface DisplayLayer {
     /** Create the display + encoder; returns the display id. */
     fun open(stream: Int, w: Int, h: Int, dpi: Int, sink: VideoSink): Int
 
-    /** Current video size of the stream (used to map normalized input). */
+    /**
+     * Mirror the phone's own screen (display 0) into a stream that fits inside
+     * w×h at display 0's aspect, following its rotation. Returns the stream's
+     * size; input for it goes to display 0, mapped over [size].
+     */
+    fun openMirror(stream: Int, w: Int, h: Int, sink: VideoSink): IntSize
+
+    /** Size normalized input maps over: the video size, or display 0's real size for a mirror. */
     fun size(stream: Int): IntSize
 
     fun resize(stream: Int, w: Int, h: Int, dpi: Int)

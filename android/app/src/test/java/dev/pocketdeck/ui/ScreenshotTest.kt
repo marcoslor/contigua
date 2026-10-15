@@ -1,8 +1,5 @@
 package dev.pocketdeck.ui
 
-import android.graphics.Bitmap
-import android.graphics.Canvas
-import android.graphics.Paint
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
@@ -13,8 +10,6 @@ import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.ImageBitmap
-import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.test.junit4.createComposeRule
@@ -26,8 +21,6 @@ import com.github.takahirom.roborazzi.ExperimentalRoborazziApi
 import com.github.takahirom.roborazzi.captureRoboImage
 import com.github.takahirom.roborazzi.captureScreenRoboImage
 import dev.pocketdeck.R
-import dev.pocketdeck.launcher.LauncherApp
-import dev.pocketdeck.launcher.LauncherScreen
 import dev.pocketdeck.ui.theme.PocketDeckTheme
 import org.junit.Rule
 import org.junit.Test
@@ -133,20 +126,6 @@ class ScreenshotTest {
     @Test
     fun pairingDialogDark() = shootPairingDialog("pairing_dialog_dark", dark = true)
 
-    // ---- phone-mode launcher -------------------------------------------
-
-    @Test
-    fun launcherLight() = shootLauncher("launcher_light", dark = false, query = "")
-
-    @Test
-    fun launcherDark() = shootLauncher("launcher_dark", dark = true, query = "")
-
-    @Test
-    fun launcherSearchLight() = shootLauncher("launcher_search_light", dark = false, query = "pho")
-
-    @Test
-    fun launcherSearchDark() = shootLauncher("launcher_search_dark", dark = true, query = "pho")
-
     // ---- app icon (docs/DESIGN.md §3) ----------------------------------
 
     @Test
@@ -251,13 +230,6 @@ class ScreenshotTest {
         captureScreenRoboImage("src/test/screenshots/$name.png")
     }
 
-    private fun shootLauncher(name: String, dark: Boolean, query: String) {
-        val apps = fakeApps()
-        capture(name, dark) {
-            LauncherScreen(apps = apps, query = query, onQueryChange = {}, onLaunch = {})
-        }
-    }
-
     private fun shootIcon(name: String, monochrome: Boolean) {
         val tag = "appIcon"
         compose.mainClock.autoAdvance = false
@@ -304,34 +276,5 @@ class ScreenshotTest {
         }
         compose.mainClock.advanceTimeBy(1_200)
         compose.onRoot().captureRoboImage("src/test/screenshots/$name.png")
-    }
-
-    private fun fakeApps(): List<LauncherApp> {
-        val entries = listOf(
-            "Photos" to 0xFF5B6CF0.toInt(),
-            "Phone" to 0xFF3FD0E0.toInt(),
-            "Messages" to 0xFF9B6BFF.toInt(),
-            "Camera" to 0xFF77536C.toInt(),
-            "Chrome" to 0xFF77A0FF.toInt(),
-            "Gmail" to 0xFFE7BAD6.toInt(),
-            "Maps" to 0xFF535A92.toInt(),
-            "Music" to 0xFFBCC2FF.toInt(),
-            "Calendar" to 0xFFE0E0F9.toInt(),
-            "Clock" to 0xFF3B4279.toInt(),
-            "Files" to 0xFF91909A.toInt(),
-            "Settings" to 0xFF444559.toInt(),
-        )
-        return entries.mapIndexed { index, (label, color) ->
-            LauncherApp(key = "app/$index", label = label, icon = solidIcon(color))
-        }
-    }
-
-    private fun solidIcon(color: Int): ImageBitmap {
-        val size = 144
-        val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
-        val canvas = Canvas(bitmap)
-        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { this.color = color }
-        canvas.drawRoundRect(0f, 0f, size.toFloat(), size.toFloat(), size / 4f, size / 4f, paint)
-        return bitmap.asImageBitmap()
     }
 }

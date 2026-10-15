@@ -16,7 +16,9 @@ import java.nio.ByteBuffer
 
 /**
  * One VirtualDisplay whose surface is a MediaCodec H.264 encoder input. The
- * encoded output is pushed straight into the session's send queue.
+ * encoded output is pushed straight into the session's send queue. Started
+ * with [startMirror] the display mirrors the phone's own screen instead
+ * (docs/design/phone-mirror.md).
  */
 internal class WindowStream(
     private val ctx: Context,
@@ -33,6 +35,11 @@ internal class WindowStream(
         const val MIN_BITRATE = 500_000
 
         const val VIRTUAL_DISPLAY_CONFIG = "android.hardware.display.VirtualDisplayConfig"
+
+        const val DEFAULT_DISPLAY = 0
+
+        /** How often the mirror checks display 0 for a rotation or size change. */
+        const val ROTATION_POLL_MS = 300L
 
         /** `MediaFormat.KEY_MAX_FPS_TO_ENCODER`, kept as a string: some builds' encoders reject it. */
         const val KEY_MAX_FPS = "max-fps-to-encoder"
@@ -80,7 +87,7 @@ internal class WindowStream(
     private val guard = RedrawGuard()
     private val sequencer = ResizeSequencer(object : ResizeSteps {
         override fun fit(w: Int, h: Int): IntSize = fitToEncoder(w, h)
-        override fun prepare(size: IntSize): IntSize? = prepareEncoder(size.w, size.h)
+        override fun prepare(size: IntSize): IntSize? = prepareEncoder(size)
         override fun resizeDisplay(size: IntSize, dpi: Int) = applyDisplaySize(size, dpi)
         override fun attachPrepared() = swapInPrepared()
         override fun releasePrevious() = releasePreviousEncoder()
@@ -102,12 +109,76 @@ internal class WindowStream(
 
     @Volatile private var displayIdValue = -1
 
+    /** Mirror only: display 0's last seen size and the Mac's window box. */
+    @Volatile private var mirrorScreen: IntSize? = null
+    @Volatile private var mirrorBox = IntSize(0, 0)
+    @Volatile private var rotationThread: Thread? = null
+
     val displayId: Int get() = displayIdValue
     val size: IntSize get() = IntSize(width, height)
 
+    /** What normalized input maps over: display 0 itself for a mirror. */
+    val inputSize: IntSize get() = mirrorScreen ?: size
+
+    /**
+     * Mirrors display 0 at its aspect inside w×h. The VD is display 0's mirror,
+     * so nothing is launched on it and the phone's screen is left as it is.
+     */
+    fun startMirror(w: Int, h: Int): IntSize {
+        val screen = checkNotNull(DisplayProbe.logicalSize(DEFAULT_DISPLAY)) { "display 0 size unknown" }
+        mirrorScreen = screen
+        mirrorBox = MirrorFit.turnBox(IntSize(w, h), screen)
+        val size = checkNotNull(prepareEncoder(MirrorFit.fit(mirrorBox, screen))) { "no encoder for mirror" }
+        val next = prepared!!
+        prepared = null
+        vd = createMirror(size.w, size.h, next.surface)
+        displayIdValue = DEFAULT_DISPLAY
+        encoder = next.codec
+        startDrain(next.codec)
+        rotationThread = Thread({ watchRotation() }, "pocketdeck-mirror-$stream").also { it.start() }
+        log("stream $stream mirror of display 0 (${screen.w}x${screen.h}) at ${size.w}x${size.h}")
+        return size
+    }
+
+    /**
+     * `DisplayManager.createVirtualDisplay(name, w, h, displayIdToMirror, surface)`,
+     * hidden, Android 14+. Shell holds CAPTURE_VIDEO_OUTPUT, which it needs.
+     */
+    private fun createMirror(w: Int, h: Int, surface: Surface): VirtualDisplay {
+        val method = DisplayManager::class.java.getMethod(
+            "createVirtualDisplay",
+            String::class.java,
+            Int::class.javaPrimitiveType,
+            Int::class.javaPrimitiveType,
+            Int::class.javaPrimitiveType,
+            Surface::class.java,
+        )
+        return method.invoke(null, "pocketdeck-mirror-$stream", w, h, DEFAULT_DISPLAY, surface) as VirtualDisplay
+    }
+
+    /** Follows display 0's rotation: the stream turns with it and a new VIDEO_CONFIG goes out. */
+    private fun watchRotation() {
+        while (!released) {
+            try {
+                Thread.sleep(ROTATION_POLL_MS)
+            } catch (_: InterruptedException) {
+                return
+            }
+            val now = DisplayProbe.logicalSize(DEFAULT_DISPLAY) ?: continue
+            if (now == mirrorScreen) continue
+            log("stream $stream: display 0 is now ${now.w}x${now.h}")
+            synchronized(this) {
+                if (released) return
+                mirrorScreen = now
+                mirrorBox = MirrorFit.turnBox(mirrorBox, now)
+                resizeLocked(mirrorBox.w, mirrorBox.h, baseDpi)
+            }
+        }
+    }
+
     fun start(w: Int, h: Int, dpi: Int): Int {
         baseDpi = dpi
-        val size = checkNotNull(prepareEncoder(w, h)) { "no encoder for ${w}x$h" }
+        val size = checkNotNull(prepareEncoder(IntSize(w, h))) { "no encoder for ${w}x$h" }
         val next = prepared!!
         prepared = null
         val created = createDisplay(size.w, size.h, dpi, next.surface)
@@ -127,6 +198,18 @@ internal class WindowStream(
     @Synchronized
     fun resize(w: Int, h: Int, dpi: Int) {
         if (released) return
+        val screen = mirrorScreen
+        if (screen == null) {
+            resizeLocked(w, h, dpi)
+        } else {
+            mirrorBox = MirrorFit.turnBox(IntSize(w, h), screen)
+            resizeLocked(mirrorBox.w, mirrorBox.h, baseDpi)
+        }
+    }
+
+    private fun resizeLocked(boxW: Int, boxH: Int, dpi: Int) {
+        val screen = mirrorScreen
+        val (w, h) = if (screen == null) IntSize(boxW, boxH) else MirrorFit.fit(IntSize(boxW, boxH), screen)
         val result = sequencer.resize(w, h, dpi, paused, IntSize(width, height))
         when (result.outcome) {
             ResizeSequencer.Outcome.RESIZED, ResizeSequencer.Outcome.DISPLAY_ONLY ->
@@ -195,6 +278,8 @@ internal class WindowStream(
     @Synchronized
     fun close() {
         released = true
+        rotationThread?.interrupt()
+        rotationThread = null
         detachEncoder()
         runCatching { prepared?.codec?.release() }
         prepared = null
@@ -209,7 +294,8 @@ internal class WindowStream(
      * Builds the next encoder (configured, input surface made, started) at the
      * size the codec will actually take. Leaves the current stream untouched.
      */
-    private fun prepareEncoder(w: Int, h: Int): IntSize? {
+    private fun prepareEncoder(want: IntSize): IntSize? {
+        val (w, h) = want
         val codec = try {
             MediaCodec.createEncoderByType(MIME)
         } catch (e: Throwable) {
@@ -291,7 +377,8 @@ internal class WindowStream(
      */
     private fun nudgeRedraw(codec: MediaCodec, offset: Int) {
         synchronized(this) {
-            if (released || encoder !== codec) return
+            // A mirror has no app to relayout; display 0 draws when it changes.
+            if (released || encoder !== codec || mirrorScreen != null) return
             log("stream $stream: no frame since the encoder attached, redraw nudge ${guard.nudgeCount} (dpi=${baseDpi + offset})")
             runCatching { vd?.resize(width, height, baseDpi + offset) }
         }
@@ -549,8 +636,21 @@ internal class AndroidDisplayLayer(
         id
     }
 
+    override fun openMirror(stream: Int, w: Int, h: Int, sink: VideoSink): IntSize = synchronized(streams) {
+        streams.remove(stream)?.close()
+        val ws = WindowStream(ctx, stream, sink, log)
+        val size = try {
+            ws.startMirror(w, h)
+        } catch (e: Throwable) {
+            ws.close()
+            throw e
+        }
+        streams[stream] = ws
+        size
+    }
+
     override fun size(stream: Int): IntSize = synchronized(streams) {
-        streams[stream]?.size ?: IntSize(0, 0)
+        streams[stream]?.inputSize ?: IntSize(0, 0)
     }
 
     override fun resize(stream: Int, w: Int, h: Int, dpi: Int) {
