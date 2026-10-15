@@ -50,8 +50,9 @@ Detail, states, copy and the connection state machine: [design/mac-redesign.md](
      (countdown, success check).
    - **Phone** (a phone is paired, including while it is away): toolbar with one group packed at the left — the traffic
      lights, the connection chip (green dot · lock while locked · battery / Connecting… / Reconnecting… / Offline /
-     Pair again) and the phone's name — and one at the right: **Phone** button, search and the Settings gear (⌘,);
-     nothing floats in the middle between them. The app grid (single click opens, arrows move, ↩ opens, esc clears).
+     Pair again) and the phone's name — and one at the right: **Phone** button, the Settings gear (⌘,), then the
+     search field (macOS keeps a toolbar search at the trailing end); nothing floats in the middle between them.
+     The app grid (single click opens, arrows move, ↩ opens, esc clears).
      The grid is there at launch from the last session and is dimmed while the phone is away. A problem is one banner
      line with at most one button (Try now / Pair again).
 2. **App windows**: only the stream, with rounded corners and a shadow; no title bar, and the desktop shows right up to the stream. Bring

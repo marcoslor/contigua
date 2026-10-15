@@ -50,9 +50,11 @@ Spec of every state, copy and transitions: [design/mac-redesign.md](design/mac-r
   `ToolbarItem(.primaryAction)` **Phone** (`iphone.gen3`); `.searchable(placement: .toolbar, prompt: "Search apps")`.
 - **Header groups** (at every width): one group packed at the left — traffic lights, then the connection
   chip (`ToolbarItem(.navigation)`; `.status` would float it in the middle of the toolbar on macOS), then the
-  `navigationTitle`; one group packed at the right — **Phone**, the search field (`DefaultToolbarItem(kind: .search,
-  placement: .primaryAction)`), and the Settings gear (`gearshape`, SettingsLink, "Settings"). Nothing floats in the
-  middle: the system's own leading/trailing placements pin the groups to the edges.
+  `navigationTitle`; one group packed at the right — **Phone**, the Settings gear (`gearshape`, SettingsLink,
+  "Settings", ⌘,), then the search field (`DefaultToolbarItem(kind: .search, placement: .primaryAction)`;
+  macOS pins a `.toolbar` search field at the trailing end of a window toolbar, so it renders last whatever
+  order the toolbar content declares). Nothing floats in the middle: the system's own leading/trailing
+  placements pin the groups to the edges.
 - **Banner:** `Label(text, systemImage: "exclamationmark.circle.fill")` `.callout`, padding 12, `.glassEffect(.regular, in: .rect(cornerRadius: 14))`, at most
   one trailing `.glass .controlSize(.small)` button (`.glassProminent` for **Pair again**), below the toolbar; one banner at a time.
 - **Grid:** `LazyVGrid` of `GridItem(.fixed(96))` columns; the column count is `floor((width − 2·20 + 8) / 104)` and the gap between columns grows to fill the row
@@ -214,7 +216,8 @@ using the phone with fingers.
 **Mac — QR sheet:** QR on white tile in dark mode too · countdown visible · success shows green checkmark · expired QR blurred with **Show new code**.
 **Mac — Deck (phone):** toolbar: one group packed at the left (traffic lights, the status pill — green dot alone when
 connected, plus lock while locked and the battery glyph + % — then the phone's own name (not the model)), one at the
-right (**Phone**, search with caret, the Settings `gearshape` opening Settings, ⌘,) · nothing between the groups ·
+right (**Phone**, the Settings `gearshape` opening Settings, ⌘,, then the search field with caret) · nothing between
+the groups ·
 grid ≤ 56 pt icons (generated initial tile when the phone has none), one-line labels, equal 20 pt side insets, the scroll bar never over a tile · at most one cell highlighted in accent tint · offline/reconnecting: dimmed grid + chip, banner only when action is needed.
 **Mac — Banner:** one line, one trailing button at most, never a reason code.
 **Mac — App window:** frameless: only the stream, rounded corners and the system shadow · a glass header (with the traffic lights) fades in above the stream, outside it, at once on hover and out as soon as the pointer leaves, the stream never moves; the window's sides and bottom are the stream's edges · title = app name (Window menu only), no visible toolbar · "Reconnecting…" pill over the last frame while the link is down · phone window: Back · Home · Recents at the header's right.
