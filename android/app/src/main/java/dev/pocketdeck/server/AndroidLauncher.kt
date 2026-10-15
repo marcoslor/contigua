@@ -52,7 +52,8 @@ internal class AndroidLauncher(private val ctx: Context, private val log: (Strin
         // Never let the system resolve this: if PocketDeck is the default
         // browser ("Open on Mac") the link would bounce back to the Mac.
         val probe = Intent(Intent.ACTION_VIEW, Uri.parse(url)).addCategory(Intent.CATEGORY_BROWSABLE)
-        val handlers = runCatching { pm.queryIntentActivities(probe, PackageManager.MATCH_DEFAULT_ONLY) }
+        // MATCH_ALL: without it a default browser hides every other handler (even when it is us).
+        val handlers = runCatching { pm.queryIntentActivities(probe, PackageManager.MATCH_DEFAULT_ONLY or PackageManager.MATCH_ALL) }
             .getOrDefault(emptyList()).mapNotNull { it.activityInfo }
         val preferred = runCatching { pm.resolveActivity(probe, PackageManager.MATCH_DEFAULT_ONLY) }
             .getOrNull()?.activityInfo?.packageName
