@@ -192,4 +192,7 @@ private final class FakeBoard: ClipboardPasteboard {
         self.text = text
         changeCount += 1
     }
+    // The share tests never touch images; the conformance is inert here.
+    func currentImage() -> (data: Data, mime: String)? { nil }
+    func writeImage(data: Data, mime: String) {}
 }

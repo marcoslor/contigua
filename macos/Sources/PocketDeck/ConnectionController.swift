@@ -106,6 +106,10 @@ final class ConnectionController {
     private(set) var transientBanner: Banner?
     /// APK installs (docs/design/apk.md); the Deck shows its phase.
     let apkInstaller = ApkInstaller()
+    /// Files dropped on a window (docs/design/dragdrop.md); windows show the pill.
+    let dropSender = FileDropSender()
+    /// The phone's clipboard image assembly (docs/design/dragdrop.md).
+    private let clipImageBuffer = ClipImageBuffer()
     /// Shares from the phone (docs/design/sharein.md).
     @ObservationIgnored private lazy var shareInbox: ShareInbox = {
         let directory = options.shareDirectory.map { URL(fileURLWithPath: $0, isDirectory: true) }
@@ -354,6 +358,9 @@ final class ConnectionController {
         windows.onStreamClosed = { [weak self] stream in
             DispatchQueue.main.async { self?.dockFollowWindowClosed(stream) }
         }
+        windows.onFilesDropped = { [weak self] urls in
+            MainActor.assumeIsolated { self?.dropFiles(urls) }
+        }
         windows.onAppWindowOpened = { [weak self] pkg, stream in
             MainActor.assumeIsolated { self?.establishDockFollow(pkg: pkg, stream: stream) }
         }
@@ -396,6 +403,8 @@ final class ConnectionController {
         stopQR()
         attemptTimer?.cancel()
         stopClipboardSync()
+        dropSender.connectionLost()
+        clipImageBuffer.discard()
         if audioStarted {
             audioStarted = false
             session?.stopAudio()
@@ -815,6 +824,47 @@ final class ConnectionController {
         installApk(pending.file, on: id)
     }
 
+    // MARK: File drops (docs/design/dragdrop.md)
+
+    /// A Finder drag onto a stream window (or `dropfile` scripting): a lone .apk
+    /// keeps the install route, the rest stream to Downloads/PocketDeck one by
+    /// one. Phone abroad → a banner; the phone was the point of the drag.
+    func dropFiles(_ urls: [URL]) {
+        guard !isPreview else { return }
+        let files = urls.filter { $0.isFileURL }
+        guard !files.isEmpty else { return }
+        if files.count == 1, let app = files.first(where: { ApkBundle.kind(of: $0) != nil }) {
+            installApk(app)
+            return
+        }
+        guard link.isOnline, let session else {
+            showTransient("Connect a phone to send files to it.")
+            return
+        }
+        dropSender.send(files, session: session)
+        syncDropPill()
+    }
+
+    /// The stream windows' pill mouth: the phase rendered as a line.
+    private func syncDropPill() {
+        switch dropSender.phase {
+        case .idle:
+            windows.setDropPill(nil)
+        case .sending(let name, let fraction):
+            windows.setDropPill(name.isEmpty
+                ? ("Sending…", true)
+                : ("Sending \(name)… \(Int((fraction * 100).rounded())) %", true))
+        case .finished(let text, _):
+            windows.setDropPill((text, false))
+            DispatchQueue.main.asyncAfter(deadline: .now() + 6) { [weak self] in
+                MainActor.assumeIsolated {
+                    guard let self, self.dropSender.phase == .finished(text, ok: true) || self.dropSender.phase == .finished(text, ok: false) else { return }
+                    self.windows.setDropPill(nil)
+                }
+            }
+        }
+    }
+
     // MARK: Phone data
 
     private func resetPhoneData(for ref: PhoneRef) {
@@ -886,7 +936,11 @@ final class ConnectionController {
             }
         }
         if case .pairing = link, qr == nil { sheet = .code }
-        if before.isOnline, !link.isOnline { windows.linkLost() }
+        if before.isOnline, !link.isOnline {
+            windows.linkLost()
+            dropSender.connectionLost()
+            clipImageBuffer.discard()
+        }
         if !before.isOnline, link.isOnline { windows.linkRestored() }
     }
 
@@ -1036,17 +1090,38 @@ final class ConnectionController {
             case .failed:
                 stopClipboardSync()
                 apkInstaller.connectionLost()
+                dropSender.connectionLost()
+                clipImageBuffer.discard()
                 shareInbox.connectionLost()
                 attemptEnded(reason: detail ?? "closed")
             case .closed:
                 stopClipboardSync()
                 apkInstaller.connectionLost()
+                dropSender.connectionLost()
+                clipImageBuffer.discard()
                 shareInbox.connectionLost()
             default:
                 break
             }
         case .clipboard(let text):
             clipboardSync?.receive(text)
+        case .dropProgress(let id, let bytes):
+            dropSender.progress(id: id, bytes: bytes)
+            syncDropPill()
+        case .dropResult(let result):
+            dropSender.result(result)
+            syncDropPill()
+        case .clipImageBegin(let id, let mime, let size):
+            clipImageBuffer.begin(id: id, mime: mime, size: size)
+        case .clipImageData(let id, let bytes):
+            clipImageBuffer.data(id: id, bytes: bytes)
+        case .clipImageEnd(let id, let size, let sha256):
+            if let (data, mime) = clipImageBuffer.end(id: id, size: size, sha256: sha256) {
+                Log.app.notice("clip.image: image from phone (\(data.count) bytes, \(mime, privacy: .public))")
+                clipboardSync?.receiveImage(data, mime: mime)
+            }
+        case .clipImageAbort(let id):
+            clipImageBuffer.discard()
         case .apkProgress(let id, let bytes):
             apkInstaller.progress(id: id, bytes: bytes)
         case .apkResult(let result):
@@ -1062,8 +1137,7 @@ final class ConnectionController {
         case .shareFileEnd(let id, let size, let sha256):
             shareInbox.fileEnd(id: id, size: size, sha256: sha256)
         case .shareFileAbort(let id):
-            shareInbox.fileAbort(id: id)
-        case .ready(let info, _, let address):
+            shareInbox.fileAbort(id: id)        case .ready(let info, _, let address):
             ready(info, address: address)
         case .apps(let list):
             appsReceived(list)
@@ -1111,14 +1185,22 @@ final class ConnectionController {
         send(.attemptFailed(reason: reason))
     }
 
-    /// Plain-text clipboard sync for the session that just became ready. The
-    /// send path is bound to that session, so a later session never gets its text.
+    /// Plain-text clipboard sync for the session that just became ready — plus
+    /// the clipboard-image direction (docs/design/dragdrop.md). The send paths
+    /// are bound to that session, so a later session never gets its text.
     private func startClipboardSync(on session: Session) {
         stopClipboardSync()
         let defaults = profile.defaults
         let sync = ClipboardSync(pasteboard: SystemPasteboard(),
                                  isEnabled: { ClipboardSync.isEnabled(in: defaults) },
                                  send: { [weak session] text in session?.sendClipboard(text) },
+                                 sendImage: { [weak self, weak session] data, mime in
+            guard let session else { return }
+            // The poll runs on the main run loop; the frame encodes stay off it.
+            Task.detached(priority: .userInitiated) {
+                ClipImageSend.run(data, mime: mime, session: session)
+            }
+        },
                                  clock: ClipboardSync.timerClock)
         sync.start()
         clipboardSync = sync

@@ -25,6 +25,11 @@ final class VideoLayerView: NSView {
     /// All AppKit events are handed to this mapper.
     var inputMapper: InputMapper?
 
+    /// Finder drags land here (`dropfile` scripting and the NSDraggingDestination
+    /// end on the same call; e2e drives it either way). Files only: links have
+    /// their own paths (OpenLink, the Deck's drop destination).
+    var onDroppedFiles: (([URL]) -> Void)?
+
     var isPaused = false
 
 
@@ -45,6 +50,8 @@ final class VideoLayerView: NSView {
         // pinch and rotate pointers; resting palms and thumbs are not reported.
         allowedTouchTypes = [.indirect]
         wantsRestingTouches = false
+        // A Finder drag onto the window delivers files (docs/design/dragdrop.md).
+        registerForDraggedTypes([.fileURL])
     }
 
     @available(*, unavailable)
@@ -53,6 +60,30 @@ final class VideoLayerView: NSView {
     override var isFlipped: Bool { false }
     override var acceptsFirstResponder: Bool { true }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    // MARK: File drops (docs/design/dragdrop.md)
+
+    override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {
+        canReadFiles(in: sender) ? .copy : []
+    }
+
+    override func draggingUpdated(_ sender: any NSDraggingInfo) -> NSDragOperation {
+        canReadFiles(in: sender) ? .copy : []
+    }
+
+    override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
+        let urls = sender.draggingPasteboard.readObjects(forClasses: [NSURL.self],
+                                                         options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
+        guard !urls.isEmpty else { return false }
+        Log.app.info("drop: \(urls.count, privacy: .public) file(s) on the window")
+        onDroppedFiles?(urls)
+        return true
+    }
+
+    private func canReadFiles(in sender: any NSDraggingInfo) -> Bool {
+        !(sender.draggingPasteboard.readObjects(forClasses: [NSURL.self],
+            options: [.urlReadingFileURLsOnly: true]) ?? []).isEmpty
+    }
 
     override func layout() {
         super.layout()
