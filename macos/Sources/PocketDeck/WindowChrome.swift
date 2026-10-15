@@ -51,29 +51,6 @@ enum WindowChrome {
     static func isInHoverZone(y: CGFloat, height: CGFloat) -> Bool {
         y >= height - hoverZone && y <= height
     }
-
-    /// The phone's screen turned to match a stream whose orientation differs
-    /// from it (the phone rotated); nil while they agree.
-    static func turnedPhone(phone: CGSize, video: CGSize) -> CGSize? {
-        guard video.width > 0, video.height > 0, phone.width > 0, phone.height > 0 else { return nil }
-        guard (video.width > video.height) != (phone.width > phone.height) else { return nil }
-        return CGSize(width: phone.height, height: phone.width)
-    }
-
-    /// A phone window keeps its phone's aspect ratio in the stream, not in the
-    /// frame (the header band is not part of the picture). The dimension the user
-    /// moved more leads; the other follows. Sizes are window frames.
-    static func phoneFrame(proposed: CGSize, current: CGSize, phone: CGSize) -> CGSize {
-        guard phone.width > 0, phone.height > 0 else { return proposed }
-        let ratio = phone.height / phone.width
-        let stream = streamSize(window: proposed)
-        let widthMoved = abs(proposed.width - current.width)
-        let heightMoved = abs(proposed.height - current.height)
-        if widthMoved * ratio >= heightMoved {
-            return windowSize(stream: CGSize(width: stream.width, height: (stream.width * ratio).rounded()))
-        }
-        return windowSize(stream: CGSize(width: (stream.height / ratio).rounded(), height: stream.height))
-    }
 }
 
 /// When the header shows. The pointer at the top brings it in; an open menu or
@@ -110,7 +87,9 @@ struct HeaderHover: Equatable {
     }
 }
 
-private struct HeaderControls: View {
+/// The buttons that live next to the traffic lights in the window kinds that
+/// have them: plain icons in one row.
+struct HeaderControls: View {
     static let buttonWidth: CGFloat = 32
     static let buttonHeight: CGFloat = 28
     let actions: [HeaderAction]
@@ -118,44 +97,26 @@ private struct HeaderControls: View {
     var body: some View {
         HStack(spacing: 0) {
             ForEach(actions) { action in
-                if action.glass {
-                    // The header's own Liquid Glass material, one circle per button.
-                    Button(action: action.perform) {
-                        Image(systemName: action.symbol)
-                            .font(.system(size: 11, weight: .semibold))
-                            .frame(width: 14, height: 14)
-                    }
-                    .buttonStyle(.glass)
-                    .buttonBorderShape(.circle)
-                    .controlSize(.small)
-                    .frame(width: Self.buttonWidth, height: Self.buttonHeight)
-                    .focusable(false)
-                    .help(action.help)
-                    .accessibilityLabel(action.help)
-                } else {
-                    Button(action: action.perform) {
-                        Image(systemName: action.symbol)
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(.primary)
-                            .frame(width: Self.buttonWidth, height: Self.buttonHeight)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .focusable(false)
-                    .help(action.help)
-                    .accessibilityLabel(action.help)
+                Button(action: action.perform) {
+                    Image(systemName: action.symbol)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(.primary)
+                        .frame(width: Self.buttonWidth, height: Self.buttonHeight)
+                        .contentShape(Rectangle())
                 }
+                .buttonStyle(.plain)
+                .focusable(false)
+                .help(action.help)
+                .accessibilityLabel(action.help)
             }
         }
     }
 }
 
-/// A button at the header's right.
+/// A button at the bar's right end (the phone window's Back/Home/Recents).
 struct HeaderAction: Identifiable {
     let symbol: String
     let help: String
-    /// A Liquid Glass button (the phone window's nav) rather than a plain icon.
-    var glass = false
     let perform: () -> Void
 
     var id: String { symbol }

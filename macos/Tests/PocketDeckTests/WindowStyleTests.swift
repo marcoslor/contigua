@@ -155,20 +155,17 @@ final class BarMirrorTests: XCTestCase {
     }
 
     func testTheDefaultsAreTheOnesTheDesignAsksFor() {
-        XCTAssertEqual(BarMirror.standard.blur, 18)
         XCTAssertEqual(BarMirror.standard.alphaSeam, 0.85)
         XCTAssertEqual(BarMirror.standard.alphaTop, 0.25)
         XCTAssertEqual(BarMirror.stored(in: makeDefaults()), .standard, "unset keys keep the defaults")
     }
 
-    func testTheProfilesDefaultsOverrideEachNumberOnItsOwn() {
+    func testTheProfilesDefaultsOverrideEachAlphaOnItsOwn() {
         let defaults = makeDefaults()
-        defaults.set(30, forKey: BarMirror.blurKey)
-        XCTAssertEqual(BarMirror.stored(in: defaults), BarMirror(blur: 30, alphaSeam: 0.85, alphaTop: 0.25))
         defaults.set(0.5, forKey: BarMirror.alphaSeamKey)
-        XCTAssertEqual(BarMirror.stored(in: defaults), BarMirror(blur: 30, alphaSeam: 0.5, alphaTop: 0.25))
+        XCTAssertEqual(BarMirror.stored(in: defaults), BarMirror(alphaSeam: 0.5, alphaTop: 0.25))
         defaults.set(0.1, forKey: BarMirror.alphaTopKey)
-        XCTAssertEqual(BarMirror.stored(in: defaults), BarMirror(blur: 30, alphaSeam: 0.5, alphaTop: 0.1))
+        XCTAssertEqual(BarMirror.stored(in: defaults), BarMirror(alphaSeam: 0.5, alphaTop: 0.1))
     }
 
     func testAnAlphaOfZeroCountsAsSet() {
@@ -179,11 +176,9 @@ final class BarMirrorTests: XCTestCase {
 
     func testOutOfRangeValuesAreClamped() {
         let defaults = makeDefaults()
-        defaults.set(400, forKey: BarMirror.blurKey)
         defaults.set(3, forKey: BarMirror.alphaSeamKey)
         defaults.set(-1, forKey: BarMirror.alphaTopKey)
         let mirror = BarMirror.stored(in: defaults)
-        XCTAssertEqual(mirror.blur, 64)
         XCTAssertEqual(mirror.alphaSeam, 1)
         XCTAssertEqual(mirror.alphaTop, 0)
     }
@@ -195,7 +190,7 @@ final class BarMirrorTests: XCTestCase {
         XCTAssertEqual(mirror.alpha(aboveSeam: 14, bar: 28), 0.55, accuracy: 0.0001, "and it falls linearly")
         XCTAssertEqual(mirror.alpha(aboveSeam: -5, bar: 28), 0.85, "below the seam nothing changes")
         XCTAssertEqual(mirror.alpha(aboveSeam: 100, bar: 28), 0.25)
-        XCTAssertEqual(BarMirror(blur: 0, alphaSeam: 1, alphaTop: 0).alpha(aboveSeam: 1, bar: 0), 0,
+        XCTAssertEqual(BarMirror(alphaSeam: 1, alphaTop: 0).alpha(aboveSeam: 1, bar: 0), 0,
                        "a degenerate bar does not divide by zero")
     }
 }
@@ -331,5 +326,28 @@ final class ChromeBarTests: XCTestCase {
         XCTAssertEqual(toggle.minX, 67 + 8, accuracy: 0.001, "8 pt right of the light")
         XCTAssertEqual(toggle.midY, zoom.midY, accuracy: 0.001, "on the lights' line")
         XCTAssertEqual(toggle.size, CGSize(width: 16, height: 16))
+    }
+}
+
+final class PhoneChromeTests: XCTestCase {
+    func testThePhoneTurnsOnlyWhenTheStreamsOrientationDiffers() {
+        let phone = CGSize(width: 1080, height: 2340)
+        XCTAssertNil(PhoneChrome.turnedPhone(phone: phone, video: CGSize(width: 368, height: 800)))
+        XCTAssertEqual(PhoneChrome.turnedPhone(phone: phone, video: CGSize(width: 800, height: 368)),
+                       CGSize(width: 2340, height: 1080))
+        XCTAssertNil(PhoneChrome.turnedPhone(phone: phone, video: .zero))
+    }
+
+    func testThePhoneFrameKeepsThePhonesAspectRatioInTheStream() {
+        let phone = CGSize(width: 1080, height: 2400)
+        let pad = WindowStyle.framed.windowSize(stream: .zero)
+        XCTAssertEqual(PhoneChrome.frame(proposed: CGSize(width: 540 + pad.width, height: 1100),
+                                         current: CGSize(width: 450 + pad.width, height: 1100),
+                                         phone: phone, style: .framed),
+                       CGSize(width: 540 + pad.width, height: 1200 + pad.height), "the width led")
+        XCTAssertEqual(PhoneChrome.frame(proposed: CGSize(width: 450 + pad.width, height: 1200 + pad.height),
+                                         current: CGSize(width: 450 + pad.width, height: 1000 + pad.height),
+                                         phone: phone, style: .framed),
+                       CGSize(width: 540 + pad.width, height: 1200 + pad.height), "the height led")
     }
 }

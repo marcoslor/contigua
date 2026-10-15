@@ -22,12 +22,13 @@ final class PhoneWindowController: StreamWindowController {
         let visibleHeight = NSScreen.main?.visibleFrame.height ?? 900
         let videoHeight = (visibleHeight * 0.75).rounded()
         let width = (videoHeight * self.phoneScreen.width / self.phoneScreen.height).rounded()
-        super.init(stream: stream, contentSize: NSSize(width: width, height: videoHeight), manager: manager)
+        super.init(stream: stream, contentSize: NSSize(width: width, height: videoHeight), manager: manager,
+                   styleKey: WindowStyleStore.phoneKey)
         // The phone window names the phone itself: its display name (the
         // nickname, else the phone's own name), and what the phone reports
         // once it sends `window.title` for this stream.
         window?.title = Self.title(name: manager.phoneName, phone: phone)
-        window?.minSize = WindowChrome.windowSize(stream: NSSize(
+        window?.minSize = style.windowSize(stream: NSSize(
             width: Self.minVideoWidth, height: Self.minVideoWidth * phoneScreen.height / phoneScreen.width))
         videoView.inputMapper?.isPhoneMode = true
         rotationObserver = NotificationCenter.default.addObserver(
@@ -47,12 +48,12 @@ final class PhoneWindowController: StreamWindowController {
     /// turns too, keeping its top-left corner and its picture's area.
     private func followRotation() {
         let video = videoView.videoSize
-        guard let window, let turned = WindowChrome.turnedPhone(phone: phoneScreen, video: video) else { return }
+        guard let window, let turned = PhoneChrome.turnedPhone(phone: phoneScreen, video: video) else { return }
         phoneScreen = turned
-        let current = WindowChrome.streamSize(window: window.frame.size)
-        let size = WindowChrome.windowSize(stream: CGSize(width: current.height, height: current.width))
+        let current = style.streamSize(window: window.frame.size)
+        let size = style.windowSize(stream: CGSize(width: current.height, height: current.width))
         let frame = window.frame
-        window.minSize = WindowChrome.windowSize(stream: turned.width < turned.height
+        window.minSize = style.windowSize(stream: turned.width < turned.height
             ? CGSize(width: Self.minVideoWidth, height: Self.minVideoWidth * turned.height / turned.width)
             : CGSize(width: Self.minVideoWidth * turned.width / turned.height, height: Self.minVideoWidth))
         window.setFrame(NSRect(x: frame.minX, y: frame.maxY - size.height, width: size.width, height: size.height),
@@ -71,13 +72,13 @@ final class PhoneWindowController: StreamWindowController {
     private static let minVideoWidth: CGFloat = 240
 
     override func headerActions() -> [HeaderAction] {
-        [HeaderAction(symbol: "chevron.backward", help: "Back", glass: true) { [weak self] in self?.nav("back") },
-         HeaderAction(symbol: "circle", help: "Home", glass: true) { [weak self] in self?.nav("home") },
-         HeaderAction(symbol: "square.on.square", help: "Recents", glass: true) { [weak self] in self?.nav("recents") }]
+        [HeaderAction(symbol: "chevron.backward", help: "Back") { [weak self] in self?.nav("back") },
+         HeaderAction(symbol: "circle", help: "Home") { [weak self] in self?.nav("home") },
+         HeaderAction(symbol: "square.on.square", help: "Recents") { [weak self] in self?.nav("recents") }]
     }
 
     func windowWillResize(_ sender: NSWindow, to frameSize: NSSize) -> NSSize {
-        WindowChrome.phoneFrame(proposed: frameSize, current: sender.frame.size, phone: phoneScreen)
+        PhoneChrome.frame(proposed: frameSize, current: sender.frame.size, phone: phoneScreen, style: style)
     }
     /// dpi = phoneDpi × vdWidth / phoneScreenWidth, so the phone's dp width is
     /// preserved whatever the Mac window size is.

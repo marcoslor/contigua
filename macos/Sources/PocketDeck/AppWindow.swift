@@ -15,9 +15,10 @@ final class AppWindowController: StreamWindowController {
         self.pkg = pkg
         self.activity = activity
         subject = label
-        super.init(stream: stream, contentSize: Self.defaultContentSize, manager: manager)
+        super.init(stream: stream, contentSize: Self.defaultContentSize, manager: manager,
+                   styleKey: WindowStyleStore.key(forPackage: pkg))
         window?.title = manager.titled(label)
-        window?.minSize = WindowChrome.windowSize(stream: NSSize(width: 320, height: 240))
+        window?.minSize = style.windowSize(stream: NSSize(width: 320, height: 240))
     }
 
     @available(*, unavailable)
@@ -57,9 +58,9 @@ final class LinkWindowController: StreamWindowController {
     init(stream: UInt32, url: String, manager: WindowManager) {
         self.url = url
         subject = Self.title(for: url)
-        super.init(stream: stream, contentSize: AppWindowController.defaultContentSize, manager: manager)
+        super.init(stream: stream, contentSize: AppWindowController.defaultContentSize, manager: manager, styleKey: nil)
         window?.title = manager.titled(subject)
-        window?.minSize = WindowChrome.windowSize(stream: NSSize(width: 320, height: 240))
+        window?.minSize = style.windowSize(stream: NSSize(width: 320, height: 240))
     }
 
     @available(*, unavailable)
