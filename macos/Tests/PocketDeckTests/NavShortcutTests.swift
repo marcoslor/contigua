@@ -111,6 +111,52 @@ final class NavShortcutTests: XCTestCase {
         XCTAssertEqual(sent(), [.nav("home")])
     }
 
+    // MARK: Mouse side buttons
+
+    /// An extra-button NSEvent (buttonNumber 2/3/4…) like the e2e helper posts
+    /// with kCGEventOtherMouseDown and kCGMouseEventButtonNumber.
+    private func otherMouse(_ type: CGEventType, number: Int) -> NSEvent {
+        // The field, not the CGMouseButton enum (left/right/center), is what
+        // NSEvent.buttonNumber reads, so set it for buttons 3/4.
+        let cg = CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: .zero, mouseButton: .center)!
+        cg.setIntegerValueField(.mouseEventButtonNumber, value: Int64(number))
+        return NSEvent(cgEvent: cg)!
+    }
+
+    func testNavActionMapping() {
+        XCTAssertEqual(InputMapper.navAction(forButton: 2), "home", "middle keeps what it does")
+        XCTAssertEqual(InputMapper.navAction(forButton: 3), "back", "the usual side Back button")
+        XCTAssertNil(InputMapper.navAction(forButton: 4), "the Forward button does nothing")
+        XCTAssertNil(InputMapper.navAction(forButton: 0))
+        XCTAssertNil(InputMapper.navAction(forButton: 1), "the right button has its own path")
+        XCTAssertNil(InputMapper.navAction(forButton: 5))
+    }
+
+    func testSideBackButtonSendsExactlyOneBackNoTouch() {
+        let (map, sent) = mapper()
+        map.otherMouseDown(otherMouse(.otherMouseDown, number: 3))
+        XCTAssertEqual(sent(), [.nav("back")], "one Back for the press, not a touch")
+    }
+
+    func testForwardButtonSendsNothing() {
+        let (map, sent) = mapper()
+        map.otherMouseDown(otherMouse(.otherMouseDown, number: 4))
+        XCTAssertTrue(sent().isEmpty, "Forward is inert")
+    }
+
+    /// A held button drags and releases through the view: none of that may
+    /// reach the mapper's touch path or repeat the nav from the down.
+    func testOtherButtonDragAndReleaseNeverTouchOrRepeat() {
+        let (map, sent) = mapper()
+        let view = VideoLayerView(frame: NSRect(x: 0, y: 0, width: 100, height: 100))
+        view.inputMapper = map
+        view.otherMouseDown(with: otherMouse(.otherMouseDown, number: 3))
+        view.otherMouseDragged(with: otherMouse(.otherMouseDragged, number: 3))
+        view.otherMouseDragged(with: otherMouse(.otherMouseDragged, number: 3))
+        view.otherMouseUp(with: otherMouse(.otherMouseUp, number: 3))
+        XCTAssertEqual(sent(), [.nav("back")], "down maps once; drag and release send nothing")
+    }
+
     // MARK: Unrelated keys keep working
 
     func testPlainLetterStillBatchesText() {
