@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # End-to-end checks C3-C13 for the macOS client against tools/fakephone.
 #
-#   ./scripts/check-e2e.sh [qr|pair|render|resize|input|mouseback|input-global|pause|direct|nav|spotlight|pinch|chrome|trackpad|clip|sharein|links|share|apk|dock|nickname|audio|all]
+#   ./scripts/check-e2e.sh [qr|pair|render|resize|input|mouseback|input-global|pause|direct|nav|spotlight|pinch|chrome|trackpad|clip|sharein|links|share|apk|dock|nickname|audio|handoff|all]
 #
 # Every check starts from a clean slate: no PocketDeck or fakephone processes
 # left by an earlier run, a fresh fakephone state file and no pairing key in
@@ -2066,6 +2066,84 @@ check_nickname() {
     wait_until 5 no_fakephone
 }
 
+# --- Continue on Mac (docs/ROADMAP.md #9, docs/design/handoff.md) -----------
+
+# check_handoff — the --continue-on-mac hook runs the menu command (the same
+# ConnectionController.continueOnMac the ⌘⇧C/menu items call) once the session
+# is ready. The fakephone stages the three phone answers: the foreground app
+# moved to the new display (default), relaunched fresh (the move was refused),
+# and nothing continuable (the foreground is the home screen/SystemUI). The
+# moved and fresh answers open a window titled with the app the phone reports
+# ("Settings (FakePhone)") and stream video; nothing opens nothing but a notice.
+check_handoff() {
+    clean
+    start_fake || return 1
+    launch --connect "127.0.0.1:$PORT" --continue-on-mac --quit-after 30
+
+    wait_until 30 events_have '"t":"task.continue"' \
+        && ok "HO the Mac sent task.continue" || bad "HO no task.continue reached the phone"
+    wait_until 30 events_have '"ev":"task.continue","stream":1,"mode":"moved"' \
+        && ok "HO the phone moved the foreground app (started=moved)" \
+        || bad "HO no moved answer: $(tail -2 "$WORK/events.jsonl" | tr '\n' ' ')"
+    wait_until 30 events_have '"ev":"video","stream":1,' \
+        || bad "HO no video for the continued app"
+    wait_until 15 windows_at_least 2 \
+        && ok "HO a window opened for the continued app ($(windows | wc -l | tr -d ' ') windows)" \
+        || bad "HO no window opened"
+    wait_until 15 titles_have "Settings (FakePhone)" \
+        && ok "HO the window is titled \"Settings (FakePhone)\" (the app the phone reports)" \
+        || bad "HO no titled window: $(window_titles "$APP_PID" | tr '\n' '|')"
+    stop_app
+    stop_fakephone
+    wait_until 5 no_fakephone
+
+    # The move was refused: the phone still opens the stream and says so
+    # (window.opened started="fresh"); the Mac opens the window all the same.
+    clean
+    python3 "$FAKEPHONE" --port "$PORT" --no-mdns --auto-allow \
+        --events "$WORK/events.jsonl" --state "$WORK/state.json" \
+        --handoff-mode fresh > "$WORK/fake.log" 2>&1 &
+    FAKE_PID=$!
+    for _ in $(seq 1 40); do grep -q "listening" "$WORK/fake.log" && break; sleep 0.25; done
+    grep -q "listening" "$WORK/fake.log" || { bad "HO fresh: fakephone did not start"; return 1; }
+    launch --connect "127.0.0.1:$PORT" --continue-on-mac --quit-after 30
+    wait_until 30 events_have '"t":"task.continue"' || bad "HO fresh: no task.continue"
+    wait_until 30 events_have '"ev":"task.continue","stream":1,"mode":"fresh"' \
+        && ok "HO fresh: the phone answered that it relaunched the app" \
+        || bad "HO fresh: no fresh answer"
+    wait_until 30 events_have '"ev":"video","stream":1,' \
+        && ok "HO fresh: the app still streams into its window" || bad "HO fresh: no video"
+    wait_until 15 titles_have "Settings (FakePhone)" \
+        && ok "HO fresh: the window is titled after the relaunched app" \
+        || bad "HO fresh: no titled window"
+    stop_app
+    stop_fakephone
+    wait_until 5 no_fakephone
+
+    # Nothing continuable: no window after the notice, only the short notice
+    # on the Mac. The pairing sheet keeps window counts unstable, so the phone
+    # side (no display, refusal answer) and the missing title are the evidence.
+    clean
+    python3 "$FAKEPHONE" --port "$PORT" --no-mdns --auto-allow \
+        --events "$WORK/events.jsonl" --state "$WORK/state.json" \
+        --handoff-mode nothing > "$WORK/fake.log" 2>&1 &
+    FAKE_PID=$!
+    for _ in $(seq 1 40); do grep -q "listening" "$WORK/fake.log" && break; sleep 0.25; done
+    grep -q "listening" "$WORK/fake.log" || { bad "HO nothing: fakephone did not start"; return 1; }
+    launch --connect "127.0.0.1:$PORT" --continue-on-mac --quit-after 30
+    wait_until 30 events_have '"t":"task.continue"' \
+        && ok "HO nothing: the command still reaches the phone" || bad "HO nothing: no task.continue"
+    wait_until 30 events_have '"ev":"task.continue","stream":1,"mode":"nothing"' \
+        && ok "HO nothing: the phone refused (nothing continuable in the foreground)" \
+        || bad "HO nothing: the phone did not refuse"
+    ! events_have '"ev":"video"' \
+        && ok "HO nothing: no video, the phone opened no display" \
+        || bad "HO nothing: video streamed for a refused handoff"
+    stop_app
+    stop_fakephone
+    wait_until 5 no_fakephone
+}
+
 check_orphans() {
     sleep 1
     local n
@@ -2084,8 +2162,8 @@ build_e2e_app() {
 
 which_check="${1:-all}"
 case "$which_check" in
-    qr|pair|render|resize|input|mouseback|input-global|pause|direct|nav|spotlight|pinch|chrome|trackpad|clip|sharein|links|share|apk|dock|nickname|audio|all) ;;
-    *) say "usage: check-e2e.sh [qr|pair|render|resize|input|mouseback|input-global|pause|direct|nav|spotlight|pinch|chrome|trackpad|clip|sharein|links|share|apk|dock|nickname|audio|all]"; exit 2 ;;
+    qr|pair|render|resize|input|mouseback|input-global|pause|direct|nav|spotlight|pinch|chrome|trackpad|clip|sharein|links|share|apk|dock|nickname|audio|handoff|all) ;;
+    *) say "usage: check-e2e.sh [qr|pair|render|resize|input|mouseback|input-global|pause|direct|nav|spotlight|pinch|chrome|trackpad|clip|sharein|links|share|apk|dock|nickname|audio|handoff|all]"; exit 2 ;;
 esac
 acquire_lock
 wait_for_other_runs
@@ -2118,9 +2196,10 @@ case "$which_check" in
     dock)     check_dock ;;
     nickname) check_nickname ;;
     audio)    check_audio ;;
+    handoff)  check_handoff ;;
     all)      check_qr; check_pair; check_render; check_resize; check_input; check_mouseback; check_pinch
               check_chrome; check_trackpad; check_pause; check_direct; check_nav; check_spotlight; check_clip; check_sharein; check_links; check_share; check_apk; check_dock; check_nickname
-              check_audio; check_orphans ;;
+              check_audio; check_handoff; check_orphans ;;
 esac
 
 say ""

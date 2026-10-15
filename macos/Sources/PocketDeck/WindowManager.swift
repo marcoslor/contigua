@@ -182,6 +182,28 @@ final class WindowManager {
         return controller
     }
 
+    /// "Continue on Mac" (docs/ROADMAP.md #9): a window for the app in the
+    /// foreground on the phone's screen. The phone answers with the stream it
+    /// opened (`task.continue`) or an error; the video and the app label follow.
+    @discardableResult
+    func openHandoffWindow() -> HandoffWindowController {
+        let stream = allocateStream()
+        let controller = HandoffWindowController(stream: stream, manager: self)
+        store(controller, stream: stream)
+        controller.present()
+        controller.sendOpen()
+        onChange?()
+        return controller
+    }
+
+    /// The phone refused `task.continue` (docs/design/handoff.md): nothing
+    /// continuable on its screen. The window that never opened is removed; the
+    /// connection's session already answered with a phone error.
+    func closeFailedHandoff(stream: UInt32) {
+        guard let controller = controller(for: stream), controller is HandoffWindowController else { return }
+        controller.closeFromRemote()
+    }
+
     func resize(stream: UInt32, to size: NSSize) {
         controller(for: stream)?.setContentSize(size)
     }
@@ -271,6 +293,8 @@ final class WindowManager {
         case .windowTitle(let stream, let label, let pkg):
             (controller(for: stream) as? PhoneWindowController)?.setSubject(label)
             (controller(for: stream) as? AppWindowController)?.setSubject(label)
+            (controller(for: stream) as? HandoffWindowController)?.adopt(pkg: pkg)
+            (controller(for: stream) as? HandoffWindowController)?.setSubject(label)
             if let link = controller(for: stream) as? LinkWindowController {
                 let unknown = link.pkg == nil
                 link.setSubject(label)
@@ -282,6 +306,10 @@ final class WindowManager {
         case .windowClosed(let stream, let reason):
             Log.app.info("phone closed stream \(stream, privacy: .public) (\(reason, privacy: .public))")
             controller(for: stream)?.closeFromRemote()
+        case .windowOpened(let stream, _, _, _, let started):
+            if started == .fresh {
+                (controller(for: stream) as? HandoffWindowController)?.showFreshNotice()
+            }
         case .ready(_, let isReconnect, _):
             if isReconnect { reopenAll() }
         default:
