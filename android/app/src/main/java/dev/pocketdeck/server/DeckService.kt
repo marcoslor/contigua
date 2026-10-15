@@ -31,6 +31,10 @@ class DeckService(private val appContext: Context?) :
     @Volatile private var deviceId: String = ""
     @Volatile private var deviceName: String = "Android"
 
+    /** v2 in-memory TLS identity pushed from the app (never written, never logged). */
+    @Volatile var selfCertPem: String = ""
+    @Volatile var selfKeyP8: String = ""
+
     @Volatile private var server: Server? = null
     @Volatile private var power: AndroidPower? = null
 
@@ -118,6 +122,11 @@ class DeckService(private val appContext: Context?) :
         val obj = runCatching { Json.parseObject(json) }.getOrNull() ?: return
         Json.str(obj["deviceId"])?.let { if (it.isNotEmpty()) deviceId = it }
         Json.str(obj["deviceName"])?.let { if (it.isNotEmpty()) deviceName = it }
+        val self = Json.asObject(obj["self"])
+        if (self != null) {
+            Json.str(self["certPem"])?.let { if (it.isNotEmpty()) selfCertPem = it }
+            (Json.str(self["keyP8"]) ?: Json.str(self["keyB64"]))?.let { if (it.isNotEmpty()) selfKeyP8 = it }
+        }
         val list = Json.asList(obj["clients"]).orEmpty().mapNotNull { entry ->
             val m = Json.asObject(entry) ?: return@mapNotNull null
             val id = Json.str(m["clientId"]) ?: return@mapNotNull null
@@ -125,7 +134,7 @@ class DeckService(private val appContext: Context?) :
             PairedClient(id, Json.str(m["name"]) ?: "Mac", key)
         }
         clients = list
-        log("paired clients: ${list.size}, device=$deviceId")
+        log("paired clients: ${list.size}, device=$deviceId, self=${selfCertPem.isNotEmpty()}")
     }
 
     override fun respondPairing(requestId: String, allow: Boolean) {
