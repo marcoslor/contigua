@@ -21,13 +21,16 @@ images travel both ways. Dragging **out** of a phone window is design only (§Dr
 ## Phone side (shell UID, like the APK path) — progress in the window
 A glass pill like the reconnect pill shows "Sending report.pdf… 43 %" and the outcome for 5 s. All bytes stream into a hidden temp file in `/sdcard/Download/PocketDeck/` (`mkdir -p` on demand;
 the only path we create), renamed after a SHA-256 match. Then a media scan
-(`MediaScannerConnection.scanFile`, best effort) and — where sensible: one file, a context and our
-provider available — `am start -a android.intent.action.SEND -t <mime> --grant-read-uri-permission
---eu android.intent.extra.STREAM <uri>`, as argv (never `sh -c`; shell UID may background-start
-activities, the app process may not). The URI is the **app's** `dev.pocketdeck.fileprovider`
-(`external-path` → `/storage/emulated/0`); with the provider's `grantUriPermissions="true"` the
-system honours the flag for a shell caller too. The phone never trusts payload or name beyond
-`sha256` and the sanitised name.
+(`MediaScannerConnection.scanFile`, best effort) and — where sensible: one file, a context and our provider
+available — the SEND step, whose URI grant must come from the UID that owns `dev.pocketdeck.fileprovider`.
+Shell (UID 2000) does not own it, so an `am start -a SEND --grant-read-uri-permission` from shell has the grant
+silently dropped and the receiver crashes on a URI it cannot open. Instead the shell process stages the finished
+file in the app's external media folder (`Android/media/dev.pocketdeck/shared/`; the app reads what shell writes
+there, while the same file under `Android/data/<pkg>` stays unreadable to it) and starts the exported, UI-less
+`dev.pocketdeck.drop.ShareTrampoline` with the bare name. The trampoline accepts only a name its own sanitiser
+leaves alone, copies the file into `cacheDir/shared/` (≤ 5 files, ≤ 500 MB) and shows the SEND chooser for that
+copy, `FLAG_GRANT_READ_URI_PERMISSION` and `ClipData` set — the grant therefore comes from the app's own UID.
+The phone never trusts payload or name beyond `sha256` and the sanitised name.
 
 ## Clipboard images — extends `clip.set` (text only today)
 - Binary `0x23 CLIP_DATA`, both directions, same shape as the drop:
@@ -50,10 +53,15 @@ the promise temp file. Deferred: the pasteboard demand loop and the gesture arbi
 
 ## Alternatives rejected
 Base64 in JSON (+33 %, the 8 MiB JSON cap; a binary frame is free). Reusing `APK_DATA` (it routes
-to pm; a second meaning of the same ids invites wrecks). An app-process activity start for SEND
-(Android 10+ background-activity-launch blocks it; `am` from shell is the documented exemption). A
+to pm; a second meaning of the same ids invites wrecks). A shell `am start` that grants our provider URI
+("Alternatives rejected" in round 1: the grant comes from UID 2000, which does not own the provider, so the
+system drops it). Sharing the MediaStore URI of the scanned file (the app cannot read a file it does not own
+without `READ_MEDIA_*`, so it can neither verify nor usefully grant it — measured on API 36: `openInputStream`
+fails, and a shell grant of it is dropped too). Staging under `Android/data/<pkg>` (measured: the app cannot
+read a shell-written file there, even in its own package folder). A
 clipboard cap over 8 MiB would stream through the queue that carries video and stall the session.
 
 ## Risks
-The shell SEND grant is verified with a live `am start` on the emulator; a vendor ROM that refuses
-leaves the file written. Phone→Mac image reads through other apps' content URIs may not resolve.
+The SEND step is verified with a live `am start` of the trampoline on the emulator (chooser shown, Messages
+opens the attachment, no `Permission Denial` in logcat). A vendor ROM that refuses the trampoline leaves the
+file written in Downloads. Phone→Mac image reads through other apps' content URIs may not resolve.
