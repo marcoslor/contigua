@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # End-to-end checks C3-C13 for the macOS client against tools/fakephone.
 #
-#   ./scripts/check-e2e.sh [qr|pair|render|resize|input|input-global|pause|direct|nav|spotlight|pinch|chrome|trackpad|clip|sharein|links|share|apk|dock|all]
+#   ./scripts/check-e2e.sh [qr|pair|render|resize|input|mouseback|input-global|pause|direct|nav|spotlight|pinch|chrome|trackpad|clip|sharein|links|share|apk|dock|all]
 #
 # Every check starts from a clean slate: no PocketDeck or fakephone processes
 # left by an earlier run, a fresh fakephone state file and no pairing key in
@@ -557,8 +557,102 @@ check_input_global() {
     stop_fakephone
 }
 
-# --- C13: pinch / rotate gestures ------------------------------------------
+# --- Mouse side buttons ----------------------------------------------------
 
+# mb_nav_count <stream> <action> — how many `nav` messages of that action and
+# stream the fakephone received.
+mb_nav_count() {
+    python3 - "$WORK/events.jsonl" "$1" "$2" <<'PY'
+import json, sys
+stream, action = int(sys.argv[1]), sys.argv[2]
+n = 0
+for line in open(sys.argv[1]):
+    try:
+        event = json.loads(line)
+    except ValueError:
+        continue
+    msg = event.get("msg") if event.get("ev") == "rx" else None
+    if isinstance(msg, dict) and msg.get("t") == "nav" \
+            and msg.get("stream") == stream and msg.get("action") == action:
+        n += 1
+print(n)
+PY
+}
+
+# mb_touch_count <stream> — an extra-button press must never become a TOUCH.
+mb_touch_count() {
+    local n
+    n="$(grep -c "\"kind\":\"touch\",\"stream\":$1," "$WORK/events.jsonl" 2>/dev/null || true)"
+    echo "${n:-0}"
+}
+
+# check_mouseback — the mouse's side Back button (a real CGEvent
+# otherMouseDown with kCGMouseEventButtonNumber = 3) is one Android Back per
+# press in a stream window, exactly like the header's Back: no repeat while
+# held (a held press drags and still counts one) and nothing on mouse-up. The
+# Forward button (4) does nothing, and no extra-button press, drag or release
+# ever becomes a TOUCH on that stream. Both window kinds get it: an app
+# window, then the phone-mode window.
+check_mouseback() {
+    clean
+    start_fake || return 1
+
+    # Phase A: an app window (the only stream window -> stream 1).
+    launch --connect "127.0.0.1:$PORT" --open com.android.settings --quit-after 60
+    wait_until 30 events_have '"ev":"video","stream":1,' \
+        || { bad "MB no video config for the app window"; stop_app; stop_fakephone; return 1; }
+    local win navs touches
+    win="$(await_window '$4 == 900')" \
+        || { bad "MB no 900 pt app window"; stop_app; stop_fakephone; return 1; }
+
+    "$CGBIN" bpress --window "$win" --button 3 >/dev/null
+    wait_until 10 eval '[ "$(mb_nav_count 1 back)" = "1" ]' \
+        && ok "MB side Back -> exactly one nav back" \
+        || bad "MB side Back: $(mb_nav_count 1 back) nav back"
+    touches="$(mb_touch_count 1)"
+    [ "$touches" = "0" ] \
+        && ok "MB the Back press made no touches" \
+        || bad "MB the Back press made $touches touch frames"
+
+    "$CGBIN" bpress --window "$win" --button 4 >/dev/null
+    sleep 2
+    navs="$(mb_nav_count 1 back)"
+    touches="$(mb_touch_count 1)"
+    [ "$navs" = "1" ] && [ "$touches" = "0" ] \
+        && ok "MB Forward does nothing (still $navs nav back, $touches touches)" \
+        || bad "MB Forward leaked: $navs nav back, $touches touches"
+
+    "$CGBIN" bpress --window "$win" --button 3 --hold 0.4 --dx 80 --dy 6 --steps 12 >/dev/null
+    wait_until 10 eval '[ "$(mb_nav_count 1 back)" = "2" ]' \
+        && ok "MB a held press is exactly one more Back (drags add none)" \
+        || bad "MB held press: $(mb_nav_count 1 back) nav back"
+    touches="$(mb_touch_count 1)"
+    [ "$touches" = "0" ] \
+        && ok "MB the held press and its release made no touches" \
+        || bad "MB the held press made $touches touch frames"
+    stop_app
+
+    # Phase B: the phone-mode window (also a stream window -> stream 1 again).
+    : > "$WORK/events.jsonl"
+    launch --connect "127.0.0.1:$PORT" --open-phone --quit-after 60
+    wait_until 30 events_have '"ev":"video","stream":1,' \
+        || { bad "MB no video config for the phone window"; stop_app; stop_fakephone; return 1; }
+    win="$(await_window '$5 > $4')" \
+        || { bad "MB no portrait phone window"; stop_app; stop_fakephone; return 1; }
+    "$CGBIN" bpress --window "$win" --button 3 >/dev/null
+    wait_until 10 eval '[ "$(mb_nav_count 1 back)" = "1" ]' \
+        && ok "MB the phone window's side Back is exactly one nav back" \
+        || bad "MB phone window: $(mb_nav_count 1 back) nav back"
+    touches="$(mb_touch_count 1)"
+    [ "$touches" = "0" ] \
+        && ok "MB no touches in the phone window either" \
+        || bad "MB the phone window made $touches touch frames"
+    stop_app
+    stop_fakephone
+    wait_until 5 no_fakephone
+}
+
+# --- C13: pinch / rotate gestures ------------------------------------------
 # check_pinch — trackpad pinch and rotate are synthesized as a two-pointer
 # TOUCH sequence: down(0), down(1), coalesced moves, up(1), up(0). The pair's
 # distance follows the pinch scale, its pixel-space angle follows the rotation;
@@ -1883,8 +1977,8 @@ build_e2e_app() {
 
 which_check="${1:-all}"
 case "$which_check" in
-    qr|pair|render|resize|input|input-global|pause|direct|nav|spotlight|pinch|chrome|trackpad|clip|sharein|links|share|apk|dock|audio|all) ;;
-    *) say "usage: check-e2e.sh [qr|pair|render|resize|input|input-global|pause|direct|nav|spotlight|pinch|chrome|trackpad|clip|sharein|links|share|apk|dock|audio|all]"; exit 2 ;;
+    qr|pair|render|resize|input|mouseback|input-global|pause|direct|nav|spotlight|pinch|chrome|trackpad|clip|sharein|links|share|apk|dock|audio|all) ;;
+    *) say "usage: check-e2e.sh [qr|pair|render|resize|input|mouseback|input-global|pause|direct|nav|spotlight|pinch|chrome|trackpad|clip|sharein|links|share|apk|dock|audio|all]"; exit 2 ;;
 esac
 acquire_lock
 wait_for_other_runs
@@ -1900,6 +1994,7 @@ case "$which_check" in
     render)   check_render ;;
     resize)   check_resize ;;
     input)    check_input ;;
+    mouseback) check_mouseback ;;
     input-global) check_input_global ;;
     pinch)    check_pinch ;;
     chrome)   check_chrome ;;
@@ -1915,7 +2010,7 @@ case "$which_check" in
     apk)      check_apk ;;
     dock)     check_dock ;;
     audio)    check_audio ;;
-    all)      check_qr; check_pair; check_render; check_resize; check_input; check_pinch
+    all)      check_qr; check_pair; check_render; check_resize; check_input; check_mouseback; check_pinch
               check_chrome; check_trackpad; check_pause; check_direct; check_nav; check_spotlight; check_clip; check_sharein; check_links; check_share; check_apk; check_dock
               check_audio; check_orphans ;;
 esac

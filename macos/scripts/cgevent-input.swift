@@ -10,6 +10,11 @@
 //   swift scripts/cgevent-input.swift drag   --window ID --right-edge --dx 100   (resize from the right edge)
 //   swift scripts/cgevent-input.swift scroll --window ID [--dy 3 --dx 0]
 //   swift scripts/cgevent-input.swift rclick --window ID
+//   swift scripts/cgevent-input.swift bpress --window ID [--button 3] [--dx N --dy N --steps N] [--hold 0.4]
+//       an extra mouse button's press: otherMouseDown with
+//       kCGMouseEventButtonNumber = button, a held stretch (otherMouseDragged
+//       events across --steps) after --hold seconds when --steps is set, then
+//       otherMouseUp; button 3 is the usual side Back button
 //   swift scripts/cgevent-input.swift move   --window ID --top N   (N pt below the window's top edge, centred)
 //   swift scripts/cgevent-input.swift move   --window ID [--dx N --dy N]
 //   swift scripts/cgevent-input.swift click  --window ID --top N [--dx N]   (N pt below the top edge)
@@ -112,6 +117,34 @@ func scroll(_ point: CGPoint, dx: Double, dy: Double) {
     post(event)
 }
 
+// otherButton -- an extra mouse button (2 = middle, 3 = the usual side Back
+// button, 4 = Forward). CGEvent reads kCGMouseEventButtonNumber, not the
+// CGMouseButton enum, so the field is set for buttons it has no enum for.
+func otherButton(_ type: CGEventType, number: Int32, at point: CGPoint) -> CGEvent? {
+    let event = CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: point, mouseButton: .center)
+    event?.setIntegerValueField(.mouseEventButtonNumber, value: Int64(number))
+    return event
+}
+
+/// A press of extra button `number`: down, an optional held stretch of
+/// otherMouseDragged events, then up (NSEvent otherMouseDown/Dragged/Up).
+func pressOtherButton(_ point: CGPoint, number: Int32, dx: Double, dy: Double, steps: Int, hold: Double) {
+    move(to: point)
+    usleep(20_000)
+    post(otherButton(.otherMouseDown, number: number, at: point))
+    usleep(UInt32(hold * 1_000_000))
+    if steps > 0 {
+        for step in 1...steps {
+            let fraction = Double(step) / Double(steps)
+            let at = CGPoint(x: point.x + dx * fraction, y: point.y + dy * fraction)
+            post(otherButton(.otherMouseDragged, number: number, at: at))
+            usleep(8_000)
+        }
+        post(otherButton(.otherMouseDragged, number: number, at: point))
+    }
+    post(otherButton(.otherMouseUp, number: number, at: point))
+}
+
 let keyCodes: [Character: CGKeyCode] = [
     "a": 0, "s": 1, "d": 2, "f": 3, "h": 4, "g": 5, "z": 6, "x": 7, "c": 8, "v": 9,
     "b": 11, "q": 12, "w": 13, "e": 14, "r": 15, "y": 16, "t": 17, "1": 18, "2": 19,
@@ -162,7 +195,7 @@ case "all":
     for entry in (CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]]) ?? [] {
         print("owner=\(entry[kCGWindowOwnerName as String] ?? "?") pid=\(entry[kCGWindowOwnerPID as String] ?? "?") id=\(entry[kCGWindowNumber as String] ?? "?") layer=\(entry[kCGWindowLayer as String] ?? "?") bounds=\(entry[kCGWindowBounds as String] ?? "?")")
     }
-case "click", "rclick", "drag", "scroll", "move":
+case "click", "rclick", "drag", "scroll", "move", "bpress":
     guard let id = numberArgument("--window"), let target = windowWithID(CGWindowID(id), owner: owner, pid: pid) else {
         FileHandle.standardError.write(Data("cgevent-input: no such window\n".utf8))
         exit(1)
@@ -180,6 +213,10 @@ case "click", "rclick", "drag", "scroll", "move":
             click(point, button: .left)
         }
     case "rclick": click(point, button: .right)
+    case "bpress":
+        pressOtherButton(point, number: Int32(numberArgument("--button") ?? 3),
+                         dx: dx, dy: dy, steps: numberArgument("--steps") ?? 0,
+                         hold: doubleArgument("--hold") ?? 0.08)
     case "drag":
         // `--right-edge`: grab the window's right edge (a resize) instead of its centre.
         let start = hasFlag("--right-edge") ? CGPoint(x: target.x + target.width, y: center.y) : center

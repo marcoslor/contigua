@@ -19,7 +19,10 @@ cd macos && ./scripts/install.sh && open /Applications/PocketDeck.app
 5. Resize any window freely — tall, square, ultra-wide, or drag while the app
    runs. The app re-lays out to the new shape.
 6. Type into the focused window, click/drag, scroll the wheel. Right-click =
-   Android back, middle-click = home. Click a window first if keys seem ignored.
+   Android back, middle-click = home, and the mouse's side **Back** button =
+   Android back too — exactly one per press, like the header's Back button
+   (nothing while it is held, nothing on release, never a touch); **Forward**
+   does nothing yet. Click a window first if keys seem ignored.
    On a trackpad, two-finger scroll drags the page like a finger (with fling),
    pinch and rotate are two fingers around the pointer. Windows are just the
    app: move the pointer to the top edge and a glass header with the traffic

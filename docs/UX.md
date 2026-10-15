@@ -59,7 +59,9 @@ Detail, states, copy and the connection state machine: [design/mac-redesign.md](
    the pointer to the stream's top edge and a glass header (with the traffic lights) appears at once *above* the stream, never over it; drag
    the glass to move the window. The stream's own edges resize the window. The header goes as soon as the pointer leaves, and clicks above a resting
    window reach what is behind it. The stream never moves or changes size for it. The trackpad works like a touch screen: a two-finger scroll is a finger dragging
-   (Android's own scrolling, overscroll and fling), a pinch or rotate is two fingers around the pointer, the mouse wheel stays a wheel and three or more
+   (Android's own scrolling, overscroll and fling), a pinch or rotate is two fingers around the pointer, the mouse wheel stays a wheel, the mouse's side
+   **Back** button (button 3) sends Android Back to that window once per press — never repeated while held, nothing on release, and never a touch —
+   while **Forward** (button 4) does nothing for now, and three or more
    fingers stay the system's; **View → Show Touches** draws a dot where the phone is being touched (off by default).
    New windows cascade (never on top of the Deck) and remember their frame. While the connection is down a small glass pill
    ("Reconnecting…") sits over the last frame; the window stays open. Phone mode: Back · Home · Recents sit at the right
