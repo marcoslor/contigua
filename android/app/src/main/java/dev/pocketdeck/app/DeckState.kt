@@ -20,6 +20,12 @@ object DeckState {
     @Volatile var paired: List<Prefs.PairedMac> = emptyList()
     @Volatile var pending: PendingPairing? = null
 
+    /**
+     * The Mac's per-session opt-in for notification sharing (`notify.enable`),
+     * relayed from the shell service; the listener reads this side of the gate.
+     */
+    @Volatile var notifyForward: Boolean = false
+
     private val listeners = CopyOnWriteArrayList<() -> Unit>()
 
     fun addListener(listener: () -> Unit) {

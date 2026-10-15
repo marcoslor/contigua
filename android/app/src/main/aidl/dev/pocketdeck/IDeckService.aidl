@@ -63,4 +63,26 @@ interface IDeckService {
      * ShareStatus code. The service closes its copy of `data`.
      */
     int shareFile(String name, String mime, in ParcelFileDescriptor data) = 10;
+
+    /**
+     * Notification-sharing gate (one toggle per phone; the app owns the phone
+     * toggle, the session owns the Mac toggle; both true means forward):
+     * the app holds the user's per-phone opt-in and pushes it here whenever it
+     * changes so the session can answer `notify.state` synchronously.
+     */
+    void setNotifyShared(boolean shared) = 11;
+
+    /**
+     * The notification listener, running in the app process, pushes what it
+     * reads. `json` is one {"t":"notify.post"|"notify.remove"|"media.state"}
+     * style map as built by NotifyEvents; dropped unless both gates are on.
+     */
+    void pushDeviceEvent(String json) = 12;
+
+    /**
+     * Grant notification-listener access for the app's listener component by
+     * running `cmd notification allow_listener` (shell UID). Returns whether the
+     * settings now hold the component.
+     */
+    boolean grantListenerAccess() = 13;
 }

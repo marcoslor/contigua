@@ -38,6 +38,7 @@ fun DeckApp(deck: DeckViewModel) {
         HomeScreen(
             state = state,
             onToggleEnabled = deck::setEnabled,
+            onToggleNotify = deck::setNotifyShared,
             onStatusAction = deck::runStatusAction,
             onForget = deck::forget,
             onUndoForget = deck::undoForget,

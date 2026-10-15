@@ -74,6 +74,7 @@ import kotlinx.coroutines.launch
 fun HomeScreen(
     state: DeckUiState,
     onToggleEnabled: (Boolean) -> Unit,
+    onToggleNotify: (Boolean) -> Unit,
     onStatusAction: (AttentionKind) -> Unit,
     onForget: (PairedMacUi) -> String,
     onUndoForget: (PairedMacUi) -> Unit,
@@ -125,6 +126,30 @@ fun HomeScreen(
                     role = androidx.compose.ui.semantics.Role.Switch,
                 ),
             )
+            ListItem(
+                headlineContent = { Text(stringResource(R.string.home_notify_share)) },
+                supportingContent = {
+                    if (state.notifyShared) {
+                        Text(stringResource(R.string.home_notify_granted_hint))
+                    }
+                },
+                trailingContent = {
+                    Switch(checked = state.notifyShared, onCheckedChange = null)
+                },
+                modifier = Modifier.toggleable(
+                    value = state.notifyShared,
+                    onValueChange = onToggleNotify,
+                    role = androidx.compose.ui.semantics.Role.Switch,
+                ),
+            )
+            if (state.notifyGrantFailed) {
+                Text(
+                    text = stringResource(R.string.home_notify_grant_failed),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.padding(vertical = 8.dp),
+                )
+            }
             Spacer(Modifier.height(24.dp))
             Text(
                 text = stringResource(R.string.home_paired_title),

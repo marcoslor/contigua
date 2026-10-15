@@ -37,6 +37,16 @@ class DeckForegroundService : Service() {
 
         override fun onSessionChanged(connected: Boolean, macName: String?, windows: Int) =
             handleSessionChanged(connected, macName, windows)
+
+        override fun onNotifySession(forwarding: Boolean) {
+            DeckState.notifyForward = forwarding
+            DeckState.notifyChanged()
+        }
+
+        override fun onMediaCommand(action: String?) {
+            val command = action ?: return
+            PdNotificationBridge.mediaSink?.invoke(command)
+        }
     }
 
     private val nsd by lazy { NsdAdvertiser(this) }
@@ -98,8 +108,17 @@ class DeckForegroundService : Service() {
             // reading (and the keyguard state) as soon as it is reachable.
             DeviceStateRelay.push(svc)
             DeviceStateRelay.pushLocked(svc)
+            // The notify toggle also lives only in the app: hand it over so the
+            // session can answer `notify.state` without a round trip.
+            syncNotifyShared()
         } catch (e: Throwable) {
             Log.i(TAG, "startServer failed: ${e.message}")
+        }
+    }
+
+    private fun syncNotifyShared() {
+        ShizukuClient.current()?.let { svc ->
+            runCatching { svc.setNotifyShared(Prefs.isNotifyShared(this)) }
         }
     }
 
