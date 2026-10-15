@@ -408,6 +408,8 @@ struct PhoneDeckView: View {
         .animation(.smooth(duration: 0.3), value: controller.banner)
         .animation(.smooth(duration: 0.3), value: controller.apkInstaller.phase)
         .navigationTitle(controller.activePhone?.name ?? "PocketDeck")
+        .searchable(text: $query, placement: .toolbar, prompt: "Search apps")
+        .searchFocused($searchFocused)
         .toolbar {
             // The header packs into two groups at any width: the traffic
             // lights, the connection chip and the title on the left; the
@@ -419,15 +421,16 @@ struct PhoneDeckView: View {
                     .disabled(!controller.link.isOnline)
                     .help("Open the phone screen")
             }
-            // Search keeps its field between the Phone button and the gear.
-            DefaultToolbarItem(kind: .search, placement: .primaryAction)
             ToolbarItem(placement: .primaryAction) {
                 SettingsLink { Image(systemName: "gearshape") }
                     .help("Settings")
             }
+            // macOS pins the .toolbar search field at the trailing end of a
+            // window toolbar, so it renders after the gear whatever order
+            // the toolbar content declares (docs/DESIGN.md "Deck": Phone,
+            // gear, search field).
+            DefaultToolbarItem(kind: .search, placement: .primaryAction)
         }
-        .searchable(text: $query, placement: .toolbar, prompt: "Search apps")
-        .searchFocused($searchFocused)
         .onChange(of: controller.searchFocusRequest) { searchFocused = true }
         .onChange(of: controller.sheet) { _, sheet in if sheet == nil { searchFocused = true } }
         .onChange(of: query) { navigator.selection = nil }
