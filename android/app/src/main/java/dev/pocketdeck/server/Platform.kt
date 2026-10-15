@@ -153,6 +153,32 @@ interface DeviceSource {
     fun subscribeState(onChange: (DeviceState) -> Unit): AutoCloseable?
 }
 
+/** One task the system currently has, as far as "Continue on Mac" needs. */
+data class SystemTask(
+    val taskId: Int,
+    /** Package of the task's top activity ("" when nothing resolves). */
+    val pkg: String,
+    /** The top activity's class, when known (the fallback relaunch tracer). */
+    val activity: String?,
+    val displayId: Int,
+    /** The TaskInfo home flag: the launcher, which "Continue on Mac" skips. */
+    val isHome: Boolean,
+    /** A task drawn by SystemUI (recents UI, and the keyguard's surface). */
+    val isSystemUi: Boolean,
+)
+
+/**
+ * The system's task list and task-to-display moves, at shell UID. Null from
+ * [tasks] means the phone cannot report its foreground app.
+ */
+interface TaskMove {
+    /** The system's tasks, most recently active first; null = not available. */
+    fun tasks(): List<SystemTask>?
+
+    /** Moves an existing task to a display. false means the system refused: relaunch instead. */
+    fun move(taskId: Int, displayId: Int): Boolean
+}
+
 /**
  * The device clipboard as plain text. [listen] callbacks arrive on a platform
  * thread and fire for every primary-clip change, including our own [setText].

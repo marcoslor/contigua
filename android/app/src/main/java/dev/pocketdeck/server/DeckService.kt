@@ -62,6 +62,7 @@ class DeckService(private val appContext: Context?) :
         this.power = power
         val titles = AndroidWindowObserver(shell, ::log)
         val audio = AudioCapture(shell, ::log)
+        val taskMove = AndroidTaskMove(::log)
 
         val factory = SessionFactory { socket ->
             Session(
@@ -78,6 +79,7 @@ class DeckService(private val appContext: Context?) :
                 taskPresence = titles,
                 clipboard = ShellClipboard(::log),
                 packages = ShellPackages(shell, ::log),
+                taskMove = taskMove,
                 now = { SystemClock.uptimeMillis() },
                 log = ::log,
                 autoApprovePairing = dev.pocketdeck.BuildConfig.DEBUG,

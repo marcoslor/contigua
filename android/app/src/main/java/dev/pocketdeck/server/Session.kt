@@ -38,6 +38,8 @@ class Session(
     private val clipboard: ClipboardPort? = null,
     /** APK installs at shell UID; null refuses them (docs/design/apk.md). */
     private val packages: PackageShell? = null,
+    /** Task list + task-to-display moves for `task.continue`; null refuses them. */
+    private val taskMove: TaskMove? = null,
     private val now: () -> Long = { System.nanoTime() / 1_000_000 },
     private val log: (String) -> Unit = {},
     private val handshakeTimeoutMs: Int = 15_000,
@@ -389,6 +391,7 @@ class Session(
             "window.keyframe" -> onWindowKeyframe(obj, frame)
             "window.quality" -> onWindowQuality(obj, frame)
             "window.launch" -> onWindowLaunch(obj, frame)
+            "task.continue" -> onTaskContinue(obj, frame)
             "nav" -> onNav(obj, frame)
             "text" -> onText(obj, frame)
             "clip.set" -> onClipSet(obj)
@@ -431,6 +434,64 @@ class Session(
             return
         }
         openStream(obj, stream, WindowContent.Link(url))
+    }
+
+    /**
+     * `task.continue` (docs/ROADMAP.md #9): the Mac wants a window for the app
+     * now in the foreground on the phone's own screen. The phone picks the top
+     * task (ForegroundTaskPicker), opens the stream's virtual display, moves
+     * the task onto it and reports how it went in the `window.opened` reply:
+     * `started: "moved"` keeps the task's state, `started: "fresh"` says the
+     * move was refused and the package was relaunched (its state is lost).
+     * Nothing continuable is on the screen -> `nothing_to_continue`.
+     */
+    private fun onTaskContinue(obj: Map<String, Any?>, frame: Frame) {
+        val stream = streamOf(obj, frame)
+        val mover = taskMove ?: run {
+            sendError("not_available", "this phone can't report its foreground app", stream)
+            return
+        }
+        val tasks = runCatching { mover.tasks() }.getOrNull() ?: run {
+            sendError("not_available", "this phone can't report its foreground app", stream)
+            return
+        }
+        val task = ForegroundTaskPicker.pick(tasks, OWN_PACKAGE) ?: run {
+            sendError("nothing_to_continue", "the phone's screen has nothing to continue", stream)
+            return
+        }
+        val w = floor16(Json.int(obj["w"]) ?: 0)
+        val h = floor16(Json.int(obj["h"]) ?: 0)
+        val dpi = Json.int(obj["dpi"]) ?: 160
+        if (w <= 0 || h <= 0) {
+            sendError("bad_size", "task.continue needs w,h", stream)
+            return
+        }
+        if (streams.containsKey(stream)) display.close(stream)
+        val displayId = display.open(stream, w, h, dpi, this)
+        val state = StreamState(stream, displayId, IntSize(w, h))
+            .also { it.content = WindowContent.App(task.pkg, task.activity) }
+        synchronized(streams) { streams[stream] = state }
+        // Moving before the reply: `started` must match what actually happened.
+        val moved = runCatching { mover.move(task.taskId, displayId) }.getOrDefault(false)
+        if (moved) goHome() else launchOn(stream, displayId, task.pkg, task.activity)
+        sendJson(
+            mapOf(
+                "t" to "window.opened", "stream" to stream, "displayId" to displayId,
+                "w" to w, "h" to h, "started" to (if (moved) "moved" else "fresh"),
+            ),
+        )
+        power.setActiveStreams(activeDisplayIds())
+        runCatching { callback.onSessionChanged(true, currentMacName ?: clientName, windowCount()) }
+        startStreamWatch()
+    }
+
+    /** After a successful move the phone's own screen shows nothing: go home. */
+    private fun goHome() {
+        val t = now()
+        runCatching {
+            injector.key(PHONE_DISPLAY_ID, Frames.ACTION_DOWN, KEYCODE_HOME, 0, t, t)
+            injector.key(PHONE_DISPLAY_ID, Frames.ACTION_UP, KEYCODE_HOME, 0, t, t + 1)
+        }
     }
 
     /** Creates the display for a `window.open` / `link.open` and starts its content. */
@@ -848,6 +909,10 @@ class Session(
         const val OWN_PACKAGE = "dev.pocketdeck"
         const val LAUNCHER_ACTIVITY = "dev.pocketdeck.launcher.LauncherActivity"
         const val KEYCODE_BACK = 4
+        const val KEYCODE_HOME = 3
+
+        /** The phone's own screen: where "Continue on Mac" looks. */
+        const val PHONE_DISPLAY_ID = 0
 
         /** Bounds the kernel's video backlog so the delta-drop rule can fire. */
         const val SEND_BUFFER_BYTES = 128 * 1024
