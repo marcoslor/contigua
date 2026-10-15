@@ -1,5 +1,7 @@
-// Keyboard shortcuts -> protocol actions: Esc/⌘[ = back (Esc only when the
-// window is focused with no sheet), ⇧⌘H = home and ⌘↑ = recents in phone mode.
+// Keyboard shortcuts and mouse-utility input -> protocol actions: Esc/⌘[ =
+// back (the ⌘ once per press, no repeat while held; Esc only when the window
+// is focused with no sheet), a .swipe event from mouse utilities with
+// deltaX > 0 = back, ⇧⌘H = home and ⌘↑ = recents in phone mode.
 
 import AppKit
 import XCTest
@@ -18,10 +20,10 @@ final class NavShortcutTests: XCTestCase {
     }
 
     private func keyEvent(_ keyCode: UInt16, _ characters: String,
-                          flags: NSEvent.ModifierFlags = []) -> NSEvent {
+                          flags: NSEvent.ModifierFlags = [], isARepeat: Bool = false) -> NSEvent {
         NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: flags, timestamp: 0,
                          windowNumber: 0, context: nil, characters: characters,
-                         charactersIgnoringModifiers: characters, isARepeat: false, keyCode: keyCode)!
+                         charactersIgnoringModifiers: characters, isARepeat: isARepeat, keyCode: keyCode)!
     }
 
     private func mapper(phoneMode: Bool = false, escape: Bool = true) -> (InputMapper, () -> [Sent]) {
@@ -69,7 +71,22 @@ final class NavShortcutTests: XCTestCase {
         XCTAssertEqual(sent(), [.nav("back")])
     }
 
-    // MARK: Phone mode
+    func testCommandBracketHeldSendsExactlyOneBack() {
+        let (map, sent) = mapper()
+        map.keyDown(keyEvent(33, "[", flags: [.command]))
+        map.keyDown(keyEvent(33, "[", flags: [.command], isARepeat: true)) // a held ⌘[ fires repeats
+        map.keyUp(keyEvent(33, "[", flags: [.command]))
+        XCTAssertEqual(sent(), [.nav("back")], "the repeat and the release add nothing")
+    }
+
+    func testCommandBracketIsBackNeverAKey() {
+        let (map, sent) = mapper()
+        map.keyDown(keyEvent(33, "[", flags: [.command]))
+        map.keyUp(keyEvent(33, "[", flags: [.command]))
+        XCTAssertEqual(sent(), [.nav("back")], "exactly one nav back, no KEY frame for [ or its up")
+    }
+
+    // MARK: Mouse-utility swipe
 
     func testShiftCommandHSendsHomeOnlyInPhoneMode() {
         let (phone, phoneSent) = mapper(phoneMode: true)
@@ -155,6 +172,31 @@ final class NavShortcutTests: XCTestCase {
         view.otherMouseDragged(with: otherMouse(.otherMouseDragged, number: 3))
         view.otherMouseUp(with: otherMouse(.otherMouseUp, number: 3))
         XCTAssertEqual(sent(), [.nav("back")], "down maps once; drag and release send nothing")
+    }
+
+    // MARK: Swipe navigation from mouse utilities
+
+    /// NSEvent has no synthesizer for type .swipe (what mouse utilities send
+    /// for a Back button), so the mapper takes the event's deltaX as the seam
+    /// and `navAction(forSwipeDeltaX:)` is the tested mapping.
+    func testSwipeDeltaMapping() {
+        XCTAssertEqual(InputMapper.navAction(forSwipeDeltaX: 1.0), "back", "deltaX +1 is a swipe back")
+        XCTAssertEqual(InputMapper.navAction(forSwipeDeltaX: 0.1), "back")
+        XCTAssertNil(InputMapper.navAction(forSwipeDeltaX: -1.0), "deltaX −1 is forward and stays inert")
+        XCTAssertNil(InputMapper.navAction(forSwipeDeltaX: -0.1))
+        XCTAssertNil(InputMapper.navAction(forSwipeDeltaX: 0.0))
+    }
+
+    func testSwipeBackSendsExactlyOneBackNoTouch() {
+        let (map, sent) = mapper()
+        map.swipe(deltaX: 1.0)
+        XCTAssertEqual(sent(), [.nav("back")], "one Back for the swipe, not a touch")
+    }
+
+    func testForwardSwipeSendsNothing() {
+        let (map, sent) = mapper()
+        map.swipe(deltaX: -1.0)
+        XCTAssertTrue(sent().isEmpty, "swipe forward is inert, like the Forward button")
     }
 
     // MARK: Unrelated keys keep working

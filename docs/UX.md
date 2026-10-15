@@ -62,7 +62,8 @@ Detail, states, copy and the connection state machine: [design/mac-redesign.md](
    (Android's own scrolling, overscroll and fling), a pinch or rotate is two fingers around the pointer, the mouse wheel stays a wheel, the mouse's side
    **Back** button (button 3) sends Android Back to that window once per press — never repeated while held, nothing on release, and never a touch —
    while **Forward** (button 4) does nothing for now, and three or more
-   fingers stay the system's; **View → Show Touches** draws a dot where the phone is being touched (off by default).
+   fingers stay the system's; Back also arrives as a right click, ⌘[, or a swipe-back event from mouse utilities (Logi Options+), once per gesture.
+   **View → Show Touches** draws a dot where the phone is being touched (off by default).
    New windows cascade (never on top of the Deck) and remember their frame. While the connection is down a small glass pill
    ("Reconnecting…") sits over the last frame; the window stays open. Phone mode: Back · Home · Recents sit at the right
    of the hover header.
