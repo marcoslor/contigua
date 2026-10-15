@@ -29,8 +29,8 @@ discovered phone, tries `auth` with it (challenge `id` tells it which phone answ
 On `welcome` it stores the key under that device id and closes the QR sheet. The QR
 key expires after 5 minutes or on sheet close.
 
-**Pairing manager:** Mac → Settings → Devices (paired phones: name, model, last seen,
-Forget). Phone → home screen "Paired Macs" (name, last connected, Forget). Forgetting
+**Pairing manager:** Mac → Settings → Devices (paired phones: name, nickname, model, last seen,
+**Rename…**, **Use**, **Forget**). Phone → home screen "Paired Macs" (name, last connected, Forget). Forgetting
 on either side removes the key; the other side gets `auth_failed` next time and shows
 "Pair again".
 
@@ -50,7 +50,7 @@ Detail, states, copy and the connection state machine: [design/mac-redesign.md](
      (countdown, success check).
    - **Phone** (a phone is paired, including while it is away): toolbar with one group packed at the left — the traffic
      lights, the connection chip (green dot · lock while locked · battery / Connecting… / Reconnecting… / Offline /
-     Pair again) and the phone's name — and one at the right: **Phone** button, the Settings gear (⌘,), then the
+     Pair again) and the phone's name (its nickname when one is set) — and one at the right: **Phone** button, the Settings gear (⌘,), then the
      search field (macOS keeps a toolbar search at the trailing end); nothing floats in the middle between them.
      The app grid (single click opens, arrows move, ↩ opens, esc clears).
      The grid is there at launch from the last session and is dimmed while the phone is away. A problem is one banner
@@ -67,12 +67,17 @@ Detail, states, copy and the connection state machine: [design/mac-redesign.md](
    New windows cascade (never on top of the Deck) and remember their frame. While the connection is down a small glass pill
    ("Reconnecting…") sits over the last frame; the window stays open. Phone mode: Back · Home · Recents sit at the right
    of the hover header.
-   While an app window is open, its app appears in the Dock and ⌘-Tab as "App (Phone)" (a link window as the app that displays
-   the link; the phone mirror as nothing). It arrives on its own, ends when the window closes, and **Options → Keep in Dock**
+   While an app window is open, its app appears in the Dock and ⌘-Tab as "App (Nickname)" (a link window as the app that
+   displays the link; the phone mirror as nothing). It arrives on its own, ends when the window closes, and **Options → Keep in Dock**
    makes it permanent ("Add to Dock" in the app's context menu does the same by hand; Settings → General switches it off).
 3. **Settings** (⌘,; also the settings gear at the Deck header's right): tabs **General** (launch at login, show in menu bar,
    share clipboard with the phone, show phone apps in the Dock, default window density) · **Devices** (paired phones: name,
-   model, last seen, **Use**, **Forget**; **Add phone…**). Nothing else.
+   model, last seen, **Rename…**, **Use**, **Forget**; **Add phone…**; the Dock shims rebuild on a rename). Nothing else.
+
+    A **nickname** ("Rename…" dialog) is 1–40 characters, trimmed; empty keeps using the phone's own name. It is the one
+    name everywhere: the Deck title, the menu bar, the chip's voiceover copy, failure banners, notifications from the phone
+    ("Copied from *Nickname*"), Spotlight entries ("App (Nickname)"), phone and app window titles ("WhatsApp (Nickname)"),
+    and the Dock shim names — open windows retitle at once and the phone's shims rebuild with the new name.
 
 Status/feedback: a single connection chip in the Deck toolbar and the menu-bar menu. Reconnecting is silent: a remembered phone
 connects by itself at launch and after any drop, with back-off, and the UI shows "Offline" (never an error code) only after 15 s
