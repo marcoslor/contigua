@@ -456,8 +456,7 @@ internal class AudioCapture(
             }
             policy = pol
             policyMix = mix
-            val sink = PolicyAudio.policyCreateSink.invoke(pol, mix) as? AudioRecord
-                ?: return@runCatching null
+            val sink = createPolicySink(pol, mix) ?: return@runCatching null
             // startRecording needs a beat (measured ~130 ms to RECORDING).
             sink.startRecording()
             val deadline = System.currentTimeMillis() + SINK_RECORDING_WAIT_MS
@@ -471,6 +470,72 @@ internal class AudioCapture(
         }.getOrNull().also { sink ->
             if (sink == null) releaseHeldPolicy()
         }
+    }
+
+    /**
+     * The mix's recording record. The framework's createAudioRecordSink builds
+     * it with the process attribution (our package, rejected at uid 2000), so
+     * this rebuilds the identical record (same REMOTE_SUBMIX capture preset and
+     * mix-address tags; AudioPolicy.createAudioRecordSink's own construction)
+     * with the shell attribution that AudioFlinger accepts.
+     */
+    private fun createPolicySink(pol: Any, mix: Any): AudioRecord? {
+        val framework = runCatching {
+            PolicyAudio.policyCreateSink.invoke(pol, mix) as? AudioRecord
+        }.getOrNull()
+        if (framework != null && framework.state == AudioRecord.STATE_INITIALIZED) {
+            return framework
+        }
+        runCatching { framework?.release() }
+        return runCatching {
+            val registration = PolicyAudio.mixGetRegistration.invoke(mix) as? String
+            if (registration.isNullOrEmpty()) {
+                log("audio: mix has no registration id; cannot tailor the sink")
+                return@runCatching null
+            }
+            // AudioPolicy.createAudioRecordSink's exact AudioAttributes:
+            // internal capture preset REMOTE_SUBMIX, the mix's registered
+            // address, and the fixed-volume tag.
+            val ab = PolicyAudio.attributesBuilder.getConstructor().newInstance()
+            PolicyAudio.attrsSetInternalCapturePreset.invoke(ab, MediaRecorder.AudioSource.REMOTE_SUBMIX)
+            PolicyAudio.attrsAddTag.invoke(ab, "addr=$registration")
+            PolicyAudio.attrsAddTag.invoke(ab, PolicyAudio.submixFixedVolume)
+            val minBuf = AudioRecord.getMinBufferSize(
+                SAMPLE_RATE, AudioFormat.CHANNEL_IN_STEREO, AudioFormat.ENCODING_PCM_16BIT,
+            )
+            if (minBuf <= 0) {
+                log("audio: policy sink: bad min buffer $minBuf")
+                return@runCatching null
+            }
+            // The hidden Builder.setAudioAttributes carries the mix's address
+            // tags; setContext supplies the shell attribution AudioFlinger
+            // accepts (the framework's own sink uses the process attribution
+            // and is rejected at uid 2000 with a package).
+            val rb = AudioRecord.Builder()
+                .apply { if (Build.VERSION.SDK_INT >= 31) setContext(ctx) }
+            PolicyAudio.recordSetAttributes.invoke(rb, PolicyAudio.attrsBuild.invoke(ab))
+            val rec = rb
+                .setAudioFormat(
+                    AudioFormat.Builder()
+                        .setSampleRate(SAMPLE_RATE)
+                        .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                        .setChannelMask(
+                            PolicyAudio.inFromOutChannelMask.invoke(
+                                null, PolicyAudio.channelOutStereo,
+                            ) as Int
+                        )
+                        .build(),
+                )
+                .setBufferSizeInBytes(maxOf(minBuf, CHUNK_BYTES * 4))
+                .build()
+            if (rec.state != AudioRecord.STATE_INITIALIZED) {
+                log("audio: policy sink record not initialized (${rec.state})")
+                runCatching { rec.release() }
+                return@runCatching null
+            }
+            log("audio: policy sink on the shell attribution (framework sink rejected the process attribution)")
+            rec
+        }.getOrNull()
     }
 
     private fun releaseHeldPolicy() {
@@ -555,6 +620,34 @@ private object PolicyAudio {
     val amRegisterPolicy = declared(AudioManager::class.java, "registerAudioPolicy", policy)
     val amUnregisterPolicy = declared(AudioManager::class.java, "unregisterAudioPolicy", policy)
     val policyCreateSink = declared(policy, "createAudioRecordSink", mix)
+
+    /** The mix address the framework Environment's own sink tags its record with. */
+    val mixGetRegistration = declared(mix, "getRegistration")
+
+    // The AudioPolicy.createAudioRecordSink pieces that are not public API.
+    val attributesBuilder = Class.forName("android.media.AudioAttributes\$Builder")
+    val attrsSetInternalCapturePreset =
+        declared(attributesBuilder, "setInternalCapturePreset", Int::class.javaPrimitiveType!!)
+    val attrsAddTag = declared(attributesBuilder, "addTag", String::class.java)
+    val attrsBuild = declared(attributesBuilder, "build")
+    val submixFixedVolume: String = run {
+        for (f in android.media.AudioRecord::class.java.declaredFields) {
+            if (f.name == "SUBMIX_FIXED_VOLUME") {
+                f.isAccessible = true
+                return@run f.get(null) as String
+            }
+        }
+        "submix_fixed_volume"
+    }
+    val channelOutStereo: Int = AudioFormat.CHANNEL_OUT_STEREO
+    val inFromOutChannelMask = declared(
+        AudioFormat::class.java, "inChannelMaskFromOutChannelMask", Int::class.javaPrimitiveType!!,
+    )
+
+    // Hidden Builder.setAudioAttributes(@SystemApi): the sink's AudioAttributes
+    // are not expressible through the public API.
+    val recordBuilder = Class.forName("android.media.AudioRecord\$Builder")
+    val recordSetAttributes = declared(recordBuilder, "setAudioAttributes", android.media.AudioAttributes::class.java)
 
     private fun staticInt(cls: Class<*>, name: String): Int {
         for (f in cls.declaredFields) {
