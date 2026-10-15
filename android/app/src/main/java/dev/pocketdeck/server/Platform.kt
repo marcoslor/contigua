@@ -1,5 +1,7 @@
 package dev.pocketdeck.server
 
+import java.io.File
+
 /**
  * Platform seams for the session core.
  *
@@ -200,6 +202,24 @@ interface ClipboardPort {
 
     /** Stops delivery. Safe to call more than once and without [listen]. */
     fun stop()
+}
+
+/** An image the clipboard holds: primary bytes (JPEG/PNG) of the first image item. */
+data class ClipImage(val bytes: ByteArray, val mime: String)
+
+/** Clipboard images, the extension [ClipboardPort] needs beyond text. */
+interface ClipboardImagePort {
+    /**
+     * The image currently on the clipboard, or null. Reading may fail for another
+     * app's content URI; a null is simply "nothing synced", never an error.
+     */
+    fun readImage(): ClipImage?
+
+    /**
+     * Puts the already-written image [file] on the clipboard; the platform decides
+     * how another app can reach it (a FileProvider URI is the intent).
+     */
+    fun writeImage(file: File, mime: String, label: String)
 }
 
 /** Events pushed to the app process (pairing prompt, session state). */

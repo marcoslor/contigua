@@ -40,6 +40,8 @@ object Frames {
     const val TYPE_KEY = 0x12
     const val TYPE_APK_DATA = 0x20
     const val TYPE_SHARE_DATA = 0x21
+    const val TYPE_DROP_DATA = 0x22
+    const val TYPE_CLIP_DATA = 0x23
 
     const val CODEC_H264 = 1
     const val CODEC_OPUS = 2

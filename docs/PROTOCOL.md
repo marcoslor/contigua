@@ -310,10 +310,10 @@ activity with the app's FileProvider content URI (docs/design/dragdrop.md).
 Both directions while a session is ready; same announce → chunks → end as `share.file`, but
 the sender may be either side:
 
-- `{"t":"clip.image.start","id":N,"mime":"image/jpeg"|"image/png","size":S}` (id: the
-  Mac's start from 1, the phone's `share.file` id space continues past its own), then
+- `{"t":"clip.image.start","id":N,"mime":"image/jpeg"|"image/png","size":S}`, then
   `CLIP_DATA` frames (`stream` = `id`, ≤ 1 MiB each), then
   `{"t":"clip.image.end","id":N,"size","sha256":"<64 hex>"}` — or `{"t":"clip.image.abort","id":N}`.
+  Ids are per direction, from 1.
 - At most 8 MiB (8 388 608 bytes) per image. Larger: the sender stays silent, a receiver that
   sees `size` over the cap ignores the image — the `clip.set` rule for bytes.
 - One image in flight per direction: a new `clip.image.start` replaces the unfinished one, and
