@@ -90,6 +90,7 @@ final class NowPlayingController {
 
     /// Nothing the phone plays at the moment: clear macOS Now Playing.
     func clear() {
+        guard current != nil else { return }
         current = nil
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
         if log != nil { record("media cleared") }
