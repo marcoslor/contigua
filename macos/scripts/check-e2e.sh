@@ -637,15 +637,20 @@ check_mouseback() {
 
     # Mouse utilities also turn a Back button into a ⌘[ keystroke; the event
     # goes to the frontmost app's key window, which this floated window is.
+    # ⌘[ is consumed as Back, never also forwarded as a KEY ([ is not in
+    # metaKeyMap). A received nav makes fakephone log the KEYCODE_BACK down/up
+    # it performs for the action, so the invariant is: every key frame in the
+    # log is one of those nav-emulation pairs — no key frame of our own.
     "$CGBIN" move --window "$win" >/dev/null
     "$CGBIN" key --keycode 33 --cmd >/dev/null
     wait_until 10 eval '[ "$(mb_nav_count 1 back)" = "3" ]' \
         && ok "MB Cmd-[ is exactly one more Back" \
         || bad "MB Cmd-[: $(mb_nav_count 1 back) nav back"
     keys="$(grep -c '"kind":"key","stream":1,' "$WORK/events.jsonl" 2>/dev/null || true)"
-    [ "$keys" = "0" ] \
-        && ok "MB Cmd-[ sent no key frames" \
-        || bad "MB Cmd-[ leaked $keys key frames"
+    navkeys="$(grep -c '"kind":"key","stream":1,"action":[01],"keycode":4,"meta":0,' "$WORK/events.jsonl" 2>/dev/null || true)"
+    [ "$keys" = "$navkeys" ] \
+        && ok "MB Cmd-[ sent no key frames (all $keys keys are fakephone's nav emulation)" \
+        || bad "MB Cmd-[ leaked $((keys - navkeys)) key frames of $keys"
     stop_app
 
     # Phase B: the phone-mode window (also a stream window -> stream 1 again).
