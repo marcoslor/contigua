@@ -61,7 +61,8 @@ class DeckService(private val appContext: Context?) :
         val power = AndroidPower(base, ::log)
         this.power = power
         val titles = AndroidWindowObserver(shell, ::log)
-        val audio = AudioCapture(shell, ::log)
+        val uids = AppUids(base, ::log)
+        val audio = AudioCapture(shell, ::log, uids::uidOf)
         val taskMove = AndroidTaskMove(shell, ::log)
         val clip = ShellClipboard(shell, ::log)
 

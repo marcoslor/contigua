@@ -12,23 +12,35 @@ import android.media.MediaRecorder
 import android.os.Build
 import android.os.SystemClock
 import dev.pocketdeck.proto.Frames
+import java.lang.reflect.Method
 
 /**
- * Device-wide audio capture over REMOTE_SUBMIX.
+ * Audio capture for a session (docs/design/audio.md).
  *
- * Opening a REMOTE_SUBMIX input from the shell UID (which holds
- * CAPTURE_AUDIO_OUTPUT) makes the framework route media playback to the
- * submix output instead of the speaker, so the phone goes silent while we
- * stream and no AudioPolicy is needed. Approach adapted from scrcpy's
- * "output" audio source (Apache-2.0).
+ * Two paths, chosen by [AudioFollow.plan] from the open windows:
  *
- * The submix device keeps its own music volume index (often mid-scale), which
- * attenuates the capture; [levelSubmix] undoes that without touching the
- * speaker's volume.
+ * - **Per-app** (`FollowPlan.PerApp`): one shell-UID `android.media.audiopolicy`
+ *   AudioPolicy whose loop-back mix is uid-filtered (RULE_MATCH_UID per window's
+ *   app). Only windowed apps stream to the Mac; every other app keeps playing
+ *   on the phone speaker. Window open/close swaps the UID set by stopping the
+ *   whole capture and building it again (register ~15-65 ms plus sink rebuild,
+ *   sub-second gap; the Mac's jitter buffer bridges it, so keep it as is).
+ * - **All-audio** (`FollowPlan.AllAudio`, today's path): a REMOTE_SUBMIX
+ *   AudioRecord routes media to the submix output, so the phone speaker goes
+ *   silent while streaming. Reached for phone-mode windows, on fallback, and
+ *   whenever a window cannot be attributed (link pending, uid lookup failure).
+ *
+ * The two paths never coexist (one policy per client; REMOTE_SUBMIX and a
+ * policy mix at once breaks continuity — the swap goes through a full stop).
+ * Any policy registration failure falls back to all-audio with one log line,
+ * and [stop] always unregisters the policy: nothing registered outlives the
+ * session, and the framework drops the policy again if the process dies.
  */
 internal class AudioCapture(
     private val ctx: Context,
     private val log: (String) -> Unit,
+    /** Package name → app UID for the follow mix rules (shell PackageManager). */
+    private val uidOf: (String) -> Int? = { null },
 ) : AudioCaptureLayer {
 
     private companion object {
@@ -46,6 +58,8 @@ internal class AudioCapture(
         /** AudioDeviceAttributes.ROLE_OUTPUT (hidden). */
         const val ROLE_OUTPUT = 2
         const val MAX_BEHIND_NS = 200_000_000L
+        /** Bounded wait for the policy sink to reach RECORDSTATE_RECORDING. */
+        const val SINK_RECORDING_WAIT_MS = 1_000L
     }
 
     @Volatile private var running = false
@@ -55,9 +69,66 @@ internal class AudioCapture(
     @Volatile private var codec: MediaCodec? = null
     override val isRunning: Boolean get() = running
 
+    /** The session that last asked for capture (AudioSink identity = the session). */
+    @Volatile private var lastSink: AudioSink? = null
+    private var lastCodecs: List<Int> = emptyList()
+    private var windowsProvider: () -> List<CaptureWindow> = { emptyList() }
+
+    /** Only that owner may move this running capture between plans. */
+    @Volatile private var occupiedBy: AudioSink? = null
+
+    /** The plan `record`/`policy` currently implement; null when not running. */
+    @Volatile private var activePlan: FollowPlan? = null
+
+    /** The registered AudioPolicy (android.media.audiopolicy.AudioPolicy), if any. */
+    private var policy: Any? = null
+    private var policyMix: Any? = null
+
+    /**
+     * Set when a plan change stopped the capture because the plan went idle;
+     * the owner revives it on the next window change (the Mac only re-sends
+     * audio.start when its own window set empties, so the phone must restart
+     * the capture itself).
+     */
+    private var wantsRestart = false
+
     @Synchronized
-    override fun start(sink: AudioSink, preferredCodecs: List<Int>) {
+    override fun start(sink: AudioSink, preferredCodecs: List<Int>, windows: () -> List<CaptureWindow>) {
         if (running) return
+        windowsProvider = windows
+        lastSink = sink
+        lastCodecs = preferredCodecs
+        wantsRestart = false
+        startLocked(sink, preferredCodecs)
+    }
+
+    @Synchronized
+    override fun stop() {
+        if (!running && thread == null && policy == null) return
+        wantsRestart = false
+        stopLocked()
+        log("audio: stopped")
+    }
+
+    @Synchronized
+    override fun onWindowsChanged(owner: AudioSink?) {
+        if (running && occupiedBy !== owner) return
+        if (!running && lastSink !== owner) return
+        val next = AudioFollow.plan(windowsProvider(), uidOf)
+        if (running) {
+            if (next == activePlan) return
+            log("audio: plan $activePlan -> $next")
+            stopLocked()
+            wantsRestart = next is FollowPlan.Idle
+        }
+        if (next !is FollowPlan.Idle) {
+            val sink = lastSink ?: return
+            startLocked(sink, lastCodecs)
+        }
+    }
+
+    /** Builds record + encoder for the current plan; runs in the class monitor. */
+    private fun startLocked(sink: AudioSink, preferredCodecs: List<Int>) {
         val wantOpus = preferredCodecs.isEmpty() || preferredCodecs.contains(Frames.CODEC_OPUS)
         val wantAac = preferredCodecs.isEmpty() || preferredCodecs.contains(Frames.CODEC_AAC)
         val mime: String
@@ -72,105 +143,98 @@ internal class AudioCapture(
             log("audio: no encoder for $preferredCodecs")
             return
         }
-        val minBuf = AudioRecord.getMinBufferSize(
-            SAMPLE_RATE, AudioFormat.CHANNEL_IN_STEREO, AudioFormat.ENCODING_PCM_16BIT,
-        )
-        if (minBuf <= 0) {
-            log("audio: bad min buffer $minBuf")
+        val requestedPlan = AudioFollow.plan(windowsProvider(), uidOf)
+        if (requestedPlan is FollowPlan.Idle) {
+            log("audio: nothing to capture (no followable window)")
             return
         }
-        val rec = try {
-            // The record's attribution must be uid 2000 + com.android.shell (from
-            // the ShellContext); our own package at the shell UID is rejected.
-            AudioRecord.Builder()
-                .apply { if (Build.VERSION.SDK_INT >= 31) setContext(ctx) }
-                .setAudioSource(MediaRecorder.AudioSource.REMOTE_SUBMIX)
-                .setAudioFormat(
-                    AudioFormat.Builder()
-                        .setSampleRate(SAMPLE_RATE)
-                        .setChannelMask(AudioFormat.CHANNEL_IN_STEREO)
-                        .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                        .build(),
-                )
-                .setBufferSizeInBytes(maxOf(minBuf, CHUNK_BYTES * 4))
-                .build()
-        } catch (t: Throwable) {
-            log("audio: record init failed: ${t.message}")
-            return
-        }
-        if (rec.state != AudioRecord.STATE_INITIALIZED) {
-            log("audio: record not initialized")
-            runCatching { rec.release() }
-            return
-        }
-        val enc = try {
-            MediaCodec.createEncoderByType(mime)
-        } catch (t: Throwable) {
-            log("audio: no $mime encoder: ${t.message}")
-            runCatching { rec.release() }
-            return
-        }
-        try {
-            val format = MediaFormat.createAudioFormat(mime, SAMPLE_RATE, CHANNELS)
-            format.setInteger(MediaFormat.KEY_BIT_RATE, if (codecId == Frames.CODEC_OPUS) BITRATE_OPUS else BITRATE_AAC)
-            format.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, CHUNK_BYTES * 2)
-            if (codecId == Frames.CODEC_AAC) {
-                runCatching {
-                    format.setInteger(
-                        MediaFormat.KEY_AAC_PROFILE,
-                        MediaCodecInfo.CodecProfileLevel.AACObjectLC,
-                    )
-                }
+        val enc = buildEncoder(mime, codecId) ?: return
+
+        var rec: AudioRecord? = null
+        var effective = requestedPlan
+        var why = ""
+        if (requestedPlan is FollowPlan.PerApp) {
+            rec = openPolicyRecord(requestedPlan.uids)
+            if (rec == null) {
+                // One log line inside openPolicyRecord; degrade to today's path.
+                effective = FollowPlan.AllAudio
             }
-            runCatching { format.setInteger(MediaFormat.KEY_PRIORITY, 0) }
-            enc.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
-            enc.start()
-        } catch (t: Throwable) {
-            log("audio: encoder configure failed: ${t.message}")
-            runCatching { enc.release() }
-            runCatching { rec.release() }
-            return
         }
-        levelSubmix()
+        if (effective is FollowPlan.AllAudio) {
+            why = "remote submix"
+            levelSubmix()
+            rec = openSubmixRecord() ?: run {
+                runCatching { enc.release() }
+                return
+            }
+        }
         running = true
+        occupiedBy = sink
         record = rec
         codec = enc
+        activePlan = effective
+        // The policy mix streams at full scale (verified in K4: the mix output
+        // is not volume-indexed). Only the submix path needs SubmixLevel.
+        gain = if (effective is FollowPlan.AllAudio) submixGain else 1f
+
         sink.onAudioConfig(codecId, SAMPLE_RATE, CHANNELS, FRAME_MS, ByteArray(0))
-        log("audio: capturing codec=$codecId ($mime)")
-        thread = Thread({ loop(sink, codecId, rec, enc) }, "pocketdeck-audio").also { it.start() }
-        runCatching { rec.startRecording() }
+        log("audio: capturing codec=$codecId ($mime) plan=${describe(effective, why)}")
+        thread = Thread({ loop(sink, codecId, enc) }, "pocketdeck-audio").also { it.start() }
+        runCatching { rec?.startRecording() }
             .onFailure {
                 log("audio: startRecording failed: ${it.message}")
                 stop()
             }
     }
 
+    private fun describe(plan: FollowPlan, why: String) = when (plan) {
+        is FollowPlan.PerApp -> "per-app uids=${plan.uids.joinToString("+")}"
+        FollowPlan.AllAudio -> "all-audio ($why)"
+        FollowPlan.Idle -> "idle"
+    }
+
     @Synchronized
-    override fun stop() {
-        if (!running && thread == null) return
+    private fun stopLocked() {
+        if (!running && thread == null && policy == null) return
         running = false
         runCatching { record?.stop() }
         runCatching { Thread.sleep(20) }
         runCatching { codec?.stop() }
         runCatching { codec?.release() }
         runCatching { record?.release() }
+        val pol = policy
         codec = null
         record = null
+        policy = null
+        policyMix = null
+        occupiedBy = null
+        activePlan = null
+        if (pol != null) {
+            try {
+                unregisterPolicy(pol)
+            } catch (t: Throwable) {
+                log("audio: unregister failed: ${t.message}")
+            }
+        }
         val t = thread
         thread = null
         if (t != null && t !== Thread.currentThread()) runCatching { t.join(1000) }
-        log("audio: stopped")
     }
 
-    private fun loop(sink: AudioSink, codecId: Int, rec: AudioRecord, enc: MediaCodec) {
+    private fun loop(sink: AudioSink, codecId: Int, enc: MediaCodec) {
         val info = MediaCodec.BufferInfo()
         val chunk = ByteArray(CHUNK_BYTES)
         var sentAacSetup = false
         var clockBaseNs = 0L
         var producedNs = 0L
         while (running) {
+            val inRec = record
+            if (inRec == null) {
+                Thread.sleep(20)
+                continue
+            }
             val n = try {
-                rec.read(chunk, 0, chunk.size)
+                inRec.read(chunk, 0, chunk.size)
             } catch (_: Throwable) {
                 break
             }
@@ -276,8 +340,155 @@ internal class AudioCapture(
                 am.getStreamVolumeDb(AudioManager.STREAM_MUSIC, it, AudioDeviceInfo.TYPE_REMOTE_SUBMIX)
             },
         )
-        gain = if (plan is SubmixLevel.Plan.SoftwareGain) plan.gain else 1f
+        submixGain = if (plan is SubmixLevel.Plan.SoftwareGain) plan.gain else 1f
         log("audio: submix index=$index level $plan")
+    }
+
+    /** The gain decided by the last [levelSubmix] (submix attenuation undo). */
+    @Volatile private var submixGain = 1f
+
+    /** REMOTE_SUBMIX record of the all-audio path; null when it cannot be opened. */
+    private fun openSubmixRecord(): AudioRecord? {
+        val minBuf = AudioRecord.getMinBufferSize(
+            SAMPLE_RATE, AudioFormat.CHANNEL_IN_STEREO, AudioFormat.ENCODING_PCM_16BIT,
+        )
+        if (minBuf <= 0) {
+            log("audio: bad min buffer $minBuf")
+            return null
+        }
+        val rec = try {
+            // The record's attribution must be uid 2000 + com.android.shell (from
+            // the ShellContext); our own package at the shell UID is rejected.
+            AudioRecord.Builder()
+                .apply { if (Build.VERSION.SDK_INT >= 31) setContext(ctx) }
+                .setAudioSource(MediaRecorder.AudioSource.REMOTE_SUBMIX)
+                .setAudioFormat(
+                    AudioFormat.Builder()
+                        .setSampleRate(SAMPLE_RATE)
+                        .setChannelMask(AudioFormat.CHANNEL_IN_STEREO)
+                        .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                        .build(),
+                )
+                .setBufferSizeInBytes(maxOf(minBuf, CHUNK_BYTES * 4))
+                .build()
+        } catch (t: Throwable) {
+            log("audio: record init failed: ${t.message}")
+            return null
+        }
+        if (rec.state != AudioRecord.STATE_INITIALIZED) {
+            log("audio: record not initialized")
+            runCatching { rec.release() }
+            return null
+        }
+        return rec
+    }
+
+    private fun buildEncoder(mime: String, codecId: Int): MediaCodec? {
+        val enc = try {
+            MediaCodec.createEncoderByType(mime)
+        } catch (t: Throwable) {
+            log("audio: no $mime encoder: ${t.message}")
+            return null
+        }
+        try {
+            val format = MediaFormat.createAudioFormat(mime, SAMPLE_RATE, CHANNELS)
+            format.setInteger(MediaFormat.KEY_BIT_RATE, if (codecId == Frames.CODEC_OPUS) BITRATE_OPUS else BITRATE_AAC)
+            format.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, CHUNK_BYTES * 2)
+            if (codecId == Frames.CODEC_AAC) {
+                runCatching {
+                    format.setInteger(
+                        MediaFormat.KEY_AAC_PROFILE,
+                        MediaCodecInfo.CodecProfileLevel.AACObjectLC,
+                    )
+                }
+            }
+            runCatching { format.setInteger(MediaFormat.KEY_PRIORITY, 0) }
+            enc.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+            enc.start()
+        } catch (t: Throwable) {
+            log("audio: encoder configure failed: ${t.message}")
+            runCatching { enc.release() }
+            return null
+        }
+        return enc
+    }
+
+    /**
+     * Registers the uid-filtered loop-back mix (one rule per window app; the
+     * exact construction probed in .agent/perapp/findings.md) and returns its
+     * recording sink, or null when the framework rejects it — the caller then
+     * falls back to all-audio. Storing `policy` before any later failure lets
+     * that failure path unregister it, so nothing is left registered.
+     */
+    private fun openPolicyRecord(uids: List<Int>): AudioRecord? {
+        val am = ctx.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        return runCatching {
+            val rb = PolicyAudio.mixingRuleBuilder.getConstructor().newInstance()
+            PolicyAudio.setTargetMixRole.invoke(rb, PolicyAudio.rolePlayers)
+            for (uid in uids) {
+                PolicyAudio.addMixRule.invoke(rb, PolicyAudio.ruleMatchUid, uid)
+            }
+            // Capture stays non-privileged: the windowed apps' own capture
+            // opt-out (setAllowedCapturePolicy) is honored that way.
+            runCatching { PolicyAudio.allowPrivilegedPlaybackCapture.invoke(rb, false) }
+            val rule = PolicyAudio.ruleBuild.invoke(rb)
+
+            val fmt = AudioFormat.Builder()
+                .setSampleRate(SAMPLE_RATE)
+                .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                .setChannelMask(AudioFormat.CHANNEL_OUT_STEREO)
+                .build()
+            val mixBuilder = PolicyAudio.mixBuilder
+                .getConstructor(PolicyAudio.mixingRule)
+                .newInstance(rule)
+            PolicyAudio.mixSetFormat.invoke(mixBuilder, fmt)
+            PolicyAudio.mixSetRouteFlags.invoke(mixBuilder, PolicyAudio.routeLoopBack)
+            val mix = PolicyAudio.mixBuild.invoke(mixBuilder)
+
+            val pb = PolicyAudio.policyBuilder.getConstructor(Context::class.java).newInstance(ctx)
+            PolicyAudio.policyAddMix.invoke(pb, mix)
+            val pol = PolicyAudio.policyBuild.invoke(pb)
+
+            val rc = PolicyAudio.amRegisterPolicy.invoke(am, pol) as Int
+            if (rc != 0) {
+                log("audio: registerAudioPolicy(uids=${uids.joinToString("+")}) rc=$rc")
+                return@runCatching null
+            }
+            policy = pol
+            policyMix = mix
+            val sink = PolicyAudio.policyCreateSink.invoke(pol, mix) as? AudioRecord
+                ?: return@runCatching null
+            // startRecording needs a beat (measured ~130 ms to RECORDING).
+            sink.startRecording()
+            val deadline = System.currentTimeMillis() + SINK_RECORDING_WAIT_MS
+            while (sink.recordingState != AudioRecord.RECORDSTATE_RECORDING) {
+                Thread.sleep(20)
+                if (System.currentTimeMillis() >= deadline) return@runCatching null
+            }
+            sink
+        }.onFailure {
+            log("audio: policy mix failed: ${it.javaClass.simpleName}: ${it.message}")
+        }.getOrNull().also { sink ->
+            if (sink == null) releaseHeldPolicy()
+        }
+    }
+
+    private fun releaseHeldPolicy() {
+        val pol = policy ?: return
+        policy = null
+        policyMix = null
+        try {
+            unregisterPolicy(pol)
+        } catch (t: Throwable) {
+            log("audio: fallback unregister failed: ${t.message}")
+        }
+    }
+
+    private fun unregisterPolicy(pol: Any) {
+        val am = ctx.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        val rc = PolicyAudio.amUnregisterPolicy.invoke(am, pol) as? Int
+        if (rc != null && rc != 0) log("audio: unregisterAudioPolicy rc=$rc")
+        policyMix = null
     }
 
     /** STREAM_MUSIC index of the remote-submix output device only (hidden APIs). */
@@ -307,5 +518,74 @@ internal class AudioCapture(
             val got = managerClass.getMethod("getDeviceVolume", infoClass, deviceClass).invoke(manager, info(null), device)
             return infoClass.getMethod("getVolumeIndex").invoke(got) as Int
         }
+    }
+}
+
+/**
+ * Reflection into the hidden `android.media.audiopolicy` classes. On this API
+ * level `android.media.AudioMix` is only a parcel stub and AudioMixingRule does
+ * not exist there, so the policy path always names this package (probed: a
+ * mix from the stub class fails legacy2aidl conversion with BAD_VALUE).
+ */
+private object PolicyAudio {
+    val mixingRule = Class.forName("android.media.audiopolicy.AudioMixingRule")
+    val mixingRuleBuilder = Class.forName("android.media.audiopolicy.AudioMixingRule\$Builder")
+    val mix = Class.forName("android.media.audiopolicy.AudioMix")
+    val mixBuilder = Class.forName("android.media.audiopolicy.AudioMix\$Builder")
+    val policy = Class.forName("android.media.audiopolicy.AudioPolicy")
+    val policyBuilder = Class.forName("android.media.audiopolicy.AudioPolicy\$Builder")
+
+    val rolePlayers: Int = staticInt(mixingRule, "MIX_ROLE_PLAYERS")
+    val ruleMatchUid: Int = staticInt(mixingRule, "RULE_MATCH_UID")
+    val routeLoopBack: Int = staticInt(mix, "ROUTE_FLAG_LOOP_BACK")
+
+    val setTargetMixRole = declared(mixingRuleBuilder, "setTargetMixRole", Int::class.javaPrimitiveType!!)
+    val addMixRule = declared(mixingRuleBuilder, "addMixRule", Int::class.javaPrimitiveType!!, Any::class.java)
+    val allowPrivilegedPlaybackCapture =
+        declared(mixingRuleBuilder, "allowPrivilegedPlaybackCapture", Boolean::class.javaPrimitiveType!!)
+    val ruleBuild = declared(mixingRuleBuilder, "build")
+
+    val mixSetFormat = declared(mixBuilder, "setFormat", AudioFormat::class.java)
+    val mixSetRouteFlags = declared(mixBuilder, "setRouteFlags", Int::class.javaPrimitiveType!!)
+    val mixBuild = declared(mixBuilder, "build")
+
+    val policyAddMix = declared(policyBuilder, "addMix", mix)
+    val policyBuild = declared(policyBuilder, "build")
+
+    val amRegisterPolicy = declared(AudioManager::class.java, "registerAudioPolicy", policy)
+    val amUnregisterPolicy = declared(AudioManager::class.java, "unregisterAudioPolicy", policy)
+    val policyCreateSink = declared(policy, "createAudioRecordSink", mix)
+
+    private fun staticInt(cls: Class<*>, name: String): Int {
+        for (f in cls.declaredFields) {
+            if (f.name != name) continue
+            f.isAccessible = true
+            return f.getInt(null)
+        }
+        throw NoSuchFieldException("$cls.$name")
+    }
+
+    /** First declared [name] matching every argument type, walking superclasses. */
+    private fun declared(cls: Class<*>, name: String, vararg types: Class<*>): Method {
+        var c: Class<*>? = cls
+        while (c != null) {
+            for (m in c.declaredMethods) {
+                if (m.name != name) continue
+                val pt = m.parameterTypes
+                if (pt.size != types.size) continue
+                var matches = true
+                for (i in types.indices) {
+                    if (pt[i] != types[i]) {
+                        matches = false
+                        break
+                    }
+                }
+                if (!matches) continue
+                m.isAccessible = true
+                return m
+            }
+            c = c.superclass
+        }
+        throw NoSuchMethodException("$cls.$name")
     }
 }
