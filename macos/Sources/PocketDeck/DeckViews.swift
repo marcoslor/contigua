@@ -409,11 +409,21 @@ struct PhoneDeckView: View {
         .animation(.smooth(duration: 0.3), value: controller.apkInstaller.phase)
         .navigationTitle(controller.activePhone?.name ?? "PocketDeck")
         .toolbar {
-            ToolbarItem(placement: .status) { StatusChip() }
+            // The header packs into two groups at any width: the traffic
+            // lights, the connection chip and the title on the left; the
+            // actions on the right. .status would float the chip in the
+            // middle of the toolbar on macOS (docs/DESIGN.md "Deck").
+            ToolbarItem(placement: .navigation) { StatusChip() }
             ToolbarItem(placement: .primaryAction) {
                 Button { controller.openPhoneWindow() } label: { Label("Phone", systemImage: "iphone.gen3") }
                     .disabled(!controller.link.isOnline)
                     .help("Open the phone screen")
+            }
+            // Search keeps its field between the Phone button and the gear.
+            DefaultToolbarItem(kind: .search, placement: .primaryAction)
+            ToolbarItem(placement: .primaryAction) {
+                SettingsLink { Image(systemName: "gearshape") }
+                    .help("Settings")
             }
         }
         .searchable(text: $query, placement: .toolbar, prompt: "Search apps")
