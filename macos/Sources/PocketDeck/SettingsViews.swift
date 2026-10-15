@@ -25,9 +25,11 @@ enum WindowDensity {
 }
 
 struct GeneralSettings: View {
+    @Environment(ConnectionController.self) private var controller
     @AppStorage("showMenuBar", store: Profile.active.defaults) private var showMenuBar = true
     @AppStorage(ClipboardSync.enabledKey, store: Profile.active.defaults) private var shareClipboard = true
     @AppStorage(WindowDensity.key, store: Profile.active.defaults) private var density = 1.0
+    @AppStorage(DockAutoSetting.key, store: Profile.active.defaults) private var showAppsInDock = true
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
 
     var body: some View {
@@ -42,6 +44,8 @@ struct GeneralSettings: View {
                 }
             Toggle("Show in menu bar", isOn: $showMenuBar)
             Toggle("Share clipboard with your phone", isOn: $shareClipboard)
+            Toggle("Show phone apps in the Dock", isOn: $showAppsInDock)
+                .onChange(of: showAppsInDock) { _, _ in controller.showAppsInDockChanged() }
             Picker("Default window density", selection: $density) {
                 ForEach(WindowDensity.options, id: \.value) { Text($0.label).tag($0.value) }
             }

@@ -13,6 +13,8 @@ struct LaunchOptions {
     var resizes: [(stream: UInt32, size: NSSize, after: TimeInterval)] = []
     var minimizes: [(stream: UInt32, after: TimeInterval)] = []
     var deminimizes: [(stream: UInt32, after: TimeInterval)] = []
+    /// `--close-stream N:SECONDS`: close that stream window like a person does (e2e).
+    var closeStreams: [(stream: UInt32, after: TimeInterval)] = []
     var quitAfter: TimeInterval?
     var resetPairing = false
     var qrSheet = false
@@ -70,6 +72,8 @@ struct LaunchOptions {
                 if let value = next() { options.minimizes.append(Self.parseTimedStream(value)) }
             case "--deminimize-stream":
                 if let value = next() { options.deminimizes.append(Self.parseTimedStream(value)) }
+            case "--close-stream":
+                if let value = next() { options.closeStreams.append(Self.parseTimedStream(value)) }
             case "--quit-after":
                 if let value = next(), let seconds = Double(value) { options.quitAfter = seconds }
             case "--reset-pairing":
