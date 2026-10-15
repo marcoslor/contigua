@@ -1837,14 +1837,20 @@ check_dock() {
     remove_dock_apps
 
     # A host that dies without notice (a crash posts no closed) must not leave the
-    # identity behind: it quits after the host stops answering its pings.
+    # identity behind: it quits after the host stops answering its pings. The kill
+    # only ever happens after the identity is bound (a settle), because a shim whose
+    # open request was never answered (the host died first) purges itself on the
+    # slower 30 s retry deadline instead — the 45 s wait covers both.
     launch --connect "127.0.0.1:$PORT" --dock-dir "$dir" --open "$pkg" --quit-after 120
     wait_until 20 window_rx window.open "$pkg" || bad "DOCK crash: no window.open"
-    wait_until 10 eval '[ -n "$(dock_shim_pids)" ]' \
+    wait_until 30 shim_made \
+        && ok "DOCK crash: the window's Dock app was created" || { bad "DOCK crash: the shim never appeared"; stop_fakephone; return 1; }
+    sleep 6
+    wait_until 5 eval '[ -n "$(dock_shim_pids)" ]' \
         && ok "DOCK crash: the shim runs (pid $(dock_shim_pids | tr '\n' ' '))" \
-        || bad "DOCK crash: the shim never started"
+        || bad "DOCK crash: the shim is not running"
     kill -9 "$APP_PID"
-    wait_until 20 eval '[ -z "$(dock_shim_pids)" ]' \
+    wait_until 45 eval '[ -z "$(dock_shim_pids)" ]' \
         && ok "DOCK crash: after the host stopped answering, the shim quit" \
         || bad "DOCK crash: the shim outlives its dead host"
     remove_dock_apps
@@ -1861,8 +1867,8 @@ check_dock() {
     stop_app
 
     # ... but the menu command keeps working.
-    launch --connect "127.0.0.1:$PORT" --dock-dir "$dir" --dock-add "$pkg" --quit-after 60
-    wait_until 30 shim_made && ok "DOCK off: Add to Dock still works" || bad "DOCK off: Add to Dock no longer works"
+    launch --connect "127.0.0.1:$PORT" --dock-dir "$dir" --dock-add "$pkg" --quit-after 90
+    wait_until 45 shim_made && ok "DOCK off: Add to Dock still works" || bad "DOCK off: Add to Dock no longer works"
     stop_app
 
     # Removing by hand: --dock-remove unregisters and deletes the bundle.
