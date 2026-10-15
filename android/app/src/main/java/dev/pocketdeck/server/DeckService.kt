@@ -93,6 +93,9 @@ class DeckService(private val appContext: Context?) :
                 autoApprovePairing = dev.pocketdeck.BuildConfig.DEBUG,
                 audioCapture = audio,
                 notifyShared = { notifySharedStore },
+                // The session tells the app when the forwarding gate is open, so
+                // the listener's bridge knows when to push (DeckState relay).
+                notifyForward = { forward -> sendToApp { it.onNotifySession(forward) } },
                 mediaCommand = { action -> sendToApp { it.onMediaCommand(action) } },
             )
         }
@@ -167,9 +170,16 @@ class DeckService(private val appContext: Context?) :
     override fun grantListenerAccess(): Boolean {
         val component = "${dev.pocketdeck.BuildConfig.APPLICATION_ID}/dev.pocketdeck.app.PdNotificationListener"
         run("cmd", "notification", "allow_listener", component)
-        // The grant command is silent; the listener list is the truth.
-        val granted = run("settings", "get", "secure", "enabled_notification_listeners")
-            .contains(component)
+        // The grant command is silent and the settings write can lag a moment
+        // behind it (seen on API 36); poll briefly -- the listener list is the
+        // truth, but the first read right after the command may be stale.
+        var granted = false
+        for (attempt in 1..15) {
+            granted = run("settings", "get", "secure", "enabled_notification_listeners")
+                .contains(component)
+            if (granted) break
+            Thread.sleep(200)
+        }
         log("notify: listener grant=$granted component=$component")
         return granted
     }
