@@ -15,6 +15,7 @@ import java.net.Socket
 import java.net.SocketTimeoutException
 import java.util.concurrent.atomic.AtomicBoolean
 
+import dev.pocketdeck.app.Prefs.PENDING_QR_TTL_MS
 import dev.pocketdeck.e2ee.KeyPin
 import dev.pocketdeck.e2ee.PairingCodeV2
 import dev.pocketdeck.e2ee.TlsExporter
@@ -59,6 +60,12 @@ class Session(
     maxDeltaBytesPerStream: Int = SendQueue.DEFAULT_MAX_DELTA_BYTES,
     private val autoApprovePairing: Boolean = false,
     private val selfCertProvider: () -> String = { "" },
+    /**
+     * The scanned QR the app handed over (map shape as Prefs.PendingQr), or
+     * null. The shell answers the Mac's probe with pair.qr when the connected
+     * Mac's TLS fingerprint matches `macFp` (R2).
+     */
+    private val pendingQrProvider: () -> Map<String, Any?>? = { null },
     /** The TLS session view: the Mac's point fingerprint and the exporter. Production
      * derives both from this session's SSLSocket; the JVM tests inject deterministic
      * values (docs/design/e2ee.md §4b: the HKDF math is pinned without an engine). */
@@ -285,6 +292,7 @@ class Session(
                 "hello" -> onHello(obj)
                 "pair.request" -> onPairRequest()
                 "pair.nonce" -> onPairNonce(obj)
+                "pair.ok" -> onPairingOkFromMac(obj)
                 else -> rejectProtocol("expected handshake, got '$t'")
             }
             Phase.READY -> dispatch(obj, frame, t)
@@ -305,7 +313,12 @@ class Session(
         // the Mac reinstalled: pair again — docs/design/e2ee.md §7).
         val client = store.snapshot().firstOrNull { it.clientId == clientId }
         if (client == null) {
-            phase = Phase.PAIR
+            // A scanned QR changes the story: the phone proactively answers the
+            // Mac's probe with pair.qr (review R2); left otherwise in PAIR for
+            // the Mac's pair.request.
+            if (!onHelloQrIfPending()) {
+                phase = Phase.PAIR
+            }
             return
         }
         val peer = tlsFacts.peerFingerprint()
@@ -354,6 +367,70 @@ class Session(
             it.isDaemon = true
             it.start()
         }
+    }
+
+    /**
+     * R2 QR: on hello, a phone that scanned the Mac's QR (a fresh pending with
+     * `macFp` equal to the connected TLS fingerprint) answers with `pair.qr`:
+     * HMAC of its one-time secret over label‖exporter‖phoneFP. The Mac
+     * verifies (it issued the secret with the QR) and pins the phone; the
+     * phone's Allow prompt stays (the Mac's pair.ok arms it).
+     */
+    private fun onHelloQrIfPending(): Boolean {
+        val qr = pendingQrProvider() ?: return false
+        val fp = Json.str(qr["macFp"]) ?: return false
+        val secretHex = Json.str(qr["secret"]) ?: return false
+        val at = Json.long(qr["at"]) ?: 0
+        // The QR expires with the Mac's sheet (5 minutes); a stale scan is dead.
+        if (System.currentTimeMillis() - at !in 0..PENDING_QR_TTL_MS) return false
+        if (!fp.contentEqualsHex(tlsFacts.peerFingerprint())) return false
+        val id = Crypto.toHex(Crypto.randomBytes(8))
+        synchronized(pairLock) {
+            pendingPairId = id
+            pairSettled = false
+        }
+        pendingPhoneFp = tlsView?.selfFingerprint?.invoke() ?: selfFingerprintBytes()
+        pendingMacFp = tlsFacts.peerFingerprint()
+        val exporter = tlsFacts.exporter()
+        if (exporter == null) {
+            log("pair.qr dropped: no exporter under TLS")
+            return false
+        }
+        val secret = try {
+            hexToBytes(secretHex)
+        } catch (e: Exception) {
+            return false
+        }
+        if (secret.size != 16) return false
+        runCatching { socket.soTimeout = 0 }
+        val hmac = PairingCodeV2.qrHmac(secret, exporter, pendingPhoneFp)
+        sendJson(mapOf("t" to "pair.qr", "m" to PairingCodeV2.hex(hmac)))
+        phase = Phase.PAIR
+        return true
+    }
+
+    /** Only `pair.ok` from the Mac after a QR flow carries the Allow gate. */
+    private fun onPairingOkFromMac(obj: Map<String, Any?>) {
+        val id = pendingPairId ?: return onPairingMissingState()
+        val macHex = Json.str(obj["macFP"]) ?: return onPairingMissingState()
+        if (!macHex.contentEqualsHex(pendingMacFp)) {
+            log("pair.ok macFP disagrees with the TLS peer fingerprint")
+            finishWithError("pair_commit", "pairing answer does not match the session")
+            return
+        }
+        runCatching { socket.soTimeout = 0 }
+        if (autoApprovePairing) {
+            synchronized(pairLock) { pairSettled = true }
+            completePairing()
+            return
+        }
+        runCatching { callback.onPairingRequest(id, clientName, "") }
+    }
+
+    private fun String.contentEqualsHex(bytes: ByteArray): Boolean {
+        if (length != 64) return false
+        if (any { !it.isDigit() && it !in 'a'..'f' && it !in 'A'..'F' }) return false
+        return hexToBytes(this).contentEquals(bytes)
     }
 
     private fun onPairNonce(obj: Map<String, Any?>) {

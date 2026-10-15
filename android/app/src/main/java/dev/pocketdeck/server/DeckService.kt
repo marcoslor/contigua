@@ -35,6 +35,10 @@ class DeckService(private val appContext: Context?) :
     @Volatile var selfCertPem: String = ""
     @Volatile var selfKeyP8: String = ""
 
+    /** The scanned QR the app handed over (R2); null when none or expired.
+     * Never logged: the secret is HMAC fodder only. */
+    @Volatile var pendingQr: Map<String, Any?>? = null
+
     @Volatile private var server: Server? = null
     @Volatile private var power: AndroidPower? = null
 
@@ -96,6 +100,7 @@ class DeckService(private val appContext: Context?) :
                 log = ::log,
                 autoApprovePairing = dev.pocketdeck.BuildConfig.DEBUG,
                 selfCertProvider = { selfCertPem },
+                pendingQrProvider = { pendingQr },
                 audioCapture = audio,
                 notifyShared = { notifySharedStore },
                 // The session tells the app when the forwarding gate is open, so
@@ -129,6 +134,7 @@ class DeckService(private val appContext: Context?) :
             Json.str(self["certPem"])?.let { if (it.isNotEmpty()) selfCertPem = it }
             Json.str(self["keyP8"])?.let { if (it.isNotEmpty()) selfKeyP8 = it }
         }
+        pendingQr = Json.asObject(obj["pendingQr"])
         val list = Json.asList(obj["clients"]).orEmpty().mapNotNull { entry ->
             val m = Json.asObject(entry) ?: return@mapNotNull null
             val id = Json.str(m["clientId"]) ?: return@mapNotNull null

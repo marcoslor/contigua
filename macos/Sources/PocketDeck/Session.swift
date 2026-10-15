@@ -203,6 +203,9 @@ final class Session {
     private var remoteCommit: Data?
     private var ourNm: Data?
     private var pendingNp: Data?
+    /// The one-time QR secret S this probe carries (nil outside QR probes);
+    /// never written anywhere (R2).
+    private var qrSecret: Data?
     private var failedOnce = false
 
     enum PairingPolicy { case never, allowed, probe }
@@ -592,16 +595,50 @@ final class Session {
             armPairingDeadline()
             Log.session.notice("pairing code derived for this screen: \(PairingCodeV2.codeHex(code), privacy: .public)")
             emit(.pairCodeShown(deviceId: knownDeviceId, code: PairingCodeV2.codeHex(code)))
-        case "pair.ok":
-            // The person allowed on the phone. `phoneFP` cross-checks the pin we
-            // learned from the handshake with what the phone knows it shared
-            // ("pair.ok carrying what each side pins"); then `welcome` stores it.
-            if let fpHex = message.string("phoneFP"), !learnedPeerPin.isEmpty, fpHex != learnedPeerPin {
-                Log.session.error("pair.ok phoneFP disagrees with the handshake fingerprint")
-                phoneErrorCode = "pair_commit"
-                fail("pair_commit"); return
+        case "pair.qr":
+            // R2: the phone proves the scan with HMAC(S, "pd-qr-v2" || exporter
+            // || phoneFP); verified here, the phone's cert is pinned from the
+            // handshake. The phone's Allow prompt still gates: it answers
+            // pair.ok (no fields) after its person allows.
+            guard let secret = qrSecret, let exporter = exporterProvider?() else {
+                Log.session.error("pair.qr outside a QR probe session")
+                phoneErrorCode = "pair_qr"
+                fail("pair_qr"); return
             }
+            let phoneFp = Data(hexString: learnedPeerPin) ?? Data()
+            guard phoneFp.count == 32 else {
+                Log.session.error("pair.qr without a handshake fingerprint")
+                phoneErrorCode = "pair_qr"
+                fail("pair_qr"); return
+            }
+            let expectedHmac = PairingCodeV2.qrHmac(secret: secret, exporter: Data(exporter), phoneFp: phoneFp)
+            guard let receivedHex = message.string("m"),
+                  let received = Data(hexString: receivedHex), received == expectedHmac else {
+                Log.session.error("pair.qr HMAC rejected")
+                phoneErrorCode = "pair_qr"
+                fail("pair_qr"); return
+            }
+            sendJSON([
+                "t": "pair.ok",
+                "phoneFP": learnedPeerPin,
+                "macFP": macFingerprintHex,
+            ])
+        case "pair.ok":
+            if let fpHex = message.string("phoneFP") {
+                // The pins-carrying shape (§4 code path): cross-check the pin we
+                // learned from the handshake with what the phone shared.
+                guard !learnedPeerPin.isEmpty, fpHex == learnedPeerPin else {
+                    Log.session.error("pair.ok phoneFP disagrees with the handshake fingerprint")
+                    phoneErrorCode = "pair_commit"
+                    fail("pair_commit"); return
+                }
+            }
+            // The person allowed on the phone; on the QR path the ack-only
+            // shape completes the sheet.
             emit(.pairApproved)
+            if qrSecret != nil {
+                emit(.qrPaired(deviceId: knownDeviceId ?? learnedPeerPin))
+            }
         case "welcome":
             guard let device = message.object("device"), let info = PhoneInfo(device: device) else {
                 Log.session.error("welcome without device")
@@ -779,6 +816,10 @@ final class Session {
     }
 
     // MARK: Pairing API
+
+    /// Carries the QR sheet's one-time secret `s` on a probe session (R2): the
+    /// phone proves the scan by the `pair.qr` HMAC over the exporter.
+    func useQRSecret(_ secret: Data) { qrSecret = secret }
 
     // MARK: Exporter
 

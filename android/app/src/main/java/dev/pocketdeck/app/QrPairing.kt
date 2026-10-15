@@ -4,30 +4,40 @@ import java.net.URI
 import java.net.URLDecoder
 
 /**
- * Parses the Mac's pairing QR into a client id, name and one-time key. The Mac
- * writes `pocketdeck://pair?c=<clientId>&n=<url-encoded name>&k=<64 hex>`
- * (docs/UX.md, "Pairing model").
+ * Parses the Mac's pairing QR into its v2 payload (review R2):
+ * `pocketdeck://pair?c=<clientId>&n=<url-encoded name>&f=<macFP 64 hex>&s=<secret 32 hex>`.
+ * The phone pins the Mac by `f` and answers the Mac over the TLS connection
+ * with `pair.qr` HMAC of `s` (docs/design/e2ee.md §6); `s` lives only in RAM
+ * until the shell server consumes it.
  *
  * Pure (no Android types) so the whole accept/reject matrix is JVM-testable.
  */
 object QrPairing {
 
-    /** A pairing key is 32 bytes of hex (docs/PROTOCOL.md auth key). */
-    const val KEY_HEX_LENGTH = 64
+    /** A fingerprint is 32 bytes of hex; the one-time secret is 16 bytes. */
+    const val FP_HEX_LENGTH = 64
+    const val SECRET_HEX_LENGTH = 32
 
     private const val SCHEME = "pocketdeck"
     private const val HOST = "pair"
 
     sealed interface Result {
-        data class Pairing(val clientId: String, val name: String, val keyHex: String) : Result
+        data class Pairing(
+            val clientId: String,
+            val name: String,
+            /** The Mac's certificate point fingerprint (the pin the phone keeps). */
+            val macFpHex: String,
+            /** The one-time secret: its HMAC proves the scan. */
+            val secretHex: String,
+        ) : Result
 
         /** Not a PocketDeck pairing URI at all. */
         data object NotPairing : Result
 
-        /** Our URI, but `c`/`k` are missing or empty. */
+        /** Our URI, but a required parameter is missing or empty. */
         data object Malformed : Result
 
-        /** `c` and `k` are present but `k` is not [KEY_HEX_LENGTH] hex characters. */
+        /** Parameters present but `f`/`s` are not well-formed hex of the right length (v1 keys land here too). */
         data object BadKey : Result
     }
 
@@ -42,11 +52,12 @@ object QrPairing {
 
         val params = parseQuery(uri.rawQuery)
         val clientId = params["c"]?.takeIf { it.isNotBlank() } ?: return Result.Malformed
-        val key = params["k"]?.takeIf { it.isNotBlank() } ?: return Result.Malformed
-        if (!isHex(key, KEY_HEX_LENGTH)) return Result.BadKey
+        val fp = params["f"]?.takeIf { it.isNotBlank() } ?: return Result.Malformed
+        val secret = params["s"]?.takeIf { it.isNotBlank() } ?: return Result.Malformed
+        if (!isHex(fp, FP_HEX_LENGTH) || !isHex(secret, SECRET_HEX_LENGTH)) return Result.BadKey
 
         val name = params["n"]?.takeIf { it.isNotBlank() } ?: "Mac"
-        return Result.Pairing(clientId, name, key.lowercase())
+        return Result.Pairing(clientId, name, fp.lowercase(), secret.lowercase())
     }
 
     private fun parseQuery(raw: String?): Map<String, String> {

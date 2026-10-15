@@ -83,6 +83,7 @@
     <string name="qr_incomplete">That QR code is missing pairing details.</string>
     <string name="qr_bad_key">That pairing key isn\'t valid.</string>
     <string name="qr_repair">PocketDeck updated its connection security — pair from the Mac\'s Pair screen again.</string>
+    <string name="qr_waiting">Scanned %1$s — waiting for it to connect…</string>
     <string name="qr_paired">Paired with %1$s.</string>
     <string name="qr_scan_failed">Couldn\'t scan the code.</string>
 
