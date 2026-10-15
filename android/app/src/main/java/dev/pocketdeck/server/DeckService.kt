@@ -62,7 +62,7 @@ class DeckService(private val appContext: Context?) :
         this.power = power
         val titles = AndroidWindowObserver(shell, ::log)
         val audio = AudioCapture(shell, ::log)
-        val taskMove = AndroidTaskMove(::log)
+        val taskMove = AndroidTaskMove(shell, ::log)
 
         val factory = SessionFactory { socket ->
             Session(
