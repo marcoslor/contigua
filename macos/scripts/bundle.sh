@@ -198,6 +198,8 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 </dict>
 </plist>
 PLIST
+# Read at launch: only the release build may use the default profile.
+plutil -insert PDBuildVariant -string "$VARIANT" "$APP/Contents/Info.plist"
 
 # Share extension: swiftc, because SwiftPM cannot link an app extension's entry point.
 APPEX="$APP/Contents/PlugIns/Share.appex"
