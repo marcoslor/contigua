@@ -176,6 +176,8 @@ class DeckForegroundService : Service() {
 
     private fun handlePaired(clientId: String, name: String, macFp: String) {
         Prefs.addPaired(this, Prefs.PairedMac(clientId, name, macFp, System.currentTimeMillis()))
+        // A QR scan that landed in a pairing is consumed: drop the one-time secret.
+        Prefs.clearPendingQr(this)
         DeckState.paired = Prefs.paired(this)
         DeckState.pending = null
         getSystemService(NotificationManager::class.java).cancel(NOTIF_PAIRING)

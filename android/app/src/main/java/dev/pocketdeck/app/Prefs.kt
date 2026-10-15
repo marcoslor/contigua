@@ -12,9 +12,29 @@ object Prefs {
     private const val KEY_DEVICE_ID = "device_id"
     private const val KEY_DEVICE_NAME = "device_name"
     private const val KEY_PAIRED = "paired"
+    private const val KEY_PENDING_QR = "pending_qr"
     private const val KEY_ONBOARDING_DONE = "onboarding_done"
     private const val KEY_BATTERY_REQUESTED = "battery_requested"
     private const val KEY_NOTIFY_SHARED = "notify_shared"
+
+    /**
+     * A scanned Mac QR (review R2): the phone pins the Mac by `f` and answers
+     * the Mac over TLS with `pair.qr` HMAC of `s`. Kept only until it is served
+     * once or expires with the QR (5 minutes).
+     */
+    data class PendingQr(
+        val clientId: String,
+        val name: String,
+        /** The Mac's point fingerprint (64 lowercase hex). */
+        val macFp: String,
+        /** One-time secret (32 lowercase hex), consumed by the shell server. */
+        val secret: String,
+        /** Local epoch millis of the scan. */
+        val at: Long,
+    )
+
+    /** Where the QR expires on the phone side, matching the Mac's sheet. */
+    const val PENDING_QR_TTL_MS = 5 * 60 * 1000L
 
     data class PairedMac(
         val clientId: String,
@@ -87,6 +107,34 @@ object Prefs {
         save(ctx, paired(ctx).filterNot { it.clientId == clientId })
     }
 
+    /** The scanned-but-unanswered QR; null when none or expired. */
+    fun pendingQr(ctx: Context): PendingQr? {
+        val raw = sp(ctx).getString(KEY_PENDING_QR, null) ?: return null
+        val obj = runCatching { Json.asObject(Json.parse(raw)) }.getOrNull() ?: return null
+        val clientId = Json.str(obj["clientId"]) ?: return null
+        val fp = Json.str(obj["macFp"]) ?: return null
+        val secret = Json.str(obj["secret"]) ?: return null
+        val at = Json.long(obj["at"]) ?: 0
+        val qr = PendingQr(clientId, Json.str(obj["name"]) ?: "Mac", fp, secret, at)
+        return if (System.currentTimeMillis() - at in 0..PENDING_QR_TTL_MS) qr else null
+    }
+
+    fun setPendingQr(ctx: Context, qr: PendingQr) {
+        val json = Json.encode(mapOf(
+            "clientId" to qr.clientId,
+            "name" to qr.name,
+            "macFp" to qr.macFp,
+            "secret" to qr.secret,
+            "at" to qr.at,
+        ))
+        sp(ctx).edit().putString(KEY_PENDING_QR, json).apply()
+    }
+
+    /** The QR was answered (or the sheet gave up): drop the secret from storage. */
+    fun clearPendingQr(ctx: Context) {
+        sp(ctx).edit().remove(KEY_PENDING_QR).apply()
+    }
+
     private fun save(ctx: Context, macs: List<PairedMac>) {
         val json = Json.encode(
             macs.map {
@@ -107,12 +155,18 @@ object Prefs {
             val id = dev.pocketdeck.e2ee.PhoneIdentity.ensure(ctx)
             mapOf("certPem" to id.certPem, "keyP8" to id.keyP8)
         }.getOrNull()
+        val qr = pendingQr(ctx)
+        val pendingQr = qr?.let {
+            mapOf("clientId" to it.clientId, "name" to it.name, "macFp" to it.macFp,
+                  "secret" to it.secret, "at" to it.at)
+        }
         return Json.encode(
             mapOf(
                 "deviceId" to deviceId(ctx),
                 "deviceName" to deviceName(ctx),
                 "clients" to paired(ctx).map { mapOf("clientId" to it.clientId, "name" to it.name, "macFp" to it.macFp) },
                 "self" to self,
+                "pendingQr" to pendingQr,
             ),
         )
     }

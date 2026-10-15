@@ -186,6 +186,10 @@ final class FakeV2PhoneBrain {
     /// When true the phone answers `hello` with `welcome` right away: the
     /// reconnect path where the phone already knows the clientId.
     var welcomeOnHello = false
+    /// R2: what the phone "scanned": the one-time secret + the pinned Mac
+    /// fingerprint (the fake phone proves the scan with pair.qr).
+    var scannedSecret: Data?
+    var scannedMacFpHex: String?
     /// When set, the phone's answer to `pair.request`/`pair.nonce` is this
     /// error instead (pair_denied / pair_timeout shapes).
     var error: String?
@@ -233,10 +237,37 @@ final class FakeV2PhoneBrain {
         }
         switch message.t {
         case "hello":
+            if let secret = scannedSecret {
+                // The phone scanned THIS Mac's QR: pin by fingerprint, prove S.
+                guard let expectedMacFp = scannedMacFpHex,
+                      expectedMacFp == connection.macFingerprintHex else {
+                    connection.sendJSON(["t": "error", "code": "pair_qr", "message": "wrong mac"])
+                    return true
+                }
+                let exporter = connection.exporter() ?? []
+                let hmac = PairingCodeV2.qrHmac(secret: secret,
+                                                exporter: Data(exporter),
+                                                phoneFp: Data(hexString: phoneFingerprintHex) ?? Data())
+                connection.sendJSON(["t": "pair.qr", "m": PairingCodeV2.hex(hmac)])
+                return true
+            }
             if self.welcomeOnHello {
                 connection.sendJSON(["t": "welcome", "device": [
                     "id": self.deviceId, "name": self.name, "model": "Pixel", "sdk": 36,
                     "screen": ["w": 1080, "h": 2340, "dpi": 450], "locked": true]])
+                return true
+            }
+            return false
+        case "pair.ok":
+            if scannedSecret != nil {
+                // The Mac accepted the scan proof; the person allows (auto or
+                // kept for the test), then the phone acks and welcomes.
+                if self.allow ?? self.autoAllow {
+                    connection.sendJSON(["t": "pair.ok"])
+                    connection.sendJSON(["t": "welcome", "device": [
+                        "id": self.deviceId, "name": self.name, "model": "Pixel", "sdk": 36,
+                        "screen": ["w": 1080, "h": 2340, "dpi": 450], "locked": true]])
+                }
                 return true
             }
             return false

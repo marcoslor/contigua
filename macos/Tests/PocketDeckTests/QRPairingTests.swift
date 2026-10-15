@@ -1,4 +1,4 @@
-// QR pairing payload, expiry and image (docs/UX.md "Pairing model").
+// QR pairing payload, expiry and image (docs/UX.md "Pairing model", R2).
 
 import XCTest
 @testable import PocketDeck
@@ -6,28 +6,30 @@ import XCTest
 final class QRPairingTests: XCTestCase {
 
     private let base = Date(timeIntervalSince1970: 1_000_000)
+    private let macFp = String(repeating: "ab", count: 32)
 
     private func payload(name: String = "Marcos's MacBook Pro", age: TimeInterval = 0) -> PairingQRPayload {
         PairingQRPayload(clientId: "5f0c1d2e-0000-4000-8000-abcdefabcdef",
                          name: name,
-                         key: Data(repeating: 0xab, count: 32),
+                         macFingerprintHex: macFp,
+                         secret: Data(repeating: 0xcd, count: 16),
                          createdAt: base.addingTimeInterval(-age))!
     }
 
-    func testURIShape() {
+    func testURIShapeCarriesClientIdNameFAndSecret() {
         let uri = payload().uri
-        XCTAssertTrue(uri.hasPrefix("pocketdeck://pair?c=5f0c1d2e-0000-4000-8000-abcdefabcdef&n="), uri)
-        let key = uri.components(separatedBy: "&k=").last ?? ""
-        XCTAssertEqual(key.count, 64)
-        XCTAssertEqual(key, String(repeating: "ab", count: 32))
-        XCTAssertTrue(key.allSatisfy { $0.isNumber || ("a"..."f").contains($0) })
+        let fakeSecret = String(repeating: "cd", count: 16)
+        let tail = "&f=" + macFp + "&s=" + fakeSecret
+        let tailInUri = String(uri.suffix(tail.count))
+        let prefix = "pocketdeck://pair?c=5f0c1d2e-0000-4000-8000-abcdefabcdef&n="
+        XCTAssertTrue(uri.hasPrefix(prefix))
+        XCTAssertEqual(tailInUri, tail)
     }
 
     func testNameIsPercentEncodedForFormDecoding() {
         let uri = payload(name: "Mac & Co + 1 = 2").uri
         XCTAssertFalse(uri.contains("Mac & Co"))
         XCTAssertFalse(uri.contains("+"))
-        XCTAssertFalse(uri.contains("= 2"))
         XCTAssertTrue(uri.contains("Mac%20%26%20Co%20%2B%201%20%3D%202"), uri)
     }
 
@@ -40,17 +42,22 @@ final class QRPairingTests: XCTestCase {
         XCTAssertEqual(payload(age: 400).remaining(now: base), 0, accuracy: 0.001)
     }
 
-    func testRandomKeysAre32BytesAndUnique() {
-        let first = PairingQRPayload.random(clientId: "c", name: "n")
-        let second = PairingQRPayload.random(clientId: "c", name: "n")
-        XCTAssertEqual(first?.key.count, 32)
-        XCTAssertEqual(second?.key.count, 32)
-        XCTAssertNotEqual(first?.key, second?.key)
+    func testRandomSecretsAre16BytesAndUnique() {
+        let first = PairingQRPayload.random(clientId: "c", name: "n", macFingerprintHex: macFp)
+        let second = PairingQRPayload.random(clientId: "c", name: "n", macFingerprintHex: macFp)
+        XCTAssertEqual(first?.secret.count, 16)
+        XCTAssertEqual(second?.secret.count, 16)
+        XCTAssertNotEqual(first?.secret, second?.secret)
+        XCTAssertNotNil(first)
     }
 
-    func testRejectsWrongKeyLengthAndEmptyClientId() {
-        XCTAssertNil(PairingQRPayload(clientId: "c", name: "n", key: Data(repeating: 0, count: 31)))
-        XCTAssertNil(PairingQRPayload(clientId: "", name: "n", key: Data(repeating: 0, count: 32)))
+    func testRejectsBadSecretLengthEmptyClientIdOrBadFp() {
+        XCTAssertNil(PairingQRPayload(clientId: "c", name: "n", macFingerprintHex: macFp,
+                                      secret: Data(repeating: 0, count: 15)))
+        XCTAssertNil(PairingQRPayload(clientId: "", name: "n", macFingerprintHex: macFp,
+                                      secret: Data(repeating: 0, count: 16)))
+        XCTAssertNil(PairingQRPayload(clientId: "c", name: "n", macFingerprintHex: "ab",
+                                      secret: Data(repeating: 0, count: 16)))
     }
 
     func testQRImageIsDrawnCrisplyOnWhite() throws {

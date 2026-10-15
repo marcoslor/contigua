@@ -264,11 +264,19 @@ class DeckViewModel(app: Application) : AndroidViewModel(app) {
     fun onQrScanned(raw: String) {
         val ctx = getApplication<Application>()
         when (val result = QrPairing.parse(raw)) {
-            // v2 (docs/design/e2ee.md R2): the QR {f,s} is a transient pin input,
-            // not a stored secret; the phone answers the Mac over the TLS
-            // connection with pair.qr (phase-2 step 8). Nothing lands in Prefs
-            // from a scan.
-            is QrPairing.Result.Pairing -> postSnackbar(ctx.getString(R.string.qr_repair))
+            is QrPairing.Result.Pairing -> {
+                // R2: the scan pins the Mac by `f` and hands the one-time `s`
+                // to the shell server (RAM + a short-lived store copy); the
+                // shell answers the Mac's probe with pair.qr, and the Allow
+                // prompt still gates the first connection.
+                Prefs.setPendingQr(
+                    ctx,
+                    Prefs.PendingQr(result.clientId, result.name, result.macFpHex,
+                                    result.secretHex, System.currentTimeMillis()),
+                )
+                runCatching { ShizukuClient.current()?.setPairedClients(Prefs.serviceStateJson(ctx)) }
+                postSnackbar(ctx.getString(R.string.qr_waiting, result.name))
+            }
             QrPairing.Result.BadKey -> postSnackbar(ctx.getString(R.string.qr_bad_key))
             QrPairing.Result.Malformed -> postSnackbar(ctx.getString(R.string.qr_incomplete))
             QrPairing.Result.NotPairing -> postSnackbar(ctx.getString(R.string.qr_not_pairing))

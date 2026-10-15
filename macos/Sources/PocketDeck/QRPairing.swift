@@ -1,42 +1,63 @@
-// QR pairing (docs/UX.md, "Pairing model"): the payload the Mac shows, its
-// 5-minute lifetime, and the QR image itself. The payload and expiry rules are
-// pure so the unit tests pin them.
+// QR pairing (docs/UX.md, "Pairing model"), review R2: the payload the Mac
+// shows — two stable identifiers and one-time secret — its 5-minute lifetime,
+// and the QR image itself. The payload and expiry rules are pure so the unit
+// tests pin them; `s` is RAM-only (regenerated per sheet) and expires with the
+// QR; the phone pins the Mac by `f`.
 
 import AppKit
 import CoreImage
+import NIOSSL
 import Security
 
 struct PairingQRPayload: Equatable {
-    static let keyByteCount = 32
+    /// R2: the QR carries the Mac's fingerprint `f` (the phone pins it) and a
+    /// one-time 128-bit secret `s` (docs/design/e2ee.md, review R2). The secret
+    /// is RAM-only on the Mac (regenerated per sheet) and expires with the QR.
+    static let secretByteCount = 16
     /// The QR is only valid for five minutes (docs/UX.md).
     static let lifetime: TimeInterval = 300
 
     let clientId: String
     let name: String
-    /// 32 raw key bytes; the QR carries them as 64 lowercase hex characters.
-    let key: Data
+    /// The Mac's TLS identity point fingerprint (64 lowercase hex).
+    let macFingerprintHex: String
+    /// One-time 128-bit secret, 32 lowercase hex chars.
+    let secret: Data
     let createdAt: Date
 
-    init?(clientId: String, name: String, key: Data, createdAt: Date = Date()) {
-        guard !clientId.isEmpty, key.count == Self.keyByteCount else { return nil }
+    init?(clientId: String, name: String, macFingerprintHex: String,
+          secret: Data, createdAt: Date = Date()) {
+        guard !clientId.isEmpty, secret.count == Self.secretByteCount,
+              macFingerprintHex.count == 64, !name.isEmpty else { return nil }
         self.clientId = clientId
         self.name = name
-        self.key = key
+        self.macFingerprintHex = macFingerprintHex.lowercased()
+        self.secret = secret
         self.createdAt = createdAt
     }
 
-    /// A fresh random key (SecRandomCopyBytes) for one QR sheet.
-    static func random(clientId: String, name: String, now: Date = Date()) -> PairingQRPayload? {
-        var bytes = [UInt8](repeating: 0, count: keyByteCount)
+    /// A fresh one-time secret (SecRandomCopyBytes) for one QR sheet.
+    static func random(clientId: String, name: String, macFingerprintHex: String,
+                       now: Date = Date()) -> PairingQRPayload? {
+        var bytes = [UInt8](repeating: 0, count: secretByteCount)
         guard SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) == errSecSuccess else { return nil }
-        return PairingQRPayload(clientId: clientId, name: name, key: Data(bytes), createdAt: now)
+        return PairingQRPayload(clientId: clientId, name: name,
+                                macFingerprintHex: macFingerprintHex, secret: Data(bytes), createdAt: now)
     }
 
-    var keyHex: String { key.map { String(format: "%02x", $0) }.joined() }
+    var secretHex: String { secret.map { String(format: "%02x", $0) }.joined() }
 
-    /// `pocketdeck://pair?c=<clientId>&n=<url-encoded name>&k=<64 hex>`
+    /// The Mac identity's point fingerprint (R2's `f`); an empty string means
+    /// the identity cannot be parsed.
+    static func selfFingerprintHex(identity: DeviceIdentityV2) -> String {
+        guard let cert = try? NIOSSLCertificate(bytes: [UInt8](identity.certPem.utf8), format: .pem),
+              let fp = PinCheckV2.pointFingerprint(cert: cert) else { return "" }
+        return Data(fp).hexString
+    }
+
+    /// `pocketdeck://pair?c=<clientId>&n=<url-encoded name>&f=<macFP 64 hex>&s=<secret 32 hex>`
     var uri: String {
-        "pocketdeck://pair?c=\(Self.percentEncoded(clientId))&n=\(Self.percentEncoded(name))&k=\(keyHex)"
+        "pocketdeck://pair?c=\(Self.percentEncoded(clientId))&n=\(Self.percentEncoded(name))&f=\(macFingerprintHex)&s=\(secretHex)"
     }
 
     func isExpired(now: Date = Date()) -> Bool {

@@ -1100,6 +1100,11 @@ final class ConnectionController {
         identityFile.save(updated)
     }
 
+    /// The Mac's own point fingerprint (the `f` param of the QR URI, R2).
+    private func macFingerprintHex(in identity: DeviceIdentityV2) -> String {
+        PairingQRPayload.selfFingerprintHex(identity: identity)
+    }
+
     /// Nothing to connect to (not discovered, no remembered address): count it as
     /// a failed attempt so the backoff and the 15 s offline rule still run.
     private func noEndpoint() {
@@ -1492,12 +1497,14 @@ final class ConnectionController {
 
     // MARK: QR pairing
 
-    /// Show a fresh key as a QR and probe the phones we can see for it (every 2 s
-    /// round, each phone at most every 4 s, for 5 minutes).
+    /// Show a fresh one-time secret as a QR (c/n/f/s) and probe the phones we
+    /// can see for it (every 2 s round, each phone at most every 4 s, for
+    /// 5 minutes; review R2).
     func startQRPairing(presentAfterLaunch: Bool = false) {
         if let qr, !qr.expired { sheet = .qr; return }
         stopQR()
-        guard let payload = PairingQRPayload.random(clientId: clientId, name: ClientIdentity.name) else {
+        guard let payload = PairingQRPayload.random(clientId: clientId, name: ClientIdentity.name,
+                                                    macFingerprintHex: macFingerprintHex(in: identity)) else {
             showTransient("Couldn't create a pairing code.")
             return
         }
@@ -1551,25 +1558,26 @@ final class ConnectionController {
         for phone in QRProbePlanner.candidates(phones: discovered, paired: paired, active: busy,
                                                 lastProbe: qrLastProbe, busyUntil: qrBusyUntil, now: now) {
             startProbe(id: phone.deviceId, endpoint: .service(phone.endpoint, pinnedTo: phone.interface), deviceId: phone.deviceId,
-                       key: state.payload.key, now: now)
+                       secret: state.payload.secret, now: now)
         }
         if let connect = options.connect {
             let id = "\(connect.host):\(connect.port)"
             let due = qrLastProbe[id].map { now.timeIntervalSince($0) >= QRProbePlanner.probeInterval } ?? true
             if !busy.contains(id), due {
                 startProbe(id: id, endpoint: .hostPort(host: connect.host, port: connect.port), deviceId: nil,
-                           key: state.payload.key, now: now)
+                           secret: state.payload.secret, now: now)
             }
         }
     }
 
-    private func startProbe(id: String, endpoint: Session.Endpoint, deviceId: String?, key: Data, now: Date) {
-        // v2: the QR carries the identity the phone pins (step 8 wires the
-        // `pair.qr` HMAC answer). Until then a probe only opens the TLS pairing
-        // channel and waits; it never sends anything the phone could answer.
+    private func startProbe(id: String, endpoint: Session.Endpoint, deviceId: String?, secret: Data, now: Date) {
+        // R2: the QR probe opens the TLS pairing channel and carries the
+        // sheet's one-time secret; a phone that scanned the QR pins us by `f`
+        // and proves `s` with `pair.qr`.
         let probe = Session(endpoint: endpoint, knownDeviceId: deviceId, clientId: clientId,
                             identity: identity, pinnedPhone: nil, pinStore: pins)
         probe.pairingPolicy = .probe
+        probe.useQRSecret(secret)
         probe.onEvent = { [weak self, weak probe] event in
             MainActor.assumeIsolated {
                 guard let self, let probe else { return }
@@ -1674,7 +1682,8 @@ final class ConnectionController {
         case "qr", "qr-success", "qr-expired":
             rememberedPhones = []
             welcomeSeen = true
-            if let payload = PairingQRPayload.random(clientId: clientId, name: ClientIdentity.name) {
+            if let payload = PairingQRPayload.random(clientId: clientId, name: ClientIdentity.name,
+                                                     macFingerprintHex: macFingerprintHex(in: identity)) {
                 qr = QRPairingState(payload: payload, succeeded: name == "qr-success", expired: name == "qr-expired")
             }
             pendingSheet = .qr

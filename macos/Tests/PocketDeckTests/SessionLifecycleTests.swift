@@ -224,12 +224,60 @@ final class SessionLifecycleTests: XCTestCase {
                                 identity: pinnedIdentity,
                                 pinnedPhone: record, pinStore: pins)
         reconnect.pairingPolicy = .never
+        brain.scannedSecret = nil
         brain.welcomeOnHello = true
         var gotReady = false
         reconnect.onEvent = { if case .ready = $0 { gotReady = true } }
         reconnect.start()
         XCTAssertTrue(waitFor { gotReady }, "pinned reconnect never went ready: \(reconnect.state)")
         reconnect.close()
+    }
+
+    /// R2: the Mac's QR probe carries a one-time secret; a phone that scanned
+    /// proves it with pair.qr, and the probe session pairs + pins it.
+    func testQRProbePinsThePhoneThroughThePairQrProof() throws {
+        try makeFake()
+        let secret = Data((0..<16).map { _ in UInt8.random(in: 0...255) })
+        brain.scannedSecret = secret
+        brain.scannedMacFpHex = PairingQRPayload.selfFingerprintHex(identity: macIdentity.identity)
+        brain.autoAllow = true
+        let pins = PhonePinStoreV2()
+        let probe = makeSession(port: server.port, policy: .probe, pinStore: pins)
+        probe.useQRSecret(secret)
+        var qrSigned = false
+        probe.onEvent = { if case .qrPaired = $0 { qrSigned = true } }
+        probe.start()
+        XCTAssertTrue(waitFor { probe.state == .ready }, "QR probe never paired: \(probe.state)")
+        XCTAssertTrue(qrSigned, "the QR handshake never reached the controller")
+        XCTAssertEqual(pins.record(for: "phone-1")?.phoneFingerprintHex, server.phoneFingerprintHex)
+        probe.close()
+    }
+
+    /// A wrong HMAC (the probe's secret is not what the phone scanned) is
+    /// refused; no pin is stored.
+    func testAWrongQRSecretIsRefused() throws {
+        try makeFake()
+        let realSecret = Data((0..<16).map { _ in UInt8.random(in: 0...255) })
+        brain.scannedSecret = realSecret
+        brain.scannedMacFpHex = PairingQRPayload.selfFingerprintHex(identity: macIdentity.identity)
+        let pins = PhonePinStoreV2()
+        let probe = makeSession(port: server.port, policy: .probe, pinStore: pins)
+        probe.useQRSecret(Data(repeating: 0x77, count: 16)) // the attacker's guess
+        probe.start()
+        XCTAssertTrue(waitFor { probe.state == .failed("pair_qr") }, "state=\(probe.state)")
+        XCTAssertNil(pins.record(for: "phone-1"))
+        probe.close()
+    }
+
+    /// Without a scanned QR the probe sits silent and the connect watchdog
+    /// ends it (the sheet's probes must not junk up the phone with prompts).
+    func testAProbeWithoutAScanNeverPairs() throws {
+        try makeFake()
+        let probe = makeSession(port: server.port, connectTimeout: 0.4, policy: .probe)
+        probe.start()
+        XCTAssertTrue(waitFor { probe.state == .failed("timeout") }, "state=\(probe.state)")
+        XCTAssertNil(brain.lastCode)
+        probe.close()
     }
 
     func testBonjourAttemptsCanBePinnedToTheInterfaceTheyWereFoundOn() throws {
