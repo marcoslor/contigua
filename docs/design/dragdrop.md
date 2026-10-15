@@ -4,11 +4,11 @@ Drag files from Finder onto a phone window → the phone writes them to
 `/sdcard/Download/PocketDeck/`, media-scans them and offers a SEND chooser; clipboard
 images travel both ways. Dragging **out** of a phone window is design only (§Drag out).
 
-## Entry points (Mac) and protocol
+## Protocol
 - **Drop** on any stream window (app, link, phone mode) and on the Deck. A lone `.apk`/`.apks`/`.xapk`
-  keeps going to the APK installer (docs/design/apk.md); anything else is a transfer. Several files
-  queue, one at a time. `--debug-input-script` gains `dropfile PATH` (e2e): it feeds the same
-  handler the drag ends in. `application(_:open:)` is left APK-only (Open With stays an APK path).
+  keeps going to the APK installer (docs/design/apk.md); anything else is a transfer (several queue,
+  one at a time). `--debug-input-script` gains `dropfile PATH` (e2e): it feeds the same handler the
+  drag ends in; `application(_:open:)` stays APK-only, like Open With.
 - Mirrors `apk.install` + `APK_DATA`: Mac → `{"t":"drop.start","id":N,"name","mime","size",
   "sha256","resume":bytes?}` → binary `0x22 DROP_DATA` (`stream` = `id`, chunks ≤ 1 MiB, paced like
   APK parts: ≤ 256 KiB, ≤ 4 in flight) → phone `drop.progress {bytes}` ≤ 4/s, then exactly one
@@ -20,8 +20,8 @@ images travel both ways. Dragging **out** of a phone window is design only (§Dr
 - Names: `[A-Za-z0-9 ._-]`, ≤ 100 chars, no leading dot, collisions " 2", " 3"… — the share-in
   receiver's rules, enforced on both sides.
 
-## Phone side (shell UID, like the APK path)
-All bytes stream into a hidden temp file in `/sdcard/Download/PocketDeck/` (`mkdir -p` on demand;
+## Phone side (shell UID, like the APK path) — progress in the window
+A glass pill like the reconnect pill shows "Sending report.pdf… 43 %" and the outcome for 5 s. All bytes stream into a hidden temp file in `/sdcard/Download/PocketDeck/` (`mkdir -p` on demand;
 the only path we create), renamed after a SHA-256 match. Then a media scan
 (`MediaScannerConnection.scanFile`, best effort) and — where sensible: one file, a context and our
 provider available — `am start -a android.intent.action.SEND -t <mime> --grant-read-uri-permission
@@ -45,9 +45,6 @@ system honours the flag for a shell caller too. The phone never trusts payload o
   shell-made clip depends on ClipboardService URI grants — verified on the emulator; worst case the
   image still exists in the folder.
 
-## Progress in the window (Mac)
-A glass pill like the reconnect pill: "Sending report.pdf… 43 %", then the outcome for 5 s.
-
 ## Drag out (design only, not built)
 The window exposes a file-promise drag (qualifier: a mouse-side long-press, since the input mapper
 owns ordinary drags). On demand the phone sends `share.file` + `SHARE_DATA` on a fresh share id into
@@ -60,6 +57,5 @@ to pm; a second meaning of the same ids invites wrecks). An app-process activity
 clipboard cap over 8 MiB would stream through the queue that carries video and stall the session.
 
 ## Risks
-The shell `SEND` grant is verified with a live `am start` on the emulator; a vendor ROM that refuses
-leaves the file written and a toast instead. Phone→Mac image reads through other apps' content URIs
-may not resolve; best effort, silently skipped.
+The shell SEND grant is verified with a live `am start` on the emulator; a vendor ROM that refuses
+leaves the file written. Phone→Mac image reads through other apps' content URIs may not resolve.
