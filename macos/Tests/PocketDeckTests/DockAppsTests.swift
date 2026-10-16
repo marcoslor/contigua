@@ -199,15 +199,48 @@ final class DockAppsTests: XCTestCase {
 
     // MARK: Bindings
 
+    func testAShimExitClosesItsWindowOnceWhicheverPathSeesIt() throws {
+        let apps = DockApps(folder: folder, profile: Profile(name: "e2e")!)
+        var closed: [UInt32] = []
+        let gone = expectation(description: "the exit watch closes the window")
+        apps.onShimQuit = { stream in closed.append(stream); gone.fulfill() }
+        let shim = Process()
+        shim.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        shim.arguments = ["0.3"]
+        try shim.run()
+        let pid = Int(shim.processIdentifier)
+        apps.bind(pid: pid, stream: 4, pkg: "com.whatsapp")
+        wait(for: [gone], timeout: 5)
+        // NSWorkspace (or the shim's quit message) arriving too is harmless.
+        apps.shimExited(pid)
+        apps.shimExited(pid)
+        XCTAssertEqual(closed, [4])
+        XCTAssertNil(apps.stream(forPid: pid))
+    }
+
+    func testAShimAlreadyGoneWhenBoundClosesItsWindow() throws {
+        let apps = DockApps(folder: folder, profile: Profile(name: "e2e")!)
+        var closed: [UInt32] = []
+        apps.onShimQuit = { closed.append($0) }
+        let shim = Process()
+        shim.executableURL = URL(fileURLWithPath: "/usr/bin/true")
+        try shim.run()
+        shim.waitUntilExit()
+        apps.bind(pid: Int(shim.processIdentifier), stream: 5, pkg: "com.whatsapp")
+        XCTAssertEqual(closed, [5])
+    }
+
     func testBindingsFollowTheWindowIdentity() {
         let apps = DockApps(folder: folder, profile: Profile(name: "e2e")!)
+        // A live pid: a bound pid that is already gone closes its window at once.
+        let pid = Int(getpid())
         XCTAssertEqual(apps.boundStreams, [])
-        apps.bind(pid: 51, stream: 2, pkg: "com.whatsapp")
-        XCTAssertEqual(apps.stream(forPid: 51), 2)
+        apps.bind(pid: pid, stream: 2, pkg: "com.whatsapp")
+        XCTAssertEqual(apps.stream(forPid: pid), 2)
         XCTAssertEqual(apps.binding(stream: 2)?.pkg, "com.whatsapp")
         XCTAssertEqual(apps.boundStreams, [2])
         // A second window of the same app takes the identity over.
-        apps.rebind(pid: 51, to: 3)
+        apps.rebind(pid: pid, to: 3)
         XCTAssertEqual(apps.binding(stream: 3)?.pkg, "com.whatsapp")
         apps.streamClosed(3)
         XCTAssertNil(apps.binding(stream: 3))
