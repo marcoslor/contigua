@@ -42,6 +42,7 @@ struct GeneralSettings: View {
     @AppStorage(ClipboardSync.enabledKey, store: Profile.active.defaults) private var shareClipboard = true
     @AppStorage(WindowDensity.key, store: Profile.active.defaults) private var density = 1.0
     @AppStorage(DockAutoSetting.key, store: Profile.active.defaults) private var showAppsInDock = true
+    @AppStorage(GlassIconsSetting.key, store: Profile.active.defaults) private var glassIconsOn = true
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
 
     var body: some View {
@@ -58,6 +59,7 @@ struct GeneralSettings: View {
             Toggle("Share clipboard with your phone", isOn: $shareClipboard)
             Toggle("Show phone apps in the Dock", isOn: $showAppsInDock)
                 .onChange(of: showAppsInDock) { _, _ in controller.showAppsInDockChanged() }
+            Toggle("Glass app icons", isOn: $glassIconsOn)
             Picker("Default window density", selection: $density) {
                 ForEach(WindowDensity.options, id: \.value) { Text($0.label).tag($0.value) }
             }

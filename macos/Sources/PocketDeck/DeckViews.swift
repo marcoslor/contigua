@@ -584,6 +584,7 @@ struct AppGrid: View {
                         grid {
                             ForEach(apps, id: \.pkg) { app in
                                 AppCell(app: app, icon: controller.icons[app.pkg],
+                                        layers: controller.iconLayers[app.pkg],
                                         iconIsMissing: iconIsMissing(app),
                                         selected: navigator.selection == app.pkg) { controller.openApp(app) }
                                     .id(app.pkg)
@@ -628,15 +629,18 @@ struct AppGrid: View {
 struct AppCell: View {
     let app: AppInfo
     let icon: NSImage?
+    let layers: AppIconLayers?
     let iconIsMissing: Bool
     let selected: Bool
     let open: () -> Void
     @State private var hovering = false
+    @AppStorage(GlassIconsSetting.key, store: Profile.active.defaults) private var glassIconsOn = true
 
     var body: some View {
         Button(action: open) {
             VStack(spacing: 6) {
-                AppIconView(app: app, image: icon, isMissing: iconIsMissing)
+                AppIconView(app: app, image: icon, layers: layers, isMissing: iconIsMissing,
+                            glassOn: glassIconsOn, hovering: hovering)
                 Text(app.label)
                     .font(.caption)
                     .lineLimit(1)
@@ -653,6 +657,7 @@ struct AppCell: View {
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
         .animation(.smooth(duration: 0.15), value: selected)
+        .animation(.smooth(duration: 0.2), value: hovering)
         .accessibilityLabel(app.label)
     }
 }
