@@ -81,4 +81,28 @@ final class LaunchOptionsTests: XCTestCase {
         XCTAssertEqual(options.appearance, "light")
         XCTAssertNil(LaunchOptions.parse(["PocketDeck"]).preview)
     }
+
+    func testParsesBackground() {
+        XCTAssertTrue(LaunchOptions.parse(["PocketDeck", "--profile", "e2e", "--background"]).background)
+        XCTAssertFalse(LaunchOptions.parse(["PocketDeck", "--profile", "e2e"]).background)
+    }
+
+    func testBackgroundNeedsANamedProfileEvenInARelease() {
+        let quiet = LaunchOptions.parse(["PocketDeck", "--background", "--profile", "e2e"])
+        XCTAssertNil(quiet.launchRefusal(releaseBuild: false))
+        XCTAssertNil(quiet.launchRefusal(releaseBuild: true))
+        for args in [["PocketDeck", "--background"], ["PocketDeck", "--background", "--profile", "default"]] {
+            let options = LaunchOptions.parse(args)
+            XCTAssertNotNil(options.launchRefusal(releaseBuild: true), "\(args)")
+            XCTAssertNotNil(options.launchRefusal(releaseBuild: false), "\(args)")
+        }
+    }
+
+    func testDefaultProfileRefusedOnlyInDevBuilds() {
+        let bare = LaunchOptions.parse(["PocketDeck"])
+        XCTAssertNotNil(bare.launchRefusal(releaseBuild: false))
+        XCTAssertNil(bare.launchRefusal(releaseBuild: true))
+        XCTAssertNil(LaunchOptions.parse(["PocketDeck", "--preview", "offline"]).launchRefusal(releaseBuild: false))
+        XCTAssertNotNil(LaunchOptions.parse(["PocketDeck", "--profile", "Bad Name"]).launchRefusal(releaseBuild: true))
+    }
 }

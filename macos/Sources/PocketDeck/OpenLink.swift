@@ -85,7 +85,7 @@ enum PhonePicker {
         alert.accessoryView = popup
         alert.addButton(withTitle: confirm)
         alert.addButton(withTitle: "Cancel")
-        NSApp.activate(ignoringOtherApps: true)
+        BackgroundMode.activateApp()
         guard alert.runModal() == .alertFirstButtonReturn else { return nil }
         return phones[popup.indexOfSelectedItem].id
     }

@@ -48,6 +48,9 @@ struct LaunchOptions {
     /// `--continue-on-mac`: run the Continue on Mac command once the session is
     /// ready (e2e, docs/design/handoff.md).
     var continueOnMac = false
+    /// `--background`: the e2e run's quiet mode (BackgroundMode.swift). Only
+    /// with a non-default profile; the installed app never runs this way.
+    var background = false
 
     /// nil when `--profile` was missing or not a usable name.
     var profile: Profile? { Profile(name: profileName) }
@@ -118,12 +121,26 @@ struct LaunchOptions {
                 options.setNickname = next()
             case "--continue-on-mac":
                 options.continueOnMac = true
+            case "--background":
+                options.background = true
             default:
                 break
             }
             index += 1
         }
         return options
+    }
+
+    /// Why the app must not start with these options, or nil. The default
+    /// profile holds the user's pairings: dev and test builds (and bare
+    /// binaries) must name their own profile, previews touch no data, and
+    /// background mode is never the user's app.
+    func launchRefusal(releaseBuild: Bool) -> String? {
+        guard let profile else { return "--profile \(profileName): use 1-32 of a-z, 0-9 and -" }
+        guard profile.isDefault else { return nil }
+        if background { return "--background needs --profile NAME (never the default profile)" }
+        if preview == nil, !releaseBuild { return "this build needs --profile NAME (the default profile is for the installed app)" }
+        return nil
     }
 
     /// `N:WxH-pt` — the `-pt` suffix is optional.
@@ -159,16 +176,13 @@ final class AppEnvironment {
         let options = LaunchOptions.parse(CommandLine.arguments)
         // A profile name that does not parse must not fall back to the default
         // profile: a test run would then use the user's data.
-        guard let profile = options.profile else {
-            FileHandle.standardError.write(Data("--profile \(options.profileName): use 1-32 of a-z, 0-9 and -\n".utf8))
+        let release = Bundle.main.object(forInfoDictionaryKey: "PDBuildVariant") as? String == "release"
+        if let refusal = options.launchRefusal(releaseBuild: release) {
+            FileHandle.standardError.write(Data((refusal + "\n").utf8))
             exit(2)
         }
-        // The default profile holds the user's pairings; dev and test builds
-        // (and bare binaries) must name their own profile. Previews touch no data.
-        if profile.isDefault, options.preview == nil, Bundle.main.object(forInfoDictionaryKey: "PDBuildVariant") as? String != "release" {
-            FileHandle.standardError.write(Data("this build needs --profile NAME (the default profile is for the installed app)\n".utf8))
-            exit(2)
-        }
+        let profile = options.profile!
+        BackgroundMode.isOn = options.background
         Profile.active = profile
         Log.app.notice("profile \(profile.name, privacy: .public): pair keys \(profile.pairKeys.url.path, privacy: .public), defaults \(profile.defaultsSuiteName ?? "standard", privacy: .public)")
         if options.resetPairing {
@@ -188,9 +202,14 @@ final class AppEnvironment {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Started from a shell (the test harness) there is no LaunchServices to
     /// make the process a regular app; do it explicitly so it gets windows and a Dock icon.
+    /// In background mode it stays out of the Dock and ⌘-Tab instead.
     @MainActor
     func applicationWillFinishLaunching(_ notification: Notification) {
-        NSApp.setActivationPolicy(.regular)
+        if AppEnvironment.shared.options.background {
+            BackgroundMode.start()
+        } else {
+            NSApp.setActivationPolicy(.regular)
+        }
     }
 
     @MainActor
@@ -201,7 +220,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case "dark": NSApp.appearance = NSAppearance(named: .darkAqua)
         default: break
         }
-        NSApp.activate(ignoringOtherApps: true)
+        BackgroundMode.activateApp()
         NSApp.servicesProvider = LinkService.shared
         environment.controller.start()
     }
@@ -258,7 +277,7 @@ enum DeckWindow {
 
     @MainActor
     static func show() {
-        NSApp.activate(ignoringOtherApps: true)
+        BackgroundMode.activateApp()
         guard let window else { return }
         if window.isMiniaturized { window.deminiaturize(nil) }
         window.makeKeyAndOrderFront(nil)

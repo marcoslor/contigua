@@ -641,7 +641,7 @@ final class ConnectionController {
     }
 
     private func focusWindow(stream: UInt32) {
-        NSApp.activate(ignoringOtherApps: true)
+        BackgroundMode.activateApp()
         guard let window = windows.controller(for: stream)?.window else { return }
         if window.isMiniaturized { window.deminiaturize(nil) }
         window.makeKeyAndOrderFront(nil)
@@ -836,7 +836,7 @@ final class ConnectionController {
         panel.allowedContentTypes = ApkBundle.fileExtensions.compactMap { UTType(filenameExtension: $0) }
         panel.allowsMultipleSelection = false
         panel.message = "Choose an Android app (.apk, .apks or .xapk) to install on the phone."
-        NSApp.activate(ignoringOtherApps: true)
+        BackgroundMode.activateApp()
         guard panel.runModal() == .OK, let url = panel.url else { return }
         installApk(url)
     }

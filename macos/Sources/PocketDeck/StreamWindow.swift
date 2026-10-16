@@ -259,7 +259,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         chrome.placeTrafficLights()
         if manager.floatWindows { window?.orderFrontRegardless() }
         window?.makeFirstResponder(videoView)
-        NSApp.activate(ignoringOtherApps: true)
+        BackgroundMode.activateApp()
         configureDwell()
     }
 
