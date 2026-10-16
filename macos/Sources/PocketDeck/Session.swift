@@ -217,6 +217,8 @@ final class Session {
     /// The one-time QR secret S this probe carries (nil outside QR probes);
     /// never written anywhere (R2).
     private var qrSecret: Data?
+    /// The phone allowed a QR pairing (its pair.ok); `.qrPaired` waits for welcome.
+    private var qrApproved = false
     private var loggedExporterSha = false
     private var failedOnce = false
 
@@ -677,12 +679,11 @@ final class Session {
                     fail("pair_commit"); return
                 }
             }
-            // The person allowed on the phone; on the QR path the ack-only
-            // shape completes the sheet.
+            // The person allowed on the phone. On the QR path the sheet
+            // completes on the welcome that follows: the pin is stored there,
+            // and the controller closes this probe as soon as it hears.
             emit(.pairApproved)
-            if qrSecret != nil {
-                emit(.qrPaired(deviceId: knownDeviceId ?? learnedPeerPin))
-            }
+            if qrSecret != nil { qrApproved = true }
         case "welcome":
             logExporterOnce()
             guard let device = message.object("device"), let info = PhoneInfo(device: device) else {
@@ -701,6 +702,10 @@ final class Session {
             }
             storePinFor(info: info)
             knownDeviceIdReal = info.id
+            if qrApproved {
+                qrApproved = false
+                emit(.qrPaired(deviceId: info.id))
+            }
             phone = info
             cancelTimers()
             startPing()

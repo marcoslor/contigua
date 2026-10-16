@@ -636,8 +636,10 @@ check_qr() {
         && ok "C3 app list requested after pairing" || bad "C3 no apps.list"
     grep -q '"t":"window.open"' "$WORK/events.jsonl" && grep -q '"pkg":"com.android.settings"' "$WORK/events.jsonl" \
         && ok "C3 auto-opened app after pairing" || bad "C3 no window.open"
-    # The scan pinned the Mac; a reconnect from the stored pins authenticates.
-    grep -c '"state":"auth_ok"' "$WORK/events.jsonl" | grep -q '^[2-9]' \
+    # The probe session ends `paired`; the reconnect after it authenticates
+    # from the stored pins alone (auth_ok, the phone's pin of this Mac).
+    grep -q '"state":"paired"' "$WORK/events.jsonl" \
+        && [ "$(grep -c '"state":"auth_ok"' "$WORK/events.jsonl")" -ge 1 ] \
         && ok "C3 pins stored, reconnect authenticated" \
         || bad "C3 no reconnect auth_ok ($(grep -c '"state":"auth_ok"' "$WORK/events.jsonl" 2>/dev/null))"
     stop_fakephone
