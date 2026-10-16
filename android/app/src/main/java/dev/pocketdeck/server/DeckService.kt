@@ -111,13 +111,17 @@ class DeckService(private val appContext: Context?) :
                 notifyForward = { forward -> sendToApp { it.onNotifySession(forward) } },
                 mediaCommand = { action -> sendToApp { it.onMediaCommand(action) } },
                 tlsView = Session.TlsView.from(socket).also { view ->
-                    // K4/e2e evidence, hashes only: the platform stack really
-                    // backs the v2 pairing (isSupportedSocket gates the
-                    // exporter) and both ends compare this hash, not the bytes.
-                    if (socket is SSLSocket) log("v2 ssl socket supported: ${SSLSockets.isSupportedSocket(socket)}")
-                    val exporter = view.exporter()
-                    log(if (exporter == null) "v2 exporter unavailable"
-                        else "v2 exporter sha256: " + TlsExporter.toHex(TlsExporter.sha256(exporter)))
+                    // K4/e2e evidence, hashes only, debug builds only: the
+                    // platform stack really backs the v2 pairing
+                    // (isSupportedSocket gates the exporter) and both ends
+                    // compare this hash, not the bytes. Release builds log
+                    // neither line.
+                    if (dev.pocketdeck.BuildConfig.DEBUG) {
+                        if (socket is SSLSocket) log("v2 ssl socket supported: ${SSLSockets.isSupportedSocket(socket)}")
+                        val exporter = view.exporter()
+                        log(if (exporter == null) "v2 exporter unavailable"
+                            else "v2 exporter sha256: " + TlsExporter.toHex(TlsExporter.sha256(exporter)))
+                    }
                 },
             )
         }
