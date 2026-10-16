@@ -45,7 +45,7 @@ WATCH_SRC="$MACOS/scripts/quiet-watch.swift"
 WATCHBIN="$TOOLS/quiet-watch-$(shasum "$WATCH_SRC" | cut -c1-12)"
 # PD_E2E_VISIBLE=1: the app runs as a normal foreground app on the real screens
 # and the checks that need real input run too (debugging). Otherwise the run is
-# quiet: see "Running the e2e checks while you work" in docs/TESTING.md.
+# quiet: see "Running the e2e checks while you work" in docs/TRY-IT.md.
 VISIBLE="${PD_E2E_VISIBLE:-0}"
 LOCK_DIR="/tmp/pocketdeck-e2e.lock"
 KEYCHAIN_SERVICE="dev.pocketdeck.mac.$PROFILE"

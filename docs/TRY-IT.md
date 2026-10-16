@@ -77,6 +77,27 @@ python3 tools/fakephone/deckctl.py --host 127.0.0.1 --port 47811 \
 Details (pairing without a camera, port discovery, timings, what fails on a
 loaded machine) are in `tools/emulator/README.md`.
 
+## Running the e2e checks while you work
+
+`macos/scripts/check-e2e.sh <check|all>` drives a test copy of the app against
+the fakephone. By default the run is quiet, so you can keep typing in another app:
+
+- the app runs with `--background` (only with a test profile, never the default
+  one): no Dock icon or ⌘-Tab entry, it never becomes the frontmost app, and its
+  per-app Dock apps are agents launched in the background;
+- its windows open on a virtual display of its own (about the size of your main
+  display, placed so it touches it only at the bottom-right corner, gone when the
+  app quits), so nothing appears on your screens and the streams keep running;
+- clicks, keys and side buttons are delivered inside the app, never by moving
+  your pointer.
+
+`scripts/quiet-watch.swift` watches the whole run and the summary ends with
+`QUIET focus_changes=N pointer_moves=N visible_windows=N dock_icons=N`; any
+non-zero count fails the run. The few steps that need real input through the
+window server print `SKIP … (needs real input; PD_E2E_VISIBLE=1 runs it)`.
+`PD_E2E_VISIBLE=1` runs everything visibly, as a normal foreground app with real
+pointer events (for debugging; don't type meanwhile).
+
 ## Known limitations (SM-S936B, Android 16)
 
 - This Samsung build puts the virtual display in the panel's display group, so
