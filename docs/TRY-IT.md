@@ -10,6 +10,12 @@ cd android && export JAVA_HOME=/opt/homebrew/opt/openjdk@17 ANDROID_HOME=$HOME/L
 cd macos && ./scripts/install.sh && open /Applications/PocketDeck.app
 ```
 
+0. **Upgrading from a plaintext build? Pair once more.** Sessions are now TLS 1.3
+   with pinned keys (protocol v2), so the old plaintext pairing does not carry
+   over: the first connection after the update asks for a fresh pair (the
+   phone's "This Mac's certificate changed; pair again" or the Mac's "This
+   phone's identity changed. Pair again."). Code and QR pairing both work;
+   after that, reconnects are silent as before.
 1. Phone: PocketDeck → **Pair new Mac** (first run: onboarding → **Scan QR code**).
 2. Mac: **Pair with QR** → point the phone at the sheet (the phone's camera app
    works too — the link opens PocketDeck). The sheet closes itself when paired

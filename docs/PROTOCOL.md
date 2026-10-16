@@ -1,4 +1,4 @@
-# PocketDeck wire protocol — v1
+# PocketDeck wire protocol — v2
 
 The single source of truth for Mac ⇄ phone traffic. Both sides MUST implement
 exactly this. Change it here first, then in code.
@@ -7,13 +7,19 @@ exactly this. Change it here first, then in code.
 
 - **LAN only.** The phone listens on TCP (ephemeral port) and advertises it
   over mDNS/DNS-SD as service type `_pocketdeck._tcp.` with TXT records:
-  `v=1`, `id=<deviceId>` (stable random hex, 16 chars), `name=<device name>`,
-  `model=<Build.MODEL>`.
+  `v=1` (the discovery record's generation), `id=<deviceId>` (stable random
+  hex, 16 chars), `name=<device name>`, `model=<Build.MODEL>`. No fingerprint
+  or other tracking identifier rides in the TXT.
+- **TLS 1.3, mutual, pinned — no plaintext, no v1.** The phone wraps every
+  accepted connection in a platform `SSLSocket` (Conscrypt) and the Mac dials
+  with NIOSSL/BoringSSL (docs/design/e2ee.md §1/§2). Both ends: TLS 1.3 only,
+  client auth required, session resumption and 0-RTT disabled, and the peer
+  certificate pinned (the phone pins the Mac's certificate fingerprint, the
+  Mac pins the phone's). There is no plaintext phase and no v1 fallback: a
+  client that does not complete the handshake is closed without a byte.
 - The Mac connects **one TCP connection per phone** (the "session"). Everything
   — control, input and every video stream — is multiplexed on it.
 - Both ends set `TCP_NODELAY`. Byte order is **big-endian** everywhere.
-- (v1 is plaintext + HMAC auth. TLS is a later milestone; keep framing
-  transport-agnostic.)
 
 ## Framing
 
@@ -91,55 +97,88 @@ display id on every injected event.
 
 ## Session handshake
 
-1. Mac → `{"t":"hello","v":1,"clientId":"<uuid>","name":"<Mac name>"}`
-2. Phone → `{"t":"challenge","nonce":"<32 hex>","id":"<deviceId>"}` (`id` = the mDNS TXT
-   `id`, so a Mac that connected by address knows which stored key to use)
-3. Paired Mac → `{"t":"auth","mac":"<hex>"}` where `mac` = lowercase hex of
-   HMAC-SHA256(key = the 32 raw key bytes, message = UTF-8 bytes of the nonce
-   hex string as sent);
-   unpaired Mac → `{"t":"pair.request"}` (see Pairing).
+1. The TLS 1.3 handshake completes with both certificates exchanged and
+   verified against the pinned peer (an unpaired phone accepts the Mac's
+   certificate and pins it only on a successful pairing; a paired phone
+   refuses a Mac whose certificate fingerprint is not the pinned one with
+   `{"t":"error","code":"bad_pin"}` and closes — "This phone's identity
+   changed" on the Mac side is the same rule in the other direction).
+2. Mac → `{"t":"hello","v":2,"clientId":"<uuid>","name":"<Mac name>","id":"<the Mac's identity id>"}`.
+   A `v` other than 2 gets `{"t":"error","code":"version"}` and a close.
+3. The phone knows the Mac by `clientId`:
+   - **Paired**: its pinned fingerprint must equal the TLS peer's fingerprint;
+     then the phone sends `welcome` and the session is ready.
+   - **Unpaired**: the phone waits in the pairing phase (next section). The
+     Mac asks for the code flow with `{"t":"pair.request"}`; a scanned QR is
+     answered by the phone itself with `pair.qr` (see Pairing).
 4. Phone → `{"t":"welcome","device":{"id":..,"name":..,"model":..,"sdk":36,
-   "screen":{"w":1080,"h":2340,"dpi":450},"locked":true}}` or
-   `{"t":"error","code":"auth_failed"}` and closes.
+   "screen":{"w":1080,"h":2340,"dpi":450},"locked":true}}`. The phone allows
+   exactly one session at a time: a second connection gets
+   `{"t":"error","code":"busy","message":"one session at a time"}` and a close.
 
-Nothing but hello/challenge/auth/pair.request is accepted before `welcome`.
+Nothing but `hello`, `pair.request`, `pair.nonce` and `pair.ok` is accepted
+before `welcome`; anything else is `{"t":"error","code":"protocol"}` and a
+close.
 
 ## Pairing (first contact)
 
-Numeric comparison, like Bluetooth: both screens show the same 6-digit code and the
-person taps Allow on the phone. Nothing is typed, and the Mac sends nothing after
-`pair.request`.
+Numeric comparison (Bluetooth SSP style) over the TLS channel: both screens show
+the same 6-digit code and the person taps Allow on the phone. Nothing is typed
+and no field ever carries the code; comparing the screens authenticates the
+channel against a man in the middle (docs/design/e2ee.md §4).
+
+### Code flow
 
 1. Mac → `{"t":"pair.request"}`.
-2. Phone generates a random 6-digit code, shows it in an Android notification/dialog
-   ("Pair with <Mac name>? Code 123 456" + Allow/Deny) and replies
-   `{"t":"pair.code_shown","code":"123456"}`. The code is new in this message; it is
-   exactly six ASCII digits (leading zeros kept). The Mac shows it grouped "123 456".
-3. The person compares the two screens and taps **Allow** or **Deny** on the phone.
-   - Allow: the phone generates a random 32-byte key, stores `{clientId, name, key}`
-     and replies `{"t":"pair.ok","key":"<64 hex>"}` immediately followed by `welcome`.
-     The Mac stores the key under the device id (a 0600 file in its profile folder).
+2. Phone → `{"t":"pair.commit","c":"<64 hex>"}` where
+   `c = SHA-256("pd-commit-v2" || Np || phoneFP || macFP)`, `Np` = 16 fresh
+   random bytes the phone keeps secret for now, and the fingerprints are the
+   two certificate point fingerprints.
+3. Mac → `{"t":"pair.nonce","n":"<32 hex>"}` with `Nm` = 16 fresh random bytes.
+   The Mac releases `Nm` only after the commit is on record, so the phone's
+   `Np` is hash-locked before the Mac's nonce exists.
+4. Phone → `{"t":"pair.reveal","n":"<32 hex>"}` with `Np`. The Mac recomputes
+   the commit from the revealed `Np` and both fingerprints; a mismatch, or a
+   reveal without a verified commit, closes with `{"t":"error","code":"pair_commit"}`.
+5. Both sides derive the code (docs/design/e2ee.md §4/§4b):
+
+```
+exporter = TLS-Exporter("EXPORTER-pocketdeck-pair", empty context, 32 bytes)
+code     = uint64_be(SHA-256("pd-code-v2" || exporter || macFP || phoneFP
+                             || Nm || Np)[0..8]) mod 1_000_000   // "123 456"
+```
+
+   The phone shows it with its Allow/Deny prompt ("Pair with <Mac name>?"), the
+   Mac shows it next to the phone row.
+6. The person compares the screens and taps **Allow** or **Deny** on the phone.
+   - Allow: the phone pins the Mac's fingerprint, replies
+     `{"t":"pair.ok","phoneFP":"<64 hex>","macFP":"<64 hex>"}` (what each side
+     pins) and immediately follows with `welcome`.
    - Deny: `{"t":"error","code":"pair_denied"}`, then the phone closes.
-   - No decision within **120 s**: `{"t":"error","code":"pair_timeout"}`, then the
-     phone closes.
-4. If the Mac closes the connection first (Cancel, network loss), the phone discards
-   the request and dismisses its prompt.
+   - No decision within **120 s**: `{"t":"error","code":"pair_timeout"}`, then
+     the phone closes. Within the pairing phase the phone applies no read
+     timeout; the 120 s decision window is the only limit.
+7. If the Mac closes first (Cancel, network loss), the phone discards the
+   request and dismisses its prompt. One pairing request per session; a second
+   `pair.request` is ignored.
 
-Timing rules:
+### QR flow (Mac shows, phone scans)
 
-- While a pairing request is open the phone applies no read timeout to the
-  connection (the 15 s handshake timeout ends at `pair.request`); the 120 s decision
-  window is the only limit. A Mac must not apply a per-attempt connect timeout to a
-  session that has received `pair.code_shown`; it may keep its own backstop of 125 s
-  from that message.
-- One pairing request per session; a second `pair.request` is ignored.
-- A phone that predates `code` in `pair.code_shown` expects `pair.confirm`; the Mac
-  treats a `pair.code_shown` without `code` as an incompatible version.
+The Mac shows `pocketdeck://pair?c=<clientId>&n=<name>&f=<macFP hex 64>&s=<S hex 32>`,
+where `s` is a one-time 128-bit secret that expires with the QR. The phone scans
+it, pins `f` (the Mac fingerprint), and proves `s` inside the TLS session:
 
-**The code is displayed only, never typed.** A later milestone (E2E) derives the code
-from both TLS certificate fingerprints, so that comparing the screens authenticates
-the channel against a man in the middle. For that to hold the code must never become
-an input path (no field, no `pair.confirm`): the phone's Allow is the confirmation.
+1. Mac opens the QR sheet: it probes the phones it can reach (and the
+   `--connect` target) with a pairing-channel `hello`, carrying no code.
+2. Phone (holding a scanned payload whose `f` equals the TLS peer's
+   fingerprint) → `{"t":"pair.qr","m":"<64 hex>"}` where
+   `m = HMAC-SHA256(S, "pd-qr-v2" || exporter || phoneFP)`.
+3. Mac verifies `m` with the sheet's secret and answers
+   `{"t":"pair.ok","phoneFP":"<64 hex>","macFP":"<64 hex>"}`; the phone's Allow
+   prompt still gates completion, and the phone then pins the Mac and sends
+   `welcome`.
+4. An expired or unknown QR secret is refused like any failed pairing; the
+   Mac's sheet closes on `welcome`.
 
 ## JSON messages
 
@@ -326,12 +365,21 @@ the sender may be either side:
 
 ## Error codes
 
-`{"t":"error","code":...}` codes: `busy` (another session is active; sent instead of
-`challenge`, then close), `auth_failed`, `pair_denied`, `version`, `protocol` (message not
-allowed in the current state; then close), `pair_timeout` (nobody answered the pairing prompt in 120 s; then close), `no_stream` (unknown `stream`), `launch_failed`, `bad_url` (a `link.open` URL that is not allowed), `bad_size` (`task.continue` without w/h), `not_available` (the phone can't report its foreground app, e.g. no task manager access), `nothing_to_continue` (the foreground is our app, the launcher/home or SystemUI).
+`{"t":"error","code":...}` codes: `busy` (another session is active), `bad_pin` (the
+peer's certificate fingerprint is not the pinned one — the Mac shows "This phone's
+identity changed. Pair again."), `pair_denied`, `pair_commit` (the revealed nonce does
+not match the commit), `version`, `protocol` (message not allowed in the current state;
+then close), `pair_timeout` (nobody answered the pairing prompt in 120 s; then close),
+`no_stream` (unknown `stream`), `launch_failed`, `bad_url` (a `link.open` URL that is
+not allowed), `bad_size` (`task.continue` without w/h), `not_available` (the phone can't
+report its foreground app, e.g. no task manager access), `nothing_to_continue` (the
+foreground is our app, the launcher/home or SystemUI).
 Oversized frames close the session without a reply.
 
 ## Versioning
 
-`v` in hello + mDNS TXT. A phone that can't serve the Mac's `v` replies
-`{"t":"error","code":"version"}` and closes.
+`v` = **2** in `hello` is the protocol version. The mDNS TXT `v` is the
+discovery record's own generation (`1`), a Mac ignores records with another
+value. A phone that can't serve the Mac's protocol version replies
+`{"t":"error","code":"version"}` and closes; there is no v1 negotiation and
+no plaintext fallback (v2 is TLS-only).

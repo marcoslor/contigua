@@ -1,5 +1,6 @@
-// One TCP session per phone. Owns the NWConnection, the framed reader/writer,
-// the handshake state machine, the 15 s app-level ping and reconnect.
+// One TLS session per phone. Owns the NIO channel (TlsConnectorV2), the framed
+// reader/writer, the handshake state machine, the 15 s app-level ping and
+// reconnect.
 //
 // Everything the rest of the app sees is a `SessionEvent` delivered on the
 // main queue; video frames included (the display layer hops to its own queue).

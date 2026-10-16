@@ -138,12 +138,17 @@ system-privileged steps):
 ## The Mac side
 
 - **Connection**: `Discovery` (NWBrowser over `_pocketdeck._tcp`) or manual
-  address; `ConnectionController` owns pairing state and the session.
-  Pairing: QR (the sheet publishes a `pocketdeck://pair?c=…&n=…&k=…` payload)
-  or numeric comparison (six digits on both screens, phone's **Allow** is the
-  confirmation — the code is never typed). Keys live in
-  `~/Library/Application Support/PocketDeck-<profile>/pairkeys.json` (0600);
-  profiles isolate pairing/UI state (`--profile <name>`, never the default).
+  address; `ConnectionController` owns pairing state and the session. Every
+  session is **TLS 1.3, mutual, pinned** (NIOSSL/BoringSSL on this side): the
+  per-profile identity is `…/PocketDeck-<profile>/identity.json` (0600) and
+  each paired phone's fingerprint and certificate live in `pins.json` (0600).
+  Pairing: QR (the sheet publishes
+  `pocketdeck://pair?c=…&n=…&f=…&s=…`, secret one-time) or numeric comparison
+  (six digits on both screens, derived from the TLS exporter and fresh nonces;
+  the phone's **Allow** is the confirmation — the code is never typed). A
+  non-default profile never dials a phone found over Bonjour on its own
+  (`DialPolicy`). Profiles isolate all of this (`--profile <name>`, never the
+  default).
 - **Windows**: `AppWindow`/`StreamWindow` + `StreamChrome`. The style system
   (`WindowStyle`, remembered per app in the profile defaults) has two shapes:
   **Framed** (a permanent 28 pt bar with the traffic lights above the stream)
@@ -232,9 +237,16 @@ docs/                    ARCHITECTURE, PROTOCOL, ROADMAP, TRY-IT, UX, design/
   never dismissed.
 - End of session restores every power state we touched.
 
-## Planned: end-to-end encryption
+## End-to-end encryption (v2, shipped in this branch)
 
-Today's wire is plaintext with HMAC authentication (pairing keys, 0600).
-Mutual TLS with keys pinned at pairing is the P0 launch blocker — same frames,
-encrypted at the transport, so the relay (a later, optional milestone) can
-never read stream content (docs/PROTOCOL.md, docs/ROADMAP.md "Before launch").
+The wire is **TLS 1.3 only, with both ends pinned**: no plaintext phase, no v1
+fallback, no session resumption or 0-RTT, and a certificate that is not the
+pinned peer's is refused (`bad_pin`). The phone terminates each session on a
+platform `SSLSocket` (Conscrypt); the Mac dials with NIOSSL/BoringSSL from an
+in-memory identity. Pairing pins the peer: the code path commits to a fresh
+phone nonce before the Mac releases its own and derives the six digits from the
+TLS exporter plus both nonces (docs/PROTOCOL.md "Pairing", design §4/§4b), and
+the QR path carries the Mac's fingerprint plus a one-time secret the phone
+proves with `pair.qr`. Key material never leaves the devices and never enters
+a log (hashes only). A relay (a later, optional milestone) therefore sees
+ciphertext only (docs/ROADMAP.md "Before launch").
