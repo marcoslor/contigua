@@ -28,6 +28,12 @@
 # build/e2e/PocketDeck.app, rebuilt from the current tree on every run. The
 # default profile (the user's pairings, cached phones and defaults) and the
 # user's build/PocketDeck.app are never read, rebuilt or killed here.
+#
+# The run's virtual display (pd-vdisplay, PD_E2E_PROFILE's serial): one display
+# is created before the first launch and held for the whole run, so the app in
+# background mode reuses it instead of creating and destroying its own on every
+# launch. Display create/destroy is a system-wide reconfiguration; the checks
+# launch the app several times, `all` about 45.
 set -uo pipefail
 
 MACOS="$(cd "$(dirname "$0")/.." && pwd)"
@@ -43,6 +49,11 @@ TOOLS="/tmp/pocketdeck-e2e-tools"
 CGBIN="$TOOLS/cgevent-$(shasum "$CGINPUT" | cut -c1-12)"
 WATCH_SRC="$MACOS/scripts/quiet-watch.swift"
 WATCHBIN="$TOOLS/quiet-watch-$(shasum "$WATCH_SRC" | cut -c1-12)"
+VDISPLAY_SRC="$MACOS/scripts/pd-vdisplay.swift"
+VDISPLAYBIN="$TOOLS/pd-vdisplay-$(shasum "$VDISPLAY_SRC" | cut -c1-12)"
+# The guard (pd-watchdog.sh): no run may leave the Mac's display plumbing
+# burning the way the old per-launch displays once did.
+WATCHDOG="$MACOS/scripts/pd-watchdog.sh"
 # PD_E2E_VISIBLE=1: the app runs as a normal foreground app on the real screens
 # and the checks that need real input run too (debugging). Otherwise the run is
 # quiet: see "Running the e2e checks while you work" in docs/TRY-IT.md.
@@ -89,10 +100,14 @@ finish() {
     if [ -n "${HOLDS_LOCK:-}" ]; then
         kill_e2e_app
         stop_fakephone
+        stop_vdisplay
+        stop_watchdog app
         unregister_share
         remove_dock_apps
     fi
     stop_watch
+    stop_watchdog vdisplay
+    stop_watchdog app
     kill "$CAFFEINATE_PID" >/dev/null 2>&1
     release_lock
 }
@@ -145,6 +160,7 @@ launch() {
     [ "$VISIBLE" = "1" ] || quiet=(--background)
     "$APP" --profile "$PROFILE" "${quiet[@]}" "$@" > "$WORK/app.log" 2>&1 &
     APP_PID=$!
+    start_watchdog app "$APP_PID"
 }
 
 # open_quiet <open args...> — LaunchServices `open` that does not bring the app
@@ -190,6 +206,122 @@ stop_watch() {
     kill "$WATCH_PID" >/dev/null 2>&1
     wait "$WATCH_PID" 2>/dev/null
     WATCH_PID=""
+}
+
+# start_watchdog <slot> <pid> — one of the run's processes is watched
+# (pd-watchdog.sh): the run's virtual display and every app launch, the two
+# things here that make macOS reconfigure what it shows. A watchdog that fires
+# kills its process and appends "WATCHDOG killed reason=…" to the run's log;
+# watchdog_report below turns that into the run's FAIL. <slot> pairs the start
+# with the stop.
+start_watchdog() {
+    local slot="$1" target="$2"
+    "$WATCHDOG" "$target" >> "$WATCHDOG_LOG" 2>&1 &
+    case "$slot" in
+        vdisplay) WD_VDISPLAY_PID=$! ;;
+        app)      WD_APP_PID=$! ;;
+    esac
+}
+
+# stop_watchdog <slot> — nothing to watch any more. A watchdog whose process is
+# already gone has exited on its own; this only makes that explicit, so no
+# watcher outlives the run.
+stop_watchdog() {
+    local slot="$1" pid=""
+    case "$slot" in
+        vdisplay) pid="${WD_VDISPLAY_PID:-}" ;;
+        app)      pid="${WD_APP_PID:-}" ;;
+    esac
+    [ -n "$pid" ] || return 0
+    kill "$pid" >/dev/null 2>&1
+    wait "$pid" 2>/dev/null
+    case "$slot" in
+        vdisplay) WD_VDISPLAY_PID="" ;;
+        app)      WD_APP_PID="" ;;
+    esac
+    return 0
+}
+
+# init_watchdog — the run's watchdog log, empty at its start (the lock is held,
+# so no other run's lines can be in it).
+init_watchdog() {
+    WATCHDOG_LOG="$WORK-watchdog.txt"
+    : > "$WATCHDOG_LOG"
+}
+
+# watchdog_report — what the watchdogs saw, right before the run's summary. Any
+# killed line is a FAIL: a process was taken away from the check that was using
+# it, because the machine was under enough pressure to need that.
+watchdog_report() {
+    stop_watchdog vdisplay
+    stop_watchdog app
+    local line
+    while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        say "$line"
+        bad "$line"
+    done < "$WATCHDOG_LOG"
+}
+
+# build_vdisplay — the run's virtual display helper (pd-vdisplay.swift). A quiet
+# run holds ONE display for the whole run: the app under test finds it by its
+# ids and puts its windows there, instead of creating and destroying a display
+# on every launch. Each create/destroy is a system-wide reconfiguration
+# (WindowServer, colorsync and every running app re-lay out), and a check
+# launches the app several times.
+build_vdisplay() {
+    if [ ! -x "$VDISPLAYBIN" ]; then
+        mkdir -p "$TOOLS"
+        swiftc -O "$VDISPLAY_SRC" -o "$VDISPLAYBIN" >/dev/null 2>&1 || { say "could not build $VDISPLAY_SRC"; return 1; }
+    fi
+}
+
+# start_vdisplay — starts the helper and reads the one line it prints
+# ("id=… w=… h=… scale=…"): the id is the display the run's app should use, the
+# size and scale are what the display-dependent expectations below are read
+# from (never hardcoded again). Nothing is passed on to the app. A run that
+# cannot start it still works: the app then creates a display of its own, the
+# way a manual --background launch does.
+start_vdisplay() {
+    # A visible run is on the person's own screens: the app looks for no display
+    # of its own there and makes none, so this run makes none either.
+    if [ "$VISIBLE" = "1" ]; then
+        VDISPLAY_ID=""
+        VDISPLAY_SCALE=""
+        return 0
+    fi
+    VDISPLAY_FILE="$WORK-vdisplay.txt"
+    rm -f "$VDISPLAY_FILE"
+    "$VDISPLAYBIN" --profile "$PROFILE" > "$VDISPLAY_FILE" 2>&1 &
+    VDISPLAY_PID=$!
+    start_watchdog vdisplay "$VDISPLAY_PID"
+    local tries=40
+    while [ "$tries" -gt 0 ]; do
+        grep -q "^id=" "$VDISPLAY_FILE" && break
+        sleep 0.25
+        tries=$((tries - 1))
+    done
+    VDISPLAY_ID="$(sed -n 's/^id=\([0-9]*\).*/\1/p' "$VDISPLAY_FILE" | head -1)"
+    VDISPLAY_SCALE="$(sed -n 's/^id=[0-9]* .*scale=\([0-9]*\).*/\1/p' "$VDISPLAY_FILE" | head -1)"
+    if [ -z "$VDISPLAY_ID" ]; then
+        VDISPLAY_SCALE=1
+        say "pd-vdisplay could not create the run's virtual display ($(tr '\n' ' ' < "$VDISPLAY_FILE"))"
+        say "the app will create one per launch instead (a manual --background launch does the same)"
+        stop_vdisplay
+        return 1
+    fi
+    say "run display: virtual display $VDISPLAY_ID, scale ${VDISPLAY_SCALE:-1} (held for the whole run)"
+    return 0
+}
+
+# stop_vdisplay — the display goes away with the helper, once the app is gone.
+stop_vdisplay() {
+    stop_watchdog vdisplay
+    [ -n "${VDISPLAY_PID:-}" ] || return 0
+    kill "$VDISPLAY_PID" >/dev/null 2>&1
+    wait "$VDISPLAY_PID" 2>/dev/null
+    VDISPLAY_PID=""
+    return 0
 }
 
 # quiet_report — the QUIET line; in a quiet run any non-zero count is one FAIL.
@@ -2775,6 +2907,9 @@ build_e2e_app || exit 1
 build_cgevent || exit 1
 build_share_driver || exit 1
 build_watch || exit 1
+build_vdisplay || exit 1
+init_watchdog
+start_vdisplay
 start_watch
 case "$which_check" in
     qr)       check_qr ;;
@@ -2810,6 +2945,7 @@ case "$which_check" in
 esac
 
 quiet_report
+watchdog_report
 say ""
 say "passed=$PASS failed=$FAIL"
 [ "$FAIL" = "0" ]
