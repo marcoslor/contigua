@@ -80,3 +80,38 @@ extension NSWindow {
 extension NSApplication {
     @objc fileprivate var pd_keyWindow: NSWindow? { pd_keyWindow ?? BackgroundKeyWindow.current }
 }
+
+/// Background mode's stand-in for LaunchServices handing the app a file: a quiet
+/// run cannot use `open -a`, which brings the running app to the front even
+/// with `-g`. A `*.path` file in the folder holds one absolute path per line;
+/// it is read, removed, and its paths go to the app's own open handler.
+/// nil (inert) unless the app runs with `--background`.
+final class OpenRequestInbox {
+    let folder: URL
+    private var timer: Timer?
+
+    init?(options: LaunchOptions) {
+        guard options.background, let path = options.openRequests, path.hasPrefix("/") else { return nil }
+        folder = URL(fileURLWithPath: path, isDirectory: true)
+    }
+
+    /// The paths of the requests waiting in the folder, oldest name first; the
+    /// request files are removed.
+    func take() -> [URL] {
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? []
+        return names.filter { $0.hasSuffix(".path") }.sorted().flatMap { name -> [URL] in
+            let file = folder.appendingPathComponent(name)
+            defer { try? FileManager.default.removeItem(at: file) }
+            let text = (try? String(contentsOf: file, encoding: .utf8)) ?? ""
+            return text.split(separator: "\n").map(String.init).filter { $0.hasPrefix("/") }
+                .map { URL(fileURLWithPath: $0) }
+        }
+    }
+
+    func start(_ open: @escaping ([URL]) -> Void) {
+        timer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
+            guard let urls = self?.take(), !urls.isEmpty else { return }
+            open(urls)
+        }
+    }
+}
