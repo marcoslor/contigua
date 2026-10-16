@@ -82,8 +82,18 @@ final class VirtualDisplay {
                                        primaryHeight: CGDisplayBounds(CGMainDisplayID()).height)
     }
 
-    /// A display of the main display's point size at 2x, at its bottom-right
-    /// corner. nil (and a log line) when this macOS refuses the API.
+    /// The quiet-mode screen: 1280x800 pt at 1x (1280x800 px). A background run
+    /// only ever needs a place for its windows to be on screen; the person's
+    /// screen size at 2x (3360x2100 px) cost the window server, colorsync and
+    /// every running app a re-layout for no benefit — the video is scaled into
+    /// the window anyway.
+    static let pointSize = (width: UInt(1280), height: UInt(800))
+    /// 1x: the display's pixels are its points. 2x would double every byte the
+    /// window server composites; nothing in the app or the checks needs it.
+    static let backingScale: UInt = 1
+
+    /// A display of this size at its bottom-right corner. nil (and a log line)
+    /// when this macOS refuses the API.
     @discardableResult
     /// FNV-1a of the profile name: the same profile always gets the same display.
     static func serialNumber(profile: String) -> UInt32 {
@@ -105,8 +115,8 @@ final class VirtualDisplay {
             return adopted
         }
         let main = CGDisplayBounds(CGMainDisplayID())
-        let width = UInt(main.width > 0 ? main.width : 1680)
-        let height = UInt(main.height > 0 ? main.height : 1050)
+        let width = pointSize.width
+        let height = pointSize.height
         guard let descriptor = make("CGVirtualDisplayDescriptor"),
               let settings = make("CGVirtualDisplaySettings"),
               let mode = alloc("CGVirtualDisplayMode", initWith: width, height),
@@ -115,8 +125,8 @@ final class VirtualDisplay {
             return nil
         }
         descriptor.setValue("PocketDeck e2e", forKey: "name")
-        descriptor.setValue(width * 2, forKey: "maxPixelsWide")
-        descriptor.setValue(height * 2, forKey: "maxPixelsHigh")
+        descriptor.setValue(width * backingScale, forKey: "maxPixelsWide")
+        descriptor.setValue(height * backingScale, forKey: "maxPixelsHigh")
         descriptor.setValue(NSValue(size: NSSize(width: 340, height: 212)), forKey: "sizeInMillimeters")
         descriptor.setValue(vendorID, forKey: "vendorID")
         descriptor.setValue(productID, forKey: "productID")
@@ -132,12 +142,12 @@ final class VirtualDisplay {
             return nil
         }
         settings.setValue([mode], forKey: "modes")
-        settings.setValue(1, forKey: "hiDPI")
+        settings.setValue(backingScale == 2 ? 1 : 0, forKey: "hiDPI")
         guard apply(settings, to: handle), let id = (handle.value(forKey: "displayID") as? NSNumber)?.uint32Value, id != 0 else {
             Log.app.error("background: the virtual display refused its settings")
             return nil
         }
-        configure(id, pointSize: (width, height), corner: BackgroundPlacement.cornerOrigin(touching: main))
+        configure(id, pointSize: pointSize, corner: BackgroundPlacement.cornerOrigin(touching: main))
         let created = VirtualDisplay(displayID: id, handle: handle)
         shared = created
         Log.app.notice("background: virtual display \(id, privacy: .public) at \(String(describing: CGDisplayBounds(id)), privacy: .public)")
@@ -151,9 +161,10 @@ final class VirtualDisplay {
         guard CGBeginDisplayConfiguration(&config) == .success else { return }
         let options = [kCGDisplayShowDuplicateLowResolutionModes: true] as CFDictionary
         let modes = CGDisplayCopyAllDisplayModes(id, options) as? [CGDisplayMode] ?? []
-        if let retina = modes.first(where: { $0.width == Int(pointSize.0) && $0.height == Int(pointSize.1)
-                                              && $0.pixelWidth == Int(pointSize.0) * 2 }) {
-            CGConfigureDisplayWithDisplayMode(config, id, retina, nil)
+        let wanted = Int(pointSize.0) * Int(backingScale)
+        if let mode = modes.first(where: { $0.width == Int(pointSize.0) && $0.height == Int(pointSize.1)
+                                           && $0.pixelWidth == wanted }) {
+            CGConfigureDisplayWithDisplayMode(config, id, mode, nil)
         }
         CGConfigureDisplayOrigin(config, id, Int32(corner.x), Int32(corner.y))
         CGCompleteDisplayConfiguration(config, .forAppOnly)

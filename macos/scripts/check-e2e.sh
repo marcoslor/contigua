@@ -284,10 +284,12 @@ build_vdisplay() {
 # way a manual --background launch does.
 start_vdisplay() {
     # A visible run is on the person's own screens: the app looks for no display
-    # of its own there and makes none, so this run makes none either.
+    # of its own there and makes none, so this run makes none either. Those
+    # screens are Retina at 2x — the scale the numbers these checks have always
+    # been written against.
     if [ "$VISIBLE" = "1" ]; then
         VDISPLAY_ID=""
-        VDISPLAY_SCALE=""
+        RUN_SCALE=2
         return 0
     fi
     VDISPLAY_FILE="$WORK-vdisplay.txt"
@@ -302,15 +304,16 @@ start_vdisplay() {
         tries=$((tries - 1))
     done
     VDISPLAY_ID="$(sed -n 's/^id=\([0-9]*\).*/\1/p' "$VDISPLAY_FILE" | head -1)"
-    VDISPLAY_SCALE="$(sed -n 's/^id=[0-9]* .*scale=\([0-9]*\).*/\1/p' "$VDISPLAY_FILE" | head -1)"
+    RUN_SCALE="$(sed -n 's/^id=[0-9]* .*scale=\([0-9]*\).*/\1/p' "$VDISPLAY_FILE" | head -1)"
     if [ -z "$VDISPLAY_ID" ]; then
-        VDISPLAY_SCALE=1
+        # The app then creates its own display of the same size and scale.
+        RUN_SCALE=1
         say "pd-vdisplay could not create the run's virtual display ($(tr '\n' ' ' < "$VDISPLAY_FILE"))"
         say "the app will create one per launch instead (a manual --background launch does the same)"
         stop_vdisplay
         return 1
     fi
-    say "run display: virtual display $VDISPLAY_ID, scale ${VDISPLAY_SCALE:-1} (held for the whole run)"
+    say "run display: virtual display $VDISPLAY_ID, scale ${RUN_SCALE:-1} (held for the whole run)"
     return 0
 }
 
@@ -648,31 +651,45 @@ check_render() {
 check_resize() {
     clean
     start_fake || return 1
+    # The video's pixels are the window's points at the run's backing scale
+    # (VideoGeometry.displayPixels), so each pt size below is the pixel size
+    # these assertions have always named, divided by that scale: at 1x the
+    # window is twice as big in points and the phone sees what it saw at 2x.
+    # The cap case asks for more than 2560 pt at 1x so the 2560 px cap stays in
+    # play; a window bigger than the display has to be possible for any of this
+    # to mean anything, and the app sets frames rather than dragging them.
+    local scale="$RUN_SCALE" w h
+    w=$((1600 / scale)); h=$((1200 / scale))
     launch --connect "127.0.0.1:$PORT" \
-        --open com.android.settings --resize-stream 1:800x600-pt --quit-after 60
-    # The window is 800x600 pt and the video is all of it.
+        --open com.android.settings --resize-stream "1:${w}x${h}-pt" --quit-after 60
+    # The window is wxh pt and the video is all of it.
     wait_until 30 events_have '"ev":"video","stream":1,"config":true,"w":1600,"h":1200' \
-        && ok "C6 new video config 1600x1200 (the whole 800x600 pt window, at 2x)" || bad "C6 no new config"
+        && ok "C6 new video config 1600x1200 (the whole ${w}x${h} pt window, at ${scale}x)" || bad "C6 no new config"
     events_have '"t":"window.resize"' \
         && ok "C6 window.resize sent" || bad "C6 no window.resize"
-    screenshot 800 "$WORK/resize.png" && say "screenshot: $WORK/resize.png"
+    screenshot "$w" "$WORK/resize.png" && say "screenshot: $WORK/resize.png"
     stop_app
 
     # Non-16:9 shapes: tall, then ultra-wide (capped at 2560 px, aspect kept).
+    w=$((1200 / scale)); h=$((1800 / scale))
     launch --connect "127.0.0.1:$PORT" --open com.android.settings \
-        --resize-stream 1:600x900-pt --quit-after 60
+        --resize-stream "1:${w}x${h}-pt" --quit-after 60
     wait_until 30 events_have '"ev":"video","stream":1,"config":true,"w":1200,"h":1792' \
-        && ok "C6 tall shape resized to 1200x1792 (900 pt at 2x, floored to 16)" || bad "C6 no tall config"
-    screenshot 600 "$WORK/resize-tall.png" && say "screenshot: $WORK/resize-tall.png"
+        && ok "C6 tall shape resized to 1200x1792 (${w}x${h} pt at ${scale}x, floored to 16)" || bad "C6 no tall config"
+    screenshot "$w" "$WORK/resize-tall.png" && say "screenshot: $WORK/resize-tall.png"
     stop_app
 
+    w=$((3200 / scale)); h=$((1000 / scale))
     launch --connect "127.0.0.1:$PORT" --open com.android.settings \
-        --resize-stream 1:1600x500-pt --quit-after 60
+        --resize-stream "1:${w}x${h}-pt" --quit-after 60
     wait_until 30 events_have '"ev":"video","stream":1,"config":true,"w":2560,"h":800' \
         && ok "C6 ultra-wide capped to 2560x800 (aspect kept)" || bad "C6 no capped config"
-    events_have '"dpi":256' \
-        && ok "C6 capped size lowers the dpi to 256" || bad "C6 dpi did not follow the cap"
-    screenshot 1600 "$WORK/resize-wide.png" || screenshot_widest "$WORK/resize-wide.png" \
+    # dpi = 160 x the video's pixel ratio x density (VideoGeometry.dpi): the
+    # capped 2560 px across the window's w pt.
+    local want_dpi=$((160 * 2560 / w))
+    events_have "\"dpi\":$want_dpi" \
+        && ok "C6 capped size lowers the dpi to $want_dpi" || bad "C6 dpi did not follow the cap"
+    screenshot "$w" "$WORK/resize-wide.png" || screenshot_widest "$WORK/resize-wide.png" \
         && say "screenshot: $WORK/resize-wide.png"
     stop_app
     stop_fakephone
@@ -1252,9 +1269,10 @@ window_gone() {
 # the 900x600 pt stream plus a permanent 28 pt bar above it (the stream's own
 # mirrored top rows under the window material), lights on the bar's line, and
 # the bar is not flat while a colourful stream runs (testsrc2) but tracks the
-# stream's top row at the seam. The virtual display (window.open 1792x1200,
-# every window.resize at that size) never changes with the style or while
-# switching. Immersive: the window is exactly the stream; a click in the
+# stream's top row at the seam. The virtual display (window.open of the 900x600
+# pt stream at the run's backing scale — 1792x1200 at 2x, 896x592 at 1x — every
+# window.resize at that size) never changes with the style or while switching.
+# Immersive: the window is exactly the stream; a click in the
 # 72x32 hot zone before the dwell reaches the app as ordinary touch, a rest
 # shows the dwell pill (the traffic lights on screen), a click on the minimise
 # light minimises the window and no touch reaches the phone from the chrome.
@@ -1270,6 +1288,11 @@ check_chrome() {
     [ "$VISIBLE" = "1" ] || on_virtual=(--virtual)
     "$CGBIN" backdrop --file "$WORK/backdrop.txt" --seconds 120 "${on_virtual[@]}" &
     local backdrop=$!
+    # The stream's video pixels: 900x600 pt at the run's backing scale, floored
+    # to 16 (VideoGeometry.displayPixels) — 1792x1200 in a 2x run, the one size
+    # the phone is told and the display keeps through every style and switch.
+    local wake hake
+    wake=$((900 * RUN_SCALE / 16 * 16)); hake=$((600 * RUN_SCALE / 16 * 16))
 
     # --- Framed: the permanent bar over the stream ---
     # The pointer rests in the window, below the bar.
@@ -1284,7 +1307,7 @@ check_chrome() {
     local before
     before="$(window_opens_resizes)"
     case "$before" in
-        "open=1792x1200 "*) ok "C14 window.open is 1792x1200: the 900x600 pt stream at 2x, no bar in it" ;;
+        "open=${wake}x${hake} "*) ok "C14 window.open is ${wake}x${hake}: the 900x600 pt stream at ${RUN_SCALE}x, no bar in it" ;;
         *) bad "C14 window.open size: $before" ;;
     esac
     chrome_is "style=framed lights=shown pill=hidden" \
@@ -1433,7 +1456,7 @@ check_chrome() {
     # The virtual display's size never changed over the whole run: one size,
     # the stream's, through three launches and every switch.
     case "$(resize_sizes)" in
-        1792x1200) ok "C14 the virtual display kept the stream's size through all styles and switches" ;;
+        "${wake}x${hake}") ok "C14 the virtual display kept the stream's size through all styles and switches" ;;
         # No resize landed: every window.resize kept the display's one true size.
         none) ok "C14 the virtual display changed nothing: one stream size throughout" ;;
         *) bad "C14 the virtual display changed: $(resize_sizes)" ;;
@@ -1465,7 +1488,7 @@ check_trackpad() {
     wait_until 40 events_have '"action":"back"' \
         || { bad "C15 scripted trackpad gestures did not reach the phone"; say "app log: $(tail -3 "$WORK/app.log")"; }
     local verdicts
-    verdicts="$(python3 - "$WORK/events.jsonl" <<'PY' || true
+    verdicts="$(python3 - "$WORK/events.jsonl" "$RUN_SCALE" <<'PY' || true
 import json, math, sys
 
 touches, scrolls = [], []
@@ -1510,9 +1533,9 @@ verdict(len(scrolls) == 1 and scrolls[0]["v"] > 0, "C15 the wheel is one SCROLL 
 if len(gestures) != 4:
     sys.exit(0)
 
-# Video height in points is half its pixels (2x backing); 200 pt of scroll moves
-# the finger by 200 / that, normalized.
-height_pt = video[1] / 2
+# Video height in points is its pixels divided by the backing scale of the run;
+# 200 pt of scroll moves the finger by 200 / that, normalized.
+height_pt = video[1] / float(sys.argv[2])
 expected = 200.0 / height_pt
 
 
