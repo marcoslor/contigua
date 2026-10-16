@@ -443,7 +443,18 @@ class Session(
 
     private fun onAppsIcon(obj: Map<String, Any?>) {
         val pkg = Json.str(obj["pkg"]) ?: return
-        sendJson(mapOf("t" to "icon", "pkg" to pkg, "png" to (catalog.iconPng(pkg) ?: "")))
+        // The layers ride along as optional fields; a non-adaptive icon sends
+        // none and an old Mac just ignores them.
+        val fields = LinkedHashMap<String, Any?>()
+        fields["t"] = "icon"
+        fields["pkg"] = pkg
+        fields["png"] = catalog.iconPng(pkg) ?: ""
+        catalog.iconLayers(pkg)?.let { layers ->
+            fields["fg"] = layers.fg
+            fields["bg"] = layers.bg
+            layers.mono?.let { fields["mono"] = it }
+        }
+        sendJson(fields)
     }
 
     private fun onWindowOpen(obj: Map<String, Any?>, frame: Frame) {
