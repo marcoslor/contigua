@@ -501,10 +501,10 @@ final class DebugInputDriver {
     }
 
     /// Escape is only forwarded to a key window, so the window is made key
-    /// first. Activation is in-process; the other app's focus is not involved.
+    /// first. In background mode the app is not activated for it.
     private func focus(_ window: NSWindow) {
         guard !window.isKeyWindow else { return }
-        NSApp.activate(ignoringOtherApps: true)
+        BackgroundMode.activateApp()
         window.makeKeyAndOrderFront(nil)
     }
 
