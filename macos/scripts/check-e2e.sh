@@ -66,8 +66,10 @@ PASS=0
 FAIL=0
 
 # macOS removes app windows from the on-screen window list (and breaks
-# `screencapture -l`) while the display is asleep, so keep it awake for the run.
-caffeinate -d -u -t 900 &
+# `screencapture -l`) while the display is asleep, and a Mac that sleeps mid-run
+# can leave the run's virtual display online (pd-vdisplay then refuses to run),
+# so keep it awake for the whole run. -w $$: until this script exits.
+caffeinate -d -i -w $$ &
 CAFFEINATE_PID=$!
 disown "$CAFFEINATE_PID"
 trap 'finish' EXIT
@@ -279,9 +281,13 @@ build_vdisplay() {
 # start_vdisplay — starts the helper and reads the one line it prints
 # ("id=… w=… h=… scale=…"): the id is the display the run's app should use, the
 # size and scale are what the display-dependent expectations below are read
-# from (never hardcoded again). Nothing is passed on to the app. A run that
-# cannot start it still works: the app then creates a display of its own, the
-# way a manual --background launch does.
+# from (never hardcoded again). Nothing is passed on to the app.
+#
+# A quiet run holds the display or it does not run: every check below is written
+# against it, and falling back to a display per app launch is the many-
+# reconfigurations path this display exists to avoid. The helper prints
+# "FAIL vdisplay: …" (and exits non-zero) when it cannot create one or finds one
+# of its identity already online; the run stops there, "all" included.
 start_vdisplay() {
     # A visible run is on the person's own screens: the app looks for no display
     # of its own there and makes none, so this run makes none either. Those
@@ -299,17 +305,15 @@ start_vdisplay() {
     start_watchdog vdisplay "$VDISPLAY_PID"
     local tries=40
     while [ "$tries" -gt 0 ]; do
-        grep -q "^id=" "$VDISPLAY_FILE" && break
+        grep -qE '^(id=|FAIL)' "$VDISPLAY_FILE" && break
         sleep 0.25
         tries=$((tries - 1))
     done
     VDISPLAY_ID="$(sed -n 's/^id=\([0-9]*\).*/\1/p' "$VDISPLAY_FILE" | head -1)"
     RUN_SCALE="$(sed -n 's/^id=[0-9]* .*scale=\([0-9]*\).*/\1/p' "$VDISPLAY_FILE" | head -1)"
     if [ -z "$VDISPLAY_ID" ]; then
-        # The app then creates its own display of the same size and scale.
-        RUN_SCALE=1
-        say "pd-vdisplay could not create the run's virtual display ($(tr '\n' ' ' < "$VDISPLAY_FILE"))"
-        say "the app will create one per launch instead (a manual --background launch does the same)"
+        say "FAIL vdisplay: no virtual display for the run ($(tr '\n' ' ' < "$VDISPLAY_FILE"))"
+        say "the run stops here: its checks are written against that display"
         stop_vdisplay
         return 1
     fi
@@ -2932,7 +2936,7 @@ build_share_driver || exit 1
 build_watch || exit 1
 build_vdisplay || exit 1
 init_watchdog
-start_vdisplay
+start_vdisplay || exit 1
 start_watch
 case "$which_check" in
     qr)       check_qr ;;

@@ -20,6 +20,13 @@
 // — and then holds the display until SIGTERM/SIGINT (the display goes away with
 // this process). check-e2e reads that line; the app is told nothing and finds
 // the display by its ids.
+//
+// A display it cannot create, or one of the same identity left online by a run
+// that did not end cleanly, is a `FAIL vdisplay: …` line and a non-zero exit:
+// the checks are written against this display, so check-e2e stops the run at
+// once rather than let a quiet run fall back to a display per app launch.
+// (Sleeping mid-run is how such a leftover happened once; check-e2e holds a
+// caffeinate for the whole run.)
 
 import CoreGraphics
 import Foundation
@@ -100,7 +107,63 @@ func apply(_ settings: NSObject, to display: NSObject) -> Bool {
     return applyFn(display, selector, settings)
 }
 
+// MARK: The display's own geometry, as the checks read it
+
+/// A display of this identity that is already online. A run that ends cleanly
+/// never leaves one: the display goes away with the helper process that holds
+/// it. One online before this helper makes its own means the run would be
+/// drawing on a screen this process does not hold, and a second create of the
+/// same identity fails on top of that — the run is stopped instead (see below).
+/// A Mac that sleeps mid-run is how such a leftover happens; check-e2e.sh keeps
+/// it awake with caffeinate.
+func existingDisplay() -> CGDirectDisplayID? {
+    var count: UInt32 = 0
+    CGGetOnlineDisplayList(0, nil, &count)
+    var ids = [CGDirectDisplayID](repeating: 0, count: Int(count))
+    CGGetOnlineDisplayList(count, &ids, &count)
+    return ids.prefix(Int(count)).first {
+        CGDisplayVendorNumber($0) == vendorID && CGDisplayModelNumber($0) == productID
+    }
+}
+
+/// The one line check-e2e reads: the display's id, its point size and its scale
+/// (its pixels per point). Read from the display, not from the constants the
+/// create used: the checks then assert against the display the run really has.
+func describe(_ id: CGDirectDisplayID) -> String {
+    let bounds = CGDisplayBounds(id)
+    let pixels = CGDisplayPixelsWide(id)
+    let scale = bounds.width > 0 ? (Double(pixels) / Double(bounds.width)).rounded() : 1
+    return "id=\(id) w=\(Int(bounds.width)) h=\(Int(bounds.height)) scale=\(Int(max(scale, 1)))"
+}
+
 // MARK: The display
+
+/// Stop the run, with the one line check-e2e shows: every check in it is
+/// written against the display this helper holds, so a run that cannot have one
+/// must not go on (a quiet run would otherwise fall back to a display per app
+/// launch, many reconfigurations — the thing this whole path exists to avoid).
+func fail(_ reason: String) -> Never {
+    print("FAIL vdisplay: \(reason)")
+    fflush(stdout)
+    exit(1)
+}
+
+func hold(_ id: CGDirectDisplayID) -> Never {
+    print(describe(id))
+    fflush(stdout)
+    signal(SIGTERM) { _ in exit(0) }
+    signal(SIGINT) { _ in exit(0) }
+    // The descriptor's queue is the main queue, and the display lives as long as
+    // this process: hold it here.
+    RunLoop.main.run()
+    exit(0)
+}
+
+// A leftover display of this identity is not adopted: it is not this process's
+// to hold, and it is a run that did not end cleanly.
+if let leftover = existingDisplay() {
+    fail("a display of this identity (id=\(leftover)) is already online")
+}
 
 let size = (width: Screen.width, height: Screen.height)
 let scale = Screen.scale
@@ -108,8 +171,7 @@ guard let descriptor = make("CGVirtualDisplayDescriptor"),
       let settings = make("CGVirtualDisplaySettings"),
       let mode = modeClass(width: size.width, height: size.height),
       let makeDisplay = displayMaker() else {
-    FileHandle.standardError.write(Data("pd-vdisplay: no CGVirtualDisplay on this macOS\n".utf8))
-    exit(1)
+    fail("no CGVirtualDisplay on this macOS")
 }
 descriptor.setValue("PocketDeck e2e", forKey: "name")
 descriptor.setValue(size.width * scale, forKey: "maxPixelsWide")
@@ -120,15 +182,13 @@ descriptor.setValue(productID, forKey: "productID")
 descriptor.setValue(serialNumber(profile: profile), forKey: "serialNum")
 // The display is created after the descriptor is filled in: init reads it.
 guard let handle = makeDisplay(descriptor) else {
-    FileHandle.standardError.write(Data("pd-vdisplay: CGVirtualDisplay init failed\n".utf8))
-    exit(1)
+    fail("CGVirtualDisplay init failed")
 }
 settings.setValue([mode], forKey: "modes")
 settings.setValue(scale == 2 ? 1 : 0, forKey: "hiDPI")
 guard apply(settings, to: handle),
       let id = (handle.value(forKey: "displayID") as? NSNumber)?.uint32Value, id != 0 else {
-    FileHandle.standardError.write(Data("pd-vdisplay: the virtual display refused its settings\n".utf8))
-    exit(1)
+    fail("the virtual display refused its settings")
 }
 
 // The mode and the corner origin, for this process's lifetime only (.forAppOnly):
@@ -147,12 +207,4 @@ func configure(_ id: CGDirectDisplayID) {
     CGCompleteDisplayConfiguration(config, .forAppOnly)
 }
 configure(id)
-
-print("id=\(id) w=\(size.width) h=\(size.height) scale=\(scale)")
-fflush(stdout)
-
-signal(SIGTERM) { _ in exit(0) }
-signal(SIGINT) { _ in exit(0) }
-// The descriptor's queue is the main queue, and the display lives as long as
-// this process: hold it here.
-RunLoop.main.run()
+hold(id)
