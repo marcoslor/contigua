@@ -71,7 +71,7 @@ Detail, states, copy and the connection state machine: [design/mac-redesign.md](
    displays the link; the phone mirror as nothing). It arrives on its own, ends when the window closes, and **Options → Keep in Dock**
    makes it permanent ("Add to Dock" in the app's context menu does the same by hand; Settings → General switches it off).
 3. **Settings** (⌘,; also the settings gear at the Deck header's right): tabs **General** (launch at login, show in menu bar,
-   share clipboard with the phone, show phone apps in the Dock, default window density) · **Devices** (paired phones: name,
+   share clipboard with your phone, show phone apps in the Dock, **glass app icons**, default window density) · **Devices** (paired phones: name,
    model, last seen, **Rename…**, **Use**, **Forget**; **Add phone…**; the Dock shims rebuild on a rename). Nothing else.
 
     A **nickname** ("Rename…" dialog) is 1–40 characters, trimmed; empty keeps using the phone's own name. It is the one
