@@ -870,10 +870,18 @@ final class Session {
         pinSessionEstablished?(record)
     }
 
+    /// Dev and e2e bundles log the exporter hash for K4/e2e evidence; the
+    /// release bundle (PDBuildVariant=release, as bundle.sh stamps it) logs
+    /// neither the hash nor anything else derived from handshake secrets.
+    static func logsExporterHash(variant: String?) -> Bool {
+        variant != "release"
+    }
+
     /// The 32 exporter's SHA-256, logged once per session (K4/e2e compare the
     /// two ends' hashes; the exporter itself and its keylog secret never leave
     /// memory). Nil-safe: a failed handshake logs nothing.
     private func logExporterOnce() {
+        guard Self.logsExporterHash(variant: Bundle.main.object(forInfoDictionaryKey: "PDBuildVariant") as? String) else { return }
         guard !loggedExporterSha else { return }
         guard let exporter = exporterProvider?() else { return }
         loggedExporterSha = true
