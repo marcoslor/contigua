@@ -1,131 +1,240 @@
-# PocketDeck — architecture (v0)
+# PocketDeck — architecture
 
 Continuity-style Android ⇄ macOS: run Android apps in native, resizable Mac
 windows (one window per app, several at once) and a "phone" window — **while the
 phone stays locked**. LAN only. Open source.
 
 ```
- macOS app (Swift)                          Android phone
-┌────────────────────────┐   1 TCP session  ┌─────────────────────────────────────┐
-│ Launcher (apps, ⌘K)    │  (PROTOCOL.md)   │ App process (dev.pocketdeck)        │
-│ AppWindow × N ─────────┼─────────────────►│  UI, pairing prompt, NSD advertise, │
-│  AVSampleBufferDisplay │◄─────────────────┤  Shizuku binding                    │
-│  Layer per stream      │                  │        │ AIDL (control only)        │
-│ PhoneWindow            │                  │ Shell service (UID 2000, Shizuku)   │
-│ Bonjour browser        │                  │  TCP server ◄── the session lives here
-└────────────────────────┘                  │  SessionManager → WindowStream × N  │
-                                            │    VirtualDisplay + MediaCodec      │
-                                            │  InputInjector, AppLauncher, Power  │
-                                            └─────────────────────────────────────┘
+ macOS app (Swift)                             Android phone
+┌──────────────────────────────┐  1 TCP session ┌────────────────────────────────────┐
+│ ConnectionController ────────┼───────────────►│ App process (dev.pocketdeck)       │
+│ Session + Protocol (frames)  │  (PROTOCOL.md) │  MainActivity, PairingPrompt,      │
+│ Discovery (Bonjour) / Direct │◄───────────────┤  NsdAdvertiser, ShizukuClient,     │
+│ Deck (app grid, search)      │                │  PdNotificationListener, prefs     │
+│ AppWindow/StreamWindow +     │                │        │ AIDL (control only)       │
+│  WindowStyle chrome          │                │ Shell service (UID 2000, Shizuku)  │
+│  VideoLayerView              │                │  DeckService (IDeckService.aidl)   │
+│ InputMapper + gestures       │                │  Server → Session →                │
+│ AudioEngine (Opus/AAC)       │                │   WindowStream × N:                │
+│ NotifyCenter / NowPlaying    │                │    VirtualDisplay + MediaCodec     │
+│ ClipboardSync, FileDrop,     │                │   MirrorStream (display 0)         │
+│  OpenLink, ApkInstall,       │                │   AudioCapture (+ AudioFollow)     │
+│  DockApps, Handoff,          │                │   InputInjector, AppLauncher       │
+│  Spotlight, Share extension  │                │   Power/PanelPower, ShellLanding,  │
+│                              │                │   ApkInstaller, ShellClipboard     │
+└──────────────────────────────┘                └────────────────────────────────────┘
 ```
 
-## Key decisions
+## The phone side: the app process and the shell server
 
-1. **The phone is the server, inside the Shizuku shell process.** No hub, no
-   relay. UID 2000 has network access and is not subject to app-standby/Doze
-   network restrictions; encoder output goes straight to the socket (no AIDL
-   frame hop). The app process only does UI, the pairing prompt and NSD
-   advertising (the service reports its port over AIDL).
-2. **One virtual display (VD) per Mac window.** Each `WindowStream` owns a VD,
-   an H.264 encoder whose input surface backs the VD, and a stream id.
-   Resizing the Mac window resizes the VD (`VirtualDisplay.resize`) and
-   reconfigures the encoder.
-3. **VD flags** (proven on Galaxy S25+, Android 16):
-   `PUBLIC | PRESENTATION | OWN_CONTENT_ONLY | SUPPORTS_TOUCH |
-   ROTATES_WITH_CONTENT | DESTROY_CONTENT_ON_REMOVAL | TRUSTED |
-   OWN_DISPLAY_GROUP | ALWAYS_UNLOCKED | TOUCH_FEEDBACK_DISABLED | OWN_FOCUS`.
-   - **Never `SHOULD_SHOW_SYSTEM_DECORATIONS`** — it adds a SystemUI
-     NavigationBar to the VD and, on One UI, poisons `SysUiState`
-     (`backGestureDisabled`) so the phone's back gesture dies until reboot
-     (scrcpy #6007). Back = `KEYCODE_BACK` stamped with the VD display id.
-   - **Never `DEVICE_DISPLAY_GROUP`** — the VD would follow the panel's power
-     state and freeze while the phone is locked. Note: some OEM builds (Samsung
-     One UI) ignore `OWN_DISPLAY_GROUP` and put the VD in the panel's group
-     anyway (`displayGroupId 0`); the phone side detects that from the VD's
-     `DisplayInfo` at creation and powers the panel off through SurfaceFlinger
-     while it streams, so the locked panel shows nothing and the VD still
-     renders (never unlocked, no keyguard dismissal) — see android/README.md.
-   - `ALWAYS_UNLOCKED` keeps apps (not the keyguard) on the VD while the phone
-     is locked. This is the whole "locked phone" feature.
-   - Display IME policy = HIDE (no soft keyboard on the VD; Mac keyboard types).
-4. **Phone mode** = a mirror of the phone's own screen (display 0), at its
-   aspect, following rotation; input and Back/Home/Recents go to display 0.
-   The mirror never touches power or the keyguard (docs/design/phone-mirror.md).
-5. **Mac rendering:** compressed H.264 → `CMSampleBuffer` →
-   `AVSampleBufferDisplayLayer` with `DisplayImmediately`. No CPU readback, no
-   `CGImage`/`NSImage`, no `draw(_:)`. (The old client's VT→CIImage→CGImage→
-   NSView path was the main source of the "laggy mouse".)
-6. **Input** is binary frames on the same TCP session, sent immediately per
-   NSEvent (moves coalesced to at most one per display refresh). The phone
-   injects synchronously on the socket reader thread with cached reflection
-   handles. No sleeps in the touch path. A trackpad's two-finger scroll is a touch drag (so Android
-   flings), its pinch and rotate are two pointers from the raw fingers; only a mouse wheel is a SCROLL.
+**Two processes, one job each.** Shizuku runs our server code as UID 2000
+(`com.android.shell`), the same uid as `adb shell`. The app process (`dev.pocketdeck`)
+does everything a normal Android app can: UI, pairing prompt, the foreground
+service, the notification listener, NSD advertising, battery/lock relays. It
+cannot create virtual displays or read notifications at will — that is why the
+capability lives in the shell process.
 
-## Power / battery rules (acceptance criteria, not suggestions)
+The app binds the user service over Shizuku and talks to it over AIDL:
 
-- No session → no VD, no encoder, no wake lock, no polling threads. Idle cost =
-  one listening socket + NSD registration.
-- Session but no windows → no VD/encoder; TCP keepalive only (app-level ping
-  from the Mac every 15 s).
-- Mac window minimized/hidden/fully occluded → `window.pause`: encoder stopped
-  (VD surface detached), app stays alive.
-- Static content → encoder emits nothing (no repeat-frame setting).
-- Keep-awake: the VD's display group must not time out while a window is
-  visible on the Mac. Poke `userActivity` + `wakeUpWithDisplayId` for the VD's
-  group when a stream opens, on input (throttled to ≤1/s) and on a timer every
-  10 s while ≥1 stream is unpaused. Hold a PARTIAL wake lock only while ≥1
-  stream is unpaused.
-- Panel policy, chosen from the display group the VD actually got (logged at
-  creation): own group (AOSP) → only that group is woken and the panel power
-  mode is never touched; panel group (vendor builds that ignore
-  `OWN_DISPLAY_GROUP`) → the same wake also lights the panel, so the panel is
-  powered off through SurfaceFlinger right after our own wakes (never in a
-  loop), the screen showing nothing while the VD renders. A power-button press
-  hands the phone back to normal Android behaviour until the screen has been on
-  and off again. Never dismiss the keyguard, never unlock, never force the panel
-  on.
-- End of session: when we were the ones who woke the panel's group, restore the
-  panel's power mode and `goToSleep` so the phone returns to its normal
-  locked-off state with no wake locks or forced power modes left behind.
-- Encoder: H.264 High, VBR, bitrate scaled to pixels (≈ 0.12 bpp·fps, capped
-  8 Mbps), `KEY_FRAME_RATE 60`, `KEY_I_FRAME_INTERVAL` 10 s (IDR on demand),
-  `KEY_PRIORITY 0` (realtime), `KEY_LATENCY 1` where supported,
-  `KEY_MAX_B_FRAMES 0`.
+- `IDeckService.aidl` (app → shell): growable transaction codes — `stopServer`,
+  `setPairedClients`, `respondPairing`, `setBatteryState`, `setLockedState`,
+  `shareFile`, `setNotifyShared`, `pushDeviceEvent` (bumped per transaction; see
+  "Device lessons").
+- `IDeckCallback.aidl` (shell → app): `onPairingRequest`, `onPaired`,
+  `onSessionChanged`, `onNotifySession`, `onMediaCommand`.
 
-## Latency budget (LAN, 60 Hz)
+The app pushes identity and per-feature gates in (`setPairedClients`, the
+notify opt-in), the shell calls back for pairing decisions and media actions.
+The TCP session itself lives in the shell process end to end.
 
-Click → visible change on Mac ≤ 80 ms p50. Both sides log timestamps behind a
-debug flag so it can be measured: Mac logs input send time; phone logs inject
-time and the pts of the next encoded frame.
+## Streaming: one virtual display per window
+
+Each app window is a `WindowStream`: one virtual display (VD), one H.264
+encoder whose input surface backs the VD, one stream id. `window.open` carries
+`w/h/dpi/pkg`; `window.resize` resizes the VD (`resize` + encoder
+reconfiguration); `window.close` tears it down. The Mac resizes freely and the
+app re-lays out at the new shape and DPI.
+
+VD flags (proven on Android 16): `PUBLIC | PRESENTATION | OWN_CONTENT_ONLY |
+SUPPORTS_TOUCH | ROTATES_WITH_CONTENT | DESTROY_CONTENT_ON_REMOVAL | TRUSTED |
+OWN_DISPLAY_GROUP | ALWAYS_UNLOCKED | TOUCH_FEEDBACK_DISABLED | OWN_FOCUS`.
+
+- **Never `SHOULD_SHOW_SYSTEM_DECORATIONS`** — it poisons SysUiState on One UI
+  and breaks the phone's back gesture until reboot. Back is `KEYCODE_BACK`
+  stamped with the VD's display id.
+- **Never `DEVICE_DISPLAY_GROUP`** — the VD would follow the panel's power
+  state and freeze while the phone is locked. `ALWAYS_UNLOCKED` is what makes
+  "apps run while the panel is locked" possible; the keyguard itself is never
+  touched.
+- The VD's creation source is a `ShellContext` package `com.android.shell`
+  (a Shizuku-only trick); injected input must carry the display id explicitly.
+- Encoder: H.264 High, VBR scaled to pixels (≈ 0.12 bpp·fps, capped 8 Mbps),
+  60 fps, IDR on demand, realtime priority, low-latency keys where supported.
+  VDs bigger than 2560 px are scaled at capture instead of letterboxing.
+
+**Phone mode** is not a launcher config — it is a mirror of display 0. The
+shell creates a virtual display that mirrors the phone's own screen (hidden
+`DisplayManager.createVirtualDisplay` with the mirrored display id, CAPTURE
+from shell uid), at phone aspect, turning with the phone; input goes to
+display 0. It never touches power or the keyguard, and its own glass header
+carries Back/Home/Recents (docs/design/phone-mirror.md).
+
+## Audio: two capture modes
+
+The shell process captures the phone's playback and streams it → Mac
+Opus/AAC (20 ms frames) → `AVAudioEngine`. Which source is picked is a plan:
+
+- **Per-app**: an `AudioPolicy` loop-back mix uid-filtered to the focused
+  window's app (`AudioFollow.plan`, attributed as `com.android.shell`);
+- **All-audio**: the `REMOTE_SUBMIX` record (the plain submix technique), used
+  when no window can be attributed (phone window, link pending, uid lookup
+  failure) — one path is registered at a time, switching by unregister +
+  register while streams open/close/focus.
+
+Capture keeps the app's samples 1:1; media playback is routed away from the
+phone's own speaker while we stream. Per-device volume/mute lives in the Mac
+menu bar. Measurements (~80–125 ms tone → Mac on the API 36 emulator, speaker
+idle; added latency < 150 ms) and the swap rules: docs/design/audio.md.
+
+## Notifications and Now Playing
+
+Both read features ride one per-phone opt-in, default OFF on the phone and on
+the Mac. The grant is done **by the shell service** (`cmd notification
+allow_listener …PdNotificationListener` at UID 2000) when the phone toggle is
+turned on — so no settings screen and no root touch is needed.
+
+- `PdNotificationListener` runs **in the app process** (a real
+  notification-listener service), caps strings at 8 KiB, skips our own and
+  contentless notifications, and pushes JSON events to the shell over AIDL
+  (`pushDeviceEvent`) while the gate is on; the shell validates and forwards.
+- Media sessions are read in the app process with
+  `MediaSessionManager.getActiveSessions(listener)` — position drift tracked
+  via rate, callbacks throttled ≤ 1/s. `onMediaCommand` carries play/pause/next/
+  previous back. The shell-UID route is kept as a documented fallback.
+- On the Mac, notifications post via UserNotifications (grouped per phone,
+  click opens that app's window) and media state is published to
+  MPNowPlayingInfoCenter + MPRemoteCommandCenter, cleared when nothing plays.
+
+## Drag and drop, share in, APK install, shell staging
+
+Everything that turns a Mac file into a phone notification or reverse goes
+through a small shell-staging pipeline (so the shell, not the app, holds the
+system-privileged steps):
+
+- **Drop in**: Mac → `drop.start` → binary `DROP_DATA` chunks (≤ 1 MiB, paced,
+  resumable via `resume:bytes`, 200 MiB cap, one active drop per phone) → the
+  phone lands the file in `Downloads/PocketDeck/`, media-scans it and offers a
+  SEND chooser through `DropReceiver` + shell staging (`ShellLanding`,
+  `ShareTrampoline`): the app's own-uid SEND step picks the receiving app.
+- **APK install** reuses the same transport shape: `apk.install` + `APK_DATA`
+  → `pm install-create/write/commit` at shell uid; `.apks`/`.xapk` bundles are
+  parsed Mac-side first (docs/design/apk.md).
+- **Share phone → Mac**: `shareFile` (AIDL) hands bytes from the phone's SHARE
+  to the shell; `share.text`/`share.file` drive the Mac (browser / clipboard /
+  `~/Downloads/PocketDeck` + a Show-in-Finder notification).
+- Clipboard is read/written at shell uid (`ShellClipboard`), so it works while
+  the phone is locked; text and images, both directions.
+
+## The Mac side
+
+- **Connection**: `Discovery` (NWBrowser over `_pocketdeck._tcp`) or manual
+  address; `ConnectionController` owns pairing state and the session.
+  Pairing: QR (the sheet publishes a `pocketdeck://pair?c=…&n=…&k=…` payload)
+  or numeric comparison (six digits on both screens, phone's **Allow** is the
+  confirmation — the code is never typed). Keys live in
+  `~/Library/Application Support/PocketDeck-<profile>/pairkeys.json` (0600);
+  profiles isolate pairing/UI state (`--profile <name>`, never the default).
+- **Windows**: `AppWindow`/`StreamWindow` + `StreamChrome`. The style system
+  (`WindowStyle`, remembered per app in the profile defaults) has two shapes:
+  **Framed** (a permanent 28 pt bar with the traffic lights above the stream)
+  and **Immersive** (the window is the stream; a dwell pill brings the lights
+  back on hover at the top). Style flips (⌥⌘F / View menu) resize the window
+  around the same stream and never re-open the window.
+- **Video**: H.264 Annex-B → `CMSampleBuffer` →
+  `AVSampleBufferDisplayLayer` with `DisplayImmediately`. No CPU readback, no
+  `CGImage`, no `draw(_:)` — this is what keeps the pointer honest.
+- **Input**: binary frames sent immediately per NSEvent (moves coalesced to
+  one per display refresh, no sleeps); the phone injects synchronously on its
+  socket reader thread with cached reflection handles. Trackpad: two-finger
+  scroll is a touch drag (Android gets flings; a mouse wheel is a SCROLL
+  frame), pinch/rotate are two pointers from the raw fingers; a mouse side
+  Back button maps to one Android Back per press.
+- **Outbound features**: `ClipboardSync` (NSPasteboard ⇄ shell clipboard),
+  `FileDrop` sender (chunked/resumable drops + pill UI), `OpenLink`
+  (`pocketdeck://open` + the bundled Share extension "Open on Phone"),
+  `ApkInstall`/`ApkBundle`, `AudioEngine` (menu bar volume/mute),
+  `NotifyCenter`/`NowPlaying`, `DockApps` (shim bundles in
+  `~/Applications/PocketDeck Apps/` with the real icon), `Spotlight`,
+  `HandoffWindow` (⌘⇧C / menu continuing the phone's foreground task).
+- **Deck**: the launcher window — app grid, search, battery/lock chips,
+  drops as AP target, per-app context menu (Add to Dock, style).
+
+References per feature: docs/design/*.md (also mac-audit.md). The wire is
+defined once in docs/PROTOCOL.md (framing, message tables, pairing rules).
 
 ## Repo layout
 
 ```
 android/                 Gradle project, single :app module (dev.pocketdeck)
   app/src/main/java/dev/pocketdeck/
-    app/                 MainActivity, PairingPrompt, NsdAdvertiser, ShizukuBinder
-    server/              (runs in the shell process) DeckService (AIDL), Server,
-                         Session, WindowStream, Encoder, InputInjector,
-                         AppLauncher, Power, PanelPower (panel off through
-                         SurfaceFlinger), DisplayProbe, Hidden (reflection cache),
-                         ShellContext
+    app/                 MainActivity, PairingPrompt, NsdAdvertiser,
+                         ShizukuClient, PdNotificationListener, prefs, share
+    server/              (runs in the shell process) DeckService (AIDL),
+                         Server, Session, WindowStream (VD + MediaCodec
+                         encoder), AudioCapture + AudioFollow, InputInjector,
+                         AndroidLauncher, Power/PanelPower, DisplayProbe,
+                         ShellLanding (+ DropReceiver, ShareTrampoline),
+                         ApkInstaller, ShellClipboard, Hidden, ResizePlan
     proto/               Frame codec (mirrors docs/PROTOCOL.md)
-macos/                   SwiftPM package (macOS 26+) → PocketDeck.app (scripts/bundle.sh)
-  Sources/PocketDeck/    App, Discovery, Session, Protocol, WindowManager,
-                         AppWindow, VideoLayerView, InputMapper, Launcher UI, pair keys
-tools/fakephone/         Python fake phone (protocol-complete, ffmpeg testsrc video)
-docs/                    ARCHITECTURE, PROTOCOL, research/
+  app/src/test/          Robolectric/device-state unit tests + screenshot tests
+macos/                   SwiftPM package (macOS 26+) → PocketDeck.app
+  Sources/PocketDeck/    App/Profile, Discovery/DirectConnect, Session +
+                         Protocol, WindowManager + AppWindow/StreamWindow +
+                         StreamChrome/WindowStyle, VideoLayerView, InputMapper
+                         + gestures, DeckViews, AudioEngine, NotifyCenter,
+                         NowPlaying, ClipboardSync, FileDrop, OpenLink,
+                         ApkInstall, DockApps, Spotlight, HandoffWindow,
+                         QRPairing/PairingSheets, pair keys (Identity)
+  Scripts/               bundle.sh, check-e2e.sh (fakephone-driven checks),
+                         install.sh, cgevent-input.swift (input driver)
+tools/fakephone/         Python fake phone (protocol-complete) + deckctl
+tools/emulator/          boots the real server on a local emulator (uid 2000)
+docs/                    ARCHITECTURE, PROTOCOL, ROADMAP, TRY-IT, UX, design/
 ```
 
-## Device lessons carried over from the POC (don't re-learn these)
+## Device lessons (keep, they are load-bearing)
 
-- VD creation needs `DisplayManager` constructed with a `ShellContext` whose
-  package is `com.android.shell` (scrcpy FakeContext trick).
-- Android 16 `IPowerManager.wakeUp` is the 4-arg `(long,int,String,String)`.
+- VD creation needs `DisplayManager` built on a `ShellContext` whose package is
+  `com.android.shell`; audio capture and policy registration must be
+  attributed the same way or AudioFlinger rejects them.
 - Injected input needs `InputEvent.setDisplayId(vdId)` or it lands on display 0.
 - Synthesised drags must carry real, increasing event times; instant bursts get
-  discarded by apps.
+  discarded by apps. Injected keys must leave Shift in
+  `charactersIgnoringModifiers` or text arrives doubled.
 - Shizuku user services are daemons: bump `versionCode` (used as service
-  version) on every install or the old service keeps running.
-- Test rig: Samsung SM-S936B, Android 16, adb via wireless-debugging TLS only;
-  prefix adb with `timeout 20`.
+  version) on every install or the old service keeps running. AIDL transaction
+  codes must grow monotonically — a rebuild with an existing shell service
+  breaks otherwise.
+- Some OEM builds (One UI) ignore `OWN_DISPLAY_GROUP` and put the VD in the
+  panel's group anyway; the server detects that from the VD's `DisplayInfo`
+  and powers the panel off through SurfaceFlinger while streaming, restoring
+  normal power state when the last window closes (android/README.md).
+
+## Session end / battery (acceptance criteria, not suggestions)
+
+- No session → no VD, no encoder, no wake lock, no polling; idle cost is one
+  listening socket + NSD registration.
+- Windows hidden/occluded → `window.pause` (encoder stopped, VD surface
+  detached). Static content emits no frames. App-level ping every 15 s.
+- Keep-awake pokes the VD's display group (on stream open, throttled input,
+  a ≤ 1/10 s timer while streams are visible) holding a PARTIAL wake lock only
+  while ≥ 1 stream is unpaused; the panel is never forced on, the keyguard is
+  never dismissed.
+- End of session restores every power state we touched.
+
+## Planned: end-to-end encryption
+
+Today's wire is plaintext with HMAC authentication (pairing keys, 0600).
+Mutual TLS with keys pinned at pairing is the P0 launch blocker — same frames,
+encrypted at the transport, so the relay (a later, optional milestone) can
+never read stream content (docs/PROTOCOL.md, docs/ROADMAP.md "Before launch").
