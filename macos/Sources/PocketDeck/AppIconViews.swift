@@ -6,6 +6,25 @@
 
 import SwiftUI
 
+/// The adaptive icon layers a phone sent (`icon` message, docs/PROTOCOL.md):
+/// the flat PNG stays for every other icon use.
+struct AppIconLayers: Equatable {
+    var fg: NSImage
+    var bg: NSImage
+    var mono: NSImage?
+
+    init?(fg: NSImage?, bg: NSImage?, mono: NSImage?) {
+        guard let fg, let bg else { return nil }
+        self.fg = fg
+        self.bg = bg
+        self.mono = mono
+    }
+
+    static func == (lhs: AppIconLayers, rhs: AppIconLayers) -> Bool {
+        lhs.fg == rhs.fg && lhs.bg == rhs.bg && lhs.mono == rhs.mono
+    }
+}
+
 enum FallbackIcon {
     /// First letter or digit of the label (the package's last part if there is none).
     static func initial(label: String, pkg: String) -> String {

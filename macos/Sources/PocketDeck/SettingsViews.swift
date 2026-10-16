@@ -24,6 +24,18 @@ enum WindowDensity {
     }
 }
 
+/// Settings → General "Glass app icons": the Deck grid's Liquid Glass tiles
+/// (docs/design/mac-redesign.md). On unless turned off.
+enum GlassIconsSetting {
+    static let key = "deck.glassIcons"
+
+    static func isEnabled(in defaults: UserDefaults) -> Bool {
+        defaults.object(forKey: key) as? Bool ?? true
+    }
+
+    static var isEnabled: Bool { isEnabled(in: Profile.active.defaults) }
+}
+
 struct GeneralSettings: View {
     @Environment(ConnectionController.self) private var controller
     @AppStorage("showMenuBar", store: Profile.active.defaults) private var showMenuBar = true

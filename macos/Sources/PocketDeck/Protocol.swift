@@ -431,6 +431,11 @@ struct JSONMessage {
 
     func object(_ key: String) -> [String: Any]? { raw[key] as? [String: Any] }
     func array(_ key: String) -> [[String: Any]]? { raw[key] as? [[String: Any]] }
+
+    /// Base64 text decoded; `icon`'s `fg`/`bg`/`mono` layers arrive this way.
+    func data(_ key: String) -> Data? {
+        string(key).flatMap { Data(base64Encoded: $0) }
+    }
 }
 
 enum JSONFrame {

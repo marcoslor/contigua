@@ -79,7 +79,8 @@ enum SessionEvent {
     case state(SessionState, String?)
     case ready(PhoneInfo, isReconnect: Bool, address: CachedAddress?)
     case apps([AppInfo])
-    case icon(pkg: String, png: Data)
+    /// The adaptive layers ride along when the icon is one (`icon` message).
+    case icon(pkg: String, png: Data, fg: Data?, bg: Data?, mono: Data?)
     case windowOpened(stream: UInt32, displayId: Int, width: Int, height: Int,
                       started: HandoffStart)
     case windowClosed(stream: UInt32, reason: String)
@@ -581,7 +582,8 @@ final class Session {
             emit(.apps(apps))
         case "icon":
             if let pkg = message.string("pkg"), let b64 = message.string("png"), let png = Data(base64Encoded: b64) {
-                emit(.icon(pkg: pkg, png: png))
+                emit(.icon(pkg: pkg, png: png,
+                           fg: message.data("fg"), bg: message.data("bg"), mono: message.data("mono")))
             }
         case "window.opened":
             emit(.windowOpened(stream: UInt32(message.int("stream") ?? 0),
