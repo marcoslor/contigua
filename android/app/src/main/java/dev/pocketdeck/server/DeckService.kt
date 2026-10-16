@@ -2,6 +2,7 @@ package dev.pocketdeck.server
 
 import android.app.KeyguardManager
 import android.content.Context
+import android.net.ssl.SSLSockets
 import android.os.Build
 import android.os.ParcelFileDescriptor
 import android.os.SystemClock
@@ -9,8 +10,10 @@ import android.util.Log
 import dev.pocketdeck.IDeckCallback
 import dev.pocketdeck.IDeckService
 import dev.pocketdeck.proto.Crypto
+import dev.pocketdeck.e2ee.TlsExporter
 import dev.pocketdeck.proto.Json
 import java.util.concurrent.TimeUnit
+import javax.net.ssl.SSLSocket
 
 /**
  * The Shizuku user-service entry point. Runs as shell (UID 2000), owns the TCP
@@ -107,7 +110,15 @@ class DeckService(private val appContext: Context?) :
                 // the listener's bridge knows when to push (DeckState relay).
                 notifyForward = { forward -> sendToApp { it.onNotifySession(forward) } },
                 mediaCommand = { action -> sendToApp { it.onMediaCommand(action) } },
-                tlsView = Session.TlsView.from(socket),
+                tlsView = Session.TlsView.from(socket).also { view ->
+                    // K4/e2e evidence, hashes only: the platform stack really
+                    // backs the v2 pairing (isSupportedSocket gates the
+                    // exporter) and both ends compare this hash, not the bytes.
+                    if (socket is SSLSocket) log("v2 ssl socket supported: ${SSLSockets.isSupportedSocket(socket)}")
+                    val exporter = view.exporter()
+                    log(if (exporter == null) "v2 exporter unavailable"
+                        else "v2 exporter sha256: " + TlsExporter.toHex(TlsExporter.sha256(exporter)))
+                },
             )
         }
         val srv = Server(factory, ::log, { selfCertPem }, { selfKeyP8 })
