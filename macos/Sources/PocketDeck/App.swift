@@ -51,6 +51,9 @@ struct LaunchOptions {
     /// `--background`: the e2e run's quiet mode (BackgroundMode.swift). Only
     /// with a non-default profile; the installed app never runs this way.
     var background = false
+    /// `--open-requests DIR` (background mode only): each `*.path` file put in DIR
+    /// names files to open, as LaunchServices' Open With would (e2e, apk).
+    var openRequests: String?
 
     /// nil when `--profile` was missing or not a usable name.
     var profile: Profile? { Profile(name: profileName) }
@@ -123,6 +126,8 @@ struct LaunchOptions {
                 options.continueOnMac = true
             case "--background":
                 options.background = true
+            case "--open-requests":
+                options.openRequests = next()
             default:
                 break
             }
@@ -200,6 +205,8 @@ final class AppEnvironment {
 // MARK: - App delegate
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    private var openRequestInbox: OpenRequestInbox?
+
     /// Started from a shell (the test harness) there is no LaunchServices to
     /// make the process a regular app; do it explicitly so it gets windows and a Dock icon.
     /// In background mode it stays out of the Dock and ⌘-Tab instead.
@@ -223,6 +230,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         default: break
         }
         BackgroundMode.activateApp()
+        if let inbox = OpenRequestInbox(options: environment.options) {
+            inbox.start { [weak self] urls in self?.application(NSApp, open: urls) }
+            openRequestInbox = inbox
+        }
         NSApp.servicesProvider = LinkService.shared
         environment.controller.start()
     }

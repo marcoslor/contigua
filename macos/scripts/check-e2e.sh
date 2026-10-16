@@ -1984,7 +1984,22 @@ apk_log() {
 check_apk() {
     clean
     start_fake || return 1
-    launch --connect "127.0.0.1:$PORT" --quit-after 120
+    # Quiet runs hand the files to the app's Open With handler through its
+    # request folder: LaunchServices' `open -a` brings the running app forward
+    # even with -g, so that route is the visible run's.
+    local requests=()
+    if [ "$VISIBLE" = "1" ]; then
+        open_apk() { open -a "$E2E_BUNDLE" "$1"; }
+    else
+        mkdir -p "$WORK/open-requests"
+        requests=(--open-requests "$WORK/open-requests")
+        open_apk() {
+            printf '%s\n' "$1" > "$WORK/open-requests/$(basename "$1").tmp"
+            mv "$WORK/open-requests/$(basename "$1").tmp" "$WORK/open-requests/$(date +%s%N)-$(basename "$1").path"
+        }
+        skip_visible "APK the files arrive through LaunchServices (open -a, Finder's Open With)"
+    fi
+    launch --connect "127.0.0.1:$PORT" "${requests[@]}" --quit-after 120
 
     authenticated() { events_have '"state":"auth_ok"' || events_have '"state":"paired"'; }
     wait_until 30 authenticated \
@@ -2031,7 +2046,7 @@ PY
 
     local before event want
     before="$(apps_lists)"
-    open_quiet -a "$E2E_BUNDLE" "$WORK/tiny.apk"
+    open_apk "$WORK/tiny.apk"
     if wait_until 30 apk_found 1 ok; then
         event="$(apk_event 1 ok)"
         want="$(shasum -a 256 "$WORK/tiny.apk" | cut -c1-64)"
@@ -2052,12 +2067,12 @@ PY
         && ok "APK the app list was refreshed after the install" \
         || bad "APK no apps.list after the install"
 
-    open_quiet -a "$E2E_BUNDLE" "$WORK/old.apk"
+    open_apk "$WORK/old.apk"
     wait_until 30 log_has "apk: result failed: A newer version of this app is already on the phone." \
         && ok "APK downgrade failure reads: A newer version of this app is already on the phone." \
         || bad "APK no downgrade message: $(apk_log | tail -2)"
 
-    open_quiet -a "$E2E_BUNDLE" "$WORK/bundle.apks"
+    open_apk "$WORK/bundle.apks"
     if wait_until 30 apk_found 2 ok; then
         event="$(apk_event 2 ok)"
         echo "$event" | python3 -c 'import json,sys; e=json.load(sys.stdin); f=e["files"]; sys.exit(0 if [x["name"] for x in f]==["base-master.apk","base-arm64_v8a.apk"] and all(x["match"] for x in f) else 1)' \
