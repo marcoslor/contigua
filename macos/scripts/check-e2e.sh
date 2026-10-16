@@ -2140,7 +2140,7 @@ check_mirror() {
         "wait 0.03" "hoverat 0 90" "wait 0.03" "hoverat 0 70" "wait 0.03" "hoverat 0 58" > "$WORK/mirror.txt"
     launch --connect "127.0.0.1:$PORT" --open-phone --float-windows \
         --debug-chrome-state "$WORK/chrome.txt" --debug-input-script "$WORK/mirror.txt" --quit-after 40
-    local portrait landscape shot="$WORK/mirror-glass.png"
+    local portrait landscape
     if portrait="$(await_window '$5 > $4 * 1.5')"; then
         ok "MIRROR phone window is portrait ($(windows | awk -v i="$portrait" '$1 == i {print $4 "x" $5}'))"
     else
@@ -2152,7 +2152,6 @@ check_mirror() {
         *) bad "MIRROR stream aspect is not the phone's ($(mirror_aspect))" ;;
     esac
     wait_until 3 chrome_is "header=shown" && sleep 0.4
-    region_shot "$portrait" "$shot" && say "glass nav screenshot ($(chrome_state)): $shot"
     if landscape="$(await_window "\$1 == $portrait && \$4 > \$5 * 1.5")"; then
         ok "MIRROR window turned with the phone ($(windows | awk -v i="$landscape" '$1 == i {print $4 "x" $5}'))"
     else
