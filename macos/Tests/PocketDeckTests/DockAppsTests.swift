@@ -77,6 +77,13 @@ final class DockAppsTests: XCTestCase {
         XCTAssertNil(plist["LSUIElement"], "the shim must show in the Dock and ⌘-Tab")
     }
 
+    func testBackgroundModeShimsAreAgents() {
+        var quiet = spec()
+        quiet.agent = true
+        XCTAssertEqual(quiet.infoPlist["LSUIElement"] as? Bool, true)
+        XCTAssertEqual(quiet.infoPlist["CFBundleIdentifier"] as? String, spec().infoPlist["CFBundleIdentifier"] as? String)
+    }
+
     // MARK: Bundle on disk
 
     func testBuildWritesAReadableBundleWithEscapedNames() throws {

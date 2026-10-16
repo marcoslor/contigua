@@ -58,6 +58,8 @@ struct DockShimSpec: Equatable {
     var profile: Profile
     /// The PocketDeck.app the shim launches when it is not running.
     var hostPath: String
+    /// Background mode's shims are agents (LSUIElement): no Dock tile, no ⌘-Tab entry.
+    var agent = BackgroundMode.isOn
 
     /// "WhatsApp (Pixel)", like the Spotlight titles.
     var displayName: String { SpotlightIndexer.title(label: label, phoneName: phoneName) }
@@ -106,7 +108,7 @@ struct DockShimSpec: Equatable {
             DockMessage.plistPackage: pkg,
             DockMessage.plistProfile: profile.name,
             DockMessage.plistHostPath: hostPath,
-        ]
+        ].merging(agent ? ["LSUIElement": true] : [:]) { current, _ in current }
     }
 }
 
@@ -341,6 +343,7 @@ final class DockApps: NSObject {
 
     private func open(_ url: URL, launched: @escaping (Int?) -> Void) {
         let configuration = NSWorkspace.OpenConfiguration()
+        configuration.activates = !BackgroundMode.isOn
         NSWorkspace.shared.openApplication(at: url, configuration: configuration) { app, _ in
             launched(app.map { Int($0.processIdentifier) })
         }
