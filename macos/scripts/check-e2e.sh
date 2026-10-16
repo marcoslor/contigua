@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # End-to-end checks C3-C13 for the macOS client against tools/fakephone.
 #
-#   ./scripts/check-e2e.sh [qr|pair|render|resize|input|mouseback|input-global|pause|direct|nav|mirror|spotlight|pinch|chrome|trackpad|clip|sharein|links|share|apk|drop|dock|nickname|notify|audio|handoff|all]
+#   ./scripts/check-e2e.sh [qr|pair|render|resize|input|mouseback|input-global|pause|direct|nav|mirror|spotlight|pinch|chrome|trackpad|clip|sharein|links|share|apk|drop|dock|nickname|notify|audio|handoff|deck|all]
 #
 # Every check starts from a clean slate: no PocketDeck or fakephone processes
 # left by an earlier run, a fresh fakephone state file and no pairing key in
@@ -2593,6 +2593,50 @@ EOF
     wait_until 5 no_fakephone
 }
 
+# --- DECK: the app grid's icon kinds ---------------------------------------
+
+icons_kind() { grep '"ev":"icon"' "$WORK/events.jsonl" 2>/dev/null | grep -c "$1" || true; }
+
+have_layered_icons() { [ "$(icons_kind '"layers":true')" -ge 4 ]; }
+have_flat_icons() { [ "$(icons_kind '"layers":false')" -ge 5 ]; }
+
+# check_deck — the grid gets both kinds of icon the phone can send: fakephone
+# answers fg/bg layers for every 3rd app and a flat PNG for the rest. The Deck
+# shows both without errors and the grid is captured for the human (glass is
+# judged by eye in .agent/glass/; this check only asserts the wire and the
+# log say both kinds arrived).
+check_deck() {
+    clean
+    start_fake || return 1
+    launch --connect "127.0.0.1:$PORT" --quit-after 40
+    wait_until 30 events_have '"t":"apps.list"' \
+        && ok "DECK the app list was requested" || bad "DECK no apps.list"
+    wait_until 30 have_layered_icons \
+        && ok "DECK layered icon replies arrived ($(icons_kind '"layers":true'))" \
+        || bad "DECK no layered icon replies"
+    wait_until 5 have_flat_icons \
+        && ok "DECK flat icon replies arrived ($(icons_kind '"layers":false'))" \
+        || bad "DECK no flat icon replies"
+    local total
+    total="$(count_events '"ev":"icon"')"
+    [ "$total" -ge 13 ] && ok "DECK $total icon replies in total" || bad "DECK only $total icon replies"
+    ! grep -qiE "fatal|protocol error" "$WORK/app.log" 2>/dev/null \
+        && ok "DECK the app logged no fatal/protocol error" \
+        || bad "DECK the app log has fatal/protocol lines"
+    # The deckMode transition (welcome -> grid) settles; a capture too early
+    # shows both states overlapped, which is useless as the visual record.
+    sleep 3
+    local deck="$WORK/deck-grid.png" id
+    if id="$(await_window '$4 >= 600')" && screencapture -x -l"$id" "$deck"; then
+        ok "DECK grid captured: $deck"
+    else
+        bad "DECK no Deck window to capture"
+    fi
+    stop_app
+    stop_fakephone
+    wait_until 5 no_fakephone
+}
+
 check_orphans() {
     sleep 1
     local n
@@ -2611,8 +2655,8 @@ build_e2e_app() {
 
 which_check="${1:-all}"
 case "$which_check" in
-    qr|pair|render|resize|input|mouseback|input-global|pause|direct|nav|mirror|spotlight|pinch|chrome|trackpad|clip|sharein|links|share|apk|drop|dock|nickname|notify|audio|handoff|all) ;;
-    *) say "usage: check-e2e.sh [qr|pair|render|resize|input|mouseback|input-global|pause|direct|nav|mirror|spotlight|pinch|chrome|trackpad|clip|sharein|links|share|apk|drop|dock|nickname|notify|audio|handoff|all]"; exit 2 ;;
+    qr|pair|render|resize|input|mouseback|input-global|pause|direct|nav|mirror|spotlight|pinch|chrome|trackpad|clip|sharein|links|share|apk|drop|dock|nickname|notify|audio|handoff|deck|all) ;;
+    *) say "usage: check-e2e.sh [qr|pair|render|resize|input|mouseback|input-global|pause|direct|nav|mirror|spotlight|pinch|chrome|trackpad|clip|sharein|links|share|apk|drop|dock|nickname|notify|audio|handoff|deck|all]"; exit 2 ;;
 esac
 acquire_lock
 wait_for_other_runs
@@ -2646,12 +2690,13 @@ case "$which_check" in
     drop)     check_drop ;;
     dock)     check_dock ;;
     nickname) check_nickname ;;
+    deck)     check_deck ;;
     notify)   check_notify ;;
     audio)    check_audio ;;
     handoff)  check_handoff ;;
     all)      check_qr; check_pair; check_render; check_resize; check_input; check_mouseback; check_pinch
               check_chrome; check_trackpad; check_pause; check_direct; check_nav; check_mirror; check_spotlight; check_clip; check_sharein; check_links; check_share; check_apk; check_drop; check_dock; check_nickname
-              check_notify; check_audio; check_handoff; check_orphans ;;
+              check_notify; check_audio; check_handoff; check_deck; check_orphans ;;
 esac
 
 say ""
