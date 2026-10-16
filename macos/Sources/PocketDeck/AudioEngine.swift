@@ -99,6 +99,44 @@ final class AudioEngine {
             engine.connect(player, to: engine.mainMixerNode, format: format)
         }
         player.volume = 1.0
+        NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange, object: engine, queue: nil,
+        ) { [weak self] _ in
+            self?.configurationChanged()
+        }
+    }
+
+    /// Whether starting playback is safe: `player.play()` raises an
+    /// Objective-C exception Swift cannot catch when the player has no IO
+    /// cycle — seen on the emulator rig's first audio frame, and it can also
+    /// hit a real Mac when the output device changes. Playback may only start
+    /// when the engine is running and the output node reports a real format.
+    static func mayPlay(isRunning: Bool, sampleRate: Double, channels: UInt32) -> Bool {
+        isRunning && sampleRate > 0 && channels > 0
+    }
+
+    /// The output device changed (headphones, Bluetooth): the engine's IO
+    /// cycle is gone, and any later play() on it would abort the process.
+    /// Stop cleanly, forget the pre-buffer, and let the next flush start again
+    /// on the new device. The device-change notification arrives on whatever
+    /// thread posts it; the state is kept consistent under the lock.
+    private func configurationChanged() {
+        player.stop()
+        engine.stop()
+        lock.lock()
+        pendingPCM.removeAll()
+        jitter.reset()
+        queuedFrames = 0
+        started = false
+        lock.unlock()
+    }
+
+    /// Discard the pre-buffered PCM (playback cannot start right now).
+    private func dropPending() {
+        lock.lock()
+        pendingPCM.removeAll()
+        jitter.reset()
+        lock.unlock()
     }
 
     func configure(_ config: AudioConfig) {
@@ -154,13 +192,25 @@ final class AudioEngine {
 
     private func flush() {
         if !started {
-            do {
-                try engine.start()
-                player.play()
-                started = true
-            } catch {
+            if !engine.isRunning {
+                do {
+                    try engine.start()
+                } catch {
+                    dropPending()
+                    return
+                }
+            }
+            let outFormat = engine.outputNode.outputFormat(forBus: 0)
+            guard Self.mayPlay(isRunning: engine.isRunning,
+                               sampleRate: outFormat.sampleRate,
+                               channels: outFormat.channelCount) else {
+                // No usable output format (device gone or mid-change): drop the
+                // burst rather than crash in play(). The next flush retries.
+                dropPending()
                 return
             }
+            player.play()
+            started = true
         }
         lock.lock()
         let buffers = pendingPCM
