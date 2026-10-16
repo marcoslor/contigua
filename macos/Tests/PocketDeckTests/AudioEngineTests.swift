@@ -38,4 +38,15 @@ final class AudioEngineTests: XCTestCase {
         engine.muted = false
         XCTAssertFalse(engine.muted)
     }
+
+    func testMayPlayRequiresRunningEngineAndUsableOutputFormat() {
+        XCTAssertTrue(AudioEngine.mayPlay(isRunning: true, sampleRate: 48000, channels: 2))
+        XCTAssertTrue(AudioEngine.mayPlay(isRunning: true, sampleRate: 44100, channels: 1))
+        // Engine not running: play() would abort (no IO cycle).
+        XCTAssertFalse(AudioEngine.mayPlay(isRunning: false, sampleRate: 48000, channels: 2))
+        // Output node reports no device: sample rate and channels go to zero.
+        XCTAssertFalse(AudioEngine.mayPlay(isRunning: true, sampleRate: 0, channels: 2))
+        XCTAssertFalse(AudioEngine.mayPlay(isRunning: true, sampleRate: 48000, channels: 0))
+        XCTAssertFalse(AudioEngine.mayPlay(isRunning: false, sampleRate: 0, channels: 0))
+    }
 }
