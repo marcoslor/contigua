@@ -19,7 +19,8 @@
 //   swift scripts/cgevent-input.swift move   --window ID --top N   (N pt below the window's top edge, centred)
 //   swift scripts/cgevent-input.swift move   --window ID [--dx N --dy N]
 //   swift scripts/cgevent-input.swift click  --window ID --top N [--dx N]   (N pt below the top edge)
-//   swift scripts/cgevent-input.swift backdrop --file F --seconds N
+//   swift scripts/cgevent-input.swift backdrop --file F --seconds N [--virtual]   (--virtual: on the
+//                                     e2e app's virtual display, whenever there is one)
 //       a plain window over the main screen just below the floating level: above every
 //       normal window (the Deck included), behind `--float-windows` stream windows;
 //       every click it receives is appended to F as "x y" (Quartz points)
@@ -299,7 +300,26 @@ case "backdrop":
     let window = NSWindow(contentRect: frame, styleMask: [.borderless], backing: .buffered, defer: false)
     window.contentView = Catcher(file: file)
     window.level = NSWindow.Level(rawValue: NSWindow.Level.floating.rawValue - 1)
-    window.orderFrontRegardless()
+    if hasFlag("--virtual") {
+        // Quiet runs: behind the windows on the e2e app's virtual display
+        // (VirtualDisplay.swift's ids), which comes and goes with each launch.
+        func virtualScreen() -> NSScreen? {
+            NSScreen.screens.first { screen in
+                guard let id = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID else { return false }
+                return CGDisplayVendorNumber(id) == 0x5044 && CGDisplayModelNumber(id) == 0xE2E0
+            }
+        }
+        Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { _ in
+            if let screen = virtualScreen() {
+                if window.frame != screen.visibleFrame { window.setFrame(screen.visibleFrame, display: true) }
+                if !window.isVisible { window.orderFrontRegardless() }
+            } else if window.isVisible {
+                window.orderOut(nil)
+            }
+        }
+    } else {
+        window.orderFrontRegardless()
+    }
     DispatchQueue.main.asyncAfter(deadline: .now() + seconds) { exit(0) }
     app.run()
 case "type":

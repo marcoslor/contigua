@@ -147,6 +147,10 @@ launch() {
     APP_PID=$!
 }
 
+# open_quiet <open args...> — LaunchServices `open` that does not bring the app
+# forward in a quiet run.
+open_quiet() { if [ "$VISIBLE" = "1" ]; then open "$@"; else open -g "$@"; fi; }
+
 # skip_visible <name> — a step that needs real input through the window server.
 skip_visible() { say "SKIP $1 (needs real input; PD_E2E_VISIBLE=1 runs it)"; }
 
@@ -615,6 +619,7 @@ check_input() {
 # check_input_global — real CGEvents at the window (needs the window visible and
 # focused, and nothing covering it). Optional sanity check of the global path.
 check_input_global() {
+    [ "$VISIBLE" = "1" ] || { skip_visible "input-global (real CGEvents through the window server are its point)"; return 0; }
     clean
     start_fake || return 1
     launch --connect "127.0.0.1:$PORT" \
@@ -622,11 +627,11 @@ check_input_global() {
     wait_until 30 events_have '"ev":"video","stream":1,' || bad "C7 no video config"
     local win
     win="$(await_window '$4 == 900')" || { bad "C7 no app window"; stop_app; return 1; }
-    "$CGBIN" click --window "$win" >/dev/null
-    "$CGBIN" drag --window "$win" --dx 200 --dy 0 --steps 20 >/dev/null
-    "$CGBIN" scroll --window "$win" --dy 3 >/dev/null
-    "$CGBIN" type --text hi >/dev/null
-    "$CGBIN" rclick --window "$win" >/dev/null
+    cg_input click --window "$win"
+    cg_input drag --window "$win" --dx 200 --dy 0 --steps 20
+    cg_input scroll --window "$win" --dy 3
+    cg_input type --text hi
+    cg_input rclick --window "$win"
     wait_until 15 events_have '"action":"back"'
     assert_input
     stop_app
@@ -662,30 +667,36 @@ mb_touch_count() {
     echo "${n:-0}"
 }
 
-# check_mouseback — the mouse's side Back button (a real CGEvent
-# otherMouseDown with kCGMouseEventButtonNumber = 3) is one Android Back per
+# check_mouseback — the mouse's side Back button (otherMouseDown with
+# buttonNumber 3, delivered by the scripted driver to the view under it the way
+# the window dispatches it) is one Android Back per
 # press in a stream window, exactly like the header's Back: no repeat while
 # held (a held press drags and still counts one) and nothing on mouse-up. The
 # Forward button (4) does nothing, and no extra-button press, drag or release
 # ever becomes a TOUCH on that stream. Mouse utilities often deliver the Back
 # button as something else: a ⌘[ keystroke counts one Back and never a KEY
 # frame (a .swipe event has no CGEvent synthesizer; unit tests cover it). Both
-# window kinds get it: an app window, then the phone-mode window.
+# window kinds get it: an app window, then the phone-mode window. The driver
+# waits for a file before each next press, so every count is read in between.
+# PD_E2E_VISIBLE=1 adds one press as a real CGEvent through the window server.
 check_mouseback() {
     clean
     start_fake || return 1
 
-    # Phase A: an app window (the only stream window -> stream 1). Float it:
-    # the press is a real CGEvent and must land on the app window, not on the
-    # Deck in front of it.
-    launch --connect "127.0.0.1:$PORT" --open com.android.settings --float-windows --quit-after 60
+    # Phase A: an app window (the only stream window -> stream 1). Floated, so a
+    # visible run's real press lands on it and not on the Deck.
+    rm -f "$WORK"/mb-step-*
+    printf '%s\n' "sidebutton 3" "waitfile $WORK/mb-step-forward" "sidebutton 4" \
+        "waitfile $WORK/mb-step-held" "sidebutton 3 0.4 80 6 12" \
+        "waitfile $WORK/mb-step-key" "key cmd+[" > "$WORK/mb-a.txt"
+    launch --connect "127.0.0.1:$PORT" --open com.android.settings --float-windows \
+        --debug-input-script "$WORK/mb-a.txt" --quit-after 60
     wait_until 30 events_have '"ev":"video","stream":1,' \
         || { bad "MB no video config for the app window"; stop_app; stop_fakephone; return 1; }
     local win navs keys touches
     win="$(await_window '$4 == 900')" \
         || { bad "MB no 900 pt app window"; stop_app; stop_fakephone; return 1; }
 
-    "$CGBIN" bpress --window "$win" --button 3 >/dev/null
     wait_until 10 eval '[ "$(mb_nav_count 1 back)" = "1" ]' \
         && ok "MB side Back -> exactly one nav back" \
         || bad "MB side Back: $(mb_nav_count 1 back) nav back"
@@ -694,7 +705,7 @@ check_mouseback() {
         && ok "MB the Back press made no touches" \
         || bad "MB the Back press made $touches touch frames"
 
-    "$CGBIN" bpress --window "$win" --button 4 >/dev/null
+    touch "$WORK/mb-step-forward"
     sleep 2
     navs="$(mb_nav_count 1 back)"
     touches="$(mb_touch_count 1)"
@@ -702,7 +713,7 @@ check_mouseback() {
         && ok "MB Forward does nothing (still $navs nav back, $touches touches)" \
         || bad "MB Forward leaked: $navs nav back, $touches touches"
 
-    "$CGBIN" bpress --window "$win" --button 3 --hold 0.4 --dx 80 --dy 6 --steps 12 >/dev/null
+    touch "$WORK/mb-step-held"
     wait_until 10 eval '[ "$(mb_nav_count 1 back)" = "2" ]' \
         && ok "MB a held press is exactly one more Back (drags add none)" \
         || bad "MB held press: $(mb_nav_count 1 back) nav back"
@@ -712,13 +723,12 @@ check_mouseback() {
         || bad "MB the held press made $touches touch frames"
 
     # Mouse utilities also turn a Back button into a ⌘[ keystroke; the event
-    # goes to the frontmost app's key window, which this floated window is.
+    # goes to the key window, which the driver makes this window.
     # ⌘[ is consumed as Back, never also forwarded as a KEY ([ is not in
     # metaKeyMap). A received nav makes fakephone log the KEYCODE_BACK down/up
     # it performs for the action, so the invariant is: every key frame in the
     # log is one of those nav-emulation pairs — no key frame of our own.
-    "$CGBIN" move --window "$win" >/dev/null
-    "$CGBIN" key --keycode 33 --cmd >/dev/null
+    touch "$WORK/mb-step-key"
     wait_until 10 eval '[ "$(mb_nav_count 1 back)" = "3" ]' \
         && ok "MB Cmd-[ is exactly one more Back" \
         || bad "MB Cmd-[: $(mb_nav_count 1 back) nav back"
@@ -731,12 +741,13 @@ check_mouseback() {
 
     # Phase B: the phone-mode window (also a stream window -> stream 1 again).
     : > "$WORK/events.jsonl"
-    launch --connect "127.0.0.1:$PORT" --open-phone --float-windows --quit-after 60
+    printf '%s\n' "sidebutton 3" > "$WORK/mb-b.txt"
+    launch --connect "127.0.0.1:$PORT" --open-phone --float-windows \
+        --debug-input-script "$WORK/mb-b.txt" --quit-after 60
     wait_until 30 events_have '"ev":"video","stream":1,' \
         || { bad "MB no video config for the phone window"; stop_app; stop_fakephone; return 1; }
     win="$(await_window '$5 > $4')" \
         || { bad "MB no portrait phone window"; stop_app; stop_fakephone; return 1; }
-    "$CGBIN" bpress --window "$win" --button 3 >/dev/null
     wait_until 10 eval '[ "$(mb_nav_count 1 back)" = "1" ]' \
         && ok "MB the phone window's side Back is exactly one nav back" \
         || bad "MB phone window: $(mb_nav_count 1 back) nav back"
@@ -744,6 +755,14 @@ check_mouseback() {
     [ "$touches" = "0" ] \
         && ok "MB no touches in the phone window either" \
         || bad "MB the phone window made $touches touch frames"
+    if [ "$VISIBLE" = "1" ]; then
+        cg_input bpress --window "$win" --button 3
+        wait_until 10 eval '[ "$(mb_nav_count 1 back)" = "2" ]' \
+            && ok "MB a real side Back CGEvent through the window server is one more nav back" \
+            || bad "MB real side Back: $(mb_nav_count 1 back) nav back"
+    else
+        skip_visible "MB side Back as a real CGEvent through the window server"
+    fi
     stop_app
     stop_fakephone
     wait_until 5 no_fakephone
@@ -1115,17 +1134,20 @@ check_chrome() {
     clean
     start_fake || return 1
     rm -f "$WORK/chrome.txt"
-    "$CGBIN" backdrop --file "$WORK/backdrop.txt" --seconds 120 &
+    local on_virtual=()
+    [ "$VISIBLE" = "1" ] || on_virtual=(--virtual)
+    "$CGBIN" backdrop --file "$WORK/backdrop.txt" --seconds 120 "${on_virtual[@]}" &
     local backdrop=$!
 
     # --- Framed: the permanent bar over the stream ---
+    # The pointer rests in the window, below the bar.
+    printf '%s\n' "hoverat 0 200" > "$WORK/chrome-framed.txt"
     launch --connect "127.0.0.1:$PORT" --open com.android.settings --float-windows \
-        --debug-chrome-state "$WORK/chrome.txt" --quit-after 40
+        --debug-chrome-state "$WORK/chrome.txt" --debug-input-script "$WORK/chrome-framed.txt" --quit-after 40
     wait_until 30 events_have '"ev":"video","stream":1,' || { bad "C14 no video config"; kill "$backdrop"; stop_app; stop_fakephone; return 1; }
     local win
     win="$(await_window '$4 == 900 && $5 == 628')" || { bad "C14 no 900x628 pt window (900x600 stream + 28 pt bar)"; kill "$backdrop"; stop_app; stop_fakephone; return 1; }
     ok "C14 the window is the 900x600 pt stream plus a 28 pt bar, nothing at the sides or bottom (900x628)"
-    "$CGBIN" move --window "$win" --top 200 >/dev/null
     sleep 0.3
     local before
     before="$(window_opens_resizes)"
@@ -1177,9 +1199,11 @@ check_chrome() {
     sleep 1
     start_fake || return 1
     : > "$WORK/events.jsonl"
+    # The script waits for the check's go before clicking the pill's minimise light.
+    rm -f "$WORK/chrome-step-minimise"
     printf '%s\n' "wait 0.6" "windowstyle toggle" "wait 4" \
         "hover 0.02 0.03" "wait 0.15" "click 0.02 0.03" "wait 1.2" \
-        "wait 8" > "$WORK/chrome-immersive.txt"
+        "waitfile $WORK/chrome-step-minimise" "clickat -406 20" "wait 8" > "$WORK/chrome-immersive.txt"
     launch --connect "127.0.0.1:$PORT" --open com.android.settings --float-windows \
         --debug-chrome-state "$WORK/chrome.txt" --debug-input-script "$WORK/chrome-immersive.txt" \
         --quit-after 40
@@ -1214,8 +1238,9 @@ check_chrome() {
         && ok "C14 the immersive stream is the live app (mid-row spread $spread)" \
         || bad "C14 the immersive stream is blank (mid-row spread ${spread:-0})"
 
-    # The pill's minimise light is a real click on the window's chrome.
-    "$CGBIN" click --window "$win" --dx -406 --top 20 >/dev/null
+    # The pill's minimise light: a click there goes through the window's own
+    # event dispatch to the light.
+    touch "$WORK/chrome-step-minimise"
     sleep 1
     window_gone "$win" \
         && ok "C14 a click on the pill's minimise light minimised the window" \
@@ -1230,7 +1255,9 @@ check_chrome() {
     : > "$WORK/events.jsonl"
 
     # --- Switching with ⌥⌘F, near the top of the screen ---
-    printf '%s\n' "wait 0.6" "click 0.5 0.5" "wait 0.8" "key opt+cmd+f" "wait 10" \
+    rm -f "$WORK/chrome-step-top"
+    printf '%s\n' "wait 0.6" "click 0.5 0.5" "wait 0.8" "key opt+cmd+f" \
+        "waitfile $WORK/chrome-step-top" "windowtop" "wait 9" \
         "key opt+cmd+f" "wait 3" "key opt+cmd+f" "wait 3" "key opt+cmd+f" "wait 8" > "$WORK/chrome-switch.txt"
     launch --connect "127.0.0.1:$PORT" --open com.android.settings --float-windows \
         --debug-chrome-state "$WORK/chrome.txt" --debug-input-script "$WORK/chrome-switch.txt" \
@@ -1242,9 +1269,9 @@ check_chrome() {
         && ok "C14 ⌥⌘F flips to framed: the window grows by the 28 pt bar (900x628)" \
         || bad "C14 ⌥⌘F did not grow the window to 900x628: $(windows | awk -v id="$win" '$1 == id {print $4, $5}')"
     y0="$(win_y "$win")"
-    # The bar takes the window to the top of the screen: grab the bar and push
-    # it up hard; it pins at the visible frame's top edge.
-    "$CGBIN" drag --window "$win" --top 14 --dy -120 --steps 25 >/dev/null
+    # The window goes to the top of the screen, where pushing its bar up hard
+    # pins it: the visible frame's top edge.
+    touch "$WORK/chrome-step-top"
     sleep 0.4
     local ytop
     ytop="$(win_y "$win")"
@@ -1641,8 +1668,11 @@ PY
 check_mirror() {
     clean
     FAKE_ARGS="--rotate-after 6" start_fake || return 1
+    # The pointer comes to the top edge to bring the header in (glass nav buttons).
+    printf '%s\n' "wait 1" "hoverat 0 200" "wait 0.03" "hoverat 0 150" "wait 0.03" "hoverat 0 120" \
+        "wait 0.03" "hoverat 0 90" "wait 0.03" "hoverat 0 70" "wait 0.03" "hoverat 0 58" > "$WORK/mirror.txt"
     launch --connect "127.0.0.1:$PORT" --open-phone --float-windows \
-        --debug-chrome-state "$WORK/chrome.txt" --quit-after 40
+        --debug-chrome-state "$WORK/chrome.txt" --debug-input-script "$WORK/mirror.txt" --quit-after 40
     local portrait landscape shot="$WORK/mirror-glass.png"
     if portrait="$(await_window '$5 > $4 * 1.5')"; then
         ok "MIRROR phone window is portrait ($(windows | awk -v i="$portrait" '$1 == i {print $4 "x" $5}'))"
@@ -1654,9 +1684,6 @@ check_mirror() {
         *" ok") ok "MIRROR stream has the phone screen's aspect ($(mirror_aspect))" ;;
         *) bad "MIRROR stream aspect is not the phone's ($(mirror_aspect))" ;;
     esac
-    # Bring the header in (the pointer at the top edge) to show the glass nav buttons.
-    for top in 200 150 120 90 70; do "$CGBIN" move --window "$portrait" --top "$top" >/dev/null; sleep 0.03; done
-    "$CGBIN" move --window "$portrait" --top 58 >/dev/null
     wait_until 3 chrome_is "header=shown" && sleep 0.4
     region_shot "$portrait" "$shot" && say "glass nav screenshot ($(chrome_state)): $shot"
     if landscape="$(await_window "\$1 == $portrait && \$4 > \$5 * 1.5")"; then
@@ -1922,7 +1949,7 @@ PY
     }
     stream_video() { events_have '"ev":"video"'; }
 
-    open -a "$E2E_BUNDLE" "pocketdeck://open?url=https%3A%2F%2Fexample.com"
+    open_quiet -a "$E2E_BUNDLE" "pocketdeck://open?url=https%3A%2F%2Fexample.com"
     wait_until 30 link_logged "https://example.com" \
         && ok "LINKS fakephone logs link.open https://example.com" \
         || bad "LINKS fakephone did not log link.open https://example.com"
@@ -1930,7 +1957,7 @@ PY
         && ok "LINKS a stream window opened with video ($(windows | wc -l | tr -d ' ') windows)" \
         || bad "LINKS no stream window/video for the link"
 
-    open -a "$E2E_BUNDLE" "pocketdeck://open?url=file%3A%2F%2F%2Fetc%2Fhosts"
+    open_quiet -a "$E2E_BUNDLE" "pocketdeck://open?url=file%3A%2F%2F%2Fetc%2Fhosts"
     sleep 3
     ! events_have 'file:///etc/hosts' \
         && ok "LINKS a file: link never reaches the phone" \
@@ -2004,7 +2031,7 @@ PY
 
     local before event want
     before="$(apps_lists)"
-    open -a "$E2E_BUNDLE" "$WORK/tiny.apk"
+    open_quiet -a "$E2E_BUNDLE" "$WORK/tiny.apk"
     if wait_until 30 apk_found 1 ok; then
         event="$(apk_event 1 ok)"
         want="$(shasum -a 256 "$WORK/tiny.apk" | cut -c1-64)"
@@ -2025,12 +2052,12 @@ PY
         && ok "APK the app list was refreshed after the install" \
         || bad "APK no apps.list after the install"
 
-    open -a "$E2E_BUNDLE" "$WORK/old.apk"
+    open_quiet -a "$E2E_BUNDLE" "$WORK/old.apk"
     wait_until 30 log_has "apk: result failed: A newer version of this app is already on the phone." \
         && ok "APK downgrade failure reads: A newer version of this app is already on the phone." \
         || bad "APK no downgrade message: $(apk_log | tail -2)"
 
-    open -a "$E2E_BUNDLE" "$WORK/bundle.apks"
+    open_quiet -a "$E2E_BUNDLE" "$WORK/bundle.apks"
     if wait_until 30 apk_found 2 ok; then
         event="$(apk_event 2 ok)"
         echo "$event" | python3 -c 'import json,sys; e=json.load(sys.stdin); f=e["files"]; sys.exit(0 if [x["name"] for x in f]==["base-master.apk","base-arm64_v8a.apk"] and all(x["match"] for x in f) else 1)' \
@@ -2309,7 +2336,7 @@ check_dock() {
 
     local before
     before="$(windows | wc -l | tr -d ' ')"
-    open "$shim"
+    open_quiet "$shim"
     wait_until 20 window_rx window.open "$pkg" \
         && ok "DOCK open -> fakephone got window.open for $pkg" || bad "DOCK no window.open for $pkg"
     wait_until 15 windows_at_least $((before + 1)) \

@@ -47,6 +47,37 @@ final class DebugInputTests: XCTestCase {
         ])
     }
 
+    func testParsesTheQuietRunVerbs() throws {
+        let actions = try DebugInputScript.parse("""
+        hoverat 0 200
+        clickat -406 20
+        sidebutton 3
+        sidebutton 3 0.4 80 6 12
+        windowtop
+        waitfile /tmp/pd-step
+        waitfile /tmp/pd-step 5
+        """)
+        XCTAssertEqual(actions, [
+            .hoverAt(dx: 0, top: 200),
+            .clickAt(dx: -406, top: 20),
+            .sideButton(3, hold: 0.08, dx: 0, dy: 0, steps: 0),
+            .sideButton(3, hold: 0.4, dx: 80, dy: 6, steps: 12),
+            .windowTop,
+            .waitFile("/tmp/pd-step", timeout: 30),
+            .waitFile("/tmp/pd-step", timeout: 5),
+        ])
+        for bad in ["hoverat 1", "clickat a b", "sidebutton", "sidebutton 1", "sidebutton 3 0.4 80",
+                    "windowtop now", "waitfile relative/path", "waitfile"] {
+            XCTAssertThrowsError(try DebugInputScript.parse(bad), bad)
+        }
+    }
+
+    func testWindowPointIsFromTheCentreAndTheTopEdge() {
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 600),
+                              styleMask: [.borderless], backing: .buffered, defer: true)
+        XCTAssertEqual(DebugInputDriver.windowPoint(dx: -406, top: 20, in: window), CGPoint(x: 44, y: 580))
+    }
+
     func testBlankLinesAndCommentsAreSkipped() throws {
         let actions = try DebugInputScript.parse("\n  # set up\n\nclick 0.5 0.5\n   \n")
         XCTAssertEqual(actions, [.click(.center)])

@@ -27,6 +27,17 @@
 //                                  an .apk keeps its install route)
 //   hover NX NY                    the pointer moves to NX NY (in immersive, the window
 //                                  in the dwell pill's hot zone)
+//   hoverat DX TOP                 the pointer at a window point: DX pt right of the
+//                                  window's centre, TOP pt below its top edge
+//   clickat DX TOP                 a left click there, through the window's own event
+//                                  dispatch (it reaches the window's chrome, e.g. a light)
+//   sidebutton N [HOLD DX DY STEPS]  mouse button N (3 = Back, 4 = Forward) at the stream's
+//                                  centre, delivered to the view under it; held HOLD seconds
+//                                  (default 0.08), dragged DX DY pt over STEPS moves
+//   windowtop                      the window moved up to the screen's visible top (where
+//                                  dragging its bar upward pins it)
+//   waitfile PATH [SECONDS]        wait until PATH exists (default 30 s): the check script
+//                                  says when the next step may run
 //   notifyclick ID           the same routing a click on that phone notification runs
 //                            (opens the app's window); not a stream action
 //   mediacmd ACTION          the same routing a Now Playing control runs: play, pause,
@@ -69,6 +80,11 @@ enum DebugInputAction: Equatable {
     case windowStyle(String)
     case dropFile(String)
     case hover(NormalizedPoint)
+    case hoverAt(dx: Double, top: Double)
+    case clickAt(dx: Double, top: Double)
+    case sideButton(Int, hold: Double, dx: Double, dy: Double, steps: Int)
+    case windowTop
+    case waitFile(String, timeout: Double)
     case notifyClick(String)
     case mediaCommand(String)
     case wait(Double)
@@ -159,6 +175,28 @@ enum DebugInputScript {
             }
         case "hover":
             return .hover(try point(args, count: 2))
+        case "hoverat", "clickat":
+            guard args.count == 2, let dx = Double(args[0]), let top = Double(args[1]) else {
+                throw LineError(message: "\(verb) needs DX TOP (points)")
+            }
+            return verb == "hoverat" ? .hoverAt(dx: dx, top: top) : .clickAt(dx: dx, top: top)
+        case "sidebutton":
+            guard [1, 5].contains(args.count), let button = Int(args[0]), (2...31).contains(button) else {
+                throw LineError(message: "sidebutton needs N (2...31) and optionally HOLD DX DY STEPS")
+            }
+            guard args.count == 5 else { return .sideButton(button, hold: 0.08, dx: 0, dy: 0, steps: 0) }
+            guard let dx = Double(args[2]), let dy = Double(args[3]), let steps = Int(args[4]), steps >= 0 else {
+                throw LineError(message: "sidebutton DX DY are points, STEPS a count")
+            }
+            return .sideButton(button, hold: try hold(args, index: 1), dx: dx, dy: dy, steps: steps)
+        case "windowtop":
+            guard args.isEmpty else { throw LineError(message: "windowtop takes no arguments") }
+            return .windowTop
+        case "waitfile":
+            guard (1...2).contains(args.count), args[0].hasPrefix("/") else {
+                throw LineError(message: "waitfile needs an absolute PATH and optionally SECONDS")
+            }
+            return .waitFile(args[0], timeout: args.count == 2 ? try hold(args, index: 1) : 30)
         case "dropfile":
             guard args.count == 1, !args[0].isEmpty else {
                 throw LineError(message: "dropfile needs an absolute PATH")
@@ -386,6 +424,23 @@ final class DebugInputDriver {
         case .hover(let target):
             let point = view.convert(location(target, in: view), to: nil)
             (view.window?.windowController as? StreamWindowController)?.pointerMoved(toWindowPoint: point)
+        case .hoverAt(let dx, let top):
+            guard let window = view.window else { return }
+            (window.windowController as? StreamWindowController)?
+                .pointerMoved(toWindowPoint: Self.windowPoint(dx: dx, top: top, in: window))
+        case .clickAt(let dx, let top):
+            guard let window = view.window else { return }
+            click(at: Self.windowPoint(dx: dx, top: top, in: window), in: window)
+        case .sideButton(let button, let hold, let dx, let dy, let steps):
+            sideButton(button, hold: hold, dx: dx, dy: dy, steps: steps, in: view)
+        case .windowTop:
+            guard let window = view.window, let screen = window.screen else { return }
+            window.setFrameTopLeftPoint(NSPoint(x: window.frame.minX, y: screen.visibleFrame.maxY))
+        case .waitFile(let path, let timeout):
+            let deadline = Date(timeIntervalSinceNow: timeout)
+            while !FileManager.default.fileExists(atPath: path), Date() < deadline {
+                RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.05))
+            }
         case .notifyClick(let id):
             // The phone's posts arrive on their own schedule; give a late one
             // ~10 s, pumping the run loop so its frames can land.
@@ -506,6 +561,64 @@ final class DebugInputDriver {
         guard !window.isKeyWindow else { return }
         BackgroundMode.activateApp()
         window.makeKeyAndOrderFront(nil)
+    }
+
+    /// `DX TOP`: DX pt right of the window's centre, TOP pt below its top edge,
+    /// in window coordinates (origin bottom-left).
+    static func windowPoint(dx: Double, top: Double, in window: NSWindow) -> CGPoint {
+        CGPoint(x: window.frame.width / 2 + dx, y: window.frame.height - top)
+    }
+
+    /// A left click the way the window dispatches a real one: the up is queued
+    /// first, so a control's mouse tracking (a traffic light) finds it.
+    private func click(at point: CGPoint, in window: NSWindow) {
+        func event(_ type: NSEvent.EventType) -> NSEvent? {
+            NSEvent.mouseEvent(with: type, location: point, modifierFlags: [],
+                               timestamp: ProcessInfo.processInfo.systemUptime,
+                               windowNumber: window.windowNumber, context: nil,
+                               eventNumber: 0, clickCount: 1, pressure: 1)
+        }
+        guard let down = event(.leftMouseDown), let up = event(.leftMouseUp) else { return }
+        NSApp.postEvent(up, atStart: false)
+        window.sendEvent(down)
+        pumpRunLoop()
+    }
+
+    /// An extra mouse button as AppKit delivers it: an event with that button
+    /// number to the view under the pointer (NSEvent.mouseEvent cannot carry a
+    /// button number, so the event comes from a CGEvent).
+    private func sideButton(_ button: Int, hold: Double, dx: Double, dy: Double, steps: Int, in view: VideoLayerView) {
+        guard let window = view.window else { return }
+        let start = view.convert(CGPoint(x: view.bounds.midX, y: view.bounds.midY), to: nil)
+        func send(_ type: CGEventType, at point: CGPoint) {
+            guard let mouseButton = CGMouseButton(rawValue: UInt32(button)),
+                  let cgEvent = CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: .zero,
+                                        mouseButton: mouseButton) else { return }
+            cgEvent.setIntegerValueField(.mouseEventButtonNumber, value: Int64(button))
+            // As with the wheel events: a window-less NSEvent reads its CG location
+            // back as the window point.
+            let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
+            cgEvent.location = CGPoint(x: point.x, y: primaryHeight - point.y)
+            guard let event = NSEvent(cgEvent: cgEvent),
+                  let frameView = window.contentView?.superview ?? window.contentView,
+                  let target = frameView.hitTest(point) else { return }
+            switch type {
+            case .otherMouseDown: target.otherMouseDown(with: event)
+            case .otherMouseDragged: target.otherMouseDragged(with: event)
+            default: target.otherMouseUp(with: event)
+            }
+        }
+        send(.otherMouseDown, at: start)
+        RunLoop.current.run(until: Date(timeIntervalSinceNow: hold))
+        if steps > 0 {
+            for step in 1...steps {
+                let fraction = Double(step) / Double(steps)
+                send(.otherMouseDragged, at: CGPoint(x: start.x + dx * fraction, y: start.y - dy * fraction))
+                RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.008))
+            }
+            send(.otherMouseDragged, at: start)
+        }
+        send(.otherMouseUp, at: start)
     }
 
     /// The whole script runs in one run-loop turn; gesture steps hand the
