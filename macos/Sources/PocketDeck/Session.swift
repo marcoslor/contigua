@@ -451,11 +451,37 @@ final class Session {
 
     /// The numeric form of a resolved NWEndpoint.Host (a dial needs an address
     /// NIO can use; a name would resolve again and might answer differently).
-    private static func ipAddressString(_ host: NWEndpoint.Host) -> String? {
-        if case let .ipv4(ip) = host { return "\(ip)" }
-        if case let .ipv6(ip) = host { return "\(ip)" }
+    static func ipAddressString(_ host: NWEndpoint.Host) -> String? {
+        if case let .ipv4(ip) = host { return dialableHost("\(ip)") }
+        if case let .ipv6(ip) = host { return dialableHost("\(ip)") }
         let parts = String(describing: host).components(separatedBy: CharacterSet(charactersIn: "()"))
-        return parts.count > 1 ? parts[1] : parts.first
+        return dialableHost(parts.count > 1 ? parts[1] : parts.first ?? "")
+    }
+
+    /// The host string NIO can dial for a resolved address.
+    ///
+    /// Network.framework reports Bonjour-resolved ports interface-scoped
+    /// ("192.168.1.5%en0"). `SocketAddress(ipAddress:)` only accepts a zone on
+    /// IPv6 (it hands those to getaddrinfo), so a scoped IPv4 must lose it or
+    /// every discovered phone fails to parse. On IPv6 the zone is dropped too,
+    /// except for link-local (fe80::/10), which is unroutable without one.
+    static func dialableHost(_ textual: String) -> String? {
+        let trimmed = textual.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, !trimmed.contains("/") else { return nil }
+        let percent = trimmed.firstIndex(of: "%")
+        let address = percent.map { String(trimmed[..<$0]) } ?? trimmed
+        let scope = percent.map { String(trimmed[trimmed.index(after: $0)...]) }
+        guard !address.isEmpty else { return nil }
+        guard address.contains(":") else { return address }
+        guard isIPv6LinkLocal(address), let scope, !scope.isEmpty else { return address }
+        return "\(address)%\(scope)"
+    }
+
+    /// fe80::/10 — the first hextet between fe80 and febf.
+    private static func isIPv6LinkLocal(_ address: String) -> Bool {
+        let hextet = address.prefix(while: { $0 != ":" })
+        guard let value = UInt16(hextet, radix: 16) else { return false }
+        return (value & 0xffc0) == 0xfe80
     }
 
     private func armConnectWatchdog() {
