@@ -41,6 +41,12 @@ TOOLS="/tmp/pocketdeck-e2e-tools"
 # Named by the source's hash: other checkouts share $TOOLS, and a helper built from
 # their (older or newer) source must not be taken for this one.
 CGBIN="$TOOLS/cgevent-$(shasum "$CGINPUT" | cut -c1-12)"
+WATCH_SRC="$MACOS/scripts/quiet-watch.swift"
+WATCHBIN="$TOOLS/quiet-watch-$(shasum "$WATCH_SRC" | cut -c1-12)"
+# PD_E2E_VISIBLE=1: the app runs as a normal foreground app on the real screens
+# and the checks that need real input run too (debugging). Otherwise the run is
+# quiet: see "Running the e2e checks while you work" in docs/TESTING.md.
+VISIBLE="${PD_E2E_VISIBLE:-0}"
 LOCK_DIR="/tmp/pocketdeck-e2e.lock"
 KEYCHAIN_SERVICE="dev.pocketdeck.mac.$PROFILE"
 DEFAULTS_SUITE="dev.pocketdeck.mac.$PROFILE"
@@ -86,6 +92,7 @@ finish() {
         unregister_share
         remove_dock_apps
     fi
+    stop_watch
     kill "$CAFFEINATE_PID" >/dev/null 2>&1
     release_lock
 }
@@ -131,10 +138,69 @@ start_fake() {
     say "fakephone did not start:"; cat "$WORK/fake.log"; return 1
 }
 
-# launch <args...> — starts the app as a direct child so `wait` works.
+# launch <args...> — starts the app as a direct child so `wait` works. Quiet runs
+# add --background: no activation, no Dock icon, windows on a virtual display.
 launch() {
-    "$APP" --profile "$PROFILE" "$@" > "$WORK/app.log" 2>&1 &
+    local quiet=()
+    [ "$VISIBLE" = "1" ] || quiet=(--background)
+    "$APP" --profile "$PROFILE" "${quiet[@]}" "$@" > "$WORK/app.log" 2>&1 &
     APP_PID=$!
+}
+
+# skip_visible <name> — a step that needs real input through the window server.
+skip_visible() { say "SKIP $1 (needs real input; PD_E2E_VISIBLE=1 runs it)"; }
+
+# cg_input <cgevent args...> — a real-input step (visible runs only): the watcher
+# counts any pointer move while the marker exists.
+cg_input() {
+    touch "$WORK/input-step"
+    "$CGBIN" "$@" >/dev/null
+    local status=$?
+    rm -f "$WORK/input-step"
+    return $status
+}
+
+build_watch() {
+    if [ ! -x "$WATCHBIN" ]; then
+        mkdir -p "$TOOLS"
+        swiftc -O "$WATCH_SRC" -o "$WATCHBIN" >/dev/null 2>&1 || { say "could not build $WATCH_SRC"; return 1; }
+    fi
+}
+
+# start_watch — samples focus, pointer and windows for the whole run (quiet-watch.swift).
+# This run's processes: the e2e bundle, anything under $WORK (Dock shims made with
+# --dock-dir), the profile's automatic Dock apps and the helper tools in $TOOLS.
+# Its files sit next to $WORK, which every check clears.
+start_watch() {
+    QUIET_FILE="$WORK-quiet.txt"
+    QUIET_DETAILS="$WORK-quiet-details.txt"
+    rm -f "$QUIET_FILE" "$QUIET_DETAILS"
+    "$WATCHBIN" --summary "$QUIET_FILE" --details "$QUIET_DETAILS" \
+        --input-marker "$WORK/input-step" \
+        --prefix "$E2E_BUNDLE/" --prefix "$WORK/" --prefix "$(profile_dock_dir)/" --prefix "$TOOLS/" &
+    WATCH_PID=$!
+}
+
+stop_watch() {
+    [ -n "${WATCH_PID:-}" ] || return 0
+    kill "$WATCH_PID" >/dev/null 2>&1
+    wait "$WATCH_PID" 2>/dev/null
+    WATCH_PID=""
+}
+
+# quiet_report — the QUIET line; in a quiet run any non-zero count is one FAIL.
+quiet_report() {
+    stop_watch
+    local line
+    line="$(cat "$QUIET_FILE" 2>/dev/null)"
+    [ -n "$line" ] || line="focus_changes=? pointer_moves=? visible_windows=? dock_icons=?"
+    say "QUIET $line"
+    if [ "$VISIBLE" = "1" ]; then
+        say "(PD_E2E_VISIBLE=1: the run is visible on purpose; QUIET is not enforced)"
+    elif [ "$line" != "focus_changes=0 pointer_moves=0 visible_windows=0 dock_icons=0" ]; then
+        bad "QUIET the run disturbed the desktop ($line); details: $QUIET_DETAILS"
+        head -20 "$QUIET_DETAILS" 2>/dev/null
+    fi
 }
 
 wait_app() {
@@ -2666,6 +2732,8 @@ say "run: port $PORT, work $WORK, profile $PROFILE, app $E2E_BUNDLE"
 build_e2e_app || exit 1
 build_cgevent || exit 1
 build_share_driver || exit 1
+build_watch || exit 1
+start_watch
 case "$which_check" in
     qr)       check_qr ;;
     pair)     check_pair ;;
@@ -2699,6 +2767,7 @@ case "$which_check" in
               check_notify; check_audio; check_handoff; check_deck; check_orphans ;;
 esac
 
+quiet_report
 say ""
 say "passed=$PASS failed=$FAIL"
 [ "$FAIL" = "0" ]
