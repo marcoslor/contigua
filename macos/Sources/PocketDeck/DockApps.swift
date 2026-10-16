@@ -225,6 +225,10 @@ final class DockApps: NSObject {
 
     /// Shim pid → the window (stream, pkg) it stands for.
     private(set) var bindings: [Int: Binding] = [:]
+    /// Shim pid → a watch on its exit. NSWorkspace does not report every app's
+    /// end (agent shims in background mode), and a killed shim never posts its
+    /// quit message; whichever notices first closes the window, once.
+    private var exitWatches: [Int: DispatchSourceProcess] = [:]
     private let center = DistributedNotificationCenter.default()
     /// The file system and LaunchServices work of the automatic path runs here:
     /// creating a shim for the first time must never slow the window it stands for.
@@ -411,7 +415,18 @@ final class DockApps: NSObject {
     /// The shim is up and its pid now stands for the window of `stream`.
     func bind(pid: Int, stream: UInt32, pkg: String) {
         bindings[pid] = Binding(stream: stream, pkg: pkg)
+        watchExit(of: pid)
         post(DockMessage.opened, pid: pid)
+    }
+
+    private func watchExit(of pid: Int) {
+        guard exitWatches[pid] == nil else { return }
+        let source = DispatchSource.makeProcessSource(identifier: pid_t(pid), eventMask: .exit, queue: .main)
+        source.setEventHandler { [weak self] in self?.shimExited(pid) }
+        exitWatches[pid] = source
+        source.resume()
+        // Gone before the watch started: the source would never fire.
+        if kill(pid_t(pid), 0) != 0, errno == ESRCH { shimExited(pid) }
     }
 
     func stream(forPid pid: Int) -> UInt32? { bindings[pid]?.stream }
@@ -434,6 +449,7 @@ final class DockApps: NSObject {
     func streamClosed(_ stream: UInt32) {
         for (pid, bound) in bindings where bound.stream == stream {
             bindings.removeValue(forKey: pid)
+            exitWatches.removeValue(forKey: pid)?.cancel()
             post(DockMessage.closed, pid: pid)
         }
     }
@@ -457,15 +473,18 @@ final class DockApps: NSObject {
 
     @objc private func quitRequested(_ notification: Notification) {
         guard let pid = notification.userInfo?[DockMessage.pidKey] as? Int else { return }
-        shimGone(pid)
+        shimExited(pid)
     }
 
     @objc private func appTerminated(_ notification: Notification) {
         guard let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else { return }
-        shimGone(Int(app.processIdentifier))
+        shimExited(Int(app.processIdentifier))
     }
 
-    private func shimGone(_ pid: Int) {
+    /// The shim quit (its message, NSWorkspace or the exit watch): its window
+    /// closes. Safe to call more than once for the same pid.
+    func shimExited(_ pid: Int) {
+        exitWatches.removeValue(forKey: pid)?.cancel()
         guard let bound = bindings.removeValue(forKey: pid) else { return }
         Log.app.notice("dock: shim \(pid, privacy: .public) quit; closing stream \(bound.stream, privacy: .public)")
         onShimQuit?(bound.stream)
