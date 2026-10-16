@@ -183,9 +183,9 @@ final class StreamChromeImmersiveTests: XCTestCase {
         if let choose {
             defaults.set(choose.rawValue, forKey: WindowStyleStore.key(forPackage: "com.example.app"))
         }
-        let keys = PairKeyStore(defaults: defaults, keys: .scratch())
+        let pins = PhonePinStoreV2()
         let session = Session(endpoint: .hostPort(host: "127.0.0.1", port: 1), knownDeviceId: nil,
-                              clientId: "test-client", keyStore: keys)
+                              clientId: "test-client", pinStore: pins)
         return WindowManager(session: session, defaults: defaults)
     }
 
