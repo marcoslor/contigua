@@ -215,6 +215,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @MainActor
     func applicationDidFinishLaunching(_ notification: Notification) {
         let environment = AppEnvironment.shared
+        // SwiftUI makes the app regular while it launches; background mode stays an accessory.
+        if environment.options.background { NSApp.setActivationPolicy(.accessory) }
         switch environment.options.appearance {
         case "light": NSApp.appearance = NSAppearance(named: .aqua)
         case "dark": NSApp.appearance = NSAppearance(named: .darkAqua)
