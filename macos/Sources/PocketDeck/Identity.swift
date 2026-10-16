@@ -1,10 +1,13 @@
 // Identity, key storage and logging.
 //
 // - clientId: stable per-install UUID in the profile's defaults (sent in `hello`).
-// - Pair keys: one JSON file, ~/Library/Application Support/<profile folder>/pairkeys.json,
-//   mode 0600 in a 0700 folder. Not the Keychain: every re-signed build made
-//   macOS ask for the login password. Keychain storage returns with proper
-//   code signing before release.
+// - Identity: the v2 EC key + certificate in
+//   ~/Library/Application Support/<profile folder>/identity.json, mode 0600 in
+//   a 0700 folder; the phones this Mac has pinned live beside it in pins.json
+//   (PhonePinStoreV2). Not the Keychain: every re-signed build made macOS ask
+//   for the login password. Keychain storage returns with proper code signing
+//   before release. (The v1 pairkeys.json is deleted by IdentityMigrationV2 —
+//   v2 pairs from scratch.)
 // - Logging: os.Logger only (no `print`); the optional latency log is a file
 //   under ~/Library/Logs/<profile folder> because it is sampled by the tests.
 

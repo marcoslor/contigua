@@ -1,6 +1,6 @@
 // What this Mac remembers about the phones it has paired with, apart from the
-// secret keys (`PairKeyFile`) and reachability hints (`CachedDeviceStore`): name,
-// model, last seen. The UI is driven by this list, so a missing or rejected key
+// pinned certificates (`PhonePinStoreV2`) and reachability hints
+// (`CachedDeviceStore`): name, model, last seen. The UI is driven by this list, so a missing or rejected key
 // reads as "pair again" for a named phone, never as a fresh install.
 //
 // Everything lives in the profile's defaults and support folder (`Profile`).

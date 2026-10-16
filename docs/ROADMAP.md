@@ -21,11 +21,14 @@ Status: `[ ]` todo · `[~]` in progress · `[x]` done (verified on device).
 
 ## Before launch (P0)
 
-- [ ] **End-to-end encryption:** mutual TLS 1.3 with keys pinned at pairing (QR/code exchanges
-      certificate fingerprints); the same encrypted stream runs over LAN, P2P and relay, so no
-      relay can read it. Replaces plaintext + HMAC; protocol v2.
-      Mac pairing keys are protected only by file permissions for now (`pairkeys.json`, 0600);
-      Keychain storage returns with proper code signing before release.
+- [~] **End-to-end encryption:** done on `epic/e2ee` — mutual TLS 1.3 with keys pinned at
+      pairing (the code derives from the TLS exporter plus fresh nonces; the QR carries the
+      Mac's fingerprint and a one-time secret), replacing plaintext + HMAC; protocol v2.
+      It flips to `[x]` once the architect verifies it on the real phone (phase 2b step 10
+      proved it on the emulator: code and exporter hash equal on both ends).
+      Mac identity and pins are protected only by file permissions for now
+      (`identity.json`, `pins.json`, 0600); Keychain storage returns with proper code
+      signing before release.
 
 ## v0.1 — after the core flow works
 

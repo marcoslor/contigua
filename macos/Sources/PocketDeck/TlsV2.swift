@@ -1,6 +1,5 @@
-// The v2 TLS transport for the Mac side (docs/design/e2ee.md §1/§4b/§6) —
-// new components beside the v1 NWConnection session, not yet wired (the
-// session re-pointing lands with the v2 pairing steps 7+).
+// The TLS transport for the Mac side (docs/design/e2ee.md §1/§4b/§6) — what
+// every session dials with; the v1 NWConnection/plaintext path is gone.
 //
 // - NIOSSL/BoringSSL in memory: per-profile identity (DeviceIdentityV2), TLS 1.3
 //   only, resumption and 0-RTT impossible (R3): every connect makes a fresh
