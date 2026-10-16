@@ -1,10 +1,13 @@
 // The invisible screen of background mode: a virtual display (CoreGraphics'
-// private CGVirtualDisplay API, the one screen-extender apps use) that lives
-// as long as the process, and the hooks that put every window the app shows
-// onto it. Windows there are on screen for macOS (not occluded, so streams keep
-// running and `screencapture -l` works) but on none of the person's displays.
-// The display is placed so it touches the main display only at its
-// bottom-right corner, where the person's pointer rarely goes.
+// private CGVirtualDisplay API, the one screen-extender apps use) that lives as
+// long as the process — unless one is already there: an e2e run holds a single
+// display of these ids for the whole run (pd-vdisplay.swift) and the app
+// adopts it instead of creating and destroying a display on every launch — and
+// the hooks that put every window the app shows onto it. Windows there are on
+// screen for macOS (not occluded, so streams keep running and `screencapture -l`
+// works) but on none of the person's displays. The display is placed so it
+// touches the main display only at its bottom-right corner, where the person's
+// pointer rarely goes.
 
 import AppKit
 import CoreGraphics
@@ -40,7 +43,8 @@ enum BackgroundPlacement {
 }
 
 final class VirtualDisplay {
-    /// Its EDID-style ids: tools (the e2e backdrop, the quiet watcher) find it by them.
+    /// Its EDID-style ids: tools (the e2e backdrop, the quiet watcher, the run's
+    /// pd-vdisplay helper) find it by them.
     static let vendorID: UInt32 = 0x5044
     static let productID: UInt32 = 0xE2E0
 
@@ -48,12 +52,28 @@ final class VirtualDisplay {
     private(set) static var shared: VirtualDisplay?
 
     let displayID: CGDirectDisplayID
-    /// Holds the display: it goes away when this object (the process) does.
-    private let handle: NSObject
+    /// Holds a display this process created: it goes away when this object
+    /// (the process) does. nil for an adopted one, which belongs to the run
+    /// that made it (pd-vdisplay) and is left alone here.
+    private let handle: NSObject?
 
-    private init(displayID: CGDirectDisplayID, handle: NSObject) {
+    private init(displayID: CGDirectDisplayID, handle: NSObject?) {
         self.displayID = displayID
         self.handle = handle
+    }
+
+    /// A display of this app's ids that is already online, if any. An e2e run
+    /// holds one for the whole run (scripts/pd-vdisplay.swift): the app is not
+    /// told about it and finds it here, so the checks' ~45 launches share one
+    /// display instead of reconfiguring the system's displays 45 times.
+    static func existingDisplay() -> CGDirectDisplayID? {
+        var count: UInt32 = 0
+        CGGetOnlineDisplayList(0, nil, &count)
+        var ids = [CGDirectDisplayID](repeating: 0, count: Int(count))
+        CGGetOnlineDisplayList(count, &ids, &count)
+        return ids.prefix(Int(count)).first {
+            CGDisplayVendorNumber($0) == vendorID && CGDisplayModelNumber($0) == productID
+        }
     }
 
     /// The display's frame in AppKit coordinates.
@@ -78,6 +98,12 @@ final class VirtualDisplay {
     @MainActor
     static func create() -> VirtualDisplay? {
         if let shared { return shared }
+        if let existing = existingDisplay() {
+            let adopted = VirtualDisplay(displayID: existing, handle: nil)
+            shared = adopted
+            Log.app.notice("background: using the virtual display \(existing, privacy: .public) an e2e run holds at \(String(describing: CGDisplayBounds(existing)), privacy: .public)")
+            return adopted
+        }
         let main = CGDisplayBounds(CGMainDisplayID())
         let width = UInt(main.width > 0 ? main.width : 1680)
         let height = UInt(main.height > 0 ? main.height : 1050)
@@ -118,7 +144,7 @@ final class VirtualDisplay {
         return created
     }
 
-    /// The 2x mode and the corner origin, for this process's lifetime only
+    /// The mode and the corner origin, for this process's lifetime only
     /// (`.forAppOnly`): the person's arrangement is back when the app exits.
     private static func configure(_ id: CGDirectDisplayID, pointSize: (UInt, UInt), corner: CGPoint) {
         var config: CGDisplayConfigRef?
