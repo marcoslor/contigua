@@ -65,6 +65,17 @@ final class VirtualDisplay {
     /// A display of the main display's point size at 2x, at its bottom-right
     /// corner. nil (and a log line) when this macOS refuses the API.
     @discardableResult
+    /// FNV-1a of the profile name: the same profile always gets the same display.
+    static func serialNumber(profile: String) -> UInt32 {
+        var hash: UInt32 = 0x811C_9DC5
+        for byte in profile.utf8 {
+            hash ^= UInt32(byte)
+            hash = hash &* 0x0100_0193
+        }
+        return hash == 0 ? 1 : hash
+    }
+
+    @MainActor
     static func create() -> VirtualDisplay? {
         if let shared { return shared }
         let main = CGDisplayBounds(CGMainDisplayID())
@@ -83,7 +94,11 @@ final class VirtualDisplay {
         descriptor.setValue(NSValue(size: NSSize(width: 340, height: 212)), forKey: "sizeInMillimeters")
         descriptor.setValue(vendorID, forKey: "vendorID")
         descriptor.setValue(productID, forKey: "productID")
-        descriptor.setValue(UInt32(getpid()), forKey: "serialNum")
+        // One stable identity per profile: macOS keeps a colour profile and an
+        // arrangement entry for every display identity it has seen, so a new
+        // serial per launch piled up hundreds of ghost displays and kept
+        // colorsync and the window server busy.
+        descriptor.setValue(serialNumber(profile: AppEnvironment.shared.options.profileName), forKey: "serialNum")
         descriptor.setValue(DispatchQueue.main, forKey: "queue")
         // The descriptor is read by init, so the display is made after it is filled in.
         guard let handle = makeDisplay(descriptor) else {
