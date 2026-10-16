@@ -13,6 +13,8 @@ enum BackgroundMode {
     @MainActor
     static func start() {
         NSApp.setActivationPolicy(.accessory)
+        VirtualDisplay.create()
+        NSWindow.keepWindowsOnVirtualDisplay()
     }
 
     /// Brings the app forward, except in background mode: there the person's
