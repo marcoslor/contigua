@@ -185,8 +185,12 @@ final class ConnectionController {
     private(set) var apps: [AppInfo] = []
     private(set) var appsLoaded = false
     private(set) var icons: [String: NSImage] = [:]
+    /// The adaptive layers of the icons that have them (`deck.glassIcons`).
+    private(set) var iconLayers: [String: AppIconLayers] = [:]
     /// Packages the phone answered with no icon at all.
     private(set) var missingIcons: Set<String> = []
+    /// The one re-request a flat cached icon gets per connection.
+    private let layerRefresh = IconLayerRefresh()
     private(set) var status: PhoneStatus?
     private(set) var pairingSucceeded = false
     private(set) var qr: QRPairingState?
@@ -905,10 +909,27 @@ final class ConnectionController {
         appsLoaded = !apps.isEmpty
         status = nil
         icons = [:]
+        iconLayers = [:]
         missingIcons = []
         for app in apps {
             if let image = IconCache.shared.load(pkg: app.pkg, deviceId: ref.id) { icons[app.pkg] = image }
+            loadCachedLayers(app.pkg, deviceId: ref.id)
         }
+    }
+
+    /// A cache entry that has layers goes straight into the grid (no
+    /// re-request); a flat one stays flat until the connection checks.
+    private func loadCachedLayers(_ pkg: String, deviceId: String) {
+        guard iconLayers[pkg] == nil, let data = IconCache.shared.loadLayerData(pkg: pkg, deviceId: deviceId) else { return }
+        iconLayers[pkg] = Self.glassLayers(fg: data.fg, bg: data.bg, mono: data.mono)
+    }
+
+    /// Decode the `icon` message's layer fields; incomplete or undecodable
+    /// layers mean none.
+    static func glassLayers(fg: Data?, bg: Data?, mono: Data?) -> AppIconLayers? {
+        guard let fg, let bg else { return nil }
+        return AppIconLayers(fg: NSImage(data: fg), bg: NSImage(data: bg),
+                             mono: mono == nil ? nil : NSImage(data: mono!))
     }
 
     // MARK: Discovery
@@ -1188,11 +1209,15 @@ final class ConnectionController {
             nowPlaying.apply(media)
         case .apps(let list):
             appsReceived(list)
-        case .icon(let pkg, let png):
+        case .icon(let pkg, let png, let fg, let bg, let mono):
             if let image = NSImage(data: png) {
                 icons[pkg] = image
                 windows.setIcon(image, pkg: pkg)
-                if let id = link.phone?.id { IconCache.shared.store(png, pkg: pkg, deviceId: id) }
+                if let id = link.phone?.id { IconCache.shared.store(png, fg: fg, bg: bg, mono: mono, pkg: pkg, deviceId: id) }
+                // A layered icon lands only when it decodes whole; without
+                // layers the entry is cleared, so a flat icon from a phone
+                // that predates layers replaces a stale one.
+                iconLayers[pkg] = Self.glassLayers(fg: fg, bg: bg, mono: mono)
             } else {
                 missingIcons.insert(pkg)
             }
@@ -1293,6 +1318,7 @@ final class ConnectionController {
             cache.store(name: info.name, deviceId: info.id)
         }
         lastAttemptFailed = false
+        layerRefresh.reset()
         let hadWindows = !windows.openStreams.isEmpty
         windows.phone = info
         // Every window title carries the display name from here on.
@@ -1344,8 +1370,16 @@ final class ConnectionController {
             if let id = link.phone?.id, let cached = IconCache.shared.load(pkg: app.pkg, deviceId: id) {
                 icons[app.pkg] = cached
                 windows.setIcon(cached, pkg: app.pkg)
+                loadCachedLayers(app.pkg, deviceId: id)
             } else {
                 session?.requestIcon(pkg: app.pkg)
+            }
+        }
+        // A cached icon without layers may predate them: ask once per
+        // connection, so a phone that has layers catches the glass look up.
+        if GlassIconsSetting.isEnabled(in: profile.defaults), let id = link.phone?.id {
+            for app in list where iconLayers[app.pkg] == nil && icons[app.pkg] != nil && IconCache.shared.hasLayers(pkg: app.pkg, deviceId: id) == false {
+                if layerRefresh.allow(pkg: app.pkg) { session?.requestIcon(pkg: app.pkg) }
             }
         }
         if let ref = link.phone {

@@ -41,6 +41,58 @@ final class IconCacheTests: XCTestCase {
         XCTAssertNotNil(cache.load(pkg: "com.android.settings", deviceId: "real-phone"))
     }
 
+    func testLayersRoundTripBesideTheFlatIcon() {
+        let cache = IconCache(directory: directory)
+        let flat = png(10), fg = png(40), bg = png(120), mono = png(250)
+        cache.store(flat, fg: fg, bg: bg, mono: mono, pkg: "com.a.b", deviceId: "d1")
+
+        XCTAssertEqual(cache.loadData(pkg: "com.a.b", deviceId: "d1"), flat, "the flat icon is unchanged")
+        XCTAssertTrue(cache.hasLayers(pkg: "com.a.b", deviceId: "d1"))
+        XCTAssertEqual(cache.loadLayerData(pkg: "com.a.b", deviceId: "d1")?.fg, fg)
+        XCTAssertEqual(cache.loadLayerData(pkg: "com.a.b", deviceId: "d1")?.bg, bg)
+        XCTAssertEqual(cache.loadLayerData(pkg: "com.a.b", deviceId: "d1")?.mono, mono)
+    }
+
+    func testLayersWithoutMonochromeRoundTripToo() {
+        let cache = IconCache(directory: directory)
+        cache.store(png(10), fg: png(40), bg: png(120), mono: nil, pkg: "com.a.b", deviceId: "d1")
+
+        let layers = cache.loadLayerData(pkg: "com.a.b", deviceId: "d1")
+        XCTAssertEqual(layers?.fg, png(40))
+        XCTAssertEqual(layers?.bg, png(120))
+        XCTAssertNil(layers?.mono)
+    }
+
+    func testAFlatOnlyEntryStaysFlat() {
+        let cache = IconCache(directory: directory)
+        cache.store(png(10), pkg: "com.a.b", deviceId: "d1")
+
+        XCTAssertFalse(cache.hasLayers(pkg: "com.a.b", deviceId: "d1"))
+        XCTAssertNil(cache.loadLayerData(pkg: "com.a.b", deviceId: "d1"))
+    }
+
+    func testAFlatReplyClearsEarlierLayers() throws {
+        let cache = IconCache(directory: directory)
+        cache.store(png(10), fg: png(40), bg: png(120), mono: nil, pkg: "com.a.b", deviceId: "d1")
+        // The same phone, now answering without layers (it predates them).
+        cache.store(png(11), pkg: "com.a.b", deviceId: "d1")
+
+        XCTAssertFalse(cache.hasLayers(pkg: "com.a.b", deviceId: "d1"))
+        XCTAssertNil(cache.loadLayerData(pkg: "com.a.b", deviceId: "d1"))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: directory
+            .appendingPathComponent("icons/d1", isDirectory: true)
+            .appendingPathComponent("com.a.b-fg.png").path), "the layer files go with the marker")
+        XCTAssertEqual(cache.loadData(pkg: "com.a.b", deviceId: "d1"), png(11))
+    }
+
+    func testLayerStoreNeedsBothLayers() {
+        let cache = IconCache(directory: directory)
+        cache.store(png(10), fg: png(40), bg: nil, mono: nil, pkg: "com.a.b", deviceId: "d1")
+
+        XCTAssertFalse(cache.hasLayers(pkg: "com.a.b", deviceId: "d1"))
+        XCTAssertNil(cache.loadLayerData(pkg: "com.a.b", deviceId: "d1"))
+    }
+
     func testOldUnnamespacedFilesAreNeverRead() throws {
         try png(1).write(to: directory.appendingPathComponent("com.android.settings.png"))
         let cache = IconCache(directory: directory)
@@ -86,5 +138,20 @@ final class IconCacheTests: XCTestCase {
         XCTAssertEqual(apps.load(deviceId: "real-phone").map(\.pkg), ["com.spotify.music"])
         XCTAssertEqual(apps.load(deviceId: "fakephone").map(\.pkg), ["com.android.settings"])
         XCTAssertTrue(apps.load(deviceId: "other").isEmpty)
+    }
+}
+
+@MainActor
+final class IconLayerRefreshTests: XCTestCase {
+
+    func testOneReRequestPerPackagePerConnection() {
+        let refresh = IconLayerRefresh()
+
+        XCTAssertTrue(refresh.allow(pkg: "com.a"))
+        XCTAssertFalse(refresh.allow(pkg: "com.a"), "a package never gets asked twice in one connection")
+        XCTAssertTrue(refresh.allow(pkg: "com.b"))
+        // A reconnect (the same phone again) starts a new connection.
+        refresh.reset()
+        XCTAssertTrue(refresh.allow(pkg: "com.a"))
     }
 }
