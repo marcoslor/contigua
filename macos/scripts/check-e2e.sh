@@ -49,6 +49,8 @@ TOOLS="/tmp/pocketdeck-e2e-tools"
 CGBIN="$TOOLS/cgevent-$(shasum "$CGINPUT" | cut -c1-12)"
 WATCH_SRC="$MACOS/scripts/quiet-watch.swift"
 WATCHBIN="$TOOLS/quiet-watch-$(shasum "$WATCH_SRC" | cut -c1-12)"
+LOAD_SRC="$MACOS/scripts/pd-load.swift"
+LOADBIN="$TOOLS/pd-load-$(shasum "$LOAD_SRC" | cut -c1-12)"
 VDISPLAY_SRC="$MACOS/scripts/pd-vdisplay.swift"
 VDISPLAYBIN="$TOOLS/pd-vdisplay-$(shasum "$VDISPLAY_SRC" | cut -c1-12)"
 # The guard (pd-watchdog.sh): no run may leave the Mac's display plumbing
@@ -108,6 +110,7 @@ finish() {
         remove_dock_apps
     fi
     stop_watch
+    stop_load
     stop_watchdog vdisplay
     stop_watchdog app
     kill "$CAFFEINATE_PID" >/dev/null 2>&1
@@ -263,6 +266,47 @@ watchdog_report() {
         say "$line"
         bad "$line"
     done < "$WATCHDOG_LOG"
+}
+
+# build_load — the run's sampler (pd-load.swift): samples WindowServer and
+# colorsync CPU and watches the online display list, and reports the LOAD line.
+build_load() {
+    if [ ! -x "$LOADBIN" ]; then
+        mkdir -p "$TOOLS"
+        swiftc -O "$LOAD_SRC" -o "$LOADBIN" >/dev/null 2>&1 || { say "could not build $LOAD_SRC"; return 1; }
+    fi
+}
+
+# start_load — from before the run's display exists: the helper's own display
+# appearing is one change it sees (vdisplay/adds), and the one going away at the
+# end of the run (load_report) is another.
+start_load() {
+    LOAD_FILE="$WORK-load.txt"
+    rm -f "$LOAD_FILE"
+    "$LOADBIN" --summary "$LOAD_FILE" &
+    LOAD_PID=$!
+}
+
+stop_load() {
+    [ -n "${LOAD_PID:-}" ] || return 0
+    kill "$LOAD_PID" >/dev/null 2>&1
+    wait "$LOAD_PID" 2>/dev/null
+    LOAD_PID=""
+}
+
+# load_report — ends what the run holds and reports what it cost, before its
+# QUIET verdict. The app goes first (its windows are on the run's display, and
+# the sample to come is the display's, not a window migration), then the
+# display, and the last three seconds are sampled: a quiet run's whole cost is
+# that one display appearing and going away (vdisplay=2). Every run reports one
+# LOAD line, whatever a check says: the numbers are the point of quiet mode
+# being allowed at all.
+load_report() {
+    kill_e2e_app
+    stop_vdisplay
+    sleep 3
+    stop_load
+    say "$(cat "$LOAD_FILE" 2>/dev/null || echo "LOAD no samples")"
 }
 
 # build_vdisplay — the run's virtual display helper (pd-vdisplay.swift). A quiet
@@ -2935,7 +2979,9 @@ build_cgevent || exit 1
 build_share_driver || exit 1
 build_watch || exit 1
 build_vdisplay || exit 1
+build_load || exit 1
 init_watchdog
+start_load
 start_vdisplay || exit 1
 start_watch
 case "$which_check" in
@@ -2973,6 +3019,7 @@ esac
 
 quiet_report
 watchdog_report
+load_report
 say ""
 say "passed=$PASS failed=$FAIL"
 [ "$FAIL" = "0" ]
