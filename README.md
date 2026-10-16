@@ -17,7 +17,7 @@ window you give it.
 |---|---|
 | ![Two Android apps as Mac windows](docs/images/two_app_windows.png) | ![The app grid](docs/images/deck_dark.png) |
 
-| The phone window mirrors the phone's own screen (Back / Home / Recents in the glass header) | Pairing, step by step on the phone |
+| The phone window mirrors the phone's own screen (Back / Home / Recents at the right of the bar) | Pairing, step by step on the phone |
 |---|---|
 | ![Phone mode](docs/images/phone_mode.png) | ![Pairing onboarding](docs/images/onboarding_4_pair_light.png) |
 
@@ -80,7 +80,7 @@ window you give it.
   Launchpad, Spotlight and ⌘-Tab. Launching it opens that app's window.
 - **Spotlight** — every phone app searches as "App (Phone name)".
 - Silently reconnects to the last phone; closes a window by closing the app's
-  display, drains bandwidth when a window is hidden or occluded, and asks the
+  display, saves bandwidth when a window is hidden or covered, and asks the
   phone for nothing while you're not looking (battery rules in
   docs/ARCHITECTURE.md).
 
