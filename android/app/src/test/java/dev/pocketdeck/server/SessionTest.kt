@@ -329,6 +329,24 @@ class SessionTest {
         val icon = readUntil("icon")
         assertEquals("com.a", icon["pkg"])
         assertEquals("AAAA", icon["png"])
+        // A non-adaptive icon sends no layers at all.
+        assertEquals(false, icon.containsKey("fg"))
+        assertEquals(false, icon.containsKey("bg"))
+        assertEquals(false, icon.containsKey("mono"))
+    }
+
+    @Test
+    fun iconMessageCarriesTheAdaptiveLayersAsOptionalFields() {
+        addAndAuthenticate()
+        platform.apps = listOf(AppEntry("com.a", "Alpha", "com.a/.Main"))
+        platform.iconResult = "AAAA"
+        platform.iconLayersResult = IconLayers("fg-b64", "bg-b64", "mono-b64")
+        send(mapOf("t" to "apps.icon", "pkg" to "com.a"))
+        val icon = readUntil("icon")
+        assertEquals("AAAA", icon["png"])
+        assertEquals("fg-b64", icon["fg"])
+        assertEquals("bg-b64", icon["bg"])
+        assertEquals("mono-b64", icon["mono"])
     }
 
     @Test

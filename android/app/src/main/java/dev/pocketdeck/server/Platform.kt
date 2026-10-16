@@ -120,7 +120,17 @@ interface DisplayLayer {
 interface AppCatalog {
     fun list(): List<AppEntry>
     fun iconPng(pkg: String): String?
+
+    /**
+     * The adaptive icon's layers as base64 PNGs (`fg`/`bg`/`mono` fields of the
+     * `icon` message), each the whole 108 dp layer at 216x216 px; null when the
+     * icon is not adaptive.
+     */
+    fun iconLayers(pkg: String): IconLayers? = null
 }
+
+/** @property fg foreground layer; @property bg background layer; `mono` only on API 33+. */
+data class IconLayers(val fg: String, val bg: String, val mono: String?)
 
 interface Launcher {
     /** @return true when the launch was accepted; false means report `launch_failed`. */

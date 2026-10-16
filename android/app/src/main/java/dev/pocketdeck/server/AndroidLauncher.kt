@@ -7,7 +7,10 @@ import android.content.pm.PackageManager
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Canvas
+import android.graphics.drawable.AdaptiveIconDrawable
+import android.graphics.drawable.Drawable
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.util.Base64
 import java.io.ByteArrayOutputStream
@@ -27,6 +30,7 @@ internal class AndroidLauncher(private val ctx: Context, private val log: (Strin
     private val activityManager: Any? = Hidden.proxy("android.app.IActivityManager", "activity")
     private val activityManagerClass = Hidden.iface("android.app.IActivityManager")
     private val iconCache = HashMap<String, String>()
+    private val layersCache = HashMap<String, IconLayers?>()
 
     private var loggedBinderPath = false
     private var loggedAmPath = false
@@ -107,6 +111,40 @@ internal class AndroidLauncher(private val ctx: Context, private val log: (Strin
             log("icon $pkg failed: ${e.message}")
             null
         }
+    }
+
+    /** Layers of an adaptive icon, cached like the flat one; null is cached too. */
+    override fun iconLayers(pkg: String): IconLayers? {
+        synchronized(layersCache) { layersCache[pkg]?.let { return it } }
+        val layers = try {
+            val drawable = pm.getApplicationIcon(pkg) as? AdaptiveIconDrawable
+                ?: return null
+            val fg = renderLayer(drawable.foreground) ?: return null
+            val bg = renderLayer(drawable.background) ?: return null
+            IconLayers(
+                fg = fg,
+                bg = bg,
+                mono = if (Build.VERSION.SDK_INT >= 33) renderLayer(drawable.monochrome) else null,
+            )
+        } catch (e: Throwable) {
+            log("layers $pkg failed: ${e.message}")
+            null
+        }
+        synchronized(layersCache) { layersCache[pkg] = layers }
+        return layers
+    }
+
+    /** The whole 108 dp layer at 216x216 px (for the Mac's glass tile). */
+    private fun renderLayer(layer: Drawable?): String? {
+        layer ?: return null
+        val bitmap = Bitmap.createBitmap(LAYER_SIZE, LAYER_SIZE, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bitmap)
+        layer.setBounds(0, 0, LAYER_SIZE, LAYER_SIZE)
+        layer.draw(canvas)
+        val out = ByteArrayOutputStream()
+        bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
+        bitmap.recycle()
+        return Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP)
     }
 
     // ------------------------------------------------------------------
@@ -194,5 +232,8 @@ internal class AndroidLauncher(private val ctx: Context, private val log: (Strin
 
     private companion object {
         const val ICON_SIZE = 96
+
+        /** The whole 108 dp adaptive-icon layer, rendered at 2x for the Mac. */
+        const val LAYER_SIZE = 216
     }
 }
