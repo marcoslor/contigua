@@ -96,14 +96,14 @@ func sample() {
         guard layer < 25, alpha > 0, bounds.width > 1, bounds.height > 1,
               real.contains(where: { $0.intersects(bounds) }), !visibleWindows.contains(number) else { continue }
         visibleWindows.insert(number)
-        note("window \(number) of \(path(of: pid)) at \(bounds) on a real display")
+        note("window \(number) of pid \(pid) \(path(of: pid)) at \(bounds) on a real display")
     }
 
     if let front = NSWorkspace.shared.frontmostApplication?.processIdentifier, front != lastFrontmost {
         lastFrontmost = front
         if isRun(front) {
             focusChanges += 1
-            note("frontmost -> \(path(of: front))")
+            note("frontmost -> pid \(front) \(path(of: front))")
         }
     }
 
