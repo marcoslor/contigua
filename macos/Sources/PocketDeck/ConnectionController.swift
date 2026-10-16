@@ -1049,7 +1049,10 @@ final class ConnectionController {
         // A preempted attempt that has not authenticated is cancelled, never leaked.
         if let session, session.state != .ready { session.close() }
         if session?.state == .ready { return }
-        let found = discovered.first { $0.deviceId == ref.id }
+        // A test profile never dials a Bonjour-discovered phone on its own:
+        // discovery would find the real phones on this Mac's LAN (DialPolicy).
+        let found = DialPolicy.mayDialDiscovered(profile)
+            ? discovered.first { $0.deviceId == ref.id } : nil
         if found == nil, let connect = options.connect {
             lastAttemptWasService = false
             start(Session(endpoint: .hostPort(host: connect.host, port: connect.port),
@@ -1563,7 +1566,8 @@ final class ConnectionController {
         }
         let paired = Set(rememberedPhones.map(\.id).filter { pins.record(for: $0) != nil })
         let busy = Set(qrProbes.map(\.id))
-        for phone in QRProbePlanner.candidates(phones: discovered, paired: paired, active: busy,
+        let probeable = DialPolicy.mayDialDiscovered(profile) ? discovered : []
+        for phone in QRProbePlanner.candidates(phones: probeable, paired: paired, active: busy,
                                                 lastProbe: qrLastProbe, busyUntil: qrBusyUntil, now: now) {
             startProbe(id: phone.deviceId, endpoint: .service(phone.endpoint, pinnedTo: phone.interface), deviceId: phone.deviceId,
                        secret: state.payload.secret, now: now)
