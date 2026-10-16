@@ -60,11 +60,21 @@ Spec of every state, copy and transitions: [design/mac-redesign.md](design/mac-r
 - **Grid:** `LazyVGrid` of `GridItem(.fixed(96))` columns; the column count is `floor((width − 2·20 + 8) / 104)` and the gap between columns grows to fill the row
   (≥ 8), so the first tile starts and the last one ends exactly 20 pt from the window edges at any width; rows spacing 8, vertical padding 16 (`GridMetrics`).
   Cell 96×100: icon 56×56 `.clipShape(.rect(cornerRadius: 13, style: .continuous))`, label `.caption` 1 line `.truncationMode(.middle)` with 6 pt side padding, spacing 6.
-  Hover `.fill(.quaternary)`; selected `.fill(Color.accentColor.opacity(0.22))`, both `RoundedRectangle(cornerRadius: 14)` (no glass inside the grid). Loading: 12
+  Hover `.fill(.quaternary)`; selected `.fill(Color.accentColor.opacity(0.22))`, both `RoundedRectangle(cornerRadius: 14)`. Loading: 12
   `.redacted(reason: .placeholder)` cells. **Icons** come from the phone, cached per phone (device id + package). While one is on its way: a 56 pt `.quaternary` rounded square.
   When the phone has none (or the link is down): a generated tile — rounded square (13, continuous) with a top→bottom gradient of a hue derived from the package name
   (FNV-1a, so it is stable), the app's initial in `.system(size: 26, weight: .semibold, design: .rounded)` white. Never pixel art.
   Offline/reconnecting: `.opacity(0.5)`, not clickable. No matches: "No apps match “query”" `.callout .secondary`, height 120.
+
+- **Glass app icons** (Settings → General, `deck.glassIcons`, default on): with it on, each icon sits on a Liquid Glass squircle
+  and the cell keeps hover/selection as above; off is the previous look exactly (flat image, radius 13).
+  The tile is 56 pt with a corner radius of 22.5 % of its side (`.rect(cornerRadius:style: .continuous)`),
+  `.glassEffect(.regular, in:)`, `.regular.interactive()` while the pointer is over the cell. An **adaptive** icon
+  (the phone sent `fg`/`bg`, docs/PROTOCOL.md) is cropped to the central 2/3 of its 216 px canvas — the 72 dp visible
+  area of the 108 dp canvas — the `bg` drawn under the glass at 35 % opacity so the tile carries the app's colour,
+  the `fg` on top at full opacity, clipped to the squircle; the flat 96 px icon stays for every other use (Dock/Spotlight/
+  notifications). A **non-adaptive** icon is centred at 78 % of the tile with no tint; placeholders and the generated
+  tile are unchanged, and `mono` is stored for a later round.
 
 ### Pairing-code sheet (numeric comparison)
 - `.sheet`, frame width 400, padding 32, VStack spacing 24: title "Pair with *phone name*" `.title3.weight(.semibold)` · the code · one line `.callout`
