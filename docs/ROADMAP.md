@@ -4,33 +4,37 @@ Status: `[ ]` todo · `[~]` in progress · `[x]` done (verified on device).
 
 ## v0 — prove the POC (LAN, locked phone)
 
-- [~] Phone server in the Shizuku shell process, one TCP session, PROTOCOL v1
-- [~] One VD + encoder per Mac window, resizable, multiple at once
-- [~] Phone mode (phone-aspect VD + PocketDeck launcher)
-- [~] Mac client: Bonjour discovery, pairing, launcher with search, AVSampleBufferDisplayLayer windows
-- [~] Low-latency input path (binary frames, no sleeps, no hub)
-- [~] Battery rules from ARCHITECTURE.md (pause on hidden windows, no idle work)
+- [x] Phone server in the Shizuku shell process, one TCP session, PROTOCOL v1
+- [x] One VD + encoder per Mac window, resizable, multiple at once
+- [x] Phone mode — a mirror of the phone's own screen (display 0), at phone
+      aspect, turning with the phone, with Back/Home/Recents
+      (docs/design/phone-mirror.md)
+- [x] Mac client: Bonjour discovery, pairing, launcher with search, AVSampleBufferDisplayLayer windows
+- [x] Low-latency input path (binary frames, no sleeps, no hub)
+- [x] Battery rules from ARCHITECTURE.md (pause on hidden windows, no idle work)
 - [ ] `setIgnoreActivitySizeRestrictions(true)` on SDK ≥ 36 so fixed-size apps fill any window
 - [ ] **Spike:** `VirtualDisplayConfig.Builder.setHomeSupported(true)` without
       `SHOULD_SHOW_SYSTEM_DECORATIONS`. If One UI's launcher runs on the VD and #6007
       stays clean across lock/unlock, use the system launcher in phone mode instead of ours.
-- [ ] **End-to-end encryption (P0):** mutual TLS 1.3 with keys pinned at pairing (QR/code exchanges
+- [ ] Device QA on the S25+ with the phone locked: latency ≤ 80 ms p50, #6007 clean, battery drain per hour measured idle vs. one window
+- [~] Repo polish: README with GIF, LICENSE, build docs, CI (gradle build + swift build/test + fakephone selfcheck) — README landed on epic/docs; GIF, LICENSE, CI and the fakephone selfcheck in CI are still open
+
+## Before launch (P0)
+
+- [ ] **End-to-end encryption:** mutual TLS 1.3 with keys pinned at pairing (QR/code exchanges
       certificate fingerprints); the same encrypted stream runs over LAN, P2P and relay, so no
       relay can read it. Replaces plaintext + HMAC; protocol v2.
       Mac pairing keys are protected only by file permissions for now (`pairkeys.json`, 0600);
       Keychain storage returns with proper code signing before release.
-- [ ] Device QA on the S25+ with the phone locked: latency ≤ 80 ms p50, #6007 clean, battery drain per hour measured idle vs. one window
-- [ ] Repo polish: README with GIF, LICENSE, build docs, CI (gradle build + swift build/test + fakephone selfcheck)
 
 ## v0.1 — after the core flow works
 
-Done: accurate lock state, nav shortcuts, orphan cleanup watchdog, display-scoped keep-awake,
-live quality knob, Spotlight for apps ("WhatsApp (Phone name)"), trackpad pinch/rotate,
-links Mac → phone (#5), APK install (#10), share phone → Mac (#11), Dock and Launchpad apps (#6),
-phone nickname + titles (#1, #2), clipboard text both ways (#3).
-
-Remaining, in build order (very simple items first, then the ones that make Android apps feel
-like Mac apps). Each item is one looped dev task with its own checks.
+All v0.1 items are done on main: accurate lock state, nav shortcuts, orphan cleanup watchdog,
+display-scoped keep-awake, live quality knob, Spotlight for apps ("WhatsApp (Phone name)"),
+trackpad pinch/rotate, links Mac → phone (#5), APK install (#10), share phone → Mac (#11),
+Dock and Launchpad apps (#6), phone nickname + titles (#1, #2), clipboard text both ways (#3),
+audio phone → Mac (#4, per-app capture), notifications + Now Playing (#7), drag & drop +
+clipboard images (#8), phone mirroring, window styles (Framed / Immersive, remembered per app).
 
 | # | Feature | Approach | Size |
 |---|---|---|---|
@@ -40,8 +44,8 @@ like Mac apps). Each item is one looped dev task with its own checks.
 | 4 | [x] Audio phone → Mac | REMOTE_SUBMIX at shell UID → Opus/AAC on the session → AVAudioEngine on the Mac, <150 ms added latency, per-device volume/mute (docs/design/audio.md); verified end to end on the API 36 emulator (~80–125 ms tone → Mac, speaker idle), API 34/35 and the real phone still to check | M |
 | 5 | [x] Links Mac → phone | Share → "Open on Phone" (Share extension), Services, drop on the Deck → `link.open` → `ACTION_VIEW` in a new window (docs/design/links.md) | S‑M |
 | 6 | [x] Dock and Launchpad apps | Deck → right-click an app → Add to Dock: a per-app shim bundle in ~/Applications/PocketDeck Apps (real icon, "App (Phone)" in Dock, Launchpad, ⌘-Tab); launching opens/focuses the window, quitting closes it (docs/design/dock.md) | M |
-| 7 | Notifications + media controls | read at shell UID → UserNotifications (click opens the app window); media sessions → Now Playing | M‑L |
-| 8 | Drag & drop files, clipboard images | drag-in: push + share intent; drag-out: file promises; images staged both ways, size-limited | M |
+| 7 | [x] Notifications + Now Playing | notifications and media sessions read by a listener in the app process (granted at the per-phone opt-in via `cmd notification allow_listener` from the shell), forwarded over AIDL → macOS UserNotifications (click opens the app window) and MPNowPlayingInfoCenter + MPRemoteCommandCenter; off by default on both sides (docs/design/notify.md); e2e `notify` | M‑L |
+| 8 | [x] Drag & drop files, clipboard images | Mac → `drop.start` (chunked ≤ 1 MiB parts, resumable, 200 MiB cap) → phone writes to `Downloads/PocketDeck/`, media-scans and offers the app's SEND chooser through shell staging; clipboard images travel both ways (docs/design/dragdrop.md); e2e `drop` | M |
 | 9 | [x] Phone → Mac app handoff | "Continue on Mac" (menu bar, app menu, ⌘⇧C): move the phone's foreground task onto a new VD window — `task.continue` → `IActivityTaskManager.moveRootTaskToDisplay` at shell UID, verified on the API 36 emulator (docs/design/handoff.md) | M |
 | 10 | [x] APK install | drop / Open With / Services / menu bar an .apk, .apks or .xapk → `apk.install` + `APK_DATA` → `pm install-create/write/commit` at shell UID (docs/design/apk.md) | S‑M |
 | 11 | [x] Share phone → Mac | Android Share → "Send to Mac": links open in the Mac browser, text → clipboard, images → ~/Downloads/PocketDeck + clipboard; "Open on Mac" in the text menu and Open with (`share.text`, `share.file` + `SHARE_DATA`; docs/design/sharein.md) | S‑M |
