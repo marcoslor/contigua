@@ -115,7 +115,14 @@ class Server(
                     val ssl = ShellTls.wrapAccepted(rawSocket, ctx)
                     val handshake = runCatching { ssl.startHandshake() }
                     if (handshake.isFailure) {
-                        log("tls handshake failed: ${handshake.exceptionOrNull()?.message}")
+                        // A client that connects and hangs up without a byte
+                        // (the Mac's Bonjour resolve does exactly that once
+                        // per connect: review R4-b) is no event at all: no
+                        // log, no session, nothing counted.
+                        val error = handshake.exceptionOrNull()
+                        if (error == null || !isEmptyConnection(error)) {
+                            log("tls handshake failed: ${error?.message}")
+                        }
                         runCatching { ssl.close() }
                         null
                     } else {
@@ -142,6 +149,23 @@ class Server(
                     if (active === session) active = null
                 }
             }, "pocketdeck-session").also { it.start() }
+        }
+    }
+
+    internal companion object {
+        /** True when the peer closed before completing a ClientHello: an
+         *  EOF/reset anywhere in the cause chain (JDK: "Remote host terminated
+         *  the handshake"; Conscrypt: "Connection closed by peer"). */
+        fun isEmptyConnection(error: Throwable): Boolean {
+            var cause: Throwable? = error
+            while (cause != null) {
+                if (cause is java.io.EOFException) return true
+                val message = cause.message?.lowercase().orEmpty()
+                if ("terminated the handshake" in message || "closed by peer" in message ||
+                    "connection reset" in message) return true
+                cause = cause.cause.takeIf { it !== cause }
+            }
+            return false
         }
     }
 

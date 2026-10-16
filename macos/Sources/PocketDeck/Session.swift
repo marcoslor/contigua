@@ -4,6 +4,7 @@
 // Everything the rest of the app sees is a `SessionEvent` delivered on the
 // main queue; video frames included (the display layer hops to its own queue).
 
+import CryptoKit
 import Foundation
 import Network
 import NIO
@@ -154,7 +155,14 @@ final class Session {
     }
 
     private let endpoint: Endpoint
-    private var knownDeviceId: String?
+    private let knownDeviceFor: String?
+    var knownDeviceId: String? {
+        // Set for real on `welcome`; before that it is the remembered id this
+        // attempt dialed against (the pin-mismatch cache drop reads exactly
+        // that pre-welcome identity).
+        knownDeviceIdReal ?? knownDeviceFor
+    }
+    private var knownDeviceIdReal: String?
     private let strictDeviceId: String?
     private let clientId: String
     /// The Mac's v2 TLS identity (docs/design/e2ee.md §3); loaded per profile by
@@ -180,6 +188,9 @@ final class Session {
     private var ownsGroup: Bool = false
 
     private var decoder = FrameDecoder()
+    /// The dialed host:port of the current/most recent attempt (§2): welcome
+    /// turns it into the cached address the planner falls back on (C10).
+    private var dialedAddress: CachedAddress?
     /// The peer state the TLS layer learns: the phone's certificate fingerprint
     /// and the cert itself. Set asynchronously by the handshake watcher, read
     /// on demand (pairing happens well after the handshake completed).
@@ -206,6 +217,7 @@ final class Session {
     /// The one-time QR secret S this probe carries (nil outside QR probes);
     /// never written anywhere (R2).
     private var qrSecret: Data?
+    private var loggedExporterSha = false
     private var failedOnce = false
 
     enum PairingPolicy { case never, allowed, probe }
@@ -237,7 +249,7 @@ final class Session {
          connectTimeout: TimeInterval = Session.defaultConnectTimeout,
          pairingTimeout: TimeInterval = Session.defaultPairingTimeout) {
         self.endpoint = endpoint
-        self.knownDeviceId = knownDeviceId
+        self.knownDeviceFor = knownDeviceId
         self.strictDeviceId = strictDeviceId
         self.clientId = clientId
         if let identity {
@@ -289,6 +301,10 @@ final class Session {
         guard let target = resolveTarget(endpoint) else {
             fail("resolve"); return
         }
+        dialedAddress = nil
+        if let port = UInt16(exactly: target.port) {
+            dialedAddress = CachedAddress(host: target.host, port: port)
+        }
 
         // The pin record for a reconnect comes from the shared store; pairing
         // attempts NEVER use one (§7: a stale pin must not block a person's
@@ -334,7 +350,16 @@ final class Session {
             }
             return
         } catch {
-            Log.session.error("tls connect failed: \(String(describing: error), privacy: .public)")
+            let message = String(describing: error)
+            // A mid-handshake verification failure IS the stale-pin refusal
+            // (§7): the dial carries the pin record's phone cert as its only
+            // trust root, so the peer cert failing to verify means the phone's
+            // certificate changed. Surface it as pin-mismatch, not generic tls.
+            if message.contains("certificate_verify_failed") || message.contains("certificate verify") {
+                Log.session.error("tls verify refused: \(message.prefix(160), privacy: .public)")
+                fail("pin-mismatch"); return
+            }
+            Log.session.error("tls connect failed: \(message.prefix(160), privacy: .public)")
             fail("tls"); return
         }
         guard let res = connectResult else {
@@ -496,7 +521,23 @@ final class Session {
     private func handleTransportError(_ message: String) {
         // The pinned-reconnect paths surface the stale-pin case as a TLS verify
         // failure inside the record's trustRoots (§7: "certificate changed").
+        // A plain "closed-by-peer" is the phone's normal hang-up: notice, not
+        // error (the phone treats aborted sessions quietly; the Mac mirrors it).
+        if message.hasPrefix("closed-by-peer") {
+            if !intentionalClose {
+                Log.session.notice("the phone closed the TLS session")
+            }
+        } else {
+            Log.session.error("tls transport refused: \(message.lowercased().prefix(240), privacy: .public)")
+        }
+        let lowered = message.lowercased()
         if message.contains(TlsV2Error.pinMismatch(got: "", expected: "").description.prefix(18)) {
+            fail("pin-mismatch")
+            return
+        }
+        // The trust root IS the pinned leaf; its verify failing mid-handshake
+        // means the phone's certificate changed (stale pin, §7).
+        if lowered.contains("certificate_verify_failed") || lowered.contains("certificate verify failed") {
             fail("pin-mismatch")
             return
         }
@@ -554,6 +595,7 @@ final class Session {
             fail("version")
         case "pair.commit":
             // §4 step 1: the phone commits before the Mac releases its nonce.
+            logExporterOnce()
             guard let hex = message.string("c"), let commit = Data(hexString: hex), commit.count == 32 else {
                 phoneErrorCode = "pair_commit"
                 fail("pair_commit"); return
@@ -596,6 +638,7 @@ final class Session {
             Log.session.notice("pairing code derived for this screen: \(PairingCodeV2.codeHex(code), privacy: .public)")
             emit(.pairCodeShown(deviceId: knownDeviceId, code: PairingCodeV2.codeHex(code)))
         case "pair.qr":
+            logExporterOnce()
             // R2: the phone proves the scan with HMAC(S, "pd-qr-v2" || exporter
             // || phoneFP); verified here, the phone's cert is pinned from the
             // handshake. The phone's Allow prompt still gates: it answers
@@ -624,6 +667,7 @@ final class Session {
                 "macFP": macFingerprintHex,
             ])
         case "pair.ok":
+            logExporterOnce()
             if let fpHex = message.string("phoneFP") {
                 // The pins-carrying shape (§4 code path): cross-check the pin we
                 // learned from the handshake with what the phone shared.
@@ -640,6 +684,7 @@ final class Session {
                 emit(.qrPaired(deviceId: knownDeviceId ?? learnedPeerPin))
             }
         case "welcome":
+            logExporterOnce()
             guard let device = message.object("device"), let info = PhoneInfo(device: device) else {
                 Log.session.error("welcome without device")
                 return
@@ -655,14 +700,14 @@ final class Session {
                 return
             }
             storePinFor(info: info)
-            knownDeviceId = info.id
+            knownDeviceIdReal = info.id
             phone = info
             cancelTimers()
             startPing()
             let isReconnect = everReady
             everReady = true
             transition(.ready, nil)
-            emit(.ready(info, isReconnect: isReconnect, address: nil))
+            emit(.ready(info, isReconnect: isReconnect, address: dialedAddress))
         case "apps":
             let apps = (message.array("apps") ?? []).compactMap { AppInfo(json: $0) }
             emit(.apps(apps))
@@ -791,6 +836,17 @@ final class Session {
         let record = PinnedPhoneV2(deviceId: info.id, phoneFingerprintHex: pin, certPem: certPem)
         phonePinStore?.store(record)
         pinSessionEstablished?(record)
+    }
+
+    /// The 32 exporter's SHA-256, logged once per session (K4/e2e compare the
+    /// two ends' hashes; the exporter itself and its keylog secret never leave
+    /// memory). Nil-safe: a failed handshake logs nothing.
+    private func logExporterOnce() {
+        guard !loggedExporterSha else { return }
+        guard let exporter = exporterProvider?() else { return }
+        loggedExporterSha = true
+        let digest = SHA256.hash(data: Data(exporter))
+        Log.session.notice("v2 exporter sha256: \(digest.map { String(format: "%02x", $0) }.joined(), privacy: .public)")
     }
 
     /// 76-char PEM body strip for the record's cert (base64 → lines).
@@ -924,6 +980,7 @@ final class Session {
         cancelTimers()
         let reason = phoneErrorCode ?? transportReason
         phoneErrorCode = nil
+        Log.session.notice("session failed: \(reason, privacy: .public)")
         if !intentionalClose {
             transition(.failed(reason), reason)
         } else {

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # End-to-end checks C3-C13 for the macOS client against tools/fakephone.
 #
-#   ./scripts/check-e2e.sh [qr|pair|render|resize|input|mouseback|input-global|pause|direct|nav|mirror|spotlight|pinch|chrome|trackpad|clip|sharein|links|share|apk|drop|dock|nickname|notify|audio|handoff|deck|all]
+#   ./scripts/check-e2e.sh [qr|pair|tls|render|resize|input|mouseback|input-global|pause|direct|nav|mirror|spotlight|pinch|chrome|trackpad|clip|sharein|links|share|apk|drop|dock|nickname|notify|audio|handoff|deck|all]
 #
 # Every check starts from a clean slate: no PocketDeck or fakephone processes
 # left by an earlier run, a fresh fakephone state file and no pairing key in
@@ -40,6 +40,13 @@ MACOS="$(cd "$(dirname "$0")/.." && pwd)"
 ROOT="$(cd "$MACOS/.." && pwd)"
 FAKEPHONE="$ROOT/tools/fakephone/fakephone.py"
 PROFILE="${PD_E2E_PROFILE:-e2e}"
+# The fake phone needs a TLS 1.3 interpreter (docs/design/e2ee.md §6): the
+# system python3 links LibreSSL, so PD_FAKE_TLS_PYTHON names python3.11+.
+FAKE_PY="${PD_FAKE_TLS_PYTHON:-$(command -v python3.11 || echo /usr/bin/python3)}"
+"$FAKE_PY" -c 'import sys, ssl; sys.exit(0 if sys.version_info[:2] >= (3,11) and not ssl.OPENSSL_VERSION.startswith("LibreSSL") else 3)' 2>/dev/null || {
+    say "$FAKE_PY cannot serve TLS 1.3; set PD_FAKE_TLS_PYTHON to a python3.11+ built on OpenSSL 3"
+    exit 3
+}
 E2E_BUNDLE="$MACOS/build/e2e/PocketDeck.app"
 APP="$E2E_BUNDLE/Contents/MacOS/PocketDeck"
 CGINPUT="$MACOS/scripts/cgevent-input.swift"
@@ -125,9 +132,11 @@ clear_profile_state() {
     # A key created by a *different* build makes macOS show a modal Keychain
     # permission dialog, which hangs the app; remove every item, not just one.
     while security delete-generic-password -s "$KEYCHAIN_SERVICE" >/dev/null 2>&1; do :; done
-    # Pair keys now live in a file in the profile's folder; a stale one would make
-    # the app authenticate instead of pairing with a fresh fakephone.
-    rm -f "$HOME/Library/Application Support/PocketDeck-$PROFILE/pairkeys.json"
+    # v2 pairing state = the Mac identity + per-phone pins in the profile
+    # folder; the checks pair from scratch each run, so both must go. v1's
+    # pairkeys.json is gone; IdentityMigrationV2 wipes it on the next start.
+    local support="$HOME/Library/Application Support/PocketDeck-$PROFILE"
+    rm -f "$support/pairkeys.json" "$support/identity.json" "$support/pins.json"
     defaults delete "$DEFAULTS_SUITE" >/dev/null 2>&1
     return 0
 }
@@ -147,15 +156,15 @@ clean() {
 start_fake() {
     local state="${1:-$WORK/state.json}"
     # shellcheck disable=SC2086
-    python3 "$FAKEPHONE" --port "$PORT" --no-mdns --auto-allow --allow-delay "${FAKE_ALLOW_DELAY:-0}" ${FAKE_ARGS:-} \
+    "$FAKE_PY" "$FAKEPHONE" --port "$PORT" --no-mdns --auto-allow --allow-delay "${FAKE_ALLOW_DELAY:-0}" ${FAKE_ARGS:-} \
         --events "$WORK/events.jsonl" \
-        --state "$state" > "$WORK/fake.log" 2>&1 &
+        --state "$state" > "$WORK/fake.log" 2> "$WORK/fake.err" &
     FAKE_PID=$!
     for _ in $(seq 1 40); do
-        grep -q "listening" "$WORK/fake.log" && return 0
+        grep -q "listening" "$WORK/fake.log" "$WORK/fake.err" 2>/dev/null && return 0
         sleep 0.25
     done
-    say "fakephone did not start:"; cat "$WORK/fake.log"; return 1
+    say "fakephone did not start:"; cat "$WORK/fake.log" "$WORK/fake.err"; return 1
 }
 
 # launch <args...> — starts the app as a direct child so `wait` works. Quiet runs
@@ -578,8 +587,9 @@ count_events() { grep -c "$1" "$WORK/events.jsonl" 2>/dev/null || echo 0; }
 
 # --- C3: QR pairing -------------------------------------------------------
 
-# check_qr — the Mac shows a QR, the phone "scans" it (--qr-uri), the Mac
-# authenticates with the pending key: auth_ok, no pair.request.
+# check_qr — the Mac shows a QR (c/n/f/s), the phone "scans" it (--qr-uri),
+# answers pair.qr on the Mac's probe, and the live session completes with
+# pair.ok; no pair.request ever leaves the Mac. The Allow gate is auto.
 check_qr() {
     clean
     start_fake || return 1
@@ -591,41 +601,45 @@ check_qr() {
         kill "$APP_PID" "$FAKE_PID" >/dev/null 2>&1
         return 1
     fi
-    say "QR payload: $(cat "$WORK/qr.txt")"
     wait_until 15 windows_at_least 2 \
         && ok "C3 QR sheet is on screen (launcher + sheet)" \
         || bad "C3 no sheet window: $(windows | tr '\n' ' ')"
     case "$(cat "$WORK/qr.txt")" in
-        pocketdeck://pair?c=*"&n="*"&k="*) ok "C3 payload is a pocketdeck://pair URI" ;;
+        pocketdeck://pair?c=*"&n="*"&f="*"&s="*) ok "C3 payload is a pocketdeck://pair c/n/f/s URI" ;;
         *) bad "C3 payload shape: $(cat "$WORK/qr.txt")" ;;
     esac
-    [ "$(grep -o 'k=[0-9a-f]*' "$WORK/qr.txt" | cut -c3- | tr -d '\n' | wc -c | tr -d ' ')" = "64" ] \
-        && ok "C3 key is 64 hex" || bad "C3 key is not 64 hex"
+    [ "$(grep -o 'f=[0-9a-f]*' "$WORK/qr.txt" | cut -c3- | tr -d '\n' | wc -c | tr -d ' ')" = "64" ] \
+        && ok "C3 the Mac fingerprint f is 64 hex" || bad "C3 f is not 64 hex"
+    [ "$(grep -o 's=[0-9a-f]*' "$WORK/qr.txt" | cut -c3- | tr -d '\n' | wc -c | tr -d ' ')" = "32" ] \
+        && ok "C3 the one-time secret s is 32 hex (never a v1 k= key)" \
+        || bad "C3 s is not 32 hex"
     grep -q '"t":"pair.request"' "$WORK/events.jsonl" \
         && bad "C3 live session tried pair.request while a QR was pending" \
         || ok "C3 no pair.request before the scan"
-    cp "$WORK/events.jsonl" "$WORK/events1.jsonl"
 
-    # The phone now "scans": a second fakephone on the same port/state, with the
-    # client+key from the QR registered as paired.
+    # The phone now "scans": the same phone second start with the staged
+    # pending QR; a Mac whose handshake fingerprint matches f gets pair.qr.
     stop_fakephone
     sleep 1
-    python3 "$FAKEPHONE" --port "$PORT" --no-mdns --auto-allow \
+    "$FAKE_PY" "$FAKEPHONE" --port "$PORT" --no-mdns --auto-allow \
         --state "$WORK/state.json" --events "$WORK/events.jsonl" \
         --qr-uri "$(cat "$WORK/qr.txt")" > "$WORK/fake2.log" 2>&1 &
     FAKE_PID=$!
     wait_app
-    grep -q '"state":"auth_ok"' "$WORK/events.jsonl" \
-        && ok "C3 Mac authenticated with the QR key" || bad "C3 no auth_ok after the scan"
+    grep -q '"t":"pair.qr"' "$WORK/events.jsonl" \
+        && ok "C3 phone proved the scan with pair.qr" || bad "C3 no pair.qr"
+    grep -q '"t":"pair.ok"' "$WORK/events.jsonl" \
+        && ok "C3 pair.ok completed the QR pairing" || bad "C3 no pair.ok"
     grep -q '"t":"pair.request"' "$WORK/events.jsonl" \
         && bad "C3 pair.request after the scan" || ok "C3 no pair.request at all"
     grep -q '"t":"apps.list"' "$WORK/events.jsonl" \
         && ok "C3 app list requested after pairing" || bad "C3 no apps.list"
     grep -q '"t":"window.open"' "$WORK/events.jsonl" && grep -q '"pkg":"com.android.settings"' "$WORK/events.jsonl" \
         && ok "C3 auto-opened app after pairing" || bad "C3 no window.open"
-    # Two auth_ok: the probe (QR key) and the reconnect from the stored Keychain key.
-    [ "$(grep -c '"state":"auth_ok"' "$WORK/events.jsonl")" -ge 2 ] \
-        && ok "C3 key stored, reconnect authenticated" || bad "C3 no reconnect auth_ok"
+    # The scan pinned the Mac; a reconnect from the stored pins authenticates.
+    grep -c '"state":"auth_ok"' "$WORK/events.jsonl" | grep -q '^[2-9]' \
+        && ok "C3 pins stored, reconnect authenticated" \
+        || bad "C3 no reconnect auth_ok ($(grep -c '"state":"auth_ok"' "$WORK/events.jsonl" 2>/dev/null))"
     stop_fakephone
 }
 
@@ -644,8 +658,32 @@ check_pair() {
         && ok "C4 first launch paired after an 8 s wait for Allow" || bad "C4 first launch did not pair"
     grep -q '"t":"pair.request"' "$WORK/events.jsonl" \
         && ok "C4 pair.request sent" || bad "C4 no pair.request"
+    grep -q '"t":"pair.commit"' "$WORK/events.jsonl" \
+        && ok "C4 phone committed before the Mac could release anything (pair.commit)" \
+        || bad "C4 no pair.commit"
+    grep -q '"t":"pair.nonce"' "$WORK/events.jsonl" \
+        && ok "C4 Mac released its nonce (pair.nonce)" || bad "C4 no pair.nonce"
+    grep -q '"t":"pair.reveal"' "$WORK/events.jsonl" \
+        && ok "C4 phone revealed its nonce (pair.reveal)" || bad "C4 no pair.reveal"
     grep -q '"t":"pair.confirm"' "$WORK/events.jsonl" \
         && bad "C4 sent pair.confirm (the code is never typed)" || ok "C4 no pair.confirm"
+    mac_code() {
+        log show --last 4m --info --style syslog \
+            --predicate "subsystem == \"dev.pocketdeck.mac\" AND processID == $APP_PID" 2>/dev/null \
+            | grep -o 'pairing code derived for this screen: [0-9]*' | grep -o '[0-9]*' | tail -1
+    }
+    wait_until 25 [ -n "$(mac_code)" ] || true
+    phone_code="$(grep -o 'Pairing code: [0-9]*' "$WORK/fake.log" | grep -o '[0-9]*' | tail -1)"
+    mac="$(mac_code)"
+    for c in "$mac" "$phone_code"; do
+        case "$c" in
+            [0-9][0-9][0-9][0-9][0-9][0-9]) : ;;
+            *) bad "C4 pairing code missing or not 6 digits (mac='${mac:-none}' phone='${phone_code:-none}')" ;;
+        esac
+    done
+    [ -n "$mac" ] && [ "$mac" = "$phone_code" ] \
+        && ok "C4 the code is the same on both screens ($mac; one §4 exporter)" \
+        || bad "C4 the screens' codes disagree (mac='${mac:-none}' phone='${phone_code:-none}')"
     [ "$(count_events '"t":"window.open"')" = "3" ] \
         && ok "C4 three window.open" || bad "C4 expected 3 window.open, got $(count_events '"t":"window.open"')"
     grep -q '"pkg":"com.android.settings"' "$WORK/events.jsonl" && grep -q '"pkg":"com.whatsapp"' "$WORK/events.jsonl" \
@@ -656,7 +694,7 @@ check_pair() {
     streams="$(grep '"ev":"video"' "$WORK/events.jsonl" | grep -o 'stream":[0-9]*' | sort -u | wc -l | tr -d ' ')"
     [ "$streams" = "3" ] && ok "C4 video configs for 3 streams" || bad "C4 configs for $streams streams"
 
-    # second launch, same fakephone + Keychain: must auth without pairing
+    # second launch, same fakephone + stored pins: must authenticate without pairing
     : > "$WORK/events.jsonl"
     launch --connect "127.0.0.1:$PORT" --open-phone --quit-after 8
     wait_app
@@ -665,6 +703,221 @@ check_pair() {
     grep -q '"t":"pair.request"' "$WORK/events.jsonl" \
         && bad "C4 second launch tried to pair again" || ok "C4 second launch skipped pairing"
     stop_fakephone
+}
+
+# --- TLS transport matrix (docs/design/e2ee.md §6; the relay row stays with
+# the relay's own checks, the code-equality row rides `pair`) ----------------
+
+# mac_failed_line — the last `session failed:` detail this run's app logged.
+mac_failed_line() {
+    log show --last 5m --info --style syslog \
+        --predicate "subsystem == \"dev.pocketdeck.mac\" AND processID == $APP_PID" 2>/dev/null \
+        | grep -o 'session failed: [a-z_-]*' | tail -1
+}
+
+# probe_close ×3 — the Mac's Bonjour resolve shape: open a TCP connection and
+# close it without sending anything (review R4-b).
+probe_close_x3() {
+    "$FAKE_PY" - "$PORT" <<'PY'
+import socket, sys
+for _ in range(3):
+    probe = socket.create_connection(("127.0.0.1", int(sys.argv[1])), timeout=5)
+    probe.close()
+PY
+}
+
+check_tls() {
+    local line rotated_fp pidA pidB exporters
+    clean
+    say "TLS: the phone is a TLS-only listener; the matrix (§6) runs against it"
+    start_fake || return 1
+
+    # (1) plaintext refused: a plain TCP client never gets a protocol byte.
+    out="$(printf '{"t":"hello","v":1,"clientId":"probe","name":"nc"}\n' | nc -w 2 127.0.0.1 "$PORT" 2>/dev/null || true)"
+    case "$out" in
+        *'"t":"welcome"'*|*'"t":"error"'*|*'"t":"challenge"'*)
+            bad "TLS1 plaintext was answered with protocol bytes" ;;
+        *) ok "TLS1 a plaintext connection is refused (no welcome) and the session stays dead" ;;
+    esac
+
+    # (R4-b) open-and-close probes are quiet: no session events, no pairing
+    # prompt, no error log; the next real session still pairs.
+    stop_fakephone
+    sleep 1
+    start_fake || return 1
+    probe_close_x3 || { bad "TLS R4-b probes could not connect"; stop_fakephone; return 1; }
+    events_have '"state":"open"' \
+        && bad "TLS R4-b a probe got a session event" \
+        || ok "TLS R4-b aborted connections left no session events"
+    events_have '"t":"pair.' \
+        && bad "TLS R4-b a probe reached pairing traffic" \
+        || ok "TLS R4-b aborted connections never reach pairing"
+    if grep -q "session error" "$WORK/fake.err" 2>/dev/null; then
+        bad "TLS R4-b the phone logged a session error for the probes"
+    else
+        ok "TLS R4-b the phone logged nothing at error level"
+    fi
+    launch --connect "127.0.0.1:$PORT" --quit-after 20
+    wait_app
+    if grep -q '"state":"paired"' "$WORK/events.jsonl"; then
+        ok "TLS R4-b the phone stayed healthy: the next real session pairs"
+    else
+        bad "TLS R4-b no pairing after the aborted probes"
+    fi
+    stop_app
+    stop_fakephone
+    sleep 1
+
+    # (7) two sessions, never resumed: every accept is a full TLS 1.3
+    # handshake, so each session's exporter hash differs (R3). --connect on
+    # both: mDNS discovery could otherwise answer for a phone this rig no
+    # longer controls, and the claim is about the two handshakes below.
+    start_fake || return 1
+    launch --connect "127.0.0.1:$PORT" --quit-after 20
+    wait_app
+    pidA="$APP_PID"
+    stop_fakephone
+    sleep 1
+    start_fake || return 1
+    launch --connect "127.0.0.1:$PORT" --quit-after 9
+    wait_app
+    pidB="$APP_PID"
+    grep -q '"state":"auth_ok"' "$WORK/events.jsonl" \
+        && ok "TLS7 the second session completed" || bad "TLS7 no second session"
+    exporters="$(log show --last 6m --info --style syslog \
+        --predicate "subsystem == \"dev.pocketdeck.mac\" AND (processID == $pidA OR processID == $pidB)" 2>/dev/null \
+        | grep -o 'v2 exporter sha256: [0-9a-f]*' | sort -u | wc -l | tr -d ' ')"
+    [ "$exporters" -ge 2 ] \
+        && ok "TLS7 $exporters distinct exporters over 2 sessions (full handshakes, no resumption)" \
+        || bad "TLS7 exporters repeat like a resumed session would ($exporters distinct)"
+    stop_app
+    stop_fakephone
+    sleep 1
+
+    # (3) the phone's cert rotated: the Mac refuses at TLS verify
+    # ("certificate changed"), the pin survives (re-pair keeps it, §7), and the
+    # person's re-pair restores it.
+    FAKE_ARGS="--tls-identity $WORK/rotated-phone.identity" start_fake || return 1
+    rotated_fp="$(grep -ho 'fakephone identity fp: [0-9a-f]*' "$WORK/fake.err" "$WORK/fake.log" "$WORK/fake3.log" 2>/dev/null | tail -1 | cut -d' ' -f4)"
+    launch --connect "127.0.0.1:$PORT" --quit-after 16
+    wait_app
+    line="$(mac_failed_line)"
+    case "$line" in
+        "session failed: pin-mismatch")
+            ok "TLS3 rotated phone cert refused (pin-mismatch)" ;;
+        *)
+            bad "TLS3 expected session failed: pin-mismatch, got: ${line:-nothing}" ;;
+    esac
+    grep -q '"state":"auth_ok"' "$WORK/events.jsonl" \
+        && bad "TLS3 authenticated with a rotated phone" || ok "TLS3 no auth against the rotated phone"
+    grep -q '"t":"pair.request"' "$WORK/events.jsonl" \
+        && bad "TLS3 pairing traffic hit the rotated phone" \
+        || ok "TLS3 no pairing traffic under a stale pin"
+    [ -f "$HOME/Library/Application Support/PocketDeck-$PROFILE/pins.json" ] \
+        && ok "TLS3 the pin record survived the refusal (re-pair keeps it, §7)" \
+        || bad "TLS3 the pin record vanished on a refused session"
+    stop_app
+    stop_fakephone
+    sleep 1
+    # the person's re-pair step (§7): drop the phone from My Devices and pair
+    # again (--reset-pairing clears the Mac's pin + mirror; the phone's own pin
+    # of the Mac is untouched and the reconnect lands pinless: the rotated
+    # phone's cert becomes the stored pin on welcome).
+    FAKE_ARGS="--tls-identity $WORK/rotated-phone.identity" start_fake || return 1
+    launch --reset-pairing --connect "127.0.0.1:$PORT" --quit-after 18
+    wait_app
+    grep -q '"state":"auth_ok"' "$WORK/events.jsonl" \
+        && ok "TLS3 the re-pair reconnect authenticated" \
+        || bad "TLS3 the re-pair never reconnected"
+    if [ -n "$rotated_fp" ] && grep -q "\"phoneFingerprintHex\":\"$rotated_fp\"" \
+            "$HOME/Library/Application Support/PocketDeck-$PROFILE/pins.json" 2>/dev/null; then
+        ok "TLS3 the rotated phone's fingerprint is the stored pin now"
+    else
+        bad "TLS3 the pin store does not hold the rotated phone's fingerprint"
+    fi
+    stop_app
+    stop_fakephone
+    sleep 1
+
+    # (2) a v1 phone: `version`, then nothing (the v1 path is gone). A clean
+    # slate: the row above left the Mac pinned to the rotated phone.
+    clean
+    FAKE_ARGS="--legacy-phone" start_fake || return 1
+    launch --connect "127.0.0.1:$PORT" --quit-after 14
+    wait_app
+    line="$(mac_failed_line)"
+    case "$line" in
+        "session failed: version")
+            ok "TLS2 a v1 phone is refused with the version reason" ;;
+        *) bad "TLS2 expected session failed: version, got: ${line:-nothing}" ;;
+    esac
+    stop_app
+    stop_fakephone
+    sleep 1
+
+    # (4) the MAC's cert rotated: the phone refuses the reconnect with bad_pin
+    # ("This Mac's certificate changed; pair again") — the design's refusal
+    # row; the un-blocked re-pair (phone-side purge) is out of the matrix.
+    clean
+    start_fake || return 1
+    launch --connect "127.0.0.1:$PORT" --quit-after 20
+    wait_app
+    grep -q '"state":"paired"' "$WORK/events.jsonl" \
+        && ok "TLS4 paired before the Mac rotation" || bad "TLS4 never paired"
+    stop_app
+    sleep 1
+    "$FAKE_PY" - "$WORK/macrot.identity" "$HOME/Library/Application Support/PocketDeck-$PROFILE/identity.json" <<'PY'
+import json, os, subprocess, sys
+identity_dir, identity_file = sys.argv[1], sys.argv[2]
+os.makedirs(identity_dir, exist_ok=True)
+key = os.path.join(identity_dir, "key.pem")
+cert = os.path.join(identity_dir, "cert.pem")
+subprocess.run(["/usr/bin/openssl", "ecparam", "-name", "prime256v1", "-genkey",
+                "-noout", "-out", key], check=True,
+               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+subprocess.run(["/usr/bin/openssl", "req", "-new", "-x509", "-key", key, "-days", "366",
+                "-subj", "/CN=PocketDeck rotated", "-out", cert], check=True,
+               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+os.chmod(key, 0o600)
+der = subprocess.run(["/usr/bin/openssl", "pkcs8", "-topk8", "-nocrypt", "-in", key],
+                     check=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL).stdout.decode()
+pem = subprocess.run(["/usr/bin/openssl", "x509", "-in", cert],
+                     check=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL).stdout.decode()
+with open(identity_file) as fp:
+    identity = json.load(fp)
+# The stored shapes are FULL PEM text (CryptoKit's pemRepresentation), key first
+# written 0600 by the atomic save below; keep the §3 fields exactly.
+identity["certPem"] = pem
+identity["keyP8"] = der
+tmp = identity_file + ".tmp"
+with open(tmp, "w") as fp:
+    json.dump(identity, fp)
+os.chmod(tmp, 0o600)
+os.replace(tmp, identity_file)
+PY
+    : > "$WORK/events.jsonl"
+    launch --quit-after 16
+    wait_app
+    line="$(mac_failed_line)"
+    case "$line" in
+        "session failed: bad_pin")
+            ok "TLS4 rotated Mac cert refused by the phone (bad_pin)" ;;
+        *) bad "TLS4 expected session failed: bad_pin, got: ${line:-nothing}" ;;
+    esac
+    grep -q '"state":"auth_ok"' "$WORK/events.jsonl" \
+        && bad "TLS4 authenticated with a rotated Mac cert" || ok "TLS4 no auth with the rotated Mac cert"
+    stop_app
+    stop_fakephone
+
+    # (8) log hygiene: no key material, no exporter bytes, no secrets in any
+    # log this run produced (R3 hygiene; hashes and fingerprints are allowed).
+    if grep -IHnE 'BEGIN [A-Z ]*PRIVATE|-----BEGIN CERTIFICATE|EXPORTER_SECRET|exportKeyingMaterial|pocketdeck-memory-only' "$WORK/app.log" "$WORK/fake.log" "$WORK/fake.err" "$WORK/events.jsonl" 2>/dev/null | grep -q .; then
+        bad "TLS8 key material in a log"
+    else
+        ok "TLS8 no key material, exporter bytes or secrets in any log"
+    fi
+    stop_fakephone
+    wait_until 5 no_fakephone
 }
 
 # --- C5: rendering --------------------------------------------------------
@@ -1740,7 +1993,7 @@ PY
 # device id behind the same address must be refused and the address dropped.
 check_direct() {
     clean
-    # Phase A: pair; `welcome` stores the key (Keychain) + address (prefs).
+    # Phase A: pair; `welcome` stores the pin (pins.json) + address (prefs).
     start_fake || return 1
     launch --connect "127.0.0.1:$PORT" --quit-after 16
     wait_app
@@ -1764,24 +2017,33 @@ check_direct() {
         && ok "C10b reconnected through the cached address (auth_ok)" \
         || bad "C10b no auth_ok via the cached address"
     grep -q '"t":"pair.request"' "$WORK/events.jsonl" \
-        && bad "C10b paired again instead of using the stored key" \
-        || ok "C10b used the stored key"
+        && bad "C10b paired again instead of using the stored pin" \
+        || ok "C10b used the stored pin"
     stop_fakephone
     sleep 1
 
-    # Phase C: a different device id now answers on that address.
+    # Phase C: a different phone (its own TLS identity) now answers on
+    # that address: the Mac's pin check refuses the TLS handshake before
+    # any pairing traffic (v2 keeps C10's device-id rule as a pin mismatch).
     : > "$WORK/events.jsonl"
     rm -f "$WORK/state-other.json"
     start_fake "$WORK/state-other.json" || return 1
     launch --quit-after 16
     wait_app
-    grep -q '"state":"open"' "$WORK/events.jsonl" \
-        && ok "C10c reached the cached address" || bad "C10c never connected to the cached address"
+    mac_pin_refusal() {
+        log show --last 4m --info --style syslog \
+            --predicate "subsystem == \"dev.pocketdeck.mac\" AND processID == $APP_PID" 2>/dev/null \
+            | grep -qF 'session failed: pin-mismatch'
+    }
+    wait_until 20 mac_pin_refusal \
+        && ok "C10c refused the different phone at TLS verify (pin-mismatch)" \
+        || bad "C10c the session did not fail with pin-mismatch"
     grep -q '"state":"auth_ok"' "$WORK/events.jsonl" \
-        && bad "C10c authenticated against a different device id" \
-        || ok "C10c refused the different device id (no auth_ok)"
-    grep -q '"t":"auth"' "$WORK/events.jsonl" \
-        && bad "C10c sent auth for the wrong device" || ok "C10c sent no auth for the wrong device"
+        && bad "C10c authenticated against a different phone" \
+        || ok "C10c refused the different phone (no auth_ok)"
+    grep -q '"t":"pair.request"' "$WORK/events.jsonl" \
+        && bad "C10c tried to pair with a foreign phone" \
+        || ok "C10c sent no pairing traffic to the foreign phone"
     cached="$(defaults read "$DEFAULTS_SUITE" cachedAddresses 2>/dev/null || true)"
     case "$cached" in
         *127.0.0.1:$PORT*) bad "C10c cached address kept after the mismatch" ;;
@@ -2966,8 +3228,8 @@ build_e2e_app() {
 
 which_check="${1:-all}"
 case "$which_check" in
-    qr|pair|render|resize|input|mouseback|input-global|pause|direct|nav|mirror|spotlight|pinch|chrome|trackpad|clip|sharein|links|share|apk|drop|dock|nickname|notify|audio|handoff|deck|all) ;;
-    *) say "usage: check-e2e.sh [qr|pair|render|resize|input|mouseback|input-global|pause|direct|nav|mirror|spotlight|pinch|chrome|trackpad|clip|sharein|links|share|apk|drop|dock|nickname|notify|audio|handoff|deck|all]"; exit 2 ;;
+    qr|pair|tls|render|resize|input|mouseback|input-global|pause|direct|nav|mirror|spotlight|pinch|chrome|trackpad|clip|sharein|links|share|apk|drop|dock|nickname|notify|audio|handoff|deck|all) ;;
+    *) say "usage: check-e2e.sh [qr|pair|tls|render|resize|input|mouseback|input-global|pause|direct|nav|mirror|spotlight|pinch|chrome|trackpad|clip|sharein|links|share|apk|drop|dock|nickname|notify|audio|handoff|deck|all]"; exit 2 ;;
 esac
 acquire_lock
 wait_for_other_runs
@@ -2987,6 +3249,7 @@ start_watch
 case "$which_check" in
     qr)       check_qr ;;
     pair)     check_pair ;;
+    tls)      check_tls ;;
     mirror)   check_mirror ;;
     render)   check_render ;;
     resize)   check_resize ;;
@@ -3012,7 +3275,7 @@ case "$which_check" in
     notify)   check_notify ;;
     audio)    check_audio ;;
     handoff)  check_handoff ;;
-    all)      check_qr; check_pair; check_render; check_resize; check_input; check_mouseback; check_pinch
+    all)      check_tls; check_qr; check_pair; check_render; check_resize; check_input; check_mouseback; check_pinch
               check_chrome; check_trackpad; check_pause; check_direct; check_nav; check_mirror; check_spotlight; check_clip; check_sharein; check_links; check_share; check_apk; check_drop; check_dock; check_nickname
               check_notify; check_audio; check_handoff; check_deck; check_orphans ;;
 esac

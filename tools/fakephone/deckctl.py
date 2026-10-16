@@ -13,6 +13,8 @@ Usage:
 
 import argparse
 import base64
+import hashlib
+import hmac
 import json
 import os
 import pty
@@ -20,6 +22,7 @@ import re
 import select
 import signal
 import socket
+import ssl
 import subprocess
 import sys
 import threading
@@ -59,13 +62,13 @@ def round16(value):
     return value - (value % 16)
 
 
-# --- persisted client identity + per-device keys ---------------------------
+# --- persisted client identity + per-Mac pins (v2) --------------------------
 class ClientState(object):
     def __init__(self, path):
         self.path = path
         self.client_id = None
         self.name = None
-        self.keys = {}          # device id -> key hex
+        self.pins = {}          # device id -> the phone's point fingerprint (hex)
         self.order = []         # device ids, most recently used first
         self._load()
 
@@ -77,18 +80,28 @@ class ClientState(object):
             data = {}
         self.client_id = data.get("clientId")
         self.name = data.get("name")
-        self.keys = data.get("keys", {})
-        self.order = data.get("order", list(self.keys.keys()))
+        # v1 carried shared keys; those authenticate nothing in v2 and must
+        # not pass for pins: dropped (no reverse path — re-pair).
+        self.pins = {k: v for k, v in (data.get("pins") or {}).items()
+                     if isinstance(v, str) and len(v) == 64}
+        self.order = data.get("order", list(self.pins.keys()))
+        self.last_phone_fp = data.get("lastPhoneFp")
+        self.fp_hex = None
+        self.identity_dir = None
 
     def save(self):
         data = {"clientId": self.client_id, "name": self.name,
-                "keys": self.keys, "order": self.order}
+                "pins": self.pins, "order": self.order,
+                "lastPhoneFp": self.last_phone_fp}
         tmp = self.path + ".tmp"
         with open(tmp, "w") as fp:
             json.dump(data, fp, indent=2)
         os.replace(tmp, self.path)
 
     def ensure_identity(self, name):
+        """The TLS identity (P-256 self-signed) in a dir beside this state file."""
+        self.identity_dir = self.path + ".identity"
+        self.fp_hex = proto.make_identity(self.identity_dir, cn="PocketDeck deckctl")
         if not self.client_id:
             self.client_id = str(uuid.uuid4())
         if name:
@@ -98,19 +111,12 @@ class ClientState(object):
         self.save()
         return self.client_id, self.name
 
-    def remember(self, device_id, key_hex):
-        self.keys[device_id] = key_hex
+    def remember(self, device_id, pin_hex):
+        self.pins[device_id] = pin_hex
         if device_id in self.order:
             self.order.remove(device_id)
         self.order.insert(0, device_id)
         self.save()
-
-    def candidates(self, device_hint=None):
-        ids = list(self.order)
-        if device_hint:
-            ids = ([device_hint] if device_hint in self.keys else []) + \
-                  [i for i in ids if i != device_hint]
-        return [(i, self.keys[i]) for i in ids if i in self.keys]
 
 
 # --- socket client ---------------------------------------------------------
@@ -144,26 +150,28 @@ class Client(object):
         except OSError:
             pass
 
-    # -- handshake --
-    def _hello_challenge(self, timeout=HANDSHAKE_TIMEOUT):
+    # -- handshake (v2: no challenge, no auth) --
+    def send_hello(self):
         client_id, name = self.state.ensure_identity(self.state.name)
-        self.send_json({"t": "hello", "v": 1, "clientId": client_id, "name": name})
+        # The Mac's identity rides the TLS handshake's client certificate; the
+        # hello carries only the display identity (§4: no self-reported pin).
+        self.send_json({"t": "hello", "v": 2, "clientId": client_id, "name": name})
+        self.client_name = name
+
+    def _next_frame(self, timeout=HANDSHAKE_TIMEOUT):
         frame = self.recv(timeout)
         if frame is TIMEOUT:
-            raise DeckError("no challenge from phone (timeout)")
+            raise DeckError("no answer from phone (timeout)")
         if frame is None:
             raise DeckError("phone closed the connection during handshake")
         if frame.type != proto.TYPE_JSON:
-            raise DeckError("expected JSON challenge, got %s" % frame.name)
+            raise DeckError("expected JSON handshake frame, got %s" % frame.name)
         msg = proto.unpack_json(frame)
         if msg.get("t") == "error":
             if msg.get("code") == "busy":
                 raise Busy()
-            raise DeckError("phone error during handshake: %s" % msg.get("code"))
-        if msg.get("t") != "challenge":
-            raise DeckError("expected challenge, got %r" % msg.get("t"))
-        self.challenge_id = msg.get("id")
-        return msg["nonce"]
+            raise DeckError("phone error: %s" % msg.get("code"))
+        return msg
 
     def _welcome(self, timeout=HANDSHAKE_TIMEOUT):
         frame = self.recv(timeout)
@@ -176,7 +184,7 @@ class Client(object):
         msg = proto.unpack_json(frame)
         if msg.get("t") == "error":
             code = msg.get("code")
-            if code == "auth_failed":
+            if code == "bad_pin":
                 raise AuthFailed()
             raise DeckError("phone error before welcome: %s" % code)
         if msg.get("t") != "welcome":
@@ -184,59 +192,109 @@ class Client(object):
         self.device = msg.get("device", {})
         return msg
 
-    def authenticate(self, key_hex):
-        nonce = self._hello_challenge()
-        # The challenge names the phone, so its stored key wins over the caller's guess.
-        key_hex = self.state.keys.get(self.challenge_id, key_hex)
-        mac = proto.hmac_hex(bytes.fromhex(key_hex), nonce)
-        self.send_json({"t": "auth", "mac": mac})
-        self._welcome()
+    def connect(self):
+        """Pin-verifying reconnect: hello v2, then welcome without pairing."""
+        self.send_hello()
+        msg = self._next_frame()
+        if msg.get("t") != "welcome":
+            raise DeckError("expected welcome without pairing, got %r" % msg.get("t"))
+        self.device = msg.get("device", {})
+        device_id = self.device.get("id")
+        # Mirror the Mac's pin check: the phone's handshake cert must be the
+        # one stored for this device id (§1); anything else is a re-pair.
+        pinned = self.state.pins.get(device_id)
+        if pinned is None or not hmac.compare_digest(pinned, self.sock.phone_fp_hex):
+            raise AuthFailed()
+        self.device_id = device_id
 
     def pair(self, on_code, decision_timeout=130.0):
-        """Numeric comparison: the phone shows the code, a person taps Allow there."""
-        nonce = self._hello_challenge()
+        """The §4 machine: pair.request → commit → nonce → reveal rehash → code."""
+        self.send_hello()
         self.send_json({"t": "pair.request"})
-        frame = self.recv(HANDSHAKE_TIMEOUT)
-        if frame is TIMEOUT or frame is None:
-            raise DeckError("no pair.code_shown from phone")
-        msg = proto.unpack_json(frame)
-        if msg.get("t") == "error":
-            raise DeckError("phone refused pairing: %s" % msg.get("code"))
-        if msg.get("t") != "pair.code_shown" or not msg.get("code"):
-            raise DeckError("expected pair.code_shown with a code, got %r" % msg.get("t"))
-        on_code(str(msg["code"]))
-        frame = self.recv(decision_timeout)
-        if frame is TIMEOUT or frame is None:
-            raise DeckError("no pair.ok from phone")
-        msg = proto.unpack_json(frame)
-        if msg.get("t") == "error":
-            raise DeckError("pairing refused (%s)" % msg.get("code"))
-        if msg.get("t") != "pair.ok" or "key" not in msg:
-            raise DeckError("expected pair.ok with key, got %r" % msg.get("t"))
+        msg = self._next_frame()
+        if msg.get("t") == "welcome":
+            # The phone already knows this Mac (a leftover pin) — done.
+            self.device = msg.get("device", {})
+            self.device_id = self.device.get("id")
+            return
+        if msg.get("t") != "pair.commit" or not msg.get("c"):
+            raise DeckError("expected pair.commit, got %r" % msg.get("t"))
+        remote_commit = msg["c"]
+        nm = os.urandom(16)
+        self.send_json({"t": "pair.nonce", "n": nm.hex()})
+        msg = self._next_frame()
+        if msg.get("t") != "pair.reveal" or not msg.get("n"):
+            raise DeckError("expected pair.reveal, got %r" % msg.get("t"))
+        np = bytes.fromhex(msg["n"])
+        phone_fp = bytes.fromhex(self.sock.phone_fp_hex)  # §1: from the handshake
+        mac_fp = bytes.fromhex(self.state.fp_hex)
+        expected = hashlib.sha256(b"pd-commit-v2" + np + phone_fp + mac_fp).hexdigest()
+        if not hmac.compare_digest(expected, remote_commit):
+            raise DeckError("pair commit mismatch: refuse (pair_commit)")
+        self.state.last_phone_fp = self.sock.phone_fp_hex
+        # deckctl (a stdlib TLS client) cannot reach the exporter; the phone
+        # reports the real §4 code itself (fakephone's stdout). This digests
+        # the wire facts only — a self-check trace, never asserted against.
+        preimage = hashlib.sha256(b"pd-code-v2" + b"deckctl-no-exporter" +
+                                  mac_fp + phone_fp + nm + np).digest()
+        code = "%06d" % (int.from_bytes(preimage[:8], "big") % 1000000)
+        on_code(code)
+        msg = self._next_frame(decision_timeout)
+        if msg.get("t") != "pair.ok" or not msg.get("phoneFP") or not msg.get("macFP"):
+            raise DeckError("expected pair.ok with both pins, got %r" % msg.get("t"))
+        if not hmac.compare_digest(msg["phoneFP"].lower(), self.sock.phone_fp_hex):
+            raise DeckError("pair.ok phoneFP is not the handshake's certificate")
+        self.state.last_phone_fp = msg["phoneFP"]
         self._welcome()
         device_id = self.device.get("id")
-        self.state.remember(device_id, msg["key"])
+        self.state.remember(device_id, msg["phoneFP"])
         self.device_id = device_id
 
 
-def _connect_raw(host, port, timeout=DEFAULT_TIMEOUT):
+def _connect_host(host, port, state, timeout=DEFAULT_TIMEOUT):
+    """A TLS 1.3 session to the phone: deckctl presents ITS identity as the
+    client cert (the phone pins the Mac from the handshake, like the real Mac),
+    then takes the phone's fingerprint from the presented server cert (§1:
+    pins are handshake facts, not hello self-reports)."""
+    state.ensure_identity(state.name)
+    cert_path, key_path = proto.identity_paths(state.identity_dir)
     try:
-        return socket.create_connection((host, port), timeout=timeout)
+        raw = socket.create_connection((host, port), timeout=timeout)
     except OSError as exc:
         raise DeckError("cannot connect to %s:%s (%s)" % (host, port, exc))
+    try:
+        raw.settimeout(timeout)
+        context = proto.tls_client_context(cert_path, key_path)
+        sock = context.wrap_socket(raw, server_hostname="fakephone.local")
+    except (ssl.SSLError, OSError) as exc:
+        try:
+            raw.close()
+        except OSError:
+            pass
+        raise DeckError("tls connect to %s:%s failed (%s)" % (host, port, exc))
+    # The phone's point fingerprint comes from the presented certificate
+    # (§1: the pin is the handshake's peer cert, not a hello self-report).
+    peer = sock.getpeercert(binary_form=True)
+    if not peer:
+        sock.close()
+        raise DeckError("phone did not present a certificate")
+    try:
+        sock.phone_fp_hex = proto.point_fp_from_der(peer)
+    except ValueError as exc:
+        sock.close()
+        raise DeckError("phone cert not pin-form (%s)" % exc)
+    return sock
 
 
 def open_session(host, port, state, on_code, device_hint=None, busy_retries=1):
-    """Return an authenticated Client. Tries stored keys, then pairing."""
-    candidates = state.candidates(device_hint)
+    """Return an authenticated Client (paired pin) — else pair when --pair was given."""
     last_error = None
-    for device_id, key_hex in candidates:
+    if state.pins:
         for attempt in range(busy_retries):
-            sock = _connect_raw(host, port)
+            sock = _connect_host(host, port, state)
             client = Client(sock, state)
             try:
-                client.authenticate(key_hex)
-                client.device_id = client.challenge_id or device_id
+                client.connect()
                 return client
             except Busy:
                 client.close()
@@ -246,7 +304,7 @@ def open_session(host, port, state, on_code, device_hint=None, busy_retries=1):
                 continue
             except AuthFailed:
                 client.close()
-                last_error = DeckError("stored key for device %s was rejected" % device_id)
+                last_error = DeckError("pin rejected for device %s; re-pair needed" % device_hint)
                 break
             except DeckError as exc:
                 client.close()
@@ -256,7 +314,7 @@ def open_session(host, port, state, on_code, device_hint=None, busy_retries=1):
             raise last_error
         raise DeckError("not paired with this phone; pass --pair")
     for attempt in range(busy_retries):
-        sock = _connect_raw(host, port)
+        sock = _connect_host(host, port, state)
         client = Client(sock, state)
         try:
             client.pair(on_code)

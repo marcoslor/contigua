@@ -1,13 +1,23 @@
 #!/usr/bin/env python3
-"""fakephone - a protocol-faithful fake PocketDeck phone.
+"""fakephone - a protocol-faithful fake PocketDeck phone (protocol v2).
 
-Speaks docs/PROTOCOL.md v1 on a TCP socket, advertises over mDNS via the macOS
-`dns-sd` CLI, and produces real H.264 out of ffmpeg (one process per window
-stream). It is the reference server the macOS app and the Android server are
-tested against, so the wire format here is the contract.
+Runs the docs/PROTOCOL.md v2 flow over TLS 1.3: its own self-signed P-256
+identity, no resumption, framing byte-identical to v1. The pairing material —
+the §4 code and the R2 pair.qr HMAC — derives from the REAL TLS exporter via
+pyOpenSSL's export_keying_material (the same RFC 8446 §7.5 formula both stacks
+run), so the code on the fakephone's screen equals the Mac's. It advertises
+over mDNS via the macOS `dns-sd` CLI and produces real H.264 out of ffmpeg
+(one process per window stream). It is the reference server the macOS app and
+the Android server are tested against, so the wire format here is the contract.
+
+Precondition: TLS 1.3 needs OpenSSL 3 (the system `python3` links LibreSSL
+2.8/3.3, which has no TLS 1.3), and the phone-style permissive client-cert
+trust needs pyOpenSSL. Start fakephone with a TLS-capable interpreter —
+check-e2e.sh reads `PD_FAKE_TLS_PYTHON`; a wrong interpreter exits 3 with the
+hint.
 
 Usage:
-    python3 fakephone.py --port 0 --auto-allow --events /tmp/ev.jsonl
+    python3.11 fakephone.py --port 0 --auto-allow --events /tmp/ev.jsonl
 """
 
 import argparse
@@ -23,6 +33,7 @@ import select
 import shutil
 import signal
 import socket
+import ssl
 import struct
 import subprocess
 import sys
@@ -33,7 +44,12 @@ import urllib.parse
 import zlib
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import proto  # noqa: E402
+import proto  # noqa: E402  (codec + the shared v2 TLS identity helpers)
+
+tls_guard = proto.tls_guard
+make_identity = proto.make_identity
+identity_paths = proto.identity_paths
+tls_server_session = proto.tls_server_session
 
 FFMPEG = os.environ.get("FFMPEG") or shutil.which("ffmpeg") or "/opt/homebrew/bin/ffmpeg"
 DNS_SD = "/usr/bin/dns-sd"
@@ -47,6 +63,13 @@ FRAME_RATE = 60
 # Backpressure: at most ~250 ms of delta frames pending per stream (60 fps).
 MAX_PENDING_DELTA = 15
 LOW_PENDING_DELTA = 4
+
+FAKE_DEBUG = os.environ.get("FAKE_DEBUG")
+
+def dbg(message):
+    if FAKE_DEBUG:
+        sys.stderr.write("fakephone: %s\n" % message)
+        sys.stderr.flush()
 
 DEFAULT_STATE = os.path.expanduser("~/.pocketdeck-fakephone.json")
 
@@ -376,6 +399,9 @@ class EventLog(object):
     def session(self, state):
         self._emit({"ev": "session", "state": state, "ts": time.time()})
 
+    def tx(self, msg):
+        self._emit({"ev": "tx", "msg": msg, "ts": time.time()})
+
     def rx(self, msg):
         self._emit({"ev": "rx", "msg": msg, "ts": time.time()})
 
@@ -454,37 +480,50 @@ class EventLog(object):
                 self._fp = None
 
 
-# --- persisted pairing state ----------------------------------------------
-def scan_qr_uri(store, uri):
-    """Simulate a QR scan: `pocketdeck://pair?c=&n=&k=` -> a paired client.
+# --- TLS 1.3 identity (docs/design/e2ee.md §1/§2) --------------------------
+# shared with proto.py's v2 section: identity generation, fingerprint, contexts.
+PENDING_QR_TTL = 300  # the phone's copy expires with the Mac's sheet
 
-    Scanning is the consent (docs/UX.md): the phone stores the Mac's client id
-    and key, so the Mac's next `auth` succeeds without any pair.request.
+
+def scan_qr_uri(store, uri):
+    """Simulate the QR scan (review R2): `pocketdeck://pair?c=&n=&f=&s=`.
+
+    The phone pins the Mac by `f` until a Mac whose certificate fingerprint
+    matches connects; it then answers with pair.qr = HMAC(s, exporter||phoneFP)
+    and waits for the Mac's pair.ok before the Allow gate. Nothing is paired
+    from the scan itself.
     """
     parsed = urllib.parse.urlparse(uri.strip())
     if parsed.scheme.lower() != "pocketdeck" or parsed.netloc.lower() != "pair":
         raise ValueError("not a PocketDeck pairing URI: %r" % uri)
     params = urllib.parse.parse_qs(parsed.query)
     client_id = (params.get("c") or [""])[0].strip()
-    key_hex = (params.get("k") or [""])[0].strip()
+    fp_hex = (params.get("f") or [""])[0].strip()
+    secret_hex = (params.get("s") or [""])[0].strip()
     name = (params.get("n") or ["Mac"])[0]
-    if not client_id or len(key_hex) != 64:
-        raise ValueError("pairing URI needs ?c=<clientId>&k=<64 hex>")
+    if not client_id or len(fp_hex) != 64 or len(secret_hex) != 32:
+        raise ValueError("pairing URI needs ?c=<clientId>&f=<64 hex>&s=<32 hex>")
     try:
-        key = bytes.fromhex(key_hex)
+        bytes.fromhex(fp_hex)
+        bytes.fromhex(secret_hex)
     except ValueError:
-        raise ValueError("pairing URI key is not hex: %r" % key_hex)
-    store.add_client(client_id, name, key)
-    print("QR scan: paired client %r (%s)" % (name, client_id))
+        raise ValueError("pairing URI fingerprint/secret is not hex")
+    store.set_pending_qr({"clientId": client_id, "name": name,
+                          "macFp": fp_hex.lower(), "secret": secret_hex.lower(),
+                          "at": time.time()})
+    print("QR scan staged for %r (%s), expires with the QR" % (name, client_id))
     sys.stdout.flush()
 
 
 class Store(object):
+    """v2 pin state: per-Mac fingerprint pins (no shared secrets, v1 files die)."""
+
     def __init__(self, path):
         self.path = path
         self.lock = threading.Lock()
         self.device_id = None
         self.clients = {}
+        self.pending_qr = None
         self._load()
 
     def _load(self):
@@ -494,28 +533,36 @@ class Store(object):
         except (IOError, OSError, ValueError):
             data = {}
         self.device_id = data.get("id") or proto.gen_device_id()
-        self.clients = data.get("clients", {})
+        clients = {}
+        for client_id, entry in data.get("clients", {}).items():
+            # v1 entries carry a shared key and pin nothing in v2: dropped.
+            if isinstance(entry, dict) and entry.get("macFp"):
+                clients[client_id] = {"name": entry.get("name", "Mac"),
+                                      "macFp": entry["macFp"]}
+        self.clients = clients
+        self.pending_qr = data.get("pendingQr")
 
     def save(self):
         with self.lock:
             data = {"id": self.device_id, "clients": self.clients}
+            if self.pending_qr:
+                data["pendingQr"] = self.pending_qr
             tmp = self.path + ".tmp"
             with open(tmp, "w") as fp:
                 json.dump(data, fp, indent=2)
             os.replace(tmp, self.path)
 
-    def key_for(self, client_id):
+    def pinned_for(self, client_id):
         entry = self.clients.get(client_id)
         if not entry:
             return None
-        try:
-            return bytes.fromhex(entry["key"])
-        except (KeyError, ValueError):
-            return None
+        return entry["macFp"]
 
-    def add_client(self, client_id, name, key):
-        with self.lock:
-            self.clients[client_id] = {"name": name, "key": key.hex()}
+    def add_pinned_client(self, client_id, name, mac_fp_hex):
+        # The slot assignment is atomic; save() owns the lock (a client is
+        # never torn read-modify-write across threads by anything else).
+        self.clients[client_id] = {"name": name, "macFp": mac_fp_hex}
+        self.pending_qr = None  # the scan is consumed
         self.save()
 
 
@@ -865,8 +912,8 @@ class Session(object):
         self._on_end = on_end
         self.sender = None
         self.client_id = None
-        self.client_name = ""
-        self.nonce = None
+        self.client_name = None
+        self.mac_fp_hex = None          # the Mac's point fingerprint (hello `fp`)
         self.windows = {}
         self._unknown_types = set()
         self.audio = AudioTone(phone)
@@ -875,29 +922,49 @@ class Session(object):
         self._thread.start()
 
     def close(self):
-        try:
-            self.sock.shutdown(socket.SHUT_RDWR)
-        except OSError:
-            pass
-        try:
-            self.sock.close()
-        except OSError:
-            pass
+        for sock in (getattr(self, "sock", None),):
+            if sock is None:
+                continue
+            try:
+                sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            try:
+                sock.close()
+            except OSError:
+                pass
 
     def _run(self):
-        self.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-        self.phone.events.session("open")
-        self.sender = Sender(self.sock, self.phone.on_backlog_cleared)
-        self.phone.sender = self.sender
+        """TLS wrap first (docs/design/e2ee.md §2): nothing speaks plaintext.
+
+        Anything that dies before the first session byte — an aborted client
+        (the Mac's Bonjour resolve opens a connection and closes it: review
+        R4-b), a plaintext probe, a port scan — stays quiet: no error-level
+        log, no pairing prompt, no counted failed attempt. A debug hint under
+        FAKE_DEBUG only.
+        """
         try:
-            if self._handshake():
-                self._main_loop()
+            self.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            if self.phone.args.no_tls:
+                self.phone.events.session("open")
+                self._handshake_serve()
+                return
+            conn = self.phone.accept_tls(self.sock)
+            self.sock = conn
+            self.phone.events.session("open")
+            self._handshake_serve()
         except proto.ProtocolError as exc:
             sys.stderr.write("fakephone: session error: %s\n" % exc)
-        except OSError:
-            pass
+        except Exception as exc:
+            dbg("tls handshake dropped: %s: %s" % (type(exc).__name__, exc))
         finally:
             self._teardown()
+
+    def _handshake_serve(self):
+        self.sender = Sender(self.sock, self.phone.on_backlog_cleared)
+        self.phone.sender = self.sender
+        if self.handshake():
+            self._main_loop()
 
     def _teardown(self):
         try:
@@ -917,9 +984,19 @@ class Session(object):
 
     # -- handshake --
     def _send(self, obj):
+        # Pairing sends get their own event line (the e2e `tls` matrix reads
+        # the phone's side of the flow verbatim); feature traffic is rx-only,
+        # so the older event counts stay unchanged.
+        if str(obj.get("t", "")).startswith("pair."):
+            self.phone.events.tx(obj)
         self.sender.send_json(obj)
 
-    def _handshake(self):
+    def handshake(self):
+        """The v2 greeting (parity with the phone's Session.kt): hello v2 names
+        the client; the Mac's fingerprint comes from the TLS handshake's client
+        certificate, never from a hello field. A pinned Mac that still presents
+        its stored fingerprint gets `welcome`; anything else pairs via §4 or
+        the R2 QR."""
         frame = proto.recv_frame(self.sock)
         if frame is None:
             return False
@@ -931,75 +1008,193 @@ class Session(object):
         if msg.get("t") != "hello":
             self._send_error("protocol", "expected hello")
             return False
-        if msg.get("v") != 1:
-            self._send_error("version")
-            return False
+        version = msg.get("v")
+        if not self.phone.args.legacy_phone:
+            if version != 2:
+                self._send_error("version")
+                return False
         self.client_id = msg.get("clientId")
         self.client_name = msg.get("name", "")
-        self.nonce = proto.gen_nonce_hex()
-        self._send({"t": "challenge", "nonce": self.nonce, "id": self.phone.store.device_id})
+        if self.phone.args.legacy_phone:
+            # A v1 phone answers hello with its challenge and then waits for
+            # auth like any v1 phone would; the v2 Mac surfaces the version
+            # mismatch and hangs up. Kill the read only when the Mac goes.
+            self.mac_fp_hex = ""
+            self.nonce = proto.gen_nonce_hex()
+            self._send({"t": "challenge", "nonce": self.nonce, "id": self.phone.store.device_id})
+            while True:
+                frame = proto.recv_frame(self.sock)
+                if frame is None:
+                    return False
+        # §1: the phone pins what the handshake presented; no self-report.
+        self.mac_fp_hex = (proto.point_fp_from_der(self.sock.client_der)
+                           if getattr(self.sock, "client_der", None) else "")
+        pinned = self.phone.store.pinned_for(self.client_id)
+        if pinned is not None:
+            if not hmac.compare_digest(pinned, self.mac_fp_hex):
+                self._send_error("bad_pin", "this Mac's certificate changed; pair again")
+                # The Mac must read the error before the close lands: hold the
+                # with the same write-then-close shape Session.kt uses.
+                while True:
+                    try:
+                        if proto.recv_frame(self.sock) is None:
+                            break
+                    except (proto.ProtocolError, OSError):
+                        break
+                return False
+            self.phone.events.session("auth_ok")
+            self.welcome()
+            return True
+        pending = self.phone.store.pending_qr
+        if self._pending_qr_fresh(pending) and (pending["macFp"] or "").lower() == self.mac_fp_hex:
+            return self.pair_qr_flow(pending)
+        return self.pair_request_flow()
 
+    def _pending_qr_fresh(self, pending):
+        if not pending:
+            return False
+        at = float(pending.get("at") or 0)
+        return 0 <= time.time() - at <= PENDING_QR_TTL
+
+    # -- v2 code pairing (§4): the Mac asks (pair.request), the phone commits --
+    def pair_request_flow(self):
+        """The Mac's pair.request is the pairing intent; the phone answers with
+        pair.commit (fresh Np, phoneFP‖macFP bound) before the Mac releases its
+        nonce, then reveals and shows the code with its Allow prompt."""
         frame = proto.recv_frame(self.sock)
         if frame is None:
             return False
         if frame.type != proto.TYPE_JSON:
-            self._send_error("protocol", "expected auth or pair.request")
+            self._send_error("protocol", "expected pair.request")
             return False
         msg = proto.unpack_json(frame)
         self.phone.events.rx(msg)
-        kind = msg.get("t")
-        if kind == "auth":
-            return self._auth(msg)
-        if kind == "pair.request":
-            return self._pair()
-        self._send_error("protocol", "expected auth or pair.request")
-        return False
-
-    def _auth(self, msg):
-        key = self.phone.store.key_for(self.client_id)
-        got = msg.get("mac", "")
-        if key is None or not hmac.compare_digest(proto.hmac_hex(key, self.nonce), got):
-            self._send_error("auth_failed")
+        if msg.get("t") != "pair.request":
+            self._send_error("protocol", "expected pair.request")
             return False
-        self.phone.events.session("auth_ok")
-        self._welcome()
-        return True
-
-    def _pair(self):
-        """Numeric comparison: the code goes to the Mac in pair.code_shown, and
-        the person's Allow (here: --auto-allow after --allow-delay, or the
-        terminal prompt) is the only step. Nothing comes back from the Mac."""
-        code = "%06d" % random.randrange(0, 1000000)
+        self.np = os.urandom(16)
+        phone_fp = bytes.fromhex(self.phone.fp_hex)
+        mac_fp = bytes.fromhex(self.mac_fp_hex)
+        commit = hashlib.sha256(b"pd-commit-v2" + self.np + phone_fp + mac_fp).digest()
+        self._send({"t": "pair.commit", "c": commit.hex()})
+        frame = proto.recv_frame(self.sock)
+        if frame is None:
+            return False
+        if frame.type != proto.TYPE_JSON:
+            self._send_error("protocol", "expected pair.nonce")
+            return False
+        msg = proto.unpack_json(frame)
+        self.phone.events.rx(msg)
+        if msg.get("t") != "pair.nonce":
+            self._send_error("pair_commit", "expected pair.nonce")
+            return False
+        try:
+            nm = bytes.fromhex(msg.get("n") or "")
+        except ValueError:
+            nm = b""
+        if len(nm) != 16:
+            self._send_error("pair_commit", "bad nonce")
+            return False
+        dbg("reveal sent; decision next")
+        self._send({"t": "pair.reveal", "n": self.np.hex()})
+        # §4: the code derives from the REAL TLS exporter on both ends —
+        # pyOpenSSL's export_keying_material is the same RFC 8446 §7.5 formula
+        # ExporterV2 runs on the Mac, so the screens show the same code (the
+        # e2e `pair` check asserts the equality; K4 asserts it on-device).
+        exporter = self.exporter()
+        if exporter is None:
+            raise proto.ProtocolError("pair.reveal: no exporter from TLS")
+        preimage = hashlib.sha256(b"pd-code-v2" + exporter +
+                                  mac_fp + phone_fp + nm + self.np).digest()
+        code = int.from_bytes(preimage[:8], "big") % 1000000
+        code = "%06d" % code
         self.phone.report_code(code)
-        self._send({"t": "pair.code_shown", "code": code})
-        allowed = self._decision()
-        if allowed is None:
+        if not self.decision():
+            dbg("decision false")
             return False
-        if not allowed:
-            self._send_error("pair_denied")
-            return False
-        key = proto.gen_key()
-        self.phone.store.add_client(self.client_id, self.client_name, key)
-        self._send({"t": "pair.ok", "key": key.hex()})
+        dbg("decision true; storing pin")
+        self.phone.store.add_pinned_client(self.client_id, self.client_name, self.mac_fp_hex)
+        dbg("pin stored; sending pair.ok")
+        self._send({"t": "pair.ok", "phoneFP": self.phone.fp_hex, "macFP": self.mac_fp_hex})
+        dbg("pair.ok sent")
         self.phone.events.session("paired")
-        self._welcome()
+        self.welcome()
         return True
 
-    def _decision(self):
+    # -- R2 QR pairing --
+    def pair_qr_flow(self, pending):
+        """The phone proved the scan (pair.qr HMAC over the REAL exporter, the
+        same bytes the Mac derives); the Mac verifies, pins and sends
+        pair.ok {macFP}; the Allow prompt still gates."""
+        exporter = self.exporter()
+        if exporter is None:
+            raise proto.ProtocolError("pair.qr: no exporter from TLS")
+        phone_fp = bytes.fromhex(self.phone.fp_hex)
+        mac = hmac.new(bytes.fromhex(pending["secret"]),
+                       b"pd-qr-v2" + exporter + phone_fp, hashlib.sha256).hexdigest()
+        self._send({"t": "pair.qr", "m": mac})
+        frame = proto.recv_frame(self.sock)
+        if frame is None:
+            return False
+        if frame.type != proto.TYPE_JSON:
+            self._send_error("protocol", "expected pair.ok")
+            return False
+        msg = proto.unpack_json(frame)
+        self.phone.events.rx(msg)
+        if msg.get("t") != "pair.ok":
+            self._send_error("protocol", "expected pair.ok")
+            return False
+        # Parity with the phone: the Mac's pair.ok must name THIS session's
+        # Mac fingerprint (the handshake's client cert).
+        if not hmac.compare_digest((msg.get("macFP") or "").lower(), self.mac_fp_hex):
+            self._send_error("pair_commit", "pair.ok does not match the session")
+            return False
+        if not self.decision():
+            return False
+        self.phone.store.add_pinned_client(self.client_id, self.client_name, self.mac_fp_hex)
+        # Same shape the phone always sends (Session.kt completePairing): the
+        # Mac cross-checks phoneFP against the handshake pin it learned.
+        self._send({"t": "pair.ok", "phoneFP": self.phone.fp_hex, "macFP": self.mac_fp_hex})
+        self.phone.events.session("paired")
+        self.welcome()
+        return True
+
+    def exporter(self):
+        """The REAL RFC 8446 §7.5 exporter of this TLS session (32 bytes):
+        pyOpenSSL's export is the formula both stacks agree on. Never logged;
+        memory only."""
+        material = getattr(self.sock, "exporter", None)
+        if material is None:
+            dbg("no exporter on %r (sock type %s)" % (self.sock, type(self.sock).__name__))
+            return None
+        try:
+            data = material(b"EXPORTER-pocketdeck-pair", 32)
+        except Exception as exc:
+            dbg("exporter unavailable: %s: %s" % (type(exc).__name__, exc))
+            return None
+        if not data or len(data) != 32:
+            dbg("exporter came back %r" % data)
+            return None
+        return data
+
+    def decision(self):
         """True = Allow, False = Deny, None = the Mac hung up first (Cancel)."""
         if not self.phone.args.auto_allow:
-            return self.phone.ask_allow(self.client_name)
+            result = self.phone.ask_allow(self.client_name)
+            return result
         deadline = time.time() + self.phone.args.allow_delay
         while True:
             left = deadline - time.time()
             if left <= 0:
                 return True
-            ready, _, _ = select.select([self.sock], [], [], left)
+            # The TLS layer may hold decoded bytes: select the raw socket.
+            readable = getattr(self.sock, "raw_socket", lambda: self.sock)()
+            ready, _, _ = select.select([readable], [], [], left)
             if ready:
                 # The Mac says nothing while a person decides: readable means it hung up.
                 return None
 
-    def _welcome(self):
+    def welcome(self):
         self._send({"t": "welcome", "device": {
             "id": self.phone.store.device_id,
             "name": self.phone.name,
@@ -1562,9 +1757,17 @@ class FakePhone(object):
         self.name = args.name
         # The screen as it is turned now (the phone mirror follows it).
         self.screen = (SCREEN_W, SCREEN_H)
+        tls_guard()
         self.store = Store(args.state)
         if args.qr_uri:
             scan_qr_uri(self.store, args.qr_uri)
+        # One identity per state file's directory, so restarts keep serving the
+        # same cert the Mac pins; `--tls-identity` overrides (the rotated-cert
+        # case points at a different dir).
+        self.tls_identity_dir = args.tls_identity or (args.state + ".identity")
+        self.fp_hex = None
+        if not args.no_tls:
+            self.fp_hex = make_identity(self.tls_identity_dir)
         self.events = EventLog(args.events)
         self.sender = None            # active session's sender
         self._session = None
@@ -1578,6 +1781,12 @@ class FakePhone(object):
         self._display_lock = threading.Lock()
         self._mdns = None
         self.label_dir = tempfile.mkdtemp(prefix="fakephone-") if args.labels else None
+
+    def accept_tls(self, raw):
+        """One TLS 1.3 handshake per connection (the SSLContext is per
+        connection, so the captured client cert only ever belongs to it)."""
+        cert_path, key_path = identity_paths(self.tls_identity_dir)
+        return proto.tls_server_session(cert_path, key_path, raw)
 
     def next_display_id(self):
         with self._display_lock:
@@ -1646,6 +1855,16 @@ class FakePhone(object):
 
     def _reject_busy(self, conn):
         try:
+            if not self.args.no_tls:
+                try:
+                    conn = self.accept_tls(conn)
+                except Exception as exc:
+                    dbg("busy tls wrap failed: %s: %s" % (type(exc).__name__, exc))
+                    try:
+                        conn.close()
+                    except OSError:
+                        pass
+                    return
             conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             conn.sendall(proto.pack_json({"t": "error", "code": "busy",
                                           "message": "another session is active"}))
@@ -1742,8 +1961,19 @@ def build_parser():
     p.add_argument("--rotate-after", type=float, default=0.0, metavar="SECONDS",
                    help="turn the screen to landscape this long after a phone window opens")
     p.add_argument("--qr-uri", metavar="URI",
-                   help="simulate a QR scan: register the client+key from a "
-                        "pocketdeck://pair URI as paired, then authenticate normally")
+                   help="simulate the v2 QR scan (R2): stage a pocketdeck://pair "
+                        "c/n/f/s URI; a Mac whose TLS fingerprint matches f gets "
+                        "the pair.qr proof, then the Allow gate still applies")
+    p.add_argument("--no-tls", action="store_true",
+                   help="serve plaintext (the e2e plaintext refusal case: the "
+                        "Mac must refuse to speak and never pair)")
+    p.add_argument("--legacy-phone", action="store_true",
+                   help="behave like a v1 phone (challenge after hello): the "
+                        "v2 Mac surfaces the version mismatch and hangs up")
+    p.add_argument("--tls-identity", metavar="DIR", default=None,
+                   help="TLS identity dir (cert.pem/key.pem; generated once); "
+                        "default is next to --state, so restarts keep the pin. "
+                        "A different dir is a rotated server certificate")
     p.add_argument("--clip-on-welcome", metavar="TEXT", default=None,
                    help="send TEXT as clip.set right after welcome (the phone's clipboard)")
     p.add_argument("--share", metavar="KIND:VALUE", action="append", default=[],
@@ -1765,6 +1995,9 @@ def main(argv=None):
     args = build_parser().parse_args(argv)
     add_demo_apps(args.demo_apps, args.no_icon_every)
     phone = FakePhone(args)
+    if phone.fp_hex:
+        print("fakephone identity fp: %s" % phone.fp_hex, file=sys.stderr)
+        sys.stderr.flush()
 
     def _sig(_signum, _frame):
         phone._stop.set()
