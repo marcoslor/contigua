@@ -125,6 +125,43 @@ class ServerTest {
         }
     }
 
+    /**
+     * Review R4-b: a client that connects and closes without a byte (the Mac's
+     * Bonjour resolve) is quiet — no log line, no session — and the next real
+     * session still works.
+     */
+    @Test
+    fun emptyConnectionIsQuietAndTheNextSessionWorks() {
+        val platform = FakePlatform()
+        platform.clients.add(PairedClient("c1", "MacBook", TlsV2Fixture.MAC_FP_HEX))
+        val phoneIdentity = TestTls.generate("PocketDeck Phone (empty test)")
+        val macIdentity = TestTls.generate("PocketDeck Mac (empty test)")
+        val logs = java.util.Collections.synchronizedList(mutableListOf<String>())
+        val server = Server({ socket -> sessionFor(platform, socket) }, log = { logs.add(it) },
+            { phoneIdentity.certPem }, { phoneIdentity.keyP8 })
+        val port = server.start()
+        try {
+            repeat(3) { Socket("127.0.0.1", port).close() }
+            client(port, macIdentity, phoneIdentity).use { tls ->
+                tls.soTimeout = 3_000
+                val ssl = tls as javax.net.ssl.SSLSocket
+                ssl.startHandshake()
+                assertEquals("TLSv1.3", ssl.session.protocol)
+            }
+            assertEquals(emptyList<String>(), logs.filter { "handshake" in it })
+            assertEquals(false, platform.sessionChanges.any { it.connected })
+        } finally {
+            server.stop()
+        }
+    }
+
+    @Test
+    fun emptyConnectionClassifier() {
+        assertEquals(true, Server.isEmptyConnection(javax.net.ssl.SSLHandshakeException("x").apply { initCause(java.io.EOFException()) }))
+        assertEquals(true, Server.isEmptyConnection(javax.net.ssl.SSLException("Connection closed by peer")))
+        assertEquals(false, Server.isEmptyConnection(javax.net.ssl.SSLHandshakeException("no cipher suites in common")))
+    }
+
     private fun sessionFor(platform: FakePlatform, socket: Socket): Session = Session(
         socket = socket,
         display = platform,

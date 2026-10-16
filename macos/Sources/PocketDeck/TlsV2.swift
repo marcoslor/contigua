@@ -406,7 +406,11 @@ final class TlsConnectorV2: @unchecked Sendable {
             guard PinCheckV2.matches(peerFingerprint, pinHex: identity.pin) else {
                 throw TlsV2Error.pinMismatch(got: Data(peerFingerprint).hexString, expected: identity.pin)
             }
-            tls.certificateVerification = .fullVerification
+            // The pinned cert IS the check (§1): no hostname validation — a
+            // self-signed phone's name means nothing — the handshake either
+            // verifies against this exact leaf or dies with certificate
+            // changed. (Resumed handshakes are impossible: R3.)
+            tls.certificateVerification = .noHostnameVerification
             tls.trustRoots = .certificates([cert])
         } else {
             // PAIRING: no pin record yet. A §3 pin without a record is a

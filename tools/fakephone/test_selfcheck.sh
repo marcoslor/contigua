@@ -8,7 +8,8 @@
 set -u
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-PY=/usr/bin/python3
+PY="${PD_FAKE_TLS_PYTHON:-}"
+[ -n "$PY" ] || PY="$(command -v python3.11 || echo /usr/bin/python3)"
 FFPROBE="$(command -v ffprobe || echo /opt/homebrew/bin/ffprobe)"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/fakephone-selfcheck.XXXXXX")"
 PORT_FILE="$WORK/port"
@@ -111,7 +112,7 @@ grep -q "window.quality" "$WORK/fh.err" || die "fakephone did not log window.qua
 
 # --- second simultaneous session must be rejected --------------------------
 note "busy: a second session is rejected while the first keeps streaming"
-"${DECK[@]}" open --phone --w 720 --h 1280 --dpi 320 --seconds 4 \
+"${DECK[@]}" open --phone --w 1080 --h 2340 --dpi 450 --seconds 4 \
     --out "$WORK/busy1.h264" > "$WORK/busy1.txt" 2>"$WORK/busy1.err" &
 BUSY_PID=$!
 sleep 1.5

@@ -1197,13 +1197,21 @@ final class ConnectionController {
         switch event {
         case .state(let state, let detail):
             switch state {
-            case .failed:
+            case .failed(let reason):
                 stopClipboardSync()
                 apkInstaller.connectionLost()
                 dropSender.connectionLost()
                 clipImageBuffer.discard()
                 shareInbox.connectionLost()
                 nowPlaying.clear()
+                // The TLS pin said the dialed phone is not the one this Mac
+                // pinned (a foreign phone took the cached address): keep the
+                // pin record — re-pair overturns it (§7) — and drop the stale
+                // cache entry, as v1's identity mismatch did (C10).
+                if reason == "pin-mismatch", let id = session?.knownDeviceId, !id.isEmpty {
+                    Log.session.notice("dropping cached address for \(id, privacy: .public) (the TLS pin refuses it)")
+                    cache.forget(deviceId: id)
+                }
                 attemptEnded(reason: detail ?? "closed")
             case .closed:
                 stopClipboardSync()
