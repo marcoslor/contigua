@@ -381,6 +381,15 @@ def round16(value):
 
 
 # --- JSON Lines event log --------------------------------------------------
+def redact_pairing(msg):
+    """Pairing nonces, commitments and proofs never reach the event log
+    (hard rule: lengths only); everything else is logged verbatim."""
+    if not str(msg.get("t", "")).startswith("pair."):
+        return msg
+    return {k: ("<%d hex>" % len(v) if k in ("n", "c", "m") and isinstance(v, str) else v)
+            for k, v in msg.items()}
+
+
 class EventLog(object):
     """Writes the exact JSON Lines format other agents' tests consume."""
 
@@ -400,10 +409,10 @@ class EventLog(object):
         self._emit({"ev": "session", "state": state, "ts": time.time()})
 
     def tx(self, msg):
-        self._emit({"ev": "tx", "msg": msg, "ts": time.time()})
+        self._emit({"ev": "tx", "msg": redact_pairing(msg), "ts": time.time()})
 
     def rx(self, msg):
-        self._emit({"ev": "rx", "msg": msg, "ts": time.time()})
+        self._emit({"ev": "rx", "msg": redact_pairing(msg), "ts": time.time()})
 
     def touch(self, stream, action, pointer, nx, ny):
         self._emit({"ev": "input", "kind": "touch", "stream": stream, "action": action,
@@ -540,17 +549,19 @@ class Store(object):
                 clients[client_id] = {"name": entry.get("name", "Mac"),
                                       "macFp": entry["macFp"]}
         self.clients = clients
-        self.pending_qr = data.get("pendingQr")
 
     def save(self):
         with self.lock:
             data = {"id": self.device_id, "clients": self.clients}
-            if self.pending_qr:
-                data["pendingQr"] = self.pending_qr
             tmp = self.path + ".tmp"
             with open(tmp, "w") as fp:
                 json.dump(data, fp, indent=2)
             os.replace(tmp, self.path)
+
+    def set_pending_qr(self, pending):
+        # Memory only, like the phone's 5-minute PendingQr: the one-time
+        # secret never reaches the state file.
+        self.pending_qr = pending
 
     def pinned_for(self, client_id):
         entry = self.clients.get(client_id)

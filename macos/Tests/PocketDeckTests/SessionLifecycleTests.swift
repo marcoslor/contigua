@@ -245,10 +245,18 @@ final class SessionLifecycleTests: XCTestCase {
         let probe = makeSession(port: server.port, policy: .probe, pinStore: pins)
         probe.useQRSecret(secret)
         var qrSigned = false
-        probe.onEvent = { if case .qrPaired = $0 { qrSigned = true } }
+        var pinnedAtSignal = false
+        probe.onEvent = {
+            if case .qrPaired = $0 {
+                qrSigned = true
+                // The controller closes the probe on this event: the pin must be stored by then.
+                pinnedAtSignal = pins.record(for: "phone-1") != nil
+            }
+        }
         probe.start()
         XCTAssertTrue(waitFor { probe.state == .ready }, "QR probe never paired: \(probe.state)")
         XCTAssertTrue(qrSigned, "the QR handshake never reached the controller")
+        XCTAssertTrue(pinnedAtSignal, "qrPaired fired before the pin was stored")
         XCTAssertEqual(pins.record(for: "phone-1")?.phoneFingerprintHex, server.phoneFingerprintHex)
         probe.close()
     }

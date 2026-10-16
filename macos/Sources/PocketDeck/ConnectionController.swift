@@ -90,7 +90,9 @@ final class ConnectionController {
     /// The v2 identity + pin store (docs/design/e2ee.md §3): identity.json is
     /// the Mac's TLS identity, pins.json holds one record per phone; identity's
     /// `pin` mirrors the current phone's fingerprint.
-    let identity: DeviceIdentityV2
+    /// The live §3 identity; the pin mirror changes in memory and on disk
+    /// together (sessions started later read this copy, not the file).
+    private(set) var identity: DeviceIdentityV2
     let identityFile: IdentityFileV2
     let pins: PhonePinStoreV2
     let cache: CachedDeviceStore
@@ -576,9 +578,8 @@ final class ConnectionController {
         if let holder = pins.all.first(where: { $0.phoneFingerprintHex == identity.pin }), holder.deviceId != deviceId {
             return
         }
-        var updated = identity
-        updated.pin = ""
-        identityFile.save(updated)
+        identity.pin = ""
+        identityFile.save(identity)
     }
 
     func openApp(_ app: AppInfo) {
@@ -1095,9 +1096,8 @@ final class ConnectionController {
     /// session just paired; re-saved after every successful pairing.
     private func mirrorIdentityPin(record: PinnedPhoneV2) {
         guard pins.record(for: record.deviceId)?.phoneFingerprintHex == record.phoneFingerprintHex else { return }
-        var updated = identity
-        updated.pin = record.phoneFingerprintHex
-        identityFile.save(updated)
+        identity.pin = record.phoneFingerprintHex
+        identityFile.save(identity)
     }
 
     /// The Mac's own point fingerprint (the `f` param of the QR URI, R2).
@@ -1583,7 +1583,8 @@ final class ConnectionController {
         // sheet's one-time secret; a phone that scanned the QR pins us by `f`
         // and proves `s` with `pair.qr`.
         let probe = Session(endpoint: endpoint, knownDeviceId: deviceId, clientId: clientId,
-                            identity: identity, pinnedPhone: nil, pinStore: pins)
+                            identity: identity, pinnedPhone: nil, pinStore: pins,
+                            onPinEstablished: { [weak self] record in self?.mirrorIdentityPin(record: record) })
         probe.pairingPolicy = .probe
         probe.useQRSecret(secret)
         probe.onEvent = { [weak self, weak probe] event in
