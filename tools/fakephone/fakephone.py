@@ -191,6 +191,22 @@ def _png(width, height, rows):
             chunk(b"IDAT", zlib.compress(bytes(raw), 9)) + chunk(b"IEND", b""))
 
 
+def _png_rgba(width, height, rows):
+    """Encode 8-bit RGBA scanlines (a layer keeps around its transparent corners)."""
+    raw = bytearray()
+    for row in rows:
+        raw.append(0)
+        raw += bytes(row)
+
+    def chunk(typ, data):
+        return (struct.pack(">I", len(data)) + typ + data +
+                struct.pack(">I", zlib.crc32(typ + data) & 0xFFFFFFFF))
+
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0)
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) +
+            chunk(b"IDAT", zlib.compress(bytes(raw), 9)) + chunk(b"IEND", b""))
+
+
 def render_text_png(text, width, height, fg, bg, scale=None):
     """Render uppercase text centered on a solid background.
 
@@ -229,6 +245,49 @@ def render_text_png(text, width, height, fg, bg, scale=None):
                             off = (px + dx) * 3
                             row[off:off + 3] = bytes(fg)
     return _png(width, height, canvas)
+
+
+def render_glyph_png(letter, width, height, rgba):
+    """One glyph inside the visible zone of a layer canvas (the fg layer of
+    an adaptive icon): the content sits in the central 2/3 of the 216 px
+    canvas the way an Android foreground layer stays inside its safe area;
+    everything around it, and beyond it, is transparent."""
+    canvas = [bytearray(width * 4) for _ in range(height)]
+    letter = letter.upper() if letter.upper() in FONT else " "
+    rows = FONT.get(letter, FONT[" "])
+    # The glyph must fit comfortably inside the central 2/3 (the visible area
+    # of the 108 dp canvas), the way an Android fg layer keeps a margin; centred.
+    zone = max(8, int(width * 2 / 3))
+    by_height = (zone * 3 // 4) // GLYPH_H
+    by_width = (zone * 3 // 4) // max(1, (GLYPH_W + 1))
+    scale = max(1, min(by_height, by_width))
+    text_w = max(0, (GLYPH_W + 1) * scale - 1)
+    text_h = GLYPH_H * scale
+    x0 = (width - text_w) // 2
+    y0 = (height - text_h) // 2
+    for gy, row in enumerate(rows):
+        for gx, on in enumerate(row):
+            if on != "1":
+                continue
+            for dy in range(scale):
+                py = y0 + gy * scale + dy
+                for dx in range(scale):
+                    px = x0 + gx * scale + dx
+                    off = px * 4
+                    canvas[py][off:off + 4] = bytes(rgba)
+    return _png_rgba(width, height, canvas)
+
+
+ADAPTIVE_EVERY = 3
+
+
+def is_adaptive_pkg(pkg):
+    """Every 3rd app of the label list uses an adaptive icon, like most real
+    launchers; the others keep their flat one so the Deck shows both kinds."""
+    for position, app in enumerate(sorted(APPS, key=lambda a: a["label"].lower())):
+        if app["pkg"] == pkg:
+            return position % ADAPTIVE_EVERY == 1
+    return False
 
 
 def pkg_color(pkg):
@@ -347,6 +406,11 @@ class EventLog(object):
 
     def clip(self, direction, text):
         self._emit({"ev": "clip", "dir": direction, "text": text, "ts": time.time()})
+
+    def icon(self, pkg, png_bytes, layers):
+        """an icon reply: packages and lengths only (no base64 in the log)."""
+        self._emit({"ev": "icon", "pkg": pkg, "bytes": png_bytes, "layers": layers,
+                    "ts": time.time()})
 
     def link(self, stream, url):
         self._emit({"ev": "link", "stream": stream, "url": url, "ts": time.time()})
@@ -1262,7 +1326,13 @@ class Session(object):
     def _on_apps_icon(self, msg):
         pkg = msg.get("pkg", "")
         png = self.phone.icon_png(pkg)
-        self._send({"t": "icon", "pkg": pkg, "png": base64.b64encode(png).decode("ascii")})
+        reply = {"t": "icon", "pkg": pkg, "png": base64.b64encode(png).decode("ascii")}
+        layers = self.phone.icon_layers(pkg)
+        self.phone.events.icon(pkg, len(png), layers is not None)
+        if layers is not None:
+            reply["fg"] = layers["fg"]
+            reply["bg"] = layers["bg"]
+        self._send(reply)
 
     def _stream_or_error(self, msg):
         stream_id = msg.get("stream")
@@ -1502,6 +1572,7 @@ class FakePhone(object):
         self._stop = threading.Event()
         self._srv = None
         self._icon_cache = {}
+        self._layers_cache = {}
         self._icon_lock = threading.Lock()
         self._display_seq = 100
         self._display_lock = threading.Lock()
@@ -1520,18 +1591,35 @@ class FakePhone(object):
             cached = self._icon_cache.get(pkg)
             if cached is not None:
                 return cached
-        letter = ""
-        for app in APPS:
-            if app["pkg"] == pkg:
-                letter = app["label"][:1]
-                break
-        if not letter:
-            letter = (pkg.rsplit(".", 1)[-1] or "?")[:1]
-        fg = (255, 255, 255)
-        png = render_text_png(letter or "?", 96, 96, fg, pkg_color(pkg))
+        png = render_text_png(self._icon_letter(pkg) or "?", 96, 96, (255, 255, 255), pkg_color(pkg))
         with self._icon_lock:
             self._icon_cache[pkg] = png
         return png
+
+    def icon_layers(self, pkg):
+        """fg/bg of the adaptive icons (base64), like the real phone's `icon`
+        message fields; None for a flat icon or one without an icon at all."""
+        if pkg in NO_ICON_PKGS or not is_adaptive_pkg(pkg):
+            return None
+        with self._icon_lock:
+            cached = self._layers_cache.get(pkg)
+        if cached is not None:
+            return cached
+        letter = self._icon_letter(pkg)
+        colour = pkg_color(pkg)
+        fg = render_glyph_png(letter, 216, 216, (255, 255, 255, 255))
+        bg = _png(216, 216, [bytearray(bytes(colour) * 216) for _ in range(216)])
+        layers = {"fg": base64.b64encode(fg).decode("ascii"),
+                  "bg": base64.b64encode(bg).decode("ascii")}
+        with self._icon_lock:
+            self._layers_cache[pkg] = layers
+        return layers
+
+    def _icon_letter(self, pkg):
+        for app in APPS:
+            if app["pkg"] == pkg:
+                return app["label"][:1]
+        return (pkg.rsplit(".", 1)[-1] or "?")[:1]
 
     def report_code(self, code):
         try:
