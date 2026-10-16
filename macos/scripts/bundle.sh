@@ -200,6 +200,9 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 PLIST
 # Read at launch: only the release build may use the default profile.
 plutil -insert PDBuildVariant -string "$VARIANT" "$APP/Contents/Info.plist"
+# The e2e app starts as an agent, so a quiet (--background) run never has a Dock
+# icon, not even while it launches; a visible run makes itself a regular app.
+[ "$VARIANT" = "e2e" ] && plutil -insert LSUIElement -bool true "$APP/Contents/Info.plist"
 
 # Share extension: swiftc, because SwiftPM cannot link an app extension's entry point.
 APPEX="$APP/Contents/PlugIns/Share.appex"

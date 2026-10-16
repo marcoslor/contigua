@@ -105,5 +105,8 @@ final class ShimDelegate: NSObject, NSApplicationDelegate {
 
 let delegate = ShimDelegate()
 NSApplication.shared.delegate = delegate
-NSApp.setActivationPolicy(.regular)
+// A background-mode (e2e) shim is built as an agent and stays one.
+if Bundle.main.object(forInfoDictionaryKey: "LSUIElement") as? Bool != true {
+    NSApp.setActivationPolicy(.regular)
+}
 NSApp.run()
