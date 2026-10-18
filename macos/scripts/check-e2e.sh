@@ -153,6 +153,9 @@ clean() {
 
 # start_fake [state-file] — same port every time, never mDNS. FAKE_ALLOW_DELAY
 # makes the "person" take that many seconds to tap Allow; FAKE_ARGS adds flags.
+# stdout goes to fake.log, stderr to fake.err (fakephone puts the listening
+# line and its receive diagnostics on stderr): grep both when a line may be
+# either. Starts fakephone with FAKE_PY — it needs a TLS 1.3 python.
 start_fake() {
     local state="${1:-$WORK/state.json}"
     # shellcheck disable=SC2086
@@ -1225,11 +1228,17 @@ check_mouseback() {
 # TOUCH sequence: down(0), down(1), coalesced moves, up(1), up(0). The pair's
 # distance follows the pinch scale, its pixel-space angle follows the rotation;
 # the right click at the end of the script says the whole script was delivered.
+#
+# The script leads with "wait 1.5": right after launch the opening app's stream
+# window is key, then the deck and the pairing sheet take it back in turn — a
+# key change mid-gesture cancels the gesture by design, and a script armed on
+# the video-size note starts inside that churn. C15's scripts wait for the same
+# reason; the gestures land the same either way, just after the windows settle.
 check_pinch() {
     clean
     start_fake || return 1
-    printf '%s\n' "pinch 0.5 0.5 1.5" "pinch 0.5 0.5 0.6" "rotate 0.5 0.5 90" \
-        "rightclick 0.5 0.5" > "$WORK/pinch.txt"
+    printf '%s\n' "wait 1.5" "pinch 0.5 0.5 1.5" "pinch 0.5 0.5 0.6" \
+        "rotate 0.5 0.5 90" "rightclick 0.5 0.5" > "$WORK/pinch.txt"
     launch --connect "127.0.0.1:$PORT" \
         --open com.android.settings --debug-input-script "$WORK/pinch.txt" --quit-after 60
     wait_until 30 events_have '"action":"back"' \
@@ -2285,7 +2294,7 @@ check_clip() {
 
     # A sentinel, so pd-clip-1 can only have come from the phone.
     printf '%s' pd-clip-0 | pbcopy
-    python3 "$FAKEPHONE" --port "$PORT" --no-mdns --auto-allow \
+    "$FAKE_PY" "$FAKEPHONE" --port "$PORT" --no-mdns --auto-allow \
         --events "$WORK/events.jsonl" --state "$WORK/state.json" \
         --clip-on-welcome pd-clip-1 > "$WORK/fake.log" 2>&1 &
     FAKE_PID=$!
@@ -2333,7 +2342,7 @@ png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 64, 64, 8, 2
     + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b"")
 open(sys.argv[1], "wb").write(png)
 PY2
-    python3 "$FAKEPHONE" --port "$PORT" --no-mdns --auto-allow \
+    "$FAKE_PY" "$FAKEPHONE" --port "$PORT" --no-mdns --auto-allow \
         --events "$WORK/events.jsonl" --state "$WORK/state.json" \
         --share "text:https://example.com/sharein" --share "image:$image" \
         --share "text:file:///etc/hosts" --share "text:pd-share-text-1" > "$WORK/fake.log" 2>&1 &
@@ -2602,7 +2611,7 @@ PY
     }
     drop_found() { drop_event "$@" >/dev/null; }
     log_has() { drop_log | grep -qF -- "$1"; }
-    fake_log_has() { grep -qF -- "$1" "$WORK/fake.log"; }
+    fake_log_has() { grep -qF -- "$1" "$WORK/fake.log" "$WORK/fake.err" 2>/dev/null; }
 
     # The 8 s wait keeps the two drops apart: FileDropSender takes one file at a
     # time and would refuse the second while the first is still in flight.
@@ -2991,7 +3000,7 @@ check_handoff() {
     # The move was refused: the phone still opens the stream and says so
     # (window.opened started="fresh"); the Mac opens the window all the same.
     clean
-    python3 "$FAKEPHONE" --port "$PORT" --no-mdns --auto-allow \
+    "$FAKE_PY" "$FAKEPHONE" --port "$PORT" --no-mdns --auto-allow \
         --events "$WORK/events.jsonl" --state "$WORK/state.json" \
         --handoff-mode fresh > "$WORK/fake.log" 2>&1 &
     FAKE_PID=$!
@@ -3015,7 +3024,7 @@ check_handoff() {
     # on the Mac. The pairing sheet keeps window counts unstable, so the phone
     # side (no display, refusal answer) and the missing title are the evidence.
     clean
-    python3 "$FAKEPHONE" --port "$PORT" --no-mdns --auto-allow \
+    "$FAKE_PY" "$FAKEPHONE" --port "$PORT" --no-mdns --auto-allow \
         --events "$WORK/events.jsonl" --state "$WORK/state.json" \
         --handoff-mode nothing > "$WORK/fake.log" 2>&1 &
     FAKE_PID=$!
@@ -3078,7 +3087,7 @@ PY
     }
 
     start_fake || return 1
-    device="$(sed -n 's/^fakephone \([^ ]*\) listening.*/\1/p' "$WORK/fake.log" | head -1)"
+    device="$(sed -n 's/^fakephone \([^ ]*\) listening.*/\1/p' "$WORK/fake.log" "$WORK/fake.err" | head -1)"
     [ -n "$device" ] || { bad "NOTIFY no device id in the fakephone listening line"; stop_fakephone; return 1; }
     # The per-phone opt-in is a stored default of the e2e profile, off by default
     # (check_dock seeds showAppsInDock the same way).
