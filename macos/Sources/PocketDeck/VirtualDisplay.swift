@@ -221,6 +221,7 @@ extension NSWindow {
         let pairs: [(Selector, Selector)] = [
             (#selector(NSWindow.order(_:relativeTo:)), #selector(NSWindow.pd_order(_:relativeTo:))),
             (#selector(NSWindow.orderFrontRegardless), #selector(NSWindow.pd_orderFrontRegardless)),
+            (#selector(NSWindow.constrainFrameRect(_:to:)), #selector(NSWindow.pd_constrainFrameRect(_:to:))),
         ]
         for (original, replacement) in pairs {
             guard let a = class_getInstanceMethod(NSWindow.self, original),
@@ -241,6 +242,22 @@ extension NSWindow {
     @objc private func pd_orderFrontRegardless() {
         moveOntoVirtualDisplay()
         pd_orderFrontRegardless()
+    }
+
+    /// A window on the run's display keeps the size it was given. The display is
+    /// small on purpose (VirtualDisplay.pointSize) and windows may be bigger than
+    /// it: the checks resize a stream to a 1600x1200 pt window (C6) and the phone
+    /// has to be told about all of it, while AppKit's own constraint would cut the
+    /// frame down to the display's visible frame (800 pt) — and the app, which
+    /// sets these frames rather than dragging them, would then stream less than it
+    /// asked for. The app places the windows here itself (place(), above), so a
+    /// frame that does not fit is not a frame the person is locked out of; every
+    /// other screen keeps AppKit's constraint.
+    @objc private func pd_constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect {
+        // AppKit constrains a frame to the window's screen (nil) or to a named
+        // one: on the run's display, the asked-for frame wins.
+        if let display = VirtualDisplay.shared, screen == nil || screen?.frame == display.frame { return frameRect }
+        return pd_constrainFrameRect(frameRect, to: screen)
     }
 
     /// Sheets and child windows follow their parent; the menu bar item and
