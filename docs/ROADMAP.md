@@ -53,6 +53,30 @@ clipboard images (#8), phone mirroring, window styles (Framed / Immersive, remem
 | 10 | [x] APK install | drop / Open With / Services / menu bar an .apk, .apks or .xapk → `apk.install` + `APK_DATA` → `pm install-create/write/commit` at shell UID (docs/design/apk.md) | S‑M |
 | 11 | [x] Share phone → Mac | Android Share → "Send to Mac": links open in the Mac browser, text → clipboard, images → ~/Downloads/PocketDeck + clipboard; "Open on Mac" in the text menu and Open with (`share.text`, `share.file` + `SHARE_DATA`; docs/design/sharein.md) | S‑M |
 
+## QoL batch (2026-10-18), smallest first
+
+Order of work: this batch, then quick features, then an architecture / maintainability / security review before more features.
+
+Batch A (XS-S, one agent, one commit each)
+- [ ] A1 Android: space between the collapsed top bar and the first card (the "Connected" card touches the bar).
+- [ ] A2 Mac: notification titles end with the phone's name, e.g. "Ana (Pixel 9)".
+- [ ] A3 Mac: Show Touches defaults to on when a trackpad is present; an explicit user choice always wins.
+- [ ] A4 Mac: turning off "Show phone apps in the Dock" removes the Dock icon of running non-pinned apps too.
+
+Batch B (S)
+- [ ] B1 Mac: glass title bar uses progressive blur only, no dimming, in framed and immersive, light and dark apps.
+- [ ] B2 Mac: immersive mode's reveal delay is a setting (default unchanged); fix the unbalanced immersive controls (needs a screenshot of the issue).
+- [ ] B3 Android: "Allow connections" (master: refuses every Mac, paired or not, and drops live sessions) + "Allow new pairings" (greyed out while the master is off).
+
+Batch C (M, one at a time)
+- [ ] C1 Mac: View > Density submenu. "Default" (the Settings value, checked when the app has no override) plus the values; picking a value sets a per-app override for the focused window's app, "Default" clears it. Settings lists overrides with a reset.
+- [ ] C2 Mac: native fullscreen shows the app title and the traffic lights in the revealed title bar, framed and immersive.
+- [ ] C3 Mac: live resize. Until the phone sends a frame at the new size, the last frame fills the window aspect-fill (centred crop) instead of letterboxing; the reflection samples only the video, never the black gap.
+
+Batch D (M-L)
+- [ ] D1 Hover pass-through: Mac pointer moves reach the phone as mouse hover (ACTION_HOVER_*), e.g. Chrome's new-tab Lens button reacts as with a real mouse. Brief: .agent/hover/brief.md.
+- [ ] D2 Clicking a Mac notification runs its action in a PocketDeck window. Setting: Open on Mac (default) / Open on phone / Do nothing.
+
 ## v0.x — later native features
 
 | Feature | Approach | Size |
