@@ -363,9 +363,20 @@ def valid_link(raw):
 
 
 def mirror_fit(w, h, screen_w, screen_h):
-    """The phone mirror's size: inside w x h at the screen's aspect, never above the screen."""
+    """The phone mirror's size: inside w x h at the screen's aspect, never above the screen.
+
+    round16 floors, so taking both sides from the same scale would stretch the
+    aspect by up to 15 px of the short side: a 352x752 box gave 336x752 (2.238)
+    for a 1080x2340 screen (2.167, the MIRROR check). The short side floors and
+    the long side follows it at the screen's aspect, which is what a mirror does;
+    the window shows the little that is left as bars.
+    """
     scale = min(float(w) / screen_w, float(h) / screen_h, 1.0)
-    return round16(screen_w * scale), round16(screen_h * scale)
+    if screen_w <= screen_h:
+        fit_w = round16(screen_w * scale)
+        return fit_w, round16(fit_w * screen_h / screen_w)
+    fit_h = round16(screen_h * scale)
+    return round16(fit_h * screen_w / screen_h), fit_h
 
 
 def turn_box(w, h, screen_w, screen_h):
