@@ -833,7 +833,13 @@ def cmd_open(client, args):
     if not stats["configs"]:
         raise DeckError("no VIDEO_CONFIG received")
     w, h = stats["configs"][0]
-    want = (round16(args.w), round16(args.h))
+    # A phone-mode stream is mirrored into the box at the screen's aspect (the
+    # phone floors it to 16 px), so its size is the one the phone announced.
+    opened = stats["opened"]
+    if args.phone and opened.get("w") and opened.get("h"):
+        want = (int(opened["w"]), int(opened["h"]))
+    else:
+        want = (round16(args.w), round16(args.h))
     if (w, h) != want:
         raise proto.ProtocolError("VIDEO_CONFIG is %dx%d, expected %dx%d" % (w, h, want[0], want[1]))
     if stats["frames"] == 0:
@@ -1235,10 +1241,15 @@ def cmd_probe(client, args):
         request["pkg"] = args.target
     client.send_json(request)
     size = rec.wait_for_size(stream, 25.0)
-    want = (round16(args.w), round16(args.h))
+    opened = rec.opened.get(stream, {})
+    # A phone-mode stream is mirrored into the box at the screen's aspect (the
+    # phone floors it to 16 px), so its size is the one the phone announced.
+    if args.phone and opened.get("w") and opened.get("h"):
+        want = (int(opened["w"]), int(opened["h"]))
+    else:
+        want = (round16(args.w), round16(args.h))
     if size != want:
         raise proto.ProtocolError("VIDEO_CONFIG is %dx%d, expected %dx%d" % (size[0], size[1], want[0], want[1]))
-    opened = rec.opened.get(stream, {})
     print("stream=%d size=%dx%d displayId=%s" % (stream, size[0], size[1], opened.get("displayId")))
 
     def run_phase(name, action, duration=None):
