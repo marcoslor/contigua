@@ -3,6 +3,7 @@ package dev.pocketdeck.server
 import android.os.IBinder
 import android.os.PowerManager
 import android.os.SystemClock
+import android.util.Log
 import java.lang.reflect.Method
 
 /**
@@ -119,6 +120,8 @@ internal class PanelPower(private val log: (String) -> Unit) {
  */
 internal object SystemSleep {
 
+    private const val TAG = "PocketDeckPower"
+
     private val powerManager: Any? = Hidden.proxy("android.os.IPowerManager", "power")
 
     private val goToSleep: Method? =
@@ -130,11 +133,17 @@ internal object SystemSleep {
     }.getOrDefault(0)
 
     fun goToSleep(): Boolean {
-        val m = goToSleep ?: return false
-        val pm = powerManager ?: return false
-        return runCatching {
+        val m = goToSleep
+        val pm = powerManager
+        if (m == null || pm == null) {
+            if (Hidden.firstTime("goToSleep unavailable")) Log.i(TAG, "goToSleep unavailable")
+            return false
+        }
+        val ok = runCatching {
             m.invoke(pm, SystemClock.uptimeMillis(), reason, 0)
             true
         }.getOrDefault(false)
+        if (!ok && Hidden.firstTime("goToSleep unavailable")) Log.i(TAG, "goToSleep unavailable")
+        return ok
     }
 }

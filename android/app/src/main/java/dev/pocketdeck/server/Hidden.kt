@@ -12,6 +12,13 @@ import java.lang.reflect.Method
  */
 internal object Hidden {
 
+    /** Missing-handle messages already logged, so each one is reported once. */
+    private val loggedOnce = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
+    /** @return true the first time this exact message is seen in this process. */
+    fun firstTime(message: String): Boolean = loggedOnce.add(message)
+
+
     val T_INT: Class<*> = Int::class.javaPrimitiveType!!
     val T_LONG: Class<*> = Long::class.javaPrimitiveType!!
     val T_FLOAT: Class<*> = Float::class.javaPrimitiveType!!
