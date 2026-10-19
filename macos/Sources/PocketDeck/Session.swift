@@ -884,22 +884,22 @@ final class Session {
                 receivedAt: Date().timeIntervalSince1970,
             )))
         case "fs.items":
-            guard let id = message.int("id"), id > 0 else { return }
-            emit(.fsItems(id: UInt32(id), page: message.string("page"),
+            guard let raw = message.int("id"), let id = UInt32(exactly: raw), id > 0 else { return }
+            emit(.fsItems(id: id, page: message.string("page"),
                           items: message.array("items") ?? []))
         case "fs.item":
-            guard let id = message.int("id"), id > 0, let item = message.object("item") else { return }
-            emit(.fsItem(id: UInt32(id), item: item))
+            guard let raw = message.int("id"), let id = UInt32(exactly: raw), id > 0, let item = message.object("item") else { return }
+            emit(.fsItem(id: id, item: item))
         case "fs.read.end":
-            guard let id = message.int("id"), id > 0 else { return }
-            emit(.fsReadEnd(id: UInt32(id), size: message.int("size") ?? -1,
+            guard let raw = message.int("id"), let id = UInt32(exactly: raw), id > 0 else { return }
+            emit(.fsReadEnd(id: id, size: message.int("size") ?? -1,
                             sha256: message.string("sha256") ?? ""))
         case "error":
             let code = message.string("code") ?? "unknown"
             // An fs failure names the request it answers; it is not the
             // session-level error a stream-less `error` otherwise is.
-            if let id = message.int("id"), id > 0 {
-                emit(.fsError(id: UInt32(id), code: code, message: message.string("message")))
+            if let raw = message.int("id"), let id = UInt32(exactly: raw), id > 0 {
+                emit(.fsError(id: id, code: code, message: message.string("message")))
                 return
             }
             if message.int("stream") == nil { phoneErrorCode = code }

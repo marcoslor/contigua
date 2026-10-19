@@ -54,6 +54,12 @@ class FsPaths(val root: File, private val stats: FsStats = FsStats.Default) {
         if (canonicalPath != rootPath && !canonicalPath.startsWith(rootPath + File.separator)) {
             throw denied("outside the root")
         }
+        // A symlink inside the root may still point at Android/… or a hidden
+        // top-level entry: apply the shape rule to where it really lands.
+        if (canonicalPath != rootPath) {
+            val top = canonicalPath.substring(rootPath.length + 1).substringBefore(File.separatorChar)
+            if (top.startsWith(".") || top == ANDROID) throw denied("link to a hidden entry")
+        }
         return File(canonicalPath)
     }
 
