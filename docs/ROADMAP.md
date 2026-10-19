@@ -70,7 +70,7 @@ Batch B (S)
 
 Batch C (M, one at a time)
 - [x] C1 Mac: View > Density submenu. "Default" (the Settings value, checked when the app has no override) plus the values; picking a value sets a per-app override for the focused window's app, "Default" clears it. Settings lists overrides with a reset.
-- [ ] C2 Mac: native fullscreen shows the app title and the traffic lights in the revealed title bar, framed and immersive.
+- [x] C2 Mac: native fullscreen shows the app title and the traffic lights in the revealed title bar, framed and immersive.
 - [ ] C3 Mac: live resize. Until the phone sends a frame at the new size, the last frame fills the window aspect-fill (centred crop) instead of letterboxing; the reflection samples only the video, never the black gap.
 
 Batch D (M-L)
