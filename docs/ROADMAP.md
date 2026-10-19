@@ -64,8 +64,8 @@ Batch A (XS-S, one agent, one commit each)
 - [x] A4 Mac: turning off "Show phone apps in the Dock" removes the Dock icon of running non-pinned apps too.
 
 Batch B (S)
-- [ ] B1 Mac: glass title bar uses progressive blur only, no dimming, in framed and immersive, light and dark apps.
-- [ ] B2 Mac: immersive mode's reveal delay is a setting (default unchanged); fix the unbalanced immersive controls (needs a screenshot of the issue).
+- [x] B1 Mac: glass title bar uses progressive blur only, no dimming, in framed and immersive, light and dark apps.
+- [ ] B2 Mac: immersive mode's reveal delay is a setting (default unchanged) (done); fix the unbalanced immersive controls (needs a screenshot of the issue).
 - [ ] B3 Android: "Allow connections" (master: refuses every Mac, paired or not, and drops live sessions) + "Allow new pairings" (greyed out while the master is off).
 
 Batch C (M, one at a time)
