@@ -54,6 +54,7 @@ Max frame size 8 MiB; a receiver that sees a larger `len` closes the session.
 | `0x21` | SHARE_DATA | phone→mac | the next bytes (≤ 1 MiB) of a shared file; `stream` = the share `id`; see "Share phone → Mac" |
 | `0x22` | DROP_DATA | mac→phone | the next bytes (≤ 1 MiB) of a file dropped on a window; `stream` = the drop `id`; see "Drop Mac → phone" |
 | `0x23` | CLIP_DATA | both | the next bytes (≤ 1 MiB) of a clipboard image; `stream` = the image `id`; see "Clipboard images" |
+| `0x24` | FS_DATA | phone→mac | the next bytes (≤ 256 KiB) of an `fs.read`; `stream` = the read `id`; see "Phone files" |
 
 `nx`,`ny` are normalized `[0,1]` in the stream's video coordinates (top-left
 origin). The phone maps them to the stream's current virtual display size.
@@ -233,6 +234,10 @@ Mac → phone (after `welcome`):
 | `clip.image.abort` | `id` | the sender gave up; discard what arrived |
 | `audio.start` | `codecs` (array of int, e.g. `[2,3]`) | start device-wide audio; phone answers AUDIO_CONFIG + frames |
 | `audio.stop` | — | stop device-wide audio |
+| `fs.list` | `id`, `path`, `page`? | children of `path`; `page` is the phone's opaque cursor, absent = first |
+| `fs.stat` | `id`, `path` | one item's metadata |
+| `fs.read` | `id`, `path`, `offset`, `length`, `etag`? | stream `length` bytes from `offset` (`FS_DATA`, then `fs.read.end`); an `etag` that no longer matches answers `fs_stale` |
+| `fs.cancel` | `id` | abandon a running `fs.read`; the phone stops streaming and drops what is queued |
 
 Phone → Mac:
 
@@ -257,6 +262,9 @@ Phone → Mac:
 | `drop.progress` | `id`, `bytes` — bytes written of a file drop |
 | `drop.result` | `id`, `ok`; success: `path`; failure: `code`, `message` |
 | `clip.image.start` | `id`, `mime`, `size` — sent by either side |
+| `fs.items` | `id`, `page` (null = last), `items`: `[{"name","dir","size","mtime","ino","etag"}]` — no path per item; the parent is implicit |
+| `fs.item` | `id`, `item` (same shape) |
+| `fs.read.end` | `id`, `size`, `sha256` — the requested range is complete and correct |
 
 Unknown `t` values and unknown binary frame types are ignored (log once). Unknown
 fields are ignored. `activity` is a component string `pkg/fully.qualified.Class`.
@@ -366,6 +374,49 @@ The phone writes every byte to a hidden temp file in `/sdcard/Download/PocketDec
 only after the SHA-256 matches, media-scans the file and — where sensible — offers a SEND
 activity with the app's FileProvider content URI (docs/design/dragdrop.md).
 
+## Phone files (read-only)
+
+Browsing the phone's shared storage from the Mac (docs/design/files.md §3). One
+session, multiplexed like everything else. The phone is stateless across
+requests: no index, no cache, no lock table beyond the running reads.
+
+- **Paths are relative to shared storage**, `/storage/emulated/0` (`""` = the
+  root). A path is rejected with `fs_denied` when it is absolute, contains `\`
+  or NUL, is longer than 4096 bytes or 32 `/`-separated components, has an
+  empty, `.` or `..` component, canonicalizes outside the root (a symlink must
+  not escape it), or names `Android/…` or a dot-prefixed top-level entry.
+  Anything missing is `fs_not_found`; a `fs.list` of a file is `fs_not_a_dir`.
+- **`fs.list`** answers one page of at most 1000 items and at most 1 MiB of
+  JSON. `page` is an opaque string the phone chose; a page that is absent or
+  unknown starts at the first item. `fs.items.page` is `null` on the last page.
+- **Items** are `{"name","dir","size","mtime","ino","etag"}`: `size` and
+  `mtime` (ms) are the file's own, `ino` its inode (0 when unknown), `etag`
+  16 bytes of `(ino, size, mtime)` as 32 lowercase hex characters — a weak
+  version that changes with any metadata change. No per-item path: the parent
+  is the request's path. A list never hashes file contents.
+- **`fs.read`** streams the requested range as `FS_DATA` frames (`stream` =
+  `id`, each ≤ 256 KiB) and ends with `fs.read.end` carrying the range's size
+  and SHA-256. Chunks are paced like share-in: at most 1 MiB queued, so at
+  most four 256 KiB frames are in flight. `offset` + `length` must lie inside
+  the file (the last byte may be EOF, a zero length reads nothing and ends
+  immediately) — anything else is `fs_denied`. A stale or absent file is
+  `fs_not_found`; a directory is `fs_not_a_dir`. With `etag` present and
+  different from the file's current one, the answer is `fs_stale` and no data
+  is sent.
+- **`fs.cancel`** stops that read: the phone sends no further `FS_DATA` for the
+  id (queued chunks are dropped), and the Mac discards what it already has.
+  Frames for a cancelled or unknown `id` are dropped. A session that ends
+  abandons every running read.
+- **Ids and caps**: `id` is a u32 ≠ 0 chosen by the Mac, one request in flight
+  per id; the phone runs at most 8 reads at once and answers `fs_busy` past
+  that. Every reply carries its `id`; fs failures are the ordinary `error`
+  message with an `id` field.
+- **Logs carry no names**: counts, lengths, depths and codes only, both sides.
+
+This is the read-only slice: `fs.write`, `fs.move`, `fs.delete`, `fs.mkdir`,
+`fs.setAttrs`, `fs.watch` and `fs.changes` are designed but not part of the
+wire yet.
+
 ## Notifications + media
 
 Phone notifications and media controls (docs/design/notify.md) travel only
@@ -434,7 +485,10 @@ not allowed), `bad_size` (`task.continue` without w/h), `connections_off` (the p
 this Mac is not paired: "<phone name> isn't accepting new pairings."),
 `not_available` (the phone can't
 report its foreground app, e.g. no task manager access), `nothing_to_continue` (the
-foreground is our app, the launcher/home or SystemUI).
+foreground is our app, the launcher/home or SystemUI), `fs_not_found`,
+`fs_denied` (a path outside the readable rules, or a range outside the file),
+`fs_not_a_dir`, `fs_stale` (the `fs.read` etag no longer matches the file) and
+`fs_busy` (more than 8 reads in flight).
 Oversized frames close the session without a reply. JSON nesting is capped at
 64 arrays/objects; deeper input is rejected like any malformed JSON (before
 `welcome` it simply gets no answer).
