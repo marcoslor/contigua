@@ -131,10 +131,3 @@ final class Discovery {
         return parsed.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 }
-
-extension NWBrowser.Result.Metadata {
-    var txtDictionary: [String: String] {
-        if case let .bonjour(record) = self { return record.dictionary }
-        return [:]
-    }
-}

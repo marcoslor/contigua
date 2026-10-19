@@ -373,9 +373,6 @@ struct ScrollEvent: Equatable {
 
 /// KEY: u8 action (0 down, 1 up) · u32 keycode · u32 metaState.
 struct KeyEvent: Equatable {
-    static let metaCtrlOn: UInt32 = 0x1000
-    static let metaCtrlLeftOn: UInt32 = 0x2000
-
     var action: UInt8
     var keycode: UInt32
     var metaState: UInt32

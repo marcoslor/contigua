@@ -1673,11 +1673,6 @@ final class ConnectionController {
         qrRound()
     }
 
-    func cancelQRPairing() {
-        stopQR()
-        if sheet == .qr { sheet = nil }
-    }
-
     private func stopQR() {
         qrTimer?.invalidate()
         qrTimer = nil

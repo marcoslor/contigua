@@ -252,17 +252,25 @@ final class WindowManager {
         return streams[stream]
     }
 
-    @discardableResult
-    func openApp(pkg: String, activity: String? = nil) -> AppWindowController {
+    /// The body every `open*` shares: allocate a stream, build its controller,
+    /// remember it, show it, tell the phone what to show, redraw the window list.
+    private func open<T: StreamWindowController>(_ make: (UInt32) -> T) -> T {
         let stream = allocateStream()
-        let label = appsByPkg[pkg]?.label ?? pkg
-        let controller = AppWindowController(stream: stream, pkg: pkg, activity: activity,
-                                            label: label, manager: self)
+        let controller = make(stream)
         store(controller, stream: stream)
         controller.present()
         controller.sendOpen()
         onChange?()
-        onAppWindowOpened?(pkg, stream)
+        return controller
+    }
+
+    @discardableResult
+    func openApp(pkg: String, activity: String? = nil) -> AppWindowController {
+        let label = appsByPkg[pkg]?.label ?? pkg
+        let controller = open {
+            AppWindowController(stream: $0, pkg: pkg, activity: activity, label: label, manager: self)
+        }
+        onAppWindowOpened?(pkg, controller.stream)
         return controller
     }
 
@@ -281,13 +289,7 @@ final class WindowManager {
 
     @discardableResult
     func openLink(_ url: String) -> LinkWindowController {
-        let stream = allocateStream()
-        let controller = LinkWindowController(stream: stream, url: url, manager: self)
-        store(controller, stream: stream)
-        controller.present()
-        controller.sendOpen()
-        onChange?()
-        return controller
+        open { LinkWindowController(stream: $0, url: url, manager: self) }
     }
 
     /// The open app and link windows — the ones a Dock identity stands for — as
@@ -303,13 +305,7 @@ final class WindowManager {
 
     @discardableResult
     func openPhoneWindow() -> PhoneWindowController {
-        let stream = allocateStream()
-        let controller = PhoneWindowController(stream: stream, phone: phone, manager: self)
-        store(controller, stream: stream)
-        controller.present()
-        controller.sendOpen()
-        onChange?()
-        return controller
+        open { PhoneWindowController(stream: $0, phone: phone, manager: self) }
     }
 
     /// "Continue on Mac" (docs/ROADMAP.md #9): a window for the app in the
@@ -317,13 +313,7 @@ final class WindowManager {
     /// opened (`task.continue`) or an error; the video and the app label follow.
     @discardableResult
     func openHandoffWindow() -> HandoffWindowController {
-        let stream = allocateStream()
-        let controller = HandoffWindowController(stream: stream, manager: self)
-        store(controller, stream: stream)
-        controller.present()
-        controller.sendOpen()
-        onChange?()
-        return controller
+        open { HandoffWindowController(stream: $0, manager: self) }
     }
 
     /// The phone refused `task.continue` (docs/design/handoff.md): nothing
