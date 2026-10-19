@@ -14,16 +14,6 @@ struct SettingsView: View {
     }
 }
 
-enum WindowDensity {
-    static let key = "defaultDensity"
-    static let options: [(label: String, value: Double)] = [("75%", 0.75), ("100%", 1.0), ("125%", 1.25), ("150%", 1.5)]
-
-    static var current: Double {
-        let stored = Profile.active.defaults.double(forKey: key)
-        return stored == 0 ? 1.0 : stored
-    }
-}
-
 /// Settings → General "Glass app icons": the Deck grid's Liquid Glass tiles
 /// (docs/design/mac-redesign.md). On unless turned off.
 enum GlassIconsSetting {
@@ -65,6 +55,20 @@ struct GeneralSettings: View {
                 ForEach(WindowDensity.options, id: \.value) { Text($0.label).tag($0.value) }
             }
             .pickerStyle(.menu)
+            .onChange(of: density) { _, value in controller.setDefaultDensity(value) }
+            if !controller.densityOverrides.isEmpty {
+                Section("App overrides") {
+                    ForEach(controller.densityOverrides) { row in
+                        LabeledContent(controller.displayName(forPackage: row.pkg)) {
+                            HStack(spacing: 8) {
+                                Text(DensityRules.percentLabel(row.value)).foregroundStyle(.secondary)
+                                Button("Reset") { controller.clearDensityOverride(forPackage: row.pkg) }
+                            }
+                        }
+                    }
+                    Button("Reset all") { controller.clearAllDensityOverrides() }
+                }
+            }
             Picker("Reveal controls after", selection: $revealDelay) {
                 ForEach(RevealDelay.allCases, id: \.self) { Text($0.label).tag($0) }
             }

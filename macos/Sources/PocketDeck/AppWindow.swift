@@ -14,6 +14,9 @@ final class AppWindowController: StreamWindowController {
     /// This window's style is remembered for the app it shows.
     override var styleKey: String? { WindowStyleStore.key(forPackage: pkg) }
 
+    /// So is its density override.
+    override var densityPackage: String? { pkg }
+
     init(stream: UInt32, pkg: String, activity: String?, label: String, manager: WindowManager) {
         self.pkg = pkg
         self.activity = activity
@@ -61,6 +64,9 @@ final class LinkWindowController: StreamWindowController {
     /// The link wears the style the package remembers, once it is known.
     override var styleKey: String? { pkg.map { WindowStyleStore.key(forPackage: $0) } }
 
+    /// And its density override, under the same package key.
+    override var densityPackage: String? { pkg }
+
     init(stream: UInt32, url: String, manager: WindowManager) {
         self.url = url
         subject = Self.title(for: url)
@@ -96,6 +102,7 @@ final class LinkWindowController: StreamWindowController {
         guard self.pkg == nil, !pkg.isEmpty else { return }
         self.pkg = pkg
         reapplyStoredStyle()
+        reapplyStoredDensity()
     }
 
     override func retitle() {

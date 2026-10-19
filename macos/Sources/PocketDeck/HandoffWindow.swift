@@ -28,6 +28,9 @@ final class HandoffWindowController: StreamWindowController {
     /// remembered style applies.
     override var styleKey: String? { pkg.map { WindowStyleStore.key(forPackage: $0) } }
 
+    /// And its density override.
+    override var densityPackage: String? { pkg }
+
     override func sendOpen() {
         let pixels = displayPixels()
         if let pkg {
@@ -55,6 +58,7 @@ final class HandoffWindowController: StreamWindowController {
         guard self.pkg == nil, !pkg.isEmpty, pkg != "dev.pocketdeck" else { return }
         self.pkg = pkg
         reapplyStoredStyle()
+        reapplyStoredDensity()
     }
 
     override func retitle() {

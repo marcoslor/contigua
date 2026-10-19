@@ -84,8 +84,10 @@ final class WindowManager {
         frames = defaults
         hasTrackpad = TrackpadPresence.anyTrackpad()
         styleStore = WindowStyleStore(defaults: defaults)
+        densityStore = WindowDensityStore(defaults: defaults)
         StreamMenuState.shared.showTouches = ShowTouchesDefault.resolve(
             hasTrackpad: hasTrackpad, stored: defaults.object(forKey: Self.showTouchesKey) as? Bool)
+        StreamMenuState.shared.settingsDensity = WindowDensity.value(in: defaults)
     }
 
     /// The View menu's Window Style: toggle/switch the key stream window's
@@ -117,6 +119,59 @@ final class WindowManager {
 
     /// The per-package style keys (WindowStyleStore) over this profile's defaults.
     let styleStore: WindowStyleStore
+
+    /// The per-package density overrides (WindowDensityStore), same scheme.
+    let densityStore: WindowDensityStore
+
+    /// Fired when a density override is added, changed or cleared (Settings →
+    /// General lists them).
+    var onDensityOverridesChanged: (() -> Void)?
+
+    /// Settings → General "Default window density": what apps without an
+    /// override use.
+    var defaultDensity: Double { WindowDensity.value(in: frames) }
+
+    /// Every app's override for Settings → General "App overrides".
+    var densityOverrides: [DensityOverride] {
+        densityStore.all().map { DensityOverride(pkg: $0.key, value: $0.value) }
+            .sorted { $0.pkg < $1.pkg }
+    }
+
+    /// Settings → General's density changed: every window of an app without an
+    /// override takes it at once, and the View ▸ Density Default item's label
+    /// follows.
+    func defaultDensityChanged() {
+        StreamMenuState.shared.settingsDensity = defaultDensity
+        for controller in allControllers() { controller.defaultDensityChanged() }
+    }
+
+    /// A density override for `pkg` changed (nil clears it): every open window
+    /// of that app takes it at once.
+    func setDensity(_ value: Double?, forPackage pkg: String) {
+        densityStore.set(value, forKey: WindowDensityStore.key(forPackage: pkg))
+        for controller in allControllers() where controller.densityPackage == pkg {
+            controller.applyStoredDensity()
+        }
+        let state = StreamMenuState.shared
+        if state.densityPackage == pkg { state.densityOverride = value }
+        onDensityOverridesChanged?()
+    }
+
+    func clearAllDensityOverrides() {
+        let overridden = allControllers().filter { $0.densityOverride != nil }
+        densityStore.clearAll()
+        for controller in overridden { controller.applyStoredDensity() }
+        StreamMenuState.shared.densityOverride = nil
+        onDensityOverridesChanged?()
+    }
+
+    /// View ▸ Density's pick for the key stream window's app; nil is
+    /// "Default". Nothing happens without a key stream window that shows an app.
+    func setKeyWindowDensity(_ value: Double?) {
+        guard let controller = NSApp.keyWindow?.windowController as? StreamWindowController,
+              let pkg = controller.densityPackage else { return }
+        setDensity(value, forPackage: pkg)
+    }
 
     /// View → Show Touches: the fingers Android sees while a trackpad gesture
     /// runs. On by default where a trackpad exists (built-in or connected);
@@ -316,6 +371,9 @@ final class WindowManager {
         for key in frames.dictionaryRepresentation().keys where key.hasPrefix(WindowStyleStore.prefix) {
             frames.removeObject(forKey: key)
         }
+        densityStore.clearAll()
+        StreamMenuState.shared.densityOverride = nil
+        StreamMenuState.shared.settingsDensity = WindowDensity.value(in: frames)
     }
 
     /// Re-issue window.open for every open window (used after a reconnect).
