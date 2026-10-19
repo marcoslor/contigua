@@ -1266,10 +1266,14 @@ final class ConnectionController {
             Log.app.notice("phone notify \(on ? "on" : "off", privacy: .public)")
             if !on { nowPlaying.clear() }
         case .notifyPosted(let id, let pkg, let when, let title, let text):
-            guard let phoneId = link.phone?.id.isEmpty == false ? link.phone?.id : session?.phone?.id else { break }
+            let ref = link.phone?.id.isEmpty == false ? link.phone
+                : session?.phone.map { PhoneRef(id: $0.id, name: $0.name, model: $0.model) }
+            guard let phone = ref, !phone.id.isEmpty else { break }
             notifyCenter.post(
                 PhoneNotification(id: id, pkg: pkg, when: when, title: title, text: text),
-                phoneId: phoneId, labelFor: { [weak self] in self?.labelFor($0) ?? nil },
+                phoneId: phone.id,
+                phoneName: displayName(for: phone, fallback: "your phone"),
+                labelFor: { [weak self] in self?.labelFor($0) ?? nil },
             )
         case .notifyRemoved(let id):
             notifyCenter.remove(id: id)
