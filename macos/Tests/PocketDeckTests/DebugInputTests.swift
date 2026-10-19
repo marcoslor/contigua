@@ -18,6 +18,7 @@ final class DebugInputTests: XCTestCase {
         fingerpinch 0.5 0.5 0.5 3
         fingerrotate 0.5 0.5 45
         showtouches on
+        dockapps off
         hover 0.5 0
         notifyclick pd-n1
         mediacmd play
@@ -38,6 +39,7 @@ final class DebugInputTests: XCTestCase {
             .fingerPinch(at: .center, scale: 0.5, hold: 3),
             .fingerRotate(at: .center, degrees: 45, hold: 0),
             .showTouches(true),
+            .dockApps(false),
             .hover(NormalizedPoint(nx: 0.5, ny: 0)),
             .notifyClick("pd-n1"),
             .mediaCommand("play"),

@@ -74,7 +74,11 @@ final class DockAppsTests: XCTestCase {
         XCTAssertEqual(plist["PDPackage"] as? String, "com.whatsapp")
         XCTAssertEqual(plist["PDProfile"] as? String, "e2e")
         XCTAssertEqual(plist["PDHostPath"] as? String, "/tmp/PocketDeck.app")
+        XCTAssertEqual(plist["PDPinned"] as? Bool, false, "an automatic shim is not pinned")
         XCTAssertNil(plist["LSUIElement"], "the shim must show in the Dock and ⌘-Tab")
+        var manual = spec()
+        manual.pinned = true
+        XCTAssertEqual(manual.infoPlist["PDPinned"] as? Bool, true)
     }
 
     func testBackgroundModeShimsAreAgents() {
@@ -88,13 +92,16 @@ final class DockAppsTests: XCTestCase {
 
     func testBuildWritesAReadableBundleWithEscapedNames() throws {
         let label = "Tom & \"Jerry\" <1>"
-        let url = try DockShimBuilder.build(spec(label: label), in: folder, shimBinary: try binary(), iconPNG: png())
+        var pinned = spec(label: label)
+        pinned.pinned = true
+        let url = try DockShimBuilder.build(pinned, in: folder, shimBinary: try binary(), iconPNG: png())
         let bundle = try XCTUnwrap(Bundle(url: url))
         XCTAssertEqual(bundle.bundleIdentifier, "dev.pocketdeck.dock.e2e.a1b2c3d4e5f60718.com-whatsapp")
         XCTAssertEqual(bundle.object(forInfoDictionaryKey: "CFBundleName") as? String, "\(label) (Pixel)")
         XCTAssertTrue(FileManager.default.fileExists(atPath: url.appendingPathComponent("Contents/MacOS/PocketDeckShim").path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: url.appendingPathComponent("Contents/Resources/AppIcon.icns").path))
         XCTAssertEqual(DockShimBuilder.records(in: folder, profile: Profile(name: "e2e")!).map(\.pkg), ["com.whatsapp"])
+        XCTAssertEqual(DockShimBuilder.records(in: folder, profile: Profile(name: "e2e")!).map(\.pinned), [true])
         XCTAssertEqual(DockShimBuilder.records(in: folder, profile: .default), [], "another profile's shims are not ours")
     }
 
@@ -117,9 +124,9 @@ final class DockAppsTests: XCTestCase {
 
     // MARK: Cleanup decisions
 
-    private func record(_ pkg: String, device: String = "d1", name: String) -> DockShimRecord {
+    private func record(_ pkg: String, device: String = "d1", name: String, pinned: Bool = false) -> DockShimRecord {
         DockShimRecord(url: URL(fileURLWithPath: "/x/\(pkg)-\(device).app"), deviceId: device, pkg: pkg,
-                       profile: "e2e", name: name)
+                       profile: "e2e", name: name, pinned: pinned)
     }
 
     private func app(_ pkg: String, _ label: String) -> AppInfo {
@@ -149,6 +156,28 @@ final class DockAppsTests: XCTestCase {
     func testForgetRemovesOnlyThatPhonesShims() {
         let records = [record("a", name: "A (P)"), record("a", device: "d2", name: "A (Q)")]
         XCTAssertEqual(DockCleanup.planForget(records: records, deviceId: "d2"), [.remove(records[1].url)])
+    }
+
+    // MARK: The setting's off state (docs/design/dock.md §Lifecycle)
+
+    func testTurningTheSettingOffStopsOnlyUnpinnedShims() {
+        let records = [record("a", name: "A (P)"), record("b", name: "B (P)", pinned: true),
+                       record("c", device: "d2", name: "C (Q)")]
+        XCTAssertEqual(DockQuit.plan(records: records).map(\.pkg), ["a", "c"],
+                       "shims added by hand are not stopped by the setting")
+    }
+
+    func testLegacyShimsWithoutTheMarkerCountAsPinned() throws {
+        // Bundles from before automatic identities: all added by hand, so a
+        // missing PDPinned key must not make the setting stop them.
+        let url = try DockShimBuilder.build(spec(), in: folder, shimBinary: try binary(), iconPNG: nil)
+        let plistURL = url.appendingPathComponent("Contents/Info.plist")
+        var plist = try XCTUnwrap(PropertyListSerialization.propertyList(from: try Data(contentsOf: plistURL),
+                                                                        format: nil) as? [String: Any])
+        plist.removeValue(forKey: "PDPinned")
+        try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0).write(to: plistURL)
+        let records = DockShimBuilder.records(in: folder, profile: Profile(name: "e2e")!)
+        XCTAssertEqual(records.map(\.pinned), [true])
     }
 
     func testTestProfilesNeverUseApplicationsFolder() {
