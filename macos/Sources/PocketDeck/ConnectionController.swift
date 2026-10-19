@@ -466,7 +466,9 @@ final class ConnectionController {
         audio.stop()
         audioOn = false
         nowPlaying.clear()
-        session?.close()
+        // Quit path only: give the teardown a bounded moment so the process
+        // does not exit with a half-closed channel (arch H4).
+        session?.closeAndWait()
         session = nil
     }
 
