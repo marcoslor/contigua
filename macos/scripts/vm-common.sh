@@ -10,6 +10,7 @@ VM_USER="admin"
 VM_HOME="/Users/$VM_USER"
 VM_ROOT="$VM_HOME/pd-e2e"        # the worktree copy inside the guest
 VM_PORT="${PD_VM_PORT:-47890}"   # the run's port inside the guest
+VM_MEMORY="${PD_VM_MEMORY:-4096}"  # MB; the tahoe image rejects less than 4 GB
 VM_STATE="${PD_VM_STATE:-$HOME/.tart/pd-e2e}"  # ssh key + prepared marker (host)
 VM_KEY="$VM_STATE/id_ed25519"
 HEAVY_LOCK="/tmp/pocketdeck-heavy.lock"
@@ -82,16 +83,19 @@ vm_running() { pgrep -f "$TART run $VM" >/dev/null 2>&1; }
 VM_IP=""
 RUN_PID=""
 
-# vm_boot — start the VM headless (no window ever touches the user's session)
-# and wait for sshd. Needs $VM_LOG.
+# vm_boot [password] — start the VM headless (no window ever touches the user's
+# session) and wait for sshd. "password" waits using the image's admin/admin
+# account (a fresh clone has no host key installed yet). Needs $VM_LOG.
 vm_boot() {
+    local probe="ssh_guest"
+    [ "${1:-}" = "password" ] && probe="vm_password_ssh"
     say "booting $VM headless"
     "$TART" run "$VM" --no-graphics --no-audio >"$VM_LOG" 2>&1 &
     RUN_PID=$!
     VM_IP="$("$TART" ip "$VM" --wait 240 2>/dev/null)"
     [ -n "$VM_IP" ] || { say "no IP for $VM after 240 s; see $VM_LOG"; return 1; }
     local waited=0
-    until ssh_guest true 2>/dev/null; do
+    until "$probe" true 2>/dev/null; do
         if ! kill -0 "$RUN_PID" 2>/dev/null; then say "$VM stopped while booting; see $VM_LOG"; return 1; fi
         [ "$waited" -ge 300 ] && { say "ssh to $VM ($VM_IP) did not come up; see $VM_LOG"; return 1; }
         sleep 5
@@ -116,12 +120,12 @@ vm_stop() {
 }
 
 SSH_OPTS=(-o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null
-          -o ConnectTimeout=8 -o ServerAliveInterval=30 -i "$VM_KEY")
+          -o LogLevel=ERROR -o ConnectTimeout=8 -o ServerAliveInterval=30 -i "$VM_KEY")
 
 # ssh_guest <command...> — run a command in the guest, non-interactive.
 ssh_guest() { ssh "${SSH_OPTS[@]}" "$VM_USER@$VM_IP" "$@"; }
 
-RSYNC_SSH="ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i $VM_KEY"
+RSYNC_SSH="ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -i $VM_KEY"
 
 # rsync_to_guest <local> <guest-path> [extra rsync args...]
 rsync_to_guest() {

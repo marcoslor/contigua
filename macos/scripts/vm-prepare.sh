@@ -6,7 +6,7 @@
 #   macos/scripts/vm-prepare.sh --fresh    delete and re-clone it first
 #
 # The VM is named pd-e2e (PD_E2E_VM) and is a clone of
-# ghcr.io/cirruslabs/macos-tahoe-base:latest (PD_E2E_BASE): 2 CPUs, 3.5 GB RAM,
+# ghcr.io/cirruslabs/macos-tahoe-base:latest (PD_E2E_BASE): 2 CPUs, 4 GB RAM,
 # a 1920x1080 display, ssh on as admin/admin. Preparation is idempotent: it
 # installs Homebrew's python3 and ffmpeg, the Command Line Tools (for swiftc,
 # the suite compiles its small helpers in-guest), the host's dedicated ssh key,
@@ -33,7 +33,8 @@ if [ "$FRESH" = 1 ]; then
 fi
 
 if ! vm_exists; then
-    if ! "$TART" images 2>/dev/null | grep -q "$BASE_IMAGE"; then
+    # `tart list` lists pulled images and VMs together.
+    if ! "$TART" list 2>/dev/null | grep -qF "$BASE_IMAGE"; then
         say "the base image is not pulled; run: $TART pull $BASE_IMAGE"
         exit 3
     fi
@@ -41,7 +42,7 @@ if ! vm_exists; then
     "$TART" clone "$BASE_IMAGE" "$VM" || exit 1
 fi
 # Idempotent: also refreshes an existing VM's sizing.
-"$TART" set "$VM" --cpu 2 --memory 3584 --display 1920x1080 || exit 1
+"$TART" set "$VM" --cpu 2 --memory "$VM_MEMORY" --display 1920x1080 || exit 1
 
 if [ ! -f "$VM_KEY" ]; then
     say "generating the host->guest ssh key ($VM_KEY)"
@@ -56,7 +57,7 @@ trap 'vm_stop; heavy_unlock' EXIT
 memory_gate || exit 3
 
 VM_LOG="$VM_STATE/prepare-tart-run.log"
-vm_boot || exit 3
+vm_boot password || exit 3
 
 say "installing the ssh key (first contact uses the image's admin/admin)"
 vm_password_ssh "mkdir -p ~/.ssh && chmod 700 ~/.ssh && touch ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys && grep -qF '$PUBKEY' ~/.ssh/authorized_keys || echo '$PUBKEY' >> ~/.ssh/authorized_keys" \
@@ -74,6 +75,8 @@ step() { printf '\n== %s\n' "$*"; }
 
 step "system"
 sw_vers -productVersion; uname -m
+echo "command line tools: $(xcode-select -p 2>/dev/null || echo none)"
+echo "SIP: $(csrutil status 2>/dev/null)"
 
 step "console session"
 # The checks drive a real window server, so an admin session must own the
@@ -99,6 +102,23 @@ PY
     rm -f /tmp/kcpassword
 fi
 
+step "TCC (SIP: $($SUDO csrutil status 2>/dev/null | sed -E 's/.*: //'))"
+if $SUDO csrutil status 2>/dev/null | grep -q 'disabled'; then
+    # The ssh session's responsible processes need Screen Recording
+    # (`screencapture -l`, the checks' screenshots) and Accessibility (real
+    # CGEvent posts in PD_E2E_VISIBLE runs). The rows are what the GUI's
+    # "grant" button writes.
+    db="/Library/Application Support/com.apple.TCC/TCC.db"
+    for service in kTCCServiceScreenCapture kTCCServiceAccessibility; do
+        for client in com.apple.sshd-keygen-wrapper /usr/libexec/sshd-keygen-wrapper /bin/bash /bin/sh /usr/bin/screencapture; do
+            $SUDO sqlite3 "$db" "INSERT OR REPLACE INTO access (service, client, client_type, auth_value, auth_reason, auth_version, csreq, indirect_object_identifier_type, indirect_object_identifier, indirect_object_code_identity, flags, last_modified) SELECT '$service', '$client', 0, 2, 3, 1, NULL, 0, 'UNUSED', NULL, 0, strftime('%s','now') WHERE NOT EXISTS (SELECT 1 FROM access WHERE service='$service' AND client='$client');" 2>&1
+        done
+    done
+    echo "tcc rows: $($SUDO sqlite3 "$db" 'SELECT service||" "||client FROM access WHERE auth_value=2;' 2>&1 | tr '\n' ';')"
+else
+    echo "SIP enabled: cannot write the TCC database (see progress.md)"
+fi
+
 step "sleep, screensaver and lock screen off"
 $SUDO pmset -a sleep 0 disksleep 0 displaysleep 0
 $SUDO defaults write /Library/Preferences/com.apple.loginwindow DisableScreenLock -bool true
@@ -109,8 +129,8 @@ command -v brew >/dev/null || { echo "no Homebrew in the image"; exit 4; }
 brew --version | head -1
 
 step "python3 + ffmpeg"
-brew list --formula 2>/dev/null | grep -qx python || brew install python || exit 4
-brew list --formula 2>/dev/null | grep -qx ffmpeg || brew install ffmpeg || exit 4
+brew list --formula 2>/dev/null | grep -q '^python' || brew install python || exit 4
+brew list --formula 2>/dev/null | grep -q '^ffmpeg' || brew install ffmpeg || exit 4
 /opt/homebrew/bin/python3 -c 'import sys, ssl; print("python", sys.version.split()[0], ssl.OPENSSL_VERSION)' || exit 4
 ffmpeg -version 2>/dev/null | head -1 || exit 4
 
@@ -132,23 +152,6 @@ step "ssh key"
 mkdir -p ~/.ssh && chmod 700 ~/.ssh
 touch ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys
 grep -qF "$1" ~/.ssh/authorized_keys || echo "$1" >> ~/.ssh/authorized_keys
-
-step "TCC (SIP: $($SUDO csrutil status 2>/dev/null | sed -E 's/.*: //'))"
-if $SUDO csrutil status 2>/dev/null | grep -q 'disabled'; then
-    # The ssh session's responsible processes need Screen Recording
-    # (`screencapture -l`, the checks' screenshots) and Accessibility (real
-    # CGEvent posts in PD_E2E_VISIBLE runs). The rows are what the GUI's
-    # "grant" button writes.
-    db="/Library/Application Support/com.apple.TCC/TCC.db"
-    for service in kTCCServiceScreenCapture kTCCServiceAccessibility; do
-        for client in com.apple.sshd-keygen-wrapper /usr/libexec/sshd-keygen-wrapper /bin/bash /bin/sh /usr/bin/screencapture; do
-            $SUDO sqlite3 "$db" "INSERT OR REPLACE INTO access (service, client, client_type, auth_value, auth_reason, auth_version, csreq, indirect_object_identifier_type, indirect_object_identifier, indirect_object_code_identity, flags, last_modified) SELECT '$service', '$client', 0, 2, 3, 1, NULL, 0, 'UNUSED', NULL, 0, strftime('%s','now') WHERE NOT EXISTS (SELECT 1 FROM access WHERE service='$service' AND client='$client');" 2>&1
-        done
-    done
-    echo "tcc rows: $($SUDO sqlite3 "$db" 'SELECT service||" "||client FROM access WHERE auth_value=2;' 2>&1 | tr '\n' ';')"
-else
-    echo "SIP enabled: cannot write the TCC database (see progress.md)"
-fi
 
 step "done"
 echo "guest preparation steps finished"
@@ -175,11 +178,27 @@ check() { # check <label> <command...>
         ok=0
     fi
 }
-check "console session" 'test "$(stat -f%Su /dev/console)" = admin'
+check_wait() { # check_wait <label> <seconds> <command...> — login can lag sshd
+    local label="$1" secs="$2" waited=0
+    shift 2
+    while :; do
+        if ssh_guest "$@" >/dev/null 2>&1; then
+            check "$label" "$@"
+            return
+        fi
+        if [ "$waited" -ge "$secs" ]; then
+            check "$label" "$@"   # fail and print the error
+            return
+        fi
+        sleep 5
+        waited=$((waited + 5))
+    done
+}
+check_wait "console session" 90 'test "$(stat -f%Su /dev/console)" = admin'
 check "swiftc"         'PATH=/opt/homebrew/bin:/usr/bin:/bin swiftc --version | head -1'
 check "ffmpeg"         'PATH=/opt/homebrew/bin:/usr/bin:/bin ffmpeg -version 2>/dev/null | head -1'
 check "python TLS1.3"  '/opt/homebrew/bin/python3 -c "import ssl,sys; assert sys.version_info>=(3,11) and not ssl.OPENSSL_VERSION.startswith(\"LibreSSL\"); print(sys.version.split()[0], ssl.OPENSSL_VERSION)"'
-check "screencapture"  'screencapture -x /tmp/pd-e2e-check.png && test -s /tmp/pd-e2e-check.png && stat -f%z /tmp/pd-e2e-check.png && rm -f /tmp/pd-e2e-check.png'
+check_wait "screencapture" 30 'sudo launchctl asuser $(id -u) sudo -u admin bash -c "screencapture -x /tmp/pd-e2e-check.png" && stat -f%z /tmp/pd-e2e-check.png && PATH=/opt/homebrew/bin:/usr/bin:/bin ffmpeg -hide_banner -i /tmp/pd-e2e-check.png -vf signalstats,metadata=print -f null - 2>&1 | grep -oE "YMAX=[0-9]+" | head -1 && rm -f /tmp/pd-e2e-check.png'
 
 [ "$ok" = 1 ] || { say "prepared VM failed verification; see $state.log"; exit 3; }
 
