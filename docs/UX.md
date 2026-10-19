@@ -101,7 +101,12 @@ Material 3, edge-to-edge, dynamic color, light/dark.
 2. **Home**:
    - Big status card: **Ready** · "Visible to Macs on *Wi-Fi name*" / **Connected to
      *Mac name*** · "*N* windows open" / **Shizuku not running** (with fix button).
-   - Switch: "Allow connections".
+   - Switch: "Keep PocketDeck running" (starts/stops the background service).
+   - Switch: "Allow connections" (master: off refuses every Mac, paired or not,
+     drops live sessions and stops advertising). Default on.
+   - Switch: "Allow new pairings" (off refuses unknown Macs before any code;
+     paired Macs still connect). Greyed out while "Allow connections" is off.
+     Default on.
    - "Paired Macs" list (name, last connected, Forget via swipe or overflow).
    - FAB or tonal button: **Pair new Mac** (QR scan).
 3. **Pairing prompt**: high-priority notification with the code and Allow/Deny, and,

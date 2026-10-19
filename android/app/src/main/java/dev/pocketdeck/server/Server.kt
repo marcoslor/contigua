@@ -22,6 +22,8 @@ class Server(
     private val log: (String) -> Unit = {},
     private val selfCertProvider: () -> String = { "" },
     private val selfKeyProvider: () -> String = { "" },
+    /** The app's connection gates; null refuses every Mac (fail closed). */
+    private val gateProvider: () -> GateSettings? = { null },
 ) {
     private val serverSocket = ServerSocket()
     private val running = AtomicBoolean(false)
@@ -135,6 +137,13 @@ class Server(
                 null
             }
             if (socket == null) continue
+            // The master gate is checked before any session state exists: a
+            // Mac gets the refusal even if the app never pushed a setting.
+            if (gateProvider()?.allowConnections != true) {
+                log("refused: connections off")
+                reject(socket, "connections_off", "the phone is not accepting connections")
+                continue
+            }
             val current = active
             if (current != null && !current.isClosed) {
                 rejectBusy(socket)
@@ -169,10 +178,18 @@ class Server(
         }
     }
 
-    private fun rejectBusy(socket: Socket) {
+    /** Live gate change: the app switched a gate while a session is up. */
+    fun applyGates() {
+        active?.takeIf { !it.isClosed }?.applyGates()
+    }
+
+    private fun rejectBusy(socket: Socket) =
+        reject(socket, "busy", "one session at a time")
+
+    private fun reject(socket: Socket, code: String, message: String) {
         try {
             val out = socket.getOutputStream()
-            out.write(Frames.encodeJson(0, Json.encode(mapOf("t" to "error", "code" to "busy", "message" to "one session at a time"))))
+            out.write(Frames.encodeJson(0, Json.encode(mapOf("t" to "error", "code" to code, "message" to message))))
             out.flush()
         } catch (_: Throwable) {
         }

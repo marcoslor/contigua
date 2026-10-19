@@ -86,4 +86,11 @@ interface IDeckService {
      * settings now hold the component.
      */
     boolean grantListenerAccess() = 13;
+
+    /**
+     * The app's two connection gates (docs/PROTOCOL.md "Error codes"). The
+     * server applies them before it starts listening and again on every
+     * change; `allowConnections=false` drops the live session immediately.
+     */
+    void setGates(boolean allowConnections, boolean allowPairings) = 14;
 }

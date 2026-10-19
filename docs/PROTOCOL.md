@@ -9,7 +9,10 @@ exactly this. Change it here first, then in code.
   over mDNS/DNS-SD as service type `_pocketdeck._tcp.` with TXT records:
   `v=1` (the discovery record's generation), `id=<deviceId>` (stable random
   hex, 16 chars), `name=<device name>`, `model=<Build.MODEL>`. No fingerprint
-  or other tracking identifier rides in the TXT.
+  or other tracking identifier rides in the TXT. While the phone's "Allow
+  connections" switch is off it stops advertising and keeps the listener up:
+  a Mac that already has the address is refused (see "Error codes"), and
+  turning the switch back on advertises the same port again.
 - **TLS 1.3, mutual, pinned — no plaintext, no v1.** The phone wraps every
   accepted connection in a platform `SSLSocket` (Conscrypt) and the Mac dials
   with NIOSSL/BoringSSL (docs/design/e2ee.md §1/§2). Both ends: TLS 1.3 only,
@@ -105,7 +108,13 @@ display id on every injected event.
    changed" on the Mac side is the same rule in the other direction).
 2. Mac → `{"t":"hello","v":2,"clientId":"<uuid>","name":"<Mac name>","id":"<the Mac's identity id>"}`.
    A `v` other than 2 gets `{"t":"error","code":"version"}` and a close.
-3. The phone knows the Mac by `clientId`:
+3. The phone knows the Mac by `clientId` and applies its two connection
+   switches before anything else. "Allow connections" off refuses every Mac,
+   paired or not, with `{"t":"error","code":"connections_off"}` and a close.
+   "Allow new pairings" off refuses an unpaired Mac the same way with
+   `{"t":"error","code":"pairing_off"}` before any code exists; paired Macs
+   continue. If the phone cannot read the switches it refuses like
+   `connections_off` (fail closed). Otherwise:
    - **Paired**: its pinned fingerprint must equal the TLS peer's fingerprint;
      then the phone sends `welcome` and the session is ready.
    - **Unpaired**: the phone waits in the pairing phase (next section). The
@@ -371,7 +380,11 @@ identity changed. Pair again."), `pair_denied`, `pair_commit` (the revealed nonc
 not match the commit), `version`, `protocol` (message not allowed in the current state;
 then close), `pair_timeout` (nobody answered the pairing prompt in 120 s; then close),
 `no_stream` (unknown `stream`), `launch_failed`, `bad_url` (a `link.open` URL that is
-not allowed), `bad_size` (`task.continue` without w/h), `not_available` (the phone can't
+not allowed), `bad_size` (`task.continue` without w/h), `connections_off` (the phone's
+"Allow connections" switch is off: the Mac shows "Connections are turned off on
+<phone name>."), `pairing_off` (the phone's "Allow new pairings" switch is off and
+this Mac is not paired: "<phone name> isn't accepting new pairings."),
+`not_available` (the phone can't
 report its foreground app, e.g. no task manager access), `nothing_to_continue` (the
 foreground is our app, the launcher/home or SystemUI).
 Oversized frames close the session without a reply.

@@ -97,9 +97,12 @@ class DeckViewModel(app: Application) : AndroidViewModel(app) {
         val connected = DeckState.connectedMac
         val paired = Prefs.paired(ctx).filterNot { pendingForgets.containsKey(it.clientId) }
 
+        val allowConnections = Prefs.isAllowConnections(ctx)
         _state.value = DeckUiState(
             onboardingDone = Prefs.isOnboardingDone(ctx),
             enabled = enabled,
+            allowConnections = allowConnections,
+            allowPairings = Prefs.isAllowPairings(ctx),
             notifyShared = Prefs.isNotifyShared(ctx),
             notifyGrantFailed = notifyGrantFailed,
             shizukuInstalled = installed,
@@ -114,7 +117,7 @@ class DeckViewModel(app: Application) : AndroidViewModel(app) {
             batteryRequested = Prefs.isBatteryRequested(ctx),
             wifiName = wifiName(ctx),
             shizuku = shizukuUiState(installed, running, granted),
-            status = mapStatus(StatusInput(enabled, running, granted, port, connected)),
+            status = mapStatus(StatusInput(enabled, running, granted, port, connected, allowConnections)),
         )
     }
 
@@ -180,6 +183,38 @@ class DeckViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
+     * The master connection gate. The server refuses every Mac while it is
+     * off and drops the live session at once; the advertisement follows so
+     * the phone is not visible either (docs/PROTOCOL.md).
+     */
+    fun setAllowConnections(value: Boolean) {
+        val ctx = getApplication<Application>()
+        Prefs.setAllowConnections(ctx, value)
+        pushGates()
+        DeckForegroundService.gatesChanged(ctx)
+        refresh()
+    }
+
+    /** Whether an unknown Mac may pair. Paired Macs keep connecting. */
+    fun setAllowPairings(value: Boolean) {
+        val ctx = getApplication<Application>()
+        Prefs.setAllowPairings(ctx, value)
+        pushGates()
+        DeckForegroundService.gatesChanged(ctx)
+        refresh()
+    }
+
+    private fun pushGates() {
+        val ctx = getApplication<Application>()
+        val svc = ShizukuClient.current() ?: return
+        runCatching { svc.setGates(Prefs.isAllowConnections(ctx), Prefs.isAllowPairings(ctx)) }
+            .onFailure {
+                // A daemon that does not know the gates must not keep serving.
+                runCatching { svc.stopServer() }
+            }
+    }
+
+    /**
      * The per-phone opt-in for notification sharing. Turning it on asks the shell
      * service for the listener grant (`cmd notification allow_listener`); when
      * the shell path fails the person grants it in Settings (docs/design/notify.md).
@@ -212,7 +247,10 @@ class DeckViewModel(app: Application) : AndroidViewModel(app) {
     fun runStatusAction(kind: AttentionKind) {
         val ctx = getApplication<Application>()
         when (kind) {
-            AttentionKind.CONNECTIONS_OFF -> setEnabled(true)
+            AttentionKind.CONNECTIONS_OFF -> {
+                val ctx = getApplication<Application>()
+                if (Prefs.isEnabled(ctx)) setAllowConnections(true) else setEnabled(true)
+            }
             AttentionKind.SHIZUKU_NOT_RUNNING -> openShizuku()
             AttentionKind.SHIZUKU_PERMISSION -> allowShizuku()
             AttentionKind.RETRY -> {

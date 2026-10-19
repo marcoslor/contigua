@@ -204,7 +204,7 @@ using the phone with fingers.
 | Needs attention (Shizuku not running, connections off) | `tertiaryContainer` / `onTertiaryContainer` | `ic_warning` + `FilledTonalButton` fix |
 | Error | `errorContainer` / `onErrorContainer` | `ic_error` + `FilledTonalButton` retry |
 
-- `ListItem(headlineContent = "Allow connections", trailingContent = Switch(...))`, whole row toggles.
+- `ListItem(headlineContent = "Keep PocketDeck running", trailingContent = Switch(...))`, whole row toggles; then "Allow connections" (master) and "Allow new pairings" (disabled while the master is off, keeping its value), same shape.
 - "Paired Macs" header `titleMedium` `primary`; rows `ListItem` (leading `ic_laptop_mac`, headline name, supporting "Last connected *relative*", trailing `IconButton` overflow → `DropdownMenu` "Forget"), wrapped in `SwipeToDismissBox` (end-to-start, background `errorContainer` + `ic_delete`). Forget → `Snackbar` with **Undo** (4 s) before the key is deleted. Empty: `bodyMedium onSurfaceVariant` "No Macs paired yet."
 - `ExtendedFloatingActionButton(text = "Pair new Mac", icon = ic_qr_code_scanner)`, collapses (`expanded = !scrolled`).
 
@@ -238,7 +238,7 @@ grid ≤ 56 pt icons (generated initial tile when the phone has none), one-line 
 **Mac — Settings:** exactly two tabs (General, Devices) · General has exactly 3 controls · Forget is red.
 **Mac — Menu bar:** status line first · items in the order listed · icon changes with connection state.
 **Android — Onboarding:** progress bar at top advances per step · no swipe between pages · one primary button per page · Shizuku row shows current state text + matching button · Scan QR is outlined.
-**Android — Home:** large title collapses on scroll · status card color matches the table for each state · "Allow connections" switch · Paired Macs rows with last connected · extended FAB "Pair new Mac" · content not under status/nav bars.
+**Android — Home:** large title collapses on scroll · status card color matches the table for each state · "Keep PocketDeck running", "Allow connections" and "Allow new pairings" switches · Paired Macs rows with last connected · extended FAB "Pair new Mac" · content not under status/nav bars.
 **Android — Pairing prompt:** heads-up notification with code + Allow/Deny · in-app dialog code in large monospace, grouped 3+3.
 **Android — Phone launcher:** only a docked search bar and the icon grid; columns increase on wider displays.
 **Copy (all):** sentence case · no "virtual display/stream/HMAC/port" outside Connect manually · max one helper line per element.

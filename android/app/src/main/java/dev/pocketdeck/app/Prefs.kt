@@ -9,6 +9,8 @@ object Prefs {
 
     private const val FILE = "pocketdeck"
     private const val KEY_ENABLED = "enabled"
+    private const val KEY_ALLOW_CONNECTIONS = "allow_connections"
+    private const val KEY_ALLOW_PAIRINGS = "allow_pairings"
     private const val KEY_DEVICE_ID = "device_id"
     private const val KEY_DEVICE_NAME = "device_name"
     private const val KEY_PAIRED = "paired"
@@ -50,6 +52,25 @@ object Prefs {
     fun isEnabled(ctx: Context): Boolean = sp(ctx).getBoolean(KEY_ENABLED, false)
 
     fun setEnabled(ctx: Context, value: Boolean) = sp(ctx).edit().putBoolean(KEY_ENABLED, value).apply()
+
+    /**
+     * The master connection gate (docs/PROTOCOL.md "Error codes"). ON by
+     * default; OFF refuses every Mac, paired or not, and drops live sessions.
+     * The shell server defaults to refused until the app pushes this value, so
+     * an unreadable setting fails closed.
+     */
+    fun isAllowConnections(ctx: Context): Boolean =
+        sp(ctx).getBoolean(KEY_ALLOW_CONNECTIONS, true)
+
+    fun setAllowConnections(ctx: Context, value: Boolean) =
+        sp(ctx).edit().putBoolean(KEY_ALLOW_CONNECTIONS, value).apply()
+
+    /** Whether an unknown Mac may start a pairing. Paired Macs are unaffected. */
+    fun isAllowPairings(ctx: Context): Boolean =
+        sp(ctx).getBoolean(KEY_ALLOW_PAIRINGS, true)
+
+    fun setAllowPairings(ctx: Context, value: Boolean) =
+        sp(ctx).edit().putBoolean(KEY_ALLOW_PAIRINGS, value).apply()
 
     fun isOnboardingDone(ctx: Context): Boolean = sp(ctx).getBoolean(KEY_ONBOARDING_DONE, false)
 

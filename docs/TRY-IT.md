@@ -1,6 +1,6 @@
 # Try PocketDeck: Android apps in Mac windows, phone locked
 
-Same Wi-Fi; Shizuku running on the phone and "Allow connections" on.
+Same Wi-Fi; Shizuku running on the phone, PocketDeck running and "Allow connections" on.
 
 ```bash
 # phone (USB or wireless debugging)

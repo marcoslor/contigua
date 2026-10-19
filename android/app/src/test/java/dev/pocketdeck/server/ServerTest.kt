@@ -51,11 +51,13 @@ class ServerTest {
                     log = {},
                     handshakeTimeoutMs = 3_000,
                     tlsView = TlsV2Fixture.view,
+                    gateProvider = { GateSettings(true, true) },
                 )
             },
             log = {},
             { phoneIdentity.certPem },
             { phoneIdentity.keyP8 },
+            { GateSettings(true, true) },
         )
         val port = server.start()
         try {
@@ -97,7 +99,7 @@ class ServerTest {
         val platform = FakePlatform()
         val phoneIdentity = TestTls.generate("PocketDeck Phone (plaintext test)")
         val server = Server({ socket -> sessionFor(platform, socket) }, log = {},
-            { phoneIdentity.certPem }, { phoneIdentity.keyP8 })
+            { phoneIdentity.certPem }, { phoneIdentity.keyP8 }, { GateSettings(true, true) })
         val port = server.start()
         try {
             val plain = Socket("127.0.0.1", port)
@@ -138,7 +140,7 @@ class ServerTest {
         val macIdentity = TestTls.generate("PocketDeck Mac (empty test)")
         val logs = java.util.Collections.synchronizedList(mutableListOf<String>())
         val server = Server({ socket -> sessionFor(platform, socket) }, log = { logs.add(it) },
-            { phoneIdentity.certPem }, { phoneIdentity.keyP8 })
+            { phoneIdentity.certPem }, { phoneIdentity.keyP8 }, { GateSettings(true, true) })
         val port = server.start()
         try {
             repeat(3) { Socket("127.0.0.1", port).close() }
@@ -176,6 +178,7 @@ class ServerTest {
         log = {},
         handshakeTimeoutMs = 3_000,
         tlsView = TlsV2Fixture.view,
+        gateProvider = { GateSettings(true, true) },
     )
 
     private fun client(port: Int, macIdentity: TestTls.Identity, phoneIdentity: TestTls.Identity): Socket =

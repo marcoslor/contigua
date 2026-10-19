@@ -65,7 +65,10 @@
     <string name="action_turn_on">Turn on</string>
     <string name="action_retry">Retry</string>
 
+    <string name="home_keep_running">Keep PocketDeck running</string>
     <string name="home_allow_connections">Allow connections</string>
+    <string name="home_allow_pairings">Allow new pairings</string>
+    <string name="home_allow_pairings_hint">Turn on Allow connections first.</string>
     <string name="home_notify_share">Show notifications on the Mac</string>
     <string name="home_notify_granting">Granting notification access…</string>
     <string name="home_notify_grant_failed">Couldn\'t grant notification access. Enable PocketDeck in Settings → Notification access.</string>

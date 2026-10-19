@@ -40,7 +40,8 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 after an install unless the number grows, so bump it on every device install.
 
 Shizuku must be running. The first-run onboarding walks through installing and
-starting it, granting the app permission and turning **Allow connections** on.
+starting it, granting the app permission and turning **Keep PocketDeck running** on
+(**Allow connections** stays on unless someone turns it off).
 
 ## How it works
 

@@ -61,6 +61,7 @@ class NotifySessionTest {
                 pairDecisionTimeoutMs = 30_000,
                 autoApprovePairing = true,
                 tlsView = TlsV2Fixture.view,
+                gateProvider = { GateSettings(true, true) },
                 notifyShared = { phoneShared },
                 mediaCommand = { action -> mediaCommands.add(action) },
                 notifyForward = { forward -> forwards.add(forward) },

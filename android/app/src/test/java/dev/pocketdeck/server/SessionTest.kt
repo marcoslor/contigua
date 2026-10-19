@@ -13,6 +13,7 @@ import org.junit.Test
 import java.net.ServerSocket
 import java.net.Socket
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * Drives [Session] over a real loopback TCP connection with a fake platform,
@@ -37,7 +38,8 @@ class SessionTest {
     }
 
     private fun connect(pairDecisionTimeoutMs: Long, autoApprovePairing: Boolean = false,
-                        taskMove: TaskMove? = null) {
+                        taskMove: TaskMove? = null,
+                        gates: () -> GateSettings? = { GateSettings(true, true) }) {
         serverSocket = ServerSocket(0)
         val accept = Thread {
             val s = serverSocket.accept()
@@ -64,6 +66,7 @@ class SessionTest {
                 exitPollIntervalMs = 50,
                 autoApprovePairing = autoApprovePairing,
                 tlsView = TlsV2Fixture.view,
+                gateProvider = gates,
             )
             session = sess
             sess.run()
@@ -888,11 +891,94 @@ class SessionTest {
         assertEquals("Reader", title["label"])
     }
 
+    // ------------------------------------------------------------------
+    // connection gates
+    // ------------------------------------------------------------------
+
+    @Test
+    fun connectionsOffRefusesAnUnknownMacAtHello() {
+        closeCurrent()
+        connect(pairDecisionTimeoutMs = 30_000, gates = { GateSettings(false, true) })
+        hello("unknown", "Mac")
+        val error = readUntil("error")
+        assertEquals("connections_off", error["code"])
+    }
+
+    @Test
+    fun connectionsOffRefusesAPairedMacToo() {
+        closeCurrent()
+        connect(pairDecisionTimeoutMs = 30_000, gates = { GateSettings(false, true) })
+        platform.clients.add(PairedClient("c1", "MacBook", TlsV2Fixture.MAC_FP_HEX))
+        hello("c1", "MacBook")
+        val error = readUntil("error")
+        assertEquals("connections_off", error["code"])
+    }
+
+    @Test
+    fun missingGateSettingsFailClosed() {
+        closeCurrent()
+        connect(pairDecisionTimeoutMs = 30_000, gates = { null })
+        hello("c1", "MacBook")
+        assertEquals("connections_off", readUntil("error")["code"])
+    }
+
+    @Test
+    fun pairingsOffRefusesAnUnknownMacBeforeAnyCode() {
+        closeCurrent()
+        connect(pairDecisionTimeoutMs = 30_000, gates = { GateSettings(true, false) })
+        hello("unknown", "Mac")
+        // The refusal is the first frame: no pair.commit (the code) ever went out.
+        val first = readJson()
+        assertEquals("error", first["t"])
+        assertEquals("pairing_off", first["code"])
+    }
+
+    @Test
+    fun pairingsOffStillAcceptsAPairedMac() {
+        closeCurrent()
+        connect(pairDecisionTimeoutMs = 30_000, gates = { GateSettings(true, false) })
+        platform.clients.add(PairedClient("c1", "MacBook", TlsV2Fixture.MAC_FP_HEX))
+        authenticate("c1")
+    }
+
+    @Test
+    fun masterSwitchOffDropsTheLiveSession() {
+        closeCurrent()
+        val gates = AtomicReference(GateSettings(true, true))
+        connect(pairDecisionTimeoutMs = 30_000, gates = { gates.get() })
+        platform.clients.add(PairedClient("c1", "MacBook", TlsV2Fixture.MAC_FP_HEX))
+        authenticate("c1")
+        gates.set(GateSettings(false, true))
+        session!!.applyGates()
+        assertEquals("connections_off", readUntil("error")["code"])
+        // The writer drains the error before the socket closes (a clean EOF,
+        // never a reset that could eat the frame).
+        val eof = runCatching { client.getInputStream().read() }.getOrNull()
+        assertTrue(eof == null || eof == -1)
+    }
+
+    @Test
+    fun pairingsOffDropsAnOpenPairingPrompt() {
+        closeCurrent()
+        val gates = AtomicReference(GateSettings(true, true))
+        connect(pairDecisionTimeoutMs = 30_000, gates = { gates.get() })
+        hello("unknown", "Mac")
+        send(mapOf("t" to "pair.request"))
+        readUntil("pair.commit")
+        gates.set(GateSettings(true, false))
+        session!!.applyGates()
+        assertEquals("pairing_off", readUntil("error")["code"])
+    }
+
+    private fun closeCurrent() {
+        runCatching { client.close() }
+        runCatching { serverSocket.close() }
+    }
+
     /** Tears down the current session, reconnects with [taskMove]. */
     @Suppress("SameParameterValue")
     private fun reconnectWith(taskMove: TaskMove?) {
-        runCatching { client.close() }
-        runCatching { serverSocket.close() }
+        closeCurrent()
         connect(pairDecisionTimeoutMs = 30_000, taskMove = taskMove)
         addAndAuthenticate()
     }

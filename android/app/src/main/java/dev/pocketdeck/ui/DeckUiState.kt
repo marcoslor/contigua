@@ -21,6 +21,8 @@ data class StatusInput(
     val shizukuGranted: Boolean,
     val port: Int,
     val connectedMac: String?,
+    /** The master gate; false also means "needs attention" while the service runs. */
+    val allowConnections: Boolean = true,
 )
 
 /**
@@ -28,7 +30,8 @@ data class StatusInput(
  * attention"; only a running server with nothing connected is "ready".
  */
 fun mapStatus(input: StatusInput): DeckStatus = when {
-    !input.enabled -> DeckStatus(StatusState.NEEDS_ATTENTION, AttentionKind.CONNECTIONS_OFF)
+    !input.enabled || !input.allowConnections ->
+        DeckStatus(StatusState.NEEDS_ATTENTION, AttentionKind.CONNECTIONS_OFF)
     !input.shizukuRunning -> DeckStatus(StatusState.NEEDS_ATTENTION, AttentionKind.SHIZUKU_NOT_RUNNING)
     !input.shizukuGranted -> DeckStatus(StatusState.NEEDS_ATTENTION, AttentionKind.SHIZUKU_PERMISSION)
     input.connectedMac != null -> DeckStatus(StatusState.CONNECTED, AttentionKind.NONE)
@@ -76,6 +79,8 @@ data class PendingPairingUi(val requestId: String, val macName: String, val code
 data class DeckUiState(
     val onboardingDone: Boolean = false,
     val enabled: Boolean = false,
+    val allowConnections: Boolean = true,
+    val allowPairings: Boolean = true,
     val notifyShared: Boolean = false,
     val notifyGrantFailed: Boolean = false,
     val shizukuInstalled: Boolean = false,
