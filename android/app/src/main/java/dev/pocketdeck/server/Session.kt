@@ -70,6 +70,8 @@ class Session(
      * Mac's TLS fingerprint matches `macFp` (R2).
      */
     private val pendingQrProvider: () -> Map<String, Any?>? = { null },
+    /** Drops the shell's copy of the QR once it was served (review L-3). */
+    private val pendingQrConsumer: () -> Unit = {},
     /**
      * The app's two connection gates. Null means the values were never
      * delivered; [ConnectionGate] then refuses every Mac (fail closed).
@@ -485,6 +487,9 @@ class Session(
         runCatching { socket.soTimeout = 0 }
         val hmac = PairingCodeV2.qrHmac(secret, exporter, pendingPhoneFp)
         sendJson(mapOf("t" to "pair.qr", "m" to PairingCodeV2.hex(hmac)))
+        // One-time: a second hello with the same QR secret must not be answered
+        // (review L-3). The app's stored copy expires with its TTL.
+        runCatching { pendingQrConsumer() }
         phase = Phase.PAIR
         return true
     }

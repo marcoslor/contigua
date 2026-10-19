@@ -118,6 +118,7 @@ class DeckService(private val appContext: Context?) :
                 pairCooldown = pairCooldown,
                 selfCertProvider = { selfCertPem },
                 pendingQrProvider = { pendingQr },
+                pendingQrConsumer = { pendingQr = null },
                 gateProvider = { gates },
                 audioCapture = audio,
                 notifyShared = { notifySharedStore },
