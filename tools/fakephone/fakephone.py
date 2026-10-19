@@ -831,7 +831,8 @@ class Sender(object):
     def _run(self):
         while True:
             with self._cv:
-                while not (self._json or self._key or self._delta) and not self._closed:
+                while not (self._json or self._key or self._bulk or self._delta) \
+                        and not self._closed:
                     self._cv.wait()
                 if self._closed:
                     return
@@ -1797,6 +1798,9 @@ class Session(object):
                                                  proto.pack_frame(proto.TYPE_FS_DATA, read_id, data)):
                         return
                     done += len(data)
+                    if self.phone.args.fs_chunk_delay_ms > 0:
+                        # A slow reader (e2e cancel): the cancel arrives mid-file.
+                        time.sleep(self.phone.args.fs_chunk_delay_ms / 1000.0)
             end = {"t": "fs.read.end", "id": read_id, "size": done,
                    "sha256": digest.hexdigest()}
             self.sender.send_bulk(0, proto.pack_json(end))
@@ -2434,6 +2438,9 @@ def build_parser():
                    metavar="DIR",
                    help="serve read-only phone files from DIR (default: PD_FAKE_FS_ROOT, "
                         "else fs.* is refused)")
+    p.add_argument("--fs-chunk-delay-ms", type=int, default=0, metavar="MS",
+                   help="pause after each FS_DATA chunk (a slow phone, so a cancel "
+                        "can land mid-file in the e2e check)")
     p.add_argument("--drop-ack-delay", type=float, default=0.0, metavar="SECONDS",
                    help="repeat the last drop.progress and hold the result this long, "
                         "so the phone's confirmation for the tail lands after the Mac "

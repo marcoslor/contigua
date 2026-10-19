@@ -57,30 +57,43 @@ class FsReaderTest {
     ).also { if (etag != null) it["etag"] = etag }
 
     /** The bulk lane contents for one id: concatenated FS_DATA payloads, in order. */
-    private fun data(id: Int): ByteArray {
+    private fun data(id: Long): ByteArray {
         val out = java.io.ByteArrayOutputStream()
         for (frame in bulk) {
             if (frame.size < 9) continue
             val type = frame[4].toInt() and 0xFF
             val stream = ((frame[5].toInt() and 0xFF) shl 24) or ((frame[6].toInt() and 0xFF) shl 16) or
                 ((frame[7].toInt() and 0xFF) shl 8) or (frame[8].toInt() and 0xFF)
-            if (type == Frames.TYPE_FS_DATA && stream == id) out.write(frame, 9, frame.size - 9)
+            if (type == Frames.TYPE_FS_DATA && (stream.toLong() and 0xFFFF_FFFFL) == id) {
+                out.write(frame, 9, frame.size - 9)
+            }
         }
         return out.toByteArray()
     }
 
     /** The fs.read.end of one id, or null. */
-    private fun end(id: Int): Map<String, Any?>? {
+    private fun end(id: Long): Map<String, Any?>? {
         for (frame in bulk) {
             if (frame.size < 9 || frame[4].toInt() and 0xFF != Frames.TYPE_JSON) continue
             val obj = Json.parseObject(String(frame, 9, frame.size - 9, Charsets.UTF_8))
-            if (obj["t"] == "fs.read.end" && (obj["id"] as Number).toInt() == id) return obj
+            if (obj["t"] == "fs.read.end" && (obj["id"] as Number).toLong() == id) return obj
         }
         return null
     }
 
+    private fun data(id: Int) = data(id.toLong())
+    private fun end(id: Int) = end(id.toLong())
+
     private fun failure(id: Int): Map<String, Any?>? =
         synchronized(json) { json.lastOrNull { it["t"] == "error" && (it["id"] as? Number)?.toInt() == id } }
+
+    private fun awaitEnd(id: Long): Map<String, Any?> {
+        repeat(200) {
+            end(id)?.let { return it }
+            Thread.sleep(10)
+        }
+        throw AssertionError("no fs.read.end for id $id; bulk=${bulk.size} json=${json}")
+    }
 
     private fun awaitEnd(id: Int): Map<String, Any?> {
         repeat(200) {
@@ -96,6 +109,19 @@ class FsReaderTest {
             Thread.sleep(10)
         }
         throw AssertionError("no error for id $id")
+    }
+
+    @Test
+    fun anIdAboveIntMaxKeepsItsUnsignedWireValue() {
+        setup()
+        val bytes = ByteArray(8) { it.toByte() }
+        file("a.bin", bytes)
+        val reader = reader()
+        reader.begin(mapOf("t" to "fs.read", "id" to 4_290_737_149L, "path" to "a.bin",
+            "offset" to 0L, "length" to 8L))
+        val end = awaitEnd(4_290_737_149L)
+        assertEquals(4_290_737_149L, (end["id"] as Number).toLong())
+        assertArrayEquals(bytes, data(4_290_737_149L))
     }
 
     @Test
@@ -218,7 +244,7 @@ class FsReaderTest {
         assertTrue("the producer never sent the first chunk", firstChunk.await(5, TimeUnit.SECONDS))
         // The producer is parked inside the sender: no second chunk can exist.
         assertEquals(1, chunks.size)
-        reader.cancel(9)
+        reader.cancel(9L)
         release.countDown()
         Thread.sleep(300)
         assertEquals("cancelled read produced more chunks", 1, chunks.size)
@@ -242,7 +268,7 @@ class FsReaderTest {
         assertTrue(parked.await(5, TimeUnit.SECONDS))
         reader.begin(read(99, "big.bin", length = 1))
         assertEquals("fs_busy", awaitFailure(99)["code"])
-        repeat(8) { reader.cancel(it + 1) }
+        repeat(8) { reader.cancel((it + 1).toLong()) }
         release.countDown()
         reader.close()
     }

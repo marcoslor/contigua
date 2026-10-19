@@ -18,6 +18,7 @@ import hmac
 import json
 import os
 import pty
+import random
 import re
 import select
 import signal
@@ -1555,6 +1556,109 @@ def make_code_sink(args):
     return sink
 
 
+def _fs_id():
+    return random.SystemRandom().randint(1, 0xFFFFFFFF)
+
+
+def _fs_wait(client, fs_id, timeout=90.0):
+    """Next JSON reply for [fs_id]; FS_DATA-only frames are not JSON."""
+    while True:
+        frame = client.recv(timeout)
+        if frame is TIMEOUT:
+            raise DeckError("no answer for fs id %d (timeout)" % fs_id)
+        if frame is None:
+            raise DeckError("phone closed the connection during fs id %d" % fs_id)
+        if frame.type != proto.TYPE_JSON:
+            continue
+        msg = proto.unpack_json(frame)
+        if msg.get("id") != fs_id:
+            continue
+        if msg.get("t") == "error":
+            raise DeckError("fs error: %s (%s)" % (msg.get("code"), msg.get("message", "")))
+        return msg
+
+
+def _fs_list_all(client, path):
+    """Every page of one listing, following the phone's cursor."""
+    fs_id = _fs_id()
+    items = []
+    page = None
+    while True:
+        request = {"t": "fs.list", "id": fs_id, "path": path}
+        if page is not None:
+            request["page"] = page
+        client.send_json(request)
+        msg = _fs_wait(client, fs_id)
+        if msg.get("t") != "fs.items":
+            raise DeckError("expected fs.items, got %r" % msg.get("t"))
+        items.extend(msg.get("items") or [])
+        page = msg.get("page")
+        if page is None:
+            return items
+
+
+def cmd_fs(client, args):
+    """Read-only phone files (docs/PROTOCOL.md): list, stat, read."""
+    if args.action == "list":
+        items = _fs_list_all(client, args.path)
+        print(json.dumps(items, indent=None, separators=(",", ":"), sort_keys=True))
+        return 0
+    if args.action == "stat":
+        fs_id = _fs_id()
+        client.send_json({"t": "fs.stat", "id": fs_id, "path": args.path})
+        msg = _fs_wait(client, fs_id)
+        if msg.get("t") != "fs.item":
+            raise DeckError("expected fs.item, got %r" % msg.get("t"))
+        print(json.dumps(msg.get("item") or {}, indent=None, separators=(",", ":"), sort_keys=True))
+        return 0
+    # read
+    length = args.length
+    if length is None:
+        stat_id = _fs_id()
+        client.send_json({"t": "fs.stat", "id": stat_id, "path": args.path})
+        item = _fs_wait(client, stat_id).get("item") or {}
+        length = int(item.get("size", 0)) - args.offset
+        if length < 0:
+            raise DeckError("offset is past the end of the file")
+    fs_id = _fs_id()
+    request = {"t": "fs.read", "id": fs_id, "path": args.path,
+               "offset": args.offset, "length": length}
+    if args.etag:
+        request["etag"] = args.etag
+    client.send_json(request)
+    digest = hashlib.sha256()
+    got = 0
+    with open(args.out, "wb") as handle:
+        while True:
+            frame = client.recv(60.0)
+            if frame is TIMEOUT:
+                raise DeckError("fs.read timed out after %d bytes" % got)
+            if frame is None:
+                raise DeckError("phone closed the connection during fs.read")
+            if frame.type == proto.TYPE_FS_DATA:
+                if frame.stream != fs_id:
+                    continue
+                handle.write(frame.payload)
+                digest.update(frame.payload)
+                got += len(frame.payload)
+                continue
+            if frame.type != proto.TYPE_JSON:
+                continue
+            msg = proto.unpack_json(frame)
+            if msg.get("id") != fs_id:
+                continue
+            if msg.get("t") == "error":
+                raise DeckError("fs error: %s (%s)" % (msg.get("code"), msg.get("message", "")))
+            if msg.get("t") != "fs.read.end":
+                continue
+            want = digest.hexdigest()
+            if msg.get("size") != got or msg.get("sha256") != want:
+                raise DeckError("fs.read.end disagrees: size %r/%d, sha %r/%s"
+                                % (msg.get("size"), got, msg.get("sha256"), want))
+            print(json.dumps({"bytes": got, "sha256": want}))
+            return 0
+
+
 def build_parser():
     p = argparse.ArgumentParser(description="Fake Mac client / conformance tester for PocketDeck.",
                                 allow_abbrev=False)
@@ -1700,6 +1804,14 @@ def build_parser():
     sp.add_argument("--interval", type=float, default=2.5)
     sp.add_argument("--launch-settle", type=float, default=2.0)
 
+    sp = sub.add_parser("fs", help="read-only phone files: list/stat/read (docs/PROTOCOL.md)", **spp)
+    sp.add_argument("action", choices=["list", "stat", "read"])
+    sp.add_argument("path", help="path relative to the phone's shared storage ('' = the root)")
+    sp.add_argument("out", nargs="?", help="read: write the range here")
+    sp.add_argument("--offset", type=int, default=0, help="read: first byte (default 0)")
+    sp.add_argument("--length", type=int, default=None, help="read: byte count (default: offset..EOF via stat)")
+    sp.add_argument("--etag", help="read: the version the Mac believes (fs_stale on mismatch)")
+
     sp = sub.add_parser("frame-png", help="decode a frame of a recorded .h264 to PNG (no session)", **spp)
     sp.add_argument("file")
     sp.add_argument("--out", required=True)
@@ -1723,6 +1835,7 @@ COMMANDS = {
     "multi": cmd_multi,
     "resize-stress": cmd_resize_stress,
     "exit-test": cmd_exit_test,
+    "fs": cmd_fs,
     "frame-png": cmd_frame_png,
 }
 

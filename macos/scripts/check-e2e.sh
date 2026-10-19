@@ -3405,6 +3405,179 @@ PY
     wait_until 5 no_fakephone
 }
 
+# check_files — read-only phone files, slices S1+S2 (docs/design/files.md §6,
+# docs/PROTOCOL.md "Phone files"). The check builds a fake /sdcard, starts the
+# fake phone on it and runs the app's --debug-fs-script (FsDebug.swift): each
+# step's result is one `fsdebug: {...}` JSON line on app.log, with name hashes
+# instead of names. Asserts: root listing names+sizes (hidden/Android rules),
+# 1500-file paging, the three fs_denied paths, two whole-file reads by SHA-256,
+# a stale etag, and a cancelled read that stops the phone's stream.
+check_files() {
+    clean
+    python3 - "$WORK" <<'PY'
+import json, os, sys
+work = sys.argv[1]
+root = os.path.join(work, "fsroot")
+for folder in ("Documents", "Documents/notes", "DCIM/Camera", "many", "Android/data/x"):
+    os.makedirs(os.path.join(root, folder), exist_ok=True)
+open(os.path.join(root, "Android/data/x/y"), "wb").write(b"hidden")
+open(os.path.join(root, ".hidden"), "wb").write(b"hidden")
+# ~40 files: 36 small ones across the folders, then the two big ones.
+for i in range(36):
+    folder = ["Documents", "DCIM/Camera", "Documents/notes", ""][i % 4]
+    with open(os.path.join(root, folder, "file%02d.txt" % i), "wb") as handle:
+        handle.write(("small %d\n" % i).encode() * (i + 1))
+with open(os.path.join(root, "big3.bin"), "wb") as handle:
+    handle.write(os.urandom(3 * 1024 * 1024))
+with open(os.path.join(root, "big32.bin"), "wb") as handle:
+    handle.write(os.urandom(32 * 1024 * 1024))
+for i in range(1500):
+    open(os.path.join(root, "many", "m%04d.txt" % i), "wb").close()
+PY
+    FAKE_ARGS="--fs-root $WORK/fsroot --fs-chunk-delay-ms 4" start_fake || return 1
+    printf '%s\n' \
+        "list" "listall many" "stat big3.bin" \
+        "list .." "list /sdcard" "list Android/data" \
+        "read big3.bin $WORK/out3.bin" \
+        "read big32.bin $WORK/out32.bin" \
+        "read big32.bin $WORK/stale.bin 0 1048576 stale" \
+        "read big32.bin $WORK/cancel.bin 0 33554432 - 100" \
+        > "$WORK/fs.txt"
+    launch --connect "127.0.0.1:$PORT" --debug-fs-script "$WORK/fs.txt" --quit-after 300
+    fs_done() { grep -q '"op":"done"' "$WORK/app.log" 2>/dev/null; }
+    if ! wait_until 180 fs_done; then
+        bad "FILES the debug script never finished: $(grep 'fsdebug:' "$WORK/app.log" | tail -3)"
+        stop_app; stop_fakephone; return 1
+    fi
+    sleep 1   # the fake's writer logs the last FS_DATA frames it wrote
+    python3 - "$WORK" "$WORK/fsroot" > "$WORK/fs-results.txt" <<'PY'
+import hashlib, json, os, sys
+work, root = sys.argv[1], sys.argv[2]
+results = []
+
+def report(ok, text):
+    results.append(("ok " if ok else "bad ") + text)
+
+lines = []
+for raw in open(os.path.join(work, "app.log"), errors="replace"):
+    at = raw.find("fsdebug: ")
+    if at < 0:
+        continue
+    try:
+        lines.append(json.loads(raw[at + len("fsdebug: "):]))
+    except ValueError:
+        pass
+
+def h(text):
+    return hashlib.sha256(text.encode()).hexdigest()[:16]
+
+def sha_file(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for block in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+def listings(path):
+    return [line for line in lines if line.get("op") == "list" and line.get("ok")
+            and line.get("p") == h(path)]
+
+def failure(path, op="list"):
+    for line in lines:
+        if line.get("op") == op and line.get("p") == h(path) and line.get("ok") is False:
+            return line.get("code")
+    return None
+
+# 1. The root listing: what a person calls phone storage, with real sizes.
+expected = set()
+for name in os.listdir(root):
+    if name.startswith(".") or name == "Android":
+        continue
+    info = os.lstat(os.path.join(root, name))
+    size = 0 if os.path.isdir(os.path.join(root, name)) else info.st_size
+    expected.add((h(name), 1 if os.path.isdir(os.path.join(root, name)) else 0, size))
+pages = listings("")
+got = set()
+for page in pages:
+    for item in page.get("items", []):
+        got.add((item["n"], item["d"], item["s"]))
+report(len(got) == len(expected) and got == expected,
+       "FILES the root listing has every visible name and size (%d items, hidden/Android "
+       "left out)" % len(got))
+
+# 2. Paging over a 1500-file folder: every name exactly once.
+pages = listings("many")
+names = [item["n"] for page in pages for item in page.get("items", [])]
+want = {h("m%04d.txt" % i) for i in range(1500)}
+report(len(pages) >= 2 and len(names) == 1500 and len(set(names)) == 1500 and set(names) == want,
+       "FILES paging read all 1500 names exactly once in %d pages" % len(pages))
+
+# 3. stat.
+stat = next((line for line in lines if line.get("op") == "stat" and line.get("ok")), None)
+report(bool(stat) and stat["s"] == 3 * 1024 * 1024 and stat["d"] == 0
+       and stat["p"] == h("big3.bin"),
+       "FILES stat reports big3.bin as a 3 MiB file")
+
+# 4. The refused paths.
+denied = [failure(".."), failure("/sdcard"), failure("Android/data")]
+report(denied == ["fs_denied"] * 3,
+       "FILES '..', an absolute path and Android/data answer fs_denied (%s)" % denied)
+
+# 5. Whole-file reads: the phone's sha256, the app's sha256 and the file on disk agree.
+def read_ok(name, size):
+    want = sha_file(os.path.join(root, name))
+    done = [line for line in lines if line.get("op") == "read" and line.get("ok")
+            and line.get("p") == h(name) and line.get("bytes") == size]
+    if not done:
+        report(False, "FILES %s never read back" % name)
+        return
+    out = os.path.join(work, "out3.bin" if name == "big3.bin" else "out32.bin")
+    report(done[-1]["sha256"] == want and sha_file(out) == want,
+           "FILES %s read back byte-identical (%d bytes, sha %s...)" % (name, size, want[:12]))
+
+read_ok("big3.bin", 3 * 1024 * 1024)
+read_ok("big32.bin", 32 * 1024 * 1024)
+
+# 6. A stale etag is refused and leaves no file.
+report(failure("big32.bin", op="read") == "fs_stale"
+       and not os.path.exists(os.path.join(work, "stale.bin")),
+       "FILES a stale etag answers fs_stale and writes nothing")
+
+# 7. A cancelled read stops; the fake logged no chunk after the cancel marker.
+cancelled = any(line.get("op") == "read" and line.get("ok") is False
+                and line.get("p") == h("big32.bin") and line.get("code") == "cancelled"
+                for line in lines)
+read_id, before, after = None, 0, 0
+order = []   # ("sent"|"cancel", id) in the fake's write order
+for raw in open(os.path.join(work, "fake.err"), errors="replace"):
+    line = raw.strip()
+    if line.startswith("fakephone: fs cancel id="):
+        order.append(("cancel", int(line.rsplit("=", 1)[1])))
+    elif line.startswith("fakephone: fs sent id="):
+        order.append(("sent", int(line.split()[3].split("=")[1])))
+at = next((i for i, item in enumerate(order) if item[0] == "cancel"), None)
+if at is not None:
+    read_id = order[at][1]
+    before = sum(1 for kind, ident in order[:at] if kind == "sent" and ident == read_id)
+    after = sum(1 for kind, ident in order[at + 1:] if kind == "sent" and ident == read_id)
+report(cancelled and read_id is not None and before > 0 and after <= 1,
+       "FILES the cancelled read stopped on the phone (cancel after %d chunks, %d chunk "
+       "after it)" % (before, after))
+
+for line in results:
+    print(line)
+PY
+    while IFS= read -r line; do
+        case "$line" in
+            ok\ *) ok "${line#ok }" ;;
+            bad\ *) bad "${line#bad }" ;;
+        esac
+    done < "$WORK/fs-results.txt"
+    stop_app
+    stop_fakephone
+    wait_until 5 no_fakephone
+}
+
 # check_drop — a file dropped on a window (docs/design/dragdrop.md). The scripted
 # `dropfile` feeds the same handler a Finder drag ends in, so the path under test
 # is the window's own drop destination -> FileDropSender; fakephone acts like
