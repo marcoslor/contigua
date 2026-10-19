@@ -76,7 +76,9 @@ struct GeneralSettings: View {
             .onChange(of: revealDelay) { _, delay in controller.setRevealDelay(delay) }
         }
         .formStyle(.grouped)
-        .scrollDisabled(true)
+        // The pane sizes to its content; with overrides listed it may outgrow
+        // a small screen, so then it scrolls instead of clipping.
+        .scrollDisabled(controller.densityOverrides.isEmpty)
     }
 }
 
