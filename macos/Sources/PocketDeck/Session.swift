@@ -549,7 +549,7 @@ final class Session {
 
     private func handleTransportError(_ message: String) {
         // The pinned-reconnect paths surface the stale-pin case as a TLS verify
-        // failure inside the record's trustRoots (§7: "certificate changed").
+        // failure inside the pin callback (§7: "certificate changed").
         // A plain "closed-by-peer" is the phone's normal hang-up: notice, not
         // error (the phone treats aborted sessions quietly; the Mac mirrors it).
         if message.hasPrefix("closed-by-peer") {

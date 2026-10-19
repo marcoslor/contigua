@@ -112,10 +112,15 @@ enum PinCheckV2 {
 // MARK: - Identity generation (Mac side)
 
 /// Generates the Mac's v2 TLS identity: in-memory P-256 key, self-signed v3
-/// cert (SAN/IP, EKU server+client, ±1 day validity margins — the BoringSSL
-/// evaluator flapped with `notBefore == now` in the spikes). Pin starts empty;
+/// cert (SAN/IP, EKU server+client, one day of clock skew before issuance).
+/// The valid-after is far in the future: pins are permanent and the cert is
+/// never renewed, so a short life would break every paired peer on expiry
+/// (sec L-5). Existing identities are never regenerated. Pin starts empty;
 /// pairing writes the phone's fingerprint.
 enum IdentityGeneratorV2 {
+    /// 100 years, the lifetime of a new identity at both ends of a pairing.
+    static let lifetime: TimeInterval = 100 * 365 * 86_400
+
     /// Serial derives from the key itself: same key ⇒ same serial, no extra state.
     static func serialNumber(for key: P256.Signing.PublicKey) -> UInt128 {
         let digest = SHA256.hash(data: key.x963Representation)
@@ -124,7 +129,11 @@ enum IdentityGeneratorV2 {
         return value
     }
 
-    static func make(deviceId: String, cn: String = "PocketDeck Mac") -> (identity: DeviceIdentityV2, privateKey: P256.Signing.PrivateKey) {
+    /// `notValidBefore`/`notValidAfter` exist for tests (an expired pinned
+    /// cert); production uses the defaults.
+    static func make(deviceId: String, cn: String = "PocketDeck Mac",
+                     notValidBefore: Date? = nil,
+                     notValidAfter: Date? = nil) -> (identity: DeviceIdentityV2, privateKey: P256.Signing.PrivateKey) {
         precondition(!deviceId.isEmpty, "deviceId must be set before identity.json exists")
         let key = P256.Signing.PrivateKey()
         let now = Date()
@@ -140,8 +149,8 @@ enum IdentityGeneratorV2 {
                 version: .v3,
                 serialNumber: .init(serialNumber(for: key.publicKey)),
                 publicKey: .init(key.publicKey),
-                notValidBefore: now.addingTimeInterval(-86_400),
-                notValidAfter: now.addingTimeInterval(366 * 86_400),
+                notValidBefore: notValidBefore ?? now.addingTimeInterval(-86_400),
+                notValidAfter: notValidAfter ?? now.addingTimeInterval(lifetime),
                 issuer: name,
                 subject: name,
                 signatureAlgorithm: .ecdsaWithSHA256,
@@ -243,11 +252,12 @@ extension String {
 
 // MARK: - The pinned phone (the pin store the TLS layer feeds from)
 
-/// One phone's pin record (§6: "the pin store feeds `trustRoots` per phone").
+/// One phone's pin record (§6: "the pin store feeds `trustRoots` per phone" —
+/// today the pin is compared directly, see sec L-5).
 /// `-fp` hex is the fingerprint the pin store carries; the cert PEM is the same
-/// self-signed cert the phone presented, kept so the TLS layer can build the
-/// trust chain. Persistence is `pins.json` (0600); the in-memory store
-/// write-through saves on every change (step 7).
+/// self-signed cert the phone presented, kept so the pin gate can re-derive and
+/// cross-check the fingerprint before dialing. Persistence is `pins.json`
+/// (0600); the in-memory store write-through saves on every change (step 7).
 struct PinnedPhoneV2: Codable, Equatable {
     var deviceId: String
     var phoneFingerprintHex: String
@@ -370,8 +380,8 @@ final class TlsConnectorV2: @unchecked Sendable {
     let identity: DeviceIdentityV2
     /// nil = pairing mode (§4: TLS itself cannot authenticate an unknown peer;
     /// the commit/nonce/reveal flow and the QR HMAC are the checks). Non-nil =
-    /// a pinned phone from the pin store; the connection is then verified the
-    /// standard-roots way.
+    /// a pinned phone from the pin store; the connection is then verified by
+    /// exact fingerprint, not by chain/date validation (sec L-5).
     let pinnedPhone: PinnedPhoneV2?
     let keyLog: KeyLogCapture
     private let group: EventLoopGroup
@@ -405,12 +415,14 @@ final class TlsConnectorV2: @unchecked Sendable {
             guard PinCheckV2.matches(peerFingerprint, pinHex: identity.pin) else {
                 throw TlsV2Error.pinMismatch(got: Data(peerFingerprint).hexString, expected: identity.pin)
             }
-            // The pinned cert IS the check (§1): no hostname validation — a
-            // self-signed phone's name means nothing — the handshake either
-            // verifies against this exact leaf or dies with certificate
-            // changed. (Resumed handshakes are impossible: R3.)
+            // The pin IS the check (sec L-5): `connect()` installs a custom
+            // verification callback that accepts the peer only when its leaf
+            // fingerprint equals this pin. No trust roots, no hostname, and no
+            // validity dates: the phone's self-signed leaf was issued for 366
+            // days and is never renewed, so an expiry check would break every
+            // paired phone after a year. Everything else is still rejected.
+            // (Resumed handshakes are impossible: R3.)
             tls.certificateVerification = .noHostnameVerification
-            tls.trustRoots = .certificates([cert])
         } else {
             // PAIRING: no pin record yet. A §3 pin without a record is a
             // corrupt store — refuse rather than degrade to open TLS.
@@ -443,6 +455,27 @@ final class TlsConnectorV2: @unchecked Sendable {
         return ExporterV2.derive(exporterSecret: secret)
     }
 
+    /// The client handler for one attempt. With a pin, a custom verification
+    /// callback replaces BoringSSL's chain validation entirely: the leaf is
+    /// accepted only when its P-256 point fingerprint equals the pin, and its
+    /// validity dates are deliberately not consulted (sec L-5: the phone's
+    /// self-signed leaf has a fixed 366-day life and is never renewed).
+    static func makeClientHandler(context: NIOSSLContext, pinnedPinHex: String?) throws -> NIOSSLClientHandler {
+        guard let pinHex = pinnedPinHex else {
+            return try NIOSSLClientHandler(context: context, serverHostname: nil)
+        }
+        return try NIOSSLClientHandler(context: context, serverHostname: nil,
+                                       customVerificationCallback: { chain, promise in
+            guard let leaf = chain.first,
+                  let fingerprint = PinCheckV2.pointFingerprint(cert: leaf),
+                  PinCheckV2.matches(fingerprint, pinHex: pinHex) else {
+                promise.succeed(.failed)
+                return
+            }
+            promise.succeed(.certificateVerified)
+        })
+    }
+
     /// Connects; the returned session stays open while the caller keeps the
     /// channel. `onPeerPin` fires once the handshake completed, with the
     /// phone's fingerprint: pairing mode uses it to learn the pin (state
@@ -458,7 +491,12 @@ final class TlsConnectorV2: @unchecked Sendable {
         let tlsConfig = try configuration()
         let context = try NIOSSLContext(configuration: tlsConfig)
         let capture = keyLog
-        let sslHandler = try NIOSSLClientHandler(context: context, serverHostname: nil)
+        // Pinned peers: the standard trust-roots path is replaced by a callback
+        // that compares the presented leaf against the pin and ignores the
+        // certificate's validity dates (sec L-5). Pairing mode (no pin) keeps
+        // the plain handler: any cert completes, the pin is learned from it.
+        let sslHandler = try Self.makeClientHandler(context: context,
+                                                    pinnedPinHex: pinnedPhone == nil ? nil : identity.pin)
         let learn = onPeerPin
         let learnCert = onPeerCert
         do {

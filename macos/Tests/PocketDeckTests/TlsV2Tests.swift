@@ -166,6 +166,21 @@ final class TlsV2Tests: XCTestCase {
         }
     }
 
+    private final class ErrorCaptureHandler: ChannelInboundHandler, @unchecked Sendable {
+        typealias InboundIn = ByteBuffer
+
+        private let onError: @Sendable (String) -> Void
+
+        init(onError: @escaping @Sendable (String) -> Void) {
+            self.onError = onError
+        }
+
+        func errorCaught(context: ChannelHandlerContext, error: Error) {
+            onError(String(describing: error))
+            context.close(promise: nil)
+        }
+    }
+
     private func cert(_ identity: DeviceIdentityV2) throws -> NIOSSLCertificate {
         try NIOSSLCertificate(bytes: [UInt8](identity.certPem.utf8), format: .pem)
     }
@@ -260,6 +275,118 @@ final class TlsV2Tests: XCTestCase {
         XCTAssertNotEqual(exporterReconnect, exporterPairing)
         XCTAssertEqual(exporterReconnect, ExporterV2.derive(exporterSecret: server.capture.only ?? []))
         XCTAssertEqual(reconnectLearned.get(), pinnedMac.pin)
+    }
+
+    // MARK: Pinned peers ignore certificate validity dates (sec L-5)
+
+    /// The phone's leaf is issued for 366 days and never renewed; the Mac pins
+    /// its fingerprint. An expired pinned leaf must still be accepted — the pin
+    /// is the whole check, the dates are not part of it.
+    func testExpiredPinnedCertificateIsAccepted() throws {
+        let mac = IdentityGeneratorV2.make(deviceId: "mac-unit-expired")
+        let now = Date()
+        let expired = IdentityGeneratorV2.make(deviceId: "phone-expired",
+                                               cn: "PocketDeck Phone",
+                                               notValidBefore: now.addingTimeInterval(-10 * 86_400),
+                                               notValidAfter: now.addingTimeInterval(-2 * 86_400))
+        let server = try loopbackServer(trusting: try cert(mac.identity), phoneMaterial: expired)
+        defer { server.channel.close(promise: nil) }
+
+        let record = PinnedPhoneV2(deviceId: expired.identity.deviceId,
+                                   phoneFingerprintHex: server.phoneFingerprint,
+                                   certPem: expired.identity.certPem)
+        let pinnedMac = DeviceIdentityV2(deviceId: mac.identity.deviceId,
+                                         certPem: mac.identity.certPem,
+                                         keyP8: mac.identity.keyP8,
+                                         pin: server.phoneFingerprint)
+        let connector = TlsConnectorV2(identity: pinnedMac, pinnedPhone: record, group: group)
+        let errorBox = NSLockedBox(value: "")
+        let session = try connector.connect(host: "127.0.0.1", port: server.port,
+                                            onFrame: { _ in }, onError: { errorBox.set($0) })
+        defer { session.channel.close(promise: nil) }
+        let exporter = waitForOptional { session.exporter() }
+        XCTAssertNotNil(exporter, "an expired pinned leaf must be accepted: \(errorBox.get())")
+    }
+
+    /// The same expired leaf over the former trust-roots route (BoringSSL
+    /// chain validation) fails: this is the evidence that NIOSSL checks the
+    /// validity dates, and why the pin callback replaced that route.
+    func testTrustRootsRouteRejectsExpiredCertificate() throws {
+        let mac = IdentityGeneratorV2.make(deviceId: "mac-unit-expired-roots")
+        let now = Date()
+        let expired = IdentityGeneratorV2.make(deviceId: "phone-expired-roots",
+                                                cn: "PocketDeck Phone",
+                                                notValidBefore: now.addingTimeInterval(-10 * 86_400),
+                                                notValidAfter: now.addingTimeInterval(-2 * 86_400))
+        let server = try loopbackServer(trusting: try cert(mac.identity), phoneMaterial: expired)
+        defer { server.channel.close(promise: nil) }
+
+        var tls = TLSConfiguration.makeClientConfiguration()
+        tls.certificateVerification = .noHostnameVerification
+        tls.trustRoots = .certificates([try cert(expired.identity)])
+        tls.certificateChain = [.certificate(try cert(mac.identity))]
+        tls.privateKey = .privateKey(try NIOSSLPrivateKey(bytes: [UInt8](mac.identity.keyP8.utf8), format: .pem))
+        tls.minimumTLSVersion = .tlsv13
+        tls.maximumTLSVersion = .tlsv13
+        let context = try NIOSSLContext(configuration: tls)
+        let handler = try NIOSSLClientHandler(context: context, serverHostname: nil)
+        let refused = DispatchSemaphore(value: 0)
+        let message = NSLockedBox(value: "")
+        let channel = try ClientBootstrap(group: group)
+            .channelInitializer { ch -> EventLoopFuture<Void> in
+                do {
+                    try ch.pipeline.syncOperations.addHandler(handler)
+                    try ch.pipeline.syncOperations.addHandler(ErrorCaptureHandler { error in
+                        message.set(error)
+                        refused.signal()
+                    })
+                    return ch.eventLoop.makeSucceededVoidFuture()
+                } catch {
+                    return ch.eventLoop.makeFailedFuture(error)
+                }
+            }
+            .connect(to: try SocketAddress(ipAddress: "127.0.0.1", port: server.port))
+            .wait()
+        defer { channel.close(promise: nil) }
+        XCTAssertTrue(waitForSignal(refused, seconds: 10),
+                      "an expired trust root must fail chain validation, not hang")
+        XCTAssertTrue(message.get().lowercased().contains("expired")
+                      || message.get().lowercased().contains("certificate")
+                      || message.get().contains("sslError"),
+                      "expected a certificate validation error, got: \(message.get())")
+    }
+
+    /// A pin that does not match the certificate the peer presents is still
+    /// rejected, dates untouched: replacing trustRoots did not loosen the pin.
+    func testPinnedPeerRejectsDifferentCertificate() throws {
+        let mac = IdentityGeneratorV2.make(deviceId: "mac-unit-wrong-pin")
+        let phoneB = IdentityGeneratorV2.make(deviceId: "phone-b", cn: "PocketDeck Phone B")
+        let phoneA = IdentityGeneratorV2.make(deviceId: "phone-a", cn: "PocketDeck Phone A")
+        let server = try loopbackServer(trusting: try cert(mac.identity), phoneMaterial: phoneB)
+        defer { server.channel.close(promise: nil) }
+
+        let aCert = try cert(phoneA.identity)
+        let aPin = Data(PinCheckV2.pointFingerprint(cert: aCert)!).hexString
+        let record = PinnedPhoneV2(deviceId: phoneA.identity.deviceId,
+                                   phoneFingerprintHex: aPin,
+                                   certPem: phoneA.identity.certPem)
+        let pinnedMac = DeviceIdentityV2(deviceId: mac.identity.deviceId,
+                                         certPem: mac.identity.certPem,
+                                         keyP8: mac.identity.keyP8,
+                                         pin: aPin)
+        let connector = TlsConnectorV2(identity: pinnedMac, pinnedPhone: record, group: group)
+        let refused = DispatchSemaphore(value: 0)
+        let message = NSLockedBox(value: "")
+        let session = try? connector.connect(host: "127.0.0.1", port: server.port,
+                                             onFrame: { _ in }, onError: { error in
+            message.set(error)
+            refused.signal()
+        })
+        defer { session?.channel.close(promise: nil) }
+        XCTAssertTrue(waitForSignal(refused, seconds: 10),
+                      "a different unexpired certificate must be rejected")
+        XCTAssertNil(session?.exporter(), "no exporter on a rejected handshake")
+        XCTAssertFalse(message.get().isEmpty)
     }
 
     func testServerRefusesUnknownClientFingerprint() throws {
