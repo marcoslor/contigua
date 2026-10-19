@@ -981,6 +981,15 @@ final class Session {
     func installApk(id: UInt32, files: [[String: Any]]) { sendJSON(["t": "apk.install", "id": Int(id), "files": files]) }
     func cancelApk(id: UInt32) { sendJSON(["t": "apk.cancel", "id": Int(id)]) }
     func enableNotifications(_ on: Bool) { sendJSON(["t": "notify.enable", "on": on]) }
+
+    /// A Mac banner click (docs/design/notify.md): run the phone notification's
+    /// own action on the window's display or on the phone's screen. The id is
+    /// one the phone issued; an older phone ignores the message, which leaves
+    /// the window at its launcher activity (today's behaviour).
+    func openNotification(id: String, target: NotifyOpenTarget, stream: UInt32? = nil) {
+        sendJSON(NotifyOpenMessage.make(id: id, target: target, stream: stream))
+    }
+
     func mediaCommand(_ action: String) { sendJSON(["t": "media.command", "action": action]) }
     func sendApkData(id: UInt32, bytes: [UInt8], sent: @escaping @Sendable (Bool) -> Void) { sendData(.apkData, id: id, bytes: bytes, sent: sent) }
     func dropStart(id: UInt32, name: String, mime: String, size: Int, sha256: String, resume: Int = 0) {

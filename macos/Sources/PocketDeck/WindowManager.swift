@@ -266,6 +266,19 @@ final class WindowManager {
         return controller
     }
 
+    /// A notification click's window: raise the app's window when it is
+    /// already open, else open one. The returned stream is where the phone
+    /// runs the notification's action.
+    @discardableResult
+    func openOrRaiseApp(pkg: String, activity: String? = nil) -> UInt32 {
+        if let existing = allControllers().compactMap({ $0 as? AppWindowController })
+            .first(where: { $0.pkg == pkg }) {
+            existing.window?.makeKeyAndOrderFront(nil)
+            return existing.stream
+        }
+        return openApp(pkg: pkg, activity: activity).stream
+    }
+
     @discardableResult
     func openLink(_ url: String) -> LinkWindowController {
         let stream = allocateStream()
