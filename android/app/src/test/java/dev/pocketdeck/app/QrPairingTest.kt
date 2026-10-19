@@ -98,4 +98,28 @@ class QrPairingTest {
         val tooShort = QrPairing.parse("pocketdeck://pair?c=1a2b&f=" + fp.dropLast(1) + "&s=$secret")
         assertTrue(tooShort is QrPairing.Result.BadKey)
     }
+
+    // L-2: an exported pair link must not overwrite a live pending scan.
+
+    private val otherFp = "88227c41edbdf92b83c27bff6ae8570eb14144050a5b0903e351a777e09ecfe5"
+
+    @Test
+    fun `no pending qr accepts the link`() {
+        assertTrue(QrPairing.mayReplacePending(null, 0L, fp, 1_000L, 300_000L))
+    }
+
+    @Test
+    fun `a fresh pending qr from another mac is kept`() {
+        assertEquals(false, QrPairing.mayReplacePending(fp, 1_000L, otherFp, 2_000L, 300_000L))
+    }
+
+    @Test
+    fun `the same mac may refresh its pending qr`() {
+        assertTrue(QrPairing.mayReplacePending(fp, 1_000L, fp.uppercase(), 2_000L, 300_000L))
+    }
+
+    @Test
+    fun `an expired pending qr is replaceable`() {
+        assertTrue(QrPairing.mayReplacePending(fp, 1_000L, otherFp, 302_000L, 300_000L))
+    }
 }

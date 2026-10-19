@@ -11,6 +11,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
+import android.util.Log
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import dev.pocketdeck.IDeckService
@@ -307,10 +308,19 @@ class DeckViewModel(app: Application) : AndroidViewModel(app) {
                 // to the shell server (RAM + a short-lived store copy); the
                 // shell answers the Mac's probe with pair.qr, and the Allow
                 // prompt still gates the first connection.
+                val now = System.currentTimeMillis()
+                val existing = Prefs.pendingQr(ctx)
+                if (!QrPairing.mayReplacePending(
+                        existing?.macFp, existing?.at ?: 0L, result.macFpHex,
+                        now, Prefs.PENDING_QR_TTL_MS)) {
+                    // L-2: a link from another Mac cannot overwrite a live scan.
+                    Log.i(TAG, "pair link ignored: another pairing is pending")
+                    return
+                }
                 Prefs.setPendingQr(
                     ctx,
                     Prefs.PendingQr(result.clientId, result.name, result.macFpHex,
-                                    result.secretHex, System.currentTimeMillis()),
+                                    result.secretHex, now),
                 )
                 runCatching { ShizukuClient.current()?.setPairedClients(Prefs.serviceStateJson(ctx)) }
                 postSnackbar(ctx.getString(R.string.qr_waiting, result.name))
@@ -355,5 +365,6 @@ class DeckViewModel(app: Application) : AndroidViewModel(app) {
         const val REQUEST_SHIZUKU = 4001
         const val SHIZUKU_PACKAGE = "moe.shizuku.privileged.api"
         private const val FORGET_UNDO_MS = 4_000L
+        private const val TAG = "PocketDeckVm"
     }
 }
