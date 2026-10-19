@@ -153,7 +153,14 @@ class Session(
     private val share = ShareSender(::sendJson, queue::enqueueBulk, log)
     private val drop = dropLanding?.let { DropReceiver(it, ::sendJson, log) }
     /** Read-only phone files; absent on a platform without shared storage. */
-    private val files = filesRoot?.let { FsView(FsPaths(it, fsStats)) }
+    private val files = filesRoot?.let { root ->
+        runCatching { FsView(FsPaths(root, fsStats)) }.getOrElse {
+            // A storage root that cannot be resolved must not cost the session:
+            // fs.* then answers fs_denied, everything else works.
+            log("fs: the shared-storage root is unavailable (${it.javaClass.simpleName})")
+            null
+        }
+    }
     private val fsReader = files?.let { FsReader(it.paths, queue::enqueueBulk, ::sendJson, log) }
     private val clipImageSync = ClipImageSync()
     private val clipImageSender = ClipImageSender(queue::enqueueBulk, log)
@@ -708,7 +715,7 @@ class Session(
                 "fs.list" -> onFsList(obj)
                 "fs.stat" -> onFsStat(obj)
                 "fs.read" -> fsReader?.begin(obj)
-                "fs.cancel" -> (obj["id"] as? Number)?.let { fsReader?.cancel(it.toInt()) }
+                "fs.cancel" -> (obj["id"] as? Number)?.toLong()?.let { fsReader?.cancel(it) }
                 "clip.image.start" -> onClipImageStart(obj)
                 "clip.image.end" -> onClipImageEnd(obj)
                 "clip.image.abort" -> onClipImageAbort(obj)
@@ -1159,13 +1166,13 @@ class Session(
     // ------------------------------------------------------------------
 
     /** A request id: u32, never 0; anything else is ignored (no reply to match). */
-    private fun fsId(obj: Map<String, Any?>): Int? {
+    private fun fsId(obj: Map<String, Any?>): Long? {
         val id = (obj["id"] as? Number)?.toLong() ?: return null
-        return if (id in 1..0xFFFF_FFFFL) id.toInt() else null
+        return if (id in 1..0xFFFF_FFFFL) id else null
     }
 
     /** An fs failure: the ordinary `error` frame, carrying the request id. */
-    private fun fsError(id: Int, failure: FsFailure) {
+    private fun fsError(id: Long, failure: FsFailure) {
         log("fs: id=$id ${failure.code}")
         sendJson(mapOf("t" to "error", "code" to failure.code,
             "message" to (failure.message ?: ""), "id" to id))
@@ -1185,6 +1192,11 @@ class Session(
             log("fs: list id=$id ${page.items.size} items, next=${page.next != null}")
         } catch (e: FsFailure) {
             fsError(id, e)
+        } catch (e: Exception) {
+            // A reply always carries its id, even when the filesystem throws
+            // something the path rules do not name.
+            log("fs: list id=$id failed: ${e.javaClass.simpleName}")
+            fsError(id, FsFailure("internal", "the listing failed"))
         }
     }
 
@@ -1196,6 +1208,9 @@ class Session(
             log("fs: stat id=$id")
         } catch (e: FsFailure) {
             fsError(id, e)
+        } catch (e: Exception) {
+            log("fs: stat id=$id failed: ${e.javaClass.simpleName}")
+            fsError(id, FsFailure("internal", "the stat failed"))
         }
     }
 

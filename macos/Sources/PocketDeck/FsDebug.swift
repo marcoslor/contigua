@@ -5,7 +5,8 @@
 // carries a name's SHA-256 prefix, its size, its directory flag and its etag.
 //
 // Grammar (blank lines and lines starting with # are ignored):
-//   list PATH
+//   list PATH                           one page
+//   listall PATH                        every page, following the phone's cursor
 //   stat PATH
 //   read PATH OUT                       the whole file into OUT
 //   read PATH OUT OFFSET LENGTH [ETAG [CANCEL_MS]]
@@ -13,7 +14,7 @@
 //                                       (32 zeros) or a 32-hex etag, and
 //                                       CANCEL_MS cancels the read that long
 //                                       after it started
-// PATH is relative to the phone's shared storage ('' = the root), OUT an
+// PATH is relative to the phone's shared storage (no PATH = the root), OUT an
 // absolute path on this Mac. Paths with spaces are not supported.
 //
 // Results: {"op":"list","ok":true,"p":"<hash>","items":[{"n","d","s","e"}],
@@ -25,6 +26,7 @@ import Foundation
 
 enum FsScriptAction: Equatable {
     case list(String)
+    case listAll(String)
     case stat(String)
     case read(path: String, out: String, offset: Int?, length: Int?, etag: String?, cancelAfterMs: Int?)
 }
@@ -55,9 +57,14 @@ enum FsDebugScript {
 
     private static func parseLine(_ words: [String]) throws -> FsScriptAction {
         switch words.first?.lowercased() {
-        case "list", "stat":
-            guard words.count == 2 else { throw LineError(message: "\(words[0]) needs one PATH") }
-            return words[0].lowercased() == "list" ? .list(words[1]) : .stat(words[1])
+        case "list", "listall", "stat":
+            guard words.count <= 2 else { throw LineError(message: "\(words[0]) takes at most one PATH") }
+            let path = words.count == 2 ? words[1] : ""
+            switch words[0].lowercased() {
+            case "list": return .list(path)
+            case "listall": return .listAll(path)
+            default: return .stat(path)
+            }
         case "read":
             guard words.count == 3 || (5...7).contains(words.count) else {
                 throw LineError(message: "read needs PATH OUT [OFFSET LENGTH [ETAG [CANCEL_MS]]]")
@@ -140,6 +147,8 @@ final class FsDebugDriver {
                 }
                 self.step()
             }
+        case .listAll(let path):
+            listAll(path: path, page: nil)
         case .stat(let path):
             client.stat(path: path) { [weak self] result in
                 guard let self else { return }
@@ -164,6 +173,33 @@ final class FsDebugDriver {
                 case .failure(let error):
                     self.fail("read", path: path, error)
                 }
+                self.step()
+            }
+        }
+    }
+
+    /// `listall`: the same request with the phone's cursor until it says the
+    /// page is the last one. Each page is one result line.
+    private func listAll(path: String, page: String?) {
+        client.list(path: path, page: page) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .success(let listing):
+                self.emit([
+                    "op": "list", "ok": true, "p": self.nameHash(path),
+                    "items": listing.items.map { item in
+                        ["n": self.nameHash(item.name), "d": item.dir ? 1 : 0,
+                         "s": item.size, "e": item.etag] as [String: Any]
+                    },
+                    "more": listing.next != nil,
+                ])
+                if let next = listing.next {
+                    self.listAll(path: path, page: next)
+                } else {
+                    self.step()
+                }
+            case .failure(let error):
+                self.fail("list", path: path, error)
                 self.step()
             }
         }

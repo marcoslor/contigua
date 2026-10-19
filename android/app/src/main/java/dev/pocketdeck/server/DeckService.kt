@@ -13,6 +13,7 @@ import dev.pocketdeck.IDeckService
 import dev.pocketdeck.proto.Crypto
 import dev.pocketdeck.e2ee.TlsExporter
 import dev.pocketdeck.proto.Json
+import java.io.File
 import java.util.concurrent.TimeUnit
 import javax.net.ssl.SSLSocket
 
@@ -110,9 +111,11 @@ class DeckService(private val appContext: Context?) :
                 packages = ShellPackages(shell, ::log),
                 taskMove = taskMove,
                 dropLanding = ShellLanding(appContext, ::log),
-                // The real /sdcard, resolved through the platform's own shared
-                // storage path (Environment) rather than a hardcoded string.
-                filesRoot = android.os.Environment.getExternalStorageDirectory(),
+                // The shared storage root. Environment.getExternalStorageDirectory()
+                // asks StorageManager, which refuses a caller that is not the
+                // app's own uid; the shell service is uid 2000. This is the real
+                // path of /sdcard (docs/design/files.md §4).
+                filesRoot = File("/storage/emulated/0"),
                 fsStats = AndroidFsStats,
                 now = { SystemClock.uptimeMillis() },
                 log = ::log,

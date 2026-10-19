@@ -25,7 +25,7 @@ class FsFailure(val code: String, message: String) : Exception(message)
 class FsPaths(val root: File, private val stats: FsStats = FsStats.Default) {
 
     /** The root's canonical path, with no trailing separator. */
-    val rootPath: String = root.canonicalPath
+    val rootPath: String = canonical(root)
 
     /** The root as the canonical file every relative path hangs off. */
     fun rootFile(): File = File(rootPath)
@@ -50,15 +50,11 @@ class FsPaths(val root: File, private val stats: FsStats = FsStats.Default) {
         if (parts[0].startsWith(".")) throw denied("hidden entry")
         if (parts[0] == ANDROID) throw denied("Android")
         val file = File(rootFile(), path)
-        val canonical = try {
-            file.canonicalFile
-        } catch (e: Exception) {
-            throw denied("unresolvable path")
-        }
-        if (canonical.path != rootPath && !canonical.path.startsWith(rootPath + File.separator)) {
+        val canonicalPath = canonical(file)
+        if (canonicalPath != rootPath && !canonicalPath.startsWith(rootPath + File.separator)) {
             throw denied("outside the root")
         }
-        return canonical
+        return File(canonicalPath)
     }
 
     /** Metadata for [file], or null when it is gone. */
@@ -92,6 +88,13 @@ class FsPaths(val root: File, private val stats: FsStats = FsStats.Default) {
         fun notADir() = FsFailure("fs_not_a_dir", "not a directory")
         fun stale() = FsFailure("fs_stale", "the file changed")
         fun busy() = FsFailure("fs_busy", "too many reads")
+
+        /** Canonical path, or the absolute one when the platform refuses to resolve it. */
+        private fun canonical(file: File): String = try {
+            file.canonicalPath
+        } catch (e: Exception) {
+            file.absolutePath
+        }
 
         fun etag(ino: Long, size: Long, mtimeMs: Long): String {
             val digest = MessageDigest.getInstance("SHA-256")

@@ -28,17 +28,19 @@ class FsReader(
     private val chunkBytes: Int = CHUNK_BYTES,
     private val maxReads: Int = MAX_READS,
 ) {
-    private class Job(val id: Int, val file: File, val offset: Long, val length: Long) {
+    private class Job(val id: Long, val file: File, val offset: Long, val length: Long) {
         val cancelled = AtomicBoolean(false)
         var thread: Thread? = null
     }
 
     private val lock = Object()
-    private val jobs = HashMap<Int, Job>()
+    private val jobs = HashMap<Long, Job>()
 
     /** Starts one range read; refusals answer `error` and stream nothing. */
     fun begin(obj: Map<String, Any?>) {
-        val id = (obj["id"] as? Number)?.toLong()?.takeIf { it in 1..0xFFFF_FFFFL }?.toInt() ?: return
+        // The wire id is a u32: keep it unsigned in JSON replies (an Int would
+        // answer a negative number for half of all ids, and the Mac matches on it).
+        val id = (obj["id"] as? Number)?.toLong()?.takeIf { it in 1..0xFFFF_FFFFL } ?: return
         val offset = Json.long(obj["offset"]) ?: -1L
         val length = Json.long(obj["length"]) ?: -1L
         val file = try {
@@ -66,7 +68,7 @@ class FsReader(
     }
 
     /** `fs.cancel`: the producer stops before its next chunk. */
-    fun cancel(id: Int) {
+    fun cancel(id: Long) {
         val job = synchronized(lock) { jobs[id] } ?: return
         job.cancelled.set(true)
     }
@@ -78,7 +80,7 @@ class FsReader(
         running.forEach { runCatching { it.thread?.join(1_000) } }
     }
 
-    private fun refuse(id: Int, failure: FsFailure) {
+    private fun refuse(id: Long, failure: FsFailure) {
         log("fs: read id=$id ${failure.code}")
         sendJson(mapOf("t" to "error", "code" to failure.code,
             "message" to (failure.message ?: ""), "id" to id))
@@ -101,7 +103,7 @@ class FsReader(
                     }
                     if (n == 0) continue
                     digest.update(buffer, 0, n)
-                    if (!sendBulk(Frames.encode(Frames.TYPE_FS_DATA, job.id, buffer.copyOf(n)))) {
+                    if (!sendBulk(Frames.encode(Frames.TYPE_FS_DATA, job.id.toInt(), buffer.copyOf(n)))) {
                         log("fs: read id=${job.id} abandoned at $done bytes")
                         return
                     }
