@@ -19,6 +19,7 @@ class Frame(val type: Int, val stream: Int, val payload: ByteArray) {
 data class TouchPayload(val action: Int, val pointerId: Int, val nx: Float, val ny: Float)
 data class ScrollPayload(val nx: Float, val ny: Float, val hscroll: Float, val vscroll: Float)
 data class KeyPayload(val action: Int, val keycode: Int, val metaState: Int)
+data class HoverPayload(val action: Int, val nx: Float, val ny: Float)
 data class VideoConfigPayload(val codec: Int, val width: Int, val height: Int, val csd: ByteArray)
 data class VideoFramePayload(val ptsUs: Long, val key: Boolean, val data: ByteArray)
 data class AudioConfigPayload(val codec: Int, val sampleRate: Int, val channels: Int, val frameMs: Int, val setup: ByteArray)
@@ -38,6 +39,7 @@ object Frames {
     const val TYPE_TOUCH = 0x10
     const val TYPE_SCROLL = 0x11
     const val TYPE_KEY = 0x12
+    const val TYPE_HOVER = 0x13
     const val TYPE_APK_DATA = 0x20
     const val TYPE_SHARE_DATA = 0x21
     const val TYPE_DROP_DATA = 0x22
@@ -54,6 +56,10 @@ object Frames {
 
     const val ACTION_DOWN = 0
     const val ACTION_UP = 1
+
+    const val HOVER_ENTER = 0
+    const val HOVER_MOVE = 1
+    const val HOVER_EXIT = 2
 
     fun encode(type: Int, stream: Int, payload: ByteArray): ByteArray {
         val bb = ByteBuffer.allocate(4 + HEADER + payload.size).order(ByteOrder.BIG_ENDIAN)
@@ -110,6 +116,20 @@ object Frames {
         requireSize(payload, 9, "key")
         val bb = ByteBuffer.wrap(payload).order(ByteOrder.BIG_ENDIAN)
         return KeyPayload(bb.get().toInt() and 0xFF, bb.int, bb.int)
+    }
+
+    fun encodeHover(p: HoverPayload): ByteArray {
+        val bb = ByteBuffer.allocate(1 + 4 + 4).order(ByteOrder.BIG_ENDIAN)
+        bb.put(p.action.toByte())
+        bb.putFloat(p.nx)
+        bb.putFloat(p.ny)
+        return bb.array()
+    }
+
+    fun decodeHover(payload: ByteArray): HoverPayload {
+        requireSize(payload, 9, "hover")
+        val bb = ByteBuffer.wrap(payload).order(ByteOrder.BIG_ENDIAN)
+        return HoverPayload(bb.get().toInt() and 0xFF, bb.float, bb.float)
     }
 
     /** `u8 codec · u16 w · u16 h · Annex-B csd`. */

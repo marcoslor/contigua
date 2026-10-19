@@ -57,6 +57,48 @@ class FramesTest {
         assertEquals(0x1000, decoded.metaState)
     }
 
+    /**
+     * HOVER: the same byte vector as the Swift test (0x13, enter, 0.25, 0.5).
+     * Payload: u8 action · f32 nx · f32 ny.
+     */
+    @Test
+    fun hoverFrameBytesMatchTheSwiftSide() {
+        val payload = Frames.encodeHover(HoverPayload(Frames.HOVER_ENTER, 0.25f, 0.5f))
+        assertArrayEquals(
+            byteArrayOf(0x00, 0x3E, 0x80.toByte(), 0, 0, 0x3F, 0, 0, 0),
+            payload,
+        )
+        val frame = roundTrip(Frames.encode(Frames.TYPE_HOVER, 3, payload))
+        assertEquals(0x13, frame.type)
+        assertEquals(3, frame.stream)
+        val decoded = Frames.decodeHover(frame.payload)
+        assertEquals(Frames.HOVER_ENTER, decoded.action)
+        assertEquals(0.25f, decoded.nx, 0f)
+        assertEquals(0.5f, decoded.ny, 0f)
+    }
+
+    @Test
+    fun hoverMoveAndExitRoundTrip() {
+        for (action in listOf(Frames.HOVER_MOVE, Frames.HOVER_EXIT)) {
+            val decoded = Frames.decodeHover(
+                Frames.encodeHover(HoverPayload(action, 0.75f, 0.125f)),
+            )
+            assertEquals(action, decoded.action)
+            assertEquals(0.75f, decoded.nx, 0f)
+            assertEquals(0.125f, decoded.ny, 0f)
+        }
+    }
+
+    @Test
+    fun shortHoverPayloadIsAProtocolError() {
+        try {
+            Frames.decodeHover(byteArrayOf(0, 0, 0))
+            fail("a short hover payload must be rejected")
+        } catch (e: ProtocolException) {
+            // expected
+        }
+    }
+
     @Test
     fun videoConfigRoundTrip() {
         val csd = byteArrayOf(0, 0, 0, 1, 0x67, 0x42, 0, 0, 0, 1, 0x68, 0xCE.toByte())
