@@ -133,6 +133,24 @@ final class WindowManager {
         }
     }
 
+    /// Settings → General "Reveal controls after": the immersive dwell, read
+    /// from the profile's defaults.
+    var revealDelay: RevealDelay { RevealDelay.stored(in: frames) }
+
+    /// The setting changed: every open window takes the new delay at once, a
+    /// rest already running included.
+    func revealDelayChanged() {
+        let seconds = revealDelay.seconds
+        for controller in allControllers() { controller.setRevealDelay(seconds) }
+    }
+
+    /// Write the setting and apply it (the Settings picker's path is
+    /// `revealDelayChanged`; tests and debug hooks use this).
+    func setRevealDelay(_ delay: RevealDelay) {
+        frames.set(delay.rawValue, forKey: RevealDelay.key)
+        revealDelayChanged()
+    }
+
     /// A remembered frame may belong to a display that is gone.
     func clampedToScreen(_ frame: NSRect) -> NSRect {
         let screens = NSScreen.screens.map(\.visibleFrame)
@@ -293,6 +311,7 @@ final class WindowManager {
         guard forgetPrefs else { return }
         frames.removeObject(forKey: Self.framesKey)
         frames.removeObject(forKey: Self.showTouchesKey)
+        frames.removeObject(forKey: RevealDelay.key)
         StreamMenuState.shared.showTouches = false
         for key in frames.dictionaryRepresentation().keys where key.hasPrefix(WindowStyleStore.prefix) {
             frames.removeObject(forKey: key)

@@ -208,6 +208,38 @@ final class StreamChromeImmersiveTests: XCTestCase {
         return !close.isHidden && close.alphaValue > 0.99
     }
 
+    /// Settings → General "Reveal controls after" reaches the open windows at
+    /// once, and a rest already running is re-timed from its start.
+    func testTheRevealDelaySettingAppliesToOpenWindowsLive() throws {
+        let manager = makeManager(choose: .immersive)
+        // Through the manager, as every window is: the live update walks the
+        // windows it owns.
+        let controller = manager.openApp(pkg: "com.example.app")
+        defer { controller.window?.close() }
+        let window = try XCTUnwrap(controller.window)
+        window.orderFront(nil)
+        XCTAssertEqual(controller.dwell.dwell, RevealDelay.short.seconds, "the default is Short")
+
+        manager.setRevealDelay(.long)
+        XCTAssertEqual(controller.dwell.dwell, RevealDelay.long.seconds, "open windows follow at once")
+        controller.pointerMoved(toWindowPoint: NSPoint(x: 20, y: 580))
+        pump(0.4)
+        XCTAssertFalse(controller.dwell.shown, "Long has not rested long enough at 400 ms")
+        pump(0.35)
+        XCTAssertTrue(controller.dwell.shown, "but it has at 750 ms")
+
+        // Leave the zone, let the pill go, then pick Instantly: the next rest
+        // shows it without waiting.
+        controller.pointerMoved(toWindowPoint: NSPoint(x: 500, y: 300))
+        pump(0.75)
+        XCTAssertFalse(controller.dwell.shown)
+        manager.setRevealDelay(.instantly)
+        XCTAssertEqual(controller.dwell.dwell, 0)
+        controller.pointerMoved(toWindowPoint: NSPoint(x: 20, y: 580))
+        pump(0.05)
+        XCTAssertTrue(controller.dwell.shown, "Instantly needs no dwell")
+    }
+
     func testTheImmersivePillIsClearGlass() throws {
         let manager = makeManager(choose: .immersive)
         let controller = AppWindowController(stream: 1, pkg: "com.example.app", activity: nil,

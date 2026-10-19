@@ -146,6 +146,49 @@ final class WindowStyleSizeTests: XCTestCase {
     }
 }
 
+final class RevealDelayTests: XCTestCase {
+    private func makeDefaults() -> UserDefaults {
+        let name = "dev.pocketdeck.tests.reveal.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: name)!
+        addTeardownBlock { UserDefaults().removePersistentDomain(forName: name) }
+        return defaults
+    }
+
+    func testShortIsTheDefaultAndTheOldFixedDwell() {
+        XCTAssertEqual(RevealDelay.stored(in: makeDefaults()), .short, "nothing stored opens Short")
+        XCTAssertEqual(RevealDelay.short.seconds, DwellChrome.dwell)
+        XCTAssertEqual(RevealDelay.short.seconds, 0.35)
+    }
+
+    func testTheThreeChoicesAreZeroTheDefaultAndTwiceIt() {
+        XCTAssertEqual(RevealDelay.instantly.seconds, 0)
+        XCTAssertEqual(RevealDelay.short.seconds, 0.35)
+        XCTAssertEqual(RevealDelay.long.seconds, 0.7)
+        XCTAssertEqual(RevealDelay.long.seconds, RevealDelay.short.seconds * 2)
+    }
+
+    func testTheStoredChoiceRoundTrips() {
+        let defaults = makeDefaults()
+        for delay in RevealDelay.allCases {
+            defaults.set(delay.rawValue, forKey: RevealDelay.key)
+            XCTAssertEqual(RevealDelay.stored(in: defaults), delay)
+        }
+    }
+
+    func testAnUnreadableValueFallsBackToShort() {
+        let defaults = makeDefaults()
+        defaults.set("soon", forKey: RevealDelay.key)
+        XCTAssertEqual(RevealDelay.stored(in: defaults), .short)
+    }
+
+    func testTheLabelsTheSettingsPickerShows() {
+        XCTAssertEqual(RevealDelay.instantly.label, "Instantly")
+        XCTAssertEqual(RevealDelay.short.label, "Short")
+        XCTAssertEqual(RevealDelay.long.label, "Long")
+        XCTAssertEqual(RevealDelay.allCases, [.instantly, .short, .long])
+    }
+}
+
 final class DwellPillTests: XCTestCase {
     /// The hot zone and a pill that covers it.
     private func makePill() -> DwellPill {
@@ -253,6 +296,36 @@ final class DwellPillTests: XCTestCase {
         XCTAssertFalse(pill.shown, "the rest starts from the re-entry")
         pill.update(now: 3.36)
         XCTAssertTrue(pill.shown)
+    }
+
+    func testEachRevealDelayShowsThePillAtItsOwnTime() {
+        let cases: [(RevealDelay, TimeInterval, TimeInterval)] = [
+            (.instantly, 0, 0),
+            (.short, 0.34, 0.35),
+            (.long, 0.69, 0.7),
+        ]
+        for (delay, early, due) in cases {
+            var pill = DwellPill(zone: CGRect(x: 0, y: 0, width: 72, height: 32),
+                                 pill: CGRect(x: 0, y: 0, width: 100, height: 28),
+                                 dwell: delay.seconds)
+            pill.pointerMoved(to: CGPoint(x: 20, y: 10), now: 0)
+            pill.update(now: early)
+            XCTAssertEqual(pill.shown, early >= delay.seconds, "\(delay) at \(early) s")
+            pill.update(now: due)
+            XCTAssertTrue(pill.shown, "\(delay) at \(due) s")
+        }
+    }
+
+    func testChangingTheDelayRetimesARestAlreadyRunning() {
+        var pill = DwellPill(zone: CGRect(x: 0, y: 0, width: 72, height: 32),
+                             pill: CGRect(x: 0, y: 0, width: 100, height: 28),
+                             dwell: RevealDelay.long.seconds)
+        pill.pointerMoved(to: CGPoint(x: 20, y: 10), now: 0)
+        pill.update(now: 0.4)
+        XCTAssertFalse(pill.shown, "Long is not up at 400 ms")
+        pill.setDwell(RevealDelay.short.seconds)
+        pill.update(now: 0.4)
+        XCTAssertTrue(pill.shown, "Short's 350 ms had already passed when it was picked")
     }
 
     func testTheHotZoneAndPillAreTheOnesTheDesignAsksFor() {
