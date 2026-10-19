@@ -278,6 +278,7 @@ final class ConnectionController {
     /// An app file waiting for its phone to become ready (nil phone = whichever comes first).
     private var pendingApk: (file: URL, deviceId: String?, until: Date)?
     private var debugInput: DebugInputDriver?
+    private var debugControl: DebugControl?
     private var pairingTarget: PairingTarget?
     private var qrTimer: Timer?
     private var qrProbes: [QRProbe] = []
@@ -381,27 +382,15 @@ final class ConnectionController {
         if let directory = options.dumpVideoDirectory { windows.videoDump = VideoDump(directory: directory) }
         windows.floatWindows = options.floatWindows
         windows.chromeStateFile = options.debugChromeState.map { URL(fileURLWithPath: $0) }
-        if let path = options.debugInputScript {
-            do {
-                debugInput = try DebugInputDriver(scriptPath: path)
-                // The notify/media actions reach the same handlers a banner click
-                // and a Now Playing control do. The driver runs on the main thread.
-                debugInput?.notifyClick = { [weak self] id in
-                    MainActor.assumeIsolated { self?.notifyCenter.performOpen(id: id) ?? false }
-                }
-                debugInput?.mediaCommand = { [weak self] action in
-                    MainActor.assumeIsolated { self?.nowPlaying.perform(action) }
-                }
-                // The dockapps action writes the setting the way Settings'
-                // @AppStorage does, then calls the same handler its onChange does.
-                debugInput?.dockApps = { [weak self] on in
-                    MainActor.assumeIsolated { self?.setShowAppsInDock(on) }
-                }
-                debugInput?.arm()
-            } catch {
-                FileHandle.standardError.write(Data("debug-input-script \(path): \(error)\n".utf8))
-                exit(2)
+        if let path = options.debugInputScript, let error = armDebugInput(path) {
+            FileHandle.standardError.write(Data((error + "\n").utf8))
+            exit(2)
+        }
+        if let directory = options.debugControl {
+            debugControl = DebugControl(directory: directory) { [weak self] command, arguments in
+                MainActor.assumeIsolated { self?.performDebugControl(command, arguments) ?? "no controller" }
             }
+            debugControl?.start()
         }
         if let preview = options.preview {
             applyPreview(preview)
@@ -1443,7 +1432,7 @@ final class ConnectionController {
         }
         if !didAutoOpen {
             didAutoOpen = true
-            applyAutoOpen()
+            applyAutoOpen(options)
         }
         if let request = pendingOpen, request.deviceId == info.id {
             pendingOpen = nil
@@ -1506,7 +1495,58 @@ final class ConnectionController {
 
     // MARK: Test hooks
 
-    private func applyAutoOpen() {
+    /// Arms a `--debug-input-script`; the error text when the script is unusable.
+    private func armDebugInput(_ path: String) -> String? {
+        debugInput?.cancel()
+        do {
+            debugInput = try DebugInputDriver(scriptPath: path)
+        } catch {
+            debugInput = nil
+            return "debug-input-script \(path): \(error)"
+        }
+        // The notify/media actions reach the same handlers a banner click
+        // and a Now Playing control do. The driver runs on the main thread.
+        debugInput?.notifyClick = { [weak self] id in
+            MainActor.assumeIsolated { self?.notifyCenter.performOpen(id: id) ?? false }
+        }
+        debugInput?.mediaCommand = { [weak self] action in
+            MainActor.assumeIsolated { self?.nowPlaying.perform(action) }
+        }
+        // The dockapps action writes the setting the way Settings'
+        // @AppStorage does, then calls the same handler its onChange does.
+        debugInput?.dockApps = { [weak self] on in
+            MainActor.assumeIsolated { self?.setShowAppsInDock(on) }
+        }
+        debugInput?.arm()
+        return nil
+    }
+
+    /// `--debug-control` (DebugControl.swift): the e2e checks that share this
+    /// running app reset it between them and open their windows through it.
+    /// Returns nil when the command ran, else why not.
+    private func performDebugControl(_ command: String, _ arguments: [String]) -> String? {
+        switch command {
+        case "reset":
+            debugInput?.cancel()
+            debugInput = nil
+            windows.resetForNextCheck(forgetPrefs: arguments == ["prefs"])
+            audio.statsFile = nil
+            return nil
+        case "open":
+            guard link.isOnline else { return "not online" }
+            let check = LaunchOptions.parse(["PocketDeck"] + arguments)
+            windows.floatWindows = check.floatWindows
+            windows.chromeStateFile = check.debugChromeState.map { URL(fileURLWithPath: $0) }
+            audio.statsFile = check.audioStatsFile
+            if let path = check.debugInputScript, let error = armDebugInput(path) { return error }
+            applyAutoOpen(check)
+            return nil
+        default:
+            return "unknown command \(command)"
+        }
+    }
+
+    private func applyAutoOpen(_ options: LaunchOptions) {
         for pkg in options.openPackages { windows.openApp(pkg: pkg) }
         if options.openPhone { windows.openPhoneWindow() }
         if options.continueOnMac { windows.openHandoffWindow() }

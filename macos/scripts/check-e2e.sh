@@ -3,7 +3,8 @@
 #
 #   ./scripts/check-e2e.sh [qr|pair|tls|render|resize|input|mouseback|input-global|pause|direct|nav|mirror|spotlight|pinch|chrome|trackpad|clip|sharein|links|share|apk|drop|dock|nickname|notify|audio|handoff|deck|all]
 #
-# Every check starts from a clean slate: no PocketDeck or fakephone processes
+# Every check starts from a clean slate (the shared-app checks share one, see
+# "The shared app" below): no PocketDeck or fakephone processes
 # left by an earlier run, a fresh fakephone state file and no pairing key in
 # the Keychain (a key created by a *different* build would make macOS prompt
 # for Keychain access, which is why C4 asks for the key to be deleted first).
@@ -109,6 +110,7 @@ kill_e2e_app() {
 # for the lock must leave the running one's app and fakephone alone.
 finish() {
     if [ -n "${HOLDS_LOCK:-}" ]; then
+        end_shared
         kill_e2e_app
         stop_fakephone
         stop_vdisplay
@@ -142,6 +144,7 @@ clear_profile_state() {
 }
 
 clean() {
+    end_shared
     kill_e2e_app
     stop_fakephone
     remove_dock_apps
@@ -416,10 +419,117 @@ wait_app() {
 }
 
 # stop_app — the checks are done once their events arrived; the app's own
-# --quit-after is only a safety bound.
+# --quit-after is only a safety bound. The shared app (below) is not stopped:
+# its windows close and its stream state is forgotten, ready for the next check.
 stop_app() {
+    if [ -n "${SHARED_PID:-}" ] && [ "$APP_PID" = "$SHARED_PID" ]; then
+        control reset || say "shared app: reset answered '$CONTROL_REPLY'"
+        return 0
+    fi
     kill "$APP_PID" >/dev/null 2>&1
     wait "$APP_PID" 2>/dev/null
+}
+
+# --- The shared app -------------------------------------------------------
+#
+# The checks that test neither launch, pairing nor first run (the window,
+# input, chrome, audio and drop checks) share one running app and one phone
+# instead of each launching its own: launch_shared starts it (a fresh launch,
+# from a clean slate and pairing from scratch like any other), begin_shared
+# hands it from one check to the next. Between checks the app gets a `reset`
+# through its --debug-control folder (DebugControl.swift): every stream window
+# closes as the person closes one and the stream state is forgotten (stream ids
+# from 1, no remembered frames or styles: `reset prefs`), and the phone's event
+# log starts empty. Between two phases of one check (next_shared) a plain
+# `reset` keeps the remembered frames and styles, as a relaunch did. A check opens its windows with open_shared, which takes a launch's
+# per-window options (--open, --float-windows, --debug-input-script, ...).
+# stop_app resets the shared app; stop_fakephone leaves the shared phone up.
+# Any check that runs `clean` (every check that needs a fresh launch) ends them.
+
+CONTROL_SEQ=0
+
+# control <command...> — runs one command in the shared app and waits for its
+# answer (CONTROL_REPLY); true when the answer is "ok".
+control() {
+    local dir="$WORK-control" name
+    CONTROL_SEQ=$((CONTROL_SEQ + 1))
+    name="c$CONTROL_SEQ"
+    printf '%s\n' "$*" > "$dir/$name.tmp" && mv "$dir/$name.tmp" "$dir/$name.cmd"
+    if ! wait_until 10 [ -s "$dir/$name.done" ]; then
+        CONTROL_REPLY="no answer in 10 s"
+        return 1
+    fi
+    CONTROL_REPLY="$(cat "$dir/$name.done")"
+    rm -f "$dir/$name.done"
+    [ "$CONTROL_REPLY" = "ok" ]
+}
+
+# launch_shared <launch args...> — a fresh launch (after clean and start_fake,
+# like any check's) that the following shared checks keep using.
+launch_shared() {
+    rm -rf "$WORK-control"
+    mkdir -p "$WORK-control"
+    launch --debug-control "$WORK-control" "$@"
+    SHARED_PID="$APP_PID"
+    SHARED_FAKE_PID="$FAKE_PID"
+}
+
+shared_alive() {
+    [ -n "${SHARED_PID:-}" ] && kill -0 "$SHARED_PID" 2>/dev/null \
+        && [ -n "${SHARED_FAKE_PID:-}" ] && kill -0 "$SHARED_FAKE_PID" 2>/dev/null
+}
+
+# begin_shared — the start of a shared check: the running shared app, reset and
+# with an empty phone event log and work dir, or else a fresh one.
+begin_shared() {
+    if shared_alive && control reset prefs; then
+        find "$WORK" -mindepth 1 -maxdepth 1 ! -name events.jsonl ! -name state.json \
+            ! -name 'fake*.log' ! -name fake.err ! -name app.log -exec rm -rf {} +
+        : > "$WORK/events.jsonl"
+        APP_PID="$SHARED_PID"
+        FAKE_PID="$SHARED_FAKE_PID"
+        return 0
+    fi
+    shared_alive && say "shared app: reset answered '$CONTROL_REPLY'; launching a new one"
+    clean
+    start_fake || return 1
+    launch_shared --connect "127.0.0.1:$PORT"
+    # The windows open once the session is ready (open_shared waits for it).
+}
+
+# next_shared — between two phases of one shared check: the phase's windows
+# close and the phone's event log starts empty, as a relaunch against a fresh
+# fakephone gave.
+next_shared() {
+    stop_app
+    : > "$WORK/events.jsonl"
+}
+
+# open_shared <launch args...> — the check's windows in the shared app; the
+# session may still be getting ready after a fresh launch.
+open_shared() {
+    local tries=60
+    while ! control open "$@"; do
+        tries=$((tries - 1))
+        if [ "$CONTROL_REPLY" != "not online" ] || [ "$tries" -le 0 ]; then
+            bad "shared app: open $* answered '$CONTROL_REPLY'"
+            return 1
+        fi
+        sleep 0.5
+    done
+    APP_PID="$SHARED_PID"
+}
+
+# end_shared — the shared app and its phone stop (by their own PIDs only: an
+# orphan of any check must still be found by C9).
+end_shared() {
+    [ -n "${SHARED_PID:-}" ] || return 0
+    kill "$SHARED_PID" >/dev/null 2>&1
+    wait "$SHARED_PID" 2>/dev/null
+    [ -n "${SHARED_FAKE_PID:-}" ] && kill "$SHARED_FAKE_PID" >/dev/null 2>&1
+    SHARED_PID=""
+    SHARED_FAKE_PID=""
+    wait_until 5 no_fakephone
 }
 
 acquire_lock() {
@@ -489,7 +599,11 @@ PY
 
 # Only this run's fakephones (every one is started with this run's --events).
 # WORK is unset if the run gave up waiting for the lock before choosing a port.
-stop_fakephone() { [ -n "${WORK:-}" ] && pkill -f -- "--events $WORK/events.jsonl" >/dev/null 2>&1; }
+# The shared phone (above) stays up for the next shared check.
+stop_fakephone() {
+    [ -n "${SHARED_PID:-}" ] && return 0
+    [ -n "${WORK:-}" ] && pkill -f -- "--events $WORK/events.jsonl" >/dev/null 2>&1
+}
 
 # The CGEvent helper is compiled once: `swift file.swift` re-interprets the
 # source on every call, which is seconds per window lookup.
@@ -940,10 +1054,8 @@ PY
 # --- C5: rendering --------------------------------------------------------
 
 check_render() {
-    clean
-    start_fake || return 1
-    launch --connect "127.0.0.1:$PORT" \
-        --open com.android.settings --open-phone --float-windows --quit-after 40
+    begin_shared || return 1
+    open_shared --open com.android.settings --open-phone --float-windows || return 1
     local app_shot="$WORK/render-app.png" phone_shot="$WORK/render-phone.png" id
     if ! wait_until 30 events_have '"ev":"video","stream":1,' \
         || ! wait_until 30 events_have '"ev":"video","stream":2,'; then
@@ -967,8 +1079,7 @@ check_render() {
 # --- C6: resize -----------------------------------------------------------
 
 check_resize() {
-    clean
-    start_fake || return 1
+    begin_shared || return 1
     # The video's pixels are the window's points at the run's backing scale
     # (VideoGeometry.displayPixels), so each pt size below is the pixel size
     # these assertions have always named, divided by that scale: at 1x the
@@ -978,8 +1089,7 @@ check_resize() {
     # to mean anything, and the app sets frames rather than dragging them.
     local scale="$RUN_SCALE" w h
     w=$((1600 / scale)); h=$((1200 / scale))
-    launch --connect "127.0.0.1:$PORT" \
-        --open com.android.settings --resize-stream "1:${w}x${h}-pt" --quit-after 60
+    open_shared --open com.android.settings --resize-stream "1:${w}x${h}-pt" || return 1
     # The window is wxh pt and the video is all of it.
     wait_until 30 events_have '"ev":"video","stream":1,"config":true,"w":1600,"h":1200' \
         && ok "C6 new video config 1600x1200 (the whole ${w}x${h} pt window, at ${scale}x)" || bad "C6 no new config"
@@ -990,16 +1100,14 @@ check_resize() {
 
     # Non-16:9 shapes: tall, then ultra-wide (capped at 2560 px, aspect kept).
     w=$((1200 / scale)); h=$((1800 / scale))
-    launch --connect "127.0.0.1:$PORT" --open com.android.settings \
-        --resize-stream "1:${w}x${h}-pt" --quit-after 60
+    open_shared --open com.android.settings --resize-stream "1:${w}x${h}-pt" || return 1
     wait_until 30 events_have '"ev":"video","stream":1,"config":true,"w":1200,"h":1792' \
         && ok "C6 tall shape resized to 1200x1792 (${w}x${h} pt at ${scale}x, floored to 16)" || bad "C6 no tall config"
     screenshot "$w" "$WORK/resize-tall.png" && say "screenshot: $WORK/resize-tall.png"
     stop_app
 
     w=$((3200 / scale)); h=$((1000 / scale))
-    launch --connect "127.0.0.1:$PORT" --open com.android.settings \
-        --resize-stream "1:${w}x${h}-pt" --quit-after 60
+    open_shared --open com.android.settings --resize-stream "1:${w}x${h}-pt" || return 1
     wait_until 30 events_have '"ev":"video","stream":1,"config":true,"w":2560,"h":800' \
         && ok "C6 ultra-wide capped to 2560x800 (aspect kept)" || bad "C6 no capped config"
     # dpi = 160 x the video's pixel ratio x density (VideoGeometry.dpi): the
@@ -1070,12 +1178,10 @@ PY
 # as the first video frame size arrives; the last action's nav back is the
 # signal that the whole script has been delivered.
 check_input() {
-    clean
-    start_fake || return 1
+    begin_shared || return 1
     printf '%s\n' "click 0.5 0.5" "drag 0.5 0.5 0.7 0.5" "scroll 3" "scroll -2" "type hi" \
         "rightclick 0.5 0.5" > "$WORK/input.txt"
-    launch --connect "127.0.0.1:$PORT" \
-        --open com.android.settings --debug-input-script "$WORK/input.txt" --quit-after 60
+    open_shared --open com.android.settings --debug-input-script "$WORK/input.txt" || return 1
     wait_until 30 events_have '"action":"back"' \
         || { bad "C7 scripted input did not reach the phone"; say "app log: $(tail -3 "$WORK/app.log")"; }
     assert_input
@@ -1147,8 +1253,7 @@ mb_touch_count() {
 # waits for a file before each next press, so every count is read in between.
 # PD_E2E_VISIBLE=1 adds one press as a real CGEvent through the window server.
 check_mouseback() {
-    clean
-    start_fake || return 1
+    begin_shared || return 1
 
     # Phase A: an app window (the only stream window -> stream 1). Floated, so a
     # visible run's real press lands on it and not on the Deck.
@@ -1156,8 +1261,7 @@ check_mouseback() {
     printf '%s\n' "sidebutton 3" "waitfile $WORK/mb-step-forward" "sidebutton 4" \
         "waitfile $WORK/mb-step-held" "sidebutton 3 0.4 80 6 12" \
         "waitfile $WORK/mb-step-key" "key cmd+[" > "$WORK/mb-a.txt"
-    launch --connect "127.0.0.1:$PORT" --open com.android.settings --float-windows \
-        --debug-input-script "$WORK/mb-a.txt" --quit-after 60
+    open_shared --open com.android.settings --float-windows --debug-input-script "$WORK/mb-a.txt" || return 1
     wait_until 30 events_have '"ev":"video","stream":1,' \
         || { bad "MB no video config for the app window"; stop_app; stop_fakephone; return 1; }
     local win navs keys touches
@@ -1204,13 +1308,10 @@ check_mouseback() {
     [ "$keys" = "$navkeys" ] \
         && ok "MB Cmd-[ sent no key frames (all $keys keys are fakephone's nav emulation)" \
         || bad "MB Cmd-[ leaked $((keys - navkeys)) key frames of $keys"
-    stop_app
-
     # Phase B: the phone-mode window (also a stream window -> stream 1 again).
-    : > "$WORK/events.jsonl"
+    next_shared
     printf '%s\n' "sidebutton 3" > "$WORK/mb-b.txt"
-    launch --connect "127.0.0.1:$PORT" --open-phone --float-windows \
-        --debug-input-script "$WORK/mb-b.txt" --quit-after 60
+    open_shared --open-phone --float-windows --debug-input-script "$WORK/mb-b.txt" || return 1
     wait_until 30 events_have '"ev":"video","stream":1,' \
         || { bad "MB no video config for the phone window"; stop_app; stop_fakephone; return 1; }
     win="$(await_window '$5 > $4')" \
@@ -1231,8 +1332,6 @@ check_mouseback() {
         skip_visible "MB side Back as a real CGEvent through the window server"
     fi
     stop_app
-    stop_fakephone
-    wait_until 5 no_fakephone
 }
 
 # --- C13: pinch / rotate gestures ------------------------------------------
@@ -1247,12 +1346,10 @@ check_mouseback() {
 # the video-size note starts inside that churn. C15's scripts wait for the same
 # reason; the gestures land the same either way, just after the windows settle.
 check_pinch() {
-    clean
-    start_fake || return 1
+    begin_shared || return 1
     printf '%s\n' "wait 1.5" "pinch 0.5 0.5 1.5" "pinch 0.5 0.5 0.6" \
         "rotate 0.5 0.5 90" "rightclick 0.5 0.5" > "$WORK/pinch.txt"
-    launch --connect "127.0.0.1:$PORT" \
-        --open com.android.settings --debug-input-script "$WORK/pinch.txt" --quit-after 60
+    open_shared --open com.android.settings --debug-input-script "$WORK/pinch.txt" || return 1
     wait_until 30 events_have '"action":"back"' \
         || { bad "C13 scripted gestures did not reach the phone"; say "app log: $(tail -3 "$WORK/app.log")"; }
     local verdicts
@@ -1605,8 +1702,7 @@ window_gone() {
 # just that bar; the choice lands under chrome.style.<package>. A right-edge
 # drag resizes the window and the display.
 check_chrome() {
-    clean
-    start_fake || return 1
+    begin_shared || return 1
     rm -f "$WORK/chrome.txt"
     local on_virtual=()
     [ "$VISIBLE" = "1" ] || on_virtual=(--virtual)
@@ -1621,8 +1717,9 @@ check_chrome() {
     # --- Framed: the permanent bar over the stream ---
     # The pointer rests in the window, below the bar.
     printf '%s\n' "hoverat 0 200" > "$WORK/chrome-framed.txt"
-    launch --connect "127.0.0.1:$PORT" --open com.android.settings --float-windows \
-        --debug-chrome-state "$WORK/chrome.txt" --debug-input-script "$WORK/chrome-framed.txt" --quit-after 40
+    open_shared --open com.android.settings --float-windows \
+        --debug-chrome-state "$WORK/chrome.txt" --debug-input-script "$WORK/chrome-framed.txt" \
+        || { kill "$backdrop"; return 1; }
     wait_until 30 events_have '"ev":"video","stream":1,' || { bad "C14 no video config"; kill "$backdrop"; stop_app; stop_fakephone; return 1; }
     local win
     win="$(await_window '$4 == 900 && $5 == 628')" || { bad "C14 no 900x628 pt window (900x600 stream + 28 pt bar)"; kill "$backdrop"; stop_app; stop_fakephone; return 1; }
@@ -1673,19 +1770,15 @@ check_chrome() {
     # ---
 
     # --- Immersive: the dwell pill ---
-    stop_app
-    stop_fakephone
-    sleep 1
-    start_fake || return 1
-    : > "$WORK/events.jsonl"
+    next_shared
     # The script waits for the check's go before clicking the pill's minimise light.
     rm -f "$WORK/chrome-step-minimise"
     printf '%s\n' "wait 0.6" "windowstyle toggle" "wait 4" \
         "hover 0.02 0.03" "wait 0.15" "click 0.02 0.03" "wait 1.2" \
         "waitfile $WORK/chrome-step-minimise" "clickat -406 20" "wait 8" > "$WORK/chrome-immersive.txt"
-    launch --connect "127.0.0.1:$PORT" --open com.android.settings --float-windows \
+    open_shared --open com.android.settings --float-windows \
         --debug-chrome-state "$WORK/chrome.txt" --debug-input-script "$WORK/chrome-immersive.txt" \
-        --quit-after 40
+        || { kill "$backdrop"; return 1; }
     win="$(await_window '$4 == 900 && $5 == 628')" || { bad "C14 no framed window on the relaunch"; kill "$backdrop"; stop_app; stop_fakephone; return 1; }
     # The script flips to immersive: the window shrinks by the bar, the stream stays.
     wait_until 8 win_size "$win" 900 600 \
@@ -1727,20 +1820,16 @@ check_chrome() {
     [ "$(count_events '"kind":"touch","stream":1,"action":0')" -eq "$touches" ] \
         && ok "C14 and no touch reached the phone from the chrome" \
         || bad "C14 the chrome's click reached the phone as touch"
-    stop_app
-    stop_fakephone
-    sleep 1
-    start_fake || return 1
-    : > "$WORK/events.jsonl"
+    next_shared
 
     # --- Switching with ⌥⌘F, near the top of the screen ---
     rm -f "$WORK/chrome-step-top"
     printf '%s\n' "wait 0.6" "click 0.5 0.5" "wait 0.8" "key opt+cmd+f" \
         "waitfile $WORK/chrome-step-top" "windowtop" "wait 9" \
         "key opt+cmd+f" "wait 3" "key opt+cmd+f" "wait 3" "key opt+cmd+f" "wait 8" > "$WORK/chrome-switch.txt"
-    launch --connect "127.0.0.1:$PORT" --open com.android.settings --float-windows \
+    open_shared --open com.android.settings --float-windows \
         --debug-chrome-state "$WORK/chrome.txt" --debug-input-script "$WORK/chrome-switch.txt" \
-        --quit-after 40
+        || { kill "$backdrop"; return 1; }
     win="$(await_window '$4 == 900')" || { bad "C14 no window for the switch checks"; kill "$backdrop"; stop_app; stop_fakephone; return 1; }
     local y0
     # The stored immersive choice opens immersive; ⌥⌘F brings the bar back.
@@ -1799,16 +1888,14 @@ check_chrome() {
 # still SCROLL, and raw trackpad fingers (modelled by the scripted driver) make
 # the pinch and rotate pointers. Momentum events must reach the phone as nothing.
 check_trackpad() {
-    clean
-    start_fake || return 1
+    begin_shared || return 1
     # The script starts at the first video config. The main thread is busy with
     # the opening frames for a few hundred ms after that, which would stretch one
     # step of the first gesture past the cadence C15 measures. Settle first: the
     # first frame is shown within milliseconds, and the rest is margin.
     printf '%s\n' "wait 1.5" "trackscroll 200" "scroll 3" "fingerscroll -200" "fingerpinch 0.5 0.5 1.8" \
         "fingerrotate 0.5 0.5 90" "rightclick 0.5 0.5" > "$WORK/trackpad.txt"
-    launch --connect "127.0.0.1:$PORT" \
-        --open com.android.settings --debug-input-script "$WORK/trackpad.txt" --quit-after 60
+    open_shared --open com.android.settings --debug-input-script "$WORK/trackpad.txt" || return 1
     wait_until 40 events_have '"action":"back"' \
         || { bad "C15 scripted trackpad gestures did not reach the phone"; say "app log: $(tail -3 "$WORK/app.log")"; }
     local verdicts
@@ -1956,19 +2043,10 @@ PY
 
 # --- C8: pause/resume -----------------------------------------------------
 
-check_pause() {
-    clean
-    start_fake || return 1
-    launch --connect "127.0.0.1:$PORT" \
-        --open com.android.settings --minimize-stream 1:6 --deminimize-stream 1:11 --quit-after 16
-    wait_app
-    # Another window passing over the test window makes macOS report it occluded,
-    # which is a pause/resume pair of its own. The scripted minimize holds the
-    # stream paused for the 5 s between the two timers; count that pair, require
-    # every pause to be answered by a resume, and report any short pair that is
-    # not ours instead of letting it decide the verdict.
-    local verdict
-    verdict="$(python3 - "$WORK/events.jsonl" <<'PY' || true
+# pause_verdict — "scripted=N others=N unanswered=N stray=N" over stream 1's
+# window.pause/window.resume pairs so far.
+pause_verdict() {
+    python3 - "$WORK/events.jsonl" <<'PY' || true
 import json, sys
 
 marks = []
@@ -1996,7 +2074,21 @@ scripted = [gap for gap in pairs if 3.5 <= gap <= 6.5]
 others = [gap for gap in pairs if not 3.5 <= gap <= 6.5]
 print("scripted=%d others=%d unanswered=%d stray=%d" % (len(scripted), len(others), 1 if open_pause is not None else 0, stray))
 PY
-)"
+}
+
+check_pause() {
+    begin_shared || return 1
+    local opened verdict
+    open_shared --open com.android.settings --minimize-stream 1:6 --deminimize-stream 1:11 || return 1
+    opened="$(date +%s)"
+    # Another window passing over the test window makes macOS report it occluded,
+    # which is a pause/resume pair of its own. The scripted minimize holds the
+    # stream paused for the 5 s between the two timers; count that pair, require
+    # every pause to be answered by a resume, and report any short pair that is
+    # not ours instead of letting it decide the verdict. The window is watched
+    # for the same 16 s a launch with --quit-after 16 gave it.
+    while [ $(($(date +%s) - opened)) -lt 16 ]; do sleep 0.5; done
+    verdict="$(pause_verdict)"
     say "C8 pause/resume pairs: $verdict"
     case "$verdict" in
         *"scripted=1 "*) ok "C8 exactly one scripted window.pause/window.resume pair (5 s apart)" ;;
@@ -2006,7 +2098,7 @@ PY
         *"unanswered=0 stray=0"*) ok "C8 every window.pause is answered by a window.resume" ;;
         *) bad "C8 unbalanced pause/resume: $verdict" ;;
     esac
-    stop_fakephone
+    stop_app
 }
 
 # --- C10: direct reconnect to a dozing phone (no mDNS) ---------------------
@@ -2082,7 +2174,7 @@ check_direct() {
 # Two launches: with both windows open they overlap, and a click aimed at one
 # can land on the other in front.
 check_nav() {
-    clean
+    begin_shared || return 1
 
     nav_count() {
         python3 - "$WORK/events.jsonl" "$1" "$2" <<'PY'
@@ -2106,24 +2198,17 @@ PY
     nav_at_least() { [ "$(nav_count 1 "$2")" -ge "$1" ]; }
 
     # Phase A: an app window -> ⌘[ and Esc are `nav back` on stream 1.
-    start_fake || return 1
     printf '%s\n' "key cmd+[" "key esc" > "$WORK/input-back.txt"
-    launch --connect "127.0.0.1:$PORT" \
-        --open com.android.settings --debug-input-script "$WORK/input-back.txt" --quit-after 60
+    open_shared --open com.android.settings --debug-input-script "$WORK/input-back.txt" || return 1
     wait_until 30 nav_at_least 1 back \
         && ok "C11 ⌘[ in an app window -> nav back" || bad "C11 no nav back after ⌘["
     wait_until 30 nav_at_least 2 back \
         && ok "C11 Esc in an app window -> nav back" || bad "C11 no second nav back after Esc"
-    stop_app
-    stop_fakephone
-    wait_until 5 no_fakephone
 
     # Phase B: a phone-mode window -> ⇧⌘H home, ⌘↑ recents (both stream 1).
-    : > "$WORK/events.jsonl"
-    start_fake || return 1
+    next_shared
     printf '%s\n' "key cmd+shift+h" "key cmd+up" > "$WORK/input-phone.txt"
-    launch --connect "127.0.0.1:$PORT" --open-phone \
-        --debug-input-script "$WORK/input-phone.txt" --quit-after 60
+    open_shared --open-phone --debug-input-script "$WORK/input-phone.txt" || return 1
     wait_until 30 nav_at_least 1 home \
         && ok "C11 ⇧⌘H in the phone window -> nav home" || bad "C11 no nav home"
     wait_until 30 nav_at_least 1 recents \
@@ -2270,10 +2355,8 @@ PY
 }
 
 check_audio() {
-    clean
-    start_fake || return 1
-    launch --connect "127.0.0.1:$PORT" \
-        --open com.android.settings --audio-stats "$WORK/audio.json" --quit-after 30
+    begin_shared || return 1
+    open_shared --open com.android.settings --audio-stats "$WORK/audio.json" || return 1
     if wait_until 20 audio_stats_ok; then
         ok "C14 Mac received audio (config + >=10 frames)"
     else
@@ -2594,8 +2677,7 @@ drop_log() {
 }
 
 check_drop() {
-    clean
-    start_fake || return 1
+    begin_shared || return 1
 
     python3 - "$WORK" <<'PY'
 import os, sys
@@ -2634,8 +2716,7 @@ PY
     # time and would refuse the second while the first is still in flight.
     printf '%s\n' "dropfile $WORK/drop-3mb.bin" "wait 8" "dropfile $WORK/tripped.bin" "wait 5" \
         > "$WORK/drop.txt"
-    launch --connect "127.0.0.1:$PORT" --open com.android.settings \
-        --debug-input-script "$WORK/drop.txt" --quit-after 120
+    open_shared --open com.android.settings --debug-input-script "$WORK/drop.txt" || return 1
 
     local event want
     if wait_until 60 drop_found 1 ok; then
@@ -2677,8 +2758,6 @@ PY
         && ok "DROP the app survived the failed drop (one instance)" \
         || bad "DROP the app died or a second instance appeared"
     stop_app
-    stop_fakephone
-    wait_until 5 no_fakephone
 }
 
 # --- Share extension ------------------------------------------------------
@@ -3262,7 +3341,8 @@ have_flat_icons() { [ "$(icons_kind '"layers":false')" -ge 5 ]; }
 check_deck() {
     clean
     start_fake || return 1
-    launch --connect "127.0.0.1:$PORT" --quit-after 40
+    # The shared app's own launch: the checks after this one use it.
+    launch_shared --connect "127.0.0.1:$PORT"
     wait_until 30 events_have '"t":"apps.list"' \
         && ok "DECK the app list was requested" || bad "DECK no apps.list"
     wait_until 30 have_layered_icons \
@@ -3287,11 +3367,10 @@ check_deck() {
         bad "DECK no Deck window to capture"
     fi
     stop_app
-    stop_fakephone
-    wait_until 5 no_fakephone
 }
 
 check_orphans() {
+    end_shared
     sleep 1
     local n
     n="$(e2e_app_pids | wc -l | tr -d ' ')"
@@ -3326,16 +3405,28 @@ build_e2e_app() {
     fi
 }
 
+# The order `all` runs in. The shared-app checks (from deck, whose launch they
+# share, to drop) run back to back; every other check launches its own app.
+ALL_CHECKS=(tls qr pair direct mirror spotlight clip sharein links share apk dock nickname notify handoff
+            deck render resize input mouseback pinch chrome trackpad pause nav audio drop)
+
+usage() {
+    say "usage: check-e2e.sh [qr|pair|tls|render|resize|input|mouseback|input-global|pause|direct|nav|mirror|spotlight|pinch|chrome|trackpad|clip|sharein|links|share|apk|drop|dock|nickname|notify|audio|handoff|deck|all]"
+    exit 2
+}
+
 which_check="${1:-all}"
 case "$which_check" in
-    qr|pair|tls|render|resize|input|mouseback|input-global|pause|direct|nav|mirror|spotlight|pinch|chrome|trackpad|clip|sharein|links|share|apk|drop|dock|nickname|notify|audio|handoff|deck|all) ;;
-    *) say "usage: check-e2e.sh [qr|pair|tls|render|resize|input|mouseback|input-global|pause|direct|nav|mirror|spotlight|pinch|chrome|trackpad|clip|sharein|links|share|apk|drop|dock|nickname|notify|audio|handoff|deck|all]"; exit 2 ;;
+    qr|pair|tls|render|resize|input|mouseback|input-global|pause|direct|nav|mirror|spotlight|pinch|chrome|trackpad|clip|sharein|links|share|apk|drop|dock|nickname|notify|audio|handoff|deck) CHECKS=("$which_check") ;;
+    all) CHECKS=("${ALL_CHECKS[@]}") ;;
+    *) usage ;;
 esac
 acquire_lock
 wait_for_other_runs
 pick_run
 mkdir -p "$WORK"
 say "run: port $PORT, work $WORK, profile $PROFILE, app $E2E_BUNDLE"
+[ "$which_check" = "all" ] && say "checks: ${CHECKS[*]}"
 build_e2e_app || exit 1
 build_cgevent || exit 1
 build_share_driver || exit 1
@@ -3346,39 +3437,10 @@ init_watchdog
 start_load
 start_vdisplay || exit 1
 start_watch
-case "$which_check" in
-    qr)       check_qr ;;
-    pair)     check_pair ;;
-    tls)      check_tls ;;
-    mirror)   check_mirror ;;
-    render)   check_render ;;
-    resize)   check_resize ;;
-    input)    check_input ;;
-    mouseback) check_mouseback ;;
-    input-global) check_input_global ;;
-    pinch)    check_pinch ;;
-    chrome)   check_chrome ;;
-    trackpad) check_trackpad ;;
-    pause)    check_pause ;;
-    direct)   check_direct ;;
-    nav)      check_nav ;;
-    spotlight) check_spotlight ;;
-    clip)     check_clip ;;
-    sharein)  check_sharein ;;
-    links)    check_links ;;
-    share)    check_share ;;
-    apk)      check_apk ;;
-    drop)     check_drop ;;
-    dock)     check_dock ;;
-    nickname) check_nickname ;;
-    deck)     check_deck ;;
-    notify)   check_notify ;;
-    audio)    check_audio ;;
-    handoff)  check_handoff ;;
-    all)      check_tls; check_qr; check_pair; check_render; check_resize; check_input; check_mouseback; check_pinch
-              check_chrome; check_trackpad; check_pause; check_direct; check_nav; check_mirror; check_spotlight; check_clip; check_sharein; check_links; check_share; check_apk; check_drop; check_dock; check_nickname
-              check_notify; check_audio; check_handoff; check_deck; check_orphans ;;
-esac
+for check in "${CHECKS[@]}"; do
+    "check_${check//-/_}"
+done
+[ "$which_check" = "all" ] && check_orphans
 
 quiet_report
 watchdog_report

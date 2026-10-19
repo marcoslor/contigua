@@ -280,6 +280,28 @@ final class WindowManager {
         onChange?()
     }
 
+    /// Test hook (`--debug-control` reset, e2e): back to the windows of a just
+    /// launched app for the next check that shares this running app. Every stream
+    /// window closes the way the person closes one (the phone gets window.close),
+    /// stream ids start at 1 again, no cascade position carries over and the
+    /// per-check options are off. `forgetPrefs` also drops the remembered frames,
+    /// styles and Show Touches (a fresh profile); without it they stay, as they
+    /// do across a relaunch.
+    func resetForNextCheck(forgetPrefs: Bool) {
+        for controller in allControllers() { controller.window?.close() }
+        nextStream = 1
+        cascadePoint = .zero
+        floatWindows = false
+        chromeStateFile = nil
+        guard forgetPrefs else { return }
+        frames.removeObject(forKey: Self.framesKey)
+        frames.removeObject(forKey: Self.showTouchesKey)
+        StreamMenuState.shared.showTouches = false
+        for key in frames.dictionaryRepresentation().keys where key.hasPrefix(WindowStyleStore.prefix) {
+            frames.removeObject(forKey: key)
+        }
+    }
+
     /// Re-issue window.open for every open window (used after a reconnect).
     func reopenAll() {
         for controller in allControllers() { controller.sendOpen() }

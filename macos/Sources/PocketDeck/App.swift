@@ -20,6 +20,9 @@ struct LaunchOptions {
     var qrSheet = false
     var qrPayloadFile: String?
     var debugInputScript: String?
+    /// `--debug-control DIR`: commands from the e2e checks that share this
+    /// running app (DebugControl.swift).
+    var debugControl: String?
     var dumpVideoDirectory: String?
     /// `--float-windows`: stream windows stay above other apps' windows, so the
     /// checks that look at them are not defeated by whatever the person has open.
@@ -96,6 +99,8 @@ struct LaunchOptions {
                 options.qrPayloadFile = next()
             case "--debug-input-script":
                 options.debugInputScript = next()
+            case "--debug-control":
+                options.debugControl = next()
             case "--dump-video":
                 options.dumpVideoDirectory = next()
             case "--float-windows":

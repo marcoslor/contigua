@@ -128,7 +128,7 @@ enum PhoneChrome {
 /// the phone window. An app with no stored choice opens `WindowStyle.standard`.
 struct WindowStyleStore {
     static let phoneKey = "chrome.style.phone"
-    private static let prefix = "chrome.style."
+    static let prefix = "chrome.style."
 
     let defaults: UserDefaults
 

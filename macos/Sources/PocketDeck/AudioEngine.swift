@@ -83,7 +83,10 @@ final class AudioEngine {
     private static let maxQueuedFrames: Int64 = 5760
 
     private(set) var stats = AudioStats()
-    var statsFile: String?
+    /// A new file starts from zero counts (e2e: one file per check).
+    var statsFile: String? {
+        didSet { stats = AudioStats() }
+    }
     var volume: Float = 1.0 {
         didSet { player.volume = muted ? 0 : volume }
     }

@@ -406,7 +406,12 @@ class EventLog(object):
 
     def __init__(self, path):
         self._lock = threading.Lock()
-        self._fp = open(path, "w") if path else None
+        # Append mode on a file emptied here: a harness may empty the log
+        # between two checks while this phone runs on, and every line still
+        # lands at the new end (a plain "w" offset would leave a hole before it).
+        if path:
+            open(path, "w").close()
+        self._fp = open(path, "a") if path else None
 
     def _emit(self, obj):
         if self._fp is None:
