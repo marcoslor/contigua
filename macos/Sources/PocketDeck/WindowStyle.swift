@@ -97,6 +97,41 @@ enum DwellChrome {
     }
 }
 
+/// Settings → General "Reveal controls after": how long the pointer rests in
+/// the immersive hot zone before the pill shows. Short is the old fixed 350 ms
+/// and the default; the value lives in the profile's defaults and applies to
+/// open windows at once.
+enum RevealDelay: String, CaseIterable {
+    case instantly
+    case short
+    case long
+
+    static let key = "immersive.revealDelay"
+
+    var label: String {
+        switch self {
+        case .instantly: return "Instantly"
+        case .short: return "Short"
+        case .long: return "Long"
+        }
+    }
+
+    /// Instantly (0), the default 350 ms, or twice that.
+    var seconds: TimeInterval {
+        switch self {
+        case .instantly: return 0
+        case .short: return DwellChrome.dwell
+        case .long: return DwellChrome.dwell * 2
+        }
+    }
+
+    /// Unset or unreadable values are Short, the default.
+    static func stored(in defaults: UserDefaults) -> RevealDelay {
+        guard let raw = defaults.string(forKey: key), let value = RevealDelay(rawValue: raw) else { return .short }
+        return value
+    }
+}
+
 /// The phone window's shape rules: the stream keeps the phone's aspect ratio;
 /// the window adds the style's bar above it.
 enum PhoneChrome {
@@ -164,7 +199,8 @@ struct WindowStyleStore {
 struct DwellPill: Equatable {
     let zone: CGRect
     let pill: CGRect
-    let dwell: TimeInterval
+    /// Settings → General "Reveal controls after"; `setDwell` changes it live.
+    private(set) var dwell: TimeInterval
     let hideDelay: TimeInterval
     let tolerance: CGFloat
 
@@ -206,6 +242,13 @@ struct DwellPill: Equatable {
             restStart = now
             restPoint = point
         }
+    }
+
+    /// The Settings control changed: the next rest uses `value`, and a rest
+    /// already running is re-timed from when it began (the controller folds
+    /// the time in again, so a shorter delay can show it at once).
+    mutating func setDwell(_ value: TimeInterval) {
+        dwell = max(value, 0)
     }
 
     /// A click reached the app through the hot zone: the rest starts again from

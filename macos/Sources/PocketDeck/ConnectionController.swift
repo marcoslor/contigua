@@ -715,6 +715,12 @@ final class ConnectionController {
         recheckOpenWindows()
     }
 
+    /// Settings → General "Reveal controls after": open immersive windows take
+    /// the new delay at once.
+    func setRevealDelay(_ delay: RevealDelay) {
+        windows.setRevealDelay(delay)
+    }
+
     /// Debug input "dockapps on|off": the setting the Settings toggle writes,
     /// then the same handler its onChange runs (e2e).
     func setShowAppsInDock(_ on: Bool) {

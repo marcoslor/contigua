@@ -43,6 +43,7 @@ struct GeneralSettings: View {
     @AppStorage(WindowDensity.key, store: Profile.active.defaults) private var density = 1.0
     @AppStorage(DockAutoSetting.key, store: Profile.active.defaults) private var showAppsInDock = true
     @AppStorage(GlassIconsSetting.key, store: Profile.active.defaults) private var glassIconsOn = true
+    @AppStorage(RevealDelay.key, store: Profile.active.defaults) private var revealDelay: RevealDelay = .short
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
 
     var body: some View {
@@ -64,6 +65,11 @@ struct GeneralSettings: View {
                 ForEach(WindowDensity.options, id: \.value) { Text($0.label).tag($0.value) }
             }
             .pickerStyle(.menu)
+            Picker("Reveal controls after", selection: $revealDelay) {
+                ForEach(RevealDelay.allCases, id: \.self) { Text($0.label).tag($0) }
+            }
+            .pickerStyle(.menu)
+            .onChange(of: revealDelay) { _, delay in controller.setRevealDelay(delay) }
         }
         .formStyle(.grouped)
         .scrollDisabled(true)

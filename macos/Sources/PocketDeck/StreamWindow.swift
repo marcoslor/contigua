@@ -140,11 +140,12 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     private func configureDwell() {
         let active = style == .immersive && !(window?.styleMask.contains(.fullScreen) ?? false)
         if active {
-            dwell = DwellPill(zone: CGRect(origin: .zero, size: DwellChrome.hotZone), pill: chrome.pillStreamRect)
+            dwell = DwellPill(zone: CGRect(origin: .zero, size: DwellChrome.hotZone), pill: chrome.pillStreamRect,
+                              dwell: manager.revealDelay.seconds)
             startDwellFeed()
         } else {
             stopDwellFeed()
-            dwell = DwellPill()
+            dwell = DwellPill(dwell: manager.revealDelay.seconds)
         }
         chrome.setPill(false)
         lastPillShown = false
@@ -173,6 +174,15 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         guard let window, window.isVisible, style == .immersive,
               window.styleMask.contains(.fullScreen) == false else { return }
         pointerMoved(toWindowPoint: window.convertPoint(fromScreen: point))
+    }
+
+    /// Settings → General "Reveal controls after" changed: the next rest uses
+    /// the new delay, and one already running is re-timed from its start (a
+    /// shorter delay can show the pill at once).
+    func setRevealDelay(_ seconds: TimeInterval) {
+        guard dwell.dwell != seconds else { return }
+        dwell.setDwell(seconds)
+        refreshDwell()
     }
 
     /// Folds the dwell's time in now; also what the show/hide timers call.
