@@ -74,6 +74,8 @@ import kotlinx.coroutines.launch
 fun HomeScreen(
     state: DeckUiState,
     onToggleEnabled: (Boolean) -> Unit,
+    onToggleAllowConnections: (Boolean) -> Unit,
+    onToggleAllowPairings: (Boolean) -> Unit,
     onToggleNotify: (Boolean) -> Unit,
     onStatusAction: (AttentionKind) -> Unit,
     onForget: (PairedMacUi) -> String,
@@ -116,13 +118,45 @@ fun HomeScreen(
             StatusCard(state = state, onAction = onStatusAction)
             Spacer(Modifier.height(16.dp))
             ListItem(
-                headlineContent = { Text(stringResource(R.string.home_allow_connections)) },
+                headlineContent = { Text(stringResource(R.string.home_keep_running)) },
                 trailingContent = {
                     Switch(checked = state.enabled, onCheckedChange = null)
                 },
                 modifier = Modifier.toggleable(
                     value = state.enabled,
                     onValueChange = onToggleEnabled,
+                    role = androidx.compose.ui.semantics.Role.Switch,
+                ),
+            )
+            ListItem(
+                headlineContent = { Text(stringResource(R.string.home_allow_connections)) },
+                trailingContent = {
+                    Switch(checked = state.allowConnections, onCheckedChange = null)
+                },
+                modifier = Modifier.toggleable(
+                    value = state.allowConnections,
+                    onValueChange = onToggleAllowConnections,
+                    role = androidx.compose.ui.semantics.Role.Switch,
+                ),
+            )
+            ListItem(
+                headlineContent = { Text(stringResource(R.string.home_allow_pairings)) },
+                supportingContent = {
+                    if (!state.allowConnections) {
+                        Text(stringResource(R.string.home_allow_pairings_hint))
+                    }
+                },
+                trailingContent = {
+                    Switch(
+                        checked = state.allowPairings,
+                        onCheckedChange = null,
+                        enabled = state.allowConnections,
+                    )
+                },
+                modifier = Modifier.toggleable(
+                    value = state.allowPairings,
+                    enabled = state.allowConnections,
+                    onValueChange = onToggleAllowPairings,
                     role = androidx.compose.ui.semantics.Role.Switch,
                 ),
             )

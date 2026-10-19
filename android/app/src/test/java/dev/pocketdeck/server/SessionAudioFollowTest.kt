@@ -81,6 +81,7 @@ class SessionAudioFollowTest {
                 handshakeTimeoutMs = 3_000,
                 audioCapture = capture,
                 tlsView = TlsV2Fixture.view,
+                gateProvider = { GateSettings(true, true) },
             )
             session = sess
             sess.run()

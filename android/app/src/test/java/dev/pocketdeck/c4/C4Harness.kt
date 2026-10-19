@@ -4,6 +4,7 @@ import dev.pocketdeck.proto.Frames
 import dev.pocketdeck.server.AppEntry
 import dev.pocketdeck.server.CannedVideo
 import dev.pocketdeck.server.FakePlatform
+import dev.pocketdeck.server.GateSettings
 import dev.pocketdeck.server.Server
 import dev.pocketdeck.server.Session
 import java.io.File
@@ -71,9 +72,11 @@ object C4Harness {
                     callback = platform,
                     now = { System.nanoTime() / 1_000_000 },
                     log = { System.err.println("harness: $it") },
+                    gateProvider = { GateSettings(true, true) },
                 )
             },
             log = { System.err.println("harness: $it") },
+            gateProvider = { GateSettings(true, true) },
         )
         holder[0] = server
         val port = server.start()

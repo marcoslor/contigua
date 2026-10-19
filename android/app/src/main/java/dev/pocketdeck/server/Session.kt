@@ -66,6 +66,11 @@ class Session(
      * Mac's TLS fingerprint matches `macFp` (R2).
      */
     private val pendingQrProvider: () -> Map<String, Any?>? = { null },
+    /**
+     * The app's two connection gates. Null means the values were never
+     * delivered; [ConnectionGate] then refuses every Mac (fail closed).
+     */
+    private val gateProvider: () -> GateSettings? = { null },
     /** The TLS session view: the Mac's point fingerprint and the exporter. Production
      * derives both from this session's SSLSocket; the JVM tests inject deterministic
      * values (docs/design/e2ee.md §4b: the HKDF math is pinned without an engine). */
@@ -167,6 +172,39 @@ class Session(
 
     fun shareFile(name: String, mime: String, input: java.io.InputStream): Int =
         if (isReady) share.file(name, mime, input) else ShareStatus.NO_SESSION
+
+    /**
+     * A gate changed in the app process. The master switch drops every live
+     * session at once; the pairing switch drops only a session that has not
+     * authenticated yet. Paired sessions keep running with pairings off.
+     */
+    fun applyGates() {
+        if (closed.get() || closeRequested) return
+        val settings = gateProvider()
+        val decision = when {
+            settings?.allowConnections != true -> GateDecision.REFUSE_CONNECTIONS_OFF
+            phase == Phase.PAIR && settings?.allowPairings != true -> GateDecision.REFUSE_PAIRING_OFF
+            else -> return
+        }
+        refuse(decision)
+    }
+
+    /**
+     * Send the refusal, then let the writer drain the queue and close the
+     * socket (the same write-then-close shape as the other handshake errors).
+     */
+    private fun refuse(decision: GateDecision) {
+        val code = decision.code ?: return
+        val why = if (decision == GateDecision.REFUSE_CONNECTIONS_OFF) "connections off" else "pairing off"
+        log("refused: $why mac=${macIdHash(clientId)}")
+        finishWithError(code, "the phone is not accepting ${if (decision == GateDecision.REFUSE_CONNECTIONS_OFF) "connections" else "new pairings"}")
+    }
+
+    /** The Mac's id hash, never the id itself (logs carry no identifiers). */
+    private fun macIdHash(id: String): String = runCatching {
+        val digest = java.security.MessageDigest.getInstance("SHA-256")
+        Crypto.toHex(digest.digest(id.toByteArray(Charsets.UTF_8))).take(16)
+    }.getOrDefault("-")
 
     // ------------------------------------------------------------------
     // lifecycle
@@ -312,6 +350,13 @@ class Session(
         // channel now has to prove it is still that Mac (a rotated cert means
         // the Mac reinstalled: pair again — docs/design/e2ee.md §7).
         val client = store.snapshot().firstOrNull { it.clientId == clientId }
+        when (ConnectionGate.decide(gateProvider(), isPaired = client != null)) {
+            GateDecision.REFUSE_CONNECTIONS_OFF ->
+                return refuse(GateDecision.REFUSE_CONNECTIONS_OFF)
+            GateDecision.REFUSE_PAIRING_OFF ->
+                return refuse(GateDecision.REFUSE_PAIRING_OFF)
+            GateDecision.ACCEPT -> Unit
+        }
         if (client == null) {
             // A scanned QR changes the story: the phone proactively answers the
             // Mac's probe with pair.qr (review R2); left otherwise in PAIR for

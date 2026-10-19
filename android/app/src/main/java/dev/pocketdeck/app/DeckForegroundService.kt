@@ -76,6 +76,10 @@ class DeckForegroundService : Service() {
                 return START_NOT_STICKY
             }
             ACTION_FORGET -> intent.getStringExtra(EXTRA_CLIENT_ID)?.let { forget(it) }
+            ACTION_GATES -> {
+                pushGates()
+                updateAdvertising()
+            }
             else -> {
                 updateShizukuState()
                 ShizukuClient.ensureBound(this)
@@ -98,11 +102,26 @@ class DeckForegroundService : Service() {
         try {
             svc.setCallback(callback)
             svc.setPairedClients(Prefs.serviceStateJson(this))
+            // Before startServer: a server that has not received the gates
+            // refuses everything, so this order has no permissive window.
+            // A daemon too old to know setGates cannot be gated: stop it
+            // instead of letting it serve (fail closed).
+            try {
+                svc.setGates(Prefs.isAllowConnections(this), Prefs.isAllowPairings(this))
+            } catch (e: Throwable) {
+                Log.i(TAG, "setGates unavailable; stopping the un-gated server: ${e.message}")
+                runCatching { svc.stopServer() }
+                serviceReady = false
+                DeckState.port = -1
+                nsd.stop()
+                updateOngoing()
+                return
+            }
             val port = svc.startServer()
             DeckState.port = port
             serviceReady = true
             updateShizukuState()
-            advertise(port)
+            updateAdvertising()
             updateOngoing()
             // The shell process cannot read the battery itself: hand it the last
             // reading (and the keyguard state) as soon as it is reachable.
@@ -134,6 +153,24 @@ class DeckForegroundService : Service() {
     private fun advertise(port: Int) {
         if (port <= 0) return
         nsd.advertise(port, Prefs.deviceId(this), Prefs.deviceName(this), Build.MODEL ?: "Android")
+    }
+
+    /**
+     * While "Allow connections" is off the phone is not advertised at all
+     * (docs/PROTOCOL.md "Transport"): less exposure, and no Mac caches an
+     * address that only answers with a refusal.
+     */
+    private fun updateAdvertising() {
+        if (!Prefs.isAllowConnections(this)) {
+            nsd.stop()
+            return
+        }
+        if (DeckState.port > 0) advertise(DeckState.port)
+    }
+
+    private fun pushGates() {
+        val svc = ShizukuClient.current() ?: return
+        runCatching { svc.setGates(Prefs.isAllowConnections(this), Prefs.isAllowPairings(this)) }
     }
 
     fun respondPairing(requestId: String?, allow: Boolean) {
@@ -272,6 +309,7 @@ class DeckForegroundService : Service() {
         const val ACTION_DENY = "dev.pocketdeck.action.DENY"
         const val ACTION_STOP = "dev.pocketdeck.action.STOP"
         const val ACTION_FORGET = "dev.pocketdeck.action.FORGET"
+        const val ACTION_GATES = "dev.pocketdeck.action.GATES"
         const val EXTRA_REQUEST_ID = "request_id"
         const val EXTRA_CLIENT_ID = "client_id"
 
@@ -283,6 +321,15 @@ class DeckForegroundService : Service() {
         fun stop(context: android.content.Context) {
             val intent = Intent(context, DeckForegroundService::class.java).setAction(ACTION_STOP)
             context.startService(intent)
+        }
+
+        /** A gate changed: push it to the server and fix the advertisement. */
+        fun gatesChanged(context: android.content.Context) {
+            // Never start a stopped service just to re-advertise; the next
+            // start pushes the stored values before it listens.
+            if (!Prefs.isEnabled(context)) return
+            val intent = Intent(context, DeckForegroundService::class.java).setAction(ACTION_GATES)
+            runCatching { context.startService(intent) }
         }
     }
 }

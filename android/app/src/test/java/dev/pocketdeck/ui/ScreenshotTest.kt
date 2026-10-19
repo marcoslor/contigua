@@ -200,6 +200,8 @@ class ScreenshotTest {
             HomeScreen(
                 state = state,
                 onToggleEnabled = {},
+                onToggleAllowConnections = {},
+                onToggleAllowPairings = {},
                 onToggleNotify = {},
                 onStatusAction = {},
                 onForget = { "" },

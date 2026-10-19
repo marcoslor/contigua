@@ -48,6 +48,13 @@ class DeckService(private val appContext: Context?) :
     /** Mirror of the app's per-phone notify toggle (pushed via setNotifyShared). */
     @Volatile private var notifySharedStore = false
 
+    /**
+     * The app's connection gates (pushed via setGates). Null until the app
+     * delivers them, which refuses every Mac: the server never assumes the
+     * permissive defaults on its own.
+     */
+    @Volatile private var gates: GateSettings? = null
+
     /** Last battery reading relayed by the app process (this process cannot receive it). */
     @Volatile private var batteryPercent = 0
     @Volatile private var batteryCharging = false
@@ -104,6 +111,7 @@ class DeckService(private val appContext: Context?) :
                 autoApprovePairing = dev.pocketdeck.BuildConfig.DEBUG,
                 selfCertProvider = { selfCertPem },
                 pendingQrProvider = { pendingQr },
+                gateProvider = { gates },
                 audioCapture = audio,
                 notifyShared = { notifySharedStore },
                 // The session tells the app when the forwarding gate is open, so
@@ -125,7 +133,7 @@ class DeckService(private val appContext: Context?) :
                 },
             )
         }
-        val srv = Server(factory, ::log, { selfCertPem }, { selfKeyP8 })
+        val srv = Server(factory, ::log, { selfCertPem }, { selfKeyP8 }, { gates })
         server = srv
         return srv.start()
     }
@@ -185,6 +193,17 @@ class DeckService(private val appContext: Context?) :
         return ParcelFileDescriptor.AutoCloseInputStream(pfd).use {
             srv.shareFile(name ?: "image", mime ?: "application/octet-stream", it)
         }
+    }
+
+    /**
+     * The app's two connection gates. Pushed before `startServer` at every
+     * bind, so a fresh server never listens with unknown values; a later push
+     * also drops sessions the new values refuse.
+     */
+    override fun setGates(allowConnections: Boolean, allowPairings: Boolean) {
+        gates = GateSettings(allowConnections, allowPairings)
+        log("gates: connections=$allowConnections pairings=$allowPairings")
+        server?.applyGates()
     }
 
     /** The app's per-phone opt-in for notification sharing (privacy default OFF). */
