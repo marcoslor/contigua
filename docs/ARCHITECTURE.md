@@ -45,7 +45,9 @@ The app binds the user service over Shizuku and talks to it over AIDL:
 
 The app pushes identity and per-feature gates in (`setPairedClients`, the
 notify opt-in), the shell calls back for pairing decisions and media actions.
-The TCP session itself lives in the shell process end to end.
+The TCP session itself lives in the shell process end to end. Once ready, a
+handler that throws ends only that message (an `error`/`internal` reply); it
+never closes the session.
 
 ## Streaming: one virtual display per window
 
