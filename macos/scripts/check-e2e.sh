@@ -180,7 +180,7 @@ start_fake() {
 launch() {
     local quiet=()
     [ "$VISIBLE" = "1" ] || quiet=(--background)
-    "$APP" --profile "$PROFILE" "${quiet[@]}" "$@" > "$WORK/app.log" 2>&1 &
+    "$APP" --profile "$PROFILE" ${quiet[@]+"${quiet[@]}"} "$@" > "$WORK/app.log" 2>&1 &
     APP_PID=$!
     start_watchdog app "$APP_PID"
 }
@@ -1726,7 +1726,7 @@ check_chrome() {
     rm -f "$WORK/chrome.txt"
     local on_virtual=()
     [ "$VISIBLE" = "1" ] || on_virtual=(--virtual)
-    "$CGBIN" backdrop --file "$WORK/backdrop.txt" --seconds 120 "${on_virtual[@]}" &
+    "$CGBIN" backdrop --file "$WORK/backdrop.txt" --seconds 120 ${on_virtual[@]+"${on_virtual[@]}"} &
     local backdrop=$!
     # The stream's video pixels: 900x600 pt at the run's backing scale, floored
     # to 16 (VideoGeometry.displayPixels) — 1792x1200 in a 2x run, the one size
@@ -2595,7 +2595,7 @@ check_apk() {
         }
         skip_visible "APK the files arrive through LaunchServices (open -a, Finder's Open With)"
     fi
-    launch --connect "127.0.0.1:$PORT" "${requests[@]}" --quit-after 120
+    launch --connect "127.0.0.1:$PORT" ${requests[@]+"${requests[@]}"} --quit-after 120
 
     authenticated() { events_have '"state":"auth_ok"' || events_have '"state":"paired"'; }
     wait_until 30 authenticated \
