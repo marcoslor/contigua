@@ -49,6 +49,15 @@ enum DockAutoSetting {
     }
 }
 
+/// The running identities "Show phone apps in the Dock" stops when it turns
+/// off: every shim the person did not add by hand. Pinned ones follow the
+/// existing rule and keep running (docs/design/dock.md §Lifecycle).
+enum DockQuit {
+    static func plan(records: [DockShimRecord]) -> [DockShimRecord] {
+        records.filter { !$0.pinned }
+    }
+}
+
 /// Everything a shim bundle is made from.
 struct DockShimSpec: Equatable {
     var deviceId: String
@@ -60,6 +69,9 @@ struct DockShimSpec: Equatable {
     var hostPath: String
     /// Background mode's shims are agents (LSUIElement): no Dock tile, no ⌘-Tab entry.
     var agent = BackgroundMode.isOn
+    /// True for the "Add to Dock" path: the person added this identity by hand,
+    /// so the Show-phone-apps setting never stops it.
+    var pinned = false
 
     /// "WhatsApp (Pixel)", like the Spotlight titles.
     var displayName: String { SpotlightIndexer.title(label: label, phoneName: phoneName) }
@@ -108,6 +120,7 @@ struct DockShimSpec: Equatable {
             DockMessage.plistPackage: pkg,
             DockMessage.plistProfile: profile.name,
             DockMessage.plistHostPath: hostPath,
+            DockMessage.plistPinned: pinned,
         ].merging(agent ? ["LSUIElement": true] : [:]) { current, _ in current }
     }
 }
@@ -119,6 +132,10 @@ struct DockShimRecord: Equatable {
     var pkg: String
     var profile: String
     var name: String
+    /// Added by hand ("Add to Dock"); absent in bundles from before the
+    /// automatic path existed, which were all added by hand, so it defaults
+    /// to true there. Automatic ones write false.
+    var pinned = true
 }
 
 enum DockShimBuilder {
@@ -181,7 +198,8 @@ enum DockShimBuilder {
                   let owner = plist[DockMessage.plistProfile] as? String, owner == profile.name
             else { return nil }
             return DockShimRecord(url: url, deviceId: deviceId, pkg: pkg, profile: owner,
-                                  name: plist["CFBundleName"] as? String ?? "")
+                                  name: plist["CFBundleName"] as? String ?? "",
+                                  pinned: plist[DockMessage.plistPinned] as? Bool ?? true)
         }.sorted { $0.url.path < $1.url.path }
     }
 }
@@ -287,8 +305,17 @@ final class DockApps: NSObject {
         }
     }
 
-    private func isRunning(_ url: URL) -> Bool {
-        NSRunningApplication.runningApplications(withBundleIdentifier: bundleId(of: url) ?? "").contains {
+    /// Whether the app's shim was added by hand ("Add to Dock"); such an
+    /// identity follows the existing rule and never stops with the setting.
+    func isPinned(deviceId: String, pkg: String) -> Bool {
+        records().first { $0.deviceId == deviceId && $0.pkg == pkg }?.pinned ?? false
+    }
+
+    private func isRunning(_ url: URL) -> Bool { runningApp(of: url) != nil }
+
+    /// The running instance of a shim bundle, if any.
+    private func runningApp(of url: URL) -> NSRunningApplication? {
+        NSRunningApplication.runningApplications(withBundleIdentifier: bundleId(of: url) ?? "").first {
             $0.bundleURL?.standardizedFileURL == url.standardizedFileURL
         }
     }
@@ -303,6 +330,24 @@ final class DockApps: NSObject {
     }
 
     // MARK: Automatic identity (docs/design/dock.md §Lifecycle)
+
+    /// The setting turned off: stop the running identities the person did not
+    /// add by hand. Each stops without closing its window — the shim was only
+    /// the Dock identity — and the bundle stays on disk.
+    func quitUnpinnedShims() {
+        for record in DockQuit.plan(records: records()) {
+            guard let app = runningApp(of: record.url) else { continue }
+            quit(pid: Int(app.processIdentifier))
+        }
+    }
+
+    /// Ask a shim to quit without treating it as the person quitting it: its
+    /// binding goes first, so its window is not closed with it.
+    func quit(pid: Int) {
+        exitWatches.removeValue(forKey: pid)?.cancel()
+        bindings.removeValue(forKey: pid)
+        NSRunningApplication(processIdentifier: pid_t(pid))?.terminate()
+    }
 
     /// Builds the shim for a phone app whose window opened and launches it, bound
     /// to `stream`'s window. The file work runs off the main thread: the window
@@ -354,7 +399,8 @@ final class DockApps: NSObject {
     }
 
     @discardableResult
-    func add(deviceId: String, pkg: String, label: String, phoneName: String, launch: Bool) -> URL? {
+    func add(deviceId: String, pkg: String, label: String, phoneName: String, launch: Bool,
+             pinned: Bool) -> URL? {
         guard let binary = Self.shimBinary else {
             Log.app.error("dock: no shim executable in this build")
             return nil
@@ -362,7 +408,7 @@ final class DockApps: NSObject {
         // A rename leaves the old bundle under its old file name.
         for record in records() where record.deviceId == deviceId && record.pkg == pkg { remove(record.url) }
         let spec = DockShimSpec(deviceId: deviceId, pkg: pkg, label: label, phoneName: phoneName,
-                                profile: profile, hostPath: Bundle.main.bundleURL.path)
+                                profile: profile, hostPath: Bundle.main.bundleURL.path, pinned: pinned)
         guard let url = make(spec, shellBinary: binary) else { return nil }
         if launch { open(url) { _ in } }
         return url
@@ -404,7 +450,8 @@ final class DockApps: NSObject {
         case .remove(let url):
             remove(url)
         case .rebuild(let record, let label):
-            add(deviceId: record.deviceId, pkg: record.pkg, label: label, phoneName: phoneName, launch: false)
+            add(deviceId: record.deviceId, pkg: record.pkg, label: label, phoneName: phoneName, launch: false,
+                pinned: record.pinned)
         }
     }
 

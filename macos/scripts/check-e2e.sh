@@ -2805,7 +2805,8 @@ registered_in_ls() { local dump; dump="$("$LSREGISTER" -dump 2>/dev/null)"; grep
 # And the automatic identity (docs/design/dock.md §Lifecycle): an app window the app
 # opens itself makes the shim exist and run while the window is open and brings it
 # down with the window; with the setting off nothing is created and "Add to Dock"
-# still works.
+# still works; turning the setting off stops a running automatic shim (its window
+# stays) but leaves a hand-added one running.
 check_dock() {
     clean
     local dir pkg="com.whatsapp" shim id
@@ -2858,6 +2859,59 @@ check_dock() {
     stop_app
     wait_until 5 eval '[ -z "$(dock_shim_pids)" ]' \
         && ok "DOCK auto: quitting the app leaves no shim behind" || bad "DOCK auto: a shim survived the app"
+    remove_dock_apps
+
+    # Turning the setting off while an automatic identity runs: the shim stops,
+    # the window stays (the identity was only the Dock tile), and nothing
+    # re-identifies the window while the setting is off.
+    printf 'wait 25\ndockapps off\n' > "$WORK/dock-off-script.txt"
+    launch --connect "127.0.0.1:$PORT" --dock-dir "$dir" --open "$pkg" \
+        --debug-input-script "$WORK/dock-off-script.txt" --quit-after 80
+    wait_until 30 window_rx window.open "$pkg" \
+        && ok "DOCK toggle: window.open arrived for $pkg" \
+        || { bad "DOCK toggle: no window.open for $pkg"; stop_app; stop_fakephone; return 1; }
+    wait_until 30 eval '[ -n "$(dock_shim_pids)" ]' \
+        && ok "DOCK toggle: the automatic shim runs while the setting is on" \
+        || bad "DOCK toggle: the shim never ran"
+    local kept
+    kept="$(windows | wc -l | tr -d ' ')"
+    wait_until 30 eval '[ "$(defaults read "$DEFAULTS_SUITE" showAppsInDock 2>/dev/null)" = "0" ]' \
+        && ok "DOCK toggle: the setting is off" || bad "DOCK toggle: the setting never turned off"
+    wait_until 20 eval '[ -z "$(dock_shim_pids)" ]' \
+        && ok "DOCK toggle: the running automatic shim quit" || bad "DOCK toggle: the shim kept running"
+    wait_until 10 eval '[ "$(windows | wc -l | tr -d " ")" -ge "$kept" ]' \
+        && ok "DOCK toggle: the window stayed open" || bad "DOCK toggle: the window closed with the shim"
+    sleep 5
+    [ -z "$(dock_shim_pids)" ] \
+        && ok "DOCK toggle: no identity comes back while the setting is off" \
+        || bad "DOCK toggle: an identity started while the setting was off"
+    stop_app
+    # The next phase waits for a bundle to appear; a leftover one would satisfy
+    # that wait at once and its shim would be the one opened and (replaced by
+    # the app's own --dock-add) stopped.
+    remove_dock_apps
+
+    # Pinned (Add to Dock) identities follow the existing rule: turning the
+    # setting off leaves them running with their window.
+    launch --connect "127.0.0.1:$PORT" --dock-dir "$dir" --dock-add "$pkg" \
+        --debug-input-script "$WORK/dock-off-script.txt" --quit-after 80
+    wait_until 30 shim_made \
+        || { bad "DOCK pinned: no Dock app in $dir"; stop_app; stop_fakephone; return 1; }
+    shim="$(ls -d "$dir"/*.app | head -1)"
+    open_quiet "$shim"
+    wait_until 20 window_rx window.open "$pkg" \
+        && ok "DOCK pinned: the shim opened its window" || bad "DOCK pinned: no window.open for $pkg"
+    wait_until 20 eval '[ -n "$(dock_shim_pids)" ]' \
+        && ok "DOCK pinned: the shim runs" || bad "DOCK pinned: the shim is not running"
+    wait_until 30 eval '[ "$(defaults read "$DEFAULTS_SUITE" showAppsInDock 2>/dev/null)" = "0" ]' \
+        && ok "DOCK pinned: the setting turned off" || bad "DOCK pinned: the setting never turned off"
+    sleep 5
+    [ -n "$(dock_shim_pids)" ] \
+        && ok "DOCK pinned: the hand-added shim keeps running" \
+        || bad "DOCK pinned: the setting stopped a hand-added shim"
+    wait_until 5 windows_at_least 1 \
+        && ok "DOCK pinned: its window is still open" || bad "DOCK pinned: the window is gone"
+    stop_app
     remove_dock_apps
 
     # Setting off: the window opens, nothing is created.

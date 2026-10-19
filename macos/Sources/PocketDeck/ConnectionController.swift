@@ -392,6 +392,11 @@ final class ConnectionController {
                 debugInput?.mediaCommand = { [weak self] action in
                     MainActor.assumeIsolated { self?.nowPlaying.perform(action) }
                 }
+                // The dockapps action writes the setting the way Settings'
+                // @AppStorage does, then calls the same handler its onChange does.
+                debugInput?.dockApps = { [weak self] on in
+                    MainActor.assumeIsolated { self?.setShowAppsInDock(on) }
+                }
                 debugInput?.arm()
             } catch {
                 FileHandle.standardError.write(Data("debug-input-script \(path): \(error)\n".utf8))
@@ -626,7 +631,8 @@ final class ConnectionController {
 
     func addToDock(_ app: AppInfo) {
         guard let phone = link.phone else { return }
-        if dockApps.add(deviceId: phone.id, pkg: app.pkg, label: app.label, phoneName: displayName(for: phone), launch: true) == nil {
+        if dockApps.add(deviceId: phone.id, pkg: app.pkg, label: app.label, phoneName: displayName(for: phone),
+                        launch: true, pinned: true) == nil {
             showTransient("Couldn't add \(app.label) to the Dock.")
         }
         dockRevision += 1
@@ -688,7 +694,8 @@ final class ConnectionController {
         if let pkg = options.dockAdd {
             guard IconCache.shared.loadData(pkg: pkg, deviceId: phone.id) != nil || missingIcons.contains(pkg) else { return }
             let label = apps.first { $0.pkg == pkg }?.label ?? pkg
-            dockApps.add(deviceId: phone.id, pkg: pkg, label: label, phoneName: displayName(for: phone), launch: false)
+            dockApps.add(deviceId: phone.id, pkg: pkg, label: label, phoneName: displayName(for: phone),
+                         launch: false, pinned: true)
         }
         if let pkg = options.dockRemove { dockApps.remove(deviceId: phone.id, pkg: pkg) }
         // `--set-nickname`: the rename a person does in Settings → Devices →
@@ -707,9 +714,19 @@ final class ConnectionController {
     /// Settings → General "Show phone apps in the Dock": on unless it is off.
     var showAppsInDock: Bool { DockAutoSetting.isEnabled(in: profile.defaults) }
 
-    /// The setting changed: open windows follow immediately.
+    /// The setting changed: open windows follow immediately. Off stops the
+    /// running automatic identities too (their windows stay); manually added
+    /// ones follow the existing rule and keep running.
     func showAppsInDockChanged() {
+        if !showAppsInDock { dockApps.quitUnpinnedShims() }
         recheckOpenWindows()
+    }
+
+    /// Debug input "dockapps on|off": the setting the Settings toggle writes,
+    /// then the same handler its onChange runs (e2e).
+    func setShowAppsInDock(_ on: Bool) {
+        profile.defaults.set(on, forKey: DockAutoSetting.key)
+        showAppsInDockChanged()
     }
 
     /// Pkgs of open windows — shims standing for one are neither removed nor
@@ -745,11 +762,11 @@ final class ConnectionController {
         case .skip, .wait:
             return
         case .launchExisting:
-            bindWhenDockCleared(pkg: pkg, stream: stream) { launched in
+            bindWhenDockCleared(deviceId: phone.id, pkg: pkg, stream: stream) { launched in
                 self.dockApps.relaunch(deviceId: phone.id, pkg: pkg, bind: stream, launched: launched)
             }
         case .createAndLaunch:
-            bindWhenDockCleared(pkg: pkg, stream: stream) { launched in
+            bindWhenDockCleared(deviceId: phone.id, pkg: pkg, stream: stream) { launched in
                 self.dockApps.buildAndLaunch(
                     DockShimSpec(deviceId: phone.id, pkg: pkg, label: label, phoneName: self.displayName(for: phone),
                                  profile: profile, hostPath: Bundle.main.bundleURL.path),
@@ -759,16 +776,23 @@ final class ConnectionController {
     }
 
     /// Runs the launch and clears the in-flight key and binds the pid when it is up.
-    private func bindWhenDockCleared(pkg: String, stream: UInt32,
+    private func bindWhenDockCleared(deviceId: String, pkg: String, stream: UInt32,
                                      work: (_ launched: @escaping (Int?) -> Void) -> Void) {
-        let key = "\(link.phone?.id ?? "")/\(pkg)"
+        let key = "\(deviceId)/\(pkg)"
         dockEstablishing.insert(key)
         work { [weak self] pid in
             MainActor.assumeIsolated {
                 guard let self else { return }
                 self.dockEstablishing.remove(key)
                 if let pid {
-                    self.dockApps.bind(pid: pid, stream: stream, pkg: pkg)
+                    // The setting can turn off while the bundle is being built:
+                    // the fresh identity must not outlive it (only manual ones
+                    // do), so it is stopped instead of bound.
+                    if self.showAppsInDock || self.dockApps.isPinned(deviceId: deviceId, pkg: pkg) {
+                        self.dockApps.bind(pid: pid, stream: stream, pkg: pkg)
+                    } else {
+                        self.dockApps.quit(pid: pid)
+                    }
                 }
                 self.recheckOpenWindows()
             }

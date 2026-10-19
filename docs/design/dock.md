@@ -67,7 +67,9 @@ window (`NSApp.applicationIconImage` is per process, not per window).
   phone says it has none — so the Dock never shows a blank tile. An identity already
   on disk (kept from Add to Dock) is simply launched. The phone mirror window gets
   none. With the setting off nothing runs automatically and the menu item below
-  still works.
+  still works; turning it off also stops the running automatic identities ("PDPinned"
+  false — their windows stay open, the bundles stay on disk), while ones added by
+  hand keep running with their windows.
 - Manual: Deck → app context menu → **Add to Dock** creates and launches the shim
   regardless of the setting; the person chooses Options → Keep in Dock. PocketDeck
   never writes the Dock's preferences. Remove: the same menu → **Remove from Dock App**.

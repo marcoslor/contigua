@@ -77,6 +77,7 @@ enum DebugInputAction: Equatable {
     case fingerPinch(at: NormalizedPoint, scale: Double, hold: Double)
     case fingerRotate(at: NormalizedPoint, degrees: Double, hold: Double)
     case showTouches(Bool)
+    case dockApps(Bool)
     case windowStyle(String)
     case dropFile(String)
     case hover(NormalizedPoint)
@@ -165,6 +166,12 @@ enum DebugInputScript {
             case "on" where args.count == 1: return .showTouches(true)
             case "off" where args.count == 1: return .showTouches(false)
             default: throw LineError(message: "showtouches needs on or off")
+            }
+        case "dockapps":
+            switch args.first {
+            case "on" where args.count == 1: return .dockApps(true)
+            case "off" where args.count == 1: return .dockApps(false)
+            default: throw LineError(message: "dockapps needs on or off")
             }
         case "windowstyle":
             switch args.first {
@@ -332,6 +339,9 @@ final class DebugInputDriver {
     var notifyClick: ((String) -> Bool)?
     /// `mediacmd ACTION`: the Now Playing transport controls' target.
     var mediaCommand: ((String) -> Void)?
+    /// `dockapps on|off`: the Settings → General toggle, through the same
+    /// write-then-handle path its onChange runs (e2e).
+    var dockApps: ((Bool) -> Void)?
 
     init(actions: [DebugInputAction]) {
         self.actions = actions
@@ -412,6 +422,8 @@ final class DebugInputDriver {
             }
         case .showTouches(let enabled):
             (view.window?.windowController as? StreamWindowController)?.manager.showTouches = enabled
+        case .dockApps(let on):
+            dockApps?(on)
         case .windowStyle(let target):
             guard let controller = view.window?.windowController as? StreamWindowController else { return }
             switch target {

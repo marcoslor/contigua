@@ -22,6 +22,10 @@ enum DockMessage {
     static let plistPackage = "PDPackage"
     static let plistProfile = "PDProfile"
     static let plistHostPath = "PDHostPath"
+    /// True on shims the person added by hand ("Add to Dock"); the automatic
+    /// ones write false. Turning "Show phone apps in the Dock" off stops only
+    /// the unpinned ones.
+    static let plistPinned = "PDPinned"
 
     /// The shim executable inside PocketDeck.app/Contents/MacOS and every shim bundle.
     static let shimExecutable = "PocketDeckShim"
