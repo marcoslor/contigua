@@ -7,6 +7,7 @@ import android.view.InputEvent
 import android.view.KeyCharacterMap
 import android.view.KeyEvent
 import android.view.MotionEvent
+import dev.pocketdeck.proto.Frames
 import java.lang.reflect.Method
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledExecutorService
@@ -136,6 +137,47 @@ internal class AndroidInjector(
         } finally {
             e.recycle()
         }
+    }
+
+    /**
+     * A hovering mouse: the same motion a real one makes over the display, so
+     * hover highlights, tooltips and hover menus react. Nothing is pressed:
+     * the pointer only moves. `SOURCE_MOUSE` is what makes Android treat it as
+     * a mouse rather than a stylus.
+     */
+    override fun hover(displayId: Int, action: Int, nx: Float, ny: Float, size: IntSize) {
+        val t = SystemClock.uptimeMillis()
+        val properties = arrayOf(
+            MotionEvent.PointerProperties().apply {
+                id = 0
+                toolType = MotionEvent.TOOL_TYPE_MOUSE
+            },
+        )
+        val coords = arrayOf(
+            MotionEvent.PointerCoords().apply {
+                x = nx.coerceIn(0f, 1f) * size.w
+                y = ny.coerceIn(0f, 1f) * size.h
+                // A hovering pointer touches nothing.
+                pressure = 0f
+                this.size = 0f
+            },
+        )
+        val e = MotionEvent.obtain(
+            t, t, hoverAction(action), 1, properties, coords,
+            0, 0, 1f, 1f, 0, 0, InputDevice.SOURCE_MOUSE, 0,
+        )
+        try {
+            deliver(e, displayId)
+        } finally {
+            e.recycle()
+        }
+    }
+
+    private fun hoverAction(action: Int): Int = when (action) {
+        Frames.HOVER_ENTER -> MotionEvent.ACTION_HOVER_ENTER
+        Frames.HOVER_MOVE -> MotionEvent.ACTION_HOVER_MOVE
+        Frames.HOVER_EXIT -> MotionEvent.ACTION_HOVER_EXIT
+        else -> MotionEvent.ACTION_HOVER_MOVE
     }
 
     override fun key(displayId: Int, action: Int, keycode: Int, metaState: Int, downTime: Long, eventTime: Long) {

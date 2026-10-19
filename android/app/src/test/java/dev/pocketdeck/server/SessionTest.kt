@@ -3,6 +3,7 @@ package dev.pocketdeck.server
 import dev.pocketdeck.e2ee.PairingCodeV2
 import dev.pocketdeck.proto.FrameReader
 import dev.pocketdeck.proto.Frames
+import dev.pocketdeck.proto.HoverPayload
 import dev.pocketdeck.proto.Json
 import dev.pocketdeck.proto.TouchPayload
 import org.junit.After
@@ -493,6 +494,43 @@ class SessionTest {
         assertTrue(move.eventTime > down.eventTime)
         assertTrue(up.eventTime > move.eventTime)
         assertTrue(platform.inputs.contains(displayId))
+    }
+
+    @Test
+    fun hoverMapsToTheDisplayAndKeepsOnlyTheNewestMove() {
+        addAndAuthenticate()
+        send(mapOf("t" to "window.open", "stream" to 1, "w" to 640, "h" to 480, "dpi" to 160, "pkg" to "com.android.settings"))
+        readUntil("window.opened")
+        val displayId = platform.opens.first().displayId
+
+        sendFrame(Frames.TYPE_HOVER, 1, Frames.encodeHover(HoverPayload(Frames.HOVER_ENTER, 0.5f, 0.5f)))
+        // More moves than the injector can take one by one: stale ones are
+        // dropped rather than queued, and none may land after the exit.
+        for (i in 1..50) {
+            sendFrame(Frames.TYPE_HOVER, 1,
+                Frames.encodeHover(HoverPayload(Frames.HOVER_MOVE, i / 100f, 0.5f)))
+        }
+        await { platform.hovers.any { it.action == Frames.HOVER_MOVE } }
+        sendFrame(Frames.TYPE_HOVER, 1, Frames.encodeHover(HoverPayload(Frames.HOVER_EXIT, 0.5f, 0.5f)))
+        await { platform.hovers.any { it.action == Frames.HOVER_EXIT } }
+
+        val enter = platform.hovers.first()
+        assertEquals(Frames.HOVER_ENTER, enter.action)
+        assertEquals(displayId, enter.displayId)
+        assertEquals(0.5f, enter.nx, 0f)
+        val exit = platform.hovers.last()
+        assertEquals(Frames.HOVER_EXIT, exit.action)
+        assertEquals(displayId, exit.displayId)
+        assertTrue("no move was injected", platform.hovers.any { it.action == Frames.HOVER_MOVE })
+        assertTrue("an exit landed before the end", platform.hovers.dropLast(1).none { it.action == Frames.HOVER_EXIT })
+    }
+
+    @Test
+    fun unknownFrameTypeIsIgnoredAndTheSessionLives() {
+        addAndAuthenticate()
+        sendFrame(0x7e, 1, byteArrayOf(1, 2, 3))
+        send(mapOf("t" to "ping", "ts" to 9))
+        assertEquals(9, (readUntil("pong")["ts"] as Number).toInt())
     }
 
     @Test
