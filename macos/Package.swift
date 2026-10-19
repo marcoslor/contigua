@@ -25,7 +25,11 @@ let package = Package(
                 .product(name: "X509", package: "swift-certificates"),
                 .product(name: "SwiftASN1", package: "swift-asn1"),
             ],
-            path: "Sources/PocketDeck"
+            path: "Sources/PocketDeck",
+            // Debug builds keep the e2e launch hooks (tests and local runs);
+            // release builds only get them when bundle.sh passes the same
+            // define for an e2e bundle (sec L-6).
+            swiftSettings: [.define("PD_TEST_HOOKS", .when(configuration: .debug))]
         ),
         .testTarget(name: "PocketDeckTests", dependencies: ["PocketDeck"], path: "Tests/PocketDeckTests"),
     ]
