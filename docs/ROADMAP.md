@@ -66,7 +66,7 @@ Batch A (XS-S, one agent, one commit each)
 Batch B (S)
 - [x] B1 Mac: glass title bar uses progressive blur only, no dimming, in framed and immersive, light and dark apps.
 - [ ] B2 Mac: immersive mode's reveal delay is a setting (default unchanged) (done); fix the unbalanced immersive controls (needs a screenshot of the issue).
-- [ ] B3 Android: "Allow connections" (master: refuses every Mac, paired or not, and drops live sessions) + "Allow new pairings" (greyed out while the master is off).
+- [x] B3 Android: "Allow connections" (master: refuses every Mac, paired or not, and drops live sessions) + "Allow new pairings" (greyed out while the master is off).
 
 Batch C (M, one at a time)
 - [ ] C1 Mac: View > Density submenu. "Default" (the Settings value, checked when the app has no override) plus the values; picking a value sets a per-app override for the focused window's app, "Default" clears it. Settings lists overrides with a reset.
