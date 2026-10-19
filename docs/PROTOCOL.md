@@ -183,8 +183,10 @@ code     = uint64_be(SHA-256("pd-code-v2" || exporter || macFP || phoneFP
 ### QR flow (Mac shows, phone scans)
 
 The Mac shows `pocketdeck://pair?c=<clientId>&n=<name>&f=<macFP hex 64>&s=<S hex 32>`,
-where `s` is a one-time 128-bit secret that expires with the QR. The phone scans
-it, pins `f` (the Mac fingerprint), and proves `s` inside the TLS session:
+where `s` is a one-time 128-bit secret that expires with the QR and is consumed
+the first time the phone answers with `pair.qr` (a second hello in that window
+gets no `pair.qr`). The phone scans it, pins `f` (the Mac fingerprint), and
+proves `s` inside the TLS session:
 
 1. Mac opens the QR sheet: it probes the phones it can reach (and the
    `--connect` target) with a pairing-channel `hello`, carrying no code.

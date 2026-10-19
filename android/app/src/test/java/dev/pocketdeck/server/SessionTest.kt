@@ -41,6 +41,8 @@ class SessionTest {
     private fun connect(pairDecisionTimeoutMs: Long, autoApprovePairing: Boolean = false,
                         taskMove: TaskMove? = null,
                         pairCooldown: PairCooldown? = null,
+                        pendingQr: (() -> Map<String, Any?>?)? = null,
+                        onQrConsumed: (() -> Unit)? = null,
                         gates: () -> GateSettings? = { GateSettings(true, true) }) {
         serverSocket = ServerSocket(0)
         val accept = Thread {
@@ -68,6 +70,8 @@ class SessionTest {
                 exitPollIntervalMs = 50,
                 autoApprovePairing = autoApprovePairing,
                 pairCooldown = pairCooldown ?: PairCooldown(),
+                pendingQrProvider = pendingQr ?: { null },
+                pendingQrConsumer = onQrConsumed ?: {},
                 tlsView = TlsV2Fixture.view,
                 gateProvider = gates,
             )
@@ -377,6 +381,37 @@ class SessionTest {
         readUntil("welcome")
         assertEquals(0, platform.pairRequests.size)
         assertEquals(1, platform.paired.count { it.clientId == "cAuto" })
+    }
+
+    /**
+     * L-3: the scanned QR secret is one-time — serving `pair.qr` clears it, so
+     * a second hello with the same secret gets no answer at all.
+     */
+    @Test
+    fun aServedQrSecretIsConsumed() {
+        runCatching { client.close() }
+        runCatching { serverSocket.close() }
+        var qr: Map<String, Any?>? = mapOf(
+            "clientId" to "qc1",
+            "name" to "Mac",
+            "macFp" to TlsV2Fixture.MAC_FP_HEX,
+            "secret" to "0".repeat(32),
+            "at" to System.currentTimeMillis(),
+        )
+        connect(pairDecisionTimeoutMs = 5_000, pendingQr = { qr },
+            onQrConsumed = { qr = null })
+        hello("qc1", "Mac")
+        val served = readUntil("pair.qr")
+        assertEquals(64, (served["m"] as String).length)
+        assertEquals(null, qr)
+        client.soTimeout = 400
+        hello("qc1", "Mac")
+        try {
+            val frame = reader.readFrame()
+            throw AssertionError("second hello answered again: $frame")
+        } catch (expected: java.net.SocketTimeoutException) {
+            // Nothing arrived: the one-time secret is gone.
+        }
     }
 
     @Test
