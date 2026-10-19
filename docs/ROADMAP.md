@@ -17,7 +17,7 @@ Status: `[ ]` todo · `[~]` in progress · `[x]` done (verified on device).
       `SHOULD_SHOW_SYSTEM_DECORATIONS`. If One UI's launcher runs on the VD and #6007
       stays clean across lock/unlock, use the system launcher in phone mode instead of ours.
 - [ ] Device QA on the S25+ with the phone locked: latency ≤ 80 ms p50, #6007 clean, battery drain per hour measured idle vs. one window
-- [~] Repo polish: README with GIF, LICENSE, build docs, CI (gradle build + swift build/test + fakephone selfcheck) — README landed on epic/docs; GIF, LICENSE, CI and the fakephone selfcheck in CI are still open
+- [~] Repo polish: README with GIF, LICENSE, build docs, CI (gradle build + swift build/test + fakephone selfcheck) — README and LICENSE (PolyForm Noncommercial 1.0.0) landed; GIF, CI and the fakephone selfcheck in CI are still open
 
 ## Before launch (P0)
 
@@ -77,12 +77,28 @@ Batch D (M-L)
 - [x] D1 Hover pass-through: Mac pointer moves reach the phone as mouse hover (ACTION_HOVER_*), e.g. Chrome's new-tab Lens button reacts as with a real mouse. Brief: .agent/hover/brief.md.
 - [x] D2 Clicking a Mac notification runs its action in a PocketDeck window. Setting: Open on Mac (default) / Open on phone / Do nothing.
 
-## v0.x — later native features
+## v0.2 — deeper integrations (planned 2026-10-19, in this order)
 
-| Feature | Approach | Size |
-|---|---|---|
-| Automation server (MCP) | local stdio server over deckctl: list apps, open, observe, tap, type | M |
-| Companion IME | composing/emoji/dictation | L |
+| # | Feature | Approach | Size |
+|---|---|---|---|
+| 1 | Phone files in Finder | File Provider extension (replicated): the phone's shared storage as a Finder location, listed and fetched on demand over the session at shell UID; thumbnails and Quick Look; cached files stay readable offline, edits upload when the phone is back | L |
+| 2 | Automation server (MCP) | local stdio MCP server on the Mac over the existing session: list apps, open, screenshot a window, tap/type/swipe, read the UI tree | M |
+| 3 | Camera sharing | phone camera as a Mac camera: CoreMediaIO camera extension fed by a Camera2 stream from the phone. Spike first: can the shell process open the camera with the phone locked, or does it need the app with a foreground service | L |
+| 4 | Deeper notifications | notification actions (inline reply, buttons), dismiss synced both ways, per-app filters, images; Android 16 Live Updates / Samsung Now Bar shown live on the Mac | M‑L |
+| 5 | Deeper media control | artwork, position and seeking, choosing among several playing apps, Mac media keys and volume, where the audio plays (phone or Mac) | M |
+| 6 | Deeper calls | incoming call on the Mac with Answer / Decline / message, call log; call audio on the Mac's mic and speakers. Spike first: Telecom control and call-audio capture at shell UID | L |
+| 7 | Widgets | WidgetKit widgets (battery, now playing, latest notifications, app shortcuts). Built from a snapshot the Mac app keeps; timelines computed on the Mac so a refresh never wakes the phone; the phone pushes changes only; a disconnected phone shows the last state with its age, never an error | M |
+| 8 | WAN access | see "Remote access" below | L |
+| 9 | Remote wake | wake a dozing phone server from the Mac: the rendezvous connection doubles as the wake channel off the LAN; on the LAN, find the cheapest keepalive that survives doze | M |
+
+## After the v0.2 features: maintainability
+
+- [ ] Source file size gate: fail a source file over 10k tokens (≈ 40 KB), warn over 5k. Source only
+      (Kotlin, Swift, Python, shell); docs, generated files, lockfiles and baselines are exempt.
+      Today's offenders get a shrinking allowlist, then splits (Session.kt, ConnectionController.swift,
+      Session.swift, WindowStream.kt, check-e2e.sh → e2e-lib.sh + check files).
+- [ ] Warnings as errors on both sides; a separate Swift core target (protocol, session, TLS, geometry).
+- [ ] CI (gradle build, swift build/test, fakephone selfcheck, the size gate).
 
 ## Remote access (paid hosted option, always self-hostable)
 
@@ -96,6 +112,5 @@ Single static server binary + Docker image; one process does rendezvous + relay.
 
 ## Later
 
-Wake over network, widgets on the Mac, Finder FileProvider,
-APK preview, calls, camera sharing, adb-only mode (no Shizuku: self-bootstrap
+APK preview, Companion IME (composing/emoji/dictation), adb-only mode (no Shizuku: self-bootstrap
 via wireless-debugging pairing).
