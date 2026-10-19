@@ -80,6 +80,8 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         captureStandardLights()
         chrome.onBarPress = { [weak self] in self?.barPresses += 1; self?.writeChromeState() }
         chrome.setActions(headerActions())
+        // The overlay's setting before the first state write: the file reports it.
+        videoView.showsTouches = manager.showTouches
         stateFile = manager.chromeStateFile
         writeChromeState()
         let mapper = InputMapper(stream: stream)
@@ -97,8 +99,8 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         mapper.touchPointsChanged = { [weak self] points in self?.videoView.showTouchPoints(points) }
         mapper.hoverEnabled = { [weak self] in self?.manager.hoverEnabled ?? false }
         videoView.onDroppedFiles = { [weak manager] urls in manager?.onFilesDropped?(urls) }
+        videoView.onTouchDotsChanged = { [weak self] in self?.writeChromeState() }
         videoView.inputMapper = mapper
-        videoView.showsTouches = manager.showTouches
         // In immersive the dwell feed already sees every move in the window;
         // the tracking area would report the same ones twice.
         videoView.hoverFeedActive = { [weak self] in
@@ -468,7 +470,9 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         let fullScreen = window?.styleMask.contains(.fullScreen) ?? false
         let line = "style=\(style.rawValue) lights=\(lights ? "shown" : "hidden") pill=\(pillUp ? "shown" : "hidden")"
             + " title_visible=\(titleUp ? "yes" : "no") lights_managed=\(managed)"
-            + " fullscreen=\(fullScreen ? "yes" : "no") clicks=\(barPresses)\n"
+            + " fullscreen=\(fullScreen ? "yes" : "no") clicks=\(barPresses)"
+            + " dots=\(chrome.touchDotsOutsideMirror ? "outside" : "mirrored")"
+            + " touches=\(videoView.showsTouches ? "on" : "off") dot_count=\(chrome.touchDotCount)\n"
         try? Data(line.utf8).write(to: stateFile, options: .atomic)
     }
 

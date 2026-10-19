@@ -112,6 +112,16 @@ final class HoverInputTests: XCTestCase {
         XCTAssertEqual(sent().touches, [.down, .move, .move])
     }
 
+    func testHoverNeverShowsTouchDots() {
+        let (map, _) = makeMapper()
+        var dots: [[InputMapper.TouchPoint]] = []
+        map.touchPointsChanged = { dots.append($0) }
+        map.hoverMove(at: point(0.5, 0.98))
+        map.hoverMove(at: point(0.55, 0.9))
+        map.hoverExit()
+        XCTAssertTrue(dots.isEmpty, "Show Touches draws touches only: a hover is not a touch")
+    }
+
     func testAWindowThatClosesOrLosesKeySendsNoMoreHover() {
         let (map, sent) = makeMapper()
         map.hoverMove(at: point(0.5, 0.5))
