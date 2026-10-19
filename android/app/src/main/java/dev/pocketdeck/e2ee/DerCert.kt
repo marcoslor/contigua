@@ -29,6 +29,7 @@ object DerCert {
     private const val TAG_OID = 0x06
     private const val TAG_UTF8_STRING = 0x0C
     private const val TAG_UTC_TIME = 0x17
+    private const val TAG_GENERALIZED_TIME = 0x18
     private const val TAG_BOOLEAN = 0x01
     private const val TAG_NULL = 0x05
 
@@ -70,7 +71,7 @@ object DerCert {
                 integer(BigInteger.valueOf(serial.toLong())) +
                 signatureAlgo +
                 name(cn) +
-                derSeq(utcTime(notBefore) + utcTime(notAfter)) +
+                derSeq(time(notBefore) + time(notAfter)) +
                 name(cn) +
                 derSeq(derSeq(OID_EC_PUBLIC_KEY + OID_PRIME256V1) + bitString(point)) +
                 derContext(0xA3, extensions),
@@ -149,10 +150,22 @@ object DerCert {
 
     private fun nullBytes(): ByteArray = tlv(TAG_NULL, byteArrayOf())
 
-    private fun utcTime(date: Date): ByteArray {
+    /**
+     * RFC 5280 §4.1.2.5: UTCTime for 1950..2049, GeneralizedTime from 2050 on.
+     * The phone identity's "no expiration" date (9999) needs the latter; a cert
+     * with a 366-day validity (review L-5) uses the former.
+     */
+    internal fun time(date: Date): ByteArray {
+        val cal = utcCalendar(date)
+        val year = cal.get(java.util.Calendar.YEAR)
+        return if (year in 1950..2049) utcTime(cal) else generalizedTime(cal)
+    }
+
+    private fun utcCalendar(date: Date): java.util.Calendar =
+        java.util.Calendar.getInstance(java.util.TimeZone.getTimeZone("UTC")).apply { time = date }
+
+    private fun utcTime(cal: java.util.Calendar): ByteArray {
         // YYMMDDHHMMSSZ, always UTC (valid 1950..2049 per RFC 5280 §4.1.2.5.1).
-        val cal = java.util.Calendar.getInstance(java.util.TimeZone.getTimeZone("UTC"))
-        cal.time = date
         val text = buildString {
             pad2(cal.get(java.util.Calendar.YEAR) % 100)
             pad2(cal.get(java.util.Calendar.MONTH) + 1)
@@ -163,6 +176,20 @@ object DerCert {
             append('Z')
         }
         return tlv(TAG_UTC_TIME, text.toByteArray(Charsets.US_ASCII))
+    }
+
+    private fun generalizedTime(cal: java.util.Calendar): ByteArray {
+        // YYYYMMDDHHMMSSZ, always UTC (RFC 5280 §4.1.2.5.2).
+        val text = buildString {
+            append(cal.get(java.util.Calendar.YEAR))
+            pad2(cal.get(java.util.Calendar.MONTH) + 1)
+            pad2(cal.get(java.util.Calendar.DAY_OF_MONTH))
+            pad2(cal.get(java.util.Calendar.HOUR_OF_DAY))
+            pad2(cal.get(java.util.Calendar.MINUTE))
+            pad2(cal.get(java.util.Calendar.SECOND))
+            append('Z')
+        }
+        return tlv(TAG_GENERALIZED_TIME, text.toByteArray(Charsets.US_ASCII))
     }
 
     private fun StringBuilder.pad2(v: Int) {
