@@ -31,6 +31,7 @@ TYPE_AUDIO_FRAME = 0x05
 TYPE_TOUCH = 0x10
 TYPE_SCROLL = 0x11
 TYPE_KEY = 0x12
+TYPE_HOVER = 0x13
 TYPE_APK_DATA = 0x20
 TYPE_SHARE_DATA = 0x21
 TYPE_DROP_DATA = 0x22
@@ -45,6 +46,7 @@ TYPE_NAMES = {
     TYPE_TOUCH: "TOUCH",
     TYPE_SCROLL: "SCROLL",
     TYPE_KEY: "KEY",
+    TYPE_HOVER: "HOVER",
     TYPE_APK_DATA: "APK_DATA",
     TYPE_SHARE_DATA: "SHARE_DATA",
     TYPE_DROP_DATA: "DROP_DATA",
@@ -296,6 +298,22 @@ def unpack_key(frame):
         raise ProtocolError("KEY payload must be 9 bytes, got %d" % len(frame.payload))
     action, keycode, meta_state = struct.unpack(">BII", frame.payload)
     return action, keycode, meta_state
+
+
+HOVER_ENTER, HOVER_MOVE, HOVER_EXIT = 0, 1, 2
+
+
+def pack_hover(stream, action, nx, ny):
+    return pack_frame(TYPE_HOVER, stream, struct.pack(">Bff", action, nx, ny))
+
+
+def unpack_hover(frame):
+    if frame.type != TYPE_HOVER:
+        raise ProtocolError("expected HOVER, got %s" % frame.name)
+    if len(frame.payload) != 9:
+        raise ProtocolError("HOVER payload must be 9 bytes, got %d" % len(frame.payload))
+    action, nx, ny = struct.unpack(">Bff", frame.payload)
+    return action, nx, ny
 
 
 # --- auth (v1; the v2 TLS pin replaces it — tools/emulator/poc.py and the

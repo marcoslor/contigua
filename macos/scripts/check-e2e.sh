@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # End-to-end checks C3-C13 for the macOS client against tools/fakephone.
 #
-#   ./scripts/check-e2e.sh [qr|pair|gates|tls|render|resize|input|mouseback|input-global|pause|direct|nav|mirror|spotlight|pinch|chrome|density|trackpad|clip|sharein|links|share|apk|drop|dock|nickname|notify|audio|handoff|deck|all [--shard N/M]]
+#   ./scripts/check-e2e.sh [qr|pair|gates|tls|render|resize|input|hover|mouseback|input-global|pause|direct|nav|mirror|spotlight|pinch|chrome|density|trackpad|clip|sharein|links|share|apk|drop|dock|nickname|notify|audio|handoff|deck|all [--shard N/M]]
 #
 # Every check starts from a clean slate (the shared-app checks share one, see
 # "The shared app" below): no PocketDeck or fakephone processes
@@ -1403,7 +1403,147 @@ check_input_global() {
     stop_fakephone
 }
 
-# --- Mouse side buttons ----------------------------------------------------
+# --- Hover ----------------------------------------------------------------
+
+# hv_hover_count <action> — how many hover frames of that action the fakephone
+# received on stream 1 (0 enter, 1 move, 2 exit).
+hv_hover_count() {
+    local n
+    n="$(grep -c "\"kind\":\"hover\",\"stream\":1,\"action\":$1," "$WORK/events.jsonl" 2>/dev/null || true)"
+    echo "${n:-0}"
+}
+
+# check_hover — the Mac pointer over the video is a mouse hovering Android:
+# HOVER (0x13) becomes ACTION_HOVER_ENTER/MOVE/EXIT. Moving in enters and
+# moves, leaving the video exits, a click sends the exit before its touch
+# DOWN and the next move enters again after the release, and Settings ▸ Input
+# "Hover over Android apps" off sends no hover at all. Scripted only: the
+# driver delivers the moves to the view, so no pointer, focus or window
+# position is involved (a real-pointer variant would be visible-only).
+check_hover() {
+    begin_shared || return 1
+    rm -f "$WORK"/hv-*
+    cat > "$WORK/hover.txt" <<SCRIPT
+hover 0.5 0.5
+waitfile $WORK/hv-enter
+hover 0.55 0.5
+wait 0.03
+hover 0.6 0.5
+wait 0.03
+hover 0.65 0.45
+wait 0.03
+hover 0.7 0.4
+waitfile $WORK/hv-out
+hoverout
+waitfile $WORK/hv-click
+click 0.5 0.5
+waitfile $WORK/hv-again
+hover 0.5 0.5
+waitfile $WORK/hv-off
+hoversetting off
+waitfile $WORK/hv-moves
+hover 0.3 0.3
+hover 0.7 0.7
+hover 0.9 0.9
+wait 0.6
+SCRIPT
+    open_shared --open com.android.settings --debug-input-script "$WORK/hover.txt" || return 1
+    wait_until 30 eval '[ "$(hv_hover_count 0)" -ge 1 ]' \
+        || { bad "HV the pointer over the video sent no hover enter"; say "app log: $(tail -3 "$WORK/app.log")"; }
+
+    # Enter carries the point in video coordinates.
+    python3 - "$WORK/events.jsonl" <<'PY' && ok "HV enter at the point the pointer is over" \
+        || bad "HV enter has the wrong coordinates"
+import json, sys
+rows = [json.loads(l) for l in open(sys.argv[1]) if '"kind":"hover","stream":1,"action":0' in l]
+e = rows[0]
+sys.exit(0 if abs(e["nx"] - 0.5) <= 0.03 and abs(e["ny"] - 0.5) <= 0.03 else 1)
+PY
+    touch "$WORK/hv-enter"
+
+    wait_until 10 eval '[ "$(hv_hover_count 1)" -ge 1 ]' \
+        && ok "HV moves follow the enter ($(hv_hover_count 1))" \
+        || bad "HV no hover move reached the phone"
+    touch "$WORK/hv-out"
+
+    wait_until 10 eval '[ "$(hv_hover_count 2)" -ge 1 ]' \
+        && ok "HV leaving the video sends the exit" \
+        || bad "HV no hover exit after hoverout"
+    touch "$WORK/hv-click"
+
+    wait_until 10 eval '[ "$(grep -c "\"kind\":\"touch\",\"stream\":1,\"action\":0" "$WORK/events.jsonl")" -ge 1 ]' \
+        && ok "HV a click still sends its touch down" \
+        || bad "HV the click made no touch down"
+    touch "$WORK/hv-again"
+
+    wait_until 10 eval '[ "$(hv_hover_count 0)" -ge 2 ]' \
+        && ok "HV the next move after the release enters again" \
+        || bad "HV no second enter after the click"
+
+    # Order: the exit precedes the click's DOWN, the UP precedes the re-enter.
+    python3 - "$WORK/events.jsonl" <<'PY' && ok "HV exit before the touch DOWN, enter again after the UP" \
+        || bad "HV hover and touch order is wrong"
+import json, sys
+rows = []
+for line in open(sys.argv[1]):
+    try:
+        e = json.loads(line)
+    except ValueError:
+        continue
+    if e.get("ev") != "input" or e.get("stream") != 1:
+        continue
+    if e.get("kind") == "hover":
+        rows.append(("hover", e["action"]))
+    elif e.get("kind") == "touch":
+        rows.append(("touch", e["action"]))
+down = next(i for i, r in enumerate(rows) if r == ("touch", 0))
+up = next(i for i, r in enumerate(rows) if r == ("touch", 1))
+exit_before_down = any(r == ("hover", 2) for r in rows[:down])
+enter_after_up = any(r == ("hover", 0) for r in rows[up + 1:])
+sys.exit(0 if exit_before_down and enter_after_up else 1)
+PY
+
+    # Rate: at most one move per 16 ms (62/s); the Mac coalesces, so no two
+    # received moves are closer than a frame.
+    python3 - "$WORK/events.jsonl" <<'PY'
+import json, sys
+moves = []
+for line in open(sys.argv[1]):
+    try:
+        e = json.loads(line)
+    except ValueError:
+        continue
+    if e.get("ev") == "input" and e.get("kind") == "hover" and e.get("stream") == 1 and e.get("action") == 1:
+        moves.append(e["ts"])
+if not moves:
+    print("no moves"); sys.exit(0)
+gaps = [b - a for a, b in zip(moves, moves[1:])]
+span = max(moves) - min(moves)
+rate = (len(moves) - 1) / span if span > 0 else 0.0
+ok = (not gaps or min(gaps) >= 0.012) and rate <= 62.0
+print("%s %d moves, min gap %.1f ms, %.1f/s" %
+      ("ok" if ok else "bad", len(moves), (min(gaps) * 1000) if gaps else 0.0, rate))
+sys.exit(0 if ok else 1)
+PY
+    [ $? -eq 0 ] && ok "HV the move rate is held to one per frame" || bad "HV the move rate is too high"
+
+    # Setting off: the moves after it send nothing at all. The script turns it
+    # off after hv-off and only moves after hv-moves, so the count in between
+    # is the baseline.
+    local before after
+    touch "$WORK/hv-off"
+    sleep 1.0
+    before="$(grep -c '"kind":"hover"' "$WORK/events.jsonl" 2>/dev/null || true)"
+    touch "$WORK/hv-moves"
+    sleep 1.5
+    after="$(grep -c '"kind":"hover"' "$WORK/events.jsonl" 2>/dev/null || true)"
+    [ "${after:-0}" = "${before:-0}" ] \
+        && ok "HV the setting off sends no hover (${after:-0} frames before and after)" \
+        || bad "HV the setting off still sent $((after - before)) hover frames"
+
+    stop_app
+}
+
 
 # mb_nav_count <stream> <action> — how many `nav` messages of that action and
 # stream the fakephone received.
@@ -3862,16 +4002,16 @@ build_e2e_app() {
 # The order `all` runs in. The shared-app checks (from deck, whose launch they
 # share, to drop) run back to back; every other check launches its own app.
 ALL_CHECKS=(tls qr pair gates direct mirror spotlight clip sharein links share apk dock nickname notify handoff
-            deck render resize input mouseback pinch chrome density trackpad pause nav audio drop)
+            deck render resize input hover mouseback pinch chrome density trackpad pause nav audio drop)
 
 usage() {
-    say "usage: check-e2e.sh [qr|pair|gates|tls|render|resize|input|mouseback|input-global|pause|direct|nav|mirror|spotlight|pinch|chrome|density|trackpad|clip|sharein|links|share|apk|drop|dock|nickname|notify|audio|handoff|deck|all [--shard N/M]]"
+    say "usage: check-e2e.sh [qr|pair|gates|tls|render|resize|input|hover|mouseback|input-global|pause|direct|nav|mirror|spotlight|pinch|chrome|density|trackpad|clip|sharein|links|share|apk|drop|dock|nickname|notify|audio|handoff|deck|all [--shard N/M]]"
     exit 2
 }
 
 which_check="${1:-all}"
 case "$which_check" in
-    qr|pair|gates|tls|render|resize|input|mouseback|input-global|pause|direct|nav|mirror|spotlight|pinch|chrome|density|trackpad|clip|sharein|links|share|apk|drop|dock|nickname|notify|audio|handoff|deck) CHECKS=("$which_check") ;;
+    qr|pair|gates|tls|render|resize|input|hover|mouseback|input-global|pause|direct|nav|mirror|spotlight|pinch|chrome|density|trackpad|clip|sharein|links|share|apk|drop|dock|nickname|notify|audio|handoff|deck) CHECKS=("$which_check") ;;
     all) CHECKS=("${ALL_CHECKS[@]}") ;;
     *) usage ;;
 esac
