@@ -408,6 +408,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         state.hasStream = true
         state.showTouches = manager.showTouches
         state.style = style
+        state.fullScreen = window?.styleMask.contains(.fullScreen) ?? false
         state.densityPackage = densityPackage
         state.densityOverride = densityOverride
         state.settingsDensity = manager.defaultDensity
@@ -416,6 +417,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     func windowDidResignKey(_ notification: Notification) {
         let state = StreamMenuState.shared
         state.hasStream = false
+        state.fullScreen = false
         state.densityPackage = nil
         state.densityOverride = nil
         videoView.windowResignedKey()
@@ -523,7 +525,10 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         applyChromeConfig(fullScreen: true)
     }
 
-    func windowDidEnterFullScreen(_ notification: Notification) { chromeLayoutChanged() }
+    func windowDidEnterFullScreen(_ notification: Notification) {
+        updateFullScreenMenuState(true)
+        chromeLayoutChanged()
+    }
 
     func windowWillExitFullScreen(_ notification: Notification) {
         // The titlebar goes back to hidden before the window starts back;
@@ -533,6 +538,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     }
 
     func windowDidExitFullScreen(_ notification: Notification) {
+        updateFullScreenMenuState(false)
         applyChromeConfig(fullScreen: false)
         if let window, let frame = windowedFrame, window.frame != frame {
             window.setFrame(frame, display: true)
@@ -543,13 +549,22 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
 
     func windowDidFailToEnterFullScreen(_ window: NSWindow) {
         windowedFrame = nil
+        updateFullScreenMenuState(false)
         applyChromeConfig(fullScreen: false)
         chromeLayoutChanged()
     }
 
     func windowDidFailToExitFullScreen(_ window: NSWindow) {
+        updateFullScreenMenuState(true)
         applyChromeConfig(fullScreen: true)
         chromeLayoutChanged()
+    }
+
+    /// The Window menu's Enter/Exit Full Screen title follows the key window.
+    private func updateFullScreenMenuState(_ fullScreen: Bool) {
+        guard window?.isKeyWindow ?? false else { return }
+        StreamMenuState.shared.fullScreen = fullScreen
+        FullScreenMenu.setState(fullScreen: fullScreen)
     }
 
     /// Full screen drops the bar in either style and leaves the dwell alone:

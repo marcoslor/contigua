@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # End-to-end checks C3-C13 for the macOS client against tools/fakephone.
 #
-#   ./scripts/check-e2e.sh [qr|pair|gates|tls|render|resize|input|hover|mouseback|input-global|pause|direct|nav|mirror|spotlight|pinch|chrome|density|trackpad|clip|sharein|links|share|apk|drop|dock|nickname|notify|audio|handoff|deck|all [--shard N/M]]
+#   ./scripts/check-e2e.sh [qr|pair|gates|tls|render|resize|input|hover|mouseback|input-global|pause|direct|nav|mirror|spotlight|pinch|chrome|menus|density|trackpad|clip|sharein|links|share|apk|drop|dock|nickname|notify|audio|handoff|deck|all [--shard N/M]]
 #
 # Every check starts from a clean slate (the shared-app checks share one, see
 # "The shared app" below): no PocketDeck or fakephone processes
@@ -2332,6 +2332,155 @@ check_chrome() {
     stop_fakephone
 }
 
+# --- MENUS: the View and Window menus (menu-polish) -------------------------
+
+# check_menus — the View menu has no section titles and no full-screen item;
+# Framed/Immersive are plain radio items; the Window menu owns the only full
+# screen item (🌐F); every item the app draws itself has an SF Symbol. The
+# window's Enter/Exit title needs native full screen (a real Space), so that
+# step is visible-only.
+check_menus() {
+    begin_shared || return 1
+    rm -f "$WORK/menus.json" "$WORK/menus-step-full" "$WORK/menus-step-exit" "$WORK/menus-full.json"
+    printf '%s\n' "wait 1.5" "menudump $WORK/menus.json" \
+        "waitfile $WORK/menus-step-full 60" "fullscreen" "wait 6" \
+        "menudump $WORK/menus-full.json" \
+        "waitfile $WORK/menus-step-exit 60" "fullscreen" "wait 6" > "$WORK/menus.txt"
+    open_shared --open com.android.settings --debug-input-script "$WORK/menus.txt" || return 1
+    wait_until 20 [ -s "$WORK/menus.json" ] || {
+        bad "MENUS no menu dump in 20 s ($WORK/menus.json)"
+        say "app log: $(tail -3 "$WORK/app.log")"
+        stop_app; stop_fakephone; return 1
+    }
+
+    # The View menu, top to bottom: the design's items, nothing else — no
+    # section title (the old Picker's "Window Style" header) and no full-screen
+    # item. Separators are shown as —.
+    python3 - "$WORK/menus.json" <<'PY' && ok "MENUS View menu is exactly the design's items, no section titles" \
+        || bad "MENUS View menu is not the design"
+import json, sys
+root = json.load(open(sys.argv[1]))
+view = next((i for i in root["items"] if i["title"] == "View"), None)
+if view is None:
+    print("no View menu"); sys.exit(1)
+seq = ["—" if item["isSeparator"] else item["title"] for item in view["submenu"]]
+want = ["Find Apps", "Phone Window", "Continue on Mac", "—", "Show Touches", "—",
+        "Framed", "Immersive", "—", "Density", "Toggle Window Style"]
+if seq != want:
+    print("View:", seq, "wanted:", want); sys.exit(1)
+PY
+
+    python3 - "$WORK/menus.json" <<'PY' && ok "MENUS no section title and no full-screen item in View" \
+        || bad "MENUS View still carries a section title or a full-screen item"
+import json, sys
+root = json.load(open(sys.argv[1]))
+view = next(i for i in root["items"] if i["title"] == "View")
+titles = [item["title"] for item in view["submenu"]]
+if "Window Style" in titles:
+    print("the Window Style section title is still there"); sys.exit(1)
+if any("Full Screen" in title for title in titles):
+    print("a full-screen item is in View:", titles); sys.exit(1)
+PY
+
+    python3 - "$WORK/menus.json" <<'PY' && ok "MENUS Framed/Immersive are radio items with exactly one checked" \
+        || bad "MENUS the style radios are wrong"
+import json, sys
+root = json.load(open(sys.argv[1]))
+view = next(i for i in root["items"] if i["title"] == "View")
+by_title = {item["title"]: item for item in view["submenu"]}
+framed, immersive = by_title.get("Framed"), by_title.get("Immersive")
+if not framed or not immersive:
+    print("Framed/Immersive missing"); sys.exit(1)
+if sorted([framed["state"], immersive["state"]]) != ["off", "on"]:
+    print("states:", framed["state"], immersive["state"]); sys.exit(1)
+if framed["hasImage"] or immersive["hasImage"]:
+    print("a radio item carries an icon"); sys.exit(1)
+PY
+
+    # The Window menu's own full-screen item, and the only one in the tree.
+    python3 - "$WORK/menus.json" <<'PY' && ok "MENUS Window holds the only full-screen item, Enter Full Screen 🌐F" \
+        || bad "MENUS the Window menu's full-screen item is wrong"
+import json, sys
+def walk(items):
+    for item in items:
+        yield item
+        if item.get("submenu"):
+            yield from walk(item["submenu"])
+root = json.load(open(sys.argv[1]))
+window = next((i for i in root["items"] if i["title"] == "Window"), None)
+if window is None:
+    print("no Window menu"); sys.exit(1)
+in_window = [i for i in window["submenu"] if "Full Screen" in i["title"]]
+if len(in_window) != 1:
+    print("Window full-screen items:", [i["title"] for i in in_window]); sys.exit(1)
+item = in_window[0]
+if item["title"] != "Enter Full Screen":
+    print("title:", item["title"]); sys.exit(1)
+if item["keyEquivalent"] != "f" or item["modifiers"] != ["function"]:
+    print("shortcut:", repr(item["keyEquivalent"]), item["modifiers"]); sys.exit(1)
+everywhere = [i for i in walk(root["items"]) if "Full Screen" in i["title"]]
+if len(everywhere) != 1:
+    print("full-screen items in the tree:", [i["title"] for i in everywhere]); sys.exit(1)
+PY
+
+    # The app's own items carry SF Symbols (the system's items stay as AppKit
+    # draws them and are not in this list).
+    python3 - "$WORK/menus.json" <<'PY' && ok "MENUS every item the app draws has an SF Symbol" \
+        || bad "MENUS an app item is missing its icon"
+import json, sys
+def walk(items):
+    for item in items:
+        yield item
+        if item.get("submenu"):
+            yield from walk(item["submenu"])
+root = json.load(open(sys.argv[1]))
+items = list(walk(root["items"]))
+missing = []
+for title in ["Add Phone…", "Find Apps", "Phone Window", "Continue on Mac", "Show Touches",
+              "Density", "Toggle Window Style", "Back", "Home", "Recents", "Enter Full Screen"]:
+    found = next((i for i in items if i["title"] == title), None)
+    if found is None:
+        missing.append(title + " (missing)")
+    elif not found["hasImage"]:
+        missing.append(title)
+if missing:
+    print("no image:", missing); sys.exit(1)
+PY
+
+    if [ "$VISIBLE" = "1" ]; then
+        touch "$WORK/menus-step-full"
+        wait_until 20 [ -s "$WORK/menus-full.json" ] || {
+            bad "MENUS no second dump after entering full screen"
+            stop_app; stop_fakephone; return 1
+        }
+        python3 - "$WORK/menus-full.json" <<'PY' && ok "MENUS in full screen the Window item reads Exit Full Screen, still the only one" \
+            || bad "MENUS the full-screen title did not follow the key window"
+import json, sys
+def walk(items):
+    for item in items:
+        yield item
+        if item.get("submenu"):
+            yield from walk(item["submenu"])
+root = json.load(open(sys.argv[1]))
+everywhere = [i for i in walk(root["items"]) if "Full Screen" in i["title"]]
+if len(everywhere) != 1:
+    print("full-screen items:", [i["title"] for i in everywhere]); sys.exit(1)
+item = everywhere[0]
+if item["title"] != "Exit Full Screen":
+    print("title:", item["title"]); sys.exit(1)
+if item["keyEquivalent"] != "f" or item["modifiers"] != ["function"]:
+    print("shortcut:", repr(item["keyEquivalent"]), item["modifiers"]); sys.exit(1)
+PY
+        # Leave full screen; the next checks share this app.
+        touch "$WORK/menus-step-exit"
+        sleep 7
+    else
+        skip_visible "MENUS the Exit Full Screen title (native full screen needs a real Space)"
+    fi
+    stop_app
+    stop_fakephone
+}
+
 # --- C16: density ----------------------------------------------------------
 
 # The dpi the phone last got for a stream (its window.open or window.resize).
@@ -4002,16 +4151,16 @@ build_e2e_app() {
 # The order `all` runs in. The shared-app checks (from deck, whose launch they
 # share, to drop) run back to back; every other check launches its own app.
 ALL_CHECKS=(tls qr pair gates direct mirror spotlight clip sharein links share apk dock nickname notify handoff
-            deck render resize input hover mouseback pinch chrome density trackpad pause nav audio drop)
+            deck render resize input hover mouseback pinch chrome menus density trackpad pause nav audio drop)
 
 usage() {
-    say "usage: check-e2e.sh [qr|pair|gates|tls|render|resize|input|hover|mouseback|input-global|pause|direct|nav|mirror|spotlight|pinch|chrome|density|trackpad|clip|sharein|links|share|apk|drop|dock|nickname|notify|audio|handoff|deck|all [--shard N/M]]"
+    say "usage: check-e2e.sh [qr|pair|gates|tls|render|resize|input|hover|mouseback|input-global|pause|direct|nav|mirror|spotlight|pinch|chrome|menus|density|trackpad|clip|sharein|links|share|apk|drop|dock|nickname|notify|audio|handoff|deck|all [--shard N/M]]"
     exit 2
 }
 
 which_check="${1:-all}"
 case "$which_check" in
-    qr|pair|gates|tls|render|resize|input|hover|mouseback|input-global|pause|direct|nav|mirror|spotlight|pinch|chrome|density|trackpad|clip|sharein|links|share|apk|drop|dock|nickname|notify|audio|handoff|deck) CHECKS=("$which_check") ;;
+    qr|pair|gates|tls|render|resize|input|hover|mouseback|input-global|pause|direct|nav|mirror|spotlight|pinch|chrome|menus|density|trackpad|clip|sharein|links|share|apk|drop|dock|nickname|notify|audio|handoff|deck) CHECKS=("$which_check") ;;
     all) CHECKS=("${ALL_CHECKS[@]}") ;;
     *) usage ;;
 esac
