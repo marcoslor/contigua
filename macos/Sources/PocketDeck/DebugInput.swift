@@ -367,11 +367,17 @@ final class DebugInputDriver {
         self.init(actions: try DebugInputScript.parse(text))
     }
 
-    func arm() {
+    /// arm — start the script at the first video size change. A phone-mode
+    /// phase's script (`--open-phone`) belongs to the phone window: the shared
+    /// app may reopen an app window in the same breath, and its video size can
+    /// arrive first (it did in the VM), which would run the phone's keys on the
+    /// app window, where ⇧⌘H/⌘↑ are not nav.
+    func arm(phoneOnly: Bool = false) {
         observer = NotificationCenter.default.addObserver(
             forName: VideoLayerView.videoSizeDidChange, object: nil, queue: .main
         ) { [weak self] note in
             guard let self, let view = note.object as? VideoLayerView else { return }
+            if phoneOnly, view.inputMapper?.isPhoneMode != true { return }
             self.disarm()
             // The note is posted from a main-queue block, and the script's waits
             // spin the run loop: inside that block the main queue cannot drain, so
