@@ -41,6 +41,9 @@ internal class WindowStream(
         /** How often the mirror checks display 0 for a rotation or size change. */
         const val ROTATION_POLL_MS = 300L
 
+        /** Bounded wait for a drain thread before its codec is stopped and released. */
+        const val DRAIN_JOIN_MS = 250L
+
         /** `MediaFormat.KEY_MAX_FPS_TO_ENCODER`, kept as a string: some builds' encoders reject it. */
         const val KEY_MAX_FPS = "max-fps-to-encoder"
 
@@ -406,6 +409,7 @@ internal class WindowStream(
             val old = encoder
             encoder = null
             if (old != null) {
+                waitForDrain()
                 runCatching { old.stop() }
                 runCatching { old.release() }
             }
@@ -467,8 +471,22 @@ internal class WindowStream(
     private fun releasePreviousEncoder() {
         val codec = previous ?: return
         previous = null
+        // The old codec's drain thread is not `drainThread` any more (the swap
+        // named the new one); it exits on `encoder === codec` by itself.
         runCatching { codec.stop() }
         runCatching { codec.release() }
+    }
+
+    /**
+     * Bounded wait for the drain thread before its codec is stopped and
+     * released: `MediaCodec.release()` while the loop is in
+     * `dequeueOutputBuffer` is not safe. Never joins itself (teardown from a
+     * drain-thread callback): the `encoder` identity check already ends it.
+     */
+    private fun waitForDrain() {
+        val t = drainThread ?: return
+        if (t === Thread.currentThread()) return
+        runCatching { t.join(DRAIN_JOIN_MS) }
     }
 
     private fun detachEncoder() {
@@ -476,6 +494,7 @@ internal class WindowStream(
         encoder = null
         runCatching { vd?.setSurface(null) }
         if (codec != null) {
+            waitForDrain()
             runCatching { codec.stop() }
             runCatching { codec.release() }
         }
@@ -643,7 +662,8 @@ internal class WindowStream(
         while (!released && encoder === codec) {
             val idx = try {
                 codec.dequeueOutputBuffer(info, 10_000)
-            } catch (_: Throwable) {
+            } catch (e: Throwable) {
+                log("stream $stream drain ended: ${e.javaClass.simpleName}")
                 break
             }
             guard.poll(SystemClock.elapsedRealtime())?.let { nudgeRedraw(codec, it) }
