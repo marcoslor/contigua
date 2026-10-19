@@ -650,6 +650,19 @@ class SessionTest {
     }
 
     @Test
+    fun handlerFailureAnswersInternalErrorAndTheSessionLives() {
+        addAndAuthenticate()
+        platform.openFails = true
+        send(mapOf("t" to "window.open", "stream" to 11, "w" to 640, "h" to 480, "dpi" to 160, "pkg" to "com.android.settings"))
+        val error = readUntil("error")
+        assertEquals("internal", error["code"])
+        assertEquals(11L, error["stream"])
+        // The failure belonged to that message; the session keeps answering.
+        send(mapOf("t" to "ping", "ts" to 7))
+        assertEquals(7L, readUntil("pong")["ts"])
+    }
+
+    @Test
     fun unknownStreamReportsNoStreamWithoutClosing() {
         addAndAuthenticate()
         send(mapOf("t" to "window.resize", "stream" to 42, "w" to 640, "h" to 480, "dpi" to 160))
