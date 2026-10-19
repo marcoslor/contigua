@@ -65,7 +65,7 @@ final class StreamChromeWindowTests: XCTestCase {
         XCTAssertEqual(controller.dpi(), atRest.2)
     }
 
-    func testTheBarIsTheWindowsMaterialAndTheStreamSquaresItsTopCorners() throws {
+    func testTheBarIsTheMirrorAndTheStreamSquaresItsTopCorners() throws {
         let manager = makeManager()
         let controller = AppWindowController(stream: 1, pkg: "com.example.app", activity: nil,
                                              label: "Example", manager: manager)
@@ -77,6 +77,11 @@ final class StreamChromeWindowTests: XCTestCase {
         XCTAssertEqual(chrome.style, .framed)
         XCTAssertFalse(chrome.isOpaque)
         XCTAssertEqual(controller.chrome.actionCount, 0, "app windows have no actions")
+        // The bar is the extension view's own blurred replica: no material or
+        // other fill sits over it, so nothing can tint the stream.
+        XCTAssertTrue(chrome.subviews.contains { $0 is NSBackgroundExtensionView })
+        XCTAssertFalse(chrome.subviews.contains { $0 is NSVisualEffectView },
+                       "no material layer over the bar")
         // The corners round once, on the container (the chrome view): the video
         // stays square so the seam is straight in framed.
         XCTAssertEqual(chrome.layer?.cornerRadius, ChromeBar.cornerRadius)
@@ -201,6 +206,15 @@ final class StreamChromeImmersiveTests: XCTestCase {
     private func trafficLightsShown(_ window: NSWindow?) -> Bool {
         guard let close = window?.standardWindowButton(.closeButton) else { return false }
         return !close.isHidden && close.alphaValue > 0.99
+    }
+
+    func testTheImmersivePillIsClearGlass() throws {
+        let manager = makeManager(choose: .immersive)
+        let controller = AppWindowController(stream: 1, pkg: "com.example.app", activity: nil,
+                                             label: "Example", manager: manager)
+        defer { controller.window?.close() }
+        XCTAssertEqual(controller.chrome.pill.style, .clear, "clear glass: blur without the grey fill")
+        XCTAssertEqual(controller.chrome.pill.tintColor, .clear, "and no tint of its own")
     }
 
     /// An immersive window is exactly the stream: the bar's pixels on neither

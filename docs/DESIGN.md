@@ -104,13 +104,14 @@ Spec of every state, copy and transitions: [design/mac-redesign.md](design/mac-r
   container (every child paints square so the bar's seam stays straight); 16 pt continuous corners on the window; the virtual display is sized from the stream
   rect only, never the style.
   - **Framed bar.** An `NSBackgroundExtensionView` has the video view as its `contentView` and fills the whole window, so the band above the video is the
-    stream's own top 28 pt mirrored there — live, with the system's progressive blur, no CPU readback and no second decode. An `NSVisualEffectView`
-    (`.menu`, within-window) lies over the bar and carries the alpha ramp itself via `NSImage.maskImage` (a plain stretched gradient): material 0.15 at the
-    seam → 0.75 at the top, i.e. mirror alpha 0.85 → 0.25. `chrome.bar.alphaSeam` / `chrome.bar.alphaTop` override each (the system blur replaces `chrome.bar.blur`; it isn't tunable).
+    stream's own top 28 pt mirrored there — live, with the system's progressive blur (strongest at the window's top edge, sharp at the seam), no CPU
+    readback and no second decode. Nothing is drawn over the mirror: no material, tint, alpha ramp or scrim, so the bar keeps the stream's colours in light
+    and dark apps; the traffic lights ride it as standard controls.
   - **Immersive.** A 72×32 pt hot zone at the stream's top-left. A click there before the dwell reaches the app as an ordinary touch (no added delay) and
-    restarts the rest; a 350 ms rest (moved < 3 pt) fades the pill in over 0.12 s — `NSGlassEffectView` corner 8 with the window's traffic lights on its
-    slots (8 pt in, 23 pt apart) and the kind's actions after them (app windows: none). It fades back 600 ms after the pointer leaves zone and pill; while
-    shown, a click on its empty area drags the window, a double-click zooms.
+    restarts the rest; a rest (moved < 3 pt) fades the pill in over 0.12 s — `NSGlassEffectView` in its clear style, corner 8, so it blurs the stream
+    without a grey fill — with the window's traffic lights on its slots (8 pt in, 23 pt apart) and the kind's actions after them (app windows: none).
+    Settings → General → "Reveal controls after" picks the rest: Instantly (0), Short (350 ms, the default) or Long (700 ms); it applies to open windows
+    live. The pill fades back 600 ms after the pointer leaves zone and pill; while shown, a click on its empty area drags the window, a double-click zooms.
   - **Switching.** View ▸ Window Style's Framed/Immersive radio items and Toggle Window Style (⌥⌘F): the window grows or shrinks by the bar above the stream
     (`WindowStyle.frame` moves it down just enough when the bar would poke above the visible frame) and the choice lands per package under
     `chrome.style.<package>` (`chrome.style.phone` for the phone window); a window with nothing stored opens Framed and re-applies the stored style when it

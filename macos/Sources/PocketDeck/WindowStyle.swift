@@ -153,44 +153,6 @@ struct WindowStyleStore {
     }
 }
 
-/// The two alphas of the framed bar's mirror: the opacity the mirrored strip
-/// of the stream runs at the seam with the stream and at the window's top
-/// edge, over the window material (`1 - mirror`). The mirror itself is
-/// NSBackgroundExtensionView's fill, whose blur grows with distance from the
-/// seam — the brief's tunable `chrome.bar.blur` has no equivalent there and
-/// was given up (the system blur is not tunable). The profile's defaults
-/// still override each alpha (`chrome.bar.alphaSeam`, `chrome.bar.alphaTop`)
-/// for live tuning.
-struct BarMirror: Equatable {
-    var alphaSeam: CGFloat = 0.85
-    var alphaTop: CGFloat = 0.25
-
-    static let standard = BarMirror()
-
-    static let alphaSeamKey = "chrome.bar.alphaSeam"
-    static let alphaTopKey = "chrome.bar.alphaTop"
-
-    /// The values in use: a key the defaults do not set keeps the standard one.
-    static func stored(in defaults: UserDefaults) -> BarMirror {
-        var mirror = BarMirror()
-        if let value = defaults.object(forKey: alphaSeamKey) as? NSNumber {
-            mirror.alphaSeam = CGFloat(truncating: value).clamped(to: 0...1)
-        }
-        if let value = defaults.object(forKey: alphaTopKey) as? NSNumber {
-            mirror.alphaTop = CGFloat(truncating: value).clamped(to: 0...1)
-        }
-        return mirror
-    }
-
-    /// The mirror's opacity `offset` pt above the seam, in a bar `height` tall:
-    /// `alphaSeam` at the seam, falling linearly to `alphaTop` at the top edge.
-    func alpha(aboveSeam offset: CGFloat, bar height: CGFloat) -> CGFloat {
-        guard height > 0 else { return alphaTop }
-        let fraction = (offset / height).clamped(to: 0...1)
-        return alphaSeam + (alphaTop - alphaSeam) * fraction
-    }
-}
-
 /// The immersive hot zone's rule. The pointer has to rest still inside the zone
 /// for `dwell` before the pill shows; a click that arrives before that goes to
 /// the app as ordinary touch input (the view passes it straight through) and

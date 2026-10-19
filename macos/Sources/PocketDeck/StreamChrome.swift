@@ -2,60 +2,24 @@
 // 28 pt bar above the stream. The mirror is NSBackgroundExtensionView: the
 // video view is its contentView and it fills the rest of its frame — here the
 // bar band — with a replica of the content's top edge, so nothing is read back
-// off the CPU and nothing is decoded twice. Over the bar sits the window
-// material (within-window blend: it blurs the mirror, not the desktop) whose
-// maskImage carries the brief's alpha gradient (mirror alpha stable at the
-// seam, fading toward the window's top edge), so the bar melts into the app at
-// the seam and into the material at its top. Immersive: no
+// off the CPU and nothing is decoded twice. The replica carries the system's
+// progressive blur (strongest at the window's top edge, sharp at the seam) and
+// nothing else: no material, tint or scrim lies over it, so the bar shows the
+// stream's own colours in light and dark apps instead of a grey band. The
+// traffic lights ride the bar's line as standard controls. Immersive: no
 // chrome at rest; the window is exactly the stream, and the traffic lights live
 // on a dwell pill that fades in at the stream's top-left corner when the
 // pointer rests there (DwellChrome, DwellPill in WindowStyle.swift). Full
 // screen has no bar in either style.
-//
-// The mask is the mirrored strip's alpha made concrete: NSVisualEffectView
-// takes one opacity per row through NSImage.maskImage, and the material shows
-// `1 - mirror` at that row (0.15 at the seam, 0.75 at the top edge).
 
 import AppKit
 import SwiftUI
 
-/// The bar material's own per-row alpha for a bar `height` tall under `mirror`:
-/// row 0 is the image's top (the window's top edge), where the mirror is
-/// `alphaTop`, and the last row is the seam, where it is `alphaSeam`.
-func barMaskImage(mirror: BarMirror, height: CGFloat) -> NSImage {
-    let rows = max(Int(height * 4), 1)
-    let width = 4
-    let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: width, pixelsHigh: rows,
-                               bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
-                               colorSpaceName: .deviceRGB, bytesPerRow: width * 4, bitsPerPixel: 32)!
-    if let data = rep.bitmapData {
-        for row in 0..<rows {
-            // The mirror's alpha `distance` pt above the seam; the image's top
-            // row is the bar's farthest row from the seam.
-            let distance = height * (1 - CGFloat(row) / CGFloat(rows))
-            let mirror = mirror.alpha(aboveSeam: distance, bar: height)
-            for col in 0..<width {
-                let pixel = data + row * width * 4 + col * 4
-                pixel[0] = 0
-                pixel[1] = 0
-                pixel[2] = 0
-                pixel[3] = UInt8(((1 - mirror) * 255).rounded())
-            }
-        }
-    }
-    let image = NSImage(size: NSSize(width: CGFloat(width), height: height))
-    image.addRepresentation(rep)
-    // A plain stretchable gradient: the whole 4 pt wide image stretches over
-    // the material's bounds (no caps, so no rounded corners of its own).
-    image.capInsets = NSEdgeInsets()
-    image.resizingMode = .stretch
-    return image
-}
-
-/// The immersive dwell pill (DwellChrome): a blur-material pill at the stream's
-/// top-left corner; its empty areas drag the window; the window kind's actions
-/// and the real traffic lights (which ride the window's title area above this
-/// view) sit on top.
+/// The immersive dwell pill (DwellChrome): clear glass at the stream's top-left
+/// corner — it blurs what is under it without the regular glass's grey fill —
+/// and its empty areas drag the window; the window kind's actions and the real
+/// traffic lights (which ride the window's title area above this view) sit on
+/// top.
 final class DwellPillView: NSGlassEffectView {
     /// A click that reached the pill (the e2e check counts them).
     var onPress: (() -> Void)?
@@ -64,6 +28,11 @@ final class DwellPillView: NSGlassEffectView {
         super.init(frame: NSRect(origin: .zero, size: CGSize(width: DwellChrome.pillWidth(actionCount: 0),
                                                              height: DwellChrome.pillHeight)))
         cornerRadius = DwellChrome.pillCornerRadius
+        // Clear glass: the blur stays, the grey scrim does not. The traffic
+        // lights and the kind's actions are standard controls over it, so
+        // nothing needs a tinted backdrop to stay legible.
+        style = .clear
+        tintColor = .clear
         alphaValue = 0
         isHidden = true
     }
@@ -78,18 +47,16 @@ final class DwellPillView: NSGlassEffectView {
 }
 
 /// The window's content for both styles: the stream, and above it (framed)
-/// the bar — the extension view's mirror under the masked window material,
-/// with the traffic lights riding it and the window kind's actions at the
-/// right end. In immersive those actions ride the dwell pill instead, and the
-/// whole chrome is out of sight until the pointer dwells.
+/// the bar — the extension view's blurred mirror, with the traffic lights
+/// riding it and the window kind's actions at the right end. In immersive
+/// those actions ride the dwell pill instead, and the whole chrome is out of
+/// sight until the pointer dwells.
 final class StreamChromeView: NSView {
     let video: VideoLayerView
     /// The bar's mirror: the extension view spans the whole window, so the
-    /// band beyond the video's top edge is its filled replica.
+    /// band beyond the video's top edge is its filled replica — blurred
+    /// progressively by the system, with no material over it.
     private let ext = NSBackgroundExtensionView()
-    /// The bar material, masked by `barMaskImage` so the mirror shows through
-    /// at the seam and the window material takes the top.
-    private let bar = NSVisualEffectView()
     /// The immersive dwell pill; only a background: the buttons above it are
     /// the chrome's own subviews so they can move between bar and pill frames.
     private let pillView = DwellPillView()
@@ -97,7 +64,6 @@ final class StreamChromeView: NSView {
     /// Back/Home/Recents); hidden in the bar and shown in the pill alike.
     private let actions = NSHostingView(rootView: HeaderControls(actions: []))
     private(set) var style: WindowStyle
-    var mirror: BarMirror = .standard { didSet { refreshBarMask() } }
 
     /// The pill's fade state; only `setPill` moves it.
     private(set) var showsPill = false
@@ -116,15 +82,6 @@ final class StreamChromeView: NSView {
         ext.automaticallyPlacesContentView = false
         ext.contentView = video
         video.wantsLayer = true
-        // A plain material (not .titlebar: that one draws the window-chrome
-        // art with rounded translucent edges) within-window: it blurs the
-        // window's own content under it (the mirrored stream fill), not what
-        // is behind the window. Over a busy desktop the behind-window blend
-        // read as transparent glass along the bar's borders and corners; the
-        // mirror must own the bar.
-        bar.material = .menu
-        bar.blendingMode = .withinWindow
-        bar.state = .active
         actions.sizingOptions = []
         // The pill is a window overlay; its safe area would push the buttons
         // down.
@@ -132,10 +89,8 @@ final class StreamChromeView: NSView {
         actions.isHidden = true
         pillView.onPress = { [weak self] in self?.onBarPress?() }
         addSubview(ext)
-        addSubview(bar)
         addSubview(pillView)
         addSubview(actions)
-        refreshBarMask()
         layoutChrome()
     }
 
@@ -190,8 +145,6 @@ final class StreamChromeView: NSView {
         ext.frame = bounds
         let bar = barHeight
         video.frame = NSRect(x: 0, y: 0, width: bounds.width, height: max(bounds.height - bar, 0))
-        self.bar.frame = NSRect(x: 0, y: bounds.height - bar, width: bounds.width, height: bar)
-        self.bar.isHidden = bar == 0
         // The ext is never hidden: it is the video view's parent (its contentView
         // is the stream), and hiding NSBackgroundExtensionView blanks its
         // contentView — a stream window left immersive then showed nothing. With
@@ -234,18 +187,13 @@ final class StreamChromeView: NSView {
         }
     }
 
-    private func refreshBarMask() {
-        guard barHeight > 0 else { return }
-        bar.maskImage = barMaskImage(mirror: mirror, height: ChromeBar.height)
-    }
-
     override var isOpaque: Bool { false }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
         guard barHeight > 0, let hit = super.hitTest(point) else { return super.hitTest(point) }
-        // The bar's two layers are the window's own: a click on the bar is a
-        // drag (and counts), while the kind's actions keep their clicks.
-        return hit === bar || hit === ext ? self : hit
+        // The bar's mirrored band is the window's own: a click on it is a drag
+        // (and counts), while the kind's actions keep their clicks.
+        return hit === ext ? self : hit
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -357,8 +305,8 @@ final class StreamChromeView: NSView {
         [.closeButton, .miniaturizeButton, .zoomButton].compactMap { window?.standardWindowButton($0) }
     }
 
-    /// The style itself changed (⌥⌘F / View menu): relayout, re-mask, re-place
-    /// the lights; the pill never survives a switch.
+    /// The style itself changed (⌥⌘F / View menu): relayout, re-place the
+    /// lights; the pill never survives a switch.
     func setStyle(_ new: WindowStyle) {
         guard style != new else { return }
         style = new
@@ -366,7 +314,6 @@ final class StreamChromeView: NSView {
         pillView.isHidden = true
         pillView.alphaValue = 0
         actions.isHidden = true
-        refreshBarMask()
         layoutChrome()
         placeTrafficLights()
     }

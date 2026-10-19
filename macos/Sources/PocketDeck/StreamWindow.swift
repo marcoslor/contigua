@@ -48,7 +48,6 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         window.backgroundColor = .clear
         window.setFrame(NSRect(origin: window.frame.origin, size: frameSize), display: false)
         chrome = StreamChromeView(video: videoView, style: style)
-        chrome.mirror = manager.barMirror
         super.init(window: window)
         window.delegate = self
         window.contentView = chrome
