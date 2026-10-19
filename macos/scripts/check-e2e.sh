@@ -3130,10 +3130,40 @@ sys.exit(1)
 PY
 }
 
+# intents_metadata_ok — the built bundle carries Metadata.appintents with the
+# five intents, the two entities/queries and the provider's five shortcuts (a
+# plain JSON read; no Shortcuts app, no registration).
+intents_metadata_ok() {
+    python3 - "$E2E_BUNDLE/Contents/Resources/Metadata.appintents/extract.actionsdata" <<'PY'
+import json, sys
+try:
+    with open(sys.argv[1]) as handle:
+        data = json.load(handle)
+except (OSError, ValueError):
+    sys.exit(1)
+actions = set(data.get("actions") or {})
+want = {"OpenPhoneAppIntent", "OpenPhoneScreenIntent", "PhoneBatteryIntent",
+        "SendLinkToPhoneIntent", "SendFileToPhoneIntent"}
+shortcuts = data.get("autoShortcuts") or []
+phrases = [p.get("key", "") for s in shortcuts for p in (s.get("phraseTemplates") or [])]
+ok = actions == want \
+    and set(data.get("entities") or {}) >= {"PhoneEntity", "PhoneAppEntity"} \
+    and set(data.get("queries") or {}) >= {"PhoneEntityQuery", "PhoneAppEntityQuery"} \
+    and {s.get("actionIdentifier") for s in shortcuts} == want \
+    and all(s.get("phraseTemplates") for s in shortcuts) \
+    and any("${applicationName}" in p for p in phrases)
+sys.exit(0 if ok else 1)
+PY
+}
+
 # check_intents — the five intents through the same bridge Shortcuts runs
 # (--debug-intent): open app/phone, link, 1 MiB file, battery live and after the
 # phone is gone, and an unknown app as a human error with the app still alive.
 check_intents() {
+    # What the system reads, before anything starts (a fast plist/JSON read).
+    intents_metadata_ok \
+        && ok "INTENTS the bundle's Metadata.appintents lists 5 intents, 2 entities and 5 shortcuts" \
+        || bad "INTENTS the bundle's Metadata.appintents is missing or incomplete ($E2E_BUNDLE)"
     clean
     start_fake || return 1
     python3 - "$WORK" <<'PY'
