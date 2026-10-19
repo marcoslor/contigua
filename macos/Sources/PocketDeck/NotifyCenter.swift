@@ -25,14 +25,25 @@ enum NotifyMapping {
 
     static let maxChars = 8_192
 
+    /// The banner title: the notification's own title (else the app's label)
+    /// with the phone's name as a suffix — the name the Deck shows for that
+    /// phone (nickname, else its own name), like the window titles. A title
+    /// that is empty (or only whitespace) becomes just the phone name.
+    static func title(_ base: String?, phoneName: String) -> String {
+        let text = cap(base)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !text.isEmpty else { return phoneName }
+        guard !phoneName.isEmpty else { return text }
+        return "\(text) (\(phoneName))"
+    }
+
     /// The banner shows `[title, body]`; a missing title falls back to the app's
-    /// label (the package name when the app list has no label), and a body only
-    /// carries the notification's own text.
+    /// label, and a body only carries the notification's own text.
     static func content(_ n: PhoneNotification,
+                        phoneName: String,
                         labelFor: (String) -> String?) -> (title: String, body: String) {
         let label = labelFor(n.pkg)
         let own = cap(n.title)
-        let title = own ?? label ?? n.pkg
+        let title = Self.title(own ?? label, phoneName: phoneName)
         var body = ""
         if let text = cap(n.text), !text.isEmpty {
             body = text
@@ -132,8 +143,8 @@ final class NotifyCenter {
     }
 
     /// Posts one phone notification; the thread groups them under the phone's id.
-    func post(_ n: PhoneNotification, phoneId: String, labelFor: (String) -> String?) {
-        let (title, body) = NotifyMapping.content(n, labelFor: labelFor)
+    func post(_ n: PhoneNotification, phoneId: String, phoneName: String, labelFor: (String) -> String?) {
+        let (title, body) = NotifyMapping.content(n, phoneName: phoneName, labelFor: labelFor)
         openableIds[n.id] = n.pkg
         let requestId = "pd.\(phoneId).\(n.id)"
         requestIds[n.id] = requestId

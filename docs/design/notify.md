@@ -41,9 +41,11 @@ One per-phone opt-in covers both features; default OFF on the Mac and the phone.
   the listener route is ever blocked by an OEM.
 - Plumbing: AIDL `IDeckService.pushNotificationEvent(json)` / `pushMediaState(json)` app→shell;
   `IDeckCallback.onMediaCommand(action)` shell→app. The shell `Session` validates and forwards.
-- Notifications on the Mac: UserNotifications, title = app label (apps list, fallback pkg),
-  text = body, grouped per phone (`threadIdentifier` = phone id); clicking opens that app's
-  window when the phone's app list has the package.
+- Notifications on the Mac: UserNotifications, title = the notification's own title (else the app
+  label) with the phone's name appended ("Review (Nicky)"), the name the Deck shows for that phone;
+  a notification with neither title nor label shows the phone name alone; text = body, grouped per
+  phone (`threadIdentifier` = phone id); clicking opens that app's window when the phone's app list
+  has the package.
 - Media on the Mac: MPNowPlayingInfoCenter + MPRemoteCommandCenter (play/pause/next/prev ticked
   off through `media.command`); cleared when `media.state` shows nothing.
 - Dismiss on the Mac → dismiss on the phone: not feasible — macOS UserNotifications cannot

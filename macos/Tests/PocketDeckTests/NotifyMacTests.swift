@@ -15,35 +15,57 @@ final class NotifyMacTests: XCTestCase {
 
     // MARK: banner content
 
+    func testTitleBuilderSuffixesThePhoneName() {
+        XCTAssertEqual(NotifyMapping.title("Design review", phoneName: "Nicky"), "Design review (Nicky)")
+        XCTAssertEqual(NotifyMapping.title("Design review", phoneName: ""), "Design review",
+                       "a nameless phone adds no suffix")
+        XCTAssertEqual(NotifyMapping.title(nil, phoneName: "Nicky"), "Nicky",
+                       "an empty title is just the phone name")
+        XCTAssertEqual(NotifyMapping.title("", phoneName: "Nicky"), "Nicky")
+        XCTAssertEqual(NotifyMapping.title("   ", phoneName: "Nicky"), "Nicky")
+    }
+
     func testTitleFallsBackToTheAppLabel() {
-        let (title, body) = NotifyMapping.content(notification(text: "Deck at 4"), labelFor: { _ in "WhatsApp" })
-        XCTAssertEqual(title, "WhatsApp")
+        let (title, body) = NotifyMapping.content(notification(text: "Deck at 4"),
+                                                  phoneName: "Nicky", labelFor: { _ in "WhatsApp" })
+        XCTAssertEqual(title, "WhatsApp (Nicky)")
         XCTAssertEqual(body, "Deck at 4")
     }
 
     func testTitleWithBodyIsShownAsIs() {
         let (title, body) = NotifyMapping.content(
-            notification(title: "Design review", text: "Deck vs slides at 4"), labelFor: { _ in "WhatsApp" })
-        XCTAssertEqual(title, "Design review")
+            notification(title: "Design review", text: "Deck vs slides at 4"),
+            phoneName: "Nicky", labelFor: { _ in "WhatsApp" })
+        XCTAssertEqual(title, "Design review (Nicky)")
         XCTAssertEqual(body, "Deck vs slides at 4")
     }
 
     func testTitleOnlyFromAnUnlabeledPackageKeepsTheNameAsBody() {
         let (title, body) = NotifyMapping.content(
-            notification(title: "File downloaded", text: nil), labelFor: { _ in nil })
-        XCTAssertEqual(title, "File downloaded")
+            notification(title: "File downloaded", text: nil),
+            phoneName: "Nicky", labelFor: { _ in nil })
+        XCTAssertEqual(title, "File downloaded (Nicky)")
         XCTAssertEqual(body, "com.whatsapp")
     }
 
-    func testEmptyContentBecomesTheAppLabel() {
-        let (title, body) = NotifyMapping.content(notification(text: ""), labelFor: { _ in "WhatsApp" })
-        XCTAssertEqual(title, "WhatsApp")
+    func testATitlelessUnlabeledNotificationIsJustThePhoneName() {
+        let (title, body) = NotifyMapping.content(notification(text: "ping"),
+                                                  phoneName: "Nicky", labelFor: { _ in nil })
+        XCTAssertEqual(title, "Nicky")
+        XCTAssertEqual(body, "ping")
+    }
+
+    func testEmptyContentBecomesTheAppLabelWithThePhoneName() {
+        let (title, body) = NotifyMapping.content(notification(text: ""),
+                                                  phoneName: "Nicky", labelFor: { _ in "WhatsApp" })
+        XCTAssertEqual(title, "WhatsApp (Nicky)")
         XCTAssertEqual(body, "")
     }
 
     func testTitleOnlyFromALabeledPackageHasNoBody() {
-        let (title, body) = NotifyMapping.content(notification(title: "WhatsApp", text: nil), labelFor: { _ in "WhatsApp" })
-        XCTAssertEqual(title, "WhatsApp")
+        let (title, body) = NotifyMapping.content(notification(title: "WhatsApp", text: nil),
+                                                  phoneName: "Nicky", labelFor: { _ in "WhatsApp" })
+        XCTAssertEqual(title, "WhatsApp (Nicky)")
         XCTAssertEqual(body, "")
     }
 
