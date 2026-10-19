@@ -104,7 +104,40 @@ window server print `SKIP … (needs real input; PD_E2E_VISIBLE=1 runs it)`.
 `PD_E2E_VISIBLE=1` runs everything visibly, as a normal foreground app with real
 pointer events (for debugging; don't type meanwhile).
 
-## Known limitations (SM-S936B, Android 16)
+## Running the suite in a VM
+
+`macos/scripts/vm-e2e.sh <check|all>` runs the same suite inside a headless
+macOS VM on this Mac, so the run cannot touch your session at all: the VM has
+no window of its own, and its displays, focus and input are its own. Nothing
+has to be typed during the run, so the VM runs `PD_E2E_VISIBLE=1` by default
+and the real-input checks (global events, side button, `open -a`) run too
+(`PD_VM_VISIBLE=0` for a quiet run instead).
+
+The VM is `pd-e2e`: a clone of `ghcr.io/cirruslabs/macos-tahoe-base:latest`
+with 2 CPUs, 4 GB RAM (the smallest this image accepts) and a 1920x1080
+display. `macos/scripts/vm-prepare.sh` creates it (add `--fresh` to re-clone)
+and installs what the suite needs inside: Homebrew bash (a VISIBLE run expands
+an empty array under `set -u`, which system bash 3.2 rejects), Homebrew python3
+with pyOpenSSL (TLS 1.3 for the fakephone) and ffmpeg (video checks), the ssh
+key from `~/.tart/pd-e2e` and the TCC grants `screencapture` and CGEvents need.
+The image already brings the rest — Command Line Tools (the suite compiles its
+small helpers in the guest), an auto-login console session and SIP off, which
+is what allows the TCC rows. `vm-prepare.sh` ends with a check per piece
+(console session, swiftc, ffmpeg, python/pyOpenSSL, bash 5, a real
+`screencapture`) and writes a marker, so a prepared VM is a verified one. It
+takes a few minutes and is worth re-running after changing what the suite needs.
+
+`vm-e2e.sh` builds `build/e2e/PocketDeck.app` on the host, boots the VM
+headless, copies the tree, the bundle and `tools/fakephone` in, runs the check
+in the VM's console session, copies the log and the run's work dir back to
+`macos/build/vm-e2e/<check>/` (`run.log`, `work/`) and stops the VM. The whole
+boot-run-stop is one heavy step: it takes the same machine-wide lock as a host
+run (`.agent/heavy.sh`), so it never runs beside other heavy work. Before that
+it waits for room for the VM (at least 25% free memory, swap under 2 GB); a
+boot/stop cycle pushes swap up for a while, so back-to-back runs can wait a
+few minutes between them. The exit code is the check's.
+
+Known limitations (SM-S936B, Android 16)
 
 - This Samsung build puts the virtual display in the panel's display group, so
   the server powers the physical panel off (SurfaceFlinger) while a window
