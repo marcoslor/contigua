@@ -111,7 +111,11 @@ display id on every injected event.
    A `v` other than 2 gets `{"t":"error","code":"version"}` and a close.
 3. The phone knows the Mac by `clientId` and applies its two connection
    switches before anything else. "Allow connections" off refuses every Mac,
-   paired or not, with `{"t":"error","code":"connections_off"}` and a close.
+   paired or not, with `{"t":"error","code":"connections_off"}` and a close —
+   but only a Mac whose certificate matches a stored pin ever hears that
+   message; any other peer is closed without a reply once TLS completes. The
+   TLS handshake runs under a 10 s read timeout on a small worker pool, so one
+   silent TCP peer never blocks the next connection.
    "Allow new pairings" off refuses an unpaired Mac the same way with
    `{"t":"error","code":"pairing_off"}` before any code exists; paired Macs
    continue. If the phone cannot read the switches it refuses like
