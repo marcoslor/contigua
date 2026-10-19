@@ -92,6 +92,8 @@ class Session(
     private val notifyForward: ((Boolean) -> Unit)? = null,
     /** Asks the app for the forwarded notification's action; it answers over AIDL. */
     private val notifyOpen: ((String, Int) -> Unit)? = null,
+    /** `phone.ring` (docs/PROTOCOL.md "Ring"); null refuses it. */
+    private val ringer: Ringer? = null,
 ) : VideoSink, AudioSink {
 
     /** What the TLS layer knows about this connection (§1/§4b). */
@@ -724,6 +726,8 @@ class Session(
                 "notify.enable" -> onNotifyEnable(obj)
                 "notify.open" -> onNotifyOpen(obj, frame)
                 "media.command" -> onMediaCommand(obj)
+                "phone.ring" -> onPhoneRing(obj)
+                "phone.ring.stop" -> onPhoneRingStop()
                 else -> logOnce("unknown message '$t'")
             }
         } catch (e: Throwable) {
@@ -1051,6 +1055,28 @@ class Session(
             return
         }
         driver(command)
+    }
+
+    /**
+     * `phone.ring` (docs/PROTOCOL.md "Ring"): the app process rings for `seconds`
+     * (1..30, default 30). The shell never rings itself — it has no UI or audio.
+     */
+    private fun onPhoneRing(obj: Map<String, Any?>) {
+        val ringer = ringer ?: run {
+            sendError("unsupported", "phone.ring needs the app process", 0)
+            return
+        }
+        val seconds = ((Json.long(obj["seconds"]) ?: 30L).toInt()).coerceIn(1, 30)
+        ringer.start(seconds)
+        sendJson(mapOf("t" to "ring.state", "ringing" to true))
+    }
+
+    private fun onPhoneRingStop() {
+        ringer?.stop() ?: run {
+            sendError("unsupported", "phone.ring needs the app process", 0)
+            return
+        }
+        sendJson(mapOf("t" to "ring.state", "ringing" to false))
     }
 
     /**

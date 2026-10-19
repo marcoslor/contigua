@@ -14,6 +14,14 @@ Five intents, all optional-phone (default: the connected phone, else the only pa
 | `SendLinkToPhoneIntent` | sends a URL through the Mac → phone link path |
 | `SendFileToPhoneIntent` | drops files into `Download/PocketDeck` |
 | `PhoneBatteryIntent` | answers from the last `state`, never wakes the phone |
+| `RingPhoneIntent` | `phone.ring`: the phone's own app plays the alarm over its lock screen (≤ 30 s) |
+
+`RingPhoneIntent` needs a live session (the phone rings itself, so nothing can be queued for a
+phone that is still connecting); the menu bar has "Ring Phone" / "Stop Ringing" too. On the
+phone, the shell service forwards `phone.ring` to the app process: a high-importance
+notification with a full-screen intent is the only launch Android 14+ allows over a secure
+keyguard, so the first ring asks the person (once) to allow full-screen notifications; without
+that grant the alarm still sounds and the notification's Stop action works.
 
 `PhoneApp` is an `AppEntity` with an `EntityStringQuery` over the app list Spotlight also
 indexes, so Shortcuts can name an app instead of typing its package.

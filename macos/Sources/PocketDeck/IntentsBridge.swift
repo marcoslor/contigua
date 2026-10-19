@@ -103,4 +103,15 @@ enum IntentsBridge {
     private static func label(for pkg: String, on phone: IntentPhone) -> String {
         apps(for: phone).first { $0.pkg == pkg }?.label ?? pkg
     }
+
+    /// `phone.ring` needs the live session: the phone rings itself, so there is
+    /// nothing to queue for a phone that is still connecting.
+    static func ring(_ phone: IntentPhone, seconds: Int) throws -> String {
+        let controller = self.controller
+        guard controller.link.isOnline, controller.link.phone?.id == phone.id else {
+            throw IntentFailure.phoneNotConnected
+        }
+        controller.ringPhone(seconds: seconds)
+        return "Ringing \(phone.name)."
+    }
 }

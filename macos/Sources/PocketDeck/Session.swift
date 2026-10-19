@@ -1045,6 +1045,12 @@ final class Session {
     }
 
     func mediaCommand(_ action: String) { sendJSON(["t": "media.command", "action": action]) }
+
+    /// `phone.ring` (docs/PROTOCOL.md "Ring"): the phone's app plays its alarm
+    /// over the lock screen, at the alarm volume, for at most 30 s.
+    func ring(seconds: Int = 30) { sendJSON(["t": "phone.ring", "seconds": max(1, min(30, seconds))]) }
+
+    func stopRing() { sendJSON(["t": "phone.ring.stop"]) }
     func sendApkData(id: UInt32, bytes: [UInt8], sent: @escaping @Sendable (Bool) -> Void) { sendData(.apkData, id: id, bytes: bytes, sent: sent) }
     func dropStart(id: UInt32, name: String, mime: String, size: Int, sha256: String, resume: Int = 0) {
         var message: [String: Any] = ["t": "drop.start", "id": Int(id), "name": name, "mime": mime, "size": size, "sha256": sha256]

@@ -234,6 +234,8 @@ Mac → phone (after `welcome`):
 | `clip.image.abort` | `id` | the sender gave up; discard what arrived |
 | `audio.start` | `codecs` (array of int, e.g. `[2,3]`) | start device-wide audio; phone answers AUDIO_CONFIG + frames |
 | `audio.stop` | — | stop device-wide audio |
+| `phone.ring` | `seconds`? | ring the phone (app process, alarm over the lock screen, ≤ 30 s); see "Ring" |
+| `phone.ring.stop` | — | stop a running ring |
 | `fs.list` | `id`, `path`, `page`? | children of `path`; `page` is the phone's opaque cursor, absent = first |
 | `fs.stat` | `id`, `path` | one item's metadata |
 | `fs.read` | `id`, `path`, `offset`, `length`, `etag`? | stream `length` bytes from `offset` (`FS_DATA`, then `fs.read.end`); an `etag` that no longer matches answers `fs_stale` |
@@ -252,6 +254,7 @@ Phone → Mac:
 | `window.title` | `stream`, `label`, `pkg` — top app changed on that display (phone mode) |
 | `state` | `locked`: bool, `battery`: int, `charging`: bool — sent on change |
 | `audio.state` | `on`: bool, `codec`: int — audio capture on/off (for the UI dot) |
+| `ring.state` | `ringing`: bool — a `phone.ring` started (`true`) or ended (`false`) |
 | `error` | `code`, `message`, optional `stream` |
 | `apk.progress` | `id`, `bytes` — bytes written into the install so far |
 | `apk.result` | `id`, `ok`; success: `pkg`, `label`, `version`; failure: `code`, `message` |
@@ -470,6 +473,23 @@ the sender may be either side:
   manager. From the phone the image is read out of the clipboard's first item when its bytes
   are readable. The receiver keeps the SHA-256 of the bytes it last sent or received, so images
   are never echoed back, like `clip.set`.
+
+## Ring
+
+`phone.ring` finds the phone (docs/design/intents.md): the **app** — not the shell service,
+which has neither UI nor audio — plays the default alarm sound at the alarm volume, over the
+lock screen, for at most 30 s.
+
+1. Mac → `{"t":"phone.ring","seconds":N}` — `seconds` optional, clamped 1..30 (default 30).
+2. The phone shows an activity over the lock screen (`showWhenLocked`, screen on) with a
+   Stop button, holds transient audio focus on the alarm stream and loops the default alarm
+   tone. It stops by itself after N seconds, when Stop is tapped, or on audio-focus loss.
+3. Phone → `{"t":"ring.state","ringing":true}` once the ring started.
+4. Mac → `{"t":"phone.ring.stop"}`: the phone stops at once and answers
+   `{"t":"ring.state","ringing":false}`. The session ending stops it too.
+
+A phone build whose app process cannot show the ring answers `error` `unsupported`; the
+shell service never rings on its own.
 
 ## Error codes
 
