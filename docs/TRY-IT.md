@@ -160,12 +160,14 @@ memory, swap under 2 GB); a boot/stop cycle pushes swap up for a while, so
 back-to-back runs can wait a few minutes between them. The exit code is the
 check's (a list's is the number of checks that failed).
 
-Known VM-only failures (first `all` in the VM, 2026-10-19: 244 passed, 7
-failed; none of them fail on the host): C12's Spotlight unit tests (the guest
-has Command Line Tools only, no XCTest), C6's tall config (the 1920x1080
-screen clamps the 600x900 pt window), C15 trackscroll's 100 ms gap (VM timing),
-and a cascade where the shared session goes offline after phone mode (C11's
-nav home/recents, then the audio and drop opens answer "not online").
+Known VM-only failures (second `all` in the VM, 2026-10-19: 254 passed, 5
+failed; none of them fail on the host): C15 fingerscroll's refresh-apart gap
+(VM timing), and a cascade where the shared session goes offline after phone
+mode (C11's nav home/recents, then the audio and drop opens answer "not
+online"); the cascade does not show every boot. `PD_VM_FAKE_DEBUG=1 vm-e2e.sh`
+keeps the guest fakephone's session diagnostics in `fake.err` for the next
+time it does. C12's Spotlight unit tests and C6's tall shape print `SKIP` in
+the VM, with the reason.
 
 ## Known limitations (SM-S936B, Android 16)
 
