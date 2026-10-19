@@ -183,7 +183,10 @@ struct DevicesSettings: View {
                     }
                     Button("Forget", role: .destructive) { forgetting = phone }.buttonStyle(.glass).foregroundStyle(.red)
                 }
-                PhoneNotifyToggle(deviceId: phone.id)
+                VStack(alignment: .trailing, spacing: 6) {
+                    PhoneNotifyToggle(deviceId: phone.id)
+                    PhoneNotifyClickPicker(deviceId: phone.id)
+                }
             }
         } label: {
             VStack(alignment: .leading, spacing: 2) {
@@ -241,5 +244,44 @@ private struct PhoneNotifyToggle: View {
         }
         .toggleStyle(.switch)
         .controlSize(.small)
+    }
+}
+
+/// "When I click a phone notification" (ROADMAP D2): the same per-phone row,
+/// enabled only while the notification toggle above it is on. The choice is
+/// stored beside `notify.<deviceId>` and read on every click.
+private struct PhoneNotifyClickPicker: View {
+    let deviceId: String
+
+    @Environment(ConnectionController.self) private var controller
+    @AppStorage private var notifyEnabled: Bool
+
+    init(deviceId: String) {
+        self.deviceId = deviceId
+        _notifyEnabled = AppStorage(
+            wrappedValue: false,
+            NotifyToggle.key(deviceId: deviceId),
+            store: Profile.active.defaults,
+        )
+    }
+
+    private var defaults: UserDefaults { Profile.active.defaults }
+    private var selection: Binding<NotifyClickTarget> {
+        Binding(
+            get: { NotifyClickTarget.stored(deviceId: deviceId, defaults: defaults) },
+            set: { controller.notifyClickSettingChanged(deviceId: deviceId, target: $0) },
+        )
+    }
+
+    var body: some View {
+        Picker("When I click a phone notification", selection: selection) {
+            ForEach(NotifyClickTarget.allCases) { target in
+                Text(target.label).tag(target)
+            }
+        }
+        .pickerStyle(.menu)
+        .controlSize(.small)
+        .disabled(!notifyEnabled)
+        .help("What a click on this phone's notification does.")
     }
 }

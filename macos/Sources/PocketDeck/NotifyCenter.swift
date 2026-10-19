@@ -20,6 +20,14 @@ struct PhoneNotification: Equatable {
     var text: String?
 }
 
+/// What a banner click stands for: the forwarded id (the phone resolves it),
+/// the package and the phone whose setting decides where it runs.
+struct NotifyClick: Equatable {
+    var id: String
+    var pkg: String
+    var phoneId: String
+}
+
 /// Pure rules: the macOS title/body and the recording line. Unit-tested.
 enum NotifyMapping {
 
@@ -80,7 +88,7 @@ final class NotificationRouter: NSObject, UNUserNotificationCenterDelegate {
     /// Share actions' response handling (registered by ConnectionController).
     weak var shareActions: SystemShareActions?
     /// A phone notification was clicked (default action).
-    var onOpen: ((String) -> Void)?
+    var onOpen: ((NotifyClick) -> Void)?
 
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter,
                                             didReceive response: UNNotificationResponse,
@@ -93,9 +101,12 @@ final class NotificationRouter: NSObject, UNUserNotificationCenterDelegate {
             }
         } else if content.userInfo["kind"] as? String == Self.phoneKind,
                   let pkg = content.userInfo["pkg"] as? String,
+                  let id = content.userInfo["id"] as? String,
                   response.actionIdentifier == UNNotificationDefaultActionIdentifier {
+            let phoneId = content.userInfo["phone"] as? String ?? content.threadIdentifier
+            let click = NotifyClick(id: id, pkg: pkg, phoneId: phoneId)
             let open = onOpen ?? { _ in }
-            DispatchQueue.main.async { open(pkg) }
+            DispatchQueue.main.async { open(click) }
         }
         completionHandler()
     }
@@ -114,14 +125,15 @@ final class NotifyCenter {
     /// `--share-log`: record posts/clicks/removals (sizes and ids only) instead
     /// of posting them; nothing reaches Notification Center in this mode.
     var log: URL?
-    /// The phone notifications belong to one phone; clicking opens its app window.
-    var onOpen: ((String) -> Void)?
+    /// The phone notifications belong to one phone; a click routes through the
+    /// per-phone "When I click a phone notification" choice.
+    var onOpen: ((NotifyClick) -> Void)?
 
     var router = NotificationRouter()
 
-    /// Posted ids -> their package and their UN request identifier, so a click
-    /// and a removal can both find them back.
-    private var openableIds: [String: String] = [:]
+    /// Posted ids -> what a click needs (package, phone) and their UN request
+    /// identifier, so a click and a removal can both find them back.
+    private var openableIds: [String: NotifyClick] = [:]
     private var requestIds: [String: String] = [:]
     private var authorized = false
     private var registering = false
@@ -130,6 +142,9 @@ final class NotifyCenter {
     /// side; with a log there is nothing to show, so neither happens.
     func install() {
         guard log == nil else { return }
+        // The real banner click goes through the same routing as the debug
+        // action; the delegate is installed once, before any notification.
+        router.onOpen = { [weak self] click in self?.onOpen?(click) }
         UNUserNotificationCenter.current().delegate = router
         registerCategories()
     }
@@ -145,7 +160,7 @@ final class NotifyCenter {
     /// Posts one phone notification; the thread groups them under the phone's id.
     func post(_ n: PhoneNotification, phoneId: String, phoneName: String, labelFor: (String) -> String?) {
         let (title, body) = NotifyMapping.content(n, phoneName: phoneName, labelFor: labelFor)
-        openableIds[n.id] = n.pkg
+        openableIds[n.id] = NotifyClick(id: n.id, pkg: n.pkg, phoneId: phoneId)
         let requestId = "pd.\(phoneId).\(n.id)"
         requestIds[n.id] = requestId
         if log != nil {
@@ -157,7 +172,7 @@ final class NotifyCenter {
         if !body.isEmpty { content.body = body }
         content.threadIdentifier = phoneId
         content.sound = nil
-        content.userInfo = ["kind": NotificationRouter.phoneKind, "pkg": n.pkg]
+        content.userInfo = ["kind": NotificationRouter.phoneKind, "pkg": n.pkg, "id": n.id, "phone": phoneId]
         let request = UNNotificationRequest(identifier: requestId, content: content, trigger: nil)
         postToCenter(request)
     }
@@ -175,9 +190,9 @@ final class NotifyCenter {
     /// notification is known (yet).
     @discardableResult
     func performOpen(id: String) -> Bool {
-        guard let pkg = openableIds[id] else { return false }
-        if log != nil { record(NotifyMapping.record(opened: pkg, id: id)) }
-        onOpen?(pkg)
+        guard let click = openableIds[id] else { return false }
+        if log != nil { record(NotifyMapping.record(opened: click.pkg, id: id)) }
+        onOpen?(click)
         return true
     }
 

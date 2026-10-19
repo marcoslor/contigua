@@ -342,8 +342,8 @@ final class ConnectionController {
         // The same `--share-log` file records what both halves would have shown.
         let shareLog = options.shareLog.map { URL(fileURLWithPath: $0) }
         notifyCenter.log = shareLog
-        notifyCenter.onOpen = { [weak self] pkg in
-            MainActor.assumeIsolated { self?.openFromNotification(pkg) }
+        notifyCenter.onOpen = { [weak self] click in
+            MainActor.assumeIsolated { self?.notificationClicked(click) }
         }
         nowPlaying.log = shareLog
         nowPlaying.onCommand = { [weak self] action in
@@ -1413,14 +1413,30 @@ final class ConnectionController {
 
     // MARK: Notification share (docs/design/notify.md)
 
-    /// Opens the app window a notification stands for; unknown packages are
-    /// refused politely (the phone's app list is the source of truth).
-    func openFromNotification(_ pkg: String) {
+    /// A Mac banner click (ROADMAP D2): the per-phone "When I click a phone
+    /// notification" choice decides where the notification's own action runs.
+    /// Open on Mac raises (or opens) the app's window and runs the action on
+    /// that display; Open on phone runs it on display 0 with no Mac window; Do
+    /// nothing only dismisses the banner. Unknown packages are refused politely
+    /// (the phone's app list is the source of truth).
+    func notificationClicked(_ click: NotifyClick) {
         guard link.isOnline else { return }
-        if let app = windows.appsByPkg[pkg] ?? apps.first(where: { $0.pkg == pkg }) {
-            openApp(app)
-        } else {
-            showTransient("That app isn't openable from the Mac.")
+        let target = NotifyClickTarget.stored(deviceId: click.phoneId, defaults: profile.defaults)
+        var stream: UInt32?
+        for step in NotifyClickPlan.steps(for: target) {
+            switch step {
+            case .openWindow:
+                guard let app = windows.appsByPkg[click.pkg] ?? apps.first(where: { $0.pkg == click.pkg }) else {
+                    showTransient("That app isn't openable from the Mac.")
+                    return
+                }
+                stream = windows.openOrRaiseApp(pkg: app.pkg, activity: app.activity)
+            case .send(let destination):
+                // The window is already open: an older phone that ignores
+                // notify.open keeps today's behaviour there.
+                session?.openNotification(id: click.id, target: destination,
+                                          stream: destination == .window ? stream : nil)
+            }
         }
     }
 
@@ -1429,6 +1445,12 @@ final class ConnectionController {
         profile.defaults.set(on, forKey: NotifyToggle.key(deviceId: deviceId))
         if link.phone?.id == deviceId { session?.enableNotifications(on) }
         if !on, link.phone?.id == deviceId { nowPlaying.clear() }
+    }
+
+    /// The click choice changed; it is read on every click, so a live session
+    /// needs no message (docs/design/notify.md).
+    func notifyClickSettingChanged(deviceId: String, target: NotifyClickTarget) {
+        profile.defaults.set(target.rawValue, forKey: NotifyClickTarget.key(deviceId: deviceId))
     }
 
     private func labelFor(_ pkg: String) -> String? {

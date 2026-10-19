@@ -100,6 +100,56 @@ final class NotifyMacTests: XCTestCase {
         XCTAssertEqual(raw.double("when"), 1_700_000_000_000)
     }
 
+    // MARK: click setting (ROADMAP D2)
+
+    func testClickSettingDefaultsToOpenOnMacAndIsStoredPerPhone() {
+        let suite = "notify-click-tests-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        XCTAssertEqual(NotifyClickTarget.stored(deviceId: "phone-1", defaults: defaults), .mac,
+                       "no stored value opens on the Mac")
+        defaults.set(NotifyClickTarget.phone.rawValue, forKey: NotifyClickTarget.key(deviceId: "phone-1"))
+        defaults.set(NotifyClickTarget.none.rawValue, forKey: NotifyClickTarget.key(deviceId: "phone-2"))
+        XCTAssertEqual(NotifyClickTarget.stored(deviceId: "phone-1", defaults: defaults), .phone)
+        XCTAssertEqual(NotifyClickTarget.stored(deviceId: "phone-2", defaults: defaults), .none)
+        XCTAssertEqual(NotifyClickTarget.stored(deviceId: "phone-3", defaults: defaults), .mac,
+                       "another phone keeps its own choice")
+        defaults.set("bogus", forKey: NotifyClickTarget.key(deviceId: "phone-1"))
+        XCTAssertEqual(NotifyClickTarget.stored(deviceId: "phone-1", defaults: defaults), .mac,
+                       "an unknown stored value falls back to the default")
+    }
+
+    func testClickSettingMapsToItsAction() {
+        XCTAssertEqual(NotifyClickTarget.mac.action, .openOnMac)
+        XCTAssertEqual(NotifyClickTarget.phone.action, .openOnPhone)
+        XCTAssertEqual(NotifyClickTarget.none.action, .dismiss)
+    }
+
+    func testDoNothingOpensNothingAndSendsNothing() {
+        XCTAssertEqual(NotifyClickPlan.steps(for: .none), [])
+    }
+
+    func testOpenOnMacOpensTheWindowBeforeSendingSoAnOldPhoneStillOpensIt() {
+        XCTAssertEqual(NotifyClickPlan.steps(for: .mac), [.openWindow, .send(.window)],
+                       "window.open precedes notify.open: an older phone ignores the message")
+        XCTAssertEqual(NotifyClickPlan.steps(for: .phone), [.send(.phone)],
+                       "Open on phone opens no Mac window")
+    }
+
+    func testNotifyOpenMessageCarriesOnlyTheIdTargetAndWindowStream() {
+        let window = NotifyOpenMessage.make(id: "k1", target: .window, stream: 7)
+        XCTAssertEqual(window["t"] as? String, "notify.open")
+        XCTAssertEqual(window["id"] as? String, "k1")
+        XCTAssertEqual(window["target"] as? String, "window")
+        XCTAssertEqual(window["stream"] as? Int, 7)
+
+        let phone = NotifyOpenMessage.make(id: "k1", target: .phone)
+        XCTAssertEqual(phone["target"] as? String, "phone")
+        XCTAssertNil(phone["stream"], "the phone's own display needs no stream")
+        XCTAssertNil(phone["pkg"], "the Mac never names a package or an intent")
+        XCTAssertNil(phone["intent"])
+    }
+
     // MARK: now playing
 
     func testNowPlayingInfoFromMediaState() {
