@@ -1254,6 +1254,7 @@ check_resize() {
     end_shared
     : > "$WORK/events.jsonl"
     FAKE_ARGS="--resize-delay-ms 4000" start_fake || return 1
+    FAKE_ARGS=""
     launch_shared --connect "127.0.0.1:$PORT" || return 1
     local fw=640 fh=640 bar=28 edges win ew eh
     ew=$((fw * scale / 16 * 16)); eh=$((fh * scale / 16 * 16))
@@ -1308,8 +1309,8 @@ check_resize() {
     else
         bad "C6 phone window: no portrait window to capture"
     fi
-    stop_app
-    stop_fakephone
+    # The delayed phone must not serve the next check in a shared run.
+    end_shared
 }
 
 # --- C7: input ------------------------------------------------------------
