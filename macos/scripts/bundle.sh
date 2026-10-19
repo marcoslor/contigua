@@ -32,6 +32,23 @@ esac
 BUILD_FLAGS=()
 [ "$VARIANT" = "release" ] || BUILD_FLAGS=(-Xswiftc -DPD_TEST_HOOKS)
 
+# App Intents metadata (docs/design/intents.md). Xcode's
+# ExtractAppIntentsMetadata phase is two halves, and SwiftPM runs neither:
+# `-emit-const-values` makes swiftc write one `<file>.swiftconstvalues` per
+# source, and appintentsmetadataprocessor turns those into the bundle's
+# `Contents/Resources/Metadata.appintents`. Without that folder the system
+# knows none of the app's intents: no Siri, no Shortcuts, no Spotlight actions.
+# The protocol list is the one Xcode hands swiftc; it is a constant of the
+# toolchain rather than of this project, so it lives in a file here.
+APPINTENTS_TOOLCHAIN="${APPINTENTS_TOOLCHAIN:-$(xcode-select -p 2>/dev/null)/Toolchains/XcodeDefault.xctoolchain}"
+APPINTENTS_TOOL="$APPINTENTS_TOOLCHAIN/usr/bin/appintentsmetadataprocessor"
+APPINTENTS_PROTOCOLS="$PWD/scripts/appintents-protocols.json"
+if [ -x "$APPINTENTS_TOOL" ]; then
+    BUILD_FLAGS+=(-Xswiftc -emit-const-values -Xswiftc -const-gather-protocols-list -Xswiftc "$APPINTENTS_PROTOCOLS")
+else
+    echo "bundle.sh: warning: no appintentsmetadataprocessor in $APPINTENTS_TOOLCHAIN; the bundle will carry no App Intents metadata" >&2
+fi
+
 swift build -c release ${BUILD_FLAGS[@]+"${BUILD_FLAGS[@]}"}
 BIN="$(swift build -c release ${BUILD_FLAGS[@]+"${BUILD_FLAGS[@]}"} --show-bin-path)/PocketDeck"
 
@@ -209,6 +226,39 @@ plutil -insert PDBuildVariant -string "$VARIANT" "$APP/Contents/Info.plist"
 # The e2e app starts as an agent, so a quiet (--background) run never has a Dock
 # icon, not even while it launches; a visible run makes itself a regular app.
 [ "$VARIANT" = "e2e" ] && plutil -insert LSUIElement -bool true "$APP/Contents/Info.plist"
+
+# ExtractAppIntentsMetadata, second half: the const-values files the compiler
+# wrote above (PocketDeck's own, not the dependencies') become
+# Resources/Metadata.appintents. Same arguments Xcode's phase passes, bar the
+# per-source dependency files it only uses to decide whether to re-run.
+if [ -x "$APPINTENTS_TOOL" ]; then
+    CONST_LIST="$(find .build/out/Intermediates.noindex/PocketDeck.build -path "*/Release/*" \
+        -name "PocketDeck.SwiftFileList" 2>/dev/null | head -1)"
+    CONST_DIR="$(dirname "${CONST_LIST:-.}")"
+    CONST_VALUES="$(mktemp -t pocketdeck-constvals)"
+    trap 'rm -f "$CONST_VALUES"' EXIT
+    if [ -f "$CONST_LIST" ]; then
+        find "$CONST_DIR" -maxdepth 1 -name "*.swiftconstvalues" > "$CONST_VALUES"
+        "$APPINTENTS_TOOL" \
+            --toolchain-dir "$APPINTENTS_TOOLCHAIN" \
+            --module-name PocketDeck \
+            --sdk-root "$(xcrun --sdk macosx --show-sdk-path)" \
+            --xcode-version "$(xcodebuild -version | tail -1)" \
+            --platform-family macOS \
+            --deployment-target 26.0 \
+            --bundle-identifier dev.pocketdeck.mac \
+            --output "$APP/Contents/Resources" \
+            --target-triple "$(uname -m)-apple-macos26.0" \
+            --binary-file "$APP/Contents/MacOS/PocketDeck" \
+            --source-file-list "$CONST_LIST" \
+            --swift-const-vals-list "$CONST_VALUES" \
+            --compile-time-extraction --deployment-aware-processing --no-app-shortcuts-localization
+    else
+        echo "bundle.sh: warning: no Release SwiftFileList under .build; App Intents metadata not extracted" >&2
+    fi
+    rm -f "$CONST_VALUES"
+    trap - EXIT
+fi
 
 # Share extension: swiftc, because SwiftPM cannot link an app extension's entry point.
 APPEX="$APP/Contents/PlugIns/Share.appex"
