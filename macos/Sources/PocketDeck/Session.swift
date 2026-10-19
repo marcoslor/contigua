@@ -1009,6 +1009,7 @@ final class Session {
     func sendClipboard(_ text: String) { sendJSON(["t": "clip.set", "text": text]) }
     func touch(_ event: TouchEvent, stream: UInt32) { sendBytes(Frame(type: .touch, stream: stream, payload: event.payload).encoded) }
     func scroll(_ event: ScrollEvent, stream: UInt32) { sendBytes(Frame(type: .scroll, stream: stream, payload: event.payload).encoded) }
+    func hover(_ event: HoverEvent, stream: UInt32) { sendBytes(Frame(type: .hover, stream: stream, payload: event.payload).encoded) }
     func key(_ event: KeyEvent, stream: UInt32) { sendBytes(Frame(type: .key, stream: stream, payload: event.payload).encoded) }
 
     // MARK: Fail

@@ -10,6 +10,7 @@ final class InputMapper {
     enum Command {
         case touch(TouchEvent)
         case scroll(ScrollEvent)
+        case hover(HoverEvent)
         case key(KeyEvent)
         case text(String)
         case nav(String)
@@ -132,6 +133,8 @@ final class InputMapper {
     func mouseDown(_ event: NSEvent) {
         flushText()
         cancelTrackpadGestures()
+        // A button down ends the hover before the touch starts.
+        hoverExit()
         let (nx, ny) = normalized(locationProvider(event))
         LatencyLog.shared.noteTouchDown(stream: stream)
         send?(.touch(TouchEvent(action: .down, nx: nx, ny: ny)))
@@ -147,9 +150,89 @@ final class InputMapper {
         send?(.touch(TouchEvent(action: .up, nx: nx, ny: ny)))
     }
 
+    // MARK: Hover
+
+    /// Settings ▸ Input "Hover over Android apps". Off sends no hover frames.
+    var hoverEnabled: () -> Bool = { true }
+    /// At most one hover move per this interval; the latest point wins.
+    static let hoverMoveInterval: TimeInterval = 0.016
+    /// Schedules the coalesced hover move; tests and the scripted driver drive
+    /// it by hand.
+    var scheduleHoverMove: (TimeInterval, @escaping () -> Void) -> Void = { delay, work in
+        InputMapper.onMainRunLoop(after: delay, work)
+    }
+    /// Monotonic clock for the 16 ms window; tests replace it.
+    var hoverClock: () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
+
+    private var hoverActive = false
+    private var hoverLastPoint: (nx: Float, ny: Float) = (0, 0)
+    private var hoverPending: (nx: Float, ny: Float)?
+    private var hoverMoveScheduled = false
+    private var hoverLastSent: TimeInterval = 0
+    private var hoverGeneration = 0
+
+    /// The pointer is over the video (a move, not a drag): the first one sends
+    /// ENTER, the rest are MOVEs held to one per 16 ms.
+    func hoverMove(at point: CGPoint) {
+        guard hoverEnabled() else {
+            // Off means no hover frames at all; the phone keeps whatever it
+            // had until the setting comes back and a move sends ENTER again.
+            hoverActive = false
+            hoverPending = nil
+            hoverGeneration += 1
+            return
+        }
+        let (nx, ny) = normalized(point)
+        guard hoverActive else {
+            hoverActive = true
+            hoverLastSent = hoverClock()
+            hoverPending = nil
+            sendHover(.enter, nx: nx, ny: ny)
+            return
+        }
+        hoverPending = (nx, ny)
+        let elapsed = hoverClock() - hoverLastSent
+        if elapsed >= Self.hoverMoveInterval {
+            flushHoverMove()
+        } else if !hoverMoveScheduled {
+            hoverMoveScheduled = true
+            hoverGeneration += 1
+            let generation = hoverGeneration
+            scheduleHoverMove(Self.hoverMoveInterval - elapsed) { [weak self] in
+                guard let self, generation == self.hoverGeneration else { return }
+                self.flushHoverMove()
+            }
+        }
+    }
+
+    /// The pointer left the video (or the window), a button went down, the
+    /// window lost key or closed, or it entered Mac UI drawn over the video.
+    func hoverExit() {
+        hoverPending = nil
+        hoverMoveScheduled = false
+        hoverGeneration += 1
+        guard hoverActive else { return }
+        hoverActive = false
+        sendHover(.exit, nx: hoverLastPoint.nx, ny: hoverLastPoint.ny)
+    }
+
+    private func flushHoverMove() {
+        hoverMoveScheduled = false
+        guard hoverActive, let pending = hoverPending else { return }
+        hoverPending = nil
+        hoverLastSent = hoverClock()
+        sendHover(.move, nx: pending.nx, ny: pending.ny)
+    }
+
+    private func sendHover(_ action: HoverAction, nx: Float, ny: Float) {
+        hoverLastPoint = (nx, ny)
+        send?(.hover(HoverEvent(action: action, nx: nx, ny: ny)))
+    }
+
     func rightMouseDown(_ event: NSEvent) {
         flushText()
         cancelTrackpadGestures()
+        hoverExit()
         send?(.nav("back"))
     }
 
@@ -157,6 +240,7 @@ final class InputMapper {
     func otherMouseDown(_ event: NSEvent) {
         flushText()
         cancelTrackpadGestures()
+        hoverExit()
         if let action = Self.navAction(forButton: Int(event.buttonNumber)) {
             send?(.nav(action))
         }
