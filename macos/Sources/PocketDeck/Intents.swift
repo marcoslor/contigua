@@ -192,8 +192,28 @@ struct PhoneBatteryIntent: AppIntent {
     }
 }
 
-// MARK: Spoken phrases (Siri, Spotlight actions)
+struct RingPhoneIntent: AppIntent {
+    static var title: LocalizedStringResource = "Ring Phone"
+    static var description = IntentDescription(
+        "Rings your phone at its alarm volume, over the lock screen, for up to 30 seconds.")
+    static var parameterSummary: some ParameterSummary {
+        Summary("Ring \(\.$phone) for \(\.$seconds) seconds")
+    }
 
+    @Parameter(title: "Phone")
+    var phone: PhoneEntity?
+
+    @Parameter(title: "Seconds", default: 30)
+    var seconds: Int
+
+    @MainActor
+    func perform() async throws -> some IntentResult & ProvidesDialog {
+        let target = try IntentsBridge.resolve(phone?.id)
+        return .result(dialog: "\(try IntentsBridge.ring(target, seconds: max(1, min(30, seconds))))")
+    }
+}
+
+// MARK: Spoken phrases (Siri, Spotlight actions)
 struct PocketDeckShortcuts: AppShortcutsProvider {
     static var shortcutTileColor: ShortcutTileColor = .navy
 
@@ -216,6 +236,14 @@ struct PocketDeckShortcuts: AppShortcutsProvider {
             ],
             shortTitle: "Phone Battery",
             systemImageName: "battery.75percent"
+        )
+        AppShortcut(
+            intent: RingPhoneIntent(),
+            phrases: [
+                "Ring my phone in \(.applicationName)"
+            ],
+            shortTitle: "Ring Phone",
+            systemImageName: "iphone.radiowaves.left.and.right"
         )
         AppShortcut(
             intent: OpenPhoneAppIntent(),

@@ -1181,6 +1181,32 @@ def cmd_clip_set(client, args):
     return 0
 
 
+def cmd_ring(client, args):
+    """Send `phone.ring` (or stop it) and print the phone's ring.state answer."""
+    if args.stop:
+        client.send_json({"t": "phone.ring.stop"})
+        print("sent phone.ring.stop")
+    else:
+        client.send_json({"t": "phone.ring", "seconds": args.seconds})
+        print("sent phone.ring seconds=%d" % args.seconds)
+    deadline = time.time() + args.wait
+    while time.time() < deadline:
+        frame = client.recv(0.25)
+        if frame is TIMEOUT:
+            continue
+        if frame is None:
+            raise DeckError("phone closed during ring")
+        if frame.type != proto.TYPE_JSON:
+            continue
+        msg = proto.unpack_json(frame)
+        if msg.get("t") == "error":
+            raise DeckError("phone error: %s (%s)" % (msg.get("code"), msg.get("message")))
+        if msg.get("t") == "ring.state":
+            print("ring.state ringing=%s" % json.dumps(msg.get("ringing")))
+            return 0
+    raise DeckError("no ring.state within %ss" % args.wait)
+
+
 def cmd_clip_watch(client, args):
     """Print every `clip.set` the phone sends, for `--seconds`."""
     deadline = time.time() + args.seconds
@@ -1750,6 +1776,11 @@ def build_parser():
     sp = sub.add_parser("clip-set", help="send clip.set TEXT: put TEXT on the phone's clipboard", **spp)
     sp.add_argument("text")
 
+    sp = sub.add_parser("ring", help="phone.ring: ring the phone (or --stop), print ring.state", **spp)
+    sp.add_argument("--seconds", type=int, default=30, help="ring for 1..30 s (default 30)")
+    sp.add_argument("--stop", action="store_true", help="send phone.ring.stop instead")
+    sp.add_argument("--wait", type=float, default=10.0, help="seconds to wait for ring.state")
+
     sp = sub.add_parser("clip-watch", help="print every clip.set the phone sends", **spp)
     sp.add_argument("--seconds", type=float, default=30.0)
 
@@ -1829,6 +1860,7 @@ COMMANDS = {
     "latency": cmd_latency,
     "quality-test": cmd_quality_test,
     "watch-state": cmd_watch_state,
+    "ring": cmd_ring,
     "clip-set": cmd_clip_set,
     "clip-watch": cmd_clip_watch,
     "probe": cmd_probe,

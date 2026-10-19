@@ -134,6 +134,12 @@ class DeckService(private val appContext: Context?) :
                 notifyForward = { forward -> sendToApp { it.onNotifySession(forward) } },
                 mediaCommand = { action -> sendToApp { it.onMediaCommand(action) } },
                 notifyOpen = { id, displayId -> sendToApp { it.onNotifyOpen(id, displayId) } },
+                // phone.ring: the app process shows the alarm over the lock
+                // screen (the shell service has no UI and no audio device).
+                ringer = object : Ringer {
+                    override fun start(seconds: Int) = sendToApp { it.onRing(seconds) }
+                    override fun stop() = sendToApp { it.onRingStop() }
+                },
                 tlsView = Session.TlsView.from(socket).also { view ->
                     // K4/e2e evidence, hashes only, debug builds only: the
                     // platform stack really backs the v2 pairing

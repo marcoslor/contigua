@@ -258,6 +258,16 @@ interface DeckCallback {
     fun onSessionChanged(connected: Boolean, macName: String?, windows: Int)
 }
 
+/**
+ * `phone.ring` / `phone.ring.stop` (docs/PROTOCOL.md "Ring"). The shell service
+ * forwards them to the app process: only an app may show an activity over the
+ * lock screen and play the alarm.
+ */
+interface Ringer {
+    fun start(seconds: Int)
+    fun stop()
+}
+
 /** The app a successful install left on the phone. */
 data class InstalledApp(val pkg: String, val label: String, val version: String)
 

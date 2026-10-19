@@ -43,6 +43,10 @@ struct MenuBarContent: View {
             .disabled(!controller.link.isOnline)
         Button("Continue on Mac") { controller.continueOnMac() }
             .disabled(!controller.link.isOnline)
+        Button("Ring Phone") { controller.ringPhone() }
+            .disabled(!controller.link.isOnline)
+        Button("Stop Ringing") { controller.stopRingingPhone() }
+            .disabled(!controller.link.isOnline)
         Button("Install APK…") { controller.chooseApk() }
             .disabled(controller.apkInstaller.isBusy)
         Divider()

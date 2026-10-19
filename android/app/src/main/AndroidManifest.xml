@@ -14,6 +14,11 @@
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <!-- phone.ring's full-screen intent: the system may launch the ring over a
+         secure keyguard (Android 14+ asks the person to allow full-screen
+         notifications once; without it the ring still sounds and the
+         notification's Stop action works). -->
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
 
     <!-- The Mac's app list needs launchable apps; Shizuku is opened by package. -->
     <queries>
@@ -88,6 +93,18 @@
             android:noHistory="true"
             android:taskAffinity=""
             android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+
+        <!-- A Mac's phone.ring (docs/PROTOCOL.md "Ring"): the alarm sound over
+             the lock screen with a Stop button, at most 30 s. Not exported: only
+             the app's own service callback starts it. -->
+        <activity
+            android:name=".app.RingActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:launchMode="singleTop"
+            android:showWhenLocked="true"
+            android:taskAffinity=""
+            android:turnScreenOn="true" />
 
         <!-- "Open on Mac" (docs/design/sharein.md): aliases of ShareActivity so the share
              sheet keeps its label. The theme, noHistory etc. come from the target. -->

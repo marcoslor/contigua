@@ -22,6 +22,15 @@ oneway interface IDeckCallback {
     void onMediaCommand(String action);
 
     /**
+     * The Mac asked this phone to ring (docs/PROTOCOL.md "Ring"): the app shows
+     * the alarm over the lock screen for at most `seconds` (1..30).
+     */
+    void onRing(int seconds);
+
+    /** The Mac stopped the ring (or it timed out on the Mac's side). */
+    void onRingStop();
+
+    /**
      * A Mac clicked the forwarded notification `id` (docs/design/notify.md).
      * The app looks up the action it kept for that id and hands the
      * PendingIntent back to the server with `openNotification`; an unknown id

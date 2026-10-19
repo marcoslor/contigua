@@ -48,6 +48,14 @@ class DeckForegroundService : Service() {
             PdNotificationBridge.mediaSink?.invoke(command)
         }
 
+        override fun onRing(seconds: Int) {
+            RingController.start(this@DeckForegroundService, seconds)
+        }
+
+        override fun onRingStop() {
+            RingController.stop(this@DeckForegroundService)
+        }
+
         override fun onNotifyOpen(id: String?, displayId: Int) {
             val key = id ?: return
             // An id the listener did not keep is answered with a null intent so

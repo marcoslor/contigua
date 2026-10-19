@@ -956,6 +956,22 @@ final class ConnectionController {
         if link.phone?.id != deviceId, let phone = remembered.phone(id: deviceId) { use(phone) }
     }
 
+    /// `phone.ring` (docs/PROTOCOL.md "Ring"): the phone rings itself, so this
+    /// only works on a live session.
+    func ringPhone(seconds: Int = 30) {
+        guard link.isOnline, let session else {
+            showTransient("Connect a phone to ring it.")
+            return
+        }
+        session.ring(seconds: seconds)
+        showTransient("Ringing your phone.")
+    }
+
+    func stopRingingPhone() {
+        guard link.isOnline, let session else { return }
+        session.stopRing()
+    }
+
     private func openPendingPhoneWindow(readyPhone id: String) {
         guard let pending = pendingPhoneWindow, pending.deviceId == id else { return }
         pendingPhoneWindow = nil

@@ -81,6 +81,11 @@
     <string name="home_forgotten">Forgot %1$s.</string>
     <string name="undo">Undo</string>
 
+    <!-- phone.ring (a Mac asks this phone to ring) -->
+    <string name="ring_title">Ringing</string>
+    <string name="ring_stop">Stop</string>
+    <string name="ring_body">Asked for by your Mac</string>
+
     <!-- QR pairing feedback -->
     <string name="qr_not_pairing">That QR code isn\'t a PocketDeck pairing code.</string>
     <string name="qr_incomplete">That QR code is missing pairing details.</string>
