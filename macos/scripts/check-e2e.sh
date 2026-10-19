@@ -26,7 +26,9 @@
 # synthesize NSTouch); the phone-side timestamps in the event log give the cadence.
 #
 # The app runs under its own profile (`--profile e2e`) from its own bundle,
-# build/e2e/PocketDeck.app, rebuilt from the current tree when it changed. The
+# build/e2e/PocketDeck.app, rebuilt from the current tree when it changed
+# (PD_E2E_PREBUILT names a bundle built elsewhere, e.g. the host side of a VM
+# run, and skips the rebuild). The
 # default profile (the user's pairings, cached phones and defaults) and the
 # user's build/PocketDeck.app are never read, rebuilt or killed here.
 #
@@ -48,7 +50,7 @@ FAKE_PY="${PD_FAKE_TLS_PYTHON:-$(command -v python3.11 || echo /usr/bin/python3)
     say "$FAKE_PY cannot serve TLS 1.3; set PD_FAKE_TLS_PYTHON to a python3.11+ built on OpenSSL 3"
     exit 3
 }
-E2E_BUNDLE="$MACOS/build/e2e/PocketDeck.app"
+E2E_BUNDLE="${PD_E2E_PREBUILT:-$MACOS/build/e2e/PocketDeck.app}"
 APP="$E2E_BUNDLE/Contents/MacOS/PocketDeck"
 CGINPUT="$MACOS/scripts/cgevent-input.swift"
 TOOLS="/tmp/pocketdeck-e2e-tools"
@@ -3413,8 +3415,11 @@ APP_SOURCES=("$MACOS/Sources" "$MACOS/Shim" "$MACOS/Extensions" "$MACOS/Package.
 # build_e2e_app — bundles the current tree to build/e2e/PocketDeck.app, once per
 # run and only when a source changed since the bundle was made (bundle.sh's
 # `swift build` costs half a minute of CPU even when it has nothing to do).
-# PD_E2E_REBUILD=1 bundles anyway.
+# PD_E2E_REBUILD=1 bundles anyway. PD_E2E_PREBUILT names a bundle built
+# elsewhere (vm-e2e.sh builds it on the host and copies it into the guest);
+# then nothing is rebuilt here.
 build_e2e_app() {
+    [ -z "${PD_E2E_PREBUILT:-}" ] || return 0
     if [ "${PD_E2E_REBUILD:-0}" != "1" ] && ! newer_than "$APP" "${APP_SOURCES[@]}"; then
         say "bundle: $E2E_BUNDLE is newer than its sources; not rebuilt (PD_E2E_REBUILD=1 does)"
         return 0
