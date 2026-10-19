@@ -114,7 +114,7 @@ rm -rf "$art"
 # opens. C6's tall window (600x900 pt) is clamped to the screen's visible
 # frame, so pick a mode tall enough for it before the first check.
 if swiftc -O scripts/pd-screens.swift -o /tmp/pd-screens 2>/tmp/pd-screens-build.log; then
-    /tmp/pd-screens --min-visible-height 960 || /tmp/pd-screens
+    /tmp/pd-screens --min-visible-height 960 --scale 2 || /tmp/pd-screens
 else
     echo "pd-screens did not build:"; tail -3 /tmp/pd-screens-build.log
 fi
@@ -132,10 +132,14 @@ for check in "$@"; do
     [ -d "$work" ] && cp -R "$work" "$art/$check/work"
     echo "vm-check $check exit=$last"
 done
+# The guest's session log for the run, for a post-mortem: state changes,
+# transport errors and watchdog lines only (no clipboard or notification
+# text). The checks' own logs are already in $art.
+log show --last 45m --style compact --predicate 'subsystem == "dev.pocketdeck.mac"' 2>/dev/null \
+    | grep -E 'session|tls|watchdog|connect' | grep -vE 'clip|notif' > "$art/session.log" || true
 if [ "$#" = 1 ]; then exit "$last"; fi
 exit "$failed"
-EOS
-rsync_to_guest "$OUT/run-check.sh" "$VM_ROOT/run-check.sh" || { say "run-check copy failed"; exit 3; }
+EOSrsync_to_guest "$OUT/run-check.sh" "$VM_ROOT/run-check.sh" || { say "run-check copy failed"; exit 3; }
 run_cmd="sudo launchctl asuser \$(id -u) sudo -u admin bash $VM_ROOT/run-check.sh $VISIBLE $VM_PORT ${CHECKS[*]}"
 ssh_guest "$run_cmd" 2>&1 | tee "$OUT/run.log"
 rc=${PIPESTATUS[0]}
