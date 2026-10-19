@@ -81,6 +81,8 @@ class Session(
     private val notifyShared: () -> Boolean = { false },
     private val mediaCommand: ((String) -> Unit)? = null,
     private val notifyForward: ((Boolean) -> Unit)? = null,
+    /** Asks the app for the forwarded notification's action; it answers over AIDL. */
+    private val notifyOpen: ((String, Int) -> Unit)? = null,
 ) : VideoSink, AudioSink {
 
     /** What the TLS layer knows about this connection (§1/§4b). */
@@ -663,6 +665,7 @@ class Session(
             "audio.start" -> onAudioStart(obj)
             "audio.stop" -> onAudioStop()
             "notify.enable" -> onNotifyEnable(obj)
+            "notify.open" -> onNotifyOpen(obj, frame)
             "media.command" -> onMediaCommand(obj)
             else -> logOnce("unknown message '$t'")
         }
@@ -935,6 +938,40 @@ class Session(
             runCatching { notifyForward?.invoke(forward) }
         }
         sendJson(mapOf("t" to "notify.state", "on" to forward))
+    }
+
+    /**
+     * `notify.open`: a Mac banner click (docs/design/notify.md). The Mac names
+     * only the forwarded id and the target; the action itself never crosses the
+     * wire. With mirroring off (or a session that is not ready) the message is
+     * ignored, like every other notification message.
+     */
+    private fun onNotifyOpen(obj: Map<String, Any?>, frame: Frame) {
+        if (!notifyForwarding) {
+            logOnce("notify.open dropped (not forwarding)")
+            return
+        }
+        val id = Json.str(obj["id"])
+        if (id == null || id.isEmpty() || id.length > 64 || id.any { !it.isLetterOrDigit() && it !in "-._" }) {
+            log("notify.open dropped: id")
+            return
+        }
+        val displayId = when (Json.str(obj["target"])) {
+            "phone" -> PHONE_DISPLAY
+            "window" -> {
+                val state = requireState(streamOf(obj, frame)) ?: return
+                state.displayId
+            }
+            else -> {
+                log("notify.open dropped: target")
+                return
+            }
+        }
+        val open = notifyOpen ?: run {
+            logOnce("notify.open dropped (no consumer)")
+            return
+        }
+        open(id, displayId)
     }
 
     private fun onMediaCommand(obj: Map<String, Any?>) {

@@ -1,5 +1,6 @@
 package dev.pocketdeck;
 
+import android.app.PendingIntent;
 import dev.pocketdeck.IDeckCallback;
 
 /**
@@ -93,4 +94,13 @@ interface IDeckService {
      * change; `allowConnections=false` drops the live session immediately.
      */
     void setGates(boolean allowConnections, boolean allowPairings) = 14;
+
+    /**
+     * Send a forwarded notification's own action on `displayId` (0 = the
+     * phone's screen). The app process owns the id -> PendingIntent map and
+     * passes the token here; `intent` is null for an unknown id. The shell
+     * UID sends it because it owns the virtual display and may start
+     * activities from the background (docs/design/notify.md).
+     */
+    void openNotification(String id, int displayId, in PendingIntent intent) = 15;
 }

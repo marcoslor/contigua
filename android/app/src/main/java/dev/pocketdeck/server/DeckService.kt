@@ -1,6 +1,7 @@
 package dev.pocketdeck.server
 
 import android.app.KeyguardManager
+import android.app.PendingIntent
 import android.content.Context
 import android.net.ssl.SSLSockets
 import android.os.Build
@@ -118,6 +119,7 @@ class DeckService(private val appContext: Context?) :
                 // the listener's bridge knows when to push (DeckState relay).
                 notifyForward = { forward -> sendToApp { it.onNotifySession(forward) } },
                 mediaCommand = { action -> sendToApp { it.onMediaCommand(action) } },
+                notifyOpen = { id, displayId -> sendToApp { it.onNotifyOpen(id, displayId) } },
                 tlsView = Session.TlsView.from(socket).also { view ->
                     // K4/e2e evidence, hashes only, debug builds only: the
                     // platform stack really backs the v2 pairing
@@ -221,6 +223,29 @@ class DeckService(private val appContext: Context?) :
         val obj = runCatching { Json.parseObject(json) }.getOrNull() ?: return
         val t = Json.str(obj["t"]) ?: return
         server?.onDeviceEvent(t, obj)
+    }
+
+    /**
+     * The app's answer to `onNotifyOpen` (docs/design/notify.md): send the
+     * notification's own action on the display the Mac asked for. The shell UID
+     * does the send because it owns the virtual display; a null intent means
+     * the id is not in the app's map (an unknown id is a no-op).
+     */
+    override fun openNotification(id: String?, displayId: Int, intent: PendingIntent?) {
+        if (intent == null) {
+            log("notify.open unknown id")
+            return
+        }
+        val base = appContext ?: run {
+            log("notify.open fallback reason=no_context")
+            return
+        }
+        val reason = NotifyOpen.send(base, intent, displayId)
+        if (reason != null) {
+            log("notify.open fallback reason=$reason")
+        } else {
+            log("notify.open sent on display $displayId")
+        }
     }
 
     /** `cmd notification allow_listener` at shell UID (docs/design/notify.md). */

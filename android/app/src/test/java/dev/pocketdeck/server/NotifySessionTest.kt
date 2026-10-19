@@ -32,6 +32,7 @@ class NotifySessionTest {
     @Volatile private var session: Session? = null
     private val mediaCommands = java.util.concurrent.CopyOnWriteArrayList<String>()
     private val forwards = java.util.concurrent.CopyOnWriteArrayList<Boolean>()
+    private val notifyOpens = java.util.concurrent.CopyOnWriteArrayList<Pair<String, Int>>()
     private var clock = 1_000L
 
     @Before
@@ -65,6 +66,7 @@ class NotifySessionTest {
                 notifyShared = { phoneShared },
                 mediaCommand = { action -> mediaCommands.add(action) },
                 notifyForward = { forward -> forwards.add(forward) },
+                notifyOpen = { id, displayId -> notifyOpens.add(id to displayId) },
             )
             session = sess
             sess.run()
@@ -216,6 +218,61 @@ class NotifySessionTest {
             "pkg" to "org.fossify.musicplayer", "title" to "tone440", "positionMs" to 2_500L))
         val paused = readUntil("media.state")
         assertNull(paused["rate"])
+    }
+
+    @Test
+    fun `notify open is dropped while forwarding is off`() {
+        connect()
+        authenticate()
+        readUntil("state")
+        send(mapOf("t" to "notify.open", "id" to "key_wa_1", "target" to "phone"))
+        Thread.sleep(200)
+        assertTrue(notifyOpens.isEmpty())
+    }
+
+    @Test
+    fun `notify open with the phone target asks for display 0`() {
+        connect()
+        authenticate()
+        readUntil("state")
+        phoneShared = true
+        send(mapOf("t" to "notify.enable", "on" to true))
+        readUntil("notify.state")
+        send(mapOf("t" to "notify.open", "id" to "key_wa_1", "target" to "phone"))
+        await { notifyOpens.isNotEmpty() }
+        assertEquals(listOf("key_wa_1" to 0), notifyOpens.toList())
+    }
+
+    @Test
+    fun `notify open with the window target uses that stream's display`() {
+        connect()
+        authenticate()
+        readUntil("state")
+        phoneShared = true
+        send(mapOf("t" to "notify.enable", "on" to true))
+        readUntil("notify.state")
+        send(mapOf("t" to "window.open", "stream" to 7, "w" to 800, "h" to 600, "dpi" to 160, "pkg" to "com.a"))
+        val opened = readUntil("window.opened")
+        val displayId = (opened["displayId"] as Number).toInt()
+        send(mapOf("t" to "notify.open", "id" to "key_wa_1", "target" to "window", "stream" to 7))
+        await { notifyOpens.isNotEmpty() }
+        assertEquals(listOf("key_wa_1" to displayId), notifyOpens.toList())
+    }
+
+    @Test
+    fun `notify open drops an unknown target or stream and a malformed id`() {
+        connect()
+        authenticate()
+        readUntil("state")
+        phoneShared = true
+        send(mapOf("t" to "notify.enable", "on" to true))
+        readUntil("notify.state")
+        send(mapOf("t" to "notify.open", "id" to "key_wa_1", "target" to "desk"))
+        send(mapOf("t" to "notify.open", "id" to "bad/id", "target" to "phone"))
+        send(mapOf("t" to "notify.open", "target" to "phone"))
+        send(mapOf("t" to "notify.open", "id" to "key_wa_1", "target" to "window", "stream" to 99))
+        assertEquals("no_stream", readUntil("error")["code"])
+        assertTrue(notifyOpens.isEmpty())
     }
 
     @Test

@@ -47,6 +47,14 @@ class DeckForegroundService : Service() {
             val command = action ?: return
             PdNotificationBridge.mediaSink?.invoke(command)
         }
+
+        override fun onNotifyOpen(id: String?, displayId: Int) {
+            val key = id ?: return
+            // An id the listener did not keep is answered with a null intent so
+            // the server can log `notify.open unknown id` (no text).
+            val intent = NotifyIntents.get(key)
+            ShizukuClient.current()?.openNotification(key, displayId, intent)
+        }
     }
 
     private val nsd by lazy { NsdAdvertiser(this) }
