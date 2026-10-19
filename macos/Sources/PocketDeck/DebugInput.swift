@@ -334,6 +334,9 @@ final class DebugInputDriver {
 
     private let actions: [DebugInputAction]
     private var observer: NSObjectProtocol?
+    /// Set by `cancel()`: the rest of the script is dropped (the check that ran
+    /// it is over and the app goes on to the next one).
+    private var cancelled = false
     /// `notifyclick ID`: true once that notification is known (it may not have
     /// arrived yet, so the driver retries for a while).
     var notifyClick: ((String) -> Bool)?
@@ -371,8 +374,15 @@ final class DebugInputDriver {
         observer = nil
     }
 
+    /// Stops the script: not armed any more, no further action, and a running
+    /// wait ends at its next run-loop turn.
+    func cancel() {
+        cancelled = true
+        disarm()
+    }
+
     private func run(on view: VideoLayerView) {
-        for action in actions { perform(action, on: view) }
+        for action in actions where !cancelled { perform(action, on: view) }
     }
 
     /// The view-space point of a video-space point; the inverse of
@@ -450,20 +460,23 @@ final class DebugInputDriver {
             window.setFrameTopLeftPoint(NSPoint(x: window.frame.minX, y: screen.visibleFrame.maxY))
         case .waitFile(let path, let timeout):
             let deadline = Date(timeIntervalSinceNow: timeout)
-            while !FileManager.default.fileExists(atPath: path), Date() < deadline {
+            while !cancelled, !FileManager.default.fileExists(atPath: path), Date() < deadline {
                 RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.05))
             }
         case .notifyClick(let id):
             // The phone's posts arrive on their own schedule; give a late one
             // ~10 s, pumping the run loop so its frames can land.
-            for _ in 0..<40 {
+            for _ in 0..<40 where !cancelled {
                 if notifyClick?(id) == true { return }
                 RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.25))
             }
         case .mediaCommand(let action):
             mediaCommand?(action)
         case .wait(let seconds):
-            RunLoop.current.run(until: Date(timeIntervalSinceNow: seconds))
+            let deadline = Date(timeIntervalSinceNow: seconds)
+            while !cancelled, Date() < deadline {
+                RunLoop.current.run(until: min(deadline, Date(timeIntervalSinceNow: 0.1)))
+            }
         case .pinch(let target, let scale):
             let point = location(target, in: view)
             view.magnifyGesture(phase: .began, magnification: 0, at: point)

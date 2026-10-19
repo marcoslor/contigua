@@ -50,6 +50,12 @@ final class LaunchOptionsTests: XCTestCase {
         XCTAssertNil(LaunchOptions.parse(["PocketDeck"]).debugInputScript)
     }
 
+    func testDebugControlDirectory() {
+        let options = LaunchOptions.parse(["PocketDeck", "--debug-control", "/tmp/pd-control"])
+        XCTAssertEqual(options.debugControl, "/tmp/pd-control")
+        XCTAssertNil(LaunchOptions.parse(["PocketDeck"]).debugControl)
+    }
+
     func testResetPairingFlag() {
         XCTAssertTrue(LaunchOptions.parse(["PocketDeck", "--reset-pairing"]).resetPairing)
     }
