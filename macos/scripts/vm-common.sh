@@ -56,7 +56,9 @@ heavy_unlock() {
 
 # memory_gate — RULES.md 12: the 8 GB Mac was force-restarted once under load.
 # Do not boot a VM unless at least 25% of memory is free and swap is under
-# 2 GB; wait up to 15 minutes for other agents' steps to drain.
+# 2 GB. Waiting is the rule's other half: one boot moves a few hundred MB into
+# swap and macOS keeps it there while nothing asks for the RAM, so back-to-back
+# runs drain at ~10 MB/min. Wait up to 45 minutes and say so every 5.
 memory_gate() {
     local waited=0 free swap_mb
     while :; do
@@ -65,11 +67,13 @@ memory_gate() {
         if [ -n "$free" ] && [ "$free" -ge 25 ] && [ -n "$swap_mb" ] && [ "$swap_mb" -lt 2048 ]; then
             return 0
         fi
-        if [ "$waited" -ge 900 ]; then
-            say "memory gate: free ${free:-?}%, swap used ${swap_mb:-?} MB after 15 min; not starting the VM"
+        if [ "$waited" -ge 2700 ]; then
+            say "memory gate: free ${free:-?}%, swap used ${swap_mb:-?} MB after 45 min; not starting the VM"
             return 1
         fi
-        [ "$waited" = 0 ] && say "memory gate: free ${free:-?}%, swap used ${swap_mb:-?} MB; waiting for room"
+        if [ "$waited" = 0 ] || [ $((waited % 300)) = 0 ]; then
+            say "memory gate: free ${free:-?}%, swap used ${swap_mb:-?} MB; waiting for room"
+        fi
         sleep 30
         waited=$((waited + 30))
     done
