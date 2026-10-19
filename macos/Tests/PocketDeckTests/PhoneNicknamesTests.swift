@@ -84,11 +84,14 @@ final class PhoneNicknamesTests: XCTestCase {
         // name after a rename decides a rebuild for its shims, its alone.
         let records = [
             DockShimRecord(url: URL(fileURLWithPath: "/x/a.app"), deviceId: "aaa", pkg: "a",
-                           profile: "e2e", name: "A (FakePhone)"),
+                           profile: "e2e", name: "A (FakePhone)",
+                           token: String(repeating: "b", count: 32)),
             DockShimRecord(url: URL(fileURLWithPath: "/x/b.app"), deviceId: "aaa", pkg: "b",
-                           profile: "e2e", name: "B (FakePhone)"),
+                           profile: "e2e", name: "B (FakePhone)",
+                           token: String(repeating: "b", count: 32)),
             DockShimRecord(url: URL(fileURLWithPath: "/x/c.app"), deviceId: "other", pkg: "c",
-                           profile: "e2e", name: "C (FakePhone)"),
+                           profile: "e2e", name: "C (FakePhone)",
+                           token: String(repeating: "b", count: 32)),
         ]
         let apps = [AppInfo(json: ["pkg": "a", "label": "A"])!, AppInfo(json: ["pkg": "b", "label": "B"])!]
         XCTAssertEqual(DockCleanup.plan(records: records, deviceId: "aaa", apps: apps, phoneName: "FakePhone"), [])
