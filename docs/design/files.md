@@ -147,6 +147,32 @@ short timeout; until then the domain's items are the cached ones and dataless it
   fake phone on `127.0.0.1`; ⌘K `http://127.0.0.1:PORT`; check sidebar entry, thumbnails,
   Quick Look, and what a write does when the server is stopped.
 
+### Experiment results (2026-10-19)
+
+Status: **not run yet — blocked before the first VM boot.** The bundle, the check and
+the harness are in place (E1–E4 wired as `check-e2e.sh files-exp`, driven by
+`macos/scripts/vm-e2e.sh files-exp`), but `vm-e2e.sh`'s memory gate (RULES 12: at
+least 25% of memory free and swap under 2 GB) refused to boot the VM in two
+45-minute attempts. The gate saw 40–66% free and swap stuck between 2.5 GB and
+3.9 GB (other agents' emulator and Gradle work on the same 8 GB Mac); swap does
+not fall back on its own that quickly. No boot was spent (0/2), no File
+Provider code ran on the host, and `pluginkit -m -p com.apple.fileprovider-nonui`
+still lists no `pd-wt` extension.
+
+What is already verified by building, not by running:
+
+- the app and `Files.appex` carry `group.dev.pocketdeck.mac.files.filesexp`; the
+  extension also carries the sandbox and the
+  `com.apple.security.temporary-exception.files.home-relative-path.read-write`
+  fallback for `~/Library/Application Support/PocketDeck-filesexp/`;
+- `codesign --verify --deep --strict` passes on the debug bundle;
+- K2 is green with the extension sources in the package (`swift build`,
+  607 tests, 0 failures).
+
+Still owed: boot 1 (E1 + E2) and, if both pass, boot 2 (E3 + E4). The decision
+between the File Provider design and the WebDAV fallback (E6), and between the
+App Group and the temporary exception, waits on those two runs.
+
 ## 2. Phone side (shell uid 2000)
 
 **Listing and stat.** `/sdcard` is MediaProvider's FUSE mount, and at uid 2000 the FUSE
