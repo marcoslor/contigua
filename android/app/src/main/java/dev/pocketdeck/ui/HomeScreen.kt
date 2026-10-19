@@ -99,12 +99,15 @@ fun HomeScreen(
         },
         snackbarHost = { SnackbarHost(snackbarHostState) },
         floatingActionButton = {
-            ExtendedFloatingActionButton(
-                text = { Text(stringResource(R.string.home_pair_new)) },
-                icon = { Icon(painterResource(R.drawable.ic_qr_code_scanner), contentDescription = null) },
-                expanded = !scrolled,
-                onClick = onPairNew,
-            )
+            // A pairing the phone would refuse anyway is not offered.
+            if (state.allowConnections && state.allowPairings) {
+                ExtendedFloatingActionButton(
+                    text = { Text(stringResource(R.string.home_pair_new)) },
+                    icon = { Icon(painterResource(R.drawable.ic_qr_code_scanner), contentDescription = null) },
+                    expanded = !scrolled,
+                    onClick = onPairNew,
+                )
+            }
         },
     ) { padding ->
         Column(
