@@ -118,8 +118,9 @@ Every detail: [docs/TRY-IT.md](docs/TRY-IT.md).
 
 - **Nothing leaves your home network.** One TCP session, phone → Mac, over the
   LAN. No accounts, no analytics, no logging anywhere.
-- The session is authenticated with per-pairing keys (HMAC auth in
-  docs/PROTOCOL.md). The channel is not encrypted yet — see Status.
+- The session is **mutual TLS 1.3 with both certificates pinned at pairing**
+  (docs/PROTOCOL.md, docs/design/e2ee.md): no plaintext phase, no account and
+  no key material outside the two devices.
 - **Notifications and Now Playing are off by default on both sides** and need
   a per-phone opt-in (Android's notification-listener consent *and* a switch
   in PocketDeck's UI) before anything is read or shown.
@@ -129,9 +130,9 @@ Every detail: [docs/TRY-IT.md](docs/TRY-IT.md).
 
 ## Status
 
-Pre-release. **End-to-end encryption is planned and required before launch** —
-mutual TLS with keys pinned at pairing; today's traffic is authenticated but
-plaintext on the wire. Details and the rest of the plan: [docs/ROADMAP.md](docs/ROADMAP.md).
+Pre-release. Traffic is end-to-end encrypted: **mutual TLS 1.3 with the
+certificates pinned at pairing** (protocol v2). Details and the rest of the
+plan: [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## Docs
 

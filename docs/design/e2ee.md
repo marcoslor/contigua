@@ -84,8 +84,10 @@ Evidence (spike s1-mac, two rounds):
   device is locked), and **passes it over the existing AIDL** to the shell service
   the same way pairing keys travel today (`setPairedClients` JSON gains
   `self: {certPem, keyP8}`), so the UID 2000 server never touches a file it cannot
-  read. Private keys never leave the device and never enter logs (RULES; the
-  design doc adopts "never stringify the KeyManagerFactory's material"). The
+  read. The phone's private key therefore lives in app-private storage (0600
+  in app data), not in the Android Keystore, and is handed to the shell process
+  over that AIDL — the accepted risk for now (sec L-4). Private keys never
+  leave the device and never enter logs (RULES; the
   shell server holds the PEM only in memory (R3 hygiene: it must never write the
   key to disk and never log it; the K1 test greps harness logs for the PEM header
   and the key's base64).

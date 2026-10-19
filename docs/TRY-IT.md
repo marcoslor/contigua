@@ -185,4 +185,5 @@ the VM, with the reason.
 - One Mac at a time (a second session gets "busy").
 - Windows wider/taller than 2560 px of virtual display are scaled down (aspect
   kept), which lowers the density instead of letterboxing.
-- Plaintext + HMAC on the LAN (TLS is a later milestone, docs/PROTOCOL.md).
+- Mutual TLS 1.3 on the LAN, both certificates pinned at pairing
+  (docs/PROTOCOL.md, docs/design/e2ee.md).
