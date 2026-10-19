@@ -354,6 +354,41 @@ The phone writes every byte to a hidden temp file in `/sdcard/Download/PocketDec
 only after the SHA-256 matches, media-scans the file and — where sensible — offers a SEND
 activity with the app's FileProvider content URI (docs/design/dragdrop.md).
 
+## Notifications + media
+
+Phone notifications and media controls (docs/design/notify.md) travel only
+while both gates are on: the Mac's per-phone opt-in and the phone's own toggle.
+
+Mac → phone:
+
+| t | fields | meaning |
+|---|---|---|
+| `notify.enable` | `on` | the Mac's per-phone opt-in; the phone answers `notify.state` |
+| `notify.open` | `id`, `target` (`window`/`phone`), `stream` (window only) | a banner click: run that forwarded notification's own action |
+| `media.command` | `action`: `play`/`pause`/`next`/`prev` | drive the phone's playing session |
+
+Phone → Mac:
+
+| t | fields |
+|---|---|
+| `notify.state` | `on` — forwarding is live (both gates) |
+| `notify.post` | `id`, `pkg`, `app`?, `when`, `title`?, `text`?, `ongoing`? |
+| `notify.remove` | `id` |
+| `media.state` | `playing`, `pkg`?, `title`?, `artist`?, `album`?, `durationMs`?, `positionMs`, `rate` |
+
+`notify.open` carries only an id the phone issued in `notify.post`: the Mac
+never sends an intent, a package or a component. `target: window` names the
+stream the Mac opened for the app; the phone runs the notification's
+`contentIntent` on that window's virtual display (after the launcher activity,
+so the chat opens in the Mac window). `target: phone` runs it on the phone's
+own display 0 and opens no Mac window. An id the phone no longer holds is a
+no-op (`notify.open unknown id`); a send that cannot run (the action is
+cancelled or is not an activity) logs `notify.open fallback reason=<class>` and
+leaves the app's window at its launcher activity. A phone that does not know
+`notify.open` ignores it like any unknown `t`; with `target: window` the app's
+window is already open at its launcher activity, which is the previous
+behaviour. Notification text is never logged on either side.
+
 ## Clipboard images
 
 Both directions while a session is ready; same announce → chunks → end as `share.file`, but

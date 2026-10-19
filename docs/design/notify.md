@@ -44,8 +44,11 @@ One per-phone opt-in covers both features; default OFF on the Mac and the phone.
 - Notifications on the Mac: UserNotifications, title = the notification's own title (else the app
   label) with the phone's name appended ("Review (Nicky)"), the name the Deck shows for that phone;
   a notification with neither title nor label shows the phone name alone; text = body, grouped per
-  phone (`threadIdentifier` = phone id); clicking opens that app's window when the phone's app list
-  has the package.
+  phone (`threadIdentifier` = phone id). "When I click a phone notification" (per phone, beside the
+  opt-in, enabled only while it is on) picks what a click does: **Open on Mac** (default) opens or
+  raises the app's window and runs the notification's own `contentIntent` on that window's virtual
+  display; **Open on phone** runs it on the phone's display 0 and opens no Mac window; **Do nothing**
+  only dismisses the banner.
 - Media on the Mac: MPNowPlayingInfoCenter + MPRemoteCommandCenter (play/pause/next/prev ticked
   off through `media.command`); cleared when `media.state` shows nothing.
 - Dismiss on the Mac → dismiss on the phone: not feasible — macOS UserNotifications cannot
@@ -55,7 +58,8 @@ One per-phone opt-in covers both features; default OFF on the Mac and the phone.
 ## Protocol (docs/PROTOCOL.md, session-level JSON)
 
 - mac→phone: `notify.enable {on}` — when the per-phone toggle changes and again on reconnect;
-  `media.command {action: play|pause|next|prev}`.
+  `notify.open {id, target: window|phone, stream?}` — a banner click (the id is one the phone
+  issued; the action never crosses the wire); `media.command {action: play|pause|next|prev}`.
 - phone→mac: `notify.state {on}` (true once granted and forwarding); `notify.post {id, pkg, app?,
   when, title?, text?, ongoing?}`; `notify.remove {id}`; `media.state {playing, pkg?, title?,
   artist?, album?, durationMs?, positionMs, rate}` — empty media.state (no list fields) clears
