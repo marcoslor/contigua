@@ -186,6 +186,25 @@ final class SessionLifecycleTests: XCTestCase {
         wait(for: [closed], timeout: 5)
     }
 
+    /// Arch H4: every UI close runs on the main actor. `close()` must flip the
+    /// state synchronously (the window renders from it) and hand the blocking
+    /// teardown — channel close and graceful shutdown — to the session queue,
+    /// so a wedged TLS channel cannot freeze the app.
+    func testCloseMarksClosedSynchronouslyAndDrainsOffTheCaller() throws {
+        try makeFake(autoAllow: true)
+        let session = makeSession(port: server.port)
+        let closed = expectation(description: "EOF after close")
+        closed.assertForOverFulfill = false
+        server.onClosed = { _ in closed.fulfill() }
+        session.start()
+        XCTAssertTrue(waitFor { session.state == .ready }, "never became ready: \(session.state)")
+        let started = Date()
+        session.close()
+        XCTAssertEqual(session.state, .closed)
+        XCTAssertLessThan(Date().timeIntervalSince(started), 0.5, "close() blocked the caller")
+        wait(for: [closed], timeout: 5)
+    }
+
     /// Automatic reconnects never pair: with no pin record, the attempt fails
     /// up front and never reaches a pairing prompt on the phone.
     func testAnAutomaticSessionWithoutAPinNeverAsksForPairing() throws {

@@ -387,11 +387,38 @@ final class Session {
         }
     }
 
+    /// Stops the session. The state transition is synchronous (callers see
+    /// `.closed` at once); the blocking teardown — the channel's close future
+    /// and `syncShutdownGracefully` — runs on the session's own queue, so a
+    /// main-actor caller (every ConnectionController call site) never freezes
+    /// while a wedged TLS channel drains (arch H4).
     func close() {
+        enqueueClose(completion: nil)
+    }
+
+    /// Quit only: waits up to `timeout` for the teardown, so the process does
+    /// not exit with a half-closed channel. Never called on the UI path.
+    func closeAndWait(timeout: TimeInterval = 1) {
+        let done = DispatchSemaphore(value: 0)
+        enqueueClose { done.signal() }
+        _ = done.wait(timeout: .now() + timeout)
+    }
+
+    private func enqueueClose(completion: (() -> Void)?) {
         intentionalClose = true
         cancelTimers()
-        closeChannel()
         transition(.closed, nil)
+        // Strong self: the teardown must run even when the owner drops its
+        // reference right after close (the quit path does exactly that).
+        queue.async {
+            self.closeBlocking()
+            completion?()
+        }
+    }
+
+    /// Runs on `queue`: the part of close() that can block.
+    private func closeBlocking() {
+        closeChannel()
         if ownsGroup {
             try? eventLoopGroup?.syncShutdownGracefully()
             eventLoopGroup = nil
