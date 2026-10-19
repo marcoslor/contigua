@@ -745,7 +745,7 @@ class Session(
             sendError("bad_size", "task.continue needs w,h", stream)
             return
         }
-        if (streams.containsKey(stream)) display.close(stream)
+        if (synchronized(streams) { streams.containsKey(stream) }) display.close(stream)
         val displayId = display.open(stream, w, h, dpi, this)
         val state = StreamState(stream, displayId, IntSize(w, h))
             .also { it.content = WindowContent.App(task.pkg, task.activity) }
@@ -782,7 +782,7 @@ class Session(
             sendError("bad_size", "${obj["t"]} needs w,h", stream)
             return
         }
-        if (streams.containsKey(stream)) display.close(stream)
+        if (synchronized(streams) { streams.containsKey(stream) }) display.close(stream)
         if (content == WindowContent.Phone) {
             val size = runCatching { display.openMirror(stream, w, h, this) }.getOrElse {
                 log("phone mirror failed: ${it.message}")
