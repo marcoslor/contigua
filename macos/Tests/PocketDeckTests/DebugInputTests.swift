@@ -74,6 +74,16 @@ final class DebugInputTests: XCTestCase {
         }
     }
 
+    func testDensityVerb() throws {
+        XCTAssertEqual(try DebugInputScript.parse("density com.example.app 125"),
+                       [.density(pkg: "com.example.app", value: 1.25)])
+        XCTAssertEqual(try DebugInputScript.parse("density com.example.app default"),
+                       [.density(pkg: "com.example.app", value: nil)])
+        for bad in ["density", "density com.example.app", "density com.example.app sideways"] {
+            XCTAssertThrowsError(try DebugInputScript.parse(bad), bad)
+        }
+    }
+
     func testWindowPointIsFromTheCentreAndTheTopEdge() {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 600),
                               styleMask: [.borderless], backing: .buffered, defer: true)
