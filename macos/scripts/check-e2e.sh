@@ -118,6 +118,7 @@ finish() {
         stop_vdisplay
         stop_watchdog app
         unregister_share
+        unregister_files
         remove_dock_apps
     fi
     stop_watch
@@ -4002,6 +4003,15 @@ unregister_share() {
     return 0
 }
 
+# unregister_files — the File Provider extension leaves PlugInKit too (it is
+# only ever registered inside the e2e VM, but cleanup does not rely on that).
+unregister_files() {
+    local appex="$E2E_BUNDLE/Contents/PlugIns/Files.appex"
+    [ -d "$appex" ] && pluginkit -r "$appex" >/dev/null 2>&1
+    "$LSREGISTER" -u "$E2E_BUNDLE" >/dev/null 2>&1
+    return 0
+}
+
 # check_share — the "Open on Phone" Share extension (docs/design/links.md).
 # K6: the e2e bundle carries Share.appex under its own id, signs strictly, and PlugInKit
 # lists it while registered. K7a: the extension's hand-off code (share-driver handoff)
@@ -4059,6 +4069,232 @@ check_share() {
     unregister_share
     wait_until 10 eval '! share_listed' \
         && ok "SHARE $SHARE_ID unregistered after the check" || bad "SHARE $SHARE_ID still registered"
+}
+
+# --- File Provider experiment (docs/design/files.md §1, files-exp) ---------
+#
+# E1 (does an ad-hoc replicated extension load?), E2 (extension ⇄ app over the
+# App Group, ad-hoc), then E4 (thumbnails without materializing) and E3
+# (offline cached read, pending edit, upload on reconnect) as far as the boot
+# allows. It adds a File Provider domain, so it refuses to run anywhere but the
+# e2e VM (vm-e2e.sh exports PD_E2E_IN_VM=1). Every sub-step records its own
+# PASS/FAIL; the first failure never aborts the run.
+
+FILES_ID="dev.pocketdeck.mac.files-e2e"
+FILES_GROUP="group.dev.pocketdeck.mac.files.filesexp"
+
+files_appex() { printf '%s\n' "$E2E_BUNDLE/Contents/PlugIns/Files.appex"; }
+
+# files_exp_support — the profile folder the extension's fallback exception names.
+files_exp_support() { printf '%s\n' "$HOME/Library/Application Support/PocketDeck-filesexp"; }
+
+# files_ext_log — wherever the extension wrote its log (group container first).
+files_ext_log() {
+    local group="$HOME/Library/Group Containers/$FILES_GROUP/files-ext.log"
+    local support="$(files_exp_support)/files-ext.log"
+    if [ -f "$group" ]; then printf '%s\n' "$group"; else printf '%s\n' "$support"; fi
+}
+
+# files_oneshot <action> <logfile>: one `--files-domain` action; the app prints
+# its result and exits itself (except add, which stays up and runs the bridge).
+files_oneshot() {
+    PD_E2E_IN_VM=1 "$APP" --profile "$PROFILE" --files-domain "$1" > "$2" 2>&1
+}
+
+# files_domain_path — the domain root's user-visible URL, from `--files-domain list`.
+files_domain_path() {
+    sed -n 's/^files-domain list: path id=[^ ]* //p' "$WORK/list.txt" | tail -1
+}
+
+file_has() { grep -qF -- "$1" "$2" 2>/dev/null; }
+
+# ext_has <text> — the extension's log (group container, else fallback) has it.
+ext_has() { file_has "$1" "$(files_ext_log)"; }
+
+# run_limited <seconds> <command...> — a provider that never answers must not
+# hang the run (ls/cat on a stalled domain would).
+run_limited() { local secs="$1"; shift; perl -e 'alarm shift; exec @ARGV' "$secs" "$@"; }
+
+check_files_exp() {
+    if [ "${PD_E2E_IN_VM:-0}" != "1" ]; then
+        bad "FILES-EXP refuses to run on the host (it adds a File Provider domain); run macos/scripts/vm-e2e.sh files-exp"
+        return
+    fi
+    # The experiment runs under its own profile: the extension's fallback
+    # exception names this folder, and so does the app's bridge. Restored at
+    # the end so a later check in the same run keeps its own profile.
+    local saved_profile="$PROFILE"
+    PROFILE="filesexp"
+    clean
+    local appex; appex="$(files_appex)"
+    local extlog; extlog="$(files_ext_log)"
+
+    # -- E1: the bundle shape the File Provider extension point needs ---------
+    /usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPointIdentifier' "$appex/Contents/Info.plist" 2>/dev/null \
+        | grep -qx "com.apple.fileprovider-nonui" \
+        && ok "FILES bundle has Files.appex (com.apple.fileprovider-nonui)" \
+        || bad "FILES Files.appex missing or wrong NSExtensionPointIdentifier"
+    local principal documentgroup
+    principal="$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPrincipalClass' "$appex/Contents/Info.plist" 2>/dev/null)"
+    documentgroup="$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionFileProviderDocumentGroup' "$appex/Contents/Info.plist" 2>/dev/null)"
+    [ "$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionFileProviderSupportsEnumeration' "$appex/Contents/Info.plist" 2>/dev/null)" = "true" ] \
+        && [ "$documentgroup" = "$FILES_GROUP" ] && [ -n "$principal" ] \
+        && ok "FILES principal=$principal, enumerates, document group $documentgroup" \
+        || bad "FILES Info.plist lacks enumeration/document group/principal class"
+    codesign --verify --deep --strict "$E2E_BUNDLE" 2>/dev/null \
+        && codesign -d --entitlements - "$appex" 2>/dev/null | grep -q app-sandbox \
+        && codesign -d --entitlements - "$appex" 2>/dev/null | grep -q "$FILES_GROUP" \
+        && ok "FILES codesign --deep --strict passes; extension sandboxed, group $FILES_GROUP" \
+        || bad "FILES codesign verify failed or the extension lacks sandbox/app group"
+    codesign -d --entitlements - "$E2E_BUNDLE" 2>/dev/null | grep -q "$FILES_GROUP" \
+        && ok "FILES the app carries the same App Group" || bad "FILES the app has no App Group"
+    # The domain must not exist from an earlier run: remove first, then add.
+    files_oneshot remove "$WORK/remove-before.txt" >/dev/null 2>&1 || true
+
+    "$LSREGISTER" -f "$E2E_BUNDLE" >/dev/null 2>&1
+    pluginkit -a "$appex" >/dev/null 2>&1
+    pluginkit -e use -i "$FILES_ID" >/dev/null 2>&1
+    pluginkit -m -p com.apple.fileprovider-nonui -v > "$WORK/pluginkit.txt" 2>&1
+    file_has "$appex" "$WORK/pluginkit.txt" \
+        && ok "E1 pluginkit lists the extension at $appex" \
+        || bad "E1 pluginkit does not list $appex ($(head -3 "$WORK/pluginkit.txt" | tr '\n' ' '))"
+
+    # -- E1: add the domain (the app keeps running: it is the bridge) --------
+    launch --files-domain add
+    wait_until 30 file_has "files-domain add: ok" "$WORK/app.log" \
+        && ok "E1 NSFileProviderManager.add ok" \
+        || bad "E1 add failed: $(grep 'files-domain' "$WORK/app.log" | head -2 | tr '\n' ' ')"
+    grep 'files-domain bridge' "$WORK/app.log" | sed 's/^/    /' || true
+    wait_until 20 file_has "files-domain bridge group:" "$WORK/app.log" \
+        && ok "E2 bridge listening on the App Group socket" \
+        || bad "E2 no App Group socket: $(grep 'files-domain bridge' "$WORK/app.log" | tr '\n' ' ')"
+
+    files_oneshot list "$WORK/list.txt" || true
+    file_has "files-domain list: id=dev.pocketdeck.mac.filesexp" "$WORK/list.txt" \
+        && ok "E1 getDomains shows the domain: $(grep 'files-domain list: id=' "$WORK/list.txt")" \
+        || bad "E1 getDomains does not show the domain: $(head -2 "$WORK/list.txt" | tr '\n' ' ')"
+
+    local root; root="$(files_domain_path)"
+    run_limited 15 ls -la "$HOME/Library/CloudStorage/" > "$WORK/cloudstorage.txt" 2>&1 || true
+    echo "CloudStorage:"; sed 's/^/    /' "$WORK/cloudstorage.txt"
+    if [ -n "$root" ] && [ -d "$root" ]; then
+        ok "E1 the domain is mounted at $root"
+        run_limited 30 ls -la "$root" > "$WORK/domain-root.txt" 2>&1
+        run_limited 30 ls "$root/DCIM" > "$WORK/domain-dcim.txt" 2>&1
+        local rootcount
+        rootcount="$(run_limited 30 ls "$root" 2>/dev/null | wc -l | tr -d ' ')"
+        echo "    domain root: $(run_limited 30 ls "$root" 2>/dev/null | tr '\n' ' ')"
+        [ "$rootcount" -ge 1 ] && run_limited 30 ls "$root/DCIM" 2>/dev/null | grep -q "notes.txt" \
+            && ok "E1 the tree enumerates ($rootcount at root, DCIM has notes.txt)" \
+            || bad "E1 enumeration is not the 3-item tree ($rootcount at root)"
+    else
+        bad "E1 no visible domain path (list: $root)"
+    fi
+    if command -v fileproviderctl >/dev/null 2>&1; then
+        perl -e 'alarm 20; exec @ARGV' fileproviderctl dump > "$WORK/fileproviderctl.txt" 2>&1 || true
+    else
+        echo "fileproviderctl not found" > "$WORK/fileproviderctl.txt"
+    fi
+    file_has "filesexp" "$WORK/fileproviderctl.txt" \
+        && ok "E1 fileproviderctl dump knows the domain" \
+        || bad "E1 fileproviderctl dump has no filesexp ($(head -2 "$WORK/fileproviderctl.txt" | tr '\n' ' '))"
+
+    # -- E1: Quick Look materializes a real file -----------------------------
+    if [ -n "$root" ] && run_limited 20 test -f "$root/DCIM/notes.txt"; then
+        run_limited 30 cat "$root/DCIM/notes.txt" > "$WORK/notes-out.txt" 2>"$WORK/notes-err.txt"
+        file_has "PocketDeck files experiment" "$WORK/notes-out.txt" \
+            && ok "E1 cat materialized notes.txt, bytes match" \
+            || bad "E1 cat notes.txt: $(head -1 "$WORK/notes-err.txt")"
+        perl -e 'alarm 60; exec @ARGV' qlmanage -t -s 128 -o "$WORK" "$root/DCIM/big.bin" > "$WORK/qlmanage.txt" 2>&1 || true
+        ls "$WORK"/big.bin.png >/dev/null 2>&1 \
+            && ok "E1 Quick Look thumbnail of big.bin written ($WORK/big.bin.png)" \
+            || bad "E1 Quick Look wrote no thumbnail: $(tail -2 "$WORK/qlmanage.txt" | tr '\n' ' ')"
+    else
+        bad "E1 notes.txt not visible, skipping cat and Quick Look"
+    fi
+
+    # -- E2: the extension reached the app over the socket -------------------
+    if [ -n "$root" ] && run_limited 20 test -d "$root/DCIM"; then
+        run_limited 30 ls "$root/DCIM" >/dev/null 2>&1
+        wait_until 30 ext_has "socket group=pong" \
+            && ok "E2 extension got pong over the App Group socket" \
+            || bad "E2 extension socket: $(grep -a 'socket ' "$(files_ext_log)" 2>/dev/null | tr '\n' ' ')"
+    fi
+    # The whole extension log, for the write-up.
+    [ -f "$extlog" ] && cp "$extlog" "$WORK/extension.log" || echo "no extension log" > "$WORK/extension.log"
+
+    # -- E4: thumbnails for a dataless item ---------------------------------
+    if [ -n "$root" ] && run_limited 20 test -f "$root/DCIM/big.bin"; then
+        local before; before="$(wc -l < "$(files_ext_log)" 2>/dev/null | tr -d ' ')"
+        perl -e 'alarm 60; exec @ARGV' qlmanage -t -s 256 -o "$WORK" "$root/DCIM/big.bin" >/dev/null 2>&1 || true
+        wait_until 15 ext_has "fetchThumbnails ids=big" \
+            && ok "E4 extension answered fetchThumbnails" \
+            || bad "E4 no fetchThumbnails in the extension log"
+        if [ -f "$extlog" ]; then
+            tail -n +"$((before + 1))" "$extlog" | grep -q "fetchContents big" \
+                && bad "E4 thumbnails materialized big.bin (fetchContents was called)" \
+                || ok "E4 no fetchContents for big.bin around the thumbnail request"
+        fi
+    fi
+
+    # -- E3: offline cached read, pending edit, upload on reconnect ----------
+    if [ -n "$root" ] && run_limited 20 test -f "$root/DCIM/big.bin"; then
+        local bytes
+        bytes="$(run_limited 90 cat "$root/DCIM/big.bin" 2>/dev/null | wc -c | tr -d ' ')"
+        [ "$bytes" = "$((5 * 1024 * 1024))" ] \
+            && ok "E3 cached 5 MiB read ($bytes bytes)" \
+            || bad "E3 5 MiB read gave $bytes bytes"
+        files_oneshot disconnect "$WORK/disconnect.txt" || true
+        file_has "files-domain disconnect: ok" "$WORK/disconnect.txt" \
+            && ok "E3 disconnect(.temporary) ok" \
+            || bad "E3 disconnect: $(head -1 "$WORK/disconnect.txt")"
+        run_limited 30 cat "$root/DCIM/notes.txt" > "$WORK/notes-offline.txt" 2>/dev/null
+        file_has "PocketDeck files experiment" "$WORK/notes-offline.txt" \
+            && ok "E3 cached file opens while disconnected" \
+            || bad "E3 cached file did not open while disconnected"
+        printf 'pending experiment\n' > "$WORK/pending.bin"
+        run_limited 45 cp "$WORK/pending.bin" "$root/DCIM/pending.bin" 2>"$WORK/copy-err.txt" \
+            && ok "E3 copy into the domain accepted locally" \
+            || bad "E3 copy into the domain failed: $(head -1 "$WORK/copy-err.txt")"
+        wait_until 30 ext_has "rejected: domain disconnected -> pending" \
+            && ok "E3 createItem kept the copy pending while offline" \
+            || bad "E3 no pending createItem in the extension log"
+        files_oneshot reconnect "$WORK/reconnect.txt" || true
+        file_has "files-domain reconnect: ok" "$WORK/reconnect.txt" \
+            && ok "E3 reconnect ok" \
+            || bad "E3 reconnect: $(head -1 "$WORK/reconnect.txt")"
+        wait_until 30 ext_has "createItem pending.bin" \
+            && ok "E3 reconnect asked the extension to upload: $(grep -a 'createItem pending.bin' "$(files_ext_log)" | tail -1)" \
+            || bad "E3 no upload after reconnect"
+        [ -f "$extlog" ] && cp "$extlog" "$WORK/extension.log" || true
+    fi
+
+    # -- E1: Finder shows it in the sidebar (screenshot) ---------------------
+    if [ -n "$root" ] && [ -d "$root" ]; then
+        open -a Finder "$root" >/dev/null 2>&1 || true
+        sleep 4
+        screencapture -x "$WORK/finder.png" 2>/dev/null \
+            && ok "E1 screenshot of Finder at the domain root: $WORK/finder.png" \
+            || bad "E1 screencapture failed"
+    fi
+
+    # -- E1: remove the domain, it must be gone ------------------------------
+    kill_e2e_app
+    files_oneshot remove "$WORK/remove.txt" || true
+    file_has "files-domain remove: ok" "$WORK/remove.txt" \
+        && ok "E1 remove ok" \
+        || bad "E1 remove: $(head -1 "$WORK/remove.txt")"
+    files_oneshot list "$WORK/list-after.txt" || true
+    file_has "count=0" "$WORK/list-after.txt" \
+        && ok "E1 domain gone from getDomains" \
+        || bad "E1 domain still listed: $(grep 'count=' "$WORK/list-after.txt")"
+    unregister_files
+    sleep 1
+    pluginkit -m -p com.apple.fileprovider-nonui -v > "$WORK/pluginkit-after.txt" 2>&1
+    file_has "$appex" "$WORK/pluginkit-after.txt" \
+        && bad "FILES the extension is still registered after the check" \
+        || ok "FILES $FILES_ID unregistered after the check"
+    PROFILE="$saved_profile"
 }
 
 # --- Dock apps (docs/design/dock.md) --------------------------------------

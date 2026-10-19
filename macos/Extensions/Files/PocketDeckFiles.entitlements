@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- The app stays unsandboxed (it runs phones' apps in windows); only the
+	     App Group is here, so the bridge's socket and the extension's group
+	     container are the same directory (docs/design/files.md §1, E2). -->
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>group.dev.pocketdeck.mac.files.filesexp</string>
+	</array>
+</dict>
+</plist>
