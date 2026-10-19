@@ -141,6 +141,11 @@ brew list --formula 2>/dev/null | grep -q '^ffmpeg' || brew install ffmpeg || ex
 /opt/homebrew/bin/python3 -c 'import sys, ssl; print("python", sys.version.split()[0], ssl.OPENSSL_VERSION)' || exit 4
 ffmpeg -version 2>/dev/null | head -1 || exit 4
 
+step "bash 5"
+# check-e2e.sh expands a possibly-empty array under `set -u`, which system
+# bash 3.2 rejects; the suite runs with a modern bash (Homebrew's).
+brew list --formula 2>/dev/null | grep -q '^bash$' || brew install bash || exit 4
+
 step "pyOpenSSL for the fakephone"
 /opt/homebrew/bin/python3 -c 'import OpenSSL' 2>/dev/null \
     || /opt/homebrew/bin/python3 -m pip install --user --break-system-packages pyopenssl || exit 4
@@ -210,6 +215,7 @@ check_wait "console session" 90 'test "$(stat -f%Su /dev/console)" = admin'
 check "swiftc"         'PATH=/opt/homebrew/bin:/usr/bin:/bin swiftc --version | head -1'
 check "ffmpeg"         'PATH=/opt/homebrew/bin:/usr/bin:/bin ffmpeg -version 2>/dev/null | head -1'
 check "python TLS1.3"  '/opt/homebrew/bin/python3 -c "import ssl,sys,OpenSSL; assert sys.version_info>=(3,11) and not ssl.OPENSSL_VERSION.startswith(\"LibreSSL\"); print(sys.version.split()[0], \"pyOpenSSL\", OpenSSL.__version__)"'
+check "bash 5"        '/opt/homebrew/bin/bash -c "set -u; a=(); echo \${a[@]} ok; echo \$BASH_VERSION"'
 check_wait "screencapture" 30 'sudo launchctl asuser $(id -u) sudo -u admin bash -c "screencapture -x /tmp/pd-e2e-check.png" && stat -f%z /tmp/pd-e2e-check.png && PATH=/opt/homebrew/bin:/usr/bin:/bin ffmpeg -hide_banner -i /tmp/pd-e2e-check.png -vf signalstats,metadata=print -f null - 2>&1 | grep -oE "YMAX=[0-9]+" | head -1 && rm -f /tmp/pd-e2e-check.png'
 
 [ "$ok" = 1 ] || { say "prepared VM failed verification; see $state.log"; exit 3; }
