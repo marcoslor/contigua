@@ -44,6 +44,7 @@ object Frames {
     const val TYPE_SHARE_DATA = 0x21
     const val TYPE_DROP_DATA = 0x22
     const val TYPE_CLIP_DATA = 0x23
+    const val TYPE_FS_DATA = 0x24
 
     const val CODEC_H264 = 1
     const val CODEC_OPUS = 2
