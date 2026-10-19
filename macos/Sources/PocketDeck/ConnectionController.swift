@@ -1539,7 +1539,7 @@ final class ConnectionController {
     // MARK: Test hooks
 
     /// Arms a `--debug-input-script`; the error text when the script is unusable.
-    private func armDebugInput(_ path: String) -> String? {
+    private func armDebugInput(_ path: String, phoneOnly: Bool = false) -> String? {
         debugInput?.cancel()
         do {
             debugInput = try DebugInputDriver(scriptPath: path)
@@ -1560,7 +1560,7 @@ final class ConnectionController {
         debugInput?.dockApps = { [weak self] on in
             MainActor.assumeIsolated { self?.setShowAppsInDock(on) }
         }
-        debugInput?.arm()
+        debugInput?.arm(phoneOnly: phoneOnly)
         return nil
     }
 
@@ -1581,7 +1581,11 @@ final class ConnectionController {
             windows.floatWindows = check.floatWindows
             windows.chromeStateFile = check.debugChromeState.map { URL(fileURLWithPath: $0) }
             audio.statsFile = check.audioStatsFile
-            if let path = check.debugInputScript, let error = armDebugInput(path) { return error }
+            // A phone-mode phase's script belongs to the phone window: the
+            // shared app can reopen an app window in the same breath, and that
+            // window's video size may arrive first (it did in the VM).
+            let phoneOnly = check.openPhone && check.openPackages.isEmpty
+            if let path = check.debugInputScript, let error = armDebugInput(path, phoneOnly: phoneOnly) { return error }
             applyAutoOpen(check)
             return nil
         default:
