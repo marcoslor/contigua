@@ -139,7 +139,9 @@ log show --last 45m --style compact --predicate 'subsystem == "dev.pocketdeck.ma
     | grep -E 'session|tls|watchdog|connect' | grep -vE 'clip|notif' > "$art/session.log" || true
 if [ "$#" = 1 ]; then exit "$last"; fi
 exit "$failed"
-EOSrsync_to_guest "$OUT/run-check.sh" "$VM_ROOT/run-check.sh" || { say "run-check copy failed"; exit 3; }
+EOS
+
+rsync_to_guest "$OUT/run-check.sh" "$VM_ROOT/run-check.sh" || { say "run-check copy failed"; exit 3; }
 run_cmd="sudo launchctl asuser \$(id -u) sudo -u admin bash $VM_ROOT/run-check.sh $VISIBLE $VM_PORT ${CHECKS[*]}"
 ssh_guest "$run_cmd" 2>&1 | tee "$OUT/run.log"
 rc=${PIPESTATUS[0]}
