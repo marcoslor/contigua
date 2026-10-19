@@ -110,6 +110,10 @@ class DeckService(private val appContext: Context?) :
                 packages = ShellPackages(shell, ::log),
                 taskMove = taskMove,
                 dropLanding = ShellLanding(appContext, ::log),
+                // The real /sdcard, resolved through the platform's own shared
+                // storage path (Environment) rather than a hardcoded string.
+                filesRoot = android.os.Environment.getExternalStorageDirectory(),
+                fsStats = AndroidFsStats,
                 now = { SystemClock.uptimeMillis() },
                 log = ::log,
                 // Read when this session starts, never cached: the property can
