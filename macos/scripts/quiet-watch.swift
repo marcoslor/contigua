@@ -75,6 +75,10 @@ func displays() -> (real: [CGRect], virtual: [CGRect]) {
 
 var focusChanges = 0, pointerMoves = 0
 var visibleWindows = Set<Int>(), dockIcons = Set<pid_t>()
+/// The previous sample's frame per window. macOS's minimize/deminimize genie
+/// animates the window's own frame across the person's screen for a few frames;
+/// a window counts only once its frame is the same in two samples.
+var lastBounds: [Int: CGRect] = [:]
 var lastFrontmost: pid_t = NSWorkspace.shared.frontmostApplication?.processIdentifier ?? 0
 var lastPointer = CGEvent(source: nil)?.location ?? .zero
 
@@ -102,8 +106,13 @@ func sample() {
         let layer = entry[kCGWindowLayer as String] as? Int ?? 0
         let alpha = entry[kCGWindowAlpha as String] as? Double ?? 1
         let number = entry[kCGWindowNumber as String] as? Int ?? 0
+        let settled = lastBounds[number] == bounds
+        lastBounds[number] = bounds
         guard layer < 25, alpha > 0, bounds.width > 1, bounds.height > 1,
               real.contains(where: { overlaps($0, bounds) }), !visibleWindows.contains(number) else { continue }
+        // A frame that is already moving (the minimize animation) is not a
+        // window sitting on the person's screen; count it once it settles.
+        guard settled else { continue }
         visibleWindows.insert(number)
         note("window \(number) of pid \(pid) \(path(of: pid)) at \(bounds) on a real display")
     }

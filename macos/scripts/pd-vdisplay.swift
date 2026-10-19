@@ -10,9 +10,10 @@
 //
 // The display is the same identity the app itself used (vendor/product ids,
 // serial = the profile's hash), so macOS sees no new display: no extra ColourSync
-// profile, no new arrangement entry. It is placed to the right of every one of
-// the person's screens, with a 16 pt gap: an origin that merely touches a second
-// display's edge leaves a window's edge on that display (quiet-watch sees it).
+// profile, no new arrangement entry. It is placed past the right edge of every
+// one of the person's screens (a corner can land inside a second display); the
+// 16 pt gap it asks for is snapped away by WindowServer, so quiet-watch ignores
+// shared edges of ≤ 2 pt.
 //
 //   pd-vdisplay --profile NAME
 //
@@ -208,9 +209,10 @@ func configure(_ id: CGDirectDisplayID) {
     CGCompleteDisplayConfiguration(config, .forAppOnly)
 }
 
-/// Where the run display goes: past the right edge of every real display, with a
-/// 16 pt gap. A corner that only touches a real display shares an edge with it
-/// after the arrangement rounds, and a window there lands on the person's screen.
+/// Where the run display goes: past the right edge of every real display, so it
+/// can never land on top of a second screen the way the main display's corner
+/// can. The request asks for a 16 pt gap; WindowServer snaps display arrangements
+/// to touch, so quiet-watch's ≤ 2 pt rule is the backstop for the shared edge.
 func runOrigin(besides id: CGDirectDisplayID) -> (x: Int32, y: Int32) {
     var count: UInt32 = 0
     CGGetActiveDisplayList(0, nil, &count)
