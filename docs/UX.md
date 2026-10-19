@@ -67,13 +67,17 @@ Detail, states, copy and the connection state machine: [design/mac-redesign.md](
    while **Forward** (button 4) does nothing for now, and three or more
    fingers stay the system's; Back also arrives as a right click, ⌘[, or a swipe-back event from mouse utilities (Logi Options+), once per gesture.
    **View → Show Touches** draws a dot where the phone is being touched (off by default).
+   The pointer over the stream is a mouse over Android: hover highlights, tooltips and hover menus react as they do with a real
+   mouse, and the pointer leaving the video (or the window), a click, a drag or the window losing focus ends the hover before the
+   touch. Settings → Input → **Hover over Android apps** turns it off.
    New windows cascade (never on top of the Deck) and remember their frame. While the connection is down a small glass pill
    ("Reconnecting…") sits over the last frame; the window stays open.
    While an app window is open, its app appears in the Dock and ⌘-Tab as "App (Nickname)" (a link window as the app that
    displays the link; the phone mirror as nothing). It arrives on its own, ends when the window closes, and **Options → Keep in Dock**
    makes it permanent ("Add to Dock" in the app's context menu does the same by hand; Settings → General switches it off).
 3. **Settings** (⌘,; also the settings gear at the Deck header's right): tabs **General** (launch at login, show in menu bar,
-   share clipboard with your phone, show phone apps in the Dock, **glass app icons**, default window density, **reveal controls after**) · **Devices**
+   share clipboard with your phone, show phone apps in the Dock, **glass app icons**, default window density, **reveal controls after**) · **Input**
+   (**hover over Android apps**) · **Devices**
    (paired phones: name, model, last seen, **Rename…**, **Use**, **Forget**; **Add phone…**; the Dock shims rebuild on a rename). Nothing else.
 
     A **nickname** ("Rename…" dialog) is 1–40 characters, trimmed; empty keeps using the phone's own name. It is the one

@@ -160,7 +160,11 @@ system-privileged steps):
   `CGImage`, no `draw(_:)` — this is what keeps the pointer honest.
 - **Input**: binary frames sent immediately per NSEvent (moves coalesced to
   one per display refresh, no sleeps); the phone injects synchronously on its
-  socket reader thread with cached reflection handles. Trackpad: two-finger
+  socket reader thread with cached reflection handles. Hover: the video's
+  tracking area sends ENTER/MOVE/EXIT (moves at most one per 16 ms, the newest
+  point) and the phone injects `ACTION_HOVER_*` as a mouse; a button down sends
+  EXIT before the touch, and Mac UI over the video (the framed bar, the
+  immersive pill) or a window losing key ends it. Trackpad: two-finger
   scroll is a touch drag (Android gets flings; a mouse wheel is a SCROLL
   frame), pinch/rotate are two pointers from the raw fingers; a mouse side
   Back button maps to one Android Back per press.
