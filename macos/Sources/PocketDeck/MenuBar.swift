@@ -139,6 +139,12 @@ struct AppCommands: Commands {
                 set: { controller.windows.showTouches = $0 })) {
                 Label("Show Touches", systemImage: "hand.tap")
             }
+            Toggle(isOn: Binding(
+                get: { streamMenu.liveText },
+                set: { controller.windows.setKeyWindowLiveText($0) })) {
+                Label("Live Text", systemImage: "text.viewfinder")
+            }
+            .keyboardShortcut("t", modifiers: [.command, .shift])
             Divider()
             // The key stream window's style as two radio items: no section
             // title (a Picker's inline header does not look like a Mac menu),

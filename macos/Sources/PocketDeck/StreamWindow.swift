@@ -38,6 +38,9 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     var density: Double { DensityRules.effective(override: densityOverride, settings: manager.defaultDensity) }
 
     private(set) var isPaused = false
+    /// The mode was active at the last change; pause/resume only happen on a
+    /// real transition.
+    private var liveTextWasActive = false
     /// The standard buttons' slots before the chrome moved them, as an x and a
     /// distance from the window's top edge (the titlebar's anchor).
     private var standardLightSlots: [NSWindow.ButtonType: (x: CGFloat, fromTop: CGFloat, size: NSSize)] = [:]
@@ -79,6 +82,8 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         // full screen gives them back (applyChromeConfig).
         captureStandardLights()
         chrome.onBarPress = { [weak self] in self?.barPresses += 1; self?.writeChromeState() }
+        chrome.onLiveTextToggle = { [weak self] in self?.toggleLiveText() }
+        chrome.liveTextDragProvider = { [weak self] in self?.liveText.dragFileURL() }
         chrome.setActions(headerActions())
         // The overlay's setting before the first state write: the file reports it.
         videoView.showsTouches = manager.showTouches
@@ -116,6 +121,9 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         videoView.onRequestKeyframe = { [weak self] in
             guard let self else { return }
             self.manager.session.requestKeyframe(stream: self.stream)
+        }
+        videoView.liveText.onStateChange = { [weak self] state, reason in
+            self?.liveTextChanged(state, reason)
         }
     }
 
@@ -334,6 +342,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     }
 
     func windowWillClose(_ notification: Notification) {
+        liveText.exit(.close)
         dwellTimer?.invalidate()
         stopDwellFeed()
         resizeWork?.cancel()
@@ -344,6 +353,9 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     // MARK: Resize
 
     func windowDidResize(_ notification: Notification) {
+        // A stream window changing shape cannot keep a frozen frame: the new
+        // picture would be a different size under the same overlay.
+        liveText.exit(.resize)
         chrome.placeTrafficLights()
         scheduleResize(after: 0.3)
         writeChromeState()
@@ -414,6 +426,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         state.densityPackage = densityPackage
         state.densityOverride = densityOverride
         state.settingsDensity = manager.defaultDensity
+        state.liveText = liveText.isActive
     }
 
     func windowDidResignKey(_ notification: Notification) {
@@ -422,6 +435,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         state.fullScreen = false
         state.densityPackage = nil
         state.densityOverride = nil
+        state.liveText = false
         videoView.windowResignedKey()
     }
 
@@ -430,6 +444,47 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     /// View → Show Touches: one setting for every stream window.
     @objc func toggleShowTouches(_ sender: Any?) {
         manager.showTouches.toggle()
+    }
+
+    // MARK: Live Text
+
+    var liveText: LiveTextSession { videoView.liveText }
+
+    /// View ▸ Live Text (⌘⇧T) and the bar button: enter from idle, leave from
+    /// any other state.
+    @objc func toggleLiveTextMenuAction(_ sender: Any?) { toggleLiveText() }
+
+    func toggleLiveText() {
+        if liveText.isActive { liveText.exit(.toggle) } else { enterLiveText() }
+    }
+
+    /// Enter the mode. False when there is no displayed frame yet (the window
+    /// keeps showing live video) or it is already on.
+    @discardableResult
+    func enterLiveText() -> Bool {
+        liveText.enter()
+    }
+
+    func exitLiveText(_ reason: LiveTextExitReason) {
+        liveText.exit(reason)
+    }
+
+    /// The mode's state moves the phone and the chrome: the stream pauses at
+    /// the phone while the frame is frozen, and the status pill and menu check
+    /// follow. A close or a lost link resumes nothing: the stream is gone.
+    private func liveTextChanged(_ state: LiveTextState, _ reason: LiveTextExitReason?) {
+        let active = state.isActive
+        if active, !liveTextWasActive {
+            videoView.inputMapper?.dropPendingInput()
+            if !isPaused { session.pauseWindow(stream: stream) }
+        } else if !active, liveTextWasActive {
+            let streamEnded = reason == .close || reason == .disconnect
+            if !streamEnded, !isPaused { session.resumeWindow(stream: stream) }
+        }
+        liveTextWasActive = active
+        chrome.setLiveText(active: active)
+        StreamMenuState.shared.liveText = active
+        writeChromeState()
     }
 
     /// The pointer moved to a point in the window (also the scripted driver's
@@ -592,6 +647,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     /// The link dropped or came back: a pill over the last frame says so after
     /// 1 s (a blip shows nothing), and "Phone offline" after 15 s.
     func setLinkDown(_ down: Bool) {
+        if down { liveText.exit(.disconnect) }
         pillShowWork?.cancel()
         pillOfflineWork?.cancel()
         guard down else {

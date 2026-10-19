@@ -167,6 +167,13 @@ final class WindowManager {
         onDensityOverridesChanged?()
     }
 
+    /// View ▸ Live Text for the key stream window: on enters, off leaves for
+    /// the person's toggle. No key stream window means nothing to do.
+    func setKeyWindowLiveText(_ on: Bool) {
+        guard let controller = NSApp.keyWindow?.windowController as? StreamWindowController else { return }
+        if on { controller.enterLiveText() } else { controller.exitLiveText(.menu) }
+    }
+
     /// View ▸ Density's pick for the key stream window's app; nil is
     /// "Default". Nothing happens without a key stream window that shows an app.
     func setKeyWindowDensity(_ value: Double?) {

@@ -60,6 +60,11 @@ final class VideoLayerView: NSView {
 
     var isPaused = false
 
+    /// Live Text mode (LiveTextView.swift): the frozen frame and the VisionKit
+    /// overlay over this view. Created here so input, layout and the frame
+    /// route stay in one place; the window controller drives it.
+    private(set) var liveText: LiveTextSession!
+
 
     /// Edge-swipe back gesture (two fingers from the left strip).
     private var edgeSwipe = EdgeSwipeClassifier()
@@ -68,6 +73,7 @@ final class VideoLayerView: NSView {
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
+        liveText = LiveTextSession(host: self)
         wantsLayer = true
         displayLayer.videoGravity = .resizeAspect
         displayLayer.backgroundColor = NSColor.black.cgColor
@@ -156,12 +162,14 @@ final class VideoLayerView: NSView {
         displayLayer.frame = bounds
         updateGravity()
         edgeHint.position = CGPoint(x: edgeHint.position.x, y: bounds.midY)
+        liveText.layout(in: videoRect())
     }
 
     override func setFrameSize(_ newSize: NSSize) {
         super.setFrameSize(newSize)
         displayLayer.frame = bounds
         updateGravity()
+        liveText.layout(in: videoRect())
     }
 
     /// Stretches over the 16 px quantisation instead of showing thin black bars;
@@ -226,6 +234,13 @@ final class VideoLayerView: NSView {
 
     // MARK: Video
 
+    /// The frame the display layer is showing right now (Live Text's freeze
+    /// source). Main thread only, like the rest of the layer's work; the copy
+    /// is one buffer per entry, never per frame.
+    func copyDisplayedFrame() -> CVPixelBuffer? {
+        displayLayer.sampleBufferRenderer.displayedPixelBuffer()
+    }
+
     func configure(_ config: VideoConfig) {
         guard let format = Self.makeFormatDescription(config) else {
             Log.video.error("VIDEO_CONFIG without SPS/PPS")
@@ -254,6 +269,7 @@ final class VideoLayerView: NSView {
                 self.needsLayout = true
                 self.needsDisplay = true
                 NotificationCenter.default.post(name: Self.videoSizeDidChange, object: self)
+                self.liveText.noteStreamConfig()
             }
         }
     }
@@ -404,7 +420,11 @@ final class VideoLayerView: NSView {
     // fired on the down must not repeat and none of it may become a touch.
     override func otherMouseDragged(with event: NSEvent) {}
     override func otherMouseUp(with event: NSEvent) {}
-    override func keyDown(with event: NSEvent) { inputMapper?.keyDown(event) }
+    override func keyDown(with event: NSEvent) {
+        // The mode's own keys (Esc, ⌘C) are read by a local monitor while it
+        // is on; the mapper's gate drops everything else.
+        inputMapper?.keyDown(event)
+    }
     override func keyUp(with event: NSEvent) { inputMapper?.keyUp(event) }
 
     // Mouse utilities deliver a side Back button as a swipe event rather than

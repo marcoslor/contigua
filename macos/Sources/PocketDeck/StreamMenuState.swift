@@ -15,6 +15,8 @@ final class StreamMenuState {
     /// "Exit Full Screen" and the menu's checks follow.
     var fullScreen = false
     var showTouches = false
+    /// The key stream window is in Live Text mode (the View menu's check).
+    var liveText = false
 
     /// The app the key stream window shows; nil for the phone window and for
     /// a link window before the phone names its package. Without one the

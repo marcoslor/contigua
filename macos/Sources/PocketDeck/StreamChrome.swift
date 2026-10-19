@@ -68,6 +68,11 @@ final class StreamChromeView: NSView {
     /// The window kind's actions at the right end (the phone window's
     /// Back/Home/Recents); hidden in the bar and shown in the pill alike.
     private let actions = NSHostingView(rootView: HeaderControls(actions: []))
+    /// Live Text (docs/design/livetext.md): its button rides the bar next to
+    /// the kind's actions (or inside the pill), and its status pill says the
+    /// window is frozen while the mode is on.
+    let liveTextButton = LiveTextBarButton(frame: .zero)
+    private let liveTextStatus = LiveTextStatusView(frame: .zero)
     private(set) var style: WindowStyle
 
     /// The pill's fade state; only `setPill` moves it.
@@ -83,6 +88,11 @@ final class StreamChromeView: NSView {
     /// zoom); the e2e check counts them.
     var onBarPress: (() -> Void)?
 
+    /// The Live Text button: a click toggles the mode; the drag source is the
+    /// frozen frame (nil while the mode is off).
+    var onLiveTextToggle: (() -> Void)?
+    var liveTextDragProvider: (() -> URL?)?
+
     init(video: VideoLayerView, style: WindowStyle) {
         self.video = video
         self.style = style
@@ -97,6 +107,8 @@ final class StreamChromeView: NSView {
         actions.safeAreaRegions = []
         actions.isHidden = true
         pillView.onPress = { [weak self] in self?.onBarPress?() }
+        liveTextButton.onPress = { [weak self] in self?.onLiveTextToggle?() }
+        liveTextButton.dragProvider = { [weak self] in self?.liveTextDragProvider?() }
         addSubview(ext)
         // The dots ride above the stream but outside the mirror: above the
         // extension view's layer (0), below the pill and the actions (2), and
@@ -108,6 +120,11 @@ final class StreamChromeView: NSView {
         layer?.addSublayer(touchDots)
         addSubview(pillView)
         addSubview(actions)
+        liveTextStatus.isHidden = true
+        addSubview(liveTextButton)
+        addSubview(liveTextStatus)
+        liveTextButton.layer?.zPosition = 2
+        liveTextStatus.layer?.zPosition = 2
         pillView.layer?.zPosition = 2
         actions.layer?.zPosition = 2
         layoutChrome()
@@ -208,22 +225,59 @@ final class StreamChromeView: NSView {
     /// (setStyle, setPill).
     private func layoutControls() {
         let barVisible = barHeight > 0
+        let actionWidth = CGFloat(actionCount) * HeaderControls.buttonWidth
+        let buttonSide = LiveTextBarButton.side
         if barVisible {
             actions.isHidden = actionCount == 0
             if actionCount > 0 {
-                let width = CGFloat(actionCount) * HeaderControls.buttonWidth
-                actions.frame = NSRect(x: bounds.width - width - 12, y: bounds.height - barHeight,
-                                       width: width, height: barHeight)
+                actions.frame = NSRect(x: bounds.width - actionWidth - 12, y: bounds.height - barHeight,
+                                       width: actionWidth, height: barHeight)
             }
+            liveTextButton.isHidden = false
+            liveTextButton.frame = NSRect(x: bounds.width - actionWidth - 12 - buttonSide,
+                                          y: bounds.height - barHeight,
+                                          width: buttonSide, height: barHeight)
+            layoutLiveTextStatus(bar: true)
         } else if showsPill, let pill = pillFrame {
             actions.isHidden = actionCount == 0
             if actionCount > 0 {
-                let width = CGFloat(actionCount) * HeaderControls.buttonWidth
                 actions.frame = NSRect(x: pill.minX + DwellChrome.pillActionsX, y: pill.minY,
-                                       width: width, height: pill.height)
+                                       width: actionWidth, height: pill.height)
             }
+            liveTextButton.isHidden = false
+            liveTextButton.frame = NSRect(x: pill.minX + DwellChrome.pillActionsX + actionWidth,
+                                          y: pill.minY, width: buttonSide, height: pill.height)
+            layoutLiveTextStatus(bar: false)
+        } else {
+            // Full screen has no bar or pill: the View menu is the way in.
+            liveTextButton.isHidden = true
+            layoutLiveTextStatus(bar: false)
         }
     }
+
+    /// The status pill: centred in the framed bar, or just under the stream's
+    /// top edge where there is no bar (immersive, full screen).
+    private func layoutLiveTextStatus(bar: Bool) {
+        guard !liveTextStatus.isHidden else { return }
+        let size = liveTextStatus.preferredSize
+        liveTextStatus.frame = bar
+            ? NSRect(x: bounds.midX - size.width / 2, y: bounds.height - barHeight + (barHeight - size.height) / 2,
+                     width: size.width, height: size.height)
+            : NSRect(x: bounds.midX - size.width / 2, y: bounds.height - size.height - 10,
+                     width: size.width, height: size.height)
+    }
+
+    /// The mode came or went: the status pill, the button's accent and the
+    /// drag source follow it.
+    func setLiveText(active: Bool) {
+        liveTextButton.isOn = active
+        liveTextStatus.isHidden = !active
+        if active { layoutLiveTextStatus(bar: barHeight > 0) }
+        needsLayout = true
+    }
+
+    /// True while the status pill is up (the chrome state file reports it).
+    var showsLiveTextStatus: Bool { !liveTextStatus.isHidden }
 
     override var isOpaque: Bool { false }
 
