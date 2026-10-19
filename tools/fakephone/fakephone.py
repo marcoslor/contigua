@@ -34,6 +34,7 @@ import shutil
 import signal
 import socket
 import ssl
+import stat
 import struct
 import subprocess
 import sys
@@ -61,6 +62,7 @@ BATTERY = 87
 FRAME_RATE = 60
 
 # Backpressure: at most ~250 ms of delta frames pending per stream (60 fps).
+MAX_BULK_BYTES = 1024 * 1024  # the phone's SendQueue bulk bound
 MAX_PENDING_DELTA = 15
 LOW_PENDING_DELTA = 4
 
@@ -507,11 +509,147 @@ class EventLog(object):
     def media(self, cmd):
         self._emit({"ev": "media", "cmd": cmd, "ts": time.time()})
 
+    def fs(self, kind, **fields):
+        event = {"ev": "fs", "kind": kind, "ts": time.time()}
+        event.update(fields)
+        self._emit(event)
+
     def close(self):
         with self._lock:
             if self._fp is not None:
                 self._fp.close()
                 self._fp = None
+
+
+# --- read-only phone files (docs/PROTOCOL.md "Phone files") ----------------
+# Same rules as the phone's FsPaths/FsView: paths relative to the root, one
+# canonical target under it, Android/ and dot-prefixed top-level entries
+# refused, pages of 1000 items / 1 MiB of JSON, etag = 16 bytes of
+# (ino, size, mtime).
+FS_MAX_PATH = 4096
+FS_MAX_COMPONENTS = 32
+FS_PAGE_ITEMS = 1000
+FS_PAGE_BYTES = 1 << 20
+FS_CHUNK = 256 * 1024
+
+
+class FsError(Exception):
+    def __init__(self, code, message=""):
+        Exception.__init__(self, message or code)
+        self.code = code
+        self.message = message or code
+
+
+class FsFake(object):
+    def __init__(self, root):
+        self.root = os.path.realpath(root)
+
+    def resolve(self, rel):
+        if rel is None:
+            rel = ""
+        if not isinstance(rel, str):
+            raise FsError("fs_denied", "bad path")
+        if rel.startswith("/"):
+            raise FsError("fs_denied", "absolute path")
+        if "\x00" in rel:
+            raise FsError("fs_denied", "NUL in path")
+        if "\\" in rel:
+            raise FsError("fs_denied", "backslash in path")
+        if len(rel.encode("utf-8")) > FS_MAX_PATH:
+            raise FsError("fs_denied", "path too long")
+        if rel == "":
+            return self.root
+        parts = rel.split("/")
+        if len(parts) > FS_MAX_COMPONENTS:
+            raise FsError("fs_denied", "too many components")
+        for part in parts:
+            if part in ("", ".", ".."):
+                raise FsError("fs_denied", "bad component")
+        if parts[0].startswith("."):
+            raise FsError("fs_denied", "hidden entry")
+        if parts[0] == "Android":
+            raise FsError("fs_denied", "Android")
+        target = os.path.realpath(os.path.join(self.root, rel))
+        if target != self.root and not target.startswith(self.root + os.sep):
+            raise FsError("fs_denied", "outside the root")
+        return target
+
+    def meta(self, path):
+        try:
+            st = os.lstat(path)
+        except FileNotFoundError:
+            raise FsError("fs_not_found", "no such file")
+        except OSError:
+            raise FsError("fs_denied", "unreadable")
+        is_dir = stat.S_ISDIR(st.st_mode)
+        size = 0 if is_dir else st.st_size
+        etag = hashlib.sha256(
+            ("%d:%d:%d" % (st.st_ino, st.st_size, st.st_mtime_ns)).encode("ascii")
+        ).hexdigest()[:32]
+        return {"dir": is_dir, "size": size,
+                "mtime": st.st_mtime_ns // 1000000, "ino": st.st_ino, "etag": etag}
+
+    def list(self, rel, page):
+        path = self.resolve(rel)
+        meta = self.meta(path)
+        if not meta["dir"]:
+            raise FsError("fs_not_a_dir", "not a directory")
+        try:
+            names = os.listdir(path)
+        except OSError:
+            raise FsError("fs_denied", "unreadable directory")
+        top = path == self.root
+        names = sorted(n for n in names
+                       if not top or not (n.startswith(".") or n == "Android"))
+        start = 0
+        if isinstance(page, str) and page.isdigit() and int(page) < len(names):
+            start = int(page)
+        items, used, index = [], 0, start
+        while index < len(names) and len(items) < FS_PAGE_ITEMS:
+            name = names[index]
+            index += 1
+            try:
+                m = self.meta(os.path.join(path, name))
+            except FsError:
+                continue  # deleted since the listing
+            item = dict(m)
+            item["name"] = name
+            cost = len(json.dumps(item, separators=(",", ":"))) + 1
+            if items and used + cost > FS_PAGE_BYTES:
+                index -= 1
+                break
+            items.append(item)
+            used += cost
+        return {"items": items, "page": str(index) if index < len(names) else None}
+
+    def stat(self, rel):
+        path = self.resolve(rel)
+        meta = self.meta(path)
+        item = dict(meta)
+        item["name"] = "" if path == self.root else os.path.basename(path)
+        return item
+
+    def read_plan(self, rel, offset, length, etag):
+        path = self.resolve(rel)
+        meta = self.meta(path)
+        if meta["dir"]:
+            raise FsError("fs_not_a_dir", "not a directory")
+        if not isinstance(offset, int) or not isinstance(length, int) \
+                or offset < 0 or length < 0:
+            raise FsError("fs_denied", "bad range")
+        if isinstance(etag, str) and etag != meta["etag"]:
+            raise FsError("fs_stale", "the file changed")
+        size = meta["size"]
+        if offset > size or length > size - offset:
+            raise FsError("fs_denied", "range outside the file")
+        return path
+
+
+def _fs_id(msg):
+    value = msg.get("id")
+    if isinstance(value, int) and 0 < value <= 0xFFFFFFFF:
+        return value
+    return None
 
 
 # --- TLS 1.3 identity (docs/design/e2ee.md §1/§2) --------------------------
@@ -610,6 +748,9 @@ class Sender(object):
         self._json = []
         self._key = []
         self._delta = []
+        self._bulk = []             # (stream, data) phone->mac bulk: FS_DATA first-ish
+        self._bulk_bytes = 0
+        self._bulk_cancelled = set()
         self._pending = {}          # stream -> queued delta count
         self._need_key = set()
         self._cv = threading.Condition()
@@ -654,6 +795,32 @@ class Sender(object):
     def send_audio_frame(self, pts_us, packet):
         return self._put(2, 0, proto.pack_audio_frame(pts_us, packet))
 
+    def send_bulk(self, stream, data):
+        """Phone->mac bulk data (FS_DATA and the JSON closing it): FIFO among
+        itself, the lowest priority, and bounded at 1 MiB like the real phone's
+        bulk lane, so the producer waits instead of buffering a file."""
+        with self._cv:
+            while not self._closed and self._bulk_bytes > 0 \
+                    and self._bulk_bytes + len(data) > MAX_BULK_BYTES:
+                self._cv.wait()
+            if self._closed:
+                return False
+            if stream in self._bulk_cancelled:
+                return False
+            self._bulk.append((stream, data))
+            self._bulk_bytes += len(data)
+            self._cv.notify()
+            return True
+
+    def cancel_bulk(self, stream):
+        """fs.cancel: drop what is queued for that read; nothing more is taken."""
+        with self._cv:
+            self._bulk_cancelled.add(stream)
+            keep = [item for item in self._bulk if item[0] != stream]
+            self._bulk_bytes = sum(len(data) for _stream, data in keep)
+            self._bulk = keep
+            self._cv.notify()
+
     def forget_stream(self, stream):
         with self._cv:
             self._pending.pop(stream, None)
@@ -669,9 +836,13 @@ class Sender(object):
                 if self._closed:
                     return
                 if self._json:
-                    _stream, data = self._json.pop(0)
+                    stream, data = self._json.pop(0)
                 elif self._key:
-                    _stream, data = self._key.pop(0)
+                    stream, data = self._key.pop(0)
+                elif self._bulk:
+                    stream, data = self._bulk.pop(0)
+                    self._bulk_bytes -= len(data)
+                    self._cv.notify_all()
                 else:
                     stream, data = self._delta.pop(0)
                     remaining = self._pending.get(stream, 1) - 1
@@ -685,6 +856,11 @@ class Sender(object):
                             self._cv.acquire()
             try:
                 self._sock.sendall(data)
+                # The e2e cancel rule needs the write, not the enqueue: a frame
+                # dropped from the queue must leave no line behind.
+                if len(data) >= 9 and (data[4] & 0xFF) == proto.TYPE_FS_DATA:
+                    sys.stderr.write("fakephone: fs sent id=%d %d bytes\n" % (stream, len(data) - 9))
+                    sys.stderr.flush()
             except OSError:
                 with self._cv:
                     self._closed = True
@@ -954,6 +1130,8 @@ class Session(object):
         self.windows = {}
         self._unknown_types = set()
         self.audio = AudioTone(phone)
+        self._fs_jobs = {}              # id -> {"cancel": Event, "thread": Thread}
+        self._fs_lock = threading.Lock()
         self._thread = threading.Thread(target=self._run, daemon=True)
     def start(self):
         self._thread.start()
@@ -1008,6 +1186,7 @@ class Session(object):
             self.audio.stop()
         except Exception:
             pass
+        self._cancel_fs_reads()
         for stream_id in list(self.windows):
             self.windows[stream_id].stop()
         self.windows.clear()
@@ -1341,6 +1520,10 @@ class Session(object):
             "notify.enable": self._on_notify_enable,
             "notify.open": self._on_notify_open,
             "media.command": self._on_media_command,
+            "fs.list": self._on_fs_list,
+            "fs.stat": self._on_fs_stat,
+            "fs.read": self._on_fs_read,
+            "fs.cancel": self._on_fs_cancel,
         }.get(kind)
         if handler is None:
             if kind not in self._unknown_types:
@@ -1533,6 +1716,128 @@ class Session(object):
                                                  "size": len(drop["data"])}], False, "cancelled")
             self._send({"t": "drop.result", "id": drop["id"], "ok": False, "code": "cancelled",
                         "message": "cancelled"})
+
+    # -- read-only phone files (docs/PROTOCOL.md "Phone files") --
+    def _fs_error(self, read_id, error):
+        self.phone.events.fs("error", id=read_id, code=error.code)
+        self._send({"t": "error", "code": error.code, "message": error.message, "id": read_id})
+
+    def _on_fs_list(self, msg):
+        read_id = _fs_id(msg)
+        if read_id is None:
+            return
+        fs = self.phone.fs
+        if fs is None:
+            return self._fs_error(read_id, FsError("fs_denied", "files are not served"))
+        try:
+            page = fs.list(msg.get("path"), msg.get("page"))
+        except FsError as exc:
+            return self._fs_error(read_id, exc)
+        self._send({"t": "fs.items", "id": read_id, "page": page["page"], "items": page["items"]})
+        self.phone.events.fs("list", id=read_id, items=len(page["items"]),
+                             more=page["page"] is not None)
+
+    def _on_fs_stat(self, msg):
+        read_id = _fs_id(msg)
+        if read_id is None:
+            return
+        fs = self.phone.fs
+        if fs is None:
+            return self._fs_error(read_id, FsError("fs_denied", "files are not served"))
+        try:
+            item = fs.stat(msg.get("path"))
+        except FsError as exc:
+            return self._fs_error(read_id, exc)
+        self._send({"t": "fs.item", "id": read_id, "item": item})
+        self.phone.events.fs("stat", id=read_id, dir=item["dir"], size=item["size"])
+
+    def _on_fs_read(self, msg):
+        read_id = _fs_id(msg)
+        if read_id is None:
+            return
+        fs = self.phone.fs
+        if fs is None:
+            return self._fs_error(read_id, FsError("fs_denied", "files are not served"))
+        try:
+            path = fs.read_plan(msg.get("path"), msg.get("offset"), msg.get("length"),
+                                msg.get("etag"))
+        except FsError as exc:
+            return self._fs_error(read_id, exc)
+        job = {"cancel": threading.Event()}
+        with self._fs_lock:
+            if len(self._fs_jobs) >= 8 or read_id in self._fs_jobs:
+                busy = True
+            else:
+                self._fs_jobs[read_id] = job
+                busy = False
+        if busy:
+            return self._fs_error(read_id, FsError("fs_busy", "too many reads"))
+        self.phone.events.fs("read", id=read_id, bytes=msg.get("length"))
+        thread = threading.Thread(target=self._run_fs_read,
+                                  args=(read_id, path, msg.get("offset"), msg.get("length"), job),
+                                  daemon=True)
+        job["thread"] = thread
+        thread.start()
+
+    def _run_fs_read(self, read_id, path, offset, length, job):
+        digest = hashlib.sha256()
+        done = 0
+        try:
+            with open(path, "rb") as handle:
+                handle.seek(offset)
+                while done < length:
+                    if job["cancel"].is_set():
+                        self.phone.events.fs("xfer", id=read_id, bytes=done, cancelled=True)
+                        return
+                    data = handle.read(min(FS_CHUNK, length - done))
+                    if not data:
+                        raise FsError("fs_stale", "the file shrank")
+                    digest.update(data)
+                    if not self.sender.send_bulk(read_id,
+                                                 proto.pack_frame(proto.TYPE_FS_DATA, read_id, data)):
+                        return
+                    done += len(data)
+            end = {"t": "fs.read.end", "id": read_id, "size": done,
+                   "sha256": digest.hexdigest()}
+            self.sender.send_bulk(0, proto.pack_json(end))
+            self.phone.events.fs("end", id=read_id, bytes=done)
+            sys.stderr.write("fakephone: fs read id=%d %d bytes\n" % (read_id, done))
+            sys.stderr.flush()
+        except FsError as exc:
+            self._fs_error(read_id, exc)
+        except Exception as exc:  # a read that dies is a failed request, not a session
+            sys.stderr.write("fakephone: fs read id=%d failed: %s\n"
+                             % (read_id, type(exc).__name__))
+            sys.stderr.flush()
+            self._fs_error(read_id, FsError("fs_denied", "the file could not be read"))
+        finally:
+            with self._fs_lock:
+                self._fs_jobs.pop(read_id, None)
+
+    def _on_fs_cancel(self, msg):
+        read_id = _fs_id(msg)
+        if read_id is None:
+            return
+        with self._fs_lock:
+            job = self._fs_jobs.get(read_id)
+        if job is None:
+            return
+        job["cancel"].set()
+        # The marker first: every FS_DATA line logged after it is a frame the
+        # cancel was too late for (at most the one already on the wire).
+        sys.stderr.write("fakephone: fs cancel id=%d\n" % read_id)
+        sys.stderr.flush()
+        if self.sender:
+            self.sender.cancel_bulk(read_id)
+        self.phone.events.fs("cancel", id=read_id)
+
+    def _cancel_fs_reads(self):
+        with self._fs_lock:
+            jobs = list(self._fs_jobs.items())
+        for read_id, job in jobs:
+            job["cancel"].set()
+            if self.sender:
+                self.sender.cancel_bulk(read_id)
 
     # -- clipboard images (docs/design/dragdrop.md): the fake receives like the
     # shell does (cap 8 MiB, one per direction) and logs the outcome.
@@ -1896,6 +2201,9 @@ class FakePhone(object):
         if not args.no_tls:
             self.fp_hex = make_identity(self.tls_identity_dir)
         self.events = EventLog(args.events)
+        # The fake /sdcard (docs/design/files.md §6): the e2e check builds a
+        # tree here and the fs.* handlers serve it with the phone's rules.
+        self.fs = FsFake(args.fs_root) if args.fs_root else None
         self.sender = None            # active session's sender
         self._session = None
         self._busy = threading.Event()
@@ -2122,6 +2430,10 @@ def build_parser():
     p.add_argument("--foreground-pkg", default="com.android.settings", metavar="PKG",
                    help="the package task.continue reports as the foreground app "
                         "('none' means nothing continuable)")
+    p.add_argument("--fs-root", default=os.environ.get("PD_FAKE_FS_ROOT"),
+                   metavar="DIR",
+                   help="serve read-only phone files from DIR (default: PD_FAKE_FS_ROOT, "
+                        "else fs.* is refused)")
     p.add_argument("--drop-ack-delay", type=float, default=0.0, metavar="SECONDS",
                    help="repeat the last drop.progress and hold the result this long, "
                         "so the phone's confirmation for the tail lands after the Mac "
