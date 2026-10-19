@@ -78,6 +78,12 @@ final class InputMapper {
     var escapeAllowed: () -> Bool = { true }
     /// Video pixel size; the gesture geometry keeps its aspect ratio.
     var videoSizeProvider: () -> CGSize = { .zero }
+    /// Live Text mode (LiveTextMode.swift): while it is on, nothing goes to the
+    /// phone — pointer, keys, scroll, hover, trackpad. Esc leaves the mode
+    /// instead of reaching Android.
+    var inputSuspended: () -> Bool = { false }
+    var onLiveTextEscape: (() -> Void)?
+    private var suspended: Bool { inputSuspended() }
     /// A mouse button in use (a click-drag) wins: gestures are ignored then.
     var mouseButtonIsDown: () -> Bool = { NSEvent.pressedMouseButtons != 0 }
     /// Schedules the coalesced gesture move. The default waits one display
@@ -131,6 +137,7 @@ final class InputMapper {
     // MARK: Mouse
 
     func mouseDown(_ event: NSEvent) {
+        guard !suspended else { return }
         flushText()
         cancelTrackpadGestures()
         // A button down ends the hover before the touch starts.
@@ -141,11 +148,13 @@ final class InputMapper {
     }
 
     func mouseDragged(_ event: NSEvent) {
+        guard !suspended else { return }
         let (nx, ny) = normalized(locationProvider(event))
         send?(.touch(TouchEvent(action: .move, nx: nx, ny: ny)))
     }
 
     func mouseUp(_ event: NSEvent) {
+        guard !suspended else { return }
         let (nx, ny) = normalized(locationProvider(event))
         send?(.touch(TouchEvent(action: .up, nx: nx, ny: ny)))
     }
@@ -174,6 +183,7 @@ final class InputMapper {
     /// The pointer is over the video (a move, not a drag): the first one sends
     /// ENTER, the rest are MOVEs held to one per 16 ms.
     func hoverMove(at point: CGPoint) {
+        guard !suspended else { return }
         guard hoverEnabled() else {
             // Off means no hover frames at all; the phone keeps whatever it
             // had until the setting comes back and a move sends ENTER again.
@@ -208,6 +218,7 @@ final class InputMapper {
     /// The pointer left the video (or the window), a button went down, the
     /// window lost key or closed, or it entered Mac UI drawn over the video.
     func hoverExit() {
+        guard !suspended else { return }
         hoverPending = nil
         hoverMoveScheduled = false
         hoverGeneration += 1
@@ -230,6 +241,7 @@ final class InputMapper {
     }
 
     func rightMouseDown(_ event: NSEvent) {
+        guard !suspended else { return }
         flushText()
         cancelTrackpadGestures()
         hoverExit()
@@ -238,6 +250,7 @@ final class InputMapper {
 
     /// Middle button -> home, side button 3 -> back (button 4, Forward, is inert).
     func otherMouseDown(_ event: NSEvent) {
+        guard !suspended else { return }
         flushText()
         cancelTrackpadGestures()
         hoverExit()
@@ -250,6 +263,7 @@ final class InputMapper {
     /// button press. The delta is the seam: NSEvent cannot synthesize a .swipe,
     /// so unit tests drive this directly.
     func swipe(deltaX: CGFloat) {
+        guard !suspended else { return }
         flushText()
         cancelTrackpadGestures()
         if let action = Self.navAction(forSwipeDeltaX: deltaX) {
@@ -259,6 +273,7 @@ final class InputMapper {
 
     /// Two-finger swipe from the window's left edge (see EdgeSwipeClassifier).
     func edgeSwipeBack() {
+        guard !suspended else { return }
         flushText()
         send?(.nav("back"))
     }
@@ -273,6 +288,7 @@ final class InputMapper {
     /// A wheel stays a SCROLL frame; a two-finger trackpad scroll becomes a
     /// one-finger drag (see ScrollDrag and TrackpadGestures).
     func scroll(_ sample: ScrollSample, at point: CGPoint) {
+        guard !suspended else { return }
         flushText()
         let output = gestures.scroll(sample, cursor: point, space: gestureSpace)
         if output.wheel {
@@ -293,6 +309,7 @@ final class InputMapper {
     /// The fingers on the trackpad (NSTouch, resting ones left out), with the
     /// cursor in view points.
     func trackpadFingers(_ fingers: [TrackpadFinger], surface: TrackpadSurface, cursor: CGPoint) {
+        guard !suspended else { return }
         if gestures.fingerCount < 2, fingers.count >= 2 { flushText() }
         sendTrackpad(gestures.fingersChanged(fingers, surface: surface, cursor: cursor, space: gestureSpace))
     }
@@ -300,6 +317,7 @@ final class InputMapper {
     /// A click, a key window change or anything else that takes the stream
     /// from a trackpad gesture: Android is told to drop the touch.
     func cancelTrackpadGestures() {
+        guard !suspended else { return }
         sendTrackpad(gestures.cancel())
         if pointerGesture != nil { finishGesture(cancelled: true) }
     }
@@ -343,12 +361,12 @@ final class InputMapper {
     private var gestureMoveScheduled = false
 
     func magnify(phase: NSEvent.Phase, magnification: CGFloat, at point: CGPoint) {
-        guard !fingersOwnPinch() else { return }
+        guard !suspended, !fingersOwnPinch() else { return }
         gesture(.magnify, phase: phase, delta: Double(magnification), at: point)
     }
 
     func rotate(phase: NSEvent.Phase, rotation: CGFloat, at point: CGPoint) {
-        guard !fingersOwnPinch() else { return }
+        guard !suspended, !fingersOwnPinch() else { return }
         gesture(.rotate, phase: phase, delta: Double(rotation), at: point)
     }
 
@@ -435,6 +453,7 @@ final class InputMapper {
 
     /// Two-finger double tap: down/up/down/up at the cursor.
     func smartMagnify(at point: CGPoint) {
+        guard !suspended else { return }
         flushText()
         let (nx, ny) = normalized(point)
         tap(nx: nx, ny: ny)
@@ -449,6 +468,12 @@ final class InputMapper {
     // MARK: Keyboard
 
     func keyDown(_ event: NSEvent) {
+        if suspended {
+            // Esc is the mode's own key: it leaves, and nothing reaches the
+            // phone. Every other key is dropped while the frame is frozen.
+            if event.keyCode == Self.keyCodeEscape { onLiveTextEscape?() }
+            return
+        }
         let flags = event.modifierFlags
         if flags.contains(.command) {
             // Phone mode: ⇧⌘H = home, ⌘↑ = recents. ⇧⌘H is not ⌘H: no clash
@@ -517,6 +542,7 @@ final class InputMapper {
     }
 
     func keyUp(_ event: NSEvent) {
+        guard !suspended else { return }
         if let code = Self.keyMap[event.keyCode] {
             send?(.key(KeyEvent(action: 1, keycode: code)))
         } else if event.modifierFlags.contains(.command), let code = Self.metaKeyMap[event.keyCode] {
@@ -530,9 +556,35 @@ final class InputMapper {
         textFlush?.cancel()
         textFlush = nil
         guard !pendingText.isEmpty else { return }
+        guard !suspended else {
+            pendingText = ""
+            return
+        }
         let text = pendingText
         pendingText = ""
         send?(.text(text))
+    }
+
+    /// The mode was just entered: forget everything that was pending or held
+    /// without sending it. A pending text batch, a hover and an in-flight
+    /// gesture are all input the frozen frame must not deliver.
+    func dropPendingInput() {
+        textFlush?.cancel()
+        textFlush = nil
+        pendingText = ""
+        hoverPending = nil
+        hoverMoveScheduled = false
+        hoverGeneration += 1
+        hoverActive = false
+        gestures = TrackpadGestures()
+        pointerGesture = nil
+        gestureComponents = []
+        pendingGestureMove = nil
+        gestureMoveScheduled = false
+        if !livePointers.isEmpty {
+            livePointers.removeAll()
+            touchPointsChanged?([])
+        }
     }
 
     private func appendText(_ text: String) {
