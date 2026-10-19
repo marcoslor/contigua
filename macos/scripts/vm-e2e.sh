@@ -109,11 +109,15 @@ export PD_E2E_PREBUILT="$(dirname "$0")/macos/build/e2e/PocketDeck.app"
 export PD_FAKE_TLS_PYTHON=/opt/homebrew/bin/python3
 art="/tmp/pd-e2e-artifacts-$port"
 rm -rf "$art"
-# The guest's screen in points: a visible run puts the app on it (no virtual
-# display), and AppKit clamps windows to its visible frame, so C6's tall
-# window needs the guest to be tall enough. Logged for every run.
-screen="$(system_profiler SPDisplaysDataType 2>/dev/null | grep -E 'Resolution|UI Looks like' | tr -s ' ' | tr '\n' ' ')"
-echo "guest screen: ${screen:-unknown} (C6 needs 900 pt of height)"
+# The guest boots headless (`tart run --no-graphics`) at the resolution it
+# last had: tart's --display hint sizes a host window a headless run never
+# opens. C6's tall window (600x900 pt) is clamped to the screen's visible
+# frame, so pick a mode tall enough for it before the first check.
+if swiftc -O scripts/pd-screens.swift -o /tmp/pd-screens 2>/tmp/pd-screens-build.log; then
+    /tmp/pd-screens --min-visible-height 960 || /tmp/pd-screens
+else
+    echo "pd-screens did not build:"; tail -3 /tmp/pd-screens-build.log
+fi
 failed=0
 last=0
 for check in "$@"; do
