@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """e2e-cost — what one check-e2e.sh run cost the Mac.
 
-    python3 -I scripts/e2e-cost.py [--profile NAME] [--summary FILE] -- <command...>
+    python3 -I scripts/e2e-cost.py [--profile NAME] [--summary FILE] [--by-check] -- <command...>
 
 Runs the command (normally `scripts/check-e2e.sh <check>`) and samples the
 process table every 0.5 s while it runs. Each process's CPU time is the last
@@ -36,7 +36,15 @@ At the end it prints one line (and writes it to --summary):
   machine_busy — all CPUs' non-idle time over the run (host_statistics),
                  which includes whatever else the Mac was doing
   peak_load    — the highest 1-minute load average seen
+
+--by-check adds a BYCHECK line before COST: per check of the run (check-e2e.sh
+marks each start in $PD_E2E_MARKS), its wall time and the sampled CPU-seconds
+of macOS's daemons (d), WindowServer (ws) and the app and fakephone (af):
+
+    BYCHECK tls=189s,d=40.1,ws=12.0,af=18.7 qr=…
 """
+
+import tempfile
 
 import ctypes
 import os
@@ -134,19 +142,56 @@ def is_build(command):
     return base == "swift" and re.search(r"\s(build|test)\b", command) is not None
 
 
+USAGE = "usage: e2e-cost.py [--profile NAME] [--summary FILE] [--by-check] -- <command...>"
+
+
+def by_check_line(marks, timeline, end):
+    """BYCHECK from the check start marks and the (time, d, ws, af) samples."""
+    try:
+        starts = [(float(t), name) for t, name in (line.split() for line in open(marks) if line.strip())]
+    except (OSError, ValueError):
+        return None
+    if not starts or not timeline:
+        return None
+
+    def at(when):
+        """The cumulative counters at the last sample not after `when`."""
+        last = timeline[0]
+        for row in timeline:
+            if row[0] > when:
+                break
+            last = row
+        return last
+
+    parts = []
+    for i, (start, name) in enumerate(starts):
+        stop = starts[i + 1][0] if i + 1 < len(starts) else end
+        a, b = at(start), at(stop)
+        parts.append("%s=%.0fs,d=%.1f,ws=%.1f,af=%.1f"
+                     % (name, stop - start, b[1] - a[1], b[2] - a[2], b[3] - a[3]))
+    return "BYCHECK " + " ".join(parts)
+
+
 def main():
     args = sys.argv[1:]
-    profile, summary = os.environ.get("PD_E2E_PROFILE", "e2e"), None
+    profile, summary, by_check = os.environ.get("PD_E2E_PROFILE", "e2e"), None, False
     while args and args[0] != "--":
         if args[0] == "--profile":
             profile = args[1]; args = args[2:]
         elif args[0] == "--summary":
             summary = args[1]; args = args[2:]
+        elif args[0] == "--by-check":
+            by_check = True; args = args[1:]
         else:
-            sys.exit("usage: e2e-cost.py [--profile NAME] [--summary FILE] -- <command...>")
+            sys.exit(USAGE)
     command = args[1:]
     if not command:
-        sys.exit("usage: e2e-cost.py [--profile NAME] [--summary FILE] -- <command...>")
+        sys.exit(USAGE)
+    marks = None
+    if by_check:
+        fd, marks = tempfile.mkstemp(prefix="pd-e2e-marks-")
+        os.close(fd)
+        os.environ["PD_E2E_MARKS"] = marks
 
     before = snapshot()
     ws_pid = next((pid for pid, row in before.items() if row[2].startswith(WINDOWSERVER)), None)
@@ -162,6 +207,7 @@ def main():
     seen = {}  # pid -> (category, last cpu seconds, start cpu, in the process tree)
     daemons = {}  # pid -> (name, last cpu seconds, start cpu)
     launches, builds = set(), set()
+    timeline = []  # (time, daemons, WindowServer, app + fake) cumulative CPU-seconds
     peak = os.getloadavg()[0]
     ws_now = ws_start
 
@@ -196,6 +242,12 @@ def main():
         if ws_pid in rows:
             ws_now = rows[ws_pid][1]
         peak = max(peak, os.getloadavg()[0])
+        if marks:
+            timeline.append((time.time(),
+                             sum(max(0.0, cpu - base) for _, cpu, base in daemons.values()),
+                             ws_now - ws_start,
+                             sum(max(0.0, cpu - base) for cat, cpu, base, _ in seen.values()
+                                 if cat in ("app", "fake"))))
 
     signal.signal(signal.SIGINT, lambda *_: child.send_signal(signal.SIGINT))
     # wait4 on the child alone: its rusage covers the run's reaped tree and not
@@ -232,11 +284,14 @@ def main():
     hz = os.sysconf("SC_CLK_TCK") or 100
     lines = [
         "DAEMONS " + " ".join("%s=%.1f" % item for item in top),
+        *([line for line in [by_check_line(marks, timeline, time.time())] if line] if marks else []),
         "COST wall=%.0fs launches=%d builds=%d cpu_app=%.1f cpu_fake=%.1f cpu_ws=%.1f "
         "cpu_build=%.1f cpu_helpers=%.1f cpu_run=%.1f cpu_daemons=%.1f machine_busy=%.1f peak_load=%.1f"
         % (wall, len(launches), len(builds), totals["app"], totals["fake"], ws,
            totals["build"], totals["helpers"], run, sum(by_name.values()), (busy1 - busy0) / hz, peak),
     ]
+    if marks:
+        os.unlink(marks)
     print("\n".join(lines), flush=True)
     if summary:
         with open(summary, "a") as fp:
