@@ -115,9 +115,16 @@ class Session(
 
     private enum class Phase { HELLO, PAIR, READY }
     private class StreamState(val stream: Int, val displayId: Int, var size: IntSize) {
-        var paused = false
+        /** Read by pocketdeck-watch; written by the reader thread. */
+        @Volatile var paused = false
+
+        /** Written before the state is published under `streams`; never reassigned. */
         var content: WindowContent? = null
-        var lastTitle: TopApp? = null
+
+        /** Written by pocketdeck-watch, read by the audio thread's capture plan. */
+        @Volatile var lastTitle: TopApp? = null
+
+        /** pocketdeck-watch only. */
         var hadTask = false
         var gestureDownTime = 0L
         var lastEventTime = 0L
