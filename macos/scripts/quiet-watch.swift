@@ -77,8 +77,11 @@ var focusChanges = 0, pointerMoves = 0
 var visibleWindows = Set<Int>(), dockIcons = Set<pid_t>()
 /// The previous sample's frame per window. macOS's minimize/deminimize genie
 /// animates the window's own frame across the person's screen for a few frames;
-/// a window counts only once its frame is the same in two samples.
+/// a window that has been on the run's virtual display counts only once its
+/// frame is the same in two samples. Any other window counts at once.
 var lastBounds: [Int: CGRect] = [:]
+/// Windows seen on the run's virtual display: only these can be mid-genie.
+var seenOnVirtual = Set<Int>()
 var lastFrontmost: pid_t = NSWorkspace.shared.frontmostApplication?.processIdentifier ?? 0
 var lastPointer = CGEvent(source: nil)?.location ?? .zero
 
@@ -108,11 +111,14 @@ func sample() {
         let number = entry[kCGWindowNumber as String] as? Int ?? 0
         let settled = lastBounds[number] == bounds
         lastBounds[number] = bounds
+        if virtual.contains(where: { overlaps($0, bounds) }) { seenOnVirtual.insert(number) }
         guard layer < 25, alpha > 0, bounds.width > 1, bounds.height > 1,
               real.contains(where: { overlaps($0, bounds) }), !visibleWindows.contains(number) else { continue }
-        // A frame that is already moving (the minimize animation) is not a
-        // window sitting on the person's screen; count it once it settles.
-        guard settled else { continue }
+        // A run window leaving or returning to the virtual display through the
+        // Dock (the minimize animation) is not sitting on the person's screen;
+        // count it once it settles. A window that shows up on a real display
+        // without having been on the virtual one counts at once.
+        guard settled || !seenOnVirtual.contains(number) else { continue }
         visibleWindows.insert(number)
         note("window \(number) of pid \(pid) \(path(of: pid)) at \(bounds) on a real display")
     }
