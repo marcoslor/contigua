@@ -116,16 +116,17 @@ and the real-input checks (global events, side button, `open -a`) run too
 The VM is `pd-e2e`: a clone of `ghcr.io/cirruslabs/macos-tahoe-base:latest`
 with 2 CPUs, 4 GB RAM (the smallest this image accepts) and a 1920x1080
 display. `macos/scripts/vm-prepare.sh` creates it (add `--fresh` to re-clone)
-and installs what the suite needs inside: Homebrew bash (a VISIBLE run expands
-an empty array under `set -u`, which system bash 3.2 rejects), Homebrew python3
+and installs what the suite needs inside: Homebrew python3
 with pyOpenSSL (TLS 1.3 for the fakephone) and ffmpeg (video checks), the ssh
 key from `~/.tart/pd-e2e` and the TCC grants `screencapture` and CGEvents need.
 The image already brings the rest — Command Line Tools (the suite compiles its
 small helpers in the guest), an auto-login console session and SIP off, which
 is what allows the TCC rows. `vm-prepare.sh` ends with a check per piece
-(console session, swiftc, ffmpeg, python/pyOpenSSL, bash 5, a real
+(console session, swiftc, ffmpeg, python/pyOpenSSL, a real
 `screencapture`) and writes a marker, so a prepared VM is a verified one. It
 takes a few minutes and is worth re-running after changing what the suite needs.
+The suite runs under `/bin/bash` in the guest, the same shell the host uses, so
+the VM reproduces the host's behaviour instead of hiding a difference.
 
 `vm-e2e.sh` builds `build/e2e/PocketDeck.app` on the host, boots the VM
 headless, copies the tree, the bundle and `tools/fakephone` in, runs the check

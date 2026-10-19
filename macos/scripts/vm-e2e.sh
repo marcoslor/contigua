@@ -73,11 +73,9 @@ export PD_E2E_PORT="$2"
 export PD_E2E_VISIBLE="$1"
 export PD_E2E_PREBUILT="$(dirname "$0")/macos/build/e2e/PocketDeck.app"
 export PD_FAKE_TLS_PYTHON=/opt/homebrew/bin/python3
-# check-e2e.sh expands a possibly-empty array under `set -u`; system bash 3.2
-# calls that "unbound variable", Homebrew's bash runs it as written.
-BASH5=/opt/homebrew/bin/bash
-[ -x "$BASH5" ] || { echo "no $BASH5 in the guest; re-run vm-prepare.sh"; exit 3; }
-exec "$BASH5" scripts/check-e2e.sh "$3"
+# /bin/bash, like the host: the guest's bash 3.2 is the same one a run on the
+# Mac uses, so the VM reproduces the host's behaviour instead of hiding it.
+exec /bin/bash scripts/check-e2e.sh "$3"
 EOS
 rsync_to_guest "$OUT/run-check.sh" "$VM_ROOT/run-check.sh" || { say "run-check copy failed"; exit 3; }
 run_cmd="sudo launchctl asuser \$(id -u) sudo -u admin bash $VM_ROOT/run-check.sh $VISIBLE $VM_PORT $which_check"
