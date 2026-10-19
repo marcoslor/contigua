@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # End-to-end checks C3-C13 for the macOS client against tools/fakephone.
 #
-#   ./scripts/check-e2e.sh [qr|pair|gates|tls|render|resize|input|mouseback|input-global|pause|direct|nav|mirror|spotlight|pinch|chrome|trackpad|clip|sharein|links|share|apk|drop|dock|nickname|notify|audio|handoff|deck|all [--shard N/M]]
+#   ./scripts/check-e2e.sh [qr|pair|gates|tls|render|resize|input|mouseback|input-global|pause|direct|nav|mirror|spotlight|pinch|chrome|density|trackpad|clip|sharein|links|share|apk|drop|dock|nickname|notify|audio|handoff|deck|all [--shard N/M]]
 #
 # Every check starts from a clean slate (the shared-app checks share one, see
 # "The shared app" below): no PocketDeck or fakephone processes
@@ -1991,6 +1991,112 @@ check_chrome() {
     stop_app
     stop_fakephone
 }
+
+# --- C16: density ----------------------------------------------------------
+
+# The dpi the phone last got for a stream (its window.open or window.resize).
+stream_dpi() {
+    python3 - "$WORK/events.jsonl" "$1" <<'PY'
+import json, sys
+
+last = None
+for line in open(sys.argv[1]):
+    try:
+        event = json.loads(line)
+    except ValueError:
+        continue
+    msg = event.get("msg") or {}
+    if msg.get("t") in ("window.open", "window.resize") and msg.get("stream") == int(sys.argv[2]):
+        last = msg.get("dpi")
+print(last if last is not None else "none")
+PY
+}
+
+# stream_dpi_is STREAM DPI — for wait_until (a plain [ ] would evaluate its
+# command substitution once, before the app had a chance to resize).
+stream_dpi_is() { [ "$(stream_dpi "$1")" = "$2" ]; }
+
+# density_stored_is PACKAGE VALUE — the stored override, for wait_until.
+density_stored_is() {
+    [ "$(defaults read "$DEFAULTS_SUITE" "chrome.density.$1" 2>/dev/null)" = "$2" ]
+}
+
+# check_density — View ▸ Density (WindowDensity.swift): an app's override
+# changes the dpi the phone gets for that app's windows (160 × backing scale ×
+# density, over the window's 900x600 pt stream quantised to 16 px) and leaves
+# another app's windows alone; "Default" clears it and the window follows
+# Settings → General again. The choice lands under chrome.density.<package>
+# (the style store's scheme), and the profile reset forgets it.
+check_density() {
+    begin_shared || return 1
+    # The app's dpi: 160 × the quantised video width / the 900 pt stream, at
+    # the run's backing scale (VideoGeometry.dpi).
+    local pw base high
+    pw=$((900 * RUN_SCALE / 16 * 16))
+    base=$(python3 -c "print(int(160 * $pw / 900 + 0.5))")
+    high=$(python3 -c "print(int(160 * $pw / 900 * 1.25 + 0.5))")
+    rm -f "$WORK/density-step-restore"
+    printf '%s\n' "wait 0.8" "density com.android.settings 125" \
+        "waitfile $WORK/density-step-restore 60" \
+        "density com.android.settings default" "wait 6" > "$WORK/density.txt"
+    open_shared --open com.android.settings,com.whatsapp --debug-input-script "$WORK/density.txt" || return 1
+    wait_until 30 events_have '"ev":"video","stream":2,' \
+        || { bad "C16 no video for the second app's window"; stop_app; stop_fakephone; return 1; }
+
+    wait_until 20 stream_dpi_is 1 "$high" \
+        && ok "C16 View ▸ Density 125% took the settings window's dpi to $high" \
+        || bad "C16 settings window dpi: $(stream_dpi 1) (wanted $high)"
+    [ "$(stream_dpi 2)" = "$base" ] \
+        && ok "C16 the other app's window kept its dpi ($base)" \
+        || bad "C16 the other app's window followed: $(stream_dpi 2) (wanted $base)"
+    python3 - "$WORK/events.jsonl" "$base" <<'PY' && ok "C16 and was never resized for the override" \
+        || bad "C16 the other app's window saw a density resize"
+import json, sys
+
+base, seen = int(sys.argv[2]), False
+for line in open(sys.argv[1]):
+    try:
+        event = json.loads(line)
+    except ValueError:
+        continue
+    msg = event.get("msg") or {}
+    if msg.get("t") in ("window.open", "window.resize") and msg.get("stream") == 2:
+        seen = True
+        if msg.get("dpi") != base:
+            sys.exit(1)
+sys.exit(0 if seen else 1)
+PY
+    [ "$(defaults read "$DEFAULTS_SUITE" "chrome.density.com.android.settings" 2>/dev/null)" = "1.25" ] \
+        && ok "C16 the override is stored under the package's key" \
+        || bad "C16 the stored key: $(defaults read "$DEFAULTS_SUITE" "chrome.density.com.android.settings" 2>&1)"
+
+    touch "$WORK/density-step-restore"
+    wait_until 20 stream_dpi_is 1 "$base" \
+        && ok "C16 Default cleared the override: the window is back at $base" \
+        || bad "C16 after Default the window's dpi is $(stream_dpi 1) (wanted $base)"
+    if defaults read "$DEFAULTS_SUITE" "chrome.density.com.android.settings" >/dev/null 2>&1; then
+        bad "C16 Default left the stored override behind"
+    else
+        ok "C16 Default removed the stored override"
+    fi
+
+    # The profile reset (--debug-control reset prefs) forgets overrides too.
+    printf '%s\n' "wait 0.6" "density com.android.settings 150" "wait 5" > "$WORK/density-reset.txt"
+    open_shared --open com.android.settings --debug-input-script "$WORK/density-reset.txt" || return 1
+    wait_until 20 density_stored_is com.android.settings 1.5 \
+        && ok "C16 150% is stored for the app" \
+        || bad "C16 150% was not stored: $(defaults read "$DEFAULTS_SUITE" "chrome.density.com.android.settings" 2>&1)"
+    control reset prefs && ok "C16 the profile reset ran" \
+        || bad "C16 the profile reset answered '$CONTROL_REPLY'"
+    if defaults read "$DEFAULTS_SUITE" "chrome.density.com.android.settings" >/dev/null 2>&1; then
+        bad "C16 the profile reset left the override behind"
+    else
+        ok "C16 the profile reset forgot the override"
+    fi
+    stop_app
+    stop_fakephone
+}
+
 # --- C15: trackpad gestures ---------------------------------------------------
 
 # check_trackpad — a two-finger scroll is a one-finger touch drag, a wheel is
@@ -3547,16 +3653,16 @@ build_e2e_app() {
 # The order `all` runs in. The shared-app checks (from deck, whose launch they
 # share, to drop) run back to back; every other check launches its own app.
 ALL_CHECKS=(tls qr pair gates direct mirror spotlight clip sharein links share apk dock nickname notify handoff
-            deck render resize input mouseback pinch chrome trackpad pause nav audio drop)
+            deck render resize input mouseback pinch chrome density trackpad pause nav audio drop)
 
 usage() {
-    say "usage: check-e2e.sh [qr|pair|gates|tls|render|resize|input|mouseback|input-global|pause|direct|nav|mirror|spotlight|pinch|chrome|trackpad|clip|sharein|links|share|apk|drop|dock|nickname|notify|audio|handoff|deck|all [--shard N/M]]"
+    say "usage: check-e2e.sh [qr|pair|gates|tls|render|resize|input|mouseback|input-global|pause|direct|nav|mirror|spotlight|pinch|chrome|density|trackpad|clip|sharein|links|share|apk|drop|dock|nickname|notify|audio|handoff|deck|all [--shard N/M]]"
     exit 2
 }
 
 which_check="${1:-all}"
 case "$which_check" in
-    qr|pair|gates|tls|render|resize|input|mouseback|input-global|pause|direct|nav|mirror|spotlight|pinch|chrome|trackpad|clip|sharein|links|share|apk|drop|dock|nickname|notify|audio|handoff|deck) CHECKS=("$which_check") ;;
+    qr|pair|gates|tls|render|resize|input|mouseback|input-global|pause|direct|nav|mirror|spotlight|pinch|chrome|density|trackpad|clip|sharein|links|share|apk|drop|dock|nickname|notify|audio|handoff|deck) CHECKS=("$which_check") ;;
     all) CHECKS=("${ALL_CHECKS[@]}") ;;
     *) usage ;;
 esac
