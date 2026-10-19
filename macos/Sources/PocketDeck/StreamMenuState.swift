@@ -11,6 +11,9 @@ final class StreamMenuState {
     var hasStream = false
     /// The key stream window's style (the Window Style radio items follow it).
     var style: WindowStyle = .standard
+    /// The key window is in native full screen: the Window menu's item reads
+    /// "Exit Full Screen" and the menu's checks follow.
+    var fullScreen = false
     var showTouches = false
 
     /// The app the key stream window shows; nil for the phone window and for

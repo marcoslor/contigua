@@ -246,6 +246,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             openRequestInbox = inbox
         }
         NSApp.servicesProvider = LinkService.shared
+        // AppKit's own Enter Full Screen in the View menu would duplicate the
+        // Window menu's item (FullScreenMenu.swift); it is turned off before
+        // the menu is built. Registered, not set: AppKit reads the key through
+        // the registration domain and the person's defaults stay untouched.
+        UserDefaults.standard.register(defaults: ["NSFullScreenMenuItemEverywhere": false])
+        FullScreenMenu.install()
         if let path = environment.options.debugBanner {
             let probe = DebugBanner(path: path) { [controller = environment.controller] in
                 controller.banner?.text

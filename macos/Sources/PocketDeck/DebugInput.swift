@@ -515,6 +515,9 @@ final class DebugInputDriver {
             guard let window = view.window else { return }
             click(at: Self.windowPoint(dx: dx, top: top, in: window), in: window)
         case .menuDump(let path):
+            // The state a person sees: NSMenu.update runs the same validation
+            // an open menu does (titles, checks, AppKit's own items).
+            NSApp.mainMenu?.update()
             try? MenuDump.write(NSApp.mainMenu, to: path)
         case .sideButton(let button, let hold, let dx, let dy, let steps):
             sideButton(button, hold: hold, dx: dx, dy: dy, steps: steps, in: view)

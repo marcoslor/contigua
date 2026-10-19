@@ -101,44 +101,62 @@ struct AppCommands: Commands {
         // ⌘P is "Phone Window" (docs/design/mac-redesign.md §5); the app prints nothing.
         CommandGroup(replacing: .printItem) {}
         CommandGroup(after: .newItem) {
-            Button("Add Phone…") {
+            Button {
                 show()
                 controller.sheet = .addPhone
+            } label: {
+                Label("Add Phone…", systemImage: "plus")
             }
             .keyboardShortcut("n", modifiers: [.command, .shift])
         }
         CommandGroup(after: .toolbar) {
-            Button("Find Apps") {
+            Button {
                 show()
                 controller.requestSearchFocus()
+            } label: {
+                Label("Find Apps", systemImage: "magnifyingglass")
             }
             .keyboardShortcut("k")
-            Button("Phone Window") { controller.openPhoneWindow() }
-                .keyboardShortcut("p")
-            Button("Continue on Mac") { controller.continueOnMac() }
-                .keyboardShortcut("c", modifiers: [.command, .shift])
-            Divider()
-            Toggle("Show Touches", isOn: Binding(
-                get: { streamMenu.showTouches },
-                set: { controller.windows.showTouches = $0 }))
-            Divider()
-            // The key stream window's style: radio state from the window
-            // controllers through StreamMenuState, bonded straight to the
-            // key window's controller through the manager (remembered per
-            // app by WindowStyleStore).
-            Picker("Window Style", selection: Binding(
-                get: { streamMenu.style },
-                set: { style in controller.windows.setKeyWindowStyle(style) })) {
-                Text(WindowStyle.framed.label).tag(WindowStyle.framed)
-                Text(WindowStyle.immersive.label).tag(WindowStyle.immersive)
+            Button {
+                controller.openPhoneWindow()
+            } label: {
+                Label("Phone Window", systemImage: "iphone")
             }
-            .pickerStyle(.inline)
+            .keyboardShortcut("p")
+            Button {
+                controller.continueOnMac()
+            } label: {
+                Label("Continue on Mac", systemImage: "arrow.up.forward.app")
+            }
+            .keyboardShortcut("c", modifiers: [.command, .shift])
+            Divider()
+            Toggle(isOn: Binding(
+                get: { streamMenu.showTouches },
+                set: { controller.windows.showTouches = $0 })) {
+                Label("Show Touches", systemImage: "hand.tap")
+            }
+            Divider()
+            // The key stream window's style as two radio items: no section
+            // title (a Picker's inline header does not look like a Mac menu),
+            // just the two checks between dividers. The checked item's own
+            // click sets true again; an uncheck is not a style.
+            Toggle(isOn: Binding(
+                get: { streamMenu.style == .framed },
+                set: { if $0 { controller.windows.setKeyWindowStyle(.framed) } })) {
+                Text(WindowStyle.framed.label)
+            }
+            Toggle(isOn: Binding(
+                get: { streamMenu.style == .immersive },
+                set: { if $0 { controller.windows.setKeyWindowStyle(.immersive) } })) {
+                Text(WindowStyle.immersive.label)
+            }
+            Divider()
             // View ▸ Density: the key stream window's app override, remembered
             // per app (WindowDensityStore) and applied to every open window of
             // that app. "Default" clears it; the check mark follows the
             // override (none checked when ⌘+/⌘- landed between two options).
             // Disabled without a key stream window that shows an app.
-            Menu("Density") {
+            Menu {
                 Toggle("Default (\(DensityRules.percentLabel(streamMenu.settingsDensity)))",
                        isOn: Binding(get: { densityCheck == .defaultItem },
                                      set: { _ in pickDensity(nil) }))
@@ -148,22 +166,44 @@ struct AppCommands: Commands {
                         get: { densityCheck == .value(option.value) },
                         set: { _ in pickDensity(option.value) }))
                 }
+            } label: {
+                Label("Density", systemImage: "textformat.size")
             }
             .disabled(!streamMenu.hasStream || streamMenu.densityPackage == nil)
             // No disabled gate here: key equivalents do not get re-evaluated
             // when the state changes, and a disabled item eats its shortcut
             // silently under NSEvent.performKeyEquivalent. The binding itself
             // no-ops without a key stream window.
-            Button("Toggle Window Style") { controller.windows.toggleKeyWindowStyle() }
-                .keyboardShortcut("f", modifiers: [.command, .option])
+            Button {
+                controller.windows.toggleKeyWindowStyle()
+            } label: {
+                Label("Toggle Window Style", systemImage: "rectangle.topthird.inset.filled")
+            }
+            .keyboardShortcut("f", modifiers: [.command, .option])
         }
+        // Full screen is AppKit's own item, moved into the Window menu at
+        // launch (FullScreenMenu.swift): only a system-provided item can carry
+        // the standard 🌐F shortcut. Its title and symbol follow the key
+        // window through StreamMenuState.
         CommandMenu("Navigate") {
-            Button("Back") { send(#selector(StreamWindowController.navigateBack(_:))) }
-                .keyboardShortcut("[")
-            Button("Home") { send(#selector(PhoneWindowController.navigateHome(_:))) }
-                .keyboardShortcut("h", modifiers: [.command, .shift])
-            Button("Recents") { send(#selector(PhoneWindowController.navigateRecents(_:))) }
-                .keyboardShortcut(.upArrow, modifiers: .command)
+            Button {
+                send(#selector(StreamWindowController.navigateBack(_:)))
+            } label: {
+                Label("Back", systemImage: "chevron.backward")
+            }
+            .keyboardShortcut("[")
+            Button {
+                send(#selector(PhoneWindowController.navigateHome(_:)))
+            } label: {
+                Label("Home", systemImage: "house")
+            }
+            .keyboardShortcut("h", modifiers: [.command, .shift])
+            Button {
+                send(#selector(PhoneWindowController.navigateRecents(_:)))
+            } label: {
+                Label("Recents", systemImage: "square.stack")
+            }
+            .keyboardShortcut(.upArrow, modifiers: .command)
         }
     }
 
