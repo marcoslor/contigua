@@ -23,6 +23,9 @@ struct LaunchOptions {
     /// `--debug-fs-script FILE`: read-only phone-file requests on the session
     /// (FsDebug.swift, e2e `files` check).
     var debugFsScript: String?
+    /// `--debug-intent "<name> <args>"` (repeatable): run that intent's perform
+    /// path and log its result (IntentsDebug.swift, e2e `intents` check).
+    var debugIntents: [String] = []
     /// `--debug-control DIR`: commands from the e2e checks that share this
     /// running app (DebugControl.swift).
     var debugControl: String?
@@ -84,6 +87,7 @@ struct LaunchOptions {
         "--qr-payload-file": true,
         "--debug-input-script": true,
         "--debug-fs-script": true,
+        "--debug-intent": true,
         "--debug-control": true,
         "--dump-video": true,
         "--float-windows": false,
@@ -156,6 +160,8 @@ struct LaunchOptions {
                 options.debugInputScript = next()
             case "--debug-fs-script":
                 options.debugFsScript = next()
+            case "--debug-intent":
+                if let value = next() { options.debugIntents.append(value) }
             case "--debug-control":
                 options.debugControl = next()
             case "--dump-video":

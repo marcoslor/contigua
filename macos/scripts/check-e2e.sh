@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # End-to-end checks C3-C13 for the macOS client against tools/fakephone.
 #
-#   ./scripts/check-e2e.sh [qr|pair|gates|tls|render|resize|input|hover|mouseback|input-global|pause|direct|nav|mirror|spotlight|pinch|chrome|menus|density|trackpad|clip|sharein|links|share|apk|drop|dock|nickname|notify|audio|handoff|deck|all [--shard N/M]]
+#   ./scripts/check-e2e.sh [qr|pair|gates|tls|render|resize|input|hover|mouseback|input-global|pause|direct|nav|mirror|spotlight|intents|pinch|chrome|menus|density|trackpad|clip|sharein|links|share|apk|drop|dock|nickname|notify|audio|handoff|deck|all [--shard N/M]]
 #
 # Every check starts from a clean slate (the shared-app checks share one, see
 # "The shared app" below): no PocketDeck or fakephone processes
@@ -3076,6 +3076,176 @@ check_spotlight() {
         fi
     fi
     stop_fakephone
+}
+
+# --- Intents (Siri, Shortcuts, Spotlight actions) -------------------------
+
+# intent_event <name> [key value ...] — the last JSON line the app logged for
+# that intent (and matching fields), as JSON. The app writes one per intent.
+intent_event() {
+    python3 - "$WORK/app.log" "$@" <<'PY'
+import json, sys
+log, name = sys.argv[1], sys.argv[2]
+want = dict(zip(sys.argv[3::2], sys.argv[4::2]))
+found = None
+try:
+    lines = open(log, errors="replace")
+except OSError:
+    sys.exit(1)
+for raw in lines:
+    raw = raw.strip()
+    if not raw.startswith("{"):
+        continue
+    try:
+        event = json.loads(raw)
+    except ValueError:
+        continue
+    if event.get("intent") == name and all(str(event.get(k)) == v for k, v in want.items()):
+        found = event
+if found is None:
+    sys.exit(1)
+print(json.dumps(found))
+PY
+}
+
+# intent_field <json> <key> — the value as JSON ("null" when absent).
+intent_field() {
+    python3 -c 'import json,sys; print(json.dumps(json.loads(sys.argv[1]).get(sys.argv[2])))' "$1" "$2"
+}
+
+# drop_event_for <name> — the fakephone's drop event for that file, as JSON.
+drop_event_for() {
+    python3 - "$WORK/events.jsonl" "$1" <<'PY'
+import json, sys
+for line in open(sys.argv[1]):
+    try:
+        event = json.loads(line)
+    except ValueError:
+        continue
+    if event.get("ev") == "drop" and event.get("files") \
+            and event["files"][0].get("name") == sys.argv[2]:
+        print(json.dumps(event))
+        sys.exit(0)
+sys.exit(1)
+PY
+}
+
+# check_intents — the five intents through the same bridge Shortcuts runs
+# (--debug-intent): open app/phone, link, 1 MiB file, battery live and after the
+# phone is gone, and an unknown app as a human error with the app still alive.
+check_intents() {
+    clean
+    start_fake || return 1
+    python3 - "$WORK" <<'PY'
+import os, sys
+with open(os.path.join(sys.argv[1], "intent-1mb.bin"), "wb") as f:
+    f.write(os.urandom(1024 * 1024))
+PY
+    launch --connect "127.0.0.1:$PORT" \
+        --debug-intent "battery" \
+        --debug-intent "open-app com.android.settings" \
+        --debug-intent "open-phone" \
+        --debug-intent "send-link https://example.com/intents" \
+        --debug-intent "send-file $WORK/intent-1mb.bin" \
+        --debug-intent "open-app org.example.missing" \
+        --quit-after 120
+
+    local line
+    if wait_until 40 intent_event battery; then
+        line="$(intent_event battery)"
+        [ "$(intent_field "$line" ok)" = "true" ] \
+            && [ "$(intent_field "$line" level)" = "87" ] \
+            && [ "$(intent_field "$line" live)" = "true" ] \
+            && [ "$(intent_field "$line" dialog)" = '"FakePhone: 87 %"' ] \
+            && ok "INTENTS battery answers live from the phone's state (87 %)" \
+            || bad "INTENTS live battery line is wrong: $line"
+    else
+        bad "INTENTS no battery line from the app"
+    fi
+
+    if wait_until 40 intent_event open-app args com.android.settings; then
+        line="$(intent_event open-app args com.android.settings)"
+        [ "$(intent_field "$line" ok)" = "true" ] \
+            && [ "$(intent_field "$line" dialog)" = '"Opened Settings on FakePhone."' ] \
+            && ok "INTENTS open-app ran the Spotlight open path (Settings)" \
+            || bad "INTENTS open-app line is wrong: $line"
+    else
+        bad "INTENTS open-app com.android.settings produced no line"
+    fi
+    events_have '"pkg":"com.android.settings"' && events_have '"t":"window.open"' \
+        && ok "INTENTS the phone opened a window for the app's package" \
+        || bad "INTENTS the phone never received window.open for com.android.settings"
+
+    if wait_until 30 intent_event open-phone; then
+        line="$(intent_event open-phone)"
+        [ "$(intent_field "$line" ok)" = "true" ] && events_have '"mode":"phone"' \
+            && ok "INTENTS open-phone opened the whole-phone window" \
+            || bad "INTENTS open-phone line is wrong: $line"
+    else
+        bad "INTENTS open-phone produced no line"
+    fi
+
+    if wait_until 40 intent_event send-link; then
+        line="$(intent_event send-link)"
+        [ "$(intent_field "$line" ok)" = "true" ] \
+            && events_have '"ev":"link"' && events_have 'https://example.com/intents' \
+            && ok "INTENTS send-link reached the phone through link.open" \
+            || bad "INTENTS send-link line or phone event is wrong: $line"
+    else
+        bad "INTENTS send-link produced no line"
+    fi
+
+    if wait_until 40 intent_event send-file; then
+        line="$(intent_event send-file)"
+        [ "$(intent_field "$line" ok)" = "true" ] && [ "$(intent_field "$line" files)" = "1" ] \
+            && ok "INTENTS send-file accepted the file (1 MiB)" \
+            || bad "INTENTS send-file line is wrong: $line"
+    else
+        bad "INTENTS send-file produced no line"
+    fi
+    if wait_until 60 drop_event_for intent-1mb.bin; then
+        local want
+        want="$(shasum -a 256 "$WORK/intent-1mb.bin" | cut -c1-64)"
+        drop_event_for intent-1mb.bin | python3 -c \
+            'import json,sys; e=json.load(sys.stdin); f=e["files"][0]; sys.exit(0 if e["ok"] and f["size"]==1048576 and f["match"] and f["sha256"]==sys.argv[1] else 1)' "$want" \
+            && ok "INTENTS the phone received intent-1mb.bin with a matching sha256 (${want:0:12}…)" \
+            || bad "INTENTS the received file's sha256/size is wrong"
+    else
+        bad "INTENTS the phone never received intent-1mb.bin"
+    fi
+
+    if wait_until 30 intent_event open-app args org.example.missing; then
+        line="$(intent_event open-app args org.example.missing)"
+        [ "$(intent_field "$line" ok)" = "false" ] \
+            && [ "$(intent_field "$line" error)" = '"app_not_found"' ] \
+            && echo "$line" | grep -q "No phone app matches" \
+            && ok "INTENTS an unknown app answers a human error (app_not_found)" \
+            || bad "INTENTS unknown app line is wrong: $line"
+    else
+        bad "INTENTS unknown app produced no line"
+    fi
+    [ "$(e2e_app_pids | wc -l | tr -d ' ')" = "1" ] \
+        && ok "INTENTS the app survived every intent (one instance)" \
+        || bad "INTENTS the app died or a second instance appeared"
+
+    # Battery after the phone is gone: the last value and its age, no wake.
+    stop_app
+    stop_fakephone
+    wait_until 5 no_fakephone
+    sleep 65
+    launch --connect "127.0.0.1:$PORT" --debug-intent "battery" --quit-after 12
+    if wait_until 20 intent_event battery; then
+        line="$(intent_event battery)"
+        [ "$(intent_field "$line" ok)" = "true" ] \
+            && [ "$(intent_field "$line" level)" = "87" ] \
+            && [ "$(intent_field "$line" live)" = "false" ] \
+            && echo "$line" | grep -qE '"FakePhone: 87 % (1|2) min ago"' \
+            && ok "INTENTS battery after the phone left: last value and age" \
+            || bad "INTENTS stale battery line is wrong: $line"
+    else
+        bad "INTENTS no battery line after the phone left"
+    fi
+    stop_app
 }
 
 # --- C14: audio phone -> Mac -------------------------------------------------
