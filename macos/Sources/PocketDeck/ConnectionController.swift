@@ -99,6 +99,9 @@ final class ConnectionController {
     let remembered: RememberedPhones
     let appsCache: AppsCache
     let spotlight: SpotlightIndex
+    /// The last battery each phone reported, for the battery intent while the
+    /// phone is away (docs/design/intents.md).
+    let batteryMemory: BatteryMemory
     /// Dock and Launchpad apps (docs/design/dock.md).
     let dockApps: DockApps
     let windows: WindowManager
@@ -277,6 +280,10 @@ final class ConnectionController {
     private var pendingLink: (request: OpenLinkRequest, until: Date)?
     /// An app file waiting for its phone to become ready (nil phone = whichever comes first).
     private var pendingApk: (file: URL, deviceId: String?, until: Date)?
+    /// An intent's whole-phone window waiting for its phone (docs/design/intents.md).
+    private var pendingPhoneWindow: (deviceId: String, until: Date)?
+    /// An intent's files waiting for their phone.
+    private var pendingDrop: (urls: [URL], deviceId: String, until: Date)?
     private var debugInput: DebugInputDriver?
     private var debugControl: DebugControl?
     /// `--debug-fs-script` (FsDebug.swift): pending phone-file steps and the
@@ -327,6 +334,7 @@ final class ConnectionController {
         remembered = RememberedPhones(profile: profile)
         appsCache = AppsCache(profile: profile)
         spotlight = SpotlightIndex(domainPrefix: profile.spotlightDomainPrefix)
+        batteryMemory = BatteryMemory(profile: profile)
         dockApps = DockApps(folder: DockApps.defaultFolder(profile: profile, override: options.dockDirectory),
                             profile: profile)
         windows = WindowManager(session: Session(endpoint: .hostPort(host: "127.0.0.1", port: 1),
@@ -906,6 +914,60 @@ final class ConnectionController {
         windows.openLink(pending.request.url)
     }
 
+    // MARK: Intents (docs/design/intents.md)
+
+    /// The intent layer resolves the phone (IntentsCore); these take a device id
+    /// and reuse the Deck's paths: an open window, the pending-open queue that
+    /// Spotlight clicks use, the link route and the drop sender.
+
+    func intentsOpenApp(_ pkg: String, on deviceId: String) {
+        if link.isOnline, link.phone?.id == deviceId {
+            windows.openApp(pkg: pkg)
+            return
+        }
+        pendingOpen = SpotlightOpenRequest(deviceId: deviceId, pkg: pkg)
+        if link.phone?.id != deviceId, let phone = remembered.phone(id: deviceId) { use(phone) }
+    }
+
+    func intentsOpenPhoneWindow(on deviceId: String) {
+        if link.isOnline, link.phone?.id == deviceId {
+            windows.openPhoneWindow()
+            return
+        }
+        pendingPhoneWindow = (deviceId, Date().addingTimeInterval(Self.pendingLinkLifetime))
+        if link.phone?.id != deviceId, let phone = remembered.phone(id: deviceId) { use(phone) }
+    }
+
+    func intentsSendLink(_ url: String, on deviceId: String) {
+        openLink(url, on: deviceId)
+    }
+
+    func intentsSendFiles(_ urls: [URL], on deviceId: String) {
+        guard !urls.isEmpty else { return }
+        if link.isOnline, link.phone?.id == deviceId, let session {
+            dropSender.send(urls, session: session)
+            syncDropPill()
+            return
+        }
+        pendingDrop = (urls, deviceId, Date().addingTimeInterval(Self.pendingLinkLifetime))
+        if link.phone?.id != deviceId, let phone = remembered.phone(id: deviceId) { use(phone) }
+    }
+
+    private func openPendingPhoneWindow(readyPhone id: String) {
+        guard let pending = pendingPhoneWindow, pending.deviceId == id else { return }
+        pendingPhoneWindow = nil
+        guard pending.until > Date() else { return }
+        windows.openPhoneWindow()
+    }
+
+    private func dropPendingFiles(readyPhone id: String) {
+        guard let pending = pendingDrop, pending.deviceId == id else { return }
+        pendingDrop = nil
+        guard pending.until > Date(), let session else { return }
+        dropSender.send(pending.urls, session: session)
+        syncDropPill()
+    }
+
     // MARK: APK install (docs/design/apk.md)
 
     /// Installs an .apk / .apks / .xapk on a phone (drop, Open With, Services, menu bar).
@@ -1382,6 +1444,7 @@ final class ConnectionController {
             recheckOpenWindows()
         case .phoneState(let locked, let battery, let charging):
             status = PhoneStatus(locked: locked, battery: battery, charging: charging)
+            if let id = link.phone?.id { batteryMemory.record(deviceId: id, level: battery, charging: charging) }
         case .audioState(let on, _):
             audioOn = on
         case .windowClosed:
@@ -1503,6 +1566,9 @@ final class ConnectionController {
         // Every window title carries the display name from here on.
         windows.setPhoneName(displayName(for: ref))
         status = PhoneStatus(locked: info.locked, battery: info.battery, charging: info.charging ?? false)
+        if let battery = info.battery {
+            batteryMemory.record(deviceId: info.id, level: battery, charging: info.charging ?? false)
+        }
         if apps.isEmpty || link.phone?.id != info.id { resetPhoneData(for: ref) }
         send(.welcome(ref))
         everOnline = true
@@ -1535,6 +1601,8 @@ final class ConnectionController {
         openPendingLink(readyPhone: info.id)
         openPendingDock(readyPhone: info.id)
         installPendingApk(readyPhone: info.id)
+        openPendingPhoneWindow(readyPhone: info.id)
+        dropPendingFiles(readyPhone: info.id)
         transientBanner = nil
         syncAudio()
         startFsDebug()
