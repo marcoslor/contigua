@@ -215,10 +215,10 @@ fun HomeScreen(
                     }
                 }
             }
-            if (dev.pocketdeck.BuildConfig.DEBUG) {
+            if (dev.pocketdeck.server.DebugFlags.autoApprovePairing()) {
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    text = "Debug build: any Mac on this network can connect",
+                    text = "Debug build: auto-approve pairing is on; any Mac on this network can connect",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(vertical = 8.dp),

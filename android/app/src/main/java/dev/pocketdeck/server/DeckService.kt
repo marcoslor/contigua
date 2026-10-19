@@ -109,7 +109,9 @@ class DeckService(private val appContext: Context?) :
                 dropLanding = ShellLanding(appContext, ::log),
                 now = { SystemClock.uptimeMillis() },
                 log = ::log,
-                autoApprovePairing = dev.pocketdeck.BuildConfig.DEBUG,
+                // Read when this session starts, never cached: the property can
+                // be set or cleared between connections (review I-1).
+                autoApprovePairing = DebugFlags.autoApprovePairing(),
                 selfCertProvider = { selfCertPem },
                 pendingQrProvider = { pendingQr },
                 gateProvider = { gates },
