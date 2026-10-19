@@ -97,8 +97,11 @@ Spec of every state, copy and transitions: [design/mac-redesign.md](design/mac-r
 - **Frameless at rest.** The window is only the stream: the system's rounded corners and window shadow, no title bar, no title text, no band above the video. The content view
   (`StreamContainerView`, plain AppKit) holds the video view, which fills it, so the window's frame is the video. The virtual display is that area × backing scale (multiple of 16,
   clamped to 320–2560, aspect kept). Because of the 16 px floor the video can be up to 15 px narrower or shorter than the view; when the aspect ratios differ by ≤ 2 % the layer
-  stretches over it (`videoGravity = .resize`, `Letterbox.fills`) instead of showing thin black bars, and input is mapped against the same rectangle. A real mismatch (a frame of the
-  old shape mid-resize) is still aspect-fitted.
+  stretches over it (`videoGravity = .resize`, `Letterbox.fills`) instead of showing thin black bars, and input is mapped against the same rectangle. A real mismatch is cropped:
+  while the window has asked for a new size and no frame at that size has arrived, the last frame fills the view (`videoGravity = .resizeAspectFill`, a centred crop) so a live drag
+  shows no black bars; a config within one 16 px step ends it, and 2 s after the last ask with no answer it falls back to aspect-fit. Input is mapped against the same rectangle
+  (`Letterbox.placement` and `videoRect`), so a click lands on the pixel under the pointer even mid-resize. The phone window is the exception: it mirrors the phone's fixed screen,
+  so its letterbox is never cropped.
 - **Window chrome by style** (`StreamChrome.swift` + `WindowStyle.swift`; View ▸ Window Style, ⌥⌘F toggles). The window is the stream plus a 28 pt bar above it in
   Framed (the default, none in full screen); Immersive is exactly the stream. The other three edges are the stream's own; the corners round once on the window's
   container (every child paints square so the bar's seam stays straight); 16 pt continuous corners on the window; the virtual display is sized from the stream

@@ -32,6 +32,8 @@ final class PhoneWindowController: StreamWindowController {
         window?.minSize = style.windowSize(stream: NSSize(
             width: Self.minVideoWidth, height: Self.minVideoWidth * phoneScreen.height / phoneScreen.width))
         videoView.inputMapper?.isPhoneMode = true
+        // The mirror's letterbox is the phone's fixed screen, never a crop.
+        videoView.isPhoneMode = true
         rotationObserver = NotificationCenter.default.addObserver(
             forName: VideoLayerView.videoSizeDidChange, object: videoView, queue: .main
         ) { [weak self] _ in

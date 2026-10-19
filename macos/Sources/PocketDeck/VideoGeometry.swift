@@ -49,6 +49,15 @@ enum Letterbox {
     /// is the window floored to 16 px, which would otherwise leave thin bars.
     static let fillTolerance = 0.02
 
+    /// How the last frame sits in the view. `fit` and `fill` keep the picture's
+    /// aspect; `stretch` is the 16 px quantisation (the ratios agree), where the
+    /// whole picture covers the view without visible bars.
+    enum Placement: Equatable {
+        case fit
+        case fill
+        case stretch
+    }
+
     /// True when the video is stretched over the whole of `bounds`.
     static func fills(video: CGSize, bounds: CGSize) -> Bool {
         guard video.width > 0, video.height > 0, bounds.width > 0, bounds.height > 0 else { return false }
@@ -56,16 +65,65 @@ enum Letterbox {
         return abs(ratio - 1) <= fillTolerance
     }
 
-    /// Where the video is drawn inside `bounds`: all of it when the aspect
-    /// ratios only differ by the 16 px quantisation, else aspect-fit and centred.
-    /// Origin is the bottom-left (AppKit view coordinates) because callers pass view bounds.
-    static func videoRect(video: CGSize, in bounds: CGRect) -> CGRect {
+    /// The rule: (video, view, resize pending, phone mode) → how the frame is
+    /// drawn.
+    ///
+    /// - Ratios within the 16 px quantisation are stretched, as they always
+    ///   were; there is nothing to fill.
+    /// - While a resize is pending the app window crops the last frame to fill
+    ///   it, so the drag shows no black bars until the phone answers with a
+    ///   frame of the new shape.
+    /// - The phone window mirrors a fixed screen: its letterbox is never
+    ///   cropped, pending or not.
+    static func placement(video: CGSize, bounds: CGSize, resizePending: Bool,
+                          phoneMode: Bool) -> Placement {
+        guard video.width > 0, video.height > 0, bounds.width > 0, bounds.height > 0 else { return .fit }
+        if fills(video: video, bounds: bounds) { return .stretch }
+        if resizePending && !phoneMode { return .fill }
+        return .fit
+    }
+
+    /// Where the video is drawn inside `bounds` for a placement. `fill` is
+    /// centred and larger than `bounds` on one axis (the crop); `fit` is
+    /// centred and inside it. Origin is the bottom-left (AppKit view
+    /// coordinates) because callers pass view bounds.
+    static func videoRect(video: CGSize, in bounds: CGRect, placement: Placement) -> CGRect {
         guard video.width > 0, video.height > 0, bounds.width > 0, bounds.height > 0 else { return bounds }
-        if fills(video: video, bounds: bounds.size) { return bounds }
-        let scale = min(bounds.width / video.width, bounds.height / video.height)
-        let size = CGSize(width: video.width * scale, height: video.height * scale)
-        return CGRect(x: bounds.midX - size.width / 2, y: bounds.midY - size.height / 2,
-                      width: size.width, height: size.height)
+        switch placement {
+        case .stretch:
+            return bounds
+        case .fit:
+            let scale = min(bounds.width / video.width, bounds.height / video.height)
+            let size = CGSize(width: video.width * scale, height: video.height * scale)
+            return CGRect(x: bounds.midX - size.width / 2, y: bounds.midY - size.height / 2,
+                          width: size.width, height: size.height)
+        case .fill:
+            let scale = max(bounds.width / video.width, bounds.height / video.height)
+            let size = CGSize(width: video.width * scale, height: video.height * scale)
+            return CGRect(x: bounds.midX - size.width / 2, y: bounds.midY - size.height / 2,
+                          width: size.width, height: size.height)
+        }
+    }
+
+    /// The drawn rect with today's rule (no resize pending, app window):
+    /// stretched over the quantisation, else aspect-fit and centred.
+    static func videoRect(video: CGSize, in bounds: CGRect) -> CGRect {
+        videoRect(video: video, in: bounds,
+                  placement: placement(video: video, bounds: bounds.size, resizePending: false, phoneMode: false))
+    }
+
+    /// True when `config` answers `request`: the window asks for its pixels
+    /// floored to 16, and the phone may answer one step off on each axis, or
+    /// with the same aspect within `fillTolerance`. Until it does, a resize is
+    /// still pending.
+    static func answers(config: CGSize, request: CGSize) -> Bool {
+        guard config.width > 0, config.height > 0, request.width > 0, request.height > 0 else { return false }
+        let step: CGFloat = CGFloat(VideoSize.granularity)
+        if abs(config.width - request.width) <= step, abs(config.height - request.height) <= step {
+            return true
+        }
+        let ratio = (config.width / config.height) / (request.width / request.height)
+        return abs(ratio - 1) <= fillTolerance
     }
 
     /// Normalize a point in view coordinates to the video's [0,1] coordinates

@@ -16,6 +16,18 @@ final class VideoLayerView: NSView {
     /// Size (px) of the last VIDEO_CONFIG; drives aspect-fit letterboxing.
     private(set) var videoSize: CGSize = .zero
 
+    /// The phone window mirrors a fixed screen: its letterbox is never filled
+    /// (Letterbox.placement). The app window's is.
+    var isPhoneMode = false
+
+    /// When the window last asked for a new size; until a config at that size
+    /// arrives (or this passes) the last frame fills the view.
+    private var resizeFillUntil: TimeInterval?
+    private var resizeTimeout: DispatchWorkItem?
+
+    /// A phone that never answers must not leave a cropped picture up forever.
+    static let resizeFillTimeout: TimeInterval = 2
+
     /// Posted on the main queue once a VIDEO_CONFIG size is applied (object: the view).
     static let videoSizeDidChange = Notification.Name("dev.pocketdeck.videoSizeDidChange")
 
@@ -101,14 +113,61 @@ final class VideoLayerView: NSView {
     /// Stretches over the 16 px quantisation instead of showing thin black bars;
     /// `videoRect()` follows the same rule, so input maps to what is drawn.
     private func updateGravity() {
-        let gravity: AVLayerVideoGravity = Letterbox.fills(video: videoSize, bounds: bounds.size) ? .resize : .resizeAspect
+        let gravity = Self.gravity(for: placement())
         if displayLayer.videoGravity != gravity { displayLayer.videoGravity = gravity }
     }
 
-    /// Aspect-fit rect of the current video inside the view.
+    private func placement() -> Letterbox.Placement {
+        Letterbox.placement(video: videoSize, bounds: bounds.size,
+                            resizePending: resizeIsPending, phoneMode: isPhoneMode)
+    }
+
+    /// The gravity that draws `placement`.
+    static func gravity(for placement: Letterbox.Placement) -> AVLayerVideoGravity {
+        switch placement {
+        case .fit: return .resizeAspect
+        case .fill: return .resizeAspectFill
+        case .stretch: return .resize
+        }
+    }
+
+    /// The window asked for a new size (a drag or the resize message itself):
+    /// the last frame fills the view until a VIDEO_CONFIG at that size arrives.
+    /// The timeout falls back to aspect-fit, so a phone that never answers does
+    /// not leave a crop up.
+    func noteResizeRequested() {
+        resizeFillUntil = ProcessInfo.processInfo.systemUptime + Self.resizeFillTimeout
+        resizeTimeout?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.resizeFillUntil = nil
+            self.resizeTimeout = nil
+            self.updateGravity()
+        }
+        resizeTimeout = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.resizeFillTimeout, execute: work)
+        updateGravity()
+    }
+
+    /// A resize is pending while the window has asked and the last frame is not
+    /// the size it asked for.
+    private var resizeIsPending: Bool {
+        guard let until = resizeFillUntil, ProcessInfo.processInfo.systemUptime < until else { return false }
+        return !Letterbox.answers(config: videoSize, request: requestedPixels)
+    }
+
+    /// What the window's own size asks the phone for (the same number
+    /// `window.resize` carries).
+    private var requestedPixels: CGSize {
+        let scale = Double(window?.backingScaleFactor ?? 1)
+        return VideoSize.displayPixels(bounds: bounds.size, backingScale: scale)
+    }
+
+    /// Drawn rect of the current video inside the view: the same rule as the
+    /// gravity, so a click lands on the pixel under the pointer, even mid-resize.
     func videoRect() -> CGRect {
         guard videoSize.width > 0, videoSize.height > 0 else { return bounds }
-        return Letterbox.videoRect(video: videoSize, in: bounds)
+        return Letterbox.videoRect(video: videoSize, in: bounds, placement: placement())
     }
 
     // MARK: Video
@@ -129,6 +188,14 @@ final class VideoLayerView: NSView {
             self.handOff(.flush)
             DispatchQueue.main.async {
                 self.videoSize = size
+                // The phone answered at the size the window asked for: the
+                // fill (if one was up) ends now, before the timeout.
+                if self.resizeFillUntil != nil,
+                   Letterbox.answers(config: size, request: self.requestedPixels) {
+                    self.resizeFillUntil = nil
+                    self.resizeTimeout?.cancel()
+                    self.resizeTimeout = nil
+                }
                 self.updateGravity()
                 self.needsLayout = true
                 self.needsDisplay = true
