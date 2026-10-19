@@ -111,12 +111,19 @@ art="/tmp/pd-e2e-artifacts-$port"
 rm -rf "$art"
 # The guest boots headless (`tart run --no-graphics`) at the resolution it
 # last had: tart's --display hint sizes a host window a headless run never
-# opens. C6's tall window (600x900 pt) is clamped to the screen's visible
-# frame, so pick a mode tall enough for it before the first check.
+# opens. The checks are written for a 2x screen, so pd-screens picks the
+# tallest 2x mode the guest offers (and reports the screen); when none is tall
+# enough for C6's tall window, PD_E2E_TALL_SCREEN=0 makes that one step skip
+# with the reason instead of failing.
 if swiftc -O scripts/pd-screens.swift -o /tmp/pd-screens 2>/tmp/pd-screens-build.log; then
-    /tmp/pd-screens --min-visible-height 960 --scale 2 || /tmp/pd-screens
+    if /tmp/pd-screens --min-visible-height 960 --scale 2; then
+        export PD_E2E_TALL_SCREEN=1
+    else
+        export PD_E2E_TALL_SCREEN=0
+    fi
 else
     echo "pd-screens did not build:"; tail -3 /tmp/pd-screens-build.log
+    export PD_E2E_TALL_SCREEN=0
 fi
 failed=0
 last=0

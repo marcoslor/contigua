@@ -1,11 +1,12 @@
-// pd-screens — the e2e VM's screen: report it, or make it tall enough for C6.
+// pd-screens — the e2e VM's screen: report it, or make it as tall as it can be.
 //
 // The VM boots headless (`tart run --no-graphics`), so the guest keeps the
 // resolution it had: tart's `--display` hint sizes the host window, which a
-// headless run never opens. C6 resizes a stream to 600x900 pt, and AppKit
-// clamps a window to its screen's visible frame, so a 1280x720 guest screen
-// turned the tall config into 1200x1296 px. vm-e2e.sh runs this helper in the
-// guest's console session before the checks to pick a mode tall enough for it.
+// headless run never opens. The checks are written for a 2x screen, so a 1x
+// mode is not an option, and the guest's 2x modes are small (1280x720 pt was
+// the tallest seen). C6's tall window needs 900 pt plus the header band, so
+// where no mode is tall enough the check skips that one step with this
+// helper's answer; vm-e2e.sh runs it in the guest's console session first.
 //
 //   pd-screens                              print the screens (frame, visible, scale)
 //   pd-screens --list-modes                 print the main display's modes
@@ -14,9 +15,10 @@
 //                                           frame is at least that tall and
 //                                           whose backing scale is 2 (the scale
 //                                           the visible checks are written
-//                                           against), print what it did;
-//                                           restores the old mode and exits 1
-//                                           when none qualifies
+//                                           against); when no mode is tall
+//                                           enough, leave the tallest one on
+//                                           and exit 1 so the caller can skip
+//                                           the one step that needs it
 //
 // Only the e2e VM calls the setter; on the host it would resize the person's
 // own screen, which is why nothing in the suite calls it.

@@ -140,10 +140,13 @@ window to that screen's visible frame: C6's tall window needs 900 pt of stream
 plus the 52 pt header band. The VM boots headless, so the guest keeps the
 resolution it last had (tart's `--display` hint sizes a host window a headless
 run never opens); `vm-e2e.sh` runs `scripts/pd-screens.swift` in the guest
-before the checks, which picks the smallest display mode whose visible frame is
-at least 960 pt and logs the screen. `pd-screens` prints the screen and its
-modes when run by hand in the guest; nothing on the host calls it, since there
-it would resize the person's own screen.
+before the checks, which picks the tallest 2x mode the guest offers (the checks
+are written against 2x) and logs the screen. The guest's small display has no
+2x mode with the 952 pt of visible height the tall window needs, so that one
+step prints `SKIP` there (`PD_E2E_TALL_SCREEN=0`); a host run always runs it.
+`pd-screens` prints the screen and its modes when run by hand in the guest;
+nothing on the host calls it, since there it would resize the person's own
+screen.
 
 `vm-e2e.sh` builds `build/e2e/PocketDeck.app` on the host, boots the VM
 headless, copies the tree, the bundle and `tools/fakephone` in, runs the check
