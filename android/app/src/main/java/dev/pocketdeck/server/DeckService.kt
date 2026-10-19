@@ -137,7 +137,8 @@ class DeckService(private val appContext: Context?) :
                 },
             )
         }
-        val srv = Server(factory, ::log, { selfCertPem }, { selfKeyP8 }, { gates })
+        val srv = Server(factory, ::log, { selfCertPem }, { selfKeyP8 }, { gates },
+            { clients.map { it.macFpHex } })
         server = srv
         return srv.start()
     }

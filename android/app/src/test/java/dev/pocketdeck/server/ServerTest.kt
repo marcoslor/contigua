@@ -144,13 +144,17 @@ class ServerTest {
         val port = server.start()
         try {
             repeat(3) { Socket("127.0.0.1", port).close() }
+            // An empty connection frees its handshake slot as soon as TLS sees
+            // the EOF; give the two workers a moment before the real client so
+            // this asserts quietness, not the busy-slot rejection.
+            Thread.sleep(300)
             client(port, macIdentity, phoneIdentity).use { tls ->
                 tls.soTimeout = 3_000
                 val ssl = tls as javax.net.ssl.SSLSocket
                 ssl.startHandshake()
                 assertEquals("TLSv1.3", ssl.session.protocol)
             }
-            assertEquals(emptyList<String>(), logs.filter { "handshake" in it })
+            assertEquals(emptyList<String>(), logs.filter { it.startsWith("tls handshake failed") })
             assertEquals(false, platform.sessionChanges.any { it.connected })
         } finally {
             server.stop()
@@ -162,6 +166,86 @@ class ServerTest {
         assertEquals(true, Server.isEmptyConnection(javax.net.ssl.SSLHandshakeException("x").apply { initCause(java.io.EOFException()) }))
         assertEquals(true, Server.isEmptyConnection(javax.net.ssl.SSLException("Connection closed by peer")))
         assertEquals(false, Server.isEmptyConnection(javax.net.ssl.SSLHandshakeException("no cipher suites in common")))
+    }
+
+    /**
+     * H-1: a peer that connects and sends nothing must not stop the phone from
+     * serving the next Mac. The silent socket holds one of the two handshake
+     * workers; a real client uses the other and completes within seconds.
+     */
+    @Test
+    fun silentClientDoesNotBlockTheNextHandshake() {
+        val platform = FakePlatform()
+        platform.clients.add(PairedClient("c1", "MacBook", TlsV2Fixture.MAC_FP_HEX))
+        val phoneIdentity = TestTls.generate("PocketDeck Phone (silent test)")
+        val macIdentity = TestTls.generate("PocketDeck Mac (silent test)")
+        val server = Server({ socket -> sessionFor(platform, socket) }, log = {},
+            { phoneIdentity.certPem }, { phoneIdentity.keyP8 }, { GateSettings(true, true) })
+        val port = server.start()
+        try {
+            Socket("127.0.0.1", port).use { silent ->
+                silent.tcpNoDelay = true
+                // Give the accept loop a moment to hand the silent socket to a
+                // handshake worker before the real client arrives.
+                Thread.sleep(200)
+                val started = System.nanoTime()
+                client(port, macIdentity, phoneIdentity).use { tls ->
+                    val ssl = tls as javax.net.ssl.SSLSocket
+                    ssl.soTimeout = 5_000
+                    ssl.startHandshake()
+                    assertEquals("TLSv1.3", ssl.session.protocol)
+                }
+                val elapsedMs = (System.nanoTime() - started) / 1_000_000
+                assertTrue("handshake took ${elapsedMs}ms next to a silent peer", elapsedMs < 5_000)
+            }
+        } finally {
+            server.stop()
+        }
+    }
+
+    /**
+     * M-3: with "Allow connections" off, a stored pin's Mac still gets the
+     * protocol refusal (its UI shows it), while any other peer is closed
+     * without a single byte once TLS completes.
+     */
+    @Test
+    fun withConnectionsOffOnlyAPinnedPeerHearsTheRefusal() {
+        val platform = FakePlatform()
+        val phoneIdentity = TestTls.generate("PocketDeck Phone (gate test)")
+        val pinnedMac = TestTls.generate("PocketDeck Mac (pinned)")
+        val unknownMac = TestTls.generate("PocketDeck Mac (unknown)")
+        val pin = dev.pocketdeck.e2ee.KeyPin.toHex(
+            dev.pocketdeck.e2ee.KeyPin.fingerprint(
+                pinnedMac.cert.publicKey as java.security.interfaces.ECPublicKey))
+        val logs = java.util.Collections.synchronizedList(mutableListOf<String>())
+        val server = Server({ socket -> sessionFor(platform, socket) }, log = { logs.add(it) },
+            { phoneIdentity.certPem }, { phoneIdentity.keyP8 }, { GateSettings(false, true) },
+            { listOf(pin) })
+        val port = server.start()
+        try {
+            client(port, pinnedMac, phoneIdentity).use { tls ->
+                val ssl = tls as javax.net.ssl.SSLSocket
+                ssl.soTimeout = 3_000
+                ssl.startHandshake()
+                val out = ssl.getOutputStream()
+                out.write(Frames.encodeJson(0, Json.encode(mapOf(
+                    "t" to "hello", "v" to 2, "clientId" to "c1", "name" to "Mac"))))
+                out.flush()
+                val error = readJson(FrameReader(ssl.getInputStream()))
+                assertEquals("error", error["t"])
+                assertEquals("connections_off", error["code"])
+            }
+            client(port, unknownMac, phoneIdentity).use { tls ->
+                val ssl = tls as javax.net.ssl.SSLSocket
+                ssl.soTimeout = 3_000
+                ssl.startHandshake()
+                val first = runCatching { ssl.getInputStream().read() }
+                assertTrue("an unknown peer must not get a protocol byte",
+                    first.isFailure || first.getOrNull() == -1)
+            }
+        } finally {
+            server.stop()
+        }
     }
 
     private fun sessionFor(platform: FakePlatform, socket: Socket): Session = Session(

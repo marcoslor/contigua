@@ -1,11 +1,17 @@
 package dev.pocketdeck.server
 
+import dev.pocketdeck.proto.Crypto
 import dev.pocketdeck.proto.Frames
 import dev.pocketdeck.proto.Json
 import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
 import javax.net.ssl.SSLContext
+import javax.net.ssl.SSLSocket
+import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.SynchronousQueue
+import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 /** Builds a [Session] for an accepted socket (wired up by DeckService). */
@@ -24,11 +30,31 @@ class Server(
     private val selfKeyProvider: () -> String = { "" },
     /** The app's connection gates; null refuses every Mac (fail closed). */
     private val gateProvider: () -> GateSettings? = { null },
+    /**
+     * The stored macOS pins (hex). With "Allow connections" off only a peer
+     * whose certificate matches one of them hears `connections_off`; any other
+     * peer is closed without a word (review M-3).
+     */
+    private val pinnedPeerFpsProvider: () -> List<String> = { emptyList() },
 ) {
     private val serverSocket = ServerSocket()
     private val running = AtomicBoolean(false)
     @Volatile private var acceptThread: Thread? = null
     @Volatile private var active: Session? = null
+    /** Serialises the "one session at a time" decision made by handshake workers. */
+    private val sessionLock = Object()
+    /**
+     * Bounded handshake pool (review H-1): the accept loop hands every socket to
+     * one of two workers and immediately accepts again, so a peer that never
+     * sends its ClientHello can never block later connections. A third socket
+     * while both slots are busy is closed at once (no queue).
+     */
+    private val handshakes = ThreadPoolExecutor(
+        MAX_HANDSHAKES, MAX_HANDSHAKES, 30L, TimeUnit.SECONDS, SynchronousQueue(),
+        { r -> Thread(r, "pocketdeck-handshake").apply { isDaemon = true } },
+    ).apply { allowCoreThreadTimeOut(true) }
+    /** True once the current saturation burst was logged; cleared when a slot frees. */
+    private val handshakeBusyLogged = AtomicBoolean(false)
     /** The TLS context built from the current pushed identity; rebuilt only
      * when the PEMs change (setPairedClients may run at any time). */
     private var cachedContext: String = ""
@@ -71,6 +97,7 @@ class Server(
     fun stop() {
         if (!running.compareAndSet(true, false)) return
         runCatching { serverSocket.close() }
+        handshakes.shutdownNow()
         active?.let { runCatching { it.close() } }
         active = null
         acceptThread = null
@@ -107,64 +134,120 @@ class Server(
                 break
             }
             runCatching { rawSocket.tcpNoDelay = true }
+            // A peer that connects and sends nothing must not hold this loop:
+            // the handshake worker owns a 10 s read timeout (review H-1).
+            runCatching { rawSocket.soTimeout = ACCEPT_TIMEOUT_MS }
+            try {
+                handshakes.execute { serve(rawSocket) }
+            } catch (_: RejectedExecutionException) {
+                // Both handshake slots are busy: refuse at once (never queue
+                // behind a silent peer). One line per saturation burst.
+                if (handshakeBusyLogged.compareAndSet(false, true)) {
+                    log("handshake slots busy: closing extra connections")
+                }
+                runCatching { rawSocket.close() }
+            }
+        }
+    }
+
+    /**
+     * A handshake worker: TLS first, then the master gate, then the single
+     * session. Runs on the bounded pool, never on the accept thread.
+     */
+    private fun serve(rawSocket: Socket) {
+        try {
             // TLS 1.3 only (docs/design/e2ee.md §2, fixed decision): every
             // connection is wrapped before any byte of the session protocol is
             // exchanged. A failed wrap is closed, never downgraded to plaintext.
-            val socket: Socket? = try {
-                val ctx = tlsContext()
-                if (ctx == null) {
-                    log("tls identity missing: closing connection")
-                    runCatching { rawSocket.close() }
-                    null
-                } else {
-                    val ssl = ShellTls.wrapAccepted(rawSocket, ctx)
-                    val handshake = runCatching { ssl.startHandshake() }
-                    if (handshake.isFailure) {
-                        // A client that connects and hangs up without a byte
-                        // (the Mac's Bonjour resolve does exactly that once
-                        // per connect: review R4-b) is no event at all: no
-                        // log, no session, nothing counted.
-                        val error = handshake.exceptionOrNull()
-                        if (error == null || !isEmptyConnection(error)) {
-                            log("tls handshake failed: ${error?.message}")
-                        }
-                        runCatching { ssl.close() }
-                        null
-                    } else {
-                        ssl
-                    }
-                }
-            } catch (e: Throwable) {
-                log("tls wrap failed: ${e.message}")
-                runCatching { rawSocket.close() }
-                null
-            }
-            if (socket == null) continue
+            val socket = completeHandshake(rawSocket) ?: return
             // The master gate is checked before any session state exists: a
-            // Mac gets the refusal even if the app never pushed a setting.
+            // known Mac gets the refusal even if the app never pushed a setting.
             if (gateProvider()?.allowConnections != true) {
-                log("refused: connections off")
-                reject(socket, "connections_off", "the phone is not accepting connections")
-                continue
+                refuseConnectionsOff(socket)
+                return
             }
-            val current = active
-            if (current != null && !current.isClosed) {
-                rejectBusy(socket)
-                continue
-            }
-            val session = factory.create(socket)
-            active = session
-            Thread({
-                try {
-                    session.run()
-                } finally {
-                    if (active === session) active = null
+            synchronized(sessionLock) {
+                val current = active
+                if (current != null && !current.isClosed) {
+                    rejectBusy(socket)
+                    return
                 }
-            }, "pocketdeck-session").also { it.start() }
+                val session = factory.create(socket)
+                active = session
+                Thread({
+                    try {
+                        session.run()
+                    } finally {
+                        if (active === session) active = null
+                    }
+                }, "pocketdeck-session").also { it.start() }
+            }
+        } finally {
+            // A slot is free again: the next saturated burst logs once more.
+            handshakeBusyLogged.set(false)
+        }
+    }
+
+    /** Wrap + handshake with the accept-time read timeout; null on any failure. */
+    private fun completeHandshake(rawSocket: Socket): Socket? {
+        val ctx = tlsContext()
+        if (ctx == null) {
+            log("tls identity missing: closing connection")
+            runCatching { rawSocket.close() }
+            return null
+        }
+        val ssl: SSLSocket = try {
+            ShellTls.wrapAccepted(rawSocket, ctx)
+        } catch (e: Throwable) {
+            log("tls wrap failed: ${e.message}")
+            runCatching { rawSocket.close() }
+            return null
+        }
+        val handshake = runCatching { ssl.startHandshake() }
+        if (handshake.isFailure) {
+            // A client that connects and hangs up without a byte (the Mac's
+            // Bonjour resolve does exactly that once per connect: review R4-b)
+            // is no event at all: no log, no session, nothing counted.
+            val error = handshake.exceptionOrNull()
+            if (error == null || !isEmptyConnection(error)) {
+                log("tls handshake failed: ${error?.message}")
+            }
+            runCatching { ssl.close() }
+            return null
+        }
+        // The session sets its own read timeout in run(); hand it over clean.
+        runCatching { ssl.soTimeout = 0 }
+        return ssl
+    }
+
+    /**
+     * M-3: with connections off, only a peer whose certificate is one of the
+     * stored pins gets the protocol refusal (the Mac's UI depends on it). Any
+     * other peer is closed without a reply, so a port scan learns nothing.
+     */
+    private fun refuseConnectionsOff(socket: Socket) {
+        val peer = runCatching { Session.TlsView.from(socket).peerFingerprint() }
+            .getOrDefault(ByteArray(0))
+        val peerHex = if (peer.size == 32) Crypto.toHex(peer) else ""
+        val pinned = peerHex.isNotEmpty() && pinnedPeerFpsProvider().any {
+            it.length == 64 && it.equals(peerHex, ignoreCase = true)
+        }
+        if (pinned) {
+            log("refused: connections off")
+            reject(socket, "connections_off", "the phone is not accepting connections")
+        } else {
+            log("refused: connections off (unpinned peer)")
+            runCatching { socket.close() }
         }
     }
 
     internal companion object {
+        /** The pre-handshake read timeout (review H-1): 10 s covers a LAN trip. */
+        const val ACCEPT_TIMEOUT_MS = 10_000
+
+        /** Handshake workers; a third concurrent socket is closed at once. */
+        const val MAX_HANDSHAKES = 2
+
         /** True when the peer closed before completing a ClientHello: an
          *  EOF/reset anywhere in the cause chain (JDK: "Remote host terminated
          *  the handshake"; Conscrypt: "Connection closed by peer"). */
