@@ -106,12 +106,15 @@ pointer events (for debugging; don't type meanwhile).
 
 ## Running the suite in a VM
 
-`macos/scripts/vm-e2e.sh <check|all>` runs the same suite inside a headless
+`macos/scripts/vm-e2e.sh <check>` runs the same suite inside a headless
 macOS VM on this Mac, so the run cannot touch your session at all: the VM has
 no window of its own, and its displays, focus and input are its own. Nothing
 has to be typed during the run, so the VM runs `PD_E2E_VISIBLE=1` by default
 and the real-input checks (global events, side button, `open -a`) run too
-(`PD_VM_VISIBLE=0` for a quiet run instead).
+(`PD_VM_VISIBLE=0` for a quiet run instead). A comma list
+(`vm-e2e.sh pair,chrome,mirror,dock`) runs those checks one after another in a
+single boot, each with its own log, PASS/FAIL and `passed=`/`failed=` lines; a
+boot is the expensive part, and each check is its own process either way.
 
 The VM is `pd-e2e`: a clone of `ghcr.io/cirruslabs/macos-tahoe-base:latest`
 with 2 CPUs, 4 GB RAM (the smallest this image accepts) and a 1920x1080
@@ -131,12 +134,14 @@ the VM reproduces the host's behaviour instead of hiding a difference.
 `vm-e2e.sh` builds `build/e2e/PocketDeck.app` on the host, boots the VM
 headless, copies the tree, the bundle and `tools/fakephone` in, runs the check
 in the VM's console session, copies the log and the run's work dir back to
-`macos/build/vm-e2e/<check>/` (`run.log`, `work/`) and stops the VM. The whole
-boot-run-stop is one heavy step: it takes the same machine-wide lock as a host
-run (`.agent/heavy.sh`), so it never runs beside other heavy work. Before that
-it waits for room for the VM (at least 25% free memory, swap under 2 GB); a
-boot/stop cycle pushes swap up for a while, so back-to-back runs can wait a
-few minutes between them. The exit code is the check's.
+`macos/build/vm-e2e/<check>/` (`run.log`, `work/`) and stops the VM; a list
+lands in `macos/build/vm-e2e/<check+check...>/checks/<check>/` (`run.log`,
+`work/`). The whole boot-run-stop is one heavy step: it takes the same
+machine-wide lock as a host run (`.agent/heavy.sh`), so it never runs beside
+other heavy work. Before that it waits for room for the VM (at least 25% free
+memory, swap under 2 GB); a boot/stop cycle pushes swap up for a while, so
+back-to-back runs can wait a few minutes between them. The exit code is the
+check's (a list's is the number of checks that failed).
 
 Known limitations (SM-S936B, Android 16)
 
