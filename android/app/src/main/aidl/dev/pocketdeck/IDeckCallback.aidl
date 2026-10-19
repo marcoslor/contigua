@@ -20,4 +20,12 @@ oneway interface IDeckCallback {
 
     /** The Mac pressed a Now Playing transport control (play, pause, next, prev). */
     void onMediaCommand(String action);
+
+    /**
+     * A Mac clicked the forwarded notification `id` (docs/design/notify.md).
+     * The app looks up the action it kept for that id and hands the
+     * PendingIntent back to the server with `openNotification`; an unknown id
+     * is answered with a null intent.
+     */
+    void onNotifyOpen(String id, int displayId);
 }

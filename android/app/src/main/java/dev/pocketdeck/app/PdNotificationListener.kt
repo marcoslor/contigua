@@ -48,6 +48,7 @@ class PdNotificationListener : NotificationListenerService() {
 
     override fun onDestroy() {
         PdNotificationBridge.mediaSink = null
+        NotifyIntents.clear()
         sessionManager?.let { runCatching { it.removeOnActiveSessionsChangedListener(activeSessionsListener) } }
         sessionManager = null
         detachSession()
@@ -139,21 +140,29 @@ class PdNotificationListener : NotificationListenerService() {
         // Ongoing notifications are service chrome; a person never answers them,
         // and the media session is delivered separately anyway.
         if (sbn.packageName in NotifyEvents.skippedPackages || sbn.isOngoing) return
-        val extras = sbn.notification?.extras ?: return
-        NotifyEvents.notificationEvent(
-            id = forwardId(sbn),
+        val notification = sbn.notification ?: return
+        val extras = notification.extras ?: return
+        val id = forwardId(sbn)
+        val event = NotifyEvents.notificationEvent(
+            id = id,
             pkg = sbn.packageName,
             title = extras.getString(Notification.EXTRA_TITLE)
                 ?: extras.getString(Notification.EXTRA_TITLE_BIG),
             text = extras.getString(Notification.EXTRA_TEXT)
                 ?: extras.getString(Notification.EXTRA_BIG_TEXT),
             when_ = sbn.postTime,
-        )?.let { bridge.post(it) }
+        ) ?: return
+        // The Mac can only ask for an id it received; the action stays here and
+        // is never serialized onto the wire (docs/design/notify.md).
+        notification.contentIntent?.let { NotifyIntents.put(id, it) }
+        bridge.post(event)
     }
 
     override fun onNotificationRemoved(sbn: StatusBarNotification) {
         if (sbn.packageName in NotifyEvents.skippedPackages) return
-        NotifyEvents.removedEvent(forwardId(sbn))?.let { bridge.post(it) }
+        val id = forwardId(sbn)
+        NotifyIntents.remove(id)
+        NotifyEvents.removedEvent(id)?.let { bridge.post(it) }
     }
 
     /**
