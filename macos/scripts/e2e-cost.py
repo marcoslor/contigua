@@ -14,8 +14,9 @@ cpu_helpers, which is that total minus the sampled app/fake/build CPU.
 
 At the end it prints one line (and writes it to --summary):
 
+    DAEMONS name=… name=… …   (the five busiest system processes)
     COST wall=… launches=N builds=N cpu_app=… cpu_fake=… cpu_ws=… cpu_build=…
-         cpu_helpers=… cpu_run=… machine_busy=… peak_load=…
+         cpu_helpers=… cpu_run=… cpu_daemons=… machine_busy=… peak_load=…
 
   launches     — distinct PocketDeck processes of the profile's e2e bundle
   builds       — distinct swift-build / swift-test / swiftc invocations
@@ -26,6 +27,12 @@ At the end it prints one line (and writes it to --summary):
   cpu_helpers  — everything else the run's process tree used (python checks,
                  screencapture, `log show`, cgevent/quiet-watch/pd-load, …)
   cpu_run      — the sum of the five above
+  cpu_daemons  — macOS's own processes (under /System, /usr/libexec, /usr/sbin,
+                 /sbin, /Library/Apple; not WindowServer) over the run: what the
+                 Mac did in reply to the run's launches, windows and app
+                 registrations (Dock, Control Center, duetexpertd, …), and
+                 whatever it did anyway (not apps in /System/Applications or
+                 virtual machines). Sampled, like cpu_app.
   machine_busy — all CPUs' non-idle time over the run (host_statistics),
                  which includes whatever else the Mac was doing
   peak_load    — the highest 1-minute load average seen
@@ -95,6 +102,24 @@ def category(command, profile):
     return "helpers"
 
 
+SYSTEM_DIRS = ("/System/", "/usr/libexec/", "/usr/sbin/", "/sbin/", "/Library/Apple/")
+WINDOWSERVER = "/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer"
+# Counted elsewhere (WindowServer), or the person's and other work's, not the
+# Mac reacting to the run: apps in /System/Applications and virtual machines.
+NOT_DAEMONS = (WINDOWSERVER, "/System/Applications/",
+               "/System/Library/Frameworks/Virtualization.framework/")
+
+
+def daemon_name(command):
+    """The system process's short name, or None when it is not one."""
+    if not command.startswith(SYSTEM_DIRS) or command.startswith(NOT_DAEMONS):
+        return None
+    m = re.search(r"/([^/]+)\.(?:app|appex|xpc)/Contents/MacOS/", command)
+    if m:
+        return m.group(1).replace(" ", "_")
+    return os.path.basename(command.split(" ", 1)[0])
+
+
 def is_launch(command, profile):
     exe = command.split(" --", 1)[0]
     return "/build/e2e/PocketDeck.app/Contents/MacOS/PocketDeck" in exe and ("--profile " + profile) in command
@@ -124,8 +149,7 @@ def main():
         sys.exit("usage: e2e-cost.py [--profile NAME] [--summary FILE] -- <command...>")
 
     before = snapshot()
-    ws_pid = next((pid for pid, row in before.items() if row[2].startswith(
-        "/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer")), None)
+    ws_pid = next((pid for pid, row in before.items() if row[2].startswith(WINDOWSERVER)), None)
     ws_start = before[ws_pid][1] if ws_pid else 0.0
     busy0, total0 = machine_ticks()
     start = time.monotonic()
@@ -136,6 +160,7 @@ def main():
     # launches; a killed parent re-parents its children to launchd).
     ours = {child.pid}
     seen = {}  # pid -> (category, last cpu seconds, start cpu, in the process tree)
+    daemons = {}  # pid -> (name, last cpu seconds, start cpu)
     launches, builds = set(), set()
     peak = os.getloadavg()[0]
     ws_now = ws_start
@@ -148,9 +173,16 @@ def main():
                 cat, _, base, tree = seen[pid]
                 seen[pid] = (cat, cpu, base, tree)
                 continue
+            if pid in daemons:
+                name, _, base = daemons[pid]
+                daemons[pid] = (name, cpu, base)
+                continue
             cat = category(cmd, profile)
             tree = ppid in ours or pid in ours
             if not tree and not (cat in ("app", "fake") and pid not in before):
+                name = daemon_name(cmd)
+                if name:
+                    daemons[pid] = (name, cpu, before[pid][1] if pid in before else 0.0)
                 continue
             if tree:
                 ours.add(pid)
@@ -193,15 +225,22 @@ def main():
     totals["helpers"] = max(0.0, tree_cpu - sampled_in_tree)
     ws = max(0.0, ws_now - ws_start)
     run = tree_cpu + outside + ws
+    by_name = {}
+    for name, cpu, base in daemons.values():
+        by_name[name] = by_name.get(name, 0.0) + max(0.0, cpu - base)
+    top = sorted(by_name.items(), key=lambda item: -item[1])[:5]
     hz = os.sysconf("SC_CLK_TCK") or 100
-    line = ("COST wall=%.0fs launches=%d builds=%d cpu_app=%.1f cpu_fake=%.1f cpu_ws=%.1f "
-            "cpu_build=%.1f cpu_helpers=%.1f cpu_run=%.1f machine_busy=%.1f peak_load=%.1f"
-            % (wall, len(launches), len(builds), totals["app"], totals["fake"], ws,
-               totals["build"], totals["helpers"], run, (busy1 - busy0) / hz, peak))
-    print(line, flush=True)
+    lines = [
+        "DAEMONS " + " ".join("%s=%.1f" % item for item in top),
+        "COST wall=%.0fs launches=%d builds=%d cpu_app=%.1f cpu_fake=%.1f cpu_ws=%.1f "
+        "cpu_build=%.1f cpu_helpers=%.1f cpu_run=%.1f cpu_daemons=%.1f machine_busy=%.1f peak_load=%.1f"
+        % (wall, len(launches), len(builds), totals["app"], totals["fake"], ws,
+           totals["build"], totals["helpers"], run, sum(by_name.values()), (busy1 - busy0) / hz, peak),
+    ]
+    print("\n".join(lines), flush=True)
     if summary:
         with open(summary, "a") as fp:
-            fp.write(line + "\n")
+            fp.write("\n".join(lines) + "\n")
     sys.exit(returncode)
 
 
