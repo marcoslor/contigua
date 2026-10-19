@@ -746,7 +746,14 @@ internal class AndroidDisplayLayer(
     override fun open(stream: Int, w: Int, h: Int, dpi: Int, sink: VideoSink): Int = synchronized(streams) {
         streams.remove(stream)?.close()
         val ws = WindowStream(ctx, stream, sink, log)
-        val id = ws.start(w, h, dpi)
+        // start() can throw after it created the persistent surface and an
+        // encoder; close what it built before the session sees the failure.
+        val id = try {
+            ws.start(w, h, dpi)
+        } catch (e: Throwable) {
+            ws.close()
+            throw e
+        }
         streams[stream] = ws
         id
     }
