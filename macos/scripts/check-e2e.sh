@@ -1793,9 +1793,19 @@ check_chrome() {
     next_shared
     # The script waits for the check's go before clicking the pill's minimise light.
     rm -f "$WORK/chrome-step-minimise"
-    printf '%s\n' "wait 0.6" "windowstyle toggle" "wait 4" \
-        "hover 0.02 0.03" "wait 0.15" "click 0.02 0.03" "wait 1.2" \
-        "waitfile $WORK/chrome-step-minimise" "clickat -406 20" "wait 8" > "$WORK/chrome-immersive.txt"
+    # In a VM the scripted click is an in-app NSEvent pair that the window server
+    # never sees, so the Dock's minimise animation freezes on its first frame.
+    # Visible runs click through the window server instead; quiet runs keep the
+    # scripted click, which is what the host's reference run exercises.
+    if [ "$VISIBLE" = "1" ]; then
+        printf '%s\n' "wait 0.6" "windowstyle toggle" "wait 4" \
+            "hover 0.02 0.03" "wait 0.15" "click 0.02 0.03" "wait 1.2" \
+            "waitfile $WORK/chrome-step-minimise" "wait 8" > "$WORK/chrome-immersive.txt"
+    else
+        printf '%s\n' "wait 0.6" "windowstyle toggle" "wait 4" \
+            "hover 0.02 0.03" "wait 0.15" "click 0.02 0.03" "wait 1.2" \
+            "waitfile $WORK/chrome-step-minimise" "clickat -406 20" "wait 8" > "$WORK/chrome-immersive.txt"
+    fi
     open_shared --open com.android.settings --float-windows \
         --debug-chrome-state "$WORK/chrome.txt" --debug-input-script "$WORK/chrome-immersive.txt" \
         || { kill "$backdrop"; return 1; }
@@ -1831,8 +1841,12 @@ check_chrome() {
         || bad "C14 the immersive stream is blank (mid-row spread ${spread:-0})"
 
     # The pill's minimise light: a click there goes through the window's own
-    # event dispatch to the light.
+    # event dispatch to the light. Visible runs send it as a real click so the
+    # window server (and the Dock's animation) sees it.
     touch "$WORK/chrome-step-minimise"
+    if [ "$VISIBLE" = "1" ]; then
+        cg_input click --window "$win" --dx -406 --top 20
+    fi
     sleep 1
     window_gone "$win" \
         && ok "C14 a click on the pill's minimise light minimised the window" \
