@@ -642,6 +642,16 @@ wait_until() {
 # events_have <text> — the fakephone event log contains the text.
 events_have() { grep -qF -- "$1" "$WORK/events.jsonl" 2>/dev/null; }
 
+# await_app <seconds> <command...> — a positive step's end: the app has done what
+# the step needs once the command succeeds, so it is stopped then instead of
+# running out its --quit-after (which stays the step's upper bound).
+await_app() {
+    local seconds="$1"
+    shift
+    wait_until "$seconds" "$@"
+    stop_app
+}
+
 # await_window <awk-condition> — prints the id of the first PocketDeck window
 # matching the condition, once it exists.
 await_window() {
@@ -754,7 +764,8 @@ check_qr() {
         --state "$WORK/state.json" --events "$WORK/events.jsonl" \
         --qr-uri "$(cat "$WORK/qr.txt")" > "$WORK/fake2.log" 2>&1 &
     FAKE_PID=$!
-    wait_app
+    qr_done() { events_have '"state":"auth_ok"' && events_have '"pkg":"com.android.settings"'; }
+    await_app 30 qr_done
     grep -q '"t":"pair.qr"' "$WORK/events.jsonl" \
         && ok "C3 phone proved the scan with pair.qr" || bad "C3 no pair.qr"
     grep -q '"t":"pair.ok"' "$WORK/events.jsonl" \
@@ -784,7 +795,10 @@ check_pair() {
     FAKE_ALLOW_DELAY=8 start_fake || return 1
     launch --connect "127.0.0.1:$PORT" \
         --open com.android.settings,com.whatsapp --open-phone --quit-after 30
-    wait_app
+    three_streams() {
+        [ "$(grep '"ev":"video"' "$WORK/events.jsonl" | grep -o 'stream":[0-9]*' | sort -u | wc -l | tr -d ' ')" = "3" ]
+    }
+    await_app 30 three_streams
     grep -q '"state":"paired"' "$WORK/events.jsonl" \
         && ok "C4 first launch paired after an 8 s wait for Allow" || bad "C4 first launch did not pair"
     grep -q '"t":"pair.request"' "$WORK/events.jsonl" \
@@ -828,7 +842,7 @@ check_pair() {
     # second launch, same fakephone + stored pins: must authenticate without pairing
     : > "$WORK/events.jsonl"
     launch --connect "127.0.0.1:$PORT" --open-phone --quit-after 8
-    wait_app
+    await_app 8 events_have '"state":"auth_ok"'
     grep -q '"state":"auth_ok"' "$WORK/events.jsonl" \
         && ok "C4 second launch auth_ok" || bad "C4 second launch did not auth"
     grep -q '"t":"pair.request"' "$WORK/events.jsonl" \
@@ -889,7 +903,7 @@ check_tls() {
         ok "TLS R4-b the phone logged nothing at error level"
     fi
     launch --connect "127.0.0.1:$PORT" --quit-after 20
-    wait_app
+    await_app 20 events_have '"state":"paired"'
     if grep -q '"state":"paired"' "$WORK/events.jsonl"; then
         ok "TLS R4-b the phone stayed healthy: the next real session pairs"
     else
@@ -905,13 +919,13 @@ check_tls() {
     # longer controls, and the claim is about the two handshakes below.
     start_fake || return 1
     launch --connect "127.0.0.1:$PORT" --quit-after 20
-    wait_app
+    await_app 20 events_have '"state":"auth_ok"'
     pidA="$APP_PID"
     stop_fakephone
     sleep 1
     start_fake || return 1
     launch --connect "127.0.0.1:$PORT" --quit-after 9
-    wait_app
+    await_app 9 events_have '"state":"auth_ok"'
     pidB="$APP_PID"
     grep -q '"state":"auth_ok"' "$WORK/events.jsonl" \
         && ok "TLS7 the second session completed" || bad "TLS7 no second session"
@@ -956,7 +970,11 @@ check_tls() {
     # phone's cert becomes the stored pin on welcome).
     FAKE_ARGS="--tls-identity $WORK/rotated-phone.identity" start_fake || return 1
     launch --reset-pairing --connect "127.0.0.1:$PORT" --quit-after 18
-    wait_app
+    rotated_pinned() {
+        events_have '"state":"auth_ok"' && [ -n "$rotated_fp" ] && grep -q "\"phoneFingerprintHex\":\"$rotated_fp\"" \
+            "$HOME/Library/Application Support/PocketDeck-$PROFILE/pins.json" 2>/dev/null
+    }
+    await_app 18 rotated_pinned
     grep -q '"state":"auth_ok"' "$WORK/events.jsonl" \
         && ok "TLS3 the re-pair reconnect authenticated" \
         || bad "TLS3 the re-pair never reconnected"
@@ -992,7 +1010,7 @@ check_tls() {
     clean
     start_fake || return 1
     launch --connect "127.0.0.1:$PORT" --quit-after 20
-    wait_app
+    await_app 20 events_have '"state":"auth_ok"'
     grep -q '"state":"paired"' "$WORK/events.jsonl" \
         && ok "TLS4 paired before the Mac rotation" || bad "TLS4 never paired"
     stop_app
@@ -2111,7 +2129,8 @@ check_direct() {
     # Phase A: pair; `welcome` stores the pin (pins.json) + address (prefs).
     start_fake || return 1
     launch --connect "127.0.0.1:$PORT" --quit-after 16
-    wait_app
+    address_cached() { defaults read "$DEFAULTS_SUITE" cachedAddresses 2>/dev/null | grep -qF "127.0.0.1:$PORT"; }
+    await_app 16 eval 'events_have "\"state\":\"paired\"" && address_cached'
     grep -q '"state":"paired"' "$WORK/events.jsonl" \
         && ok "C10a paired" || bad "C10a first launch did not pair"
     local cached
@@ -2127,7 +2146,7 @@ check_direct() {
     : > "$WORK/events.jsonl"
     start_fake || return 1
     launch --quit-after 20
-    wait_app
+    await_app 20 events_have '"state":"auth_ok"'
     grep -q '"state":"auth_ok"' "$WORK/events.jsonl" \
         && ok "C10b reconnected through the cached address (auth_ok)" \
         || bad "C10b no auth_ok via the cached address"
@@ -2306,10 +2325,10 @@ check_spotlight() {
     clean
     start_fake || return 1
     launch --connect "127.0.0.1:$PORT" --quit-after 18
-    wait_app
     # Read the app's index log line now: the log window is relative to the
     # time of the query, and the unit tests below can take minutes.
-    wait_until 10 spotlight_logged
+    # The index follows the app list; the log is only read once it arrived.
+    await_app 18 eval 'events_have "\"t\":\"apps.list\"" && spotlight_logged'
     local logged hit
     logged="$(spotlight_log_line)"
     hit="$(mdfind 'kMDItemContentDescription == "Android app on FakePhone"' 2>/dev/null | head -3 || true)"
