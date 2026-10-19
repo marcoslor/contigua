@@ -51,8 +51,15 @@ fi
 PUBKEY="$(cat "$VM_KEY.pub")"
 
 state="$VM_STATE/prepared"
+memory_gate || exit 3
 heavy_lock
 trap 'vm_stop; heavy_unlock' EXIT
+
+# A killed run can leave the VM up; it is ours, so stop it before booting.
+if vm_running; then
+    say "$VM was left running; stopping it"
+    vm_stop
+fi
 
 memory_gate || exit 3
 
@@ -134,6 +141,11 @@ brew list --formula 2>/dev/null | grep -q '^ffmpeg' || brew install ffmpeg || ex
 /opt/homebrew/bin/python3 -c 'import sys, ssl; print("python", sys.version.split()[0], ssl.OPENSSL_VERSION)' || exit 4
 ffmpeg -version 2>/dev/null | head -1 || exit 4
 
+step "pyOpenSSL for the fakephone"
+/opt/homebrew/bin/python3 -c 'import OpenSSL' 2>/dev/null \
+    || /opt/homebrew/bin/python3 -m pip install --user --break-system-packages pyopenssl || exit 4
+/opt/homebrew/bin/python3 -c 'import OpenSSL; print("pyOpenSSL", OpenSSL.__version__)' || exit 4
+
 step "Command Line Tools (swiftc)"
 if command -v swiftc >/dev/null 2>&1; then
     swiftc --version
@@ -197,7 +209,7 @@ check_wait() { # check_wait <label> <seconds> <command...> — login can lag ssh
 check_wait "console session" 90 'test "$(stat -f%Su /dev/console)" = admin'
 check "swiftc"         'PATH=/opt/homebrew/bin:/usr/bin:/bin swiftc --version | head -1'
 check "ffmpeg"         'PATH=/opt/homebrew/bin:/usr/bin:/bin ffmpeg -version 2>/dev/null | head -1'
-check "python TLS1.3"  '/opt/homebrew/bin/python3 -c "import ssl,sys; assert sys.version_info>=(3,11) and not ssl.OPENSSL_VERSION.startswith(\"LibreSSL\"); print(sys.version.split()[0], ssl.OPENSSL_VERSION)"'
+check "python TLS1.3"  '/opt/homebrew/bin/python3 -c "import ssl,sys,OpenSSL; assert sys.version_info>=(3,11) and not ssl.OPENSSL_VERSION.startswith(\"LibreSSL\"); print(sys.version.split()[0], \"pyOpenSSL\", OpenSSL.__version__)"'
 check_wait "screencapture" 30 'sudo launchctl asuser $(id -u) sudo -u admin bash -c "screencapture -x /tmp/pd-e2e-check.png" && stat -f%z /tmp/pd-e2e-check.png && PATH=/opt/homebrew/bin:/usr/bin:/bin ffmpeg -hide_banner -i /tmp/pd-e2e-check.png -vf signalstats,metadata=print -f null - 2>&1 | grep -oE "YMAX=[0-9]+" | head -1 && rm -f /tmp/pd-e2e-check.png'
 
 [ "$ok" = 1 ] || { say "prepared VM failed verification; see $state.log"; exit 3; }
