@@ -11,6 +11,7 @@ import dev.pocketdeck.proto.VideoFramePayload
 import dev.pocketdeck.proto.AudioConfigPayload
 import dev.pocketdeck.proto.AudioFramePayload
 import java.io.BufferedOutputStream
+import java.io.File
 import java.net.Socket
 import java.net.SocketTimeoutException
 import java.util.concurrent.Executors
@@ -51,6 +52,10 @@ class Session(
     private val taskMove: TaskMove? = null,
     /** File drops into /sdcard/Download/PocketDeck (docs/design/dragdrop.md); null refuses. */
     private val dropLanding: DropReceiver.Landing? = null,
+    /** Shared-storage root for read-only phone files (docs/design/files.md); null refuses fs.*. */
+    private val filesRoot: File? = null,
+    /** Metadata source for fs.*; the tests hand in a deterministic one. */
+    private val fsStats: FsStats = FsStats.Default,
     /** Clipboard image port (read + write); null leaves images unsynced. */
     private val clipImages: ClipboardImagePort? = null,
     private val now: () -> Long = { System.nanoTime() / 1_000_000 },
@@ -147,6 +152,8 @@ class Session(
     private val apk = packages?.let { ApkInstaller(it, ::sendJson, log) }
     private val share = ShareSender(::sendJson, queue::enqueueBulk, log)
     private val drop = dropLanding?.let { DropReceiver(it, ::sendJson, log) }
+    /** Read-only phone files; absent on a platform without shared storage. */
+    private val files = filesRoot?.let { FsView(FsPaths(it, fsStats)) }
     private val clipImageSync = ClipImageSync()
     private val clipImageSender = ClipImageSender(queue::enqueueBulk, log)
     private val clipImageReceiver = ClipImageReceiver(ClipImageLand(clipImages, log), log)
@@ -696,6 +703,8 @@ class Session(
                 "apk.cancel" -> (obj["id"] as? Number)?.let { apk?.cancel(it.toLong()) }
                 "drop.start" -> onDropStart(obj)
                 "drop.cancel" -> (obj["id"] as? Number)?.let { drop?.cancel(it.toLong()) }
+                "fs.list" -> onFsList(obj)
+                "fs.stat" -> onFsStat(obj)
                 "clip.image.start" -> onClipImageStart(obj)
                 "clip.image.end" -> onClipImageEnd(obj)
                 "clip.image.abort" -> onClipImageAbort(obj)
@@ -1139,6 +1148,51 @@ class Session(
             return
         }
         receiver.begin(obj)
+    }
+
+    // ------------------------------------------------------------------
+    // read-only phone files (docs/design/files.md)
+    // ------------------------------------------------------------------
+
+    /** A request id: u32, never 0; anything else is ignored (no reply to match). */
+    private fun fsId(obj: Map<String, Any?>): Int? {
+        val id = (obj["id"] as? Number)?.toLong() ?: return null
+        return if (id in 1..0xFFFF_FFFFL) id.toInt() else null
+    }
+
+    /** An fs failure: the ordinary `error` frame, carrying the request id. */
+    private fun fsError(id: Int, failure: FsFailure) {
+        log("fs: id=$id ${failure.code}")
+        sendJson(mapOf("t" to "error", "code" to failure.code,
+            "message" to (failure.message ?: ""), "id" to id))
+    }
+
+    private fun onFsList(obj: Map<String, Any?>) {
+        val id = fsId(obj) ?: return
+        val view = files ?: return fsError(id, FsPaths.denied("files are not served"))
+        try {
+            val page = view.list(Json.str(obj["path"]), Json.str(obj["page"]))
+            sendJson(mapOf(
+                "t" to "fs.items",
+                "id" to id,
+                "page" to page.next,
+                "items" to page.items.map { it.toJson() },
+            ))
+            log("fs: list id=$id ${page.items.size} items, next=${page.next != null}")
+        } catch (e: FsFailure) {
+            fsError(id, e)
+        }
+    }
+
+    private fun onFsStat(obj: Map<String, Any?>) {
+        val id = fsId(obj) ?: return
+        val view = files ?: return fsError(id, FsPaths.denied("files are not served"))
+        try {
+            sendJson(mapOf("t" to "fs.item", "id" to id, "item" to view.stat(Json.str(obj["path"])).toJson()))
+            log("fs: stat id=$id")
+        } catch (e: FsFailure) {
+            fsError(id, e)
+        }
     }
 
     // ------------------------------------------------------------------
