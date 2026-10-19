@@ -1,6 +1,6 @@
 // The two window styles, their storage, the sizes and frames they ask for, the
-// immersive dwell, and the framed bar's tuning values. All pure logic — the
-// views are exercised in the e2e check (C14).
+// immersive dwell and the reveal delay. All pure logic — the views are
+// exercised in the e2e check (C14).
 
 import AppKit
 import XCTest
@@ -143,55 +143,6 @@ final class WindowStyleSizeTests: XCTestCase {
         for (from, to) in [(WindowStyle.framed, WindowStyle.immersive), (.immersive, .framed)] {
             XCTAssertEqual(from.frame(switchedTo: to, current: current, visible: screen, fullScreen: true), current)
         }
-    }
-}
-
-final class BarMirrorTests: XCTestCase {
-    private func makeDefaults() -> UserDefaults {
-        let name = "dev.pocketdeck.tests.mirror.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: name)!
-        addTeardownBlock { UserDefaults().removePersistentDomain(forName: name) }
-        return defaults
-    }
-
-    func testTheDefaultsAreTheOnesTheDesignAsksFor() {
-        XCTAssertEqual(BarMirror.standard.alphaSeam, 0.85)
-        XCTAssertEqual(BarMirror.standard.alphaTop, 0.25)
-        XCTAssertEqual(BarMirror.stored(in: makeDefaults()), .standard, "unset keys keep the defaults")
-    }
-
-    func testTheProfilesDefaultsOverrideEachAlphaOnItsOwn() {
-        let defaults = makeDefaults()
-        defaults.set(0.5, forKey: BarMirror.alphaSeamKey)
-        XCTAssertEqual(BarMirror.stored(in: defaults), BarMirror(alphaSeam: 0.5, alphaTop: 0.25))
-        defaults.set(0.1, forKey: BarMirror.alphaTopKey)
-        XCTAssertEqual(BarMirror.stored(in: defaults), BarMirror(alphaSeam: 0.5, alphaTop: 0.1))
-    }
-
-    func testAnAlphaOfZeroCountsAsSet() {
-        let defaults = makeDefaults()
-        defaults.set(0, forKey: BarMirror.alphaTopKey)
-        XCTAssertEqual(BarMirror.stored(in: defaults).alphaTop, 0, "0 is a value, not an absent key")
-    }
-
-    func testOutOfRangeValuesAreClamped() {
-        let defaults = makeDefaults()
-        defaults.set(3, forKey: BarMirror.alphaSeamKey)
-        defaults.set(-1, forKey: BarMirror.alphaTopKey)
-        let mirror = BarMirror.stored(in: defaults)
-        XCTAssertEqual(mirror.alphaSeam, 1)
-        XCTAssertEqual(mirror.alphaTop, 0)
-    }
-
-    func testTheAlphaFallsFromTheSeamToTheTop() {
-        let mirror = BarMirror.standard
-        XCTAssertEqual(mirror.alpha(aboveSeam: 0, bar: 28), 0.85, accuracy: 0.0001, "the seam keeps the stream's colour")
-        XCTAssertEqual(mirror.alpha(aboveSeam: 28, bar: 28), 0.25, accuracy: 0.0001, "the top edge is mostly material")
-        XCTAssertEqual(mirror.alpha(aboveSeam: 14, bar: 28), 0.55, accuracy: 0.0001, "and it falls linearly")
-        XCTAssertEqual(mirror.alpha(aboveSeam: -5, bar: 28), 0.85, "below the seam nothing changes")
-        XCTAssertEqual(mirror.alpha(aboveSeam: 100, bar: 28), 0.25)
-        XCTAssertEqual(BarMirror(alphaSeam: 1, alphaTop: 0).alpha(aboveSeam: 1, bar: 0), 0,
-                       "a degenerate bar does not divide by zero")
     }
 }
 

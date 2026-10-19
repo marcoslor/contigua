@@ -84,7 +84,6 @@ final class WindowManager {
         frames = defaults
         hasTrackpad = TrackpadPresence.anyTrackpad()
         styleStore = WindowStyleStore(defaults: defaults)
-        barMirror = BarMirror.stored(in: defaults)
         StreamMenuState.shared.showTouches = ShowTouchesDefault.resolve(
             hasTrackpad: hasTrackpad, stored: defaults.object(forKey: Self.showTouchesKey) as? Bool)
     }
@@ -118,8 +117,6 @@ final class WindowManager {
 
     /// The per-package style keys (WindowStyleStore) over this profile's defaults.
     let styleStore: WindowStyleStore
-    /// The framed bar's mirror alphas, as the profile's defaults set them.
-    let barMirror: BarMirror
 
     /// View → Show Touches: the fingers Android sees while a trackpad gesture
     /// runs. On by default where a trackpad exists (built-in or connected);
