@@ -25,7 +25,7 @@
 # synthesize NSTouch); the phone-side timestamps in the event log give the cadence.
 #
 # The app runs under its own profile (`--profile e2e`) from its own bundle,
-# build/e2e/PocketDeck.app, rebuilt from the current tree on every run. The
+# build/e2e/PocketDeck.app, rebuilt from the current tree when it changed. The
 # default profile (the user's pairings, cached phones and defaults) and the
 # user's build/PocketDeck.app are never read, rebuilt or killed here.
 #
@@ -2233,7 +2233,12 @@ check_spotlight() {
     else
         say "C12 mdfind lists nothing (an unsigned dev bundle cannot surface in the Spotlight index); falling back to the unit test + the app's log line"
         local out
-        out="$(cd "$MACOS" && swift test --filter SpotlightTests 2>&1 || true)"
+        # The debug test build is reused when it is newer than the sources
+        # (K2 leaves one); otherwise swift test builds it as before.
+        local skip=()
+        newer_than "$MACOS/.build/debug/PocketDeckTests.xctest/Contents/MacOS/PocketDeckTests" "${APP_SOURCES[@]}" "$MACOS/Tests" \
+            || skip=(--skip-build)
+        out="$(cd "$MACOS" && swift test ${skip[@]+"${skip[@]}"} --filter SpotlightTests 2>&1 || true)"
         if echo "$out" | grep -q "with 0 failures"; then
             ok "C12 Spotlight unit tests pass (builder + throttled re-index + domain removal)"
         else
@@ -3295,8 +3300,27 @@ check_orphans() {
     [ "$n" = "0" ] && ok "C9 no orphan fakephone processes" || bad "C9 $n orphan fakephone processes"
 }
 
-# build_e2e_app — bundles the current tree to build/e2e/PocketDeck.app.
+# newer_than <file> <path...> — some file under the paths changed after <file>
+# (true when <file> does not exist).
+newer_than() {
+    local stamp="$1"
+    shift
+    [ -e "$stamp" ] || return 0
+    [ -n "$(find "$@" -newer "$stamp" -print -quit 2>/dev/null)" ]
+}
+
+APP_SOURCES=("$MACOS/Sources" "$MACOS/Shim" "$MACOS/Extensions" "$MACOS/Package.swift"
+             "$MACOS/Package.resolved" "$MACOS/scripts/bundle.sh")
+
+# build_e2e_app — bundles the current tree to build/e2e/PocketDeck.app, once per
+# run and only when a source changed since the bundle was made (bundle.sh's
+# `swift build` costs half a minute of CPU even when it has nothing to do).
+# PD_E2E_REBUILD=1 bundles anyway.
 build_e2e_app() {
+    if [ "${PD_E2E_REBUILD:-0}" != "1" ] && ! newer_than "$APP" "${APP_SOURCES[@]}"; then
+        say "bundle: $E2E_BUNDLE is newer than its sources; not rebuilt (PD_E2E_REBUILD=1 does)"
+        return 0
+    fi
     if ! "$MACOS/scripts/bundle.sh" "$E2E_BUNDLE" --variant e2e > "$WORK/bundle.log" 2>&1; then
         say "could not bundle $E2E_BUNDLE:"; tail -20 "$WORK/bundle.log"; return 1
     fi
