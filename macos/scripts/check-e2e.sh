@@ -443,8 +443,11 @@ release_lock() {
 wait_for_other_runs() {
     local waited=0 others
     while :; do
+        # A run is a bash whose script ($4) is check-e2e.sh. A wrapper that only
+        # names it later on its command line (a lock script waiting its turn, or
+        # holding the lock for this very run) is not one.
         others="$(ps -axo pid=,ppid=,command= | awk -v me="$$" \
-            '$1 != me && $2 != me && $3 ~ /bash$/ && /check-e2e\.sh/ {print $1}')"
+            '$1 != me && $2 != me && $3 ~ /bash$/ && $4 ~ /check-e2e\.sh$/ {print $1}')"
         [ -z "$others" ] && return 0
         if [ "$waited" -ge 600 ]; then
             say "other check-e2e runs still active after 10 minutes: $others"
