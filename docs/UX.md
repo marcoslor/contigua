@@ -38,6 +38,9 @@ on either side removes the key; the other side gets `auth_failed` next time and 
 
 Menu-bar presence + Dock icon. One home window, the **Deck**, plus the app windows.
 Detail, states, copy and the connection state machine: [design/mac-redesign.md](design/mac-redesign.md).
+The app's own menu items carry SF Symbols, as Apple's apps draw theirs, and the menus have no section titles: View holds Find Apps ·
+Phone Window · Continue on Mac · Show Touches · Framed/Immersive · Density · Toggle Window Style, and native full screen is in the
+Window menu.
 
 1. **Deck** (the only main window; closing it hides it, the Dock icon and ⌘K bring it back). What it shows is chosen by
    what this Mac remembers:
@@ -55,18 +58,22 @@ Detail, states, copy and the connection state machine: [design/mac-redesign.md](
      The app grid (single click opens, arrows move, ↩ opens, esc clears).
      The grid is there at launch from the last session and is dimmed while the phone is away. A problem is one banner
      line with at most one button (Try now / Pair again).
-2. **App windows**: two styles, View ▸ Window Style (⌥⌘F toggles), remembered per app: **Framed** (default) is the stream plus a permanent 28 pt bar
+2. **App windows**: two styles, View ▸ **Framed** / **Immersive** (plain radio items, no section header; ⌥⌘F is View ▸ Toggle Window
+   Style), remembered per app: **Framed** (default) is the stream plus a permanent 28 pt bar
    above it — the stream's own top rows mirrored there, blurred progressively and with no tint, the traffic lights on that line; **Immersive** is only the
    stream, with rounded corners and a shadow, no title bar, and the desktop shows right up to it; a rest at its top-left (350 ms by default; Settings →
    General → **Reveal controls after** picks Instantly, Short or Long) fades in a small clear-glass pill with the traffic lights (Back · Home · Recents
    join it in phone mode), a click in that corner before the dwell reaches the app as an ordinary touch, and the pill fades out 600 ms after the pointer
-   leaves. Switching grows or shrinks the window by the bar, the stream keeps its place. In native full screen the stream fills the screen in
+   leaves. Switching grows or shrinks the window by the bar, the stream keeps its place. Native full screen lives in the Window menu
+   (**Enter Full Screen** / **Exit Full Screen**, 🌐F, or the green light); the stream fills the screen in
    either style; the bar macOS reveals at the top edge is the system's, with the window's title centred and the standard traffic lights. The stream's own edges resize the window. The trackpad works like a touch screen: a two-finger scroll is a finger dragging
    (Android's own scrolling, overscroll and fling), a pinch or rotate is two fingers around the pointer, the mouse wheel stays a wheel, the mouse's side
    **Back** button (button 3) sends Android Back to that window once per press — never repeated while held, nothing on release, and never a touch —
    while **Forward** (button 4) does nothing for now, and three or more
    fingers stay the system's; Back also arrives as a right click, ⌘[, or a swipe-back event from mouse utilities (Logi Options+), once per gesture.
-   **View → Show Touches** draws a dot where the phone is being touched (off by default).
+   **View → Show Touches** (on by default on a Mac with a trackpad) draws a dot where the phone is being touched by a trackpad
+   gesture — touches only, never the pointer's hover — and the framed bar above the stream never shows it: the bar mirrors the
+   video, not the overlay.
    The pointer over the stream is a mouse over Android: hover highlights, tooltips and hover menus react as they do with a real
    mouse, and the pointer leaving the video (or the window), a click, a drag or the window losing focus ends the hover before the
    touch. Settings → Input → **Hover over Android apps** turns it off.
