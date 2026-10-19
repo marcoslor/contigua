@@ -35,6 +35,8 @@
 //                                  a mouse hover on the phone
 //   hoverout                       the pointer leaves the video (hover EXIT)
 //   hoversetting on|off            Settings ▸ Input "Hover over Android apps"
+//   menudump PATH                  the main menu tree as JSON (MenuDump.swift):
+//                                  titles, images, shortcuts, state, submenus
 //   hoverat DX TOP                 the pointer at a window point: DX pt right of the
 //                                  window's centre, TOP pt below its top edge
 //   clickat DX TOP                 a left click there, through the window's own event
@@ -96,6 +98,8 @@ enum DebugInputAction: Equatable {
     case hoverSetting(Bool)
     case hoverAt(dx: Double, top: Double)
     case clickAt(dx: Double, top: Double)
+    /// The main menu tree written as JSON (e2e menus check).
+    case menuDump(String)
     case sideButton(Int, hold: Double, dx: Double, dy: Double, steps: Int)
     case windowTop
     case waitFile(String, timeout: Double)
@@ -219,6 +223,11 @@ enum DebugInputScript {
                 throw LineError(message: "\(verb) needs DX TOP (points)")
             }
             return verb == "hoverat" ? .hoverAt(dx: dx, top: top) : .clickAt(dx: dx, top: top)
+        case "menudump":
+            guard args.count == 1, args[0].hasPrefix("/") else {
+                throw LineError(message: "menudump needs an absolute PATH")
+            }
+            return .menuDump(args[0])
         case "sidebutton":
             guard [1, 5].contains(args.count), let button = Int(args[0]), (2...31).contains(button) else {
                 throw LineError(message: "sidebutton needs N (2...31) and optionally HOLD DX DY STEPS")
@@ -505,6 +514,8 @@ final class DebugInputDriver {
         case .clickAt(let dx, let top):
             guard let window = view.window else { return }
             click(at: Self.windowPoint(dx: dx, top: top, in: window), in: window)
+        case .menuDump(let path):
+            try? MenuDump.write(NSApp.mainMenu, to: path)
         case .sideButton(let button, let hold, let dx, let dy, let steps):
             sideButton(button, hold: hold, dx: dx, dy: dy, steps: steps, in: view)
         case .windowTop:
