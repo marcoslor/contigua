@@ -57,6 +57,7 @@ class FakePlatform : DisplayLayer, AppCatalog, Launcher, Injector, Power, Device
     val mirrors = CopyOnWriteArrayList<Int>()
     var screenSize = IntSize(1080, 2340)
     var mirrorFails = false
+    var openFails = false
     val resizes = CopyOnWriteArrayList<ResizeCall>()
     val pauses = CopyOnWriteArrayList<Int>()
     val resumes = CopyOnWriteArrayList<Int>()
@@ -95,6 +96,7 @@ class FakePlatform : DisplayLayer, AppCatalog, Launcher, Injector, Power, Device
     // ---- DisplayLayer -------------------------------------------------
 
     override fun open(stream: Int, w: Int, h: Int, dpi: Int, sink: VideoSink): Int {
+        check(!openFails) { "display open failed" }
         val id = nextDisplayId++
         opens.add(OpenCall(stream, w, h, dpi, id))
         sizes[stream] = IntSize(w, h)

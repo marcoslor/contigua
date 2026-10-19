@@ -644,37 +644,51 @@ class Session(
         startClipImagePoll()
     }
 
+    /**
+     * The READY-phase router. A handler failure is a failed message, not a
+     * failed session: one unsupported or vendor-broken request must not close
+     * every window. The handshake phases keep their fail-closed behaviour.
+     */
     private fun dispatch(obj: Map<String, Any?>, frame: Frame, t: String) {
-        when (t) {
-            "ping" -> sendJson(mapOf("t" to "pong", "ts" to obj["ts"]))
-            "apps.list" -> onAppsList()
-            "apps.icon" -> onAppsIcon(obj)
-            "window.open" -> onWindowOpen(obj, frame)
-            "link.open" -> onLinkOpen(obj, frame)
-            "window.resize" -> onWindowResize(obj, frame)
-            "window.close" -> onWindowClose(obj, frame)
-            "window.pause" -> onWindowPause(obj, frame)
-            "window.resume" -> onWindowResume(obj, frame)
-            "window.keyframe" -> onWindowKeyframe(obj, frame)
-            "window.quality" -> onWindowQuality(obj, frame)
-            "window.launch" -> onWindowLaunch(obj, frame)
-            "task.continue" -> onTaskContinue(obj, frame)
-            "nav" -> onNav(obj, frame)
-            "text" -> onText(obj, frame)
-            "clip.set" -> onClipSet(obj)
-            "apk.install" -> onApkInstall(obj)
-            "apk.cancel" -> (obj["id"] as? Number)?.let { apk?.cancel(it.toLong()) }
-            "drop.start" -> onDropStart(obj)
-            "drop.cancel" -> (obj["id"] as? Number)?.let { drop?.cancel(it.toLong()) }
-            "clip.image.start" -> onClipImageStart(obj)
-            "clip.image.end" -> onClipImageEnd(obj)
-            "clip.image.abort" -> onClipImageAbort(obj)
-            "audio.start" -> onAudioStart(obj)
-            "audio.stop" -> onAudioStop()
-            "notify.enable" -> onNotifyEnable(obj)
-            "notify.open" -> onNotifyOpen(obj, frame)
-            "media.command" -> onMediaCommand(obj)
-            else -> logOnce("unknown message '$t'")
+        try {
+            when (t) {
+                "ping" -> sendJson(mapOf("t" to "pong", "ts" to obj["ts"]))
+                "apps.list" -> onAppsList()
+                "apps.icon" -> onAppsIcon(obj)
+                "window.open" -> onWindowOpen(obj, frame)
+                "link.open" -> onLinkOpen(obj, frame)
+                "window.resize" -> onWindowResize(obj, frame)
+                "window.close" -> onWindowClose(obj, frame)
+                "window.pause" -> onWindowPause(obj, frame)
+                "window.resume" -> onWindowResume(obj, frame)
+                "window.keyframe" -> onWindowKeyframe(obj, frame)
+                "window.quality" -> onWindowQuality(obj, frame)
+                "window.launch" -> onWindowLaunch(obj, frame)
+                "task.continue" -> onTaskContinue(obj, frame)
+                "nav" -> onNav(obj, frame)
+                "text" -> onText(obj, frame)
+                "clip.set" -> onClipSet(obj)
+                "apk.install" -> onApkInstall(obj)
+                "apk.cancel" -> (obj["id"] as? Number)?.let { apk?.cancel(it.toLong()) }
+                "drop.start" -> onDropStart(obj)
+                "drop.cancel" -> (obj["id"] as? Number)?.let { drop?.cancel(it.toLong()) }
+                "clip.image.start" -> onClipImageStart(obj)
+                "clip.image.end" -> onClipImageEnd(obj)
+                "clip.image.abort" -> onClipImageAbort(obj)
+                "audio.start" -> onAudioStart(obj)
+                "audio.stop" -> onAudioStop()
+                "notify.enable" -> onNotifyEnable(obj)
+                "notify.open" -> onNotifyOpen(obj, frame)
+                "media.command" -> onMediaCommand(obj)
+                else -> logOnce("unknown message '$t'")
+            }
+        } catch (e: Throwable) {
+            // A broken VM is not a message failure; let run() end the session.
+            if (e is VirtualMachineError) throw e
+            // Type and exception only: payloads (clipboard text, URLs,
+            // notification text) never reach the log.
+            log("handler $t failed: ${e.javaClass.simpleName}: ${e.message}")
+            sendError("internal", "$t failed", streamOf(obj, frame))
         }
     }
 
