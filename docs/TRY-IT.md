@@ -118,7 +118,7 @@ boot is the expensive part, and each check is its own process either way.
 
 The VM is `pd-e2e`: a clone of `ghcr.io/cirruslabs/macos-tahoe-base:latest`
 with 2 CPUs, 4 GB RAM (the smallest this image accepts) and a 1920x1200 pt
-display. `macos/scripts/vm-prepare.sh` creates it (add `--fresh` to re-clone)
+display setting. `macos/scripts/vm-prepare.sh` creates it (add `--fresh` to re-clone)
 and installs what the suite needs inside: Homebrew python3
 with pyOpenSSL (TLS 1.3 for the fakephone) and ffmpeg (video checks), the ssh
 key from `~/.tart/pd-e2e` and the TCC grants `screencapture` and CGEvents need.
@@ -134,6 +134,16 @@ guest's toolchain is Command Line Tools only, so the one step that needs the
 XCTest runner (C12's Spotlight unit tests) prints `SKIP` with that reason
 instead of failing; the check also tests for the runner itself, so a host run
 never skips it.
+
+A visible run puts the app on the guest's own screen, and AppKit clamps a
+window to that screen's visible frame: C6's tall window needs 900 pt of stream
+plus the 52 pt header band. The VM boots headless, so the guest keeps the
+resolution it last had (tart's `--display` hint sizes a host window a headless
+run never opens); `vm-e2e.sh` runs `scripts/pd-screens.swift` in the guest
+before the checks, which picks the smallest display mode whose visible frame is
+at least 960 pt and logs the screen. `pd-screens` prints the screen and its
+modes when run by hand in the guest; nothing on the host calls it, since there
+it would resize the person's own screen.
 
 `vm-e2e.sh` builds `build/e2e/PocketDeck.app` on the host, boots the VM
 headless, copies the tree, the bundle and `tools/fakephone` in, runs the check
