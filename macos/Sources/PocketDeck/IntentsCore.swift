@@ -215,6 +215,22 @@ enum IntentFailure: Error, Equatable, LocalizedError {
         }
     }
 
+    /// The stable name a log line or a check matches on.
+    var code: String {
+        switch self {
+        case .noPhone: return "no_phone"
+        case .unknownPhone: return "unknown_phone"
+        case .choosePhone: return "choose_phone"
+        case .phoneNotConnected: return "not_connected"
+        case .phoneNotReady: return "not_ready"
+        case .appNotFound: return "app_not_found"
+        case .severalApps: return "several_apps"
+        case .badLink: return "bad_link"
+        case .fileMissing: return "file_missing"
+        case .fileUnreadable: return "file_unreadable"
+        }
+    }
+
     var errorDescription: String? { message }
 }
 

@@ -284,6 +284,8 @@ final class ConnectionController {
     private var pendingPhoneWindow: (deviceId: String, until: Date)?
     /// An intent's files waiting for their phone.
     private var pendingDrop: (urls: [URL], deviceId: String, until: Date)?
+    /// `--debug-intent`: parsed lines still to run, in flag order.
+    private var pendingDebugIntents: [DebugIntent] = []
     private var debugInput: DebugInputDriver?
     private var debugControl: DebugControl?
     /// `--debug-fs-script` (FsDebug.swift): pending phone-file steps and the
@@ -421,6 +423,7 @@ final class ConnectionController {
             }
             debugControl?.start()
         }
+        armDebugIntents()
         if let preview = options.preview {
             applyPreview(preview)
             return
@@ -966,6 +969,38 @@ final class ConnectionController {
         guard pending.until > Date(), let session else { return }
         dropSender.send(pending.urls, session: session)
         syncDropPill()
+    }
+
+    /// `--debug-intent` (e2e, docs/design/intents.md): battery needs no session
+    /// and runs at launch; the others run when a phone is ready, or after 25 s
+    /// so a check gets the intent's own failure instead of waiting forever.
+    private func armDebugIntents() {
+        guard !options.debugIntents.isEmpty else { return }
+        for line in options.debugIntents {
+            do {
+                pendingDebugIntents.append(try DebugIntent.parse(line))
+            } catch {
+                IntentDebugLog.write(intent: line, ok: false,
+                                     fields: ["error": "usage", "message": "\(error)"])
+            }
+        }
+        runPendingDebugIntents(immediateOnly: true)
+        guard !pendingDebugIntents.isEmpty else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 25) { [weak self] in
+            MainActor.assumeIsolated { self?.runPendingDebugIntents(immediateOnly: false) }
+        }
+    }
+
+    private func runPendingDebugIntents(immediateOnly: Bool) {
+        // Battery needs no session, but a launch that is about to pair has no
+        // remembered phone yet: then it waits like the rest instead of saying
+        // "pair a phone" a second before one arrives.
+        let runnable = pendingDebugIntents.filter {
+            !immediateOnly || ($0.isImmediate && !rememberedPhones.isEmpty)
+        }
+        guard !runnable.isEmpty else { return }
+        pendingDebugIntents.removeAll { runnable.contains($0) }
+        for intent in runnable { IntentDebugRunner.run(intent) }
     }
 
     // MARK: APK install (docs/design/apk.md)
@@ -1649,6 +1684,8 @@ final class ConnectionController {
         }
         runDockHooks()
         recheckOpenWindows()
+        // An open-app intent needs the live list (a fresh profile has no cache).
+        runPendingDebugIntents(immediateOnly: false)
     }
 
     private func codeShown(deviceId: String?, code: String) {
