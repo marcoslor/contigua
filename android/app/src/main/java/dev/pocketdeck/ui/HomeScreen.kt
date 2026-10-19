@@ -110,7 +110,7 @@ fun HomeScreen(
                 .fillMaxSize()
                 .padding(padding)
                 .verticalScroll(rememberScrollState())
-                .padding(horizontal = horizontal)
+                .padding(start = horizontal, end = horizontal, top = horizontal)
                 .padding(bottom = 88.dp),
         ) {
             StatusCard(state = state, onAction = onStatusAction)
