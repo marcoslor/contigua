@@ -347,12 +347,6 @@ final class PhonePinStoreV2 {
         Self.saveAll(phones, fileUrl: fileUrl)
     }
 
-    /// Whether a record's fingerprint is the one identity.json mirrors.
-    func isMirrored(_ deviceId: String, pin mirror: String) -> Bool {
-        lock.lock(); defer { lock.unlock() }
-        return phones[deviceId]?.phoneFingerprintHex == mirror
-    }
-
     /// Every record's fingerprint.
     func fingerprints() -> [String] {
         lock.lock(); defer { lock.unlock() }
@@ -445,14 +439,6 @@ final class TlsConnectorV2: @unchecked Sendable {
             if let line = copy.readString(length: copy.readableBytes) { capture.note(line) }
         }
         return tls
-    }
-
-    /// The exporter of this connector's (single) connection attempt, nil when
-    /// no handshake completed. Memory only — keylog secrets are never
-    /// persisted or logged.
-    func attemptedSessionExporter() -> [UInt8]? {
-        guard let secret = keyLog.only else { return nil }
-        return ExporterV2.derive(exporterSecret: secret)
     }
 
     /// The client handler for one attempt. With a pin, a custom verification

@@ -951,11 +951,6 @@ final class Session {
     /// phone proves the scan by the `pair.qr` HMAC over the exporter.
     func useQRSecret(_ secret: Data) { qrSecret = secret }
 
-    // MARK: Exporter
-
-    /// The 32 exporter bytes of this connection attempt (pairing only).
-    func attemptedExporter() -> [UInt8]? { exporterProvider?() }
-
     // MARK: Send
 
     private func emit(_ event: SessionEvent) {
