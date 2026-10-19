@@ -40,6 +40,7 @@ final class NavShortcutTests: XCTestCase {
             case .resetDensity: sent.append(.resetDensity)
             case .touch: sent.append(.touch)
             case .scroll: sent.append(.scroll)
+            case .hover: break
             }
         }
         return (mapper, { sent })

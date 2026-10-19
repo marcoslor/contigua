@@ -37,6 +37,16 @@ final class VideoLayerView: NSView {
     /// All AppKit events are handed to this mapper.
     var inputMapper: InputMapper?
 
+    /// The window's own pointer feed already reports every move (the immersive
+    /// dwell feed), so the tracking area leaves hover to it.
+    var hoverFeedActive: () -> Bool = { false }
+
+    /// True at a window point that is Mac UI drawn over the video (the
+    /// immersive pill): hovering there is not hovering the phone.
+    var macUIAtWindowPoint: ((CGPoint) -> Bool)?
+
+    private var trackingArea: NSTrackingArea?
+
     /// Finder drags land here (`dropfile` scripting and the NSDraggingDestination
     /// end on the same call; e2e drives it either way). Files only: links have
     /// their own paths (OpenLink, the Deck's drop destination).
@@ -72,6 +82,44 @@ final class VideoLayerView: NSView {
     override var isFlipped: Bool { false }
     override var acceptsFirstResponder: Bool { true }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    // MARK: Hover (docs/PROTOCOL.md HOVER)
+
+    /// The video is the phone's surface: the pointer over it is a mouse over
+    /// Android. `.inVisibleRect` follows the letterbox and resizes for free.
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let trackingArea { removeTrackingArea(trackingArea) }
+        let area = NSTrackingArea(rect: .zero,
+                                  options: [.mouseMoved, .mouseEnteredAndExited,
+                                            .activeInActiveApp, .inVisibleRect],
+                                  owner: self, userInfo: nil)
+        addTrackingArea(area)
+        trackingArea = area
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        guard !hoverFeedActive() else { return }
+        hoverPointerMoved(toWindowPoint: convert(event.locationInWindow, from: nil))
+    }
+
+    override func mouseExited(with event: NSEvent) { inputMapper?.hoverExit() }
+
+    /// The scripted driver's `hover`/`hoverout` and the immersive dwell feed
+    /// reach the same decision: the pill is Mac UI, the rest is the phone.
+    func hoverPointerMoved(toWindowPoint point: CGPoint) {
+        if macUIAtWindowPoint?(point) == true {
+            inputMapper?.hoverExit()
+        } else {
+            inputMapper?.hoverMove(at: point)
+        }
+    }
+
+    /// The window went away: the phone must not keep a hover it cannot end.
+    override func viewWillMove(toWindow newWindow: NSWindow?) {
+        if newWindow == nil { inputMapper?.hoverExit() }
+        super.viewWillMove(toWindow: newWindow)
+    }
 
     // MARK: File drops (docs/design/dragdrop.md)
 
@@ -394,6 +442,7 @@ final class VideoLayerView: NSView {
 
     /// The window lost focus: a gesture in flight must not outlive it.
     func windowResignedKey() {
+        inputMapper?.hoverExit()
         inputMapper?.cancelTrackpadGestures()
     }
 

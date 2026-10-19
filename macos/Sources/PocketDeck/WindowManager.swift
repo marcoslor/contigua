@@ -75,6 +75,8 @@ final class WindowManager {
     private var cascadePoint = NSPoint.zero
     private static let framesKey = "streamFrames"
     private static let showTouchesKey = "showTouches"
+    /// Settings ▸ Input "Hover over Android apps".
+    static let hoverKey = "input.hover"
     /// Whether this Mac has a trackpad decides the Show Touches default; read
     /// once, before the menu state seeds itself.
     private let hasTrackpad: Bool
@@ -191,6 +193,14 @@ final class WindowManager {
     /// Settings → General "Reveal controls after": the immersive dwell, read
     /// from the profile's defaults.
     var revealDelay: RevealDelay { RevealDelay.stored(in: frames) }
+
+    /// Settings ▸ Input "Hover over Android apps": the Mac pointer over a
+    /// stream window is a mouse over Android. On unless turned off; every
+    /// mapper reads it live, so a change applies to open windows at once.
+    var hoverEnabled: Bool {
+        get { frames.object(forKey: Self.hoverKey) as? Bool ?? true }
+        set { frames.set(newValue, forKey: Self.hoverKey) }
+    }
 
     /// The setting changed: every open window takes the new delay at once, a
     /// rest already running included.

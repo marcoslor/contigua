@@ -8,6 +8,7 @@ struct SettingsView: View {
     var body: some View {
         TabView {
             Tab("General", systemImage: "gearshape") { GeneralSettings() }
+            Tab("Input", systemImage: "computermouse") { InputSettings() }
             Tab("Devices", systemImage: "iphone.gen3") { DevicesSettings() }
         }
         .frame(width: 480)
@@ -79,6 +80,20 @@ struct GeneralSettings: View {
         // The pane sizes to its content; with overrides listed it may outgrow
         // a small screen, so then it scrolls instead of clipping.
         .scrollDisabled(controller.densityOverrides.isEmpty)
+    }
+}
+
+/// Settings ▸ Input: how the Mac's pointer and keyboard reach the phone.
+struct InputSettings: View {
+    @AppStorage(WindowManager.hoverKey, store: Profile.active.defaults) private var hover = true
+
+    var body: some View {
+        Form {
+            Toggle("Hover over Android apps", isOn: $hover)
+            Text("Moving the pointer over a stream window moves a mouse over the app, so hover highlights, tooltips and hover menus react. Off sends no hover at all; clicks and scrolling are unaffected.")
+                .font(.subheadline).foregroundStyle(.secondary)
+        }
+        .formStyle(.grouped)
     }
 }
 

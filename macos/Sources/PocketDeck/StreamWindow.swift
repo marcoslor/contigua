@@ -95,9 +95,22 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         }
         mapper.send = { [weak self] command in self?.handle(command) }
         mapper.touchPointsChanged = { [weak self] points in self?.videoView.showTouchPoints(points) }
+        mapper.hoverEnabled = { [weak self] in self?.manager.hoverEnabled ?? false }
         videoView.onDroppedFiles = { [weak manager] urls in manager?.onFilesDropped?(urls) }
         videoView.inputMapper = mapper
         videoView.showsTouches = manager.showTouches
+        // In immersive the dwell feed already sees every move in the window;
+        // the tracking area would report the same ones twice.
+        videoView.hoverFeedActive = { [weak self] in
+            guard let self else { return false }
+            return self.style == .immersive && !(self.window?.styleMask.contains(.fullScreen) ?? false)
+        }
+        videoView.macUIAtWindowPoint = { [weak self] point in
+            guard let self, self.style == .immersive, self.chrome.showsPill else { return false }
+            let height = self.chrome.bounds.height
+            let streamPoint = CGPoint(x: point.x, y: height - point.y)
+            return self.chrome.pillStreamRect.insetBy(dx: -4, dy: -4).contains(streamPoint)
+        }
         videoView.onRequestKeyframe = { [weak self] in
             guard let self else { return }
             self.manager.session.requestKeyframe(stream: self.stream)
@@ -416,14 +429,22 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     }
 
     /// The pointer moved to a point in the window (also the scripted driver's
-    /// hover): the immersive dwell's feed. Framed never dwells.
+    /// hover): the immersive dwell's feed, and the phone's mouse hover.
     func pointerMoved(toWindowPoint point: CGPoint) {
-        guard style == .immersive else { return }
-        // DwellChrome's zone is in stream coordinates, top-left origin: in
-        // immersive the window is exactly the stream.
-        let height = chrome.bounds.height
-        dwell.pointerMoved(to: CGPoint(x: point.x, y: height - point.y), now: now())
-        refreshDwell()
+        if style == .immersive {
+            // DwellChrome's zone is in stream coordinates, top-left origin: in
+            // immersive the window is exactly the stream.
+            let height = chrome.bounds.height
+            dwell.pointerMoved(to: CGPoint(x: point.x, y: height - point.y), now: now())
+            refreshDwell()
+        }
+        // The global feed reports moves anywhere on the Mac: only one inside
+        // the video is a hover over the phone.
+        if videoView.bounds.contains(videoView.convert(point, from: nil)) {
+            videoView.hoverPointerMoved(toWindowPoint: point)
+        } else {
+            videoView.inputMapper?.hoverExit()
+        }
     }
 
     private func now() -> TimeInterval { ProcessInfo.processInfo.systemUptime }
@@ -689,6 +710,8 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
             session.touch(event, stream: stream)
         case .scroll(let event):
             session.scroll(event, stream: stream)
+        case .hover(let event):
+            session.hover(event, stream: stream)
         case .key(let event):
             session.key(event, stream: stream)
         case .text(let text):
