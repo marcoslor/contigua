@@ -60,6 +60,24 @@ final class ProtocolTests: XCTestCase {
         XCTAssertEqual(try KeyEvent(payload: decoded.payload), key)
     }
 
+    /// HOVER: the same byte vector as the Kotlin test (0x13, enter, 0.25, 0.5).
+    func testHoverFrameBytesMatchTheKotlinSide() throws {
+        let hover = HoverEvent(action: .enter, nx: 0.25, ny: 0.5)
+        XCTAssertEqual(hover.payload, [0x00, 0x3E, 0x80, 0, 0, 0x3F, 0, 0, 0])
+        let frame = Frame(type: .hover, stream: 3, payload: hover.payload)
+        let decoded = try assertRoundTrip(frame, chunks: [1, 3, 2])
+        XCTAssertEqual(decoded.type, MessageType.hover.rawValue)
+        XCTAssertEqual(decoded.stream, 3)
+        XCTAssertEqual(try HoverEvent(payload: decoded.payload), hover)
+    }
+
+    func testHoverMoveAndExitRoundTrip() throws {
+        for action in [HoverAction.move, .exit] {
+            let hover = HoverEvent(action: action, nx: 0.75, ny: 0.125)
+            XCTAssertEqual(try HoverEvent(payload: hover.payload), hover)
+        }
+    }
+
     @discardableResult
     private func assertRoundTrip(_ frame: Frame, chunks: [Int]) throws -> Frame {
         let bytes = frame.encoded

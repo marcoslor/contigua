@@ -13,6 +13,7 @@ enum MessageType: UInt8 {
     case touch = 0x10
     case scroll = 0x11
     case key = 0x12
+    case hover = 0x13
     case apkData = 0x20
     case shareData = 0x21
     case dropData = 0x22
@@ -397,6 +398,43 @@ struct KeyEvent: Equatable {
         out.append(action)
         out.appendBE(keycode)
         out.appendBE(metaState)
+        return out
+    }
+}
+
+/// HOVER: u8 action (0 enter, 1 move, 2 exit) · f32 nx · f32 ny. A mouse
+/// hovering the video: no button is down and no touch is involved.
+enum HoverAction: UInt8 {
+    case enter = 0
+    case move = 1
+    case exit = 2
+}
+
+struct HoverEvent: Equatable {
+    var action: HoverAction
+    var nx: Float
+    var ny: Float
+
+    init(action: HoverAction, nx: Float, ny: Float) {
+        self.action = action
+        self.nx = nx
+        self.ny = ny
+    }
+
+    init(payload: [UInt8]) throws {
+        var r = ByteReader(payload)
+        let rawAction = try r.u8()
+        guard let action = HoverAction(rawValue: rawAction) else { throw ProtocolError.truncated }
+        self.action = action
+        nx = try r.f32()
+        ny = try r.f32()
+    }
+
+    var payload: [UInt8] {
+        var out = [UInt8]()
+        out.append(action.rawValue)
+        out.appendBE(nx)
+        out.appendBE(ny)
         return out
     }
 }
