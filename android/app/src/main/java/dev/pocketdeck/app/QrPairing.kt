@@ -60,8 +60,27 @@ object QrPairing {
         return Result.Pairing(clientId, name, fp.lowercase(), secret.lowercase())
     }
 
-    private fun parseQuery(raw: String?): Map<String, String> {
-        if (raw.isNullOrEmpty()) return emptyMap()
+    /**
+     * L-2: the exported `pocketdeck://pair` link must not replace a pending QR
+     * that came from a different Mac while it is still fresh. `null` (no
+     * pending, or an expired one) accepts; the same fingerprint refreshes.
+     *
+     * Pure so the rule is pinned without Android (the caller passes the store's
+     * current entry plus the wall clock).
+     */
+    fun mayReplacePending(
+        existingFpHex: String?,
+        existingAtMs: Long,
+        incomingFpHex: String,
+        nowMs: Long,
+        ttlMs: Long,
+    ): Boolean {
+        if (existingFpHex == null) return true
+        if (nowMs - existingAtMs !in 0..ttlMs) return true
+        return existingFpHex.equals(incomingFpHex, ignoreCase = true)
+    }
+
+    private fun parseQuery(raw: String?): Map<String, String> {        if (raw.isNullOrEmpty()) return emptyMap()
         val out = LinkedHashMap<String, String>()
         for (pair in raw.split('&')) {
             if (pair.isEmpty()) continue
