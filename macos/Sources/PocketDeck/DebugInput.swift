@@ -31,7 +31,10 @@
 //                                  file path (the drag destination's own handler runs;
 //                                  an .apk keeps its install route)
 //   hover NX NY                    the pointer moves to NX NY (in immersive, the window
-//                                  in the dwell pill's hot zone)
+//                                  in the dwell pill's hot zone); over the video it is
+//                                  a mouse hover on the phone
+//   hoverout                       the pointer leaves the video (hover EXIT)
+//   hoversetting on|off            Settings ▸ Input "Hover over Android apps"
 //   hoverat DX TOP                 the pointer at a window point: DX pt right of the
 //                                  window's centre, TOP pt below its top edge
 //   clickat DX TOP                 a left click there, through the window's own event
@@ -89,6 +92,8 @@ enum DebugInputAction: Equatable {
     case density(pkg: String, value: Double?)
     case dropFile(String)
     case hover(NormalizedPoint)
+    case hoverOut
+    case hoverSetting(Bool)
     case hoverAt(dx: Double, top: Double)
     case clickAt(dx: Double, top: Double)
     case sideButton(Int, hold: Double, dx: Double, dy: Double, steps: Int)
@@ -200,6 +205,15 @@ enum DebugInputScript {
             return .density(pkg: args[0], value: percent / 100)
         case "hover":
             return .hover(try point(args, count: 2))
+        case "hoverout":
+            guard args.isEmpty else { throw LineError(message: "hoverout takes no arguments") }
+            return .hoverOut
+        case "hoversetting":
+            switch args.first {
+            case "on" where args.count == 1: return .hoverSetting(true)
+            case "off" where args.count == 1: return .hoverSetting(false)
+            default: throw LineError(message: "hoversetting needs on or off")
+            }
         case "hoverat", "clickat":
             guard args.count == 2, let dx = Double(args[0]), let top = Double(args[1]) else {
                 throw LineError(message: "\(verb) needs DX TOP (points)")
@@ -480,6 +494,10 @@ final class DebugInputDriver {
         case .hover(let target):
             let point = view.convert(location(target, in: view), to: nil)
             (view.window?.windowController as? StreamWindowController)?.pointerMoved(toWindowPoint: point)
+        case .hoverOut:
+            view.inputMapper?.hoverExit()
+        case .hoverSetting(let on):
+            (view.window?.windowController as? StreamWindowController)?.manager.hoverEnabled = on
         case .hoverAt(let dx, let top):
             guard let window = view.window else { return }
             (window.windowController as? StreamWindowController)?

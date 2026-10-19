@@ -376,6 +376,7 @@ final class WindowManager {
         guard forgetPrefs else { return }
         frames.removeObject(forKey: Self.framesKey)
         frames.removeObject(forKey: Self.showTouchesKey)
+        frames.removeObject(forKey: Self.hoverKey)
         frames.removeObject(forKey: RevealDelay.key)
         StreamMenuState.shared.showTouches = false
         for key in frames.dictionaryRepresentation().keys where key.hasPrefix(WindowStyleStore.prefix) {

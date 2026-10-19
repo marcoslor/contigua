@@ -442,6 +442,10 @@ class EventLog(object):
         self._emit({"ev": "input", "kind": "key", "stream": stream, "action": action,
                     "keycode": keycode, "meta": meta, "ts": time.time()})
 
+    def hover(self, stream, action, nx, ny):
+        self._emit({"ev": "input", "kind": "hover", "stream": stream, "action": action,
+                    "nx": nx, "ny": ny, "ts": time.time()})
+
     def video_config(self, stream, w, h):
         self._emit({"ev": "video", "stream": stream, "config": True, "w": w, "h": h,
                     "ts": time.time()})
@@ -1293,6 +1297,9 @@ class Session(object):
             elif frame.type == proto.TYPE_KEY:
                 action, keycode, meta = proto.unpack_key(frame)
                 self.phone.events.key(frame.stream, action, keycode, meta)
+            elif frame.type == proto.TYPE_HOVER:
+                action, nx, ny = proto.unpack_hover(frame)
+                self.phone.events.hover(frame.stream, action, nx, ny)
             elif frame.type == proto.TYPE_APK_DATA:
                 self._on_apk_data(frame.stream, frame.payload)
             elif frame.type == proto.TYPE_DROP_DATA:
