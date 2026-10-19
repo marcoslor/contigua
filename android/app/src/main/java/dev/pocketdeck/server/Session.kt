@@ -61,6 +61,8 @@ class Session(
     private val exitPollIntervalMs: Long = 2_000,
     maxDeltaBytesPerStream: Int = SendQueue.DEFAULT_MAX_DELTA_BYTES,
     private val autoApprovePairing: Boolean = false,
+    /** Process-wide quiet window after a denied/timed-out prompt (review M-1). */
+    private val pairCooldown: PairCooldown = PairCooldown(),
     private val selfCertProvider: () -> String = { "" },
     /**
      * The scanned QR the app handed over (map shape as Prefs.PendingQr), or
@@ -415,6 +417,13 @@ class Session(
      * code only with a prompt per attempt.
      */
     private fun onPairRequest() {
+        // M-1: the last prompt was denied or timed out. Refuse this attempt
+        // with the protocol's existing denial code instead of prompting again.
+        if (pairCooldown.active()) {
+            log("pair.request refused: cooling down after a denied prompt")
+            finishWithError("pair_denied", "pairing denied")
+            return
+        }
         val id = Crypto.toHex(Crypto.randomBytes(8))
         synchronized(pairLock) {
             if (pendingPairId != null) {
@@ -546,6 +555,9 @@ class Session(
             false
         }
         if (!expired) return
+        // M-1: nobody answered; keep the phone quiet for a moment so a peer
+        // cannot retry the prompt in a tight loop.
+        pairCooldown.start()
         runCatching { callback.onPairingEnded(id) }
         finishWithError("pair_timeout", "no decision on the phone")
     }
@@ -566,7 +578,13 @@ class Session(
             }
         }
         if (!mine) return
-        if (allow) completePairing() else finishWithError("pair_denied", "pairing denied")
+        if (allow) {
+            completePairing()
+        } else {
+            // M-1: a Deny is a decision about this Mac; hold off new prompts.
+            pairCooldown.start()
+            finishWithError("pair_denied", "pairing denied")
+        }
     }
 
     /** §4: `pair.ok` carries what each side pins; the phone keeps the Mac's. */

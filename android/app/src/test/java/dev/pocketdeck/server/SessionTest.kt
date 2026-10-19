@@ -40,6 +40,7 @@ class SessionTest {
 
     private fun connect(pairDecisionTimeoutMs: Long, autoApprovePairing: Boolean = false,
                         taskMove: TaskMove? = null,
+                        pairCooldown: PairCooldown? = null,
                         gates: () -> GateSettings? = { GateSettings(true, true) }) {
         serverSocket = ServerSocket(0)
         val accept = Thread {
@@ -66,6 +67,7 @@ class SessionTest {
                 pairDecisionTimeoutMs = pairDecisionTimeoutMs,
                 exitPollIntervalMs = 50,
                 autoApprovePairing = autoApprovePairing,
+                pairCooldown = pairCooldown ?: PairCooldown(),
                 tlsView = TlsV2Fixture.view,
                 gateProvider = gates,
             )
@@ -263,7 +265,8 @@ class SessionTest {
     fun noDecisionTimesOutWithPairTimeout() {
         runCatching { client.close() }
         runCatching { serverSocket.close() }
-        connect(pairDecisionTimeoutMs = 500)
+        val cooldown = PairCooldown()
+        connect(pairDecisionTimeoutMs = 500, pairCooldown = cooldown)
         hello("c4", "Slow")
         send(mapOf("t" to "pair.request"))
         readUntil("pair.commit")
@@ -272,6 +275,44 @@ class SessionTest {
         assertEquals("pair_timeout", readUntil("error")["code"])
         assertEquals(null, reader.readFrame())
         assertEquals(listOf(platform.pairRequests.first().requestId), platform.pairEnded.toList())
+        // M-1: the timeout also opens the quiet window.
+        assertEquals(true, cooldown.active())
+    }
+
+    /**
+     * M-1: after a Deny, a reconnect's `pair.request` is refused with the
+     * existing pair_denied code for 30 s (one process-wide window, not one per
+     * session) and prompts again after it.
+     */
+    @Test
+    fun aNewPairRequestIsRefusedWhileTheDenyWindowIsOpen() {
+        var ms = 1_000L
+        val cooldown = PairCooldown(now = { ms })
+        connect(pairDecisionTimeoutMs = 5_000, pairCooldown = cooldown)
+        hello("c7", "Spam")
+        send(mapOf("t" to "pair.request"))
+        readUntil("pair.commit")
+        send(mapOf("t" to "pair.nonce", "n" to "0".repeat(32)))
+        readUntil("pair.reveal")
+        await { platform.pairRequests.isNotEmpty() }
+        session!!.respondPairing(platform.pairRequests.first().requestId, false)
+        assertEquals("pair_denied", readUntil("error")["code"])
+
+        runCatching { client.close() }
+        runCatching { serverSocket.close() }
+        connect(pairDecisionTimeoutMs = 5_000, pairCooldown = cooldown)
+        hello("c8", "SpamAgain")
+        send(mapOf("t" to "pair.request"))
+        assertEquals("pair_denied", readUntil("error")["code"])
+        assertEquals(1, platform.pairRequests.size)
+
+        ms += PairCooldown.WINDOW_MS
+        runCatching { client.close() }
+        runCatching { serverSocket.close() }
+        connect(pairDecisionTimeoutMs = 5_000, pairCooldown = cooldown)
+        hello("c9", "Later")
+        send(mapOf("t" to "pair.request"))
+        readUntil("pair.commit")
     }
 
     @Test

@@ -174,7 +174,11 @@ code     = uint64_be(SHA-256("pd-code-v2" || exporter || macFP || phoneFP
      timeout; the 120 s decision window is the only limit.
 7. If the Mac closes first (Cancel, network loss), the phone discards the
    request and dismisses its prompt. One pairing request per session; a second
-   `pair.request` is ignored.
+   `pair.request` is ignored. After a **Deny** or a **120 s timeout** the phone
+   refuses a new `pair.request` from an unpaired Mac for **30 s** with
+   `{"t":"error","code":"pair_denied"}` and a close, so a LAN peer cannot make
+   the phone prompt again in a loop. A scanned QR is still honoured: it needs
+   the person to scan the Mac's screen.
 
 ### QR flow (Mac shows, phone scans)
 

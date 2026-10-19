@@ -89,6 +89,9 @@ class DeckService(private val appContext: Context?) :
         val taskMove = AndroidTaskMove(shell, ::log)
         val clip = ShellClipboard(shell, ::log)
 
+        // One quiet window per server process, shared by every session: a
+        // reconnect must not reset it (review M-1).
+        val pairCooldown = PairCooldown()
         val factory = SessionFactory { socket ->
             Session(
                 socket = socket,
@@ -112,6 +115,7 @@ class DeckService(private val appContext: Context?) :
                 // Read when this session starts, never cached: the property can
                 // be set or cleared between connections (review I-1).
                 autoApprovePairing = DebugFlags.autoApprovePairing(),
+                pairCooldown = pairCooldown,
                 selfCertProvider = { selfCertPem },
                 pendingQrProvider = { pendingQr },
                 gateProvider = { gates },
