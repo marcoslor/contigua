@@ -133,6 +133,23 @@ struct AppCommands: Commands {
                 Text(WindowStyle.immersive.label).tag(WindowStyle.immersive)
             }
             .pickerStyle(.inline)
+            // View ▸ Density: the key stream window's app override, remembered
+            // per app (WindowDensityStore) and applied to every open window of
+            // that app. "Default" clears it; the check mark follows the
+            // override (none checked when ⌘+/⌘- landed between two options).
+            // Disabled without a key stream window that shows an app.
+            Menu("Density") {
+                Toggle("Default (\(DensityRules.percentLabel(streamMenu.settingsDensity)))",
+                       isOn: Binding(get: { densityCheck == .defaultItem },
+                                     set: { _ in pickDensity(nil) }))
+                Divider()
+                ForEach(WindowDensity.options, id: \.value) { option in
+                    Toggle(option.label, isOn: Binding(
+                        get: { densityCheck == .value(option.value) },
+                        set: { _ in pickDensity(option.value) }))
+                }
+            }
+            .disabled(!streamMenu.hasStream || streamMenu.densityPackage == nil)
             // No disabled gate here: key equivalents do not get re-evaluated
             // when the state changes, and a disabled item eats its shortcut
             // silently under NSEvent.performKeyEquivalent. The binding itself
@@ -153,6 +170,15 @@ struct AppCommands: Commands {
     private func show() {
         if DeckWindow.window == nil { openWindow(id: DeckWindow.id) }
         DeckWindow.show()
+    }
+
+    /// Which View ▸ Density item is checked for the key stream window.
+    private var densityCheck: DensityCheck {
+        DensityCheck.forOverride(streamMenu.densityOverride)
+    }
+
+    private func pickDensity(_ value: Double?) {
+        controller.windows.setKeyWindowDensity(value)
     }
 
     /// Stream windows implement these; the key window's controller answers.

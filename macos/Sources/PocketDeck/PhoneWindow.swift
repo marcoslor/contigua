@@ -73,6 +73,10 @@ final class PhoneWindowController: StreamWindowController {
     /// The phone window's style lives under its own key.
     override var styleKey: String? { WindowStyleStore.phoneKey }
 
+    /// Its dpi keeps the phone's dp width, so the density setting never
+    /// applies here and it gets no override of its own.
+    override var usesDensity: Bool { false }
+
     private static let minVideoWidth: CGFloat = 240
 
     override func headerActions() -> [HeaderAction] {

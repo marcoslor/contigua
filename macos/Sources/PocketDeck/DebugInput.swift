@@ -22,6 +22,9 @@
 //   showtouches on|off             View > Show Touches
 //   windowstyle framed|immersive|toggle   the key window's chrome style
 //                                  (View > Window Style / its ⌥⌘F toggle)
+//   density PKG PERCENT|default    the app's density override (View > Density):
+//                                  75, 100, 125 or 150, or default to clear it
+//                                  (⌘0's effect)
 //   dropfile PATH                  the Finder drag that would land here: the absolute
 //                                  file path (the drag destination's own handler runs;
 //                                  an .apk keeps its install route)
@@ -79,6 +82,8 @@ enum DebugInputAction: Equatable {
     case showTouches(Bool)
     case dockApps(Bool)
     case windowStyle(String)
+    /// An app's density override; nil is "Default" (clear it).
+    case density(pkg: String, value: Double?)
     case dropFile(String)
     case hover(NormalizedPoint)
     case hoverAt(dx: Double, top: Double)
@@ -180,6 +185,13 @@ enum DebugInputScript {
             case "toggle" where args.count == 1: return .windowStyle("toggle")
             default: throw LineError(message: "windowstyle needs framed, immersive or toggle")
             }
+        case "density":
+            guard args.count == 2 else { throw LineError(message: "density needs PKG and PERCENT or default") }
+            if args[1] == "default" { return .density(pkg: args[0], value: nil) }
+            guard let percent = Double(args[1]), percent > 0 else {
+                throw LineError(message: "density needs PERCENT (75, 100, 125, 150) or default")
+            }
+            return .density(pkg: args[0], value: percent / 100)
         case "hover":
             return .hover(try point(args, count: 2))
         case "hoverat", "clickat":
@@ -441,6 +453,9 @@ final class DebugInputDriver {
             case "immersive": controller.setStyle(.immersive)
             default: controller.toggleStyle()
             }
+        case .density(let pkg, let value):
+            guard let controller = view.window?.windowController as? StreamWindowController else { return }
+            controller.manager.setDensity(value, forPackage: pkg)
         case .dropFile(let path):
             view.onDroppedFiles?([URL(fileURLWithPath: path)])
         case .hover(let target):

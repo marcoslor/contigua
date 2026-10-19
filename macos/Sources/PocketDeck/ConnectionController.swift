@@ -333,6 +333,10 @@ final class ConnectionController {
         windows.onChange = { [weak self] in
             MainActor.assumeIsolated { self?.syncAudio() }
         }
+        windows.onDensityOverridesChanged = { [weak self] in
+            MainActor.assumeIsolated { self?.refreshDensityOverrides() }
+        }
+        densityOverrides = windows.densityOverrides
         // Notification sharing (docs/design/notify.md): the router owns the UN
         // delegate and clicks; share notifications still route to their actions.
         // The same `--share-log` file records what both halves would have shown.
@@ -719,6 +723,35 @@ final class ConnectionController {
     /// the new delay at once.
     func setRevealDelay(_ delay: RevealDelay) {
         windows.setRevealDelay(delay)
+    }
+
+    /// Settings → General "Default window density": every window of an app
+    /// without an override takes it at once.
+    func setDefaultDensity(_ value: Double) {
+        profile.defaults.set(value, forKey: WindowDensity.key)
+        windows.defaultDensityChanged()
+    }
+
+    /// Settings → General "App overrides": the list, refreshed whenever one
+    /// changes (the menu, the keyboard, Settings itself).
+    private(set) var densityOverrides: [DensityOverride] = []
+
+    private func refreshDensityOverrides() {
+        densityOverrides = windows.densityOverrides
+    }
+
+    func clearDensityOverride(forPackage pkg: String) {
+        windows.setDensity(nil, forPackage: pkg)
+    }
+
+    func clearAllDensityOverrides() {
+        windows.clearAllDensityOverrides()
+    }
+
+    /// The name the Deck shows for a package (the launcher and Dock lookup),
+    /// else the package itself (Settings → General "App overrides").
+    func displayName(forPackage pkg: String) -> String {
+        appLabel(pkg) ?? pkg
     }
 
     /// Debug input "dockapps on|off": the setting the Settings toggle writes,

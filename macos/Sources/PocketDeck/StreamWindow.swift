@@ -18,8 +18,25 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     /// file feeds it; the scripted driver's hover reaches the same path).
     private(set) var dwell = DwellPill()
     
-    /// UI scale: dpi = 160 × backingScale × density (0.75…1.5).
-    var density: Double = WindowDensity.current
+    /// The app whose density override this window follows; nil for the phone
+    /// window (its dpi keeps the phone's dp width) and for a link or handoff
+    /// window before the phone names its package.
+    var densityPackage: String? { nil }
+
+    /// Where this window's density override lives (WindowDensityStore).
+    var densityKey: String? { densityPackage.flatMap { WindowDensityStore.key(forPackage: $0) } }
+
+    /// The app's stored override; nil means the Settings default applies.
+    var densityOverride: Double? { manager.densityStore.override(forKey: densityKey) }
+
+    /// Whether the window's dpi follows the density setting at all. The phone
+    /// window's does not.
+    var usesDensity: Bool { true }
+
+    /// UI scale: dpi = 160 × backingScale × density (0.75…1.5). The app's
+    /// override, else Settings → General's default.
+    var density: Double { DensityRules.effective(override: densityOverride, settings: manager.defaultDensity) }
+
     private(set) var isPaused = false
     private var resizeWork: DispatchWorkItem?
     private var closingFromRemote = false
@@ -360,10 +377,16 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         state.hasStream = true
         state.showTouches = manager.showTouches
         state.style = style
+        state.densityPackage = densityPackage
+        state.densityOverride = densityOverride
+        state.settingsDensity = manager.defaultDensity
     }
 
     func windowDidResignKey(_ notification: Notification) {
-        StreamMenuState.shared.hasStream = false
+        let state = StreamMenuState.shared
+        state.hasStream = false
+        state.densityPackage = nil
+        state.densityOverride = nil
         videoView.windowResignedKey()
     }
 
@@ -495,14 +518,44 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
 
     // MARK: Density
 
+    /// ⌘+/⌘-: one step on the focused window's app override, created from the
+    /// value it shows now when the app had none (View ▸ Density does the same
+    /// for an exact option).
     func adjustDensity(_ delta: Double) {
-        density = min(max((density + delta).rounded(toPlaces: 3), 0.75), 1.5)
+        guard usesDensity, let pkg = densityPackage else { return }
+        manager.setDensity(DensityRules.stepped(from: density, by: delta), forPackage: pkg)
+    }
+
+    /// ⌘0: back to the Settings default (the app's override is cleared).
+    func resetDensity() {
+        setDensityOverride(nil)
+    }
+
+    /// The View ▸ Density pick (nil is "Default") for this window's app.
+    func setDensityOverride(_ value: Double?) {
+        guard let pkg = densityPackage else { return }
+        manager.setDensity(value, forPackage: pkg)
+    }
+
+    /// The app's override or the Settings default changed: the phone gets the
+    /// new dpi. The value itself is computed, so this only re-sends.
+    func applyStoredDensity() {
+        guard window != nil else { return }
         sendResize()
     }
 
-    func resetDensity() {
-        density = 1.0
-        sendResize()
+    /// Settings → General's default changed: apps without an override follow
+    /// it at once.
+    func defaultDensityChanged() {
+        guard usesDensity, densityOverride == nil else { return }
+        applyStoredDensity()
+    }
+
+    /// A link or handoff window learned the app it shows: that app's override
+    /// (if it has one) now applies.
+    func reapplyStoredDensity() {
+        guard densityOverride != nil else { return }
+        applyStoredDensity()
     }
 
     // MARK: Navigation
