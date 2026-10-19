@@ -1206,14 +1206,22 @@ check_resize() {
 
     # Non-16:9 shapes: tall, then ultra-wide (capped at 2560 px, aspect kept).
     w=$((1200 / scale)); h=$((1800 / scale))
-    open_shared --open com.android.settings --resize-stream "1:${w}x${h}-pt" || return 1
-    if wait_until 30 events_have '"ev":"video","stream":1,"config":true,"w":1200,"h":1792'; then
-        ok "C6 tall shape resized to 1200x1792 (${w}x${h} pt at ${scale}x, floored to 16)"
+    if [ "${PD_E2E_TALL_SCREEN:-1}" = "0" ]; then
+        # The VM's display cannot host this window: at 2x its guest offers no
+        # mode with 952 pt of visible height (the VM screen is small and a
+        # headless boot keeps the guest's own mode). A 1x screen would need
+        # 1800 pt, and every other size here is written for 2x.
+        skip "C6 the tall shape" "no 2x mode on this screen has 952 pt of visible height, so a ${w}x${h} pt window would be clamped"
     else
-        bad "C6 no tall config (last video $(last_video_size))"
+        open_shared --open com.android.settings --resize-stream "1:${w}x${h}-pt" || return 1
+        if wait_until 30 events_have '"ev":"video","stream":1,"config":true,"w":1200,"h":1792'; then
+            ok "C6 tall shape resized to 1200x1792 (${w}x${h} pt at ${scale}x, floored to 16)"
+        else
+            bad "C6 no tall config (last video $(last_video_size))"
+        fi
+        screenshot "$w" "$WORK/resize-tall.png" && say "screenshot: $WORK/resize-tall.png"
+        stop_app
     fi
-    screenshot "$w" "$WORK/resize-tall.png" && say "screenshot: $WORK/resize-tall.png"
-    stop_app
 
     w=$((3200 / scale)); h=$((1000 / scale))
     open_shared --open com.android.settings --resize-stream "1:${w}x${h}-pt" || return 1
