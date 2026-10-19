@@ -105,6 +105,22 @@ class SelfSignedCertTest {
     }
 
     @Test
+    fun generalizedTimeForTheNoExpirationDate() {
+        val kp = pair()
+        val never = utc(9999, 12, 31, 23, 59, 59)
+        val der = DerCert.build("PocketDeck Phone", kp, serial = 7,
+            notBefore = notBefore, notAfter = never)
+        val cert = parse(der)
+        assertEquals(never.time / 1000, cert.notAfter.time / 1000)
+        // RFC 5280: 1950..2049 use UTCTime; 9999 must be GeneralizedTime.
+        val encoded = DerCert.time(never)
+        assertEquals(0x18, encoded[0].toInt() and 0xFF)
+        assertEquals("99991231235959Z",
+            String(encoded.copyOfRange(2, encoded.size), Charsets.US_ASCII))
+        assertEquals(0x17, DerCert.time(utc(2049, 12, 31, 23, 59, 59))[0].toInt() and 0xFF)
+    }
+
+    @Test
     fun serialMustBePositive() {
         val kp = pair()
         try {

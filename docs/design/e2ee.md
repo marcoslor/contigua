@@ -52,8 +52,12 @@ Evidence (spike s1-mac, two rounds):
 - Cert-generation detail learned the hard way: nil-out `notValidBefore=now`
   flapped `CERTIFICATE_VERIFY_FAILED`/`SSLV3_ALERT_CERTIFICATE_EXPIRED` across
   runs under BoringSSL's evaluator. Certs are generated with
-  `notBefore = now−1 day`, `notAfter = now + 366 days` ("±1 day" margin) in both
-  spikes; the same margin goes into phase 2 code.
+  `notBefore = now−1 day`; a new phone identity uses the RFC 5280
+  "no well-defined expiration" date `notAfter = 9999-12-31T23:59:59Z`
+  (GeneralizedTime in DER), so a pinned leaf never expires while the app's
+  data lives (review L-5). Existing identities are never regenerated. (The
+  phase-1 spikes used `now + 366 days`; the "±1 day" margin note was about
+  `notBefore`.)
 - **Exporter access (rev 2)**: NIOSSL has no public `SSL_export_keying_material`
   wrapper as of 2.37.5 (its vendor trims the wrapper; upstream issue
   apple/swift-nio-ssl#599 opened 2026-08 is exactly this gap). The vendored

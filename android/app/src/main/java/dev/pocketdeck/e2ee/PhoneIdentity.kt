@@ -72,7 +72,7 @@ object PhoneIdentity {
         val built = DerCert.buildComplete(
             CN, pair, serial,
             Date(now.time - DAY_MS),
-            Date(now.time + 366 * DAY_MS),
+            NOT_AFTER,
         )
         val certDer = built.der
         val certPem = pem("CERTIFICATE", certDer)
@@ -88,4 +88,17 @@ object PhoneIdentity {
     }
 
     private val DAY_MS = 24L * 60L * 60L * 1000L
+
+    /**
+     * RFC 5280's "no well-defined expiration" date (review L-5): the identity
+     * lives as long as the app's data, and a pinned leaf must never expire on
+     * the Mac. New identities only — an existing one is never regenerated.
+     * 9999 needs a GeneralizedTime in DER; [DerCert.time] picks it.
+     */
+    private val NOT_AFTER: Date = java.util.Calendar
+        .getInstance(java.util.TimeZone.getTimeZone("UTC"))
+        .apply {
+            clear()
+            set(9999, java.util.Calendar.DECEMBER, 31, 23, 59, 59)
+        }.time
 }
