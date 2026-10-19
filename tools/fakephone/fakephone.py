@@ -1042,6 +1042,12 @@ class Session(object):
                 return False
         self.client_id = msg.get("clientId")
         self.client_name = msg.get("name", "")
+        if self.phone.args.refuse_connections:
+            # The phone's master switch: every Mac, paired or not.
+            return self._refuse("connections_off", "refused_connections")
+        if self.phone.args.refuse_pairings and self.phone.store.pinned_for(self.client_id) is None:
+            # The pairing switch: unknown Macs only, before any code exists.
+            return self._refuse("pairing_off", "refused_pairing")
         if self.phone.args.legacy_phone:
             # A v1 phone answers hello with its challenge and then waits for
             # auth like any v1 phone would; the v2 Mac surfaces the version
@@ -1563,6 +1569,20 @@ class Session(object):
             self._send_error("no_stream", "unknown stream %r" % (stream_id,), stream_id)
         return window
 
+    def _refuse(self, code, state):
+        """Send a gate refusal and hold the socket until the Mac reads it and
+        closes (the same write-then-close shape the real phone uses)."""
+        self.phone.events.session(state)
+        self._send_error(code, "the phone is not accepting %s" %
+                         ("connections" if code == "connections_off" else "new pairings"))
+        while True:
+            try:
+                if proto.recv_frame(self.sock) is None:
+                    break
+            except (proto.ProtocolError, OSError):
+                break
+        return False
+
     def _send_error(self, code, message=None, stream=None):
         obj = {"t": "error", "code": code}
         if message:
@@ -1972,6 +1992,10 @@ def build_parser():
     p.add_argument("--port", type=int, default=0, help="TCP port (0 = ephemeral)")
     p.add_argument("--name", default="FakePhone", help="device name advertised over mDNS")
     p.add_argument("--no-mdns", action="store_true", help="do not advertise over mDNS")
+    p.add_argument("--refuse-connections", action="store_true",
+                   help="refuse every Mac at the handshake (the phone's Allow connections switch is off)")
+    p.add_argument("--refuse-pairings", action="store_true",
+                   help="refuse unknown Macs at the handshake (the phone's Allow new pairings switch is off)")
     p.add_argument("--auto-allow", action="store_true",
                    help="accept pairing requests without the terminal y/n prompt")
     p.add_argument("--allow-delay", type=float, default=0.0, metavar="SECONDS",

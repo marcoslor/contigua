@@ -19,6 +19,10 @@ enum Cause: Equatable {
     case busy
     case versionMismatch
     case localNetworkDenied
+    /// The phone's master switch is off: every Mac is refused.
+    case connectionsOff
+    /// The phone accepts paired Macs but not new pairings.
+    case pairingsOff
 }
 
 enum Pairing: Equatable {
@@ -29,6 +33,8 @@ enum Pairing: Equatable {
     /// The person tapped Allow; the key and `welcome` are on their way.
     case verifying
     case denied
+    /// The phone refused the pairing itself (its master or pairing switch is off).
+    case refused(String)
     /// Nobody answered on the phone within its 120 s.
     case timedOut
     /// The phone could not be reached, or the connection dropped while pairing.
@@ -66,7 +72,8 @@ enum Link: Equatable {
     /// The link is down but the Mac keeps trying on its own.
     var isRecovering: Bool {
         switch self {
-        case .connecting, .reconnecting, .offline(_, .unreachable), .offline(_, .busy): return true
+        case .connecting, .reconnecting, .offline(_, .unreachable), .offline(_, .busy),
+             .offline(_, .connectionsOff), .offline(_, .pairingsOff): return true
         default: return false
         }
     }
@@ -103,6 +110,10 @@ extension Link {
             return Banner(text: "Can't reach \(naming(p)). Check that it's on the same Wi-Fi.", action: .tryNow)
         case .offline(let p, .busy):
             return Banner(text: "Another Mac is connected to \(naming(p)).", action: .tryNow)
+        case .offline(let p, .connectionsOff):
+            return Banner(text: "Connections are turned off on \(naming(p)).", action: nil)
+        case .offline(let p, .pairingsOff):
+            return Banner(text: "\(naming(p)) isn't accepting new pairings.", action: nil)
         case .offline(let p, .versionMismatch):
             return Banner(text: "\(naming(p)) runs an incompatible version of PocketDeck.", action: nil)
         case .offline(_, .localNetworkDenied):
@@ -293,6 +304,7 @@ struct LinkMachine {
             switch reason {
             case "pair_denied": link = .pairing(phone, .denied)
             case "pair_timeout": link = .pairing(phone, .timedOut)
+            case "connections_off", "pairing_off": link = .pairing(phone, .refused(reason))
             default: link = .pairing(phone, .unreachable)
             }
             return []
@@ -313,6 +325,16 @@ struct LinkMachine {
             failures += 1
             link = .offline(phone, .busy)
             return [.attempt(after: max(ReconnectPolicy.delay(afterFailures: failures), 15))]
+        case "connections_off":
+            // The phone's switch may come back: retry on the normal backoff,
+            // never in a tight loop.
+            failures += 1
+            link = .offline(phone, .connectionsOff)
+            return [.attempt(after: ReconnectPolicy.delay(afterFailures: failures))]
+        case "pairing_off":
+            failures += 1
+            link = .offline(phone, .pairingsOff)
+            return [.attempt(after: ReconnectPolicy.delay(afterFailures: failures))]
         default:
             failures += 1
             switch link {

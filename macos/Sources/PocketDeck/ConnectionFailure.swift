@@ -12,8 +12,13 @@ enum ConnectionFailure {
     static let identityMismatch = "identity-mismatch"
 
     /// The sentence shown for a failure; nil for transient failures.
-    static func message(for reason: String) -> String? {
+    /// `phoneName` is what the person calls the phone (its nickname or its own
+    /// name); the two gate refusals name it because the phone never got as far
+    /// as a `welcome`.
+    static func message(for reason: String, phoneName: String = "your phone") -> String? {
         switch reason {
+        case "connections_off": return "Connections are turned off on \(phoneName)."
+        case "pairing_off": return "\(phoneName) isn't accepting new pairings."
         case "busy": return "Another Mac is connected"
         case "pin-mismatch", "bad_pin":
             return "This phone's identity changed. Pair again."
