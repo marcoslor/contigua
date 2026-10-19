@@ -197,8 +197,12 @@ internal class AudioCapture(
     private fun stopLocked() {
         if (!running && thread == null && policy == null) return
         running = false
+        // Stop the record first: that unblocks the capture loop's read(), and
+        // only then is it safe to stop/release the codec it is still using.
         runCatching { record?.stop() }
-        runCatching { Thread.sleep(20) }
+        val t = thread
+        thread = null
+        if (t != null && t !== Thread.currentThread()) runCatching { t.join(1000) }
         runCatching { codec?.stop() }
         runCatching { codec?.release() }
         runCatching { record?.release() }
@@ -216,9 +220,6 @@ internal class AudioCapture(
                 log("audio: unregister failed: ${t.message}")
             }
         }
-        val t = thread
-        thread = null
-        if (t != null && t !== Thread.currentThread()) runCatching { t.join(1000) }
     }
 
     private fun loop(sink: AudioSink, codecId: Int, enc: MediaCodec) {
