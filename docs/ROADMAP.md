@@ -75,7 +75,7 @@ Batch C (M, one at a time)
 
 Batch D (M-L)
 - [x] D1 Hover pass-through: Mac pointer moves reach the phone as mouse hover (ACTION_HOVER_*), e.g. Chrome's new-tab Lens button reacts as with a real mouse. Brief: .agent/hover/brief.md.
-- [ ] D2 Clicking a Mac notification runs its action in a PocketDeck window. Setting: Open on Mac (default) / Open on phone / Do nothing.
+- [x] D2 Clicking a Mac notification runs its action in a PocketDeck window. Setting: Open on Mac (default) / Open on phone / Do nothing.
 
 ## v0.x — later native features
 
