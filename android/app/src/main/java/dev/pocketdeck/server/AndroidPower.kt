@@ -265,9 +265,19 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
                     if (synchronized(policyLock) { policy.userPressedPower() }) {
                         darkEpisode = false
                         keepLit = false
+                        // Let the platform finish the screen-off it started
+                        // before handing back and waking: a wake that lands
+                        // while display 0 is still ON skips the platform's
+                        // OFF -> ON, so it never re-sends the brightness the
+                        // panel lost while we held it dark, and the screen
+                        // came back at minimum brightness (SM-S936B). The
+                        // panel stays dark meanwhile, so nothing shows the
+                        // stale level.
+                        val off = waitForPanelOff()
                         panel.panelNormal()
                         wakeDisplay(PANEL_DISPLAY_ID)
-                        log("power: user pressed power while the panel was dark; panel given back")
+                        log("power: user pressed power while the panel was dark; panel given back" +
+                            if (off) "" else " (display 0 never reported off)")
                         if (overrideLive) standDownOverride()
                     }
                     break
@@ -279,6 +289,16 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
         } finally {
             synchronized(lock) { powerWatch = null }
         }
+    }
+
+    /** Waits (bounded) until display 0 has left STATE_ON; true when it did. */
+    private fun waitForPanelOff(): Boolean {
+        val deadline = SystemClock.uptimeMillis() + PANEL_OFF_WAIT_MS
+        while (SystemClock.uptimeMillis() < deadline) {
+            if (DisplayProbe.state(PANEL_DISPLAY_ID) != Display.STATE_ON) return true
+            Thread.sleep(POWER_WATCH_MS)
+        }
+        return false
     }
 
     /** Forces the panel dark; [PanelPower] logs the mode transitions. */
@@ -491,6 +511,9 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
 
         /** Power-press watch cadence while the panel is held dark. */
         const val POWER_WATCH_MS = 20L
+
+        /** Bound on the wait for the platform's own screen-off after a power press. */
+        const val PANEL_OFF_WAIT_MS = 1_500L
 
         /** Display 0 is the panel on every phone. */
         const val PANEL_DISPLAY_ID = 0

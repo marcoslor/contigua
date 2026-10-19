@@ -44,6 +44,9 @@ internal class WindowStream(
         /** `MediaFormat.KEY_MAX_FPS_TO_ENCODER`, kept as a string: some builds' encoders reject it. */
         const val KEY_MAX_FPS = "max-fps-to-encoder"
 
+        /** `debug.pocketdeck.swap_surfaces=1`: the old surface swaps, for A/B on a device. */
+        const val SWAP_SURFACES = "debug.pocketdeck.swap_surfaces"
+
         // @hide DisplayManager flags, verified against AOSP. Deliberately absent:
         // the system-decorations flag (bit 9) and the device display-group flag
         // (bit 15). The first adds a SystemUI nav bar and poisons One UI's back
@@ -82,7 +85,24 @@ internal class WindowStream(
     private var limits = EncoderLimits()
     private var caps: MediaCodecInfo.VideoCapabilities? = null
 
-    private class Prepared(val codec: MediaCodec, val surface: Surface)
+    /** [started] is false for a codec configured for [persistent]: it starts when attached. */
+    private class Prepared(val codec: MediaCodec, val surface: Surface, val started: Boolean = true)
+
+    /**
+     * The display's one input surface for its whole life (app windows only).
+     * Every encoder attaches to it in turn, so the display's surface never
+     * changes after creation. On the SM-S936B (Android 16) a
+     * `VirtualDisplay.setSurface` leaves SurfaceFlinger's re-created display
+     * powered off until the next power change of its group: the stream stayed
+     * black after a resize or a resume until the phone was woken by hand.
+     * Null: a mirror, a refused persistent surface, or
+     * `debug.pocketdeck.swap_surfaces=1` — the encoder's own surface is swapped
+     * in as before.
+     */
+    @Volatile private var persistent: Surface? = null
+
+    /** The codec config last sent, re-sent on resume (the encoder kept running). */
+    @Volatile private var lastCsd: ByteArray? = null
 
     private val guard = RedrawGuard()
     private val sequencer = ResizeSequencer(object : ResizeSteps {
@@ -178,9 +198,16 @@ internal class WindowStream(
 
     fun start(w: Int, h: Int, dpi: Int): Int {
         baseDpi = dpi
-        val size = checkNotNull(prepareEncoder(IntSize(w, h))) { "no encoder for ${w}x$h" }
-        val next = prepared!!
+        persistent = createPersistentSurface()
+        var size = checkNotNull(prepareEncoder(IntSize(w, h))) { "no encoder for ${w}x$h" }
+        var next = prepared!!
         prepared = null
+        if (!next.started && !startOnPersistent(next.codec)) {
+            dropPersistent()
+            size = checkNotNull(prepareEncoder(IntSize(w, h))) { "no encoder for ${w}x$h" }
+            next = prepared!!
+            prepared = null
+        }
         val created = createDisplay(size.w, size.h, dpi, next.surface)
         val display = created.display
         displayIdValue = display.display.displayId
@@ -210,7 +237,9 @@ internal class WindowStream(
     private fun resizeLocked(boxW: Int, boxH: Int, dpi: Int) {
         val screen = mirrorScreen
         val (w, h) = if (screen == null) IntSize(boxW, boxH) else MirrorFit.fit(IntSize(boxW, boxH), screen)
-        val result = sequencer.resize(w, h, dpi, paused, IntSize(width, height))
+        // With one surface for life the encoder keeps running while paused, so
+        // a resize then is a normal one.
+        val result = sequencer.resize(w, h, dpi, paused && persistent == null, IntSize(width, height))
         when (result.outcome) {
             ResizeSequencer.Outcome.RESIZED, ResizeSequencer.Outcome.DISPLAY_ONLY ->
                 log("stream $stream resize ${result.size.w}x${result.size.h} dpi=$dpi" +
@@ -220,17 +249,30 @@ internal class WindowStream(
         }
     }
 
+    /**
+     * Stops sending frames. With one surface for life the display keeps its
+     * surface and the encoder keeps running (the drain drops its output), so
+     * a resume never re-points the display; the display stops drawing on its
+     * own when its group sleeps (the session releases its wake lock).
+     */
     @Synchronized
     fun pause() {
         if (paused) return
         paused = true
-        detachEncoder()
+        if (persistent == null || encoder == null) detachEncoder()
     }
 
     @Synchronized
     fun resume() {
         if (!paused || released) return
         paused = false
+        if (persistent != null && encoder != null) {
+            lastCsd?.let { sink.onConfig(stream, Frames.CODEC_H264, width, height, it) }
+            requestKeyframe()
+            // The app may have nothing new to draw: the redraw guard nudges it.
+            guard.onAttached(SystemClock.elapsedRealtime())
+            return
+        }
         val result = sequencer.resume(width, height, baseDpi, IntSize(width, height))
         if (result.outcome == ResizeSequencer.Outcome.KEPT) {
             log("stream $stream resume: no encoder for ${width}x$height")
@@ -285,6 +327,8 @@ internal class WindowStream(
         prepared = null
         runCatching { vd?.release() }
         vd = null
+        runCatching { persistent?.release() }
+        persistent = null
         displayIdValue = -1
     }
 
@@ -306,6 +350,14 @@ internal class WindowStream(
             learnLimits(codec)
             val size = fitToEncoder(w, h)
             configure(codec, size.w, size.h)
+            val shared = persistent
+            if (shared != null) {
+                // Started when attached: one codec at a time on the surface.
+                width = size.w
+                height = size.h
+                prepared = Prepared(codec, shared, started = false)
+                return size
+            }
             val surface = codec.createInputSurface()
             codec.start()
             width = size.w
@@ -347,8 +399,28 @@ internal class WindowStream(
 
     /** Points the display at the prepared encoder; the old one is released afterwards. */
     private fun swapInPrepared() {
-        val next = prepared ?: return
+        var next = prepared ?: return
         prepared = null
+        if (!next.started) {
+            // The surface takes one codec at a time: the old one goes first.
+            val old = encoder
+            encoder = null
+            if (old != null) {
+                runCatching { old.stop() }
+                runCatching { old.release() }
+            }
+            if (!startOnPersistent(next.codec)) {
+                dropPersistent()
+                if (prepareEncoder(IntSize(width, height)) == null) return
+                next = prepared ?: return
+                prepared = null
+                runCatching { vd?.setSurface(next.surface) }
+            }
+            encoder = next.codec
+            guard.onAttached(SystemClock.elapsedRealtime())
+            startDrain(next.codec)
+            return
+        }
         previous = encoder
         encoder = next.codec
         if (mirrorScreen != null) {
@@ -359,6 +431,37 @@ internal class WindowStream(
             .onFailure { log("stream $stream: VirtualDisplay.setSurface failed: ${it.message}") }
         guard.onAttached(SystemClock.elapsedRealtime())
         startDrain(next.codec)
+    }
+
+    private fun createPersistentSurface(): Surface? {
+        if (Hidden.systemProperty(SWAP_SURFACES) == "1") {
+            log("stream $stream: $SWAP_SURFACES=1, swapping encoder surfaces")
+            return null
+        }
+        return runCatching { MediaCodec.createPersistentInputSurface() }
+            .onFailure { log("stream $stream: no persistent input surface (${it.message}); swapping encoder surfaces") }
+            .getOrNull()
+    }
+
+    /** Attaches a configured codec to [persistent] and starts it; false if the codec refuses. */
+    private fun startOnPersistent(codec: MediaCodec): Boolean {
+        val shared = persistent ?: return false
+        return try {
+            codec.setInputSurface(shared)
+            codec.start()
+            true
+        } catch (e: Throwable) {
+            log("stream $stream: encoder refused the persistent input surface (${e.message}); swapping encoder surfaces")
+            runCatching { codec.release() }
+            false
+        }
+    }
+
+    /** Back to swapping the encoder's own surface in (the display keeps working). */
+    private fun dropPersistent() {
+        val shared = persistent ?: return
+        persistent = null
+        runCatching { shared.release() }
     }
 
     private fun releasePreviousEncoder() {
@@ -551,7 +654,10 @@ internal class WindowStream(
                 applyBitrate()
             }
             if (idx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
-                readCsd(codec.outputFormat)?.let { sink.onConfig(stream, Frames.CODEC_H264, width, height, it) }
+                readCsd(codec.outputFormat)?.let {
+                    lastCsd = it
+                    sink.onConfig(stream, Frames.CODEC_H264, width, height, it)
+                }
                 continue
             }
             if (idx < 0) continue
@@ -560,6 +666,8 @@ internal class WindowStream(
                 if (buf != null && info.size > 0 && (info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) == 0) {
                     if (encoder !== codec) {
                         // Switched away mid-buffer: its size is no longer the stream's.
+                    } else if (paused) {
+                        // Paused with the encoder kept running: nothing goes out.
                     } else if (dropForFps(info.presentationTimeUs)) {
                         // Above the fps cap: never queued, so the socket sees less.
                     } else {
