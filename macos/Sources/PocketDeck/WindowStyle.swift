@@ -110,10 +110,11 @@ enum DwellChrome {
     static let pillLightSpacing: CGFloat = 23
     /// The window kind's actions 8 pts right of the zoom light's slot.
     static let pillActionsX: CGFloat = pillLightInset + 2 * pillLightSpacing + ChromeBar.trafficLightButtonSide + 8
-    /// The pill is as tall as the framed bar and as wide as its contents.
+    /// The pill is as tall as the framed bar and as wide as its contents: the
+    /// window kind's actions, then Live Text's button, then the edge.
     static func pillWidth(actionCount: Int) -> CGFloat {
-        guard actionCount > 0 else { return pillActionsX + 8 - pillInset }
-        return pillActionsX + CGFloat(actionCount) * HeaderControls.buttonWidth + 6
+        pillActionsX + CGFloat(actionCount) * HeaderControls.buttonWidth
+            + LiveTextBarButton.side + 4 + 4 - pillInset
     }
 }
 
