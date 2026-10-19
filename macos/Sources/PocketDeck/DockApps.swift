@@ -72,6 +72,9 @@ struct DockShimSpec: Equatable {
     /// True for the "Add to Dock" path: the person added this identity by hand,
     /// so the Show-phone-apps setting never stops it.
     var pinned = false
+    /// The per-bundle token the shim carries in its Info.plist and echoes in
+    /// every message (sec L-8). A new bundle gets a fresh one.
+    var token = DockToken.make()
 
     /// "WhatsApp (Pixel)", like the Spotlight titles.
     var displayName: String { SpotlightIndexer.title(label: label, phoneName: phoneName) }
@@ -121,6 +124,7 @@ struct DockShimSpec: Equatable {
             DockMessage.plistProfile: profile.name,
             DockMessage.plistHostPath: hostPath,
             DockMessage.plistPinned: pinned,
+            DockMessage.plistToken: token,
         ].merging(agent ? ["LSUIElement": true] : [:]) { current, _ in current }
     }
 }
@@ -136,6 +140,9 @@ struct DockShimRecord: Equatable {
     /// automatic path existed, which were all added by hand, so it defaults
     /// to true there. Automatic ones write false.
     var pinned = true
+    /// The bundle's token (sec L-8); empty in bundles written before it existed,
+    /// which the next refresh rebuilds.
+    var token = ""
 }
 
 enum DockShimBuilder {
@@ -199,7 +206,8 @@ enum DockShimBuilder {
             else { return nil }
             return DockShimRecord(url: url, deviceId: deviceId, pkg: pkg, profile: owner,
                                   name: plist["CFBundleName"] as? String ?? "",
-                                  pinned: plist[DockMessage.plistPinned] as? Bool ?? true)
+                                  pinned: plist[DockMessage.plistPinned] as? Bool ?? true,
+                                  token: plist[DockMessage.plistToken] as? String ?? "")
         }.sorted { $0.url.path < $1.url.path }
     }
 }
@@ -214,6 +222,9 @@ enum DockCleanup: Equatable {
         let labels = Dictionary(apps.map { ($0.pkg, $0.label) }, uniquingKeysWith: { first, _ in first })
         return records.filter { $0.deviceId == deviceId }.compactMap { record in
             guard let label = labels[record.pkg] else { return .remove(record.url) }
+            // A bundle from before tokens existed is rebuilt once, by the
+            // refresh the host already does on every apps list (sec L-8).
+            if record.token.isEmpty { return .rebuild(record, label: label) }
             let wanted = SpotlightIndexer.title(label: label, phoneName: phoneName)
             return record.name == wanted ? nil : .rebuild(record, label: label)
         }
@@ -509,17 +520,40 @@ final class DockApps: NSObject {
                                     deliverImmediately: true)
     }
 
+    /// The token stored in the bundle for this app, if there is one.
+    private func shimToken(deviceId: String, pkg: String) -> String? {
+        records().first { $0.deviceId == deviceId && $0.pkg == pkg && !$0.token.isEmpty }?.token
+    }
+
     @objc private func openRequested(_ notification: Notification) {
         guard let info = notification.userInfo,
               let deviceId = info[DockMessage.deviceIdKey] as? String,
               let pkg = info[DockMessage.pkgKey] as? String,
               let pid = info[DockMessage.pidKey] as? Int else { return }
+        // sec L-8: DistributedNotificationCenter is open to every local process;
+        // only a message carrying the token stored in that shim's Info.plist
+        // may open a window. The token itself is never logged.
+        guard DockToken.matches(message: info[DockMessage.tokenKey] as? String,
+                                stored: shimToken(deviceId: deviceId, pkg: pkg)) else {
+            Log.app.notice("dock: ignored open for \(pkg, privacy: .public) on \(deviceId, privacy: .public): no matching shim token")
+            return
+        }
         Log.app.notice("dock: open \(pkg, privacy: .public) on \(deviceId, privacy: .public) for shim \(pid, privacy: .public)")
         MainActor.assumeIsolated { onOpen?(deviceId, pkg, pid) }
     }
 
     @objc private func quitRequested(_ notification: Notification) {
-        guard let pid = notification.userInfo?[DockMessage.pidKey] as? Int else { return }
+        guard let info = notification.userInfo,
+              let pid = info[DockMessage.pidKey] as? Int,
+              let deviceId = info[DockMessage.deviceIdKey] as? String,
+              let pkg = info[DockMessage.pkgKey] as? String else { return }
+        // The exit watch covers a shim whose quit is rejected; a forged quit
+        // must not be able to close a window.
+        guard DockToken.matches(message: info[DockMessage.tokenKey] as? String,
+                                stored: shimToken(deviceId: deviceId, pkg: pkg)) else {
+            Log.app.notice("dock: ignored quit for \(pkg, privacy: .public): no matching shim token")
+            return
+        }
         shimExited(pid)
     }
 

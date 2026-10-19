@@ -102,6 +102,9 @@ final class DockAppsTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: url.appendingPathComponent("Contents/Resources/AppIcon.icns").path))
         XCTAssertEqual(DockShimBuilder.records(in: folder, profile: Profile(name: "e2e")!).map(\.pkg), ["com.whatsapp"])
         XCTAssertEqual(DockShimBuilder.records(in: folder, profile: Profile(name: "e2e")!).map(\.pinned), [true])
+        let token = try XCTUnwrap(bundle.object(forInfoDictionaryKey: "PDToken") as? String)
+        XCTAssertTrue(DockToken.isWellFormed(token), "the bundle carries a token for the host's checks")
+        XCTAssertEqual(DockShimBuilder.records(in: folder, profile: Profile(name: "e2e")!).map(\.token), [token])
         XCTAssertEqual(DockShimBuilder.records(in: folder, profile: .default), [], "another profile's shims are not ours")
     }
 
@@ -126,7 +129,8 @@ final class DockAppsTests: XCTestCase {
 
     private func record(_ pkg: String, device: String = "d1", name: String, pinned: Bool = false) -> DockShimRecord {
         DockShimRecord(url: URL(fileURLWithPath: "/x/\(pkg)-\(device).app"), deviceId: device, pkg: pkg,
-                       profile: "e2e", name: name, pinned: pinned)
+                       profile: "e2e", name: name, pinned: pinned,
+                       token: String(repeating: "a", count: 32))
     }
 
     private func app(_ pkg: String, _ label: String) -> AppInfo {
@@ -151,6 +155,37 @@ final class DockAppsTests: XCTestCase {
     func testNothingToDoWhenUpToDate() {
         XCTAssertEqual(DockCleanup.plan(records: [record("a", name: "A (Pixel)")], deviceId: "d1",
                                         apps: [app("a", "A")], phoneName: "Pixel"), [])
+    }
+
+    func testALegacyShimWithoutTokenIsRebuiltByTheNextRefresh() {
+        var legacy = record("a", name: "A (Pixel)")
+        legacy.token = ""
+        XCTAssertEqual(DockCleanup.plan(records: [legacy], deviceId: "d1",
+                                        apps: [app("a", "A")], phoneName: "Pixel"),
+                       [.rebuild(legacy, label: "A")])
+    }
+
+    // MARK: Message tokens (sec L-8)
+
+    func testTokensAreRandomAndWellFormed() {
+        let a = DockToken.make()
+        let b = DockToken.make()
+        XCTAssertTrue(DockToken.isWellFormed(a), a)
+        XCTAssertTrue(DockToken.isWellFormed(b), b)
+        XCTAssertNotEqual(a, b)
+    }
+
+    func testOnlyTheShimsOwnTokenMatches() {
+        let stored = String(repeating: "ab", count: 16)
+        XCTAssertTrue(DockToken.matches(message: stored, stored: stored))
+        XCTAssertFalse(DockToken.matches(message: String(repeating: "ac", count: 16), stored: stored))
+        XCTAssertFalse(DockToken.matches(message: nil, stored: stored))
+        XCTAssertFalse(DockToken.matches(message: stored, stored: nil))
+        XCTAssertFalse(DockToken.matches(message: "", stored: ""))
+        XCTAssertFalse(DockToken.matches(message: "short", stored: "short"))
+        XCTAssertFalse(DockToken.matches(message: String(repeating: "AB", count: 16),
+                                         stored: String(repeating: "AB", count: 16)),
+                       "uppercase is not the format the host writes")
     }
 
     func testForgetRemovesOnlyThatPhonesShims() {

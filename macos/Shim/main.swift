@@ -10,6 +10,7 @@ final class ShimDelegate: NSObject, NSApplicationDelegate {
     private let deviceId: String
     private let pkg: String
     private let profile: String
+    private let token: String
     private let hostURL: URL?
     private var acknowledged = false
     private var startedAt = Date()
@@ -21,6 +22,7 @@ final class ShimDelegate: NSObject, NSApplicationDelegate {
         deviceId = info[DockMessage.plistDeviceId] as? String ?? ""
         pkg = info[DockMessage.plistPackage] as? String ?? ""
         profile = info[DockMessage.plistProfile] as? String ?? "default"
+        token = info[DockMessage.plistToken] as? String ?? ""
         hostURL = (info[DockMessage.plistHostPath] as? String).map { URL(fileURLWithPath: $0) }
         super.init()
     }
@@ -83,7 +85,7 @@ final class ShimDelegate: NSObject, NSApplicationDelegate {
     private func post(_ name: Notification.Name) {
         center.postNotificationName(name, object: profile,
                                     userInfo: [DockMessage.deviceIdKey: deviceId, DockMessage.pkgKey: pkg,
-                                               DockMessage.pidKey: pid],
+                                               DockMessage.pidKey: pid, DockMessage.tokenKey: token],
                                     deliverImmediately: true)
     }
 
