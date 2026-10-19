@@ -20,6 +20,9 @@ struct LaunchOptions {
     var qrSheet = false
     var qrPayloadFile: String?
     var debugInputScript: String?
+    /// `--debug-fs-script FILE`: read-only phone-file requests on the session
+    /// (FsDebug.swift, e2e `files` check).
+    var debugFsScript: String?
     /// `--debug-control DIR`: commands from the e2e checks that share this
     /// running app (DebugControl.swift).
     var debugControl: String?
@@ -80,6 +83,7 @@ struct LaunchOptions {
         "--qr-sheet": false,
         "--qr-payload-file": true,
         "--debug-input-script": true,
+        "--debug-fs-script": true,
         "--debug-control": true,
         "--dump-video": true,
         "--float-windows": false,
@@ -150,6 +154,8 @@ struct LaunchOptions {
                 options.qrPayloadFile = next()
             case "--debug-input-script":
                 options.debugInputScript = next()
+            case "--debug-fs-script":
+                options.debugFsScript = next()
             case "--debug-control":
                 options.debugControl = next()
             case "--dump-video":

@@ -279,6 +279,11 @@ final class ConnectionController {
     private var pendingApk: (file: URL, deviceId: String?, until: Date)?
     private var debugInput: DebugInputDriver?
     private var debugControl: DebugControl?
+    /// `--debug-fs-script` (FsDebug.swift): pending phone-file steps and the
+    /// client that carries them.
+    private var fsScriptActions: [FsScriptAction]?
+    private var fsClient: FsClient?
+    private var fsDebug: FsDebugDriver?
     private var pairingTarget: PairingTarget?
     private var qrTimer: Timer?
     private var qrProbes: [QRProbe] = []
@@ -389,6 +394,14 @@ final class ConnectionController {
         if let path = options.debugInputScript, let error = armDebugInput(path) {
             FileHandle.standardError.write(Data((error + "\n").utf8))
             exit(2)
+        }
+        if let path = options.debugFsScript {
+            do {
+                fsScriptActions = try FsDebugScript.parse(String(contentsOfFile: path, encoding: .utf8))
+            } catch {
+                FileHandle.standardError.write(Data("debug-fs-script \(path): \(error)\n".utf8))
+                exit(2)
+            }
         }
         if let directory = options.debugControl {
             debugControl = DebugControl(directory: directory) { [weak self] command, arguments in
@@ -1262,6 +1275,7 @@ final class ConnectionController {
                 stopClipboardSync()
                 apkInstaller.connectionLost()
                 dropSender.connectionLost()
+                fsClient?.connectionLost()
                 clipImageBuffer.discard()
                 shareInbox.connectionLost()
                 nowPlaying.clear()
@@ -1278,6 +1292,7 @@ final class ConnectionController {
                 stopClipboardSync()
                 apkInstaller.connectionLost()
                 dropSender.connectionLost()
+                fsClient?.connectionLost()
                 clipImageBuffer.discard()
                 shareInbox.connectionLost()
                 nowPlaying.clear()
@@ -1322,6 +1337,16 @@ final class ConnectionController {
         case .shareFileAbort(let id):
             shareInbox.fileAbort(id: id)        case .ready(let info, _, let address):
             ready(info, address: address)
+        case .fsItems(let id, let page, let items):
+            fsClient?.items(id: id, page: page, items: items)
+        case .fsItem(let id, let item):
+            fsClient?.item(id: id, item: item)
+        case .fsData(let id, let bytes):
+            fsClient?.data(id: id, bytes: bytes)
+        case .fsReadEnd(let id, let size, let sha256):
+            fsClient?.readEnd(id: id, size: size, sha256: sha256)
+        case .fsError(let id, let code, let message):
+            fsClient?.failure(id: id, code: code, message: message)
         case .notifyState(let on):
             Log.app.notice("phone notify \(on ? "on" : "off", privacy: .public)")
             if !on { nowPlaying.clear() }
@@ -1512,6 +1537,18 @@ final class ConnectionController {
         installPendingApk(readyPhone: info.id)
         transientBanner = nil
         syncAudio()
+        startFsDebug()
+    }
+
+    /// `--debug-fs-script`: once the session is ready, run the script's
+    /// list/stat/read steps in order (results on stderr, see FsDebug.swift).
+    private func startFsDebug() {
+        guard fsDebug == nil, let actions = fsScriptActions, let session else { return }
+        let client = FsClient(channel: session)
+        fsClient = client
+        let driver = FsDebugDriver(actions: actions, client: client)
+        fsDebug = driver
+        driver.run()
     }
 
     private func appsReceived(_ list: [AppInfo]) {

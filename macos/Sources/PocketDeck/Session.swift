@@ -121,6 +121,12 @@ enum SessionEvent {
     case shareFileData(id: UInt32, bytes: [UInt8])
     case shareFileEnd(id: UInt32, size: Int, sha256: String)
     case shareFileAbort(id: UInt32)
+    /// Read-only phone files (docs/design/files.md): list/stat/read replies.
+    case fsItems(id: UInt32, page: String?, items: [[String: Any]])
+    case fsItem(id: UInt32, item: [String: Any])
+    case fsData(id: UInt32, bytes: [UInt8])
+    case fsReadEnd(id: UInt32, size: Int, sha256: String)
+    case fsError(id: UInt32, code: String, message: String?)
     /// Notifications + media controls (docs/design/notify.md).
     case notifyState(on: Bool)
     case notifyPosted(id: String, pkg: String, when: Date?, title: String?, text: String?)
@@ -625,6 +631,8 @@ final class Session {
             emit(.shareFileData(id: frame.stream, bytes: frame.payload))
         case .clipData:
             emit(.clipImageData(id: frame.stream, bytes: frame.payload))
+        case .fsData:
+            emit(.fsData(id: frame.stream, bytes: frame.payload))
         case .audioConfig:
             guard let config = try? AudioConfig(payload: frame.payload) else {
                 Log.session.error("bad AUDIO_CONFIG payload")
@@ -875,8 +883,25 @@ final class Session {
                 rate: message.double("rate") ?? 0,
                 receivedAt: Date().timeIntervalSince1970,
             )))
+        case "fs.items":
+            guard let id = message.int("id"), id > 0 else { return }
+            emit(.fsItems(id: UInt32(id), page: message.string("page"),
+                          items: message.array("items") ?? []))
+        case "fs.item":
+            guard let id = message.int("id"), id > 0, let item = message.object("item") else { return }
+            emit(.fsItem(id: UInt32(id), item: item))
+        case "fs.read.end":
+            guard let id = message.int("id"), id > 0 else { return }
+            emit(.fsReadEnd(id: UInt32(id), size: message.int("size") ?? -1,
+                            sha256: message.string("sha256") ?? ""))
         case "error":
             let code = message.string("code") ?? "unknown"
+            // An fs failure names the request it answers; it is not the
+            // session-level error a stream-less `error` otherwise is.
+            if let id = message.int("id"), id > 0 {
+                emit(.fsError(id: UInt32(id), code: code, message: message.string("message")))
+                return
+            }
             if message.int("stream") == nil { phoneErrorCode = code }
             emit(.phoneError(code: code, message: message.string("message"),
                              stream: UInt32(message.int("stream") ?? 0)))
@@ -1032,6 +1057,24 @@ final class Session {
     func clipImageEnd(id: UInt32, size: Int, sha256: String) { sendJSON(["t": "clip.image.end", "id": Int(id), "size": size, "sha256": sha256]) }
     func clipImageAbort(id: UInt32) { sendJSON(["t": "clip.image.abort", "id": Int(id)]) }
     func sendClipData(id: UInt32, bytes: [UInt8], sent: @escaping @Sendable (Bool) -> Void) { sendData(.clipData, id: id, bytes: bytes, sent: sent) }
+
+    // MARK: Phone files (read-only, docs/design/files.md)
+
+    func fsList(id: UInt32, path: String, page: String?) {
+        var message: [String: Any] = ["t": "fs.list", "id": Int(id), "path": path]
+        if let page { message["page"] = page }
+        sendJSON(message)
+    }
+    func fsStat(id: UInt32, path: String) {
+        sendJSON(["t": "fs.stat", "id": Int(id), "path": path])
+    }
+    func fsRead(id: UInt32, path: String, offset: Int, length: Int, etag: String?) {
+        var message: [String: Any] = ["t": "fs.read", "id": Int(id), "path": path,
+                                      "offset": offset, "length": length]
+        if let etag { message["etag"] = etag }
+        sendJSON(message)
+    }
+    func fsCancel(id: UInt32) { sendJSON(["t": "fs.cancel", "id": Int(id)]) }
     private func sendData(_ kind: MessageType, id: UInt32, bytes: [UInt8], sent: @escaping @Sendable (Bool) -> Void) {
         guard let ch = channel else { return sent(false) }
         let frame = Frame(type: kind, stream: id, payload: bytes).encodedData()

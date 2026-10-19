@@ -18,6 +18,7 @@ enum MessageType: UInt8 {
     case shareData = 0x21
     case dropData = 0x22
     case clipData = 0x23
+    case fsData = 0x24
 }
 
 enum ProtocolError: Error, Equatable {
