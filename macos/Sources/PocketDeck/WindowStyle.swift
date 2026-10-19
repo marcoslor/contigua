@@ -53,6 +53,26 @@ enum WindowStyle: String, CaseIterable {
     }
 }
 
+/// The window's titlebar and traffic lights in a given state. Outside full
+/// screen the chrome owns both: the title is hidden, the titlebar is clear over
+/// the stream, and the lights ride the framed bar or the dwell pill. Native
+/// full screen is the system's: the bar macOS slides down at the top edge shows
+/// the window's title and the standard lights in their standard place, so the
+/// chrome leaves the buttons to AppKit.
+struct ChromeConfig: Equatable {
+    let titleVisible: Bool
+    let titlebarTransparent: Bool
+    /// true: AppKit places the standard buttons; false: the chrome does.
+    let lightsManagedByAppKit: Bool
+
+    static func forState(style: WindowStyle, fullScreen: Bool) -> ChromeConfig {
+        if fullScreen {
+            return ChromeConfig(titleVisible: true, titlebarTransparent: false, lightsManagedByAppKit: true)
+        }
+        return ChromeConfig(titleVisible: false, titlebarTransparent: true, lightsManagedByAppKit: false)
+    }
+}
+
 /// The framed bar and the immersive pill: the numbers both styles share.
 enum ChromeBar {
     /// The permanent bar above the stream.

@@ -22,6 +22,8 @@
 //   showtouches on|off             View > Show Touches
 //   windowstyle framed|immersive|toggle   the key window's chrome style
 //                                  (View > Window Style / its ⌥⌘F toggle)
+//   fullscreen                     native full screen on the key window
+//                                  (View > Enter Full Screen / ⌃⌘F)
 //   density PKG PERCENT|default    the app's density override (View > Density):
 //                                  75, 100, 125 or 150, or default to clear it
 //                                  (⌘0's effect)
@@ -82,6 +84,7 @@ enum DebugInputAction: Equatable {
     case showTouches(Bool)
     case dockApps(Bool)
     case windowStyle(String)
+    case fullScreen
     /// An app's density override; nil is "Default" (clear it).
     case density(pkg: String, value: Double?)
     case dropFile(String)
@@ -185,6 +188,9 @@ enum DebugInputScript {
             case "toggle" where args.count == 1: return .windowStyle("toggle")
             default: throw LineError(message: "windowstyle needs framed, immersive or toggle")
             }
+        case "fullscreen":
+            guard args.isEmpty else { throw LineError(message: "fullscreen takes no arguments") }
+            return .fullScreen
         case "density":
             guard args.count == 2 else { throw LineError(message: "density needs PKG and PERCENT or default") }
             if args[1] == "default" { return .density(pkg: args[0], value: nil) }
@@ -459,6 +465,8 @@ final class DebugInputDriver {
             case "immersive": controller.setStyle(.immersive)
             default: controller.toggleStyle()
             }
+        case .fullScreen:
+            view.window?.toggleFullScreen(nil)
         case .density(let pkg, let value):
             guard let controller = view.window?.windowController as? StreamWindowController else { return }
             controller.manager.setDensity(value, forPackage: pkg)

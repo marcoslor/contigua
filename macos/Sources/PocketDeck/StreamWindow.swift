@@ -38,6 +38,9 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     var density: Double { DensityRules.effective(override: densityOverride, settings: manager.defaultDensity) }
 
     private(set) var isPaused = false
+    /// The standard buttons' slots before the chrome moved them, as an x and a
+    /// distance from the window's top edge (the titlebar's anchor).
+    private var standardLightSlots: [NSWindow.ButtonType: (x: CGFloat, fromTop: CGFloat, size: NSSize)] = [:]
     private var resizeWork: DispatchWorkItem?
     private var closingFromRemote = false
     /// Folds the dwell's time in; `pointerMoved` also schedules a hide.
@@ -68,6 +71,9 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         super.init(window: window)
         window.delegate = self
         window.contentView = chrome
+        // Where AppKit put the standard buttons before the chrome moves them;
+        // full screen gives them back (applyChromeConfig).
+        captureStandardLights()
         chrome.onBarPress = { [weak self] in self?.barPresses += 1; self?.writeChromeState() }
         chrome.setActions(headerActions())
         stateFile = manager.chromeStateFile
@@ -282,6 +288,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
             // Debug-only (bisect/screenshot runs): force the window's look.
             window.appearance = NSAppearance(named: forced == "light" ? .aqua : .darkAqua)
         }
+        captureStandardLights()
         chrome.placeTrafficLights()
         if manager.floatWindows { window?.orderFrontRegardless() }
         window?.makeFirstResponder(videoView)
@@ -422,15 +429,86 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         guard let stateFile else { return }
         let lights = window?.standardWindowButton(.closeButton).map { !$0.isHidden } ?? false
         let pillUp = chrome.showsPill
-        let line = "style=\(style.rawValue) lights=\(lights ? "shown" : "hidden") pill=\(pillUp ? "shown" : "hidden") clicks=\(barPresses)\n"
+        let titleUp = window?.titleVisibility == .visible
+        let managed = chrome.lightsManagedByAppKit ? "appkit" : "us"
+        let line = "style=\(style.rawValue) lights=\(lights ? "shown" : "hidden") pill=\(pillUp ? "shown" : "hidden")"
+            + " title_visible=\(titleUp ? "yes" : "no") lights_managed=\(managed) clicks=\(barPresses)\n"
         try? Data(line.utf8).write(to: stateFile, options: .atomic)
     }
 
     /// The dwell's state machine keeps its own time; the pill's fade and the
     /// lights follow it through `setPill`.
 
+    /// The standard buttons' slots before the chrome moved them. AppKit lays
+    /// them out at the window's top-left; only their distance from the top
+    /// edge survives a window that grows to the screen.
+    private func captureStandardLights() {
+        guard let window else { return }
+        for type in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton]
+        where standardLightSlots[type] == nil {
+            guard let light = window.standardWindowButton(type), let superview = light.superview,
+                  light.frame.width > 0, light.frame.height > 0 else { continue }
+            let inWindow = superview.convert(light.frame, to: nil)
+            standardLightSlots[type] = (inWindow.minX, window.frame.height - inWindow.maxY, inWindow.size)
+        }
+    }
+
+    private func restoreStandardLights() {
+        guard let window else { return }
+        for (type, slot) in standardLightSlots {
+            guard let light = window.standardWindowButton(type), let superview = light.superview else { continue }
+            let frame = NSRect(x: slot.x, y: window.frame.height - slot.fromTop - slot.size.height,
+                               width: slot.size.width, height: slot.size.height)
+            light.frame = superview.convert(frame, from: nil)
+            light.isHidden = false
+            light.alphaValue = 1
+        }
+    }
+
+    /// The titlebar and the buttons by state (ChromeConfig): the windowed
+    /// chrome's hidden title and clear titlebar, or full screen's standard
+    /// titlebar with the title shown and AppKit placing the buttons.
+    private func applyChromeConfig(fullScreen: Bool) {
+        guard let window else { return }
+        let config = ChromeConfig.forState(style: style, fullScreen: fullScreen)
+        window.titleVisibility = config.titleVisible ? .visible : .hidden
+        window.titlebarAppearsTransparent = config.titlebarTransparent
+        chrome.lightsManagedByAppKit = config.lightsManagedByAppKit
+        if config.lightsManagedByAppKit {
+            captureStandardLights()
+            restoreStandardLights()
+        }
+    }
+
+    /// Before the transition, so the system's bar slides in with the title and
+    /// lights already in place (and out with the windowed chrome's).
+    func windowWillEnterFullScreen(_ notification: Notification) {
+        applyChromeConfig(fullScreen: true)
+    }
+
     func windowDidEnterFullScreen(_ notification: Notification) { chromeLayoutChanged() }
-    func windowDidExitFullScreen(_ notification: Notification) { chromeLayoutChanged() }
+
+    func windowWillExitFullScreen(_ notification: Notification) {
+        // The titlebar goes back to hidden before the window starts back;
+        // waiting for did-exit would flash the standard title.
+        window?.titleVisibility = .hidden
+        window?.titlebarAppearsTransparent = true
+    }
+
+    func windowDidExitFullScreen(_ notification: Notification) {
+        applyChromeConfig(fullScreen: false)
+        chromeLayoutChanged()
+    }
+
+    func windowDidFailToEnterFullScreen(_ notification: Notification) {
+        applyChromeConfig(fullScreen: false)
+        chromeLayoutChanged()
+    }
+
+    func windowDidFailToExitFullScreen(_ notification: Notification) {
+        applyChromeConfig(fullScreen: true)
+        chromeLayoutChanged()
+    }
 
     /// Full screen drops the bar in either style and leaves the dwell alone:
     /// the stream is then the whole screen.
