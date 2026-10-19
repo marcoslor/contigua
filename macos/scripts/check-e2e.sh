@@ -4066,6 +4066,68 @@ EOF
         && ok "NOTIFY no notification text in the app log, share log, fake log or event log" \
         || bad "NOTIFY notification text leaked"
 
+    # (f) "When I click a phone notification" (ROADMAP D2): Open on Mac (the
+    # default, used above) opens the window and runs the action there; Open on
+    # phone asks for display 0 and opens no window; Do nothing sends nothing.
+    notify_open_rx() {
+        python3 - "$WORK/events.jsonl" "$1" "${2:-}" <<'PY'
+import json, sys
+target, stream = sys.argv[2], sys.argv[3]
+for line in open(sys.argv[1]):
+    try:
+        event = json.loads(line)
+    except ValueError:
+        continue
+    if event.get("ev") == "notify" and event.get("kind") == "open" and event.get("target") == target:
+        if not stream or str(event.get("stream")) == stream:
+            sys.exit(0)
+sys.exit(1)
+PY
+    }
+    wait_until 20 notify_open_rx window 2 \
+        && ok "NOTIFY Open on Mac: notify.open target=window stream=2" \
+        || bad "NOTIFY Open on Mac: no notify.open for the clicked window"
+
+    # Open on phone: the same click, with the setting stored for this phone.
+    stop_app
+    defaults write "$DEFAULTS_SUITE" "notify.click.$device" -string phone
+    : > "$WORK/events.jsonl"
+    cat > "$script" <<'EOF'
+wait 3
+notifyclick pd-n1
+EOF
+    launch --connect "127.0.0.1:$PORT" --quit-after 45 --share-log "$WORK/notify-phone.log" \
+        --open com.whatsapp --debug-input-script "$script"
+    wait_until 30 notify_open_rx phone "" \
+        && ok "NOTIFY Open on phone: notify.open target=phone" \
+        || bad "NOTIFY Open on phone: no notify.open target=phone"
+    sleep 2
+    ! window_rx window.open "com.android.settings" \
+        && ok "NOTIFY Open on phone: no Mac window for the clicked app" \
+        || bad "NOTIFY Open on phone: the clicked app's window opened anyway"
+
+    # Do nothing: the click is recorded, but no message and no window.
+    stop_app
+    defaults write "$DEFAULTS_SUITE" "notify.click.$device" -string none
+    : > "$WORK/events.jsonl"
+    cat > "$script" <<'EOF'
+wait 3
+notifyclick pd-n1
+EOF
+    launch --connect "127.0.0.1:$PORT" --quit-after 45 --share-log "$WORK/notify-none.log" \
+        --open com.whatsapp --debug-input-script "$script"
+    wait_until 20 grep -qF -- "notify click id=pd-n1" "$WORK/notify-none.log" 2>/dev/null \
+        && ok "NOTIFY Do nothing: the click reached the routing" \
+        || bad "NOTIFY Do nothing: the click never reached the routing"
+    sleep 2
+    ! notify_open_rx window "" && ! notify_open_rx phone "" \
+        && ok "NOTIFY Do nothing: no notify.open was sent" \
+        || bad "NOTIFY Do nothing: notify.open was sent anyway"
+    ! window_rx window.open "com.android.settings" \
+        && ok "NOTIFY Do nothing: no Mac window opened" \
+        || bad "NOTIFY Do nothing: a window opened anyway"
+    defaults delete "$DEFAULTS_SUITE" "notify.click.$device" >/dev/null 2>&1
+
     # (b) opt-in off (the default): nothing is forwarded, nothing is asked.
     stop_app
     stop_fakephone

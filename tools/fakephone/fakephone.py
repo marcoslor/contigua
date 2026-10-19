@@ -1339,6 +1339,7 @@ class Session(object):
             "audio.start": self._on_audio_start,
             "audio.stop": self._on_audio_stop,
             "notify.enable": self._on_notify_enable,
+            "notify.open": self._on_notify_open,
             "media.command": self._on_media_command,
         }.get(kind)
         if handler is None:
@@ -1598,6 +1599,11 @@ class Session(object):
 
     def _on_media_command(self, msg):
         self.phone.events.media(msg.get("action"))
+
+    def _on_notify_open(self, msg):
+        # A Mac banner click: the id and where it runs, never any text.
+        self.phone.events.notify("open", id=msg.get("id"), target=msg.get("target"),
+                                 stream=msg.get("stream"))
 
     def _on_apps_list(self, _msg):
         apps = sorted(APPS, key=lambda a: a["label"].lower())
