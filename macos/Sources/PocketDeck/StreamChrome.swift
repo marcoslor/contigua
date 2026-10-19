@@ -60,6 +60,11 @@ final class StreamChromeView: NSView {
     /// The immersive dwell pill; only a background: the buttons above it are
     /// the chrome's own subviews so they can move between bar and pill frames.
     private let pillView = DwellPillView()
+    /// The Show Touches dots: a layer of this view, not of the video. The
+    /// extension view mirrors its contentView (the video), so a dot there
+    /// would be reflected into the framed bar; this layer is a sibling above
+    /// the mirror, so the bar shows the video only.
+    private let touchDots = CALayer()
     /// The window kind's actions at the right end (the phone window's
     /// Back/Home/Recents); hidden in the bar and shown in the pill alike.
     private let actions = NSHostingView(rootView: HeaderControls(actions: []))
@@ -93,8 +98,18 @@ final class StreamChromeView: NSView {
         actions.isHidden = true
         pillView.onPress = { [weak self] in self?.onBarPress?() }
         addSubview(ext)
+        // The dots ride above the stream but outside the mirror: above the
+        // extension view's layer (0), below the pill and the actions (2), and
+        // clipped at the seam, so a touch at the very top edge never paints
+        // over the bar.
+        video.touchDotHost = touchDots
+        touchDots.zPosition = 1
+        touchDots.masksToBounds = true
+        layer?.addSublayer(touchDots)
         addSubview(pillView)
         addSubview(actions)
+        pillView.layer?.zPosition = 2
+        actions.layer?.zPosition = 2
         layoutChrome()
     }
 
@@ -103,6 +118,19 @@ final class StreamChromeView: NSView {
 
     /// The pill, for the window tests (they look inside).
     var pill: DwellPillView { pillView }
+
+    /// The Show Touches dots' layer, for the tests and the chrome state.
+    var touchDotsLayer: CALayer { touchDots }
+
+    /// The dots drawn right now (the chrome state's evidence).
+    var touchDotCount: Int { touchDots.sublayers?.count ?? 0 }
+
+    /// True when the dots are outside the extension view's mirror (the bar
+    /// must mirror the video only): the video draws into this layer, and this
+    /// layer is the chrome's own, above the extension view.
+    var touchDotsOutsideMirror: Bool {
+        video.touchDotHost === touchDots && touchDots.superlayer === layer
+    }
 
     /// The dwell pill's own rect in the stream's coordinates, top-left origin
     /// (DwellPill's feeding geometry): the pill sits `pillInset` in from the
@@ -149,6 +177,12 @@ final class StreamChromeView: NSView {
         ext.frame = bounds
         let bar = barHeight
         video.frame = NSRect(x: 0, y: 0, width: bounds.width, height: max(bounds.height - bar, 0))
+        // The dots sit exactly over the stream, in its own coordinates, but on
+        // this view's layer: no animation while the bar comes and goes.
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        touchDots.frame = video.frame
+        CATransaction.commit()
         // The ext is never hidden: it is the video view's parent (its contentView
         // is the stream), and hiding NSBackgroundExtensionView blanks its
         // contentView — a stream window left immersive then showed nothing. With

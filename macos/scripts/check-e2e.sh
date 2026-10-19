@@ -2341,12 +2341,16 @@ check_chrome() {
 # step is visible-only.
 check_menus() {
     begin_shared || return 1
-    rm -f "$WORK/menus.json" "$WORK/menus-step-full" "$WORK/menus-step-exit" "$WORK/menus-full.json"
+    rm -f "$WORK/menus.json" "$WORK/menus-step-full" "$WORK/menus-step-exit" "$WORK/menus-full.json" \
+        "$WORK/menus-step-touch" "$WORK/menus-touch.png" "$WORK/chrome.txt"
     printf '%s\n' "wait 1.5" "menudump $WORK/menus.json" \
+        "showtouches on" "wait 1" "hover 0.5 0.5" "wait 0.3" \
+        "waitfile $WORK/menus-step-touch 60" "fingerpinch 0.5 0.01 1.25 4" "wait 1" \
         "waitfile $WORK/menus-step-full 60" "fullscreen" "wait 6" \
         "menudump $WORK/menus-full.json" \
         "waitfile $WORK/menus-step-exit 60" "fullscreen" "wait 6" > "$WORK/menus.txt"
-    open_shared --open com.android.settings --debug-input-script "$WORK/menus.txt" || return 1
+    open_shared --open com.android.settings --debug-chrome-state "$WORK/chrome.txt" \
+        --debug-input-script "$WORK/menus.txt" || return 1
     wait_until 20 [ -s "$WORK/menus.json" ] || {
         bad "MENUS no menu dump in 20 s ($WORK/menus.json)"
         say "app log: $(tail -3 "$WORK/app.log")"
@@ -2446,6 +2450,28 @@ for title in ["Add Phone…", "Find Apps", "Phone Window", "Continue on Mac", "S
 if missing:
     print("no image:", missing); sys.exit(1)
 PY
+
+    # The Show Touches dots are drawn outside the view the bar mirrors.
+    wait_until 10 eval 'grep -q "dots=outside" "$WORK/chrome.txt" 2>/dev/null' \
+        && ok "MENUS the Show Touches dots are outside the bar's mirror ($(chrome_state))" \
+        || bad "MENUS the dot layer is still inside the mirrored content: $(chrome_state)"
+
+    # Show Touches on, the pointer hovering the video and a trackpad touch at
+    # the stream's top edge: the bar above it must stay clean. The driver's
+    # fingers are scripted, so a quiet run captures the same thing (the
+    # capture is of the window, on this run's display).
+    touch "$WORK/menus-step-touch"
+    sleep 1.5
+    local win
+    win="$(await_window '$4 == 900 && $5 == 628')" \
+        && screencapture -x -o -l"$win" "$WORK/menus-touch.png" \
+        && ok "MENUS captured the bar with Show Touches on: $WORK/menus-touch.png" \
+        || bad "MENUS no window to capture the bar"
+    grep -q "touches=on" "$WORK/chrome.txt" 2>/dev/null \
+        && grep -qE "dot_count=[1-9]" "$WORK/chrome.txt" 2>/dev/null \
+        && ok "MENUS the dots are drawn while the fingers are down ($(chrome_state))" \
+        || bad "MENUS no touch dots during the pinch: $(chrome_state)"
+    sleep 4
 
     if [ "$VISIBLE" = "1" ]; then
         touch "$WORK/menus-step-full"

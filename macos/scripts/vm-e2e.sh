@@ -28,11 +28,11 @@ ROOT="$(cd "$MACOS/.." && pwd)"
 # shellcheck source=vm-common.sh
 . "$MACOS/scripts/vm-common.sh"
 
-usage="usage: vm-e2e.sh <check>[,<check>...]|all   (checks: qr|pair|tls|render|resize|input|mouseback|input-global|pause|direct|nav|mirror|spotlight|pinch|chrome|trackpad|clip|sharein|links|share|apk|drop|dock|nickname|notify|audio|handoff|deck)"
+usage="usage: vm-e2e.sh <check>[,<check>...]|all   (checks: qr|pair|tls|render|resize|input|mouseback|input-global|pause|direct|nav|mirror|spotlight|pinch|chrome|menus|trackpad|clip|sharein|links|share|apk|drop|dock|nickname|notify|audio|handoff|deck)"
 
 valid_check() {
     case "$1" in
-        qr|pair|tls|render|resize|input|mouseback|input-global|pause|direct|nav|mirror|spotlight|pinch|chrome|trackpad|clip|sharein|links|share|apk|drop|dock|nickname|notify|audio|handoff|deck) return 0 ;;
+        qr|pair|tls|render|resize|input|mouseback|input-global|pause|direct|nav|mirror|spotlight|pinch|chrome|menus|trackpad|clip|sharein|links|share|apk|drop|dock|nickname|notify|audio|handoff|deck) return 0 ;;
     esac
     return 1
 }

@@ -118,7 +118,7 @@ final class StreamChromeWindowTests: XCTestCase {
         controller.pointerMoved(toWindowPoint: NSPoint(x: 2, y: 20))
         pump(0.4)
         XCTAssertFalse(controller.dwell.shown)
-        XCTAssertEqual(try String(contentsOf: file, encoding: .utf8), "style=framed lights=shown pill=hidden title_visible=no lights_managed=us fullscreen=no clicks=0\n")
+        XCTAssertEqual(try String(contentsOf: file, encoding: .utf8), "style=framed lights=shown pill=hidden title_visible=no lights_managed=us fullscreen=no clicks=0 dots=outside touches=\(manager.showTouches ? "on" : "off") dot_count=0\n")
     }
 
     func testCloseAndMinimiseWorkWithTheBar() throws {
@@ -147,7 +147,7 @@ final class StreamChromeWindowTests: XCTestCase {
                                              label: "Example", manager: manager)
         defer { controller.window?.close() }
         controller.window?.orderFront(nil)
-        XCTAssertEqual(try String(contentsOf: file, encoding: .utf8), "style=framed lights=shown pill=hidden title_visible=no lights_managed=us fullscreen=no clicks=0\n")
+        XCTAssertEqual(try String(contentsOf: file, encoding: .utf8), "style=framed lights=shown pill=hidden title_visible=no lights_managed=us fullscreen=no clicks=0 dots=outside touches=\(manager.showTouches ? "on" : "off") dot_count=0\n")
     }
 
     func testFullScreenShowsTheTitleAndHandsTheLightsBackOnExit() throws {
@@ -190,6 +190,31 @@ final class StreamChromeWindowTests: XCTestCase {
         XCTAssertEqual(phone.chrome.actionCount, 3, "back, home, recents on the bar")
         XCTAssertEqual(AppWindowController(stream: 2, pkg: "a", activity: nil, label: "A", manager: manager)
             .chrome.actionCount, 0)
+    }
+
+    func testTheTouchDotsLayerIsOutsideTheMirroredVideo() throws {
+        let manager = makeManager()
+        let controller = AppWindowController(stream: 1, pkg: "com.example.app", activity: nil,
+                                             label: "Example", manager: manager)
+        defer { controller.window?.close() }
+        controller.window?.orderFront(nil)
+        XCTAssertTrue(controller.chrome.touchDotsOutsideMirror,
+                      "the extension view mirrors the video; the dots must not be in it")
+        XCTAssertTrue(controller.videoView.touchDotHost === controller.chrome.touchDotsLayer)
+        XCTAssertFalse(controller.chrome.touchDotsLayer.superlayer === controller.videoView.layer,
+                       "a dot on the video's own layer is reflected into the bar")
+        XCTAssertGreaterThan(controller.chrome.touchDotsLayer.zPosition, 0,
+                             "the dots composite above the extension view")
+        XCTAssertTrue(controller.chrome.touchDotsLayer.masksToBounds,
+                      "a touch at the top edge is clipped at the seam, never over the bar")
+
+        controller.videoView.showsTouches = true
+        controller.videoView.showTouchPoints([.init(id: 0, nx: 0.5, ny: 0.95)])
+        XCTAssertEqual(controller.chrome.touchDotsLayer.sublayers?.count, 1,
+                       "the dot is drawn on the chrome's layer")
+        XCTAssertEqual(controller.chrome.touchDotCount, 1)
+        XCTAssertEqual(controller.videoView.layer?.sublayers?.contains { $0.zPosition == 20 } ?? true, false,
+                       "and nothing is drawn on the mirrored video layer")
     }
 
     func testShowTouchesStartsFromTheHardwareAndRemembersTheToggle() {

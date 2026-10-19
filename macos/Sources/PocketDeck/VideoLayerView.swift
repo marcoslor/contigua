@@ -37,6 +37,12 @@ final class VideoLayerView: NSView {
     /// All AppKit events are handed to this mapper.
     var inputMapper: InputMapper?
 
+    /// Where the Show Touches dots are drawn. The chrome sets this to a layer
+    /// of its own, outside the extension view's mirror: a dot inside the
+    /// mirrored content would be reflected into the framed bar. nil draws on
+    /// the video's own layer (no chrome: tests and previews).
+    var touchDotHost: CALayer?
+
     /// The window's own pointer feed already reports every move (the immersive
     /// dwell feed), so the tracking area leaves hover to it.
     var hoverFeedActive: () -> Bool = { false }
@@ -460,6 +466,9 @@ final class VideoLayerView: NSView {
     private var touchDots: [UInt8: CALayer] = [:]
     private static let dotSize: CGFloat = 34
 
+    /// The dots changed (the chrome state records how many are up).
+    var onTouchDotsChanged: (() -> Void)?
+
     /// `points` are normalized video coordinates; none removes every dot.
     func showTouchPoints(_ points: [InputMapper.TouchPoint]) {
         let shown = showsTouches ? points : []
@@ -477,6 +486,7 @@ final class VideoLayerView: NSView {
             dot.opacity = 1
         }
         CATransaction.commit()
+        onTouchDotsChanged?()
     }
 
     private func makeDot(id: UInt8) -> CALayer {
@@ -491,7 +501,7 @@ final class VideoLayerView: NSView {
         dot.shadowRadius = 3
         dot.shadowOffset = .zero
         dot.zPosition = 20
-        layer?.addSublayer(dot)
+        (touchDotHost ?? layer)?.addSublayer(dot)
         touchDots[id] = dot
         return dot
     }
