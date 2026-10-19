@@ -34,7 +34,7 @@ device_present || die "$SERIAL is not running - run tools/emulator/start.sh firs
 DEVPORT="$(ensure_forward)" || die "cannot find the PocketDeck server port on $SERIAL (is the app running?)"
 step "forward: 127.0.0.1:$PORT -> device tcp:$DEVPORT"
 
-deckctl() { python3 "$DECKCTL" --host 127.0.0.1 --port "$PORT" --state "$STATE" "$@"; }
+deckctl() { "$PYTHON" "$DECKCTL" --host 127.0.0.1 --port "$PORT" --state "$STATE" "$@"; }
 
 # --- pair -------------------------------------------------------------------
 # deckctl cannot read the phone's screen, so the pairing prompt is handled by
@@ -57,7 +57,7 @@ bring_app_forward() {
 
 check_paired() { # 0 paired, 2 not paired, 3 phone busy
   local rc=0
-  python3 "$POC" --state "$STATE" --addr "127.0.0.1:$PORT" check >/dev/null 2>&1 || rc=$?
+  "$PYTHON" "$POC" --state "$STATE" --addr "127.0.0.1:$PORT" check >/dev/null 2>&1 || rc=$?
   return "$rc"
 }
 
@@ -80,30 +80,16 @@ if ! check_paired; then
   # The real flow first (a loaded host can be too slow for it).
   for attempt in 1 2; do
     step "pairing (code from the app prompt), attempt $attempt"
-    if python3 "$POC" --state "$STATE" --addr "127.0.0.1:$PORT" --serial "$SERIAL" --adb "$ADB" pair; then
+    if "$PYTHON" "$POC" --state "$STATE" --addr "127.0.0.1:$PORT" --serial "$SERIAL" --adb "$ADB" pair; then
       PAIRED=1
       break
     fi
     "$EMU_DIR/unlock.sh" || true
     bring_app_forward
   done
-  if [ "$PAIRED" -eq 0 ]; then
-    step "code pairing timed out; seeding the rig's own client instead"
-    python3 "$POC" --state "$STATE" --serial "$SERIAL" --adb "$ADB" seed ||
-      die "could not pair with the rig"
-    # The restarted app has to come up and push the client to the shell service.
-    SEEDED=0
-    for _ in $(seq 1 30); do
-      if check_paired; then
-        SEEDED=1
-        break
-      fi
-      sleep 3
-    done
-    [ "$SEEDED" -eq 1 ] || die "the rig is still not paired after seeding"
-  fi
+  [ "$PAIRED" -eq 1 ] || die "could not pair with the rig"
 else
-  step "already paired (key in $STATE)"
+  step "already paired (pin in $STATE)"
 fi
 
 step "deckctl apps"
@@ -165,7 +151,7 @@ done
 [ "$MULTI_OK" -eq 1 ] || die "deckctl multi did not complete"
 
 step "checking the frames"
-python3 "$POC" verify-phases --dir "$FRAMES" --prefix emu
+"$PYTHON" "$POC" verify-phases --dir "$FRAMES" --prefix emu
 
 step "frames:"
 ls -1 "$FRAMES"/*.png

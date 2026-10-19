@@ -11,7 +11,9 @@ own serial (`emulator-5554`), so a phone plugged in next to it is never touched.
 ## Requirements
 
 `JAVA_HOME=/opt/homebrew/opt/openjdk@17`, `ANDROID_HOME=~/Library/Android/sdk`
-(cmdline-tools present), `ffmpeg`, `python3` (3.9 is fine), and the SDK
+(cmdline-tools present), `ffmpeg`, and a `python3` with TLS 1.3 (3.11+ /
+OpenSSL 3; `lib.sh` tries `/opt/homebrew/bin/python3`, override with
+`POCKETDECK_PYTHON` — the macOS 3.9 cannot do the v2 handshake), and the SDK
 `emulator`/`system-images;android-36;google_apis;arm64-v8a` packages that
 `setup.sh` installs.
 
@@ -90,26 +92,30 @@ PIN), `start.sh --window` (visible emulator window), `start.sh --no-build`
 
 ## Pairing in the rig
 
-Pairing is the real flow: `pair.request` → `pair.code_shown` (with the code) and
-a prompt showing the same code → someone taps **Allow** → `pair.ok`.
-`flow.sh` runs it through `poc.py pair`: it reads the code from the pairing
-prompt (the app dialog, or the notification — whichever appears first, ignoring
-a code left over from an earlier request), checks it against the announced one, taps **Allow** over adb and writes the
-key into deckctl's own state file under the same `clientId`, so every later
-`deckctl` call just authenticates with `--state`.
+Pairing is the real flow: `pair.request` → commit/nonce/reveal → the phone shows
+a 6-digit code in its prompt → someone taps **Allow** → `pair.ok`, which carries
+both pins. `flow.sh` runs it through `poc.py pair`, which imports deckctl's v2
+TLS client rather than speaking the protocol itself (pins are facts from the
+handshake certificates, never hello self-reports): it reads the code from the
+pairing prompt (the app dialog, or the notification — whichever appears first,
+ignoring a code left over from an earlier request), taps **Allow** over adb and
+lets deckctl store the pin in its own state file under the same `clientId`, so
+every later `deckctl` call just authenticates with `--state`.
+The two codes are not compared on the Mac side: deckctl is a stdlib TLS client
+and cannot reach the exporter, so only the person comparing the phone and the
+Mac screen verifies the digits; the commit/reveal exchange authenticates the
+pins.
 
 Two things make this harder on a loaded machine, and both are handled:
 
 - the app must be *drawing* for the prompt to exist, so `flow.sh` wakes the rig
   (`unlock.sh` — a screen that slept can report "keyguard not showing") and waits
   until `dev.pocketdeck` is the resumed activity before pairing;
-- on a slow boot the prompt can take long to appear, so the real flow can time out. After two failed attempts `flow.sh` seeds a client instead
-  (`poc.py seed`): it writes the same `paired` entry a real pairing stores into
-  the app's prefs with `run-as`, restarts the app (which pushes it to the shell
-  service) and puts the matching key in deckctl's state file. Callers cannot tell
-  the difference afterwards; the README says so instead of hiding it.
+- on a slow boot the prompt can take long to appear, so the real flow can time
+  out. After two failed attempts `flow.sh` stops with an error; re-run it (or
+  pair by hand, below) once the rig is awake.
 
-To pair by hand instead: `deckctl --pair apps` (prints the announced code) with
+To pair by hand instead: `deckctl --pair apps` (prints the advisory code) with
 `poc.py wait-prompt` running in the background to tap Allow.
 
 ## What flow.sh checks

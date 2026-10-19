@@ -60,7 +60,7 @@ if ! device_present; then
   else
     GPU_ARGS="-gpu swiftshader_indirect"
     [ "$WINDOW" -eq 1 ] && GPU_ARGS=""
-    ARGS="-avd $AVD_NAME -port 5554 -no-audio -no-boot-anim -no-snapshot -no-metrics -netdelay none -netspeed full -camera-back none -camera-front none"
+    ARGS="-avd $AVD_NAME -port 5554 -memory 2048 -cores 2 -no-audio -no-boot-anim -no-snapshot -no-metrics -netdelay none -netspeed full -camera-back none -camera-front none"
     [ "$WINDOW" -eq 0 ] && ARGS="$ARGS -no-window"
     step "starting $AVD_NAME on 5554 (headless=$((1 - WINDOW)))"
     # shellcheck disable=SC2086
