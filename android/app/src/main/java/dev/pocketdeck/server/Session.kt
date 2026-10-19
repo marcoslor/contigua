@@ -13,6 +13,8 @@ import dev.pocketdeck.proto.AudioFramePayload
 import java.io.BufferedOutputStream
 import java.net.Socket
 import java.net.SocketTimeoutException
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 import dev.pocketdeck.app.Prefs.PENDING_QR_TTL_MS
@@ -150,6 +152,20 @@ class Session(
 
     private val loggedUnknown = HashSet<String>()
 
+    /**
+     * Hover moves arrive faster than the input service takes them sometimes.
+     * One slot holds the newest move; a single thread drains it, so stale
+     * points are replaced, never queued. Enter/exit go straight through: they
+     * must keep their order with the touch DOWN that follows an exit.
+     */
+    private class PendingHover(val displayId: Int, val nx: Float, val ny: Float, val size: IntSize)
+    private val hoverLock = Any()
+    private var hoverPending: PendingHover? = null
+    private var hoverDraining = false
+    private val hoverExecutor = Executors.newSingleThreadExecutor { r ->
+        Thread(r, "pocketdeck-hover").apply { isDaemon = true }
+    }
+
     /** Notification sharing: the Mac asked for it and the phone's toggle is on. */
     @Volatile private var notifyWanted = false
     @Volatile private var notifyForwarding = false
@@ -268,6 +284,7 @@ class Session(
         runCatching { apk?.close() }
         runCatching { drop?.close() }
         stopStreamWatch()
+        hoverExecutor.shutdownNow()
         runCatching { audioCapture?.stop() }
         queue.clearAudio()
         synchronized(streams) {
@@ -1125,6 +1142,19 @@ class Session(
                 injector.scroll(state.displayId, p.nx, p.ny, p.hscroll, p.vscroll, display.size(state.stream))
                 if (state.content != WindowContent.Phone) power.onInput(state.displayId)
             }
+            Frames.TYPE_HOVER -> {
+                val p = Frames.decodeHover(frame.payload)
+                val state = requireState(frame.stream) ?: return
+                val size = display.size(state.stream)
+                if (p.action == Frames.HOVER_MOVE) {
+                    queueHoverMove(PendingHover(state.displayId, p.nx, p.ny, size))
+                } else {
+                    // Enter/exit run on the same thread as the moves, and the
+                    // reader waits for them: an exit is injected before the
+                    // TOUCH DOWN that follows it.
+                    injectHoverNow(state.displayId, p.action, p.nx, p.ny, size)
+                }
+            }
             Frames.TYPE_APK_DATA -> apk?.data(frame.stream.toLong() and 0xFFFF_FFFFL, frame.payload)
             Frames.TYPE_DROP_DATA -> drop?.data(frame.stream.toLong() and 0xFFFF_FFFFL, frame.payload)
             Frames.TYPE_CLIP_DATA -> clipImageReceiver.data(frame.stream, frame.payload)
@@ -1139,6 +1169,42 @@ class Session(
             }
             else -> logOnce("unknown frame type 0x${frame.type.toString(16)}")
         }
+    }
+
+    /**
+     * Keeps only the newest hover move: while one is being injected, a later
+     * one replaces the pending point instead of queueing behind it.
+     */
+    private fun queueHoverMove(move: PendingHover) {
+        synchronized(hoverLock) {
+            hoverPending = move
+            if (hoverDraining) return
+            hoverDraining = true
+        }
+        hoverExecutor.execute {
+            while (true) {
+                val next = synchronized(hoverLock) {
+                    val pending = hoverPending
+                    hoverPending = null
+                    if (pending == null) hoverDraining = false
+                    pending
+                } ?: return@execute
+                injector.hover(next.displayId, Frames.HOVER_MOVE, next.nx, next.ny, next.size)
+            }
+        }
+    }
+
+    /**
+     * Enter/exit go through the hover thread too, and the reader waits for
+     * them, so they cannot be overtaken by a move or by the touch that follows
+     * an exit. A stale pending move is dropped first.
+     */
+    private fun injectHoverNow(displayId: Int, action: Int, nx: Float, ny: Float, size: IntSize) {
+        synchronized(hoverLock) { hoverPending = null }
+        val task = hoverExecutor.submit {
+            injector.hover(displayId, action, nx, ny, size)
+        }
+        runCatching { task.get(100, TimeUnit.MILLISECONDS) }
     }
 
     /** Monotonic, strictly increasing event time; keeps a fresh downTime per gesture. */

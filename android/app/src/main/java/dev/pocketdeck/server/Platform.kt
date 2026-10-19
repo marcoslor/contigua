@@ -147,6 +147,8 @@ interface Launcher {
 interface Injector {
     fun touch(displayId: Int, action: Int, pointerId: Int, nx: Float, ny: Float, size: IntSize, downTime: Long, eventTime: Long)
     fun scroll(displayId: Int, nx: Float, ny: Float, hscroll: Float, vscroll: Float, size: IntSize)
+    /** A mouse hovering with no button down: enter, move or exit at (nx, ny). */
+    fun hover(displayId: Int, action: Int, nx: Float, ny: Float, size: IntSize)
     fun key(displayId: Int, action: Int, keycode: Int, metaState: Int, downTime: Long, eventTime: Long)
     fun text(displayId: Int, s: String)
 }

@@ -48,6 +48,7 @@ class FakePlatform : DisplayLayer, AppCatalog, Launcher, Injector, Power, Device
     data class ViewCall(val displayId: Int, val url: String)
     data class TouchCall(val displayId: Int, val action: Int, val pointerId: Int, val nx: Float, val ny: Float, val downTime: Long, val eventTime: Long)
     data class KeyCall(val displayId: Int, val action: Int, val keycode: Int, val metaState: Int, val downTime: Long, val eventTime: Long)
+    data class HoverCall(val displayId: Int, val action: Int, val nx: Float, val ny: Float)
     data class PairingReq(val requestId: String, val macName: String, val code: String)
     data class SessionChange(val connected: Boolean, val macName: String?, val windows: Int)
     data class QualityCall(val stream: Int, val bitrate: Int?, val maxFps: Int?)
@@ -65,6 +66,7 @@ class FakePlatform : DisplayLayer, AppCatalog, Launcher, Injector, Power, Device
     val views = CopyOnWriteArrayList<ViewCall>()
     val touches = CopyOnWriteArrayList<TouchCall>()
     val keys = CopyOnWriteArrayList<KeyCall>()
+    val hovers = CopyOnWriteArrayList<HoverCall>()
     val scrolls = CopyOnWriteArrayList<Int>()
     val texts = CopyOnWriteArrayList<String>()
     val activeStreams = CopyOnWriteArrayList<List<Int>>()
@@ -169,6 +171,10 @@ class FakePlatform : DisplayLayer, AppCatalog, Launcher, Injector, Power, Device
 
     override fun scroll(displayId: Int, nx: Float, ny: Float, hscroll: Float, vscroll: Float, size: IntSize) {
         scrolls.add(displayId)
+    }
+
+    override fun hover(displayId: Int, action: Int, nx: Float, ny: Float, size: IntSize) {
+        hovers.add(HoverCall(displayId, action, nx, ny))
     }
 
     override fun key(displayId: Int, action: Int, keycode: Int, metaState: Int, downTime: Long, eventTime: Long) {
