@@ -10,8 +10,9 @@
 //
 // The display is the same identity the app itself used (vendor/product ids,
 // serial = the profile's hash), so macOS sees no new display: no extra ColourSync
-// profile, no new arrangement entry. It is placed at the main display's
-// bottom-right corner, where it touches none of the person's screens.
+// profile, no new arrangement entry. It is placed to the right of every one of
+// the person's screens, with a 16 pt gap: an origin that merely touches a second
+// display's edge leaves a window's edge on that display (quiet-watch sees it).
 //
 //   pd-vdisplay --profile NAME
 //
@@ -191,8 +192,8 @@ guard apply(settings, to: handle),
     fail("the virtual display refused its settings")
 }
 
-// The mode and the corner origin, for this process's lifetime only (.forAppOnly):
-// the person's arrangement is back when the helper exits.
+// The mode and the origin, for this process's lifetime only (.forAppOnly): the
+// person's arrangement is back when the helper exits.
 func configure(_ id: CGDirectDisplayID) {
     var config: CGDisplayConfigRef?
     guard CGBeginDisplayConfiguration(&config) == .success else { return }
@@ -202,9 +203,26 @@ func configure(_ id: CGDirectDisplayID) {
                                         && $0.pixelWidth == Int(size.width) * Int(scale) }) {
         CGConfigureDisplayWithDisplayMode(config, id, wanted, nil)
     }
-    let main = CGDisplayBounds(CGMainDisplayID())
-    CGConfigureDisplayOrigin(config, id, Int32(main.maxX), Int32(main.maxY))
+    let origin = runOrigin(besides: id)
+    CGConfigureDisplayOrigin(config, id, origin.x, origin.y)
     CGCompleteDisplayConfiguration(config, .forAppOnly)
+}
+
+/// Where the run display goes: past the right edge of every real display, with a
+/// 16 pt gap. A corner that only touches a real display shares an edge with it
+/// after the arrangement rounds, and a window there lands on the person's screen.
+func runOrigin(besides id: CGDirectDisplayID) -> (x: Int32, y: Int32) {
+    var count: UInt32 = 0
+    CGGetActiveDisplayList(0, nil, &count)
+    var ids = [CGDirectDisplayID](repeating: 0, count: Int(count))
+    CGGetActiveDisplayList(count, &ids, &count)
+    let main = CGDisplayBounds(CGMainDisplayID())
+    var right = main.maxX
+    for display in ids.prefix(Int(count)) where display != id {
+        guard CGDisplayVendorNumber(display) != vendorID || CGDisplayModelNumber(display) != productID else { continue }
+        right = max(right, CGDisplayBounds(display).maxX)
+    }
+    return (Int32((right + 16).rounded(.up)), Int32(main.minY.rounded()))
 }
 configure(id)
 hold(id)

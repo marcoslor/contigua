@@ -7,7 +7,8 @@
 //     (the `--input-marker` file exists). The person's own moves elsewhere are
 //     not the run's and are not counted;
 //   - the windows of this run's processes that are on a real display (any
-//     display but the e2e virtual one), below the menu-bar level;
+//     display but the e2e virtual one), below the menu-bar level; a window that
+//     only shares ≤ 2 pt of an edge with one is not on it;
 //   - this run's processes that have a Dock icon (regular activation policy).
 // `--summary FILE` is rewritten after every sample with
 // `focus_changes=N pointer_moves=N visible_windows=N dock_icons=N`;
@@ -33,6 +34,14 @@ let inputMarker = values("--input-marker").first
 /// The PocketDeck e2e virtual display's ids (VirtualDisplay.swift).
 let virtualVendor: UInt32 = 0x5044
 let virtualModel: UInt32 = 0xE2E0
+
+/// A real overlap, not an edge touch: display arrangements round to whole
+/// points, so a run display placed next to a person's screen can share a point
+/// or two of an edge with it. A window there is not on the person's screen.
+func overlaps(_ a: CGRect, _ b: CGRect) -> Bool {
+    let shared = a.intersection(b)
+    return !shared.isNull && shared.width > 2 && shared.height > 2
+}
 
 var pathCache: [pid_t: String] = [:]
 func path(of pid: pid_t) -> String {
@@ -94,7 +103,7 @@ func sample() {
         let alpha = entry[kCGWindowAlpha as String] as? Double ?? 1
         let number = entry[kCGWindowNumber as String] as? Int ?? 0
         guard layer < 25, alpha > 0, bounds.width > 1, bounds.height > 1,
-              real.contains(where: { $0.intersects(bounds) }), !visibleWindows.contains(number) else { continue }
+              real.contains(where: { overlaps($0, bounds) }), !visibleWindows.contains(number) else { continue }
         visibleWindows.insert(number)
         note("window \(number) of pid \(pid) \(path(of: pid)) at \(bounds) on a real display")
     }
