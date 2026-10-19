@@ -340,6 +340,10 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func scheduleResize(after delay: TimeInterval) {
+        // The window's shape changed: until the phone's frame at that size
+        // arrives the last one fills it (VideoLayerView's pending rule). The
+        // message itself is debounced below; the fill starts with the drag.
+        videoView.noteResizeRequested()
         resizeWork?.cancel()
         if delay <= 0 {
             sendResize()
