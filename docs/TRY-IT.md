@@ -143,7 +143,14 @@ memory, swap under 2 GB); a boot/stop cycle pushes swap up for a while, so
 back-to-back runs can wait a few minutes between them. The exit code is the
 check's (a list's is the number of checks that failed).
 
-Known limitations (SM-S936B, Android 16)
+Known VM-only failures (first `all` in the VM, 2026-10-19: 244 passed, 7
+failed; none of them fail on the host): C12's Spotlight unit tests (the guest
+has Command Line Tools only, no XCTest), C6's tall config (the 1920x1080
+screen clamps the 600x900 pt window), C15 trackscroll's 100 ms gap (VM timing),
+and a cascade where the shared session goes offline after phone mode (C11's
+nav home/recents, then the audio and drop opens answer "not online").
+
+## Known limitations (SM-S936B, Android 16)
 
 - This Samsung build puts the virtual display in the panel's display group, so
   the server powers the physical panel off (SurfaceFlinger) while a window
