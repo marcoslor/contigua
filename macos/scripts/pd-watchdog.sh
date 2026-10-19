@@ -13,62 +13,82 @@
 # its limit for ten samples in a row, kills the process it was given:
 #
 #   pd-watchdog.sh PID
+#   pd-watchdog.sh --targets FILE
 #
 #   WATCHDOG killed reason=colorsync cpu=93.1 pid=12345    (exit 1)
 #
+# With --targets, one watchdog guards a whole run: FILE lists the processes,
+# one "<slot> <pid>" line each, and is read again every second (the run rewrites
+# it as its apps come and go); the watchdog exits once FILE is gone. When a
+# limit fires, every listed process still alive is killed, one line each.
+#
 # Ten seconds in a row, not one sample: a display appearing legitimately raises
 # colorsync for a moment, and that must not kill a healthy run. Silence and exit
-# 0 mean only that the process ended on its own.
+# 0 mean only that the process ended on its own (or FILE went away).
 #
 # Limits: colorsync 60% (its daemon and its per-display helper together),
-# WindowServer 80%.
+# WindowServer 80%. One `ps` and one `awk` a second: the watchdog runs for as
+# long as the run, so its own cost counts.
 set -u
 
-PID="${1:-}"
-if [ -n "$PID" ] && ! kill -0 "$PID" 2>/dev/null; then
-    exit 0
-fi
-if [ -z "$PID" ]; then
-    echo "usage: pd-watchdog.sh PID" >&2
+PID=""
+TARGETS=""
+case "${1:-}" in
+    --targets) TARGETS="${2:-}" ;;
+    *) PID="${1:-}" ;;
+esac
+if [ -z "$PID$TARGETS" ]; then
+    echo "usage: pd-watchdog.sh PID | --targets FILE" >&2
     exit 2
 fi
 
-# cpu_sum "name name ..." — %CPU of every process with one of these executable
-# names, summed. The name is the last path component, the way pd-load.swift
-# reads it; one `ps` for all of them, once a second.
-cpu_sum() {
-    ps -axo %cpu=,comm= 2>/dev/null | awk -v want="$1" '
-        BEGIN { count = split(want, names, " ") }
+# guarded — the live processes to guard, in PIDS; false when there is nothing
+# left to watch (the PID ended, or FILE is gone).
+guarded() {
+    PIDS=()
+    if [ -n "$PID" ]; then
+        kill -0 "$PID" 2>/dev/null || return 1
+        PIDS=("$PID")
+        return 0
+    fi
+    [ -f "$TARGETS" ] || return 1
+    local slot pid
+    while read -r slot pid; do
+        [ -n "${pid:-}" ] && kill -0 "$pid" 2>/dev/null && PIDS+=("$pid")
+    done < "$TARGETS"
+    return 0
+}
+
+# sample — "<colorsync> <windowserver> <colorsync x10> <windowserver x10>":
+# %CPU of the processes with these executable names (the last path component,
+# the way pd-load.swift reads it), summed, from one `ps`.
+sample() {
+    ps -axo %cpu=,comm= 2>/dev/null | awk '
         {
             comm = $0
             sub(/^[[:space:]]*[0-9.]+[[:space:]]+/, "", comm)
-            for (i = length(comm); i > 0; i--) {
-                if (substr(comm, i, 1) == "/") { comm = substr(comm, i + 1); break }
-            }
-            for (i = 1; i <= count; i++) if (comm == names[i]) { total += $1; break }
+            sub(/.*\//, "", comm)
+            if (comm == "colorsyncd" || comm == "colorsync.displayservices") colorsync += $1
+            else if (comm == "WindowServer") windowserver += $1
         }
-        END { printf "%.1f", total }'
+        END { printf "%.1f %.1f %d %d\n", colorsync, windowserver, colorsync * 10, windowserver * 10 }'
 }
 
-# above VALUE LIMIT — true when the sample is over the limit.
-above() { awk -v value="$1" -v limit="$2" 'BEGIN { exit !(value > limit) }'; }
-
-COLORSYNC_LIMIT=60
-WINDOWSERVER_LIMIT=80
+COLORSYNC_LIMIT=600      # tenths of a percent
+WINDOWSERVER_LIMIT=800
 STRIKES=10
 
 colorsync_strikes=0
 windowserver_strikes=0
 
-while kill -0 "$PID" 2>/dev/null; do
-    colorsync="$(cpu_sum "colorsyncd colorsync.displayservices")"
-    windowserver="$(cpu_sum "WindowServer")"
-    if above "$colorsync" "$COLORSYNC_LIMIT"; then
+while guarded; do
+    read -r colorsync windowserver colorsync10 windowserver10 < <(sample)
+    if [ "${colorsync10:-0}" -gt "$COLORSYNC_LIMIT" ]; then
         colorsync_strikes=$((colorsync_strikes + 1))
     else
         colorsync_strikes=0
     fi
-    if above "$windowserver" "$WINDOWSERVER_LIMIT"; then
+    if [ "${windowserver10:-0}" -gt "$WINDOWSERVER_LIMIT" ]; then
         windowserver_strikes=$((windowserver_strikes + 1))
     else
         windowserver_strikes=0
@@ -84,14 +104,16 @@ while kill -0 "$PID" 2>/dev/null; do
             reason="windowserver cpu=$windowserver"
         fi
     fi
-    if [ -n "$reason" ]; then
-        kill "$PID" 2>/dev/null
-        for _ in 1 2 3; do
-            kill -0 "$PID" 2>/dev/null || break
-            sleep 1
+    if [ -n "$reason" ] && [ ${#PIDS[@]} -gt 0 ]; then
+        for pid in "${PIDS[@]}"; do kill "$pid" 2>/dev/null; done
+        for pid in "${PIDS[@]}"; do
+            for _ in 1 2 3; do
+                kill -0 "$pid" 2>/dev/null || break
+                sleep 1
+            done
+            kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null
+            echo "WATCHDOG killed reason=$reason pid=$pid"
         done
-        kill -0 "$PID" 2>/dev/null && kill -9 "$PID" 2>/dev/null
-        echo "WATCHDOG killed reason=$reason pid=$PID"
         exit 1
     fi
     sleep 1
