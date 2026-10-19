@@ -72,6 +72,25 @@ class JsonTest {
     }
 
     @Test
+    fun capsNestingDepth() {
+        // 10 000 `[` must fail as a JsonException, not with a StackOverflowError.
+        try {
+            Json.parse("[".repeat(10_000))
+            fail("expected JsonException for a deeply nested payload")
+        } catch (e: JsonException) {
+            assertTrue("unexpected message: ${e.message}", e.message!!.contains("nesting"))
+        }
+        // 64 levels parse; 65 are refused.
+        assertTrue(Json.parse("[".repeat(64) + "]".repeat(64)) is List<*>)
+        try {
+            Json.parse("[".repeat(65) + "]".repeat(65))
+            fail("65 levels must be rejected")
+        } catch (_: JsonException) {
+            // expected
+        }
+    }
+
+    @Test
     fun rejectsMalformed() {
         for (bad in listOf("{", "{\"a\":}", "[1,]", "\"unterminated", "01x", "tru")) {
             try {

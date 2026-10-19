@@ -433,7 +433,9 @@ this Mac is not paired: "<phone name> isn't accepting new pairings."),
 `not_available` (the phone can't
 report its foreground app, e.g. no task manager access), `nothing_to_continue` (the
 foreground is our app, the launcher/home or SystemUI).
-Oversized frames close the session without a reply.
+Oversized frames close the session without a reply. JSON nesting is capped at
+64 arrays/objects; deeper input is rejected like any malformed JSON (before
+`welcome` it simply gets no answer).
 
 ## Versioning
 
