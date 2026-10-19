@@ -34,7 +34,10 @@ private final class FakeDropChannel: @unchecked Sendable, DropChannel {
     private(set) var starts: [Start] = []
     private(set) var cancels: [UInt32] = []
     private var chunkData: [UInt8] = []
+    private var pending: [@Sendable (Bool) -> Void] = []
     var open = true
+    /// Keep the send completions until the test acks them (a slow connection).
+    var holdAcks = false
 
     /// Fake responses when the dropdata is sent.
     var respond: @Sendable (Bool) -> Void = { _ in true }
@@ -50,8 +53,21 @@ private final class FakeDropChannel: @unchecked Sendable, DropChannel {
     }
 
     func sendDropData(id: UInt32, bytes: [UInt8], sent: @escaping @Sendable (Bool) -> Void) {
-        lock.lock(); chunkData += bytes; lock.unlock()
-        respond(open)
+        lock.lock()
+        chunkData += bytes
+        let hold = holdAcks
+        if hold { pending.append(sent) }
+        lock.unlock()
+        if !hold { respond(open) }
+    }
+
+    /// Answers every chunk held by [holdAcks], as the connection would.
+    func ackAll(_ ok: Bool = true) {
+        lock.lock()
+        let callbacks = pending
+        pending = []
+        lock.unlock()
+        for callback in callbacks { callback(ok) }
     }
 
     var received: [UInt8] {
@@ -113,6 +129,38 @@ final class FileDropSenderTests: XCTestCase {
         guard case .finished(let text, true) = sender.phase, text.contains("tiny.pdf") else {
             return XCTFail("phase \(sender.phase)")
         }
+    }
+
+    /// The phone's progress is throttled (250 ms), so its last confirmed offset
+    /// can arrive after the whole file is out. That late offset must only move
+    /// the pill: the sender has already sent those bytes and must not reopen the
+    /// file at that offset (the phone rejects "more bytes than announced").
+    func testDelayedAcksAndALateOffsetDoNotResendTheTail() async throws {
+        let data = Data((0..<(600 * 1024)).map { UInt8($0 % 251) })
+        let url = dir.appendingPathComponent("tail.bin")
+        try data.write(to: url)
+        channel.holdAcks = true
+
+        sender.send([url], session: channel)
+        await settle()
+        let start = try XCTUnwrap(channel.starts.first)
+        XCTAssertEqual(data.count, start.size)
+
+        // The opening progress unblocks the stream; all three chunks go out and
+        // the reader reaches EOF while the acks are still held.
+        sender.progress(id: start.id, bytes: 0)
+        await settle()
+        XCTAssertEqual(data, Data(channel.received))
+
+        // The phone confirms only the first chunk, then acks the held chunks.
+        sender.progress(id: start.id, bytes: FileDropSender.chunkSize)
+        channel.ackAll()
+        await settle()
+        channel.ackAll()
+        await settle()
+
+        XCTAssertEqual(data.count, channel.received.count)
+        XCTAssertEqual(data, Data(channel.received))
     }
 
     func testResumeCarriesTheOffsetAfterALostConnection() async throws {
