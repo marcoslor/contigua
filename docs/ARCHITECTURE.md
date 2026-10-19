@@ -17,9 +17,9 @@ phone stays locked**. LAN only. Open source.
 │ InputMapper + gestures       │                │  Server → Session →                │
 │ AudioEngine (Opus/AAC)       │                │   WindowStream × N:                │
 │ NotifyCenter / NowPlaying    │                │    VirtualDisplay + MediaCodec     │
-│ ClipboardSync, FileDrop,     │                │   MirrorStream (display 0)         │
+│ ClipboardSync, FileDrop,     │                │   WindowStream.startMirror         │
 │  OpenLink, ApkInstall,       │                │   AudioCapture (+ AudioFollow)     │
-│  DockApps, Handoff,          │                │   InputInjector, AppLauncher       │
+│  DockApps, Handoff,          │                │   AndroidInjector, AndroidLauncher │
 │  Spotlight, Share extension  │                │   Power/PanelPower, ShellLanding,  │
 │                              │                │   ApkInstaller, ShellClipboard     │
 └──────────────────────────────┘                └────────────────────────────────────┘
@@ -70,7 +70,8 @@ OWN_DISPLAY_GROUP | ALWAYS_UNLOCKED | TOUCH_FEEDBACK_DISABLED | OWN_FOCUS`.
   touched.
 - The VD's creation source is a `ShellContext` package `com.android.shell`
   (a Shizuku-only trick); injected input must carry the display id explicitly.
-- Encoder: H.264 High, VBR scaled to pixels (≈ 0.12 bpp·fps, capped 8 Mbps),
+- Encoder: H.264 at the platform's default profile (we never set `KEY_PROFILE`
+  or `KEY_LEVEL`), VBR scaled to pixels (≈ 0.12 bpp·fps, capped 8 Mbps),
   60 fps, IDR on demand, realtime priority, low-latency keys where supported.
   VDs bigger than 2560 px are scaled at capture instead of letterboxing.
 
@@ -192,7 +193,7 @@ android/                 Gradle project, single :app module (dev.pocketdeck)
                          ShizukuClient, PdNotificationListener, prefs, share
     server/              (runs in the shell process) DeckService (AIDL),
                          Server, Session, WindowStream (VD + MediaCodec
-                         encoder), AudioCapture + AudioFollow, InputInjector,
+                         encoder), AudioCapture + AudioFollow, AndroidInjector,
                          AndroidLauncher, Power/PanelPower, DisplayProbe,
                          ShellLanding (+ DropReceiver, ShareTrampoline),
                          ApkInstaller, ShellClipboard, Hidden, ResizePlan

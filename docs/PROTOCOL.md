@@ -83,6 +83,8 @@ display id on every injected event.
   message (older phones do). After a backpressure drop the phone lowers a
   stream's bitrate on its own (with a floor) and grows it back once frames keep
   up, so an explicit `bitrate` is a target to recover to, not a guarantee.
+  The Mac does not send `window.quality` yet (the fakephone selfcheck does; a
+  WAN quality cap will).
 
 ### Audio rules
 
