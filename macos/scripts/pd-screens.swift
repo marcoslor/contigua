@@ -73,8 +73,12 @@ func scale(of mode: CGDisplayMode) -> Int {
 // Smallest first: the least pixels the window server has to composite. The
 // extra 80 pt leaves room for the menu bar and Dock, which the visible frame
 // has already taken off.
-let candidates = modes(display)
-    .filter { $0.width >= 1200 && Double($0.height) >= wanted + 80 && scale(of: $0) == wantedScale }
+let all = modes(display).filter { scale(of: $0) == wantedScale }
+for mode in all {
+    print("pd-screens: \(wantedScale)x mode \(mode.width)x\(mode.height) pt (\(mode.pixelWidth)x\(mode.pixelHeight) px)")
+}
+let candidates = all
+    .filter { $0.width >= 1200 && Double($0.height) >= wanted + 80 }
     .sorted { $0.pixelWidth * $0.pixelHeight < $1.pixelWidth * $1.pixelHeight }
 
 for mode in candidates {
@@ -90,6 +94,15 @@ for mode in candidates {
     }
 }
 
-if let original { _ = CGDisplaySetDisplayMode(display, original, nil) }
-print("pd-screens: no \(wantedScale)x mode gives \(Int(wanted)) pt of visible height")
+// No mode is tall enough (a small VM display): leave the tallest one on, so a
+// run is as close as the machine gets, and say so.
+if let tallest = all.max(by: { $0.height < $1.height }) {
+    _ = CGDisplaySetDisplayMode(display, tallest, nil)
+    usleep(400_000)
+    report()
+    print("pd-screens: no \(wantedScale)x mode gives \(Int(wanted)) pt of visible height; left the tallest (\(tallest.width)x\(tallest.height) pt)")
+} else if let original {
+    _ = CGDisplaySetDisplayMode(display, original, nil)
+    print("pd-screens: no \(wantedScale)x mode at all")
+}
 exit(1)
