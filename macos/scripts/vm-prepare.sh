@@ -131,18 +131,6 @@ $SUDO pmset -a sleep 0 disksleep 0 displaysleep 0
 $SUDO defaults write /Library/Preferences/com.apple.loginwindow DisableScreenLock -bool true
 defaults -currentHost write com.apple.screensaver idleTime -int 0
 
-step "window animations"
-# The guest has no GPU acceleration, so its animations are slow and the checks
-# wait only 1 s for a minimised window to leave the screen list. Scale is the
-# short minimise effect, Reduce Motion drops the genie and automatic window
-# animations off skips open/close; nobody watches this VM and the suite makes
-# no timing assertions about animations.
-echo "mineffect was: $(defaults read com.apple.dock mineffect 2>/dev/null || echo default)"
-defaults write com.apple.dock mineffect -string scale
-defaults write com.apple.universalaccess reduceMotion -bool true
-defaults write NSGlobalDomain NSAutomaticWindowAnimationsEnabled -bool false
-killall Dock 2>/dev/null || true
-
 step "homebrew"
 command -v brew >/dev/null || { echo "no Homebrew in the image"; exit 4; }
 brew --version | head -1
