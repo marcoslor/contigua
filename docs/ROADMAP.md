@@ -58,10 +58,10 @@ clipboard images (#8), phone mirroring, window styles (Framed / Immersive, remem
 Order of work: this batch, then quick features, then an architecture / maintainability / security review before more features.
 
 Batch A (XS-S, one agent, one commit each)
-- [ ] A1 Android: space between the collapsed top bar and the first card (the "Connected" card touches the bar).
-- [ ] A2 Mac: notification titles end with the phone's name, e.g. "Ana (Pixel 9)".
-- [ ] A3 Mac: Show Touches defaults to on when a trackpad is present; an explicit user choice always wins.
-- [ ] A4 Mac: turning off "Show phone apps in the Dock" removes the Dock icon of running non-pinned apps too.
+- [x] A1 Android: space between the collapsed top bar and the first card (the "Connected" card touches the bar).
+- [x] A2 Mac: notification titles end with the phone's name, e.g. "Ana (Pixel 9)".
+- [x] A3 Mac: Show Touches defaults to on when a trackpad is present; an explicit user choice always wins.
+- [x] A4 Mac: turning off "Show phone apps in the Dock" removes the Dock icon of running non-pinned apps too.
 
 Batch B (S)
 - [ ] B1 Mac: glass title bar uses progressive blur only, no dimming, in framed and immersive, light and dark apps.
