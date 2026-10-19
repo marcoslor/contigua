@@ -3473,6 +3473,8 @@ start_load
 start_vdisplay || exit 1
 start_watch
 for check in "${CHECKS[@]}"; do
+    # PD_E2E_MARKS (scripts/e2e-cost.py --by-check): when each check started.
+    [ -n "${PD_E2E_MARKS:-}" ] && echo "$(date +%s) $check" >> "$PD_E2E_MARKS"
     "check_${check//-/_}"
 done
 [ "$which_check" = "all" ] && check_orphans
