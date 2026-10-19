@@ -107,6 +107,10 @@ export PD_E2E_VISIBLE="$visible"
 export PD_E2E_IN_VM=1
 export PD_E2E_PREBUILT="$(dirname "$0")/macos/build/e2e/PocketDeck.app"
 export PD_FAKE_TLS_PYTHON=/opt/homebrew/bin/python3
+# PD_VM_FAKE_DEBUG=1 makes the guest's fakephone print its session diagnostics
+# to fake.err (the shared phone keeps them for the whole run), for diagnosing a
+# session that ends on its own.
+[ "${PD_VM_FAKE_DEBUG:-0}" = 1 ] && export FAKE_DEBUG=1
 art="/tmp/pd-e2e-artifacts-$port"
 rm -rf "$art"
 # The guest boots headless (`tart run --no-graphics`) at the resolution it
@@ -163,6 +167,11 @@ if ssh_guest "test -d $art_guest" 2>/dev/null; then
     else
         rsync_from_guest "$art_guest/" "$OUT/checks/" || say "work dir copy failed"
     fi
+fi
+# The guest's session log is one file for the whole run (an `all` is one
+# process, so its work dir is the last check's): keep it next to the log.
+if ssh_guest "test -f $art_guest/session.log" 2>/dev/null; then
+    rsync_from_guest "$art_guest/session.log" "$OUT/session.log" || say "session log copy failed"
 fi
 
 vm_stop
