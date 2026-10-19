@@ -4236,22 +4236,22 @@ build_e2e_app() {
     fi
 }
 
-# The order `all` runs in. The shared-app checks (from deck, whose launch they
-# share, to drop) run back to back; every other check launches its own app.
-ALL_CHECKS=(tls qr pair gates direct mirror spotlight clip sharein links share apk dock nickname notify handoff
-            deck render resize input hover mouseback pinch chrome menus density trackpad pause nav audio drop)
+# shellcheck source=e2e-checks.sh
+. "$MACOS/scripts/e2e-checks.sh"
 
 usage() {
-    say "usage: check-e2e.sh [qr|pair|gates|tls|render|resize|input|hover|mouseback|input-global|pause|direct|nav|mirror|spotlight|pinch|chrome|menus|density|trackpad|clip|sharein|links|share|apk|drop|dock|nickname|notify|audio|handoff|deck|all [--shard N/M]]"
+    say "usage: check-e2e.sh [$(check_list)|all [--shard N/M]]"
     exit 2
 }
 
 which_check="${1:-all}"
-case "$which_check" in
-    qr|pair|gates|tls|render|resize|input|hover|mouseback|input-global|pause|direct|nav|mirror|spotlight|pinch|chrome|menus|density|trackpad|clip|sharein|links|share|apk|drop|dock|nickname|notify|audio|handoff|deck) CHECKS=("$which_check") ;;
-    all) CHECKS=("${ALL_CHECKS[@]}") ;;
-    *) usage ;;
-esac
+if [ "$which_check" = "all" ]; then
+    CHECKS=("${ALL_CHECKS[@]}")
+elif valid_check "$which_check"; then
+    CHECKS=("$which_check")
+else
+    usage
+fi
 # `all --shard N/M`: the Nth of M consecutive slices of `all` (with C9 at the
 # end of each), so a full run can be spread over several idle periods.
 if [ "${2:-}" = "--shard" ]; then
