@@ -41,7 +41,8 @@ python3 tools/fakephone/fakephone.py --no-mdns --auto-allow \
 Options: `--port` (0 = ephemeral), `--name` (mDNS instance), `--no-mdns`,
 `--auto-allow` (with `--allow-delay SECONDS` to act like a person comparing codes), `--state` (default `~/.pocketdeck-fakephone.json`),
 `--events` (JSON Lines log, flushed per line), `--no-labels` (skip the stream
-label overlay), `--demo-apps N` (pads the app list to N apps for grid screenshots;
+label overlay), `--resize-delay-ms MS` (hold a window's new VIDEO_CONFIG that long
+after `window.resize`, so a Mac can be checked mid-resize), `--demo-apps N` (pads the app list to N apps for grid screenshots;
 `--no-icon-every K` leaves every K-th one without an icon, answered with an empty
 `png` like the real phone), `--qr-uri URI` (simulates a QR scan: registers the client id and
 key from a `pocketdeck://pair?c=&n=&k=` URI as paired, so the next `auth`
