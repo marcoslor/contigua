@@ -663,9 +663,16 @@ final class Session {
                 fail("tls"); return
             }
             let code = PairingCodeV2.code(exporter: Data(exporter), macFp: macFp, phoneFp: phoneFp, Nm: nm, Np: np)
+            let codeHex = PairingCodeV2.codeHex(code)
             armPairingDeadline()
-            Log.session.notice("pairing code derived for this screen: \(PairingCodeV2.codeHex(code), privacy: .public)")
-            emit(.pairCodeShown(deviceId: knownDeviceId, code: PairingCodeV2.codeHex(code)))
+            // sec L-1: the code is a secret for its 120 s window; the log
+            // carries its length only. The e2e bundles (PD_TEST_HOOKS) keep
+            // the value so the pair check can compare both screens.
+            Log.session.notice("pairing code derived for this screen (len \(codeHex.count, privacy: .public))")
+            #if PD_TEST_HOOKS
+            Log.session.notice("pairing code derived for this screen: \(codeHex, privacy: .public)")
+            #endif
+            emit(.pairCodeShown(deviceId: knownDeviceId, code: codeHex))
         case "pair.qr":
             logExporterOnce()
             // R2: the phone proves the scan with HMAC(S, "pd-qr-v2" || exporter
