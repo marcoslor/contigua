@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 # Builds PocketDeck.app from the SwiftPM package and ad-hoc codesigns it.
 #
-#   ./scripts/bundle.sh [APP] [--variant NAME]
+#   ./scripts/bundle.sh [APP] [--variant NAME] [--with-files]
 #
 # APP defaults to build/PocketDeck.app; only that path is ever replaced.
 # The app carries the "Open on Phone" Share extension (Contents/PlugIns/Share.appex)
-# and the Dock app executable (Contents/MacOS/PocketDeckShim).
+# and the Dock app executable (Contents/MacOS/PocketDeckShim). --with-files adds
+# the File Provider experiment's extension (Contents/PlugIns/Files.appex) and the
+# App Group the app shares with it; only the vm-e2e files-exp bundle uses it.
 # Only `--variant release` (install.sh) gets the real extension id; every other
 # bundle (default `dev`, check-e2e's `e2e`) gets `dev.pocketdeck.mac.share-NAME` and
 # a "(NAME)" title, so a test copy never competes with the installed app's extension.
@@ -14,16 +16,19 @@ cd "$(dirname "$0")/.."
 
 APP="build/PocketDeck.app"
 VARIANT="dev"
+WITH_FILES=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --variant) VARIANT="${2:?--variant needs a name}"; shift 2 ;;
+        --with-files) WITH_FILES=1; shift ;;
         *) APP="$1"; shift ;;
     esac
 done
 case "$VARIANT" in
-    release) SHARE_ID="dev.pocketdeck.mac.share"; SHARE_TITLE="Open on Phone" ;;
+    release) SHARE_ID="dev.pocketdeck.mac.share"; SHARE_TITLE="Open on Phone"; FILES_ID="dev.pocketdeck.mac.files"; FILES_TITLE="PocketDeck Files" ;;
     *[!a-z0-9]*|"") echo "bundle.sh: --variant must be a-z0-9" >&2; exit 2 ;;
-    *) SHARE_ID="dev.pocketdeck.mac.share-$VARIANT"; SHARE_TITLE="Open on Phone ($VARIANT)" ;;
+    *) SHARE_ID="dev.pocketdeck.mac.share-$VARIANT"; SHARE_TITLE="Open on Phone ($VARIANT)"
+       FILES_ID="dev.pocketdeck.mac.files-$VARIANT"; FILES_TITLE="PocketDeck Files ($VARIANT)" ;;
 esac
 
 # The e2e/debug launch hooks are compiled in only for non-release bundles:
@@ -313,6 +318,23 @@ cat > "$APPEX/Contents/Info.plist" <<PLIST
 PLIST
 codesign --force --sign - --entitlements Extensions/Share/Share.entitlements "$APPEX"
 
+# File Provider extension (docs/design/files.md §1, experiment files-exp): the
+# same swiftc shape as Share, because SwiftPM cannot link an app extension's
+# entry point. It is a replicated provider, so it needs an App Group (the app's
+# side is FilesDomain.swift) and no portal capability. Opt-in (--with-files)
+# because the extension only belongs in the VM experiment's bundle: a host e2e
+# run must not have a File Provider extension to register.
+if [ "$WITH_FILES" = 1 ]; then
+    FILES_APPEX="$APP/Contents/PlugIns/Files.appex"
+    mkdir -p "$FILES_APPEX/Contents/MacOS"
+    swiftc -O -application-extension -module-name Files -target "$(uname -m)-apple-macos26.0" \
+        -swift-version 5 Extensions/Files/Files.swift \
+        -Xlinker -e -Xlinker _NSExtensionMain -o "$FILES_APPEX/Contents/MacOS/Files"
+    sed -e "s/__FILES_ID__/$FILES_ID/" -e "s/__FILES_TITLE__/$FILES_TITLE/" \
+        Extensions/Files/Info.plist > "$FILES_APPEX/Contents/Info.plist"
+    codesign --force --sign - --entitlements Extensions/Files/Files.entitlements "$FILES_APPEX"
+fi
+
 # Dock app executable (docs/design/dock.md): copied into each per-app shim bundle.
 swiftc -O -module-name PocketDeckShim -target "$(uname -m)-apple-macos26.0" -swift-version 5 \
     Shim/main.swift Sources/PocketDeck/DockMessages.swift -o "$APP/Contents/MacOS/PocketDeckShim"
@@ -325,5 +347,11 @@ swiftc -O -module-name PocketDeckMCP -target "$(uname -m)-apple-macos26.0" -swif
     Shim/mcp.swift -o "$APP/Contents/Helpers/pocketdeck-mcp"
 codesign --force --sign - "$APP/Contents/Helpers/pocketdeck-mcp"
 
-codesign --force --sign - "$APP"
+if [ "$WITH_FILES" = 1 ]; then
+    # The app carries the App Group the Files extension shares with it (an
+    # unsandboxed app may hold an app group, docs/design/files.md §1).
+    codesign --force --sign - --entitlements Extensions/Files/PocketDeckFiles.entitlements "$APP"
+else
+    codesign --force --sign - "$APP"
+fi
 echo "built $APP"

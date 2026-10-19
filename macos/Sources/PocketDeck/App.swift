@@ -71,6 +71,9 @@ struct LaunchOptions {
     /// `--mcp-enable` (test builds only): turn the automation server's setting
     /// on for this profile at launch (e2e `mcp`).
     var mcpEnable = false
+    /// `--files-domain add|remove|list|disconnect|reconnect` — the File Provider
+    /// experiment (docs/design/files.md §1). Refused outside the e2e VM.
+    var filesDomain: String?
 
     /// nil when `--profile` was missing or not a usable name.
     var profile: Profile? { Profile(name: profileName) }
@@ -112,6 +115,7 @@ struct LaunchOptions {
         "--background": false,
         "--open-requests": true,
         "--mcp-enable": false,
+        "--files-domain": true,
     ]
 
     /// One line on stderr (the harness captures stderr into app.log); the
@@ -210,6 +214,8 @@ struct LaunchOptions {
                 options.openRequests = next()
             case "--mcp-enable":
                 options.mcpEnable = true
+            case "--files-domain":
+                options.filesDomain = next()
             default:
                 break
             }
@@ -225,6 +231,7 @@ struct LaunchOptions {
     func launchRefusal(releaseBuild: Bool) -> String? {
         guard let profile else { return "--profile \(profileName): use 1-32 of a-z, 0-9 and -" }
         guard profile.isDefault else { return nil }
+        if filesDomain != nil { return "--files-domain needs --profile NAME (never the default profile)" }
         if background { return "--background needs --profile NAME (never the default profile)" }
         if preview == nil, !releaseBuild { return "this build needs --profile NAME (the default profile is for the installed app)" }
         return nil
@@ -268,6 +275,18 @@ final class AppEnvironment {
             FileHandle.standardError.write(Data((refusal + "\n").utf8))
             exit(2)
         }
+        if let raw = options.filesDomain {
+            guard FilesDomainAction(rawValue: raw) != nil else {
+                FileHandle.standardError.write(Data("--files-domain \(raw): use add|remove|list|disconnect|reconnect\n".utf8))
+                exit(2)
+            }
+            // Never on this Mac: adding the domain puts a location in the
+            // person's Finder. Only the e2e VM (vm-e2e.sh exports this) runs it.
+            guard ProcessInfo.processInfo.environment["PD_E2E_IN_VM"] == "1" else {
+                FileHandle.standardError.write(Data("--files-domain refuses to run outside the e2e VM (PD_E2E_IN_VM=1)\n".utf8))
+                exit(2)
+            }
+        }
         let profile = options.profile!
         BackgroundMode.isOn = options.background
         Profile.active = profile
@@ -306,6 +325,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @MainActor
     func applicationDidFinishLaunching(_ notification: Notification) {
         let environment = AppEnvironment.shared
+        if let raw = environment.options.filesDomain, let action = FilesDomainAction(rawValue: raw) {
+            FilesDomainHooks.run(action)
+            // `add` started the bridge and must stay up for the extension;
+            // every other action is a one-shot the check waits on.
+            if action != .add { exit(0) }
+        }
         // SwiftUI makes the app regular while it launches; background mode stays an accessory.
         if environment.options.background { NSApp.setActivationPolicy(.accessory) }
         switch environment.options.appearance {

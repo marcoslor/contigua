@@ -68,7 +68,11 @@ if vm_running; then
 fi
 
 say "building build/e2e/PocketDeck.app on the host"
-if ! "$MACOS/scripts/bundle.sh" "$MACOS/build/e2e/PocketDeck.app" --variant e2e > "$OUT/host-build.log" 2>&1; then
+# The File Provider experiment's extension is opt-in: only the bundle for a
+# files-exp run carries it (a host run must have nothing to register).
+files_flag=()
+for c in "${CHECKS[@]}"; do [ "$c" = files-exp ] && files_flag=(--with-files); done
+if ! "$MACOS/scripts/bundle.sh" "$MACOS/build/e2e/PocketDeck.app" --variant e2e ${files_flag[@]+"${files_flag[@]}"} > "$OUT/host-build.log" 2>&1; then
     say "host build failed; see $OUT/host-build.log"; tail -5 "$OUT/host-build.log"; exit 3
 fi
 
