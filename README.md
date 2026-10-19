@@ -148,4 +148,6 @@ plaintext on the wire. Details and the rest of the plan: [docs/ROADMAP.md](docs/
 
 ## License
 
-TBD — no LICENSE file in the repository yet.
+[PolyForm Noncommercial 1.0.0](LICENSE). You may use, change and share PocketDeck for
+personal and other noncommercial purposes; commercial use is not licensed. Third-party
+dependencies (SwiftNIO, swift-crypto, …) keep their own licenses.
