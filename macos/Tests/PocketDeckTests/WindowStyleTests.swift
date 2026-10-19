@@ -63,6 +63,33 @@ final class WindowStyleStorageTests: XCTestCase {
     }
 }
 
+final class ChromeConfigTests: XCTestCase {
+    func testTheWindowedChromeHidesTheTitleAndOwnsTheLights() {
+        for style in WindowStyle.allCases {
+            let config = ChromeConfig.forState(style: style, fullScreen: false)
+            XCTAssertFalse(config.titleVisible, "\(style)")
+            XCTAssertTrue(config.titlebarTransparent, "\(style)")
+            XCTAssertFalse(config.lightsManagedByAppKit, "\(style)")
+        }
+    }
+
+    func testFullScreenShowsTheTitleAndLeavesTheLightsToAppKit() {
+        for style in WindowStyle.allCases {
+            let config = ChromeConfig.forState(style: style, fullScreen: true)
+            XCTAssertTrue(config.titleVisible, "\(style)")
+            XCTAssertFalse(config.titlebarTransparent, "\(style)")
+            XCTAssertTrue(config.lightsManagedByAppKit, "\(style)")
+        }
+    }
+
+    func testTheStyleDoesNotChangeTheTitlebarRule() {
+        XCTAssertEqual(ChromeConfig.forState(style: .framed, fullScreen: false),
+                       ChromeConfig.forState(style: .immersive, fullScreen: false))
+        XCTAssertEqual(ChromeConfig.forState(style: .framed, fullScreen: true),
+                       ChromeConfig.forState(style: .immersive, fullScreen: true))
+    }
+}
+
 final class WindowStyleSizeTests: XCTestCase {
     private let stream = CGSize(width: 900, height: 600)
     private let screen = NSRect(x: 0, y: 25, width: 1440, height: 875)

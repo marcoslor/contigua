@@ -67,6 +67,10 @@ final class StreamChromeView: NSView {
 
     /// The pill's fade state; only `setPill` moves it.
     private(set) var showsPill = false
+    /// Native full screen: AppKit owns the standard buttons' place (the title
+    /// bar macOS reveals), so this chrome must not hide or move them
+    /// (ChromeConfig in WindowStyle.swift).
+    var lightsManagedByAppKit = false
     /// The pill's frame in the toolbar area while it is up.
     private var pillFrame: NSRect?
 
@@ -243,7 +247,8 @@ final class StreamChromeView: NSView {
             NSAnimationContext.runAnimationGroup({ context in
                 context.duration = DwellChrome.fadeIn
                 controlViews.forEach { $0.animator().alphaValue = 0 }
-                lights.forEach { $0.animator().alphaValue = 0 }
+                // Full screen's bar keeps the system's lights up.
+                if !self.lightsManagedByAppKit { lights.forEach { $0.animator().alphaValue = 0 } }
             }, completionHandler: {
                 // Still hidden: park everything for the next dwell. The buttons
                 // keep alpha 1 hidden so ⌘W/⌘M still "click" them.
@@ -259,8 +264,9 @@ final class StreamChromeView: NSView {
     }
 
     private func lightsHide() {
-        // Only park when no chrome owns the lights: the bar does too.
-        guard barHeight == 0 else { return }
+        // Only park when no chrome owns the lights: the bar does too, and in
+        // full screen AppKit does.
+        guard barHeight == 0, !lightsManagedByAppKit else { return }
         trafficLights.forEach {
             if !showsPill {
                 $0.isHidden = true
@@ -274,7 +280,8 @@ final class StreamChromeView: NSView {
     /// otherwise. The lights live in the title area above the full-size
     /// content, so they are placed there in window coordinates and converted.
     func placeTrafficLights() {
-        guard let window else { return }
+        // Full screen: the system's bar, the system's buttons (ChromeConfig).
+        guard let window, !lightsManagedByAppKit else { return }
         let height = window.frame.height
         for (i, type) in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton].enumerated() {
             guard let light = window.standardWindowButton(type) else { continue }

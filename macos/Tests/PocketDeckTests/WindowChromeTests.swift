@@ -118,7 +118,7 @@ final class StreamChromeWindowTests: XCTestCase {
         controller.pointerMoved(toWindowPoint: NSPoint(x: 2, y: 20))
         pump(0.4)
         XCTAssertFalse(controller.dwell.shown)
-        XCTAssertEqual(try String(contentsOf: file, encoding: .utf8), "style=framed lights=shown pill=hidden clicks=0\n")
+        XCTAssertEqual(try String(contentsOf: file, encoding: .utf8), "style=framed lights=shown pill=hidden title_visible=no lights_managed=us clicks=0\n")
     }
 
     func testCloseAndMinimiseWorkWithTheBar() throws {
@@ -147,7 +147,37 @@ final class StreamChromeWindowTests: XCTestCase {
                                              label: "Example", manager: manager)
         defer { controller.window?.close() }
         controller.window?.orderFront(nil)
-        XCTAssertEqual(try String(contentsOf: file, encoding: .utf8), "style=framed lights=shown pill=hidden clicks=0\n")
+        XCTAssertEqual(try String(contentsOf: file, encoding: .utf8), "style=framed lights=shown pill=hidden title_visible=no lights_managed=us clicks=0\n")
+    }
+
+    func testFullScreenShowsTheTitleAndHandsTheLightsBackOnExit() throws {
+        let manager = makeManager()
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("chrome-\(UUID().uuidString).txt")
+        addTeardownBlock { try? FileManager.default.removeItem(at: file) }
+        manager.chromeStateFile = file
+        let controller = AppWindowController(stream: 1, pkg: "com.example.app", activity: nil,
+                                             label: "Example", manager: manager)
+        defer { controller.window?.close() }
+        let window = try XCTUnwrap(controller.window)
+        window.orderFront(nil)
+        controller.windowDidResize(Notification(name: NSWindow.didResizeNotification))
+
+        controller.windowWillEnterFullScreen(Notification(name: NSWindow.willEnterFullScreenNotification))
+        XCTAssertEqual(window.titleVisibility, .visible, "the system's bar shows the window's title")
+        XCTAssertFalse(window.titlebarAppearsTransparent, "and is the standard one")
+        XCTAssertTrue(trafficLightsShown(window), "the standard lights stay up")
+        controller.windowDidEnterFullScreen(Notification(name: NSWindow.didEnterFullScreenNotification))
+        let state = try String(contentsOf: file, encoding: .utf8)
+        XCTAssertTrue(state.hasPrefix("style=framed lights=shown pill=hidden title_visible=yes lights_managed=appkit"),
+                      state)
+
+        controller.windowWillExitFullScreen(Notification(name: NSWindow.willExitFullScreenNotification))
+        XCTAssertEqual(window.titleVisibility, .hidden, "the windowed chrome's title is hidden again")
+        controller.windowDidExitFullScreen(Notification(name: NSWindow.didExitFullScreenNotification))
+        XCTAssertTrue(window.titlebarAppearsTransparent)
+        XCTAssertTrue(trafficLightsShown(window), "the framed bar takes the lights back")
+        let back = try String(contentsOf: file, encoding: .utf8)
+        XCTAssertTrue(back.hasPrefix("style=framed lights=shown pill=hidden title_visible=no lights_managed=us"), back)
     }
 
     func testThePhoneWindowIsThePhoneShapeWithItsActionsOnTheBar() throws {

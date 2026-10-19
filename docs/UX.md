@@ -60,7 +60,8 @@ Detail, states, copy and the connection state machine: [design/mac-redesign.md](
    stream, with rounded corners and a shadow, no title bar, and the desktop shows right up to it; a rest at its top-left (350 ms by default; Settings →
    General → **Reveal controls after** picks Instantly, Short or Long) fades in a small clear-glass pill with the traffic lights (Back · Home · Recents
    join it in phone mode), a click in that corner before the dwell reaches the app as an ordinary touch, and the pill fades out 600 ms after the pointer
-   leaves. Switching grows or shrinks the window by the bar, the stream keeps its place. The stream's own edges resize the window. The trackpad works like a touch screen: a two-finger scroll is a finger dragging
+   leaves. Switching grows or shrinks the window by the bar, the stream keeps its place. In native full screen the stream fills the screen in
+   either style; the bar macOS reveals at the top edge is the system's, with the window's title centred and the standard traffic lights. The stream's own edges resize the window. The trackpad works like a touch screen: a two-finger scroll is a finger dragging
    (Android's own scrolling, overscroll and fling), a pinch or rotate is two fingers around the pointer, the mouse wheel stays a wheel, the mouse's side
    **Back** button (button 3) sends Android Back to that window once per press — never repeated while held, nothing on release, and never a touch —
    while **Forward** (button 4) does nothing for now, and three or more
