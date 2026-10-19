@@ -388,7 +388,11 @@ final class ConnectionController {
         }
         if let directory = options.debugControl {
             debugControl = DebugControl(directory: directory) { [weak self] command, arguments in
-                MainActor.assumeIsolated { self?.performDebugControl(command, arguments) ?? "no controller" }
+                MainActor.assumeIsolated {
+                    // nil is "ran": `self?.…` would read a run command as a missing self.
+                    guard let self else { return "no controller" }
+                    return self.performDebugControl(command, arguments)
+                }
             }
             debugControl?.start()
         }
