@@ -23,9 +23,17 @@ final class ConnectionFailureTests: XCTestCase {
     }
 
     func testEveryPhoneErrorCodeInTheProtocolHasAMessage() {
-        for code in ["busy", "bad_pin", "pair_denied", "pair_timeout", "version", "protocol", "no_stream", "launch_failed"] {
+        for code in ["busy", "bad_pin", "pair_denied", "pair_timeout", "version", "protocol", "no_stream",
+                     "launch_failed", "connections_off", "pairing_off"] {
             XCTAssertNotNil(ConnectionFailure.message(for: code), code)
         }
+    }
+
+    func testGateRefusalsNameThePhone() {
+        XCTAssertEqual(ConnectionFailure.message(for: "connections_off", phoneName: "Pixel 9"),
+                       "Connections are turned off on Pixel 9.")
+        XCTAssertEqual(ConnectionFailure.message(for: "pairing_off", phoneName: "Pixel 9"),
+                       "Pixel 9 isn't accepting new pairings.")
     }
 
     func testPairingTimeoutSaysWhatHappened() {
@@ -46,7 +54,8 @@ final class ConnectionFailureTests: XCTestCase {
     }
 
     func testTransientFailuresRetry() {
-        for reason in ["closed-by-peer", "timeout", "receive", "failed", "busy", "tls", "no-pin"] {
+        for reason in ["closed-by-peer", "timeout", "receive", "failed", "busy", "tls", "no-pin",
+                       "connections_off", "pairing_off"] {
             XCTAssertTrue(ConnectionFailure.retriesAutomatically(reason), reason)
         }
     }

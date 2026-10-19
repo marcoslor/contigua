@@ -29,6 +29,8 @@ struct LaunchOptions {
     var floatWindows = false
     /// `--debug-chrome-state FILE`: stream windows write their header state here (e2e).
     var debugChromeState: String?
+    /// `--debug-banner FILE`: the deck window's banner text, one line per change (e2e).
+    var debugBanner: String?
     var audioStatsFile: String?
     var profileName = Profile.defaultName
     /// `--share-dir DIR`: where images shared from the phone are saved (default ~/Downloads/PocketDeck).
@@ -107,6 +109,8 @@ struct LaunchOptions {
                 options.floatWindows = true
             case "--debug-chrome-state":
                 options.debugChromeState = next()
+            case "--debug-banner":
+                options.debugBanner = next()
             case "--audio-stats":
                 options.audioStatsFile = next()
             case "--profile":
@@ -212,6 +216,7 @@ final class AppEnvironment {
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var openRequestInbox: OpenRequestInbox?
+    private var debugBanner: DebugBanner?
 
     /// Started from a shell (the test harness) there is no LaunchServices to
     /// make the process a regular app; do it explicitly so it gets windows and a Dock icon.
@@ -241,6 +246,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             openRequestInbox = inbox
         }
         NSApp.servicesProvider = LinkService.shared
+        if let path = environment.options.debugBanner {
+            let probe = DebugBanner(path: path) { [controller = environment.controller] in
+                controller.banner?.text
+            }
+            probe.start()
+            debugBanner = probe
+        }
         environment.controller.start()
     }
 

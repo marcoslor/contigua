@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # End-to-end checks C3-C13 for the macOS client against tools/fakephone.
 #
-#   ./scripts/check-e2e.sh [qr|pair|tls|render|resize|input|mouseback|input-global|pause|direct|nav|mirror|spotlight|pinch|chrome|trackpad|clip|sharein|links|share|apk|drop|dock|nickname|notify|audio|handoff|deck|all [--shard N/M]]
+#   ./scripts/check-e2e.sh [qr|pair|gates|tls|render|resize|input|mouseback|input-global|pause|direct|nav|mirror|spotlight|pinch|chrome|trackpad|clip|sharein|links|share|apk|drop|dock|nickname|notify|audio|handoff|deck|all [--shard N/M]]
 #
 # Every check starts from a clean slate (the shared-app checks share one, see
 # "The shared app" below): no PocketDeck or fakephone processes
@@ -849,6 +849,81 @@ check_pair() {
         && ok "C4 second launch auth_ok" || bad "C4 second launch did not auth"
     grep -q '"t":"pair.request"' "$WORK/events.jsonl" \
         && bad "C4 second launch tried to pair again" || ok "C4 second launch skipped pairing"
+    stop_fakephone
+}
+
+# --- B3: the phone's connection gates --------------------------------------
+
+# check_gates — the phone's "Allow new pairings" refuses an unknown Mac before
+# any code, a paired Mac still connects with it off, and "Allow connections"
+# refuses the paired Mac too. The Mac shows the phone's own sentence and retries
+# on its normal backoff, not in a tight loop.
+check_gates() {
+    clean
+    local banner="$WORK/banner.txt" attempts
+
+    # 1. Pairings off, unknown Mac: refused at the handshake, no pairing traffic.
+    rm -f "$WORK/state.json"
+    FAKE_ARGS="--refuse-pairings" start_fake || return 1
+    launch --connect "127.0.0.1:$PORT" --debug-banner "$banner" --quit-after 20
+    wait_until 20 events_have '"state":"refused_pairing"' \
+        && ok "B3 pairings off: unknown Mac refused at the handshake" \
+        || bad "B3 pairings off: no refusal event"
+    wait_until 10 eval '[ "$(mac_failed_line)" = "session failed: pairing_off" ]' \
+        && ok "B3 pairings off: Mac read pairing_off" \
+        || bad "B3 pairings off: Mac reason '$(mac_failed_line)'"
+    wait_until 10 grep -qF "isn't accepting new pairings." "$banner" \
+        && ok "B3 pairings off: Mac shows \"$(cat "$banner")\"" \
+        || bad "B3 pairings off: banner '$(cat "$banner" 2>/dev/null)'"
+    events_have '"t":"pair.request"' \
+        && bad "B3 pairings off: Mac still sent pair.request" \
+        || ok "B3 pairings off: no pairing request left the Mac"
+    stop_app
+    stop_fakephone
+    sleep 1
+
+    # 2. Pair normally, so the phone has a pin for this Mac.
+    : > "$WORK/events.jsonl"
+    start_fake || return 1
+    launch --connect "127.0.0.1:$PORT" --quit-after 16
+    await_app 16 events_have '"state":"paired"'
+    events_have '"state":"paired"' \
+        && ok "B3 paired a Mac for the gate checks" || bad "B3 could not pair"
+    stop_fakephone
+    sleep 1
+
+    # 3. Pairings off, the same paired Mac: it still connects.
+    : > "$WORK/events.jsonl"
+    FAKE_ARGS="--refuse-pairings" start_fake || return 1
+    launch --connect "127.0.0.1:$PORT" --quit-after 16
+    await_app 16 events_have '"state":"auth_ok"'
+    events_have '"state":"auth_ok"' \
+        && ok "B3 pairings off: the paired Mac still authenticated" \
+        || bad "B3 pairings off: the paired Mac was refused"
+    stop_fakephone
+    sleep 1
+
+    # 4. Master off: the paired Mac is refused, and the retries use the backoff.
+    : > "$WORK/events.jsonl"
+    rm -f "$banner"
+    FAKE_ARGS="--refuse-connections" start_fake || return 1
+    launch --connect "127.0.0.1:$PORT" --debug-banner "$banner" --quit-after 30
+    wait_until 20 events_have '"state":"refused_connections"' \
+        && ok "B3 connections off: paired Mac refused at the handshake" \
+        || bad "B3 connections off: no refusal event"
+    wait_until 10 eval '[ "$(mac_failed_line)" = "session failed: connections_off" ]' \
+        && ok "B3 connections off: Mac read connections_off" \
+        || bad "B3 connections off: Mac reason '$(mac_failed_line)'"
+    wait_until 10 grep -qF "Connections are turned off on FakePhone." "$banner" \
+        && ok "B3 connections off: Mac shows \"$(cat "$banner")\"" \
+        || bad "B3 connections off: banner '$(cat "$banner" 2>/dev/null)'"
+    # Six seconds is several backoff slots (1, 2, 4 s), never a storm.
+    sleep 6
+    attempts="$(count_events '"state":"refused_connections"')"
+    [ "$attempts" -ge 2 ] && [ "$attempts" -le 6 ] \
+        && ok "B3 connections off: $attempts attempts in the backoff window" \
+        || bad "B3 connections off: $attempts attempts in the backoff window (tight loop or gave up)"
+    stop_app
     stop_fakephone
 }
 
@@ -3445,17 +3520,17 @@ build_e2e_app() {
 
 # The order `all` runs in. The shared-app checks (from deck, whose launch they
 # share, to drop) run back to back; every other check launches its own app.
-ALL_CHECKS=(tls qr pair direct mirror spotlight clip sharein links share apk dock nickname notify handoff
+ALL_CHECKS=(tls qr pair gates direct mirror spotlight clip sharein links share apk dock nickname notify handoff
             deck render resize input mouseback pinch chrome trackpad pause nav audio drop)
 
 usage() {
-    say "usage: check-e2e.sh [qr|pair|tls|render|resize|input|mouseback|input-global|pause|direct|nav|mirror|spotlight|pinch|chrome|trackpad|clip|sharein|links|share|apk|drop|dock|nickname|notify|audio|handoff|deck|all [--shard N/M]]"
+    say "usage: check-e2e.sh [qr|pair|gates|tls|render|resize|input|mouseback|input-global|pause|direct|nav|mirror|spotlight|pinch|chrome|trackpad|clip|sharein|links|share|apk|drop|dock|nickname|notify|audio|handoff|deck|all [--shard N/M]]"
     exit 2
 }
 
 which_check="${1:-all}"
 case "$which_check" in
-    qr|pair|tls|render|resize|input|mouseback|input-global|pause|direct|nav|mirror|spotlight|pinch|chrome|trackpad|clip|sharein|links|share|apk|drop|dock|nickname|notify|audio|handoff|deck) CHECKS=("$which_check") ;;
+    qr|pair|gates|tls|render|resize|input|mouseback|input-global|pause|direct|nav|mirror|spotlight|pinch|chrome|trackpad|clip|sharein|links|share|apk|drop|dock|nickname|notify|audio|handoff|deck) CHECKS=("$which_check") ;;
     all) CHECKS=("${ALL_CHECKS[@]}") ;;
     *) usage ;;
 esac

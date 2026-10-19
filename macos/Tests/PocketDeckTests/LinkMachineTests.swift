@@ -147,6 +147,33 @@ final class LinkMachineTests: XCTestCase {
         XCTAssertEqual(machine.link, .offline(phone, .unreachable))
     }
 
+    func testConnectionsOffNamesThePhoneAndKeepsTheBackoff() {
+        var machine = online()
+        XCTAssertEqual(machine.handle(.attemptFailed(reason: "connections_off"), at: at(5)),
+                       [.attempt(after: 1)])
+        XCTAssertEqual(machine.link, .offline(phone, .connectionsOff))
+        XCTAssertEqual(machine.link.banner?.text, "Connections are turned off on Pixel 9.")
+        XCTAssertNil(machine.link.banner?.action)
+        // The next retry waits longer: the same schedule as every other drop.
+        XCTAssertEqual(machine.handle(.attemptFailed(reason: "connections_off"), at: at(6)),
+                       [.attempt(after: 2)])
+    }
+
+    func testPairingsOffNamesThePhoneAndKeepsTheBackoff() {
+        var machine = online()
+        XCTAssertEqual(machine.handle(.attemptFailed(reason: "pairing_off"), at: at(5)),
+                       [.attempt(after: 1)])
+        XCTAssertEqual(machine.link, .offline(phone, .pairingsOff))
+        XCTAssertEqual(machine.link.banner?.text, "Pixel 9 isn't accepting new pairings.")
+    }
+
+    func testPairingRefusedByThePhoneStaysInTheSheet() {
+        var machine = LinkMachine()
+        machine.handle(.beginPairing(phone), at: t0)
+        machine.handle(.attemptFailed(reason: "pairing_off"), at: at(2))
+        XCTAssertEqual(machine.link, .pairing(phone, .refused("pairing_off")))
+    }
+
     func testVersionMismatchStopsRetryingButTryNowRestarts() {
         var machine = online()
         XCTAssertEqual(machine.handle(.attemptFailed(reason: "version"), at: at(5)), [.stopAttempts])
