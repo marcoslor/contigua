@@ -4,6 +4,13 @@ package dev.pocketdeck.proto
 class JsonException(message: String) : Exception(message)
 
 /**
+ * Deepest accepted array/object nesting. Frames reach the parser before
+ * authentication and may be 8 MiB, so without a cap a fabricated payload can
+ * exhaust the stack (review L-7). 64 is far above anything the protocol sends.
+ */
+private const val MAX_DEPTH = 64
+
+/**
  * Minimal JSON encoder/parser.
  *
  * The protocol layer must run in plain-JVM unit tests where Android's `org.json`
@@ -100,6 +107,7 @@ object Json {
 
     private class Parser(private val s: String) {
         var pos = 0
+        private var depth = 0
 
         fun eof(): Boolean = pos >= s.length
 
@@ -111,13 +119,22 @@ object Json {
             skipWs()
             if (eof()) throw JsonException("unexpected end of input")
             return when (val c = s[pos]) {
-                '{' -> parseObject()
-                '[' -> parseArray()
+                '{' -> nested { parseObject() }
+                '[' -> nested { parseArray() }
                 '"' -> parseString()
                 't' -> literal("true", true)
                 'f' -> literal("false", false)
                 'n' -> literal("null", null)
                 else -> if (c == '-' || c.isDigit()) parseNumber() else throw JsonException("unexpected '$c' at $pos")
+            }
+        }
+
+        private fun <T> nested(parse: () -> T): T {
+            if (++depth > MAX_DEPTH) throw JsonException("nesting deeper than $MAX_DEPTH")
+            try {
+                return parse()
+            } finally {
+                depth--
             }
         }
 
