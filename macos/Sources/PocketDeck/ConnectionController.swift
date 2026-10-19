@@ -1307,9 +1307,11 @@ final class ConnectionController {
             apkInstaller.result(result)
         case .shareText(let text):
             shareInbox.phoneName = shareName()
+            shareInbox.phoneId = session?.phone?.id ?? ""
             shareInbox.text(text)
         case .shareFileBegin(let id, let name, let mime):
             shareInbox.phoneName = shareName()
+            shareInbox.phoneId = session?.phone?.id ?? ""
             shareInbox.fileBegin(id: id, name: name, mime: mime)
         case .shareFileData(let id, let bytes):
             shareInbox.fileData(id: id, bytes: bytes)

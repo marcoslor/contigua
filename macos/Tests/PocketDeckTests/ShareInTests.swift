@@ -160,8 +160,51 @@ final class ShareInTests: XCTestCase {
         XCTAssertEqual(actions.notes, ["Copied from Pixel", "Image from Pixel"])
     }
 
-    func testCopiedShareIsNotEchoedBack() {
-        let pasteboard = FakeBoard()
+    // MARK: link rate limit (sec H-2)
+
+    func testTheOpenLimiterAllowsOneLinkPerPhonePerWindow() {
+        var limiter = ShareOpenLimiter()
+        XCTAssertTrue(limiter.allow(phone: "p", now: 10))
+        XCTAssertFalse(limiter.allow(phone: "p", now: 10.5))
+        XCTAssertFalse(limiter.allow(phone: "p", now: 12.99))
+        XCTAssertTrue(limiter.allow(phone: "p", now: 13))
+        XCTAssertTrue(limiter.allow(phone: "q", now: 13), "the window is per phone")
+        XCTAssertFalse(limiter.allow(phone: "p", now: 12), "a backwards clock does not open early")
+    }
+
+    @MainActor
+    func testTheInboxHoldsASecondLinkInsideTheWindowAsANotification() {
+        let actions = RecordingActions()
+        let inbox = ShareInbox(directory: directory, actions: actions)
+        inbox.phoneName = "Pixel"
+        inbox.phoneId = "phone-1"
+        var now: TimeInterval = 100
+        inbox.clock = { now }
+
+        inbox.text("https://first.example.com/a?b=1")
+        now += 1
+        inbox.text("https://second.example.com/secret/path?q=1")
+        XCTAssertEqual(actions.opened.compactMap(\.host), ["first.example.com"])
+        XCTAssertEqual(actions.links.count, 1)
+        XCTAssertEqual(actions.links.first?.title, "Link from Pixel")
+        XCTAssertEqual(actions.links.first?.body, "second.example.com", "the notification carries the host only")
+        XCTAssertEqual(actions.links.first?.url.absoluteString, "https://second.example.com/secret/path?q=1",
+                       "the click target is the whole link")
+
+        // Another phone has its own window.
+        inbox.phoneId = "phone-2"
+        inbox.text("https://other.example.com")
+        XCTAssertEqual(actions.opened.compactMap(\.host), ["first.example.com", "other.example.com"])
+
+        // The same phone after the window opens again.
+        inbox.phoneId = "phone-1"
+        now += 2
+        inbox.text("https://third.example.com")
+        XCTAssertEqual(actions.opened.compactMap(\.host),
+                       ["first.example.com", "other.example.com", "third.example.com"])
+    }
+
+    func testCopiedShareIsNotEchoedBack() {        let pasteboard = FakeBoard()
         var sent: [String] = []
         let sync = ClipboardSync(pasteboard: pasteboard, isEnabled: { false }, send: { sent.append($0) },
                                  clock: { _, _ in {} })
@@ -178,10 +221,12 @@ private final class RecordingActions: ShareInActions {
     var texts: [String] = []
     var images: [URL] = []
     var notes: [String] = []
+    var links: [(title: String, body: String, url: URL)] = []
     func open(_ url: URL) { opened.append(url) }
     func copy(text: String) { texts.append(text) }
     func copy(imageFile: URL) { images.append(imageFile) }
     func notify(title: String, body: String, file: URL?) { notes.append(title) }
+    func notifyLink(title: String, body: String, url: URL) { links.append((title, body, url)) }
 }
 
 private final class FakeBoard: ClipboardPasteboard {
