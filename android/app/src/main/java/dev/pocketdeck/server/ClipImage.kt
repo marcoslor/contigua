@@ -21,15 +21,6 @@ object ClipImagePolicy {
         if (bytes.isEmpty() || bytes.size > MAX_BYTES) return null
         return MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
     }
-
-    /** `image/png`, or `image/jpeg` when the bytes carry the JPEG marker. */
-    fun sniffMime(bytes: ByteArray): String? {
-        if (bytes.size >= 3 && bytes[0] == 0xFF.toByte() && bytes[1] == 0xD8.toByte() && bytes[2] == 0xFF.toByte()) {
-            return "image/jpeg"
-        }
-        if (bytes.size >= 8 && bytes[0] == 0x89.toByte() && bytes[1] == 0x50.toByte()) return "image/png"
-        return null
-    }
 }
 
 /**
