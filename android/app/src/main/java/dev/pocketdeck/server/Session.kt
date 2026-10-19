@@ -154,6 +154,7 @@ class Session(
     private val drop = dropLanding?.let { DropReceiver(it, ::sendJson, log) }
     /** Read-only phone files; absent on a platform without shared storage. */
     private val files = filesRoot?.let { FsView(FsPaths(it, fsStats)) }
+    private val fsReader = files?.let { FsReader(it.paths, queue::enqueueBulk, ::sendJson, log) }
     private val clipImageSync = ClipImageSync()
     private val clipImageSender = ClipImageSender(queue::enqueueBulk, log)
     private val clipImageReceiver = ClipImageReceiver(ClipImageLand(clipImages, log), log)
@@ -303,6 +304,7 @@ class Session(
         stopClipImagePoll()
         runCatching { apk?.close() }
         runCatching { drop?.close() }
+        runCatching { fsReader?.close() }
         stopStreamWatch()
         hoverExecutor.shutdownNow()
         runCatching { audioCapture?.stop() }
@@ -705,6 +707,8 @@ class Session(
                 "drop.cancel" -> (obj["id"] as? Number)?.let { drop?.cancel(it.toLong()) }
                 "fs.list" -> onFsList(obj)
                 "fs.stat" -> onFsStat(obj)
+                "fs.read" -> fsReader?.begin(obj)
+                "fs.cancel" -> (obj["id"] as? Number)?.let { fsReader?.cancel(it.toInt()) }
                 "clip.image.start" -> onClipImageStart(obj)
                 "clip.image.end" -> onClipImageEnd(obj)
                 "clip.image.abort" -> onClipImageAbort(obj)
