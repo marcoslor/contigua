@@ -72,6 +72,14 @@ let wantedScale = Int(argument("--scale") ?? "2") ?? 2
 func scale(of mode: CGDisplayMode) -> Int {
     Int((Double(mode.pixelWidth) / Double(max(1, mode.width))).rounded())
 }
+// What the screen is now, always: the caller's log says what the run had, and
+// a screen that already qualifies is left alone (its mode list can be odd).
+report()
+if let screen = NSScreen.main, screen.visibleFrame.height >= wanted,
+   Int(screen.backingScaleFactor.rounded()) == wantedScale {
+    print("pd-screens: already \(Int(screen.visibleFrame.height)) pt of visible height at \(wantedScale)x")
+    exit(0)
+}
 // Smallest first: the least pixels the window server has to composite. The
 // extra 80 pt leaves room for the menu bar and Dock, which the visible frame
 // has already taken off.
