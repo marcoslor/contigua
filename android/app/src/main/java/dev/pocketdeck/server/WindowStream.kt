@@ -642,13 +642,23 @@ internal class WindowStream(
 
     private fun hideIme(displayId: Int) {
         runCatching {
-            val wm = Hidden.proxy("android.view.IWindowManager", "window") ?: return
+            val wm = Hidden.proxy("android.view.IWindowManager", "window")
+            if (wm == null) {
+                val missing = "hidden api missing: IWindowManager"
+                if (Hidden.firstTime(missing)) log(missing)
+                return
+            }
             val m = Hidden.method(
                 Hidden.iface("android.view.IWindowManager"),
                 "setDisplayImePolicy",
                 Hidden.T_INT,
                 Hidden.T_INT,
-            ) ?: return
+            )
+            if (m == null) {
+                val missing = "hidden api missing: IWindowManager.setDisplayImePolicy"
+                if (Hidden.firstTime(missing)) log(missing)
+                return
+            }
             m.invoke(wm, displayId, IME_POLICY_HIDE)
         }
     }

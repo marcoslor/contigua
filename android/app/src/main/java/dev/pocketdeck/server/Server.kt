@@ -44,6 +44,9 @@ class Server(
                 val built = try {
                     ShellTls.serverContext(cert, key, null)
                 } catch (t: Throwable) {
+                    // Class and message only: never the key or certificate bytes.
+                    // This separates "identity missing" from "identity broken".
+                    log("tls context build failed: ${t.javaClass.simpleName}: ${t.message}")
                     null
                 }
                 cachedTlsContext = built
