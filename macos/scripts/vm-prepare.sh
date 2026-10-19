@@ -7,7 +7,12 @@
 #
 # The VM is named pd-e2e (PD_E2E_VM) and is a clone of
 # ghcr.io/cirruslabs/macos-tahoe-base:latest (PD_E2E_BASE): 2 CPUs, 4 GB RAM,
-# a 1920x1080 display, ssh on as admin/admin. Preparation is idempotent: it
+# a 1920x1200 pt display, ssh on as admin/admin. The display is a hint in
+# points (tart's default unit for macOS): the suite's visible run puts the app
+# on the guest's real screen, and C6's tall window (600x900 pt of stream plus
+# the 52 pt header band) has to fit the visible frame, which a 1080 pt screen
+# did not. 1200 pt is the smallest 16:10 size with room for it.
+# Preparation is idempotent: it
 # installs Homebrew's python3 and ffmpeg, the Command Line Tools (for swiftc,
 # the suite compiles its small helpers in-guest), the host's dedicated ssh key,
 # an auto-login console session (the checks drive a real window server) and the
@@ -42,7 +47,7 @@ if ! vm_exists; then
     "$TART" clone "$BASE_IMAGE" "$VM" || exit 1
 fi
 # Idempotent: also refreshes an existing VM's sizing.
-"$TART" set "$VM" --cpu 2 --memory "$VM_MEMORY" --display 1920x1080 || exit 1
+"$TART" set "$VM" --cpu 2 --memory "$VM_MEMORY" --display 1920x1200 || exit 1
 
 if [ ! -f "$VM_KEY" ]; then
     say "generating the host->guest ssh key ($VM_KEY)"

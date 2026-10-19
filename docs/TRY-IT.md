@@ -117,7 +117,7 @@ single boot, each with its own log, PASS/FAIL and `passed=`/`failed=` lines; a
 boot is the expensive part, and each check is its own process either way.
 
 The VM is `pd-e2e`: a clone of `ghcr.io/cirruslabs/macos-tahoe-base:latest`
-with 2 CPUs, 4 GB RAM (the smallest this image accepts) and a 1920x1080
+with 2 CPUs, 4 GB RAM (the smallest this image accepts) and a 1920x1200 pt
 display. `macos/scripts/vm-prepare.sh` creates it (add `--fresh` to re-clone)
 and installs what the suite needs inside: Homebrew python3
 with pyOpenSSL (TLS 1.3 for the fakephone) and ffmpeg (video checks), the ssh
@@ -129,7 +129,11 @@ is what allows the TCC rows. `vm-prepare.sh` ends with a check per piece
 `screencapture`) and writes a marker, so a prepared VM is a verified one. It
 takes a few minutes and is worth re-running after changing what the suite needs.
 The suite runs under `/bin/bash` in the guest, the same shell the host uses, so
-the VM reproduces the host's behaviour instead of hiding a difference.
+the VM reproduces the host's behaviour instead of hiding a difference. The
+guest's toolchain is Command Line Tools only, so the one step that needs the
+XCTest runner (C12's Spotlight unit tests) prints `SKIP` with that reason
+instead of failing; the check also tests for the runner itself, so a host run
+never skips it.
 
 `vm-e2e.sh` builds `build/e2e/PocketDeck.app` on the host, boots the VM
 headless, copies the tree, the bundle and `tools/fakephone` in, runs the check

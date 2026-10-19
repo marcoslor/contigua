@@ -189,8 +189,12 @@ launch() {
 # forward in a quiet run.
 open_quiet() { if [ "$VISIBLE" = "1" ]; then open "$@"; else open -g "$@"; fi; }
 
+# skip <name> <reason> — a step this machine cannot run. A SKIP is not a
+# failure: the suite says why it did not run and moves on.
+skip() { say "SKIP $1 ($2)"; }
+
 # skip_visible <name> — a step that needs real input through the window server.
-skip_visible() { say "SKIP $1 (needs real input; PD_E2E_VISIBLE=1 runs it)"; }
+skip_visible() { skip "$1" "needs real input; PD_E2E_VISIBLE=1 runs it"; }
 
 # cg_input <cgevent args...> — a real-input step (visible runs only): the watcher
 # counts any pointer move while the marker exists.
@@ -643,6 +647,13 @@ wait_until() {
 
 # events_have <text> — the fakephone event log contains the text.
 events_have() { grep -qF -- "$1" "$WORK/events.jsonl" 2>/dev/null; }
+
+# last_video_size — the newest video config's pixels, for a FAIL message: a
+# window the screen clamps is what C6 usually catches.
+last_video_size() {
+    grep '"ev":"video"' "$WORK/events.jsonl" 2>/dev/null | grep '"config":true' | tail -1 \
+        | grep -o '"w":[0-9]*,"h":[0-9]*' | tail -1
+}
 
 # await_app <seconds> <command...> — a positive step's end: the app has done what
 # the step needs once the command succeeds, so it is stopped then instead of
@@ -1196,8 +1207,11 @@ check_resize() {
     # Non-16:9 shapes: tall, then ultra-wide (capped at 2560 px, aspect kept).
     w=$((1200 / scale)); h=$((1800 / scale))
     open_shared --open com.android.settings --resize-stream "1:${w}x${h}-pt" || return 1
-    wait_until 30 events_have '"ev":"video","stream":1,"config":true,"w":1200,"h":1792' \
-        && ok "C6 tall shape resized to 1200x1792 (${w}x${h} pt at ${scale}x, floored to 16)" || bad "C6 no tall config"
+    if wait_until 30 events_have '"ev":"video","stream":1,"config":true,"w":1200,"h":1792'; then
+        ok "C6 tall shape resized to 1200x1792 (${w}x${h} pt at ${scale}x, floored to 16)"
+    else
+        bad "C6 no tall config (last video $(last_video_size))"
+    fi
     screenshot "$w" "$WORK/resize-tall.png" && say "screenshot: $WORK/resize-tall.png"
     stop_app
 
@@ -2514,6 +2528,11 @@ spotlight_log_line() {
 
 spotlight_logged() { [ -n "$(spotlight_log_line)" ]; }
 
+# xctest_available — `swift test` needs the XCTest runner, which comes with
+# Xcode. A guest with Command Line Tools only (the e2e VM) has swiftc but no
+# usr/bin/xctest, so the unit-test fallback below cannot run there.
+xctest_available() { [ -x "$(xcode-select -p 2>/dev/null)/usr/bin/xctest" ]; }
+
 # check_spotlight — after an app list arrives the apps are indexed. mdfind is
 # tried first; an unsigned dev bundle may not be able to write the Spotlight
 # index, in which case the unit tests (item builder + throttle) and the app's
@@ -2533,17 +2552,21 @@ check_spotlight() {
         ok "C12 mdfind found indexed phone apps: $(echo "$hit" | tr '\n' ' ')"
     else
         say "C12 mdfind lists nothing (an unsigned dev bundle cannot surface in the Spotlight index); falling back to the unit test + the app's log line"
-        local out
-        # The debug test build is reused when it is newer than the sources
-        # (K2 leaves one); otherwise swift test builds it as before.
-        local skip=()
-        newer_than "$MACOS/.build/debug/PocketDeckTests.xctest/Contents/MacOS/PocketDeckTests" "${APP_SOURCES[@]}" "$MACOS/Tests" \
-            || skip=(--skip-build)
-        out="$(cd "$MACOS" && swift test ${skip[@]+"${skip[@]}"} --filter SpotlightTests 2>&1 || true)"
-        if echo "$out" | grep -q "with 0 failures"; then
-            ok "C12 Spotlight unit tests pass (builder + throttled re-index + domain removal)"
+        if xctest_available; then
+            local out
+            # The debug test build is reused when it is newer than the sources
+            # (K2 leaves one); otherwise swift test builds it as before.
+            local build_args=()
+            newer_than "$MACOS/.build/debug/PocketDeckTests.xctest/Contents/MacOS/PocketDeckTests" "${APP_SOURCES[@]}" "$MACOS/Tests" \
+                || build_args=(--skip-build)
+            out="$(cd "$MACOS" && swift test ${build_args[@]+"${build_args[@]}"} --filter SpotlightTests 2>&1 || true)"
+            if echo "$out" | grep -q "with 0 failures"; then
+                ok "C12 Spotlight unit tests pass (builder + throttled re-index + domain removal)"
+            else
+                bad "C12 Spotlight unit tests failed"
+            fi
         else
-            bad "C12 Spotlight unit tests failed"
+            skip "C12 Spotlight unit tests" "this toolchain has no XCTest runner: $(xcode-select -p 2>/dev/null) has no usr/bin/xctest"
         fi
         if [ -n "$logged" ]; then
             ok "C12 the app logged the index attempt ($logged)"

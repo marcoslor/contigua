@@ -102,10 +102,18 @@ port="$2"
 shift 2
 export PD_E2E_PORT="$port"
 export PD_E2E_VISIBLE="$visible"
+# PD_E2E_IN_VM: the checks that need something this guest lacks (XCTest) can
+# skip instead of failing; a host run never sets it.
+export PD_E2E_IN_VM=1
 export PD_E2E_PREBUILT="$(dirname "$0")/macos/build/e2e/PocketDeck.app"
 export PD_FAKE_TLS_PYTHON=/opt/homebrew/bin/python3
 art="/tmp/pd-e2e-artifacts-$port"
 rm -rf "$art"
+# The guest's screen in points: a visible run puts the app on it (no virtual
+# display), and AppKit clamps windows to its visible frame, so C6's tall
+# window needs the guest to be tall enough. Logged for every run.
+screen="$(system_profiler SPDisplaysDataType 2>/dev/null | grep -E 'Resolution|UI Looks like' | tr -s ' ' | tr '\n' ' ')"
+echo "guest screen: ${screen:-unknown} (C6 needs 900 pt of height)"
 failed=0
 last=0
 for check in "$@"; do
