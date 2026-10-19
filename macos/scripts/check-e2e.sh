@@ -695,6 +695,14 @@ screenshot_portrait() {
     screencapture -x -l"$id" "$file"
 }
 
+# shot_window <window-id> <file> — the window's own pixels only, no shadow:
+# the edge checks sample just inside the frame, so the capture must be exactly
+# the window (screencapture -o drops the shadow -l would add).
+shot_window() {
+    local id="$1" file="$2"
+    screencapture -x -o -l"$id" "$file"
+}
+
 # screenshot_widest <file> — capture the widest window (wide resize, clamped by
 # the display so the requested point width may not exist).
 screenshot_widest() {
@@ -1235,6 +1243,72 @@ check_resize() {
     screenshot "$w" "$WORK/resize-wide.png" || screenshot_widest "$WORK/resize-wide.png" \
         && say "screenshot: $WORK/resize-wide.png"
     stop_app
+
+    # --- Live resize: the old frame fills the window until the answer ---
+    # A fresh phone holds its VIDEO_CONFIG back for a moment after
+    # window.resize (--resize-delay-ms). The app asks 2 s after the window
+    # opens, so the window keeps the old frame in its new shape: while the
+    # answer is pending the frame is cropped to fill it (no black bars), and
+    # the answer's own frame is the normal rule again. The screenshots are
+    # taken within the 2 s fill timeout (VideoLayerView.resizeFillTimeout).
+    end_shared
+    : > "$WORK/events.jsonl"
+    FAKE_ARGS="--resize-delay-ms 4000" start_fake || return 1
+    launch_shared --connect "127.0.0.1:$PORT" || return 1
+    local fw=640 fh=640 bar=28 edges win ew eh
+    ew=$((fw * scale / 16 * 16)); eh=$((fh * scale / 16 * 16))
+    open_shared --open com.android.settings --float-windows \
+        --resize-stream "1:${fw}x${fh}-pt" || return 1
+    wait_until 30 events_have '"ev":"video","stream":1,"config":true' \
+        || bad "C6 live resize: no first video config"
+    if win="$(await_window "\$4 == $fw")" && shot_window "$win" "$WORK/resize-fill.png"; then
+        # The screenshot is taken as the window takes its new shape (inside
+        # the 2 s fill timeout); the phone's held answer comes 0.3 s later.
+        wait_until 5 events_have '"ev":"resize","held":true' \
+            && ok "C6 live resize: the phone held its answer (no config at the new size yet)" \
+            || bad "C6 live resize: the phone did not hold the resize answer"
+        edges="$(edge_kinds "$WORK/resize-fill.png" "$fw" $((fh + bar)) "$bar")"
+        [ "$edges" = "left=stream right=stream bottom=stream top=stream" ] \
+            && ok "C6 live resize: the last frame fills the window, no black bars while the answer is held ($edges)" \
+            || bad "C6 live resize: bars while the answer is held ($edges)"
+        say "screenshot: $WORK/resize-fill.png"
+    else
+        bad "C6 live resize: no window ${fw} pt wide to capture"
+    fi
+    wait_until 30 events_have "\"ev\":\"video\",\"stream\":1,\"config\":true,\"w\":${ew},\"h\":${eh}" \
+        || bad "C6 live resize: no answer at ${ew}x${eh} (last video $(last_video_size))"
+    local tries=12
+    while [ "$tries" -gt 0 ]; do
+        shot_window "$win" "$WORK/resize-fill-done.png" || break
+        edges="$(edge_kinds "$WORK/resize-fill-done.png" "$fw" $((fh + bar)) "$bar")"
+        [ "$edges" = "left=stream right=stream bottom=stream top=stream" ] && break
+        sleep 0.25
+        tries=$((tries - 1))
+    done
+    [ "$edges" = "left=stream right=stream bottom=stream top=stream" ] \
+        && ok "C6 live resize: after the answer the picture is the settled one ($edges)" \
+        || bad "C6 live resize: after the answer ($edges)"
+    say "screenshot: $WORK/resize-fill-done.png"
+
+    # The phone window mirrors the phone's own screen: no fill, no crop, and
+    # the bar above it mirrors the screen's top rows (never a black gap).
+    next_shared
+    open_shared --open-phone --float-windows || return 1
+    wait_until 30 events_have '"ev":"video","stream":1,"config":true' \
+        || bad "C6 phone window: no video config"
+    local pw ph
+    read -r win _ _ pw ph <<< "$(windows | awk '$5 > $4 {print; exit}')"
+    if [ -n "${win:-}" ] && shot_window "$win" "$WORK/resize-phone.png"; then
+        edges="$(edge_kinds "$WORK/resize-phone.png" "$pw" "$ph" "$bar")"
+        case "$edges" in
+            *"top=black"*) bad "C6 phone window: black under the bar ($edges)" ;;
+            *) ok "C6 phone window: the mirror's letterbox is unchanged, no black under the bar ($edges)" ;;
+        esac
+        say "screenshot: $WORK/resize-phone.png"
+    else
+        bad "C6 phone window: no portrait window to capture"
+    fi
+    stop_app
     stop_fakephone
 }
 
@@ -1768,6 +1842,37 @@ def kind(x, y):
 mid = h - 300 * scale
 print("left=%s right=%s bottom=%s" % (kind(2 * scale, mid), kind(w - 2 * scale - 1, mid),
                                       kind(w / 10, h - 2 * scale - 1)))
+PY
+}
+
+# edge_kinds <png> <w-pt> <h-pt> <bar-pt> — the window's own pixels just inside
+# its left, right, bottom and (just under the bar) top edges, as "left=… right=…
+# bottom=… top=…" with each "backdrop", "black" or "stream". <h-pt> is the whole
+# window, bar included; <bar-pt> is the framed bar's height (0 without one).
+# Black is the video layer's own letterbox (the live-resize fill's opposite).
+edge_kinds() {
+    python3 - "$@" <<'PY'
+import subprocess, sys
+path, wpt, hpt, barpt = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4])
+size = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "stream=width,height", "-of", "csv=p=0", path],
+                      capture_output=True, text=True).stdout.strip().split(",")
+w, h = int(size[0]), int(size[1])
+scale = w / wpt
+raw = subprocess.run(["ffmpeg", "-v", "error", "-i", path, "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
+                     capture_output=True).stdout
+def kind(x, y):
+    i = (int(y) * w + int(x)) * 3
+    r, g, b = raw[i], raw[i + 1], raw[i + 2]
+    # The backdrop is (46, 115, 217); the samples avoid the patterns' dark bars.
+    if b > 170 and r < 110 and g < 160:
+        return "backdrop"
+    if max(r, g, b) < 40:
+        return "black"
+    return "stream"
+mid = (barpt + (hpt - barpt) / 2) * scale
+print("left=%s right=%s bottom=%s top=%s" % (
+    kind(2 * scale, mid), kind(w - 2 * scale - 1, mid),
+    kind(w / 10, h - 2 * scale - 1), kind(w / 10, (barpt + 2) * scale)))
 PY
 }
 

@@ -455,6 +455,11 @@ class EventLog(object):
         self._emit({"ev": "quality", "stream": stream, "bitrate": bitrate,
                     "maxFps": max_fps, "ts": time.time()})
 
+    def resize_held(self, stream, ms):
+        """A window.resize is received and its answer held back (--resize-delay-ms)."""
+        self._emit({"ev": "resize", "held": True, "stream": stream, "ms": ms,
+                    "ts": time.time()})
+
     def clip(self, direction, text):
         self._emit({"ev": "clip", "dir": direction, "text": text, "ts": time.time()})
 
@@ -709,6 +714,7 @@ class WindowStream(object):
         self._enc = None
         self._reader = None
         self._configured = False
+        self._resize_timer = None
         self._au_index = 0
         self._paused = False
         self._lock = threading.Lock()
@@ -1712,6 +1718,25 @@ class Session(object):
         window = self._stream_or_error(msg)
         if window is None:
             return
+        delay = getattr(self.phone.args, "resize_delay_ms", 0)
+        if delay > 0:
+            # Hold the answer: the Mac keeps the old frame in the new window
+            # shape until the timer restarts the encoder (the live-resize fill).
+            # A newer resize replaces the held one.
+            self.phone.events.resize_held(window.stream_id, delay)
+            timer = getattr(window, "_resize_timer", None)
+            if timer is not None:
+                timer.cancel()
+            timer = threading.Timer(delay / 1000.0, self._apply_window_resize, args=(window, msg))
+            timer.daemon = True
+            window._resize_timer = timer
+            timer.start()
+            return
+        self._apply_window_resize(window, msg)
+
+    def _apply_window_resize(self, window, msg):
+        if window.stream_id not in self.windows:
+            return
         if window.mode == "phone":
             box = turn_box(msg.get("w", window.w), msg.get("h", window.h), *self.phone.screen)
             window.w, window.h = mirror_fit(*box + self.phone.screen)
@@ -1725,6 +1750,9 @@ class Session(object):
         window = self._stream_or_error(msg)
         if window is None:
             return
+        if window._resize_timer is not None:
+            window._resize_timer.cancel()
+            window._resize_timer = None
         window.stop()
         del self.windows[msg["stream"]]
         self.sender.forget_stream(msg["stream"])
@@ -2085,6 +2113,9 @@ def build_parser():
                    help="repeat the last drop.progress and hold the result this long, "
                         "so the phone's confirmation for the tail lands after the Mac "
                         "has sent everything (a slow phone)")
+    p.add_argument("--resize-delay-ms", type=int, default=0, metavar="MS",
+                   help="hold back a window's new VIDEO_CONFIG this long after "
+                        "window.resize (the Mac's live-resize fill); 0 answers at once")
     return p
 
 
