@@ -75,13 +75,18 @@ final class WindowManager {
     private var cascadePoint = NSPoint.zero
     private static let framesKey = "streamFrames"
     private static let showTouchesKey = "showTouches"
+    /// Whether this Mac has a trackpad decides the Show Touches default; read
+    /// once, before the menu state seeds itself.
+    private let hasTrackpad: Bool
 
     init(session: Session, defaults: UserDefaults = .standard) {
         self.session = session
         frames = defaults
+        hasTrackpad = TrackpadPresence.anyTrackpad()
         styleStore = WindowStyleStore(defaults: defaults)
         barMirror = BarMirror.stored(in: defaults)
-        StreamMenuState.shared.showTouches = defaults.bool(forKey: Self.showTouchesKey)
+        StreamMenuState.shared.showTouches = ShowTouchesDefault.resolve(
+            hasTrackpad: hasTrackpad, stored: defaults.object(forKey: Self.showTouchesKey) as? Bool)
     }
 
     /// The View menu's Window Style: toggle/switch the key stream window's
@@ -116,9 +121,14 @@ final class WindowManager {
     /// The framed bar's mirror alphas, as the profile's defaults set them.
     let barMirror: BarMirror
 
-    /// View → Show Touches: the fingers Android sees while a trackpad gesture runs. Off by default.
+    /// View → Show Touches: the fingers Android sees while a trackpad gesture
+    /// runs. On by default where a trackpad exists (built-in or connected);
+    /// once the person toggles it, their stored choice always wins.
     var showTouches: Bool {
-        get { frames.bool(forKey: Self.showTouchesKey) }
+        get {
+            ShowTouchesDefault.resolve(hasTrackpad: hasTrackpad,
+                                       stored: frames.object(forKey: Self.showTouchesKey) as? Bool)
+        }
         set {
             frames.set(newValue, forKey: Self.showTouchesKey)
             for controller in allControllers() { controller.videoView.showsTouches = newValue }

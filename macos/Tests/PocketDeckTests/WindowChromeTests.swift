@@ -157,9 +157,14 @@ final class StreamChromeWindowTests: XCTestCase {
             .chrome.actionCount, 0)
     }
 
-    func testShowTouchesIsOffByDefaultAndRemembered() {
+    func testShowTouchesStartsFromTheHardwareAndRemembersTheToggle() {
         let manager = makeManager()
         addTeardownBlock { StreamMenuState.shared.showTouches = false }
+        // Nothing stored yet: the default follows the machine's trackpad.
+        XCTAssertEqual(manager.showTouches, TrackpadPresence.anyTrackpad())
+        XCTAssertEqual(StreamMenuState.shared.showTouches, TrackpadPresence.anyTrackpad())
+        // The stored choice wins from the first toggle on.
+        manager.showTouches = false
         XCTAssertFalse(manager.showTouches)
         let controller = AppWindowController(stream: 1, pkg: "com.example.app", activity: nil,
                                              label: "Example", manager: manager)
@@ -430,7 +435,9 @@ final class StreamMenuTests: XCTestCase {
         XCTAssertTrue(state.hasStream)
         controller.windowDidResignKey(Notification(name: NSWindow.didResignKeyNotification))
         XCTAssertFalse(state.hasStream)
+        let alreadyOn = manager.showTouches
         XCTAssertTrue(NSApp.sendAction(#selector(StreamWindowController.toggleShowTouches(_:)), to: controller, from: nil))
-        XCTAssertTrue(manager.showTouches)
+        XCTAssertEqual(manager.showTouches, !alreadyOn, "the menu item toggled the setting")
+        XCTAssertEqual(state.showTouches, manager.showTouches, "and the menu state follows it")
     }
 }
