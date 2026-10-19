@@ -714,7 +714,7 @@ class Session(
                 "drop.cancel" -> (obj["id"] as? Number)?.let { drop?.cancel(it.toLong()) }
                 "fs.list" -> onFsList(obj)
                 "fs.stat" -> onFsStat(obj)
-                "fs.read" -> fsReader?.begin(obj)
+                "fs.read" -> onFsRead(obj)
                 "fs.cancel" -> (obj["id"] as? Number)?.toLong()?.let { fsReader?.cancel(it) }
                 "clip.image.start" -> onClipImageStart(obj)
                 "clip.image.end" -> onClipImageEnd(obj)
@@ -1198,6 +1198,15 @@ class Session(
             log("fs: list id=$id failed: ${e.javaClass.simpleName}")
             fsError(id, FsFailure("internal", "the listing failed"))
         }
+    }
+
+    private fun onFsRead(obj: Map<String, Any?>) {
+        val reader = fsReader
+        if (reader == null) {
+            fsId(obj)?.let { fsError(it, FsPaths.denied("files are not served")) }
+            return
+        }
+        reader.begin(obj)
     }
 
     private fun onFsStat(obj: Map<String, Any?>) {

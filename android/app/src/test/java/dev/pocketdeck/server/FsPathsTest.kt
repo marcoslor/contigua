@@ -155,6 +155,19 @@ class FsPathsTest {
     }
 
     @Test
+    fun aSymlinkToAHiddenTopLevelEntryIsRefused() {
+        val root = tmp.newFolder("sdcard4")
+        File(root, "Android/data/app").mkdirs()
+        File(root, ".secret").mkdirs()
+        Files.createSymbolicLink(File(root, "apps").toPath(), File(root, "Android/data").toPath())
+        Files.createSymbolicLink(File(root, "dot").toPath(), File(root, ".secret").toPath())
+        paths = FsPaths(root)
+        denied("apps")
+        denied("apps/app")
+        denied("dot")
+    }
+
+    @Test
     fun etagChangesWithEveryPartOfTheVersion() {
         val base = FsPaths.etag(ino = 7, size = 100, mtimeMs = 1_700_000_000_000)
         assertEquals(32, base.length)
