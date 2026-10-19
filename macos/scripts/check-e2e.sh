@@ -2787,11 +2787,16 @@ drop_log() {
 }
 
 check_drop() {
-    begin_shared || return 1
+    # A slow phone: its confirmation for the tail is repeated after the Mac's
+    # reader is at EOF, which is the offset race the sender must ignore.
+    FAKE_ARGS="--drop-ack-delay 0.3" begin_shared || return 1
 
     python3 - "$WORK" <<'PY'
 import os, sys
 work = sys.argv[1]
+# 32 MiB: enough chunks that the phone's 250 ms progress lags the wire.
+with open(os.path.join(work, "drop-32mb.bin"), "wb") as f:
+    f.write(os.urandom(32 * 1024 * 1024))
 # 3 MB of random bytes: a real chunked transfer, small enough to hash quickly.
 with open(os.path.join(work, "drop-3mb.bin"), "wb") as f:
     f.write(os.urandom(3 * 1024 * 1024))
@@ -2800,21 +2805,20 @@ with open(os.path.join(work, "tripped.bin"), "wb") as f:
     f.write(b"PD_FAKE_DOWNSIZE" + os.urandom(64 * 1024))
 PY
 
+    # drop_event <name> <ok|bad> — the first event for that file and outcome.
     drop_event() {
         python3 - "$WORK/events.jsonl" "$1" "$2" <<'PY'
 import json, sys
-want_ok = sys.argv[3] == "ok"
-n = 0
+name, want_ok = sys.argv[2], sys.argv[3] == "ok"
 for line in open(sys.argv[1]):
     try:
         e = json.loads(line)
     except ValueError:
         continue
-    if e.get("ev") == "drop" and e.get("ok") == want_ok:
-        n += 1
-        if n == int(sys.argv[2]):
-            print(json.dumps(e))
-            sys.exit(0)
+    if e.get("ev") == "drop" and e.get("ok") == want_ok and e.get("files") \
+            and e["files"][0].get("name") == name:
+        print(json.dumps(e))
+        sys.exit(0)
 sys.exit(1)
 PY
     }
@@ -2822,15 +2826,37 @@ PY
     log_has() { drop_log | grep -qF -- "$1"; }
     fake_log_has() { grep -qF -- "$1" "$WORK/fake.log" "$WORK/fake.err" 2>/dev/null; }
 
-    # The 8 s wait keeps the two drops apart: FileDropSender takes one file at a
-    # time and would refuse the second while the first is still in flight.
-    printf '%s\n' "dropfile $WORK/drop-3mb.bin" "wait 8" "dropfile $WORK/tripped.bin" "wait 5" \
+    # The waits keep the drops apart: FileDropSender takes one file at a time
+    # and would refuse the next while the one before is still in flight.
+    printf '%s\n' "dropfile $WORK/drop-32mb.bin" "wait 20" \
+        "dropfile $WORK/drop-3mb.bin" "wait 8" "dropfile $WORK/tripped.bin" "wait 5" \
         > "$WORK/drop.txt"
     open_shared --open com.android.settings --debug-input-script "$WORK/drop.txt" || return 1
 
     local event want
-    if wait_until 60 drop_found 1 ok; then
-        event="$(drop_event 1 ok)"
+    # The 32 MiB drop with the late tail confirmation: every byte exactly once.
+    if wait_until 90 drop_found drop-32mb.bin ok; then
+        event="$(drop_event drop-32mb.bin ok)"
+        want="$(shasum -a 256 "$WORK/drop-32mb.bin" | cut -c1-64)"
+        echo "$event" | python3 -c 'import json,sys; e=json.load(sys.stdin); f=e["files"]; sys.exit(0 if len(f)==1 and f[0]["name"]=="drop-32mb.bin" and f[0]["size"]==32*1024*1024 and f[0]["match"] and f[0]["sha256"]==sys.argv[1] else 1)' "$want" \
+            && ok "DROP fakephone got drop-32mb.bin (32 MiB) with a matching sha256 (${want:0:12}…)" \
+            || bad "DROP 32 MiB sha256/size mismatch: $event (want $want)"
+    else
+        bad "DROP fakephone never received the 32 MiB file"
+    fi
+    wait_until 30 fake_log_has "33554432 bytes (drop-32mb.bin) -> sha ok" \
+        && ok "DROP fakephone received all 33554432 bytes over DROP_DATA" \
+        || bad "DROP fakephone did not log the full 32 MiB: $(grep -i drop "$WORK/fake.log" "$WORK/fake.err" | tail -3)"
+    # The late confirmation must not have moved the sender back into the file.
+    sleep 1
+    if fake_log_has "more bytes than announced"; then
+        bad "DROP the sender re-sent bytes after EOF: $(grep -h 'more bytes than announced' "$WORK/fake.log" "$WORK/fake.err" | tail -2)"
+    else
+        ok "DROP no tail re-send: received bytes == announced bytes"
+    fi
+
+    if wait_until 60 drop_found drop-3mb.bin ok; then
+        event="$(drop_event drop-3mb.bin ok)"
         want="$(shasum -a 256 "$WORK/drop-3mb.bin" | cut -c1-64)"
         echo "$event" | python3 -c 'import json,sys; e=json.load(sys.stdin); f=e["files"]; sys.exit(0 if len(f)==1 and f[0]["name"]=="drop-3mb.bin" and f[0]["size"]==3*1024*1024 and f[0]["match"] and f[0]["sha256"]==sys.argv[1] else 1)' "$want" \
             && ok "DROP fakephone got drop-3mb.bin (3 MB) with a matching sha256 (${want:0:12}…)" \
@@ -2852,8 +2878,8 @@ PY
         && ok "DROP fakephone received all 3145728 bytes over DROP_DATA" \
         || bad "DROP fakephone did not log the full 3 MB: $(grep -i drop "$WORK/fake.log" | tail -2)"
 
-    if wait_until 60 drop_found 1 bad; then
-        event="$(drop_event 1 bad)"
+    if wait_until 60 drop_found tripped.bin bad; then
+        event="$(drop_event tripped.bin bad)"
         echo "$event" | python3 -c 'import json,sys; e=json.load(sys.stdin); sys.exit(0 if e["code"]=="too_large" and not e["files"][0].get("match") else 1)' \
             && ok "DROP the over-cap trip answered ok=false too_large" \
             || bad "DROP the negative event is wrong: $event"

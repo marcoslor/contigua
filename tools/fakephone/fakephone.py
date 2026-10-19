@@ -1431,17 +1431,48 @@ class Session(object):
             sys.stderr.write("fakephone: drop %r resume %r ignored (no temp)\n"
                              % (drop_id, msg["resume"]))
         self._drop = {"id": drop_id, "name": name, "mime": msg.get("mime") or "application/octet-stream",
-                      "size": size, "sha": sha, "data": bytearray(), "last": 0.0}
+                      "size": size, "sha": sha, "data": bytearray(), "last": 0.0,
+                      "last_progress": 0}
+        self.phone._finished_drops.clear()
         self._send({"t": "drop.progress", "id": drop_id, "bytes": 0})
+
+    def _finished(self, drop, code):
+        """Remembers [drop] so a tail re-sent after its result is not ignored."""
+        self.phone._finished_drops[drop["id"]] = {"name": drop["name"], "size": drop["size"],
+                                                  "extra": 0, "reported": False, "code": code}
 
     def _on_drop_data(self, drop_id, payload):
         drop = getattr(self, "_drop", None)
         if not drop or drop["id"] != drop_id:
+            done = self.phone._finished_drops.get(drop_id)
+            if done:
+                done["extra"] += len(payload)
+                if not done["reported"]:
+                    done["reported"] = True
+                    sys.stderr.write("fakephone: drop %r more bytes than announced "
+                                     "(%d > %d)\n" % (drop_id, done["size"] + done["extra"], done["size"]))
+                    sys.stderr.flush()
+                    self.phone.events.drop(drop_id, [{"name": done["name"],
+                                                      "size": done["size"] + done["extra"]}],
+                                           False, "too_many_bytes")
             return
         drop["data"] += payload
         got = len(drop["data"])
+        if got > drop["size"]:
+            # The real receiver's rule: every byte must fit the announcement.
+            self._drop = None
+            self._finished(drop, "too_many_bytes")
+            sys.stderr.write("fakephone: drop %r more bytes than announced (%d > %d)\n"
+                             % (drop_id, got, drop["size"]))
+            sys.stderr.flush()
+            self.phone.events.drop(drop_id, [{"name": drop["name"], "size": got}],
+                                   False, "too_many_bytes")
+            self._send({"t": "drop.result", "id": drop_id, "ok": False, "code": "too_many_bytes",
+                        "message": "more bytes than announced"})
+            return
         if DROP_FAKE_DOWNSIZE in payload:
             self._drop = None
+            self._finished(drop, "too_large")
             sys.stderr.write("fakephone: drop %r tripped PD_FAKE_DOWNSIZE\n" % drop_id)
             self.phone.events.drop(drop_id, [{"name": drop["name"], "size": got}], False, "too_large")
             self._send({"t": "drop.result", "id": drop_id, "ok": False, "code": "too_large",
@@ -1450,13 +1481,20 @@ class Session(object):
         now = time.time()
         if got < drop["size"] and now - drop["last"] >= 0.25:
             drop["last"] = now
+            drop["last_progress"] = got
             self._send({"t": "drop.progress", "id": drop_id, "bytes": got})
         if got < drop["size"]:
             return
+        if self.phone.args.drop_ack_delay > 0:
+            # The confirmation for the tail lands late: the Mac's reader is at
+            # EOF by then, and the stale offset must not move it back.
+            self._send({"t": "drop.progress", "id": drop_id, "bytes": drop["last_progress"]})
+            time.sleep(self.phone.args.drop_ack_delay)
         self._drop = None
         data, sha = bytes(drop["data"]), drop["sha"]
         digest = hashlib.sha256(data).hexdigest()
         ok = digest == sha
+        self._finished(drop, "ok" if ok else "checksum")
         sys.stderr.write("fakephone: drop %r %d bytes (%s) -> %s\n"
                          % (drop_id, len(data), drop["name"], "sha ok" if ok else "checksum"))
         if ok:
@@ -1476,6 +1514,7 @@ class Session(object):
         drop = getattr(self, "_drop", None)
         if drop and drop["id"] == msg.get("id"):
             self._drop = None
+            self._finished(drop, "cancelled")
             self.phone.events.drop(drop["id"], [{"name": drop["name"],
                                                  "size": len(drop["data"])}], False, "cancelled")
             self._send({"t": "drop.result", "id": drop["id"], "ok": False, "code": "cancelled",
@@ -1828,6 +1867,9 @@ class FakePhone(object):
         self._display_lock = threading.Lock()
         self._mdns = None
         self.label_dir = tempfile.mkdtemp(prefix="fakephone-") if args.labels else None
+        # Drops that finished, so bytes arriving after the result (a re-sent
+        # tail) are reported like the real receiver's "more bytes than announced".
+        self._finished_drops = {}
 
     def accept_tls(self, raw):
         """One TLS 1.3 handshake per connection (the SSLContext is per
@@ -2039,6 +2081,10 @@ def build_parser():
     p.add_argument("--foreground-pkg", default="com.android.settings", metavar="PKG",
                    help="the package task.continue reports as the foreground app "
                         "('none' means nothing continuable)")
+    p.add_argument("--drop-ack-delay", type=float, default=0.0, metavar="SECONDS",
+                   help="repeat the last drop.progress and hold the result this long, "
+                        "so the phone's confirmation for the tail lands after the Mac "
+                        "has sent everything (a slow phone)")
     return p
 
 

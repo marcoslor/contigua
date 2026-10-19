@@ -166,6 +166,31 @@ class DropReceiverTest {
         assertTrue(full.contentEquals(tmp.root.resolve("tail.pdf").readBytes()))
     }
 
+    /**
+     * The Mac's resume offset is a hint from the last progress frame; the temp
+     * can be longer (progress is throttled). The phone announces the temp's
+     * length and expects exactly the bytes after it, as the Mac seeks there.
+     */
+    @Test
+    fun resumePastTheHintAnnouncesAndTakesOnlyTheTempsTail() {
+        val full = generated(12)
+        val first = receiver(stall = 150)
+        first.begin(startWith("tail.pdf", full))
+        first.data(7, full.copyOfRange(0, 8))
+        assertEquals("failed", awaitResult()["code"])
+
+        frames.clear()
+        // The Mac asks for 6, but its lost progress frame means the temp is at 8.
+        val second = receiver(stall = 300)
+        second.begin(startWith("tail.pdf", full, resume = 6))
+        val progress = awaitProgress()
+        assertEquals(8L, progress.first()["bytes"])
+        second.data(7, full.copyOfRange(8, 12))
+        val result = awaitResult()
+        assertEquals(true, result["ok"])
+        assertTrue(full.contentEquals(tmp.root.resolve("tail.pdf").readBytes()))
+    }
+
     /** `resume` of a file no temp backs: progress 0 and the Mac streams from zero. */
     @Test
     fun anUnbackedResumeRestartsFromZero() {

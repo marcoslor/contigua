@@ -40,7 +40,11 @@ class DropReceiver(
         /** The offset the Mac asked to resume at; 0 streams from zero. */
         val resume: Long,
     ) {
-        /** Bytes this run accepts: the Mac re-sends only what follows the resume offset. */
+        /**
+         * The most bytes this run may accept: what follows the requested resume
+         * offset. The temp can be longer than that (progress lags the disk), so
+         * [run] accepts and expects only `size - temp.length()` when it resumes.
+         */
         val allowed: Long = desk.size - resume
         val chunks = ArrayBlockingQueue<ByteArray>(QUEUE_CHUNKS)
         @Volatile var cancelled = false
@@ -138,7 +142,10 @@ class DropReceiver(
                 var done = offset
                 var pending: ByteArray? = null
                 var pendingOffset = 0
-                var left = job.allowed
+                // The phone's own resume point, not the Mac's request: the temp
+                // may hold more than the Mac had confirmed, and the Mac seeks to
+                // the offset this run announced.
+                var left = job.desk.size - offset
                 while (left > 0) {
                     if (pending == null || pendingOffset == pending!!.size) {
                         pending = take(job) ?: run {

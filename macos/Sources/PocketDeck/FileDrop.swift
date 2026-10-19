@@ -141,6 +141,10 @@ final class FileDropSender {
     private var reader: FileHandle?
     /// What the phone has confirmed so far (its opening progress may resume).
     private var offset = 0
+    /// The next byte to read. Only the phone's opening progress may move it (a
+    /// resume); after that it follows the reads, so a late progress can never
+    /// send a byte twice.
+    private var cursor = 0
     /// Between `drop.start` and the phone's opening progress no chunk is sent.
     private var awaitingOffset = false
     private var inFlight = 0
@@ -185,6 +189,7 @@ final class FileDropSender {
         queue.removeFirst()
         id = UInt32.random(in: 1...UInt32.max)
         offset = 0
+        cursor = 0
         let resume = self.resume(sha256: next.sha256)
         Log.app.notice("drop: sending \(next.name, privacy: .public) (\(next.size, privacy: .public) bytes\(resume > 0 ? ", resumes at \(resume)" : ""))")
         phase = .sending(next.name, fraction: resume > 0 ? Double(resume) / Double(next.size) : 0)
@@ -203,10 +208,10 @@ final class FileDropSender {
     private func pump() {
         guard case .sending = phase, !cancelled, !awaitingOffset,
               let session, let current else { return }
-        while inFlight < Self.inFlightLimit && offset < current.size {
+        while inFlight < Self.inFlightLimit && cursor < current.size {
             if reader == nil {
                 reader = try? FileHandle(forReadingFrom: current.url)
-                try? reader?.seek(toOffset: UInt64(offset))
+                try? reader?.seek(toOffset: UInt64(cursor))
             }
             let chunk = (try? reader?.read(upToCount: Self.chunkSize)) ?? nil
             guard let chunk, !chunk.isEmpty else {
@@ -214,6 +219,7 @@ final class FileDropSender {
                 reader = nil
                 break
             }
+            cursor += chunk.count
             inFlight += 1
             let id = self.id
             session.sendDropData(id: id, bytes: [UInt8](chunk)) { [weak self] ok in
@@ -233,12 +239,22 @@ final class FileDropSender {
         finish("Transfer cancelled.", ok: false)
     }
 
-    /// The phone's confirmed byte count: the fraction the pill shows.
+    /// The phone's confirmed byte count: the fraction the pill shows. The
+    /// opening progress is the only one that can seek (the phone's resume
+    /// offset); later ones are behind the wire and must not re-read anything.
     func progress(id: UInt32, bytes: Int) {
         guard id == self.id, let current, current.size > 0 else { return }
-        offset = max(offset, bytes)
-        awaitingOffset = false
-        if case .sending = phase { phase = .sending(current.name, fraction: Double(min(offset, current.size)) / Double(current.size)) }
+        let confirmed = min(max(bytes, 0), current.size)
+        if awaitingOffset {
+            awaitingOffset = false
+            cursor = confirmed
+            offset = confirmed
+            try? reader?.close()
+            reader = nil
+        } else {
+            offset = max(offset, confirmed)
+        }
+        if case .sending = phase { phase = .sending(current.name, fraction: Double(offset) / Double(current.size)) }
         pump()
     }
 
@@ -299,6 +315,8 @@ final class FileDropSender {
         reader = nil
         id = 0
         inFlight = 0
+        offset = 0
+        cursor = 0
         phase = .finished(text, ok: ok)
         clearTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(5))
