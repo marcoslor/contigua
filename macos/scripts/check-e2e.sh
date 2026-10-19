@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # End-to-end checks C3-C13 for the macOS client against tools/fakephone.
 #
-#   ./scripts/check-e2e.sh [qr|pair|tls|render|resize|input|mouseback|input-global|pause|direct|nav|mirror|spotlight|pinch|chrome|trackpad|clip|sharein|links|share|apk|drop|dock|nickname|notify|audio|handoff|deck|all]
+#   ./scripts/check-e2e.sh [qr|pair|tls|render|resize|input|mouseback|input-global|pause|direct|nav|mirror|spotlight|pinch|chrome|trackpad|clip|sharein|links|share|apk|drop|dock|nickname|notify|audio|handoff|deck|all [--shard N/M]]
 #
 # Every check starts from a clean slate (the shared-app checks share one, see
 # "The shared app" below): no PocketDeck or fakephone processes
@@ -3430,7 +3430,7 @@ ALL_CHECKS=(tls qr pair direct mirror spotlight clip sharein links share apk doc
             deck render resize input mouseback pinch chrome trackpad pause nav audio drop)
 
 usage() {
-    say "usage: check-e2e.sh [qr|pair|tls|render|resize|input|mouseback|input-global|pause|direct|nav|mirror|spotlight|pinch|chrome|trackpad|clip|sharein|links|share|apk|drop|dock|nickname|notify|audio|handoff|deck|all]"
+    say "usage: check-e2e.sh [qr|pair|tls|render|resize|input|mouseback|input-global|pause|direct|nav|mirror|spotlight|pinch|chrome|trackpad|clip|sharein|links|share|apk|drop|dock|nickname|notify|audio|handoff|deck|all [--shard N/M]]"
     exit 2
 }
 
@@ -3440,6 +3440,22 @@ case "$which_check" in
     all) CHECKS=("${ALL_CHECKS[@]}") ;;
     *) usage ;;
 esac
+# `all --shard N/M`: the Nth of M consecutive slices of `all` (with C9 at the
+# end of each), so a full run can be spread over several idle periods.
+if [ "${2:-}" = "--shard" ]; then
+    [ "$which_check" = "all" ] || usage
+    case "${3:-}" in
+        [1-9]/[1-9]|[1-9]/[1-9][0-9]|[1-9][0-9]/[1-9][0-9]) ;;
+        *) usage ;;
+    esac
+    shard="${3%/*}" shards="${3#*/}"
+    [ "$shard" -le "$shards" ] || usage
+    from=$(( (shard - 1) * ${#ALL_CHECKS[@]} / shards ))
+    to=$(( shard * ${#ALL_CHECKS[@]} / shards ))
+    CHECKS=("${ALL_CHECKS[@]:$from:$((to - from))}")
+elif [ $# -gt 1 ]; then
+    usage
+fi
 acquire_lock
 wait_for_other_runs
 pick_run
