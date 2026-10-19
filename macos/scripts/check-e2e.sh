@@ -228,34 +228,41 @@ stop_watch() {
 # start_watchdog <slot> <pid> — one of the run's processes is watched
 # (pd-watchdog.sh): the run's virtual display and every app launch, the two
 # things here that make macOS reconfigure what it shows. A watchdog that fires
-# kills its process and appends "WATCHDOG killed reason=…" to the run's log;
-# watchdog_report below turns that into the run's FAIL. <slot> pairs the start
-# with the stop.
+# kills its processes and appends "WATCHDOG killed reason=…" to the run's log;
+# watchdog_report below turns that into the run's FAIL. One watchdog guards the
+# whole run through its targets file, one "<slot> <pid>" line per slot; <slot>
+# pairs the start with the stop.
 start_watchdog() {
     local slot="$1" target="$2"
-    "$WATCHDOG" "$target" >> "$WATCHDOG_LOG" 2>&1 &
-    case "$slot" in
-        vdisplay) WD_VDISPLAY_PID=$! ;;
-        app)      WD_APP_PID=$! ;;
-    esac
+    set_watchdog_target "$slot" "$target"
+    if [ -z "${WD_PID:-}" ] || ! kill -0 "$WD_PID" 2>/dev/null; then
+        "$WATCHDOG" --targets "$WATCHDOG_TARGETS" >> "$WATCHDOG_LOG" 2>&1 &
+        WD_PID=$!
+    fi
 }
 
-# stop_watchdog <slot> — nothing to watch any more. A watchdog whose process is
-# already gone has exited on its own; this only makes that explicit, so no
-# watcher outlives the run.
+# set_watchdog_target <slot> [pid] — the slot's line in the targets file is
+# replaced (or removed without a pid); the file is swapped in whole.
+set_watchdog_target() {
+    local slot="$1" target="${2:-}"
+    { grep -v "^$slot " "$WATCHDOG_TARGETS" 2>/dev/null
+      [ -z "$target" ] || echo "$slot $target"; } > "$WATCHDOG_TARGETS.tmp"
+    mv "$WATCHDOG_TARGETS.tmp" "$WATCHDOG_TARGETS"
+}
+
+# stop_watchdog <slot> — nothing to watch in the slot any more. The watchdog
+# itself stops with the last slot, so no watcher outlives the run.
 stop_watchdog() {
-    local slot="$1" pid=""
-    case "$slot" in
-        vdisplay) pid="${WD_VDISPLAY_PID:-}" ;;
-        app)      pid="${WD_APP_PID:-}" ;;
-    esac
-    [ -n "$pid" ] || return 0
-    kill "$pid" >/dev/null 2>&1
-    wait "$pid" 2>/dev/null
-    case "$slot" in
-        vdisplay) WD_VDISPLAY_PID="" ;;
-        app)      WD_APP_PID="" ;;
-    esac
+    local slot="$1"
+    [ -n "${WATCHDOG_TARGETS:-}" ] && [ -f "$WATCHDOG_TARGETS" ] || return 0
+    set_watchdog_target "$slot"
+    [ -s "$WATCHDOG_TARGETS" ] && return 0
+    rm -f "$WATCHDOG_TARGETS"
+    if [ -n "${WD_PID:-}" ]; then
+        kill "$WD_PID" >/dev/null 2>&1
+        wait "$WD_PID" 2>/dev/null
+        WD_PID=""
+    fi
     return 0
 }
 
@@ -263,7 +270,9 @@ stop_watchdog() {
 # so no other run's lines can be in it).
 init_watchdog() {
     WATCHDOG_LOG="$WORK-watchdog.txt"
+    WATCHDOG_TARGETS="$WORK-watchdog-targets.txt"
     : > "$WATCHDOG_LOG"
+    rm -f "$WATCHDOG_TARGETS"
 }
 
 # watchdog_report — what the watchdogs saw, right before the run's summary. Any
