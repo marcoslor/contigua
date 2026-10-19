@@ -528,7 +528,8 @@ class Session(
         val exporter = tlsFacts.exporter() ?: ByteArray(32)
         val code = PairingCodeV2.code(exporter, pendingMacFp, pendingPhoneFp, nmBytes, np)
         val codeStr = PairingCodeV2.codeHex(code)
-        log("pair code shown on the phone: $codeStr")
+        // The code itself never reaches a log (rule: hashes/lengths only).
+        log("pair code shown on the phone: ${codeStr.length} digits")
         if (autoApprovePairing) {
             synchronized(pairLock) { pairSettled = true }
             completePairing()
