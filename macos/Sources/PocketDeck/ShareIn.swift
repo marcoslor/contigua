@@ -214,6 +214,34 @@ protocol ShareInActions: AnyObject {
     func copy(text: String)
     func copy(imageFile: URL)
     func notify(title: String, body: String, file: URL?)
+    /// A link the rate limit held back (sec H-2): a notification whose click
+    /// opens it. The default keeps test doubles simple.
+    func notifyLink(title: String, body: String, url: URL)
+}
+
+extension ShareInActions {
+    func notifyLink(title: String, body: String, url: URL) {
+        notify(title: title, body: body, file: nil)
+    }
+}
+
+/// At most one automatic browser open per phone per window (sec H-2): a phone
+/// that shares links in a loop cannot take the Mac's screen (or fill the
+/// browser with tabs) one link at a time. The clock is injected (a monotonic
+/// one in production) so the rule is testable.
+struct ShareOpenLimiter {
+    static let window: TimeInterval = 3
+    private var lastOpen: [String: TimeInterval] = [:]
+
+    mutating func allow(phone: String, now: TimeInterval) -> Bool {
+        if let last = lastOpen[phone] {
+            let elapsed = now - last
+            // A clock that went backwards is not a new window (fail closed).
+            if elapsed < Self.window { return false }
+        }
+        lastOpen[phone] = now
+        return true
+    }
 }
 
 /// Routes shares from the connected phone to the actions.
@@ -222,15 +250,31 @@ final class ShareInbox {
     private let receiver: ShareFileReceiver
     private let actions: ShareInActions
     var phoneName = "your phone"
+    /// The connected phone's id: the open rate limit is per phone.
+    var phoneId = ""
+    /// Monotonic in production; tests inject a value.
+    var clock: () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
+
+    private var openLimiter = ShareOpenLimiter()
 
     init(directory: URL, actions: ShareInActions) {
         receiver = ShareFileReceiver(directory: directory)
         self.actions = actions
     }
 
+    private var phoneKey: String { phoneId.isEmpty ? phoneName : phoneId }
+
     func text(_ raw: String) {
         switch ShareInPolicy.classify(raw) {
         case .link(let url):
+            guard openLimiter.allow(phone: phoneKey, now: clock()) else {
+                // Inside the window: no second browser open. The notification
+                // carries the host only, never the path/query, and its click
+                // opens the link.
+                Log.app.notice("share: link from phone held by the open-rate limit")
+                actions.notifyLink(title: "Link from \(phoneName)", body: url.host ?? "", url: url)
+                return
+            }
             Log.app.notice("share: link from phone")
             actions.open(url)
         case .text(let text):
@@ -275,6 +319,7 @@ final class ShareInbox {
 /// responses back here.
 final class SystemShareActions: NSObject, ShareInActions {
     static let category = "pocketdeck.share.image"
+    static let linkCategory = "pocketdeck.share.link"
     static let showAction = "show"
 
     private let log: URL?
@@ -305,19 +350,36 @@ final class SystemShareActions: NSObject, ShareInActions {
 
     func notify(title: String, body: String, file: URL?) {
         if log != nil { return record("notify \(title): \(body)") }
-        let center = UNUserNotificationCenter.current()
-        if !registered {
-            registered = true
-            let show = UNNotificationAction(identifier: Self.showAction, title: "Show in Finder")
-            center.setNotificationCategories([UNNotificationCategory(identifier: Self.category, actions: [show],
-                                                                     intentIdentifiers: [])])
-        }
         let content = UNMutableNotificationContent()
         content.title = title
         content.body = body
         if let file {
             content.categoryIdentifier = Self.category
             content.userInfo = ["file": file.path]
+        }
+        deliver(content)
+    }
+
+    /// A held-back link (sec H-2): the click opens it. Body is the host only.
+    func notifyLink(title: String, body: String, url: URL) {
+        if log != nil { return record("notify \(title): \(body) (link)") }
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = body
+        content.categoryIdentifier = Self.linkCategory
+        content.userInfo = ["url": url.absoluteString]
+        deliver(content)
+    }
+
+    private func deliver(_ content: UNMutableNotificationContent) {
+        let center = UNUserNotificationCenter.current()
+        if !registered {
+            registered = true
+            let show = UNNotificationAction(identifier: Self.showAction, title: "Show in Finder")
+            center.setNotificationCategories([
+                UNNotificationCategory(identifier: Self.category, actions: [show], intentIdentifiers: []),
+                UNNotificationCategory(identifier: Self.linkCategory, actions: [], intentIdentifiers: []),
+            ])
         }
         let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
         center.requestAuthorization(options: [.alert]) { granted, _ in
@@ -328,6 +390,12 @@ final class SystemShareActions: NSObject, ShareInActions {
     /// The share notification's response, routed by NotificationRouter.
     @MainActor
     func handleShareResponse(_ response: UNNotificationResponse) {
+        if let raw = response.notification.request.content.userInfo["url"] as? String,
+           response.actionIdentifier == UNNotificationDefaultActionIdentifier,
+           let url = ShareInPolicy.webURL(raw) {
+            DispatchQueue.main.async { NSWorkspace.shared.open(url) }
+            return
+        }
         if let path = response.notification.request.content.userInfo["file"] as? String,
            response.actionIdentifier == Self.showAction || response.actionIdentifier == UNNotificationDefaultActionIdentifier {
             let url = URL(fileURLWithPath: path)

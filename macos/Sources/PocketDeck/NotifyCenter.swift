@@ -95,7 +95,8 @@ final class NotificationRouter: NSObject, UNUserNotificationCenterDelegate {
                                             withCompletionHandler completionHandler: @escaping () -> Void) {
         let content = response.notification.request.content
         if content.categoryIdentifier == SystemShareActions.category
-            || content.userInfo["file"] is String {
+            || content.userInfo["file"] is String
+            || content.userInfo["url"] is String {
             DispatchQueue.main.async { [weak self] in
                 self?.shareActions?.handleShareResponse(response)
             }
