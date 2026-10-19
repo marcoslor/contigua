@@ -21,6 +21,21 @@ CACHE_DIR="$CACHE_DIR"
 AGENT_DIR="$AGENT_DIR"
 mkdir -p "$CACHE_DIR" "$AGENT_DIR"
 
+# The v2 handshake is TLS 1.3, which the macOS system Python (3.9 + LibreSSL)
+# cannot do. Prefer an interpreter whose ssl can enforce it; POCKETDECK_PYTHON
+# overrides. Falls back to plain python3 so the error names the real cause.
+pick_python() {
+  local cand
+  for cand in "${POCKETDECK_PYTHON:-}" /opt/homebrew/bin/python3 python3; do
+    [ -n "$cand" ] || continue
+    command -v "$cand" >/dev/null 2>&1 || continue
+    "$cand" -c 'import ssl; c = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT); c.minimum_version = ssl.TLSVersion.TLSv1_3' \
+      >/dev/null 2>&1 && { echo "$cand"; return 0; }
+  done
+  command -v python3
+}
+PYTHON="$(pick_python)"
+
 emu() { timeout "${ADB_TIMEOUT:-20}" "$ADB" -s "$SERIAL" "$@"; }
 emu_long() { timeout "${ADB_LONG_TIMEOUT:-600}" "$ADB" -s "$SERIAL" "$@"; }
 

@@ -6,41 +6,38 @@ or touch the phone's screen, so this tool covers the rig's local bits:
 
   check          connect + authenticate + print the welcome (exit 0 paired,
                  2 not paired, 3 the phone is busy with another session).
-  pair           real pairing: checks the 6-digit code the phone announced
-                 against its prompt, taps Allow over adb, stores the key in deckctl's own
-                 state file (under the same clientId, so deckctl authenticates
-                 with `--state` afterwards).
+  pair           pair through deckctl's v2 client: watch the phone's prompt,
+                 tap Allow over adb, and store the pin in deckctl's own state
+                 file (under the same clientId, so deckctl authenticates with
+                 `--state` afterwards).
   wait-prompt    wait for a new prompt and tap Allow (pair with `deckctl --pair`).
-  seed           deterministic pairing for a machine that cannot drive the real
-                 flow: writes the same `paired` entry a pairing stores into the
-                 app prefs with `run-as`, restarts the app, stores the key.
   verify-phases  check the PNGs `deckctl multi` wrote: every phase must show real
                  UI (mean luma), and every input-step phase must differ from the
                  previous phase of the same stream.
 
-Only reads tools/fakephone/proto.py (never edits it). Python 3.9 stdlib + ffmpeg.
+The v2 handshake is TLS 1.3 with client certificates and pins taken from the
+handshake, so this file does not speak the protocol itself: it imports deckctl
+(`open_session`, `ClientState`, `DeckError`) and adds only the adb side.
+Python 3.9 stdlib + ffmpeg.
 """
 
 import argparse
 import hashlib
-import json
 import os
 import re
 import shutil
-import socket
 import subprocess
 import sys
 import time
-import uuid
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(ROOT, "..", "fakephone"))
+import deckctl  # noqa: E402
 import proto  # noqa: E402
 
 APP_PKG = "dev.pocketdeck"
 MAIN_ACTIVITY = APP_PKG + "/.app.MainActivity"
 DEFAULT_ADB = os.path.join(os.path.expanduser("~"), "Library/Android/sdk/platform-tools/adb")
-TIMEOUT = object()
 
 
 class PocError(Exception):
@@ -163,61 +160,15 @@ def xml_escape(value):
 
 
 # --- protocol client -------------------------------------------------------
-class Session:
-    def __init__(self, sock):
-        self.sock = sock
-        self.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-        self.nonce = None
-        self.challenge_id = None
-        self.welcome = {}
-        self.device = {}
-
-    def send_json(self, obj):
-        self.sock.sendall(proto.pack_json(obj, obj.get("stream", 0) or 0))
-
-    def send_raw(self, data):
-        self.sock.sendall(data)
-
-    def recv(self, timeout):
-        self.sock.settimeout(timeout)
-        try:
-            return proto.recv_frame(self.sock)
-        except socket.timeout:
-            return TIMEOUT
-
-    def expect_json(self, want, timeout=10.0):
-        deadline = time.time() + timeout
-        while True:
-            frame = self.recv(max(0.05, deadline - time.time()))
-            if frame is TIMEOUT:
-                raise PocError("timed out waiting for %r" % want)
-            if frame is None:
-                raise PocError("phone closed the connection while waiting for %r" % want)
-            if frame.type != proto.TYPE_JSON:
-                continue
-            msg = proto.unpack_json(frame)
-            if msg.get("t") == "error":
-                raise PocError("phone error %s: %s" % (msg.get("code"), msg.get("message", "")))
-            if want is None or msg.get("t") == want:
-                return msg
-
-    def hello(self, client_id="rig", name="rig"):
-        self.send_json({"t": "hello", "v": 1, "clientId": client_id, "name": name})
-        msg = self.expect_json("challenge")
-        self.nonce = msg.get("nonce")
-        self.challenge_id = msg.get("id")
-        return msg
-
-    def auth(self, key_hex, nonce):
-        self.send_json({"t": "auth", "mac": proto.hmac_hex(bytes.fromhex(key_hex), nonce)})
-        self.welcome = self.expect_json("welcome")
-        self.device = self.welcome.get("device", {})
-        return self.welcome
-
-
-def connect(addr, timeout=10.0):
+def split_addr(addr):
+    """'host:port' -> (host, port)."""
     host, _, port = addr.rpartition(":")
-    return Session(socket.create_connection((host, int(port)), timeout=timeout))
+    if not host or not port:
+        raise PocError("address must be host:port, got %r" % addr)
+    try:
+        return host, int(port)
+    except ValueError:
+        raise PocError("bad port in address %r" % addr)
 
 
 # --- frames ----------------------------------------------------------------
@@ -239,29 +190,6 @@ def png_stats(path):
     return float(res.stdout[0]) if res.stdout else -1.0
 
 
-# --- state -----------------------------------------------------------------
-def load_state(path):
-    try:
-        with open(path) as fp:
-            return json.load(fp)
-    except (IOError, OSError, ValueError):
-        return {}
-
-
-def save_state(path, state):
-    tmp = path + ".tmp"
-    with open(tmp, "w") as fp:
-        json.dump(state, fp, indent=2)
-    os.replace(tmp, path)
-
-
-def remember_key(state, device_id, key, path):
-    keys = state.setdefault("keys", {})
-    keys[device_id] = key
-    state["order"] = [device_id] + [i for i in state.get("order", []) if i != device_id]
-    save_state(path, state)
-
-
 # --- commands --------------------------------------------------------------
 def cmd_check(args):
     """Connect + authenticate + print the welcome.
@@ -269,64 +197,60 @@ def cmd_check(args):
     Exit codes so a caller can tell the two failures apart: 0 paired, 2 not
     paired (needs the prompt), 3 the phone is busy with another session.
     """
+    host, port = split_addr(args.addr)
+    state = deckctl.ClientState(args.state)
     try:
-        sess = connect(args.addr)
-        state = load_state(args.state)
-        sess.hello(state.get("clientId", "rig"), state.get("name", "rig"))
-        keys = state.get("keys", {})
-        key_id = sess.challenge_id
-        if key_id not in keys:
-            raise PocError("no stored key for device %s" % key_id)
-        sess.auth(keys[key_id], sess.nonce)
-        dev = sess.welcome.get("device", {})
-        print("welcome: id=%s name=%s model=%s locked=%s" %
-              (dev.get("id"), dev.get("name"), dev.get("model"), dev.get("locked")))
-        sess.sock.close()
-        return 0
-    except PocError as exc:
+        client = deckctl.open_session(host, port, state, on_code=None)
+    except deckctl.DeckError as exc:
+        # open_session folds Busy/AuthFailed into DeckError; the message is the
+        # only distinction left (the busy one is raised verbatim).
         message = str(exc)
         sys.stderr.write("poc: %s\n" % message)
-        busy = "busy" in message or "reset" in message.lower()
-        return 3 if busy else 2
+        return 3 if "busy" in message else 2
+    try:
+        dev = client.device or {}
+        print("welcome: id=%s name=%s model=%s locked=%s" %
+              (dev.get("id"), dev.get("name"), dev.get("model"), dev.get("locked")))
+    finally:
+        client.close()
+    return 0
 
 
 def cmd_pair(args):
-    """Real pairing: hello -> pair.request -> code on both screens -> Allow.
+    """Real pairing through deckctl's v2 client: watch the phone's prompt, tap
+    Allow, store the pin in deckctl's state file under the clientId deckctl will
+    use.
 
-    The Mac side learns the code from pair.code_shown; the phone shows the same
-    one in its prompt, which this helper confirms against before it taps Allow
-    (the phone waits 120 s for that decision). The key lands in deckctl's state
-    file under the clientId deckctl will use.
+    deckctl derives its own advisory code from the wire facts (it cannot reach
+    the TLS exporter), so it is not compared with the phone's prompt: the
+    prompt's code is what the person compares, and this helper only taps Allow
+    after confirming a *new* prompt appeared.
     """
     adb = Adb(args.adb, args.serial)
-    state = load_state(args.state)
-    client_id = state.get("clientId") or str(uuid.uuid4())
-    name = args.name or state.get("name") or socket.gethostname()
-    state["clientId"] = client_id
-    state["name"] = name
+    state = deckctl.ClientState(args.state)
+    if args.name:
+        state.name = args.name
+    host, port = split_addr(args.addr)
+    # A prompt left over from an earlier aborted request must not be mistaken
+    # for the one this request raises. "" means "none": read_new_code would
+    # otherwise snapshot the *new* prompt as its baseline and ignore it.
+    stale = notification_code(adb) or dialog_code(ui_dump(adb)) or ""
 
-    sess = connect(args.addr)
-    sess.hello(client_id, name)
-    stale = notification_code(adb) or dialog_code(ui_dump(adb))
-    sess.send_json({"t": "pair.request"})
-    shown = sess.expect_json("pair.code_shown", timeout=20.0).get("code")
-    print("pair: phone announced code %s, watching for the prompt" % shown)
+    def on_code(_code):
+        print("pair: pair.request accepted, watching the phone's prompt")
+        shown = read_new_code(adb, args.timeout, stale=stale)
+        if shown is None:
+            raise deckctl.DeckError("no new pairing code within %.0fs" % args.timeout)
+        print("pair: prompt shows code %s" % shown)
+        if not tap_allow(adb, args.tap_timeout):
+            raise deckctl.DeckError(
+                "pairing prompt found (code %s) but Allow was not reachable" % shown)
 
-    code = read_new_code(adb, args.timeout, stale=stale)
-    if code is None:
-        raise PocError("no new pairing code within %.0fs" % args.timeout)
-    if code != shown:
-        raise PocError("the prompt shows %s but the Mac was told %s" % (code, shown))
-    print("pair: code %s matches on both screens" % code)
-    if not tap_allow(adb, args.tap_timeout):
-        raise PocError("pairing prompt found (code %s) but Allow was not reachable" % code)
-
-    msg = sess.expect_json("pair.ok", timeout=40.0)
-    key = msg["key"]
-    device_id = sess.expect_json("welcome").get("device", {}).get("id", "")
-    remember_key(state, device_id, key, args.state)
-    print("pair: ok device=%s key stored in %s" % (device_id, args.state))
-    sess.sock.close()
+    client = deckctl.open_session(host, port, state, on_code=on_code)
+    try:
+        print("pair: ok device=%s pin stored in %s" % (client.device_id, args.state))
+    finally:
+        client.close()
     return 0
 
 
@@ -417,12 +341,6 @@ def main(argv=None):
                     help="how long to keep looking for the Allow button")
     sp.set_defaults(func=cmd_pair)
 
-    sp = sub.add_parser("seed", help="deterministic pairing: write the client into the app prefs")
-    sp.add_argument("--device-id", default=os.environ.get("POCKETDECK_DEVICE_ID", "e0e0e0e0e0e0e0e0"),
-                    help="the rig's stable device id (default %(default)s)")
-    sp.add_argument("--name", help="client name to store")
-    sp.set_defaults(func=cmd_seed)
-
     sp = sub.add_parser("wait-prompt", help="wait for a new pairing prompt, tap Allow")
     sp.add_argument("--timeout", type=float, default=90.0)
     sp.add_argument("--interval", type=float, default=0.4)
@@ -439,7 +357,7 @@ def main(argv=None):
     args = p.parse_args(argv)
     try:
         return args.func(args)
-    except (PocError, proto.ProtocolError, OSError) as exc:
+    except (PocError, deckctl.DeckError, proto.ProtocolError, OSError) as exc:
         sys.stderr.write("poc: error: %s\n" % exc)
         return 2
 

@@ -1,7 +1,8 @@
 # fakephone — fake PocketDeck phone + conformance client
 
 A protocol-faithful test harness for [docs/PROTOCOL.md](../../docs/PROTOCOL.md)
-v1. Python 3.9 stdlib only, plus `ffmpeg`/`ffprobe` and the macOS `dns-sd` CLI.
+v2 (TLS 1.3 client certificates, pins). Python 3.11+ for the TLS parts (3.9's
+LibreSSL cannot do TLS 1.3), plus `ffmpeg`/`ffprobe` and the macOS `dns-sd` CLI.
 
 - `proto.py` — the frame codec (JSON, VIDEO_CONFIG, VIDEO_FRAME, TOUCH, SCROLL,
   KEY), the HMAC auth helper, and Annex-B helpers (NAL/access-unit splitting,
@@ -14,8 +15,11 @@ v1. Python 3.9 stdlib only, plus `ffmpeg`/`ffprobe` and the macOS `dns-sd` CLI.
 
 ## Requirements
 
-`/usr/bin/python3` (3.9.6) and `ffmpeg`/`ffprobe` (tested with Homebrew 8.0).
-`dns-sd` ships with macOS at `/usr/bin/dns-sd`.
+A Python with TLS 1.3 — Python 3.11+ against OpenSSL 3 (`/opt/homebrew/bin/python3`),
+or set `PD_FAKE_TLS_PYTHON`. The macOS system `/usr/bin/python3` (3.9.6) links
+LibreSSL 2.8, which has no TLS 1.3, so it cannot talk to the v2 server. Also
+`ffmpeg`/`ffprobe` (tested with Homebrew 8.0). `dns-sd` ships with macOS at
+`/usr/bin/dns-sd`.
 
 ## Run the self-check
 
