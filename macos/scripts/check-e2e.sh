@@ -1643,7 +1643,7 @@ PY
 
 # chrome_state — the chrome the app last wrote (--debug-chrome-state):
 # "style=framed|immersive lights=shown|hidden pill=shown|hidden
-#  title_visible=yes|no lights_managed=us|appkit clicks=N"
+#  title_visible=yes|no lights_managed=us|appkit fullscreen=yes|no clicks=N"
 # (N = clicks that reached the bar or the pill; in native full screen the
 # system's titlebar shows the title and places the lights).
 chrome_state() { cat "$WORK/chrome.txt" 2>/dev/null; }
@@ -2022,10 +2022,10 @@ check_chrome() {
         rm -f "$WORK/c2-step-framed" "$WORK/c2-step-exit-framed" \
             "$WORK/c2-step-immersive" "$WORK/c2-step-exit-immersive"
         printf '%s\n' "wait 1" "windowstyle framed" "wait 1" "fullscreen" "wait 6" \
-            "waitfile $WORK/c2-step-framed" "fullscreen" "wait 6" \
-            "waitfile $WORK/c2-step-exit-framed" "windowstyle immersive" "wait 2" "fullscreen" "wait 6" \
-            "waitfile $WORK/c2-step-immersive" "fullscreen" "wait 6" \
-            "waitfile $WORK/c2-step-exit-immersive" "wait 10" > "$WORK/chrome-fullscreen.txt"
+            "waitfile $WORK/c2-step-framed 60" "fullscreen" "wait 6" \
+            "waitfile $WORK/c2-step-exit-framed 60" "windowstyle immersive" "wait 2" "fullscreen" "wait 6" \
+            "waitfile $WORK/c2-step-immersive 60" "fullscreen" "wait 6" \
+            "waitfile $WORK/c2-step-exit-immersive 60" "wait 10" > "$WORK/chrome-fullscreen.txt"
         open_shared --open com.android.settings \
             --debug-chrome-state "$WORK/chrome.txt" --debug-input-script "$WORK/chrome-fullscreen.txt" \
             || { kill "$backdrop"; return 1; }
@@ -2036,15 +2036,20 @@ check_chrome() {
         full="$(await_window '$4 > 900 && $5 > 628')" \
             && ok "C2 framed full screen fills the screen ($(windows | awk -v i="$full" '$1 == i {print $4 "x" $5}'))" \
             || bad "C2 framed full screen: the window did not fill the screen"
-        wait_until 15 chrome_is "style=framed lights=shown pill=hidden title_visible=yes lights_managed=appkit" \
+        wait_until 15 chrome_is "style=framed lights=shown pill=hidden title_visible=yes lights_managed=appkit fullscreen=yes" \
             && ok "C2 framed full screen: the revealed bar shows the title and the standard lights ($(chrome_state))" \
             || bad "C2 framed full screen: $(chrome_state)"
+        # The system's bar only slides down when the pointer reaches the top
+        # edge; look at it there.
+        cg_input move --window "$full" --top 0
+        sleep 1
+        screencapture -x "$WORK/chrome-fullscreen-framed.png" && say "screenshot: $WORK/chrome-fullscreen-framed.png"
         touch "$WORK/c2-step-framed"
 
         win="$(await_window '$4 == 900 && $5 == 628')" \
             && ok "C2 leaving framed full screen restores the 900x628 window" \
             || bad "C2 leaving framed full screen: $(windows | awk '$4 == 900 {print $4 "x" $5}')"
-        wait_until 15 chrome_is "style=framed lights=shown pill=hidden title_visible=no lights_managed=us" \
+        wait_until 15 chrome_is "style=framed lights=shown pill=hidden title_visible=no lights_managed=us fullscreen=no" \
             && ok "C2 and the framed bar's lights come back, title hidden ($(chrome_state))" \
             || bad "C2 after framed full screen: $(chrome_state)"
         touch "$WORK/c2-step-exit-framed"
@@ -2055,18 +2060,23 @@ check_chrome() {
         full="$(await_window '$4 > 900 && $5 > 600')" \
             && ok "C2 immersive full screen fills the screen ($(windows | awk -v i="$full" '$1 == i {print $4 "x" $5}'))" \
             || bad "C2 immersive full screen: the window did not fill the screen"
-        wait_until 15 chrome_is "style=immersive lights=shown pill=hidden title_visible=yes lights_managed=appkit" \
+        wait_until 15 chrome_is "style=immersive lights=shown pill=hidden title_visible=yes lights_managed=appkit fullscreen=yes" \
             && ok "C2 immersive full screen: the revealed bar shows the title and the standard lights ($(chrome_state))" \
             || bad "C2 immersive full screen: $(chrome_state)"
+        cg_input move --window "$full" --top 0
+        sleep 1
+        screencapture -x "$WORK/chrome-fullscreen-immersive.png" && say "screenshot: $WORK/chrome-fullscreen-immersive.png"
         touch "$WORK/c2-step-immersive"
 
         win="$(await_window '$4 == 900 && $5 == 600')" \
             && ok "C2 leaving immersive full screen restores the 900x600 window" \
             || bad "C2 leaving immersive full screen: $(windows | awk '$4 == 900 {print $4 "x" $5}')"
-        wait_until 15 chrome_is "style=immersive lights=hidden pill=hidden title_visible=no lights_managed=us" \
+        wait_until 15 chrome_is "style=immersive lights=hidden pill=hidden title_visible=no lights_managed=us fullscreen=no" \
             && ok "C2 and immersive is back at rest: no lights, no pill, title hidden ($(chrome_state))" \
             || bad "C2 after immersive full screen: $(chrome_state)"
         touch "$WORK/c2-step-exit-immersive"
+        # Leave the pointer where it was, not on the screen's top edge.
+        cg_input move --window "$win" --dx 0 --dy 0
     else
         skip_visible "C2 native full screen (a real Space switch)"
     fi

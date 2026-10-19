@@ -41,6 +41,10 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     /// The standard buttons' slots before the chrome moved them, as an x and a
     /// distance from the window's top edge (the titlebar's anchor).
     private var standardLightSlots: [NSWindow.ButtonType: (x: CGFloat, fromTop: CGFloat, size: NSSize)] = [:]
+    /// The windowed frame to come back to: AppKit restores a standard
+    /// titlebar's 28 pt even though this window's titlebar is hidden and clear,
+    /// which would grow the window and its stream on every full-screen exit.
+    private var windowedFrame: NSRect?
     private var resizeWork: DispatchWorkItem?
     private var closingFromRemote = false
     /// Folds the dwell's time in; `pointerMoved` also schedules a hide.
@@ -302,7 +306,10 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     func windowDidMove(_ notification: Notification) { rememberFrame() }
 
     private func rememberFrame() {
-        guard let window, window.isVisible, !closingFromRemote else { return }
+        // Never the screen-sized frame full screen moves the window to: the
+        // next open would come back too big.
+        guard let window, window.isVisible, !closingFromRemote,
+              !window.styleMask.contains(.fullScreen), windowedFrame == nil else { return }
         manager.saveFrame(window.frame, forKey: frameKey)
     }
 
@@ -431,8 +438,10 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         let pillUp = chrome.showsPill
         let titleUp = window?.titleVisibility == .visible
         let managed = chrome.lightsManagedByAppKit ? "appkit" : "us"
+        let fullScreen = window?.styleMask.contains(.fullScreen) ?? false
         let line = "style=\(style.rawValue) lights=\(lights ? "shown" : "hidden") pill=\(pillUp ? "shown" : "hidden")"
-            + " title_visible=\(titleUp ? "yes" : "no") lights_managed=\(managed) clicks=\(barPresses)\n"
+            + " title_visible=\(titleUp ? "yes" : "no") lights_managed=\(managed)"
+            + " fullscreen=\(fullScreen ? "yes" : "no") clicks=\(barPresses)\n"
         try? Data(line.utf8).write(to: stateFile, options: .atomic)
     }
 
@@ -483,6 +492,9 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     /// Before the transition, so the system's bar slides in with the title and
     /// lights already in place (and out with the windowed chrome's).
     func windowWillEnterFullScreen(_ notification: Notification) {
+        if let window, !window.styleMask.contains(.fullScreen) {
+            windowedFrame = window.frame
+        }
         applyChromeConfig(fullScreen: true)
     }
 
@@ -497,15 +509,20 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
 
     func windowDidExitFullScreen(_ notification: Notification) {
         applyChromeConfig(fullScreen: false)
+        if let window, let frame = windowedFrame, window.frame != frame {
+            window.setFrame(frame, display: true)
+        }
+        windowedFrame = nil
         chromeLayoutChanged()
     }
 
-    func windowDidFailToEnterFullScreen(_ notification: Notification) {
+    func windowDidFailToEnterFullScreen(_ window: NSWindow) {
+        windowedFrame = nil
         applyChromeConfig(fullScreen: false)
         chromeLayoutChanged()
     }
 
-    func windowDidFailToExitFullScreen(_ notification: Notification) {
+    func windowDidFailToExitFullScreen(_ window: NSWindow) {
         applyChromeConfig(fullScreen: true)
         chromeLayoutChanged()
     }
