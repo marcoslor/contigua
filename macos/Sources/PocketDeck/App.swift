@@ -63,6 +63,47 @@ struct LaunchOptions {
     /// nil when `--profile` was missing or not a usable name.
     var profile: Profile? { Profile(name: profileName) }
 
+    /// Launch flags that exist only for the e2e harness and the screenshot
+    /// runs; the value says whether the flag takes an argument. A production
+    /// build (no `PD_TEST_HOOKS`) ignores them instead of acting on them
+    /// (sec L-6: `--debug-control` alone can drive a live session).
+    static let testHooks: [String: Bool] = [
+        "--connect": true,
+        "--open": true,
+        "--open-phone": false,
+        "--resize-stream": true,
+        "--minimize-stream": true,
+        "--deminimize-stream": true,
+        "--close-stream": true,
+        "--quit-after": true,
+        "--reset-pairing": false,
+        "--qr-sheet": false,
+        "--qr-payload-file": true,
+        "--debug-input-script": true,
+        "--debug-control": true,
+        "--dump-video": true,
+        "--float-windows": false,
+        "--debug-chrome-state": true,
+        "--debug-banner": true,
+        "--audio-stats": true,
+        "--share-log": true,
+        "--preview": true,
+        "--appearance": true,
+        "--dock-dir": true,
+        "--dock-add": true,
+        "--dock-remove": true,
+        "--set-nickname": true,
+        "--continue-on-mac": false,
+        "--background": false,
+        "--open-requests": true,
+    ]
+
+    /// One line on stderr (the harness captures stderr into app.log); the
+    /// flag's value is never logged.
+    private static func noteIgnoredDebugFlag(_ flag: String) {
+        FileHandle.standardError.write(Data("ignored debug flag \(flag) in a release build\n".utf8))
+    }
+
     static func parse(_ arguments: [String]) -> LaunchOptions {
         var options = LaunchOptions()
         var index = 1
@@ -71,7 +112,15 @@ struct LaunchOptions {
             return index < arguments.count ? arguments[index] : nil
         }
         while index < arguments.count {
-            switch arguments[index] {
+            let argument = arguments[index]
+            #if !PD_TEST_HOOKS
+            if let takesValue = Self.testHooks[argument] {
+                Self.noteIgnoredDebugFlag(argument)
+                index += takesValue ? 2 : 1
+                continue
+            }
+            #endif
+            switch argument {
             case "--connect":
                 if let value = next(), let colon = value.lastIndex(of: ":"),
                    let port = UInt16(value[value.index(after: colon)...]) {

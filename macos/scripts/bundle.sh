@@ -26,8 +26,14 @@ case "$VARIANT" in
     *) SHARE_ID="dev.pocketdeck.mac.share-$VARIANT"; SHARE_TITLE="Open on Phone ($VARIANT)" ;;
 esac
 
-swift build -c release
-BIN="$(swift build -c release --show-bin-path)/PocketDeck"
+# The e2e/debug launch hooks are compiled in only for non-release bundles:
+# install.sh's `--variant release` build ignores them (sec L-6). The flag is
+# passed here so `build_e2e_app` and vm-e2e.sh's host build both get it.
+BUILD_FLAGS=()
+[ "$VARIANT" = "release" ] || BUILD_FLAGS=(-Xswiftc -DPD_TEST_HOOKS)
+
+swift build -c release ${BUILD_FLAGS[@]+"${BUILD_FLAGS[@]}"}
+BIN="$(swift build -c release ${BUILD_FLAGS[@]+"${BUILD_FLAGS[@]}"} --show-bin-path)/PocketDeck"
 
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
