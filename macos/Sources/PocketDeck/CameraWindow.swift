@@ -94,7 +94,13 @@ enum CameraWindowCopy {
 /// The centred message box over the stream: text, an optional spinner and the
 /// "Try Again" button. It only covers its own box, never the whole stream.
 final class CameraStateView: NSView {
-    private let box = NSView()
+    /// The box lays out top-down like this view (the plain NSView would put the
+    /// first subview at the bottom).
+    private final class FlippedBox: NSView {
+        override var isFlipped: Bool { true }
+    }
+
+    private let box = FlippedBox()
     private let label = NSTextField(wrappingLabelWithString: "")
     private let spinner = NSProgressIndicator()
     private let retry = NSButton(title: "Try Again", target: nil, action: nil)
@@ -123,7 +129,15 @@ final class CameraStateView: NSView {
         spinner.controlSize = .small
         spinner.isDisplayedWhenStopped = false
         box.addSubview(spinner)
-        retry.bezelStyle = .rounded
+        // White on the dark glass, whichever appearance the app is in.
+        retry.isBordered = false
+        retry.wantsLayer = true
+        retry.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.16).cgColor
+        retry.layer?.cornerRadius = 6
+        retry.attributedTitle = NSAttributedString(string: "Try Again", attributes: [
+            .foregroundColor: NSColor.white,
+            .font: NSFont.systemFont(ofSize: 13, weight: .semibold),
+        ])
         retry.target = self
         retry.action = #selector(pressRetry)
         box.addSubview(retry)
@@ -169,7 +183,7 @@ final class CameraStateView: NSView {
         var contentHeight: CGFloat = 0
         if showsSpinner { contentHeight += 22 }
         contentHeight += textHeight
-        if showsRetry { contentHeight += 12 + 24 }
+        if showsRetry { contentHeight += 12 + 28 }
         let height = max(contentHeight, 8) + 36
         box.frame = NSRect(x: (bounds.width - width) / 2, y: (bounds.height - height) / 2,
                            width: width, height: height)
@@ -183,9 +197,9 @@ final class CameraStateView: NSView {
             y += textHeight
         }
         if showsRetry {
-            let size = retry.fittingSize
-            retry.frame = NSRect(x: (width - size.width) / 2, y: y + 12,
-                                 width: size.width, height: max(size.height, 24))
+            let buttonWidth = max(retry.fittingSize.width + 24, 92)
+            retry.frame = NSRect(x: (box.bounds.width - buttonWidth) / 2, y: y + 12,
+                                 width: buttonWidth, height: 28)
         }
     }
 
