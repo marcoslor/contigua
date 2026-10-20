@@ -127,8 +127,11 @@ Subcommands:
   `recover`. `--motion V` injects motion to keep a static app drawing:
   `--motion-mode scroll` sends wheel bursts, `drag` a synthetic fling.
   `--cap-seconds`/`--cap-fps` end with an fps-cap phase.
-- `watch-state --seconds N` — print every `state` message with its timestamp;
-  lock/unlock the phone while it runs and count the lines (one per change).
+- `watch-state --seconds N` — print every `state` message with its timestamp
+  (and `dnd` when the phone reports it); lock/unlock the phone while it runs and
+  count the lines (one per change).
+- `dnd MODE` — send `phone.dnd` with `priority`/`alarms`/`none`/`off` and print
+  the state the phone reports (docs/design/focus.md).
 
 `--wait-for-free SECONDS` (any subcommand) retries while another client holds the
 phone's single session; the default is to fail fast with `busy`.
