@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # End-to-end checks C3-C13 for the macOS client against tools/fakephone.
 #
-#   ./scripts/check-e2e.sh [qr|pair|gates|tls|render|resize|input|hover|mouseback|input-global|pause|direct|nav|mirror|spotlight|intents|mcp|focus|controls|pinch|chrome|menus|density|trackpad|clip|sharein|links|share|apk|drop|dock|nickname|notify|audio|handoff|deck|all [--shard N/M]]
+#   ./scripts/check-e2e.sh [qr|pair|gates|tls|render|resize|input|hover|mouseback|input-global|pause|direct|nav|mirror|spotlight|intents|mcp|focus|controls|pinch|chrome|menus|density|trackpad|clip|sharein|links|share|apk|drop|dock|nickname|notify|notify-actions|audio|handoff|deck|all [--shard N/M]]
 #
 # Every check starts from a clean slate (the shared-app checks share one, see
 # "The shared app" below): no PocketDeck or fakephone processes
@@ -5418,7 +5418,7 @@ PY
     no_notify_text() {
         local file
         for file in "$@"; do
-            if grep -qE 'pd-notify-(title|text)-[12]' "$file" 2>/dev/null; then
+            if grep -qE 'pd-notify-(title|text)-[0-9]' "$file" 2>/dev/null; then
                 say "  notification text in $file"
                 return 1
             fi
@@ -5432,6 +5432,10 @@ PY
     # The per-phone opt-in is a stored default of the e2e profile, off by default
     # (check_dock seeds showAppsInDock the same way).
     defaults write "$DEFAULTS_SUITE" "notify.$device" -bool YES
+    # Dock auto-identity is on by default: phase (a) opens an app window and
+    # would leave a shim that phase (f) then relaunches as a Dock open, which
+    # this check would read as the click's window. Dock has its own check.
+    defaults write "$DEFAULTS_SUITE" "showAppsInDock" -bool NO
 
     # The click and the command go through the same handlers the banner click
     # and the Now Playing control run; both arrive after the window's video.
@@ -5557,6 +5561,7 @@ EOF
     stop_fakephone
     wait_until 5 no_fakephone
     defaults delete "$DEFAULTS_SUITE" "notify.$device" >/dev/null 2>&1
+    defaults delete "$DEFAULTS_SUITE" "showAppsInDock" >/dev/null 2>&1
     : > "$WORK/events.jsonl"
     # The same phone and pairing, so only the opt-in differs between the phases.
     start_fake "$WORK/state.json" || return 1
@@ -5578,8 +5583,156 @@ EOF
     wait_until 5 no_fakephone
 }
 
-# --- DECK: the app grid's icon kinds ---------------------------------------
+# check_notify_actions — deeper notifications, part 1 (docs/design/notify.md):
+# the phone's buttons and reply field on the banner, a clear in both directions,
+# per-app mute and Copy code. Quiet share-log run: ids, indexes, lengths and the
+# category hash only; the fake code is compared by hash and never printed.
+check_notify_actions() {
+    clean
+    local log="$WORK/notify-actions.log" script="$WORK/notify-actions-input.txt" device
+    local code_hash code_types
+    log_has() { grep -qF -- "$1" "$log" 2>/dev/null; }
+    # notify_rx KIND ID [I] [TEXTLEN] — a fakephone notification event.
+    notify_rx() {
+        python3 - "$WORK/events.jsonl" "$@" <<'PY'
+import json, sys
+path = sys.argv[1]
+kind = sys.argv[2]
+want_id = sys.argv[3] if len(sys.argv) > 3 else None
+want_i = sys.argv[4] if len(sys.argv) > 4 else None
+want_len = sys.argv[5] if len(sys.argv) > 5 else None
+for line in open(path):
+    try:
+        event = json.loads(line)
+    except ValueError:
+        continue
+    if event.get("ev") != "notify" or event.get("kind") != kind:
+        continue
+    if want_id is not None and event.get("id") != want_id:
+        continue
+    if want_i is not None and str(event.get("i")) != want_i:
+        continue
+    if want_len is not None and str(event.get("textLen")) != want_len:
+        continue
+    sys.exit(0)
+sys.exit(1)
+PY
+    }
 
+    start_fake || return 1
+    device="$(sed -n 's/^fakephone \([^ ]*\) listening.*/\1/p' "$WORK/fake.log" "$WORK/fake.err" | head -1)"
+    [ -n "$device" ] || { bad "NOTIFY-ACTIONS no device id in the fakephone listening line"; stop_fakephone; return 1; }
+    defaults write "$DEFAULTS_SUITE" "notify.$device" -bool YES
+    # No Dock auto-identity: it would open windows behind this check's back
+    # (docs/design/dock.md has its own check).
+    defaults write "$DEFAULTS_SUITE" "showAppsInDock" -bool NO
+    # The mute test: one package muted before the launch; its post must be dropped.
+    defaults write "$DEFAULTS_SUITE" "notify.mute.$device" -array com.slack
+
+    # A reply action, a plain button, a dismiss, an ongoing dismiss (refused on
+    # the Mac) and Copy code, all through the handlers a banner response runs.
+    cat > "$script" <<'EOF'
+wait 3
+notifyaction pd-a1 1 pd-reply-1
+notifyaction pd-a1 0
+notifycopy pd-a4
+notifydismiss pd-a3
+notifydismiss pd-a2
+EOF
+    launch --connect "127.0.0.1:$PORT" --quit-after 60 --share-log "$log" \
+        --open com.whatsapp --debug-input-script "$script"
+
+    # (a) the wire carried the shapes: counts and the category hash, no text.
+    wait_until 20 log_has "notify post id=pd-a1 pkg=com.whatsapp" \
+        && ok "NOTIFY-ACTIONS pd-a1 (reply shape) recorded" \
+        || bad "NOTIFY-ACTIONS pd-a1 not recorded: $(cat "$log" 2>/dev/null | tr '\n' '|')"
+    log_has "actions=2 reply=1" \
+        && ok "NOTIFY-ACTIONS the reply shape advertised 2 actions, one reply" \
+        || bad "NOTIFY-ACTIONS the reply shape's action counts are wrong"
+    log_has "code=0 ongoing=0 category=pd.n." \
+        && ok "NOTIFY-ACTIONS the category is a shape hash" \
+        || bad "NOTIFY-ACTIONS no category hash for pd-a1"
+    wait_until 20 log_has "notify post id=pd-a4 pkg=com.whatsapp" \
+        && ok "NOTIFY-ACTIONS pd-a4 (code shape) recorded" \
+        || bad "NOTIFY-ACTIONS pd-a4 not recorded"
+    grep -q "notify post id=pd-a4 .*code=1" "$log" 2>/dev/null \
+        && ok "NOTIFY-ACTIONS the code was found in the notification" \
+        || bad "NOTIFY-ACTIONS the code was not found"
+
+    # (b) muted: com.slack's post is dropped before it is shown.
+    wait_until 20 log_has "notify muted pkg=com.slack" \
+        && ok "NOTIFY-ACTIONS the muted package was dropped" \
+        || bad "NOTIFY-ACTIONS no muted line"
+    ! log_has "notify post id=pd-a5" \
+        && ok "NOTIFY-ACTIONS the muted package got no banner" \
+        || bad "NOTIFY-ACTIONS the muted package was posted anyway"
+
+    # (c) reply and button: the phone logs the right index and text length.
+    wait_until 20 log_has "notify action id=pd-a1 i=1 textLen=10" \
+        && ok "NOTIFY-ACTIONS the reply action was sent" \
+        || bad "NOTIFY-ACTIONS no reply action in the share log"
+    wait_until 20 notify_rx action pd-a1 1 10 \
+        && ok "NOTIFY-ACTIONS the phone got the reply (i=1, length 10)" \
+        || bad "NOTIFY-ACTIONS the phone logged no reply action"
+    wait_until 20 notify_rx action pd-a1 0 0 \
+        && ok "NOTIFY-ACTIONS the phone got the button (i=0, no text)" \
+        || bad "NOTIFY-ACTIONS the phone logged no button action"
+
+    # (d) dismiss: the clearable one goes out, the ongoing one does not.
+    wait_until 20 notify_rx dismiss pd-a2 \
+        && ok "NOTIFY-ACTIONS the phone got notify.dismiss for the banner" \
+        || bad "NOTIFY-ACTIONS the phone logged no dismiss"
+    log_has "notify dismiss id=pd-a3 refused=ongoing" \
+        && ok "NOTIFY-ACTIONS the ongoing notification was refused" \
+        || bad "NOTIFY-ACTIONS the ongoing refusal is not in the share log"
+    ! notify_rx dismiss pd-a3 \
+        && ok "NOTIFY-ACTIONS no dismiss was sent for the ongoing notification" \
+        || bad "NOTIFY-ACTIONS the ongoing notification was dismissed anyway"
+
+    # (e) the phone taking a notification away clears the banner (notify.remove).
+    wait_until 20 log_has "notify remove id=pd-n2" \
+        && ok "NOTIFY-ACTIONS the phone's notify.remove reached the Mac" \
+        || bad "NOTIFY-ACTIONS notify.remove was not recorded"
+
+    # (f) Copy code: value and length by hash, the concealed/transient types,
+    # then the clipboard is cleared again. Nothing here prints the code.
+    wait_until 20 log_has "notify copy id=pd-a4 len=6" \
+        && ok "NOTIFY-ACTIONS Copy code copied a 6-char code" \
+        || bad "NOTIFY-ACTIONS no copy line"
+    if [ -n "$(pbpaste 2>/dev/null)" ]; then
+        code_hash="$(pbpaste | shasum -a 256 | cut -d' ' -f1)"
+        code_types="$(xcrun swift -e 'import AppKit; print((NSPasteboard.general.types ?? []).map { $0.rawValue }.joined(separator: ","))' 2>/dev/null)"
+        [ "$(printf '%s' 482913 | shasum -a 256 | cut -d' ' -f1)" = "$code_hash" ] \
+            && ok "NOTIFY-ACTIONS the pasteboard holds the code (hash match)" \
+            || bad "NOTIFY-ACTIONS the pasteboard does not hold the code"
+        case "$code_types" in
+            *org.nspasteboard.ConcealedType*) ok "NOTIFY-ACTIONS the pasteboard item is concealed" ;;
+            *) bad "NOTIFY-ACTIONS the pasteboard item is not concealed ($code_types)" ;;
+        esac
+        case "$code_types" in
+            *org.nspasteboard.TransientType*) ok "NOTIFY-ACTIONS the pasteboard item is transient" ;;
+            *) bad "NOTIFY-ACTIONS the pasteboard item is not transient" ;;
+        esac
+        pbcopy < /dev/null
+    else
+        bad "NOTIFY-ACTIONS the pasteboard is empty after Copy code"
+    fi
+
+    # (g) privacy: no notification or reply text in any log.
+    ! grep -qE 'pd-notify-(title|text)-[0-9]|pd-reply-1|482913' \
+        "$WORK/app.log" "$log" "$WORK/fake.log" "$WORK/fake.err" "$WORK/events.jsonl" 2>/dev/null \
+        && ok "NOTIFY-ACTIONS no notification or reply text reached a log" \
+        || bad "NOTIFY-ACTIONS notification text leaked"
+
+    defaults delete "$DEFAULTS_SUITE" "notify.$device" >/dev/null 2>&1
+    defaults delete "$DEFAULTS_SUITE" "notify.mute.$device" >/dev/null 2>&1
+    defaults delete "$DEFAULTS_SUITE" "showAppsInDock" >/dev/null 2>&1
+    stop_app
+    stop_fakephone
+    wait_until 5 no_fakephone
+}
+
+# --- DECK: the app grid's icon kinds ---------------------------------------
 icons_kind() { grep '"ev":"icon"' "$WORK/events.jsonl" 2>/dev/null | grep -c "$1" || true; }
 
 have_layered_icons() { [ "$(icons_kind '"layers":true')" -ge 4 ]; }
