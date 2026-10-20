@@ -93,6 +93,20 @@ final class LiveTextInputGateTests: XCTestCase {
         XCTAssertTrue(commands.isEmpty)
     }
 
+    func testEnteringMidDragCancelsTheHeldTouch() {
+        mapper.mouseDown( event(.leftMouseDown))
+        mapper.mouseDragged( event(.leftMouseDragged))
+        suspended = true
+        commands = []
+        mapper.dropPendingInput()
+        guard case .touch(let touch)? = commands.first, commands.count == 1 else {
+            return XCTFail("expected one touch cancel, got \(commands.count) command(s)")
+        }
+        XCTAssertEqual(touch.action, .cancel)
+        mapper.mouseUp( event(.leftMouseUp))
+        XCTAssertEqual(commands.count, 1, "the release under the frozen frame reaches nothing")
+    }
+
     // MARK: Helpers
 
     private func event(_ type: NSEvent.EventType, at point: CGPoint = CGPoint(x: 10, y: 10)) -> NSEvent {

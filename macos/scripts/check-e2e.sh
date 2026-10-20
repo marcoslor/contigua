@@ -4689,14 +4689,18 @@ PY
     fi
     local resumed
     resumed="$(frames_n)"
-    if wait_until 20 eval '[ "$(frames_n)" -gt "${resumed:-0}" ]'; then
+    # "Changed", not "grew": a resumed stream may restart the fakephone's
+    # encoder, and its frame counter with it.
+    if wait_until 20 eval '[ -n "$(frames_n)" ] && [ "$(frames_n)" != "${resumed:-0}" ]'; then
         ok "LT video frames render again after exit (n $resumed -> $(frames_n))"
     else
         bad "LT no frames after exit (n $resumed -> $(frames_n))"
     fi
 
     # A stream resize while in the mode drops back to idle.
-    if wait_until 30 [ "$(grep -c '"op":"resize"' "$WORK/app.log")" -ge 1 ]; then
+    # The second enter runs VisionKit again; under load that alone can take
+    # half a minute.
+    if wait_until 60 [ "$(grep -c '"op":"resize"' "$WORK/app.log")" -ge 1 ]; then
         wait_until 15 [ "$(grep -c '"op":"idle"' "$WORK/app.log")" -ge 2 ] \
             && ok "LT a stream resize while in the mode dropped back to idle" \
             || bad "LT the resize did not return the mode to idle"

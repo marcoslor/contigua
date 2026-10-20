@@ -117,6 +117,8 @@ final class InputMapper {
     /// Touches overlay (normalized video coordinates). Empty when none is down.
     var touchPointsChanged: (([TouchPoint]) -> Void)?
     private var livePointers: [UInt8: TouchPoint] = [:]
+    /// The mouse-made touch the phone is holding (a click-drag in progress).
+    private var mouseTouch: (nx: Float, ny: Float)?
 
     struct TouchPoint: Equatable {
         var id: UInt8
@@ -144,18 +146,21 @@ final class InputMapper {
         hoverExit()
         let (nx, ny) = normalized(locationProvider(event))
         LatencyLog.shared.noteTouchDown(stream: stream)
+        mouseTouch = (nx, ny)
         send?(.touch(TouchEvent(action: .down, nx: nx, ny: ny)))
     }
 
     func mouseDragged(_ event: NSEvent) {
         guard !suspended else { return }
         let (nx, ny) = normalized(locationProvider(event))
+        mouseTouch = (nx, ny)
         send?(.touch(TouchEvent(action: .move, nx: nx, ny: ny)))
     }
 
     func mouseUp(_ event: NSEvent) {
         guard !suspended else { return }
         let (nx, ny) = normalized(locationProvider(event))
+        mouseTouch = nil
         send?(.touch(TouchEvent(action: .up, nx: nx, ny: ny)))
     }
 
@@ -565,10 +570,18 @@ final class InputMapper {
         send?(.text(text))
     }
 
-    /// The mode was just entered: forget everything that was pending or held
-    /// without sending it. A pending text batch, a hover and an in-flight
-    /// gesture are all input the frozen frame must not deliver.
+    /// The mode was just entered. A pending text batch and a queued hover move
+    /// are forgotten; what the phone is already holding (a touch, a gesture's
+    /// fingers, a hover) is cancelled, or Android would keep a finger down
+    /// under the frozen frame.
     func dropPendingInput() {
+        if let touch = mouseTouch {
+            send?(.touch(TouchEvent(action: .cancel, nx: touch.nx, ny: touch.ny)))
+            mouseTouch = nil
+        }
+        sendTrackpad(gestures.cancel())
+        if pointerGesture != nil { finishGesture(cancelled: true) }
+        if hoverActive { sendHover(.exit, nx: hoverLastPoint.nx, ny: hoverLastPoint.ny) }
         textFlush?.cancel()
         textFlush = nil
         pendingText = ""
