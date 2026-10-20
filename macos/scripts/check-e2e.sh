@@ -4688,6 +4688,44 @@ files_field() {
     sed -n "s/^files-domain list: id=$PROFILE .* $1=\([^ ]*\).*/\1/p" "$WORK/list.txt" | tail -1
 }
 
+# files_display_name — the domain's display name, which carries spaces.
+files_display_name() {
+    sed -n "s/^files-domain list: id=$PROFILE .*display=\(.*\) disconnected=.*/\1/p" \
+        "$WORK/list.txt" | tail -1
+}
+
+# files_display_is <name> — refresh the domain list and compare the name.
+files_display_is() {
+    files_list
+    [ "$(files_display_name)" = "$1" ]
+}
+
+# files_fetch_ms <path> — read the whole file through the mount and print the
+# wall time in ms: the same materialization Finder and Quick Look trigger.
+files_fetch_ms() {
+    python3 - "$1" <<'PY'
+import sys, time
+start = time.time()
+with open(sys.argv[1], "rb") as handle:
+    while handle.read(1 << 20):
+        pass
+print(int((time.time() - start) * 1000))
+PY
+}
+
+# files_fetch_ms_warm <path> — the same, with one retry. The first access to a
+# dataless item right after a 1500-entry enumeration can time out in the mount
+# (Errno 60) before the extension is asked at all (the VM run of 2026-10-20 did
+# exactly that); the retry is what Finder itself does, and the extension's own
+# `fetch done ... ms=` line below still catches a slow fetch either way.
+files_fetch_ms_warm() {
+    local first
+    first="$(files_fetch_ms "$1" 2>> "$WORK/fetch-time.err")"
+    if [ -n "$first" ]; then printf '%s\n' "$first"; return 0; fi
+    sleep 2
+    files_fetch_ms "$1" 2>> "$WORK/fetch-time.err"
+}
+
 # files_domain_path — the domain root's user-visible URL, from `--files-domain list`.
 files_domain_path() {
     sed -n "s/^files-domain list: path id=$PROFILE //p" "$WORK/list.txt" | tail -1
@@ -4792,6 +4830,8 @@ jpeg = base64.b64decode(
 open(os.path.join(root, "DCIM/Camera/photo.jpg"), "wb").write(jpeg)
 with open(os.path.join(root, "big3.bin"), "wb") as handle:
     handle.write(os.urandom(3 * 1024 * 1024))
+# One exact mebibyte for the fetch-time check (the extension logs bytes).
+open(os.path.join(root, "open1m.bin"), "wb").write(os.urandom(1024 * 1024))
 with open(os.path.join(root, "big32.bin"), "wb") as handle:
     handle.write(os.urandom(32 * 1024 * 1024))
 for i in range(1500):
@@ -4914,6 +4954,41 @@ check_files_domain() {
         && ok "FILES many lists all 1500 names across pages" \
         || bad "FILES many lists $many names, wanted 1500"
 
+    # -- The location names the phone (user request, "Fixes 10-20") -----------
+    # The domain was added at launch, before any phone was known; the session
+    # then remembered the phone and its name, and the domain was updated in
+    # place. The location is "PocketDeck (<the name every surface uses>)".
+    wait_until 60 files_display_is "PocketDeck (FakePhone)" \
+        && ok "FILES the Finder location is \"PocketDeck (FakePhone)\"" \
+        || bad "FILES the location is \"$(files_display_name)\", wanted \"PocketDeck (FakePhone)\""
+
+    # -- A fetch is one round trip, not twenty seconds ("Fixes 10-20") --------
+    # The extension used to wait for a terminal reply that never came, until
+    # the socket's 20 s receive timeout: a 412-byte Quick Look file took 20 s,
+    # twice. Small (≤ 1 KB) and 1 MiB reads must finish well under 3 s.
+    local small_size small_ms small_log big_ms big_log
+    small_size="$(stat -f%z "$WORK/fsroot/Documents/file01.txt" 2>/dev/null || echo 0)"
+    small_ms="$(files_fetch_ms_warm "$root/Documents/file01.txt")"
+    big_ms="$(files_fetch_ms_warm "$root/open1m.bin")"
+    files_log > "$WORK/files-log-fetch.txt" 2>/dev/null || true
+    small_log="$(sed -n "s/.*fetch done bytes=$small_size ms=\([0-9]*\).*/\1/p" "$WORK/files-log-fetch.txt" | tail -1)"
+    big_log="$(sed -n "s/.*fetch done bytes=1048576 ms=\([0-9]*\).*/\1/p" "$WORK/files-log-fetch.txt" | tail -1)"
+    [ "$small_size" -gt 0 ] && [ "$small_size" -le 1024 ] \
+        && ok "FILES the small file is $small_size bytes" \
+        || bad "FILES the small file is $small_size bytes, wanted ≤ 1024"
+    [ -n "$small_ms" ] && [ "$small_ms" -lt 3000 ] \
+        && ok "FILES a $small_size-byte fetch takes ${small_ms} ms (extension logged ${small_log:-?} ms)" \
+        || bad "FILES the $small_size-byte fetch took ${small_ms} ms (wanted < 3000; extension ${small_log:-no line})"
+    [ -n "$big_ms" ] && [ "$big_ms" -lt 3000 ] \
+        && ok "FILES a 1 MiB fetch takes ${big_ms} ms (extension logged ${big_log:-?} ms)" \
+        || bad "FILES the 1 MiB fetch took ${big_ms} ms (wanted < 3000; extension ${big_log:-no line})"
+    [ -n "$small_log" ] && [ "$small_log" -lt 3000 ] \
+        && ok "FILES the extension logged the small fetch at ${small_log} ms" \
+        || bad "FILES the extension's small fetch line is '${small_log:-missing}'"
+    [ -n "$big_log" ] && [ "$big_log" -lt 3000 ] \
+        && ok "FILES the extension logged the 1 MiB fetch at ${big_log} ms" \
+        || bad "FILES the extension's 1 MiB fetch line is '${big_log:-missing}'"
+
     # -- A name that appeared on the phone after the listing (collision) ------
     # A photo taken since the Mac looked: the name is not in the enumeration,
     # so the copy is a create. The phone refuses it (exclusive); the Mac's file
@@ -4992,6 +5067,30 @@ PY
     ls "$WORK"/photo.jpg.png >/dev/null 2>&1 \
         && ok "FILES Quick Look wrote a thumbnail of the jpg ($WORK/photo.jpg.png)" \
         || bad "FILES Quick Look wrote no jpg thumbnail: $(tail -2 "$WORK/qlmanage.txt" | tr '\n' ' ')"
+
+    # -- A preview writes nothing to the phone ("Fixes 10-20") ----------------
+    # Opening or previewing an item made the system send a modify that changes
+    # nothing the phone stores (last-used date, tags, favourite rank); the old
+    # extension forwarded it, so the phone re-wrote the file. The fix answers
+    # locally: no `bridge: modify` line, and the preview's watch names the
+    # file's folder, never the file (`fs_not_a_dir`).
+    files_log > "$WORK/files-log-preview-before.txt" 2>/dev/null || true
+    local modify_before modify_after watch_failures
+    modify_before="$(grep -c 'bridge: modify' "$WORK/files-log-preview-before.txt" 2>/dev/null || true)"
+    perl -e 'alarm 90; exec @ARGV' qlmanage -t -s 64 -o "$WORK" "$root/Documents/file02.txt" \
+        > "$WORK/qlmanage-small.txt" 2>&1 || true
+    perl -e 'alarm 90; exec @ARGV' qlmanage -t -s 128 -o "$WORK" "$root/DCIM/Camera/photo.jpg" \
+        > "$WORK/qlmanage-again.txt" 2>&1 || true
+    sleep 4
+    files_log > "$WORK/files-log-preview-after.txt" 2>/dev/null || true
+    modify_after="$(grep -c 'bridge: modify' "$WORK/files-log-preview-after.txt" 2>/dev/null || true)"
+    [ "${modify_after:-0}" -eq "${modify_before:-0}" ] \
+        && ok "FILES a preview sends no bridge modify (${modify_before:-0} before, ${modify_after:-0} after)" \
+        || bad "FILES a preview sent $(( ${modify_after:-0} - ${modify_before:-0} )) bridge modify line(s)"
+    watch_failures="$(grep -c 'fs_not_a_dir' "$WORK/files-log-preview-after.txt" 2>/dev/null || true)"
+    [ "${watch_failures:-0}" -eq 0 ] \
+        && ok "FILES no watch named a file (no fs_not_a_dir)" \
+        || bad "FILES $watch_failures watch(es) named a file (fs_not_a_dir)"
 
     # -- The extension served it over the bridge ------------------------------
     files_log > "$WORK/files-log.txt"
@@ -5284,6 +5383,35 @@ PY
     screencapture -x "$WORK/finder-documents.png" 2>/dev/null \
         && ok "FILES screenshot of Finder in Documents: $WORK/finder-documents.png" \
         || bad "FILES screencapture (Documents) failed"
+    # -- A rename updates the location in place ("Fixes 10-20") ---------------
+    # The nickname path Settings → Devices → Rename uses (`--set-nickname`),
+    # on a second launch so the first one's "PocketDeck (FakePhone)" above is a
+    # settled state. The domain is re-added with the same identifier and the
+    # new display name: macOS updates it, so the CloudStorage folder and its
+    # cached files stay (the same inode, and the root still lists).
+    local folder_before inode_before
+    folder_before="$(ls -d "$HOME"/Library/CloudStorage/PocketDeck-* 2>/dev/null | head -1)"
+    inode_before="$(stat -f%i "$folder_before" 2>/dev/null || true)"
+    kill_e2e_app
+    wait_until 20 eval '[ -z "$(e2e_app_pids)" ]' || true
+    launch --connect "127.0.0.1:$PORT" --files-domain add --set-nickname "Nicky"
+    wait_until 30 eval 'events_have "\"state\":\"auth_ok\"" || events_have "\"state\":\"paired\""' \
+        || bad "FILES the rename launch never authenticated"
+    wait_until 60 files_display_is "PocketDeck (Nicky)" \
+        && ok "FILES a nickname rename updates the location to \"PocketDeck (Nicky)\"" \
+        || bad "FILES the location after the rename is \"$(files_display_name)\", wanted \"PocketDeck (Nicky)\""
+    local folder_after inode_after root_after
+    folder_after="$(ls -d "$HOME"/Library/CloudStorage/PocketDeck-* 2>/dev/null | head -1)"
+    inode_after="$(stat -f%i "$folder_after" 2>/dev/null || true)"
+    [ -n "$inode_before" ] && [ "$inode_before" = "$inode_after" ] \
+        && ok "FILES the rename kept the CloudStorage folder (inode ${inode_before:-?})" \
+        || bad "FILES the CloudStorage folder changed across the rename (${inode_before:-none} -> ${inode_after:-none})"
+    files_list
+    root_after="$(files_domain_path)"
+    wait_until 60 files_root_lists "$root_after" \
+        && ok "FILES the renamed domain still lists the phone's tree" \
+        || bad "FILES the renamed domain does not list at '${root_after:-no path}'"
+
     # -- Remove the domain, it must be gone -----------------------------------
     kill_e2e_app
     stop_fakephone
