@@ -18,7 +18,7 @@
 - **Sharing is opt-in.** Notifications, Now Playing, the camera, Finder files and AI-agent control are off by default and need a person's switch. A new feature that reads or sends personal data follows the same rule.
 - **Privacy in logs, tests and commits:** never log or save notification text, media titles/artists/albums/artwork, file names, paths or file contents, pasteboard contents, key material, nonces, exporters or secrets. Log ids, counts, sizes, states, durations, error codes and hash prefixes only.
 - **LAN and end to end:** the session is mutual TLS with pinned keys (docs/design/e2ee.md); nothing goes through a third party unencrypted.
-- **Protocol changes stay compatible:** new fields are optional, an older peer ignores unknown messages and fields, and every change is documented in docs/PROTOCOL.md with what an older peer does.
+- **No backward compatibility during the alpha:** nothing is released and the phone and Mac apps ship together, so a protocol change may rename, remove or require fields freely — no "older peer" modes, fallbacks or tests. Every change is still documented in docs/PROTOCOL.md (and the protocol version bumped when a change breaks the other side). This rule ends when there are real users and the project leaves alpha.
 - **A feature blocked on something we don't have** (a paid Apple Developer ID, an account, special hardware) does not land on `main`. It lives on its own branch (`feature/<name>`), rebased now and then, and becomes a GitHub issue plus a PR when the repo is published. Today: camera sharing (`feature/camera`, needs a Developer ID for the camera extension).
 
 ## Testing rules
