@@ -130,6 +130,44 @@ NOTIFY_MEDIA_STATE = {"playing": True, "pkg": "com.spotify.music", "title": "Fak
                       "artist": "Fake Artist", "album": "Fake Album", "durationMs": 30000,
                       "positionMs": 0, "rate": 1.0}
 
+# The phone's zen modes (docs/design/focus.md): the wire names and their real
+# Settings.Global.zen_mode values, kept here so the fake applies the same
+# restore rule as ZenControl.
+ZEN_MODES = {"off": 0, "priority": 1, "none": 2, "alarms": 3}
+ZEN_NAMES = {code: name for name, code in ZEN_MODES.items()}
+
+
+class FakeZen(object):
+    """The fake phone's DND setting plus the setByMac memory: the restore rule
+    never turns off a DND the person set themselves."""
+
+    def __init__(self, person=None, supported=True):
+        self.supported = supported
+        self.mode = ZEN_MODES[person] if person else ZEN_MODES["off"]
+        # The mode PocketDeck turned on, or None when the DND is the person's.
+        self.set_by_mac = None
+
+    def name(self):
+        return ZEN_NAMES[self.mode]
+
+    def apply_from_mac(self, name):
+        """Applies one phone.dnd mode; True when the stored mode changed."""
+        code = ZEN_MODES[name]
+        before = self.mode
+        if code == ZEN_MODES["off"]:
+            if self.set_by_mac is not None and self.mode == self.set_by_mac:
+                self.mode = ZEN_MODES["off"]
+            self.set_by_mac = None
+        elif self.mode == code and self.set_by_mac == code:
+            pass  # already ours (a reconnect must not re-apply it)
+        elif self.mode != ZEN_MODES["off"]:
+            self.set_by_mac = None  # the person's own DND: leave it alone
+        else:
+            self.mode = code
+            self.set_by_mac = code
+        return self.mode != before
+
+
 
 def add_demo_apps(count, no_icon_every):
     """Grow APPS to `count` entries (screenshots of a full grid); every
@@ -425,6 +463,10 @@ class EventLog(object):
 
     def session(self, state):
         self._emit({"ev": "session", "state": state, "ts": time.time()})
+
+    def dnd(self, mode, by_mac):
+        """The phone's DND after a Mac command (mode name only, never a person)."""
+        self._emit({"ev": "dnd", "mode": mode, "byMac": by_mac, "ts": time.time()})
 
     def tx(self, msg):
         self._emit({"ev": "tx", "msg": redact_pairing(msg), "ts": time.time()})
@@ -1462,13 +1504,20 @@ class Session(object):
             "screen": {"w": SCREEN_W, "h": SCREEN_H, "dpi": SCREEN_DPI},
             "locked": True,
         }})
-        self._send({"t": "state", "locked": True, "battery": BATTERY, "charging": False})
+        self.send_state()
         if self.phone.args.clip_on_welcome is not None:
             text = self.phone.args.clip_on_welcome
             self._send({"t": "clip.set", "text": text})
             self.phone.events.clip("tx", text)
         if self.phone.args.share:
             threading.Thread(target=self._send_shares, daemon=True).start()
+
+    def send_state(self):
+        """The `state` message, with `dnd` only when the phone supports it."""
+        state = {"t": "state", "locked": True, "battery": BATTERY, "charging": False}
+        if self.phone.zen.supported:
+            state["dnd"] = self.phone.zen.name()
+        self._send(state)
 
     def _send_shares(self):
         """--share: what a person shares with "Send to Mac" (docs/design/sharein.md)."""
@@ -1528,7 +1577,7 @@ class Session(object):
 
     def _handle_json(self, msg):
         kind = msg.get("t")
-        handler = {
+        handlers = {
             "ping": self._on_ping,
             "apps.list": self._on_apps_list,
             "apps.icon": self._on_apps_icon,
@@ -1561,7 +1610,11 @@ class Session(object):
             "fs.stat": self._on_fs_stat,
             "fs.read": self._on_fs_read,
             "fs.cancel": self._on_fs_cancel,
-        }.get(kind)
+        }
+        # A phone without DND support keeps phone.dnd unknown (logged once).
+        if self.phone.zen.supported:
+            handlers["phone.dnd"] = self._on_phone_dnd
+        handler = handlers.get(kind)
         if handler is None:
             if kind not in self._unknown_types:
                 self._unknown_types.add(kind)
@@ -1571,6 +1624,18 @@ class Session(object):
 
     def _on_ping(self, msg):
         self._send({"t": "pong", "ts": msg.get("ts")})
+
+    def _on_phone_dnd(self, msg):
+        """phone.dnd (docs/design/focus.md): the fake applies the phone's own
+        restore rule and reports the mode it holds; a real change sends state."""
+        mode = msg.get("mode")
+        if mode not in ZEN_MODES:
+            self._send_error("bad_request", "phone.dnd needs mode priority|alarms|none|off")
+            return
+        changed = self.phone.zen.apply_from_mac(mode)
+        self.phone.events.dnd(self.phone.zen.name(), self.phone.zen.set_by_mac is not None)
+        if changed:
+            self.send_state()
 
     # -- APK install (docs/design/apk.md): acts like pm; a part holding the bytes
     # PD_FAKE_DOWNGRADE fails the commit with INSTALL_FAILED_VERSION_DOWNGRADE.
@@ -2241,6 +2306,10 @@ class FakePhone(object):
         if not args.no_tls:
             self.fp_hex = make_identity(self.tls_identity_dir)
         self.events = EventLog(args.events)
+        # DND (docs/design/focus.md): --dnd-unsupported acts like an old build
+        # (no state.dnd, phone.dnd is an unknown message); --dnd-person starts
+        # in a mode the person set, which the restore rule must leave alone.
+        self.zen = FakeZen(person=args.dnd_person, supported=not args.dnd_unsupported)
         # The fake /sdcard (docs/design/files.md §6): the e2e check builds a
         # tree here and the fs.* handlers serve it with the phone's rules.
         self.fs = FsFake(args.fs_root) if args.fs_root else None
@@ -2457,6 +2526,12 @@ def build_parser():
     p.add_argument("--legacy-phone", action="store_true",
                    help="behave like a v1 phone (challenge after hello): the "
                         "v2 Mac surfaces the version mismatch and hangs up")
+    p.add_argument("--dnd-person", choices=sorted(ZEN_MODES), metavar="MODE",
+                   help="the phone starts in that Do Not Disturb mode, set by the "
+                        "person (the restore rule must leave it alone)")
+    p.add_argument("--dnd-unsupported", action="store_true",
+                   help="act like a build without Focus support: state carries no "
+                        "dnd and phone.dnd is an unknown message")
     p.add_argument("--tls-identity", metavar="DIR", default=None,
                    help="TLS identity dir (cert.pem/key.pem; generated once); "
                         "default is next to --state, so restarts keep the pin. "

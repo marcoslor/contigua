@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # End-to-end checks C3-C13 for the macOS client against tools/fakephone.
 #
-#   ./scripts/check-e2e.sh [qr|pair|gates|tls|render|resize|input|hover|mouseback|input-global|pause|direct|nav|mirror|spotlight|intents|mcp|pinch|chrome|menus|density|trackpad|clip|sharein|links|share|apk|drop|dock|nickname|notify|audio|handoff|deck|all [--shard N/M]]
+#   ./scripts/check-e2e.sh [qr|pair|gates|tls|render|resize|input|hover|mouseback|input-global|pause|direct|nav|mirror|spotlight|intents|mcp|focus|pinch|chrome|menus|density|trackpad|clip|sharein|links|share|apk|drop|dock|nickname|notify|audio|handoff|deck|all [--shard N/M]]
 #
 # Every check starts from a clean slate (the shared-app checks share one, see
 # "The shared app" below): no PocketDeck or fakephone processes
@@ -3358,6 +3358,137 @@ PY
     stop_fakephone
     wait_until 5 no_fakephone
     skip "MCP a second uid" "needs another local account; the peer uid check is unit-tested"
+}
+
+# --- Focus → phone Do Not Disturb (docs/design/focus.md) -------------------
+
+# focus_event <name> [key value ...] — the last focus JSON line the app logged
+# for that hook (filter, reconcile, dnd) and matching fields, as JSON.
+focus_event() {
+    python3 - "$WORK/app.log" "$@" <<'PY'
+import json, sys
+log, name = sys.argv[1], sys.argv[2]
+want = dict(zip(sys.argv[3::2], sys.argv[4::2]))
+found = None
+try:
+    lines = open(log, errors="replace")
+except OSError:
+    sys.exit(1)
+for raw in lines:
+    raw = raw.strip()
+    if not raw.startswith("{"):
+        continue
+    try:
+        event = json.loads(raw)
+    except ValueError:
+        continue
+    if event.get("focus") == name and all(str(event.get(k)).lower() == v.lower() for k, v in want.items()):
+        found = event
+if found is None:
+    sys.exit(1)
+print(json.dumps(found))
+PY
+}
+
+# dnd_is <mode> — the phone's last DND event carries that mode.
+dnd_is() {
+    python3 - "$WORK/events.jsonl" "$1" <<'PY'
+import json, sys
+mode = None
+for line in open(sys.argv[1], errors="replace"):
+    try:
+        event = json.loads(line)
+    except ValueError:
+        continue
+    if event.get("ev") == "dnd":
+        mode = event.get("mode")
+sys.exit(0 if mode == sys.argv[2] else 1)
+PY
+}
+
+# dnd_count — how many DND changes the fake phone has applied.
+dnd_count() { grep -c '"ev":"dnd"' "$WORK/events.jsonl" 2>/dev/null || true; }
+
+# dnd_rx_count — how many phone.dnd messages the fake phone has received.
+dnd_rx_count() { grep -c '"t":"phone.dnd"' "$WORK/events.jsonl" 2>/dev/null || true; }
+
+# dnd_more_than <n> — the fake phone applied more than n DND changes.
+dnd_more_than() { [ "$(dnd_count)" -gt "$1" ]; }
+
+check_focus() {
+    # What the system reads, before anything starts.
+    intents_metadata_ok \
+        && ok "FOCUS the bundle's metadata lists the Focus filter and the DND intent" \
+        || bad "FOCUS the bundle's metadata is missing the filter or the DND intent ($E2E_BUNDLE)"
+
+    # (1) the filter silences the phone, and its end brings it back.
+    clean
+    start_fake || return 1
+    launch --connect "127.0.0.1:$PORT" --debug-focus "on priority" --quit-after 40
+    wait_until 25 dnd_is priority \
+        && ok "FOCUS filter on turned the phone's DND to priority" \
+        || bad "FOCUS filter on did not turn the phone's DND to priority"
+    events_have '"t":"phone.dnd"' \
+        && ok "FOCUS the Mac sent phone.dnd" \
+        || bad "FOCUS no phone.dnd reached the phone"
+    stop_app
+    launch --connect "127.0.0.1:$PORT" --debug-focus "off" --quit-after 40
+    wait_until 25 dnd_is off \
+        && ok "FOCUS filter off turned the phone's DND back off" \
+        || bad "FOCUS filter off did not turn the phone's DND off"
+    stop_app
+
+    # (2) a person's own DND is never turned off.
+    stop_fakephone
+    wait_until 5 no_fakephone
+    FAKE_ARGS="--dnd-person priority" start_fake || return 1
+    launch --connect "127.0.0.1:$PORT" --debug-focus "on priority" --quit-after 40
+    wait_until 25 dnd_is priority \
+        && ok "FOCUS a person's own priority DND stays on when the filter asks for it" \
+        || bad "FOCUS a person's own priority DND was changed by the filter"
+    stop_app
+    local before
+    before="$(dnd_count)"
+    launch --connect "127.0.0.1:$PORT" --debug-focus "off" --quit-after 40
+    wait_until 25 dnd_more_than "$before" \
+        && sleep 1
+    dnd_is priority \
+        && ok "FOCUS the restore rule left the person's DND alone when the filter ended" \
+        || bad "FOCUS the restore rule turned off a DND the person set"
+    stop_app
+
+    # (3) filter on while disconnected: applied once, on connect.
+    stop_fakephone
+    wait_until 5 no_fakephone
+    start_fake || return 1
+    launch --debug-focus "on alarms" --quit-after 5
+    wait_until 10 focus_event filter enabled true \
+        && ok "FOCUS a disconnected Mac stored the filter's wanted state" \
+        || bad "FOCUS the filter's wanted state was not stored"
+    stop_app
+    launch --connect "127.0.0.1:$PORT" --quit-after 40
+    wait_until 25 dnd_is alarms \
+        && ok "FOCUS the phone that connected later got the stored filter (alarms)" \
+        || bad "FOCUS a later connection never got the stored filter"
+    sleep 3
+    [ "$(dnd_rx_count)" = "1" ] \
+        && ok "FOCUS the stored filter was applied exactly once" \
+        || bad "FOCUS the stored filter was applied $(dnd_rx_count) times: $(grep '"t":"phone.dnd"' "$WORK/events.jsonl" 2>/dev/null | tr '\n' '|')"
+    stop_app
+
+    # (4) an old phone: no dnd in state, menu item disabled, nothing sent.
+    stop_fakephone
+    wait_until 5 no_fakephone
+    FAKE_ARGS="--dnd-unsupported" start_fake || return 1
+    launch --connect "127.0.0.1:$PORT" --debug-dnd on --quit-after 25
+    wait_until 20 focus_event dnd supported false \
+        && ok "FOCUS an old phone leaves the menu item disabled (no dnd in state)" \
+        || bad "FOCUS --debug-dnd did not report an unsupported phone"
+    [ "$(dnd_rx_count)" = "0" ] \
+        && ok "FOCUS nothing is sent to a phone that cannot take it (no error spam)" \
+        || bad "FOCUS a phone.dnd was sent to an old phone"
+    stop_app
+    stop_fakephone
 }
 
 # --- C14: audio phone -> Mac -------------------------------------------------

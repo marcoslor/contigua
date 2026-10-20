@@ -57,6 +57,11 @@ connection authenticates with its key instead of pairing again. A second
 simultaneous session is answered with `{"t":"error","code":"busy"}`; the first
 keeps working. Ctrl-C kills every ffmpeg/dns-sd child.
 
+Do Not Disturb (docs/design/focus.md): `state` carries `dnd` and `phone.dnd`
+sets the fake's zen mode with the phone's restore rule (`--dnd-person MODE`
+starts in a mode the person set, which must survive; `--dnd-unsupported` acts
+like a build that predates both).
+
 Screens and streams: `welcome` reports a 1080x2340 @450dpi locked phone. Each
 `window.open`/`resize`/`resume`/`keyframe` starts an ffmpeg
 `testsrc2` (phone mode: `smptehdbars`) encoder at 60 fps, H.264 High, and sends
