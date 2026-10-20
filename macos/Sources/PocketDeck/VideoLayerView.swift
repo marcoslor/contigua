@@ -22,6 +22,30 @@ final class VideoLayerView: NSView {
         FrameGrab.displayedPixelBuffer(from: displayLayer)
     }
 
+    /// The newest keyframe, kept for a window whose renderer reports no
+    /// displayed buffer (a quiet/headless run). A screenshot asks the phone for
+    /// a fresh keyframe when the serial has not moved.
+    private let keyframeLock = NSLock()
+    private var latestKeyframe: CMSampleBuffer?
+    private var keyframeSerialValue = 0
+
+    var keyframeSerial: Int {
+        keyframeLock.lock(); defer { keyframeLock.unlock() }
+        return keyframeSerialValue
+    }
+
+    /// The keyframe that arrived after `serial`, if one did.
+    func keyframeSample(after serial: Int) -> CMSampleBuffer? {
+        keyframeLock.lock(); defer { keyframeLock.unlock() }
+        return keyframeSerialValue != serial ? latestKeyframe : nil
+    }
+
+    /// The newest keyframe, however old (the phone may be gone).
+    func newestKeyframeSample() -> CMSampleBuffer? {
+        keyframeLock.lock(); defer { keyframeLock.unlock() }
+        return latestKeyframe
+    }
+
     /// The phone window mirrors a fixed screen: its letterbox is never filled
     /// (Letterbox.placement). The app window's is.
     var isPhoneMode = false
@@ -347,6 +371,12 @@ final class VideoLayerView: NSView {
             self.lastPtsUs = pts
             guard let sample = Self.makeSampleBuffer(avcc: avcc, format: format, ptsUs: pts) else { return }
             self.snapshotter?.feed(sample)
+            if frame.isKeyframe {
+                self.keyframeLock.lock()
+                self.latestKeyframe = sample
+                self.keyframeSerialValue += 1
+                self.keyframeLock.unlock()
+            }
             // The byte work above is the expensive part and stays off the main
             // thread, but CALayer is main-thread-only: reading or mutating the
             // display layer from here is undefined and leaves it accepting

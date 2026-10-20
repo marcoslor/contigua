@@ -3,6 +3,7 @@
 // link/file resolution, WindowManager for windows, Session for input, FrameGrab
 // for a screenshot. Nothing here synthesizes NSEvents or reimplements a policy.
 
+import AVFoundation
 import Foundation
 
 @MainActor
@@ -122,16 +123,38 @@ struct MCPToolHost {
 
     private func screenshot(_ id: Int) async throws -> MCPToolResult {
         let window = try requireWindow(id)
-        guard let buffer = window.videoView.displayedPixelBuffer() else {
-            throw MCPToolFailure("No frame on window \(id) yet.")
+        // The displayed frame is what the person sees. A quiet/headless window
+        // can have no displayed buffer at all, so ask the phone for a keyframe
+        // and decode that instead (FrameGrab owns both routes).
+        if let buffer = window.videoView.displayedPixelBuffer(),
+           let data = await encode(buffer) {
+            return .image(data)
         }
-        let data = await Task.detached(priority: .userInitiated) {
+        if let sample = await freshKeyframe(window) {
+            let data = await Task.detached(priority: .userInitiated) {
+                FrameGrab.png(fromSample: sample)
+            }.value
+            if let data { return .image(data) }
+        }
+        throw MCPToolFailure("No frame on window \(id) yet.")
+    }
+
+    private func encode(_ buffer: CVPixelBuffer) async -> Data? {
+        await Task.detached(priority: .userInitiated) {
             FrameGrab.png(from: buffer)
         }.value
-        guard let data else {
-            throw MCPToolFailure("Couldn't encode window \(id)'s frame.")
+    }
+
+    /// A keyframe that arrived after this call (or the newest one when the
+    /// phone is gone and cannot answer `window.keyframe`).
+    private func freshKeyframe(_ window: StreamWindowController) async -> CMSampleBuffer? {
+        let serial = window.videoView.keyframeSerial
+        controller.windows.session.requestKeyframe(stream: window.stream)
+        for _ in 0..<100 {
+            if let sample = window.videoView.keyframeSample(after: serial) { return sample }
+            try? await Task.sleep(for: .milliseconds(20))
         }
-        return .image(data)
+        return window.videoView.newestKeyframeSample()
     }
 
     // MARK: Input
