@@ -316,5 +316,14 @@ codesign --force --sign - --entitlements Extensions/Share/Share.entitlements "$A
 # Dock app executable (docs/design/dock.md): copied into each per-app shim bundle.
 swiftc -O -module-name PocketDeckShim -target "$(uname -m)-apple-macos26.0" -swift-version 5 \
     Shim/main.swift Sources/PocketDeck/DockMessages.swift -o "$APP/Contents/MacOS/PocketDeckShim"
+
+# MCP stdio shim (docs/design/mcp.md): MCP clients launch this, and it relays to
+# the app's private socket. It is signed before the bundle so signing the app
+# seals its nested code.
+mkdir -p "$APP/Contents/Helpers"
+swiftc -O -module-name PocketDeckMCP -target "$(uname -m)-apple-macos26.0" -swift-version 5 \
+    Shim/mcp.swift -o "$APP/Contents/Helpers/pocketdeck-mcp"
+codesign --force --sign - "$APP/Contents/Helpers/pocketdeck-mcp"
+
 codesign --force --sign - "$APP"
 echo "built $APP"
