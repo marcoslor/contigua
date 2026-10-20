@@ -942,7 +942,10 @@ final class NotifyCenter {
         }
         guard !registering else { return }
         registering = true
-        center.requestAuthorization(options: [.alert, .sound]) { granted, _ in
+        center.requestAuthorization(options: [.alert, .sound]) { granted, error in
+            // The e2e (and a person reading the log) needs to know whether the
+            // system will show anything at all; no content is involved.
+            Log.app.notice("notify authorization granted=\(granted, privacy: .public) error=\(error != nil, privacy: .public)")
             DispatchQueue.main.async {
                 self.authorized = true
                 self.registering = false

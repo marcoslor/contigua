@@ -99,7 +99,9 @@ window you give it.
   opens that app's window.
 - A notification's own buttons and a **Reply** field ride along on its banner;
   clearing the banner clears it on the phone, and a phone-side removal clears
-  the banner.
+  the banner. A chat's picture is on the banner too.
+- Android 16 **Live Updates** (a ride's ETA, a delivery, a timer) stay in the
+  menu bar's **Live on <phone>** section and update in place while they run.
 - **Muted apps** per phone drop those apps' notifications before they appear,
   and a sign-in code gets a **Copy code** button that copies it concealed for
   90 seconds.
