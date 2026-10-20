@@ -24,9 +24,12 @@ import android.util.Log
  * "Media part 2"). Metadata and artwork are generated test values.
  *
  * ```
- * adb shell am broadcast -p dev.pocketdeck -a dev.pocketdeck.DEBUG_MEDIA \
- *     --es op start --ei index 1
+ * adb shell am broadcast -n dev.pocketdeck/dev.pocketdeck.app.MediaDebugTrigger \
+ *     -a dev.pocketdeck.DEBUG_MEDIA --es op start --ei index 1
  * ```
+ *
+ * The component is named because an implicit broadcast is dropped while the app
+ * sits in the background (Android 8+ receiver rule).
  *
  * It records what it receives — the seek position, the volume level, its
  * maximum — in logcat under a fixed tag; no title, artist, album or picture
