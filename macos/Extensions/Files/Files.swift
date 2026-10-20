@@ -1,266 +1,490 @@
-// File Provider experiment (E1/E2/E3/E4 in docs/design/files.md §1): a
-// replicated extension serving a hard-coded tree. It never dials the phone:
-// the app owns the session, so the extension only asks the app over a UNIX
-// socket in the shared App Group container. The two socket paths are also the
-// experiment: the group container (E2) and, as the fallback, the profile's
-// Application Support folder reached through a temporary sandbox exception.
+// Phone files in Finder: the replicated File Provider extension (docs/design/
+// files.md §1, §3; slice S3). It owns no phone session and holds no keys: the
+// app does, so every answer here comes from the app over a UNIX socket in the
+// shared App Group container. File bytes arrive as framed chunks and are written
+// into the extension's own temporary file, which Finder then takes.
 //
-// Built by macos/scripts/bundle.sh with swiftc (SwiftPM cannot link an app
-// extension's entry point); the class is named in the Info.plist's
-// NSExtensionPrincipalClass as Files.FilesExtension.
+// Read-only in S3: items allow reading and enumerating, and every write op
+// answers featureUnsupported. Nothing here logs a file name, a path or content:
+// op names, lengths, ids and codes only (design §4).
+//
+// Built by macos/scripts/bundle.sh with swiftc, together with FilesCore.swift
+// (the wire, the item mapping, the id ↔ path map and the error map). The class
+// is named in the Info.plist's NSExtensionPrincipalClass as FilesExtension.
 
-import CoreGraphics
+import CryptoKit
 import FileProvider
 import Foundation
-import ImageIO
+import os
 import UniformTypeIdentifiers
 
-private let groupID = "group.dev.pocketdeck.mac.files.filesexp"
-private let profileFolder = "PocketDeck-filesexp"
+private let log = Logger(subsystem: "dev.pocketdeck.mac", category: "files")
 
-// MARK: - Logging
+/// The read cap (design §3: a write body is capped at 1 GiB; reads follow the
+/// file, and anything this large is refused with a clear error).
+private let maxFetchBytes = 1024 * 1024 * 1024
 
-/// The extension has no terminal: every step goes to os_log and to a file the
-/// check can read afterwards (the group container when it exists, else the
-/// profile folder the temporary exception allows).
-func expLog(_ message: String) {
-    NSLog("files-exp: %@", message)
-    let line = "\(ISO8601DateFormatter().string(from: Date())) \(message)\n"
-    guard let data = line.data(using: .utf8) else { return }
-    for dir in logDirectories() {
-        let url = dir.appendingPathComponent("files-ext.log")
-        if let handle = try? FileHandle(forWritingTo: url) {
-            handle.seekToEndOfFile()
-            handle.write(data)
-            try? handle.close()
-        } else {
-            try? data.write(to: url)
+// MARK: - Bridge connection
+
+/// One request (or one streamed read) per connection. The app serialises the
+/// work; the extension only maps calls onto the wire.
+final class BridgeConnection {
+    enum Reply {
+        case reply(BridgeReply)
+        case data([UInt8])
+    }
+
+    private let fd: Int32
+    private let writeLock = NSLock()
+    private var decoder = BridgeDecoder()
+    private var queue: [Reply] = []
+
+    init?(path: String) {
+        fd = socket(AF_UNIX, SOCK_STREAM, 0)
+        guard fd >= 0 else { return nil }
+        var address = sockaddr_un()
+        address.sun_family = sa_family_t(AF_UNIX)
+        let bytes = Array(path.utf8)
+        guard bytes.count < MemoryLayout.size(ofValue: address.sun_path) else {
+            Darwin.close(fd)
+            return nil
+        }
+        withUnsafeMutableBytes(of: &address.sun_path) { raw in raw.copyBytes(from: bytes) }
+        let connected = withUnsafePointer(to: &address) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                Darwin.connect(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
+            }
+        }
+        guard connected == 0 else {
+            Darwin.close(fd)
+            return nil
+        }
+        var timeout = timeval(tv_sec: 20, tv_usec: 0)
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+    }
+
+    deinit { Darwin.close(fd) }
+
+    func send(_ request: BridgeRequest) -> Bool {
+        let data = BridgeWire.line(request)
+        writeLock.lock()
+        defer { writeLock.unlock() }
+        return data.withUnsafeBytes { raw in
+            guard let base = raw.baseAddress else { return true }
+            var offset = 0
+            while offset < raw.count {
+                let written = Darwin.write(fd, base.advanced(by: offset), raw.count - offset)
+                if written > 0 {
+                    offset += written
+                } else if written < 0 && errno == EINTR {
+                    continue
+                } else {
+                    return false
+                }
+            }
+            return true
+        }
+    }
+
+    /// The next reply frame, blocking until one arrives; nil means the bridge
+    /// closed or answered something this side does not understand.
+    func next() -> Reply? {
+        var buffer = [UInt8](repeating: 0, count: 64 * 1024)
+        while true {
+            if !queue.isEmpty { return queue.removeFirst() }
+            let count = read(fd, &buffer, buffer.count)
+            if count <= 0 {
+                if count < 0 && errno == EINTR { continue }
+                return nil
+            }
+            for event in decoder.feed(Array(buffer[0..<count])) {
+                switch event {
+                case .reply(let reply):
+                    queue.append(.reply(reply))
+                case .data(_, let bytes):
+                    queue.append(.data(bytes))
+                case .dataHeader:
+                    break
+                case .invalid, .request:
+                    return nil
+                }
+            }
+            if decoder.broken { return nil }
         }
     }
 }
 
-/// The person's real home, not the sandbox container `NSHomeDirectory()`
-/// returns inside an appex: the temporary exception is relative to the real one.
-func realHome() -> String {
-    if let entry = getpwuid(getuid()), let home = entry.pointee.pw_dir {
-        return String(cString: home)
-    }
-    return NSHomeDirectory()
+/// What the socket path means for this domain: the App Group container from the
+/// bundle's Info.plist, the file named after the profile (the domain identifier).
+func bridgeSocketPath(domain: NSFileProviderDomain) -> String? {
+    guard let group = Bundle.main.object(forInfoDictionaryKey: "PDFilesGroup") as? String,
+          !group.isEmpty,
+          let container = FileManager.default
+            .containerURL(forSecurityApplicationGroupIdentifier: group) else { return nil }
+    let profile = domain.identifier.rawValue
+    let name = profile == "default" ? "files.sock" : "files-\(profile).sock"
+    return container.appendingPathComponent(name).path
 }
 
-func logDirectories() -> [URL] {
-    var dirs: [URL] = []
-    if let group = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: groupID) {
-        dirs.append(group)
-    }
-    let support = URL(fileURLWithPath: realHome())
-        .appendingPathComponent("Library/Application Support/\(profileFolder)", isDirectory: true)
-    dirs.append(support)
-    for dir in dirs { try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true) }
-    return dirs
+private func bridgeConnection(for domain: NSFileProviderDomain) -> BridgeConnection? {
+    guard let path = bridgeSocketPath(domain: domain) else { return nil }
+    return BridgeConnection(path: path)
 }
 
-// MARK: - The app bridge socket (E2)
+// MARK: - Errors
 
-/// Candidates in order: the App Group container, then the profile folder. The
-/// first one that answers `pong` is the one the sandbox honours.
-func socketCandidates() -> [(label: String, path: String)] {
-    var out: [(String, String)] = []
-    if let group = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: groupID) {
-        out.append(("group", group.appendingPathComponent("files.sock").path))
-    }
-    out.append(("app-support", URL(fileURLWithPath: realHome())
-        .appendingPathComponent("Library/Application Support/\(profileFolder)/files.sock").path))
-    return out
-}
-
-/// Returns (label, result) where result is "pong" or "errno N".
-func pingBridge() -> [(String, String)] {
-    socketCandidates().map { candidate in
-        (candidate.label, ping(path: candidate.path))
-    }
-}
-
-func ping(path: String) -> String {
-    var addr = sockaddr_un()
-    addr.sun_family = sa_family_t(AF_UNIX)
-    let bytes = Array(path.utf8)
-    guard bytes.count < MemoryLayout.size(ofValue: addr.sun_path) else { return "path too long" }
-    withUnsafeMutableBytes(of: &addr.sun_path) { raw in raw.copyBytes(from: bytes) }
-    let fd = socket(AF_UNIX, SOCK_STREAM, 0)
-    guard fd >= 0 else { return "errno \(errno)" }
-    defer { close(fd) }
-    var timeout = timeval(tv_sec: 2, tv_usec: 0)
-    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
-    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
-    let rc = withUnsafePointer(to: &addr) { pointer in
-        pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-            Darwin.connect(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
+extension FilesFailure: Error {
+    /// The NSError classes the system documents for a replicated provider.
+    var error: Error {
+        switch self {
+        case .offline:
+            return NSFileProviderError(.serverUnreachable)
+        case .notFound:
+            return NSFileProviderError(.noSuchItem)
+        case .denied:
+            return CocoaError(.fileReadNoPermission)
+        case .stale:
+            // The caller refetched once already; if it is still stale it is gone
+            // from this side's point of view.
+            return NSFileProviderError(.noSuchItem)
+        case .tooLarge:
+            return CocoaError(.fileReadTooLarge)
+        case .exists:
+            return CocoaError(.fileWriteFileExists)
+        case .notADirectory:
+            return CocoaError(.fileReadInvalidFileName)
+        case .busy:
+            return NSFileProviderError(.serverUnreachable)
+        case .cancelled:
+            return CocoaError(.userCancelled)
+        case .io:
+            return CocoaError(.fileReadUnknown)
+        case .protocolError:
+            return CocoaError(.fileReadCorruptFile)
         }
     }
-    guard rc == 0 else { return "errno \(errno)" }
-    let request = Array("ping\n".utf8)
-    guard write(fd, request, request.count) == request.count else { return "errno \(errno) (write)" }
-    var buffer = [UInt8](repeating: 0, count: 64)
-    let count = read(fd, &buffer, buffer.count)
-    guard count > 0 else { return "errno \(errno) (read)" }
-    return String(decoding: buffer[0..<count], as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
 }
 
-// MARK: - The hard-coded tree
+// MARK: - Items
 
-let bigFileSize = 5 * 1024 * 1024
+final class ProviderItem: NSObject, NSFileProviderItem {
+    let mapped: FileItem
 
-/// Thread-safe because the system calls the extension from several queues.
-final class Tree {
-    static let shared = Tree()
-    private let lock = NSLock()
-    private var items: [String: ExpItem] = [:]
-
-    private init() {
-        let version = NSFileProviderItemVersion(
-            contentVersion: Data("files-exp-1".utf8),
-            metadataVersion: Data("files-exp-1".utf8))
-        items["dcim"] = ExpItem(id: "dcim", parent: .rootContainer, name: "DCIM",
-                                type: .folder, size: nil, version: version)
-        items["notes"] = ExpItem(id: "notes", parent: NSFileProviderItemIdentifier("dcim"),
-                                 name: "notes.txt",
-                                 type: .plainText, size: 42, version: version)
-        items["big"] = ExpItem(id: "big", parent: NSFileProviderItemIdentifier("dcim"),
-                               name: "big.bin",
-                               type: .data, size: bigFileSize, version: version)
-    }
-
-    func children(of parent: NSFileProviderItemIdentifier) -> [ExpItem] {
-        lock.lock(); defer { lock.unlock() }
-        let wanted = parent == .rootContainer ? NSFileProviderItemIdentifier.rootContainer.rawValue : parent.rawValue
-        return items.values.filter { $0.parentItemIdentifier.rawValue == wanted }.sorted { $0.filename < $1.filename }
-    }
-
-    func item(_ id: NSFileProviderItemIdentifier) -> ExpItem? {
-        if id == .rootContainer { return ExpItem.root }
-        lock.lock(); defer { lock.unlock() }
-        return items[id.rawValue]
-    }
-
-    @discardableResult
-    func add(name: String, parent: NSFileProviderItemIdentifier, size: Int) -> ExpItem {
-        let id = "local-\(name)"
-        let version = NSFileProviderItemVersion(contentVersion: Data(id.utf8), metadataVersion: Data(id.utf8))
-        let item = ExpItem(id: id, parent: parent, name: name, type: .data, size: size, version: version)
-        lock.lock(); items[id] = item; lock.unlock()
-        return item
-    }
-}
-
-final class ExpItem: NSObject, NSFileProviderItem {
-    let rawId: String
-    let parent: NSFileProviderItemIdentifier
-    let name: String
-    let type: UTType
-    let size: Int?
-    let version: NSFileProviderItemVersion
-
-    static var root: ExpItem {
-        ExpItem(id: NSFileProviderItemIdentifier.rootContainer.rawValue,
-                parent: .rootContainer, name: "PocketDeck Files", type: .folder, size: nil,
-                version: NSFileProviderItemVersion(contentVersion: Data("root".utf8),
-                                                   metadataVersion: Data("root".utf8)))
-    }
-
-    init(id: String, parent: NSFileProviderItemIdentifier, name: String,
-         type: UTType, size: Int?, version: NSFileProviderItemVersion) {
-        self.rawId = id
-        self.parent = parent
-        self.name = name
-        self.type = type
-        self.size = size
-        self.version = version
-        super.init()
+    init(_ mapped: FileItem) {
+        self.mapped = mapped
     }
 
     var itemIdentifier: NSFileProviderItemIdentifier {
-        rawId == NSFileProviderItemIdentifier.rootContainer.rawValue ? .rootContainer
-            : NSFileProviderItemIdentifier(rawId)
+        mapped.identifier == FilesMap.rootIdentifier
+            ? .rootContainer : NSFileProviderItemIdentifier(mapped.identifier)
     }
-    var parentItemIdentifier: NSFileProviderItemIdentifier { parent }
-    var filename: String { name }
-    var contentType: UTType { type }
-    var documentSize: NSNumber? { size.map(NSNumber.init) }
-    var contentModificationDate: Date? { Date(timeIntervalSince1970: 1_700_000_000) }
-    var itemVersion: NSFileProviderItemVersion { version }
+
+    var parentItemIdentifier: NSFileProviderItemIdentifier {
+        mapped.parentIdentifier == FilesMap.rootIdentifier
+            ? .rootContainer : NSFileProviderItemIdentifier(mapped.parentIdentifier)
+    }
+
+    var filename: String { mapped.name }
+    var contentType: UTType { UTType(mapped.contentTypeIdentifier) ?? .data }
+    var documentSize: NSNumber? { mapped.isDirectory ? nil : NSNumber(value: mapped.size) }
+    var contentModificationDate: Date? { mapped.modificationDate }
+    var isDirectory: Bool { mapped.isDirectory }
+    var isMostRecentVersionDownloaded: Bool { true }
+    var itemVersion: NSFileProviderItemVersion {
+        NSFileProviderItemVersion(contentVersion: mapped.contentVersion,
+                                  metadataVersion: mapped.metadataVersion)
+    }
     var capabilities: NSFileProviderItemCapabilities {
-        type == .folder ? [.allowsReading, .allowsContentEnumerating, .allowsAddingSubItems]
-                        : [.allowsReading, .allowsWriting, .allowsRenaming, .allowsDeleting]
+        mapped.isDirectory ? [.allowsReading, .allowsContentEnumerating] : [.allowsReading]
     }
 }
 
 // MARK: - Extension
 
 @objc(FilesExtension)
-final class FilesExtension: NSObject, NSFileProviderReplicatedExtension, NSFileProviderThumbnailing {
+final class FilesExtension: NSObject, NSFileProviderReplicatedExtension {
     let domain: NSFileProviderDomain
+    private let work = DispatchQueue(label: "dev.pocketdeck.mac.files-extension", qos: .utility)
+    private let mapLock = NSLock()
+    private var map = FilesPathMap()
+    /// The anchor S3 answers with: no changes are reported (S5 adds them).
+    let anchor = NSFileProviderSyncAnchor(Data("files-s3".utf8))
 
     required init(domain: NSFileProviderDomain) {
         self.domain = domain
         super.init()
-        expLog("init domain=\(domain.identifier.rawValue) display=\(domain.displayName)")
-        for (label, result) in pingBridge() {
-            expLog("socket \(label)=\(result)")
-        }
+        let socket = bridgeSocketPath(domain: domain) == nil ? "none" : "group"
+        log.notice("init profile=\(domain.identifier.rawValue, privacy: .public) socket=\(socket, privacy: .public)")
     }
 
     func invalidate() {
-        expLog("invalidate")
+        log.notice("invalidate")
     }
+
+    /// A folder's listing is gone: forget it and everything below it.
+    func invalidateSubtree(path: String) {
+        withMap { $0.invalidate(subtree: path) }
+    }
+
+    /// One listing off the main thread, for the enumerator.
+    func loadListing(path: String, page: String?,
+                     completion: @escaping (Result<(items: [FsItem], next: String?), FilesFailure>) -> Void) {
+        work.async {
+            completion(self.list(path: path, page: page))
+        }
+    }
+
+    // MARK: The id ↔ path map
+
+    private func withMap<T>(_ body: (inout FilesPathMap) -> T) -> T {
+        mapLock.lock()
+        defer { mapLock.unlock() }
+        return body(&map)
+    }
+
+    private func path(for identifier: NSFileProviderItemIdentifier) -> String? {
+        if identifier == .rootContainer { return "" }
+        return withMap { $0.path(for: identifier.rawValue) }
+    }
+
+    func remember(_ items: [FsItem], parentPath: String,
+                          parentIdentifier: NSFileProviderItemIdentifier) -> [FileItem] {
+        withMap { map in
+            map.insert(childrenOf: parentPath,
+                       parentIdentifier: parentIdentifier == .rootContainer
+                           ? FilesMap.rootIdentifier : parentIdentifier.rawValue,
+                       items: items)
+        }
+    }
+
+    func remember(fs: FsItem, path: String) -> FileItem {
+        withMap { map in
+            let parentPath = (path as NSString).deletingLastPathComponent
+            let parentID = map.identifier(for: parentPath)
+                ?? (parentPath.isEmpty ? FilesMap.rootIdentifier : "path:\(parentPath)")
+            return map.insert(fs: fs, path: path, parentIdentifier: parentID)
+        }
+    }
+
+    private func rootItem() -> FileItem {
+        FilesMap.rootItem(name: domain.displayName, version: Data("root-s3".utf8))
+    }
+
+    // MARK: Bridge operations
+
+    private func connect() -> Result<BridgeConnection, FilesFailure> {
+        guard let connection = bridgeConnection(for: domain) else { return .failure(.offline) }
+        return .success(connection)
+    }
+
+    func list(path: String, page: String?) -> Result<(items: [FsItem], next: String?), FilesFailure> {
+        guard case .success(let connection) = connect() else { return .failure(.offline) }
+        let request = BridgeRequest.list(id: 1, path: path, page: page)
+        guard connection.send(request) else { return .failure(.offline) }
+        while let frame = connection.next() {
+            guard case .reply(let reply) = frame else { continue }
+            switch reply {
+            case .items(_, let next, let items):
+                return .success((items, next))
+            case .error(_, let code):
+                return .failure(FilesFailure.from(code: code))
+            default:
+                continue
+            }
+        }
+        return .failure(.offline)
+    }
+
+    private func stat(path: String) -> Result<FsItem, FilesFailure> {
+        guard case .success(let connection) = connect() else { return .failure(.offline) }
+        guard connection.send(.stat(id: 1, path: path)) else { return .failure(.offline) }
+        while let frame = connection.next() {
+            guard case .reply(let reply) = frame else { continue }
+            switch reply {
+            case .item(_, let item):
+                return .success(item)
+            case .error(_, let code):
+                return .failure(FilesFailure.from(code: code))
+            default:
+                continue
+            }
+        }
+        return .failure(.offline)
+    }
+
+    // MARK: NSFileProviderReplicatedExtension
 
     func item(for identifier: NSFileProviderItemIdentifier,
               request: NSFileProviderRequest,
               completionHandler: @escaping (NSFileProviderItem?, Error?) -> Void) -> Progress {
-        expLog("item \(identifier.rawValue)")
-        if let item = Tree.shared.item(identifier) {
-            completionHandler(item, nil)
-        } else {
+        if identifier == .rootContainer {
+            completionHandler(ProviderItem(rootItem()), nil)
+            return Progress()
+        }
+        guard let path = path(for: identifier) else {
+            log.notice("item unknown id")
             completionHandler(nil, NSFileProviderError(.noSuchItem))
+            return Progress()
+        }
+        work.async {
+            switch self.stat(path: path) {
+            case .success(let fs):
+                let item = self.remember(fs: fs, path: path)
+                log.notice("item stat ok dir=\(fs.dir, privacy: .public) size=\(fs.size, privacy: .public)")
+                completionHandler(ProviderItem(item), nil)
+            case .failure(.notFound):
+                self.withMap { $0.invalidate(subtree: path) }
+                completionHandler(nil, FilesFailure.notFound.error)
+            case .failure(let failure):
+                log.notice("item stat failed code=\(failure.rawValue, privacy: .public)")
+                completionHandler(nil, failure.error)
+            }
         }
         return Progress()
+    }
+
+    func enumerator(for containerItemIdentifier: NSFileProviderItemIdentifier,
+                    request: NSFileProviderRequest) throws -> NSFileProviderEnumerator {
+        guard let path = path(for: containerItemIdentifier) else {
+            throw FilesFailure.notFound.error
+        }
+        return FilesEnumerator(extension: self, container: containerItemIdentifier, path: path)
     }
 
     func fetchContents(for itemIdentifier: NSFileProviderItemIdentifier,
                        version requestedVersion: NSFileProviderItemVersion?,
                        request: NSFileProviderRequest,
                        completionHandler: @escaping (URL?, NSFileProviderItem?, Error?) -> Void) -> Progress {
-        guard let item = Tree.shared.item(itemIdentifier), item.type != .folder else {
-            expLog("fetchContents \(itemIdentifier.rawValue) noSuchItem")
-            completionHandler(nil, nil, NSFileProviderError(.noSuchItem))
-            return Progress()
+        let progress = Progress(totalUnitCount: 1)
+        guard let path = path(for: itemIdentifier) else {
+            completionHandler(nil, nil, FilesFailure.notFound.error)
+            return progress
         }
-        let size = item.documentSize?.intValue ?? 0
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("files-exp-\(UUID().uuidString)")
-        var data = Data()
-        if itemIdentifier.rawValue == "big" {
-            data = Data(repeating: 0x42, count: size)
-        } else {
-            data = Data("PocketDeck files experiment: \(item.filename)\n".utf8)
+        progress.isCancellable = true
+        work.async {
+            self.fetch(path: path, requested: requestedVersion, progress: progress,
+                       retried: false, completion: completionHandler)
         }
-        do {
-            try data.write(to: url)
-        } catch {
-            expLog("fetchContents \(itemIdentifier.rawValue) write failed: \(error)")
-            completionHandler(nil, nil, error)
-            return Progress()
-        }
-        expLog("fetchContents \(itemIdentifier.rawValue) bytes=\(data.count) -> \(url.path)")
-        completionHandler(url, item, nil)
-        return Progress()
+        return progress
     }
 
-    func enumerator(for containerItemIdentifier: NSFileProviderItemIdentifier,
-                    request: NSFileProviderRequest) throws -> NSFileProviderEnumerator {
-        expLog("enumerator \(containerItemIdentifier.rawValue)")
-        return TreeEnumerator(container: containerItemIdentifier)
+    /// stat → read the whole file into a temporary file → size + sha256 check.
+    /// One `fs_stale` refetches the metadata and retries once (design §3).
+    private func fetch(path: String, requested: NSFileProviderItemVersion?, progress: Progress,
+                       retried: Bool,
+                       completion: @escaping (URL?, NSFileProviderItem?, Error?) -> Void) {
+        let etag = requested.flatMap { String(data: $0.contentVersion, encoding: .utf8) }
+        let metadata: FsItem
+        switch stat(path: path) {
+        case .success(let item):
+            metadata = item
+        case .failure(let failure):
+            if failure == .notFound { withMap { $0.invalidate(subtree: path) } }
+            log.notice("fetch stat failed code=\(failure.rawValue, privacy: .public)")
+            completion(nil, nil, failure.error)
+            return
+        }
+        guard !metadata.dir else {
+            completion(nil, nil, FilesFailure.notFound.error)
+            return
+        }
+        guard metadata.size <= maxFetchBytes else {
+            log.notice("fetch refused size=\(metadata.size, privacy: .public)")
+            completion(nil, nil, FilesFailure.tooLarge.error)
+            return
+        }
+        guard case .success(let connection) = connect() else {
+            completion(nil, nil, FilesFailure.offline.error)
+            return
+        }
+        let target = temporaryFile()
+        FileManager.default.createFile(atPath: target.path, contents: nil)
+        guard let handle = try? FileHandle(forWritingTo: target) else {
+            completion(nil, nil, FilesFailure.io.error)
+            return
+        }
+        let state = ReadState(connection: connection)
+        let id: UInt32 = 1
+        state.begin(id: id)
+        progress.totalUnitCount = Int64(max(metadata.size, 1))
+        progress.completedUnitCount = 0
+        progress.cancellationHandler = { [weak state] in
+            state?.cancel()
+        }
+        guard connection.send(.read(id: id, path: path, offset: 0, length: metadata.size,
+                                    etag: etag)) else {
+            handle.closeFile()
+            try? FileManager.default.removeItem(at: target)
+            completion(nil, nil, FilesFailure.offline.error)
+            return
+        }
+        var hasher = SHA256()
+        var received = 0
+        var failure: FilesFailure?
+        while let frame = connection.next() {
+            if state.isCancelled {
+                failure = .cancelled
+                break
+            }
+            switch frame {
+            case .data(let bytes):
+                do {
+                    try handle.write(contentsOf: Data(bytes))
+                } catch {
+                    failure = .io
+                    break
+                }
+                hasher.update(data: Data(bytes))
+                received += bytes.count
+                progress.completedUnitCount = Int64(received)
+                if received > metadata.size { failure = .io; break }
+            case .reply(let reply):
+                switch reply {
+                case .end(_, let size, let sha256):
+                    let digest = hasher.finalize().map { String(format: "%02x", $0) }.joined()
+                    if size != received || size != metadata.size || digest != sha256.lowercased() {
+                        failure = .io
+                    }
+                case .error(_, let code):
+                    let mapped = FilesFailure.from(code: code)
+                    failure = mapped == .stale && !retried ? .stale : mapped
+                default:
+                    continue
+                }
+            }
+            if failure != nil { break }
+        }
+        handle.closeFile()
+        if failure == nil && received != metadata.size { failure = .io }
+        if let failure {
+            try? FileManager.default.removeItem(at: target)
+            log.notice("fetch failed code=\(failure.rawValue, privacy: .public) bytes=\(received, privacy: .public)")
+            if failure == .stale && !retried {
+                fetch(path: path, requested: nil, progress: progress, retried: true,
+                      completion: completion)
+                return
+            }
+            if failure == .cancelled { progress.cancel() }
+            completion(nil, nil, failure.error)
+            return
+        }
+        progress.completedUnitCount = progress.totalUnitCount
+        let item = remember(fs: metadata, path: path)
+        log.notice("fetch done bytes=\(received, privacy: .public)")
+        completion(target, ProviderItem(item), nil)
     }
+
+    /// A file in the extension's own temporary directory: `temporaryDirectoryURL`
+    /// when the manager has one, the sandbox's otherwise. The name is a UUID, so
+    /// nothing about the phone's tree reaches the disk name.
+    private func temporaryFile() -> URL {
+        let manager = NSFileProviderManager(for: domain)
+        let directory = (try? manager?.temporaryDirectoryURL()) ?? FileManager.default.temporaryDirectory
+        return directory.appendingPathComponent("pd-files-\(UUID().uuidString)")
+    }
+
+    // MARK: Writes (S4)
 
     func createItem(basedOn itemTemplate: NSFileProviderItem,
                     fields: NSFileProviderItemFields,
@@ -268,20 +492,8 @@ final class FilesExtension: NSObject, NSFileProviderReplicatedExtension, NSFileP
                     options: NSFileProviderCreateItemOptions,
                     request: NSFileProviderRequest,
                     completionHandler: @escaping (NSFileProviderItem?, NSFileProviderItemFields, Bool, Error?) -> Void) -> Progress {
-        let bytes = url.flatMap { try? Data(contentsOf: $0).count } ?? 0
-        let disconnected = domain.isDisconnected
-        if disconnected {
-            // Offline (E3): the system keeps the item as pending. notAuthenticated
-            // is the code Apple documents for "cannot sync right now, retry later".
-            expLog("createItem \(itemTemplate.filename) bytes=\(bytes) rejected: domain disconnected -> pending")
-            completionHandler(nil, [], false, NSFileProviderError(.notAuthenticated))
-            return Progress()
-        }
-        let item = Tree.shared.add(name: itemTemplate.filename,
-                                   parent: itemTemplate.parentItemIdentifier,
-                                   size: bytes)
-        expLog("createItem \(itemTemplate.filename) bytes=\(bytes) accepted id=\(item.itemIdentifier.rawValue)")
-        completionHandler(item, [], false, nil)
+        log.notice("createItem refused: read-only slice")
+        completionHandler(nil, [], false, CocoaError(.featureUnsupported))
         return Progress()
     }
 
@@ -292,8 +504,8 @@ final class FilesExtension: NSObject, NSFileProviderReplicatedExtension, NSFileP
                     options: NSFileProviderModifyItemOptions,
                     request: NSFileProviderRequest,
                     completionHandler: @escaping (NSFileProviderItem?, NSFileProviderItemFields, Bool, Error?) -> Void) -> Progress {
-        expLog("modifyItem \(item.itemIdentifier.rawValue) fields=\(changedFields.rawValue)")
-        completionHandler(item, [], false, nil)
+        log.notice("modifyItem refused: read-only slice")
+        completionHandler(nil, [], false, CocoaError(.featureUnsupported))
         return Progress()
     }
 
@@ -302,77 +514,105 @@ final class FilesExtension: NSObject, NSFileProviderReplicatedExtension, NSFileP
                     options: NSFileProviderDeleteItemOptions,
                     request: NSFileProviderRequest,
                     completionHandler: @escaping (Error?) -> Void) -> Progress {
-        expLog("deleteItem \(identifier.rawValue)")
-        completionHandler(nil)
+        log.notice("deleteItem refused: read-only slice")
+        completionHandler(CocoaError(.featureUnsupported))
         return Progress()
-    }
-
-    // E4: a thumbnail for the file types the system asks about, without a
-    // materialization (fetchContents is not called for these items).
-    func fetchThumbnails(for itemIdentifiers: [NSFileProviderItemIdentifier],
-                         requestedSize size: CGSize,
-                         perThumbnailCompletionHandler: @escaping (NSFileProviderItemIdentifier, Data?, Error?) -> Void,
-                         completionHandler: @escaping (Error?) -> Void) -> Progress {
-        expLog("fetchThumbnails ids=\(itemIdentifiers.map(\.rawValue).joined(separator: ",")) size=\(Int(size.width))x\(Int(size.height))")
-        for id in itemIdentifiers {
-            if let png = thumbnailPNG(size: size) {
-                perThumbnailCompletionHandler(id, png, nil)
-            } else {
-                perThumbnailCompletionHandler(id, nil, nil)
-            }
-        }
-        completionHandler(nil)
-        return Progress(totalUnitCount: Int64(itemIdentifiers.count))
     }
 }
 
-/// A small solid-colour PNG; the point is that the system gets image data from
-/// the extension, not that the picture means anything.
-func thumbnailPNG(size: CGSize) -> Data? {
-    let width = max(1, Int(size.width)), height = max(1, Int(size.height))
-    let colorSpace = CGColorSpaceCreateDeviceRGB()
-    guard let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8,
-                                  bytesPerRow: 0, space: colorSpace,
-                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
-    context.setFillColor(CGColor(red: 0.2, green: 0.5, blue: 0.9, alpha: 1))
-    context.fill(CGRect(x: 0, y: 0, width: width, height: height))
-    guard let image = context.makeImage() else { return nil }
-    let data = NSMutableData()
-    guard let destination = CGImageDestinationCreateWithData(data, UTType.png.identifier as CFString, 1, nil) else { return nil }
-    CGImageDestinationAddImage(destination, image, nil)
-    guard CGImageDestinationFinalize(destination) else { return nil }
-    return data as Data
+/// The cancel side of one fetchContents: the progress handler and the read loop
+/// meet here, so a cancel reaches the app (which tells the phone to stop).
+final class ReadState {
+    private let lock = NSLock()
+    private var id: UInt32?
+    private var cancelled = false
+    private let connection: BridgeConnection
+
+    init(connection: BridgeConnection) {
+        self.connection = connection
+    }
+
+    func begin(id: UInt32) {
+        lock.lock()
+        self.id = id
+        lock.unlock()
+    }
+
+    var isCancelled: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return cancelled
+    }
+
+    func cancel() {
+        lock.lock()
+        cancelled = true
+        let id = self.id
+        lock.unlock()
+        guard let id else { return }
+        _ = connection.send(.cancel(id: id))
+        log.notice("fetch cancelled")
+    }
 }
 
 // MARK: - Enumeration
 
-final class TreeEnumerator: NSObject, NSFileProviderEnumerator {
-    let container: NSFileProviderItemIdentifier
+/// A folder's children, one phone page at a time. The cursor is the phone's own
+/// opaque page string in an NSFileProviderPage.
+final class FilesEnumerator: NSObject, NSFileProviderEnumerator {
+    private weak var owner: FilesExtension?
+    private let container: NSFileProviderItemIdentifier
+    private let path: String
 
-    init(container: NSFileProviderItemIdentifier) {
+    init(extension owner: FilesExtension, container: NSFileProviderItemIdentifier, path: String) {
+        self.owner = owner
         self.container = container
-        super.init()
+        self.path = path
     }
 
     func invalidate() {}
 
     func enumerateItems(for observer: NSFileProviderEnumerationObserver,
                         startingAt page: NSFileProviderPage) {
-        let items = Tree.shared.children(of: container)
-        expLog("enumerate \(container.rawValue) -> \(items.count) items")
-        observer.didEnumerate(items)
-        observer.finishEnumerating(upTo: nil)
+        guard let owner else {
+            observer.finishEnumeratingWithError(FilesFailure.offline.error)
+            return
+        }
+        var cursor: String?
+        let initialByName = NSFileProviderPage.initialPageSortedByName as Data
+        let initialByDate = NSFileProviderPage.initialPageSortedByDate as Data
+        if page.rawValue as Data != initialByName,
+           page.rawValue as Data != initialByDate {
+            cursor = String(data: page.rawValue, encoding: .utf8)
+        }
+        owner.loadListing(path: path, page: cursor) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .success(let listing):
+                let items = owner.remember(listing.items, parentPath: self.path,
+                                           parentIdentifier: self.container)
+                observer.didEnumerate(items.map(ProviderItem.init))
+                let next = listing.next.map { NSFileProviderPage(Data($0.utf8)) }
+                log.notice("enumerate items=\(items.count, privacy: .public) more=\(next != nil, privacy: .public)")
+                observer.finishEnumerating(upTo: next)
+            case .failure(let failure):
+                log.notice("enumerate failed code=\(failure.rawValue, privacy: .public)")
+                if failure == .notFound {
+                    owner.invalidateSubtree(path: self.path)
+                }
+                observer.finishEnumeratingWithError(failure.error)
+            }
+        }
     }
 
     func enumerateChanges(for observer: NSFileProviderChangeObserver,
                           from anchor: NSFileProviderSyncAnchor) {
-        // The experiment never reports remote changes; answer with the current
-        // state and a new anchor, which is all Finder needs to draw the folder.
-        observer.didUpdate(Tree.shared.children(of: container))
-        observer.finishEnumeratingChanges(upTo: NSFileProviderSyncAnchor(Data("anchor-1".utf8)), moreComing: false)
+        // S3 reports no remote changes: the current anchor is the answer (S5
+        // turns fs.changes into real deltas).
+        observer.finishEnumeratingChanges(upTo: owner?.anchor ?? anchor, moreComing: false)
     }
 
     func currentSyncAnchor(completionHandler: @escaping (NSFileProviderSyncAnchor?) -> Void) {
-        completionHandler(NSFileProviderSyncAnchor(Data("anchor-1".utf8)))
+        completionHandler(owner?.anchor)
     }
 }

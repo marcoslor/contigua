@@ -5,17 +5,12 @@
 	<!-- macOS app extensions must be sandboxed (docs/design/files.md §1). -->
 	<key>com.apple.security.app-sandbox</key>
 	<true/>
-	<!-- E2: the shared container the app and the extension meet in. -->
+	<!-- The shared container the app and the extension meet in; bundle.sh
+	     writes the id for this bundle. -->
 	<key>com.apple.security.application-groups</key>
 	<array>
-		<string>group.dev.pocketdeck.mac.files.filesexp</string>
+		<string>__FILES_GROUP__</string>
 	</array>
-	<!-- E2 fallback (docs/design/files.md §1): the profile folder, when the App
-	     Group is refused by an ad-hoc signature. read-write because connect()
-	     on a UNIX socket needs write permission on the socket inode. -->
-	<key>com.apple.security.temporary-exception.files.home-relative-path.read-write</key>
-	<array>
-		<string>/Library/Application Support/PocketDeck-filesexp/</string>
-	</array>
+
 </dict>
 </plist>
