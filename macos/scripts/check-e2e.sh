@@ -3124,9 +3124,50 @@ check_mirror() {
     else
         bad "MIRROR frames did not resume after the wake"
     fi
+    # The bar's Back / Home / Recents buttons take a real click: the debug
+    # route hit-tests each button's window location and posts the mouse events
+    # to the control it finds, so the button's own mouseDown/mouseUp run. v103
+    # moved the buttons into glass capsules and their hit test stopped matching
+    # the point; the old route called the action and never saw it.
+    for button in back home recents; do
+        before="$(nav_rx_count "$button")"
+        printf 'nav-click %s\n' "$button" > "$WORK/control/nav-$button.cmd"
+        if wait_until 5 nav_click_done "$button"; then
+            if wait_until 10 nav_clicked "$button" "$before"; then
+                ok "MIRROR a click on the $button bar button -> nav $button"
+            else
+                bad "MIRROR the $button bar button sent no nav $button"
+            fi
+        else
+            bad "MIRROR the $button bar button click did not run: $(cat "$WORK/control/nav-$button.done" 2>/dev/null)"
+        fi
+    done
     stop_app
     stop_fakephone
 }
+
+# nav_rx_count <action> — stream 1's `nav` messages of that action, as the
+# fakephone received them.
+nav_rx_count() {
+    python3 - "$WORK/events.jsonl" "$1" <<'PY'
+import json, sys
+action = sys.argv[2]
+count = 0
+for line in open(sys.argv[1]):
+    try:
+        event = json.loads(line)
+    except ValueError:
+        continue
+    msg = event.get("msg") if event.get("ev") == "rx" else None
+    if isinstance(msg, dict) and msg.get("t") == "nav" \
+            and msg.get("stream") == 1 and msg.get("action") == action:
+        count += 1
+print(count)
+PY
+}
+
+nav_click_done() { [ "$(cat "$WORK/control/nav-$1.done" 2>/dev/null)" = "ok" ]; }
+nav_clicked() { [ "$(nav_rx_count "$1")" -gt "$2" ]; }
 
 # chrome_has <text> — the chrome state file contains text.
 chrome_has() { case "$(chrome_state)" in *"$1"*) return 0 ;; *) return 1 ;; esac; }
