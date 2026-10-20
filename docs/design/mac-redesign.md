@@ -119,8 +119,9 @@ backgrounds), window background default.
   | pairing | — | chip hidden (the sheet is up) | |
 
 - **Grid:** `LazyVGrid(columns: [GridItem(.adaptive(minimum: 96, maximum: 96), spacing: 8)], spacing: 8)`,
-  padding 16 (toolbar inset applies). Cell 96×100: icon 56×56 `.clipShape(.rect(cornerRadius: 13, style: .continuous))`,
-  label `.caption` 1 line `.truncationMode(.middle)`, spacing 6. Hover `.fill(.quaternary)`; keyboard/mouse
+  padding 16 (toolbar inset applies). Cell 96×100: icon 56×56, the shared `PhoneAppIcon` render in the macOS shape
+  (docs/design/dock.md §Icons; the setting off keeps the flat image at radius 13), label `.caption` 1 line
+  `.truncationMode(.middle)`, spacing 6. Hover `.fill(.quaternary)`; keyboard/mouse
   selection `.fill(Color.accentColor.opacity(0.22))`, both `RoundedRectangle(cornerRadius: 14)`. **Single click opens**
   (↩ opens the selected one, or the first match when none is selected).
 - **Data:** apps and icons come from `AppsCache` (§6.3) first, then refresh from the phone, so the grid

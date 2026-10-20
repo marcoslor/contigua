@@ -66,15 +66,13 @@ Spec of every state, copy and transitions: [design/mac-redesign.md](design/mac-r
   (FNV-1a, so it is stable), the app's initial in `.system(size: 26, weight: .semibold, design: .rounded)` white. Never pixel art.
   Offline/reconnecting: `.opacity(0.5)`, not clickable. No matches: "No apps match “query”" `.callout .secondary`, height 120.
 
-- **Glass app icons** (Settings → General, `deck.glassIcons`, default on): with it on, each icon sits on a Liquid Glass squircle
-  and the cell keeps hover/selection as above; off is the previous look exactly (flat image, radius 13).
-  The tile is 56 pt with a corner radius of 22.5 % of its side (`.rect(cornerRadius:style: .continuous)`),
-  `.glassEffect(.regular, in:)`, `.regular.interactive()` while the pointer is over the cell. An **adaptive** icon
-  (the phone sent `fg`/`bg`, docs/PROTOCOL.md) is cropped to the central 2/3 of its 216 px canvas — the 72 dp visible
-  area of the 108 dp canvas — the `bg` drawn under the glass at 35 % opacity so the tile carries the app's colour,
-  the `fg` on top at full opacity, clipped to the squircle; the flat 96 px icon stays for every other use (Dock/Spotlight/
-  notifications). A **non-adaptive** icon is centred at 78 % of the tile with no tint; placeholders and the generated
-  tile are unchanged, and `mono` is stored for a later round.
+- **Glass app icons** (Settings → General, `deck.glassIcons`, default on): with it on, each tile is the shared
+  `PhoneAppIcon` render (docs/design/dock.md §Icons) at 224 px — the macOS squircle (22.5 % corners), the adaptive
+  `fg`/`bg` layers at full opacity cropped to the visible 72 dp of the 108 dp canvas, or the flat icon at 78 % on a
+  white plate, with one small top light and a specular edge. Nothing is tinted or put under a material, so the tile
+  shows the phone's colours; hovering lifts the tile by 4 %. Off is the previous look exactly (the flat 96 px image,
+  radius 13). The Dock, Launchpad and Spotlight use the same renderer, so an app's icon is the same everywhere;
+  placeholders and the generated tile are unchanged, and `mono` is stored for a later round.
 
 ### Pairing-code sheet (numeric comparison)
 - `.sheet`, frame width 400, padding 32, VStack spacing 24: title "Pair with *phone name*" `.title3.weight(.semibold)` · the code · one line `.callout`
