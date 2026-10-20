@@ -234,8 +234,11 @@ The experiment's code becomes the slice's product code; this is what it does.
   writes them into its own
   `NSFileProviderManager(for:).temporaryDirectoryURL()` file, so the app never
   writes in the extension's space. `BridgeDecoder` is incremental (a line or a
-  chunk may split across any reads); a request line is capped at 64 KiB and a
-  data chunk at 8 MiB. The listener is 0600 in the group container, refuses a
+  chunk may split across any reads); a request line is capped at 64 KiB, a
+  reply line at 2 MiB (one `items` page is one line, and the phone may put
+  1000 items in it) and a data chunk at 8 MiB. Both sides set `SO_NOSIGPIPE`:
+  a write to a peer that just went away must not kill the app. The listener is
+  0600 in the group container, refuses a
   peer whose uid differs, takes at most 4 clients, and each client may have at
   most 8 live ids.
 - **Names**: bundle.sh writes `PDFilesGroup` into the app's and the extension's
@@ -253,8 +256,12 @@ The experiment's code becomes the slice's product code; this is what it does.
   previous one had enumerated). The id ↔ path map is still kept and filled by
   listings and stats, the parent identifier is looked up there (or one stat
   supplies its ino), and a subtree is invalidated on delete. `contentVersion`
-  is the etag, `metadataVersion` a SHA-256 of (name, size, mtime, ino). A
-  rename keeps the id, so S4 must move the path part of it too.
+  is the etag, `metadataVersion` a SHA-256 of (name, size, mtime, ino).
+  **A rename changes the id**, because the path rides in it. S3 is read-only so
+  nothing renames; S4 must revisit this before it ships moves: either re-issue
+  the item identifier and rely on the system's rename handling, or keep a
+  second id form that is only the ino for known items. Do not assume an id
+  survives a move.
 - **Errors**: the pure map (`FilesFailure.from(code:)`) turns `offline` and
   `closed` into `NSFileProviderError(.serverUnreachable)`, `fs_not_found` into
   `.noSuchItem`, `fs_denied` into `CocoaError(.fileReadNoPermission)`,
@@ -474,6 +481,19 @@ pair (to prove the exclusions), with the phone-side rules of §3/§4 implemented
    rename keeps the id); e2e `files-domain`: fakephone on, `--files-domain add`, assert the
    domain is registered (`getDomains`), the domain root lists the fake tree and a fetched file
    is byte-identical. (E1–E5 are the pre-slice experiments for this step.)
+   **Done (read-only).** What shipped: `FilesCore.swift` (wire, decoder, item/path/failure
+   maps), `FilesBridge.swift` (the 0600 App Group listener, streaming reads, cancel), the
+   replicated extension in `macos/Extensions/Files/` (enumerator, `fetchContents`, read-only),
+   `FilesDomainController` + the Settings row and Deck prompt, `--files-domain add|remove`
+   and `--files-bridge-dir` as hooks. Checks: K2 738/0; `FilesCoreTests` 37, `FilesBridgeTests`
+   13, `FilesDomainControllerTests` 11; e2e `files-bridge` 18/0 (host, bridge only, no File
+   Provider) and the `files` regression 8/0; VM `files-domain` 29/0 with the Finder screenshot
+   at `macos/build/vm-e2e/files-domain/work/finder.png`. What the VM taught us, now in the
+   code: identifiers must resolve in a fresh extension process (so the path rides in them), a
+   closed peer must not raise SIGPIPE, and a listing page is a single line larger than a
+   request line. Known limitation: the id↔path coupling means a rename changes the id — S4
+   owns that (see the identifiers note above).
+
 4. **S4 — write path: create, modify, delete, move; etags and conflicts.** Phone: `FsWriter`
    (temp + verify + rename + scan), `fs.move`/`fs.delete`/`fs.mkdir`/`fs.setAttrs`, `fs_stale`
    on an etag mismatch; rename through the MediaProvider path behind a `Platform` seam (so the
