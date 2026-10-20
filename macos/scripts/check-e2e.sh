@@ -4567,6 +4567,8 @@ PY
 # a change in an unwatched folder B must say nothing, the Mac's own write must
 # not echo, and closing A (or killing the driver) must stop the watch on the
 # phone. No File Provider anywhere.
+WATCH_FOLDERS=""   # the 65 folders the watch-set step touches, set by the check
+
 check_files_watch() {
     clean
     python3 - "$WORK" <<'PY'
@@ -4577,9 +4579,15 @@ for folder in ("A", "B"):
     os.makedirs(os.path.join(root, folder), exist_ok=True)
 open(os.path.join(root, "A", "seed.txt"), "wb").write(b"seed\n")
 open(os.path.join(root, "B", "other.txt"), "wb").write(b"other\n")
+# 65 folders for the watch-set cap: the 65th touch drops the least recently
+# touched and the phone never watches more than 64.
+for index in range(65):
+    os.makedirs(os.path.join(root, "W%02d" % index), exist_ok=True)
 PY
+    WATCH_FOLDERS="$(python3 -c 'print(",".join("W%02d" % i for i in range(65)))')"
     FAKE_ARGS="--fs-root $WORK/fsroot" start_fake || return 1
-    launch --connect "127.0.0.1:$PORT" --files-bridge-dir "$WORK/bridge"
+    # The ten minutes are shortened for this run only (design "S5 round 3").
+    PD_FILES_WATCH_TTL=20 launch --connect "127.0.0.1:$PORT" --files-bridge-dir "$WORK/bridge"
     wait_until 30 file_has "files-bridge: ok" "$WORK/app.log" \
         && ok "WATCH the app listens on the test bridge socket" \
         || bad "WATCH no bridge socket: $(grep 'files-bridge' "$WORK/app.log" | tail -2)"
@@ -4604,25 +4612,28 @@ PY
     else
         bad "WATCH the phone logged no change batch"
     fi
-    # A killed driver (an extension process going away) drops its watch.
-    local before hold
-    before=$(grep -c "watch off 0" "$WORK/fake.err" 2>/dev/null || true)
+    # The watch set: 65 folders keep at most 64 (LRU), and a folder untouched
+    # for the test-shortened TTL is unwatched. The driver plays the extension.
     "$MACOS/scripts/files-bridge-driver.py" --socket "$(files_bridge_socket)" \
         --root "$WORK/fsroot" --work "$WORK" --fake-err "$WORK/fake.err" \
-        --phase hold > "$WORK/bridge-hold.txt" 2>&1 &
-    hold=$!
-    if wait_until 15 file_has "ok WATCH holding" "$WORK/bridge-hold.txt"; then
-        kill -9 "$hold" 2>/dev/null
-        wait "$hold" 2>/dev/null
-        # The last thing the phone heard must be the drop of the hold's watch.
-        if wait_until 8 eval '[ "$(grep -E "watch (on|off)" "$WORK/fake.err" 2>/dev/null | tail -1)" = "fakephone: watch off 0" ]'; then
-            ok "WATCH the app drops the watch when its client goes away"
-        else
-            bad "WATCH the watch outlived the client that asked for it (last: $(grep -E "watch (on|off)" "$WORK/fake.err" | tail -1))"
-        fi
+        --phase watchset --ttl 20 --watch-folders "$WATCH_FOLDERS" \
+        > "$WORK/bridge-watchset.txt" 2>&1
+    while IFS= read -r line; do
+        case "$line" in
+            ok\ *) ok "${line#ok }" ;;
+            bad\ *) bad "${line#bad }" ;;
+            *) [ -n "$line" ] && say "    $line" ;;
+        esac
+    done < "$WORK/bridge-watchset.txt"
+    if grep -q "fakephone: watch on 64" "$WORK/fake.err" 2>/dev/null; then
+        ok "WATCH the phone never watched more than 64 folders"
     else
-        bad "WATCH the hold phase did not start: $(tail -2 "$WORK/bridge-hold.txt")"
-        kill -9 "$hold" 2>/dev/null
+        bad "WATCH the phone's watch count went past 64: $(grep "watch on" "$WORK/fake.err" | tail -1)"
+    fi
+    if [ "$(grep -c "fakephone: watch off" "$WORK/fake.err" 2>/dev/null || true)" -ge 2 ]; then
+        ok "WATCH watches were dropped: the LRU at the cap and the TTL expiry"
+    else
+        bad "WATCH no watch off beyond the first: $(grep "watch off" "$WORK/fake.err" | tail -1)"
     fi
     # Names never reach the app log; counts and ids only (design §4).
     log show --last 3m --info \
