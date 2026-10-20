@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # End-to-end checks C3-C13 for the macOS client against tools/fakephone.
 #
-#   ./scripts/check-e2e.sh [qr|pair|gates|tls|render|resize|input|hover|mouseback|input-global|pause|direct|nav|mirror|spotlight|intents|mcp|focus|pinch|chrome|menus|density|trackpad|clip|sharein|links|share|apk|drop|dock|nickname|notify|audio|handoff|deck|all [--shard N/M]]
+#   ./scripts/check-e2e.sh [qr|pair|gates|tls|render|resize|input|hover|mouseback|input-global|pause|direct|nav|mirror|spotlight|intents|mcp|focus|controls|pinch|chrome|menus|density|trackpad|clip|sharein|links|share|apk|drop|dock|nickname|notify|audio|handoff|deck|all [--shard N/M]]
 #
 # Every check starts from a clean slate (the shared-app checks share one, see
 # "The shared app" below): no PocketDeck or fakephone processes
@@ -3487,6 +3487,177 @@ check_focus() {
     [ "$(dnd_rx_count)" = "0" ] \
         && ok "FOCUS nothing is sent to a phone that cannot take it (no error spam)" \
         || bad "FOCUS a phone.dnd was sent to an old phone"
+    stop_app
+    stop_fakephone
+}
+
+# --- controls: Control Center snapshot and requests (docs/design/controls.md) ---
+
+# controls_driver — the extension's side: reads the snapshot and sends one
+# request line over the group socket. No widget extension is built on the host;
+# --controls-dir puts both in the run's work folder.
+controls_driver() { python3 "$MACOS/scripts/controls-driver.py" "$@"; }
+
+controls_snapshot_is() { controls_driver wait "$WORK/controls" "$1" "${@:2}" >/dev/null 2>&1; }
+
+controls_request() { controls_driver request "$WORK/controls" "$@"; }
+
+controls_reply_is() {
+    local reply
+    reply="$(controls_request "$@")"
+    printf '%s\n' "$reply" >> "$WORK/controls-replies.jsonl"
+    python3 - "$reply" <<'PY'
+import json, sys
+try:
+    reply = json.loads(sys.argv[1])
+except ValueError:
+    sys.exit(1)
+sys.exit(0 if reply.get("ok") is True else 1)
+PY
+}
+
+controls_error_is() {
+    local expected="$1" reply
+    shift
+    reply="$(controls_request "$@" 2>/dev/null)"
+    printf '%s\n' "$reply" >> "$WORK/controls-replies.jsonl"
+    python3 - "$reply" "$expected" <<'PY'
+import json, sys
+try:
+    reply = json.loads(sys.argv[1])
+except ValueError:
+    sys.exit(1)
+sys.exit(0 if reply.get("ok") is False and reply.get("error") == sys.argv[2] else 1)
+PY
+}
+
+ringer_is() {
+    python3 - "$WORK/events.jsonl" "$1" <<'PY'
+import json, sys
+mode = None
+for line in open(sys.argv[1], errors="replace"):
+    try:
+        event = json.loads(line)
+    except ValueError:
+        continue
+    if event.get("ev") == "ringer":
+        mode = event.get("mode")
+sys.exit(0 if mode == sys.argv[2] else 1)
+PY
+}
+
+ring_received() {
+    grep -q '"ev":"ring"' "$WORK/events.jsonl" 2>/dev/null
+}
+
+check_controls() {
+    # (1) the snapshot the extension reads, and DND from a control.
+    clean
+    start_fake || return 1
+    launch --connect "127.0.0.1:$PORT" --controls-dir "$WORK/controls" --quit-after 120
+    controls_snapshot_is 25 connected=true dnd=off \
+        && ok "CONTROLS the snapshot says connected with DND off" \
+        || bad "CONTROLS no connected/off snapshot: $(controls_driver snapshot "$WORK/controls" 2>&1 | tail -1)"
+    controls_driver snapshot "$WORK/controls" 2>/dev/null | grep -q 'FakePhone' \
+        && ok "CONTROLS the snapshot names the phone" \
+        || bad "CONTROLS the snapshot has no phone name"
+    controls_reply_is dnd on \
+        && ok "CONTROLS dnd on accepted" \
+        || bad "CONTROLS dnd on was refused"
+    wait_until 3 dnd_is priority \
+        && ok "CONTROLS dnd on reached the phone as priority" \
+        || bad "CONTROLS the phone never got phone.dnd priority"
+    controls_snapshot_is 3 dnd=priority \
+        && ok "CONTROLS the snapshot followed to dnd priority within 3 s" \
+        || bad "CONTROLS the snapshot did not follow the DND change"
+    controls_reply_is dnd off \
+        && ok "CONTROLS dnd off accepted" \
+        || bad "CONTROLS dnd off was refused"
+    wait_until 5 dnd_is off \
+        && ok "CONTROLS dnd off restored the DND PocketDeck set" \
+        || bad "CONTROLS dnd off did not restore the phone"
+
+    # (2) Ring and Ringer.
+    controls_reply_is ring \
+        && ok "CONTROLS ring accepted" \
+        || bad "CONTROLS ring was refused"
+    wait_until 3 ring_received \
+        && ok "CONTROLS ring reached the phone as phone.ring" \
+        || bad "CONTROLS the phone never got phone.ring"
+    controls_snapshot_is 3 ringing=true \
+        && ok "CONTROLS the snapshot says ringing" \
+        || bad "CONTROLS the snapshot never said ringing"
+    controls_reply_is ringer silent \
+        && ok "CONTROLS ringer silent accepted" \
+        || bad "CONTROLS ringer silent was refused"
+    wait_until 3 ringer_is silent \
+        && ok "CONTROLS ringer silent reached the phone as phone.ringer" \
+        || bad "CONTROLS the phone never got phone.ringer silent"
+    controls_snapshot_is 3 ringer=silent \
+        && ok "CONTROLS the snapshot followed the ringer" \
+        || bad "CONTROLS the snapshot did not follow the ringer"
+    controls_reply_is ringer loud 2>/dev/null \
+        && bad "CONTROLS a bad ringer mode was accepted" \
+        || ok "CONTROLS a bad ringer mode is refused"
+    stop_app
+
+    # (3) a person's own DND is never touched by the control.
+    stop_fakephone
+    wait_until 5 no_fakephone
+    FAKE_ARGS="--dnd-person priority" start_fake || return 1
+    launch --connect "127.0.0.1:$PORT" --controls-dir "$WORK/controls" --quit-after 90
+    controls_snapshot_is 25 dnd=priority \
+        && ok "CONTROLS a person's DND shows in the snapshot" \
+        || bad "CONTROLS the person's DND never reached the snapshot"
+    controls_reply_is dnd off \
+        && ok "CONTROLS dnd off accepted for a person's DND" \
+        || bad "CONTROLS dnd off was refused for a person's DND"
+    sleep 2
+    dnd_is priority \
+        && ok "CONTROLS the restore rule left the person's DND alone" \
+        || bad "CONTROLS the control turned off a DND the person set"
+    controls_snapshot_is 3 dnd=priority \
+        && ok "CONTROLS the snapshot still says priority" \
+        || bad "CONTROLS the snapshot changed a person's DND"
+    stop_app
+
+    # (4) an old phone: no ringer in state, a clear refusal, no silent no-op.
+    stop_fakephone
+    wait_until 5 no_fakephone
+    FAKE_ARGS="--ringer-unsupported" start_fake || return 1
+    launch --connect "127.0.0.1:$PORT" --controls-dir "$WORK/controls" --quit-after 60
+    controls_snapshot_is 25 connected=true \
+        && ok "CONTROLS the old phone still connects" \
+        || bad "CONTROLS the old phone never connected"
+    controls_error_is no_ringer ringer silent \
+        && ok "CONTROLS a phone without ringer support answers no_ringer" \
+        || bad "CONTROLS a phone without ringer support did not answer no_ringer"
+    grep -q '"t":"phone.ringer"' "$WORK/events.jsonl" \
+        && bad "CONTROLS a phone.ringer was sent to a phone that cannot take it" \
+        || ok "CONTROLS nothing is sent to a phone without ringer support"
+
+    # (5) fakephone gone: the snapshot says disconnected, requests say why.
+    stop_fakephone
+    controls_snapshot_is 5 connected=false \
+        && ok "CONTROLS the snapshot says disconnected when the phone goes" \
+        || bad "CONTROLS the snapshot stayed connected after the phone left"
+    controls_error_is not_connected ring \
+        && ok "CONTROLS a request without a phone answers not_connected" \
+        || bad "CONTROLS a request without a phone did not answer not_connected"
+    python3 - "$WORK/controls-replies.jsonl" <<'PY'
+import json, sys
+for line in open(sys.argv[1], errors="replace"):
+    try:
+        reply = json.loads(line)
+    except ValueError:
+        continue
+    if reply.get("error") == "not_connected" and "connected" in (reply.get("message") or ""):
+        sys.exit(0)
+sys.exit(1)
+PY
+    [ $? = 0 ] \
+        && ok "CONTROLS the not_connected reply says \"Phone isn't connected\"" \
+        || bad "CONTROLS the not_connected reply has no message"
     stop_app
     stop_fakephone
 }
