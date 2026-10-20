@@ -28,8 +28,8 @@ import time
 
 CHUNK_KIND = ("json", "data")
 WRITE_CHUNK = 256 * 1024
-# The bridge wire version (FilesCore.swift): 2 is the S4 id-carrying wire.
-BRIDGE_VERSION = 2
+# The bridge wire version (FilesCore.swift): 3 adds the watch wire.
+BRIDGE_VERSION = 3
 
 
 def report(ok, text):
