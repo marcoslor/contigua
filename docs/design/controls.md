@@ -62,22 +62,24 @@ the App Intents and the debug hooks. A DND a control turns on therefore counts
 as set by the Mac for the phone's restore rule (docs/design/focus.md), and a
 control's `off` never turns off a DND the person set.
 
-## The perform route (spike 0a)
+## The perform route (not proven)
 
-**Assumption, not yet verified.** The extension's intents are hosted by the
-widget extension and talk to the app over the App Group socket above. The
-alternatives, in the order the spike tries them, are:
+**Unverified.** The extension's intents are hosted by the widget extension and
+talk to the app over the App Group socket above. The spike never got a control
+into the gallery, so which process runs `perform()` is unknown. The alternatives
+the design allows, in order:
 
 1. the intent type compiled into both the app and the extension, so the system
-   runs `perform()` in the app process (logged pid/bundle proves it);
+   runs `perform()` in the app process;
 2. the extension runs `perform()` and talks to the app over the group socket
-   (the design above);
+   (what this implementation assumes);
 3. the intent opens the app (`openAppWhenRun`; last resort, it steals focus).
 
-The spike logs the pid and executable in `perform()`. Until it has run, only
-option 2's code exists. If the log shows option 1, the extension keeps the
-snapshot but the intents move into the app's module; if it shows option 3, the
-DND and Ring controls become app-opening buttons.
+The extension logs the pid and executable in `perform()` (`controls-ext.log` in
+the group container) and sends every action over the socket. A run that proves
+the route decides whether this stays; if the system never runs extension-hosted
+actions, the intents move into the app (`openAppWhenRun` is already set on Open
+PocketDeck) and the other three controls fall back to opening the app.
 
 ## Phone side: ringer (spike 0b)
 
@@ -116,6 +118,51 @@ On the API 36 emulator at shell UID 2000:
   hotspot without an SSID/passphrase, which would replace its configuration.
 
 No hotspot control is implemented.
+
+## Experiment results (2026-10-20)
+
+Five VM sessions were used for spike 0a (the brief allowed one; the overrun is
+recorded here rather than hidden). The bundle was the `e2e` variant built with
+`--with-controls`, ad-hoc signed, sandboxed extension with the App Group.
+
+**What worked.**
+
+- The App Group container exists and the app writes `controls.json` into it:
+  `{"connected":true,"phone":"FakePhone","dnd":"off","ringer":"normal",…}` while
+  fakephone was connected.
+- The appex registers. `pluginkit -m -i dev.pocketdeck.mac.controls-e2e` lists it
+  after `lsregister -f PocketDeck.app` and
+  `pluginkit -a …/Contents/PlugIns/Controls.appex`, both from `~/pd-e2e` and from
+  `/Applications`. In the `pluginkit -m -p com.apple.widgetkit-extension` list it
+  appeared only after the app was copied to `/Applications` and opened once.
+- System Settings › Control Center › Menu Bar has an **Add Controls…** button
+  that opens the control gallery (`gallery.png` in
+  `macos/build/vm-e2e/controls-spike5/work/`). The gallery lists system
+  categories (Clock, Connectivity, Focus, …) and the app's own menu bar item is
+  listed separately on the Menu Bar pane.
+
+**What did not work.**
+
+- PocketDeck had no category or item in the gallery, and ControlCenter never
+  launched `Controls.appex` (only the system control extensions were running).
+  No `controls-ext.log` appeared, so no `perform()` ran and the route is
+  unproven.
+- No per-app enable switch was seen in the gallery. Whether Login Items &
+  Extensions › Extensions has a Widgets/Controls row (the File Provider
+  experiment needed a switch there) was **not checked**: the session budget ran
+  out first.
+- The gallery run used an extension **without** App Intents metadata. After the
+  spike, `bundle.sh --with-controls` was changed to run
+  `appintentsmetadataprocessor` for the extension too; the built bundle now has
+  `Controls.appex/Contents/Resources/Metadata.appintents` listing the four
+  actions. The gallery was not re-checked with it.
+
+**Consequence.** The extension and the socket route are committed as
+**unverified in the VM**. The last remaining VM session (step 5) checks
+registration and the gallery again with the metadata, and presses the controls
+if they appear; if they still do not, the exact manual step is: enable the
+extension in System Settings › General › Login Items & Extensions › Extensions,
+then add the controls from Control Center › Edit Controls.
 
 ## Checks
 

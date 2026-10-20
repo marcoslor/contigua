@@ -79,6 +79,12 @@ window you give it.
   copy them out. Read-only for now. The first time, turn PocketDeck on in
   System Settings › General › Login Items & Extensions (Settings › General has
   the switch and the link).
+- **Control Center controls** (opt-in build; needs a hands-on check in the VM) —
+  Phone Do Not Disturb as a toggle, Ring Phone, a ringer-mode control and Open
+  PocketDeck, built as a small widget extension that reads a snapshot the app
+  writes and sends its actions over a private socket in the app's group. A
+  hotspot control is not included: at shell UID Android offers no way to toggle
+  the person's existing hotspot without replacing its configuration.
 
 **Notifications and Now Playing** (opt-in on both sides)
 
