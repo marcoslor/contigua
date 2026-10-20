@@ -11,6 +11,7 @@ import android.media.MediaCodec
 import android.media.MediaCodecInfo
 import android.media.MediaFormat
 import android.os.Handler
+import android.os.Looper
 import android.os.HandlerThread
 import android.os.PowerManager
 import android.os.SystemClock
@@ -55,6 +56,9 @@ internal object CameraProbe {
 
     @JvmStatic
     fun main(args: Array<String>) {
+        // ActivityThread's constructor makes a Handler, so the bare
+        // app_process main thread needs a Looper before any context exists.
+        runCatching { Looper.prepareMainLooper() }
         val mode = args.getOrNull(0) ?: "list"
         val seconds = args.getOrNull(1)?.toIntOrNull() ?: 6
         val wanted = args.getOrNull(2)
@@ -64,6 +68,7 @@ internal object CameraProbe {
                 "run" -> run(seconds, wanted)
                 "open" -> open(seconds, wanted)
                 "pkg" -> pkg(wanted)
+                "selftest" -> selftest()
                 else -> say("unknown mode '$mode'")
             }
         } catch (t: Throwable) {
@@ -86,17 +91,49 @@ internal object CameraProbe {
             say("context: no android.app.ActivityThread")
             return null
         }
-        val direct = runCatching { at.getDeclaredMethod("systemMain").invoke(null) as Context }
-        direct.getOrNull()?.let { return it }
-        direct.exceptionOrNull()?.let { say("context: systemMain failed ${it.javaClass.name}: ${it.message}") }
-        val thread = runCatching { at.getDeclaredMethod("currentActivityThread").invoke(null) }.getOrNull()
-            ?: return null
-        return runCatching { at.getDeclaredMethod("getSystemContext").invoke(thread) as Context }.getOrNull()
+        // 1. systemMain: attaches like system_server, but uid 2000 may be refused.
+        runCatching { at.getDeclaredMethod("systemMain").invoke(null) as Context }
+            .onSuccess { say("context: systemMain"); return it }
+            .onFailure { say("context: systemMain failed ${chain(it)}") }
+        // 2. A bare ActivityThread (never attached) still builds the system
+        //    Context, and that is all a CameraManager needs.
+        val bare = runCatching {
+            at.getDeclaredConstructor().apply { isAccessible = true }.newInstance()
+        }.onFailure { say("context: ActivityThread() failed ${chain(it)}") }.getOrNull()
+        if (bare != null) {
+            runCatching { at.getMethod("getSystemContext").invoke(bare) as Context }
+                .onSuccess { say("context: bare ActivityThread.getSystemContext"); return it }
+                .onFailure { say("context: getSystemContext failed ${chain(it)}") }
+            runCatching {
+                Class.forName("android.app.ContextImpl")
+                    .getDeclaredMethod("createSystemContext", at)
+                    .apply { isAccessible = true }
+                    .invoke(null, bare) as Context
+            }.onSuccess { say("context: ContextImpl.createSystemContext"); return it }
+                .onFailure { say("context: createSystemContext failed ${chain(it)}") }
+        }
+        return null
     }
 
-    /** The Context whose package/attribution is `com.android.shell` (see [ShellContext]). */
-    private fun shellManager(ctx: Context): CameraManager =
-        ctx.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+    private fun chain(t: Throwable): String =
+        generateSequence(t) { it.cause }.take(6)
+            .joinToString(" <- ") { "${it.javaClass.name}: ${it.message}" }
+
+    /**
+     * A CameraManager whose context is [ctx]. `getSystemService` cannot be used:
+     * ContextWrapper delegates to the base ContextImpl, which hands the service
+     * its own package name ("android"), and the camera service then refuses the
+     * call because uid 2000 does not own that package.
+     */
+    private fun cameraManager(ctx: Context): CameraManager {
+        runCatching {
+            CameraManager::class.java.getConstructor(Context::class.java).newInstance(ctx)
+        }.onSuccess { return it }
+            .onFailure { say("camera manager: direct constructor failed ${chain(it)}") }
+        return ctx.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+    }
+
+    private fun shellManager(ctx: Context): CameraManager = cameraManager(ctx)
 
     private fun describe(ctx: Context, label: String) {
         say(
@@ -196,12 +233,15 @@ internal object CameraProbe {
                 device.close()
             }
         }
+        val thread = HandlerThread("cam-pkg").apply { start() }
         try {
-            mgr.openCamera(id, cb, Handler(HandlerThread("cam-pkg").apply { start() }.looper))
+            mgr.openCamera(id, cb, Handler(thread.looper))
             latch.await(3, TimeUnit.SECONDS)
             say("$label: open $id -> ${outcome[0]}")
         } catch (t: Throwable) {
             say("$label: open $id threw ${t.javaClass.name}: ${t.message}")
+        } finally {
+            thread.quitSafely()
         }
     }
 
@@ -483,6 +523,20 @@ internal object CameraProbe {
         Thread.sleep(seconds * 1000L)
         say("hold: releasing after ${seconds}s (outcome=${outcome.get()})")
         thread.quitSafely()
+    }
+
+    private fun selftest() {
+        val ctx = systemContext()
+        if (ctx == null) {
+            say("selftest: no context")
+            return
+        }
+        say("selftest: context=${ctx.javaClass.name} pkg=${ctx.packageName} op=${ctx.opPackageName}")
+        val shell = ShellContext(ctx)
+        val mgr = runCatching { shellManager(shell) }
+        say("selftest: cameraManager=${mgr.getOrNull()?.javaClass?.name} err=${mgr.exceptionOrNull()?.let { chain(it) }}")
+        val ids = runCatching { mgr.getOrNull()?.cameraIdList }
+        say("selftest: cameraIdList=${ids.getOrNull()?.joinToString(",")} err=${ids.exceptionOrNull()?.let { chain(it) }}")
     }
 
     private fun say(line: String) {
