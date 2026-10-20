@@ -1,8 +1,10 @@
 # Phone camera as a Mac camera — spike (v0.2 #7)
 
-Status: **spike complete, with the phone questions unverified** (see P2-P5 and the boot record). This document answers whether PocketDeck can feed the
-phone's camera into a Mac camera device, what that would take, and what the fallback
-is. It is a design + experiment record; no product feature is implemented.
+Status: **phone probe answered (C0): the shell UID cannot open the camera; C1 is
+not built, and the capture moves to the app process.** This document answers whether
+PocketDeck can feed the phone's camera into a Mac camera device, what that would take,
+and what the fallback is. It is a design + experiment record; no product feature is
+implemented.
 
 Shape in one line: a **CoreMediaIO Camera Extension** on the Mac presents a camera
 device; the extension gets H.264 frames from the PocketDeck app, which gets them from
@@ -35,62 +37,74 @@ Shizuku user service already uses).
 
 The probe is `android/app/src/debug/java/dev/pocketdeck/server/CameraProbe.kt`, debug
 source set only. It runs as a second `app_process` at the shell UID, the same UID as
-the Shizuku user service:
+the Shizuku user service, and every stage is its own run:
 
 ```sh
 adb -s emulator-5554 shell 'CP=$(pm path dev.pocketdeck | cut -d: -f2); \
   CLASSPATH=$CP app_process /system/bin dev.pocketdeck.server.CameraProbe list'
 ```
 
-**P1 — partial: listing works, opening was not proven.** The probe builds a framework
-`Context` from `ActivityThread` (`systemMain` returns an ActivityThread; its
-`getSystemContext` supplies the framework Context, with a bare never-attached
-ActivityThread as the fallback). The bare `app_process` main thread first needs
-`Looper.prepareMainLooper()`, because ActivityThread's constructor creates a Handler.
-It then lists both emulator cameras:
+**P1 — no: the shell UID lists the cameras but cannot open one.** The 2026-10-20
+boot (`tools/emulator/cam-probe.sh`, one boot, log in `.agent/emu/cam-probe.log`)
+listed the emulator's single back camera and then failed every call that needs the
+caller's package (PID and attribution fields elided):
 
 ```
-cam: shell context: uid=2000 pid=1793 pkg=com.android.shell op=com.android.shell attribution=com.android.shell/2000
-cam: cameraIds=2 [1,10]
+cam: result stage=list ok=true uid=2000 pkg=com.android.shell op=com.android.shell basePkg=android adopted=mOpPackageName,mAttributionSource notAdopted=mPackageName cams=1 ids=1 camera_1=characteristics_failed
+cam: result stage=open ok=false uid=2000 pkg=com.android.shell op=com.android.shell basePkg=android adopted=mOpPackageName,mAttributionSource notAdopted=mPackageName camera=1 opened=false session=configured error=SecurityException:Given_calling_package_android_does_not_match_caller's_uid_2000
 ```
 
-`dumpsys media.camera` agrees: two devices (`1`, `10`), none open. The open then
-failed, but for a probe bug, not a policy refusal:
+(The `session=configured` on that line is the probe's own reporting bug: a
+synchronous `openCamera` failure releases the latch, so the stage thought the
+session had been configured. Fixed after the boot; the error code is the fact.)
 
-```
-cam: camera 1: characteristics failed java.lang.SecurityException:
-     Given calling package android does not match caller's uid 2000
-cam: pkg=com.android.shell: open 1 threw java.lang.SecurityException:
-     Given calling package android does not match caller's uid 2000
-```
+Why the context rewrite could not fix it. On API 36 `ContextImpl` no longer has an
+`mPackageName` field: `getPackageName()` returns `mPackageInfo.getPackageName()`,
+and the system context's `LoadedApk` is the `android` package (uid 1000).
+`getOpPackageName()` reads `mAttributionSource`, and `mBasePackageName` /
+`mOpPackageName` are final. The probe rewrote the base context's `mOpPackageName`
+and `mAttributionSource` to `com.android.shell`
+(`adopted=mOpPackageName,mAttributionSource`) and the platform still refused with
+"calling package android": the package the failing call presents is neither of
+those fields. Both `getCameraCharacteristics` and `openCamera` refuse, so no device
+is opened, no session exists and no frame can flow; the encoder half is irrelevant
+until this is solved.
 
-`getSystemService(CAMERA_SERVICE)` resolves through `ContextWrapper` to the base
-`ContextImpl`, whose package is `android`; `CameraManager` therefore called the camera
-service with a package uid 2000 does not own. A direct `CameraManager(shellContext)`
-constructor was built and run on the fourth boot and **still** reported `android`
-(the manager reads the package from the base context). The probe now also rewrites the
-base `ContextImpl`'s `mPackageName`, `mOpPackageName` and attribution source to
-`com.android.shell` before creating the manager; that change is built and K1-green but
-**was not run** (the boot budget was already gone). **Whether uid 2000 actually opens
-the camera is unverified.**
+The one untested route is a real `ContextImpl` for `com.android.shell`
+(`ActivityThread.getPackageInfoNoCheck` for the shell package plus
+`ContextImpl.createAppContext`), which would make `getPackageName()` answer with a
+package uid 2000 owns. It was not tried: the epic had one boot left for C1 and C1
+is not built (the brief's budget rule), so C1 answers "app process" instead.
 
-**P2–P5 — unverified.** The run that reached the point of opening a camera was the
-fourth boot; the emulator process went offline (qemu died) right after the failed open,
-so the keyguard, encoder, indicator and eviction stages never ran. What is known:
+**P2–P5 — blocked by P1.** All stages ran in the same boot and stopped at the same
+refusal, so none of them answers its question:
 
-- the rig does reach the tested state `mWakefulness=Asleep` / `isKeyguardShowing=true`
-  with a PIN set (`locksettings set-pin`) on an earlier boot, so the test setup itself
-  is sound;
-- `MediaCodec` H.264 at 1280×720@30 with `COLOR_FormatSurface` configures and starts
-  at uid 2000 (the encoder object was created and its input surface made before the
-  camera open was refused), so the encoder half of P3 is reachable; the camera→encoder
-  feed count and keyframe interval are unverified;
-- `dumpsys sensor_privacy` on that image only reports the storage implementation
-  (`com.android.server.sensorprivacy.SensorPrivacyStateControllerImpl`); no camera
-  state was captured while a client was live.
+- P2: the phone was locked first (`input keyevent KEYCODE_SLEEP`,
+  `isKeyguardShowing=true` confirmed; the rig PIN was already set and was not
+  changed) and the open still failed with the P1 error, before any lock-specific
+  policy could be observed. No frames.
+- P3: no camera, so no frames. `MediaCodec` H.264 1280×720@30 with a surface input
+  was shown to configure and start at uid 2000 by the earlier spike, but the
+  camera→encoder frame count and keyframe interval are unverified.
+- P4: no capture ran, so no privacy indicator was observed (the status-bar shot was
+  skipped because the capture stage never became ready).
+- P5: there was no capture to evict. The emulator's camera app resolves and starts
+  (`com.android.camera2/com.android.camera.CameraActivity`), but the probe held
+  nothing for it to take.
 
-**Boot budget.** The brief allowed one emulator boot. Four were used, and no further
-boot was made after the supervisor's stop:
+| | Answer | Evidence |
+|---|---|---|
+| P1 | **no** at uid 2000: listing yes, open refused | `cams=1 ids=1`; `SecurityException: Given calling package android does not match caller's uid 2000` on `getCameraCharacteristics` and `openCamera`; `notAdopted=mPackageName`, `basePkg=android` |
+| P2 | blocked by P1 (locked phone, same refusal, no frames) | `stage=locked ok=false ... opened=false` with the same `SecurityException`, after `isKeyguardShowing=true` |
+| P3 | blocked by P1; encoder half known good from the earlier spike | `stage=feed ok=false ... opened=false` |
+| P4 | **unverified**: no capture, no indicator | no capture stage ever became ready |
+| P5 | **unverified**: no capture to evict; camera app resolvable and startable | `stage=evict ok=false ... opened=true configured=true error=SecurityException` (no readiness marker); `com.android.camera2/com.android.camera.CameraActivity` |
+| M1 | camera extension = SYSX system extension in `Contents/Library/SystemExtensions`, `CMIOExtensionMachServiceName`, app's `system-extension.install` entitlement + App Group, activation + System Settings approval, app in `/Applications` | SDK headers, Apple's camera-extension article, WWDC22 10022 |
+| M2 | **refused**: ad-hoc extension cannot activate; `OSSystemExtensionErrorDomain` code 2 "Missing entitlement com.apple.developer.system-extension.install"; nothing installed, no camera | `macos/build/vm-e2e/camera/work/{activate.txt,sysextd.log,after-activate.png}` |
+| M3 | window fallback viable; DAL dead since 14.1 (Recovery-only override, not used); Developer ID unlocks the entitlement | headers + Apple docs; host has no DAL plug-in directory |
+
+**Earlier spike (four boots, budget was one).** The first probe attempt burned four
+boots of the old budget and is kept here because the failures were real:
 
 1. context creation failed twice over: `ActivityThread` needs `Looper.prepareMainLooper()`
    on the bare `app_process` main thread, and the probe cast `systemMain`'s
@@ -101,19 +115,9 @@ boot was made after the supervisor's stop:
 4. the hang was fixed; the open was still refused for the same package reason, then the
    emulator process went offline (qemu died) before P2-P5.
 
-The overrun is recorded rather than hidden. It is why P1 is only partial and P2-P5
-have no answer.
-
-| | Answer | Evidence |
-|---|---|---|
-| P1 | listing yes at uid 2000; open **unverified** (probe context bug) | `cameraIds=2 [1,10]`; `SecurityException: Given calling package android does not match caller's uid 2000` |
-| P2 | **unverified** | emulator died before the locked-screen stage |
-| P3 | encoder reachable; feed **unverified** | `encoder: started, output surface created`; open refused before frames |
-| P4 | **unverified** | screencap black (display already dead) |
-| P5 | **unverified** | never reached |
-| M1 | camera extension = SYSX system extension in `Contents/Library/SystemExtensions`, `CMIOExtensionMachServiceName`, app's `system-extension.install` entitlement + App Group, activation + System Settings approval, app in `/Applications` | SDK headers, Apple's camera-extension article, WWDC22 10022 |
-| M2 | **refused**: ad-hoc extension cannot activate; `OSSystemExtensionErrorDomain` code 2 "Missing entitlement com.apple.developer.system-extension.install"; nothing installed, no camera | `macos/build/vm-e2e/camera/work/{activate.txt,sysextd.log,after-activate.png}` |
-| M3 | window fallback viable; DAL dead since 14.1 (Recovery-only override, not used); Developer ID unlocks the entitlement | headers + Apple docs; host has no DAL plug-in directory |
+The P1 answer above is the first boot after the probe was rebuilt with independent
+stages, a 60 s watchdog and no leaked threads; it finished all five stages (four
+answered "blocked", none hung) and the emulator was killed by the script.
 
 ### Mac — VM session (M2)
 
@@ -284,39 +288,40 @@ signed-out workaround. Until the signing decision is made:
 
 ## Phone-side design
 
-The shape follows the existing shell service: one owner, one camera, no protocol
-change beyond a new request pair (to be specified when C1 starts). It is
-**provisional**: P1-P5 were not verified, so each bullet names what would change
-the decision.
+Decided after C0 (2026-10-20). The shell service cannot open a camera: the platform
+refuses every Camera2 call whose caller package is not one uid 2000 owns, and the
+`app_process` system context's package is `android` (uid 1000) in a field this
+process cannot rewrite. So:
 
-- **Who opens the camera.** The `app_process` shell service (uid 2000), the same
-  process as the Shizuku user service and the watchdog, with a `com.android.shell`
-  `CameraManager` (P1: listing already works; opening is the open question). If a
-  foreground service turns out to be required for background capture, it moves into
-  the app process (uid 10xxx) and needs the `CAMERA` permission granted to
-  `dev.pocketdeck` plus a foreground-service type — a product decision, not a
-  protocol one. One capture at a time: a second `cam.start` answers "busy".
-- **Locked phone.** Unknown until P2. The service should open the camera when a Mac
-  asks, keep the session while the Mac is watching, and treat `onDisconnected` /
-  `ERROR_CAMERA_DISABLED` as "pause": stop the encoder, tell the Mac, retry once
-  when the phone is interactive again. The window fallback must show the same state
-  ("phone is locked") instead of a black frame.
-- **What the person sees.** Unknown until P4: Android's camera privacy indicator
-  (green dot) is expected for any client, including the shell UID, and the app must
-  say so before the first use. If the indicator cannot be relied on, the design
-  needs an explicit on-phone confirmation for the first capture.
-- **Eviction.** Unknown until P5: the camera service refuses or evicts by client
-  priority. The phone side must surface the exact error to the Mac (in use / disabled
-  / evicted) so the window says what happened instead of freezing. A person opening
-  their own camera app should always win; PocketDeck must never fight for the
-  device.
+- **Who opens the camera: the app process (uid 10xxx), not the shell service.**
+  Capture runs in a foreground service of type `camera` in `dev.pocketdeck`, which
+  holds `android.permission.CAMERA` (manifest addition; the person grants it on
+  first use and the rig grants it with `pm grant`). The foreground service is what
+  keeps a session alive while the phone is locked or another app is in front. The
+  encoded access units cross to the shell service over the existing one-way
+  `IDeckCallback` bridge, which enqueues them into the session's send queue as
+  `VIDEO_FRAME`; the wire protocol does not change. One capture at a time: a second
+  `cam.start` answers `busy`.
+- **Locked phone.** Not answered by C0 (blocked). The chosen shape is an
+  app-process, foreground-service client, which Android allows to capture with the
+  keyguard up; the service still treats `ERROR_CAMERA_DISABLED` and
+  `onDisconnected` as a pause, stops the encoder, reports `locked`/`disabled`, and
+  retries exactly once when the phone becomes interactive. The Mac window must show
+  that state instead of a black frame.
+- **What the person sees.** Still unverified (P4). The green camera dot is per
+  client, so an app-process client gets it; the app must say so before the first
+  use. If a later probe shows the indicator is not reliable for a background
+  service, the fallback is an explicit on-phone confirmation for the first capture.
+- **Eviction.** Still unverified (P5). A person's own camera app always wins: the
+  service reports `evicted` with the exact callback/error, stops the encoder and
+  never retries in a loop.
 
 ## Slices
 
 | | Slice | What | Size | Gate |
 |---|---|---|---|---|
-| C0 | Finish the phone probe | fix the `CameraManager` context package, one emulator boot, answer P1-P5 (open at uid 2000, locked screen, encoder feed, indicator, eviction) | S | none |
-| C1 | Phone capture service | Camera2 open at the shell UID → MediaCodec H.264 1280×720@30 (the `WindowStream` encoder settings), start/stop, busy/disabled/evicted errors, one stream | M | C0 |
+| C0 | Finish the phone probe | done 2026-10-20: staged probe, one boot. Shell UID lists the camera and cannot open it (package/uid refusal); P2–P5 are blocked by P1 | S | none |
+| C1 | Phone capture service | Camera2 in the **app process** (foreground service, `CAMERA` permission) → MediaCodec H.264 1280×720@30 (the `WindowStream` encoder settings) → `VIDEO_FRAME` to the shell session, start/stop, busy/disabled/evicted errors, one stream | M | C0 (answered no for the shell UID) |
 | C2 | "Phone camera" window | the existing H.264 decode path in a normal Mac window, a menu item and start/stop; no extension, ships with today's ad-hoc signing | S-M | C1 |
 | C3 | CMIO camera extension | provider/device/stream, decode H.264 into `CVPixelBuffer`, App Group socket between app and extension, stream on first client and stop when none; replaces the solid-colour source | M-L | C1; **Developer ID** |
 | C4 | Signing and install | System-Extension App ID, Developer ID profiles for app and extension, notarization, `/Applications` install, approval deep-link, uninstall/upgrade | M | signing decision |
