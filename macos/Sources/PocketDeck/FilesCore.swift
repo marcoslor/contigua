@@ -330,19 +330,34 @@ enum FilesMap {
     /// the in-memory map (design §3 "Identifiers").
     static func identifier(path: String, ino: Int) -> String {
         if path.isEmpty { return rootIdentifier }
-        if ino > 0 { return "ino:\(ino):\(path)" }
-        return "path:\(path)"
+        let encoded = encodedPath(path)
+        if ino > 0 { return "ino:\(ino):\(encoded)" }
+        return "path:\(encoded)"
+    }
+
+    /// The path part of an identifier stays one opaque token: "/" would read as
+    /// a subpath to anything that treats an identifier as one.
+    static func encodedPath(_ path: String) -> String {
+        path.replacingOccurrences(of: "%", with: "%25")
+            .replacingOccurrences(of: "/", with: "%2F")
+    }
+
+    static func decodedPath(_ text: String) -> String {
+        text.replacingOccurrences(of: "%2F", with: "/")
+            .replacingOccurrences(of: "%25", with: "%")
     }
 
     /// The relative path an identifier carries, or nil when it is not one of
     /// ours (a stale id from another provider is not worth guessing about).
     static func path(fromIdentifier identifier: String) -> String? {
         if identifier == rootIdentifier { return "" }
-        if identifier.hasPrefix("path:") { return String(identifier.dropFirst("path:".count)) }
+        if identifier.hasPrefix("path:") {
+            return decodedPath(String(identifier.dropFirst("path:".count)))
+        }
         guard identifier.hasPrefix("ino:") else { return nil }
         let rest = identifier.dropFirst("ino:".count)
         guard let colon = rest.firstIndex(of: ":") else { return nil }
-        return String(rest[rest.index(after: colon)...])
+        return decodedPath(String(rest[rest.index(after: colon)...]))
     }
 
     static func contentTypeIdentifier(name: String, isDirectory: Bool) -> String {
