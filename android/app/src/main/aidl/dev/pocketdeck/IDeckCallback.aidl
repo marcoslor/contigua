@@ -37,4 +37,14 @@ oneway interface IDeckCallback {
      * is answered with a null intent.
      */
     void onNotifyOpen(String id, int displayId);
+
+    /**
+     * A Mac pressed the forwarded notification's advertised action `index`
+     * (`notify.action`). The listener fills its RemoteInput with `text` when it
+     * is a reply action and sends the PendingIntent itself; nothing is answered.
+     */
+    void onNotifyAction(String id, int index, String text);
+
+    /** A Mac cleared the forwarded notification `id` (`notify.dismiss`). */
+    void onNotifyDismiss(String id);
 }

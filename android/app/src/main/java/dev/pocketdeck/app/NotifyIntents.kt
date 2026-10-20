@@ -1,19 +1,43 @@
 package dev.pocketdeck.app
 
 import android.app.PendingIntent
+import android.app.RemoteInput
 
 /**
- * The listener's forwarded ids and their notification actions (docs/design/
- * notify.md). The Mac may only name an id the phone itself issued; it never
- * sends an intent, a package or a component. The map is bounded so a long
- * session cannot grow it without limit.
+ * One advertised action of a forwarded notification: the index in the phone's
+ * own `Notification.actions`, its PendingIntent and, for a reply action, the
+ * free-form RemoteInput that receives the Mac's text.
+ */
+class NotifyAction(
+    val index: Int,
+    val intent: PendingIntent,
+    val remoteInput: RemoteInput?,
+)
+
+/** What the listener keeps for one forwarded id (docs/design/notify.md). */
+class NotifyRecord(
+    /** The system key `cancelNotification` takes. */
+    val key: String,
+    val contentIntent: PendingIntent?,
+    val actions: List<NotifyAction>,
+    val ongoing: Boolean,
+    val noClear: Boolean,
+) {
+    fun action(index: Int): NotifyAction? = actions.firstOrNull { it.index == index }
+}
+
+/**
+ * The listener's forwarded ids and what they stand for (docs/design/notify.md).
+ * The Mac may only name an id the phone itself issued; it never sends an
+ * intent, a package or a component. The map is bounded so a long session cannot
+ * grow it without limit.
  */
 object NotifyIntents {
-    private val map = BoundedIdMap<PendingIntent>(MAX_ENTRIES)
+    private val map = BoundedIdMap<NotifyRecord>(MAX_ENTRIES)
 
-    fun put(id: String, intent: PendingIntent) = map.put(id, intent)
+    fun put(id: String, record: NotifyRecord) = map.put(id, record)
 
-    fun get(id: String): PendingIntent? = map.get(id)
+    fun get(id: String): NotifyRecord? = map.get(id)
 
     fun remove(id: String) = map.remove(id)
 

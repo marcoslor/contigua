@@ -150,6 +150,8 @@ class DeckService(private val appContext: Context?) :
                 notifyForward = { forward -> sendToApp { it.onNotifySession(forward) } },
                 mediaCommand = { action -> sendToApp { it.onMediaCommand(action) } },
                 notifyOpen = { id, displayId -> sendToApp { it.onNotifyOpen(id, displayId) } },
+                notifyAction = { id, index, text -> sendToApp { it.onNotifyAction(id, index, text) } },
+                notifyDismiss = { id -> sendToApp { it.onNotifyDismiss(id) } },
                 // phone.ring: the app process shows the alarm over the lock
                 // screen (the shell service has no UI and no audio device).
                 ringer = object : Ringer {
