@@ -27,6 +27,9 @@ import sys
 import time
 
 CHUNK_KIND = ("json", "data")
+# The two container identifiers the system owns (FilesCore.swift).
+WORKING_SET = ".workingSet"
+TRASH = ".trashContainer"
 WRITE_CHUNK = 256 * 1024
 # The bridge wire version (FilesCore.swift): 3 adds the watch wire.
 BRIDGE_VERSION = 3
@@ -367,7 +370,7 @@ def write_file(path, data):
         os.fsync(handle.fileno())
 
 
-def phase_watch(bridge, root):
+def phase_watch(bridge, root, fake_err):
     """Phone-side changes reach the Mac: the open folder is watched, moves in
     it arrive as a signal within 3 s plus a delta (create, edit, rename by ino,
     delete), an unwatched folder says nothing, and closing the folder stops it.
@@ -459,24 +462,135 @@ def phase_watch(bridge, root):
     report(create_ok(reply, len(data)) and seen <= 1,
            "WATCH the Mac's own create signals at most once (%d)" % seen)
 
+    # The working set: the same moves, from one domain-wide anchor, and every
+    # update carries the item's real parent (design "S5 round 3").
+    ws = sync_anchor(bridge, WORKING_SET)
+    report(ws is not None, "WATCH the working set has an anchor")
+    if ws is None:
+        return
+    write_file(os.path.join(root, "A", "three.txt"), b"three\n")
+    wait_signal(bridge, 3.0)
+    reply = await_change(bridge, WORKING_SET, ws, lambda items, deleted: any(
+        entry.get("name") == "three.txt" and entry.get("parent") == a for entry in items))
+    items = reply.get("items") or [] if reply.get("t") == "changes" else []
+    match = [entry for entry in items if entry.get("name") == "three.txt"]
+    report(reply.get("t") == "changes" and reply.get("expired") is False
+           and len(match) == 1 and match[0].get("parent") == a,
+           "WATCH the working set carries a create with its real parent (%d items)"
+           % len(items))
+    ws_anchor = reply.get("anchor") or ws
+    three = match[0] if match else None
+
+    if three:
+        os.rename(os.path.join(root, "A", "three.txt"),
+                  os.path.join(root, "A", "three-renamed.txt"))
+        wait_signal(bridge, 3.0)
+        reply = await_change(bridge, WORKING_SET, ws_anchor, lambda items, deleted: any(
+            entry.get("id") == three["id"] and entry.get("name") == "three-renamed.txt"
+            for entry in items))
+        items = reply.get("items") or [] if reply.get("t") == "changes" else []
+        match = [entry for entry in items if entry.get("id") == three["id"]]
+        report(reply.get("t") == "changes" and len(match) == 1
+               and match[0].get("name") == "three-renamed.txt"
+               and match[0].get("parent") == a,
+               "WATCH the working set's rename is an update of the same id")
+        ws_anchor = reply.get("anchor") or ws_anchor
+
+        os.unlink(os.path.join(root, "A", "three-renamed.txt"))
+        wait_signal(bridge, 3.0)
+        reply = await_change(bridge, WORKING_SET, ws_anchor,
+                             lambda items, deleted: three["id"] in deleted)
+        report(reply.get("t") == "changes" and three["id"] in (reply.get("deleted") or []),
+               "WATCH the working set reports the delete as the id that is gone")
+        ws_anchor = reply.get("anchor") or ws_anchor
+
+    # The two system containers never become phone folders: no listing, no
+    # stat, no fs.watch. The fake phone's watch count must not move either
+    # (the check greps its log).
+    before_ws = watch_counts(fake_err)
+    listed = bridge.list_item(WORKING_SET)
+    watched = watch_folders(bridge, [WORKING_SET], True)
+    trash = watch_folders(bridge, [TRASH], True)
+    after_ws = watch_counts(fake_err)
+    report(listed.get("t") == "error" and listed.get("code") == "fs_not_found"
+           and watched.get("t") == "error" and watched.get("code") == "fs_not_found"
+           and trash.get("t") == "error" and trash.get("code") == "fs_not_found"
+           and before_ws == after_ws,
+           "WATCH .workingSet and .trashContainer never reach the phone "
+           "(phone watch counts unchanged)")
+
+    # Round 3 keeps a folder for ten minutes after the last touch, so closing
+    # the system's enumerator only ends the pushes; the phone keeps watching
+    # (the TTL step proves the watch goes when the window ends).
+    closed = watch_counts(fake_err)
     reply = watch_folders(bridge, [a], False)
-    report(reply.get("t") == "ok", "WATCH closing the folder unwatches it")
     drain_signals(bridge, 1.0)
     write_file(os.path.join(root, "A", "after.txt"), b"after\n")
-    report(wait_signal(bridge, 1.5) is None,
-           "WATCH a change after the folder closed sends nothing")
+    remained = watch_counts(fake_err)
+    report(reply.get("t") == "ok" and remained["on"] == closed["on"]
+           and remained["off_lines"] == closed["off_lines"],
+           "WATCH closing the folder leaves it watched for its ten minutes")
 
 
-def phase_hold(bridge, root):
-    """Watches the folder and stays; the check kills this process to prove the
-    app drops the watch when its client goes away."""
+def phase_watchset(bridge, root, fake_err, ttl, folders):
+    """The watch set (design "S5 round 3"): 65 folders keep at most 64 (the
+    least recently touched drops), and a folder untouched for the TTL is
+    unwatched on the phone."""
     hello = bridge.hello()
-    a = item_id(bridge, "A")
+    report(hello.get("connected") is True, "WATCHSET hello: connected")
+    ids = [item_id(bridge, name) for name in folders]
+    ok = [ident for ident in ids if ident]
+    report(len(ok) == len(folders),
+           "WATCHSET the fake tree has %d extra folders (%d)" % (len(folders), len(ok)))
+    if len(ok) != len(folders):
+        return
+    before = watch_counts(fake_err)
+    for ident in ok:
+        reply = watch_folders(bridge, [ident], True)
+        if reply.get("t") != "ok":
+            report(False, "WATCHSET a folder was refused (%s)" % reply.get("code"))
+            return
+    after = watch_counts(fake_err)
+    # 64 folders at most: the 65th touch dropped the oldest (one watch off).
+    report(after["on"] == 64 and after["off_lines"] > before["off_lines"],
+           "WATCHSET 65 touched folders keep 64 watched, the oldest dropped "
+           "(on %d, off lines +%d)" % (after["on"], after["off_lines"] - before["off_lines"]))
+
+    # The TTL: A is touched now (it was closed earlier, still inside its
+    # window), so wait past it and expect the phone to hear one more watch off.
+    a = item_id(bridge, folders[0])
     reply = watch_folders(bridge, [a], True)
-    report(hello.get("connected") is True and reply.get("t") == "ok",
-           "WATCH holding the folder open")
-    while True:
-        time.sleep(1)
+    if reply.get("t") != "ok":
+        report(False, "WATCHSET the TTL folder was refused (%s)" % reply.get("code"))
+        return
+    offs = watch_counts(fake_err)["off_lines"]
+    deadline = time.time() + ttl + 15.0
+    while time.time() < deadline:
+        if watch_counts(fake_err)["off_lines"] > offs:
+            break
+        time.sleep(0.25)
+    report(watch_counts(fake_err)["off_lines"] > offs,
+           "WATCHSET a folder untouched for the TTL is unwatched on the phone "
+           "(%ds)" % ttl)
+
+
+def watch_counts(path):
+    """The fake phone's watch lines from its own log: the last live count and
+    how many on/off requests it saw at all."""
+    on, off, on_lines, off_lines = 0, 0, 0, 0
+    try:
+        with open(path, errors="replace") as handle:
+            for line in handle:
+                line = line.strip()
+                if line.startswith("fakephone: watch on "):
+                    on = int(line.rsplit(" ", 1)[1])
+                    on_lines += 1
+                elif line.startswith("fakephone: watch off "):
+                    off = int(line.rsplit(" ", 1)[1])
+                    off_lines += 1
+    except OSError:
+        pass
+    return {"on": on, "off": off, "on_lines": on_lines, "off_lines": off_lines}
 
 
 def item_id(bridge, path):
@@ -967,14 +1081,17 @@ def main():
     parser.add_argument("--work", required=True)
     parser.add_argument("--fake-err", default=None)
     parser.add_argument("--fake-pid", type=int, default=None)
-    parser.add_argument("--phase", choices=["online", "offline", "write", "kill", "watch", "hold"],
+    parser.add_argument("--phase",
+                        choices=["online", "offline", "write", "kill", "watch", "watchset"],
                         required=True)
+    parser.add_argument("--ttl", type=float, default=20.0)
+    parser.add_argument("--watch-folders", default="")
     args = parser.parse_args()
 
     if args.phase == "offline":
         check_offline(args.socket)
         return 0
-    if args.phase in ("watch", "hold"):
+    if args.phase in ("watch", "watchset"):
         try:
             bridge = Bridge(args.socket, timeout=60.0)
         except OSError as error:
@@ -982,9 +1099,12 @@ def main():
             return 1
         try:
             if args.phase == "watch":
-                phase_watch(bridge, args.root)
+                phase_watch(bridge, args.root, args.fake_err or
+                            os.path.join(args.work, "fake.err"))
             else:
-                phase_hold(bridge, args.root)
+                folders = [name for name in args.watch_folders.split(",") if name]
+                phase_watchset(bridge, args.root, args.fake_err or
+                               os.path.join(args.work, "fake.err"), args.ttl, folders)
         except (BridgeError, socket.timeout, OSError) as error:
             report(False, "WATCH the bridge stopped answering (%s)" % error)
             return 1
