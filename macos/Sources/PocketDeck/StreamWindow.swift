@@ -101,6 +101,10 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
             guard let window = self?.window else { return false }
             return window.isKeyWindow && window.attachedSheet == nil
         }
+        // Live Text mode receives nothing: pointer, keys, scroll, hover and
+        // trackpad all stop at the mapper (Esc leaves the mode instead).
+        mapper.inputSuspended = { [weak self] in self?.liveText.isActive ?? false }
+        mapper.onLiveTextEscape = { [weak self] in self?.exitLiveText(.escape) }
         mapper.send = { [weak self] command in self?.handle(command) }
         mapper.touchPointsChanged = { [weak self] points in self?.videoView.showTouchPoints(points) }
         mapper.hoverEnabled = { [weak self] in self?.manager.hoverEnabled ?? false }
@@ -125,6 +129,9 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         }
         videoView.liveText.onStateChange = { [weak self] state, reason in
             self?.liveTextChanged(state, reason)
+        }
+        videoView.liveText.onSubjectCopied = { [weak self] in
+            self?.chrome.flashSubjectCopied()
         }
     }
 
@@ -159,6 +166,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         style = next
         if let key = styleKey { manager.styleStore.set(style, forKey: key) }
         StreamMenuState.shared.style = style
+        ImmersiveMenuInstaller.refresh(style: style)
         chrome.setStyle(style)
         configureDwell()
         writeChromeState()
@@ -187,22 +195,35 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     private var lastPillShown = false
 
     /// Only an immersive non-fullscreen window dwells; the feed stops
-    /// otherwise and any shown pill is taken away.
+    /// otherwise and any shown pill is taken away. With Always Visible there
+    /// is no dwell at all: the lights and the capsules stay up.
     private func configureDwell() {
-        let active = style == .immersive && !(window?.styleMask.contains(.fullScreen) ?? false)
-        if active {
+        let immersive = style == .immersive && !(window?.styleMask.contains(.fullScreen) ?? false)
+        let always = ImmersiveChrome.alwaysVisible(manager.revealDelay)
+        chromeAlwaysVisible = immersive && always
+        if immersive && ImmersiveChrome.usesDwell(alwaysVisible: always) {
             dwell = DwellPill(zone: CGRect(origin: .zero, size: DwellChrome.hotZone), pill: chrome.pillStreamRect,
                               dwell: manager.revealDelay.seconds)
             startDwellFeed()
+            chrome.setPill(false)
+            lastPillShown = false
+        } else if chromeAlwaysVisible {
+            stopDwellFeed()
+            dwell = DwellPill(dwell: manager.revealDelay.seconds)
+            lastPillShown = true
+            chrome.setPill(true)
         } else {
             stopDwellFeed()
             dwell = DwellPill(dwell: manager.revealDelay.seconds)
+            chrome.setPill(false)
+            lastPillShown = false
         }
-        chrome.setPill(false)
-        lastPillShown = false
         chrome.placeTrafficLights()
         writeChromeState()
     }
+
+    /// The chrome stays up by the Always Visible choice (not by a dwell).
+    private var chromeAlwaysVisible = false
 
     func startDwellFeed() {
         guard monitors.isEmpty else { return }
@@ -227,10 +248,18 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         pointerMoved(toWindowPoint: window.convertPoint(fromScreen: point))
     }
 
-    /// Settings → General "Reveal controls after" changed: the next rest uses
-    /// the new delay, and one already running is re-timed from its start (a
-    /// shorter delay can show the pill at once).
+    /// Settings → General "Reveal controls after" / View ▸ Immersive changed:
+    /// a switch into or out of Always Visible reconfigures the chrome; another
+    /// delay re-times a rest already running (a shorter one can show the pill
+    /// at once).
     func setRevealDelay(_ seconds: TimeInterval) {
+        let always = ImmersiveChrome.alwaysVisible(manager.revealDelay)
+        // Into or out of Always Visible: whether a dwell exists at all
+        // changed, so reconfigure. Another delay only re-times the rest.
+        if always || chromeAlwaysVisible {
+            configureDwell()
+            return
+        }
         guard dwell.dwell != seconds else { return }
         dwell.setDwell(seconds)
         refreshDwell()
@@ -430,6 +459,8 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         state.densityOverride = densityOverride
         state.settingsDensity = manager.defaultDensity
         state.liveText = liveText.isActive
+        state.revealDelay = manager.revealDelay
+        ImmersiveMenuInstaller.refresh(style: style)
     }
 
     func windowDidResignKey(_ notification: Notification) {
@@ -500,7 +531,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     /// The pointer moved to a point in the window (also the scripted driver's
     /// hover): the immersive dwell's feed, and the phone's mouse hover.
     func pointerMoved(toWindowPoint point: CGPoint) {
-        if style == .immersive {
+        if style == .immersive && !chromeAlwaysVisible {
             // DwellChrome's zone is in stream coordinates, top-left origin: in
             // immersive the window is exactly the stream.
             let height = chrome.bounds.height
@@ -768,7 +799,9 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     // MARK: Navigation
 
     /// Menu action (target nil, responder chain). Enabled in every stream window.
+    /// Live Text freezes it: the phone behind the frozen frame is paused.
     @objc func navigateBack(_ sender: Any?) {
+        guard HeaderActionPolicy.allowsPhoneShortcut(liveTextActive: liveText.isActive) else { return }
         session.nav(stream: stream, action: "back")
     }
 
@@ -777,7 +810,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     /// (DwellPill.clickReachedApp; the touch itself goes on as normal input,
     /// with no added delay). Doubles as the scripted check's path.
     func touchInHotZone(_ event: TouchEvent) {
-        guard style == .immersive, let window, window.isVisible,
+        guard !chromeAlwaysVisible, style == .immersive, let window, window.isVisible,
               window.styleMask.contains(.fullScreen) == false, event.action == .down else { return }
         let bounds = videoBounds()
         guard bounds.width > 0, bounds.height > 0 else { return }
