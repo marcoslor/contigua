@@ -7219,7 +7219,6 @@ PY
     printf '%s\n' \
         "enter 1" \
         "wait-analysis POCKETDECK" \
-        "forceclick 0.5 0.5" \
         "nav back" \
         "waitfile $WORK/lt-copy-go 120" \
         "copy-image $WORK/livetext.png" \
@@ -7265,21 +7264,6 @@ PY
             screencapture -x -o -l"$shotwin" "$WORK/livetext-dimmed.png" \
                 && say "screenshot: $WORK/livetext-dimmed.png"
         fi
-    fi
-
-    # Force click: the host's text frame has no lifted subject, so the click
-    # must leave the system's path alone and copy nothing. (The subject branch
-    # is proved in the VM; a real trackpad is not available here.)
-    if wait_until 20 grep -q '"op":"forceclick"' "$WORK/app.log"; then
-        local force
-        force="$(grep '"op":"forceclick"' "$WORK/app.log" | tail -1)"
-        if grep -q '"subject":false' <<< "$force" && grep -q '"copied":false' <<< "$force"; then
-            ok "LT force click on text/empty area copied nothing (no subject: the system keeps Look Up)"
-        else
-            bad "LT force click wrote something on the host's text frame ($force)"
-        fi
-    else
-        bad "LT no forceclick result"
     fi
 
     # The mode freezes the bar: a Back press (the bar's button and ⌘[ run this

@@ -81,15 +81,9 @@ frozen frame either.
   no bar) says the window is frozen and input is paused.
 - ⌘C while the overlay has no text selection copies the frozen frame as PNG +
   TIFF to the general pasteboard; with a selection VisionKit's own copy runs.
-- **Force click copies a subject.** In the mode, a pressure stage-2 click
-  (Force Touch trackpad) on a point covered by a lifted subject copies that
-  subject's image to the pasteboard as PNG + TIFF — the same image the
-  right-click *Copy Subject* menu copies — plays the standard haptic and shows
-  the status pill as "Subject copied" for about 1.5 s. On text or empty area the
-  force click is left to the system (Look Up); normal clicks, drags and the
-  right-click menu are untouched. Nothing looks for subjects outside the mode.
-  The gated debug route `livetext forceclick <x> <y>` drives the same code path
-  and logs `livetext: force-click subject=<0|1> copied=<0|1>` (counts only).
+- *Copy Subject* stays in the right-click menu (VisionKit's own). There is no
+  force-click route: VisionKit exposes no supported stage-2 pressure API, and
+  the old monitor did not fire on real trackpads.
 - The bar button drags the frozen frame out as a PNG file (written to a
   temporary directory when the drag starts).
 
