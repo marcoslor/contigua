@@ -71,8 +71,13 @@ say "building build/e2e/PocketDeck.app on the host"
 # The File Provider extension is opt-in: only the bundle for a files-domain
 # run carries it (a host run must have nothing to register).
 files_flag=()
-for c in "${CHECKS[@]}"; do [ "$c" = files-domain ] && files_flag=(--with-files); done
-if ! "$MACOS/scripts/bundle.sh" "$MACOS/build/e2e/PocketDeck.app" --variant e2e ${files_flag[@]+"${files_flag[@]}"} > "$OUT/host-build.log" 2>&1; then
+controls_flag=()
+for c in "${CHECKS[@]}"; do
+    [ "$c" = files-domain ] && files_flag=(--with-files)
+    [ "$c" = controls ] && controls_flag=(--with-controls)
+done
+if ! "$MACOS/scripts/bundle.sh" "$MACOS/build/e2e/PocketDeck.app" --variant e2e \
+        ${files_flag[@]+"${files_flag[@]}"} ${controls_flag[@]+"${controls_flag[@]}"} > "$OUT/host-build.log" 2>&1; then
     say "host build failed; see $OUT/host-build.log"; tail -5 "$OUT/host-build.log"; exit 3
 fi
 

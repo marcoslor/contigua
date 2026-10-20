@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Builds PocketDeck.app from the SwiftPM package and ad-hoc codesigns it.
 #
-#   ./scripts/bundle.sh [APP] [--variant NAME] [--with-files]
+#   ./scripts/bundle.sh [APP] [--variant NAME] [--with-files] [--with-controls]
 #
 # APP defaults to build/PocketDeck.app; only that path is ever replaced.
 # The app carries the "Open on Phone" Share extension (Contents/PlugIns/Share.appex)
@@ -9,6 +9,9 @@
 # the "Phone files in Finder" File Provider extension (Contents/PlugIns/Files.appex)
 # and the App Group the app shares with it; only the vm-e2e files-domain bundle
 # uses it.
+# --with-controls adds the Control Center extension (Contents/PlugIns/Controls.appex)
+# and its App Group; only the VM controls bundle uses it, because a host run
+# must have nothing to register.
 # Only `--variant release` (install.sh) gets the real extension id; every other
 # bundle (default `dev`, check-e2e's `e2e`) gets `dev.pocketdeck.mac.share-NAME` and
 # a "(NAME)" title, so a test copy never competes with the installed app's extension.
@@ -18,20 +21,24 @@ cd "$(dirname "$0")/.."
 APP="build/PocketDeck.app"
 VARIANT="dev"
 WITH_FILES=0
+WITH_CONTROLS=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --variant) VARIANT="${2:?--variant needs a name}"; shift 2 ;;
         --with-files) WITH_FILES=1; shift ;;
+        --with-controls) WITH_CONTROLS=1; shift ;;
         *) APP="$1"; shift ;;
     esac
 done
 case "$VARIANT" in
     release) SHARE_ID="dev.pocketdeck.mac.share"; SHARE_TITLE="Open on Phone"; FILES_ID="dev.pocketdeck.mac.files"; FILES_TITLE="PocketDeck Files"
-             FILES_GROUP="group.dev.pocketdeck.mac.files" ;;
+             FILES_GROUP="group.dev.pocketdeck.mac.files"
+             CONTROLS_ID="dev.pocketdeck.mac.controls"; CONTROLS_TITLE="PocketDeck Controls" ;;
     *[!a-z0-9]*|"") echo "bundle.sh: --variant must be a-z0-9" >&2; exit 2 ;;
     *) SHARE_ID="dev.pocketdeck.mac.share-$VARIANT"; SHARE_TITLE="Open on Phone ($VARIANT)"
        FILES_ID="dev.pocketdeck.mac.files-$VARIANT"; FILES_TITLE="PocketDeck Files ($VARIANT)"
-       FILES_GROUP="group.dev.pocketdeck.mac.files-$VARIANT" ;;
+       FILES_GROUP="group.dev.pocketdeck.mac.files-$VARIANT"
+       CONTROLS_ID="dev.pocketdeck.mac.controls-$VARIANT"; CONTROLS_TITLE="PocketDeck Controls ($VARIANT)" ;;
 esac
 
 # The e2e/debug launch hooks are compiled in only for non-release bundles:
@@ -346,6 +353,53 @@ if [ "$WITH_FILES" = 1 ]; then
     codesign --force --sign - --entitlements "$FILES_ENTITLEMENTS" "$FILES_APPEX"
 fi
 
+# Control Center extension (docs/design/controls.md): the same swiftc shape as
+# Share. It is a widget extension, so it has its own @main (WidgetBundle) and is
+# compiled as a library entry point; ControlsCore.swift is shared with the app.
+# Opt-in (--with-controls) because a host e2e run must have no control extension
+# to register, and the brief forbids registering one on this Mac.
+if [ "$WITH_CONTROLS" = 1 ]; then
+    case "$APP" in /*) CONTROLS_APPEX="$APP/Contents/PlugIns/Controls.appex" ;; *) CONTROLS_APPEX="$PWD/$APP/Contents/PlugIns/Controls.appex" ;; esac
+    mkdir -p "$CONTROLS_APPEX/Contents/MacOS" "$CONTROLS_APPEX/Contents/Resources"
+    # Compile to objects first so the const-values files exist: the extension's
+    # control actions are App Intents, and the system learns them only from
+    # Resources/Metadata.appintents (the same processor the app uses).
+    CONTROLS_SRC=("$PWD/Extensions/Controls/Controls.swift" "$PWD/Sources/PocketDeck/ControlsCore.swift")
+    CONTROLS_OBJ="$(mktemp -d -t pocketdeck-controls)"
+    (
+        cd "$CONTROLS_OBJ"
+        swiftc -c -O -parse-as-library -application-extension -module-name Controls \
+            -target "$(uname -m)-apple-macos26.0" -swift-version 5 \
+            -emit-const-values -const-gather-protocols-list "$APPINTENTS_PROTOCOLS" \
+            ${CONTROLS_SRC[@]+"${CONTROLS_SRC[@]}"}
+        swiftc -O -o "$CONTROLS_APPEX/Contents/MacOS/Controls" *.o
+    )
+    if [ -x "$APPINTENTS_TOOL" ]; then
+        printf '%s\n' "${CONTROLS_SRC[@]}" > "$CONTROLS_OBJ/sources.txt"
+        find "$CONTROLS_OBJ" -maxdepth 1 -name "*.swiftconstvalues" > "$CONTROLS_OBJ/const.txt"
+        "$APPINTENTS_TOOL" \
+            --toolchain-dir "$APPINTENTS_TOOLCHAIN" \
+            --module-name Controls \
+            --sdk-root "$(xcrun --sdk macosx --show-sdk-path)" \
+            --xcode-version "$(xcodebuild -version | tail -1)" \
+            --platform-family macOS \
+            --deployment-target 26.0 \
+            --bundle-identifier "$CONTROLS_ID" \
+            --output "$CONTROLS_APPEX/Contents/Resources" \
+            --target-triple "$(uname -m)-apple-macos26.0" \
+            --binary-file "$CONTROLS_APPEX/Contents/MacOS/Controls" \
+            --source-file-list "$CONTROLS_OBJ/sources.txt" \
+            --swift-const-vals-list "$CONTROLS_OBJ/const.txt" \
+            --compile-time-extraction --deployment-aware-processing --no-app-shortcuts-localization
+    else
+        echo "bundle.sh: warning: no appintentsmetadataprocessor; the controls extension carries no action metadata" >&2
+    fi
+    rm -rf "$CONTROLS_OBJ"
+    sed -e "s/__CONTROLS_ID__/$CONTROLS_ID/" -e "s/__CONTROLS_TITLE__/$CONTROLS_TITLE/" \
+        Extensions/Controls/Info.plist > "$CONTROLS_APPEX/Contents/Info.plist"
+    codesign --force --sign - --entitlements Extensions/Controls/Controls.entitlements "$CONTROLS_APPEX"
+fi
+
 # Dock app executable (docs/design/dock.md): copied into each per-app shim bundle.
 swiftc -O -module-name PocketDeckShim -target "$(uname -m)-apple-macos26.0" -swift-version 5 \
     Shim/main.swift Sources/PocketDeck/DockMessages.swift -o "$APP/Contents/MacOS/PocketDeckShim"
@@ -358,7 +412,11 @@ swiftc -O -module-name PocketDeckMCP -target "$(uname -m)-apple-macos26.0" -swif
     Shim/mcp.swift -o "$APP/Contents/Helpers/pocketdeck-mcp"
 codesign --force --sign - "$APP/Contents/Helpers/pocketdeck-mcp"
 
-if [ "$WITH_FILES" = 1 ]; then
+if [ "$WITH_CONTROLS" = 1 ]; then
+    # The app carries the App Group the controls extension shares with it (an
+    # unsandboxed app may hold an app group, docs/design/files.md §1).
+    codesign --force --sign - --entitlements Extensions/Controls/PocketDeckControls.entitlements "$APP"
+elif [ "$WITH_FILES" = 1 ]; then
     # The app carries the App Group the Files extension shares with it (an
     # unsandboxed app may hold an app group, docs/design/files.md §1).
     codesign --force --sign - --entitlements "$APP_ENTITLEMENTS" "$APP"
