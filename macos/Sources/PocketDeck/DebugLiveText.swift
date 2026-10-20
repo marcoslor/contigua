@@ -10,13 +10,17 @@
 //   wait-analysis [TOKEN]        wait for VisionKit; contains is TOKEN's answer
 //   waitfile PATH [SECONDS]      wait for the harness's go-ahead
 //   copy-image OUT               write the frozen frame to OUT (absolute path)
+//   forceclick X Y               the stage-2 force click at normalized X Y
+//                                 (0...1, top-left origin)
+//   nav back|home|recents        the Navigate menu's action (what the bar's
+//                                 buttons and the shortcuts run)
 //   exit                         leave the mode
 //   resize STREAM W H            change the window's stream size (must leave)
 //   wait-idle [SECONDS]          wait for the mode to be idle again
 //
-// Results: {"op":"enter|analysis|copy|exit|resize|idle","state":...} plus
-// "hasText","textLen","contains" (analysis), "ok","bytes","w","h" (copy).
-// The last line is {"op":"done"}.
+// Results: {"op":"enter|analysis|copy|forceclick|exit|resize|idle","state":...}
+// plus "hasText","textLen","contains" (analysis), "ok","bytes","w","h" (copy),
+// "subject","copied" (forceclick). The last line is {"op":"done"}.
 
 import AppKit
 import CoreVideo
@@ -27,6 +31,8 @@ enum LiveTextScriptAction: Equatable {
     case waitAnalysis(token: String?)
     case waitFile(path: String, timeout: Double)
     case copyImage(String)
+    case forceClick(x: Double, y: Double)
+    case nav(String)
     case exit
     case resize(stream: UInt32, width: Double, height: Double)
     case waitIdle(timeout: Double)
@@ -78,10 +84,20 @@ enum LiveTextDebugScript {
                 throw LineError(message: "copy-image needs an absolute OUT path")
             }
             return .copyImage(words[1])
+        case "forceclick":
+            guard words.count == 3, let x = Double(words[1]), let y = Double(words[2]),
+                  (0...1).contains(x), (0...1).contains(y) else {
+                throw LineError(message: "forceclick needs X Y in 0...1")
+            }
+            return .forceClick(x: x, y: y)
+        case "nav":
+            guard words.count == 2, ["back", "home", "recents"].contains(words[1]) else {
+                throw LineError(message: "nav needs back, home or recents")
+            }
+            return .nav(words[1])
         case "exit":
             guard words.count == 1 else { throw LineError(message: "exit takes no arguments") }
-            return .exit
-        case "resize":
+            return .exit        case "resize":
             guard words.count == 4, let stream = UInt32(words[1]),
                   let width = Double(words[2]), let height = Double(words[3]),
                   width > 0, height > 0 else {
@@ -102,8 +118,7 @@ enum LiveTextDebugScript {
 /// Runs the script once, on the first stream whose video size arrives (there
 /// is no frame to freeze before that).
 @MainActor
-final class LiveTextDebugDriver {
-    private let actions: [LiveTextScriptAction]
+final class LiveTextDebugDriver {    private let actions: [LiveTextScriptAction]
     private let windows: WindowManager
     private var observer: NSObjectProtocol?
     /// The stream the last enter/resize named; wait-analysis and copy-image
@@ -126,9 +141,11 @@ final class LiveTextDebugDriver {
         ) { [weak self] _ in
             guard let self else { return }
             self.disarm()
-            // Outside the notification's main-queue block, so video frames and
-            // the mode's own analysis keep running between the script's waits.
-            RunLoop.main.perform { self.run() }
+            // A timer, not RunLoop.perform: while another debug script (the
+            // input burst) spins the run loop in a nested run(until:), only
+            // sources and timers fire there, perform blocks wait.
+            let timer = Timer(timeInterval: 0.05, repeats: false) { [weak self] _ in self?.run() }
+            RunLoop.main.add(timer, forMode: .common)
         }
     }
 
@@ -158,7 +175,9 @@ final class LiveTextDebugDriver {
             line["why"] = windows.controller(for: stream)?.liveText.lastFailure ?? "no window"
             emit(line)
         case .waitAnalysis(let token):
-            let deadline = Date(timeIntervalSinceNow: 20)
+            // VisionKit can take a while under load; the analysis finishes
+            // when it finishes.
+            let deadline = Date(timeIntervalSinceNow: 90)
             var controller = windows.controller(for: stream)
             while Date() < deadline {
                 controller = windows.controller(for: stream)
@@ -188,6 +207,39 @@ final class LiveTextDebugDriver {
                 line["h"] = CVPixelBufferGetHeight(frame)
             }
             line["state"] = controller?.liveText.state.rawValue ?? "none"
+            emit(line)
+        case .forceClick(let x, let y):
+            guard let controller = windows.controller(for: stream), controller.liveText.isActive else {
+                emit(["op": "forceclick", "subject": false, "copied": false,
+                      "state": windows.controller(for: stream)?.liveText.state.rawValue ?? "none"])
+                return
+            }
+            // The copy is async (VisionKit's image(for:)); pump the run loop
+            // until it answers so the script's next step sees the result.
+            let box = ForceClickResult()
+            let session = controller.liveText
+            Task { @MainActor in
+                box.value = await session.forceClickForDebug(at: CGPoint(x: x, y: y))
+            }
+            let deadline = Date(timeIntervalSinceNow: 15)
+            while box.value == nil && Date() < deadline { pump(0.05) }
+            emit(["op": "forceclick",
+                  "subject": box.value?.subject ?? false,
+                  "copied": box.value?.copied ?? false,
+                  "state": session.state.rawValue])
+        case .nav(let action):
+            guard let controller = windows.controller(for: stream) else {
+                emit(["op": "nav", "action": action, "ok": false, "state": "none"])
+                return
+            }
+            switch action {
+            case "back": controller.navigateBack(nil)
+            case "home": (controller as? PhoneWindowController)?.navigateHome(nil)
+            case "recents": (controller as? PhoneWindowController)?.navigateRecents(nil)
+            default: break
+            }
+            var line = reportLine("nav", controller: controller, ok: true)
+            line["action"] = action
             emit(line)
         case .exit:
             let controller = windows.controller(for: stream)
@@ -234,4 +286,11 @@ final class LiveTextDebugDriver {
               let text = String(data: data, encoding: .utf8) else { return }
         FileHandle.standardError.write(Data("livetext: \(text)\n".utf8))
     }
+}
+
+/// The force click's answer, written by the async task and read by the
+/// script's pump loop.
+@MainActor
+final class ForceClickResult {
+    var value: (subject: Bool, copied: Bool)?
 }

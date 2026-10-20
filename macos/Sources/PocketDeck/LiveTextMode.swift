@@ -31,8 +31,7 @@ enum LiveTextExitReason: String, Equatable {
     case captureFailed
 }
 
-enum LiveTextEvent: Equatable {
-    /// Enter the mode (the shortcut, the menu or the bar button).
+enum LiveTextEvent: Equatable {    /// Enter the mode (the shortcut, the menu or the bar button).
     case enter
     /// The displayed frame was copied into the freeze image.
     case frameCaptured
@@ -76,5 +75,21 @@ struct LiveTextMode: Equatable {
     @discardableResult
     mutating func exit(_ reason: LiveTextExitReason) -> Bool {
         handle(.exit(reason))
+    }
+}
+
+/// A Force Touch click's pressure went to stage 2: copy the subject under it,
+/// or leave the event to the system (Look Up). Pure: the view asks with the
+/// mode's state and the cached subject hit.
+enum ForceClickAction: Equatable {
+    case copy
+    case system
+}
+
+enum ForceClick {
+    static func action(active: Bool, subjectAtPoint: Bool) -> ForceClickAction {
+        // Nothing analyses or copies outside the mode.
+        guard active else { return .system }
+        return subjectAtPoint ? .copy : .system
     }
 }
