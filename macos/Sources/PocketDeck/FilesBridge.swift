@@ -765,6 +765,7 @@ final class SessionBridgeHost: FilesBridgeHost {
                 if on {
                     self.pathByItem[item] = path
                     self.itemsByPath[path, default: []].insert(item)
+                    self.baseline(item)
                 } else if let old = self.pathByItem.removeValue(forKey: item) {
                     self.itemsByPath[old]?.remove(item)
                     if self.itemsByPath[old]?.isEmpty == true { self.itemsByPath.removeValue(forKey: old) }
@@ -794,6 +795,19 @@ final class SessionBridgeHost: FilesBridgeHost {
     func filesChanged(paths: [String]) {
         for path in paths {
             for item in itemsByPath[path] ?? [] { refresh(item) }
+        }
+    }
+
+    /// A watched folder that was never listed has nothing to diff against, so
+    /// a phone-side change to it could never be reported. List it once, quietly:
+    /// this baseline is not a change and is not signalled.
+    private var baselining: Set<String> = []
+
+    private func baseline(_ item: String) {
+        guard snapshots[item] == nil, !baselining.contains(item) else { return }
+        baselining.insert(item)
+        listPages(item: item) { [weak self] _ in
+            self?.baselining.remove(item)
         }
     }
 

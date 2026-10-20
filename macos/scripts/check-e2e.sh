@@ -5098,10 +5098,17 @@ PY
     # Documents is open in Finder: a file made on the phone must appear in the
     # mount within 10 s, a rename must replace it, a delete must remove it, and
     # closing Finder must stop the phone's watch.
-    local watch_before watch_after
+    local watch_before watch_after watch_on_before
     watch_before="$(grep -c "watch off" "$WORK/fake.err" 2>/dev/null || true)"
+    watch_on_before="$(grep -c "watch on" "$WORK/fake.err" 2>/dev/null || true)"
     open -a Finder "$root/Documents" >/dev/null 2>&1 || true
-    sleep 3
+    # The change below has to happen *after* the phone started watching the
+    # folder: a file that predates the watch is in its baseline, not a change.
+    for _ in $(seq 1 40); do
+        [ "$(grep -c "watch on" "$WORK/fake.err" 2>/dev/null || true)" -gt "${watch_on_before:-0}" ] && break
+        sleep 0.25
+    done
+    sleep 1
     python3 - "$WORK/fsroot/Documents" <<'PY'
 import os, sys
 open(os.path.join(sys.argv[1], "phonechange.txt"), "wb").write(b"made on the phone\n")
