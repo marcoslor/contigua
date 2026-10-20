@@ -135,7 +135,8 @@ enum SessionEvent {
     case fsError(id: UInt32, code: String, message: String?)
     /// Notifications + media controls (docs/design/notify.md).
     case notifyState(on: Bool)
-    case notifyPosted(id: String, pkg: String, when: Date?, title: String?, text: String?)
+    case notifyPosted(id: String, pkg: String, when: Date?, title: String?, text: String?,
+                      actions: [NotifyActionInfo], ongoing: Bool)
     case notifyRemoved(id: String)
     case mediaState(MediaState)
 }
@@ -878,7 +879,9 @@ final class Session {
             let whenMs = message.double("when")
             emit(.notifyPosted(id: message.string("id") ?? "", pkg: message.string("pkg") ?? "",
                                when: whenMs.map { Date(timeIntervalSince1970: $0 / 1000) },
-                               title: message.string("title"), text: message.string("text")))
+                               title: message.string("title"), text: message.string("text"),
+                               actions: (message.array("actions") ?? []).compactMap { NotifyActionInfo(json: $0) },
+                               ongoing: message.bool("ongoing") ?? false))
         case "notify.remove":
             emit(.notifyRemoved(id: message.string("id") ?? ""))
         case "media.state":
@@ -1060,6 +1063,19 @@ final class Session {
     /// the window at its launcher activity (today's behaviour).
     func openNotification(id: String, target: NotifyOpenTarget, stream: UInt32? = nil) {
         sendJSON(NotifyOpenMessage.make(id: id, target: target, stream: stream))
+    }
+
+    /// `notify.action` (docs/design/notify.md): press one of the actions the
+    /// phone advertised for this id; `text` only rides along for a reply action.
+    func notifyAction(id: String, index: Int, text: String?) {
+        var message: [String: Any] = ["t": "notify.action", "id": id, "i": index]
+        if let text, !text.isEmpty { message["text"] = text }
+        sendJSON(message)
+    }
+
+    /// `notify.dismiss`: clear that forwarded notification on the phone.
+    func notifyDismiss(id: String) {
+        sendJSON(["t": "notify.dismiss", "id": id])
     }
 
     func mediaCommand(_ action: String) { sendJSON(["t": "media.command", "action": action]) }
