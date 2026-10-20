@@ -231,6 +231,81 @@ Samsung's Now Bar has no public API; One UI 8 shows Android 16 Live Updates
 there, so the same promoted notification appears in it with no Samsung-specific
 code.
 
+## Media part 2 design (v0.2 #9)
+
+Deeper media control: the Mac's Now Playing becomes a local player. The phone still
+reads sessions with `MediaSessionManager.getActiveSessions(listener)` inside the
+notification listener, throttled to ≤ 1/s, and the existing gate is unchanged —
+nothing media leaves the phone unless notification sharing is on. No new gate.
+
+### Artwork
+
+The phone takes the chosen session's `MediaMetadata` artwork in this order:
+`METADATA_KEY_ART`, `METADATA_KEY_ALBUM_ART`, `METADATA_KEY_DISPLAY_ICON`, and, for
+each, the `*_URI` variant only when a `ContentResolver` open works in the app
+process. A bitmap or an `Icon` is rasterised; a URI that cannot be opened is
+skipped (the next source is tried). The picture is scaled to at most 512×512
+(aspect kept, never enlarged), encoded as JPEG quality 80, and sent only when it
+is at most 256 KiB. This is a pure rule ([MediaArtRules]) behind the same
+`BitmapSource` seam the notification pictures use, and it is JVM-tested with a
+fake source.
+
+The wire message is `media.art {key, mime, w, h, data}` (data = base64 of the
+encoded bytes), sent once per change: the phone hashes the scaled bytes (SHA-256,
+first 16 hex chars) and keeps the last hash per session key, so an unchanged
+picture is never re-sent. No artwork means `media.art {key}` with no data, which
+clears it. Logs carry bytes, w×h and a hash prefix only — never the picture.
+
+On the Mac the picture becomes an `MPMediaItemArtwork` in `nowPlayingInfo`; the
+menu bar extra's media row shows it small. Artwork in tests is a generated test
+pattern.
+
+### Position and seek
+
+`media.state` already carries `positionMs`, `durationMs` and `rate`; it gains
+**`canSeek`** (the phone's `PlaybackState` lists `ACTION_SEEK_TO`). The Mac
+enables `MPRemoteCommandCenter.changePlaybackPositionCommand` only while
+`canSeek`, which sends `media.command {action:"seek", positionMs}`. The phone
+calls `transportControls.seekTo` and the next `media.state` confirms. The
+`skipForward`/`skipBackward` commands are 15 s seek steps by the same route, and
+are enabled only while `canSeek`. `positionMs` is clamped to
+`[0, durationMs]` (unclamped above 0 when the session reports no duration).
+
+### Several playing apps
+
+The phone keeps the list of active sessions in the order the system reports
+them. The **chosen** session is the Mac's pick while that key is still active,
+else the system's first. A new message `media.sessions {list, chosen}`:
+
+- `list` = `[{key, pkg, app, playing}]` in system order. `key` is an opaque
+  per-session id the phone mints; `app` is the app label. The list never carries
+  titles, artists or albums.
+- `chosen` = the key `media.state` describes.
+
+`media.command` and `media.state` gain an optional `key`. `media.choose {key}`
+(Mac → phone) picks a session; an unknown key is ignored with a log line and the
+chosen session does not move. On the Mac the menu bar extra's media row gets a
+"Playing on phone: <app>" submenu listing the sessions when there are two or
+more. A phone that predates `media.sessions` keeps today's behaviour: one
+session, no submenu.
+
+### Volume
+
+Phone → Mac: `volume` and `volumeMax` in `media.state`, read from the chosen
+session's `MediaController.playbackInfo` (local playback = the music stream).
+Mac → phone: `media.command {action:"volume", level}` → the app process calls
+`MediaController.setVolumeTo(level, 0)` — no shell call, no system UI flag. The
+level is clamped to `[0, volumeMax]`. The Mac UI is a slider in the menu bar
+extra's media row; the Mac's own volume keys stay the Mac's and are not
+intercepted.
+
+### Older peers
+
+A command from an older Mac carries no `key` and acts on the chosen session, as
+before. An older phone ignores `media.choose` and `media.art` like any unknown
+`t`, and never sends `media.sessions`; the Mac then shows today's single-session
+Now Playing. Unknown fields are ignored on both sides.
+
 ## Part 2 results (v0.2 #8, part 1)
 
 Built: actions/buttons and inline reply, dismiss Mac ↔ phone, per-app mute, Copy code. Images
