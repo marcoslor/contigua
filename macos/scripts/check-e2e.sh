@@ -4859,6 +4859,12 @@ check_files_domain() {
     files_oneshot list "$WORK/list-before.txt" >/dev/null 2>&1 || true
     files_oneshot remove "$WORK/remove-before.txt" >/dev/null 2>&1 || true
     files_oneshot list "$WORK/list-after-remove.txt" >/dev/null 2>&1 || true
+    # The removal deletes the domain's CloudStorage folder after its completion
+    # handler: an add before that finds the old folder and imports it from disk
+    # (every listing then stalls). Wait for the folder to go.
+    stale_domain_folder() { ls -d "$HOME"/Library/CloudStorage/PocketDeck-* >/dev/null 2>&1; }
+    wait_until 60 eval '! stale_domain_folder' \
+        || bad "FILES the removed domain's folder is still in CloudStorage after 60 s"
 
     launch --connect "127.0.0.1:$PORT" --files-domain add
     wait_until 30 file_has "files-domain add: ok" "$WORK/app.log" \
