@@ -182,7 +182,11 @@ final class WatchChannel {
         lock.lock()
         let known = items.contains(item)
         if on && known {
+            let alive = connection != nil
             lock.unlock()
+            if !alive, connect() {
+                _ = send(.watch(id: freshID(), items: Array(items), on: true))
+            }
             return
         }
         if on { items.insert(item) } else { items.remove(item) }
@@ -252,7 +256,19 @@ final class WatchChannel {
             connection = nil
             thread = nil
         }
+        let wanted = Array(items)
         lock.unlock()
+        guard !wanted.isEmpty else { return }
+        // The app's bridge went away (a restart, or the domain reconnecting):
+        // open a fresh connection and re-subscribe, with a short backoff so a
+        // restarting app is not hammered.
+        for attempt in 0..<15 {
+            Thread.sleep(forTimeInterval: 1.0 + Double(attempt))
+            if connect() {
+                if send(.watch(id: freshID(), items: wanted, on: true)) { return }
+            }
+        }
+        log.notice("watch: could not re-subscribe")
     }
 
     private func signal(_ containers: [String]) {
@@ -567,6 +583,11 @@ final class FilesExtension: NSObject, NSFileProviderReplicatedExtension {
 
     func enumerator(for containerItemIdentifier: NSFileProviderItemIdentifier,
                     request: NSFileProviderRequest) throws -> NSFileProviderEnumerator {
+        // The system wants this folder: watch it on the phone while it does
+        // (design §5). The enumerator's invalidate() stops it again.
+        let identifier = containerItemIdentifier == .rootContainer
+            ? FilesMap.rootIdentifier : containerItemIdentifier.rawValue
+        watch(identifier, on: true)
         return FilesEnumerator(extension: self, container: containerItemIdentifier)
     }
 
@@ -1165,6 +1186,7 @@ final class FilesEnumerator: NSObject, NSFileProviderEnumerator {
             observer.finishEnumeratingWithError(FilesFailure.offline.error)
             return
         }
+        owner.watch(containerIdentifier, on: true)
         let from = String(data: anchor.rawValue, encoding: .utf8) ?? ""
         owner.loadChanges(item: containerIdentifier, from: from) { result in
             switch result {
@@ -1194,6 +1216,7 @@ final class FilesEnumerator: NSObject, NSFileProviderEnumerator {
 
     func currentSyncAnchor(completionHandler: @escaping (NSFileProviderSyncAnchor?) -> Void) {
         guard let owner else { return completionHandler(nil) }
+        owner.watch(containerIdentifier, on: true)
         owner.loadAnchor(item: containerIdentifier) { result in
             switch result {
             case .success(let anchor):
