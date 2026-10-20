@@ -89,7 +89,6 @@ class PdNotificationListener : NotificationListenerService() {
 
     override fun onDestroy() {
         DeckState.removeListener(gateObserver)
-        mediaHandler.removeCallbacks(scanTick)
         PdNotificationBridge.mediaSink = null
         PdNotificationBridge.chooseSink = null
         PdNotificationBridge.actionSink = null
@@ -114,11 +113,9 @@ class PdNotificationListener : NotificationListenerService() {
     }
 
     override fun onListenerConnected() {
-        // The grant is live from here: read the stack, watch it, and keep a slow
-        // re-read while the Mac forwards (see scanSessions).
+        // The grant is live from here: read the stack and watch it.
         if (watchSessions() == null) return
         scanSessions("connect")
-        scheduleScan()
     }
 
     /**
@@ -142,12 +139,11 @@ class PdNotificationListener : NotificationListenerService() {
     }
 
     /**
-     * Reads the session stack again. The system's change callback is the cheap
-     * signal, but it is not a guarantee: the read at connect can land before a
-     * track exists, a session can appear while the Mac has not opted in yet
-     * (everything sent then is dropped by the gate), and a missed callback
-     * would leave Now Playing silent for the rest of the process. So the gate
-     * opening, a command that finds nothing and a slow tick each re-read.
+     * Reads the session stack again. A read at connect can land before a track
+     * exists and a session can appear while the Mac has not opted in yet
+     * (everything sent then is dropped by the gate), so the gate opening, a
+     * command that finds nothing and a listener that could not register its
+     * callback each re-read.
      */
     private fun scanSessions(reason: String) {
         val manager = sessionManager ?: watchSessions() ?: return
@@ -160,20 +156,7 @@ class PdNotificationListener : NotificationListenerService() {
 
     /** The Mac's (or the phone's) sharing switch moved: read again and resend. */
     private val gateObserver: () -> Unit = {
-        if (bridge.gate()) mediaHandler.post { scanSessions("gate") } else mediaHandler.removeCallbacks(scanTick)
-    }
-
-    /** A slow re-read while forwarding; nothing runs while sharing is off. */
-    private fun scheduleScan() {
-        mediaHandler.removeCallbacks(scanTick)
-        if (bridge.gate()) mediaHandler.postDelayed(scanTick, SCAN_MS)
-    }
-
-    private val scanTick = object : Runnable {
-        override fun run() {
-            scanSessions("tick")
-            scheduleScan()
-        }
+        if (bridge.gate()) mediaHandler.post { scanSessions("gate") }
     }
 
     /**
@@ -647,8 +630,5 @@ class PdNotificationListener : NotificationListenerService() {
     private companion object {
         const val TAG = "PocketDeckApp"
         const val MEDIA_MERGE_MS = 200L
-
-        /** While the Mac forwards, a re-read this often catches what a callback missed. */
-        const val SCAN_MS = 5_000L
     }
 }

@@ -462,9 +462,9 @@ later push of the same list was skipped as unchanged. The two together explain
 the silence: no `media.sessions`, no `media.state`, and `media command …
 ignored: no session attached` while the listener was connected.
 
-The listener now re-reads the stack at connect, when the gate opens, when a
-command finds nothing attached, and on a 5 s tick while forwarding, and it
-remembers only what a Mac actually received. `MediaSessionScanTest` (Robolectric,
+The listener now re-reads the stack at connect, when the gate opens and when a
+command finds nothing attached, and it remembers only what a Mac actually
+received. `MediaSessionScanTest` (Robolectric,
 behind a recording seam in `PdNotificationBridge`) pins both cases: on the old
 listener the late gate and the callback-less session both fail (the second with
 `media command play ignored: no session attached`); with the fix both pass.
