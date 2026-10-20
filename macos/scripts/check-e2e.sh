@@ -4618,12 +4618,14 @@ check_share() {
 # byte-identical whole-file reads, a cancel that stops the phone's stream, the
 # fs_denied path, and `offline` after fakephone is killed.
 
-# files_bridge_socket — the socket path `--files-bridge-dir $WORK/bridge` uses.
+# files_bridge_socket — the socket path `--files-bridge-dir $WORK/bridge` uses
+# (or BRIDGE_DIR, for the relaunch phase's own directory).
 files_bridge_socket() {
+    local dir="${BRIDGE_DIR:-$WORK/bridge}"
     if [ "$PROFILE" = default ]; then
-        printf '%s\n' "$WORK/bridge/files.sock"
+        printf '%s\n' "$dir/files.sock"
     else
-        printf '%s\n' "$WORK/bridge/files-$PROFILE.sock"
+        printf '%s\n' "$dir/files-$PROFILE.sock"
     fi
 }
 
@@ -4674,10 +4676,28 @@ PY
     wait_until 30 eval 'events_have "\"state\":\"paired\"" || events_have "\"state\":\"auth_ok\""' \
         || { bad "BRIDGE the app never authenticated"; stop_app; stop_fakephone; return 1; }
     files_bridge_driver online
+    # A relaunch with Finder files already on: the domain is still added, the
+    # bridge socket died with the old process, and v103 returned from
+    # ensureDomain() before starting it — the extension then found "the app is
+    # not reachable" and Finder said "Your device couldn't connect to the
+    # server". The hook presents the domain as existing (no File Provider on
+    # this Mac); the bridge must come up anyway and answer hello.
+    stop_app
+    defaults write "$DEFAULTS_SUITE" files.showInFinder -bool true
+    launch --connect "127.0.0.1:$PORT" --files-domain-seen "$WORK/bridge-seen"
+    if wait_until 20 [ -S "$WORK/bridge-seen/files-$PROFILE.sock" ]; then
+        ok "BRIDGE a relaunch with the domain present brings the socket up"
+        BRIDGE_DIR="$WORK/bridge-seen" files_bridge_driver online
+    else
+        bad "BRIDGE a relaunch with the domain present left no bridge socket"
+        stop_app
+        stop_fakephone
+        return 1
+    fi
     # The phone goes away: every dataless request must answer offline.
     stop_fakephone
     wait_until 5 no_fakephone
-    files_bridge_driver offline
+    BRIDGE_DIR="$WORK/bridge-seen" files_bridge_driver offline
     # Nothing about the bridge may put a name, a path or bytes in the app log:
     # os_log carries op names, counts and lengths only (design §4).
     log show --last 3m --info \
