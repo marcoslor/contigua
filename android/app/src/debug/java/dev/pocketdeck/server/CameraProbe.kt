@@ -563,7 +563,8 @@ internal object CameraProbe {
             runCatching { opened.await(ms, TimeUnit.MILLISECONDS) }.getOrDefault(false) && openError == null
 
         fun awaitConfigured(ms: Long): Boolean =
-            runCatching { configured.await(ms, TimeUnit.MILLISECONDS) }.getOrDefault(false) && sessionError == null
+            runCatching { configured.await(ms, TimeUnit.MILLISECONDS) }.getOrDefault(false) &&
+                openError == null && sessionError == null
 
         private val handler: Handler get() = Handler(thread.looper)
 
