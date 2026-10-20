@@ -305,6 +305,26 @@ def change_set(bridge, item, anchor):
     return bridge.reply(request)
 
 
+def await_change(bridge, item, anchor, predicate, timeout=4.0):
+    """The next change set after [anchor] that satisfies [predicate].
+
+    A rename reaches the app as more than one notification; each one is a delta
+    after the same anchor, so asking again after the next signal is the same
+    assertion, not a weaker one.
+    """
+    deadline = time.time() + timeout
+    reply = change_set(bridge, item, anchor)
+    while True:
+        items = (reply.get("items") or []) if reply.get("t") == "changes" else []
+        deleted = (reply.get("deleted") or []) if reply.get("t") == "changes" else []
+        if reply.get("t") == "changes" and predicate(items, deleted):
+            return reply
+        remaining = deadline - time.time()
+        if remaining <= 0 or wait_signal(bridge, remaining) is None:
+            return reply
+        reply = change_set(bridge, item, anchor)
+
+
 def wait_signal(bridge, timeout):
     """The next `changed` push, or None after [timeout] seconds."""
     deadline = time.time() + timeout
@@ -387,6 +407,8 @@ def phase_watch(bridge, root):
     if not match:
         return
     one = match[0]
+    report(True, "WATCH the created file has id %s (name hash %s)"
+           % (one.get("id"), name_hash("one.txt")))
     current = reply.get("anchor") or current
 
     write_file(os.path.join(root, "A", "one.txt"), b"one edited\n" * 2)
@@ -401,20 +423,25 @@ def phase_watch(bridge, root):
 
     os.rename(os.path.join(root, "A", "one.txt"), os.path.join(root, "A", "one-renamed.txt"))
     wait_signal(bridge, 3.0)
-    reply = change_set(bridge, a, current)
+    reply = await_change(bridge, a, current, lambda items, deleted: any(
+        entry.get("id") == one["id"] and entry.get("name") == "one-renamed.txt"
+        for entry in items) and one["id"] not in deleted)
     items = reply.get("items") or [] if reply.get("t") == "changes" else []
     deleted = reply.get("deleted") or []
     match = [entry for entry in items if entry.get("id") == one["id"]]
     report(len(match) == 1 and match[0].get("name") == "one-renamed.txt"
            and one["id"] not in deleted,
-           "WATCH a rename keeps the id and reports the new name")
+           "WATCH a rename keeps the id and reports the new name (was %s, items %s, deleted %s)"
+           % (one["id"], [entry.get("id") for entry in items], deleted))
     current = reply.get("anchor") or current
 
     os.unlink(os.path.join(root, "A", "one-renamed.txt"))
     wait_signal(bridge, 3.0)
-    reply = change_set(bridge, a, current)
+    reply = await_change(bridge, a, current,
+                         lambda items, deleted: one["id"] in deleted)
     report(reply.get("t") == "changes" and one["id"] in (reply.get("deleted") or []),
-           "WATCH a delete is reported as the id that is gone")
+           "WATCH a delete is reported as the id that is gone (was %s, deleted %s)"
+           % (one["id"], reply.get("deleted") or []))
     current = reply.get("anchor") or current
 
     # Our own write through the bridge: one change, never a storm.

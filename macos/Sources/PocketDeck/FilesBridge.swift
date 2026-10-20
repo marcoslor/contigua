@@ -797,19 +797,39 @@ final class SessionBridgeHost: FilesBridgeHost {
         }
     }
 
+    /// Containers being re-listed right now, and those that moved again while
+    /// they were (a rename arrives as more than one notification).
+    private var refreshing: Set<String> = []
+    private var refreshAgain: Set<String> = []
+
     /// Re-lists one container and records what moved. The extension is signalled
     /// for every changed container; the delta rides in its anchor log.
     private func refresh(_ item: String) {
+        if refreshing.contains(item) {
+            // One listing at a time per folder: a burst is settled by the run
+            // that is already happening (or by one more right after it).
+            refreshAgain.insert(item)
+            return
+        }
+        refreshing.insert(item)
         let before = snapshots[item]
-        listPages(item: item) { [weak self] result in
-            guard let self, case .success = result else { return }
-            guard let before else { return }
-            let after = self.snapshots[item] ?? [:]
-            let delta = FilesDiff.delta(old: before, new: Array(after.values))
-            var log = self.logs[item] ?? FilesChangeLog(scope: item)
-            let moved = log.record(delta)
-            self.logs[item] = log
-            if moved { self.signal([item]) }
+        // A rename can reach us as a delete followed by an add a moment later;
+        // settling briefly keeps one re-listing from reporting the file gone
+        // between its two names.
+        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(150)) { [weak self] in
+            guard let self else { return }
+            self.listPages(item: item) { result in
+                self.refreshing.remove(item)
+                if case .success = result, let before {
+                    let after = self.snapshots[item] ?? [:]
+                    let delta = FilesDiff.delta(old: before, new: Array(after.values))
+                    var log = self.logs[item] ?? FilesChangeLog(scope: item)
+                    let moved = log.record(delta)
+                    self.logs[item] = log
+                    if moved { self.signal([item]) }
+                }
+                if self.refreshAgain.remove(item) != nil { self.refresh(item) }
+            }
         }
     }
 

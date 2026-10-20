@@ -4614,10 +4614,11 @@ PY
     if wait_until 15 file_has "ok WATCH holding" "$WORK/bridge-hold.txt"; then
         kill -9 "$hold" 2>/dev/null
         wait "$hold" 2>/dev/null
-        if wait_until 8 [ "$(grep -c "watch off 0" "$WORK/fake.err" 2>/dev/null || true)" -gt "$before" ]; then
+        # The last thing the phone heard must be the drop of the hold's watch.
+        if wait_until 8 eval '[ "$(grep -E "watch (on|off)" "$WORK/fake.err" 2>/dev/null | tail -1)" = "fakephone: watch off 0" ]'; then
             ok "WATCH the app drops the watch when its client goes away"
         else
-            bad "WATCH the watch outlived the client that asked for it"
+            bad "WATCH the watch outlived the client that asked for it (last: $(grep -E "watch (on|off)" "$WORK/fake.err" | tail -1))"
         fi
     else
         bad "WATCH the hold phase did not start: $(tail -2 "$WORK/bridge-hold.txt")"

@@ -679,8 +679,21 @@ struct FilesIdMap: Equatable {
     private(set) var pathByIdentifier: [String: String] = [FilesMap.rootIdentifier: ""]
     private(set) var identifierByPath: [String: String] = ["": FilesMap.rootIdentifier]
     private(set) var parentByIdentifier: [String: String] = [FilesMap.rootIdentifier: FilesMap.rootIdentifier]
+    /// The inode a path was seen with. A mapping that came from disk and no
+    /// longer matches it belongs to another file (the phone replaced it while
+    /// the app was closed): the id must follow the inode, not the path.
+    private var inoByPath: [String: Int] = [:]
+    /// Paths whose mapping was loaded from disk and not yet seen again.
+    private var loadedPaths: Set<String> = []
 
     init() {}
+
+    /// The ids and the paths are the map; inode bookkeeping is not.
+    static func == (lhs: FilesIdMap, rhs: FilesIdMap) -> Bool {
+        lhs.pathByIdentifier == rhs.pathByIdentifier
+            && lhs.identifierByPath == rhs.identifierByPath
+            && lhs.parentByIdentifier == rhs.parentByIdentifier
+    }
 
     var isEmpty: Bool { pathByIdentifier.count <= 1 }
 
@@ -690,8 +703,20 @@ struct FilesIdMap: Equatable {
     mutating func insert(fs: FsItem, path: String, parentIdentifier: String) -> FileItem {
         // A path keeps the identifier it was first seen under: a verified save
         // renames a temp over the file, which changes its inode, and Finder must
-        // still see the same item (design §3, S4).
-        let identifier = identifierByPath[path] ?? FilesMap.identifier(path: path, ino: fs.ino)
+        // still see the same item (design §3, S4). A persisted mapping whose
+        // inode no longer matches is another file, though (replaced while the
+        // app was closed): that stale id must not stick to the path.
+        let fresh = FilesMap.identifier(path: path, ino: fs.ino)
+        if loadedPaths.contains(path), fs.ino > 0,
+           let known = identifierByPath[path], known.hasPrefix("ino:"),
+           fresh != known, inoByPath[path].map({ $0 != fs.ino }) ?? true {
+            pathByIdentifier.removeValue(forKey: known)
+            parentByIdentifier.removeValue(forKey: known)
+            identifierByPath.removeValue(forKey: path)
+        }
+        let identifier = identifierByPath[path] ?? fresh
+        loadedPaths.remove(path)
+        if fs.ino > 0 { inoByPath[path] = fs.ino }
         let item = FilesMap.item(identifier: identifier, path: path,
                                  parentIdentifier: parentIdentifier, fs: fs)
         remember(identifier: identifier, path: path, parentIdentifier: parentIdentifier)
@@ -705,6 +730,8 @@ struct FilesIdMap: Equatable {
         let item = FilesMap.item(identifier: identifier, path: path,
                                  parentIdentifier: parentIdentifier, fs: fs)
         remember(identifier: identifier, path: path, parentIdentifier: parentIdentifier)
+        loadedPaths.remove(path)
+        if fs.ino > 0 { inoByPath[path] = fs.ino }
         return item
     }
 
@@ -749,6 +776,8 @@ struct FilesIdMap: Equatable {
             pathByIdentifier.removeValue(forKey: id)
             parentByIdentifier.removeValue(forKey: id)
             identifierByPath.removeValue(forKey: known)
+            inoByPath.removeValue(forKey: known)
+            loadedPaths.remove(known)
         }
     }
 
@@ -757,6 +786,9 @@ struct FilesIdMap: Equatable {
     mutating func rename(identifier: String, to newPath: String) {
         guard let old = pathByIdentifier[identifier] else { return }
         identifierByPath.removeValue(forKey: old)
+        if let ino = inoByPath.removeValue(forKey: old) { inoByPath[newPath] = ino }
+        loadedPaths.remove(old)
+        loadedPaths.insert(newPath)
         if let occupant = identifierByPath[newPath] {
             pathByIdentifier.removeValue(forKey: occupant)
             parentByIdentifier.removeValue(forKey: occupant)
@@ -780,8 +812,10 @@ struct FilesIdMap: Equatable {
     func encoded() -> Data {
         var ids: [String: [String: String]] = [:]
         for (identifier, path) in pathByIdentifier {
-            ids[identifier] = ["p": path,
-                               "n": parentByIdentifier[identifier] ?? FilesMap.rootIdentifier]
+            var fields = ["p": path,
+                          "n": parentByIdentifier[identifier] ?? FilesMap.rootIdentifier]
+            if let ino = inoByPath[path] { fields["i"] = String(ino) }
+            ids[identifier] = fields
         }
         let object: [String: Any] = ["version": Self.formatVersion, "ids": ids]
         return (try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])) ?? Data()
@@ -803,6 +837,10 @@ struct FilesIdMap: Equatable {
             map.pathByIdentifier[identifier] = path
             if map.identifierByPath[path] == nil { map.identifierByPath[path] = identifier }
             map.parentByIdentifier[identifier] = parent
+            // The ino is only a check: a file that moved on is re-derived (by
+            // the ino in its id) the first time its path is listed again.
+            map.loadedPaths.insert(path)
+            if let ino = fields["i"].flatMap(Int.init) { map.inoByPath[path] = ino }
         }
         guard map.pathByIdentifier[FilesMap.rootIdentifier] == "" else { return nil }
         return map
