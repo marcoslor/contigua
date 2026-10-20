@@ -107,8 +107,12 @@ class FsWriter(
         if (current.id != id || current.cancelled.get() || payload.isEmpty()) return
         current.received += payload.size
         if (current.received > current.size) {
-            log("fs: write id=$id more bytes than announced")
-            current.cancelled.set(true)
+            // Answer once: the Mac is waiting on an `fs.result`, and a silent
+            // stop would leave it there until the session ends.
+            if (current.cancelled.compareAndSet(false, true)) {
+                log("fs: write id=$id more bytes than announced")
+                refusal(id, FsPaths.denied("more bytes than announced"))
+            }
             return
         }
         while (!current.cancelled.get()) {
