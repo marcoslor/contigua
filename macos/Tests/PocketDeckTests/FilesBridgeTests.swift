@@ -625,6 +625,34 @@ final class FilesBridgeTests: XCTestCase {
         XCTAssertTrue(b.signals().isEmpty)
     }
 
+    /// The extension that asked for the watch is short-lived: a phone-side
+    /// change often arrives with no client connected, and the mount only moves
+    /// because the bridge asks the system itself.
+    func testASignalAsksTheSystemEvenWithNoClientConnected() throws {
+        try start()
+        bridge.attach(host: host)
+        var asked: [String] = []
+        bridge.signalDomain = { asked.append($0) }
+        bridge.signal(containers: ["ino:9"])
+        XCTAssertEqual(["ino:9"], asked)
+        bridge.signal(containers: [])
+        XCTAssertEqual(["ino:9"], asked, "an empty batch asks for nothing")
+    }
+
+    func testASignalForADeadClientsContainerStillReachesTheSystem() throws {
+        try start()
+        bridge.attach(host: host)
+        var asked: [String] = []
+        bridge.signalDomain = { asked.append($0) }
+        let client = try connect()
+        client.send(.watch(id: 1, items: ["ino:9"], on: true))
+        XCTAssertTrue(pump { client.replies().count == 1 })
+        client.shutdown()
+        XCTAssertTrue(pump { host.watches.contains { !$0.1 } })
+        bridge.signal(containers: ["ino:9"])
+        XCTAssertEqual(["ino:9"], asked)
+    }
+
     func testChangesAndAnchorForwardTheHostsAnswer() throws {
         try start()
         bridge.attach(host: host)

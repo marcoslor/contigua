@@ -16,6 +16,7 @@ private final class FakeDomainManager: FilesDomainManaging {
     private(set) var reconnects: [String] = []
     private(set) var disconnects: [(id: String, reason: String)] = []
     private(set) var signals: [String] = []
+    private(set) var signaledContainers: [(identifier: String, container: String)] = []
 
     func domain(identifier: String) -> FilesDomainInfo? {
         guard let info, info.identifier == identifier else { return nil }
@@ -50,6 +51,12 @@ private final class FakeDomainManager: FilesDomainManaging {
 
     func signalEnumerator(identifier: String, completion: @escaping (Error?) -> Void) {
         signals.append(identifier)
+        completion(nil)
+    }
+
+    func signalContainer(identifier: String, container: String,
+                         completion: @escaping (Error?) -> Void) {
+        signaledContainers.append((identifier, container))
         completion(nil)
     }
 }
@@ -116,6 +123,20 @@ final class FilesDomainControllerTests: XCTestCase {
         controller.setEnabled(true)
         XCTAssertEqual(1, manager.adds.count)
         XCTAssertEqual(1, started.count)
+    }
+
+    /// A phone-side change re-enumerates that folder, not just the root: the
+    /// extension that held the watch is usually gone by the time it arrives.
+    func testAPhoneSideChangeSignalsTheContainer() {
+        controller.setEnabled(true)
+        manager.info?.userEnabled = true
+        controller.signalContainer("ino:9")
+        XCTAssertEqual(["ino:9"], manager.signaledContainers.map(\.container))
+        XCTAssertEqual([FilesDomain.identifier(profile: profile)],
+                       manager.signaledContainers.map(\.identifier))
+        // The root container keeps its own identifier.
+        controller.signalContainer("")
+        XCTAssertEqual("", manager.signaledContainers.last?.container)
     }
 
     func testTheSwitchTurningOnMovesTheStateToOn() {

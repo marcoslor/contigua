@@ -887,6 +887,9 @@ final class FilesBridge {
     private var listener: FilesBridgeListener?
     private var host: FilesBridgeHost?
     private(set) var socketPath: String?
+    /// Asks the system to re-enumerate one container. Set once by the app: the
+    /// bridge cannot reach NSFileProviderManager without the live domain.
+    var signalDomain: ((String) -> Void)?
 
     /// The shared bridge the app runs; tests make their own instance so two
     /// listeners never share state.
@@ -971,12 +974,20 @@ final class FilesBridge {
         Log.files.notice("bridge: session detached")
     }
 
-    /// A watched container moved: tell every extension process that holds it.
+    /// A watched container moved: tell every extension process that holds it,
+    /// and tell the system too. The extension processes are short-lived — Finder
+    /// does not keep one alive between two operations — so a signal that only
+    /// went to a live client was lost exactly when a phone-side change arrived
+    /// with nobody's extension running. `signalDomain` makes fileproviderd start
+    /// one and ask for the container's changes (design §5).
     func signal(containers: [String]) {
         guard !containers.isEmpty else { return }
         for (slot, client) in watchClients {
             let mine = (watchSets[slot] ?? []).filter { containers.contains($0) }
             if !mine.isEmpty { client.sendSignal(items: Array(mine)) }
+        }
+        if let signalDomain {
+            for container in containers { signalDomain(container) }
         }
         Log.files.notice("bridge: signal containers=\(containers.count, privacy: .public)")
     }

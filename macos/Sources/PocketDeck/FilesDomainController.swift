@@ -52,6 +52,10 @@ protocol FilesDomainManaging: AnyObject {
     func reconnect(identifier: String, completion: @escaping (Error?) -> Void)
     func disconnect(identifier: String, reason: String, completion: @escaping (Error?) -> Void)
     func signalEnumerator(identifier: String, completion: @escaping (Error?) -> Void)
+    /// Re-enumerate one container: a folder the phone changed may be a child of
+    /// the root, and only the system can start an extension that is not running.
+    func signalContainer(identifier: String, container: String,
+                         completion: @escaping (Error?) -> Void)
 }
 
 @MainActor
@@ -156,6 +160,15 @@ final class FilesDomainController {
 
     func openSystemSettings() {
         openSettings()
+    }
+
+    /// The phone says a watched folder moved (design §5). Re-enumerate that
+    /// container through the system: the extension process that asked for the
+    /// watch has usually exited by now, so a push alone would reach nobody.
+    func signalContainer(_ container: String) {
+        guard enabled else { return }
+        manager.signalContainer(identifier: identifier, container: container) { _ in }
+        Log.files.notice("domain: signal container")
     }
 
     /// The VM hook adds the domain itself (so `--files-domain add` can report
@@ -276,12 +289,14 @@ final class SystemFilesDomainManager: FilesDomainManaging {
 
     func add(identifier: String, displayName: String,
              completion: @escaping (Error?) -> Void) {
+        cachedManagers.removeValue(forKey: identifier)
         let domain = NSFileProviderDomain(
             identifier: NSFileProviderDomainIdentifier(identifier), displayName: displayName)
         NSFileProviderManager.add(domain, completionHandler: completion)
     }
 
     func remove(identifier: String, completion: @escaping (Error?) -> Void) {
+        cachedManagers.removeValue(forKey: identifier)
         guard let domain = domainObject(identifier) else { return completion(nil) }
         NSFileProviderManager.remove(domain, mode: .removeAll) { _, error in completion(error) }
     }
@@ -302,6 +317,15 @@ final class SystemFilesDomainManager: FilesDomainManaging {
         manager.signalEnumerator(for: .rootContainer, completionHandler: completion)
     }
 
+    /// One container, not the whole root (docs/design/files.md §5): a phone-side
+    /// change to a folder Finder has open is that folder's enumeration.
+    func signalContainer(identifier: String, container: String,
+                         completion: @escaping (Error?) -> Void) {
+        guard let manager = manager(identifier) else { return completion(nil) }
+        let item = container.isEmpty ? .rootContainer : NSFileProviderItemIdentifier(container)
+        manager.signalEnumerator(for: item, completionHandler: completion)
+    }
+
     private func domainObject(_ identifier: String) -> NSFileProviderDomain? {
         var found: NSFileProviderDomain?
         _ = filesWait(20) { done in
@@ -314,7 +338,15 @@ final class SystemFilesDomainManager: FilesDomainManaging {
     }
 
     private func manager(_ identifier: String) -> NSFileProviderManager? {
+        // The domain lookup is a round trip to fileproviderd and this now runs
+        // on every phone-side change: one lookup per domain, not per change.
+        if let cached = cachedManagers[identifier] { return cached }
         guard let domain = domainObject(identifier) else { return nil }
-        return NSFileProviderManager(for: domain)
+        let manager = NSFileProviderManager(for: domain)
+        cachedManagers[identifier] = manager
+        return manager
     }
+
+    /// Manager per domain, dropped whenever the domain set changes.
+    private var cachedManagers: [String: NSFileProviderManager] = [:]
 }
