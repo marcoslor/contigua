@@ -35,11 +35,13 @@ class PdNotificationListener : NotificationListenerService() {
     private val mediaHandler = Handler(worker.looper)
 
     private var sessionManager: MediaSessionManager? = null
+    private var watching = false
     private var attachedController: MediaController? = null
 
     /** Every active session, in the system's order (docs/design/notify.md). */
     private var sessions: List<MediaController> = emptyList()
     private var callbacksOn: List<MediaController> = emptyList()
+    private val listenerComponent by lazy { ComponentName(this, PdNotificationListener::class.java) }
 
     /** The Mac's pick, while that session is still active. */
     private var chosenKey: String? = null
@@ -75,14 +77,18 @@ class PdNotificationListener : NotificationListenerService() {
     override fun onCreate() {
         super.onCreate()
         // The pushes need the shell-service binder; bind once, not per event.
-        ShizukuClient.ensureBound(this)
+        runCatching { ShizukuClient.ensureBound(this) }
         PdNotificationBridge.mediaSink = { json -> deliverMediaAction(json) }
         PdNotificationBridge.chooseSink = { key -> deliverChoose(key) }
         PdNotificationBridge.actionSink = { id, index, text -> deliverAction(id, index, text) }
         PdNotificationBridge.dismissSink = { id -> deliverDismiss(id) }
+        // The gate can open long after the stack was read (the Mac opts in on
+        // its own schedule), and everything pushed before it is dropped.
+        DeckState.addListener(gateObserver)
     }
 
     override fun onDestroy() {
+        DeckState.removeListener(gateObserver)
         PdNotificationBridge.mediaSink = null
         PdNotificationBridge.chooseSink = null
         PdNotificationBridge.actionSink = null
@@ -96,6 +102,7 @@ class PdNotificationListener : NotificationListenerService() {
         }
         sessionManager?.let { runCatching { it.removeOnActiveSessionsChangedListener(activeSessionsListener) } }
         sessionManager = null
+        watching = false
         detachSession()
         lastArtHash.clear()
         lastArtMetadata = null
@@ -106,15 +113,50 @@ class PdNotificationListener : NotificationListenerService() {
     }
 
     override fun onListenerConnected() {
-        // The grant is live from here: watch the session stack and pick the one
-        // the person is currently playing on.
-        runCatching {
-            val manager = getSystemService(MediaSessionManager::class.java)
-            sessionManager = manager
-            val component = ComponentName(this, PdNotificationListener::class.java)
-            manager.addOnActiveSessionsChangedListener(activeSessionsListener, component)
-            attachSession(manager.getActiveSessions(component))
-        }.onFailure { Log.w(TAG, "media session watch failed: ${it.message}") }
+        // The grant is live from here: read the stack and watch it.
+        if (watchSessions() == null) return
+        scanSessions("connect")
+    }
+
+    /**
+     * Registers the system's change signal once; null when the grant is not live
+     * yet (the next scan retries). A listener that cannot be registered still
+     * gets the scans below.
+     */
+    private fun watchSessions(): MediaSessionManager? {
+        val manager = runCatching { getSystemService(MediaSessionManager::class.java) }.getOrNull()
+            ?: return null
+        if (!watching) {
+            val ok = runCatching {
+                manager.addOnActiveSessionsChangedListener(activeSessionsListener, listenerComponent)
+            }.onFailure { Log.w(TAG, "media session watch failed: ${it.javaClass.simpleName}") }
+                .isSuccess
+            if (!ok) return null
+            watching = true
+        }
+        sessionManager = manager
+        return manager
+    }
+
+    /**
+     * Reads the session stack again. A read at connect can land before a track
+     * exists and a session can appear while the Mac has not opted in yet
+     * (everything sent then is dropped by the gate), so the gate opening, a
+     * command that finds nothing and a listener that could not register its
+     * callback each re-read.
+     */
+    private fun scanSessions(reason: String) {
+        val manager = sessionManager ?: watchSessions() ?: return
+        val list = runCatching { manager.getActiveSessions(listenerComponent) }
+            .onFailure { Log.w(TAG, "media scan failed: ${it.javaClass.simpleName}") }
+            .getOrNull() ?: return
+        Log.i(TAG, "media scan n=${list.size} reason=$reason")
+        attachSession(list)
+    }
+
+    /** The Mac's (or the phone's) sharing switch moved: read again and resend. */
+    private val gateObserver: () -> Unit = {
+        if (bridge.gate()) mediaHandler.post { scanSessions("gate") }
     }
 
     /**
@@ -220,6 +262,9 @@ class PdNotificationListener : NotificationListenerService() {
             )
         }
         val wire = MediaControl.sessionsWire(infos, chosenKey)
+        // Only what a Mac actually got may be remembered: a push dropped by the
+        // gate must be sent once sharing opens, not skipped as "unchanged".
+        if (!bridge.gate()) return
         if (wire == lastSessions) return
         lastSessions = wire
         bridge.sessions(wire)
@@ -231,6 +276,9 @@ class PdNotificationListener : NotificationListenerService() {
      * it. Only the size, the dimensions and a hash prefix are logged.
      */
     private fun pushArtwork(controller: MediaController, key: String, metadata: MediaMetadata?) {
+        // Nothing is encoded or remembered while sharing is off (docs/design/
+        // notify.md: no new gate, and the artwork gate is the same one).
+        if (!bridge.gate()) return
         // The metadata object changes exactly when the session's artwork may have.
         if (metadata != null && metadata === lastArtMetadata) return
         lastArtMetadata = metadata
@@ -257,9 +305,12 @@ class PdNotificationListener : NotificationListenerService() {
     }
 
     private fun runMediaCommand(command: MediaCommand) {
-        val controller = when (val key = command.key) {
-            null -> attachedController
-            else -> sessions.firstOrNull { keyOf(it) == key }
+        var controller = controllerFor(command)
+        if (controller == null) {
+            // Silence looked like "no session attached" once: the stack may have
+            // moved without the system telling us, so read it before giving up.
+            scanSessions("command")
+            controller = controllerFor(command)
         }
         if (controller == null) {
             Log.i(TAG, "media command ${command.action} ignored: no session attached")
@@ -286,6 +337,12 @@ class PdNotificationListener : NotificationListenerService() {
                 Log.i(TAG, "media volume level=$level max=${max ?: -1}")
             }
         }
+    }
+
+    /** Which session a command acts on: the Mac's key, else the chosen one. */
+    private fun controllerFor(command: MediaCommand): MediaController? = when (val key = command.key) {
+        null -> attachedController
+        else -> sessions.firstOrNull { keyOf(it) == key }
     }
 
     /** `media.choose`: the Mac picks which app Now Playing follows. */

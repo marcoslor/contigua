@@ -38,6 +38,8 @@ class PdNotificationBridge(private val context: Context) {
             if (event["t"] == "media.state" && event["playing"] == true) Log.i(TAG, "gated, media.state held")
             return
         }
+        // After the gate, so a JVM test records exactly what the Mac would get.
+        recordForTest?.invoke(event)
         runCatching { ShizukuClient.current()?.pushDeviceEvent(Json.encode(event)) }
             .onFailure {
                 when (it) {
@@ -63,6 +65,13 @@ class PdNotificationBridge(private val context: Context) {
         /** `media.choose` (session key) from the Mac. */
         @Volatile
         var chooseSink: ((String) -> Unit)? = null
+
+        /**
+         * A JVM test records what would cross the wire here (after both gates);
+         * the app leaves it null. Nothing else reads or writes it.
+         */
+        @Volatile
+        var recordForTest: ((Map<String, Any?>) -> Unit)? = null
 
         private const val TAG = "PocketDeckApp"
     }

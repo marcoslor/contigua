@@ -447,9 +447,42 @@ Not verified:
   `getActiveSessions` on this image. The rig now waits for the enabled listener
   and records the debug/server logcat lines and the listener setting when the
   section fails, so the next boot's log names the cause. The boot budget allows
-  no second boot here.
+  no second boot here. (Settled later, on the JVM: see "Why the emulator
+  reported no media sessions" below.)
 
-  Still unproven on a real listener: `getActiveSessions` ordering and key
+  ### Why the emulator reported no media sessions
+
+The listener read `getActiveSessions` once, at `onListenerConnected`, and then
+trusted the system's `OnActiveSessionsChangedListener`. A read that lands before
+a session exists (the rig starts its fake sessions after the app), or a missed
+callback, leaves the list empty for the rest of the process. On top of that,
+every push made before the Mac's `notify.enable` is dropped by the gate, and the
+session and artwork dedupe caches were updated on those dropped pushes, so a
+later push of the same list was skipped as unchanged. The two together explain
+the silence: no `media.sessions`, no `media.state`, and `media command …
+ignored: no session attached` while the listener was connected.
+
+The listener now re-reads the stack at connect, when the gate opens and when a
+command finds nothing attached, and it remembers only what a Mac actually
+received. `MediaSessionScanTest` (Robolectric,
+behind a recording seam in `PdNotificationBridge`) pins both cases: on the old
+listener the late gate and the callback-less session both fail (the second with
+`media command play ignored: no session attached`); with the fix both pass.
+
+The second boot (`verify-batch`, 2026-10-20) reached the media section and showed
+the other half of the silence: `dumpsys media_session` said `Sessions Stack -
+have 0 sessions` and no `PdMediaDebug` line existed at all, while the listener
+logged `media scan n=0` for the gate and for each command. The rig's
+`debug_broadcast` helper sent `am broadcast -n <component>` without the intent
+action, so `MediaDebugTrigger.onReceive` returned at its `action != ACTION`
+check and no fake session was ever created; "the broadcast was delivered"
+(`result=0`) was true and meaningless. The helper now sends `-a <action>`, the
+receiver logs the action it ignored, `media.sh --check` asserts the helper's
+intent carries it, and preflight counts the boot ledger by its actual columns
+(it reported "0 of 2 used" whatever the ledger held). The media section itself
+still has not run on a device: the budget for this round is spent.
+
+Still unproven on a real listener: `getActiveSessions` ordering and key
   minting, artwork from a real `MediaMetadata` (bitmap and `*_URI` sources),
   `transportControls.seekTo`, the local-playback volume (`playbackInfo` +
   `setVolumeTo`), and the session list shrinking when an app stops.

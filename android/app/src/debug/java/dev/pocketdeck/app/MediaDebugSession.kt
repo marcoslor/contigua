@@ -37,7 +37,12 @@ import android.util.Log
  */
 class MediaDebugTrigger : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
-        if (intent.action != ACTION) return
+        if (intent.action != ACTION) {
+            // A broadcast to this component without the action is ignored (the
+            // rig sends both); say so instead of looking like a dead session.
+            Log.i(TAG, "ignored: action=${intent.action}")
+            return
+        }
         if (context.checkCallingOrSelfPermission(android.Manifest.permission.DUMP) !=
             PackageManager.PERMISSION_GRANTED
         ) {
