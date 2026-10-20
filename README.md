@@ -81,7 +81,8 @@ window you give it.
   Gallery. A delete is **immediate** — the phone has no Trash — and Finder says
   so. Cached files stay readable while the phone is away, and edits made then
   upload when it is back; when both sides changed a file, both copies are kept
-  (`name (from Mac).ext`). The first time, turn PocketDeck on in System
+  (`name (from Mac).ext`). A copy onto a name the phone already has is refused,
+  never silently replaced. The first time, turn PocketDeck on in System
   Settings › General › Login Items & Extensions (Settings › General has the
   switch and the link).
 - **Control Center controls** (in progress, opt-in build: the controls do not yet appear in Control Center) —

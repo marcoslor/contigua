@@ -565,16 +565,35 @@ with the phone's bytes verified and nothing lost when both sides changed a file.
    **Done (writes).** What shipped: `FsWriter` (hidden staging file, size + sha256, MediaProvider
    rename behind `FsPlatform`, media scan), `FsMutations` (`fs.move`/`delete`/`mkdir`/
    `setAttrs`, etag checks) and `AndroidFsPlatform` on the phone; `FsClient` writes and
-   mutations, `FilesIdMap` (0600, parent ids, pinned across content replacement), bridge
-   version 2 with the extension→app data flow and its 1 MiB gate, and the extension's
-   `createItem`/`modifyItem`/`deleteItem` with Progress, cancel, offline and the
-   `(from Mac)` conflict copy. Checks: K1 477/0; K2 772/0; e2e `files-write` 20/0 (create,
-   edit, rename, move, delete, cancel, kill mid-write and retry) plus the `files-bridge` 18/0,
-   `files` 8/0 and `drop` 10/0 regressions. Not verified on the emulator: the rig stopped at
-   the PIN bouncer (`unlock.sh`), so `tools/emulator/fs-write.sh` has not run. The VM check
-   (`files-domain` with the write steps) did not start: the memory gate refused after 45 min
-   (`swap used 2936 MB`, limit 2048), so the Finder side of the writes is tested only through
-   the bridge, not by a real replicated extension.
+   mutations, `FilesIdMap` (0600 from the moment its temp exists, parent ids, pinned across
+   content replacement), bridge version 2 with the extension→app data flow and its 1 MiB gate,
+   and the extension's `createItem`/`modifyItem`/`deleteItem` with Progress, cancel, offline and
+   the `(from Mac)` conflict copy. A create is exclusive end to end (`fs_exists` at the request
+   and again at the rename; the extension answers `filenameCollision`), a delete carries its
+   base etag so the phone checks it right before deleting, and more bytes than announced get one
+   `fs_denied` answer. Checks: K1 494/0; K2 786/0; e2e `files-write` 23/0 (create, edit, rename,
+   move, delete, cancel, kill mid-write and retry, a create onto an existing name, the numbered
+   conflict copy, a delete with a stale etag) plus the `files-bridge` 18/0, `files` 8/0 and
+   `drop` 10/0 regressions.
+   **VM.** `macos/scripts/vm-e2e.sh files-domain` runs in two sessions (2/2 used): 41/0. Finder's
+   own actions, not the bridge: a 3 MiB copy into the mount lands on the fake phone with the
+   Mac's sha256, an edit in place changes the phone's size, a rename follows (one entry, no
+   duplicate), mkdir, delete, a copy made while the phone is away lands after the reconnect, and
+   the 32 MiB file reads back byte-identical. The collision case: a name that exists on the phone
+   but not in the Mac's listing is refused (`fs_exists`, 8 retries in the run) and **the phone's
+   file keeps its bytes**; a POSIX `cp` has no "pick another name" step, so the system kept
+   retrying the same name instead of renaming — the extension's `filenameCollision` answer is
+   what Finder's own copy uses, and the numbered `(from Mac 2)` retry is proven by the host
+   `files-write` check. Screenshots: the domain root and Documents in `finder.png` /
+   `finder-documents.png` under the run's work dir.
+   **Emulator: unverified.** The single boot was spent on the round-2 `unlock.sh` fix: the
+   dump was being written to `/sdcard`, which is not mounted until the phone has been unlocked
+   once (FBE), so round 1's dump was always empty and the bouncer grep could never match. The
+   script now dumps to `/data/local/tmp`, raises the bouncer with `wm dismiss-keyguard`, accepts
+   API 36's `KeyguardPINView` and enters the PIN as key events (with a blind attempt when the
+   keyguard is not visible to uiautomator). That fix has not been run: no boot budget was left,
+   so `tools/emulator/fs-write.sh` has not run either and nothing is claimed here about whether
+   a MediaProvider rename keeps the MediaStore `_id`.
 5. **S5 — watching and the idle rule.** Phone: `FsWatcher` (bounded inotify + the generation
    fallback) + `fs.watch`/`fs.changes`; the platform seam lets the JVM test drive a fake watch
    source. Mac: `enumerateChanges`/`currentSyncAnchor` + `signalEnumerator` from the bridge.
