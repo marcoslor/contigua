@@ -50,12 +50,27 @@ RESULT="$OUT/media.log"
 WATCH="$OUT/watch.log"
 FAKEV="$OUT/fake-volume.log"
 FAKEP="$OUT/fake-position.log"
+EVIDENCE="$OUT/media-debug.log"
 DC=("$PYTHON" tools/fakephone/deckctl.py --host 127.0.0.1 --port "$PORT" \
     --state "$CACHE_DIR/deckctl-state.json")
 
 FAILED=0
 pass() { echo "PASS media: $*"; }
 fail() { echo "FAIL media: $*"; FAILED=1; }
+
+# media_evidence LABEL — the phone's own account of the session stack, the
+# listener binding and the fake sessions. Counts, packages and states only:
+# neither dumpsys metadata nor logcat lines with track text are kept.
+media_evidence() {
+  {
+    echo "== $1 $(date '+%H:%M:%S') =="
+    emu shell dumpsys media_session 2>/dev/null | tr -d '\r' |
+      grep -E 'Sessions Stack|MediaSessionRecord|package=|state=PlaybackState' | head -40
+    emu shell dumpsys notification 2>/dev/null | tr -d '\r' |
+      grep -A4 'PdNotificationListener' | head -20
+    emu logcat -d -s PdMediaDebug:I 2>/dev/null | tr -d '\r' | tail -20
+  } >> "$EVIDENCE"
+}
 
 # ---- the assertions (pure: they only read the files they are given) ---------
 
@@ -192,6 +207,12 @@ PY
     || { echo "CHECK FAIL: fakephone --help"; exit 1; }
   "$PYTHON" tools/fakephone/fakephone.py --help 2>&1 | grep -q -- "--older-phone" \
     || { echo "CHECK FAIL: fakephone has no --older-phone"; exit 1; }
+  # The receiver checks the intent's action first: a helper that sends only the
+  # component delivers a broadcast the debug code ignores (this is how the
+  # fake sessions stayed at zero on two boots).
+  ( emu() { echo "$@"; }; debug_broadcast dev.pocketdeck.DEBUG_MEDIA --es op start ) |
+    grep -q -- "-a dev.pocketdeck.DEBUG_MEDIA" \
+    || { echo "CHECK FAIL: debug_broadcast drops the action"; exit 1; }
   echo "CHECK OK: preflight, deckctl media, fakephone flags; $SERIAL free"
   exit 0
 fi
@@ -278,6 +299,8 @@ start_fake 1
 sleep 2
 start_fake 2
 sleep 3
+: > "$EVIDENCE"
+media_evidence "fake sessions started"
 emu logcat -c >/dev/null 2>&1 || true
 
 wait_watch() { # wait_watch PATTERN SECONDS
@@ -324,12 +347,14 @@ wait_watch '^media.sessions n=1 ' 20 || fail "the list did not shrink after a se
 
 kill $WATCH_PID >/dev/null 2>&1 || true
 wait $WATCH_PID 2>/dev/null || true
+media_evidence "after drive"
 check_boot "$WATCH" "$FAKEP" "$FAKEV"
 
 if [ "$FAILED" -ne 0 ]; then
   # The next boot is not allowed, so a failed section must carry the phone's own
   # account of it: the debug session's lines, the server's, and which listeners
   # are enabled (component names only).
+  media_evidence "failed"
   EMULOG="$OUT/media-logcat.log"
   emu logcat -d -s PdMediaDebug:I PocketDeckSvc:I PocketDeckApp:I 2>/dev/null |
     tr -d '\r' | tail -60 > "$EMULOG" || true

@@ -186,7 +186,9 @@ debug_broadcast() { # debug_broadcast <action> [am extras...]
   shift
   comp="$(debug_component "$action")" ||
     { echo "[${0##*/}] error: no debug component for $action" >&2; return 2; }
-  emu shell am broadcast -n "$comp" "$@" 2>&1
+  # The explicit component beats the background-receiver rule; the action is
+  # what the receiver checks first, so it must be on the intent too.
+  emu shell am broadcast -n "$comp" -a "$action" "$@" 2>&1
 }
 
 # Waits for the server to log and listen on a port. Prints the port, returns 1

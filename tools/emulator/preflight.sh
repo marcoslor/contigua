@@ -154,7 +154,7 @@ LEDGER=/tmp/pocketdeck-boots.ledger
 if [ -f "$BUDGET_FILE" ]; then
   LIMIT="$(sed -n 's/^emulator=\([0-9][0-9]*\)$/\1/p' "$BUDGET_FILE" | head -1)"
   USED=0
-  [ -f "$LEDGER" ] && USED="$(awk -v n="$NAME" '$2 == n && $3 == "emulator" { c++ } END { print c + 0 }' "$LEDGER")"
+  [ -f "$LEDGER" ] && USED="$(awk -v n="$NAME" '$(NF-2) == n && $(NF-1) == "emulator" { c++ } END { print c + 0 }' "$LEDGER")"
   if [ -n "$LIMIT" ]; then
     if [ "$USED" -ge "$LIMIT" ]; then
       fail "emulator budget spent for $NAME ($USED of $LIMIT boots already in $LEDGER)"
