@@ -97,6 +97,76 @@ is recorded rather than hidden. No further emulator boot was made.
 | P4 | **unverified** | screencap black (display already dead) |
 | P5 | **unverified** | never reached |
 
+### Mac — SDK research (M1)
+
+A phone camera becomes a Mac camera only through a **CoreMediaIO Camera Extension**
+(macOS 12.3+, `CoreMediaIO.framework` `CMIOExtension*`; the WWDC22 "Create camera
+extensions with Core Media IO" session and "Creating a camera extension with Core Media
+I/O"). It is a **system extension**, not an app extension: macOS runs it in its own
+sandboxed daemon (as the `_cmiodalassistants` role user), validates every buffer, and
+republishes it as a normal capture device through AVFoundation. No piece of PocketDeck
+code runs inside the capturing app.
+
+**Bundle layout.** The extension lives in the containing app:
+
+```
+PocketDeck.app/Contents/Library/SystemExtensions/dev.pocketdeck.mac.camera.systemextension/
+  Contents/Info.plist
+  Contents/MacOS/CameraExtension
+```
+
+The extension's `Info.plist` must declare `CFBundlePackageType = SYSX` and the
+`CMIOExtension` dictionary with `CMIOExtensionMachServiceName`; Apple's register
+assistant finds and launches the extension by that Mach service name, so it is
+required, not cosmetic. The `CMIOExtensionInfoDictionaryKey` / `…MachServiceNameKey`
+constants are in `CMIOExtensionProvider.h`.
+
+**Entitlements.** From Apple's article and the WWDC22 walkthrough:
+
+- the **app** carries `com.apple.developer.system-extension.install` (the "System
+  Extension" capability) and an **App Group** shared with the extension;
+- the **extension** carries `com.apple.security.app-sandbox` and the same App Group.
+  Apple's guidance is that the group identifier is prefixed by the extension's
+  MachServiceName. `com.apple.security.device.camera` is needed only if the
+  extension itself opens a camera (we do not: the frames come from the phone);
+- the restricted `system-extension.install` entitlement is authorized by a
+  **provisioning profile**, i.e. a Developer ID (or development) team identity. An
+  ad-hoc signature has no profile, which is the experiment below.
+
+**Activation.** The app submits
+`OSSystemExtensionRequest.activationRequest(forExtensionWithIdentifier:queue:)` and
+implements the delegate: `requestNeedsUserApproval(_:)`, `request(_:didFinishWithResult:)`
+(`.completed`, `.willCompleteAfterReboot`) and `request(_:didFailWithError:)`. The
+person approves in System Settings — Privacy & Security's "Allow" prompt, and the
+extension is listed under Login Items & Extensions › Camera Extensions. The containing
+app must be in `/Applications`: an app elsewhere fails with
+`OSSystemExtensionErrorUnsupportedParentBundleLocation` (code 3). The other error codes
+that matter here are `MissingEntitlement` (2), `CodeSignatureInvalid` (8),
+`ValidationFailed` (9) and `ForbiddenBySystemPolicy` (10). Installing a replacement
+build needs a reboot before its daemon runs (a known CoreMediaIO behaviour, Apple
+forums thread 756234).
+
+**Built here (host, compile + sign only).** `macos/Extensions/Camera/` now holds a
+minimal extension (one provider, one device, one 1280×720@30 source stream that sends
+a solid colour; the real one would send the phone's decoded frames) and
+`bundle.sh --with-camera` builds and ad-hoc signs it into
+`Contents/Library/SystemExtensions/dev.pocketdeck.mac.camera-<variant>.systemextension`.
+On this host that bundle was **built and signed but never opened, copied into place,
+registered or activated** (the brief forbids it):
+
+```
+$ codesign --verify --deep --strict build/vm-e2e/camera/PocketDeck.app   # no output
+$ plutil -p .../dev.pocketdeck.mac.camera-e2e.systemextension/Contents/Info.plist
+  "CFBundlePackageType" => "SYSX"
+  "CMIOExtension" => { "CMIOExtensionMachServiceName" => "group.dev.pocketdeck.mac.camera-e2e" }
+$ codesign -d --entitlements :- .../CameraExtension
+  com.apple.security.app-sandbox = true
+  com.apple.security.application-groups = [group.dev.pocketdeck.mac.camera-e2e]
+$ codesign -d --entitlements :- PocketDeck.app
+  com.apple.developer.system-extension.install = true
+  com.apple.security.application-groups = [group.dev.pocketdeck.mac.camera-e2e]
+```
+
 ## Recommended path
 
 (to be decided from the findings)

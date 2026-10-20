@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- The app that installs a system extension carries this entitlement. A
+	     real build gets it from a Developer ID provisioning profile; an
+	     ad-hoc signature cannot be validated against one, which is exactly
+	     what the VM session measures. -->
+	<key>com.apple.developer.system-extension.install</key>
+	<true/>
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>__CAMERA_GROUP__</string>
+	</array>
+</dict>
+</plist>
