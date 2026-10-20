@@ -111,21 +111,25 @@ enum DwellChrome {
     /// The window kind's actions 8 pts right of the zoom light's slot.
     static let pillActionsX: CGFloat = pillLightInset + 2 * pillLightSpacing + ChromeBar.trafficLightButtonSide + 8
     /// The pill is as tall as the framed bar and as wide as its contents: the
-    /// window kind's actions, then Live Text's button, then the edge.
-    static func pillWidth(actionCount: Int) -> CGFloat {
-        pillActionsX + CGFloat(actionCount) * HeaderControls.buttonWidth
-            + LiveTextBarButton.side + 4 + 4 - pillInset
+    /// traffic lights, the window kind's action capsules, then Live Text's
+    /// capsule, then the edge.
+    static func pillWidth(actions: [HeaderAction]) -> CGFloat {
+        pillActionsX + HeaderBar.rowWidth(actions)
+            + (actions.isEmpty ? 0 : HeaderBar.capsuleGap) + HeaderBar.liveTextSide + 2
     }
 }
 
-/// Settings → General "Reveal controls after": how long the pointer rests in
-/// the immersive hot zone before the pill shows. Short is the old fixed 350 ms
+/// Settings → General "Reveal controls after" and View ▸ Immersive: how long
+/// the pointer rests in the immersive hot zone before the chrome shows, or
+/// "Always Visible", which keeps it up at rest. Short is the old fixed 350 ms
 /// and the default; the value lives in the profile's defaults and applies to
 /// open windows at once.
 enum RevealDelay: String, CaseIterable {
     case instantly
     case short
     case long
+    /// Immersive chrome stays shown: no hot zone, no dwell, no hiding.
+    case alwaysVisible
 
     static let key = "immersive.revealDelay"
 
@@ -134,17 +138,22 @@ enum RevealDelay: String, CaseIterable {
         case .instantly: return "Instantly"
         case .short: return "Short"
         case .long: return "Long"
+        case .alwaysVisible: return "Always Visible"
         }
     }
 
-    /// Instantly (0), the default 350 ms, or twice that.
+    /// Instantly (0), the default 350 ms, or twice that. Unused when the
+    /// chrome is always visible.
     var seconds: TimeInterval {
         switch self {
-        case .instantly: return 0
+        case .instantly, .alwaysVisible: return 0
         case .short: return DwellChrome.dwell
         case .long: return DwellChrome.dwell * 2
         }
     }
+
+    /// The immersive chrome never hides for this choice.
+    var keepsChromeVisible: Bool { self == .alwaysVisible }
 
     /// Unset or unreadable values are Short, the default.
     static func stored(in defaults: UserDefaults) -> RevealDelay {

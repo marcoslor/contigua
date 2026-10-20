@@ -89,9 +89,9 @@ final class PhoneWindowController: StreamWindowController {
     private static let minVideoWidth: CGFloat = 240
 
     override func headerActions() -> [HeaderAction] {
-        [HeaderAction(symbol: "chevron.backward", help: "Back") { [weak self] in self?.nav("back") },
-         HeaderAction(symbol: "circle", help: "Home") { [weak self] in self?.nav("home") },
-         HeaderAction(symbol: "square.on.square", help: "Recents") { [weak self] in self?.nav("recents") }]
+        [.back { [weak self] in self?.navigateBack(nil) },
+         .home { [weak self] in self?.navigateHome(nil) },
+         .recents { [weak self] in self?.navigateRecents(nil) }]
     }
 
     func windowWillResize(_ sender: NSWindow, to frameSize: NSSize) -> NSSize {
@@ -106,11 +106,14 @@ final class PhoneWindowController: StreamWindowController {
     }
 
     /// ⇧⌘H / ⌘↑ only make sense here (home/recents are phone-mode actions).
+    /// Live Text freezes them with the bar's buttons.
     @objc func navigateHome(_ sender: Any?) {
+        guard HeaderActionPolicy.allowsPhoneShortcut(liveTextActive: liveText.isActive) else { return }
         session.nav(stream: stream, action: "home")
     }
 
     @objc func navigateRecents(_ sender: Any?) {
+        guard HeaderActionPolicy.allowsPhoneShortcut(liveTextActive: liveText.isActive) else { return }
         session.nav(stream: stream, action: "recents")
     }
 
