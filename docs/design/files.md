@@ -948,6 +948,49 @@ Still unverified: the same on a real Mac with the real phone (the hands-on pass)
    works, a write stays pending; restart → `reconnect`, upload lands), and `files-thumbs`
    (`fetchThumbnails` fills the grid while `isDownloaded` stays false).
 
+## Fixes 10-20 (the hands-on pass)
+
+The first real Mac + real phone run (2026-10-20) found three defects and two
+honesty gaps. All are fixed on this branch; the unit tests and the host checks
+run everywhere, the end-to-end proof is `files-domain` in the VM (the real
+Mac + phone pass stays with the reviewer).
+
+- **A fetch took 20 s.** `fetchContents` read frames until the connection
+  answered. `end` is the read's terminal reply, but the loop treated it as an
+  intermediate one: it set no failure, the `if failure != nil` guard did not
+  break, and the next `next()` blocked until the socket's `SO_RCVTIMEO` (20 s)
+  returned nil. A Quick Look preview fetches more than once (thumbnail and
+  preview), so a 412-byte file took about a minute. The loop now leaves on
+  `end` (or `error`) and logs `fetch done bytes=<n> ms=<n>`; every other
+  `while let frame = connection.next()` loop in the extension was audited and
+  already returned on its terminal reply.
+- **A preview wrote the file back.** After an open, the system sends a modify
+  for its replica's own bookkeeping (last-used date, tags, favourite rank).
+  The extension forwarded every `modifyItem`, so the phone got
+  `content=false` with no name, parent or date and re-wrote the file. The
+  decision is now a pure helper (`FilesModifyDecision`): a write happens only
+  for contents, or a filename, parent or modification date that really
+  differs. Anything else is answered locally with the item as it is.
+- **A watch named a file.** The working set touches folders, but the system can
+  ask about a file (a preview did); the phone answered `fs_not_a_dir` and the
+  logging-only failure hid it. A touch now resolves the item and, when it is a
+  file, watches its folder instead. The 64-folder cap is unchanged.
+- **The location is "PocketDeck (<phone name>)".** `FilesDomain.displayName`
+  now uses the one name every other surface uses (`RememberedPhones.displayName`:
+  the nickname, else the phone's own name) and composes "PocketDeck (<name>)";
+  with no phone it stays "PocketDeck". A rename, or the phone's name arriving
+  after the domain was added, re-adds the same identifier with the new display
+  name, which macOS updates in place: the Finder location and its
+  CloudStorage folder (with the cached files) stay.
+- **Settings are honest about the build.** A bundle without the App Group or
+  `Contents/PlugIns/Files.appex` shows a disabled switch and "This copy of
+  PocketDeck was built without Finder files."; the controller never tries to
+  add a domain and logs one line. Real failures say to turn the switch off and
+  on again instead of promising that a restart helps. `scripts/install.sh`
+  forwards extra arguments to `bundle.sh`, so `./scripts/install.sh --with-files`
+  installs the extension, and (only for a bundle that carries it) registers the
+  installed copy and its `Files.appex`.
+
 ## Alternatives rejected
 
 - **The extension dials the phone itself.** One session per phone (`busy`), and the keys/pins
