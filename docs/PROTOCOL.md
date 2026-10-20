@@ -54,7 +54,7 @@ Max frame size 8 MiB; a receiver that sees a larger `len` closes the session.
 | `0x21` | SHARE_DATA | phone→mac | the next bytes (≤ 1 MiB) of a shared file; `stream` = the share `id`; see "Share phone → Mac" |
 | `0x22` | DROP_DATA | mac→phone | the next bytes (≤ 1 MiB) of a file dropped on a window; `stream` = the drop `id`; see "Drop Mac → phone" |
 | `0x23` | CLIP_DATA | both | the next bytes (≤ 1 MiB) of a clipboard image; `stream` = the image `id`; see "Clipboard images" |
-| `0x24` | FS_DATA | phone→mac | the next bytes (≤ 256 KiB) of an `fs.read`; `stream` = the read `id`; see "Phone files" |
+| `0x24` | FS_DATA | both | the next bytes (≤ 256 KiB) of an `fs.read` or `fs.write`; `stream` = the request `id`; see "Phone files" |
 
 `nx`,`ny` are normalized `[0,1]` in the stream's video coordinates (top-left
 origin). The phone maps them to the stream's current virtual display size.
@@ -379,11 +379,12 @@ The phone writes every byte to a hidden temp file in `/sdcard/Download/PocketDec
 only after the SHA-256 matches, media-scans the file and — where sensible — offers a SEND
 activity with the app's FileProvider content URI (docs/design/dragdrop.md).
 
-## Phone files (read-only)
+## Phone files
 
-Browsing the phone's shared storage from the Mac (docs/design/files.md §3). One
-session, multiplexed like everything else. The phone is stateless across
-requests: no index, no cache, no lock table beyond the running reads.
+Browsing and writing the phone's shared storage from the Mac (docs/design/
+files.md §3). One session, multiplexed like everything else. The phone is
+stateless across requests: no index, no cache, no lock table beyond the
+running transfers.
 
 - **Paths are relative to shared storage**, `/storage/emulated/0` (`""` = the
   root). A path is rejected with `fs_denied` when it is absolute, contains `\`
@@ -418,9 +419,55 @@ requests: no index, no cache, no lock table beyond the running reads.
   message with an `id` field.
 - **Logs carry no names**: counts, lengths, depths and codes only, both sides.
 
-This is the read-only slice: `fs.write`, `fs.move`, `fs.delete`, `fs.mkdir`,
-`fs.setAttrs`, `fs.watch` and `fs.changes` are designed but not part of the
-wire yet.
+### Writing
+
+`FS_DATA` also travels Mac → phone: `stream` = the request `id`, each frame
+≤ 256 KiB, paced like a drop (at most 1 MiB queued, so at most four frames in
+flight). The phone writes into a hidden temp in the target folder
+(`.pocketdeck-<random>.part`, never listed), verifies size and SHA-256, then
+renames over the target — through the MediaProvider path where the platform
+has one, `renameTo` plus a media scan of both paths otherwise — and scans the
+final path so the file appears in Files/Photos. A cancel or a session end
+deletes the temp; a failed write never leaves a partial file under the
+target's name. A write never replaces a directory.
+
+| t | fields | meaning |
+|---|---|---|
+| `fs.write` | `id`, `path`, `size`, `sha256`, `etag`? | stream `size` bytes after the request; `etag` is the version the Mac believes it replaces |
+| `fs.move` | `id`, `from`, `to`, `etag`? | rename/move one entry; `fs_exists` when `to` is taken, `fs_stale` on an etag mismatch |
+| `fs.delete` | `id`, `path`, `recursive` | a file always; a folder when empty or `recursive` |
+| `fs.mkdir` | `id`, `path` | create one folder (`fs_exists` when taken, `fs_not_found` when the parent is gone) |
+| `fs.setAttrs` | `id`, `path`, `mtime`? | set the modification time, best effort |
+
+Phone → Mac:
+
+| t | fields |
+|---|---|
+| `fs.progress` | `id`, `bytes` — at most 4 per second, then once with the last byte |
+| `fs.result` | `id`, `ok`; on success `item` (the new metadata) and `etag`; on failure `code` and `message` |
+
+Rules:
+
+- A `fs.write` body is at most 1 GiB (1 073 741 824 bytes). A larger announced
+  `size` answers `fs_too_large` before a byte arrives. More bytes than
+  announced are dropped and the write fails.
+- `size` and `sha256` are mandatory. A size or hash mismatch removes the temp
+  and answers `fs_denied` (the wire's existing "could not write" code); the
+  target is untouched.
+- With `etag` present and different from the target's current version (or the
+  target having appeared or vanished since), the answer is `fs_stale` and the
+  temp is deleted. The etag is checked again right before the rename.
+- One write at a time per session (`fs_busy` for a second id). `fs.cancel`
+  stops a write and deletes its temp. A session end does the same.
+- `fs.move`, `fs.delete` and `fs.mkdir` are refused with `fs_denied` for any
+  path the shape rules reject, `fs_not_found` for an absent source, and
+  `fs_exists` when the destination is taken. A non-empty folder deleted
+  without `recursive` is `fs_denied`.
+- `fs.setAttrs` answers `fs.result` with the item; a platform that cannot set
+  the time answers `ok: true` with the item's real metadata (best effort).
+
+`fs.watch` and `fs.changes` are designed (design §2, §5) but are not part of
+the wire yet.
 
 ## Notifications + media
 
