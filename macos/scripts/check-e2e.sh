@@ -5141,12 +5141,11 @@ PY
     screencapture -x "$WORK/finder-watch.png" 2>/dev/null \
         && ok "WATCH screenshot of Finder after the phone-side change: $WORK/finder-watch.png" \
         || bad "WATCH the screenshot after the phone-side change failed"
-    files_log > "$WORK/files-log-watch.txt" 2>/dev/null || true
-    if grep -q "phone watch on=true" "$WORK/files-log-watch.txt" 2>/dev/null \
-        || grep -q "watch on" "$WORK/fake.err" 2>/dev/null; then
+    if grep -q "watch on" "$WORK/fake.err" 2>/dev/null; then
         ok "WATCH the extension asked the phone to watch the open folder"
     else
-        bad "WATCH the phone was never asked to watch anything (bridge watch lines: $(grep -c 'bridge: watch' "$WORK/files-log-watch.txt" 2>/dev/null || echo 0), phone watch lines: $(grep -c 'phone watch' "$WORK/files-log-watch.txt" 2>/dev/null || echo 0))"
+        files_log > "$WORK/files-log-watch.txt" 2>/dev/null || true
+        bad "WATCH the phone was never asked to watch anything (bridge watch lines: $(grep -c 'bridge: watch' "$WORK/files-log-watch.txt" 2>/dev/null || echo 0), phone-side applies: $(grep -c 'phone watch on' "$WORK/files-log-watch.txt" 2>/dev/null || echo 0))"
     fi
     python3 - "$WORK/fsroot/Documents" <<'PY'
 import os, sys
