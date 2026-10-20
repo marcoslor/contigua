@@ -469,10 +469,18 @@ behind a recording seam in `PdNotificationBridge`) pins both cases: on the old
 listener the late gate and the callback-less session both fail (the second with
 `media command play ignored: no session attached`); with the fix both pass.
 
-The device boot for this fix was attempted once and stopped before the media
-section, at the rig's own pairing step (`no new pairing code within 60s`; the
-phone's server had accepted `pair.request` and the listener was enabled), so the
-emulator run and everything below stay unproven.
+The second boot (`verify-batch`, 2026-10-20) reached the media section and showed
+the other half of the silence: `dumpsys media_session` said `Sessions Stack -
+have 0 sessions` and no `PdMediaDebug` line existed at all, while the listener
+logged `media scan n=0` for the gate and for each command. The rig's
+`debug_broadcast` helper sent `am broadcast -n <component>` without the intent
+action, so `MediaDebugTrigger.onReceive` returned at its `action != ACTION`
+check and no fake session was ever created; "the broadcast was delivered"
+(`result=0`) was true and meaningless. The helper now sends `-a <action>`, the
+receiver logs the action it ignored, `media.sh --check` asserts the helper's
+intent carries it, and preflight counts the boot ledger by its actual columns
+(it reported "0 of 2 used" whatever the ledger held). The media section itself
+still has not run on a device: the budget for this round is spent.
 
 Still unproven on a real listener: `getActiveSessions` ordering and key
   minting, artwork from a real `MediaMetadata` (bitmap and `*_URI` sources),
