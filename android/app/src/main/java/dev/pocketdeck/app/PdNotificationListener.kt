@@ -9,6 +9,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.HandlerThread
+import android.os.SystemClock
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
 import android.app.Notification
@@ -32,6 +33,14 @@ class PdNotificationListener : NotificationListenerService() {
 
     private var sessionManager: MediaSessionManager? = null
     private var attachedController: MediaController? = null
+
+    /** Live Update coalescing (docs/design/notify.md): one per second per id. */
+    private val throttle = NotifyLiveThrottle()
+    private val pendingLive = HashMap<String, Map<String, Any?>>()
+    private var flushScheduled = false
+
+    /** The picture already sent for an id, by content hash (in memory only). */
+    private val sentImages = BoundedIdMap<Int>(64)
 
     private val sessionCallback = object : MediaController.Callback() {
         override fun onPlaybackStateChanged(state: PlaybackState?) = scheduleMediaPush()
@@ -57,6 +66,9 @@ class PdNotificationListener : NotificationListenerService() {
         PdNotificationBridge.actionSink = null
         PdNotificationBridge.dismissSink = null
         NotifyIntents.clear()
+        throttle.clear()
+        pendingLive.clear()
+        sentImages.clear()
         sessionManager?.let { runCatching { it.removeOnActiveSessionsChangedListener(activeSessionsListener) } }
         sessionManager = null
         detachSession()
@@ -153,14 +165,17 @@ class PdNotificationListener : NotificationListenerService() {
             dev.pocketdeck.BuildConfig.DEBUG,
         )
         // Ongoing notifications are service chrome; a person never answers
-        // them, and the media session is delivered separately anyway. The debug
-        // poster's own ongoing notification is the exception that makes the
-        // "ongoing is not dismissed" rule testable on an emulator.
+        // them, and the media session is delivered separately anyway. An
+        // Android 16 Live Update is the exception: the system promoted it, so
+        // its progress is the point (docs/design/notify.md). The debug poster's
+        // own ongoing notification stays forwardable so the rules are testable.
+        val promoted = NotifyEvents.promoted(notification.flags, sbn.isOngoing)
         if (sbn.packageName in NotifyEvents.skippedPackages && !debugPoster) return
-        if (sbn.isOngoing && !debugPoster) return
+        if (sbn.isOngoing && !promoted && !debugPoster) return
         val id = forwardId(sbn)
         val candidates = actionCandidates(notification)
         val actions = NotifyEvents.selectActions(candidates)
+        val live = liveFor(sbn, notification, promoted, debugPoster)
         val event = NotifyEvents.notificationEvent(
             id = id,
             pkg = sbn.packageName,
@@ -172,6 +187,7 @@ class PdNotificationListener : NotificationListenerService() {
             actions = actions,
             ongoing = sbn.isOngoing,
             debugPoster = debugPoster,
+            live = live,
         ) ?: return
         // The Mac can only ask for an id it received; the action stays here and
         // is never serialized onto the wire (docs/design/notify.md).
@@ -198,7 +214,121 @@ class PdNotificationListener : NotificationListenerService() {
                 noClear = notification.flags and Notification.FLAG_NO_CLEAR != 0,
             ),
         )
-        bridge.post(event)
+        deliver(id, event, live, if (live == null) notification else null)
+    }
+
+    /**
+     * The `live` field for a promoted ongoing notification (docs/design/notify.md).
+     * The logcat line is the emulator's record of what Android 16 did: the flag
+     * it set and whether it considers the notification promotable. No text.
+     */
+    private fun liveFor(
+        sbn: StatusBarNotification,
+        notification: Notification,
+        promoted: Boolean,
+        debugPoster: Boolean,
+    ): Map<String, Any?>? {
+        if (!sbn.isOngoing) return null
+        val promotable = if (Build.VERSION.SDK_INT >= 36) {
+            runCatching { notification.hasPromotableCharacteristics() }.getOrDefault(false)
+        } else {
+            false
+        }
+        Log.i(
+            TAG,
+            "notify live promoted=${if (promoted) 1 else 0} promotable=${if (promotable) 1 else 0}"
+                + " style=${styleName(notification)}",
+        )
+        if (!promoted && !debugPoster) return null
+        val extras = notification.extras
+        val indeterminate = extras?.getBoolean(Notification.EXTRA_PROGRESS_INDETERMINATE, false) == true
+        val progress = if (indeterminate) {
+            null
+        } else {
+            NotifyEvents.progressFraction(
+                extras?.getInt(Notification.EXTRA_PROGRESS, -1) ?: -1,
+                extras?.getInt(Notification.EXTRA_PROGRESS_MAX, 0) ?: 0,
+            )
+        }
+        val chip = if (Build.VERSION.SDK_INT >= 36) notification.shortCriticalText else null
+        val chrono = if (extras?.getBoolean(Notification.EXTRA_SHOW_CHRONOMETER, false) == true) {
+            notification.`when`
+        } else {
+            null
+        }
+        val countDown = extras?.getBoolean(Notification.EXTRA_CHRONOMETER_COUNT_DOWN, false) == true
+        // A promoted notification with none of the extras is still live: the
+        // empty object is the marker the Mac's menu bar section needs.
+        return NotifyEvents.liveWire(progress, chip, chrono, countDown) ?: emptyMap()
+    }
+
+    /** The style's class name only ("ProgressStyle"), never any content. */
+    private fun styleName(notification: Notification): String {
+        val template = notification.extras?.getString(Notification.EXTRA_TEMPLATE) ?: return "none"
+        return template.substringAfterLast('$').substringAfterLast('.')
+    }
+
+    /**
+     * Sends a post and, for a notification with a picture, its `notify.image`
+     * right after it (docs/design/notify.md). Live updates are coalesced to at
+     * most one per second per id; the newest state wins.
+     */
+    private fun deliver(
+        id: String,
+        event: Map<String, Any?>,
+        live: Map<String, Any?>?,
+        picture: Notification?,
+    ) {
+        mediaHandler.post {
+            if (live != null) {
+                val now = SystemClock.uptimeMillis()
+                if (!throttle.due(id, now)) {
+                    pendingLive[id] = event
+                    scheduleLiveFlush()
+                    return@post
+                }
+                pendingLive.remove(id)
+            }
+            bridge.post(event)
+            if (picture == null) return@post
+            val image = NotifyImageRules.encode(NotifyPictures.sourceFor(this, picture)) ?: return@post
+            val hash = image.data.contentHashCode()
+            // An update that repeats the same picture is not sent again.
+            if (sentImages.get(id) == hash) return@post
+            sentImages.put(id, hash)
+            bridge.post(image.wire(id, NotifyPictures::base64))
+            Log.i(
+                TAG,
+                "notify.image id=$id mime=${image.mime} w=${image.width} h=${image.height}"
+                    + " size=${image.data.size}",
+            )
+        }
+    }
+
+    private fun scheduleLiveFlush() {
+        if (flushScheduled) return
+        flushScheduled = true
+        mediaHandler.postDelayed(liveFlush, throttle.intervalMs)
+    }
+
+    private val liveFlush = object : Runnable {
+        override fun run() {
+            flushScheduled = false
+            val now = SystemClock.uptimeMillis()
+            var next = Long.MAX_VALUE
+            for ((id, event) in pendingLive.toList()) {
+                if (throttle.due(id, now)) {
+                    pendingLive.remove(id)
+                    bridge.post(event)
+                } else {
+                    next = minOf(next, throttle.waitMs(id, now))
+                }
+            }
+            if (pendingLive.isNotEmpty()) {
+                flushScheduled = true
+                mediaHandler.postDelayed(this, next.coerceIn(50L, throttle.intervalMs))
+            }
+        }
     }
 
     override fun onNotificationRemoved(sbn: StatusBarNotification) {
@@ -211,6 +341,9 @@ class PdNotificationListener : NotificationListenerService() {
         if (sbn.packageName in NotifyEvents.skippedPackages && !debugPoster) return
         val id = forwardId(sbn)
         NotifyIntents.remove(id)
+        throttle.forget(id)
+        pendingLive.remove(id)
+        sentImages.remove(id)
         NotifyEvents.removedEvent(id)?.let { bridge.post(it) }
     }
 
