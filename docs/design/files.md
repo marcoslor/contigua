@@ -532,6 +532,14 @@ with the phone's bytes verified and nothing lost when both sides changed a file.
   the original id, and one line logs "conflict" with no names. A delete whose base etag is
   stale does not delete: the phone's item comes back in Finder. A rename onto an existing name
   (`fs_exists`) answers `NSFileProviderError(.filenameCollision)`.
+- **A create never replaces.** `createItem` sends `fs.write` with `exclusive: true`: a name that
+  already exists on the phone (a photo taken since the Mac's last listing) answers `fs_exists`
+  at the request (no byte accepted) and again right before the rename, and the phone's file is
+  never touched. The extension maps that to `NSFileProviderError(.filenameCollision)`, so the
+  system retries the new item under another name. The conflict copy is a create too and runs the
+  same numbered retry (`(from Mac 2)` … `(from Mac 20)`, then it fails with that collision error);
+  unlike the listing-based pick it survives a name taken between the listing and the upload.
+  Without `exclusive`, a replace must name the version it replaces (`etag`); neither → `fs_exists`.
 - **No trash**: `deleteItem` deletes forever on the phone; there is no `.trash` container on
   either side (a phone-side trash would change what the person sees in Files on the phone).
   Finder warns that the delete cannot be undone.

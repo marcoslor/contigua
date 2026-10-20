@@ -77,9 +77,13 @@ class FsWriterTest {
         etag: String? = null,
         size: Long = bytes.size.toLong(),
         digest: String = sha(bytes),
+        exclusive: Boolean = false,
     ): Map<String, Any?> = mutableMapOf<String, Any?>(
         "t" to "fs.write", "id" to id, "path" to path, "size" to size, "sha256" to digest,
-    ).also { if (etag != null) it["etag"] = etag }
+    ).also {
+        if (etag != null) it["etag"] = etag
+        if (exclusive) it["exclusive"] = true
+    }
 
     /** Feeds the body in 256 KiB pieces, like the Mac's drop pacing. */
     private fun feed(writer: FsWriter, id: Int, bytes: ByteArray, chunk: Int = 256 * 1024) {
@@ -192,7 +196,8 @@ class FsWriterTest {
         val target = File(paths.rootPath, "a.txt").also { it.writeText("keep me") }
         val bytes = "other bytes".toByteArray()
         val writer = writer()
-        writer.begin(write(5, "a.txt", bytes, digest = "0".repeat(64)))
+        writer.begin(write(5, "a.txt", bytes, etag = paths.item(target).etag,
+            digest = "0".repeat(64)))
         feed(writer, 5, bytes)
         assertEquals("fs_denied", awaitRefusal(5)["code"])
         assertEquals("keep me", target.readText())
@@ -224,6 +229,51 @@ class FsWriterTest {
         writer.begin(write(7, "gone.txt", bytes, etag = "0".repeat(32)))
         assertEquals("fs_stale", awaitRefusal(7)["code"])
         assertFalse(File(paths.rootPath, "gone.txt").exists())
+        awaitNoStaging()
+    }
+
+    // MARK: Exclusive creates (design §4: a create never replaces)
+
+    @Test
+    fun anExclusiveCreateOnAnExistingFileIsRefusedBeforeAByte() {
+        setup()
+        val phone = File(paths.rootPath, "photo.jpg").also { it.writeText("the phone's photo") }
+        val bytes = "the Mac's version".toByteArray()
+        val writer = writer()
+        writer.begin(write(41, "photo.jpg", bytes, exclusive = true))
+        assertEquals("fs_exists", awaitRefusal(41)["code"])
+        assertEquals("the phone's photo", phone.readText())
+        assertTrue(platform.renamed.isEmpty())
+        // Nothing was accepted, so nothing of this write ran: no progress frame.
+        assertTrue(synchronized(json) { json.none { it["t"] == "fs.progress" } })
+        awaitNoStaging()
+    }
+
+    @Test
+    fun anExclusiveCreateRefusesWhenTheTargetAppearsDuringTheWrite() {
+        setup()
+        val bytes = ByteArray(512 * 1024) { (it % 251).toByte() }
+        val writer = writer()
+        writer.begin(write(42, "new.txt", bytes, exclusive = true))
+        // The phone makes a file under the same name while the bytes stream.
+        val appeared = File(paths.rootPath, "new.txt").also { it.writeText("made on the phone") }
+        feed(writer, 42, bytes)
+        assertEquals("fs_exists", awaitRefusal(42)["code"])
+        assertEquals("made on the phone", appeared.readText())
+        assertTrue(platform.renamed.isEmpty())
+        awaitNoStaging()
+    }
+
+    @Test
+    fun aReplaceWithoutAnEtagIsRefusedOnAnExistingFile() {
+        setup()
+        val phone = File(paths.rootPath, "a.txt").also { it.writeText("keep") }
+        val bytes = "ours".toByteArray()
+        val writer = writer()
+        writer.begin(write(43, "a.txt", bytes))
+        assertEquals("fs_exists", awaitRefusal(43)["code"])
+        assertEquals("keep", phone.readText())
+        assertTrue(platform.renamed.isEmpty())
         awaitNoStaging()
     }
 

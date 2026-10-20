@@ -478,18 +478,17 @@ def staging_files(root):
     return found
 
 
-def conflict_name(name, taken):
+def conflict_candidate(name, attempt):
+    """The extension's FilesConflict.candidate: 1 is (from Mac), then numbered."""
     base, dot, ext = name.rpartition(".")
     if not dot or not base:
         base, ext = name, ""
     suffix = "." + ext if ext else ""
-    number = 1
-    while True:
-        label = " (from Mac)" if number == 1 else " (from Mac %d)" % number
-        candidate = base + label + suffix
-        if candidate not in taken:
-            return candidate
-        number += 1
+    label = " (from Mac)" if attempt == 1 else " (from Mac %d)" % attempt
+    return base + label + suffix
+
+
+CONFLICT_ATTEMPTS = 20
 
 
 def create_ok(reply, size):
@@ -591,21 +590,59 @@ def phase_write(bridge, root):
         report(reply.get("t") == "error" and reply.get("code") == "fs_stale",
                "WRITE a stale base answers fs_stale (%s)" % reply.get("code"))
         # The conflict rule: keep both, upload as "<name> (from Mac).<ext>".
+        # A previous round already left "(from Mac)", and another process takes
+        # the first free name right after this listing: the create is
+        # exclusive, so fs_exists moves the copy on to the next number.
         _, listing = bridge.list_item_all(folder)
         taken = {entry["name"] for entry in listing}
-        conflict = conflict_name("stale.bin", taken)
-        reply = bridge.create_item(folder, conflict, mine)
+        older = conflict_candidate("stale.bin", 1)
+        older_bytes = b"an older conflict copy\n"
+        with open(on_disk(root, "PDWrite/" + older), "wb") as handle:
+            handle.write(older_bytes)
+            handle.flush()
+            os.fsync(handle.fileno())
+        landed = None
+        for attempt in range(1, CONFLICT_ATTEMPTS + 1):
+            candidate = conflict_candidate("stale.bin", attempt)
+            if candidate in taken:
+                continue
+            reply = bridge.create_item(folder, candidate, mine)
+            if reply.get("t") == "error" and reply.get("code") == "fs_exists":
+                continue
+            if reply.get("t") == "item":
+                landed = candidate
+            break
+        second = conflict_candidate("stale.bin", 2)
         current = bridge.stat_item(stale["id"])
         original_path = on_disk(root, "PDWrite/stale.bin")
-        conflict_ok = reply.get("t") == "item" and os.path.exists(
-            on_disk(root, "PDWrite/" + conflict)) \
-            and sha_file(on_disk(root, "PDWrite/" + conflict)) == hashlib.sha256(mine).hexdigest()
+        conflict_ok = landed == second \
+            and sha_file(on_disk(root, "PDWrite/" + second)) == hashlib.sha256(mine).hexdigest()
         report(conflict_ok and current.get("t") == "item"
-               and sha_file(original_path) == hashlib.sha256(phone_bytes).hexdigest(),
-               "WRITE a conflict keeps the phone's bytes and adds a (from Mac) copy")
-        if reply.get("t") == "item":
-            bridge.delete_item(reply["item"]["id"], reply["item"]["etag"])
+               and sha_file(original_path) == hashlib.sha256(phone_bytes).hexdigest()
+               and sha_file(on_disk(root, "PDWrite/" + older)) == hashlib.sha256(older_bytes).hexdigest(),
+               "WRITE a conflict keeps the phone's bytes and numbers past a taken (from Mac) copy (%s)"
+               % name_hash(landed or ""))
+        if landed:
+            _, listing = bridge.list_item_all(folder)
+            by_name = {entry["name"]: entry for entry in listing}
+            if second in by_name:
+                bridge.delete_item(by_name[second]["id"], by_name[second]["etag"])
         bridge.delete_item(stale["id"], current["item"]["etag"] if current.get("t") == "item" else "")
+
+    # A create onto a name the phone already has, but the Mac never listed (a
+    # photo taken since): the phone's bytes stay, the Mac is told fs_exists.
+    taken_path = on_disk(root, "taken.bin")
+    taken_bytes = b"the phone's file, present before the Mac looked\n"
+    with open(taken_path, "wb") as handle:
+        handle.write(taken_bytes)
+        handle.flush()
+        os.fsync(handle.fileno())
+    reply = bridge.create_item(".rootContainer", "taken.bin", b"the Mac's version\n")
+    report(reply.get("t") == "error" and reply.get("code") == "fs_exists"
+           and sha_file(taken_path) == hashlib.sha256(taken_bytes).hexdigest(),
+           "WRITE a create onto an existing name answers fs_exists and keeps its bytes (%s)"
+           % reply.get("code"))
+    os.unlink(taken_path)
 
     # Leave the tree as the check's next phase expects: PDWrite stays (the
     # mid-write phase writes into it by name).

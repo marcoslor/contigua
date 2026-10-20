@@ -22,7 +22,7 @@ private final class FakeFsChannel: FsChannel {
     private(set) var stats: [(id: UInt32, path: String)] = []
     private(set) var reads: [Read] = []
     private(set) var cancels: [UInt32] = []
-    private(set) var writes: [(id: UInt32, path: String, size: Int, sha256: String, etag: String?)] = []
+    private(set) var writes: [(id: UInt32, path: String, size: Int, sha256: String, etag: String?, exclusive: Bool)] = []
     private(set) var writeData: [(id: UInt32, bytes: [UInt8])] = []
     private(set) var moves: [(id: UInt32, from: String, to: String, etag: String?)] = []
     private(set) var deletes: [(id: UInt32, path: String, recursive: Bool)] = []
@@ -46,9 +46,10 @@ private final class FakeFsChannel: FsChannel {
         reads.append(Read(id: id, path: path, offset: offset, length: length, etag: etag))
     }
 
-    func fsWrite(id: UInt32, path: String, size: Int, sha256: String, etag: String?) {
+    func fsWrite(id: UInt32, path: String, size: Int, sha256: String, etag: String?,
+                 exclusive: Bool) {
         lock.lock(); defer { lock.unlock() }
-        writes.append((id, path, size, sha256, etag))
+        writes.append((id, path, size, sha256, etag, exclusive))
     }
 
     func fsWriteData(id: UInt32, bytes: [UInt8], sent: @escaping @Sendable (Bool) -> Void) {
@@ -293,6 +294,7 @@ final class FsClientTests: XCTestCase {
         XCTAssertEqual(bytes.count, announced.size)
         XCTAssertEqual(sha, announced.sha256)
         XCTAssertEqual("old", announced.etag)
+        XCTAssertFalse(announced.exclusive)
         XCTAssertTrue(sink.append(bytes))
         sink.finish()
         // At most four chunks in flight; each completion lets the next go.
@@ -307,6 +309,16 @@ final class FsClientTests: XCTestCase {
         let item = FsItem(name: "a.bin", dir: false, size: bytes.count, mtime: 9, ino: 77, etag: "new")
         client.result(id: announced.id, ok: true, item: item.jsonObject, code: nil, message: nil)
         XCTAssertEqual([.success(item)], results)
+    }
+
+    func testACreateAnnouncesExclusive() throws {
+        var results: [Result<FsItem, FsError>] = []
+        _ = try XCTUnwrap(client.beginWrite(path: "new.bin", size: 1,
+                                            sha256: String(repeating: "a", count: 64),
+                                            etag: nil, exclusive: true) { results.append($0) })
+        let announced = try XCTUnwrap(channel.writes.last)
+        XCTAssertTrue(announced.exclusive)
+        XCTAssertNil(announced.etag)
     }
 
     func testAWriteCancelSendsFsCancelAndFailsTheSink() throws {

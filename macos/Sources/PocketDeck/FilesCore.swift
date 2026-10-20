@@ -765,18 +765,30 @@ struct FilesIdMap: Equatable {
 /// What a write becomes when the phone's copy moved on (design §4 "Conflicts"):
 /// keep both. `<name> (from Mac).<ext>`, numbered when that is taken too.
 enum FilesConflict {
-    static func name(for name: String, taken: (String) -> Bool = { _ in false }) -> String {
+    /// After this many names the copy gives up rather than try forever: a folder
+    /// with a phone-side writer can otherwise spin on the same name for good.
+    static let maxAttempts = 20
+
+    /// The n-th candidate name (1-based): `(from Mac)`, `(from Mac 2)`, …; nil
+    /// past the cap. A create is exclusive, so each candidate is tried on the
+    /// phone and `fs_exists` moves on to the next one.
+    static func candidate(for name: String, attempt: Int) -> String? {
+        guard attempt >= 1, attempt <= maxAttempts else { return nil }
         let ns = name as NSString
         let ext = ns.pathExtension
         let base = ns.deletingPathExtension
         let suffix = ext.isEmpty ? "" : ".\(ext)"
-        var candidate = "\(base) (from Mac)\(suffix)"
-        var number = 2
-        while taken(candidate) {
-            candidate = "\(base) (from Mac \(number))\(suffix)"
-            number += 1
+        if attempt == 1 { return "\(base) (from Mac)\(suffix)" }
+        return "\(base) (from Mac \(attempt))\(suffix)"
+    }
+
+    /// The first candidate the listing says is free; nil when all are taken.
+    static func name(for name: String, taken: (String) -> Bool = { _ in false }) -> String? {
+        for attempt in 1...maxAttempts {
+            guard let candidate = candidate(for: name, attempt: attempt) else { return nil }
+            if !taken(candidate) { return candidate }
         }
-        return candidate
+        return nil
     }
 }
 
@@ -824,4 +836,8 @@ enum FilesFailure: String, CaseIterable {
         default: return .protocolError
         }
     }
+
+    /// A create refused because the name is taken: the extension answers
+    /// `filenameCollision` and the system retries with another name (design §4).
+    var needsAnotherName: Bool { self == .exists }
 }

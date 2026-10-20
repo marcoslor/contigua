@@ -39,6 +39,7 @@ class FsWriter(
         val size: Long,
         val sha256: String,
         val etag: String?,
+        val exclusive: Boolean,
     ) {
         val chunks = ArrayBlockingQueue<ByteArray>(QUEUE_CHUNKS)
         val cancelled = AtomicBoolean(false)
@@ -79,11 +80,17 @@ class FsWriter(
             return refusal(id, FsPaths.denied("a directory is not a file"))
         }
         val etag = Json.str(obj["etag"])
-        if (etag != null && (meta == null || etag != paths.etag(meta))) {
+        // A create never replaces what is already there: the file may have
+        // appeared since the Mac's last listing (a photo taken meanwhile). A
+        // replace must name the version it replaces (design §4).
+        val exclusive = Json.bool(obj["exclusive"]) == true
+        if (exclusive || etag == null) {
+            if (meta != null) return refusal(id, FsPaths.exists())
+        } else if (meta == null || etag != paths.etag(meta)) {
             return refusal(id, FsPaths.stale())
         }
         sweepStaleTemps(target)
-        val next = Job(id, target, tempFor(target), size, sha256, etag)
+        val next = Job(id, target, tempFor(target), size, sha256, etag, exclusive)
         synchronized(lock) {
             if (job != null) return refusal(id, FsPaths.busy())
             job = next
@@ -158,6 +165,12 @@ class FsWriter(
                     if (current.dir || paths.etag(current) != job.etag) {
                         return refusal(job.id, FsPaths.stale())
                     }
+                }
+                if (job.cancelled.get()) return
+                // A create checked again right here: a file that appeared under
+                // the same name while the bytes were streaming stays untouched.
+                if (job.exclusive && paths.meta(job.target) != null) {
+                    return refusal(job.id, FsPaths.exists())
                 }
                 if (!platform.rename(job.temp, job.target) && !platform.plainRename(job.temp, job.target)) {
                     log("fs: write id=${job.id} could not name the file")

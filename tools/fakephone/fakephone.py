@@ -744,7 +744,7 @@ class FsFake(object):
 
 
     # -- writes (docs/PROTOCOL.md "Phone files") ---------------------------
-    def write_plan(self, rel, size, sha256, etag):
+    def write_plan(self, rel, size, sha256, etag, exclusive=False):
         """The target and its hidden temp, or the refusal. Nothing is created."""
         if not isinstance(size, int) or size < 0:
             raise FsError("fs_denied", "no size")
@@ -765,16 +765,19 @@ class FsFake(object):
                 raise
         if meta is not None and meta["dir"]:
             raise FsError("fs_denied", "a directory is not a file")
-        if etag is not None and meta is not None and etag != meta["etag"]:
-            raise FsError("fs_stale", "the file changed")
-        if etag is not None and meta is None:
+        # A create never replaces what is there; a replace names the version it
+        # replaces (docs/design/files.md §4).
+        if exclusive or etag is None:
+            if meta is not None:
+                raise FsError("fs_exists", "that name is taken")
+        elif etag != meta["etag"]:
             raise FsError("fs_stale", "the file changed")
         temp = os.path.join(os.path.dirname(target),
                             FS_TEMP_PREFIX + uuid.uuid4().hex + FS_TEMP_SUFFIX)
         return target, temp
 
-    def finish_write(self, target, temp, size, sha256, etag):
-        """Verifies the temp, re-checks the etag and renames into place."""
+    def finish_write(self, target, temp, size, sha256, etag, exclusive=False):
+        """Verifies the temp, re-checks the target and renames into place."""
         try:
             if os.path.getsize(temp) != size:
                 raise FsError("fs_denied", "the file arrived damaged")
@@ -784,7 +787,12 @@ class FsFake(object):
                     digest.update(block)
             if digest.hexdigest() != str(sha256).lower():
                 raise FsError("fs_denied", "the file arrived damaged")
-            if etag is not None:
+            if exclusive:
+                # Checked again right here: a file that appeared while the
+                # bytes streamed is never replaced.
+                if os.path.lexists(target):
+                    raise FsError("fs_exists", "that name is taken")
+            elif etag is not None:
                 try:
                     meta = self.meta(target)
                 except FsError:
@@ -2187,8 +2195,9 @@ class Session(object):
         if self._fs_write is not None:
             return self._fs_result(read_id, code="fs_busy", message="another write is running")
         size, sha, etag = msg.get("size"), msg.get("sha256"), msg.get("etag")
+        exclusive = msg.get("exclusive") is True
         try:
-            target, temp = fs.write_plan(msg.get("path"), size, sha, etag)
+            target, temp = fs.write_plan(msg.get("path"), size, sha, etag, exclusive)
         except FsError as exc:
             self.phone.events.fs("write", id=read_id, ok=False, code=exc.code)
             return self._fs_result(read_id, code=exc.code, message=exc.message)
@@ -2197,7 +2206,8 @@ class Session(object):
         except OSError:
             return self._fs_result(read_id, code="fs_denied", message="could not stage the file")
         self._fs_write = {"id": read_id, "target": target, "temp": temp, "size": size,
-                          "sha256": sha, "etag": etag, "received": 0,
+                          "sha256": sha, "etag": etag, "exclusive": exclusive,
+                          "received": 0,
                           "handle": handle, "digest": hashlib.sha256(),
                           "last": time.time() - 1.0}
         self.phone.events.fs("write.start", id=read_id, size=size)
@@ -2237,7 +2247,7 @@ class Session(object):
         fs = self.phone.fs
         try:
             item = fs.finish_write(job["target"], job["temp"], job["size"],
-                                   job["sha256"], job["etag"])
+                                   job["sha256"], job["etag"], job["exclusive"])
         except FsError as exc:
             self.phone.events.fs("write", id=job["id"], size=job["size"], ok=False,
                                  code=exc.code)

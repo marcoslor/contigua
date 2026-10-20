@@ -433,7 +433,7 @@ target's name. A write never replaces a directory.
 
 | t | fields | meaning |
 |---|---|---|
-| `fs.write` | `id`, `path`, `size`, `sha256`, `etag`? | stream `size` bytes after the request; `etag` is the version the Mac believes it replaces |
+| `fs.write` | `id`, `path`, `size`, `sha256`, `etag`?, `exclusive`? | stream `size` bytes after the request; `etag` is the version the Mac believes it replaces; `exclusive: true` is a create that must not replace anything |
 | `fs.move` | `id`, `from`, `to`, `etag`? | rename/move one entry; `fs_exists` when `to` is taken, `fs_stale` on an etag mismatch |
 | `fs.delete` | `id`, `path`, `recursive` | a file always; a folder when empty or `recursive` |
 | `fs.mkdir` | `id`, `path` | create one folder (`fs_exists` when taken, `fs_not_found` when the parent is gone) |
@@ -450,13 +450,19 @@ Rules:
 
 - A `fs.write` body is at most 1 GiB (1 073 741 824 bytes). A larger announced
   `size` answers `fs_too_large` before a byte arrives. More bytes than
-  announced are dropped and the write fails.
+  announced are dropped, the temp is deleted and the write answers `fs_denied`
+  ("more bytes than announced") — once, so the Mac never waits.
 - `size` and `sha256` are mandatory. A size or hash mismatch removes the temp
   and answers `fs_denied` (the wire's existing "could not write" code); the
   target is untouched.
 - With `etag` present and different from the target's current version (or the
   target having appeared or vanished since), the answer is `fs_stale` and the
   temp is deleted. The etag is checked again right before the rename.
+- `exclusive: true` means create: a target that exists is `fs_exists` at the
+  request (no byte is accepted), and it is checked again right before the
+  rename (a file that appeared during the stream stays untouched, the temp is
+  deleted). Without `exclusive` and without `etag` an existing target is also
+  `fs_exists`: a replace must name the version it replaces.
 - One write at a time per session (`fs_busy` for a second id). `fs.cancel`
   stops a write and deletes its temp. A session end does the same.
 - `fs.move`, `fs.delete` and `fs.mkdir` are refused with `fs_denied` for any

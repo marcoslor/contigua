@@ -1105,10 +1105,12 @@ final class Session {
         sendJSON(message)
     }
     func fsCancel(id: UInt32) { sendJSON(["t": "fs.cancel", "id": Int(id)]) }
-    func fsWrite(id: UInt32, path: String, size: Int, sha256: String, etag: String?) {
+    func fsWrite(id: UInt32, path: String, size: Int, sha256: String, etag: String?,
+                 exclusive: Bool) {
         var message: [String: Any] = ["t": "fs.write", "id": Int(id), "path": path,
                                       "size": size, "sha256": sha256]
         if let etag { message["etag"] = etag }
+        if exclusive { message["exclusive"] = true }
         sendJSON(message)
     }
     func fsWriteData(id: UInt32, bytes: [UInt8], sent: @escaping @Sendable (Bool) -> Void) {
