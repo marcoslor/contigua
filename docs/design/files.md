@@ -494,6 +494,53 @@ pair (to prove the exclusions), with the phone-side rules of §3/§4 implemented
    request line. Known limitation: the id↔path coupling means a rename changes the id — S4
    owns that (see the identifiers note above).
 
+### S4 implementation notes
+
+S3's read-only tree gains writes: create, edit, rename, move, delete and folder creation,
+with the phone's bytes verified and nothing lost when both sides changed a file.
+
+- **Identifiers** are `ino:<st_ino>` only; `path:<relative path>` stays the fallback when the
+  phone reports `ino: 0`, and `.rootContainer` is the root. The path no longer rides in the id,
+  so a rename or a move keeps the identity — S3's limitation is gone.
+- **The app owns the id ↔ path map**, because the extension runs in more than one process and
+  is restarted at will while the app is one process: one JSON file per profile in the
+  profile's Application Support folder (`files-ids.json`, 0600, written atomically), filled
+  from every listing and stat reply and updated on every successful write, move, delete and
+  mkdir. A stale entry (a stat by the mapped path reports another ino, or is gone) is
+  re-resolved once from the parent's listing; if that does not settle it the answer is
+  `noSuchItem`. Bumping the domain's version (the map format version, below) drops S3's
+  path-carrying ids: on the first run of a domain with the old format the app removes and
+  re-adds the domain, logging one line.
+- **Bridge wire** (`FilesCore.swift`, `FilesBridge.swift`) grows a second version, and the
+  requests carry item identifiers rather than paths, since only the app can resolve them:
+  `list` (item, page), `stat` (item), `read` (item, offset, length, etag), `create` (parent,
+  name, dir?, size, sha256), `modify` (item, base etag, changed fields: content and/or
+  name/parent/mtime), `delete` (item, base etag, recursive), `cancel` (id). Replies carry the
+  new or current item with its identifier (`{"t":"item","id","item"}`), and `{"t":"ok","id"}`
+  for a delete. For a create or a content modify, `data` chunks travel extension → app on the
+  same framing as reads; the app streams them into `fs.write` with the drop rule (≤ 1 MiB
+  queued). The extension writes nothing outside its own temporary directory.
+- **Extension**: capabilities add `allowsWriting`, `allowsAddingSubItems`, `allowsRenaming`,
+  `allowsReparenting` and `allowsDeleting`, but not `allowsTrashing` — there is no trash
+  container, so Finder's delete is immediate and says so. `createItem`, `modifyItem` and
+  `deleteItem` carry a real `Progress`; a cancel sends the bridge `cancel`, which sends
+  `fs.cancel`. With the phone away the answer is `NSFileProviderError(.serverUnreachable)`, so
+  the system keeps the change pending and retries after `reconnect()`.
+- **Conflicts**: a `modifyItem` whose base etag no longer matches the phone (`fs_stale`) keeps
+  both — the Mac's content is uploaded as `<name> (from Mac).<ext>` in the same folder
+  (numbered when taken: `<name> (from Mac 2).<ext>`), the phone's current item is returned for
+  the original id, and one line logs "conflict" with no names. A delete whose base etag is
+  stale does not delete: the phone's item comes back in Finder. A rename onto an existing name
+  (`fs_exists`) answers `NSFileProviderError(.filenameCollision)`.
+- **No trash**: `deleteItem` deletes forever on the phone; there is no `.trash` container on
+  either side (a phone-side trash would change what the person sees in Files on the phone).
+  Finder warns that the delete cannot be undone.
+- **Caps and refusals** are the phone's (design §3): a write body over 1 GiB is
+  `fs_too_large` before a byte, at most 8 live ids per client, one write at a time. The
+  Android/ and dot-prefixed top-level rules, the canonical-path rule and "a write never
+  replaces a directory" apply to every write op.
+
+
 4. **S4 — write path: create, modify, delete, move; etags and conflicts.** Phone: `FsWriter`
    (temp + verify + rename + scan), `fs.move`/`fs.delete`/`fs.mkdir`/`fs.setAttrs`, `fs_stale`
    on an etag mismatch; rename through the MediaProvider path behind a `Platform` seam (so the
