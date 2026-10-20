@@ -290,6 +290,15 @@ class DeckService(private val appContext: Context?) :
         }
     }
 
+    /**
+     * The app's camera push (docs/PROTOCOL.md "Camera"). The shell half of C1
+     * (the hub, the pipe and the relay) lands with the next commit; until then
+     * the push is recorded only in the log's length, never its contents.
+     */
+    override fun cameraState(json: String?) {
+        log("camera state not handled yet (${json?.length ?: 0} bytes)")
+    }
+
     /** `cmd notification allow_listener` at shell UID (docs/design/notify.md). */
     override fun grantListenerAccess(): Boolean {
         val component = "${dev.pocketdeck.BuildConfig.APPLICATION_ID}/dev.pocketdeck.app.PdNotificationListener"
