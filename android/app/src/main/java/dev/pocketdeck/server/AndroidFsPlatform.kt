@@ -2,6 +2,7 @@ package dev.pocketdeck.server
 
 import android.content.Context
 import java.io.File
+import java.nio.file.FileAlreadyExistsException
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 
@@ -21,15 +22,38 @@ class AndroidFsPlatform(
     private val log: (String) -> Unit = {},
 ) : FsPlatform {
 
-    override fun rename(from: File, to: File): Boolean = runCatching { from.renameTo(to) }
-        .onFailure { log("fs: rename failed: ${it.javaClass.simpleName}") }
-        .getOrDefault(false)
+    override fun rename(from: File, to: File, replace: Boolean): Boolean {
+        return try {
+            // `renameTo` replaces silently. A caller that must not replace gets
+            // one check right here; the window left is the gap between it and
+            // the syscall, not the whole transfer.
+            if (!replace && to.exists()) throw FileAlreadyExistsException(to.path)
+            from.renameTo(to)
+        } catch (e: FileAlreadyExistsException) {
+            throw e
+        } catch (e: Exception) {
+            log("fs: rename failed: ${e.javaClass.simpleName}")
+            false
+        }
+    }
 
-    override fun plainRename(from: File, to: File): Boolean = runCatching {
-        Files.move(from.toPath(), to.toPath(), StandardCopyOption.REPLACE_EXISTING)
-        true
-    }.onFailure { log("fs: plain rename failed: ${it.javaClass.simpleName}") }
-        .getOrDefault(false)
+    override fun plainRename(from: File, to: File, replace: Boolean): Boolean {
+        return try {
+            if (replace) {
+                Files.move(from.toPath(), to.toPath(), StandardCopyOption.REPLACE_EXISTING)
+            } else {
+                // Without REPLACE_EXISTING the kernel refuses a taken name, so
+                // this path has no window at all.
+                Files.move(from.toPath(), to.toPath())
+            }
+            true
+        } catch (e: FileAlreadyExistsException) {
+            throw e
+        } catch (e: Exception) {
+            log("fs: plain rename failed: ${e.javaClass.simpleName}")
+            false
+        }
+    }
 
     override fun scan(files: List<File>) {
         val app = app ?: return
