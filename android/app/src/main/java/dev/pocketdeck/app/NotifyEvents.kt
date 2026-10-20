@@ -190,8 +190,10 @@ object NotifyEvents {
         if (id.isEmpty() || id.length > 64 || id.any { !it.isLetterOrDigit() && it !in "-._" }) null else mapOf("t" to "notify.remove", "id" to id)
 
     /**
-     * The chosen media session's state; null clears Now Playing. `positionMs` is
-     * the session's position at send time; the Mac advances it with `rate`.
+     * The chosen session's state; null clears Now Playing. `positionMs` is the
+     * session's position at send time; the Mac advances it with `rate`. `key`,
+     * `canSeek` and the volume pair are the "Media part 2" fields: an older Mac
+     * ignores them, an older phone never sends them.
      */
     fun mediaState(
         playing: Boolean,
@@ -202,21 +204,30 @@ object NotifyEvents {
         durationMs: Long?,
         positionMs: Long?,
         rate: Double,
+        key: String? = null,
+        canSeek: Boolean = false,
+        volume: Int? = null,
+        volumeMax: Int? = null,
     ): Map<String, Any?> = buildMap {
         put("t", "media.state")
         put("playing", playing)
         validPackage(pkg.orEmpty())?.let { put("pkg", it) }
+        MediaControl.validKey(key)?.let { put("key", it) }
         title?.let(::capped)?.takeIf { it.isNotEmpty() }?.let { put("title", it) }
         artist?.let(::capped)?.takeIf { it.isNotEmpty() }?.let { put("artist", it) }
         album?.let(::capped)?.takeIf { it.isNotEmpty() }?.let { put("album", it) }
         durationMs?.takeIf { it > 0 }?.let { put("durationMs", it) }
         positionMs?.takeIf { it >= 0 }?.let { put("positionMs", it) }
         if (playing) put("rate", rate)
+        if (canSeek) put("canSeek", true)
+        val max = volumeMax?.takeIf { it > 0 }
+        if (max != null) {
+            put("volumeMax", max)
+            volume?.let { put("volume", it.coerceIn(0, max)) }
+        }
     }
 
-    /** Transport commands; anything else is not a command and is dropped. */
-    fun validMediaCommand(action: String): String? = when (action) {
-        "play", "pause", "next", "prev" -> action
-        else -> null
-    }
+    /** Transport, seek and volume commands; anything else is not a command. */
+    fun validMediaCommand(action: String): String? =
+        action.takeIf { it in MediaControl.actions }
 }

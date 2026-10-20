@@ -167,7 +167,8 @@ class DeckService(private val appContext: Context?) :
                 // The session tells the app when the forwarding gate is open, so
                 // the listener's bridge knows when to push (DeckState relay).
                 notifyForward = { forward -> sendToApp { it.onNotifySession(forward) } },
-                mediaCommand = { action -> sendToApp { it.onMediaCommand(action) } },
+                mediaCommand = { command -> sendToApp { it.onMediaCommand(command) } },
+                mediaChoose = { key -> sendToApp { it.onMediaChoose(key) } },
                 notifyOpen = { id, displayId -> sendToApp { it.onNotifyOpen(id, displayId) } },
                 notifyAction = { id, index, text -> sendToApp { it.onNotifyAction(id, index, text) } },
                 notifyDismiss = { id -> sendToApp { it.onNotifyDismiss(id) } },

@@ -31,6 +31,7 @@ class NotifySessionTest {
     @Volatile private var phoneShared = false
     @Volatile private var session: Session? = null
     private val mediaCommands = java.util.concurrent.CopyOnWriteArrayList<String>()
+    private val mediaChooses = java.util.concurrent.CopyOnWriteArrayList<String>()
     private val forwards = java.util.concurrent.CopyOnWriteArrayList<Boolean>()
     private val notifyOpens = java.util.concurrent.CopyOnWriteArrayList<Pair<String, Int>>()
     private var clock = 1_000L
@@ -64,7 +65,8 @@ class NotifySessionTest {
                 tlsView = TlsV2Fixture.view,
                 gateProvider = { GateSettings(true, true) },
                 notifyShared = { phoneShared },
-                mediaCommand = { action -> mediaCommands.add(action) },
+                mediaCommand = { command -> mediaCommands.add(command) },
+                mediaChoose = { key -> mediaChooses.add(key) },
                 notifyForward = { forward -> forwards.add(forward) },
                 notifyOpen = { id, displayId -> notifyOpens.add(id to displayId) },
             )
@@ -286,7 +288,33 @@ class NotifySessionTest {
         send(mapOf("t" to "media.command"))
         val deadline = System.currentTimeMillis() + 3_000
         while (mediaCommands.size < 2 && System.currentTimeMillis() < deadline) Thread.sleep(20)
-        assertEquals(listOf("play", "pause"), mediaCommands.toList())
+        // The app process receives the validated command as JSON (part 2).
+        assertEquals(listOf("play", "pause"),
+                     mediaCommands.toList().map { Json.parseObject(it)["action"] })
+    }
+
+    @Test
+    fun `media seek, volume and choose are validated before they reach the app`() {
+        connect()
+        authenticate()
+        readUntil("state")
+        send(mapOf("t" to "media.command", "action" to "seek", "positionMs" to 45_000, "key" to "s2"))
+        send(mapOf("t" to "media.command", "action" to "volume", "level" to 9))
+        send(mapOf("t" to "media.command", "action" to "seek"))
+        send(mapOf("t" to "media.command", "action" to "volume", "level" to -1))
+        send(mapOf("t" to "media.choose", "key" to "s1"))
+        send(mapOf("t" to "media.choose", "key" to "bad key"))
+        val deadline = System.currentTimeMillis() + 3_000
+        while ((mediaCommands.size < 2 || mediaChooses.size < 1) && System.currentTimeMillis() < deadline) {
+            Thread.sleep(20)
+        }
+        val commands = mediaCommands.toList().map { Json.parseObject(it) }
+        assertEquals("seek", commands[0]["action"])
+        assertEquals(45_000L, commands[0]["positionMs"])
+        assertEquals("s2", commands[0]["key"])
+        assertEquals("volume", commands[1]["action"])
+        assertEquals(9L, (commands[1]["level"] as Number).toLong())
+        assertEquals(listOf("s1"), mediaChooses.toList())
     }
 
     @Test

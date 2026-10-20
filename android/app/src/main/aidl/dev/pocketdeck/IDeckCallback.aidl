@@ -20,8 +20,15 @@ oneway interface IDeckCallback {
     /** The Mac asked to start (or stop) notification sharing for this session. */
     void onNotifySession(boolean forwarding);
 
-    /** The Mac pressed a Now Playing transport control (play, pause, next, prev). */
-    void onMediaCommand(String action);
+    /**
+     * The Mac drove Now Playing (`media.command`): `json` is the validated
+     * command — `{"action":"play"|"pause"|"next"|"prev"|"seek"|"volume",
+     * "key"?,"positionMs"?,"level"?}` (docs/design/notify.md).
+     */
+    void onMediaCommand(String json);
+
+    /** The Mac picked which phone session Now Playing follows (`media.choose`). */
+    void onMediaChoose(String key);
 
     /**
      * The Mac asked this phone to ring (docs/PROTOCOL.md "Ring"): the app shows
