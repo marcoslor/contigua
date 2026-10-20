@@ -4844,9 +4844,6 @@ check_files_domain() {
     # -- The fake phone and the app (the domain is added at launch) ------------
     files_tree
     FAKE_ARGS="--fs-root $WORK/fsroot --fs-chunk-delay-ms 4" start_fake || return 1
-    # The domain must not exist from an earlier run: remove first, then add.
-    files_oneshot remove "$WORK/remove-before.txt" >/dev/null 2>&1 || true
-
     "$LSREGISTER" -f "$E2E_BUNDLE" >/dev/null 2>&1
     pluginkit -a "$appex" >/dev/null 2>&1
     pluginkit -e use -i "$FILES_ID" >/dev/null 2>&1
@@ -4854,6 +4851,14 @@ check_files_domain() {
     file_has "$appex" "$WORK/pluginkit.txt" \
         && ok "FILES pluginkit lists the extension at $appex" \
         || bad "FILES pluginkit does not list $appex ($(head -3 "$WORK/pluginkit.txt" | tr '\n' ' '))"
+    # The domain must not exist from an earlier run: remove it, then add. After
+    # the bundle and its extension are registered: run before that, the remove
+    # said "not found" while a domain left by a run that was cut short (a VM's
+    # disk persists) stayed registered, stuck in its disk import, and every
+    # later run re-added onto it. The listings around it are the evidence.
+    files_oneshot list "$WORK/list-before.txt" >/dev/null 2>&1 || true
+    files_oneshot remove "$WORK/remove-before.txt" >/dev/null 2>&1 || true
+    files_oneshot list "$WORK/list-after-remove.txt" >/dev/null 2>&1 || true
 
     launch --connect "127.0.0.1:$PORT" --files-domain add
     wait_until 30 file_has "files-domain add: ok" "$WORK/app.log" \
