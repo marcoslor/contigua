@@ -123,18 +123,16 @@ struct MCPToolHost {
 
     private func screenshot(_ id: Int) async throws -> MCPToolResult {
         let window = try requireWindow(id)
-        // The displayed frame is what the person sees. A quiet/headless window
-        // can have no displayed buffer at all, so ask the phone for a keyframe
-        // and decode that instead (FrameGrab owns both routes).
-        if let buffer = window.videoView.displayedPixelBuffer(),
+        // The same two routes as Live Text's freeze: the frame the display
+        // layer shows (what the person sees), else the phone's next keyframe
+        // decoded once, for a window whose layer reports no displayed buffer
+        // (occluded, or a quiet/headless run).
+        if let buffer = window.videoView.copyDisplayedFrame(),
            let data = await encode(buffer) {
             return .image(data)
         }
-        if let sample = await freshKeyframe(window) {
-            let data = await Task.detached(priority: .userInitiated) {
-                FrameGrab.png(fromSample: sample)
-            }.value
-            if let data { return .image(data) }
+        if let buffer = await snapshot(window), let data = await encode(buffer) {
+            return .image(data)
         }
         throw MCPToolFailure("No frame on window \(id) yet.")
     }
@@ -145,16 +143,31 @@ struct MCPToolHost {
         }.value
     }
 
-    /// A keyframe that arrived after this call (or the newest one when the
-    /// phone is gone and cannot answer `window.keyframe`).
-    private func freshKeyframe(_ window: StreamWindowController) async -> CMSampleBuffer? {
-        let serial = window.videoView.keyframeSerial
-        controller.windows.session.requestKeyframe(stream: window.stream)
-        for _ in 0..<100 {
-            if let sample = window.videoView.keyframeSample(after: serial) { return sample }
-            try? await Task.sleep(for: .milliseconds(20))
+    /// The phone's next keyframe, decoded (VideoLayerView.beginFrameSnapshot).
+    /// nil after 2 s: no format yet, the phone is gone, or Live Text took the
+    /// decoder for its own freeze in the meantime.
+    private func snapshot(_ window: StreamWindowController) async -> CVPixelBuffer? {
+        final class Once {
+            var continuation: CheckedContinuation<CVPixelBuffer?, Never>?
+            func finish(_ buffer: CVPixelBuffer?) {
+                continuation?.resume(returning: buffer)
+                continuation = nil
+            }
         }
-        return window.videoView.newestKeyframeSample()
+        let once = Once()
+        let view = window.videoView
+        let buffer = await withCheckedContinuation { continuation in
+            once.continuation = continuation
+            view.beginFrameSnapshot { buffer in MainActor.assumeIsolated { once.finish(buffer) } }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                MainActor.assumeIsolated {
+                    guard once.continuation != nil else { return }
+                    view.cancelFrameSnapshot()
+                    once.finish(nil)
+                }
+            }
+        }
+        return buffer
     }
 
     // MARK: Input
