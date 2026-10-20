@@ -78,8 +78,11 @@ window you give it.
   **PocketDeck** location in Finder: browse, open and Quick Look files, copy
   them out, and copy files in, edit, rename, move, make folders and delete.
   Writes are verified on the phone and MediaStore is kept in step, so a new
-  photo shows up in the Gallery, and changes made on the phone appear in Finder
-  while the folder is open. A delete is **immediate** — the phone has no Trash — and Finder says
+  photo shows up in the Gallery. While a folder has been open the phone keeps
+  watching it for ten minutes, and the app signals the domain's working set so
+  Finder can pick the change up — the end-to-end proof of a phone-side change
+  appearing in Finder is still open (see docs/design/files.md "S5 Done"). A
+  delete is **immediate** — the phone has no Trash — and Finder says
   so. Cached files stay readable while the phone is away, and edits made then
   upload when it is back; when both sides changed a file, both copies are kept
   (`name (from Mac).ext`). A copy onto a name the phone already has is refused,
