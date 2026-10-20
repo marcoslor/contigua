@@ -12,7 +12,30 @@ struct SettingsView: View {
             Tab("Devices", systemImage: "iphone.gen3") { DevicesSettings() }
             Tab("Automation", systemImage: "terminal") { AutomationSettings() }
         }
-        .frame(width: 480)
+        .frame(width: SettingsLayout.width)
+        // A grouped Form reports its content's ideal height, and the Settings
+        // window took it: on a short screen the rows below the fold were
+        // clipped and could not scroll. The cap makes the TabView fit the
+        // screen, so the form inside it scrolls; a shorter tab keeps its own
+        // natural height.
+        .frame(maxHeight: SettingsLayout.maxContentHeight(for: NSScreen.main?.visibleFrame.height ?? 800))
+    }
+}
+
+/// Settings' window size rules (docs/design/mac-redesign.md §3.6).
+enum SettingsLayout {
+    static let width: CGFloat = 480
+    /// The design's height; tall enough for General's usual rows, short enough
+    /// for a 1280x800 screen with the menu bar and margins.
+    static let designHeight: CGFloat = 560
+    /// The title bar, the menu bar and a margin: the room a window must leave.
+    static let chromeAllowance: CGFloat = 120
+    static let minimumHeight: CGFloat = 320
+
+    /// The tallest the tab content may be on a screen whose visible height is
+    /// `visibleHeight` (no scrolling until the content is actually taller).
+    static func maxContentHeight(for visibleHeight: CGFloat) -> CGFloat {
+        max(min(designHeight, visibleHeight - chromeAllowance), minimumHeight)
     }
 }
 
