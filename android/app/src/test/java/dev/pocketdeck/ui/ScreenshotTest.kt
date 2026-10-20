@@ -203,7 +203,6 @@ class ScreenshotTest {
                 onToggleAllowConnections = {},
                 onToggleAllowPairings = {},
                 onToggleNotify = {},
-                onToggleCamera = {},
                 onStatusAction = {},
                 onForget = { "" },
                 onUndoForget = {},

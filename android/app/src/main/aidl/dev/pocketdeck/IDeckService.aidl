@@ -103,14 +103,4 @@ interface IDeckService {
      * activities from the background (docs/design/notify.md).
      */
     void openNotification(String id, int displayId, in PendingIntent intent) = 15;
-
-    /**
-     * The app's camera side (docs/PROTOCOL.md "Camera", docs/design/camera.md
-     * C1): the gate and the camera list
-     * {"allowed":bool,"cams":[{"id","facing","w","h"}]} when the setting or the
-     * permission changes, and each capture's state
-     * {"stream":N,"state":"...","reason":"..."} as it moves. The session relays
-     * states to `cam.state`; the list answers `cam.list`.
-     */
-    void cameraState(String json) = 16;
 }

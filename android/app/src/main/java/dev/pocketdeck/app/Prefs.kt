@@ -18,7 +18,6 @@ object Prefs {
     private const val KEY_ONBOARDING_DONE = "onboarding_done"
     private const val KEY_BATTERY_REQUESTED = "battery_requested"
     private const val KEY_NOTIFY_SHARED = "notify_shared"
-    private const val KEY_CAMERA_ALLOWED = "camera_allowed"
 
     /**
      * A scanned Mac QR (review R2): the phone pins the Mac by `f` and answers
@@ -92,17 +91,6 @@ object Prefs {
 
     fun setNotifyShared(ctx: Context, value: Boolean) =
         sp(ctx).edit().putBoolean(KEY_NOTIFY_SHARED, value).apply()
-
-    /**
-     * "Let Macs use the camera" (docs/design/camera.md, C1). Default OFF: the
-     * shell service refuses `cam.start` with `off` until this is true and the
-     * CAMERA permission is granted. Only the runtime dialog (or the rig's
-     * `pm grant`) grants the permission; nothing here ever does.
-     */
-    fun isCameraAllowed(ctx: Context): Boolean = sp(ctx).getBoolean(KEY_CAMERA_ALLOWED, false)
-
-    fun setCameraAllowed(ctx: Context, value: Boolean) =
-        sp(ctx).edit().putBoolean(KEY_CAMERA_ALLOWED, value).apply()
 
     /** Stable random 16-hex id advertised over mDNS. */
     fun deviceId(ctx: Context): String {

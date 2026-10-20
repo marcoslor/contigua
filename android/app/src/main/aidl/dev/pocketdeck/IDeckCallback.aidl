@@ -1,7 +1,5 @@
 package dev.pocketdeck;
 
-import android.os.ParcelFileDescriptor;
-
 /** One-way events from the shell service to the app process. */
 oneway interface IDeckCallback {
 
@@ -56,14 +54,4 @@ oneway interface IDeckCallback {
 
     /** A Mac cleared the forwarded notification `id` (`notify.dismiss`). */
     void onNotifyDismiss(String id);
-
-    /**
-     * A Mac asked for the phone's camera (`cam.start`, docs/PROTOCOL.md
-     * "Camera"). `paramsJson` is the request (CameraSpec) and `sink` the write
-     * end of the capture's pipe: the app writes length-prefixed access units
-     * into it and the shell turns them into VIDEO_FRAMEs. The shell starts the
-     * app's CameraCaptureService itself (uid 2000) right after this call; the
-     * app parks the pipe for it. Closing the read end stops the capture.
-     */
-    void onCameraStart(String paramsJson, in ParcelFileDescriptor sink);
 }

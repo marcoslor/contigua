@@ -19,11 +19,6 @@
          notifications once; without it the ring still sounds and the
          notification's Stop action works). -->
     <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
-    <!-- Camera sharing (docs/design/camera.md, C1): the app process captures in
-         a camera-type foreground service the shell starts. The permission is
-         requested by the "Let Macs use the camera" toggle, never granted here. -->
-    <uses-permission android:name="android.permission.CAMERA" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
 
     <!-- The Mac's app list needs launchable apps; Shizuku is opened by package. -->
     <queries>
@@ -144,17 +139,6 @@
             android:name=".app.DeckForegroundService"
             android:exported="false"
             android:foregroundServiceType="connectedDevice" />
-
-        <!-- Camera sharing (docs/design/camera.md, C1). Exported only so uid 2000
-             (the Shizuku shell service, which is the one caller Android lets start
-             a camera FGS from the background) can start it; DUMP is a signature
-             permission the shell holds and ordinary apps do not. Not sticky: a
-             capture never outlives the session that asked for it. -->
-        <service
-            android:name=".app.CameraCaptureService"
-            android:exported="true"
-            android:permission="android.permission.DUMP"
-            android:foregroundServiceType="camera" />
 
         <!-- Notification sharing (docs/design/notify.md): reads active
              notifications and the media session after the per-phone opt-in;
