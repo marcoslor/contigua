@@ -18,6 +18,9 @@
 //   nav-click back|home|recents  a click on that bar button: synthetic NSEvents
 //                    at the button's window location, to the control the
 //                    content's hit test finds (never the action itself)
+//   nav back|home|recents  the Navigate menu's action on the first stream
+//                    window (what its bar button and shortcut run): for a check
+//                    that must act after a wait the app cannot run inline
 //   settings-dump PATH [LAST ROW]  the Settings window's real geometry: its
 //                    frame against the screen, the tab's scroll view, and
 //                    whether the last row shows once scrolled to the end

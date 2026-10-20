@@ -2253,6 +2253,24 @@ final class ConnectionController {
             if let path = check.debugInputScript, let error = armDebugInput(path, phoneOnly: phoneOnly) { return error }
             applyAutoOpen(check)
             return nil
+        case "nav":
+            guard let action = arguments.first,
+                  ["back", "home", "recents"].contains(action) else {
+                return "nav needs back|home|recents"
+            }
+            guard let window = windows.controller(for: 1) else { return "no first window" }
+            switch action {
+            case "back":
+                window.navigateBack(nil)
+            case "home", "recents":
+                guard let phone = window as? PhoneWindowController else {
+                    return "home/recents need the phone window"
+                }
+                action == "home" ? phone.navigateHome(nil) : phone.navigateRecents(nil)
+            default:
+                return "nav needs back|home|recents"
+            }
+            return nil
         case "wake-phone":
             // The phone window's Wake Screen button, for the e2e (its click is
             // unit-tested; a scripted click would need real pointer input).

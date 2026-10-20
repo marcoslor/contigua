@@ -1082,7 +1082,8 @@ def main():
     parser.add_argument("--fake-err", default=None)
     parser.add_argument("--fake-pid", type=int, default=None)
     parser.add_argument("--phase",
-                        choices=["online", "offline", "write", "kill", "watch", "watchset"],
+                        choices=["online", "read", "offline", "write", "kill",
+                                 "watch", "watchset"],
                         required=True)
     parser.add_argument("--ttl", type=float, default=20.0)
     parser.add_argument("--watch-folders", default="")
@@ -1136,6 +1137,17 @@ def main():
         report(False, "BRIDGE cannot connect to the bridge socket (%s)" % error)
         return 1
     try:
+        if args.phase == "read":
+            # The read-only half of `online`: what a Finder browse, a Quick
+            # Look and a stat send, with no create/cancel in the same phase.
+            hello = bridge.hello()
+            report(hello.get("t") == "hello" and hello.get("connected") is True,
+                   "BRIDGE hello: connected, phone name %r" % hello.get("name"))
+            check_root_listing(bridge, args.root)
+            check_paging(bridge, args.root, "Documents", 1)
+            check_stat(bridge, args.root, "big3.bin")
+            check_read(bridge, args.root, "big3.bin", 3 * 1024 * 1024)
+            return 0
         hello = bridge.hello()
         report(hello.get("t") == "hello" and hello.get("connected") is True
                and hello.get("name") == "FakePhone",
