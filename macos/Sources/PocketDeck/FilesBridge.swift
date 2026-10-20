@@ -19,7 +19,7 @@ import os
 /// directory (`--files-bridge-dir`). The file name carries the profile so two
 /// profiles never meet on one socket.
 enum FilesSocket {
-    static let infoPlistKey = "PDFilesGroup"
+    static let infoPlistKey = filesGroupInfoKey
 
     /// bundle.sh writes the group id into the Info.plist; a bare `swift run`
     /// build has none and the bridge simply is not started.
@@ -388,9 +388,16 @@ final class SessionBridgeHost: FilesBridgeHost {
     /// once from the parent's listing, else `fs_not_found` (design §3).
     private func resolve(_ identifier: String,
                          completion: @escaping (Result<String, FsError>) -> Void) {
-        if identifier == FilesMap.rootIdentifier { return completion(.success("")) }
+        resolveKind(identifier) { result in completion(result.map { $0.path }) }
+    }
+
+    /// As `resolve`, plus whether the phone says the item is a folder: a watch
+    /// names folders, and a file answered `fs_not_a_dir` (design "Fixes 10-20").
+    private func resolveKind(_ identifier: String,
+                             completion: @escaping (Result<(path: String, dir: Bool), FsError>) -> Void) {
+        if identifier == FilesMap.rootIdentifier { return completion(.success(("", true))) }
         guard let path = map.path(for: identifier) else {
-            return reresolve(identifier, completion: completion)
+            return reresolveKind(identifier, completion: completion)
         }
         client.stat(path: path) { [weak self] result in
             guard let self else { return }
@@ -403,12 +410,12 @@ final class SessionBridgeHost: FilesBridgeHost {
                                     parentIdentifier: self.parent(of: identifier),
                                     identifier: identifier)
                 self.save()
-                completion(.success(path))
+                completion(.success((path, fs.dir)))
             case .failure(let error):
                 if error.code == "fs_not_found" {
                     self.map.invalidate(subtree: path)
                     self.save()
-                    return self.reresolve(identifier, completion: completion)
+                    return self.reresolveKind(identifier, completion: completion)
                 }
                 completion(.failure(error))
             }
@@ -418,6 +425,11 @@ final class SessionBridgeHost: FilesBridgeHost {
     /// One listing of the parent: the only other way to learn an id's path.
     private func reresolve(_ identifier: String,
                              completion: @escaping (Result<String, FsError>) -> Void) {
+        reresolveKind(identifier) { result in completion(result.map { $0.path }) }
+    }
+
+    private func reresolveKind(_ identifier: String,
+                               completion: @escaping (Result<(path: String, dir: Bool), FsError>) -> Void) {
         guard let parentID = map.parent(for: identifier), parentID != identifier else {
             return completion(.failure(FsError(code: "fs_not_found")))
         }
@@ -434,7 +446,7 @@ final class SessionBridgeHost: FilesBridgeHost {
                         if FilesMap.identifier(path: path, ino: fs.ino) == identifier {
                             self.map.insert(fs: fs, path: path, parentIdentifier: parentID)
                             self.save()
-                            return completion(.success(path))
+                            return completion(.success((path, fs.dir)))
                         }
                     }
                     completion(.failure(FsError(code: "fs_not_found")))
@@ -807,19 +819,27 @@ final class SessionBridgeHost: FilesBridgeHost {
         guard !filesSystemContainer(item) else {
             return completion(.failure(FsError(code: "fs_not_found")))
         }
-        resolve(item) { [weak self] result in
+        resolveKind(item) { [weak self] result in
             guard let self else { return }
             switch result {
             case .failure(let error):
                 completion(.failure(error))
-            case .success(let path):
-                if self.pathByItem[item] == path {
+            case .success(let resolved) where !resolved.dir:
+                // A watch names a folder. The system can still ask about a file
+                // (a preview did): the phone refuses `fs_not_a_dir`, and the
+                // file's folder is what the list of changes is about anyway. A
+                // watch for the parent covers the file's own changes too.
+                let parent = self.parent(of: item)
+                guard parent != item else { return completion(.success(())) }
+                self.touch(item: parent, completion: completion)
+            case .success(let resolved):
+                if self.pathByItem[item] == resolved.path {
                     return completion(.success(()))
                 }
-                self.pathByItem[item] = path
-                self.itemsByPath[path, default: []].insert(item)
+                self.pathByItem[item] = resolved.path
+                self.itemsByPath[resolved.path, default: []].insert(item)
                 self.baseline(item)
-                self.client.watch(paths: [path], on: true, completion: completion)
+                self.client.watch(paths: [resolved.path], on: true, completion: completion)
             }
         }
     }

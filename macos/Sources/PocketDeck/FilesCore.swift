@@ -882,6 +882,52 @@ struct FilesIdMap: Equatable {
     }
 }
 
+// MARK: - Modify decisions
+
+/// The fields a modify can carry that the phone actually stores. The system
+/// also sends a modify for its own replica's bookkeeping (last-used date, tags,
+/// favourite rank); nothing on the phone holds those, and writing for them cost
+/// a phone round trip that re-wrote the file after every preview.
+struct FilesModifyChange: Equatable {
+    var contents = false
+    var filename = false
+    var parent = false
+    var modificationDate = false
+}
+
+/// The values of those fields before and after the modify. A field the system
+/// did not report as changed keeps its old value.
+struct FilesModifyValues: Equatable {
+    var name: String
+    var parent: String
+    /// Milliseconds since 1970, as the phone reports a modification date.
+    var mtime: Int?
+}
+
+enum FilesModifyDecision {
+    /// The phone is written only when something it stores really changes.
+    static func needsPhoneWrite(_ change: FilesModifyChange,
+                                old: FilesModifyValues?,
+                                new: FilesModifyValues) -> Bool {
+        if change.contents { return true }
+        // No old values (a fresh extension process): a field the system says
+        // changed is a change.
+        guard let old else {
+            return change.filename || change.parent || change.modificationDate
+        }
+        if change.filename && new.name != old.name { return true }
+        if change.parent && new.parent != old.parent { return true }
+        if change.modificationDate && new.mtime != old.mtime { return true }
+        return false
+    }
+}
+
+// MARK: - What this bundle can do
+
+/// The Info.plist key `bundle.sh --with-files` writes into the app and the
+/// extension: the App Group the bridge's socket lives in.
+let filesGroupInfoKey = "PDFilesGroup"
+
 // MARK: - Conflicts
 
 /// What a write becomes when the phone's copy moved on (design §4 "Conflicts"):

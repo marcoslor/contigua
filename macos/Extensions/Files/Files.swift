@@ -606,6 +606,7 @@ final class FilesExtension: NSObject, NSFileProviderReplicatedExtension {
     private func fetch(item: String, requested: NSFileProviderItemVersion?, progress: Progress,
                        retried: Bool,
                        completion: @escaping (URL?, NSFileProviderItem?, Error?) -> Void) {
+        let started = Date()
         let etag = requested.flatMap { String(data: $0.contentVersion, encoding: .utf8) }
         let metadata: FileItem
         switch stat(item: item) {
@@ -653,6 +654,11 @@ final class FilesExtension: NSObject, NSFileProviderReplicatedExtension {
         var hasher = SHA256()
         var received = 0
         var failure: FilesFailure?
+        // `end` is the read's terminal reply: whether it carried a hash mismatch
+        // or the bytes are good, nothing else arrives on this connection. Waiting
+        // for another frame cost the socket's 20 s receive timeout per fetch (a
+        // Quick Look of a 412-byte file took 20 s, twice).
+        var ended = false
         while let frame = connection.next() {
             if state.isCancelled {
                 failure = .cancelled
@@ -679,14 +685,16 @@ final class FilesExtension: NSObject, NSFileProviderReplicatedExtension {
                     if size != received || size != metadata.size || digest != sha256.lowercased() {
                         failure = .io
                     }
+                    ended = true
                 case .error(_, let code):
                     let mapped = FilesFailure.from(code: code)
                     failure = mapped == .stale && !retried ? .stale : mapped
+                    ended = true
                 default:
                     continue
                 }
             }
-            if failure != nil { break }
+            if failure != nil || ended { break }
         }
         handle.closeFile()
         if failure == nil && received != metadata.size { failure = .io }
@@ -703,7 +711,8 @@ final class FilesExtension: NSObject, NSFileProviderReplicatedExtension {
             return
         }
         progress.completedUnitCount = progress.totalUnitCount
-        log.notice("fetch done bytes=\(received, privacy: .public)")
+        let elapsed = Int(Date().timeIntervalSince(started) * 1000)
+        log.notice("fetch done bytes=\(received, privacy: .public) ms=\(elapsed, privacy: .public)")
         completion(target, ProviderItem(metadata), nil)
     }
 
@@ -902,6 +911,27 @@ final class FilesExtension: NSObject, NSFileProviderReplicatedExtension {
         let changedDate: Date? = item.contentModificationDate ?? nil
         if changedFields.contains(.contentModificationDate), let changedDate {
             mtime = Int(changedDate.timeIntervalSince1970 * 1000)
+        }
+
+        // The system also sends modifies for its own replica's bookkeeping
+        // (last-used date, tags, favourite rank). None of those exist on the
+        // phone, so a modify that changes nothing the phone stores is answered
+        // locally: sending `content=false` with no fields used to reach the
+        // phone and re-write the file after every preview (design "Fixes 10-20").
+        let change = FilesModifyChange(
+            contents: wantsContent,
+            filename: newName != nil,
+            parent: newParent != nil,
+            modificationDate: mtime != nil)
+        let values = FilesModifyValues(
+            name: item.filename,
+            parent: item.parentItemIdentifier == .rootContainer
+                ? FilesMap.rootIdentifier : item.parentItemIdentifier.rawValue,
+            mtime: mtime)
+        guard FilesModifyDecision.needsPhoneWrite(change, old: nil, new: values) else {
+            log.notice("modify local: nothing the phone stores changed")
+            completionHandler(item, [], false, nil)
+            return progress
         }
 
         if !wantsContent {
