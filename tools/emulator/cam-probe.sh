@@ -92,7 +92,7 @@ run_stage() { # run_stage <stage> [args...]
 
 start_camera_app() {
   local activity
-  activity="$(emu shell cmd package resolve-activity --brief -a android.media.action.STILL_IMAGE_CAMERA 2>/dev/null |
+  activity="$(emu_long shell cmd package resolve-activity --brief -a android.media.action.STILL_IMAGE_CAMERA 2>/dev/null |
     grep '/' | tail -1 | tr -d '\r')"
   step "camera app: ${activity:-none resolved}"
   if [ -n "$activity" ]; then
@@ -105,8 +105,8 @@ start_camera_app() {
 
 dump_p4() {
   step "P4: dumpsys sensor_privacy, media.camera, status bar"
-  emu shell dumpsys sensor_privacy > "$EVIDENCE/p4-sensor-privacy.txt" 2>&1 || true
-  emu shell dumpsys media.camera > "$EVIDENCE/p4-media-camera.txt" 2>&1 || true
+  emu_long shell dumpsys sensor_privacy > "$EVIDENCE/p4-sensor-privacy.txt" 2>&1 || true
+  emu_long shell dumpsys media.camera > "$EVIDENCE/p4-media-camera.txt" 2>&1 || true
   emu shell screencap -p /data/local/tmp/pd-cam-status.png >/dev/null 2>&1 || true
   "$ADB" -s "$SERIAL" pull /data/local/tmp/pd-cam-status.png "$EVIDENCE/p4-status-bar.png" >/dev/null 2>&1 || true
   emu shell rm -f /data/local/tmp/pd-cam-status.png >/dev/null 2>&1 || true
