@@ -249,8 +249,8 @@ one uid 2000 owns, and the `app_process` system context's package is `android` (
 
 ## C1 implementation notes
 
-Built on the shape above; the wire is docs/PROTOCOL.md "Camera". Numbers from the
-one C1 emulator boot are at the end of this section.
+Built on the shape above; the wire is docs/PROTOCOL.md "Camera". The verification
+record is at the end of this section.
 
 - **Consent is a setting, default off.** "Let Macs use the camera" sits on the Home
   screen next to the notification-sharing toggle. Turning it on asks for `CAMERA`
@@ -259,9 +259,14 @@ one C1 emulator boot are at the end of this section.
   capture. The app pushes `{allowed, cams}` to the shell service through
   `IDeckService.cameraState` whenever the setting or the permission changes and when
   the deck service starts; the shell refuses `cam.start` with `off` while it is
-  false or was never pushed (fail closed). The rig enables it with the preference
-  write the toggle makes plus `pm grant` (tools/emulator/cam-c1.sh) — production
-  code never grants the permission itself.
+  false or was never pushed (fail closed). The rig enables it with `pm grant` plus
+  a debug-only, DUMP-protected receiver (`CameraDebugSetting`) that runs the same
+  calls as the toggle — `Prefs.setCameraAllowed`, `CameraGate.push` and, when
+  turning off, stopping a live capture — and then waits for `cam.list` to agree
+  (tools/emulator/cam-c1.sh). Rewriting `shared_prefs` behind the app's back is
+  not an option: the notification listener restarts the app about 260 ms after a
+  force-stop, so the reloaded process could write the old value back (both C1
+  runs lost the gate that way). Production code never grants the permission.
 - **Start path: the shell spawns `am start-foreground-service`.** The shell service
   has no `ContextImpl` for our package (C0's finding), so the start is the C0b
   stage-a mechanism run as a child process — `am start-foreground-service -n
@@ -292,7 +297,12 @@ one C1 emulator boot are at the end of this section.
   the real implementations. `onDisconnected` is `evicted`; `ERROR_CAMERA_DISABLED`
   is `disabled`; `ERROR_CAMERA_IN_USE`/`MAX_CAMERAS_IN_USE` are `busy`; nothing is
   retried. The encoder is the `WindowStream` shape: `video/avc`, surface colour
-  format, VBR, no B-frames, I-frame interval 2 s.
+  format, VBR, no B-frames, I-frame interval 2 s. Its build order is
+  create → configure → createInputSurface → start, owned by `EncoderSetup` and
+  pinned by `CameraEncoderOrderTest`: the input surface only exists while the
+  codec is configured, so a `start` before it fails with a `CodecException`
+  (round 1's every-capture failure on the emulator). A refused step logs its
+  name plus `errorCode`, `isTransient`, `isRecoverable` and `diagnosticInfo`.
 - **Encoder details.** Bitrate ~0.12 bpp·fps, capped at 8 Mbps; SPS+PPS from the
   output format (`csd-0`, `csd-1`) are prepended to the first keyframe only; every
   later keyframe is a plain IDR. The first keyframe therefore decodes without a
@@ -303,28 +313,36 @@ one C1 emulator boot are at the end of this section.
 
 ### C1 verification
 
-- **Host, `cam-wire` (fakephone + deckctl, no Mac app): PASS 15/15.** list (2
-  cameras) → 3 s capture (92 frames, 30.7 fps, keyframe first and with SPS/PPS, a
-  1906 ms keyframe gap) → a second stream `busy` → `cam.stop` → `stopped` → the
-  camera free again (61 frames) → the Annex-B decodes as 1280×720 H.264 →
-  eviction after 29 frames (`evicted`, 0 frames after, no retry) → setting off
-  (empty list, `off`).
-- **JVM (K1):** the state machine (start/frames framing/busy/evict/pipe EOF/off) and
-  the wire shapes in `CameraCaptureTest` (9) and `CameraBridgeTest` (8).
-- **Emulator: NOT verified — C1's one boot was lost to a rig bug.** The boot
-  (2026-10-20 10:55, ledger `camera-c1 emulator 32633`) reached the app with the
-  permission granted and the wire up (deckctl paired on the rig, real phone
-  server), but `tools/emulator/cam-c1.sh` wrote the `camera_allowed` pref *after*
-  `</map>`, where SharedPreferences cannot see it: `cam.start` answered `off` on
-  the wire (frames 0), which is the gate working, and the script then died on an
-  undefined helper (`stats_field`). Both are fixed (the key is asserted inside
-  `<map>`, and `cam.list` must be non-empty before the capture stages), but the
-  budget is one boot, so the emulator numbers — fps, keyframe interval with the
-  phone locked, eviction and recovery, `stopped` and the service gone, the `off`
-  path after the setting is turned off — are unverified until a re-run:
-  `tools/emulator/cam-c1.sh --check` then the script inside one
-  `heavy.sh` call. Evidence from the lost boot: `.agent/emu/cam-c1.log`,
-  `.cache/cam-c1-start.txt`.
+- **Host, `cam-wire` (fakephone + deckctl, no Mac app): PASS 15/15** (round 2
+  re-run). list (2 cameras) → 3 s capture (91 frames, 30.3 fps, keyframe first and
+  with SPS/PPS, a 1905 ms keyframe gap) → a second stream `busy` → `cam.stop` →
+  `stopped` → the camera free again (61 frames) → the Annex-B decodes as 1280×720
+  H.264 → eviction after 30 frames (`evicted`, 0 frames after, no retry) → setting
+  off (empty list, `off`).
+- **JVM (K1): 580 tests, 0 failures.** The state machine (start/frames
+  framing/busy/evict/pipe EOF/off) and the wire shapes in `CameraCaptureTest` (9)
+  and `CameraBridgeTest` (8); the encoder build order and its release on failure in
+  `CameraEncoderOrderTest` (5); the debug receiver's `on`/`off` argument in
+  `CameraDebugArgsTest` (3).
+- **Emulator: still not verified on device. Two boots used, both lost on the rig.**
+  - Round 1 (2026-10-20 10:55): the pref write landed after `</map>`, so `cam.start`
+    answered `off` (`cam-wire`'s gate working); the script then died on an undefined
+    helper.
+  - Round 2 (2026-10-20 12:31, ledger `camera-c1r2 emulator 91674`): boot, unlock,
+    pairing and the `CAMERA` grant were fine, but the setting never reached the app.
+    The script's `am broadcast -a dev.pocketdeck.DEBUG_CAMERA_SETTING` was implicit,
+    and Android drops an implicit broadcast to a manifest receiver while the app is
+    in the background: no `PdCameraDebug` line, and the app pushed
+    `camera gate: allowed=false cams=0` (`cam.list` 0 cameras). The rig now sends it
+    to the receiver's component (`-n dev.pocketdeck/.app.CameraDebugSetting`) with
+    `-p`, re-sends it while waiting for `cam.list`, and records the
+    `BroadcastQueue`/permission-denial lines when the gate does not move. **This
+    fix and the encoder order fix are unverified on the device**; the round's one
+    boot is spent, so the next run has to confirm them together: fps, keyframe
+    interval with the phone locked, eviction and recovery, `stopped` with the
+    service gone, and `off` after the setting is turned off
+    (`tools/emulator/cam-c1.sh --check`, then the script inside one `heavy.sh`
+    call). Evidence: `.agent/emu/cam-c1.log`.
 - **Unverified on a real phone:** the privacy dot for an app-process camera client
   (C0b's P4 note); the emulator's synthetic camera is not a measure of a real
   camera's fps or keyframe timing.
