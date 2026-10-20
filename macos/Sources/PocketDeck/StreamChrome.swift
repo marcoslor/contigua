@@ -25,7 +25,7 @@ final class DwellPillView: NSGlassEffectView {
     var onPress: (() -> Void)?
 
     init() {
-        super.init(frame: NSRect(origin: .zero, size: CGSize(width: DwellChrome.pillWidth(actionCount: 0),
+        super.init(frame: NSRect(origin: .zero, size: CGSize(width: DwellChrome.pillWidth(actions: []),
                                                              height: DwellChrome.pillHeight)))
         cornerRadius = DwellChrome.pillCornerRadius
         // Clear glass: the blur stays, the grey scrim does not. The traffic
@@ -66,8 +66,9 @@ final class StreamChromeView: NSView {
     /// the mirror, so the bar shows the video only.
     private let touchDots = CALayer()
     /// The window kind's actions at the right end (the phone window's
-    /// Back/Home/Recents); hidden in the bar and shown in the pill alike.
-    private let actions = NSHostingView(rootView: HeaderControls(actions: []))
+    /// Back/Home/Recents), each group in its own glass capsule; hidden in the
+    /// bar and shown in the pill alike.
+    private let actions = HeaderBarView(frame: .zero)
     /// The phone window's sleeping-panel cover (docs/design/phone-mirror.md):
     /// above the stream, below the pill and the kind's actions.
     let phoneOverlay = PhoneScreenOverlayView(frame: .zero)
@@ -75,8 +76,11 @@ final class StreamChromeView: NSView {
     /// the kind's actions (or inside the pill), and its status pill says the
     /// window is frozen while the mode is on.
     let liveTextButton = LiveTextBarButton(frame: .zero)
+    private let liveTextCapsule = HeaderCapsuleView(material: HeaderBar.material(dark: false))
     private let liveTextStatus = LiveTextStatusView(frame: .zero)
     private(set) var style: WindowStyle
+    /// Live Text is on: the kind's actions are frozen (HeaderActionPolicy).
+    private(set) var liveTextActive = false
 
     /// The pill's fade state; only `setPill` moves it.
     private(set) var showsPill = false
@@ -104,10 +108,6 @@ final class StreamChromeView: NSView {
         ext.automaticallyPlacesContentView = false
         ext.contentView = video
         video.wantsLayer = true
-        actions.sizingOptions = []
-        // The pill is a window overlay; its safe area would push the buttons
-        // down.
-        actions.safeAreaRegions = []
         actions.isHidden = true
         pillView.onPress = { [weak self] in self?.onBarPress?() }
         liveTextButton.onPress = { [weak self] in self?.onLiveTextToggle?() }
@@ -125,12 +125,15 @@ final class StreamChromeView: NSView {
         phoneOverlay.layer?.zPosition = 1.5
         addSubview(pillView)
         addSubview(actions)
+        addSubview(liveTextCapsule)
         liveTextStatus.isHidden = true
         addSubview(liveTextButton)
         addSubview(liveTextStatus)
+        liveTextCapsule.isHidden = true
         liveTextButton.layer?.zPosition = 2
-        liveTextStatus.layer?.zPosition = 2
+        liveTextStatus.layer?.zPosition = 3
         pillView.layer?.zPosition = 2
+        liveTextCapsule.layer?.zPosition = 2
         actions.layer?.zPosition = 2
         layoutChrome()
     }
@@ -159,15 +162,16 @@ final class StreamChromeView: NSView {
     /// stream's top-left corner and is as wide as its contents.
     var pillStreamRect: CGRect {
         CGRect(x: DwellChrome.pillInset, y: DwellChrome.pillInset,
-               width: DwellChrome.pillWidth(actionCount: actionCount), height: DwellChrome.pillHeight)
+               width: DwellChrome.pillWidth(actions: actions.actions), height: DwellChrome.pillHeight)
     }
 
     func setActions(_ actions: [HeaderAction]) {
-        self.actions.rootView = HeaderControls(actions: actions)
+        self.actions.setActions(actions, liveTextActive: liveTextActive)
         needsLayout = true
+        layoutChrome()
     }
 
-    var actionCount: Int { actions.rootView.actions.count }
+    var actionCount: Int { actions.actionCount }
 
     /// Right now: the framed bar above the stream, or nothing in immersive and
     /// in full screen.
@@ -192,7 +196,7 @@ final class StreamChromeView: NSView {
     private func newPillFrame() -> NSRect? {
         guard style == .immersive, !(window?.styleMask.contains(.fullScreen) ?? false) else { return nil }
         return NSRect(x: DwellChrome.pillInset, y: bounds.height - DwellChrome.pillInset - DwellChrome.pillHeight,
-                      width: DwellChrome.pillWidth(actionCount: actionCount), height: DwellChrome.pillHeight)
+                      width: DwellChrome.pillWidth(actions: actions.actions), height: DwellChrome.pillHeight)
     }
 
     func layoutChrome() {
@@ -231,32 +235,35 @@ final class StreamChromeView: NSView {
     /// (setStyle, setPill).
     private func layoutControls() {
         let barVisible = barHeight > 0
-        let actionWidth = CGFloat(actionCount) * HeaderControls.buttonWidth
-        let buttonSide = LiveTextBarButton.side
+        let side = HeaderBar.liveTextSide
         if barVisible {
             actions.isHidden = actionCount == 0
-            if actionCount > 0 {
-                actions.frame = NSRect(x: bounds.width - actionWidth - 12, y: bounds.height - barHeight,
-                                       width: actionWidth, height: barHeight)
-            }
             liveTextButton.isHidden = false
-            liveTextButton.frame = NSRect(x: bounds.width - actionWidth - 12 - buttonSide,
-                                          y: bounds.height - barHeight,
-                                          width: buttonSide, height: barHeight)
+            liveTextCapsule.isHidden = false
+            if let row = HeaderBar.row(actions.actions, rightEdge: bounds.width) {
+                let y = bounds.height - barHeight
+                // Center the 28 pt capsules in the 28 pt bar band.
+                actions.frame = NSRect(x: row.actionsX, y: y, width: row.actionsWidth, height: barHeight)
+                liveTextCapsule.frame = NSRect(x: row.liveTextX, y: y, width: side, height: barHeight)
+                liveTextButton.frame = NSRect(x: row.liveTextX, y: y, width: side, height: barHeight)
+            }
             layoutLiveTextStatus(bar: true)
         } else if showsPill, let pill = pillFrame {
             actions.isHidden = actionCount == 0
-            if actionCount > 0 {
-                actions.frame = NSRect(x: pill.minX + DwellChrome.pillActionsX, y: pill.minY,
-                                       width: actionWidth, height: pill.height)
-            }
             liveTextButton.isHidden = false
-            liveTextButton.frame = NSRect(x: pill.minX + DwellChrome.pillActionsX + actionWidth,
-                                          y: pill.minY, width: buttonSide, height: pill.height)
+            liveTextCapsule.isHidden = false
+            // The pill's own row: the lights, then the action capsules from
+            // pillActionsX, then a gap and the Live Text capsule.
+            actions.frame = NSRect(x: pill.minX + DwellChrome.pillActionsX, y: pill.minY,
+                                   width: HeaderBar.rowWidth(actions.actions), height: pill.height)
+            liveTextCapsule.frame = NSRect(x: actions.frame.maxX + HeaderBar.capsuleGap, y: pill.minY,
+                                           width: side, height: pill.height)
+            liveTextButton.frame = liveTextCapsule.frame
             layoutLiveTextStatus(bar: false)
         } else {
             // Full screen has no bar or pill: the View menu is the way in.
             liveTextButton.isHidden = true
+            liveTextCapsule.isHidden = true
             layoutLiveTextStatus(bar: false)
         }
     }
@@ -273,19 +280,49 @@ final class StreamChromeView: NSView {
                      width: size.width, height: size.height)
     }
 
-    /// The mode came or went: the status pill, the button's accent and the
-    /// drag source follow it.
+    /// The mode came or went: the status pill, the button's accent, the drag
+    /// source and the frozen controls follow it.
     func setLiveText(active: Bool) {
+        liveTextActive = active
         liveTextButton.isOn = active
+        actions.setActions(actions.actions, liveTextActive: active)
+        liveTextStatus.setText("Live Text")
         liveTextStatus.isHidden = !active
         if active { layoutLiveTextStatus(bar: barHeight > 0) }
         needsLayout = true
     }
 
+    /// A subject was copied by force click: the status pill says so for a
+    /// moment, then goes back to "Live Text" (or away when the mode is off).
+    func flashSubjectCopied() {
+        copyStatusWork?.cancel()
+        liveTextStatus.setText("Subject copied")
+        liveTextStatus.isHidden = false
+        layoutLiveTextStatus(bar: barHeight > 0)
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.liveTextStatus.setText("Live Text")
+            self.liveTextStatus.isHidden = !self.liveTextActive
+            self.layoutLiveTextStatus(bar: self.barHeight > 0)
+        }
+        copyStatusWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: work)
+    }
+
+    private var copyStatusWork: DispatchWorkItem?
+
     /// True while the status pill is up (the chrome state file reports it).
     var showsLiveTextStatus: Bool { !liveTextStatus.isHidden }
 
     override var isOpaque: Bool { false }
+
+    /// The capsule material follows the window's appearance (light or dark).
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        let material = HeaderBar.material(for: effectiveAppearance)
+        actions.material = material
+        liveTextCapsule.material = material
+    }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
         guard barHeight > 0, let hit = super.hitTest(point) else { return super.hitTest(point) }
