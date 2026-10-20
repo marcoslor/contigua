@@ -318,7 +318,9 @@ L_KEYS="$(stats_field "$CACHE_DIR/cam-c1-locked.txt" keys)"
 L_FPS="$(stats_field "$CACHE_DIR/cam-c1-locked.txt" fps)"
 step "locked: frames=$L_FRAMES keys=$L_KEYS fps=$L_FPS"
 RESULTS+=("locked frames=$L_FRAMES keys=$L_KEYS fps=$L_FPS")
-[ "${L_FRAMES:-0}" -ge 60 ] || fail "only $L_FRAMES frames across the lock (C0b expected ~30/s)"
+# C0b measured the synthetic camera at 6-8 fps (29-42 frames per 5 s), so 9 s
+# is 54-72 frames; 45 leaves room for the encoder's first second.
+[ "${L_FRAMES:-0}" -ge 45 ] || fail "only $L_FRAMES frames across the lock (C0b: 6-8 fps)"
 [ "${L_KEYS:-0}" -ge 2 ] || fail "only $L_KEYS keyframes across the lock"
 case "$(last_state "$CACHE_DIR/cam-c1-locked.txt")" in
   *stopped*) : ;;
