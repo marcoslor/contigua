@@ -64,7 +64,10 @@ memory_gate() {
     while :; do
         free="$(memory_pressure 2>/dev/null | tail -1 | sed -E 's/.*: ([0-9]+)%.*/\1/')"
         swap_mb="$(sysctl -n vm.swapusage 2>/dev/null | sed -E 's/.*used = ([0-9.]+)M.*/\1/' | cut -d. -f1)"
-        if [ -n "$free" ] && [ "$free" -ge 25 ] && [ -n "$swap_mb" ] && [ "$swap_mb" -lt 2048 ]; then
+        # PD_VM_SWAP_MAX_MB / PD_VM_FREE_MIN: a supervised run may move the
+        # bar (stale swap with plenty free); agents never set these.
+        if [ -n "$free" ] && [ "$free" -ge "${PD_VM_FREE_MIN:-25}" ] && [ -n "$swap_mb" ] \
+            && [ "$swap_mb" -lt "${PD_VM_SWAP_MAX_MB:-2048}" ]; then
             return 0
         fi
         if [ "$waited" -ge 2700 ]; then
