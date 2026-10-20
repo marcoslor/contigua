@@ -7097,6 +7097,17 @@ PY
         bad "LT no analysis result (app log: $(tail -3 "$WORK/app.log"))"
     fi
 
+    # VM screenshots (visible runs only): the bar over the bright text frame,
+    # once in the mode (controls dimmed, "Live Text" pill) and once at rest.
+    if [ "$VISIBLE" = "1" ]; then
+        local shotwin
+        shotwin="$(await_window '$4 > 200 && $5 > 200')" || shotwin=""
+        if [ -n "$shotwin" ]; then
+            screencapture -x -o -l"$shotwin" "$WORK/livetext-dimmed.png" \
+                && say "screenshot: $WORK/livetext-dimmed.png"
+        fi
+    fi
+
     # Force click: the host's text frame has no lifted subject, so the click
     # must leave the system's path alone and copy nothing. (The subject branch
     # is proved in the VM; a real trackpad is not available here.)
@@ -7184,6 +7195,10 @@ PY
         ok "LT video frames render again after exit (n $resumed -> $(frames_n))"
     else
         bad "LT no frames after exit (n $resumed -> $(frames_n))"
+    fi
+    if [ "$VISIBLE" = "1" ] && [ -n "${shotwin:-}" ]; then
+        screencapture -x -o -l"$shotwin" "$WORK/livetext-bar.png" \
+            && say "screenshot: $WORK/livetext-bar.png"
     fi
 
     # A stream resize while in the mode drops back to idle.
