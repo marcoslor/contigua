@@ -634,13 +634,6 @@ class EventLog(object):
     def session(self, state):
         self._emit({"ev": "session", "state": state, "ts": time.time()})
 
-    def camera(self, stream, state, reason=None):
-        """A cam.state the fake sent (ids and state names only, no pixels)."""
-        ev = {"ev": "camera", "stream": stream, "state": state, "ts": time.time()}
-        if reason:
-            ev["reason"] = reason
-        self._emit(ev)
-
     def dnd(self, mode, by_mac):
         """The phone's DND after a Mac command (mode name only, never a person)."""
         self._emit({"ev": "dnd", "mode": mode, "byMac": by_mac, "ts": time.time()})
@@ -1537,117 +1530,6 @@ class WindowStream(object):
             self.phone.events.frames(self.stream_id, self._frames_sent)
 
 
-# --- one encoder-backed camera stream (docs/PROTOCOL.md "Camera") -----------
-class CameraStream(object):
-    """A synthetic camera: an animated test pattern encoded to H.264.
-
-    Differences from WindowStream that the wire requires: no VIDEO_CONFIG (the
-    Mac learns the format from the first keyframe) and SPS+PPS prepended to that
-    first keyframe only, with a keyframe every 2 s. Counts and ids are all the
-    caller sees; no frame is saved here.
-    """
-
-    #: The cameras `cam.list` advertises on a phone that shares its camera.
-    CAMERAS = [
-        {"id": "0", "facing": "back", "w": 1920, "h": 1080},
-        {"id": "1", "facing": "front", "w": 1280, "h": 720},
-    ]
-
-    def __init__(self, phone, stream_id, w, h, fps, camera_id, facing):
-        self.phone = phone
-        self.stream_id = stream_id
-        self.w = round16(w)
-        self.h = round16(h)
-        self.fps = max(1, min(30, int(fps)))
-        self.camera_id = camera_id
-        self.facing = facing
-        self._enc = None
-        self._reader = None
-        self._au_index = 0
-        self._csd_sent = False
-        self._lock = threading.Lock()
-        self._frames_sent = 0
-        self._keys_sent = 0
-
-    def _cmd(self):
-        return [FFMPEG, "-hide_banner", "-loglevel", "error", "-re",
-                "-f", "lavfi", "-i", "testsrc2=size=%dx%d:rate=%d" % (self.w, self.h, self.fps),
-                "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
-                "-bf", "0", "-g", str(self.fps * 2), "-profile:v", "high",
-                "-pix_fmt", "yuv420p", "-x264-params", "aud=1", "-an", "-f", "h264", "-"]
-
-    def start(self):
-        with self._lock:
-            self._stop_locked()
-            self._enc = subprocess.Popen(self._cmd(), stdout=subprocess.PIPE,
-                                         stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
-                                         bufsize=0)
-            proc = self._enc
-        self._reader = threading.Thread(target=self._read_loop, args=(proc,), daemon=True)
-        self._reader.start()
-
-    def stop(self):
-        with self._lock:
-            self._stop_locked()
-
-    def _stop_locked(self):
-        proc = self._enc
-        self._enc = None
-        if proc is not None:
-            try:
-                proc.kill()
-            except OSError:
-                pass
-            try:
-                proc.wait(timeout=5)
-            except Exception:
-                pass
-        reader = self._reader
-        self._reader = None
-        if reader is not None and reader.is_alive() and reader is not threading.current_thread():
-            reader.join(timeout=5)
-
-    def _read_loop(self, proc):
-        splitter = proto.AccessUnitSplitter()
-        while True:
-            if self._enc is not proc:
-                return
-            try:
-                chunk = proc.stdout.read(65536)
-            except (OSError, ValueError):
-                return
-            if not chunk:
-                for au in splitter.flush():
-                    if self._enc is proc:
-                        self._emit(au)
-                return
-            for au in splitter.feed(chunk):
-                if self._enc is not proc:
-                    return
-                self._emit(au)
-
-    def _emit(self, access_unit):
-        nals = proto.split_nals(access_unit)
-        if not nals:
-            return
-        key = proto.is_idr(nals)
-        if key and not self._csd_sent:
-            sps_pps = proto.extract_sps_pps(nals)
-            if sps_pps is None:
-                return
-            access_unit = sps_pps + access_unit
-            self._csd_sent = True
-        pts = self._au_index * (1000000 // self.fps)
-        self._au_index += 1
-        flags = proto.FRAME_FLAG_KEY if key else 0
-        sender = self.phone.sender
-        if sender is not None:
-            sender.send_frame(self.stream_id, pts, flags, access_unit)
-        self._frames_sent += 1
-        if key:
-            self._keys_sent += 1
-
-
 # --- device-wide audio tone (440 Hz sine → AAC, 48 kHz stereo) ---------------
 class AudioTone(object):
     """One 440 Hz sine encoded to AAC-ADTS by ffmpeg, split into raw frames.
@@ -1768,8 +1650,6 @@ class Session(object):
         self.client_name = None
         self.mac_fp_hex = None          # the Mac's point fingerprint (hello `fp`)
         self.windows = {}
-        # One camera capture at a time (docs/PROTOCOL.md "Camera"), like the phone.
-        self.camera = None
         self._unknown_types = set()
         self.audio = AudioTone(phone)
         self._fs_jobs = {}              # id -> {"cancel": Event, "thread": Thread}
@@ -1849,9 +1729,6 @@ class Session(object):
         for stream_id in list(self.windows):
             self.windows[stream_id].stop()
         self.windows.clear()
-        if self.camera is not None:
-            self.camera.stop()
-            self.camera = None
         if self.sender:
             self.sender.close()
         if self.phone.sender is self.sender:
@@ -2177,9 +2054,6 @@ class Session(object):
             "window.keyframe": self._on_window_keyframe,
             "window.quality": self._on_window_quality,
             "window.launch": self._on_window_launch,
-            "cam.list": self._on_cam_list,
-            "cam.start": self._on_cam_start,
-            "cam.stop": self._on_cam_stop,
             "task.continue": self._on_task_continue,
             "nav": self._on_nav,
             "text": self._on_noop,
@@ -2231,71 +2105,6 @@ class Session(object):
 
     def _on_ping(self, msg):
         self._send({"t": "pong", "ts": msg.get("ts")})
-
-    # -- camera (docs/PROTOCOL.md "Camera") -------------------------------
-    def _send_cam_state(self, stream_id, state, reason=None):
-        msg = {"t": "cam.state", "stream": stream_id, "state": state}
-        if reason:
-            msg["reason"] = reason
-        self.phone.events.camera(stream_id, state, reason)
-        self._send(msg)
-
-    def _on_cam_list(self, msg):
-        if self.phone.args.camera_off:
-            self._send({"t": "cam.cams", "cams": []})
-            return
-        self._send({"t": "cam.cams", "cams": list(CameraStream.CAMERAS)})
-
-    def _on_cam_start(self, msg):
-        stream_id = msg.get("stream")
-        if stream_id is None:
-            self._send_error("bad_request", "cam.start needs stream")
-            return
-        if self.phone.args.camera_off:
-            # The person's "Let Macs use the camera" is off (or no permission).
-            self._send_cam_state(stream_id, "off")
-            return
-        if self.camera is not None:
-            self._send_cam_state(stream_id, "busy")
-            return
-        if stream_id in self.windows:
-            self._send_cam_state(stream_id, "error", "stream_in_use")
-            return
-        w = int(msg.get("w") or 1280)
-        h = int(msg.get("h") or 720)
-        w = max(160, min(1920, w))
-        h = max(120, min(1080, h))
-        fps = max(1, min(30, int(msg.get("fps") or 30)))
-        facing = msg.get("facing") if msg.get("facing") in ("back", "front") else "back"
-        camera_id = msg.get("id")
-        if camera_id is None:
-            camera_id = next(c["id"] for c in CameraStream.CAMERAS if c["facing"] == facing)
-        stream = CameraStream(self.phone, stream_id, w, h, fps, camera_id, facing)
-        self.camera = stream
-        self._send_cam_state(stream_id, "streaming")
-        stream.start()
-        if self.phone.args.cam_evict_after > 0:
-            threading.Thread(target=self._cam_evict_later, args=(stream,),
-                             daemon=True).start()
-
-    def _cam_evict_later(self, stream):
-        """The person's own camera app opens: the Mac's capture is evicted."""
-        time.sleep(self.phone.args.cam_evict_after)
-        if self.camera is not stream:
-            return
-        stream.stop()
-        self.camera = None
-        self._send_cam_state(stream.stream_id, "evicted", "onDisconnected")
-
-    def _on_cam_stop(self, msg):
-        stream_id = msg.get("stream")
-        if stream_id is None:
-            self._send_error("bad_request", "cam.stop needs stream")
-            return
-        if self.camera is not None and self.camera.stream_id == stream_id:
-            self.camera.stop()
-            self.camera = None
-        self._send_cam_state(stream_id, "stopped")
 
     def _on_phone_dnd(self, msg):
         """phone.dnd (docs/design/focus.md): the fake applies the phone's own
@@ -3711,12 +3520,6 @@ def build_parser():
                    help="with --demo-apps, every K-th app has no icon")
     p.add_argument("--rotate-after", type=float, default=0.0, metavar="SECONDS",
                    help="turn the screen to landscape this long after a phone window opens")
-    p.add_argument("--camera-off", action="store_true",
-                   help="the phone's \"Let Macs use the camera\" is off: cam.cams is "
-                        "empty and cam.start answers off")
-    p.add_argument("--cam-evict-after", type=float, default=0.0, metavar="SECONDS",
-                   help="the person's camera app takes the camera this long after a "
-                        "capture starts: the fake stops frames and answers evicted")
     p.add_argument("--qr-uri", metavar="URI",
                    help="simulate the v2 QR scan (R2): stage a pocketdeck://pair "
                         "c/n/f/s URI; a Mac whose TLS fingerprint matches f gets "

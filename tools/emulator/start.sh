@@ -60,10 +60,7 @@ if ! device_present; then
   else
     GPU_ARGS="-gpu swiftshader_indirect"
     [ "$WINDOW" -eq 1 ] && GPU_ARGS=""
-    # The back camera is the emulator's synthetic test pattern ("emulated"),
-    # never a host webcam: the C0/C1 probe needs a camera that cannot open the
-    # Mac's own. The front camera stays off (the AVD has none).
-    ARGS="-avd $AVD_NAME -port 5554 -memory 2048 -cores 2 -no-audio -no-boot-anim -no-snapshot -no-metrics -netdelay none -netspeed full -camera-back emulated -camera-front none"
+    ARGS="-avd $AVD_NAME -port 5554 -memory 2048 -cores 2 -no-audio -no-boot-anim -no-snapshot -no-metrics -netdelay none -netspeed full"
     [ "$WINDOW" -eq 0 ] && ARGS="$ARGS -no-window"
     step "starting $AVD_NAME on 5554 (headless=$((1 - WINDOW)))"
     # shellcheck disable=SC2086
