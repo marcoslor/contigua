@@ -66,6 +66,9 @@ final class FilesDomainControllerTests: XCTestCase {
     override func setUp() async throws {
         profile = Profile(name: "ftest")!
         FilesDomainSetting.write(false, in: profile.defaults)
+        // These tests model the current build: its identifiers are format 2.
+        profile.defaults.set(FilesIdMap.formatVersion,
+                             forKey: FilesDomainSetting.idsFormatKey)
         manager = FakeDomainManager()
         started = []
         stopped = 0
@@ -158,6 +161,24 @@ final class FilesDomainControllerTests: XCTestCase {
         controller.start()
         XCTAssertEqual(.on, controller.state)
         XCTAssertTrue(manager.adds.isEmpty)
+    }
+
+    func testAnOldIdentifierFormatReplacesTheDomainOnce() {
+        // S3's ids carried a path; the app-owned map cannot resolve them, so
+        // the first run of the new format removes and re-adds the domain.
+        FilesDomainSetting.write(true, in: profile.defaults)
+        profile.defaults.removeObject(forKey: FilesDomainSetting.idsFormatKey)
+        manager.info = FilesDomainInfo(identifier: FilesDomain.identifier(profile: profile),
+                                       displayName: "PocketDeck", isDisconnected: false,
+                                       userEnabled: true)
+        rebuild()
+        controller.start()
+        XCTAssertEqual([FilesDomain.identifier(profile: profile)], manager.removes)
+        XCTAssertEqual(1, manager.adds.count)
+        XCTAssertEqual(.needsSwitch, controller.state)
+        // The format is recorded: a second start does not do it again.
+        controller.start()
+        XCTAssertEqual(1, manager.removes.count)
     }
 
     func testAnExistingDisabledDomainAsksForTheSwitch() {

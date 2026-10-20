@@ -43,6 +43,14 @@ struct Profile: Equatable {
             .appendingPathComponent("pairkeys.json")
     }
 
+    /// The app-owned identifier ↔ path map for phone files in Finder (design
+    /// §3, S4): one small JSON per profile, 0600, next to the pair keys.
+    var filesIdMapUrl: URL {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        return base.appendingPathComponent(supportDirectoryName, isDirectory: true)
+            .appendingPathComponent("files-ids.json")
+    }
+
     /// Name of the UserDefaults suite; nil means the standard defaults.
     var defaultsSuiteName: String? { isDefault ? nil : "\(Self.bundleId).\(name)" }
 

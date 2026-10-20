@@ -1653,6 +1653,12 @@ final class ConnectionController {
         case .fsReadEnd(let id, let size, let sha256):
             fsClient?.readEnd(id: id, size: size, sha256: sha256)
             filesBridgeClient?.readEnd(id: id, size: size, sha256: sha256)
+        case .fsProgress(let id, let bytes):
+            fsClient?.progress(id: id, bytes: bytes)
+            filesBridgeClient?.progress(id: id, bytes: bytes)
+        case .fsResult(let id, let ok, let item, let code, let message):
+            fsClient?.result(id: id, ok: ok, item: item, code: code, message: message)
+            filesBridgeClient?.result(id: id, ok: ok, item: item, code: code, message: message)
         case .fsError(let id, let code, let message):
             fsClient?.failure(id: id, code: code, message: message)
             filesBridgeClient?.failure(id: id, code: code, message: message)
@@ -1829,7 +1835,9 @@ final class ConnectionController {
         if let session {
             let client = FsClient(channel: session)
             filesBridgeClient = client
-            FilesBridge.shared.attach(host: SessionBridgeHost(client: client, name: displayName(for: ref)))
+            FilesBridge.shared.attach(host: SessionBridgeHost(client: client,
+                                                             name: displayName(for: ref),
+                                                             mapURL: profile.filesIdMapUrl))
             filesDomain.sessionReady(true)
         }
         everOnline = true

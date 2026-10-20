@@ -1,6 +1,7 @@
-// The pure half of S3 (FilesCore.swift): the bridge wire's incremental parser,
-// the fs item → File Provider item mapping, the identifier ↔ path map and the
-// error map. Nothing here touches FileProvider or a socket.
+// The pure half of phone files (FilesCore.swift): the bridge wire's incremental
+// parser, the fs item → File Provider item mapping, the app-owned identifier
+// map (and its persisted shape) and the error map. Nothing here touches
+// FileProvider or a socket.
 
 import Foundation
 import XCTest
@@ -11,14 +12,31 @@ final class FilesBridgeWireTests: XCTestCase {
         var decoder = BridgeDecoder()
         return decoder.feed([UInt8](data))
     }
+
+    private func fileItem(_ name: String = "a.txt", id: String = "ino:6",
+                          parent: String = ".rootContainer") -> FileItem {
+        FilesMap.item(path: name, parentIdentifier: parent,
+                      fs: FsItem(name: name, dir: false, size: 4, mtime: 5, ino: 6, etag: "aa"))
+    }
+
     func testRequestsRoundTrip() {
         let requests: [BridgeRequest] = [
             .hello(id: 1, version: filesBridgeVersion),
-            .list(id: 2, path: "DCIM", page: "1000"),
-            .list(id: 3, path: "", page: nil),
-            .stat(id: 4, path: "notes.txt"),
-            .read(id: 5, path: "big.bin", offset: 10, length: 20, etag: "abcd"),
-            .read(id: 6, path: "big.bin", offset: 0, length: 1, etag: nil),
+            .list(id: 2, item: "ino:10", page: "1000"),
+            .list(id: 3, item: FilesMap.rootIdentifier, page: nil),
+            .stat(id: 4, item: "ino:11"),
+            .read(id: 5, item: "ino:12", offset: 10, length: 20, etag: "abcd"),
+            .create(id: 6, request: BridgeCreate(parent: "ino:10", name: "new.txt",
+                                                dir: false, size: 9, sha256: String(repeating: "a", count: 64))),
+            .create(id: 7, request: BridgeCreate(parent: FilesMap.rootIdentifier, name: "Folder",
+                                                dir: true, size: 0, sha256: nil)),
+            .modify(id: 8, request: BridgeModify(item: "ino:13", base: "bb", content: true,
+                                                name: nil, parent: nil, mtime: nil,
+                                                size: 3, sha256: String(repeating: "c", count: 64))),
+            .modify(id: 9, request: BridgeModify(item: "ino:13", base: "bb", content: false,
+                                                name: "renamed.txt", parent: nil, mtime: nil,
+                                                size: 0, sha256: nil)),
+            .delete(id: 10, item: "ino:13", base: "bb", recursive: true),
             .cancel(id: 5),
         ]
         for request in requests {
@@ -28,20 +46,31 @@ final class FilesBridgeWireTests: XCTestCase {
     }
 
     func testRepliesRoundTrip() {
+        let item = fileItem()
         let replies: [BridgeReply] = [
-            .hello(id: 1, version: 1, name: "Nicky", connected: true),
-            .hello(id: 1, version: 1, name: nil, connected: false),
-            .items(id: 2, page: "40", items: [
-                FsItem(name: "a.txt", dir: false, size: 4, mtime: 5, ino: 6, etag: "aa"),
-            ]),
+            .hello(id: 1, version: filesBridgeVersion, name: "Nicky", connected: true),
+            .hello(id: 1, version: filesBridgeVersion, name: nil, connected: false),
+            .items(id: 2, page: "40", items: [item, fileItem("b.txt", id: "ino:7")]),
             .items(id: 2, page: nil, items: []),
-            .item(id: 3, item: FsItem(name: "DCIM", dir: true, size: 0, mtime: 1, ino: 9, etag: "bb")),
-            .end(id: 4, size: 1024, sha256: "ff"),
-            .error(id: 4, code: "fs_not_found"),
+            .item(id: 3, item: item),
+            .ready(id: 4),
+            .ok(id: 5),
+            .end(id: 6, size: 1024, sha256: "ff"),
+            .error(id: 7, code: "fs_not_found"),
         ]
         for reply in replies {
             XCTAssertEqual([.reply(reply)], decode(BridgeWire.line(reply)), "\(reply)")
         }
+    }
+
+    func testAnItemCarriesEverythingTheExtensionNeeds() {
+        let item = fileItem()
+        guard case .reply(.item(_, let parsed)) = decode(BridgeWire.line(.item(id: 1, item: item))).first else {
+            return XCTFail("no item reply")
+        }
+        XCTAssertEqual(item, parsed)
+        XCTAssertEqual(item.contentVersion, parsed.contentVersion)
+        XCTAssertEqual(item.metadataVersion, parsed.metadataVersion)
     }
 
     func testDataHeaderCarriesExactlyItsBytes() {
@@ -58,7 +87,8 @@ final class FilesBridgeWireTests: XCTestCase {
 
     func testAChunkSplitAcrossReads() {
         let header = BridgeWire.dataHeader(id: 5, length: 6)
-        let stream = [UInt8](header) + [10, 20, 30, 40, 50, 60] + [UInt8](BridgeWire.line(.end(id: 5, size: 6, sha256: "x")))
+        let stream = [UInt8](header) + [10, 20, 30, 40, 50, 60]
+            + [UInt8](BridgeWire.line(.end(id: 5, size: 6, sha256: "x")))
         var decoder = BridgeDecoder()
         var events: [BridgeEvent] = []
         // Header half a line, then the rest, then the bytes in three pieces.
@@ -77,7 +107,7 @@ final class FilesBridgeWireTests: XCTestCase {
     }
 
     func testOneByteAtATime() {
-        let stream = [UInt8](BridgeWire.line(.list(id: 9, path: "DCIM", page: nil)))
+        let stream = [UInt8](BridgeWire.line(.list(id: 9, item: "ino:1", page: nil)))
             + [UInt8](BridgeWire.dataHeader(id: 9, length: 2)) + [7, 8]
         var decoder = BridgeDecoder()
         var events: [BridgeEvent] = []
@@ -85,7 +115,7 @@ final class FilesBridgeWireTests: XCTestCase {
             events += decoder.feed([byte])
         }
         XCTAssertEqual([
-            .request(.list(id: 9, path: "DCIM", page: nil)),
+            .request(.list(id: 9, item: "ino:1", page: nil)),
             .dataHeader(id: 9, length: 2),
             .data(id: 9, bytes: [7, 8]),
         ], events)
@@ -103,8 +133,9 @@ final class FilesBridgeWireTests: XCTestCase {
     func testAListingPageIsAllowedToBeOneLargeLine() {
         // 1000 items is one `items` reply; the request cap must not clip it.
         let items = (0..<1000).map { index in
-            FsItem(name: "file-\(index)-0123456789.txt", dir: false, size: index,
-                   mtime: 1_700_000_000_000, ino: index + 1, etag: "etag-\(index)")
+            FilesMap.item(path: "file-\(index)-0123456789.txt", parentIdentifier: "ino:1",
+                          fs: FsItem(name: "file-\(index)-0123456789.txt", dir: false, size: index,
+                                     mtime: 1_700_000_000_000, ino: index + 1, etag: "etag-\(index)"))
         }
         let line = BridgeWire.line(.items(id: 3, page: "1000", items: items))
         XCTAssertGreaterThan(line.count, BridgeWire.maxLineBytes)
@@ -128,6 +159,7 @@ final class FilesBridgeWireTests: XCTestCase {
         XCTAssertEqual([.invalid("bad_id")], decode(Data("{\"t\":\"cancel\",\"id\":0}\n".utf8)))
         XCTAssertEqual([.invalid("unknown_type")], decode(Data("{\"t\":\"wat\",\"id\":1}\n".utf8)))
         XCTAssertEqual([.invalid("bad_request")], decode(Data("{\"t\":\"list\",\"id\":1}\n".utf8)))
+        XCTAssertEqual([.invalid("bad_request")], decode(Data("{\"t\":\"create\",\"id\":1}\n".utf8)))
         XCTAssertEqual([.invalid("bad_len")], decode(Data("{\"t\":\"data\",\"id\":1,\"len\":-1}\n".utf8)))
     }
 }
@@ -141,7 +173,7 @@ final class FilesItemMappingTests: XCTestCase {
     func testAFileMapsSizeDatesTypeAndVersions() {
         let item = FilesMap.item(path: "DCIM/photo.jpg", parentIdentifier: "ino:7",
                                  fs: fs("photo.jpg", size: 1234, ino: 99, mtime: 1_700_000_001_500))
-        XCTAssertEqual("ino:99:DCIM%2Fphoto.jpg", item.identifier)
+        XCTAssertEqual("ino:99", item.identifier)
         XCTAssertEqual("ino:7", item.parentIdentifier)
         XCTAssertEqual("photo.jpg", item.name)
         XCTAssertEqual(1234, item.size)
@@ -172,82 +204,150 @@ final class FilesItemMappingTests: XCTestCase {
         XCTAssertNotEqual(first.metadataVersion, renamed.metadataVersion)
     }
 
-    func testInoZeroFallsBackToThePath() {
+    func testTheIdentifierIsTheInoSoARenameKeepsIt() {
+        XCTAssertEqual("ino:12", FilesMap.identifier(path: "x", ino: 12))
+        XCTAssertEqual("ino:12", FilesMap.identifier(path: "renamed", ino: 12))
+        XCTAssertEqual(".rootContainer", FilesMap.identifier(path: "", ino: 0))
+        // A phone that reports no ino falls back to the path, one opaque token.
         XCTAssertEqual("path:DCIM%2Fnotes.txt",
                        FilesMap.identifier(path: "DCIM/notes.txt", ino: 0))
-        let item = FilesMap.item(path: "DCIM/notes.txt", parentIdentifier: "ino:1",
-                                 fs: fs("notes.txt", ino: 0))
-        XCTAssertEqual("path:DCIM%2Fnotes.txt", item.identifier)
-        XCTAssertEqual("ino:12:x", FilesMap.identifier(path: "x", ino: 12))
-        XCTAssertEqual(".rootContainer", FilesMap.identifier(path: "", ino: 0))
-    }
-
-    func testAnIdentifierCarriesItsPathSoAFreshInstanceCanResolveIt() {
-        // The system runs the extension in several processes; a second one has
-        // no map and must still resolve what the first one enumerated.
-        let item = FilesMap.item(path: "DCIM/Camera/photo.jpg", parentIdentifier: "ino:7",
-                                 fs: fs("photo.jpg", ino: 99))
-        XCTAssertEqual("DCIM/Camera/photo.jpg", FilesMap.path(fromIdentifier: item.identifier))
-        XCTAssertEqual("ino:5:a%252Fb", FilesMap.identifier(path: "a%2Fb", ino: 5))
-        XCTAssertEqual("a%2Fb", FilesMap.path(fromIdentifier: "ino:5:a%252Fb"))
+        XCTAssertEqual("DCIM/notes.txt",
+                       FilesMap.path(fromIdentifier: "path:DCIM%2Fnotes.txt"))
         XCTAssertEqual("", FilesMap.path(fromIdentifier: FilesMap.rootIdentifier))
-        XCTAssertEqual("a/b c.txt", FilesMap.path(fromIdentifier: "path:a%2Fb c.txt"))
+        // An ino identifier resolves only through the app's map.
         XCTAssertNil(FilesMap.path(fromIdentifier: "ino:99"))
         XCTAssertNil(FilesMap.path(fromIdentifier: "something-else"))
     }
 }
 
-final class FilesPathMapTests: XCTestCase {
-    private func fs(_ name: String, dir: Bool = false, ino: Int) -> FsItem {
-        FsItem(name: name, dir: dir, size: 0, mtime: 1, ino: ino, etag: "e")
+final class FilesIdMapTests: XCTestCase {
+    private func fs(_ name: String, dir: Bool = false, ino: Int, etag: String = "e") -> FsItem {
+        FsItem(name: name, dir: dir, size: 0, mtime: 1, ino: ino, etag: etag)
     }
 
-    func testAListingFillsTheMapBothWays() {
-        var map = FilesPathMap()
+    func testAListingFillsTheMapBothWaysWithItsParents() {
+        var map = FilesIdMap()
         let items = map.insert(childrenOf: "", parentIdentifier: FilesMap.rootIdentifier,
                                items: [fs("DCIM", dir: true, ino: 10), fs("notes.txt", ino: 11)])
-        XCTAssertEqual(["ino:10:DCIM", "ino:11:notes.txt"], items.map(\.identifier))
-        XCTAssertEqual("DCIM", map.path(for: "ino:10:DCIM"))
-        XCTAssertEqual("notes.txt", map.path(for: "ino:11:notes.txt"))
-        XCTAssertEqual("ino:11:notes.txt", map.identifier(for: "notes.txt"))
+        XCTAssertEqual(["ino:10", "ino:11"], items.map(\.identifier))
+        XCTAssertEqual("DCIM", map.path(for: "ino:10"))
+        XCTAssertEqual("notes.txt", map.path(for: "ino:11"))
+        XCTAssertEqual("ino:11", map.identifier(for: "notes.txt"))
         XCTAssertEqual("", map.path(for: FilesMap.rootIdentifier))
+        XCTAssertEqual(FilesMap.rootIdentifier, map.parent(for: "ino:10"))
     }
 
     func testNestedPathsAndSubtreeInvalidation() {
-        var map = FilesPathMap()
+        var map = FilesIdMap()
         map.insert(childrenOf: "", parentIdentifier: FilesMap.rootIdentifier,
                    items: [fs("DCIM", dir: true, ino: 10)])
-        _ = map.insert(childrenOf: "DCIM", parentIdentifier: "ino:10:DCIM",
+        _ = map.insert(childrenOf: "DCIM", parentIdentifier: "ino:10",
                        items: [fs("Camera", dir: true, ino: 20)])
-        _ = map.insert(childrenOf: "DCIM/Camera", parentIdentifier: "ino:20:DCIM%2FCamera",
+        _ = map.insert(childrenOf: "DCIM/Camera", parentIdentifier: "ino:20",
                        items: [fs("a.jpg", ino: 21), fs("b.jpg", ino: 22)])
-        XCTAssertEqual("DCIM/Camera/a.jpg", map.path(for: "ino:21:DCIM%2FCamera%2Fa.jpg"))
+        XCTAssertEqual("DCIM/Camera/a.jpg", map.path(for: "ino:21"))
+        XCTAssertEqual("ino:20", map.parent(for: "ino:21"))
         map.invalidate(subtree: "DCIM")
-        XCTAssertNil(map.path(for: "ino:10:DCIM"))
-        XCTAssertNil(map.path(for: "ino:20:DCIM%2FCamera"))
-        XCTAssertNil(map.path(for: "ino:21:DCIM%2FCamera%2Fa.jpg"))
+        XCTAssertNil(map.path(for: "ino:10"))
+        XCTAssertNil(map.path(for: "ino:20"))
+        XCTAssertNil(map.path(for: "ino:21"))
         XCTAssertNil(map.identifier(for: "DCIM/Camera/a.jpg"))
     }
 
     func testARenameKeepsTheIdentifier() {
-        var map = FilesPathMap()
+        var map = FilesIdMap()
         _ = map.insert(childrenOf: "", parentIdentifier: FilesMap.rootIdentifier,
                        items: [fs("old.txt", ino: 30)])
-        map.rename(identifier: "ino:30:old.txt", to: "new.txt")
-        XCTAssertEqual("new.txt", map.path(for: "ino:30:old.txt"))
+        map.rename(identifier: "ino:30", to: "new.txt")
+        XCTAssertEqual("new.txt", map.path(for: "ino:30"))
         XCTAssertNil(map.identifier(for: "old.txt"))
-        XCTAssertEqual("ino:30:old.txt", map.identifier(for: "new.txt"))
+        XCTAssertEqual("ino:30", map.identifier(for: "new.txt"))
     }
 
     func testRenamingAFolderMovesItsChildren() {
-        var map = FilesPathMap()
+        var map = FilesIdMap()
         _ = map.insert(childrenOf: "", parentIdentifier: FilesMap.rootIdentifier,
                        items: [fs("old", dir: true, ino: 40)])
-        _ = map.insert(childrenOf: "old", parentIdentifier: "ino:40:old",
-                       items: [fs("a.txt", ino: 41)])
-        map.rename(identifier: "ino:40:old", to: "new")
-        XCTAssertEqual("new/a.txt", map.path(for: "ino:41:old%2Fa.txt"))
-        XCTAssertEqual("ino:41:old%2Fa.txt", map.identifier(for: "new/a.txt"))
+        _ = map.insert(childrenOf: "old", parentIdentifier: "ino:40", items: [fs("a.txt", ino: 41)])
+        map.rename(identifier: "ino:40", to: "new")
+        XCTAssertEqual("new/a.txt", map.path(for: "ino:41"))
+        XCTAssertEqual("ino:41", map.identifier(for: "new/a.txt"))
+    }
+
+    func testAPathFallbackIdentifierResolvesAfterARename() {
+        // ino 0 keeps the path in the id, so a rename changes the id: the map
+        // records the new one and drops the old path.
+        var map = FilesIdMap()
+        _ = map.insert(childrenOf: "", parentIdentifier: FilesMap.rootIdentifier,
+                       items: [fs("a.txt", ino: 0)])
+        XCTAssertEqual("path:a.txt", map.identifier(for: "a.txt"))
+        map.invalidate(subtree: "a.txt")
+        _ = map.insert(childrenOf: "", parentIdentifier: FilesMap.rootIdentifier,
+                       items: [fs("b.txt", ino: 0)])
+        XCTAssertEqual("path:b.txt", map.identifier(for: "b.txt"))
+    }
+
+    func testAPersistedMapRoundTrips() {
+        var map = FilesIdMap()
+        _ = map.insert(childrenOf: "", parentIdentifier: FilesMap.rootIdentifier,
+                       items: [fs("DCIM", dir: true, ino: 10), fs("a.txt", ino: 11)])
+        _ = map.insert(childrenOf: "DCIM", parentIdentifier: "ino:10",
+                       items: [fs("photo.jpg", ino: 12)])
+        let decoded = FilesIdMap.decode(map.encoded())
+        XCTAssertEqual(map, decoded)
+        XCTAssertEqual("DCIM/photo.jpg", decoded?.path(for: "ino:12"))
+        XCTAssertEqual("ino:10", decoded?.parent(for: "ino:12"))
+    }
+
+    func testACorruptOrForeignFileIsAFreshMap() {
+        XCTAssertNil(FilesIdMap.decode(Data("not json".utf8)))
+        XCTAssertNil(FilesIdMap.decode(Data("{}".utf8)))
+        XCTAssertNil(FilesIdMap.decode(Data("{\"version\":1,\"ids\":{}}".utf8)))
+        XCTAssertNil(FilesIdMap.decode(Data("{\"version\":2,\"ids\":{\"ino:1\":{}}}".utf8)))
+        // A version from before S4 is not migrated: the domain is re-added.
+        let fresh = FilesIdMap.load(URL(fileURLWithPath: "/tmp/pd-no-such-map-\(UUID().uuidString).json"))
+        XCTAssertTrue(fresh.isEmpty)
+        XCTAssertEqual("", fresh.path(for: FilesMap.rootIdentifier))
+    }
+
+    func testTheFileIsWrittenPrivateAndAtomically() throws {
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("pd-map-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("files-ids.json")
+        var map = FilesIdMap()
+        _ = map.insert(childrenOf: "", parentIdentifier: FilesMap.rootIdentifier,
+                       items: [fs("a.txt", ino: 5)])
+        FilesIdMap.save(map, to: url)
+        XCTAssertEqual(map, FilesIdMap.load(url))
+        let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+        XCTAssertEqual(0o600, (attributes[.posixPermissions] as? NSNumber)?.intValue)
+        // A corrupt file on disk loads as a fresh map, never a crash.
+        try Data("garbage".utf8).write(to: url)
+        XCTAssertTrue(FilesIdMap.load(url).isEmpty)
+    }
+}
+
+final class FilesConflictTests: XCTestCase {
+    func testTheFirstConflictKeepsTheExtension() {
+        XCTAssertEqual("a (from Mac).jpg", FilesConflict.name(for: "a.jpg"))
+        XCTAssertEqual("report (from Mac).pdf", FilesConflict.name(for: "report.pdf"))
+        XCTAssertEqual("archive.tar (from Mac).gz", FilesConflict.name(for: "archive.tar.gz"))
+    }
+
+    func testATakenNameIsNumbered() {
+        var taken = Set(["a (from Mac).jpg"])
+        XCTAssertEqual("a (from Mac 2).jpg",
+                       FilesConflict.name(for: "a.jpg", taken: { taken.contains($0) }))
+        taken.insert("a (from Mac 2).jpg")
+        XCTAssertEqual("a (from Mac 3).jpg",
+                       FilesConflict.name(for: "a.jpg", taken: { taken.contains($0) }))
+    }
+
+    func testNoExtensionAndDotFiles() {
+        XCTAssertEqual("README (from Mac)", FilesConflict.name(for: "README"))
+        XCTAssertEqual(".env (from Mac)", FilesConflict.name(for: ".env"))
+        XCTAssertEqual(".gitignore (from Mac)", FilesConflict.name(for: ".gitignore"))
     }
 }
 

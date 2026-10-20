@@ -128,6 +128,10 @@ enum SessionEvent {
     case fsItem(id: UInt32, item: [String: Any])
     case fsData(id: UInt32, bytes: [UInt8])
     case fsReadEnd(id: UInt32, size: Int, sha256: String)
+    /// A write's confirmed bytes (docs/PROTOCOL.md "Phone files").
+    case fsProgress(id: UInt32, bytes: Int)
+    /// A write or mutation finished; `item` is the new metadata on success.
+    case fsResult(id: UInt32, ok: Bool, item: [String: Any]?, code: String?, message: String?)
     case fsError(id: UInt32, code: String, message: String?)
     /// Notifications + media controls (docs/design/notify.md).
     case notifyState(on: Bool)
@@ -900,6 +904,14 @@ final class Session {
             guard let raw = message.int("id"), let id = UInt32(exactly: raw), id > 0 else { return }
             emit(.fsReadEnd(id: id, size: message.int("size") ?? -1,
                             sha256: message.string("sha256") ?? ""))
+        case "fs.progress":
+            guard let raw = message.int("id"), let id = UInt32(exactly: raw), id > 0 else { return }
+            emit(.fsProgress(id: id, bytes: message.int("bytes") ?? 0))
+        case "fs.result":
+            guard let raw = message.int("id"), let id = UInt32(exactly: raw), id > 0 else { return }
+            emit(.fsResult(id: id, ok: message.bool("ok") ?? false,
+                           item: message.object("item"),
+                           code: message.string("code"), message: message.string("message")))
         case "error":
             let code = message.string("code") ?? "unknown"
             // An fs failure names the request it answers; it is not the
@@ -1093,6 +1105,29 @@ final class Session {
         sendJSON(message)
     }
     func fsCancel(id: UInt32) { sendJSON(["t": "fs.cancel", "id": Int(id)]) }
+    func fsWrite(id: UInt32, path: String, size: Int, sha256: String, etag: String?) {
+        var message: [String: Any] = ["t": "fs.write", "id": Int(id), "path": path,
+                                      "size": size, "sha256": sha256]
+        if let etag { message["etag"] = etag }
+        sendJSON(message)
+    }
+    func fsWriteData(id: UInt32, bytes: [UInt8], sent: @escaping @Sendable (Bool) -> Void) {
+        sendData(.fsData, id: id, bytes: bytes, sent: sent)
+    }
+    func fsMove(id: UInt32, from: String, to: String, etag: String?) {
+        var message: [String: Any] = ["t": "fs.move", "id": Int(id), "from": from, "to": to]
+        if let etag { message["etag"] = etag }
+        sendJSON(message)
+    }
+    func fsDelete(id: UInt32, path: String, recursive: Bool) {
+        sendJSON(["t": "fs.delete", "id": Int(id), "path": path, "recursive": recursive])
+    }
+    func fsMkdir(id: UInt32, path: String) {
+        sendJSON(["t": "fs.mkdir", "id": Int(id), "path": path])
+    }
+    func fsSetAttrs(id: UInt32, path: String, mtime: Int) {
+        sendJSON(["t": "fs.setAttrs", "id": Int(id), "path": path, "mtime": mtime])
+    }
     private func sendData(_ kind: MessageType, id: UInt32, bytes: [UInt8], sent: @escaping @Sendable (Bool) -> Void) {
         guard let ch = channel else { return sent(false) }
         let frame = Frame(type: kind, stream: id, payload: bytes).encodedData()

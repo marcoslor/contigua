@@ -17,6 +17,10 @@ import Observation
 
 enum FilesDomainSetting {
     static let key = "files.showInFinder"
+    /// Which identifier format the extension's ids use (design §3, S4). S3's ids
+    /// carried a path; the first run of the new format re-adds the domain so the
+    /// system drops them.
+    static let idsFormatKey = "files.idsFormat"
 
     static func isEnabled(in defaults: UserDefaults) -> Bool {
         defaults.bool(forKey: key)
@@ -164,6 +168,22 @@ final class FilesDomainController {
     // MARK: Internals
 
     private func ensureDomain() {
+        // S3's identifiers carried a path; the app-owned map (format 2) cannot
+        // resolve them. Replace the domain once, then never again.
+        let storedFormat = profile.defaults.integer(forKey: FilesDomainSetting.idsFormatKey)
+        if storedFormat != FilesIdMap.formatVersion,
+           manager.domain(identifier: identifier) != nil {
+            profile.defaults.set(FilesIdMap.formatVersion,
+                                 forKey: FilesDomainSetting.idsFormatKey)
+            Log.files.notice("domain: id format changed; replacing the domain")
+            manager.remove(identifier: identifier) { [weak self] _ in
+                self?.addedLocally = false
+                self?.ensureDomain()
+            }
+            return
+        }
+        profile.defaults.set(FilesIdMap.formatVersion,
+                             forKey: FilesDomainSetting.idsFormatKey)
         if let info = manager.domain(identifier: identifier) {
             addedLocally = true
             state = info.userEnabled ? .on : .needsSwitch

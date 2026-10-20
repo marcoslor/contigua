@@ -46,6 +46,19 @@ struct FsItem: Equatable {
     }
 }
 
+/// Where a bridge create/modify pushes the extension's bytes. The app hands one
+/// out when `fs.write` starts; the sink streams the chunks into the phone with
+/// the drop pacing and answers the completion when the phone finished.
+@MainActor
+protocol FilesWriteSink: AnyObject {
+    /// Takes one chunk; false when the write is over (cancelled or failed).
+    func append(_ bytes: [UInt8]) -> Bool
+    /// All announced bytes were handed over.
+    func finish()
+    /// The extension cancelled (or its client went away).
+    func cancel()
+}
+
 /// One page of a listing; `next` is the phone's cursor for the next page.
 struct FsPage: Equatable {
     var items: [FsItem]
@@ -74,28 +87,69 @@ struct FsError: Error, Equatable, CustomStringConvertible {
 // MARK: - Bridge wire
 
 /// A request on the App Group socket: the extension asks, the app answers.
+/// Requests name the item (an identifier the app resolves), never a path: the
+/// app owns the id ↔ path map because the system runs the extension in more
+/// than one process (design §3, S4).
 enum BridgeRequest: Equatable {
     case hello(id: UInt32, version: Int)
-    case list(id: UInt32, path: String, page: String?)
-    case stat(id: UInt32, path: String)
-    case read(id: UInt32, path: String, offset: Int, length: Int, etag: String?)
+    case list(id: UInt32, item: String, page: String?)
+    case stat(id: UInt32, item: String)
+    case read(id: UInt32, item: String, offset: Int, length: Int, etag: String?)
+    /// A new file or folder under `parent`; a file's bytes follow once the app
+    /// answers `ready`, as `data` frames on this id.
+    case create(id: UInt32, request: BridgeCreate)
+    /// A changed item: content and/or name/parent/mtime. New content follows the
+    /// `ready` as `data` frames.
+    case modify(id: UInt32, request: BridgeModify)
+    case delete(id: UInt32, item: String, base: String, recursive: Bool)
     case cancel(id: UInt32)
 
     var id: UInt32 {
         switch self {
         case .hello(let id, _), .list(let id, _, _), .stat(let id, _),
-             .read(let id, _, _, _, _), .cancel(let id):
+             .read(let id, _, _, _, _), .create(let id, _), .modify(let id, _),
+             .delete(let id, _, _, _), .cancel(let id):
             return id
         }
     }
+}
+
+/// The fields of a `create`: a folder needs none of the byte fields.
+struct BridgeCreate: Equatable {
+    var parent: String
+    var name: String
+    var dir: Bool
+    var size: Int
+    var sha256: String?
+
+    /// A file with bytes to follow.
+    var hasContent: Bool { !dir && size > 0 && sha256 != nil }
+}
+
+/// The fields of a `modify`: only what changed, plus the version it changed from.
+struct BridgeModify: Equatable {
+    var item: String
+    var base: String
+    var content: Bool
+    var name: String?
+    var parent: String?
+    var mtime: Int?
+    var size: Int
+    var sha256: String?
+
+    var hasContent: Bool { content && size > 0 && sha256 != nil }
 }
 
 /// A reply: one JSON line, and for a read the `data` headers with their raw
 /// bytes, then `end` (or `error`).
 enum BridgeReply: Equatable {
     case hello(id: UInt32, version: Int, name: String?, connected: Bool)
-    case items(id: UInt32, page: String?, items: [FsItem])
-    case item(id: UInt32, item: FsItem)
+    case items(id: UInt32, page: String?, items: [FileItem])
+    case item(id: UInt32, item: FileItem)
+    /// A write's bytes may start: the app is ready for `data` frames on this id.
+    case ready(id: UInt32)
+    /// A delete succeeded.
+    case ok(id: UInt32)
     /// Announcement of `length` raw bytes that follow the newline.
     case data(id: UInt32, length: Int)
     case end(id: UInt32, size: Int, sha256: String)
@@ -103,7 +157,7 @@ enum BridgeReply: Equatable {
 }
 
 /// The bridge protocol version. Both sides refuse anything else.
-let filesBridgeVersion = 1
+let filesBridgeVersion = 2
 
 enum BridgeWire {
     /// A request line is at most 64 KiB (design §3's cap, applied locally).
@@ -120,19 +174,46 @@ enum BridgeWire {
         case .hello(_, let version):
             object["t"] = "hello"
             object["version"] = version
-        case .list(_, let path, let page):
+        case .list(_, let item, let page):
             object["t"] = "list"
-            object["path"] = path
+            object["item"] = item
             if let page { object["page"] = page }
-        case .stat(_, let path):
+        case .stat(_, let item):
             object["t"] = "stat"
-            object["path"] = path
-        case .read(_, let path, let offset, let length, let etag):
+            object["item"] = item
+        case .read(_, let item, let offset, let length, let etag):
             object["t"] = "read"
-            object["path"] = path
+            object["item"] = item
             object["offset"] = offset
             object["length"] = length
             if let etag { object["etag"] = etag }
+        case .create(_, let create):
+            object["t"] = "create"
+            object["parent"] = create.parent
+            object["name"] = create.name
+            object["dir"] = create.dir
+            if !create.dir {
+                object["size"] = create.size
+                if let sha256 = create.sha256 { object["sha256"] = sha256 }
+            }
+        case .modify(_, let modify):
+            object["t"] = "modify"
+            object["item"] = modify.item
+            object["base"] = modify.base
+            var fields: [String: Any] = ["content": modify.content]
+            if let name = modify.name { fields["name"] = name }
+            if let parent = modify.parent { fields["parent"] = parent }
+            if let mtime = modify.mtime { fields["mtime"] = mtime }
+            object["fields"] = fields
+            if modify.content {
+                object["size"] = modify.size
+                if let sha256 = modify.sha256 { object["sha256"] = sha256 }
+            }
+        case .delete(_, let item, let base, let recursive):
+            object["t"] = "delete"
+            object["item"] = item
+            object["base"] = base
+            object["recursive"] = recursive
         case .cancel:
             object["t"] = "cancel"
         }
@@ -150,6 +231,10 @@ enum BridgeWire {
             if let page { object["page"] = page }
         case .item(let id, let item):
             object = ["t": "item", "id": Int(id), "item": item.jsonObject]
+        case .ready(let id):
+            object = ["t": "ready", "id": Int(id)]
+        case .ok(let id):
+            object = ["t": "ok", "id": Int(id)]
         case .data(let id, let length):
             object = ["t": "data", "id": Int(id), "len": length]
         case .end(let id, let size, let sha256):
@@ -266,30 +351,63 @@ struct BridgeDecoder {
             let version = (object["version"] as? NSNumber)?.intValue ?? filesBridgeVersion
             return .request(.hello(id: id, version: version))
         case "list", "stat", "read":
-            guard let path = object["path"] as? String else { return .invalid("bad_request") }
+            guard let item = object["item"] as? String else { return .invalid("bad_request") }
             switch type {
             case "list":
-                return .request(.list(id: id, path: path, page: object["page"] as? String))
+                return .request(.list(id: id, item: item, page: object["page"] as? String))
             case "stat":
-                return .request(.stat(id: id, path: path))
+                return .request(.stat(id: id, item: item))
             default:
                 guard let offset = (object["offset"] as? NSNumber)?.intValue,
                       let length = (object["length"] as? NSNumber)?.intValue else {
                     return .invalid("bad_request")
                 }
-                return .request(.read(id: id, path: path, offset: offset, length: length,
+                return .request(.read(id: id, item: item, offset: offset, length: length,
                                       etag: object["etag"] as? String))
             }
+        case "create":
+            guard let parent = object["parent"] as? String,
+                  let name = object["name"] as? String,
+                  let dir = object["dir"] as? Bool else { return .invalid("bad_request") }
+            let create = BridgeCreate(
+                parent: parent, name: name, dir: dir,
+                size: (object["size"] as? NSNumber)?.intValue ?? 0,
+                sha256: object["sha256"] as? String)
+            return .request(.create(id: id, request: create))
+        case "modify":
+            guard let item = object["item"] as? String,
+                  let base = object["base"] as? String,
+                  let fields = object["fields"] as? [String: Any] else {
+                return .invalid("bad_request")
+            }
+            let modify = BridgeModify(
+                item: item, base: base,
+                content: fields["content"] as? Bool ?? false,
+                name: fields["name"] as? String,
+                parent: fields["parent"] as? String,
+                mtime: (fields["mtime"] as? NSNumber)?.intValue,
+                size: (object["size"] as? NSNumber)?.intValue ?? 0,
+                sha256: object["sha256"] as? String)
+            return .request(.modify(id: id, request: modify))
+        case "delete":
+            guard let item = object["item"] as? String,
+                  let base = object["base"] as? String else { return .invalid("bad_request") }
+            return .request(.delete(id: id, item: item, base: base,
+                                    recursive: object["recursive"] as? Bool ?? false))
         case "cancel":
             return .request(.cancel(id: id))
         case "items":
-            let items = (object["items"] as? [[String: Any]])?.compactMap(FsItem.init(json:)) ?? []
+            let items = (object["items"] as? [[String: Any]])?.compactMap(FileItem.init(json:)) ?? []
             return .reply(.items(id: id, page: object["page"] as? String, items: items))
         case "item":
-            guard let item = FsItem(json: object["item"] as? [String: Any] ?? [:]) else {
+            guard let item = FileItem(json: object["item"] as? [String: Any] ?? [:]) else {
                 return .invalid("bad_item")
             }
             return .reply(.item(id: id, item: item))
+        case "ready":
+            return .reply(.ready(id: id))
+        case "ok":
+            return .reply(.ok(id: id))
         case "data":
             guard let length = (object["len"] as? NSNumber)?.intValue,
                   length >= 0, length <= BridgeWire.maxChunkBytes else {
@@ -315,7 +433,9 @@ struct BridgeDecoder {
 
 /// An item as the File Provider sees it, without FileProvider types: the ids
 /// are strings, the content types are UTType identifiers, the versions are the
-/// raw bytes the extension wraps in NSFileProviderItemVersion.
+/// raw bytes the extension wraps in NSFileProviderItemVersion. This is also the
+/// shape the bridge carries, so the app builds it once and the extension wraps
+/// it unchanged.
 struct FileItem: Equatable {
     var identifier: String
     var parentIdentifier: String
@@ -327,26 +447,77 @@ struct FileItem: Equatable {
     var etag: String
     var contentVersion: Data
     var metadataVersion: Data
+
+    init(identifier: String, parentIdentifier: String, name: String, isDirectory: Bool,
+         size: Int, modificationDate: Date, contentTypeIdentifier: String, etag: String,
+         contentVersion: Data, metadataVersion: Data) {
+        self.identifier = identifier
+        self.parentIdentifier = parentIdentifier
+        self.name = name
+        self.isDirectory = isDirectory
+        self.size = size
+        self.modificationDate = modificationDate
+        self.contentTypeIdentifier = contentTypeIdentifier
+        self.etag = etag
+        self.contentVersion = contentVersion
+        self.metadataVersion = metadataVersion
+    }
+
+    init?(json: [String: Any]) {
+        guard let identifier = json["id"] as? String,
+              let parent = json["parent"] as? String,
+              let name = json["name"] as? String,
+              let dir = json["dir"] as? Bool,
+              let type = json["type"] as? String,
+              let etag = json["etag"] as? String,
+              let contentVersion = (json["cv"] as? String).flatMap({ Data(base64Encoded: $0) }),
+              let metadataVersion = (json["mv"] as? String).flatMap({ Data(base64Encoded: $0) })
+        else { return nil }
+        let mtime = (json["mtime"] as? NSNumber)?.intValue ?? 0
+        self.init(identifier: identifier, parentIdentifier: parent, name: name,
+                  isDirectory: dir, size: (json["size"] as? NSNumber)?.intValue ?? 0,
+                  modificationDate: Date(timeIntervalSince1970: TimeInterval(mtime) / 1000),
+                  contentTypeIdentifier: type, etag: etag,
+                  contentVersion: contentVersion, metadataVersion: metadataVersion)
+    }
+
+    /// The versions encode everything the date carries, so equality does not
+    /// depend on a Date's last bit surviving a JSON round trip.
+    static func == (lhs: FileItem, rhs: FileItem) -> Bool {
+        lhs.identifier == rhs.identifier && lhs.parentIdentifier == rhs.parentIdentifier
+            && lhs.name == rhs.name && lhs.isDirectory == rhs.isDirectory
+            && lhs.size == rhs.size && lhs.etag == rhs.etag
+            && lhs.contentTypeIdentifier == rhs.contentTypeIdentifier
+            && lhs.contentVersion == rhs.contentVersion
+            && lhs.metadataVersion == rhs.metadataVersion
+    }
+
+    var jsonObject: [String: Any] {
+        ["id": identifier, "parent": parentIdentifier, "name": name, "dir": isDirectory,
+         "size": size, "mtime": Int(modificationDate.timeIntervalSince1970 * 1000),
+         "type": contentTypeIdentifier, "etag": etag,
+         "cv": contentVersion.base64EncodedString(),
+         "mv": metadataVersion.base64EncodedString()]
+    }
 }
+
+// MARK: - Item mapping
 
 enum FilesMap {
     /// NSFileProviderItemIdentifier.rootContainer's raw value.
     static let rootIdentifier = filesRootIdentifier
 
-    /// `ino:<st_ino>` identifies the item; a phone that reports ino 0 (some
-    /// FUSE mounts do) falls back to `<path>`. The identifier also carries the
-    /// relative path after the ino, because the system runs the extension in
-    /// more than one process (and restarts it), so an id must resolve without
-    /// the in-memory map (design §3 "Identifiers").
+    /// `ino:<st_ino>` is the identity, so a rename or a move keeps it; a phone
+    /// that reports ino 0 (some FUSE mounts do) falls back to the path. The app
+    /// resolves both through its own map (design §3 "Identifiers", S4).
     static func identifier(path: String, ino: Int) -> String {
         if path.isEmpty { return rootIdentifier }
-        let encoded = encodedPath(path)
-        if ino > 0 { return "ino:\(ino):\(encoded)" }
-        return "path:\(encoded)"
+        if ino > 0 { return "ino:\(ino)" }
+        return "path:\(encodedPath(path))"
     }
 
-    /// The path part of an identifier stays one opaque token: "/" would read as
-    /// a subpath to anything that treats an identifier as one.
+    /// The path part of a path-form identifier stays one opaque token: "/" would
+    /// read as a subpath to anything that treats an identifier as one.
     static func encodedPath(_ path: String) -> String {
         path.replacingOccurrences(of: "%", with: "%25")
             .replacingOccurrences(of: "/", with: "%2F")
@@ -357,17 +528,14 @@ enum FilesMap {
             .replacingOccurrences(of: "%25", with: "%")
     }
 
-    /// The relative path an identifier carries, or nil when it is not one of
-    /// ours (a stale id from another provider is not worth guessing about).
+    /// The relative path a path-form identifier carries. An ino identifier has
+    /// none: only the app's map can resolve it.
     static func path(fromIdentifier identifier: String) -> String? {
         if identifier == rootIdentifier { return "" }
         if identifier.hasPrefix("path:") {
             return decodedPath(String(identifier.dropFirst("path:".count)))
         }
-        guard identifier.hasPrefix("ino:") else { return nil }
-        let rest = identifier.dropFirst("ino:".count)
-        guard let colon = rest.firstIndex(of: ":") else { return nil }
-        return decodedPath(String(rest[rest.index(after: colon)...]))
+        return nil
     }
 
     static func contentTypeIdentifier(name: String, isDirectory: Bool) -> String {
@@ -413,30 +581,41 @@ enum FilesMap {
     static func childPath(_ parent: String, _ name: String) -> String {
         parent.isEmpty ? name : "\(parent)/\(name)"
     }
+
+    static func parentPath(of path: String) -> String {
+        (path as NSString).deletingLastPathComponent
+    }
 }
 
 /// NSFileProviderItemIdentifier.rootContainer is the string ".rootContainer";
 /// repeated here so this file does not need FileProvider.
 let filesRootIdentifier = ".rootContainer"
 
-// MARK: - Identifier ↔ path map
+// MARK: - The app-owned identifier map
 
-/// The extension's id ↔ path map, filled by listings and stats. Identifiers
-/// come from the phone's ino (or the path when it reports none); a rename
-/// keeps the identifier and only moves the path.
-struct FilesPathMap: Equatable {
+/// The app's id ↔ path map (design §3, S4). It is the only thing that can turn
+/// an `ino:` identifier back into a path, so it lives in the app, one process,
+/// and is persisted per profile. Every listing and stat reply fills it; every
+/// successful write, move, delete and mkdir updates it.
+struct FilesIdMap: Equatable {
+    /// The persisted shape. A different version is a fresh map: S3's ids carried
+    /// a path and are not worth migrating.
+    static let formatVersion = 2
+
     private(set) var pathByIdentifier: [String: String] = [FilesMap.rootIdentifier: ""]
     private(set) var identifierByPath: [String: String] = ["": FilesMap.rootIdentifier]
+    private(set) var parentByIdentifier: [String: String] = [FilesMap.rootIdentifier: FilesMap.rootIdentifier]
 
     init() {}
 
-    /// Registers one item (a listing entry or a stat result) and returns its
-    /// mapped item. The parent identifier is the container's identifier.
+    var isEmpty: Bool { pathByIdentifier.count <= 1 }
+
+    /// Registers one item (a listing entry, a stat result or a write's reply)
+    /// and returns its mapped item.
     @discardableResult
     mutating func insert(fs: FsItem, path: String, parentIdentifier: String) -> FileItem {
         let item = FilesMap.item(path: path, parentIdentifier: parentIdentifier, fs: fs)
-        pathByIdentifier[item.identifier] = path
-        identifierByPath[path] = item.identifier
+        remember(identifier: item.identifier, path: path, parentIdentifier: parentIdentifier)
         return item
     }
 
@@ -449,13 +628,26 @@ struct FilesPathMap: Equatable {
         }
     }
 
-    func path(for identifier: String) -> String? {
-        pathByIdentifier[identifier]
+    /// Records an id the app already has an item for (a write or move reply
+    /// carries the new metadata, not a fresh listing).
+    mutating func remember(identifier: String, path: String, parentIdentifier: String) {
+        if let old = pathByIdentifier[identifier], old != path {
+            identifierByPath.removeValue(forKey: old)
+        }
+        if let occupant = identifierByPath[path], occupant != identifier {
+            pathByIdentifier.removeValue(forKey: occupant)
+            parentByIdentifier.removeValue(forKey: occupant)
+        }
+        pathByIdentifier[identifier] = path
+        identifierByPath[path] = identifier
+        parentByIdentifier[identifier] = parentIdentifier
     }
 
-    func identifier(for path: String) -> String? {
-        identifierByPath[path]
-    }
+    func path(for identifier: String) -> String? { pathByIdentifier[identifier] }
+
+    func identifier(for path: String) -> String? { identifierByPath[path] }
+
+    func parent(for identifier: String) -> String? { parentByIdentifier[identifier] }
 
     /// Forgets a path and everything below it (a delete, or a folder whose
     /// listing is about to be re-read).
@@ -466,6 +658,7 @@ struct FilesPathMap: Equatable {
         }
         for (id, known) in doomed {
             pathByIdentifier.removeValue(forKey: id)
+            parentByIdentifier.removeValue(forKey: id)
             identifierByPath.removeValue(forKey: known)
         }
     }
@@ -477,6 +670,7 @@ struct FilesPathMap: Equatable {
         identifierByPath.removeValue(forKey: old)
         if let occupant = identifierByPath[newPath] {
             pathByIdentifier.removeValue(forKey: occupant)
+            parentByIdentifier.removeValue(forKey: occupant)
         }
         pathByIdentifier[identifier] = newPath
         identifierByPath[newPath] = identifier
@@ -488,6 +682,77 @@ struct FilesPathMap: Equatable {
             pathByIdentifier[id] = moved
             identifierByPath[moved] = id
         }
+    }
+
+    // MARK: Persistence
+
+    /// The persisted JSON: a version and one entry per id. Names are not in it
+    /// (only paths), and the file is 0600 in the profile's support folder.
+    func encoded() -> Data {
+        var ids: [String: [String: String]] = [:]
+        for (identifier, path) in pathByIdentifier {
+            ids[identifier] = ["p": path,
+                               "n": parentByIdentifier[identifier] ?? FilesMap.rootIdentifier]
+        }
+        let object: [String: Any] = ["version": Self.formatVersion, "ids": ids]
+        return (try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])) ?? Data()
+    }
+
+    /// A corrupt, foreign or older file is a fresh map (the caller re-adds the
+    /// domain, which drops the ids the map cannot explain).
+    static func decode(_ data: Data) -> FilesIdMap? {
+        guard let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let version = (object["version"] as? NSNumber)?.intValue,
+              version == formatVersion,
+              let ids = object["ids"] as? [String: [String: String]] else { return nil }
+        var map = FilesIdMap()
+        map.pathByIdentifier.removeAll()
+        map.identifierByPath.removeAll()
+        map.parentByIdentifier.removeAll()
+        for (identifier, fields) in ids {
+            guard let path = fields["p"], let parent = fields["n"] else { return nil }
+            map.pathByIdentifier[identifier] = path
+            if map.identifierByPath[path] == nil { map.identifierByPath[path] = identifier }
+            map.parentByIdentifier[identifier] = parent
+        }
+        guard map.pathByIdentifier[FilesMap.rootIdentifier] == "" else { return nil }
+        return map
+    }
+
+    static func load(_ url: URL) -> FilesIdMap {
+        guard let data = try? Data(contentsOf: url), let map = decode(data) else {
+            return FilesIdMap()
+        }
+        return map
+    }
+
+    static func save(_ map: FilesIdMap, to url: URL) {
+        let directory = url.deletingLastPathComponent()
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
+                                                 attributes: [.posixPermissions: 0o700])
+        try? map.encoded().write(to: url, options: [.atomic])
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600],
+                                               ofItemAtPath: url.path)
+    }
+}
+
+// MARK: - Conflicts
+
+/// What a write becomes when the phone's copy moved on (design §4 "Conflicts"):
+/// keep both. `<name> (from Mac).<ext>`, numbered when that is taken too.
+enum FilesConflict {
+    static func name(for name: String, taken: (String) -> Bool = { _ in false }) -> String {
+        let ns = name as NSString
+        let ext = ns.pathExtension
+        let base = ns.deletingPathExtension
+        let suffix = ext.isEmpty ? "" : ".\(ext)"
+        var candidate = "\(base) (from Mac)\(suffix)"
+        var number = 2
+        while taken(candidate) {
+            candidate = "\(base) (from Mac \(number))\(suffix)"
+            number += 1
+        }
+        return candidate
     }
 }
 

@@ -1,12 +1,16 @@
-// The app side of phone files in Finder (docs/design/files.md §1, §3): a
+// The app side of phone files in Finder (docs/design/files.md §1, §3, §4): a
 // UNIX-domain socket in the App Group container that the sandboxed File
-// Provider extension asks for listings, stats and file bytes. The app owns the
-// one phone session, so the extension never dials the phone.
+// Provider extension asks for listings, stats, file bytes and writes. The app
+// owns the one phone session, so the extension never dials the phone, and the
+// app owns the id ↔ path map, so an identifier resolves in any extension
+// process (and after a restart).
 //
-// The wire is FilesCore's: newline-delimited JSON with an `id`, then for a read
-// a `data` header and exactly that many raw bytes, repeatedly, then `end`.
-// Nothing that crosses this socket is logged with a name, a path or a byte
-// value: op names, counts, lengths and codes only (design §4).
+// The wire is FilesCore's: newline-delimited JSON with an `id`, then for a
+// transfer a `data` header and exactly that many raw bytes. Reads flow app →
+// extension; a create/modify answers `ready` first and the extension's bytes
+// flow the other way, paced by the write sink. Nothing that crosses this socket
+// is logged with a name, a path or a byte value: op names, counts, lengths and
+// codes only (design §4).
 
 import Foundation
 import os
@@ -38,10 +42,35 @@ enum FilesSocket {
     }
 }
 
+/// How many write bytes one client may have in flight before the bridge stops
+/// reading its socket: the drop rule's 1 MiB (§3). The reader thread blocks and
+/// the extension's own write blocks on TCP, so nothing buffers the file here.
+final class FilesWriteFlow: @unchecked Sendable {
+    static let maxQueuedBytes = 1 << 20
+    private let lock = NSLock()
+    private var pending = 0
+
+    /// Reserves room for one chunk; false when the budget is spent.
+    func reserve(_ bytes: Int) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard pending + bytes <= Self.maxQueuedBytes else { return false }
+        pending += bytes
+        return true
+    }
+
+    func release(_ bytes: Int) {
+        lock.lock()
+        pending = max(0, pending - bytes)
+        lock.unlock()
+    }
+}
+
 /// One accepted client. Reads happen on its own queue (blocking recv); writes
 /// are serialized by a lock and may come from the main actor.
 final class FilesBridgeClient: @unchecked Sendable {
     let fd: Int32
+    let flow = FilesWriteFlow()
     private let lock = NSLock()
     private var closed = false
 
@@ -107,10 +136,16 @@ final class FilesBridgeListener {
     private var stopped = false
     private(set) var path: String = ""
 
+    /// `onData` answers false when the client's write budget is spent; the read
+    /// loop then waits and offers the same bytes again.
+    typealias RequestHandler = @Sendable (BridgeRequest, FilesBridgeClient) -> Void
+    typealias DataHandler = @Sendable (UInt32, [UInt8], FilesBridgeClient) -> Bool
+
     /// Returns "ok" or an errno-style reason; the caller logs it without the
     /// path.
     func start(path: String,
-               onRequest: @escaping @Sendable (BridgeRequest, FilesBridgeClient) -> Void,
+               onRequest: @escaping RequestHandler,
+               onData: @escaping DataHandler,
                onClose: @escaping @Sendable (FilesBridgeClient) -> Void) -> String {
         self.path = path
         let directory = URL(fileURLWithPath: path).deletingLastPathComponent()
@@ -149,7 +184,9 @@ final class FilesBridgeListener {
             return "listen errno \(failure)"
         }
         listenFD = fd
-        queue.async { [weak self] in self?.acceptLoop(onRequest: onRequest, onClose: onClose) }
+        queue.async { [weak self] in
+            self?.acceptLoop(onRequest: onRequest, onData: onData, onClose: onClose)
+        }
         return "ok"
     }
 
@@ -166,7 +203,8 @@ final class FilesBridgeListener {
         if !path.isEmpty { unlink(path) }
     }
 
-    private func acceptLoop(onRequest: @escaping @Sendable (BridgeRequest, FilesBridgeClient) -> Void,
+    private func acceptLoop(onRequest: @escaping RequestHandler,
+                            onData: @escaping DataHandler,
                             onClose: @escaping @Sendable (FilesBridgeClient) -> Void) {
         while true {
             lock.lock()
@@ -207,13 +245,14 @@ final class FilesBridgeListener {
             // A separate queue per client: the accept loop blocks in accept(),
             // so a read loop on the same serial queue would never run.
             DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-                self?.readLoop(client, onRequest: onRequest, onClose: onClose)
+                self?.readLoop(client, onRequest: onRequest, onData: onData, onClose: onClose)
             }
         }
     }
 
     private func readLoop(_ client: FilesBridgeClient,
-                          onRequest: @escaping @Sendable (BridgeRequest, FilesBridgeClient) -> Void,
+                          onRequest: @escaping RequestHandler,
+                          onData: @escaping DataHandler,
                           onClose: @escaping @Sendable (FilesBridgeClient) -> Void) {
         var decoder = BridgeDecoder()
         var buffer = [UInt8](repeating: 0, count: 64 * 1024)
@@ -227,11 +266,20 @@ final class FilesBridgeListener {
                 switch event {
                 case .request(let request):
                     onRequest(request, client)
+                case .data(let id, let bytes):
+                    // Wait for room instead of buffering the file: the extension
+                    // is blocked on its own write, so this is the flow control.
+                    while !onData(id, bytes, client) {
+                        if !client.isOpen { break loop }
+                        usleep(20_000)
+                    }
+                case .dataHeader:
+                    break
                 case .invalid:
                     // A request channel only carries requests: a malformed line
                     // ends it rather than guessing.
                     break loop
-                default:
+                case .reply:
                     break loop
                 }
             }
@@ -245,51 +293,431 @@ final class FilesBridgeListener {
     }
 }
 
-/// What the bridge needs from the live phone: list/stat/read/cancel and the
+/// What the bridge needs from the live phone: the item operations and the
 /// display name the domain shows. A protocol so the server can be tested with
 /// no session and no File Provider.
 @MainActor
 protocol FilesBridgeHost: AnyObject {
     var isConnected: Bool { get }
     var displayName: String? { get }
-    func list(path: String, page: String?, completion: @escaping (Result<FsPage, FsError>) -> Void)
-    func stat(path: String, completion: @escaping (Result<FsItem, FsError>) -> Void)
-    func streamRead(path: String, offset: Int, length: Int, etag: String?,
+    func list(item: String, page: String?,
+              completion: @escaping (Result<(items: [FileItem], next: String?), FsError>) -> Void)
+    func stat(item: String, completion: @escaping (Result<FileItem, FsError>) -> Void)
+    func streamRead(item: String, offset: Int, length: Int, etag: String?,
                     onStart: @escaping (UInt32) -> Void,
                     chunk: @escaping ([UInt8]) -> Bool,
                     completion: @escaping (Result<FsReadResult, FsError>) -> Void)
+    /// `ready` fires once with the sink the extension's bytes go into, or nil
+    /// when nothing follows (a folder, or a refusal).
+    func create(_ request: BridgeCreate,
+                ready: @escaping (FilesWriteSink?) -> Void,
+                completion: @escaping (Result<FileItem, FsError>) -> Void)
+    func modify(_ request: BridgeModify,
+                ready: @escaping (FilesWriteSink?) -> Void,
+                completion: @escaping (Result<FileItem, FsError>) -> Void)
+    func delete(item: String, base: String, recursive: Bool,
+                completion: @escaping (Result<Void, FsError>) -> Void)
     func cancel(id: UInt32)
     func cancelAll()
 }
 
-/// The real host: one session, one FsClient.
+/// The real host: one session, one FsClient, and the app-owned id ↔ path map.
 @MainActor
 final class SessionBridgeHost: FilesBridgeHost {
     private let client: FsClient
     private let name: String?
+    private let mapURL: URL?
+    private var map: FilesIdMap
 
-    init(client: FsClient, name: String?) {
+    init(client: FsClient, name: String?, mapURL: URL?) {
         self.client = client
         self.name = name
+        self.mapURL = mapURL
+        self.map = mapURL.map(FilesIdMap.load) ?? FilesIdMap()
     }
 
     var isConnected: Bool { true }
     var displayName: String? { name }
 
-    func list(path: String, page: String?, completion: @escaping (Result<FsPage, FsError>) -> Void) {
-        client.list(path: path, page: page, completion: completion)
+    // MARK: Resolution
+
+    /// An identifier → the phone's relative path. A mapped entry is verified
+    /// with one stat (the ino must still be the id); a mismatch is re-resolved
+    /// once from the parent's listing, else `fs_not_found` (design §3).
+    private func resolve(_ identifier: String,
+                         completion: @escaping (Result<String, FsError>) -> Void) {
+        if identifier == FilesMap.rootIdentifier { return completion(.success("")) }
+        guard let path = map.path(for: identifier) else {
+            return reresolve(identifier, completion: completion)
+        }
+        client.stat(path: path) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .success(let fs):
+                if FilesMap.identifier(path: path, ino: fs.ino) == identifier {
+                    // Refresh what the reply says; the path is the same.
+                    self.map.insert(fs: fs, path: path, parentIdentifier: self.parent(of: identifier))
+                    return completion(.success(path))
+                }
+                self.reresolve(identifier, completion: completion)
+            case .failure(let error):
+                if error.code == "fs_not_found" {
+                    self.map.invalidate(subtree: path)
+                    self.save()
+                    return self.reresolve(identifier, completion: completion)
+                }
+                completion(.failure(error))
+            }
+        }
     }
 
-    func stat(path: String, completion: @escaping (Result<FsItem, FsError>) -> Void) {
-        client.stat(path: path, completion: completion)
+    /// One listing of the parent: the only other way to learn an id's path.
+    private func reresolve(_ identifier: String,
+                             completion: @escaping (Result<String, FsError>) -> Void) {
+        guard let parentID = map.parent(for: identifier), parentID != identifier else {
+            return completion(.failure(FsError(code: "fs_not_found")))
+        }
+        resolve(parentID) { [weak self] parentResult in
+            guard let self else { return }
+            guard case .success(let parentPath) = parentResult else {
+                return completion(.failure(FsError(code: "fs_not_found")))
+            }
+            self.client.list(path: parentPath, page: nil) { result in
+                switch result {
+                case .success(let page):
+                    for fs in page.items {
+                        let path = FilesMap.childPath(parentPath, fs.name)
+                        if FilesMap.identifier(path: path, ino: fs.ino) == identifier {
+                            self.map.insert(fs: fs, path: path, parentIdentifier: parentID)
+                            self.save()
+                            return completion(.success(path))
+                        }
+                    }
+                    completion(.failure(FsError(code: "fs_not_found")))
+                case .failure(let error):
+                    completion(.failure(error))
+                }
+            }
+        }
     }
 
-    func streamRead(path: String, offset: Int, length: Int, etag: String?,
+    private func parent(of identifier: String) -> String {
+        map.parent(for: identifier) ?? FilesMap.rootIdentifier
+    }
+
+    private func save() {
+        guard let mapURL else { return }
+        FilesIdMap.save(map, to: mapURL)
+    }
+
+    // MARK: Reads
+
+    func list(item: String, page: String?,
+              completion: @escaping (Result<(items: [FileItem], next: String?), FsError>) -> Void) {
+        resolve(item) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .failure(let error):
+                completion(.failure(error))
+            case .success(let path):
+                self.client.list(path: path, page: page) { result in
+                    switch result {
+                    case .success(let listing):
+                        let items = self.map.insert(childrenOf: path, parentIdentifier: item,
+                                                    items: listing.items)
+                        self.save()
+                        completion(.success((items, listing.next)))
+                    case .failure(let error):
+                        completion(.failure(error))
+                    }
+                }
+            }
+        }
+    }
+
+    func stat(item: String, completion: @escaping (Result<FileItem, FsError>) -> Void) {
+        resolve(item) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .failure(let error):
+                completion(.failure(error))
+            case .success(let path):
+                self.client.stat(path: path) { result in
+                    switch result {
+                    case .success(let fs):
+                        let mapped = self.map.insert(fs: fs, path: path,
+                                                     parentIdentifier: self.parent(of: item))
+                        self.save()
+                        completion(.success(mapped))
+                    case .failure(let error):
+                        completion(.failure(error))
+                    }
+                }
+            }
+        }
+    }
+
+    func streamRead(item: String, offset: Int, length: Int, etag: String?,
                     onStart: @escaping (UInt32) -> Void,
                     chunk: @escaping ([UInt8]) -> Bool,
                     completion: @escaping (Result<FsReadResult, FsError>) -> Void) {
-        client.streamRead(path: path, offset: offset, length: length, etag: etag,
-                          onStart: onStart, chunk: chunk, completion: completion)
+        resolve(item) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .failure(let error):
+                completion(.failure(error))
+            case .success(let path):
+                self.client.streamRead(path: path, offset: offset, length: length, etag: etag,
+                                       onStart: onStart, chunk: chunk, completion: completion)
+            }
+        }
+    }
+
+    // MARK: Writes
+
+    func create(_ request: BridgeCreate,
+                ready: @escaping (FilesWriteSink?) -> Void,
+                completion: @escaping (Result<FileItem, FsError>) -> Void) {
+        resolve(request.parent) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .failure(let error):
+                ready(nil)
+                completion(.failure(error))
+            case .success(let parentPath):
+                let path = FilesMap.childPath(parentPath, request.name)
+                if request.dir {
+                    ready(nil)
+                    self.client.mkdir(path: path) { result in
+                        switch result {
+                        case .success(let fs?):
+                            let item = self.map.insert(fs: fs, path: path,
+                                                       parentIdentifier: request.parent)
+                            self.save()
+                            completion(.success(item))
+                        case .success(nil):
+                            completion(.failure(FsError(code: "protocol")))
+                        case .failure(let error):
+                            completion(.failure(error))
+                        }
+                    }
+                    return
+                }
+                guard let sha256 = request.sha256 else {
+                    ready(nil)
+                    return completion(.failure(FsError(code: "fs_denied", message: "no digest")))
+                }
+                let sink = self.client.beginWrite(path: path, size: request.size, sha256: sha256,
+                                                  etag: nil) { result in
+                    switch result {
+                    case .success(let fs):
+                        let finalPath = FilesMap.childPath(parentPath, fs.name)
+                        let item = self.map.insert(fs: fs, path: finalPath,
+                                                   parentIdentifier: request.parent)
+                        self.save()
+                        completion(.success(item))
+                    case .failure(let error):
+                        completion(.failure(error))
+                    }
+                }
+                ready(sink)
+            }
+        }
+    }
+
+    func modify(_ request: BridgeModify,
+                ready: @escaping (FilesWriteSink?) -> Void,
+                completion: @escaping (Result<FileItem, FsError>) -> Void) {
+        resolve(request.item) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .failure(let error):
+                ready(nil)
+                completion(.failure(error))
+            case .success(let path):
+                self.performModify(request, path: path, ready: ready, completion: completion)
+            }
+        }
+    }
+
+    private func performModify(_ request: BridgeModify, path: String,
+                               ready: @escaping (FilesWriteSink?) -> Void,
+                               completion: @escaping (Result<FileItem, FsError>) -> Void) {
+        let wantsMove = request.name != nil || request.parent != nil
+        if request.hasContent, let sha256 = request.sha256 {
+            let sink = client.beginWrite(path: path, size: request.size, sha256: sha256,
+                                         etag: request.base) { [weak self] result in
+                guard let self else { return }
+                switch result {
+                case .failure(let error):
+                    completion(.failure(error))
+                case .success(let fs):
+                    self.afterContent(fs, request: request, path: path, wantsMove: wantsMove,
+                                      completion: completion)
+                }
+            }
+            ready(sink)
+            return
+        }
+        ready(nil)
+        if wantsMove {
+            moveItem(request, path: path, etag: request.base, completion: completion)
+            return
+        }
+        if let mtime = request.mtime {
+            client.stat(path: path) { [weak self] result in
+                guard let self else { return }
+                switch result {
+                case .failure(let error):
+                    completion(.failure(error))
+                case .success(let fs):
+                    guard fs.etag == request.base else {
+                        return completion(.failure(FsError(code: "fs_stale")))
+                    }
+                    self.client.setAttrs(path: path, mtime: mtime) { result in
+                        switch result {
+                        case .success(let fs?):
+                            completion(.success(self.remember(fs, path: path, item: request.item)))
+                        case .success(nil):
+                            completion(.failure(FsError(code: "protocol")))
+                        case .failure(let error):
+                            completion(.failure(error))
+                        }
+                    }
+                }
+            }
+            return
+        }
+        // Nothing that changes the phone: answer its current metadata.
+        client.stat(path: path) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .success(let fs):
+                completion(.success(self.remember(fs, path: path, item: request.item)))
+            case .failure(let error):
+                completion(.failure(error))
+            }
+        }
+    }
+
+    /// After new content landed: a rename/move and/or a date may follow.
+    private func afterContent(_ fs: FsItem, request: BridgeModify, path: String,
+                              wantsMove: Bool,
+                              completion: @escaping (Result<FileItem, FsError>) -> Void) {
+        let landed = remember(fs, path: path, item: request.item)
+        if wantsMove {
+            moveItem(request, path: path, etag: nil) { [weak self] result in
+                guard let self else { return }
+                switch result {
+                case .failure(let error):
+                    completion(.failure(error))
+                case .success(let moved):
+                    guard let mtime = request.mtime else { return completion(.success(moved)) }
+                    self.setMtime(mtime, item: moved, path: self.map.path(for: moved.identifier) ?? path,
+                                  completion: completion)
+                }
+            }
+            return
+        }
+        guard let mtime = request.mtime else { return completion(.success(landed)) }
+        setMtime(mtime, item: landed, path: path, completion: completion)
+    }
+
+    private func setMtime(_ mtime: Int, item: FileItem, path: String,
+                          completion: @escaping (Result<FileItem, FsError>) -> Void) {
+        client.setAttrs(path: path, mtime: mtime) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .success(let fs?):
+                completion(.success(self.remember(fs, path: path, item: item.identifier)))
+            case .success(nil):
+                completion(.success(item))
+            case .failure(let error):
+                completion(.failure(error))
+            }
+        }
+    }
+
+    private func moveItem(_ request: BridgeModify, path: String, etag: String?,
+                          completion: @escaping (Result<FileItem, FsError>) -> Void) {
+        let name = request.name ?? (path as NSString).lastPathComponent
+        let finishMove: (String) -> Void = { [weak self] parentPath in
+            guard let self else { return }
+            let newPath = FilesMap.childPath(parentPath, name)
+            self.client.move(from: path, to: newPath, etag: etag) { result in
+                switch result {
+                case .failure(let error):
+                    completion(.failure(error))
+                case .success(let fs?):
+                    self.map.rename(identifier: request.item, to: newPath)
+                    let item = self.remember(fs, path: newPath,
+                                             item: request.item,
+                                             parentIdentifier: request.parent ?? self.parent(of: request.item))
+                    self.save()
+                    completion(.success(item))
+                case .success(nil):
+                    completion(.failure(FsError(code: "protocol")))
+                }
+            }
+        }
+        guard let parentID = request.parent else {
+            return finishMove(FilesMap.parentPath(of: path))
+        }
+        resolve(parentID) { result in
+            switch result {
+            case .failure(let error):
+                completion(.failure(error))
+            case .success(let parentPath):
+                finishMove(parentPath)
+            }
+        }
+    }
+
+    private func remember(_ fs: FsItem, path: String, item: String,
+                          parentIdentifier: String? = nil) -> FileItem {
+        let identifier = FilesMap.identifier(path: path, ino: fs.ino)
+        if identifier != item {
+            // The phone's identity moved (a rename MediaProvider re-created):
+            // the old id is worth nothing now.
+            map.invalidate(subtree: path)
+        }
+        let mapped = map.insert(fs: fs, path: path,
+                                parentIdentifier: parentIdentifier ?? parent(of: item))
+        save()
+        return mapped
+    }
+
+    func delete(item: String, base: String, recursive: Bool,
+                completion: @escaping (Result<Void, FsError>) -> Void) {
+        resolve(item) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .failure(let error):
+                completion(.failure(error))
+            case .success(let path):
+                // The phone's delete has no etag field: one stat is the check.
+                self.client.stat(path: path) { result in
+                    switch result {
+                    case .failure(let error):
+                        completion(.failure(error))
+                    case .success(let fs):
+                        guard fs.etag == base else {
+                            return completion(.failure(FsError(code: "fs_stale")))
+                        }
+                        self.client.delete(path: path, recursive: recursive) { result in
+                            switch result {
+                            case .failure(let error):
+                                completion(.failure(error))
+                            case .success:
+                                self.map.invalidate(subtree: path)
+                                self.save()
+                                completion(.success(()))
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     func cancel(id: UInt32) { client.cancel(id: id) }
@@ -305,6 +733,8 @@ final class FilesBridge {
     /// cancel needs.
     private var liveIDs: [ObjectIdentifier: Set<UInt32>] = [:]
     private var readIDs: [ObjectIdentifier: [UInt32: UInt32]] = [:]
+    /// The sink a create/modify's data frames go into, per client and id.
+    private var writeSinks: [ObjectIdentifier: [UInt32: FilesWriteSink]] = [:]
 
     private var listener: FilesBridgeListener?
     private var host: FilesBridgeHost?
@@ -328,6 +758,16 @@ final class FilesBridge {
                     MainActor.assumeIsolated { self?.handle(request, from: client) }
                 }
             },
+            onData: { [weak self] id, bytes, client in
+                guard client.flow.reserve(bytes.count) else { return false }
+                DispatchQueue.main.async {
+                    MainActor.assumeIsolated {
+                        self?.accept(bytes, id: id, from: client)
+                        client.flow.release(bytes.count)
+                    }
+                }
+                return true
+            },
             onClose: { [weak self] client in
                 DispatchQueue.main.async {
                     MainActor.assumeIsolated { self?.forget(client) }
@@ -347,6 +787,7 @@ final class FilesBridge {
         host = nil
         liveIDs.removeAll()
         readIDs.removeAll()
+        writeSinks.removeAll()
     }
 
     /// A session became ready: the bridge answers from now on.
@@ -362,6 +803,7 @@ final class FilesBridge {
         host = nil
         liveIDs.removeAll()
         readIDs.removeAll()
+        writeSinks.removeAll()
         Log.files.notice("bridge: session detached")
     }
 
@@ -378,10 +820,10 @@ final class FilesBridge {
                                name: host?.displayName,
                                connected: host?.isConnected ?? false))
             Log.files.notice("bridge: hello connected=\(self.host != nil, privacy: .public)")
-        case .list(let id, let path, let page):
+        case .list(let id, let item, let page):
             guard let host, host.isConnected else { return client.send(.error(id: id, code: "offline")) }
             guard begin(id, client) else { return }
-            host.list(path: path, page: page) { [weak self] result in
+            host.list(item: item, page: page) { [weak self] result in
                 MainActor.assumeIsolated {
                     self?.end(id, client)
                     switch result {
@@ -394,10 +836,10 @@ final class FilesBridge {
                     }
                 }
             }
-        case .stat(let id, let path):
+        case .stat(let id, let item):
             guard let host, host.isConnected else { return client.send(.error(id: id, code: "offline")) }
             guard begin(id, client) else { return }
-            host.stat(path: path) { [weak self] result in
+            host.stat(item: item) { [weak self] result in
                 MainActor.assumeIsolated {
                     self?.end(id, client)
                     switch result {
@@ -409,13 +851,13 @@ final class FilesBridge {
                     }
                 }
             }
-        case .read(let id, let path, let offset, let length, let etag):
+        case .read(let id, let item, let offset, let length, let etag):
             guard let host, host.isConnected else { return client.send(.error(id: id, code: "offline")) }
             // A whole-file read needs the item's size; the extension stats
             // first, so a request with length 0 is an empty file.
             guard begin(id, client) else { return }
             host.streamRead(
-                path: path, offset: offset, length: length, etag: etag,
+                item: item, offset: offset, length: length, etag: etag,
                 onStart: { [weak self] fsID in
                     MainActor.assumeIsolated { self?.readIDs[slot, default: [:]][id] = fsID }
                 },
@@ -438,12 +880,94 @@ final class FilesBridge {
                         }
                     }
                 })
+        case .create(let id, let create):
+            guard let host, host.isConnected else { return client.send(.error(id: id, code: "offline")) }
+            guard begin(id, client) else { return }
+            host.create(create, ready: { [weak self] sink in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    if let sink {
+                        self.writeSinks[slot, default: [:]][id] = sink
+                        client.send(.ready(id: id))
+                    }
+                }
+            }, completion: { [weak self] result in
+                MainActor.assumeIsolated {
+                    self?.finishWrite(id: id, client: client, result: result)
+                }
+            })
+            Log.files.notice("bridge: create dir=\(create.dir, privacy: .public) size=\(create.size, privacy: .public)")
+        case .modify(let id, let modify):
+            guard let host, host.isConnected else { return client.send(.error(id: id, code: "offline")) }
+            guard begin(id, client) else { return }
+            host.modify(modify, ready: { [weak self] sink in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    if let sink {
+                        self.writeSinks[slot, default: [:]][id] = sink
+                        client.send(.ready(id: id))
+                    }
+                }
+            }, completion: { [weak self] result in
+                MainActor.assumeIsolated {
+                    self?.finishWrite(id: id, client: client, result: result)
+                }
+            })
+            Log.files.notice("bridge: modify content=\(modify.hasContent, privacy: .public) size=\(modify.size, privacy: .public)")
+        case .delete(let id, let item, let base, let recursive):
+            guard let host, host.isConnected else { return client.send(.error(id: id, code: "offline")) }
+            guard begin(id, client) else { return }
+            host.delete(item: item, base: base, recursive: recursive) { [weak self] result in
+                MainActor.assumeIsolated {
+                    self?.end(id, client)
+                    switch result {
+                    case .success:
+                        client.send(.ok(id: id))
+                        Log.files.notice("bridge: delete ok")
+                    case .failure(let error):
+                        client.send(.error(id: id, code: error.code))
+                        Log.files.notice("bridge: delete failed code=\(error.code, privacy: .public)")
+                    }
+                }
+            }
         case .cancel(let id):
-            guard let fsID = readIDs[slot]?[id] else { return }
-            readIDs[slot]?[id] = nil
-            end(id, client)
-            host?.cancel(id: fsID)
-            Log.files.notice("bridge: read cancelled")
+            if let fsID = readIDs[slot]?[id] {
+                readIDs[slot]?[id] = nil
+                end(id, client)
+                host?.cancel(id: fsID)
+                Log.files.notice("bridge: read cancelled")
+            } else if let sink = writeSinks[slot]?[id] {
+                writeSinks[slot]?[id] = nil
+                end(id, client)
+                sink.cancel()
+                Log.files.notice("bridge: write cancelled")
+            }
+        }
+    }
+
+    /// One data chunk for a create/modify's write sink (main actor).
+    private func accept(_ bytes: [UInt8], id: UInt32, from client: FilesBridgeClient) {
+        let slot = ObjectIdentifier(client)
+        guard let sink = writeSinks[slot]?[id] else { return }
+        guard sink.append(bytes) else {
+            // The sink refused: the write is over; the phone's answer (or the
+            // extension's cancel) finishes the request.
+            return
+        }
+    }
+
+    private func finishWrite(id: UInt32, client: FilesBridgeClient,
+                             result: Result<FileItem, FsError>) {
+        let slot = ObjectIdentifier(client)
+        writeSinks[slot]?[id] = nil
+        end(id, client)
+        switch result {
+        case .success(let item):
+            client.send(.item(id: id, item: item))
+            Log.files.notice("bridge: write done dir=\(item.isDirectory, privacy: .public) size=\(item.size, privacy: .public)")
+        case .failure(let error):
+            client.send(.error(id: id, code: error.code))
+            Log.files.notice("bridge: write failed code=\(error.code, privacy: .public)")
         }
     }
 
@@ -471,7 +995,9 @@ final class FilesBridge {
         let slot = ObjectIdentifier(client)
         // Every read this client had in flight is abandoned on the phone too.
         for (_, fsID) in readIDs[slot] ?? [:] { host?.cancel(id: fsID) }
+        for (_, sink) in writeSinks[slot] ?? [:] { sink.cancel() }
         readIDs.removeValue(forKey: slot)
+        writeSinks.removeValue(forKey: slot)
         liveIDs.removeValue(forKey: slot)
         Log.files.notice("bridge: client gone")
     }
