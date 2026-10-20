@@ -40,6 +40,9 @@ import dev.pocketdeck.camera.CameraInfo
 import dev.pocketdeck.camera.CameraMessages
 import dev.pocketdeck.camera.CameraSpec
 import dev.pocketdeck.camera.CameraState
+import dev.pocketdeck.camera.CodecSetupException
+import dev.pocketdeck.camera.EncoderSetup
+import dev.pocketdeck.camera.SurfaceCodec
 import java.io.OutputStream
 import kotlin.math.abs
 
@@ -369,26 +372,18 @@ internal class Camera2Engine(
             listener.onState(CameraState.ERROR, t.javaClass.simpleName)
             return
         }
-        val encoder = try {
-            MediaCodec.createEncoderByType(MIME).also {
-                configure(it, size.width, size.height, spec.fps)
-                it.start()
-            }
-        } catch (t: Throwable) {
-            log("encoder failed: ${t.javaClass.simpleName}")
-            runCatching { codec?.stop() }
-            runCatching { codec?.release() }
-            codec = null
-            listener.onState(CameraState.ERROR, "encoder_${t.javaClass.simpleName}")
+        val started = try {
+            EncoderSetup.start(AvcEncoder(size, spec.fps))
+        } catch (e: CodecSetupException) {
+            // The diagnostic line the next boot (or a phone's bug report) needs:
+            // which call refused, the platform error code and diagnostic string.
+            log("encoder failed: step=${e.step} ${codecDiagnostics(e.refused)}")
+            listener.onState(CameraState.ERROR, "encoder_${e.refused.javaClass.simpleName}")
             return
         }
+        val encoder = started.codec as MediaCodec
         codec = encoder
-        val input = try {
-            encoder.createInputSurface()
-        } catch (t: Throwable) {
-            listener.onState(CameraState.ERROR, "surface_${t.javaClass.simpleName}")
-            return
-        }
+        val input = started.surface as Surface
         surface = input
         drainThread = Thread({ drain(encoder, listener) }, "pocketdeck-camera-drain").apply {
             isDaemon = true
@@ -539,6 +534,35 @@ internal class Camera2Engine(
         val out = java.io.ByteArrayOutputStream()
         for (p in parts) out.write(p)
         return out.toByteArray()
+    }
+
+    /** [SurfaceCodec] over MediaCodec: it carries the order, this carries the settings. */
+    private inner class AvcEncoder(private val size: Size, private val fps: Int) : SurfaceCodec {
+
+        override fun create(): Any = MediaCodec.createEncoderByType(MIME)
+
+        override fun configure(codec: Any) =
+            configure(codec as MediaCodec, size.width, size.height, fps)
+
+        override fun createInputSurface(codec: Any): Any = (codec as MediaCodec).createInputSurface()
+
+        override fun start(codec: Any) = (codec as MediaCodec).start()
+
+        override fun release(codec: Any) {
+            runCatching { (codec as MediaCodec).stop() }
+            runCatching { (codec as MediaCodec).release() }
+        }
+    }
+
+    /**
+     * The platform's own words for a refused encoder call: error code, the
+     * transient/recoverable flags and the diagnostic string. No frame content.
+     */
+    private fun codecDiagnostics(t: Throwable): String {
+        val codec = t as? MediaCodec.CodecException
+            ?: return "${t.javaClass.simpleName}:${t.message}"
+        return "error=${codec.errorCode} transient=${codec.isTransient} " +
+            "recoverable=${codec.isRecoverable} diagnostic=${codec.diagnosticInfo}"
     }
 
     private fun configure(encoder: MediaCodec, w: Int, h: Int, fps: Int) {
