@@ -149,3 +149,35 @@ ensure_forward() {
   emu forward "tcp:$PORT" "tcp:$devport" >/dev/null || return 1
   echo "$devport"
 }
+
+# Restarts the app and with it its shell user service, the way start.sh starts
+# it (force-stop, launch, wait for a listening port). The prefs - enabled,
+# pairing - survive, so the new server answers the same key. True on success.
+restart_server() {
+  local pkg=dev.pocketdeck deadline
+  step "restarting $pkg (the shell service is gone)"
+  emu shell am force-stop "$pkg" >/dev/null 2>&1 || true
+  for _ in $(seq 1 10); do
+    emu shell am start -n "$pkg/.app.MainActivity" >/dev/null 2>&1 || true
+    sleep 2
+    [ -n "$(emu shell "pidof $pkg" 2>/dev/null | tr -d '\r')" ] && break
+  done
+  deadline=$(( $(date +%s) + 90 ))
+  while [ "$(date +%s)" -lt "$deadline" ]; do
+    device_port >/dev/null 2>&1 && return 0
+    sleep 1
+  done
+  return 1
+}
+
+# Evidence for a service that died: the crash buffer and the app's own lines,
+# bounded, under $AGENT_DIR. The .agent tree is ignored by git: this is never
+# committed.
+capture_crash() { # capture_crash <tag>
+  local tag="$1"
+  emu logcat -b crash -d > "$AGENT_DIR/crash-$tag.log" 2>/dev/null || true
+  emu logcat -d -t 6000 2>/dev/null |
+    grep -E 'PocketDeck|dev\.pocketdeck|AndroidRuntime|FATAL|MediaScanner|MediaProvider|am_crash' |
+    tail -1000 > "$AGENT_DIR/logcat-$tag.log" || true
+  step "wrote $AGENT_DIR/crash-$tag.log and $AGENT_DIR/logcat-$tag.log"
+}
