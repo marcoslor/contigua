@@ -33,9 +33,16 @@ struct FilesFinderSettings: View {
             Toggle("Show phone files in Finder", isOn: Binding(
                 get: { controller.filesDomain.enabled },
                 set: { controller.filesDomain.setEnabled($0) }))
-            Text("The phone's storage appears as a location in Finder: browse folders, open files and copy them out. Read-only for now; the phone stays awake only while you browse.")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
+                .disabled(!controller.filesDomain.supported)
+            if controller.filesDomain.supported {
+                Text("The phone's storage appears as a location in Finder: browse, open, copy in and out, rename and delete. Deleting there deletes on the phone right away (no Trash). The phone stays awake only while you browse.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            } else {
+                Text("This copy of PocketDeck was built without Finder files.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
             if controller.filesDomain.needsSwitch {
                 Text("Turn on PocketDeck in System Settings › Login Items & Extensions, then come back. Finder stays empty until then.")
                     .font(.subheadline)
@@ -46,7 +53,7 @@ struct FilesFinderSettings: View {
                 }
             }
             if controller.filesDomain.state == .failed {
-                Text("Finder files could not be turned on. Restart PocketDeck and try again.")
+                Text("Finder files could not be turned on. Turn the switch off and on again; if it keeps failing, restart PocketDeck.")
                     .font(.subheadline)
                     .foregroundStyle(.red)
             }

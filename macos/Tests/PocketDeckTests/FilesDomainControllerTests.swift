@@ -67,9 +67,12 @@ final class FilesDomainControllerTests: XCTestCase {
     override func setUp() async throws {
         profile = Profile(name: "ftest")!
         FilesDomainSetting.write(false, in: profile.defaults)
-        // These tests model the current build: its identifiers are format 2.
+        // These tests model the current build: its identifiers are format 2 and
+        // its bundle carries the extension (the test runner's does not).
         profile.defaults.set(FilesIdMap.formatVersion,
                              forKey: FilesDomainSetting.idsFormatKey)
+        RememberedPhones(profile: profile).removeAll()
+        profile.defaults.removeObject(forKey: "phoneNicknames")
         manager = FakeDomainManager()
         started = []
         stopped = 0
@@ -89,7 +92,8 @@ final class FilesDomainControllerTests: XCTestCase {
                 return "ok"
             },
             stopBridge: { [unowned self] in self.stopped += 1 },
-            openSettings: { [unowned self] in self.openedSettings += 1 })
+            openSettings: { [unowned self] in self.openedSettings += 1 },
+            supported: true)
     }
 
     override func tearDown() async throws {
@@ -270,9 +274,87 @@ final class FilesDomainControllerTests: XCTestCase {
     func testNoBridgeWithoutAnAppGroup() {
         let bare = FilesDomainController(
             profile: profile, manager: manager, socketPath: nil,
-            startBridge: { _ in "ok" }, stopBridge: {}, openSettings: {})
+            startBridge: { _ in "ok" }, stopBridge: {}, openSettings: {},
+            supported: true)
         // The test bundle has no PDFilesGroup: there is no socket to start.
         bare.setEnabled(true)
         XCTAssertEqual(.failed, bare.state)
+    }
+
+    // MARK: Bundle without the Files extension ("Fixes 10-20")
+
+    func testABundleWithoutTheExtensionNeverAddsADomain() {
+        FilesDomainSetting.write(true, in: profile.defaults)
+        let bare = FilesDomainController(
+            profile: profile, manager: manager, socketPath: "/tmp/pd-files-test.sock",
+            startBridge: { [unowned self] path in
+                self.started.append(path)
+                return "ok"
+            }, stopBridge: {}, openSettings: {}, supported: false)
+        bare.start()
+        XCTAssertFalse(bare.supported)
+        XCTAssertFalse(bare.enabled)
+        XCTAssertEqual(.off, bare.state)
+        XCTAssertTrue(manager.adds.isEmpty)
+        XCTAssertTrue(started.isEmpty)
+        // Turning the (disabled) switch on by hand still adds nothing.
+        bare.setEnabled(true)
+        XCTAssertEqual(.off, bare.state)
+        XCTAssertFalse(bare.enabled)
+        XCTAssertTrue(manager.adds.isEmpty)
+        XCTAssertTrue(started.isEmpty)
+    }
+
+    // MARK: The Finder location's name ("Fixes 10-20")
+
+    func testTheLocationNameCarriesThePhoneName() {
+        XCTAssertEqual("PocketDeck", FilesDomain.locationName(phoneName: ""))
+        XCTAssertEqual("PocketDeck", FilesDomain.locationName(phoneName: "  "))
+        XCTAssertEqual("PocketDeck (Pixel 9)", FilesDomain.locationName(phoneName: "Pixel 9"))
+        XCTAssertEqual("PocketDeck (Nicky)", FilesDomain.locationName(phoneName: " Nicky "))
+        XCTAssertEqual("PocketDeck", FilesDomain.displayName(profile: profile))
+        let phones = RememberedPhones(profile: profile)
+        phones.remember(PhoneRef(id: "p1", name: "Pixel 9", model: "pixel"))
+        XCTAssertEqual("PocketDeck (Pixel 9)", FilesDomain.displayName(profile: profile))
+        PhoneNicknames.write("Nicky", for: "p1", to: profile.defaults)
+        XCTAssertEqual("PocketDeck (Nicky)", FilesDomain.displayName(profile: profile))
+    }
+
+    func testARenameUpdatesTheExistingDomainInPlace() {
+        FilesDomainSetting.write(true, in: profile.defaults)
+        manager.info = FilesDomainInfo(identifier: FilesDomain.identifier(profile: profile),
+                                       displayName: "PocketDeck", isDisconnected: false,
+                                       userEnabled: true)
+        RememberedPhones(profile: profile).remember(PhoneRef(id: "p1", name: "Pixel 9", model: ""))
+        rebuild()
+        controller.start()
+        // Same identifier, new display name: macOS updates the domain rather
+        // than removing it (which would delete its folder and cache).
+        XCTAssertEqual([FilesDomain.identifier(profile: profile)], manager.adds.map(\.identifier))
+        XCTAssertEqual(["PocketDeck (Pixel 9)"], manager.adds.map(\.displayName))
+        XCTAssertTrue(manager.removes.isEmpty)
+    }
+
+    func testTheNameIsNotReAddedWhenItAlreadyMatches() {
+        FilesDomainSetting.write(true, in: profile.defaults)
+        manager.info = FilesDomainInfo(identifier: FilesDomain.identifier(profile: profile),
+                                       displayName: "PocketDeck", isDisconnected: false,
+                                       userEnabled: true)
+        rebuild()
+        controller.start()
+        XCTAssertTrue(manager.adds.isEmpty)
+    }
+
+    func testTheNameArrivingAfterTheAddUpdatesTheDomain() {
+        // The e2e hook adds the domain at launch, before the phone is known;
+        // the session then remembers the phone and its name.
+        manager.info = FilesDomainInfo(identifier: FilesDomain.identifier(profile: profile),
+                                       displayName: "PocketDeck", isDisconnected: false,
+                                       userEnabled: true)
+        controller.adopt()
+        RememberedPhones(profile: profile).remember(PhoneRef(id: "p1", name: "FakePhone", model: ""))
+        controller.sessionReady(true)
+        XCTAssertEqual(["PocketDeck (FakePhone)"], manager.adds.map(\.displayName))
+        XCTAssertEqual([FilesDomain.identifier(profile: profile)], manager.reconnects)
     }
 }

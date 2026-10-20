@@ -44,6 +44,18 @@ struct FilesDomainInfo: Equatable {
     var userEnabled: Bool
 }
 
+/// Whether this app bundle can serve Finder files: the App Group and the
+/// extension bundle that `bundle.sh --with-files` adds. The check itself is a
+/// pure function (FilesCore.swift), so a fake Info dictionary and path test it.
+enum FilesBundleSupportCheck {
+    static func isSupported(bundle: Bundle = .main,
+                            fileManager: FileManager = .default) -> Bool {
+        let appex = bundle.bundleURL.appendingPathComponent(FilesBundleSupport.extensionPath)
+        return FilesBundleSupport.supports(info: bundle.infoDictionary,
+                                           extensionExists: fileManager.fileExists(atPath: appex.path))
+    }
+}
+
 @MainActor
 protocol FilesDomainManaging: AnyObject {
     func domain(identifier: String) -> FilesDomainInfo?
@@ -73,6 +85,10 @@ final class FilesDomainController {
     }
 
     let profile: Profile
+    /// Whether this bundle carries the Files extension at all. A build without
+    /// it says so and never adds a domain: "restart and try again" could not
+    /// help, and a half-added domain is worse than an honest switch.
+    let supported: Bool
     private(set) var state: State = .off
     private(set) var enabled: Bool
 
@@ -85,6 +101,7 @@ final class FilesDomainController {
     private let openSettings: () -> Void
     private var sessionUp = false
     private var addedLocally = false
+    private var loggedUnsupported = false
     @ObservationIgnored private var activationObserver: NSObjectProtocol?
 
     var identifier: String { FilesDomain.identifier(profile: profile) }
@@ -94,9 +111,11 @@ final class FilesDomainController {
          socketPath: String? = nil,
          startBridge: ((String) -> String)? = nil,
          stopBridge: (() -> Void)? = nil,
-         openSettings: (() -> Void)? = nil) {
+         openSettings: (() -> Void)? = nil,
+         supported: Bool? = nil) {
         self.profile = profile
-        enabled = FilesDomainSetting.isEnabled(in: profile.defaults)
+        self.supported = supported ?? FilesBundleSupportCheck.isSupported()
+        enabled = self.supported && FilesDomainSetting.isEnabled(in: profile.defaults)
         self.manager = manager ?? SystemFilesDomainManager()
         fixedSocketPath = socketPath
         self.startBridge = startBridge ?? { FilesBridge.shared.start(path: $0) }
@@ -109,11 +128,17 @@ final class FilesDomainController {
     /// Called once at launch (and from the e2e hook's add): brings the domain in
     /// line with the stored setting.
     func start() {
+        guard supported else {
+            state = .off
+            logUnsupported()
+            return
+        }
         guard enabled else {
             state = .off
             return
         }
         ensureDomain()
+        refreshDisplayName()
         observeActivation()
     }
 
@@ -129,6 +154,11 @@ final class FilesDomainController {
     }
 
     func setEnabled(_ on: Bool) {
+        guard supported else {
+            state = .off
+            logUnsupported()
+            return
+        }
         guard on != enabled else { return }
         enabled = on
         FilesDomainSetting.write(on, in: profile.defaults)
@@ -149,11 +179,37 @@ final class FilesDomainController {
         if up {
             manager.reconnect(identifier: identifier) { _ in }
             manager.signalWorkingSet(identifier: identifier) { _ in }
+            // The phone's name is only known now: the domain may have been
+            // added before the session remembered it (a first launch).
+            refreshDisplayName()
             Log.files.notice("domain reconnect")
         } else {
             manager.disconnect(identifier: identifier, reason: "Phone not connected") { _ in }
             Log.files.notice("domain disconnect")
         }
+    }
+
+    /// The Finder location names the phone: "PocketDeck (<name>)". A nickname
+    /// change or the phone's own name arriving after the domain was added is
+    /// applied by re-adding the same identifier with the new display name,
+    /// which macOS updates in place (the folder and its cached files stay).
+    func refreshDisplayName() {
+        guard supported, let info = manager.domain(identifier: identifier) else { return }
+        let name = FilesDomain.displayName(profile: profile)
+        guard info.displayName != name else { return }
+        manager.add(identifier: identifier, displayName: name) { error in
+            if error == nil {
+                Log.files.notice("domain: display name updated")
+            } else {
+                Log.files.notice("domain: display name update failed")
+            }
+        }
+    }
+
+    private func logUnsupported() {
+        guard !loggedUnsupported else { return }
+        loggedUnsupported = true
+        Log.files.notice("domain: this bundle has no Files extension")
     }
 
     func openSystemSettings() {
