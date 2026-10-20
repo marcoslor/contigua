@@ -70,6 +70,10 @@ window you give it.
 - **Install APKs from the Mac** — drop an `.apk` / `.apks` / `.xapk` bundle on
   the Deck, or use Open With, Services or the menu bar. The Deck shows
   progress and the result.
+- **Focus sync** — a Mac Focus with the PocketDeck filter turns the phone's Do
+  Not Disturb on (priority, alarms only or nothing) and back when it ends. A DND
+  you set yourself is never turned off. The menu bar toggles the phone's DND by
+  hand, and a Shortcut can too.
 
 **Notifications and Now Playing** (opt-in on both sides)
 
