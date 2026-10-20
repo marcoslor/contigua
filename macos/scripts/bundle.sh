@@ -328,7 +328,7 @@ if [ "$WITH_FILES" = 1 ]; then
     FILES_APPEX="$APP/Contents/PlugIns/Files.appex"
     mkdir -p "$FILES_APPEX/Contents/MacOS"
     swiftc -O -application-extension -module-name Files -target "$(uname -m)-apple-macos26.0" \
-        -swift-version 5 Extensions/Files/Files.swift \
+        -swift-version 5 Extensions/Files/Files.swift Sources/PocketDeck/FilesCore.swift \
         -Xlinker -e -Xlinker _NSExtensionMain -o "$FILES_APPEX/Contents/MacOS/Files"
     sed -e "s/__FILES_ID__/$FILES_ID/" -e "s/__FILES_TITLE__/$FILES_TITLE/" \
         Extensions/Files/Info.plist > "$FILES_APPEX/Contents/Info.plist"

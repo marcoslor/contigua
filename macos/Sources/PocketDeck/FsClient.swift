@@ -1,7 +1,8 @@
 // Client side of the read-only phone files protocol (docs/PROTOCOL.md "Phone
 // files", docs/design/files.md §3): list, stat, ranged reads and cancel on the
-// one session. A read streams FS_DATA into an output file, hashes as it goes
-// and only hands back a file whose size and SHA-256 match fs.read.end.
+// one session. A read streams FS_DATA into an output file or a consumer, hashes
+// as it goes and only reports success when the size and SHA-256 match
+// fs.read.end. The value types it speaks live in FilesCore.swift.
 //
 // The phone is stateless; this type keeps the pending request per id, and
 // frames for an id it does not know (cancelled, or a phone that ran ahead) are
@@ -9,53 +10,6 @@
 
 import CryptoKit
 import Foundation
-
-/// One item of `fs.items` / `fs.item`.
-struct FsItem: Equatable {
-    var name: String
-    var dir: Bool
-    var size: Int
-    var mtime: Int
-    var ino: Int
-    var etag: String
-
-    init?(json: [String: Any]) {
-        guard let name = json["name"] as? String,
-              let dir = json["dir"] as? Bool,
-              let etag = json["etag"] as? String else { return nil }
-        self.name = name
-        self.dir = dir
-        self.size = (json["size"] as? NSNumber)?.intValue ?? 0
-        self.mtime = (json["mtime"] as? NSNumber)?.intValue ?? 0
-        self.ino = (json["ino"] as? NSNumber)?.intValue ?? 0
-        self.etag = etag
-    }
-}
-
-/// One page of a listing; `next` is the phone's cursor for the next page.
-struct FsPage: Equatable {
-    var items: [FsItem]
-    var next: String?
-}
-
-/// A completed read: the range's length and the SHA-256 the phone announced.
-struct FsReadResult: Equatable {
-    var bytes: Int
-    var sha256: String
-}
-
-/// The phone's `fs_*` refusal.
-struct FsError: Error, Equatable, CustomStringConvertible {
-    var code: String
-    var message: String?
-
-    init(code: String, message: String? = nil) {
-        self.code = code
-        self.message = message
-    }
-
-    var description: String { message.map { "\(code): \($0)" } ?? code }
-}
 
 /// What the client needs from the session — the wire is a detail here.
 protocol FsChannel: AnyObject {
@@ -75,23 +29,53 @@ final class FsClient {
         case read(Read)
     }
 
+    /// A read's destination: a temporary file (FsDebug and the e2e checks) or a
+    /// consumer that forwards each chunk (the bridge, which streams to the
+    /// extension). The consumer returns false when it can no longer take bytes.
+    private enum ReadSink {
+        case file(FileHandle, URL)
+        case stream(([UInt8]) -> Bool)
+    }
+
     private final class Read {
         let path: String
-        let url: URL
         let expected: Int
-        let handle: FileHandle
+        let sink: ReadSink
         var received = 0
         var hasher = SHA256()
         var cancelTimer: DispatchWorkItem?
         var completion: ((Result<FsReadResult, FsError>) -> Void)?
 
-        init(path: String, url: URL, expected: Int, handle: FileHandle,
+        init(path: String, expected: Int, sink: ReadSink,
              completion: @escaping (Result<FsReadResult, FsError>) -> Void) {
             self.path = path
-            self.url = url
             self.expected = expected
-            self.handle = handle
+            self.sink = sink
             self.completion = completion
+        }
+
+        /// Removes a partial file; a stream has nothing to remove.
+        func discard() {
+            if case .file(let handle, let url) = sink {
+                handle.closeFile()
+                try? FileManager.default.removeItem(at: url)
+            }
+        }
+
+        /// Writes one chunk; an error means the destination is gone.
+        func write(_ bytes: [UInt8]) -> FsError? {
+            switch sink {
+            case .file(let handle, _):
+                do {
+                    try handle.write(contentsOf: Data(bytes))
+                    return nil
+                } catch {
+                    return FsError(code: "io", message: error.localizedDescription)
+                }
+            case .stream(let consume):
+                return consume(bytes) ? nil
+                    : FsError(code: "cancelled", message: "the destination went away")
+            }
         }
     }
 
@@ -149,13 +133,32 @@ final class FsClient {
         } catch {
             return completion(.failure(FsError(code: "io", message: error.localizedDescription)))
         }
-        let job = Read(path: path, url: url, expected: length, handle: handle, completion: completion)
+        let job = Read(path: path, expected: length, sink: .file(handle, url), completion: completion)
         pending[id] = .read(job)
         if let cancelAfterMs {
             let timer = DispatchWorkItem { [weak self] in self?.cancel(id: id) }
             job.cancelTimer = timer
             DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(cancelAfterMs), execute: timer)
         }
+        channel?.fsRead(id: id, path: path, offset: offset, length: length, etag: etag)
+    }
+
+    /// Reads into a consumer instead of a file: every FS_DATA chunk is handed
+    /// to `chunk` as it arrives, so the bridge can stream it to the extension
+    /// while the phone is still sending. `onStart` carries the phone-level id,
+    /// which is what `cancel(fsID:)` takes. A chunk that returns false stops the
+    /// read (fs.cancel goes out, the partial data is gone).
+    func streamRead(path: String, offset: Int, length: Int, etag: String?,
+                    onStart: @escaping (UInt32) -> Void,
+                    chunk: @escaping ([UInt8]) -> Bool,
+                    completion: @escaping (Result<FsReadResult, FsError>) -> Void) {
+        guard offset >= 0, length >= 0 else {
+            return completion(.failure(FsError(code: "fs_denied", message: "bad range")))
+        }
+        guard let id = freshID() else { return completion(.failure(FsError(code: "busy"))) }
+        let job = Read(path: path, expected: length, sink: .stream(chunk), completion: completion)
+        pending[id] = .read(job)
+        onStart(id)
         channel?.fsRead(id: id, path: path, offset: offset, length: length, etag: etag)
     }
 
@@ -166,8 +169,7 @@ final class FsClient {
         channel?.fsCancel(id: id)
         guard case .read(let job) = entry else { return }
         job.cancelTimer?.cancel()
-        job.handle.closeFile()
-        try? FileManager.default.removeItem(at: job.url)
+        job.discard()
         finish(job, .failure(FsError(code: "cancelled")))
     }
 
@@ -204,21 +206,17 @@ final class FsClient {
             pending.removeValue(forKey: id)
             channel?.fsCancel(id: id)
             job.cancelTimer?.cancel()
-            job.handle.closeFile()
-            try? FileManager.default.removeItem(at: job.url)
+            job.discard()
             finish(job, .failure(FsError(code: "checksum", message: "more bytes than announced")))
             return
         }
         job.hasher.update(data: Data(bytes))
-        do {
-            try job.handle.write(contentsOf: Data(bytes))
-        } catch {
+        if let error = job.write(bytes) {
             pending.removeValue(forKey: id)
             channel?.fsCancel(id: id)
             job.cancelTimer?.cancel()
-            job.handle.closeFile()
-            try? FileManager.default.removeItem(at: job.url)
-            finish(job, .failure(FsError(code: "io", message: error.localizedDescription)))
+            job.discard()
+            finish(job, .failure(error))
         }
     }
 
@@ -227,16 +225,17 @@ final class FsClient {
             return unknown(id)
         }
         job.cancelTimer?.cancel()
-        job.handle.closeFile()
         let digest = job.hasher.finalize().map { String(format: "%02x", $0) }.joined()
         guard size == job.received, size == job.expected else {
-            try? FileManager.default.removeItem(at: job.url)
+            job.discard()
             return finish(job, .failure(FsError(code: "checksum", message: "size differs")))
         }
         guard digest == sha256.lowercased() else {
-            try? FileManager.default.removeItem(at: job.url)
+            job.discard()
             return finish(job, .failure(FsError(code: "checksum", message: "sha256 differs")))
         }
+        // A file read is complete here; a stream still holds no resource.
+        if case .file(let handle, _) = job.sink { handle.closeFile() }
         finish(job, .success(FsReadResult(bytes: job.received, sha256: digest)))
     }
 
@@ -249,8 +248,7 @@ final class FsClient {
         case .stat(let completion): completion(.failure(error))
         case .read(let job):
             job.cancelTimer?.cancel()
-            job.handle.closeFile()
-            try? FileManager.default.removeItem(at: job.url)
+            job.discard()
             finish(job, .failure(error))
         }
     }
@@ -266,8 +264,7 @@ final class FsClient {
             case .stat(let completion): completion(.failure(error))
             case .read(let job):
                 job.cancelTimer?.cancel()
-                job.handle.closeFile()
-                try? FileManager.default.removeItem(at: job.url)
+                job.discard()
                 finish(job, .failure(error))
             }
         }
