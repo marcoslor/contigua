@@ -640,16 +640,18 @@ titles_line() { window_titles "$APP_PID" | grep -qxF -- "$1"; }
 
 windows_at_least() { [ "$(windows | wc -l | tr -d ' ')" -ge "$1" ]; }
 
-# wait_until <seconds> <command...> — polls every 0.25 s until the command succeeds.
+# wait_until <seconds> <command...> — polls every 0.25 s until the command
+# succeeds, for at most <seconds> of wall time. A deadline, not a try count: a
+# probe that itself blocks (run_limited 15 ls on a stalled mount) would stretch
+# a count of 4 tries per second into hours.
 wait_until() {
-    local tries=$(($1 * 4))
+    local end=$((SECONDS + $1))
     shift
-    while [ "$tries" -gt 0 ]; do
+    while :; do
         "$@" && return 0
+        [ "$SECONDS" -lt "$end" ] || return 1
         sleep 0.25
-        tries=$((tries - 1))
     done
-    return 1
 }
 
 # events_have <text> — the fakephone event log contains the text.
