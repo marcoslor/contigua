@@ -536,7 +536,8 @@ Mac → phone:
 | `notify.open` | `id`, `target` (`window`/`phone`), `stream` (window only) | a banner click: run that forwarded notification's own action |
 | `notify.action` | `id`, `i`, `text`? | press that forwarded notification's advertised action; `text` only for a reply action |
 | `notify.dismiss` | `id` | clear that forwarded notification on the phone |
-| `media.command` | `action`: `play`/`pause`/`next`/`prev` | drive the phone's playing session |
+| `media.command` | `action`: `play`/`pause`/`next`/`prev`/`seek`/`volume`, `key`?, `positionMs`?, `level`? | drive the phone's chosen media session |
+| `media.choose` | `key` | pick which phone session Now Playing follows |
 
 Phone → Mac:
 
@@ -546,7 +547,42 @@ Phone → Mac:
 | `notify.post` | `id`, `pkg`, `app`?, `when`, `title`?, `text`?, `ongoing`?, `actions`?, `live`? |
 | `notify.image` | `id`, `mime`, `w`, `h`, `data` (base64) |
 | `notify.remove` | `id` |
-| `media.state` | `playing`, `pkg`?, `title`?, `artist`?, `album`?, `durationMs`?, `positionMs`, `rate` |
+| `media.state` | `playing`, `pkg`?, `key`?, `title`?, `artist`?, `album`?, `durationMs`?, `positionMs`, `rate`, `canSeek`?, `volume`?, `volumeMax`? |
+| `media.sessions` | `list`: `[{key, pkg, app, playing}]` in the system's order, `chosen` (`key`?) |
+| `media.art` | `key`, `mime`?, `w`?, `h`?, `data`? (base64) — no data clears the picture |
+
+`media.state` describes the chosen session: `positionMs` was measured when the
+message was sent and the Mac advances it with `rate`. `key` names the session
+`media.sessions` listed; `canSeek` says its `PlaybackState` lists
+`ACTION_SEEK_TO`; `volume`/`volumeMax` come from its `playbackInfo` (local
+playback is the music stream). A phone that does not send the new fields keeps
+working: the Mac then enables no seek command and shows no volume slider.
+
+`media.sessions {list, chosen}` lists the active sessions in the system's order
+as `{key, pkg, app, playing}` — an opaque per-session `key` the phone mints, the
+package, the app label, and whether it is playing. Never a title, artist or
+album. `chosen` is the key `media.state` describes. The list is sent when it
+changes; a Mac that does not know the message ignores it and keeps today's
+single-session Now Playing.
+
+`media.art {key, mime, w, h, data}` carries the chosen session's artwork for that
+session key: `image/jpeg`, long side ≤ 512 px, at most 256 KiB encoded, `data`
+its base64 bytes. It is sent once per change (the phone dedupes by a hash of the
+scaled bytes); `media.art {key}` with no data means the session has no artwork
+and clears it. The Mac uses it as the Now Playing artwork and does not persist
+it. A phone that does not know the message never sends it; an older Mac ignores
+it.
+
+`media.command` names an optional `key`: with a key it acts on that session
+only, and an unknown key is ignored with a log line. Without one it acts on the
+chosen session, which is also what every command from an older Mac does.
+`action: seek` carries `positionMs` (clamped to `[0, durationMs]` on the phone
+before `transportControls.seekTo`); `action: volume` carries `level`, clamped to
+`[0, volumeMax]` before `setVolumeTo(level, 0)`. Both clamps are applied on the
+phone, which logs the value it used. `media.choose {key}` sets which session the
+phone describes: an unknown key changes nothing and logs it. Older phones ignore
+`media.choose` and `media.art` like any unknown `t`; older Macs ignore the new
+`media.state` fields and `media.sessions`.
 
 `actions` is an array of up to 3 `{"i": <index in the phone's Notification.actions>,
 "title": "≤ 64 chars", "reply": true?}`; `reply` marks an action with a free-form RemoteInput.
