@@ -1121,8 +1121,11 @@ final class Session {
         if let etag { message["etag"] = etag }
         sendJSON(message)
     }
-    func fsDelete(id: UInt32, path: String, recursive: Bool) {
-        sendJSON(["t": "fs.delete", "id": Int(id), "path": path, "recursive": recursive])
+    func fsDelete(id: UInt32, path: String, recursive: Bool, etag: String?) {
+        var message: [String: Any] = ["t": "fs.delete", "id": Int(id), "path": path,
+                                      "recursive": recursive]
+        if let etag { message["etag"] = etag }
+        sendJSON(message)
     }
     func fsMkdir(id: UInt32, path: String) {
         sendJSON(["t": "fs.mkdir", "id": Int(id), "path": path])

@@ -644,6 +644,27 @@ def phase_write(bridge, root):
            % reply.get("code"))
     os.unlink(taken_path)
 
+    # A delete names the version it removes; the phone checks it right before
+    # deleting, so a change made since the Mac's last look is not lost.
+    reply = bridge.create_item(folder, "delrace.bin", b"first version\n")
+    delrace = reply.get("item") if reply.get("t") == "item" else {}
+    if delrace:
+        delrace_path = on_disk(root, "PDWrite/delrace.bin")
+        with open(delrace_path, "wb") as handle:
+            handle.write(b"changed on the phone\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        reply = bridge.delete_item(delrace["id"], delrace["etag"])
+        report(reply.get("t") == "error" and reply.get("code") == "fs_stale"
+               and os.path.exists(delrace_path),
+               "WRITE a delete with the old etag is fs_stale and keeps the file (%s)"
+               % reply.get("code"))
+        fresh = bridge.stat_item(delrace["id"])
+        if fresh.get("t") == "item":
+            reply = bridge.delete_item(delrace["id"], fresh["item"]["etag"])
+            report(reply.get("t") == "ok" and not os.path.exists(delrace_path),
+                   "WRITE a delete with the current etag removes the file")
+
     # Leave the tree as the check's next phase expects: PDWrite stays (the
     # mid-write phase writes into it by name).
     report(folder_etag != "", "WRITE the folder is there for the next phase")

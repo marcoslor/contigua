@@ -695,25 +695,16 @@ final class SessionBridgeHost: FilesBridgeHost {
             case .failure(let error):
                 completion(.failure(error))
             case .success(let path):
-                // The phone's delete has no etag field: one stat is the check.
-                self.client.stat(path: path) { result in
+                // The phone checks the version right before it deletes: one
+                // round trip, no stat-then-delete window.
+                self.client.delete(path: path, recursive: recursive, etag: base) { result in
                     switch result {
                     case .failure(let error):
                         completion(.failure(error))
-                    case .success(let fs):
-                        guard fs.etag == base else {
-                            return completion(.failure(FsError(code: "fs_stale")))
-                        }
-                        self.client.delete(path: path, recursive: recursive) { result in
-                            switch result {
-                            case .failure(let error):
-                                completion(.failure(error))
-                            case .success:
-                                self.map.invalidate(subtree: path)
-                                self.save()
-                                completion(.success(()))
-                            }
-                        }
+                    case .success:
+                        self.map.invalidate(subtree: path)
+                        self.save()
+                        completion(.success(()))
                     }
                 }
             }

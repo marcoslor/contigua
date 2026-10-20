@@ -435,7 +435,7 @@ target's name. A write never replaces a directory.
 |---|---|---|
 | `fs.write` | `id`, `path`, `size`, `sha256`, `etag`?, `exclusive`? | stream `size` bytes after the request; `etag` is the version the Mac believes it replaces; `exclusive: true` is a create that must not replace anything |
 | `fs.move` | `id`, `from`, `to`, `etag`? | rename/move one entry; `fs_exists` when `to` is taken, `fs_stale` on an etag mismatch |
-| `fs.delete` | `id`, `path`, `recursive` | a file always; a folder when empty or `recursive` |
+| `fs.delete` | `id`, `path`, `recursive`, `etag`? | a file always; a folder when empty or `recursive`; `etag` is checked right before the delete |
 | `fs.mkdir` | `id`, `path` | create one folder (`fs_exists` when taken, `fs_not_found` when the parent is gone) |
 | `fs.setAttrs` | `id`, `path`, `mtime`? | set the modification time, best effort |
 
@@ -469,6 +469,12 @@ Rules:
   path the shape rules reject, `fs_not_found` for an absent source, and
   `fs_exists` when the destination is taken. A non-empty folder deleted
   without `recursive` is `fs_denied`.
+- `fs.delete` with an `etag` that no longer matches the entry answers
+  `fs_stale` and nothing is deleted: the check runs right before the delete,
+  so a stat the Mac made earlier cannot hide a change made since. A folder's
+  etag is the folder's own (a child added or removed directly in it moves it);
+  a recursive delete removes what is in the folder at that moment, deeper
+  changes included.
 - `fs.setAttrs` answers `fs.result` with the item; a platform that cannot set
   the time answers `ok: true` with the item's real metadata (best effort).
 

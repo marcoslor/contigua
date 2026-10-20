@@ -825,11 +825,14 @@ class FsFake(object):
         os.rename(source, target)
         return self._item_at(target)
 
-    def delete(self, rel, recursive):
+    def delete(self, rel, recursive, etag=None):
         path = self.resolve(rel)
         if path == self.root:
             raise FsError("fs_denied", "the root does not delete")
         meta = self.meta(path)
+        # Right before the delete: a change since the Mac's stat is fs_stale.
+        if etag is not None and etag != meta["etag"]:
+            raise FsError("fs_stale", "the file changed")
         if meta["dir"]:
             children = os.listdir(path)
             if children and not recursive:
@@ -2300,7 +2303,7 @@ class Session(object):
             return self._fs_result(read_id, code="fs_denied", message="files are not served")
         recursive = bool(msg.get("recursive"))
         try:
-            meta = fs.delete(msg.get("path"), recursive)
+            meta = fs.delete(msg.get("path"), recursive, msg.get("etag"))
         except FsError as exc:
             self.phone.events.fs("delete", id=read_id, ok=False, code=exc.code)
             return self._fs_result(read_id, code=exc.code, message=exc.message)

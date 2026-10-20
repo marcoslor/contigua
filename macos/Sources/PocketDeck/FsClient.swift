@@ -22,7 +22,7 @@ protocol FsChannel: AnyObject {
                  exclusive: Bool)
     func fsWriteData(id: UInt32, bytes: [UInt8], sent: @escaping @Sendable (Bool) -> Void)
     func fsMove(id: UInt32, from: String, to: String, etag: String?)
-    func fsDelete(id: UInt32, path: String, recursive: Bool)
+    func fsDelete(id: UInt32, path: String, recursive: Bool, etag: String?)
     func fsMkdir(id: UInt32, path: String)
     func fsSetAttrs(id: UInt32, path: String, mtime: Int)
     func fsCancel(id: UInt32)
@@ -313,10 +313,10 @@ final class FsClient {
         }
     }
 
-    func delete(path: String, recursive: Bool,
+    func delete(path: String, recursive: Bool, etag: String?,
                 completion: @escaping (Result<FsItem?, FsError>) -> Void) {
         mutate(completion) { channel, id in
-            channel.fsDelete(id: id, path: path, recursive: recursive)
+            channel.fsDelete(id: id, path: path, recursive: recursive, etag: etag)
         }
     }
 

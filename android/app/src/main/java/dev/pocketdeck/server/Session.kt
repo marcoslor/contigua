@@ -1361,7 +1361,8 @@ class Session(
     }
 
     private fun onFsDelete(obj: Map<String, Any?>) = fsMutation(obj) { ops ->
-        ops.delete(Json.str(obj["path"]), Json.bool(obj["recursive"]) ?: false)
+        ops.delete(Json.str(obj["path"]), Json.bool(obj["recursive"]) ?: false,
+            Json.str(obj["etag"]))
         null
     }
 

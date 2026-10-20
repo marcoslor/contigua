@@ -140,6 +140,37 @@ class FsMutationsTest {
     }
 
     @Test
+    fun aStaleDeleteEtagLeavesTheFileAlone() {
+        setup()
+        val file = File(paths.rootPath, "a.txt").also { it.writeText("a") }
+        val etag = paths.item(file).etag
+        // The phone's file changes after the Mac last saw it.
+        file.writeText("changed on the phone")
+        assertEquals("fs_stale", code { ops.delete("a.txt", false, etag) })
+        assertEquals("changed on the phone", file.readText())
+        // The version the Mac saw is what deletes it.
+        ops.delete("a.txt", false, paths.item(file).etag)
+        assertFalse(file.exists())
+    }
+
+    @Test
+    fun aFolderDeleteEtagCatchesChildrenAddedInIt() {
+        setup()
+        val folder = File(paths.rootPath, "folder").also { it.mkdirs() }
+        File(folder, "a.txt").writeText("a")
+        val etag = paths.item(folder).etag
+        // The ms clock in the etag needs a tick before the child changes it.
+        Thread.sleep(20)
+        File(folder, "b.txt").writeText("b")
+        assertEquals("fs_stale", code { ops.delete("folder", true, etag) })
+        assertTrue(File(folder, "b.txt").exists())
+        // Deleting a folder removes what is in it at that moment, children
+        // added since the listing included.
+        ops.delete("folder", true, paths.item(folder).etag)
+        assertFalse(folder.exists())
+    }
+
+    @Test
     fun anEmptyFolderAndAFileDeleteWithoutRecursive() {
         setup()
         File(paths.rootPath, "folder").mkdirs()
