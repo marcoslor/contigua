@@ -18,10 +18,12 @@ Six intents, all optional-phone (default: the connected phone, else the only pai
 
 `RingPhoneIntent` needs a live session (the phone rings itself, so nothing can be queued for a
 phone that is still connecting); the menu bar has "Ring Phone" / "Stop Ringing" too. On the
-phone, the shell service forwards `phone.ring` to the app process: a high-importance
-notification with a full-screen intent is the only launch Android 14+ allows over a secure
-keyguard, so the first ring asks the person (once) to allow full-screen notifications; without
-that grant the alarm still sounds and the notification's Stop action works.
+phone, the shell service forwards `phone.ring` to the app process, whose foreground service
+plays the default alarm sound (alarm stream, alarm volume) for up to 30 s and posts a
+high-importance notification with a Stop action. The lock-screen Stop screen (`RingActivity`)
+rides on that notification's full-screen intent, which Android 14+ only honours when the person
+has allowed full-screen notifications for PocketDeck. Without that grant, or when the system
+refuses a background activity start, the phone still rings and the notification still stops it.
 
 `PhoneApp` is an `AppEntity` with an `EntityStringQuery` over the app list Spotlight also
 indexes, so Shortcuts can name an app instead of typing its package.
