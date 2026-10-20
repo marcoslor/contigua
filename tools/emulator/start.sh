@@ -156,7 +156,10 @@ fi
 APK="$REPO_ROOT/android/app/build/outputs/apk/debug/app-debug.apk"
 [ -f "$APK" ] || die "no debug APK at $APK"
 step "installing $PKG"
-emu_long install -r -g "$APK" >/dev/null || die "could not install $PKG"
+# -d: another epic's worktree may have left a higher versionCode on the rig and
+# the boot budget never allows a second boot. A downgrade is only accepted when
+# the debug signature matches, so this tree's APK always ends up installed.
+emu_long install -r -d -g "$APK" >/dev/null || die "could not install $PKG"
 
 warm_test_apps
 

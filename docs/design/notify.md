@@ -396,6 +396,57 @@ notification):
 Screenshots from that session: `macos/build/vm-e2e/notify3/work/shots/` (the plain
 screen, plus the system banner — kept as the record of what did and did not appear).
 
+## Media part 2 results (v0.2 #9)
+
+Built: the chosen session's artwork (`media.art`, scaled to ≤ 512 px, JPEG q80,
+≤ 256 KiB, sent once per change and deduped by a hash of the scaled bytes), a
+position bar and 15 s skips gated on `canSeek` (`media.command seek` with the
+position clamped to the track), the list of playing apps and the choice among
+them (`media.sessions` / `media.choose`, opaque per-session keys minted by the
+phone), and the phone's media volume from a menu bar slider
+(`media.command volume`, the level clamped to `[0, volumeMax]`). The phone side
+is the listener plus a pure rules seam (`MediaControl`, `MediaArtRules`); the
+debug fake media session lives in the debug source set only, DUMP-protected
+like the notification poster. The Mac maps artwork to `MPMediaItemArtwork`,
+enables `changePlaybackPositionCommand` / `skipForward` / `skipBackward` only
+while `canSeek`, and lists the playing apps in a "Playing on phone" submenu when
+there are two or more.
+
+Verified (K1 595 unit tests 0 failures; K2 856 tests 0 failures; host e2e
+`media` 23/23 twice, regressions `notify-media` 21/21 and `notify` 22/22, all
+quiet share-log runs):
+
+- the phone's two sessions arrive in the system's order with their opaque keys,
+  and `media.state` carries the chosen `key`, `canSeek`, `volume`/`volumeMax`
+  and the position; the artwork arrives once, at 160×120 from the fake's
+  generated card, with only bytes, dimensions and a hash prefix in the log;
+- a seek past the end leaves the Mac clamped to the track's 30 s, reaches the
+  phone with that value, and the next `media.state` is at the new position;
+- a volume of 99 is clamped to the session's maximum of 15 on the Mac, reaches
+  the phone as 15, and the next `media.state` reports 15/15;
+- `media.choose` switches the chosen session, the next `media.sessions` and
+  `media.state` carry the picked key, and that session's artwork arrives once;
+- an older phone (`--older-phone`: today's `media.state` only) still drives Now
+  Playing, gets no seek/volume UI, and its transport commands still work;
+- no title, artist, album or artwork byte appears in any log.
+
+Not verified:
+
+- **Emulator (1 boot spent, API 36)**: the rig booted and unlocked, but
+  `start.sh` could not install this tree's APK — the rig carried versionCode 101
+  from another epic and this tree builds 100 (`INSTALL_FAILED_VERSION_DOWNGRADE`);
+  uninstalling the app is forbidden and the budget allows one boot, so the run
+  ended there. `tools/emulator/media.sh` never reached its checks; only its
+  `--check` and `--self-test` dry runs ran. `start.sh` now installs with `-d`
+  (unverified) for the next run. Unproven on a real listener:
+  `getActiveSessions` ordering and key minting, artwork from a real
+  `MediaMetadata` (bitmap and `*_URI` sources), `transportControls.seekTo`, the
+  local-playback volume (`playbackInfo` + `setVolumeTo`), and the session list
+  shrinking when an app stops.
+- **Real apps** (YouTube Music, Spotify) and **the Mac menu bar's look** (the
+  small artwork, the slider, the picker) were not seen on screen: host e2e is
+  quiet and the VM is out of this brief's budget.
+
 ## Checks
 
 - Unit tests: notification mapping (title/text extraction incl. BIG_TEXT, caps, skip rules),
