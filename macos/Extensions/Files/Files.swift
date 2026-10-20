@@ -1328,7 +1328,9 @@ final class WorkingSetEnumerator: NSObject, NSFileProviderEnumerator {
                          observer: NSFileProviderEnumerationObserver) {
         let finish: ([FileItem]) -> Void = { [weak self] items in
             self?.snapshot = items
-            let pageSize = 1000
+            // The same batch size as a folder: 1000 items in one callback made
+            // the system list nothing (round 2's 1500-entry folder).
+            let pageSize = FilesEnumerator.batchSize
             let slice = Array(items.dropFirst(offset).prefix(pageSize))
             observer.didEnumerate(slice.map(ProviderItem.init))
             let next = offset + slice.count < items.count
