@@ -50,6 +50,8 @@ struct PhoneStatus: Equatable {
     var locked: Bool
     var battery: Int?
     var charging: Bool
+    /// nil when the phone's `state` carries no `dnd` (old phone) or none arrived yet.
+    var dnd: PhoneDndMode? = nil
 }
 
 struct QRPairingState: Equatable {
@@ -205,6 +207,13 @@ final class ConnectionController {
     /// The one re-request a flat cached icon gets per connection.
     private let layerRefresh = IconLayerRefresh()
     private(set) var status: PhoneStatus?
+    /// The stored Focus filter values (docs/design/focus.md).
+    private let focusStore: FocusStore
+    private(set) var focusValues = FocusFilterValues()
+    /// One reconcile per connection: the first `state` decides and sends once.
+    private var focusReconciled = false
+    /// `--debug-dnd on|off`, run when the first state shows the phone's support.
+    private var pendingDebugDnd: Bool?
     private(set) var pairingSucceeded = false
     private(set) var qr: QRPairingState?
     private(set) var welcomeSeen: Bool
@@ -343,6 +352,8 @@ final class ConnectionController {
         appsCache = AppsCache(profile: profile)
         spotlight = SpotlightIndex(domainPrefix: profile.spotlightDomainPrefix)
         batteryMemory = BatteryMemory(profile: profile)
+        focusStore = FocusStore(profile: profile)
+        focusValues = focusStore.load()
         dockApps = DockApps(folder: DockApps.defaultFolder(profile: profile, override: options.dockDirectory),
                             profile: profile)
         windows = WindowManager(session: Session(endpoint: .hostPort(host: "127.0.0.1", port: 1),
@@ -442,6 +453,7 @@ final class ConnectionController {
             debugControl?.start()
         }
         armDebugIntents()
+        armFocusDebug()
         if let preview = options.preview {
             applyPreview(preview)
             return
@@ -992,6 +1004,130 @@ final class ConnectionController {
         session.stopRing()
     }
 
+    // MARK: Focus and Do Not Disturb (docs/design/focus.md)
+
+    /// The mode the phone last reported; nil when it has no `dnd` (old phone)
+    /// or no `state` arrived yet.
+    var phoneDnd: PhoneDndMode? { status?.dnd }
+
+    /// The menu item is enabled only for a connected phone that sends `dnd`.
+    var canSetPhoneDnd: Bool { link.isOnline && phoneDnd != nil }
+
+    /// The Focus filter's perform() (and the `--debug-focus` hook): store what
+    /// it asks for, then tell a connected phone at once. A phone that connects
+    /// later is reconciled once by [reconcileFocus].
+    func setFocusFilter(_ values: FocusFilterValues) {
+        storeFocusValues(values)
+        let sent = sendFocusIfSupported()
+        FocusDebugLog.write(focus: "filter", ok: true,
+                            fields: ["enabled": values.enabled, "silence": values.silence,
+                                     "allow": values.allow.rawValue,
+                                     "wanted": values.wanted?.rawValue ?? "off",
+                                     "sent": sent])
+    }
+
+    /// Stores the filter values without sending: the system refresh at launch
+    /// and before a connection's reconcile must not duplicate its `phone.dnd`.
+    func storeFocusValues(_ values: FocusFilterValues) {
+        focusStore.save(values)
+        focusValues = values
+    }
+
+    /// The menu bar item and the manual intent: send one mode now. The phone's
+    /// next `state` moves the checkmark, never an optimistic local guess.
+    func setPhoneDnd(_ mode: PhoneDndMode) {
+        guard link.isOnline, phoneDnd != nil, let session else { return }
+        session.setDnd(mode)
+    }
+
+    /// The menu item's click: on becomes priority, off becomes off.
+    func togglePhoneDnd() {
+        guard let command = FocusReconciler.menuCommand(current: phoneDnd) else { return }
+        setPhoneDnd(command)
+    }
+
+    /// The `--debug-dnd on|off` hook, the menu item's same path. "on" keeps a
+    /// mode the phone is already in; otherwise it asks for priority.
+    func setPhoneDnd(on: Bool) {
+        guard let current = phoneDnd else {
+            FocusDebugLog.write(focus: "dnd", ok: false,
+                                fields: ["on": on, "supported": false, "error": "no_dnd"])
+            return
+        }
+        let command: PhoneDndMode = on ? (current.isOn ? current : .priority) : .off
+        setPhoneDnd(command)
+        FocusDebugLog.write(focus: "dnd", ok: true,
+                            fields: ["on": on, "supported": true,
+                                     "command": command.rawValue,
+                                     "current": current.rawValue])
+    }
+
+    /// Sends the stored wanted state when this phone can take it; false when
+    /// there is no session or the phone is an old build.
+    @discardableResult
+    private func sendFocusIfSupported() -> Bool {
+        guard link.isOnline, phoneDnd != nil, let session else { return false }
+        session.setDnd(focusValues.wanted ?? .off)
+        return true
+    }
+
+    /// Once per connection, on the first `state`: read the system's current
+    /// filter first (a Focus that ended while PocketDeck was away is "not
+    /// wanted"), then decide. `dnd` is the only proof the phone supports the
+    /// command; not wanted sends off, which the phone's restore rule turns into
+    /// a no-op unless the DND is ours.
+    private func reconcileFocusOnFirstState(_ dnd: PhoneDndMode?) {
+        guard !focusReconciled else { return }
+        focusReconciled = true
+        #if PD_TEST_HOOKS
+        reconcileFocus(onConnectWith: dnd)
+        #else
+        Task { @MainActor in
+            await FocusBridge.refreshFromSystem()
+            self.reconcileFocus(onConnectWith: dnd)
+        }
+        #endif
+    }
+
+    private func reconcileFocus(onConnectWith dnd: PhoneDndMode?) {
+        switch FocusReconciler.onConnect(wanted: focusValues.wanted, phoneDnd: dnd) {
+        case .send(let mode):
+            session?.setDnd(mode)
+            FocusDebugLog.write(focus: "reconcile", ok: true,
+                                fields: ["wanted": focusValues.wanted?.rawValue ?? "off",
+                                         "sent": mode.rawValue])
+        case .unsupported:
+            // An old phone: the menu stays disabled and nothing is sent.
+            break
+        }
+    }
+
+    private func runPendingDebugDnd() {
+        guard let on = pendingDebugDnd else { return }
+        pendingDebugDnd = nil
+        setPhoneDnd(on: on)
+    }
+
+    /// `--debug-focus` and `--debug-dnd` (PD_TEST_HOOKS only): the filter's
+    /// perform() and the menu item's path, without System Settings or a click.
+    private func armFocusDebug() {
+        if let raw = options.debugFocus {
+            if let values = FocusDebugCommand.parseFilter(raw) {
+                setFocusFilter(values)
+            } else {
+                FocusDebugLog.write(focus: "filter", ok: false, fields: ["error": "usage"])
+            }
+        }
+        if let raw = options.debugDnd {
+            if let on = FocusDebugCommand.parseDnd(raw) {
+                pendingDebugDnd = on
+                if status?.dnd != nil { runPendingDebugDnd() }
+            } else {
+                FocusDebugLog.write(focus: "dnd", ok: false, fields: ["error": "usage"])
+            }
+        }
+    }
+
     private func openPendingPhoneWindow(readyPhone id: String) {
         guard let pending = pendingPhoneWindow, pending.deviceId == id else { return }
         pendingPhoneWindow = nil
@@ -1513,9 +1649,11 @@ final class ConnectionController {
             }
             runDockHooks()
             recheckOpenWindows()
-        case .phoneState(let locked, let battery, let charging):
-            status = PhoneStatus(locked: locked, battery: battery, charging: charging)
+        case .phoneState(let locked, let battery, let charging, let dnd):
+            status = PhoneStatus(locked: locked, battery: battery, charging: charging, dnd: dnd)
             if let id = link.phone?.id { batteryMemory.record(deviceId: id, level: battery, charging: charging) }
+            reconcileFocusOnFirstState(dnd)
+            runPendingDebugDnd()
         case .audioState(let on, _):
             audioOn = on
         case .windowClosed:
@@ -1637,6 +1775,8 @@ final class ConnectionController {
         // Every window title carries the display name from here on.
         windows.setPhoneName(displayName(for: ref))
         status = PhoneStatus(locked: info.locked, battery: info.battery, charging: info.charging ?? false)
+        // A new connection: its first `state` reconciles the Focus once.
+        focusReconciled = false
         if let battery = info.battery {
             batteryMemory.record(deviceId: info.id, level: battery, charging: info.charging ?? false)
         }

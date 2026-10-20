@@ -114,4 +114,17 @@ enum IntentsBridge {
         controller.ringPhone(seconds: seconds)
         return "Ringing \(phone.name)."
     }
+
+    /// Manual DND (docs/design/focus.md): live only, and only when the phone's
+    /// `state` carries `dnd`. The phone's own report updates the menu checkmark.
+    static func setPhoneDnd(on: Bool, mode: PhoneDndMode, on phone: IntentPhone) throws -> String {
+        let controller = self.controller
+        guard controller.link.isOnline, controller.link.phone?.id == phone.id else {
+            throw IntentFailure.phoneNotConnected
+        }
+        guard controller.phoneDnd != nil else { throw IntentFailure.phoneNoDnd }
+        let command = FocusReconciler.intentCommand(on: on, mode: mode)
+        controller.setPhoneDnd(command)
+        return on ? "Phone Do Not Disturb is on." : "Phone Do Not Disturb is off."
+    }
 }

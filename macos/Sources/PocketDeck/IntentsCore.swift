@@ -184,6 +184,7 @@ enum IntentFailure: Error, Equatable, LocalizedError {
     case choosePhone([String])
     case phoneNotConnected
     case phoneNotReady
+    case phoneNoDnd
     case appNotFound(String)
     case severalApps(String)
     case badLink
@@ -202,6 +203,8 @@ enum IntentFailure: Error, Equatable, LocalizedError {
             return "Your phone isn't connected."
         case .phoneNotReady:
             return "Your phone is connecting; try again in a moment."
+        case .phoneNoDnd:
+            return "This phone can't set Do Not Disturb; update PocketDeck on the phone."
         case .appNotFound(let name):
             return "No phone app matches “\(name)”."
         case .severalApps(let name):
@@ -223,6 +226,7 @@ enum IntentFailure: Error, Equatable, LocalizedError {
         case .choosePhone: return "choose_phone"
         case .phoneNotConnected: return "not_connected"
         case .phoneNotReady: return "not_ready"
+        case .phoneNoDnd: return "no_dnd"
         case .appNotFound: return "app_not_found"
         case .severalApps: return "several_apps"
         case .badLink: return "bad_link"

@@ -269,5 +269,13 @@ struct PocketDeckShortcuts: AppShortcutsProvider {
             shortTitle: "Send File to Phone",
             systemImageName: "doc.badge.arrow.up"
         )
+        AppShortcut(
+            intent: SetPhoneDNDIntent(),
+            phrases: [
+                "Set phone Do Not Disturb in \(.applicationName)"
+            ],
+            shortTitle: "Phone Do Not Disturb",
+            systemImageName: "moon.fill"
+        )
     }
 }

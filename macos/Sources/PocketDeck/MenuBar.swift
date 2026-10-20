@@ -58,6 +58,11 @@ struct MenuBarContent: View {
             .disabled(!controller.link.isOnline)
         Button("Stop Ringing") { controller.stopRingingPhone() }
             .disabled(!controller.link.isOnline)
+        Toggle("Phone Do Not Disturb", isOn: Binding(
+            get: { controller.phoneDnd?.isOn ?? false },
+            set: { _ in controller.togglePhoneDnd() },
+        ))
+        .disabled(!controller.canSetPhoneDnd)
         Button("Install APK…") { controller.chooseApk() }
             .disabled(controller.apkInstaller.isBusy)
         Divider()

@@ -3139,8 +3139,9 @@ PY
 }
 
 # intents_metadata_ok — the built bundle carries Metadata.appintents with the
-# five intents, the two entities/queries and the provider's five shortcuts (a
-# plain JSON read; no Shortcuts app, no registration).
+# six intents, the Focus filter, the manual DND intent, the two entities/queries
+# and the provider's seven shortcuts (a plain JSON read; no Shortcuts app, no
+# registration).
 intents_metadata_ok() {
     python3 - "$E2E_BUNDLE/Contents/Resources/Metadata.appintents/extract.actionsdata" <<'PY'
 import json, sys
@@ -3150,14 +3151,14 @@ try:
 except (OSError, ValueError):
     sys.exit(1)
 actions = set(data.get("actions") or {})
-want = {"OpenPhoneAppIntent", "OpenPhoneScreenIntent", "PhoneBatteryIntent",
-        "SendLinkToPhoneIntent", "SendFileToPhoneIntent", "RingPhoneIntent"}
+intents = {"OpenPhoneAppIntent", "OpenPhoneScreenIntent", "PhoneBatteryIntent",
+           "SendLinkToPhoneIntent", "SendFileToPhoneIntent", "RingPhoneIntent"}
 shortcuts = data.get("autoShortcuts") or []
 phrases = [p.get("key", "") for s in shortcuts for p in (s.get("phraseTemplates") or [])]
-ok = actions == want \
+ok = actions == intents | {"PocketDeckFocusFilter", "SetPhoneDNDIntent"} \
     and set(data.get("entities") or {}) >= {"PhoneEntity", "PhoneAppEntity"} \
     and set(data.get("queries") or {}) >= {"PhoneEntityQuery", "PhoneAppEntityQuery"} \
-    and {s.get("actionIdentifier") for s in shortcuts} == want \
+    and {s.get("actionIdentifier") for s in shortcuts} == intents | {"SetPhoneDNDIntent"} \
     and all(s.get("phraseTemplates") for s in shortcuts) \
     and any("${applicationName}" in p for p in phrases)
 sys.exit(0 if ok else 1)
@@ -3170,7 +3171,7 @@ PY
 check_intents() {
     # What the system reads, before anything starts (a fast plist/JSON read).
     intents_metadata_ok \
-        && ok "INTENTS the bundle's Metadata.appintents lists 6 intents, 2 entities and 6 shortcuts" \
+        && ok "INTENTS the bundle's Metadata.appintents lists 8 actions, 2 entities and 7 shortcuts" \
         || bad "INTENTS the bundle's Metadata.appintents is missing or incomplete ($E2E_BUNDLE)"
     clean
     start_fake || return 1

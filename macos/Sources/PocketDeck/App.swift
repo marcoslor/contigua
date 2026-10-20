@@ -26,6 +26,11 @@ struct LaunchOptions {
     /// `--debug-intent "<name> <args>"` (repeatable): run that intent's perform
     /// path and log its result (IntentsDebug.swift, e2e `intents` check).
     var debugIntents: [String] = []
+    /// `--debug-focus "<on|off> [priority|alarms|none]"`: run the Focus
+    /// filter's perform() path (docs/design/focus.md, e2e `focus` check).
+    var debugFocus: String?
+    /// `--debug-dnd on|off`: run the menu bar item's path.
+    var debugDnd: String?
     /// `--debug-livetext FILE`: scripted Live Text mode steps (DebugLiveText.swift,
     /// e2e `livetext` check). Results on stderr.
     var debugLiveText: String?
@@ -97,6 +102,8 @@ struct LaunchOptions {
         "--debug-input-script": true,
         "--debug-fs-script": true,
         "--debug-intent": true,
+        "--debug-focus": true,
+        "--debug-dnd": true,
         "--debug-livetext": true,
         "--debug-control": true,
         "--dump-video": true,
@@ -174,6 +181,10 @@ struct LaunchOptions {
                 options.debugFsScript = next()
             case "--debug-intent":
                 if let value = next() { options.debugIntents.append(value) }
+            case "--debug-focus":
+                options.debugFocus = next()
+            case "--debug-dnd":
+                options.debugDnd = next()
             case "--debug-livetext":
                 options.debugLiveText = next()
             case "--debug-control":
@@ -358,6 +369,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             debugBanner = probe
         }
         environment.controller.start()
+        #if !PD_TEST_HOOKS
+        // The system does not call perform() for a Focus that has no PocketDeck
+        // filter: read what is actually active once at launch so a Focus that
+        // ended while the app was closed is "not wanted" (docs/design/focus.md).
+        Task { await FocusBridge.refreshFromSystem() }
+        #endif
     }
 
     /// `pocketdeck://open?url=…` (docs/design/links.md).

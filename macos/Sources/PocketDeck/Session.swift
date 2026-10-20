@@ -91,7 +91,7 @@ enum SessionEvent {
                       started: HandoffStart)
     case windowClosed(stream: UInt32, reason: String)
     case windowTitle(stream: UInt32, label: String, pkg: String)
-    case phoneState(locked: Bool, battery: Int, charging: Bool)
+    case phoneState(locked: Bool, battery: Int, charging: Bool, dnd: PhoneDndMode?)
     case audioState(on: Bool, codec: UInt8)
     case phoneError(code: String, message: String?, stream: UInt32)
     /// The phone showed this code for the person to compare with its screen.
@@ -806,7 +806,8 @@ final class Session {
         case "state":
             emit(.phoneState(locked: message.bool("locked") ?? false,
                              battery: message.int("battery") ?? 0,
-                             charging: message.bool("charging") ?? false))
+                             charging: message.bool("charging") ?? false,
+                             dnd: message.string("dnd").flatMap(PhoneDndMode.init(rawValue:))))
         case "audio.state":
             emit(.audioState(on: message.bool("on") ?? false,
                              codec: UInt8(message.int("codec") ?? 0)))
@@ -1051,6 +1052,9 @@ final class Session {
     func ring(seconds: Int = 30) { sendJSON(["t": "phone.ring", "seconds": max(1, min(30, seconds))]) }
 
     func stopRing() { sendJSON(["t": "phone.ring.stop"]) }
+
+    /// `phone.dnd` (docs/PROTOCOL.md "Focus and Do Not Disturb").
+    func setDnd(_ mode: PhoneDndMode) { sendJSON(["t": "phone.dnd", "mode": mode.rawValue]) }
     func sendApkData(id: UInt32, bytes: [UInt8], sent: @escaping @Sendable (Bool) -> Void) { sendData(.apkData, id: id, bytes: bytes, sent: sent) }
     func dropStart(id: UInt32, name: String, mime: String, size: Int, sha256: String, resume: Int = 0) {
         var message: [String: Any] = ["t": "drop.start", "id": Int(id), "name": name, "mime": mime, "size": size, "sha256": sha256]
