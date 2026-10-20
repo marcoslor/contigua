@@ -54,9 +54,6 @@ struct MenuBarContent: View {
             .disabled(!controller.link.isOnline)
         Button("Continue on Mac") { controller.continueOnMac() }
             .disabled(!controller.link.isOnline)
-        Button("Phone Camera") { controller.openCameraWindow() }
-            .keyboardShortcut("c", modifiers: [.command, .option])
-            .disabled(!controller.link.isOnline)
         Button("Ring Phone") { controller.ringPhone() }
             .disabled(!controller.link.isOnline)
         Button("Stop Ringing") { controller.stopRingingPhone() }
@@ -214,12 +211,6 @@ struct AppCommands: Commands {
                 Label("Continue on Mac", systemImage: "arrow.up.forward.app")
             }
             .keyboardShortcut("c", modifiers: [.command, .shift])
-            Button {
-                controller.openCameraWindow()
-            } label: {
-                Label("Phone Camera", systemImage: "camera")
-            }
-            .keyboardShortcut("c", modifiers: [.command, .option])
             Divider()
             Toggle(isOn: Binding(
                 get: { streamMenu.showTouches },

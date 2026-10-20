@@ -315,39 +315,6 @@ final class WindowManager {
         open { PhoneWindowController(stream: $0, phone: phone, manager: self) }
     }
 
-    /// "Phone Camera" (docs/design/camera.md, C2): one per session. Picking it
-    /// again brings the open window forward instead of starting a second
-    /// capture (the phone serves one).
-    @discardableResult
-    func openCameraWindow() -> CameraWindowController {
-        if let existing = cameraWindow {
-            if existing.window?.isMiniaturized == true { existing.window?.deminiaturize(nil) }
-            existing.present()
-            existing.window?.makeKeyAndOrderFront(nil)
-            return existing
-        }
-        return open { CameraWindowController(stream: $0, manager: self) }
-    }
-
-    /// The session's camera window, if one is open (debug hooks, events).
-    var cameraWindow: CameraWindowController? {
-        allControllers().compactMap { $0 as? CameraWindowController }.first
-    }
-
-    /// A fresh stream id from the same allocator every window uses (a camera
-    /// switching camera or retrying moves to one).
-    func newStreamID() -> UInt32 { allocateStream() }
-
-    /// The controller now shows `stream` (a camera window's fresh id): its old
-    /// key stops routing, the new one starts. The window itself keeps living.
-    func rebind(_ controller: StreamWindowController, to stream: UInt32) {
-        lock.lock()
-        streams.removeValue(forKey: controller.stream)
-        controller.rebind(to: stream)
-        streams[stream] = controller
-        lock.unlock()
-    }
-
     /// "Continue on Mac" (docs/ROADMAP.md #9): a window for the app in the
     /// foreground on the phone's screen. The phone answers with the stream it
     /// opened (`task.continue`) or an error; the video and the app label follow.
@@ -472,7 +439,6 @@ final class WindowManager {
         case .frame(let stream, let frame):
             videoDump?.write(frame: frame, stream: stream)
             let controller = controller(for: stream)
-            controller?.receivedFrame()
             controller?.videoView.enqueue(frame)
         }
     }
@@ -495,11 +461,6 @@ final class WindowManager {
         case .windowClosed(let stream, let reason):
             Log.app.info("phone closed stream \(stream, privacy: .public) (\(reason, privacy: .public))")
             controller(for: stream)?.closeFromRemote()
-        case .camCams(let cams):
-            cameraWindow?.adopt(cams: cams)
-        case .camState(let stream, let state, let reason):
-            (controller(for: stream) as? CameraWindowController)?
-                .handleCamState(stream: stream, state: state, reason: reason)
         case .windowOpened(let stream, _, _, _, let started):
             if started == .fresh {
                 (controller(for: stream) as? HandoffWindowController)?.showFreshNotice()
