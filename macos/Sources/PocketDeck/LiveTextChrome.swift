@@ -123,6 +123,13 @@ final class LiveTextStatusView: NSView {
         setAccessibilityLabel("Live Text: input paused")
     }
 
+    /// "Live Text" or the short-lived "Subject copied".
+    func setText(_ text: String) {
+        label.stringValue = text
+        needsLayout = true
+        setAccessibilityLabel(text == "Live Text" ? "Live Text: input paused" : text)
+    }
+
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
 
