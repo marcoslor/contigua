@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # End-to-end checks C3-C13 for the macOS client against tools/fakephone.
 #
-#   ./scripts/check-e2e.sh [qr|pair|gates|tls|render|resize|input|hover|mouseback|input-global|pause|direct|nav|mirror|spotlight|intents|mcp|focus|controls|pinch|chrome|menus|density|trackpad|clip|sharein|links|share|apk|drop|dock|nickname|notify|notify-actions|notify-media|audio|handoff|deck|all [--shard N/M]]
+#   ./scripts/check-e2e.sh [qr|pair|gates|tls|render|resize|input|hover|mouseback|input-global|pause|direct|nav|mirror|spotlight|intents|mcp|focus|controls|pinch|chrome|menus|density|trackpad|clip|sharein|links|share|apk|drop|dock|nickname|notify|notify-actions|notify-media|media|audio|handoff|deck|all [--shard N/M]]
 #
 # Every check starts from a clean slate (the shared-app checks share one, see
 # "The shared app" below): no PocketDeck or fakephone processes
@@ -6098,7 +6098,20 @@ EOF
         || bad "NOTIFY no stream 2 for the clicked app"
 
     # (d) a Now Playing command reaches the phone as media.command.
-    wait_until 20 events_have '"ev":"media","cmd":"play"' \
+    media_played() {
+        python3 - "$WORK/events.jsonl" <<'PY'
+import json, sys
+for line in open(sys.argv[1]):
+    try:
+        event = json.loads(line)
+    except ValueError:
+        continue
+    if event.get("ev") == "media" and event.get("kind") == "rx" and event.get("action") == "play":
+        sys.exit(0)
+sys.exit(1)
+PY
+    }
+    wait_until 20 media_played \
         && ok "NOTIFY the Now Playing control reached the phone (media.command play)" \
         || bad "NOTIFY no media.command play at the phone"
     log_has "media command play" \
@@ -6403,7 +6416,7 @@ EOF
             && ok "NOTIFY-MEDIA its directory is 0700" \
             || bad "NOTIFY-MEDIA its directory is $mode, not 700"
         case "$path" in
-            */Caches/PocketDeck-notify3/notify/*) ok "NOTIFY-MEDIA the temp file is in the profile's caches" ;;
+            */Caches/PocketDeck-"$PROFILE"/notify/*) ok "NOTIFY-MEDIA the temp file is in the profile's caches" ;;
             *) bad "NOTIFY-MEDIA the temp file is outside the profile's caches ($path)" ;;
         esac
     else
@@ -6520,6 +6533,170 @@ PY
 
     defaults delete "$DEFAULTS_SUITE" "notify.$device" >/dev/null 2>&1
     defaults delete "$DEFAULTS_SUITE" "notify.click.$device" >/dev/null 2>&1
+    defaults delete "$DEFAULTS_SUITE" "showAppsInDock" >/dev/null 2>&1
+}
+
+# check_media — "Media part 2" (docs/design/notify.md, v0.2 #9): the artwork,
+# the position bar and seek, the choice among several playing apps and the
+# phone's media volume, then an older phone that knows none of it. Quiet
+# share-log run: the log carries bytes, dimensions and hash prefixes, never the
+# picture or any track text.
+check_media() {
+    clean
+    local log="$WORK/media.log" script="$WORK/media-input.txt" device
+    local oldlog="$WORK/media-older.log" oldscript="$WORK/media-older-input.txt"
+    log_has() { grep -qF -- "$1" "$log" 2>/dev/null; }
+    old_log_has() { grep -qF -- "$1" "$oldlog" 2>/dev/null; }
+    # media_events KIND [EXTRA] — the fake's media events of that kind.
+    seen_choose() { media_events choose | grep -q '"key": "s2"'; }
+    seen_second_seek() {
+        [ "$(media_count rx action=seek)" -ge 2 ] && media_events rx action=seek | grep -q '"positionMs": 5000'
+    }
+    media_events() {
+        python3 - "$WORK/events.jsonl" "$1" "${2:-}" <<'PY'
+import json, sys
+kind, extra = sys.argv[2], sys.argv[3]
+for line in open(sys.argv[1]):
+    try:
+        event = json.loads(line)
+    except ValueError:
+        continue
+    if event.get("ev") != "media" or event.get("kind") != kind:
+        continue
+    if extra and not all(str(event.get(k)) == v for k, v in (x.split("=", 1) for x in extra.split(","))):
+        continue
+    print(json.dumps(event, sort_keys=True))
+PY
+    }
+    media_count() { media_events "$1" "${2:-}" | grep -c . ; }
+
+    # (a) two playing apps: the list, the state, the artwork.
+    FAKE_ARGS="--media" start_fake '' || return 1
+    device="$(sed -n 's/^fakephone \([^ ]*\) listening.*/\1/p' "$WORK/fake.log" "$WORK/fake.err" | head -1)"
+    [ -n "$device" ] || { bad "MEDIA no device id in the fakephone listening line"; stop_fakephone; return 1; }
+    defaults write "$DEFAULTS_SUITE" "notify.$device" -bool YES
+    defaults write "$DEFAULTS_SUITE" "showAppsInDock" -bool NO
+    # The debug script arms on the window's first video size change, so a window
+    # is opened (quiet: on the run's virtual display).
+    cat > "$script" <<'EOF'
+wait 4
+mediacmd seek 45000
+wait 2
+mediacmd volume 99
+wait 2
+mediacmd choose s2
+wait 3
+mediacmd seek 5000
+wait 2
+EOF
+    launch --connect "127.0.0.1:$PORT" --quit-after 45 --share-log "$log" \
+        --open com.whatsapp --debug-input-script "$script"
+
+    wait_until 20 log_has "media sessions n=2 chosen=s1" \
+        && ok "MEDIA the phone listed both playing apps, the first chosen" \
+        || bad "MEDIA no media.sessions line: $(tr '\n' '|' < "$log" 2>/dev/null)"
+    wait_until 20 log_has "media set playing=true" \
+        && ok "MEDIA media.state drove Now Playing" \
+        || bad "MEDIA no media.state record"
+    grep -qE "media set .*canSeek=1 volume=8 volumeMax=15" "$log" 2>/dev/null \
+        && ok "MEDIA the state carries canSeek and the session volume (8/15)" \
+        || bad "MEDIA no canSeek/volume in the state record: $(grep 'media set' "$log" 2>/dev/null | head -1)"
+    wait_until 20 grep -q "media art w=160 h=120 bytes=" "$log" 2>/dev/null \
+        && ok "MEDIA the artwork arrived (jpeg 160x120)" \
+        || bad "MEDIA no media art record"
+    # Artwork once per change: one send for the first session so far.
+    [ "$(grep -c "media art w=" "$log" 2>/dev/null)" = "1" ] \
+        && [ "$(media_count art)" = "1" ] \
+        && ok "MEDIA the artwork was sent once, not once per state" \
+        || bad "MEDIA artwork sent $(grep -c 'media art w=' "$log" 2>/dev/null) times ($(media_count art) from the phone)"
+
+    # (b) the position bar: 45 s asked, the track is 30 s, so 30 s goes out.
+    wait_until 20 grep -q "media command seek positionMs=30000" "$log" 2>/dev/null \
+        && ok "MEDIA a seek past the end was clamped to the track (30000 ms)" \
+        || bad "MEDIA no clamped seek record: $(grep 'media command' "$log" 2>/dev/null | tr '\n' '|')"
+    wait_until 20 [ "$(media_count rx action=seek)" -ge 1 ] \
+        && ok "MEDIA the phone received the seek" \
+        || bad "MEDIA the phone received no seek"
+    media_events rx action=seek | grep -q '"positionMs": 30000' \
+        && ok "MEDIA the seek reached the phone with the clamped value" \
+        || bad "MEDIA the seek value at the phone: $(media_events rx action=seek | tr '\n' '|')"
+    # The next state confirms where the session now is (the fake answers).
+    wait_until 20 grep -qE "media set .*elapsedMs=30000" "$log" 2>/dev/null \
+        && ok "MEDIA the next media.state confirmed the new position" \
+        || bad "MEDIA no state after the seek: $(grep 'media set' "$log" 2>/dev/null | tail -1)"
+
+    # (c) volume: 99 asked, the session tops at 15.
+    wait_until 20 grep -q "media command volume level=15" "$log" 2>/dev/null \
+        && ok "MEDIA the volume was clamped to the session maximum (15)" \
+        || bad "MEDIA no clamped volume record: $(grep 'media command' "$log" 2>/dev/null | tr '\n' '|')"
+    media_events rx action=volume | grep -q '"level": 15' \
+        && ok "MEDIA the volume reached the phone as 15" \
+        || bad "MEDIA the volume at the phone: $(media_events rx action=volume | tr '\n' '|')"
+    wait_until 20 grep -qE "media set .*volume=15 volumeMax=15" "$log" 2>/dev/null \
+        && ok "MEDIA the next media.state reflects the new volume" \
+        || bad "MEDIA the volume did not come back in a state"
+
+    # (d) choosing: the second app takes over, its state and art follow.
+    wait_until 20 seen_choose \
+        && ok "MEDIA media.choose reached the phone" \
+        || bad "MEDIA the phone saw no media.choose ($(media_events choose | tr '\n' '|'))"
+    wait_until 20 log_has "media sessions n=2 chosen=s2" \
+        && ok "MEDIA the next sessions list shows the picked app" \
+        || bad "MEDIA the chosen key never moved: $(grep 'media sessions' "$log" 2>/dev/null | tr '\n' '|')"
+    wait_until 20 grep -qE "media set .*key=s2" "$log" 2>/dev/null \
+        && ok "MEDIA the next media.state carries the picked session's key" \
+        || bad "MEDIA no state for the picked session"
+    wait_until 20 [ "$(grep -c 'media art w=' "$log" 2>/dev/null)" = "2" ] \
+        && ok "MEDIA the picked app's artwork arrived once more" \
+        || bad "MEDIA the picked app's artwork did not arrive"
+    wait_until 20 seen_second_seek \
+        && ok "MEDIA a seek on the picked session reached the phone (5000 ms)" \
+        || bad "MEDIA no second seek at the phone ($(media_events rx | tr '\n' '|'))"
+
+    # (e) no track text or picture bytes in any log.
+    ! grep -qE 'pd-media-(title|artist|album)-9|/9j/4AAQ' \
+        "$WORK/app.log" "$log" "$WORK/fake.log" "$WORK/fake.err" "$WORK/events.jsonl" 2>/dev/null \
+        && ok "MEDIA no track text or artwork bytes reached a log" \
+        || bad "MEDIA track text or artwork bytes leaked"
+
+    # The next fakephone start empties the shared event log; keep this phase's.
+    cp "$WORK/events.jsonl" "$WORK/media-events-phase1.jsonl" 2>/dev/null
+    stop_app
+    stop_fakephone
+    wait_until 10 no_fakephone
+    sleep 2
+
+    # (f) an older phone: today's media.state only; no sessions, no artwork,
+    # no canSeek/volume, and the Mac keeps its single-session behaviour.
+    FAKE_ARGS="--older-phone" start_fake '' || return 1
+    cat > "$oldscript" <<'EOF'
+wait 5
+mediacmd play
+wait 1
+EOF
+    launch --connect "127.0.0.1:$PORT" --quit-after 40 --share-log "$oldlog" \
+        --open com.whatsapp --debug-input-script "$oldscript"
+    wait_until 20 old_log_has "media set playing=true" \
+        && ok "MEDIA the older phone's state still reaches Now Playing" \
+        || bad "MEDIA no state from the older phone: $(tr '\n' '|' < "$oldlog" 2>/dev/null)"
+    grep -qE "media set .*canSeek=0 volume=-1 volumeMax=-1 key=-" "$oldlog" 2>/dev/null \
+        && ok "MEDIA the older phone's state carries none of the new fields" \
+        || bad "MEDIA unexpected older-phone record: $(grep 'media set' "$oldlog" 2>/dev/null | head -1)"
+    ! grep -q "media sessions" "$oldlog" 2>/dev/null \
+        && ok "MEDIA no session list from the older phone" \
+        || bad "MEDIA the older phone produced a media.sessions line"
+    ! grep -q "media art" "$oldlog" 2>/dev/null \
+        && ok "MEDIA no artwork from the older phone" \
+        || bad "MEDIA the older phone produced a media art line"
+    wait_until 25 old_log_has "media command play" \
+        && ok "MEDIA a transport command still works with the older phone" \
+        || bad "MEDIA the older phone got no command"
+
+    stop_app
+    stop_fakephone
+    wait_until 10 no_fakephone
+
+    defaults delete "$DEFAULTS_SUITE" "notify.$device" >/dev/null 2>&1
     defaults delete "$DEFAULTS_SUITE" "showAppsInDock" >/dev/null 2>&1
 }
 

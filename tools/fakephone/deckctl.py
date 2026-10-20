@@ -1499,6 +1499,74 @@ def cmd_notify(client, args):
     return 0
 
 
+def cmd_media(client, args):
+    """Media control as the Mac (docs/design/notify.md "Media part 2").
+
+    `watch` opts in on its own session first (the gate is per session) and
+    prints the phone's media events: session counts, the opaque keys, the
+    position, the volume, the artwork's dimensions and bytes. Never a title,
+    an artist, an album or a package name (the emulator log stays textless).
+    """
+    what = args.what
+    if what == "watch":
+        client.send_json({"t": "notify.enable", "on": True})
+        print("sent notify.enable on=true (watching %.0fs)" % args.seconds)
+        deadline = time.time() + args.seconds
+        while time.time() < deadline:
+            frame = client.recv(0.25)
+            if frame is TIMEOUT:
+                continue
+            if frame is None:
+                raise DeckError("phone closed during media watch")
+            if frame.type != proto.TYPE_JSON:
+                continue
+            msg = proto.unpack_json(frame)
+            t = msg.get("t")
+            if t == "media.state":
+                print("media.state playing=%s key=%s titleLen=%d durationMs=%s "
+                      "positionMs=%s rate=%.2f canSeek=%s volume=%s/%s"
+                      % ("true" if msg.get("playing") else "false", msg.get("key") or "-",
+                         len(msg.get("title") or ""), msg.get("durationMs"),
+                         msg.get("positionMs"), (msg.get("rate") or 0.0),
+                         "true" if msg.get("canSeek") else "false",
+                         msg.get("volume"), msg.get("volumeMax")), flush=True)
+            elif t == "media.sessions":
+                rows = msg.get("list") or []
+                playing = sum(1 for row in rows if row.get("playing"))
+                print("media.sessions n=%d playing=%d chosen=%s"
+                      % (len(rows), playing, msg.get("chosen") or "-"), flush=True)
+            elif t == "media.art":
+                data = msg.get("data") or ""
+                print("media.art key=%s mime=%s w=%s h=%s size=%d"
+                      % (msg.get("key"), msg.get("mime"), msg.get("w"), msg.get("h"),
+                         len(data) * 3 // 4), flush=True)
+            elif t == "notify.state":
+                print("notify.state on=%s" % ("true" if msg.get("on") else "false"), flush=True)
+        return 0
+    client.send_json({"t": "notify.enable", "on": True})
+    if what == "seek":
+        msg = {"t": "media.command", "action": "seek", "positionMs": args.position}
+        if args.key:
+            msg["key"] = args.key
+        client.send_json(msg)
+        print("sent media.command seek positionMs=%d key=%s"
+              % (args.position, args.key or "-"))
+    elif what == "volume":
+        msg = {"t": "media.command", "action": "volume", "level": args.level}
+        if args.key:
+            msg["key"] = args.key
+        client.send_json(msg)
+        print("sent media.command volume level=%d key=%s" % (args.level, args.key or "-"))
+    elif what == "choose":
+        if not args.key:
+            raise DeckError("media choose needs --key")
+        client.send_json({"t": "media.choose", "key": args.key})
+        print("sent media.choose key=%s" % args.key)
+    else:
+        raise DeckError("media %s is not a command" % what)
+    return 0
+
+
 def cmd_ring(client, args):
     """Send `phone.ring` (or stop it) and print the phone's ring.state answer."""
     if args.stop:
@@ -2243,6 +2311,13 @@ def build_parser():
     sp.add_argument("--progress", type=float, default=0.5, help="live update fraction 0..1")
     sp.add_argument("--chip", default=None, help="live update chip text (length only is printed)")
 
+    sp = sub.add_parser("media", help="media: watch/seek/volume/choose (counts, keys and numbers only)", **spp)
+    sp.add_argument("what", choices=["watch", "seek", "volume", "choose"])
+    sp.add_argument("--seconds", type=float, default=20.0, help="watch window")
+    sp.add_argument("--position", type=int, default=0, help="seek target in ms")
+    sp.add_argument("--level", type=int, default=0, help="volume level")
+    sp.add_argument("--key", default=None, help="session key (optional for commands)")
+
     sp = sub.add_parser("probe", help="open, run steps, record one phase file per step", **spp)
     sp.add_argument("target", nargs="?", help="package to launch")
     sp.add_argument("--phone", action="store_true", help="phone mode instead of an app")
@@ -2358,6 +2433,7 @@ COMMANDS = {
     "clip-set": cmd_clip_set,
     "clip-watch": cmd_clip_watch,
     "notify": cmd_notify,
+    "media": cmd_media,
     "probe": cmd_probe,
     "multi": cmd_multi,
     "resize-stress": cmd_resize_stress,

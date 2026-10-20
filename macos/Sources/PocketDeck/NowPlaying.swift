@@ -205,7 +205,8 @@ enum MediaMapping {
         "media set playing=\(s.playing) titleLen=\(s.title?.count ?? 0) artistLen=\(s.artist?.count ?? 0) "
             + "albumLen=\(s.album?.count ?? 0) durationMs=\(s.durationMs ?? -1) "
             + "elapsedMs=\(Int(elapsed(of: s) * 1000)) rate=\(String(format: "%.2f", s.rate)) "
-            + "canSeek=\(s.canSeek ? 1 : 0) volume=\(s.volume ?? -1) volumeMax=\(s.volumeMax ?? -1)"
+            + "canSeek=\(s.canSeek ? 1 : 0) volume=\(s.volume ?? -1) volumeMax=\(s.volumeMax ?? -1) "
+            + "key=\(s.key ?? "-")"
     }
 }
 
@@ -295,9 +296,24 @@ final class NowPlayingController {
     }
 
     /// The `mediacmd` debug action and what the MPRemoteCommand targets call.
+    /// Seek and volume are bounded here as well, so the Mac never asks for a
+    /// position outside the track or a level the session cannot reach.
     func perform(_ command: MediaCommand) {
-        record(command.record)
-        onCommand?(command)
+        let bounded: MediaCommand
+        switch command {
+        case .seek(let ms):
+            bounded = .seek(MediaMapping.seekTarget(seconds: Double(ms) / 1000, durationMs: current?.durationMs))
+        case .volume(let level):
+            if let max = current?.volumeMax, max > 0 {
+                bounded = .volume(Swift.min(Swift.max(level, 0), max))
+            } else {
+                bounded = command
+            }
+        case .transport:
+            bounded = command
+        }
+        record(bounded.record)
+        onCommand?(bounded)
     }
 
     /// `media.choose`: the person picked another playing app.

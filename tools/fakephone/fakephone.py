@@ -204,6 +204,71 @@ NOTIFY_MEDIA_STATE = {"playing": True, "pkg": "com.spotify.music", "title": "Fak
                       "artist": "Fake Artist", "album": "Fake Album", "durationMs": 30000,
                       "positionMs": 0, "rate": 1.0}
 
+# "Media part 2" (v0.2 #9, docs/design/notify.md): two playing apps, a seekable
+# position, an absolute volume and artwork. The two rows are what the Mac's
+# "Playing on phone" submenu should list; the title/artist/album are markers the
+# e2e greps every log for to prove they never leave the wire, and the artwork is
+# the same generated test card the notification picture uses.
+MEDIA_SESSION_ROWS = [
+    {"key": "s1", "pkg": "com.spotify.music", "app": "Spotify", "playing": True},
+    {"key": "s2", "pkg": "com.google.android.youtube", "app": "YouTube", "playing": False},
+]
+MEDIA_TITLE = "pd-media-title-9"
+MEDIA_ARTIST = "pd-media-artist-9"
+MEDIA_ALBUM = "pd-media-album-9"
+MEDIA_DURATION_MS = 30_000
+MEDIA_MAX_VOLUME = 15
+
+
+class FakeMedia(object):
+    """The fake phone's Now Playing (docs/design/notify.md "Media part 2"): the
+    session list, the chosen one, its position and its absolute volume. Every
+    command it receives is logged by the event log (numbers and keys only)."""
+
+    def __init__(self):
+        self.rows = [dict(row) for row in MEDIA_SESSION_ROWS]
+        self.chosen = self.rows[0]["key"]
+        self.position = 0
+        self.volume = 8
+        self.playing = True
+        self.art_sent_for = None
+        self.art_sends = 0
+
+    def current(self):
+        return next(row for row in self.rows if row["key"] == self.chosen)
+
+    def _playing(self):
+        row = self.current()
+        return bool(self.playing and row["playing"])
+
+    def state(self):
+        row = self.current()
+        return {
+            "t": "media.state", "playing": self._playing(), "pkg": row["pkg"],
+            "key": row["key"], "title": MEDIA_TITLE, "artist": MEDIA_ARTIST,
+            "album": MEDIA_ALBUM, "durationMs": MEDIA_DURATION_MS,
+            "positionMs": self.position, "rate": 1.0 if self._playing() else 0.0,
+            "canSeek": True, "volume": self.volume, "volumeMax": MEDIA_MAX_VOLUME,
+        }
+
+    def older_state(self):
+        """What a phone that predates "Media part 2" sends: today's shape."""
+        return {
+            "t": "media.state", "playing": True, "pkg": "com.spotify.music",
+            "title": MEDIA_TITLE, "artist": MEDIA_ARTIST, "album": MEDIA_ALBUM,
+            "durationMs": MEDIA_DURATION_MS, "positionMs": self.position, "rate": 1.0,
+        }
+
+    def sessions_message(self):
+        return {"t": "media.sessions", "list": [dict(row) for row in self.rows],
+                "chosen": self.chosen}
+
+    def art_message(self):
+        return {"t": "media.art", "key": self.chosen, "mime": NOTIFY_IMAGE["mime"],
+                "w": NOTIFY_IMAGE["w"], "h": NOTIFY_IMAGE["h"],
+                "data": base64.b64encode(NOTIFY_IMAGE["data"]).decode("ascii")}
+
+
 # The phone's zen modes (docs/design/focus.md): the wire names and their real
 # Settings.Global.zen_mode values, kept here so the fake applies the same
 # restore rule as ZenControl.
@@ -676,8 +741,12 @@ class EventLog(object):
         event.update(fields)
         self._emit(event)
 
-    def media(self, cmd):
-        self._emit({"ev": "media", "cmd": cmd, "ts": time.time()})
+    def media(self, kind, **fields):
+        """media events: the command it received (action, position, level) and the
+        artwork it sent (dimensions and bytes only). Never any artwork bytes."""
+        event = {"ev": "media", "kind": kind, "ts": time.time()}
+        event.update(fields)
+        self._emit(event)
 
     def fs(self, kind, **fields):
         event = {"ev": "fs", "kind": kind, "ts": time.time()}
@@ -2134,6 +2203,7 @@ class Session(object):
             "notify.dismiss": self._on_notify_dismiss,
             "notify.fake": self._on_notify_fake,
             "media.command": self._on_media_command,
+            "media.choose": self._on_media_choose,
             "fs.list": self._on_fs_list,
             "fs.stat": self._on_fs_stat,
             "fs.read": self._on_fs_read,
@@ -2882,10 +2952,46 @@ class Session(object):
         if not only:
             self._send({"t": "notify.remove", "id": NOTIFY_REMOVE})
             self.phone.events.notify("remove", id=NOTIFY_REMOVE)
-        self._send(dict(NOTIFY_MEDIA_STATE, t="media.state"))
-        self.phone.events.notify("media.state", playing=NOTIFY_MEDIA_STATE["playing"],
-                                 titleLen=len(NOTIFY_MEDIA_STATE["title"]),
-                                 durationMs=NOTIFY_MEDIA_STATE["durationMs"])
+        if self._media_mode():
+            self._send_media()
+        else:
+            self._send(dict(NOTIFY_MEDIA_STATE, t="media.state"))
+            self.phone.events.notify("media.state", playing=NOTIFY_MEDIA_STATE["playing"],
+                                     titleLen=len(NOTIFY_MEDIA_STATE["title"]),
+                                     durationMs=NOTIFY_MEDIA_STATE["durationMs"])
+
+    def _media_mode(self):
+        return bool(getattr(self.phone.args, "media", False))
+
+    def _older_phone(self):
+        return bool(getattr(self.phone.args, "older_phone", False))
+
+    def _send_media(self):
+        """The part 2 shapes in wire order: sessions, state, then the artwork
+        once per change. `--older-phone` sends today's media.state only."""
+        media = self.phone.media
+        if self._older_phone():
+            self._send(media.older_state())
+            self.phone.events.notify("media.state", playing=True,
+                                     titleLen=len(MEDIA_TITLE), durationMs=MEDIA_DURATION_MS)
+            return
+        self._send(media.sessions_message())
+        self.phone.events.media("sessions", n=len(media.rows), chosen=media.chosen)
+        self._send(media.state())
+        self.phone.events.media("state", key=media.chosen, positionMs=media.position,
+                                volume=media.volume, canSeek=1)
+        self._send_media_art()
+
+    def _send_media_art(self):
+        media = self.phone.media
+        if self._older_phone() or media.art_sent_for == media.chosen:
+            return
+        media.art_sent_for = media.chosen
+        media.art_sends += 1
+        self._send(media.art_message())
+        self.phone.events.media("art", key=media.chosen, w=NOTIFY_IMAGE["w"],
+                                h=NOTIFY_IMAGE["h"], size=len(NOTIFY_IMAGE["data"]),
+                                sends=media.art_sends)
 
     def _remove_later(self, notify_id, delay):
         """The app took the picture notification away after a while."""
@@ -3029,7 +3135,54 @@ class Session(object):
             self.phone.events.notify("live.end", id=notify_id)
 
     def _on_media_command(self, msg):
-        self.phone.events.media(msg.get("action"))
+        """`media.command` from the Mac: log the action and its numbers, apply
+        it, and answer with the next media.state (which confirms it)."""
+        media = self.phone.media
+        action = msg.get("action")
+        key = msg.get("key")
+        position = msg.get("positionMs")
+        level = msg.get("level")
+        self.phone.events.media("rx", action=action, key=key,
+                                positionMs=position if isinstance(position, int) else -1,
+                                level=level if isinstance(level, int) else -1)
+        notes = ""
+        if not self._media_mode():
+            return
+        if key and key != media.chosen:
+            # A command for a session that is not the chosen one moves nothing.
+            self.phone.events.media("rx", action=action, key=key, skipped=1)
+            return
+        if action == "seek" and isinstance(position, int):
+            media.position = max(0, min(position, MEDIA_DURATION_MS))
+        elif action == "volume" and isinstance(level, int):
+            media.volume = max(0, min(level, MEDIA_MAX_VOLUME))
+        elif action in ("play", "pause"):
+            media.playing = action == "play"
+            for row in media.rows:
+                row["playing"] = action == "play" and row["key"] == media.chosen
+        elif action in ("next", "prev"):
+            notes = "-"
+        if self.sender is not None:
+            self._send(media.state())
+            self.phone.events.media("state", key=media.chosen, positionMs=media.position,
+                                    volume=media.volume, canSeek=1)
+
+    def _on_media_choose(self, msg):
+        """`media.choose`: the Mac picked a session. An unknown key changes
+        nothing, as on the phone."""
+        media = self.phone.media
+        key = msg.get("key")
+        known = any(row["key"] == key for row in media.rows)
+        self.phone.events.media("choose", key=key, ok=1 if known else 0)
+        if not known:
+            return
+        media.chosen = key
+        media.art_sent_for = None
+        if self.sender is None:
+            return
+        self._send(media.sessions_message())
+        self._send(media.state())
+        self._send_media_art()
 
     def _on_notify_open(self, msg):
         # A Mac banner click: the id and where it runs, never any text.
@@ -3331,6 +3484,8 @@ class FakePhone(object):
         # (no state.dnd, phone.dnd is an unknown message); --dnd-person starts
         # in a mode the person set, which the restore rule must leave alone.
         self.zen = FakeZen(person=args.dnd_person, supported=not args.dnd_unsupported)
+        # Now Playing (v0.2 #9): the two fake sessions, their position and volume.
+        self.media = FakeMedia()
         self.fake_ringer = FakeRinger(supported=not args.ringer_unsupported)
         # The fake /sdcard (docs/design/files.md §6): the e2e check builds a
         # tree here and the fs.* handlers serve it with the phone's rules.
@@ -3600,6 +3755,12 @@ def build_parser():
                         "buttons, pd-a3 ongoing, pd-a4 code, pd-m1 picture, pd-m2 "
                         "refused picture, pd-l1/pd-l2 Live Updates, pd-n1/n2 plain); "
                         "the VM check needs one banner at a time")
+    p.add_argument("--media", action="store_true",
+                   help="serve 'Media part 2' (v0.2 #9): two sessions, artwork, a "
+                        "seekable position and an absolute volume; media.choose picks")
+    p.add_argument("--older-phone", action="store_true",
+                   help="pretend a phone that predates 'Media part 2': only today's "
+                        "media.state, no media.sessions, no artwork, no canSeek/volume")
     p.add_argument("--notify-media", action="store_true",
                    help="on notify.enable also post the picture and Live Update shapes "
                         "(pd-m1, pd-m2, pd-l1, pd-l2) and advance pd-l1 every 2 s")
