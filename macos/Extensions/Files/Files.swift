@@ -265,15 +265,12 @@ final class WatchChannel {
         log.notice("watch: could not re-subscribe")
     }
 
+    /// The app pushed news about containers on this connection. The extension
+    /// cannot signal them: a replicated extension may only signal the working
+    /// set, and the app does that itself (design "S5 round 3"). The push is the
+    /// fast path only, so there is nothing to do here but account for it.
     private func signal(_ containers: [String]) {
-        guard let manager = NSFileProviderManager(for: domain) else { return }
-        for container in containers {
-            let identifier = container == FilesMap.rootIdentifier
-                ? NSFileProviderItemIdentifier.rootContainer
-                : NSFileProviderItemIdentifier(container)
-            manager.signalEnumerator(for: identifier) { _ in }
-        }
-        log.notice("watch: signal containers=\(containers.count, privacy: .public)")
+        log.notice("watch: changed containers=\(containers.count, privacy: .public)")
     }
 }
 
@@ -487,18 +484,15 @@ final class FilesExtension: NSObject, NSFileProviderReplicatedExtension {
         FilesMap.rootItem(name: domain.displayName, version: Data("root-s4".utf8))
     }
 
-    private func signal(_ identifier: String) {
-        let item = NSFileProviderItemIdentifier(identifier == FilesMap.rootIdentifier
-                                                ? FilesMap.rootIdentifier : identifier)
-        NSFileProviderManager(for: domain)?.signalEnumerator(for: item) { _ in }
-    }
+    // MARK: Watching (design "S5 round 3")
 
-    // MARK: Watching (design §5, S5)
-
-    /// One standing subscription per extension process.
+    /// One standing subscription per extension process. A container's
+    /// enumerator (or a listing, a stat, a write) touches it: the app keeps the
+    /// folder on the phone for ten minutes after the last touch, so `invalidate`
+    /// only ends the pushes, not the watch.
     private lazy var watchChannel = WatchChannel(domain: domain)
 
-    /// A container's enumerator exists: the app watches it on the phone.
+    /// The system touched this container: the app watches it on the phone.
     func watch(_ identifier: String, on: Bool) {
         watchChannel.set(identifier, on: on)
     }
@@ -577,8 +571,17 @@ final class FilesExtension: NSObject, NSFileProviderReplicatedExtension {
 
     func enumerator(for containerItemIdentifier: NSFileProviderItemIdentifier,
                     request: NSFileProviderRequest) throws -> NSFileProviderEnumerator {
-        // The system wants this folder: watch it on the phone while it does
-        // (design §5). The enumerator's invalidate() stops it again.
+        // The two identifiers the system owns are never phone folders (design
+        // "S5 round 3"): the working set has its own change log, the trash is
+        // empty because a delete on the phone is immediate.
+        if containerItemIdentifier == .workingSet {
+            return WorkingSetEnumerator(extension: self)
+        }
+        if containerItemIdentifier == .trashContainer {
+            return EmptyEnumerator()
+        }
+        // The system wants this folder: touch it on the phone (the app keeps it
+        // for ten minutes after the last touch).
         let identifier = containerItemIdentifier == .rootContainer
             ? FilesMap.rootIdentifier : containerItemIdentifier.rawValue
         watch(identifier, on: true)
@@ -990,7 +993,6 @@ final class FilesExtension: NSObject, NSFileProviderReplicatedExtension {
         if case .failure(.exists) = copied {
             log.notice("conflict: no free name after \(FilesConflict.maxAttempts, privacy: .public) tries")
         }
-        signal(parent)
         // The item the system asked about is the phone's current one.
         if case .success(let current) = stat(item: item.itemIdentifier.rawValue) {
             if case .failure = copied {
@@ -1015,29 +1017,20 @@ final class FilesExtension: NSObject, NSFileProviderReplicatedExtension {
         let base = String(data: version.contentVersion, encoding: .utf8) ?? ""
         let recursive = options.contains(.recursive)
         work.async {
-            // The parent is only needed to refresh the listing after the change.
-            let parent: String
-            switch self.stat(item: identifier.rawValue) {
-            case .success(let item): parent = item.parentIdentifier
-            case .failure(let failure):
-                log.notice("delete stat failed code=\(failure.rawValue, privacy: .public)")
-                return completionHandler(failure.error)
-            }
+            // The system knows about its own delete; no signal is needed (and a
+            // per-container one would be ignored: design "S5 round 3").
             let request = BridgeRequest.delete(id: 1, item: identifier.rawValue,
                                                base: base, recursive: recursive)
             switch self.mutate(request) {
             case .success:
-                self.signal(parent)
                 completionHandler(nil)
             case .failure(.stale):
                 // The phone's copy moved on: do not delete it; it comes back in
                 // Finder on the next enumeration.
                 log.notice("delete refused: stale (keeping the phone's item)")
-                self.signal(parent)
                 completionHandler(NSFileProviderError(.cannotSynchronize))
             case .failure(let failure):
                 log.notice("delete failed code=\(failure.rawValue, privacy: .public)")
-                self.signal(parent)
                 completionHandler(failure.error)
             }
         }
@@ -1134,8 +1127,9 @@ final class FilesEnumerator: NSObject, NSFileProviderEnumerator {
     }
 
     func invalidate() {
-        // The system is done with this folder: stop watching it on the phone
-        // when this was the last holder (design §5).
+        // The system is done with this folder's enumerator: its pushes stop, but
+        // the phone keeps watching the folder until its ten minutes run out
+        // (design "S5 round 3").
         owner?.watch(containerIdentifier, on: false)
     }
 
@@ -1219,5 +1213,133 @@ final class FilesEnumerator: NSObject, NSFileProviderEnumerator {
                 completionHandler(nil)
             }
         }
+    }
+}
+
+/// The working set (design "S5 round 3"): every change the app saw on the phone,
+/// in one sequence, with each item carrying its real parent. It is enumerated
+/// with `enumerateChangesFromSyncAnchor:` (NSFileProviderEnumerating.h), which is
+/// also how the system learns that a folder it is showing moved — a replicated
+/// extension may only signal this container.
+final class WorkingSetEnumerator: NSObject, NSFileProviderEnumerator {
+    private weak var owner: FilesExtension?
+    /// The item list `enumerateItems` pages through. Asking the app for the
+    /// working-set snapshot once per enumeration is enough: it answers from the
+    /// cached listings in memory.
+    private var snapshot: [FileItem]?
+
+    init(extension owner: FilesExtension) {
+        self.owner = owner
+    }
+
+    func invalidate() {}
+
+    func enumerateChanges(for observer: NSFileProviderChangeObserver,
+                          from anchor: NSFileProviderSyncAnchor) {
+        guard let owner else {
+            return observer.finishEnumeratingWithError(FilesFailure.offline.error)
+        }
+        let from = String(data: anchor.rawValue, encoding: .utf8)
+        owner.loadChanges(item: filesWorkingSetIdentifier, from: from) { result in
+            switch result {
+            case .failure(let failure):
+                log.notice("working set changes failed code=\(failure.rawValue, privacy: .public)")
+                observer.finishEnumeratingWithError(failure.error)
+            case .success(let reply) where reply.expired:
+                // The system drops its cached data and starts over at nil
+                // (NSFileProviderEnumerating.h): a fresh enumeration answers
+                // every cached item.
+                log.notice("working set anchor expired")
+                observer.finishEnumeratingWithError(NSFileProviderError(.syncAnchorExpired))
+            case .success(let reply):
+                if !reply.delta.items.isEmpty {
+                    observer.didUpdate(reply.delta.items.map(ProviderItem.init))
+                }
+                if !reply.delta.deleted.isEmpty {
+                    observer.didDeleteItems(withIdentifiers: reply.delta.deleted.map {
+                        NSFileProviderItemIdentifier($0)
+                    })
+                }
+                log.notice("working set changes items=\(reply.delta.items.count, privacy: .public) deleted=\(reply.delta.deleted.count, privacy: .public)")
+                observer.finishEnumeratingChanges(
+                    upTo: NSFileProviderSyncAnchor(Data(reply.anchor.utf8)), moreComing: false)
+            }
+        }
+    }
+
+    func enumerateItems(for observer: NSFileProviderEnumerationObserver,
+                        startingAt page: NSFileProviderPage) {
+        guard let owner else {
+            observer.finishEnumeratingWithError(FilesFailure.offline.error)
+            return
+        }
+        var offset = 0
+        if page.rawValue as Data != NSFileProviderPage.initialPageSortedByName as Data,
+           page.rawValue as Data != NSFileProviderPage.initialPageSortedByDate as Data,
+           let text = String(data: page.rawValue, encoding: .utf8) {
+            offset = Int(text) ?? 0
+        }
+        deliver(owner: owner, offset: offset, observer: observer)
+    }
+
+    /// The app's cached listings, one local page at a time. The system removes
+    /// an item only through `didDeleteItemsWithIdentifiers:`, so an item this
+    /// enumeration does not return is not treated as gone.
+    private func deliver(owner: FilesExtension, offset: Int,
+                         observer: NSFileProviderEnumerationObserver) {
+        let finish: ([FileItem]) -> Void = { [weak self] items in
+            self?.snapshot = items
+            let pageSize = 1000
+            let slice = Array(items.dropFirst(offset).prefix(pageSize))
+            observer.didEnumerate(slice.map(ProviderItem.init))
+            let next = offset + slice.count < items.count
+                ? NSFileProviderPage(Data(String(offset + slice.count).utf8)) : nil
+            log.notice("working set items=\(slice.count, privacy: .public) more=\(next != nil, privacy: .public)")
+            observer.finishEnumerating(upTo: next)
+        }
+        if let snapshot {
+            return finish(snapshot)
+        }
+        owner.loadChanges(item: filesWorkingSetIdentifier, from: nil) { result in
+            switch result {
+            case .success(let reply):
+                finish(reply.delta.items)
+            case .failure(let failure):
+                log.notice("working set items failed code=\(failure.rawValue, privacy: .public)")
+                observer.finishEnumeratingWithError(failure.error)
+            }
+        }
+    }
+
+    func currentSyncAnchor(completionHandler: @escaping (NSFileProviderSyncAnchor?) -> Void) {
+        guard let owner else { return completionHandler(nil) }
+        owner.loadAnchor(item: filesWorkingSetIdentifier) { result in
+            switch result {
+            case .success(let anchor):
+                completionHandler(NSFileProviderSyncAnchor(Data(anchor.utf8)))
+            case .failure:
+                completionHandler(nil)
+            }
+        }
+    }
+}
+
+/// The trash container: there is none on the phone (design §4, S4), so it
+/// enumerates nothing and never touches the phone.
+final class EmptyEnumerator: NSObject, NSFileProviderEnumerator {
+    func invalidate() {}
+
+    func enumerateItems(for observer: NSFileProviderEnumerationObserver,
+                        startingAt page: NSFileProviderPage) {
+        observer.finishEnumerating(upTo: nil)
+    }
+
+    func enumerateChanges(for observer: NSFileProviderChangeObserver,
+                          from anchor: NSFileProviderSyncAnchor) {
+        observer.finishEnumeratingChanges(upTo: anchor, moreComing: false)
+    }
+
+    func currentSyncAnchor(completionHandler: @escaping (NSFileProviderSyncAnchor?) -> Void) {
+        completionHandler(nil)
     }
 }

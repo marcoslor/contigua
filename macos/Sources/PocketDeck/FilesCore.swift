@@ -665,6 +665,15 @@ enum FilesMap {
 /// repeated here so this file does not need FileProvider.
 let filesRootIdentifier = ".rootContainer"
 
+/// The two container identifiers the system owns (design "S5 round 3"). They are
+/// never phone folders: no listing, no stat, no `fs.watch` may name them.
+let filesWorkingSetIdentifier = ".workingSet"
+let filesTrashIdentifier = ".trashContainer"
+
+func filesSystemContainer(_ identifier: String) -> Bool {
+    identifier == filesWorkingSetIdentifier || identifier == filesTrashIdentifier
+}
+
 // MARK: - The app-owned identifier map
 
 /// The app's id ↔ path map (design §3, S4). It is the only thing that can turn

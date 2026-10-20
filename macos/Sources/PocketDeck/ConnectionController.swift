@@ -416,11 +416,11 @@ final class ConnectionController {
         }
         mcp.configure(profile: profile, forced: options.mcpEnable)
         mcp.hostProvider = { [weak self] in self.map { MCPToolHost(controller: $0) } }
-        // A phone-side change to a watched folder has to re-enumerate that
-        // folder even when no extension process is running (design §5): the
-        // bridge asks the domain, not only the live extension clients.
-        FilesBridge.shared.signalDomain = { [weak self] container in
-            MainActor.assumeIsolated { self?.filesDomain.signalContainer(container) }
+        // A phone-side change has to reach the Finder UI even when no extension
+        // process is running, and a replicated extension may only be signalled
+        // through its working set (NSFileProviderManager.h, design "S5 round 3").
+        FilesBridge.shared.signalWorkingSet = { [weak self] in
+            MainActor.assumeIsolated { self?.filesDomain.signalWorkingSet() }
         }
     }
 

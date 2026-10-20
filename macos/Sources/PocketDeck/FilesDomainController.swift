@@ -51,11 +51,9 @@ protocol FilesDomainManaging: AnyObject {
     func remove(identifier: String, completion: @escaping (Error?) -> Void)
     func reconnect(identifier: String, completion: @escaping (Error?) -> Void)
     func disconnect(identifier: String, reason: String, completion: @escaping (Error?) -> Void)
-    func signalEnumerator(identifier: String, completion: @escaping (Error?) -> Void)
-    /// Re-enumerate one container: a folder the phone changed may be a child of
-    /// the root, and only the system can start an extension that is not running.
-    func signalContainer(identifier: String, container: String,
-                         completion: @escaping (Error?) -> Void)
+    /// Re-enumerates the working set: the only container a replicated extension
+    /// may signal (NSFileProviderManager.h, design "S5 round 3").
+    func signalWorkingSet(identifier: String, completion: @escaping (Error?) -> Void)
 }
 
 @MainActor
@@ -150,7 +148,7 @@ final class FilesDomainController {
         guard addedLocally || manager.domain(identifier: identifier) != nil else { return }
         if up {
             manager.reconnect(identifier: identifier) { _ in }
-            manager.signalEnumerator(identifier: identifier) { _ in }
+            manager.signalWorkingSet(identifier: identifier) { _ in }
             Log.files.notice("domain reconnect")
         } else {
             manager.disconnect(identifier: identifier, reason: "Phone not connected") { _ in }
@@ -162,13 +160,18 @@ final class FilesDomainController {
         openSettings()
     }
 
-    /// The phone says a watched folder moved (design §5). Re-enumerate that
-    /// container through the system: the extension process that asked for the
-    /// watch has usually exited by now, so a push alone would reach nobody.
-    func signalContainer(_ container: String) {
+    /// The phone says a watched folder moved (design "S5 round 3"). The only
+    /// signal a replicated extension may act on is the working set, and it also
+    /// starts an extension when none is running.
+    func signalWorkingSet() {
         guard enabled else { return }
-        manager.signalContainer(identifier: identifier, container: container) { _ in }
-        Log.files.notice("domain: signal container")
+        manager.signalWorkingSet(identifier: identifier) { error in
+            guard let error = error as NSError? else {
+                Log.files.notice("domain: signal working set")
+                return
+            }
+            Log.files.notice("domain: signal working set failed domain=\(error.domain, privacy: .public) code=\(error.code, privacy: .public)")
+        }
     }
 
     /// The VM hook adds the domain itself (so `--files-domain add` can report
@@ -202,7 +205,7 @@ final class FilesDomainController {
             state = info.userEnabled ? .on : .needsSwitch
             if info.userEnabled && sessionUp {
                 manager.reconnect(identifier: identifier) { _ in }
-                manager.signalEnumerator(identifier: identifier) { _ in }
+                manager.signalWorkingSet(identifier: identifier) { _ in }
             }
             return
         }
@@ -231,7 +234,7 @@ final class FilesDomainController {
             Log.files.notice("domain added; waiting for the System Settings switch")
             if self.sessionUp {
                 self.manager.reconnect(identifier: self.identifier) { _ in }
-                self.manager.signalEnumerator(identifier: self.identifier) { _ in }
+                self.manager.signalWorkingSet(identifier: self.identifier) { _ in }
             }
         }
     }
@@ -312,18 +315,11 @@ final class SystemFilesDomainManager: FilesDomainManaging {
         manager.disconnect(reason: reason, options: [.temporary], completionHandler: completion)
     }
 
-    func signalEnumerator(identifier: String, completion: @escaping (Error?) -> Void) {
+    /// The working set, never a folder: NSFileProviderManager.h says the other
+    /// container identifiers are ignored for a replicated extension.
+    func signalWorkingSet(identifier: String, completion: @escaping (Error?) -> Void) {
         guard let manager = manager(identifier) else { return completion(nil) }
-        manager.signalEnumerator(for: .rootContainer, completionHandler: completion)
-    }
-
-    /// One container, not the whole root (docs/design/files.md §5): a phone-side
-    /// change to a folder Finder has open is that folder's enumeration.
-    func signalContainer(identifier: String, container: String,
-                         completion: @escaping (Error?) -> Void) {
-        guard let manager = manager(identifier) else { return completion(nil) }
-        let item = container.isEmpty ? .rootContainer : NSFileProviderItemIdentifier(container)
-        manager.signalEnumerator(for: item, completionHandler: completion)
+        manager.signalEnumerator(for: .workingSet, completionHandler: completion)
     }
 
     private func domainObject(_ identifier: String) -> NSFileProviderDomain? {

@@ -1,6 +1,7 @@
 // Remote changes for the Finder domain (docs/design/files.md §5, slice S5):
 // what a re-listing of one folder shows against the listing the system was last
-// given, and the anchor log that answers `enumerateChanges(for:from:)`.
+// given, and the one ordered log that answers both a folder's
+// `enumerateChanges(for:from:)` and the working set's (round 3).
 //
 // Pure values, no FileProvider: the app records the deltas and the extension
 // wraps them in NSFileProvider types.
@@ -36,78 +37,114 @@ enum FilesDiff {
     }
 }
 
-/// What the app answers a `changes` request with (one container).
+/// What the app answers a `changes` request with (one container, or the working
+/// set when the container is nil).
 struct FilesChangesReply: Equatable {
     var anchor: String
     var delta: FilesDelta
     var expired: Bool
 }
 
-/// One container's deltas, newest last, each tied to the anchor it produced.
-/// Bounded: an anchor older than the kept history cannot be replayed, and the
-/// caller answers `.syncAnchorExpired` so the system re-enumerates.
+/// The domain's deltas, newest last, each tied to the sequence it produced and
+/// the container it happened in. One log for the whole domain: the working set
+/// replays all of it, a folder enumerator replays its own entries, and an anchor
+/// older than the kept history cannot be replayed, so the caller answers
+/// `.syncAnchorExpired` and the system re-enumerates (design "S5 round 3").
 struct FilesChangeLog: Equatable {
     /// Enough for a Finder that has been idle through a burst of changes; the
-    /// system re-enumerates past this.
-    static let maxEntries = 32
+    /// system re-enumerates past this. The cap is domain-wide, not per folder.
+    static let maxEntries = 512
 
     struct Entry: Equatable {
-        var generation: Int
+        var sequence: Int
+        var container: String
         var delta: FilesDelta
     }
 
-    /// The container this log belongs to. It rides in the anchor so an anchor
-    /// from another folder (or another process's stale idea of this one) cannot
-    /// be mistaken for a position in this history.
-    let scope: String
-    private(set) var generation = 0
+    /// A fresh epoch per app run. An anchor from an earlier process names a
+    /// sequence in a log this process no longer has, so it must expire instead
+    /// of replaying an empty delta against unrelated history.
+    let epoch: String
+    private(set) var sequence = 0
     private(set) var entries: [Entry] = []
 
-    init(scope: String) {
-        self.scope = scope
+    init(epoch: String = FilesChangeLog.newEpoch()) {
+        self.epoch = epoch
     }
 
-    /// The anchor a container reports right now.
-    var anchor: String { Self.anchor(generation, scope: scope) }
-
-    static func anchor(_ generation: Int, scope: String) -> String {
-        "g\(generation).\(scope)"
+    static func newEpoch() -> String {
+        String(UUID().uuidString.prefix(8)).lowercased()
     }
 
-    /// The generation an anchor names, or nil when it is not this log's.
-    func generation(of anchor: String) -> Int? {
-        let suffix = "." + scope
-        guard anchor.hasPrefix("g"), anchor.hasSuffix(suffix) else { return nil }
-        let number = anchor.dropFirst().dropLast(suffix.count)
-        guard let value = Int(number), value >= 0 else { return nil }
+    /// The anchor the working set reports right now.
+    var anchor: String { Self.anchor(sequence, epoch: epoch) }
+
+    static func anchor(_ sequence: Int, epoch: String) -> String {
+        "w:\(epoch):\(sequence)"
+    }
+
+    /// A folder enumerator's anchor: the same sequence, plus the folder that
+    /// owns it, so an anchor from another container cannot be mistaken for a
+    /// position in this one.
+    func containerAnchor(_ container: String) -> String {
+        Self.containerAnchor(sequence, container: container, epoch: epoch)
+    }
+
+    static func containerAnchor(_ sequence: Int, container: String,
+                                epoch: String) -> String {
+        "g:\(epoch):\(sequence):\(container)"
+    }
+
+    /// The sequence an anchor names. A working-set anchor (`container == nil`)
+    /// must be `w:<epoch>:<sequence>`; a folder anchor must be
+    /// `g:<epoch>:<sequence>:<that folder>`.
+    func sequence(of anchor: String, container: String?) -> Int? {
+        let prefix = container == nil ? "w:" : "g:"
+        guard anchor.hasPrefix(prefix) else { return nil }
+        let rest = anchor.dropFirst(prefix.count)
+        let pieces = rest.split(separator: ":", maxSplits: container == nil ? 1 : 2,
+                                omittingEmptySubsequences: false)
+        guard let namedEpoch = pieces.first, namedEpoch == epoch else { return nil }
+        guard pieces.count == (container == nil ? 2 : 3) else { return nil }
+        if let container, pieces[2] != Substring(container) { return nil }
+        guard let value = Int(pieces[1]), value >= 0 else { return nil }
         return value
     }
 
-    /// Records what a re-listing changed. Returns true when the container moved
-    /// (an empty delta still advances nothing).
+    /// Records what a re-listing changed in one container. Returns true when the
+    /// log moved (an empty delta still advances nothing).
     @discardableResult
-    mutating func record(_ delta: FilesDelta) -> Bool {
+    mutating func record(container: String, delta: FilesDelta) -> Bool {
         guard !delta.isEmpty else { return false }
-        generation += 1
-        entries.append(Entry(generation: generation, delta: delta))
+        sequence += 1
+        entries.append(Entry(sequence: sequence, container: container, delta: delta))
         if entries.count > Self.maxEntries {
             entries.removeFirst(entries.count - Self.maxEntries)
         }
         return true
     }
 
-    /// Everything after [anchor], merged in order; nil when the anchor is
-    /// unknown here or older than the kept entries.
-    func changes(from anchor: String) -> FilesDelta? {
-        guard let from = generation(of: anchor), from <= generation else { return nil }
-        if from == generation { return FilesDelta.none }
-        let oldest = entries.first?.generation ?? (generation + 1)
-        if from + 1 < oldest { return nil }
+    /// Everything after [anchor], merged in order and filtered to [container]
+    /// when one is given (nil = the whole domain, for the working set). A nil
+    /// anchor is a first enumeration: every delta the log still keeps, which the
+    /// caller combines with its cached listings. Nil return = the anchor cannot
+    /// be replayed here.
+    func changes(from anchor: String?, container: String?) -> FilesDelta? {
+        var from = 0
+        if let anchor {
+            guard let named = sequence(of: anchor, container: container) else { return nil }
+            guard named <= sequence else { return nil }
+            if named == sequence { return FilesDelta.none }
+            let oldest = entries.first?.sequence ?? (sequence + 1)
+            guard named + 1 >= oldest else { return nil }
+            from = named
+        }
 
         var order: [String] = []
         var byID: [String: FileItem] = [:]
         var deleted: [String] = []
-        for entry in entries where entry.generation > from {
+        for entry in entries where entry.sequence > from {
+            if let container, entry.container != container { continue }
             for identifier in entry.delta.deleted {
                 byID.removeValue(forKey: identifier)
                 deleted.removeAll { $0 == identifier }

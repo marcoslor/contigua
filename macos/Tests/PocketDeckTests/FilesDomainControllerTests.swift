@@ -10,13 +10,13 @@ import XCTest
 private final class FakeDomainManager: FilesDomainManaging {
     var info: FilesDomainInfo?
     var addError: Error?
+    var signalError: Error?
     var removeError: Error?
     private(set) var adds: [(identifier: String, displayName: String)] = []
     private(set) var removes: [String] = []
     private(set) var reconnects: [String] = []
     private(set) var disconnects: [(id: String, reason: String)] = []
     private(set) var signals: [String] = []
-    private(set) var signaledContainers: [(identifier: String, container: String)] = []
 
     func domain(identifier: String) -> FilesDomainInfo? {
         guard let info, info.identifier == identifier else { return nil }
@@ -49,15 +49,9 @@ private final class FakeDomainManager: FilesDomainManaging {
         completion(nil)
     }
 
-    func signalEnumerator(identifier: String, completion: @escaping (Error?) -> Void) {
+    func signalWorkingSet(identifier: String, completion: @escaping (Error?) -> Void) {
         signals.append(identifier)
-        completion(nil)
-    }
-
-    func signalContainer(identifier: String, container: String,
-                         completion: @escaping (Error?) -> Void) {
-        signaledContainers.append((identifier, container))
-        completion(nil)
+        completion(signalError)
     }
 }
 
@@ -125,18 +119,22 @@ final class FilesDomainControllerTests: XCTestCase {
         XCTAssertEqual(1, started.count)
     }
 
-    /// A phone-side change re-enumerates that folder, not just the root: the
-    /// extension that held the watch is usually gone by the time it arrives.
-    func testAPhoneSideChangeSignalsTheContainer() {
+    /// A phone-side change signals the working set — the only container a
+    /// replicated extension may signal (design "S5 round 3") — and the answer's
+    /// error is kept, not discarded.
+    func testAPhoneSideChangeSignalsTheWorkingSet() {
         controller.setEnabled(true)
         manager.info?.userEnabled = true
-        controller.signalContainer("ino:9")
-        XCTAssertEqual(["ino:9"], manager.signaledContainers.map(\.container))
-        XCTAssertEqual([FilesDomain.identifier(profile: profile)],
-                       manager.signaledContainers.map(\.identifier))
-        // The root container keeps its own identifier.
-        controller.signalContainer("")
-        XCTAssertEqual("", manager.signaledContainers.last?.container)
+        controller.signalWorkingSet()
+        XCTAssertEqual([FilesDomain.identifier(profile: profile)], manager.signals)
+        manager.signalError = NSError(domain: "com.apple.FileProvider", code: -2011)
+        controller.signalWorkingSet()
+        XCTAssertEqual(2, manager.signals.count)
+    }
+
+    func testASignalWithTheSettingOffDoesNothing() {
+        controller.signalWorkingSet()
+        XCTAssertTrue(manager.signals.isEmpty)
     }
 
     func testTheSwitchTurningOnMovesTheStateToOn() {
