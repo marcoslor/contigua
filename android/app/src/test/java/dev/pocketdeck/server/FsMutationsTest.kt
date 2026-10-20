@@ -8,6 +8,7 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import java.io.File
+import java.nio.file.FileAlreadyExistsException
 import java.util.concurrent.CopyOnWriteArrayList
 
 /**
@@ -28,17 +29,27 @@ class FsMutationsTest {
         val renamed = CopyOnWriteArrayList<Pair<File, File>>()
         val plain = CopyOnWriteArrayList<Pair<File, File>>()
         val scanned = CopyOnWriteArrayList<File>()
+        val replaceFlags = CopyOnWriteArrayList<Boolean>()
         var refuseRename = false
         var refusePlain = false
 
-        override fun rename(from: File, to: File): Boolean {
+        /** Runs inside the swallow between a caller's check and the rename. */
+        var beforeRename: (() -> Unit)? = null
+
+        override fun rename(from: File, to: File, replace: Boolean): Boolean {
+            beforeRename?.invoke()
             if (refuseRename) return false
+            replaceFlags += replace
+            if (!replace && to.exists()) throw FileAlreadyExistsException(to.path)
             renamed += from to to
             return from.renameTo(to)
         }
 
-        override fun plainRename(from: File, to: File): Boolean {
+        override fun plainRename(from: File, to: File, replace: Boolean): Boolean {
+            beforeRename?.invoke()
             if (refusePlain) return false
+            replaceFlags += replace
+            if (!replace && to.exists()) throw FileAlreadyExistsException(to.path)
             plain += from to to
             return from.renameTo(to)
         }
@@ -77,6 +88,22 @@ class FsMutationsTest {
         assertFalse(source.exists())
         assertEquals("hello", File(paths.rootPath, "b.txt").readText())
         assertEquals(listOf(File(paths.rootPath, "b.txt"), source), platform.scanned.toList())
+        // A move never asks the seam to replace; a taken name is a refusal.
+        assertEquals(listOf(false), platform.replaceFlags.toList())
+    }
+
+    @Test
+    fun aFileThatAppearsAtTheRenameIsNotReplaced() {
+        setup()
+        val source = File(paths.rootPath, "a.txt").also { it.writeText("a") }
+        val other = File(paths.rootPath, "b.txt")
+        // The name lands after the move's own check and before the rename.
+        platform.beforeRename = { other.writeText("the phone's copy") }
+        assertEquals("fs_exists", code { ops.move("a.txt", "b.txt", null) })
+        assertEquals("the phone's copy", other.readText())
+        assertEquals("a", source.readText())
+        assertTrue(source.exists())
+        assertEquals(0, platform.scanned.size)
     }
 
     @Test

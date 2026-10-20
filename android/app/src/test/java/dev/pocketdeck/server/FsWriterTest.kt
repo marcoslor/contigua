@@ -8,6 +8,7 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import java.io.File
+import java.nio.file.FileAlreadyExistsException
 import java.security.MessageDigest
 import java.util.Collections
 import java.util.concurrent.CopyOnWriteArrayList
@@ -33,17 +34,27 @@ class FsWriterTest {
         val plain = CopyOnWriteArrayList<Pair<File, File>>()
         val scanned = CopyOnWriteArrayList<File>()
         val times = CopyOnWriteArrayList<Pair<File, Long>>()
+        val replaceFlags = CopyOnWriteArrayList<Boolean>()
         var refuseRename = false
         var refusePlain = false
 
-        override fun rename(from: File, to: File): Boolean {
+        /** Runs inside the swallow between a caller's check and the rename. */
+        var beforeRename: (() -> Unit)? = null
+
+        override fun rename(from: File, to: File, replace: Boolean): Boolean {
+            beforeRename?.invoke()
             if (refuseRename) return false
+            replaceFlags += replace
+            if (!replace && to.exists()) throw FileAlreadyExistsException(to.path)
             renamed += from to to
             return from.renameTo(to)
         }
 
-        override fun plainRename(from: File, to: File): Boolean {
+        override fun plainRename(from: File, to: File, replace: Boolean): Boolean {
+            beforeRename?.invoke()
             if (refusePlain) return false
+            replaceFlags += replace
+            if (!replace && to.exists()) throw FileAlreadyExistsException(to.path)
             plain += from to to
             return from.renameTo(to)
         }
@@ -143,6 +154,8 @@ class FsWriterTest {
         assertEquals(paths.item(target).etag, result["etag"])
         awaitNoStaging()
         assertEquals(bytes.size.toString(), (result["item"] as Map<*, *>)["size"].toString())
+        // A create never asks the seam to replace anything.
+        assertEquals(listOf(false), platform.replaceFlags.toList())
     }
 
     @Test
@@ -171,6 +184,7 @@ class FsWriterTest {
         feed(writer, 3, bytes)
         assertEquals(true, awaitResult(3)["ok"])
         assertArrayEquals(bytes, before.readBytes())
+        assertEquals(listOf(true), platform.replaceFlags.toList())
         awaitNoStaging()
     }
 
@@ -261,6 +275,37 @@ class FsWriterTest {
         assertEquals("fs_exists", awaitRefusal(42)["code"])
         assertEquals("made on the phone", appeared.readText())
         assertTrue(platform.renamed.isEmpty())
+        awaitNoStaging()
+    }
+
+    @Test
+    fun aNameThatAppearsAtTheRenameIsRefusedAndTheOtherFileStays() {
+        setup()
+        val bytes = "ours".toByteArray()
+        val writer = writer()
+        writer.begin(write(44, "race.txt", bytes, exclusive = true))
+        // The name lands after the writer's own check and before the rename:
+        // exactly the window the seam's fresh check has to close.
+        platform.beforeRename = { File(paths.rootPath, "race.txt").writeText("made on the phone") }
+        feed(writer, 44, bytes)
+        assertEquals("fs_exists", awaitRefusal(44)["code"])
+        assertEquals("made on the phone", File(paths.rootPath, "race.txt").readText())
+        assertTrue(platform.renamed.isEmpty())
+        assertTrue(platform.plain.isEmpty())
+        // The temp went with the refusal.
+        awaitNoStaging()
+    }
+
+    @Test
+    fun aWriteWithoutAnEtagNeverAsksForAReplace() {
+        setup()
+        val bytes = "ours".toByteArray()
+        val writer = writer()
+        writer.begin(write(45, "fresh.txt", bytes))
+        platform.beforeRename = { File(paths.rootPath, "fresh.txt").writeText("made on the phone") }
+        feed(writer, 45, bytes)
+        assertEquals("fs_exists", awaitRefusal(45)["code"])
+        assertEquals("made on the phone", File(paths.rootPath, "fresh.txt").readText())
         awaitNoStaging()
     }
 

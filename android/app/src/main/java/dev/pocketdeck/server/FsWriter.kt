@@ -4,6 +4,7 @@ import dev.pocketdeck.proto.Crypto
 import dev.pocketdeck.proto.Json
 import java.io.File
 import java.io.FileOutputStream
+import java.nio.file.FileAlreadyExistsException
 import java.security.MessageDigest
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.TimeUnit
@@ -176,7 +177,18 @@ class FsWriter(
                 if (job.exclusive && paths.meta(job.target) != null) {
                     return refusal(job.id, FsPaths.exists())
                 }
-                if (!platform.rename(job.temp, job.target) && !platform.plainRename(job.temp, job.target)) {
+                // Only a write that named the version it replaces may replace.
+                // A create says so to the seam too, so a name that appears
+                // between the check above and the rename cannot be overwritten.
+                val replace = !job.exclusive && job.etag != null
+                val named = try {
+                    platform.rename(job.temp, job.target, replace) ||
+                        platform.plainRename(job.temp, job.target, replace)
+                } catch (e: FileAlreadyExistsException) {
+                    log("fs: write id=${job.id} name taken at the rename")
+                    return refusal(job.id, FsPaths.exists())
+                }
+                if (!named) {
                     log("fs: write id=${job.id} could not name the file")
                     return refusal(job.id, FsPaths.denied("could not name the file"))
                 }
@@ -235,17 +247,30 @@ class FsWriter(
  * What a write or a move needs from the platform (docs/design/files.md §2):
  * the media-aware rename, a plain rename as the fallback, the media scan that
  * makes a new file show up in Files/Photos, and the timestamp setter.
+ *
+ * Both renames take [replace]: an exclusive create and a `fs.move` pass false,
+ * so a name that appears between the caller's own check and the rename is
+ * refused rather than overwritten (a `FileAlreadyExistsException` says so).
+ * Only a write whose etag matched may replace.
  */
 interface FsPlatform {
     /**
      * Rename [from] onto [to] through the media-aware path. At shell uid the
      * shared-storage mount routes a rename through MediaProvider, which keeps
      * its database rows in step (design §2).
+     *
+     * @throws java.nio.file.FileAlreadyExistsException when [replace] is false
+     * and [to] exists.
      */
-    fun rename(from: File, to: File): Boolean
+    fun rename(from: File, to: File, replace: Boolean): Boolean
 
-    /** The fallback when [rename] refuses: a plain filesystem rename. */
-    fun plainRename(from: File, to: File): Boolean
+    /**
+     * The fallback when [rename] refuses: a plain filesystem rename.
+     *
+     * @throws java.nio.file.FileAlreadyExistsException when [replace] is false
+     * and [to] exists.
+     */
+    fun plainRename(from: File, to: File, replace: Boolean): Boolean
 
     /** Makes finished files visible without a remount; best effort. */
     fun scan(files: List<File>)
@@ -256,8 +281,14 @@ interface FsPlatform {
     companion object {
         /** A platform for a host that has none (JVM tests): plain renames, no scan. */
         val None = object : FsPlatform {
-            override fun rename(from: File, to: File): Boolean = from.renameTo(to)
-            override fun plainRename(from: File, to: File): Boolean = from.renameTo(to)
+            override fun rename(from: File, to: File, replace: Boolean): Boolean =
+                plainRename(from, to, replace)
+
+            override fun plainRename(from: File, to: File, replace: Boolean): Boolean {
+                if (!replace && to.exists()) throw java.nio.file.FileAlreadyExistsException(to.path)
+                return from.renameTo(to)
+            }
+
             override fun scan(files: List<File>) {}
             override fun setLastModified(file: File, mtimeMs: Long): Boolean = file.setLastModified(mtimeMs)
         }

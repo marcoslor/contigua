@@ -2,6 +2,7 @@ package dev.pocketdeck.server
 
 import dev.pocketdeck.proto.Json
 import java.io.File
+import java.nio.file.FileAlreadyExistsException
 import java.nio.file.Files
 
 /**
@@ -33,7 +34,13 @@ class FsMutations(
         if (meta.dir && to.path.startsWith(from.path + File.separator)) {
             throw FsPaths.denied("a folder cannot move into itself")
         }
-        val renamed = platform.rename(from, to) || platform.plainRename(from, to)
+        val renamed = try {
+            platform.rename(from, to, replace = false) || platform.plainRename(from, to, replace = false)
+        } catch (e: FileAlreadyExistsException) {
+            // The name was taken between the check above and the rename: the
+            // other file stays exactly as it is.
+            throw FsPaths.exists()
+        }
         if (!renamed) throw FsPaths.denied("the move failed")
         runCatching { platform.scan(listOf(to, from)) }
         log("fs: move ok dir=${meta.dir}")

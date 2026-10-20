@@ -649,8 +649,21 @@ while the list is empty. No watcher thread, timer or poll exists when idle.
   container's anchor; `enumerateChanges(from:)` replays the deltas after it, and
   an anchor older than the kept history — or one from another process — is
   `NSFileProviderError(.syncAnchorExpired)` so the system re-enumerates.
-- **Collision (S4 leftover).** Apple's replicated-provider contract says a
-  `createItem` that answers `NSFileProviderError.filenameCollision` is retried
+- **A rename replaces only when the caller says so.** The platform seam is explicit:
+  `rename(from, to, replace)` / `plainRename(from, to, replace)`. An exclusive
+  create and `fs.move` pass `false`; only a write whose etag matched passes
+  `true`. A `FileAlreadyExistsException` from the seam is `fs_exists` and
+  nothing of the caller's is left behind (a write's temp is deleted, the other
+  file keeps its bytes). `plainRename` without replace is `Files.move` with no
+  `REPLACE_EXISTING`, so the kernel checks the name and moves in one call.
+  `rename` is a `renameTo`, which has no no-replace mode, so it does one fresh
+  existence check immediately before the syscall: Java has no
+  `RENAME_NOREPLACE`, and the usual portable trick (hard link, then unlink)
+  does not work on the FUSE-backed `/storage/emulated` mount. The window left
+  is the gap between that check and the rename — microseconds instead of the
+  whole transfer. A create used to replace a file that appeared after its last
+  check, i.e. one that landed while the bytes streamed.
+- **Collision (S4 leftover).** Apple's replicated-provider contract says a  `createItem` that answers `NSFileProviderError.filenameCollision` is retried
   by the system with another name, and `NSFileProviderCreateItemOptions.mayAlreadyExist`
   means "the name may now be there, it is yours to resolve". A POSIX `cp` is not
   a File Provider client operation, though: in S4's VM run the system replayed
