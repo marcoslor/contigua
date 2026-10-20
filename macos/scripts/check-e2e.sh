@@ -5998,27 +5998,34 @@ check_dock() {
         *) [ "$version" -ge 1 ] && ok "DOCK icon: PDIconVersion $version" \
                || bad "DOCK icon: PDIconVersion is $version" ;;
     esac
-    rm -rf "$WORK/shim.iconset"
-    iconutil -c iconset "$chrome/Contents/Resources/AppIcon.icns" -o "$WORK/shim.iconset" 2>/dev/null
-    big="$WORK/shim.iconset/icon_512x512@2x.png"
-    if [ -f "$big" ]; then
-        ok "DOCK icon: the .icns has a 1024 px representation"
-        corner="$(icon_pixel "$big" 2 2)"
-        centre="$(icon_pixel "$big" 512 512)"
-        inside="$(icon_pixel "$big" 256 512)"
-        if [ "$(echo "$corner" | awk '{print $4}')" = "0" ]; then
-            ok "DOCK icon: the canvas corners are transparent"
-        else
-            bad "DOCK icon: a corner pixel is not transparent ($corner)"
-        fi
-        near "$centre" 255 255 255 4 \
-            && ok "DOCK icon: the centre is the phone's bg colour ($centre)" \
-            || bad "DOCK icon: the centre is not the bg colour ($centre)"
-        near "$inside" 51 144 236 12 \
-            && ok "DOCK icon: the fg layer is drawn on top ($inside)" \
-            || bad "DOCK icon: the fg layer is missing ($inside)"
+    if [ ! -f "$chrome/Contents/Resources/AppIcon.icns" ]; then
+        bad "DOCK icon: the shim has no AppIcon.icns ($(ls "$chrome/Contents/Resources" 2>/dev/null | tr '\n' ' '))"
     else
-        bad "DOCK icon: the .icns has no 1024 px representation"
+        # sips renders the largest representation of the .icns, so its pixel
+        # side is the top size the bundle carries.
+        big="$WORK/shim-icon.png"
+        sips -s format png "$chrome/Contents/Resources/AppIcon.icns" --out "$big" >/dev/null 2>&1
+        local side
+        side="$(sips -g pixelWidth "$big" 2>/dev/null | awk '/pixelWidth/ {print $2}')"
+        [ "$side" = "1024" ] \
+            && ok "DOCK icon: the .icns's largest image is 1024 px" \
+            || bad "DOCK icon: the .icns's largest image is ${side:-none} px"
+        if [ "$side" = "1024" ]; then
+            corner="$(icon_pixel "$big" 2 2)"
+            centre="$(icon_pixel "$big" 512 512)"
+            inside="$(icon_pixel "$big" 256 512)"
+            if [ "$(echo "$corner" | awk '{print $4}')" = "0" ]; then
+                ok "DOCK icon: the canvas corners are transparent"
+            else
+                bad "DOCK icon: a corner pixel is not transparent ($corner)"
+            fi
+            near "$centre" 255 255 255 4 \
+                && ok "DOCK icon: the centre is the phone's bg colour ($centre)" \
+                || bad "DOCK icon: the centre is not the bg colour ($centre)"
+            near "$inside" 51 144 236 12 \
+                && ok "DOCK icon: the fg layer is drawn on top ($inside)" \
+                || bad "DOCK icon: the fg layer is missing ($inside)"
+        fi
     fi
 
     # A shim from an older renderer is rebuilt the next time it is followed,
