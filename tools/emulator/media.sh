@@ -4,10 +4,15 @@
 #   tools/emulator/media.sh            the run (heavy.sh owns the lock and the
 #                                      boot budget; boot + checks + kill belong
 #                                      to one heavy.sh call, see the README)
-#   tools/emulator/media.sh --check    a dry run: syntax, files, adb, the serial
+#   tools/emulator/media.sh --no-boot  the same checks on a rig that is already
+#                                      up and paired (verify-batch.sh)
+#   tools/emulator/media.sh --check    a dry run: preflight (syntax, files, the
+#                                      APK's manifest, versionCode), the serial
 #                                      and the assertions, no device touched
 #   tools/emulator/media.sh --self-test  the assertions against synthetic logs
 #                                      (the host dry run of the check logic)
+#
+# Run it as `bash tools/emulator/media.sh` (the exec bit is not relied on).
 #
 # What it proves on a real listener (docs/design/notify.md "Media part 2"):
 # two debug fake media sessions are listed by media.sessions; the chosen one's
@@ -19,13 +24,16 @@
 set -u
 
 MODE=run
-case "${1:-}" in
-  --check) MODE=check ;;
-  --self-test) MODE=self-test ;;
-  "") ;;
-  -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
-  *) echo "media.sh: unknown flag $1" >&2; exit 2 ;;
-esac
+BOOT=1
+for arg in "$@"; do
+  case "$arg" in
+    --check) MODE=check ;;
+    --self-test) MODE=self-test ;;
+    --no-boot) BOOT=0 ;;
+    -h|--help) sed -n '2,15p' "$0"; exit 0 ;;
+    *) echo "media.sh: unknown flag $arg" >&2; exit 2 ;;
+  esac
+done
 
 cd "$(dirname "$0")/../.." || exit 1
 export ANDROID_HOME="${ANDROID_HOME:-$HOME/Library/Android/sdk}"
@@ -161,19 +169,11 @@ fi
 # ---- --check: everything that can be wrong before a boot -------------------
 if [ "$MODE" = "check" ]; then
   bash -n "$0" || { echo "CHECK FAIL: syntax"; exit 1; }
-  [ -x "$ADB" ] || { echo "CHECK FAIL: no adb at $ADB"; exit 1; }
-  [ -x "$EMULATOR" ] || { echo "CHECK FAIL: no emulator at $EMULATOR"; exit 1; }
-  [ -f tools/emulator/start.sh ] && [ -x tools/emulator/start.sh ] || { echo "CHECK FAIL: start.sh"; exit 1; }
-  [ -f tools/emulator/poc.py ] || { echo "CHECK FAIL: poc.py"; exit 1; }
-  [ -f tools/fakephone/deckctl.py ] || { echo "CHECK FAIL: deckctl.py"; exit 1; }
-  "$PYTHON" -c 'import ssl,sys; c=ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT); c.minimum_version=ssl.TLSVersion.TLSv1_3' \
-    || { echo "CHECK FAIL: $PYTHON has no TLS 1.3"; exit 1; }
+  bash tools/emulator/preflight.sh || { echo "CHECK FAIL: preflight"; exit 1; }
   if "$ADB" devices 2>/dev/null | grep -q "^$SERIAL"; then
     echo "CHECK FAIL: $SERIAL is already running (not ours to touch)"
     exit 1
   fi
-  APK="$REPO_ROOT/android/app/build/outputs/apk/debug/app-debug.apk"
-  [ -s "$APK" ] || { echo "CHECK FAIL: no debug APK at $APK (run K1 first)"; exit 1; }
   "$PYTHON" - <<'PY' || { echo "CHECK FAIL: deckctl media parser"; exit 1; }
 import sys
 sys.path.insert(0, "tools/fakephone")
@@ -192,22 +192,28 @@ PY
     || { echo "CHECK FAIL: fakephone --help"; exit 1; }
   "$PYTHON" tools/fakephone/fakephone.py --help 2>&1 | grep -q -- "--older-phone" \
     || { echo "CHECK FAIL: fakephone has no --older-phone"; exit 1; }
-  echo "CHECK OK: syntax, adb, emulator, rig scripts, TLS python, deckctl media, fakephone flags; $SERIAL free"
+  echo "CHECK OK: preflight, deckctl media, fakephone flags; $SERIAL free"
   exit 0
 fi
 
-# ---- the run (ONE boot) ----------------------------------------------------
-if "$ADB" devices 2>/dev/null | grep -q "^$SERIAL"; then
+# ---- the run (ONE boot, or a rig verify-batch.sh already booted) -----------
+if [ "$BOOT" -eq 1 ] && "$ADB" devices 2>/dev/null | grep -q "^$SERIAL"; then
   echo "media: $SERIAL already running: refusing to touch it"
   exit 1
 fi
 
 kill_emulator() { "$ADB" -s "$SERIAL" emu kill >/dev/null 2>&1 || true; }
-trap 'kill_emulator' EXIT
+if [ "$BOOT" -eq 1 ]; then
+  trap 'kill_emulator' EXIT
+fi
 
-echo "media: booting $SERIAL (one boot budget)"
-tools/emulator/start.sh --no-build || { echo "media: start.sh failed"; exit 1; }
-echo "media: up"
+if [ "$BOOT" -eq 1 ]; then
+  echo "media: booting $SERIAL (one boot budget)"
+  bash tools/emulator/start.sh --no-build || { echo "media: start.sh failed"; exit 1; }
+  echo "media: up"
+else
+  device_present || { echo "media: $SERIAL is not up (--no-boot needs a booted, paired rig)"; exit 1; }
+fi
 
 # --- the phone's own notify opt-in (media travels under the same gate) ------
 PREFS="$OUT/prefs.xml"
@@ -238,17 +244,19 @@ emu shell cmd notification allow_listener dev.pocketdeck/dev.pocketdeck.app.PdNo
 echo "media: prefs + listener grant done"
 
 # --- pair (the real v2 flow) ----------------------------------------------
-if ! "$PYTHON" tools/emulator/poc.py --state "$CACHE_DIR/deckctl-state.json" \
-      --addr "127.0.0.1:$PORT" --serial "$SERIAL" --adb "$ADB" pair; then
-  echo "media: pairing failed (unverified)"
-  exit 1
+if [ "$BOOT" -eq 1 ]; then
+  if ! "$PYTHON" tools/emulator/poc.py --state "$CACHE_DIR/deckctl-state.json" \
+        --addr "127.0.0.1:$PORT" --serial "$SERIAL" --adb "$ADB" pair; then
+    echo "media: pairing failed (unverified)"
+    exit 1
+  fi
+  echo "media: paired"
 fi
-echo "media: paired"
 
 # --- two fake media sessions, the debug build's own ------------------------
 start_fake() {
-  emu shell am broadcast -p dev.pocketdeck -a dev.pocketdeck.DEBUG_MEDIA \
-    --es op start --ei index "$1" >> "$OUT/broadcast.log" 2>&1 || true
+  debug_broadcast dev.pocketdeck.DEBUG_MEDIA \
+    --es op start --ei index "$1" >> "$OUT/broadcast.log" || true
 }
 start_fake 1
 sleep 2
@@ -294,13 +302,12 @@ wait_chosen() {
 wait_chosen || fail "media.choose did not switch the chosen session"
 
 # Stop the second fake session: the list shrinks to one.
-emu shell am broadcast -p dev.pocketdeck -a dev.pocketdeck.DEBUG_MEDIA \
-  --es op stop --ei index 2 >> "$OUT/broadcast.log" 2>&1 || true
+debug_broadcast dev.pocketdeck.DEBUG_MEDIA --es op stop --ei index 2 \
+  >> "$OUT/broadcast.log" || true
 wait_watch '^media.sessions n=1 ' 20 || fail "the list did not shrink after a session stopped"
 
 kill $WATCH_PID >/dev/null 2>&1 || true
 wait $WATCH_PID 2>/dev/null || true
-
 check_boot "$WATCH" "$FAKEP" "$FAKEV"
 {
   echo "sessions: $(watch_sessions "$WATCH")"
@@ -312,5 +319,7 @@ check_boot "$WATCH" "$FAKEP" "$FAKEV"
 } > "$RESULT"
 cat "$RESULT"
 
-kill_emulator
+if [ "$BOOT" -eq 1 ]; then
+  kill_emulator
+fi
 exit "$FAILED"

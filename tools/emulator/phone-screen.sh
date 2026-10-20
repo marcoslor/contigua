@@ -4,8 +4,14 @@
 #
 #   tools/emulator/phone-screen.sh            the run (heavy.sh owns the lock
 #                                             and the boot budget)
-#   tools/emulator/phone-screen.sh --check    a dry run: syntax, files, adb, the
-#                                             serial, the parser — no device
+#   tools/emulator/phone-screen.sh --no-boot  the same checks on a rig that is
+#                                             already up and paired (verify-batch.sh)
+#   tools/emulator/phone-screen.sh --check    a dry run: preflight (syntax,
+#                                             files, the APK's manifest,
+#                                             versionCode), the serial, the
+#                                             parser — no device
+#
+# Run it as `bash tools/emulator/phone-screen.sh` (the exec bit is not relied on).
 #
 # What it proves: after the rig boots and pairs, `input keyevent KEYCODE_SLEEP`
 # makes the phone send `state.screen off`; `phone.wake` at shell UID brings
@@ -16,12 +22,15 @@
 set -u
 
 MODE=run
-case "${1:-}" in
-  --check) MODE=check ;;
-  "") ;;
-  -h|--help) sed -n '2,16p' "$0"; exit 0 ;;
-  *) echo "phone-screen.sh: unknown flag $1" >&2; exit 2 ;;
-esac
+BOOT=1
+for arg in "$@"; do
+  case "$arg" in
+    --check) MODE=check ;;
+    --no-boot) BOOT=0 ;;
+    -h|--help) sed -n '2,15p' "$0"; exit 0 ;;
+    *) echo "phone-screen.sh: unknown flag $arg" >&2; exit 2 ;;
+  esac
+done
 
 cd "$(dirname "$0")/../.." || exit 1
 export ANDROID_HOME="${ANDROID_HOME:-$HOME/Library/Android/sdk}"
@@ -48,19 +57,11 @@ fail() { echo "FAIL phone-screen: $*"; FAILED=1; }
 # ---- --check: everything that can be wrong before a boot -------------------
 if [ "$MODE" = "check" ]; then
   bash -n "$0" || { echo "CHECK FAIL: syntax"; exit 1; }
-  [ -x "$ADB" ] || { echo "CHECK FAIL: no adb at $ADB"; exit 1; }
-  [ -x "$EMULATOR" ] || { echo "CHECK FAIL: no emulator at $EMULATOR"; exit 1; }
-  [ -f tools/emulator/start.sh ] && [ -x tools/emulator/start.sh ] || { echo "CHECK FAIL: start.sh"; exit 1; }
-  [ -f tools/emulator/poc.py ] || { echo "CHECK FAIL: poc.py"; exit 1; }
-  [ -f tools/fakephone/deckctl.py ] || { echo "CHECK FAIL: deckctl.py"; exit 1; }
-  "$PYTHON" -c 'import ssl,sys; c=ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT); c.minimum_version = ssl.TLSVersion.TLSv1_3' \
-    || { echo "CHECK FAIL: $PYTHON has no TLS 1.3"; exit 1; }
+  bash tools/emulator/preflight.sh || { echo "CHECK FAIL: preflight"; exit 1; }
   if "$ADB" devices 2>/dev/null | grep -q "^$SERIAL"; then
     echo "CHECK FAIL: $SERIAL is already running (not ours to touch)"
     exit 1
   fi
-  APK="$REPO_ROOT/android/app/build/outputs/apk/debug/app-debug.apk"
-  [ -s "$APK" ] || { echo "CHECK FAIL: no debug APK at $APK (run K1 first)"; exit 1; }
   "$PYTHON" - <<'PY' || { echo "CHECK FAIL: deckctl screen parser"; exit 1; }
 import sys
 sys.path.insert(0, "tools/fakephone")
@@ -73,36 +74,42 @@ assert args.command == "wake" and args.wait == 5
 PY
   "$PYTHON" tools/fakephone/fakephone.py --help 2>&1 | grep -q -- "--screen-off-after" \
     || { echo "CHECK FAIL: fakephone has no --screen-off-after"; exit 1; }
-  echo "CHECK OK: syntax, adb, emulator, rig scripts, TLS python, deckctl screen, fakephone flags; $SERIAL free"
+  echo "CHECK OK: preflight, deckctl screen, fakephone flags; $SERIAL free"
   exit 0
 fi
 
-# ---- the run (ONE boot) ----------------------------------------------------
-if "$ADB" devices 2>/dev/null | grep -q "^$SERIAL"; then
+# ---- the run (ONE boot, or a rig verify-batch.sh already booted) ------------
+if [ "$BOOT" -eq 1 ] && "$ADB" devices 2>/dev/null | grep -q "^$SERIAL"; then
   echo "phone-screen: $SERIAL already running: refusing to touch it"
   exit 1
 fi
 
 kill_emulator() {
   [ -n "${WAKE_PID:-}" ] && kill "$WAKE_PID" >/dev/null 2>&1 || true
-  "$ADB" -s "$SERIAL" emu kill >/dev/null 2>&1 || true
+  if [ "$BOOT" -eq 1 ]; then
+    "$ADB" -s "$SERIAL" emu kill >/dev/null 2>&1 || true
+  fi
 }
 trap 'kill_emulator' EXIT
 
-echo "phone-screen: booting $SERIAL (one boot budget)"
-if ! bash tools/emulator/start.sh --no-build; then
-  # The rig's known flake: the Shizuku user service does not always come up on
-  # the first launch after a boot (the app is installed and seeded by now). Its
-  # own restart path re-runs the app and waits for the listening port; nothing
-  # about the lock settings changes.
-  echo "phone-screen: start.sh failed; restarting the shell service"
-  if ! restart_server; then
-    echo "phone-screen: the shell service never came up (unverified)"
-    echo "failed: 1 (start)" > "$RESULT"
-    exit 1
+if [ "$BOOT" -eq 1 ]; then
+  echo "phone-screen: booting $SERIAL (one boot budget)"
+  if ! bash tools/emulator/start.sh --no-build; then
+    # The rig's known flake: the Shizuku user service does not always come up on
+    # the first launch after a boot (the app is installed and seeded by now). Its
+    # own restart path re-runs the app and waits for the listening port; nothing
+    # about the lock settings changes.
+    echo "phone-screen: start.sh failed; restarting the shell service"
+    if ! restart_server; then
+      echo "phone-screen: the shell service never came up (unverified)"
+      echo "failed: 1 (start)" > "$RESULT"
+      exit 1
+    fi
   fi
+  echo "phone-screen: up"
+else
+  device_present || { echo "phone-screen: $SERIAL is not up (--no-boot needs a booted, paired rig)"; exit 1; }
 fi
-echo "phone-screen: up"
 ensure_forward >/dev/null || { echo "phone-screen: no server port"; echo "failed: 1 (port)" > "$RESULT"; exit 1; }
 
 # --- pair (the real v2 flow) ----------------------------------------------
@@ -165,5 +172,7 @@ grep -qiE 'isKeyguardLocked=true|mKeyguardLocked=true' "$WINDOW" \
 } > "$RESULT"
 cat "$RESULT"
 
-kill_emulator
+if [ "$BOOT" -eq 1 ]; then
+  kill_emulator
+fi
 exit "$FAILED"

@@ -19,6 +19,8 @@
 #      onboarding done + a stable device id), launch the app and read the server
 #      port from logcat
 #   6. adb forward tcp:<POCKETDECK_PORT> -> the server port, print 127.0.0.1:<port>
+#
+# Run it as `bash tools/emulator/start.sh` (the exec bit is not relied on).
 set -euo pipefail
 
 WINDOW=0
@@ -27,7 +29,7 @@ for arg in "$@"; do
   case "$arg" in
     --window) WINDOW=1 ;;
     --no-build) NO_BUILD=1 ;;
-    -h|--help) sed -n '2,17p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,22p' "$0"; exit 0 ;;
     *) echo "start.sh: unknown flag $arg" >&2; exit 2 ;;
   esac
 done
@@ -83,7 +85,7 @@ emu shell "settings put system screen_off_timeout 86400000" >/dev/null 2>&1 || t
 if [ "$(emu shell locksettings get-disabled 2>/dev/null | tr -d '\r')" = "false" ] &&
   emu shell dumpsys window 2>/dev/null | grep -qiE 'isKeyguardShowing=true|mKeyguardShowing=true'; then
   step "device is locked, unlocking with the rig PIN"
-  "$EMU_DIR/unlock.sh"
+  bash "$EMU_DIR/unlock.sh"
 fi
 
 # --- 2. install the apps ----------------------------------------------------
@@ -96,7 +98,10 @@ install_apk() { # install_apk <path> <pkg>
     return 0
   fi
   step "installing $pkg"
-  emu_long install -r -g "$path" >/dev/null || die "could not install $pkg"
+  # -d: a newer build may already be on the rig (another worktree, an earlier
+  # boot) and the boot budget never allows a clean second try. A downgrade is
+  # accepted only when the signature matches, so an APK from this tree wins.
+  emu_long install -r -d -g "$path" >/dev/null || die "could not install $pkg"
   FRESH_APPS="$FRESH_APPS $pkg"
 }
 
@@ -157,6 +162,15 @@ step "installing $PKG"
 # the boot budget never allows a second boot. A downgrade is only accepted when
 # the debug signature matches, so this tree's APK always ends up installed.
 emu_long install -r -d -g "$APK" >/dev/null || die "could not install $PKG"
+
+# Fail fast and loudly: a silent downgrade failure leaves the previous build
+# answering on the port, and every later check would report the wrong code.
+WANT_CODE="$(apk_version_code "$APK")"
+GOT_CODE="$(installed_version_code "$PKG")"
+[ -n "$WANT_CODE" ] || die "cannot read the APK's versionCode (aapt2 at $AAPT2)"
+[ "$GOT_CODE" = "$WANT_CODE" ] ||
+  die "installed $PKG versionCode '${GOT_CODE:-none}' but the APK is '$WANT_CODE' (install -r -d did not land; check the signature and the log above)"
+step "installed $PKG versionCode $GOT_CODE"
 
 warm_test_apps
 
@@ -267,17 +281,22 @@ done
 [ -n "$(emu shell "pidof $PKG" 2>/dev/null | tr -d '\r')" ] || die "could not launch $PKG"
 
 # --- 6. server port ---------------------------------------------------------
-# device_port returns 1 until the server is up, so it needs `|| true` under set -e.
-DEVPORT=""
-for _ in $(seq 1 60); do
-  DEVPORT="$(device_port || true)"
-  [ -n "$DEVPORT" ] && break
-  sleep 1
+# The first launch after a boot sometimes leaves the shell service without a
+# listening port (the user service does not bind). Retry the app, up to three
+# times, and name the service's own log lines when it still does not come up.
+DEVPORT="$(wait_server_port 60 || true)"
+TRY=1
+while [ -z "$DEVPORT" ] && [ "$TRY" -le 3 ]; do
+  step "no listening port yet; restarting the shell service (try $TRY/3)"
+  if restart_server; then
+    DEVPORT="$(device_port || true)"
+  fi
+  TRY=$((TRY + 1))
 done
 if [ -z "$DEVPORT" ]; then
   step "last app/server logs:"
   emu logcat -d -s PocketDeckApp:I PocketDeckSvc:I | tail -20 >&2 || true
-  die "no listening socket for the PocketDeck shell service (see $AGENT_DIR/emulator.log)"
+  die "no listening socket for the PocketDeck shell service after 3 restarts (see $AGENT_DIR/emulator.log)"
 fi
 
 # The emulator is behind NAT and mDNS does not cross it, so reach the server
