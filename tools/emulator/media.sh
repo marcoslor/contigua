@@ -241,7 +241,23 @@ for _ in $(seq 1 90); do
   sleep 1
 done
 emu shell cmd notification allow_listener dev.pocketdeck/dev.pocketdeck.app.PdNotificationListener >/dev/null 2>&1 || true
-echo "media: prefs + listener grant done"
+# Without the bound listener the phone has no media sessions to list, and the
+# whole section would time out with nothing to show. Wait for the setting, and
+# say so loudly when it never appears (component names only, no content).
+listener_enabled() {
+  emu shell settings get secure enabled_notification_listeners 2>/dev/null |
+    tr -d '\r' | grep -q 'dev.pocketdeck'
+}
+LISTENER=0
+for _ in $(seq 1 20); do
+  if listener_enabled; then LISTENER=1; break; fi
+  emu shell cmd notification allow_listener dev.pocketdeck/dev.pocketdeck.app.PdNotificationListener >/dev/null 2>&1 || true
+  sleep 1
+done
+if [ "$LISTENER" -ne 1 ]; then
+  echo "media: the notification listener is not enabled; media.sessions cannot list anything"
+fi
+echo "media: prefs + listener grant done (listener enabled=$LISTENER)"
 
 # --- pair (the real v2 flow) ----------------------------------------------
 if [ "$BOOT" -eq 1 ]; then
@@ -309,6 +325,18 @@ wait_watch '^media.sessions n=1 ' 20 || fail "the list did not shrink after a se
 kill $WATCH_PID >/dev/null 2>&1 || true
 wait $WATCH_PID 2>/dev/null || true
 check_boot "$WATCH" "$FAKEP" "$FAKEV"
+
+if [ "$FAILED" -ne 0 ]; then
+  # The next boot is not allowed, so a failed section must carry the phone's own
+  # account of it: the debug session's lines, the server's, and which listeners
+  # are enabled (component names only).
+  EMULOG="$OUT/media-logcat.log"
+  emu logcat -d -s PdMediaDebug:I PocketDeckSvc:I PocketDeckApp:I 2>/dev/null |
+    tr -d '\r' | tail -60 > "$EMULOG" || true
+  echo "media: logcat evidence ($EMULOG):"
+  tail -12 "$EMULOG"
+  echo "media: enabled notification listeners: $(emu shell settings get secure enabled_notification_listeners 2>/dev/null | tr -d '\r')"
+fi
 {
   echo "sessions: $(watch_sessions "$WATCH")"
   echo "art: $(watch_art "$WATCH")"

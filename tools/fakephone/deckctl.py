@@ -1449,6 +1449,10 @@ def cmd_media(client, args):
                         print("media.art key=%s mime=%s w=%s h=%s size=%d"
                               % (msg.get("key"), msg.get("mime"), msg.get("w"), msg.get("h"),
                                  len(data) * 3 // 4), flush=True)
+                    elif t == "error":
+                        # Silence looked like "the phone sent nothing" once; an
+                        # error code is the phone's own answer and never content.
+                        print("error code=%s" % msg.get("code"), flush=True)
             elapsed = time.time() - started
             while plan and elapsed >= plan[0][0]:
                 _, step = plan.pop(0)
@@ -1502,6 +1506,9 @@ def cmd_media(client, args):
                          len(data) * 3 // 4), flush=True)
             elif t == "notify.state":
                 print("notify.state on=%s" % ("true" if msg.get("on") else "false"), flush=True)
+            elif t == "error":
+                # An error code is the phone's own answer and never content.
+                print("error code=%s" % msg.get("code"), flush=True)
         return 0
     client.send_json({"t": "notify.enable", "on": True})
     if what == "seek":
@@ -2380,6 +2387,8 @@ COMMANDS = {
     "watch-state": cmd_watch_state,
     "dnd": cmd_dnd,
     "ring": cmd_ring,
+    "wake": cmd_wake,
+    "wake-test": cmd_wake_test,
     "clip-set": cmd_clip_set,
     "clip-watch": cmd_clip_watch,
     "notify": cmd_notify,
