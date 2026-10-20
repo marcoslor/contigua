@@ -79,8 +79,10 @@ OWN_DISPLAY_GROUP | ALWAYS_UNLOCKED | TOUCH_FEEDBACK_DISABLED | OWN_FOCUS`.
 shell creates a virtual display that mirrors the phone's own screen (hidden
 `DisplayManager.createVirtualDisplay` with the mirrored display id, CAPTURE
 from shell uid), at phone aspect, turning with the phone; input goes to
-display 0. It never touches power or the keyguard, and its own glass header
-carries Back/Home/Recents (docs/design/phone-mirror.md).
+display 0. It never unlocks or dismisses the keyguard; an explicit
+`phone.wake` may light the panel (window open, Wake Screen), and nothing keeps
+it awake beyond the phone's own timeout. Its own glass header carries
+Back/Home/Recents (docs/design/phone-mirror.md).
 
 ## Audio: two capture modes
 
