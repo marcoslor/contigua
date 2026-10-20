@@ -16,6 +16,8 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import dev.pocketdeck.IDeckService
 import dev.pocketdeck.R
+import dev.pocketdeck.app.CameraCaptureService
+import dev.pocketdeck.app.CameraGate
 import dev.pocketdeck.app.DeckForegroundService
 import dev.pocketdeck.app.DeckState
 import dev.pocketdeck.app.Prefs
@@ -106,6 +108,7 @@ class DeckViewModel(app: Application) : AndroidViewModel(app) {
             allowPairings = Prefs.isAllowPairings(ctx),
             notifyShared = Prefs.isNotifyShared(ctx),
             notifyGrantFailed = notifyGrantFailed,
+            cameraAllowed = CameraGate.allowed(ctx),
             shizukuInstalled = installed,
             shizukuRunning = running,
             shizukuGranted = granted,
@@ -242,6 +245,30 @@ class DeckViewModel(app: Application) : AndroidViewModel(app) {
             }
         }
         ShizukuClient.current()?.let { runCatching { it.setNotifyShared(Prefs.isNotifyShared(ctx)) } }
+        refresh()
+    }
+
+    /**
+     * "Let Macs use the camera" (docs/design/camera.md). Turning it on is done
+     * only after the runtime CAMERA dialog answered; turning it off writes the
+     * setting, tells the shell (fail closed at once) and stops a live capture.
+     */
+    fun setCameraAllowed(value: Boolean) {
+        val ctx = getApplication<Application>()
+        Prefs.setCameraAllowed(ctx, value)
+        if (!value) {
+            runCatching { ctx.stopService(Intent(ctx, CameraCaptureService::class.java)) }
+        }
+        CameraGate.push(ctx)
+        refresh()
+        DeckState.notifyChanged()
+    }
+
+    /** The runtime CAMERA dialog's answer: only a grant turns the setting on. */
+    fun onCameraPermissionResult(granted: Boolean) {
+        val ctx = getApplication<Application>()
+        Prefs.setCameraAllowed(ctx, granted)
+        CameraGate.push(ctx)
         refresh()
     }
 
