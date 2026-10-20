@@ -5,6 +5,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.hardware.display.DisplayManager
 import android.os.BatteryManager
 import android.os.Binder
 import android.os.Handler
@@ -46,6 +47,8 @@ internal class AndroidDeviceState(
     private var windowManager: Any? = null
     private var hiddenKeyguard = false
     private var started = false
+    /** Display 0's power changes (`state.screen`); event driven, never polled. */
+    private var displayListener: DisplayManager.DisplayListener? = null
 
     /** Registers the listeners and emits the current state once. */
     fun start(onChange: (DeviceState) -> Unit): AutoCloseable {
@@ -78,7 +81,8 @@ internal class AndroidDeviceState(
         registerBattery(h)
         hiddenKeyguard = registerKeyguardListener()
         if (!hiddenKeyguard) registerScreenFallback(h)
-        tracker.update(DeviceState(locked(), battery, charging))
+        registerDisplayListener(h)
+        tracker.update(DeviceState(locked(), battery, charging, screen = ScreenState.read(ctx)))
         return AutoCloseable { stop() }
     }
 
@@ -90,6 +94,7 @@ internal class AndroidDeviceState(
         receiver = null
         if (r != null) runCatching { ctx.unregisterReceiver(r) }
         removeKeyguardListener()
+        removeDisplayListener()
         runCatching { thread?.quitSafely() }
         thread = null
     }
@@ -191,6 +196,40 @@ internal class AndroidDeviceState(
             return
         }
         log("state: lock events from screen broadcasts (no window manager listener)")
+    }
+
+    /**
+     * Display 0's own power state, for `state.screen`. A display listener is
+     * the event source (no polling): phone-mode mirrors are the only thing that
+     * reads it, and the panel changes far less often than a poll would tick.
+     */
+    private fun registerDisplayListener(h: Handler) {
+        val dm = ctx.getSystemService(Context.DISPLAY_SERVICE) as? DisplayManager ?: run {
+            log("state: no display manager; screen state is read on change only")
+            return
+        }
+        val listener = object : DisplayManager.DisplayListener {
+            override fun onDisplayAdded(displayId: Int) = Unit
+            override fun onDisplayRemoved(displayId: Int) = Unit
+            override fun onDisplayChanged(displayId: Int) {
+                if (displayId != android.view.Display.DEFAULT_DISPLAY) return
+                val screen = ScreenState.read(ctx) ?: return
+                log("state: display 0 -> screen=${screen.wire}")
+                tracker.onScreenChanged(screen)
+            }
+        }
+        runCatching { dm.registerDisplayListener(listener, h) }
+            .onSuccess { displayListener = listener }
+            .onFailure { log("state: display listener unavailable ($it)") }
+    }
+
+    private fun removeDisplayListener() {
+        val listener = displayListener ?: return
+        displayListener = null
+        runCatching {
+            (ctx.getSystemService(Context.DISPLAY_SERVICE) as? DisplayManager)
+                ?.unregisterDisplayListener(listener)
+        }
     }
 
     private fun locked(): Boolean = runCatching {

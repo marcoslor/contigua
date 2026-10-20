@@ -343,7 +343,8 @@ class DeckService(private val appContext: Context?) :
     }
 
     override fun state(): DeviceState =
-        DeviceState(isLocked(), batteryPercent, batteryCharging, zen?.current())
+        DeviceState(isLocked(), batteryPercent, batteryCharging, zen?.current(),
+            screen = ScreenState.read(appContext))
 
     /** Event-driven updates; null when the service has no context to register with. */
     override fun subscribeState(onChange: (DeviceState) -> Unit): AutoCloseable? {

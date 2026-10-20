@@ -31,7 +31,54 @@ data class DeviceState(
     val charging: Boolean,
     val dnd: DndMode? = null,
     val ringer: RingerMode? = null,
+    /** Display 0's power state; null when this build cannot read it. */
+    val screen: ScreenState? = null,
 )
+
+/**
+ * The phone's own screen (display 0), as `state.screen` names it
+ * (docs/PROTOCOL.md "Phone screen"). Doze and doze-suspend are off: an
+ * Always-On Display is not a live picture.
+ */
+enum class ScreenState(val wire: String) {
+    ON("on"),
+    OFF("off"),
+    ;
+
+    companion object {
+        /**
+         * Maps the platform's values. An unknown display state (some builds
+         * report UNKNOWN for the default display) follows the interactive flag
+         * instead of guessing "off".
+         */
+        fun of(displayState: Int, interactive: Boolean): ScreenState = when (displayState) {
+            android.view.Display.STATE_ON -> ON
+            android.view.Display.STATE_OFF,
+            android.view.Display.STATE_DOZE,
+            android.view.Display.STATE_DOZE_SUSPEND,
+            android.view.Display.STATE_ON_SUSPEND,
+            -> OFF
+            else -> if (interactive) ON else OFF
+        }
+
+        /** Display 0's state at the caller's UID; null when it cannot be read. */
+        fun read(ctx: android.content.Context?): ScreenState? {
+            ctx ?: return null
+            return runCatching {
+                val pm = ctx.getSystemService(android.content.Context.POWER_SERVICE)
+                    as? android.os.PowerManager ?: return@runCatching null
+                of(DisplayProbe.state(android.view.Display.DEFAULT_DISPLAY), pm.isInteractive)
+            }.getOrNull()
+        }
+    }
+}
+
+/** The outcome of `phone.wake`, logged by name (docs/PROTOCOL.md "Phone screen"). */
+enum class WakeResult(val wire: String) {
+    OK("ok"),
+    FALLBACK("fallback"),
+    FAILED("failed"),
+}
 
 /**
  * The phone's Do Not Disturb mode, named as the wire names it
@@ -232,7 +279,7 @@ interface Injector {
     fun text(displayId: Int, s: String)
 }
 
-/** Battery/keep-awake policy. Never touches the physical panel. */
+/** Battery/keep-awake policy. It never keeps the panel on beyond the person's own timeout. */
 interface Power {
     /** Input is flowing; poke the display's own group (throttled internally). */
     fun onInput(displayId: Int)
@@ -241,6 +288,13 @@ interface Power {
     fun setActiveStreams(displayIds: List<Int>)
 
     fun onSessionEnded()
+
+    /**
+     * `phone.wake`: wake display 0 once. Waking only — the keyguard stays and
+     * nothing is unlocked. [WakeResult.FAILED] when the platform refused both
+     * the display call and the key-event fallback.
+     */
+    fun wakeScreen(): WakeResult = WakeResult.FAILED
 }
 
 /** One paired Mac in v2: the pin is the Mac cert's point fingerprint (§3/§6);

@@ -182,6 +182,41 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
         setActiveStreams(emptyList())
     }
 
+    /**
+     * `phone.wake` (docs/PROTOCOL.md "Phone screen"): display 0 only, once.
+     * The display-scoped wake comes first; a build without the hidden call
+     * falls back to the shell's `input keyevent KEYCODE_WAKEUP`. Neither path
+     * unlocks anything or dismisses the keyguard, and nothing here holds the
+     * panel on afterwards.
+     */
+    override fun wakeScreen(): WakeResult {
+        val pm = ctx.getSystemService(Context.POWER_SERVICE) as? PowerManager ?: return WakeResult.FAILED
+        if (pm.isInteractive) return WakeResult.OK
+        if (wakeUpDisplayMethod != null) {
+            wakeDisplay(PANEL_DISPLAY_ID)
+            if (awaitInteractive(pm)) return WakeResult.OK
+        }
+        if (!inputWake()) return WakeResult.FAILED
+        return if (awaitInteractive(pm)) WakeResult.FALLBACK else WakeResult.FAILED
+    }
+
+    private fun awaitInteractive(pm: PowerManager): Boolean {
+        val deadline = SystemClock.uptimeMillis() + WAKE_WAIT_MS
+        while (SystemClock.uptimeMillis() < deadline) {
+            if (pm.isInteractive) return true
+            runCatching { Thread.sleep(WAKE_POLL_MS) }
+        }
+        return pm.isInteractive
+    }
+
+    /** The platform-independent fallback: one WAKEUP key at shell UID. */
+    private fun inputWake(): Boolean = runCatching {
+        val process = ProcessBuilder("input", "keyevent", "KEYCODE_WAKEUP")
+            .redirectErrorStream(true)
+            .start()
+        process.waitFor(2, java.util.concurrent.TimeUnit.SECONDS) && process.exitValue() == 0
+    }.getOrDefault(false)
+
     /** The service is going away: hand the panel back and stop the crash guard. */
     fun shutdown() {
         setActiveStreams(emptyList())
@@ -384,16 +419,18 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
         }
     }
 
-    private fun wakeDisplay(displayId: Int) {
+    private fun wakeDisplay(displayId: Int): Boolean {
         val m = wakeUpDisplayMethod ?: run {
             if (!loggedNoWakeUp) {
                 loggedNoWakeUp = true
                 log("wakeUpWithDisplayId unavailable: not waking any display")
             }
-            return
+            return false
         }
         val now = SystemClock.uptimeMillis()
-        runCatching { m.invoke(powerManager, now, wakeReasonApplication, "pocketdeck", "pocketdeck", displayId) }
+        return runCatching {
+            m.invoke(powerManager, now, wakeReasonApplication, "pocketdeck", "pocketdeck", displayId)
+        }.isSuccess
     }
 
     private fun startTimerLocked() {
@@ -514,6 +551,10 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
 
         /** Bound on the wait for the platform's own screen-off after a power press. */
         const val PANEL_OFF_WAIT_MS = 1_500L
+
+        /** How long `phone.wake` waits for the panel to come back before trying the fallback. */
+        const val WAKE_WAIT_MS = 1_500L
+        const val WAKE_POLL_MS = 50L
 
         /** Display 0 is the panel on every phone. */
         const val PANEL_DISPLAY_ID = 0
