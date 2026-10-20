@@ -1,7 +1,9 @@
 package dev.pocketdeck.server
 
 import android.app.KeyguardManager
+import android.content.AttributionSource
 import android.content.Context
+import android.content.ContextWrapper
 import android.hardware.camera2.CameraCaptureSession
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraDevice
@@ -91,9 +93,13 @@ internal object CameraProbe {
             say("context: no android.app.ActivityThread")
             return null
         }
-        // 1. systemMain: attaches like system_server, but uid 2000 may be refused.
-        runCatching { at.getDeclaredMethod("systemMain").invoke(null) as Context }
-            .onSuccess { say("context: systemMain"); return it }
+        // 1. systemMain returns an ActivityThread (not a Context), and its
+        //    getSystemContext builds the framework Context. Attach at uid 2000
+        //    may be refused; the bare-thread fallback below does not attach.
+        runCatching {
+            val thread = at.getDeclaredMethod("systemMain").invoke(null)
+            at.getMethod("getSystemContext").invoke(thread) as Context
+        }.onSuccess { say("context: systemMain"); return it }
             .onFailure { say("context: systemMain failed ${chain(it)}") }
         // 2. A bare ActivityThread (never attached) still builds the system
         //    Context, and that is all a CameraManager needs.
@@ -126,11 +132,28 @@ internal object CameraProbe {
      * call because uid 2000 does not own that package.
      */
     private fun cameraManager(ctx: Context): CameraManager {
+        adoptShellPackage((ctx as? ContextWrapper)?.baseContext ?: ctx)
         runCatching {
             CameraManager::class.java.getConstructor(Context::class.java).newInstance(ctx)
         }.onSuccess { return it }
             .onFailure { say("camera manager: direct constructor failed ${chain(it)}") }
         return ctx.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+    }
+
+    /**
+     * CameraManager calls the service with the *base* ContextImpl's package even
+     * when it was constructed with a wrapper (observed on API 36). Give the base
+     * the shell identity too, so every service call names uid 2000's package.
+     */
+    private fun adoptShellPackage(base: Context) {
+        runCatching {
+            val cls = base.javaClass
+            cls.getDeclaredField("mPackageName").apply { isAccessible = true }.set(base, "com.android.shell")
+            cls.getDeclaredField("mOpPackageName").apply { isAccessible = true }.set(base, "com.android.shell")
+            cls.getDeclaredField("mAttributionSource").apply { isAccessible = true }
+                .set(base, AttributionSource.Builder(android.os.Process.myUid())
+                    .setPackageName("com.android.shell").build())
+        }.onFailure { say("context: base package adoption failed ${chain(it)}") }
     }
 
     private fun shellManager(ctx: Context): CameraManager = cameraManager(ctx)

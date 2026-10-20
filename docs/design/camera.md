@@ -42,18 +42,20 @@ adb -s emulator-5554 shell 'CP=$(pm path dev.pocketdeck | cut -d: -f2); \
   CLASSPATH=$CP app_process /system/bin dev.pocketdeck.server.CameraProbe list'
 ```
 
-**P1 — partial: listing works, opening was not proven.** The probe gets a framework
-`Context` from a bare `ActivityThread` (`ContextImpl.createSystemContext`: `systemMain`
-cannot attach at uid 2000, and the constructor needs `Looper.prepareMainLooper()` first)
-and lists both emulator cameras:
+**P1 — partial: listing works, opening was not proven.** The probe builds a framework
+`Context` from `ActivityThread` (`systemMain` returns an ActivityThread; its
+`getSystemContext` supplies the framework Context, with a bare never-attached
+ActivityThread as the fallback). The bare `app_process` main thread first needs
+`Looper.prepareMainLooper()`, because ActivityThread's constructor creates a Handler.
+It then lists both emulator cameras:
 
 ```
 cam: shell context: uid=2000 pid=1793 pkg=com.android.shell op=com.android.shell attribution=com.android.shell/2000
 cam: cameraIds=2 [1,10]
 ```
 
-`dumpsys media.camera` agrees: two devices, `1` (back, the virtual scene) and `10`
-(front), none open. The open then failed, but for a probe bug, not a policy refusal:
+`dumpsys media.camera` agrees: two devices (`1`, `10`), none open. The open then
+failed, but for a probe bug, not a policy refusal:
 
 ```
 cam: camera 1: characteristics failed java.lang.SecurityException:
@@ -66,10 +68,11 @@ cam: pkg=com.android.shell: open 1 threw java.lang.SecurityException:
 `ContextImpl`, whose package is `android`; `CameraManager` therefore called the camera
 service with a package uid 2000 does not own. A direct `CameraManager(shellContext)`
 constructor was built and run on the fourth boot and **still** reported `android`
-(the manager reads the package from the base context), so the remaining fix is to make
-the base `ContextImpl` claim `com.android.shell` (`mPackageName`, `mOpPackageName`,
-the attribution source) before creating the manager. The emulator died before that
-could run. **Whether uid 2000 actually opens the camera is unverified.**
+(the manager reads the package from the base context). The probe now also rewrites the
+base `ContextImpl`'s `mPackageName`, `mOpPackageName` and attribution source to
+`com.android.shell` before creating the manager; that change is built and K1-green but
+**was not run** (the boot budget was already gone). **Whether uid 2000 actually opens
+the camera is unverified.**
 
 **P2–P5 — unverified.** The run that reached the point of opening a camera was the
 fourth boot; the emulator process went offline (qemu died) right after the failed open,
@@ -89,9 +92,10 @@ so the keyguard, encoder, indicator and eviction stages never ran. What is known
 **Boot budget.** The brief allowed one emulator boot. Four were used, and no further
 boot was made after the supervisor's stop:
 
-1. context creation failed: `ActivityThread` needs `Looper.prepareMainLooper()` on the
-   bare `app_process` main thread — no camera call;
-2. same, with the cause printed — no camera call;
+1. context creation failed twice over: `ActivityThread` needs `Looper.prepareMainLooper()`
+   on the bare `app_process` main thread, and the probe cast `systemMain`'s
+   ActivityThread to a Context — no camera call;
+2. the same, with the cause printed — no camera call;
 3. context worked and two cameras were listed, but `getCameraCharacteristics`/open were
    still attributed to `android`, and the `pkg` mode hung on a leaked handler thread;
 4. the hang was fixed; the open was still refused for the same package reason, then the
