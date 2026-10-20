@@ -58,6 +58,8 @@ class Session(
     private val fsStats: FsStats = FsStats.Default,
     /** Rename/scan seam for writes (docs/design/files.md §2); tests fake it. */
     private val fsPlatform: FsPlatform = FsPlatform.None,
+    /** Change source for `fs.watch` (docs/design/files.md §5); tests fake it. */
+    private val fsWatch: FsWatchSource = FsWatchSource.None,
     /** Clipboard image port (read + write); null leaves images unsynced. */
     private val clipImages: ClipboardImagePort? = null,
     private val now: () -> Long = { System.nanoTime() / 1_000_000 },
@@ -176,6 +178,9 @@ class Session(
     private val fsReader = files?.let { FsReader(it.paths, queue::enqueueBulk, ::sendJson, log) }
     private val fsWriter = files?.let { FsWriter(it.paths, fsPlatform, ::sendJson, log) }
     private val fsOps = files?.let { FsMutations(it.paths, fsPlatform, log) }
+    private val fsWatcher = files?.let {
+        FsWatcher(it.paths, fsWatch, ::sendJson, log = log)
+    }
     private val clipImageSync = ClipImageSync()
     private val clipImageSender = ClipImageSender(queue::enqueueBulk, log)
     private val clipImageReceiver = ClipImageReceiver(ClipImageLand(clipImages, log), log)
@@ -340,6 +345,7 @@ class Session(
         runCatching { drop?.close() }
         runCatching { fsReader?.close() }
         runCatching { fsWriter?.close() }
+        runCatching { fsWatcher?.close() }
         stopStreamWatch()
         hoverExecutor.shutdownNow()
         runCatching { audioCapture?.stop() }
@@ -748,6 +754,8 @@ class Session(
                 "fs.delete" -> onFsDelete(obj)
                 "fs.mkdir" -> onFsMkdir(obj)
                 "fs.setAttrs" -> onFsSetAttrs(obj)
+                "fs.watch" -> onFsWatch(obj, on = true)
+                "fs.unwatch" -> onFsWatch(obj, on = false)
                 "fs.cancel" -> (obj["id"] as? Number)?.toLong()?.let {
                     fsReader?.cancel(it)
                     fsWriter?.cancel(it)
@@ -1460,6 +1468,30 @@ class Session(
 
     private fun onFsSetAttrs(obj: Map<String, Any?>) = fsMutation(obj) { ops ->
         ops.setAttrs(Json.str(obj["path"]), FsMutations.mtime(obj))
+    }
+
+    /**
+     * `fs.watch` / `fs.unwatch` (docs/design/files.md §5): the Mac's open
+     * folders, nothing more. The reply is the usual `fs.result`; the paths are
+     * never logged.
+     */
+    private fun onFsWatch(obj: Map<String, Any?>, on: Boolean) {
+        val id = fsId(obj) ?: return
+        val watcher = fsWatcher
+            ?: return fsResult(id, null, FsPaths.denied("files are not served"))
+        val list = obj["paths"] as? List<*>
+            ?: return fsResult(id, null, FsPaths.denied("bad paths"))
+        val requested = list.map { it as? String }
+        try {
+            if (on) watcher.watch(requested) else watcher.unwatch(requested)
+            log("fs: watch ${if (on) "on" else "off"} ${list.size} folders")
+            fsResult(id, null)
+        } catch (e: FsFailure) {
+            fsResult(id, null, e)
+        } catch (e: Exception) {
+            log("fs: watch failed: ${e.javaClass.simpleName}")
+            fsResult(id, null, FsFailure("internal", "the watch failed"))
+        }
     }
 
     // ------------------------------------------------------------------

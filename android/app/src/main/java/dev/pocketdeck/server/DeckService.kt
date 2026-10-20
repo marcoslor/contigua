@@ -133,6 +133,7 @@ class DeckService(private val appContext: Context?) :
                 filesRoot = File("/storage/emulated/0"),
                 fsStats = AndroidFsStats,
                 fsPlatform = AndroidFsPlatform(appContext, ::log),
+                fsWatch = AndroidFsWatchSource(appContext, ::log),
                 now = { SystemClock.uptimeMillis() },
                 log = ::log,
                 // Read when this session starts, never cached: the property can
