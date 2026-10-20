@@ -23,6 +23,7 @@ OpenSSL 3; `lib.sh` tries `/opt/homebrew/bin/python3`, override with
 tools/emulator/setup.sh    # SDK packages + AVD (idempotent)
 tools/emulator/start.sh    # boot, Shizuku, build+install the app, print the address
 tools/emulator/flow.sh     # the core POC check, writes PNGs to .agent/emu/frames/
+tools/emulator/cam-c1.sh   # C1: the phone capture service, one boot (--check first)
 ```
 
 `start.sh` prints the address to use:
