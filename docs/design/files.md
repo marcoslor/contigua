@@ -594,6 +594,76 @@ with the phone's bytes verified and nothing lost when both sides changed a file.
    keyguard is not visible to uiautomator). That fix has not been run: no boot budget was left,
    so `tools/emulator/fs-write.sh` has not run either and nothing is claimed here about whether
    a MediaProvider rename keeps the MediaStore `_id`.
+### S5 implementation notes
+
+What the phone watches, and when, is a subscription on the session: the Mac says
+which folders it has open, the phone watches exactly those, and nothing at all
+while the list is empty. No watcher thread, timer or poll exists when idle.
+
+- **The wire** is `fs.watch` / `fs.unwatch` (`id`, `paths`: relative folders) and
+  the phone → Mac `fs.changes` (`paths`: the folders whose contents moved). A
+  watch request that names `Android/…`, a dot-prefixed top-level entry or a path
+  the shape rules refuse is `fs_denied` and adds nothing. `fs.watch` is additive
+  and idempotent, `fs.unwatch` forgets a folder that is not watched. Both answer
+  `fs.result` with `ok: true`; `fs.changes` carries paths only, never names, so
+  the Mac re-lists the folder it already knows and diffs against its own last
+  listing. That keeps the phone stateless (design §3) and means one event type
+  covers create, edit, delete and rename.
+- **One folder = one watch.** A `FileObserver` (inotify) per requested folder,
+  non-recursive, CREATE/DELETE/MOVED_TO/MOVED_FROM/CLOSE_WRITE. Nested folders
+  are watched only when the Mac has them open itself. A directory created under
+  a watched one is seen as an entry change in the parent; opening it later adds
+  its own watch.
+- **Cap:** 256 live watches per session. The emulator's
+  `fs.inotify.max_user_watches` is measured in S5 and recorded below; 256 is the
+  budget we keep because the phone also watches for its own reasons and because
+  `max_user_instances` (128) is the tighter kernel resource. When a request would
+  exceed the cap, or a watch fails to start, the folder is still in the wanted
+  set and the **generation fallback** covers it.
+- **Generation fallback:** while any wanted folder lacks a live watch, the phone
+  polls `MediaStore.getGeneration()` every 5 s. A changed generation marks every
+  wanted folder as changed in one `fs.changes`. It is the same signal the
+  `ContentObserver` push would carry, without depending on MediaProvider's
+  batching. The poll stops the moment every wanted folder is watched (or none
+  is), so the idle rule still holds.
+- **Coalescing:** events only add a folder to a pending set; the set is flushed
+  at most once per 250 ms as one `fs.changes` (≤ 4 per second per session). A
+  write storm in one folder is one message.
+- **Our own temp files never signal.** A `.pocketdeck-*.part` staging name is
+  dropped by the watch source before it reaches the coalescer, so a create from
+  the Mac does not echo back as a change.
+- **Teardown:** `fs.unwatch` closes that watch; a session end closes every watch
+  and stops the poll. The Mac also sends `fs.unwatch` when its last enumerator
+  for a folder goes away (below), so "no one is looking" is reached both ways.
+- **Mac side:** `enumerator(for:)` asks the bridge to `watch` its container, and
+  the enumerator's `invalidate()`, the extension process ending or the bridge
+  client closing asks to `unwatch` it. The app maps container ids to paths,
+  ref-counts the paths **across extension processes and clients**, and only then
+  sends `fs.watch`/`fs.unwatch` on the session. On `fs.changes` the app re-lists
+  the folder, diffs it against the listing it handed out last, follows a rename
+  through the item identifier (which is the ino, so the same file under a new
+  name is an update, not a delete plus an add), bumps that container's anchor,
+  keeps the last 32 deltas and pushes a signal to the extension, which calls
+  `NSFileProviderManager.signalEnumerator(for:)`. `currentSyncAnchor` answers the
+  container's anchor; `enumerateChanges(from:)` replays the deltas after it, and
+  an anchor older than the kept history — or one from another process — is
+  `NSFileProviderError(.syncAnchorExpired)` so the system re-enumerates.
+- **Collision (S4 leftover).** Apple's replicated-provider contract says a
+  `createItem` that answers `NSFileProviderError.filenameCollision` is retried
+  by the system with another name, and `NSFileProviderCreateItemOptions.mayAlreadyExist`
+  means "the name may now be there, it is yours to resolve". A POSIX `cp` is not
+  a File Provider client operation, though: in S4's VM run the system replayed
+  the same `createItem` 8× with the same name and the copy stayed pending. So
+  the extension now resolves the collision itself: on `fs_exists` it creates the
+  file under the next free name, `<name> 2.<ext>`, `<name> 3.<ext>`, … up to 20
+  (`<name> 21` + ext is the last try; past that it answers the same collision
+  error), with `exclusive: true`, and returns the created item, whose filename
+  the system applies to its local copy. The phone's file is never touched, and
+  the person sees the copied file appear as `name 2.ext` instead of a pending
+  item that never lands. `.filenameCollision` stays only for the "20 names are
+  taken" give-up. Renames and moves (`modifyItem`) are unchanged: a name already
+  taken there is still a collision for the person to resolve.
+
 5. **S5 — watching and the idle rule.** Phone: `FsWatcher` (bounded inotify + the generation
    fallback) + `fs.watch`/`fs.changes`; the platform seam lets the JVM test drive a fake watch
    source. Mac: `enumerateChanges`/`currentSyncAnchor` + `signalEnumerator` from the bridge.
