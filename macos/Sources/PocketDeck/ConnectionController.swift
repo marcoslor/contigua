@@ -54,6 +54,8 @@ struct PhoneStatus: Equatable {
     var dnd: PhoneDndMode? = nil
     /// nil when the phone's `state` carries no `ringer` (old phone).
     var ringer: PhoneRingerMode? = nil
+    /// Display 0's power state; nil reads as on (nothing to overlay).
+    var screen: PhoneScreen? = nil
 }
 
 struct QRPairingState: Equatable {
@@ -1814,8 +1816,10 @@ final class ConnectionController {
             }
             runDockHooks()
             recheckOpenWindows()
-        case .phoneState(let locked, let battery, let charging, let dnd, let ringer):
-            status = PhoneStatus(locked: locked, battery: battery, charging: charging, dnd: dnd, ringer: ringer)
+        case .phoneState(let locked, let battery, let charging, let dnd, let ringer, let screen):
+            status = PhoneStatus(locked: locked, battery: battery, charging: charging, dnd: dnd, ringer: ringer,
+                                 screen: screen)
+            windows.setPhoneScreen(screen)
             if let id = link.phone?.id { batteryMemory.record(deviceId: id, level: battery, charging: charging) }
             reconcileFocusOnFirstState(dnd)
             runPendingDebugDnd()
@@ -2028,7 +2032,8 @@ final class ConnectionController {
         windows.phone = info
         // Every window title carries the display name from here on.
         windows.setPhoneName(displayName(for: ref))
-        status = PhoneStatus(locked: info.locked, battery: info.battery, charging: info.charging ?? false, ringer: status?.ringer)
+        status = PhoneStatus(locked: info.locked, battery: info.battery, charging: info.charging ?? false,
+                             ringer: status?.ringer, screen: status?.screen)
         // A new connection: its first `state` reconciles the Focus once.
         focusReconciled = false
         if let battery = info.battery {
@@ -2224,6 +2229,12 @@ final class ConnectionController {
             let phoneOnly = check.openPhone && check.openPackages.isEmpty
             if let path = check.debugInputScript, let error = armDebugInput(path, phoneOnly: phoneOnly) { return error }
             applyAutoOpen(check)
+            return nil
+        case "wake-phone":
+            // The phone window's Wake Screen button, for the e2e (its click is
+            // unit-tested; a scripted click would need real pointer input).
+            guard let phone = windows.phoneWindow else { return "no phone window" }
+            phone.wakeScreen()
             return nil
         default:
             return "unknown command \(command)"

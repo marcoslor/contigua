@@ -310,9 +310,28 @@ final class WindowManager {
         }
     }
 
+    /// The last `state.screen`; a phone window opened while the panel sleeps
+    /// starts with its cover up.
+    private(set) var phoneScreen: PhoneScreen?
+
     @discardableResult
     func openPhoneWindow() -> PhoneWindowController {
-        open { PhoneWindowController(stream: $0, phone: phone, manager: self) }
+        let controller = open { PhoneWindowController(stream: $0, phone: phone, manager: self) }
+        controller.setPhoneScreen(phoneScreen)
+        return controller
+    }
+
+    /// The open phone window, if any (the debug route and the screen state).
+    var phoneWindow: PhoneWindowController? {
+        allControllers().compactMap { $0 as? PhoneWindowController }.first
+    }
+
+    /// `state.screen` from the session reaches every phone window.
+    func setPhoneScreen(_ screen: PhoneScreen?) {
+        phoneScreen = screen
+        for controller in allControllers() {
+            (controller as? PhoneWindowController)?.setPhoneScreen(screen)
+        }
     }
 
     /// "Continue on Mac" (docs/ROADMAP.md #9): a window for the app in the

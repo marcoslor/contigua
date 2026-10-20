@@ -14,6 +14,7 @@
 //                    --debug-chrome-state, --debug-input-script, --audio-stats,
 //                    --resize-stream, --minimize-stream, --deminimize-stream,
 //                    --close-stream (timers count from the command)
+//   wake-phone       the phone window's Wake Screen button (phone mode)
 //
 // Arguments are separated by spaces; paths with spaces are not supported.
 

@@ -13,6 +13,9 @@ final class PhoneWindowController: StreamWindowController {
     /// before that the window names the phone itself.
     private(set) var subject: String?
 
+    /// `state.screen` and the overlay it drives (PhoneScreenOverlay.swift).
+    private(set) var screenModel = PhoneScreenOverlay()
+
     static let fallbackScreen = CGSize(width: 1080, height: 2340)
     static let fallbackDpi: Double = 420
 
@@ -34,6 +37,10 @@ final class PhoneWindowController: StreamWindowController {
         videoView.inputMapper?.isPhoneMode = true
         // The mirror's letterbox is the phone's fixed screen, never a crop.
         videoView.isPhoneMode = true
+        chrome.phoneOverlay.onWake = { [weak self] in self?.wakeFromOverlay() }
+        // While the panel sleeps the frame is frozen: no click, key, scroll or
+        // hover reaches the phone through any path.
+        videoView.inputMapper?.inputSuspended = { [weak self] in self?.screenModel.isShowing ?? false }
         rotationObserver = NotificationCenter.default.addObserver(
             forName: VideoLayerView.videoSizeDidChange, object: videoView, queue: .main
         ) { [weak self] _ in
@@ -110,6 +117,33 @@ final class PhoneWindowController: StreamWindowController {
     override func sendOpen() {
         let pixels = displayPixels()
         session.openPhone(stream: stream, width: Int(pixels.width), height: Int(pixels.height), dpi: dpi())
+        // Opening, re-opening or reconnecting wakes display 0; the keyguard
+        // stays up and the phone's own screen timeout applies as usual.
+        screenModel.opened()
+        session.wakePhone()
+    }
+
+    /// `state.screen` from the session: off puts the blurred cover and its Wake
+    /// Screen button over the held frame, on takes it away.
+    func setPhoneScreen(_ screen: PhoneScreen?) {
+        guard screenModel.set(screen: screen) else { return }
+        let off = screenModel.isShowing
+        if off { videoView.inputMapper?.dropPendingInput() }
+        chrome.phoneOverlay.isHidden = !off
+        chrome.needsLayout = true
+        writeChromeState()
+        Log.video.notice("phone window: screen=\(off ? "off" : "on", privacy: .public) overlay=\(off ? 1 : 0, privacy: .public)")
+    }
+
+    /// A click on the blurred frame (or its Wake Screen button).
+    private func wakeFromOverlay() {
+        guard screenModel.click() else { return }
+        session.wakePhone()
+    }
+
+    /// The e2e's debug route (`wake-phone`): the same path as the button.
+    func wakeScreen() {
+        wakeFromOverlay()
     }
 
     func setSubject(_ label: String) {

@@ -526,7 +526,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     /// FILE` puts the file on the manager.
     var stateFile: URL? { didSet { writeChromeState() } }
 
-    private func writeChromeState() {
+    func writeChromeState() {
         guard let stateFile else { return }
         let lights = window?.standardWindowButton(.closeButton).map { !$0.isHidden } ?? false
         let pillUp = chrome.showsPill
@@ -537,7 +537,9 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
             + " title_visible=\(titleUp ? "yes" : "no") lights_managed=\(managed)"
             + " fullscreen=\(fullScreen ? "yes" : "no") clicks=\(barPresses)"
             + " dots=\(chrome.touchDotsOutsideMirror ? "outside" : "mirrored")"
-            + " touches=\(videoView.showsTouches ? "on" : "off") dot_count=\(chrome.touchDotCount)\n"
+            + " touches=\(videoView.showsTouches ? "on" : "off") dot_count=\(chrome.touchDotCount)"
+            + " screen=\(chrome.phoneOverlay.isHidden ? "on" : "off")"
+            + " overlay=\(chrome.phoneOverlay.isHidden ? 0 : 1)\n"
         try? Data(line.utf8).write(to: stateFile, options: .atomic)
     }
 
