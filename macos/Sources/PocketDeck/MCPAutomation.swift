@@ -20,6 +20,9 @@ final class MCPAutomation {
     @ObservationIgnored private var profile: Profile = .active
     @ObservationIgnored private var defaults: UserDefaults = .standard
     @ObservationIgnored private var server: MCPSocketServer?
+    /// The app side of a tool call; nil while shutting down.
+    @ObservationIgnored var hostProvider: (@MainActor () -> MCPToolHost?)?
+
     /// `forced` is the e2e hook (`--mcp-enable`, test builds only): it turns
     /// the setting on in this profile without asking, then the normal path runs.
     func configure(profile: Profile, forced: Bool) {
@@ -102,12 +105,21 @@ final class MCPAutomation {
     // MARK: Dispatch
 
     private func handle(_ line: Data) async -> Data? {
-        await MCPDispatcher.handle(line: line, perform: { _ in
-            .error("The automation tools are not available.")
+        await MCPDispatcher.handle(line: line, perform: { [weak self] call in
+            guard let self else { return .error("PocketDeck is shutting down.") }
+            return await self.perform(call)
         }, log: { tool, seconds in
             // Tool name and duration only: never arguments, text, URLs, file
             // names or pixels (docs/design/mcp.md).
             Log.app.notice("mcp \(tool.rawValue, privacy: .public) \(Int((seconds * 1000).rounded()), privacy: .public) ms")
         })
+    }
+
+    @MainActor
+    private func perform(_ call: MCPCall) async -> MCPToolResult {
+        guard let host = hostProvider?() else {
+            return .error("PocketDeck is shutting down.")
+        }
+        return await host.perform(call)
     }
 }

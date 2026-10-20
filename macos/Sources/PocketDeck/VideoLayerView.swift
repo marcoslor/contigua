@@ -16,6 +16,12 @@ final class VideoLayerView: NSView {
     /// Size (px) of the last VIDEO_CONFIG; drives aspect-fit letterboxing.
     private(set) var videoSize: CGSize = .zero
 
+    /// The last frame this view displayed, for the automation server's
+    /// screenshot (docs/design/mcp.md). nil before the first frame.
+    func displayedPixelBuffer() -> CVPixelBuffer? {
+        FrameGrab.displayedPixelBuffer(from: displayLayer)
+    }
+
     /// The phone window mirrors a fixed screen: its letterbox is never filled
     /// (Letterbox.placement). The app window's is.
     var isPhoneMode = false
