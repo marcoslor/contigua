@@ -19,7 +19,36 @@ struct SettingsView: View {
         // screen, so the form inside it scrolls; a shorter tab keeps its own
         // natural height.
         .frame(maxHeight: SettingsLayout.maxContentHeight(for: NSScreen.main?.visibleFrame.height ?? 800))
+        .background(SettingsWindowTag())
     }
+}
+
+/// Sizes the Settings window to the screen: SwiftUI opens it at its own 450 pt
+/// default whatever the form needs, so a long tab was cropped at "Default
+/// window density" while the top of the screen was free. The window takes the
+/// screen's room (SettingsLayout) and never extends past the visible frame; the
+/// tab inside it scrolls for the rest.
+private struct SettingsWindowTag: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        DispatchQueue.main.async {
+            guard let window = view.window else { return }
+            let screen = window.screen ?? NSScreen.main
+            let height = SettingsLayout.maxContentHeight(for: screen?.visibleFrame.height ?? 800)
+            window.setContentSize(NSSize(width: SettingsLayout.width, height: height))
+            if let screen {
+                var frame = window.frame
+                frame.origin.x = min(max(screen.visibleFrame.minX, frame.origin.x),
+                                     screen.visibleFrame.maxX - frame.width)
+                frame.origin.y = min(max(screen.visibleFrame.minY, frame.origin.y),
+                                     screen.visibleFrame.maxY - frame.height)
+                window.setFrame(frame, display: false)
+            }
+        }
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {}
 }
 
 /// Settings' window size rules (docs/design/mac-redesign.md §3.6).
@@ -152,9 +181,6 @@ struct GeneralSettings: View {
             .onChange(of: revealDelay) { _, delay in controller.setRevealDelay(delay) }
         }
         .formStyle(.grouped)
-        // The pane sizes to its content; with overrides listed it may outgrow
-        // a small screen, so then it scrolls instead of clipping.
-        .scrollDisabled(controller.densityOverrides.isEmpty)
     }
 }
 

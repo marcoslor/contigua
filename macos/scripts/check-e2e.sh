@@ -2385,6 +2385,59 @@ PY
         && ok "C14 picking Short hides the chrome again ($(chrome_state))" \
         || bad "C14 Short did not hide the chrome: $(chrome_state)"
 
+    # --- Settings: the real window fits the screen and General scrolls ---
+    # The reported bug (1680x1050): the General tab ended at "Default window
+    # density" and the rows below could not be reached. The dump is the real
+    # window: its frame against the screen, the tab's scroll view (a document
+    # taller than its clip), and whether the last row is on screen once
+    # scrolled to the end. (A synthetic wheel event cannot prove a person's
+    # scroll here: it is windowless under a quiet run; the VM's visible run
+    # does that.)
+    next_shared
+    rm -f "$WORK/settings-report.txt"
+    printf '%s\n' "density com.example.app0 125" "density com.example.app1 125" \
+        "density com.example.app2 125" "density com.example.app3 125" \
+        "density com.example.app4 125" "density com.example.app5 125" \
+        "opensettings" "wait 1" > "$WORK/chrome-settings.txt"
+    open_shared --open com.android.settings --debug-input-script "$WORK/chrome-settings.txt" \
+        || { kill "$backdrop"; return 1; }
+    sleep 2
+    control settings-dump "$WORK/settings-report.txt" >/dev/null 2>&1
+    local report
+    report="$(cat "$WORK/settings-report.txt" 2>/dev/null)"
+    if [ -z "$report" ]; then
+        bad "C14 Settings: the window did not open ($CONTROL_REPLY)"
+    else
+        say "C14 Settings: $(echo "$report" | tr '\n' ' ')"
+        case "$report" in
+            *"fits=1"*) ok "C14 Settings window fits the screen's visible frame" ;;
+            *) bad "C14 Settings window is taller than the screen" ;;
+        esac
+        case "$report" in
+            *"scroll=1"*) ok "C14 Settings: the tab's rows live in a scroll view" ;;
+            *) bad "C14 Settings: no scroll view under the tab" ;;
+        esac
+        # The window takes the room the screen allows: at the 450 pt SwiftUI
+        # default the General tab was cropped at "Default window density" while
+        # the top of the screen was free.
+        local content cap
+        content="$(sed -n 's/^content=//p' <<< "$report")"
+        cap="$(sed -n 's/^cap=//p' <<< "$report")"
+        if [ -n "$content" ] && [ -n "$cap" ] && [ "$content" -ge "$cap" ]; then
+            ok "C14 Settings: the window takes the screen's room ($content pt of $cap)"
+        else
+            bad "C14 Settings: the window is shorter than the screen allows (content ${content:-?} pt, cap ${cap:-?})"
+        fi
+        case "$report" in
+            *"at_end=1"*) ok "C14 Settings: the tab scrolls to its end" ;;
+            *) bad "C14 Settings: the tab does not reach its end" ;;
+        esac
+        case "$report" in
+            *"last_visible=1"*) ok "C14 Settings: the last row ('Reveal controls after') is reachable" ;;
+            *) bad "C14 Settings: the last row is not reachable ($(echo "$report" | tr '\n' ' '))" ;;
+        esac
+    fi
+
     kill "$backdrop" 2>/dev/null; wait "$backdrop" 2>/dev/null
     stop_app
     stop_fakephone
