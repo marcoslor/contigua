@@ -57,6 +57,16 @@ connection authenticates with its key instead of pairing again. A second
 simultaneous session is answered with `{"t":"error","code":"busy"}`; the first
 keeps working. Ctrl-C kills every ffmpeg/dns-sd child.
 
+Deeper media (docs/design/notify.md "Media part 2"): `--media` serves two
+playing apps with generated artwork, a seekable position and an absolute volume
+(`media.sessions`, `media.state` with `key`/`canSeek`/`volume`, `media.art`);
+`media.command seek|volume` moves the fake and the next `media.state` confirms,
+and `media.choose` switches the chosen app. `--older-phone` sends today's
+`media.state` only (no sessions, no artwork, no new fields), which is how the
+e2e checks that an older phone keeps today's behaviour. `deckctl media
+watch|seek|volume|choose` drives it; the event log records action names, keys,
+positions, levels and artwork dimensions/bytes only.
+
 Do Not Disturb (docs/design/focus.md): `state` carries `dnd` and `phone.dnd`
 sets the fake's zen mode with the phone's restore rule (`--dnd-person MODE`
 starts in a mode the person set, which must survive; `--dnd-unsupported` acts
