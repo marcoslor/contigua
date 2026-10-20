@@ -271,13 +271,13 @@ wait_watch() { # wait_watch PATTERN SECONDS
 "${DC[@]}" media drive --seconds 40 --position 45000 --level 3 > "$WATCH" 2>&1 &
 WATCH_PID=$!
 wait_watch '^media.sessions n=2 ' 25 || fail "no two-session list (see $WATCH)"
+FIRST_CHOSEN="$(watch_sessions "$WATCH" | awk '{print $3}')"
 sleep 5
 emu logcat -d -s PdMediaDebug:I 2>/dev/null | tr -d '\r' > "$FAKEP" || true
 sleep 4
 emu logcat -d -s PdMediaDebug:I 2>/dev/null | tr -d '\r' > "$FAKEV" || true
 
 # The drive chooses the other session at 9 s; wait for that before stopping one.
-FIRST_CHOSEN="$(watch_sessions "$WATCH" | awk '{print $3}')"
 chosen_switched() {
   local last
   last="$(watch_sessions "$WATCH" | awk '{print $3}')"
