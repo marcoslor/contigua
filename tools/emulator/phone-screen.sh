@@ -113,12 +113,14 @@ fi
 ensure_forward >/dev/null || { echo "phone-screen: no server port"; echo "failed: 1 (port)" > "$RESULT"; exit 1; }
 
 # --- pair (the real v2 flow) ----------------------------------------------
-if ! "$PYTHON" tools/emulator/poc.py --state "$CACHE_DIR/deckctl-state.json" \
-      --addr "127.0.0.1:$PORT" --serial "$SERIAL" --adb "$ADB" pair; then
-  echo "phone-screen: pairing failed (unverified)"
-  exit 1
+if [ "$BOOT" -eq 1 ]; then
+  if ! "$PYTHON" tools/emulator/poc.py --state "$CACHE_DIR/deckctl-state.json" \
+        --addr "127.0.0.1:$PORT" --serial "$SERIAL" --adb "$ADB" pair; then
+    echo "phone-screen: pairing failed (unverified)"
+    exit 1
+  fi
+  echo "phone-screen: paired"
 fi
-echo "phone-screen: paired"
 
 # --- screen off, wake, screen on, on one session ---------------------------
 "${DC[@]}" wake-test --off-timeout 60 --on-timeout 25 > "$WAKE" 2>&1 &
