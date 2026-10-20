@@ -91,6 +91,14 @@ class DeckService(private val appContext: Context?) :
         // PocketDeck forget that it owns the phone's DND.
         val zenControl = ZenControl(AndroidZenSettings(base, ::log), ShellZenSetter(::log), ::log)
         zen = zenControl
+        // One ringer reader for the whole service. The DND check inside it is a
+        // second gate: a ringer change while DND is on could end that DND.
+        val ringerControl = RingerControl(
+            AndroidRingerSettings(base, ::log),
+            ShellRingerSetter(::log),
+            { zenControl.current() },
+            ::log,
+        )
         val titles = AndroidWindowObserver(shell, ::log)
         val uids = AppUids(base, ::log)
         val audio = AudioCapture(shell, ::log, uids::uidOf)
@@ -148,6 +156,7 @@ class DeckService(private val appContext: Context?) :
                     override fun stop() = sendToApp { it.onRingStop() }
                 },
                 zen = zenControl,
+                ringerMode = ringerControl,
                 tlsView = Session.TlsView.from(socket).also { view ->
                     // K4/e2e evidence, hashes only, debug builds only: the
                     // platform stack really backs the v2 pairing

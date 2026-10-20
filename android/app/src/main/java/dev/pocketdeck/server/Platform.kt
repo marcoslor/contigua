@@ -25,7 +25,13 @@ data class DeviceInfo(
     val locked: Boolean,
 )
 
-data class DeviceState(val locked: Boolean, val battery: Int, val charging: Boolean, val dnd: DndMode? = null)
+data class DeviceState(
+    val locked: Boolean,
+    val battery: Int,
+    val charging: Boolean,
+    val dnd: DndMode? = null,
+    val ringer: RingerMode? = null,
+)
 
 /**
  * The phone's Do Not Disturb mode, named as the wire names it
@@ -38,6 +44,8 @@ enum class DndMode(val wire: String, val zen: Int) {
     NONE("none", 2),
     ALARMS("alarms", 3),
     ;
+
+    val isOn: Boolean get() = this != OFF
 
     companion object {
         fun fromWire(value: String?): DndMode? = entries.firstOrNull { it.wire == value }
@@ -61,6 +69,35 @@ interface ZenSettings {
 /** Runs `cmd notification set_dnd <mode>` at shell UID; false when the phone refused. */
 fun interface ZenSetter {
     fun set(mode: DndMode): Boolean
+}
+
+/**
+ * The phone's ringer mode, named as `phone.ringer` and `state.ringer` do
+ * (docs/design/controls.md). [android] is `Settings.Global.mode_ringer`.
+ */
+enum class RingerMode(val wire: String, val android: Int) {
+    SILENT("silent", 0),
+    VIBRATE("vibrate", 1),
+    NORMAL("normal", 2),
+    ;
+
+    companion object {
+        fun fromWire(value: String?): RingerMode? = entries.firstOrNull { it.wire == value }
+
+        /** An unknown value is unreadable, never guessed. */
+        fun fromAndroid(value: Int): RingerMode? = entries.firstOrNull { it.android == value }
+    }
+}
+
+/** Reads the phone's ringer mode; null when this build cannot read it. */
+interface RingerSettings {
+    fun read(): RingerMode?
+    fun listen(onChange: (RingerMode?) -> Unit): AutoCloseable?
+}
+
+/** Runs `cmd audio set-ringer-mode <MODE>` at shell UID; false when the phone refused. */
+fun interface RingerSetter {
+    fun set(mode: RingerMode): Boolean
 }
 
 /** What a window shows: an app on its own virtual display, or a mirror of the phone's screen. */
