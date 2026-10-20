@@ -34,6 +34,13 @@ Why this and not `SurfaceControl.createDisplay` + `setDisplayProjection`
 - A mirror's projection is fixed at creation, so a size change recreates the
   mirror VD instead of `VirtualDisplay.resize` (which left the picture small).
 - Back / Home / Recents = KEYCODE_BACK / HOME / APP_SWITCH on display 0.
+- No full screen for the phone window. A phone mirror across a whole display is
+  letterboxed or stretched (the stream keeps the phone's aspect), and the
+  person's report is that it looks bad. The window opts out with
+  `.fullScreenNone`: no green-button full-screen mode, no Window ▸ Enter Full
+  Screen (disabled for it), no ⌃⌘F. The green button zooms to the phone's
+  aspect fit inside the screen's visible frame instead. App windows keep full
+  screen.
 - Failure → `error` `mirror_unavailable` (pre-14 phones).
 
 The old phone mode (a VD running PocketDeck's own launcher activity) was

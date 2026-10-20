@@ -37,6 +37,13 @@ final class PhoneWindowController: StreamWindowController {
         videoView.inputMapper?.isPhoneMode = true
         // The mirror's letterbox is the phone's fixed screen, never a crop.
         videoView.isPhoneMode = true
+        // No full screen for the phone window: a phone mirror filling a whole
+        // display is letterboxed or stretched, and the person's report is that
+        // it looks bad. Without .fullScreenPrimary (and with .fullScreenNone)
+        // AppKit neither offers the mode nor the Window menu's item; the green
+        // button zooms to the phone's aspect fit instead
+        // (windowWillUseStandardFrame).
+        window?.collectionBehavior = [.fullScreenNone]
         chrome.phoneOverlay.onWake = { [weak self] in self?.wakeFromOverlay() }
         // While the panel sleeps the frame is frozen: no click, key, scroll or
         // hover reaches the phone through any path. Live Text freezes it too
@@ -109,6 +116,14 @@ final class PhoneWindowController: StreamWindowController {
 
     func windowWillResize(_ sender: NSWindow, to frameSize: NSSize) -> NSSize {
         PhoneChrome.frame(proposed: frameSize, current: sender.frame.size, phone: phoneScreen, style: style)
+    }
+
+    /// The green button (and a double-click on the bar) zooms to the phone's
+    /// aspect fit inside the screen, never to the whole display: this window
+    /// has no full screen.
+    func windowWillUseStandardFrame(_ window: NSWindow, defaultFrame newFrame: NSRect) -> NSRect {
+        guard let screen = window.screen ?? NSScreen.main else { return newFrame }
+        return PhoneChrome.zoomFrame(phone: phoneScreen, style: style, visible: screen.visibleFrame)
     }
     /// dpi = phoneDpi × vdWidth / phoneScreenWidth, so the phone's dp width is
     /// preserved whatever the Mac window size is.
