@@ -35,8 +35,8 @@ class DeckForegroundService : Service() {
         override fun onPaired(clientId: String, name: String, macFp: String) =
             handlePaired(clientId, name, macFp)
 
-        override fun onSessionChanged(connected: Boolean, macName: String?, windows: Int) =
-            handleSessionChanged(connected, macName, windows)
+        override fun onSessionChanged(connected: Boolean, clientId: String?, macName: String?, windows: Int) =
+            handleSessionChanged(connected, clientId, macName, windows)
 
         override fun onNotifySession(forwarding: Boolean) {
             DeckState.notifyForward = forwarding
@@ -173,6 +173,7 @@ class DeckForegroundService : Service() {
         serviceReady = false
         DeckState.port = -1
         DeckState.connectedMac = null
+        DeckState.connectedClientId = null
         nsd.stop()
         updateOngoing()
         DeckState.notifyChanged()
@@ -250,8 +251,15 @@ class DeckForegroundService : Service() {
         DeckState.notifyChanged()
     }
 
-    private fun handleSessionChanged(connected: Boolean, macName: String?, windows: Int) {
+    private fun handleSessionChanged(connected: Boolean, clientId: String?, macName: String?, windows: Int) {
+        // Both ends of a session are "last connected": a row that comes back
+        // must not keep an older time until the next pairing.
+        if (clientId != null) {
+            Prefs.touchLastConnected(this, clientId, System.currentTimeMillis())
+            DeckState.paired = Prefs.paired(this)
+        }
         DeckState.connectedMac = if (connected) macName else null
+        DeckState.connectedClientId = if (connected) clientId else null
         DeckState.windows = windows
         updateOngoing()
         DeckState.notifyChanged()

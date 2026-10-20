@@ -381,8 +381,8 @@ class DeckService(private val appContext: Context?) :
     override fun onPaired(clientId: String, name: String, macFpHex: String) =
         sendToApp { it.onPaired(clientId, name, macFpHex) }
 
-    override fun onSessionChanged(connected: Boolean, macName: String?, windows: Int) =
-        sendToApp { it.onSessionChanged(connected, macName, windows) }
+    override fun onSessionChanged(connected: Boolean, clientId: String?, macName: String?, windows: Int) =
+        sendToApp { it.onSessionChanged(connected, clientId, macName, windows) }
 
     // ------------------------------------------------------------------
 

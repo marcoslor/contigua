@@ -119,6 +119,20 @@ object Prefs {
         }
     }
 
+    /**
+     * [macs] with [clientId]'s `lastConnected` moved to [at]; the other rows keep
+     * theirs. Pure so the session-start/end bookkeeping is JVM-testable.
+     */
+    fun stamped(macs: List<PairedMac>, clientId: String, at: Long): List<PairedMac> =
+        macs.map { if (it.clientId == clientId) it.copy(lastConnected = at) else it }
+
+    /** A session started or ended: remember when this Mac was last live. */
+    fun touchLastConnected(ctx: Context, clientId: String, at: Long) {
+        val macs = paired(ctx)
+        if (macs.none { it.clientId == clientId }) return
+        save(ctx, stamped(macs, clientId, at))
+    }
+
     fun addPaired(ctx: Context, mac: PairedMac) {
         val next = paired(ctx).filterNot { it.clientId == mac.clientId } + mac
         save(ctx, next)

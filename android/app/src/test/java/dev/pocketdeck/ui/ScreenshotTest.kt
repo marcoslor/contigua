@@ -14,6 +14,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.unit.dp
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -104,11 +105,18 @@ class ScreenshotTest {
 
     @Test
     fun homeConnectedLight() =
-        shootHome("home_connected_light", false, homeState(connectedMac = "Marcos's MacBook", windows = 2))
+        shootHome("home_connected_light", false, homeState(connectedMac = "Marcos's MacBook", liveClientId = "1a2b3c4d", windows = 2))
 
     @Test
     fun homeConnectedDark() =
-        shootHome("home_connected_dark", true, homeState(connectedMac = "Marcos's MacBook", windows = 2))
+        shootHome("home_connected_dark", true, homeState(connectedMac = "Marcos's MacBook", liveClientId = "1a2b3c4d", windows = 2))
+
+    @Test
+    fun homeConnectedRowSaysConnectedNow() {
+        shootHome("home_connected_row_light", dark = false, state = homeState(connectedMac = "Marcos's MacBook", liveClientId = "1a2b3c4d"))
+        compose.onNodeWithText("Connected now").fetchSemanticsNode()
+        compose.onNodeWithText("Last connected 5 minutes ago").fetchSemanticsNode()
+    }
 
     @Test
     fun homeShizukuNotRunningLight() =
@@ -164,6 +172,7 @@ class ScreenshotTest {
 
     private fun homeState(
         connectedMac: String? = null,
+        liveClientId: String? = null,
         windows: Int = 0,
         shizukuRunning: Boolean = true,
     ): DeckUiState {
@@ -185,9 +194,12 @@ class ScreenshotTest {
             port = 4711,
             connectedMac = connectedMac,
             windows = windows,
-            paired = listOf(
-                PairedMacUi("1a2b3c4d", "Marcos's MacBook", 1_700_000_000_000L),
-                PairedMacUi("5e6f7a8b", "Mac Studio", 1_699_000_000_000L),
+            paired = pairedRows(
+                listOf(
+                    PairedMacUi("1a2b3c4d", "Marcos's MacBook", 1_700_000_000_000L),
+                    PairedMacUi("5e6f7a8b", "Mac Studio", 1_699_000_000_000L),
+                ),
+                liveClientId,
             ),
             wifiName = "Home Wi-Fi",
             shizuku = shizukuUiState(true, shizukuRunning, shizukuRunning),

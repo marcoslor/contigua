@@ -46,8 +46,10 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -66,6 +68,7 @@ import dev.pocketdeck.ui.theme.EmphasizedDecelerate
 import dev.pocketdeck.ui.theme.ExitDurationMs
 import dev.pocketdeck.ui.theme.SmallChangeDurationMs
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /** Home (docs/UX.md "Home", docs/DESIGN.md §2 Home). */
@@ -202,10 +205,15 @@ fun HomeScreen(
                     modifier = Modifier.padding(vertical = 8.dp),
                 )
             } else {
+                // Relative times go stale while the screen stays visible: the
+                // rows re-render on the next whole minute instead of on a timer
+                // that keeps the UI busy between ticks.
+                val now = rememberMinuteTick()
                 state.paired.forEach { mac ->
                     key(mac.clientId) {
                         PairedMacRow(
                             mac = mac,
+                            now = now,
                             relativeTime = relativeTime,
                             onForget = onForget,
                             onUndoForget = onUndoForget,
@@ -355,6 +363,7 @@ private fun statusActionLabel(attention: AttentionKind): Int = when (attention) 
 @Composable
 private fun PairedMacRow(
     mac: PairedMacUi,
+    now: Long,
     relativeTime: (Long) -> String,
     onForget: (PairedMacUi) -> String,
     onUndoForget: (PairedMacUi) -> Unit,
@@ -412,8 +421,15 @@ private fun PairedMacRow(
             leadingContent = { Icon(painterResource(R.drawable.ic_laptop_mac), contentDescription = null) },
             headlineContent = { Text(mac.name) },
             supportingContent = {
-                if (mac.lastConnected > 0) {
-                    Text(stringResource(R.string.home_last_connected, relativeTime(mac.lastConnected)))
+                when {
+                    mac.connected -> Text(
+                        text = stringResource(R.string.home_connected_now),
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                    // now is read so the row recomposes on the minute tick.
+                    mac.lastConnected in 1..now -> Text(
+                        stringResource(R.string.home_last_connected, relativeTime(mac.lastConnected)),
+                    )
                 }
             },
             trailingContent = {
@@ -435,4 +451,20 @@ private fun PairedMacRow(
         )
     }
     HorizontalDivider()
+}
+
+/**
+ * Wakes on the next whole minute so "Last connected …" stays true while the
+ * screen is open. Only the ticker's value changes; nothing polls between ticks.
+ */
+@Composable
+private fun rememberMinuteTick(): Long {
+    var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay((nextRelativeTick(System.currentTimeMillis()) - System.currentTimeMillis()).coerceAtLeast(1))
+            now = System.currentTimeMillis()
+        }
+    }
+    return now
 }

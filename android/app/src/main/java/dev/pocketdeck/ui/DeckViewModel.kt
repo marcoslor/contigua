@@ -112,7 +112,10 @@ class DeckViewModel(app: Application) : AndroidViewModel(app) {
             port = port,
             connectedMac = connected,
             windows = DeckState.windows,
-            paired = paired.map { PairedMacUi(it.clientId, it.name, it.lastConnected) },
+            paired = pairedRows(
+                paired.map { PairedMacUi(it.clientId, it.name, it.lastConnected) },
+                DeckState.connectedClientId,
+            ),
             pending = DeckState.pending?.let { PendingPairingUi(it.requestId, it.macName, it.code) },
             notificationsGranted = notificationsGranted,
             batteryRequested = Prefs.isBatteryRequested(ctx),
