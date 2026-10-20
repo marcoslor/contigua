@@ -163,8 +163,9 @@ is tested without Android:
   the source cannot be read: no image is sent (the notification itself still goes);
 - the wire carries `notify.image {id, mime, w, h, data}` (data = base64 of the
   encoded bytes) right after the `notify.post` for that id. An older Mac ignores
-  an unknown `t`, so the banner is unaffected. An update that repeats the same
-  picture for the same id is not sent again.
+  an unknown `t`, so the banner is unaffected. Every post (an update too) is followed
+  by its picture again: the Mac replaces the whole banner on an update, so a
+  skipped picture would leave the updated banner without it.
 
 The Mac refuses a received image that breaks its own caps (decoded > 256 KiB,
 mime other than `image/jpeg`/`image/png`, w or h ≤ 0 or > 1024, base64 that does

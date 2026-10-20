@@ -39,9 +39,6 @@ class PdNotificationListener : NotificationListenerService() {
     private val pendingLive = HashMap<String, Map<String, Any?>>()
     private var flushScheduled = false
 
-    /** The picture already sent for an id, by content hash (in memory only). */
-    private val sentImages = BoundedIdMap<Int>(64)
-
     private val sessionCallback = object : MediaController.Callback() {
         override fun onPlaybackStateChanged(state: PlaybackState?) = scheduleMediaPush()
         override fun onMetadataChanged(metadata: android.media.MediaMetadata?) = scheduleMediaPush()
@@ -66,9 +63,12 @@ class PdNotificationListener : NotificationListenerService() {
         PdNotificationBridge.actionSink = null
         PdNotificationBridge.dismissSink = null
         NotifyIntents.clear()
-        throttle.clear()
-        pendingLive.clear()
-        sentImages.clear()
+        // The live state belongs to the worker thread; quitSafely still runs this.
+        mediaHandler.post {
+            mediaHandler.removeCallbacks(liveFlush)
+            throttle.clear()
+            pendingLive.clear()
+        }
         sessionManager?.let { runCatching { it.removeOnActiveSessionsChangedListener(activeSessionsListener) } }
         sessionManager = null
         detachSession()
@@ -291,11 +291,10 @@ class PdNotificationListener : NotificationListenerService() {
             }
             bridge.post(event)
             if (picture == null) return@post
+            // Every post carries its picture again, an update with the same one
+            // too: the Mac replaces the whole banner, so a skipped picture
+            // would leave the updated banner without it.
             val image = NotifyImageRules.encode(NotifyPictures.sourceFor(this, picture)) ?: return@post
-            val hash = image.data.contentHashCode()
-            // An update that repeats the same picture is not sent again.
-            if (sentImages.get(id) == hash) return@post
-            sentImages.put(id, hash)
             bridge.post(image.wire(id, NotifyPictures::base64))
             Log.i(
                 TAG,
@@ -341,10 +340,14 @@ class PdNotificationListener : NotificationListenerService() {
         if (sbn.packageName in NotifyEvents.skippedPackages && !debugPoster) return
         val id = forwardId(sbn)
         NotifyIntents.remove(id)
-        throttle.forget(id)
-        pendingLive.remove(id)
-        sentImages.remove(id)
-        NotifyEvents.removedEvent(id)?.let { bridge.post(it) }
+        // Posts leave through mediaHandler; the removal takes the same queue so
+        // it can never overtake its own post (a ghost banner on the Mac), and
+        // the live state is only ever touched on that one thread.
+        mediaHandler.post {
+            throttle.forget(id)
+            pendingLive.remove(id)
+            NotifyEvents.removedEvent(id)?.let { bridge.post(it) }
+        }
     }
 
     /** The phone's actions, in its own order, for [NotifyEvents.selectActions]. */
