@@ -76,6 +76,22 @@ squircle and the phone's colours, and the Deck grid draws every app in one shape
 colour — the dock e2e asserts all three. The real Mac's Dock with the user's own apps is
 still unverified (test profiles only).
 
+### Emulator numbers (2026-10-20, API 36, `tools/emulator/verify-batch.sh`)
+
+The phone side of `apps.icon` ran on a device for the first time, on three
+system apps with `px` 216 and 1296:
+
+| px asked | flat PNG | fg/bg/mono layers | render |
+|---|---|---|---|
+| 216 | 144×144 px, 3.3–12.0 KB | 216×216 px each | 261–446 ms |
+| 1296 | 864×864 px, 45.7–203.5 KB | 1296×1296 px each | 652–693 ms |
+
+The flat icon is exactly `px`·2/3 and every layer exactly `px`, all three apps
+sent fg and bg (two also `mono`), and the 1296 fg/bg PNGs were saved under
+`.agent/rig-verify/icons/` and checked by eye: the visible artwork sits inside
+the central 72 dp of the 108 dp layer, as `IconSizes`/the launcher crop expect.
+Render times are software-GPU emulator numbers and say nothing about the phone.
+
 ### Step 0: can a runtime-built icon get Liquid Glass?
 
 No supported runtime path exists. macOS 26 only draws a layered Liquid Glass icon from an

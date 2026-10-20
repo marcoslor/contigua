@@ -76,12 +76,30 @@ each phase as a PNG. It talks to the phone by address (`adb forward`), never ove
 mDNS, and pins `emulator-5554` so a real phone stays untouched.
 
 ```bash
-tools/emulator/setup.sh    # SDK packages + AVD (idempotent)
-tools/emulator/start.sh    # boot, Shizuku, build+install, prints 127.0.0.1:47811
-tools/emulator/flow.sh     # the POC check; frames in .agent/emu/frames/
+bash tools/emulator/setup.sh        # SDK packages + AVD (idempotent)
+bash tools/emulator/preflight.sh    # no device: syntax, APK, manifest, budget
+bash tools/emulator/verify-batch.sh --check   # rehearse the boot command
+bash tools/emulator/start.sh        # boot, Shizuku, build+install, 127.0.0.1:47811
+bash tools/emulator/flow.sh         # the POC check; frames in .agent/emu/frames/
 python3 tools/fakephone/deckctl.py --host 127.0.0.1 --port 47811 \
     --state tools/emulator/.cache/deckctl-state.json apps
 ```
+
+Run every script as `bash <script>`: the rig does not rely on exec bits, and one
+missing bit used to cost a whole boot. A boot is expensive, so rehearse it:
+`verify-batch.sh --check` runs preflight (syntax, the APK's versionCode and
+merged manifest, deckctl's subcommands, the boot budget) plus every section's
+dry run without starting anything. The boot itself is one call, because the
+emulator holds the machine-wide heavy lock for its whole life:
+
+```sh
+~/dev/pocketdeck/.agent/heavy.sh timeout 1800 bash tools/emulator/verify-batch.sh
+```
+
+That boots once and runs media control, screen off/wake and the icon renders in
+one go, then kills the emulator. The reliability rules learnt the hard way
+(explicit broadcast components, `-d` installs with a versionCode check, the
+shell-service retry) are in `tools/emulator/README.md`.
 
 Details (pairing without a camera, port discovery, timings, what fails on a
 loaded machine) are in `tools/emulator/README.md`.
