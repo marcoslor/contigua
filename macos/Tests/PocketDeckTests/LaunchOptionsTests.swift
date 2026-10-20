@@ -16,6 +16,7 @@ final class LaunchOptionsTests: XCTestCase {
             "--quit-after", "20",
             "--qr-sheet",
             "--qr-payload-file", "/tmp/pd.qr",
+            "--mcp-enable",
         ])
         XCTAssertEqual(options.connect?.host, "127.0.0.1")
         XCTAssertEqual(options.connect?.port, 47000)
@@ -35,6 +36,7 @@ final class LaunchOptionsTests: XCTestCase {
         XCTAssertFalse(options.resetPairing)
         XCTAssertTrue(options.qrSheet)
         XCTAssertEqual(options.qrPayloadFile, "/tmp/pd.qr")
+        XCTAssertTrue(options.mcpEnable)
     }
 
     func testResizeWithoutUnitSuffix() {

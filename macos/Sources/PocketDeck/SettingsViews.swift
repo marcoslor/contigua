@@ -10,8 +10,59 @@ struct SettingsView: View {
             Tab("General", systemImage: "gearshape") { GeneralSettings() }
             Tab("Input", systemImage: "computermouse") { InputSettings() }
             Tab("Devices", systemImage: "iphone.gen3") { DevicesSettings() }
+            Tab("Automation", systemImage: "terminal") { AutomationSettings() }
         }
         .frame(width: 480)
+    }
+}
+
+/// Settings › Automation: the automation server's gate (docs/design/mcp.md).
+/// Off by default; while it is on, Settings shows the client snippet and how
+/// many agents are connected.
+struct AutomationSettings: View {
+    @Environment(ConnectionController.self) private var controller
+    @State private var copied = false
+
+    var body: some View {
+        Form {
+            Section {
+                Toggle("Allow AI agents to control your phone", isOn: Binding(
+                    get: { controller.mcp.enabled },
+                    set: { controller.mcp.setEnabled($0) },
+                ))
+                Text("A local MCP server lets an AI agent on this Mac see phone windows, tap, type, swipe, open apps and send links or files. It listens only on a private local socket, never on the network. Everything is off while this is off.")
+                    .font(.subheadline).foregroundStyle(.secondary)
+            }
+            if controller.mcp.enabled {
+                Section("Connected agents") {
+                    LabeledContent("Clients") {
+                        Text("\(controller.mcp.clientCount)")
+                    }
+                    Button("Disconnect agent") { controller.mcp.disconnectAgents() }
+                        .disabled(controller.mcp.clientCount == 0)
+                }
+                Section("MCP client configuration") {
+                    Text(controller.mcp.configSnippet)
+                        .font(.system(.caption, design: .monospaced))
+                        .textSelection(.enabled)
+                    Button(copied ? "Copied" : "Copy") {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(controller.mcp.configSnippet, forType: .string)
+                        copied = true
+                    }
+                }
+                Section {
+                    Text("Every tool call is logged by name and duration only, never its arguments, text, links, file names or pixels.")
+                        .font(.subheadline).foregroundStyle(.secondary)
+                }
+            }
+            if let error = controller.mcp.lastError {
+                Section {
+                    Text(error).font(.subheadline).foregroundStyle(.red)
+                }
+            }
+        }
+        .formStyle(.grouped)
     }
 }
 
