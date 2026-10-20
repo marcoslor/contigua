@@ -132,6 +132,8 @@ enum SessionEvent {
     case fsProgress(id: UInt32, bytes: Int)
     /// A write or mutation finished; `item` is the new metadata on success.
     case fsResult(id: UInt32, ok: Bool, item: [String: Any]?, code: String?, message: String?)
+    /// A watched folder's contents moved (docs/design/files.md §5).
+    case fsChanges(paths: [String])
     case fsError(id: UInt32, code: String, message: String?)
     /// Notifications + media controls (docs/design/notify.md).
     case notifyState(on: Bool)
@@ -915,6 +917,8 @@ final class Session {
             emit(.fsResult(id: id, ok: message.bool("ok") ?? false,
                            item: message.object("item"),
                            code: message.string("code"), message: message.string("message")))
+        case "fs.changes":
+            emit(.fsChanges(paths: message.strings("paths") ?? []))
         case "error":
             let code = message.string("code") ?? "unknown"
             // An fs failure names the request it answers; it is not the
@@ -1148,6 +1152,9 @@ final class Session {
     }
     func fsSetAttrs(id: UInt32, path: String, mtime: Int) {
         sendJSON(["t": "fs.setAttrs", "id": Int(id), "path": path, "mtime": mtime])
+    }
+    func fsWatch(id: UInt32, paths: [String], on: Bool) {
+        sendJSON(["t": on ? "fs.watch" : "fs.unwatch", "id": Int(id), "paths": paths])
     }
     private func sendData(_ kind: MessageType, id: UInt32, bytes: [UInt8], sent: @escaping @Sendable (Bool) -> Void) {
         guard let ch = channel else { return sent(false) }

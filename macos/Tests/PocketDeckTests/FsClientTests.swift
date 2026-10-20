@@ -28,6 +28,7 @@ private final class FakeFsChannel: FsChannel {
     private(set) var deletes: [(id: UInt32, path: String, recursive: Bool, etag: String?)] = []
     private(set) var mkdirs: [(id: UInt32, path: String)] = []
     private(set) var setAttrs: [(id: UInt32, path: String, mtime: Int)] = []
+    private(set) var watches: [(id: UInt32, paths: [String], on: Bool)] = []
     /// The session's write completions, held so a test decides when a chunk landed.
     private(set) var sends: [(Int, @Sendable (Bool) -> Void)] = []
 
@@ -77,6 +78,11 @@ private final class FakeFsChannel: FsChannel {
     func fsSetAttrs(id: UInt32, path: String, mtime: Int) {
         lock.lock(); defer { lock.unlock() }
         setAttrs.append((id, path, mtime))
+    }
+
+    func fsWatch(id: UInt32, paths: [String], on: Bool) {
+        lock.lock(); defer { lock.unlock() }
+        watches.append((id, paths, on))
     }
 
     func fsCancel(id: UInt32) {

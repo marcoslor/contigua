@@ -1671,6 +1671,9 @@ final class ConnectionController {
         case .fsError(let id, let code, let message):
             fsClient?.failure(id: id, code: code, message: message)
             filesBridgeClient?.failure(id: id, code: code, message: message)
+        case .fsChanges(let paths):
+            fsClient?.changes(paths: paths)
+            filesBridgeClient?.changes(paths: paths)
         case .notifyState(let on):
             Log.app.notice("phone notify \(on ? "on" : "off", privacy: .public)")
             if !on { nowPlaying.clear() }
@@ -1878,10 +1881,15 @@ final class ConnectionController {
         // §1): the app owns the session, so the extension asks this socket.
         if let session {
             let client = FsClient(channel: session)
+            // The phone's fs.changes go to the app's watcher half, which re-lists
+            // the folder and signals the extension (design §5).
+            client.onChanges = { paths in FilesBridge.shared.filesChanged(paths: paths) }
             filesBridgeClient = client
-            FilesBridge.shared.attach(host: SessionBridgeHost(client: client,
-                                                             name: displayName(for: ref),
-                                                             mapURL: profile.filesIdMapUrl))
+            FilesBridge.shared.attach(host: SessionBridgeHost(
+                client: client,
+                name: displayName(for: ref),
+                mapURL: profile.filesIdMapUrl,
+                signal: { containers in FilesBridge.shared.signal(containers: containers) }))
             filesDomain.sessionReady(true)
         }
         everOnline = true

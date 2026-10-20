@@ -633,7 +633,8 @@ while the list is empty. No watcher thread, timer or poll exists when idle.
   dropped by the watch source before it reaches the coalescer, so a create from
   the Mac does not echo back as a change.
 - **Teardown:** `fs.unwatch` closes that watch; a session end closes every watch
-  and stops the poll. The Mac also sends `fs.unwatch` when its last enumerator
+  and stops the poll. The bridge's client cap grows from 4 to 6 because the
+  watch subscription is one standing connection per extension process. The Mac also sends `fs.unwatch` when its last enumerator
   for a folder goes away (below), so "no one is looking" is reached both ways.
 - **Mac side:** `enumerator(for:)` asks the bridge to `watch` its container, and
   the enumerator's `invalidate()`, the extension process ending or the bridge

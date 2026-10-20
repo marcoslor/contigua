@@ -94,6 +94,12 @@ final class FilesBridgeClient: @unchecked Sendable {
         write(data)
     }
 
+    /// A push on the watch connection: these containers moved (design §5). It
+    /// carries no id, so it can never be mistaken for a reply.
+    func sendSignal(items: [String]) {
+        write(BridgeWire.signal(items: items))
+    }
+
     func close() {
         lock.lock()
         guard !closed else { lock.unlock(); return }
@@ -127,7 +133,9 @@ final class FilesBridgeClient: @unchecked Sendable {
 /// The listener: accept, peer-uid check, client cap, one read loop per client.
 /// It is not an actor; every callback is handed to the main actor by the owner.
 final class FilesBridgeListener {
-    static let maxClients = 4
+    /// The extension's watch subscription holds one connection for its whole
+    /// life; the rest carry the ordinary per-request connections.
+    static let maxClients = 6
 
     private let queue = DispatchQueue(label: "dev.pocketdeck.mac.files-bridge")
     private let lock = NSLock()
@@ -279,7 +287,8 @@ final class FilesBridgeListener {
                     // A request channel only carries requests: a malformed line
                     // ends it rather than guessing.
                     break loop
-                case .reply:
+                case .reply, .signal:
+                    // A request channel carries requests only.
                     break loop
                 }
             }
@@ -317,6 +326,15 @@ protocol FilesBridgeHost: AnyObject {
                 completion: @escaping (Result<FileItem, FsError>) -> Void)
     func delete(item: String, base: String, recursive: Bool,
                 completion: @escaping (Result<Void, FsError>) -> Void)
+    /// One container entered or left the watched set (design §5).
+    func watch(item: String, on: Bool, completion: @escaping (Result<Void, FsError>) -> Void)
+    /// A container's deltas after an anchor.
+    func changes(item: String, from: String?,
+                 completion: @escaping (Result<FilesChangesReply, FsError>) -> Void)
+    /// A container's current sync anchor.
+    func anchor(item: String, completion: @escaping (Result<String, FsError>) -> Void)
+    /// A watched folder moved: re-list, diff and signal the extension.
+    func filesChanged(paths: [String])
     func cancel(id: UInt32)
     func cancelAll()
 }
@@ -328,11 +346,24 @@ final class SessionBridgeHost: FilesBridgeHost {
     private let name: String?
     private let mapURL: URL?
     private var map: FilesIdMap
+    /// The app tells the extension which containers moved (design §5).
+    private let signal: ([String]) -> Void
 
-    init(client: FsClient, name: String?, mapURL: URL?) {
+    /// The last listing handed out per container, and the page being built.
+    private var snapshots: [String: [String: FileItem]] = [:]
+    private var building: [String: [String: FileItem]] = [:]
+    /// Each watched container's anchor log.
+    private var logs: [String: FilesChangeLog] = [:]
+    /// Which containers a folder belongs to, for a phone-side change.
+    private var pathByItem: [String: String] = [:]
+    private var itemsByPath: [String: Set<String>] = [:]
+
+    init(client: FsClient, name: String?, mapURL: URL?,
+         signal: @escaping ([String]) -> Void = { _ in }) {
         self.client = client
         self.name = name
         self.mapURL = mapURL
+        self.signal = signal
         self.map = mapURL.map(FilesIdMap.load) ?? FilesIdMap()
     }
 
@@ -428,6 +459,17 @@ final class SessionBridgeHost: FilesBridgeHost {
                         let items = self.map.insert(childrenOf: path, parentIdentifier: item,
                                                     items: listing.items)
                         self.save()
+                        // The listing the system was shown is the baseline a
+                        // change is diffed against; a page at a time.
+                        if page == nil { self.building[item] = [:] }
+                        var pageItems = self.building[item] ?? [:]
+                        for mapped in items { pageItems[mapped.identifier] = mapped }
+                        if listing.next == nil {
+                            self.snapshots[item] = pageItems
+                            self.building.removeValue(forKey: item)
+                        } else {
+                            self.building[item] = pageItems
+                        }
                         completion(.success((items, listing.next)))
                     case .failure(let error):
                         completion(.failure(error))
@@ -711,6 +753,82 @@ final class SessionBridgeHost: FilesBridgeHost {
         }
     }
 
+    // MARK: Watching (design §5, S5)
+
+    func watch(item: String, on: Bool, completion: @escaping (Result<Void, FsError>) -> Void) {
+        resolve(item) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .failure(let error):
+                completion(.failure(error))
+            case .success(let path):
+                if on {
+                    self.pathByItem[item] = path
+                    self.itemsByPath[path, default: []].insert(item)
+                } else if let old = self.pathByItem.removeValue(forKey: item) {
+                    self.itemsByPath[old]?.remove(item)
+                    if self.itemsByPath[old]?.isEmpty == true { self.itemsByPath.removeValue(forKey: old) }
+                }
+                self.client.watch(paths: [path], on: on, completion: completion)
+            }
+        }
+    }
+
+    func changes(item: String, from: String?,
+                 completion: @escaping (Result<FilesChangesReply, FsError>) -> Void) {
+        let log = logs[item] ?? FilesChangeLog(scope: item)
+        logs[item] = log
+        let from = from ?? FilesChangeLog.anchor(0, scope: item)
+        guard let delta = log.changes(from: from) else {
+            return completion(.success(FilesChangesReply(anchor: log.anchor, delta: .none, expired: true)))
+        }
+        completion(.success(FilesChangesReply(anchor: log.anchor, delta: delta, expired: false)))
+    }
+
+    func anchor(item: String, completion: @escaping (Result<String, FsError>) -> Void) {
+        let log = logs[item] ?? FilesChangeLog(scope: item)
+        logs[item] = log
+        completion(.success(log.anchor))
+    }
+
+    func filesChanged(paths: [String]) {
+        for path in paths {
+            for item in itemsByPath[path] ?? [] { refresh(item) }
+        }
+    }
+
+    /// Re-lists one container and records what moved. The extension is signalled
+    /// for every changed container; the delta rides in its anchor log.
+    private func refresh(_ item: String) {
+        let before = snapshots[item]
+        listPages(item: item) { [weak self] result in
+            guard let self, case .success = result else { return }
+            guard let before else { return }
+            let after = self.snapshots[item] ?? [:]
+            let delta = FilesDiff.delta(old: before, new: Array(after.values))
+            var log = self.logs[item] ?? FilesChangeLog(scope: item)
+            let moved = log.record(delta)
+            self.logs[item] = log
+            if moved { self.signal([item]) }
+        }
+    }
+
+    /// Every page of one container; the closure runs once, at the last page.
+    private func listPages(item: String,
+                           completion: @escaping (Result<Void, FsError>) -> Void) {
+        func page(_ cursor: String?) {
+            list(item: item, page: cursor) { result in
+                switch result {
+                case .failure(let error):
+                    completion(.failure(error))
+                case .success(let listing):
+                    if let next = listing.next { page(next) } else { completion(.success(())) }
+                }
+            }
+        }
+        page(nil)
+    }
+
     func cancel(id: UInt32) { client.cancel(id: id) }
     func cancelAll() { client.cancelAll() }
 }
@@ -726,6 +844,11 @@ final class FilesBridge {
     private var readIDs: [ObjectIdentifier: [UInt32: UInt32]] = [:]
     /// The sink a create/modify's data frames go into, per client and id.
     private var writeSinks: [ObjectIdentifier: [UInt32: FilesWriteSink]] = [:]
+    /// The watch subscription each client holds, and the ref-count per container
+    /// across every extension process (design §5).
+    private var watchSets: [ObjectIdentifier: Set<String>] = [:]
+    private var watchClients: [ObjectIdentifier: FilesBridgeClient] = [:]
+    private var watchCounts: [String: Int] = [:]
 
     private var listener: FilesBridgeListener?
     private var host: FilesBridgeHost?
@@ -779,6 +902,9 @@ final class FilesBridge {
         liveIDs.removeAll()
         readIDs.removeAll()
         writeSinks.removeAll()
+        watchSets.removeAll()
+        watchClients.removeAll()
+        watchCounts.removeAll()
     }
 
     /// A session became ready: the bridge answers from now on.
@@ -795,7 +921,25 @@ final class FilesBridge {
         liveIDs.removeAll()
         readIDs.removeAll()
         writeSinks.removeAll()
+        watchSets.removeAll()
+        watchClients.removeAll()
+        watchCounts.removeAll()
         Log.files.notice("bridge: session detached")
+    }
+
+    /// A watched container moved: tell every extension process that holds it.
+    func signal(containers: [String]) {
+        guard !containers.isEmpty else { return }
+        for (slot, client) in watchClients {
+            let mine = (watchSets[slot] ?? []).filter { containers.contains($0) }
+            if !mine.isEmpty { client.sendSignal(items: Array(mine)) }
+        }
+        Log.files.notice("bridge: signal containers=\(containers.count, privacy: .public)")
+    }
+
+    /// The phone reported these folders changed: the host re-lists them.
+    func filesChanged(paths: [String]) {
+        host?.filesChanged(paths: paths)
     }
 
     // MARK: Requests
@@ -922,6 +1066,52 @@ final class FilesBridge {
                     }
                 }
             }
+        case .watch(let id, let items, let on):
+            guard let host, host.isConnected else { return client.send(.error(id: id, code: "offline")) }
+            guard begin(id, client) else { return }
+            applyWatch(items, on: on, client: client, host: host) { [weak self] result in
+                MainActor.assumeIsolated {
+                    self?.end(id, client)
+                    switch result {
+                    case .success:
+                        client.send(.ok(id: id))
+                    case .failure(let error):
+                        client.send(.error(id: id, code: error.code))
+                    }
+                }
+            }
+            Log.files.notice("bridge: watch on=\(on, privacy: .public) items=\(items.count, privacy: .public)")
+        case .changes(let id, let item, let from):
+            guard let host, host.isConnected else { return client.send(.error(id: id, code: "offline")) }
+            guard begin(id, client) else { return }
+            host.changes(item: item, from: from) { [weak self] result in
+                MainActor.assumeIsolated {
+                    self?.end(id, client)
+                    switch result {
+                    case .success(let reply):
+                        client.send(.changes(id: id, anchor: reply.anchor, items: reply.delta.items,
+                                             deleted: reply.delta.deleted, expired: reply.expired))
+                        Log.files.notice("bridge: changes expired=\(reply.expired, privacy: .public) items=\(reply.delta.items.count, privacy: .public) deleted=\(reply.delta.deleted.count, privacy: .public)")
+                    case .failure(let error):
+                        client.send(.error(id: id, code: error.code))
+                        Log.files.notice("bridge: changes failed code=\(error.code, privacy: .public)")
+                    }
+                }
+            }
+        case .anchor(let id, let item):
+            guard let host, host.isConnected else { return client.send(.error(id: id, code: "offline")) }
+            guard begin(id, client) else { return }
+            host.anchor(item: item) { [weak self] result in
+                MainActor.assumeIsolated {
+                    self?.end(id, client)
+                    switch result {
+                    case .success(let anchor):
+                        client.send(.anchor(id: id, anchor: anchor))
+                    case .failure(let error):
+                        client.send(.error(id: id, code: error.code))
+                    }
+                }
+            }
         case .cancel(let id):
             if let fsID = readIDs[slot]?[id] {
                 readIDs[slot]?[id] = nil
@@ -935,6 +1125,45 @@ final class FilesBridge {
                 Log.files.notice("bridge: write cancelled")
             }
         }
+    }
+
+    /// Ref-counts one watch toggle across every client, and asks the phone only
+    /// for the transitions (design §5).
+    private func applyWatch(_ items: [String], on: Bool, client: FilesBridgeClient,
+                            host: FilesBridgeHost,
+                            completion: @escaping (Result<Void, FsError>) -> Void) {
+        let slot = ObjectIdentifier(client)
+        var set = watchSets[slot] ?? []
+        watchClients[slot] = client
+        var toggles: [(String, Bool)] = []
+        for item in items {
+            let count = watchCounts[item] ?? 0
+            if on {
+                guard !set.contains(item) else { continue }
+                set.insert(item)
+                watchCounts[item] = count + 1
+                if count == 0 { toggles.append((item, true)) }
+            } else {
+                guard set.remove(item) != nil else { continue }
+                if count <= 1 { watchCounts.removeValue(forKey: item) } else { watchCounts[item] = count - 1 }
+                if count <= 1 { toggles.append((item, false)) }
+            }
+        }
+        watchSets[slot] = set
+        guard !toggles.isEmpty else { return completion(.success(())) }
+        func next() {
+            guard !toggles.isEmpty else { return completion(.success(())) }
+            let (item, on) = toggles.removeFirst()
+            host.watch(item: item, on: on) { result in
+                MainActor.assumeIsolated {
+                    switch result {
+                    case .success: next()
+                    case .failure(let error): completion(.failure(error))
+                    }
+                }
+            }
+        }
+        next()
     }
 
     /// One data chunk for a create/modify's write sink (main actor).
@@ -994,6 +1223,20 @@ final class FilesBridge {
         readIDs.removeValue(forKey: slot)
         writeSinks.removeValue(forKey: slot)
         liveIDs.removeValue(forKey: slot)
+        // An extension process that went away stops looking: its containers drop
+        // out of the ref-count, and the last holder unwatches them on the phone.
+        if let set = watchSets.removeValue(forKey: slot) {
+            for item in set {
+                let count = watchCounts[item] ?? 0
+                if count <= 1 {
+                    watchCounts.removeValue(forKey: item)
+                    host?.watch(item: item, on: false) { _ in }
+                } else {
+                    watchCounts[item] = count - 1
+                }
+            }
+        }
+        watchClients.removeValue(forKey: slot)
         Log.files.notice("bridge: client gone")
     }
 }

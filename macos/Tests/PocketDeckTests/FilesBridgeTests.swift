@@ -105,6 +105,16 @@ private final class BridgeTestClient {
         }
     }
 
+    /// The app's watch pushes on this connection, if any.
+    func signals() -> [[String]] {
+        events.compactMap { if case .signal(let items) = $0 { return items } else { return nil } }
+    }
+
+    /// The peer goes away without a request (a killed extension process).
+    func shutdown() {
+        Darwin.shutdown(fd, SHUT_RDWR)
+    }
+
     var dataHeaders: [(id: UInt32, length: Int)] {
         events.compactMap {
             if case .dataHeader(let id, let length) = $0 { return (id, length) }
@@ -146,6 +156,11 @@ private final class StubBridgeHost: FilesBridgeHost {
     var creates: [BridgeCreate] = []
     var modifies: [BridgeModify] = []
     var deletes = 0
+    var watches: [(String, Bool)] = []
+    var watchError: FsError?
+    var changesReply = FilesChangesReply(anchor: "g0.ino:9", delta: .none, expired: false)
+    var changeRequests: [(String, String?)] = []
+    var changedPaths: [[String]] = []
 
     struct StubWrite {
         let sink: StubSink
@@ -217,6 +232,26 @@ private final class StubBridgeHost: FilesBridgeHost {
                 completion: @escaping (Result<Void, FsError>) -> Void) {
         deletes += 1
         completion(deleteResult)
+    }
+
+    func watch(item: String, on: Bool, completion: @escaping (Result<Void, FsError>) -> Void) {
+        watches.append((item, on))
+        if let error = watchError { return completion(.failure(error)) }
+        completion(.success(()))
+    }
+
+    func changes(item: String, from: String?,
+                 completion: @escaping (Result<FilesChangesReply, FsError>) -> Void) {
+        changeRequests.append((item, from))
+        completion(.success(changesReply))
+    }
+
+    func anchor(item: String, completion: @escaping (Result<String, FsError>) -> Void) {
+        completion(.success(changesReply.anchor))
+    }
+
+    func filesChanged(paths: [String]) {
+        changedPaths.append(paths)
     }
 
     func cancel(id: UInt32) {
@@ -497,19 +532,19 @@ final class FilesBridgeTests: XCTestCase {
         XCTAssertEqual(9, host.pending.count)
     }
 
-    func testAtMostFourClients() throws {
+    func testAtMostSixClients() throws {
         try start()
         bridge.attach(host: host)
         var accepted: [BridgeTestClient] = []
-        for index in UInt32(1)...UInt32(4) {
+        for index in UInt32(1)...UInt32(FilesBridgeListener.maxClients) {
             let client = try connect()
             client.send(.hello(id: index, version: filesBridgeVersion))
             accepted.append(client)
         }
         XCTAssertTrue(pump { accepted.allSatisfy { !$0.replies().isEmpty } })
-        let fifth = try connect()
-        XCTAssertTrue(pump { fifth.closed })
-        XCTAssertTrue(fifth.events.isEmpty)
+        let extra = try connect()
+        XCTAssertTrue(pump { extra.closed })
+        XCTAssertTrue(extra.events.isEmpty)
     }
 
     func testAMalformedLineEndsTheClient() throws {
@@ -536,6 +571,86 @@ final class FilesBridgeTests: XCTestCase {
         client.sendRaw("")   // nothing; close through stop below
         Darwin.close(client.fd)
         XCTAssertTrue(pump { host.cancels == [id] })
+    }
+
+    func testWatchingIsRefCountedAcrossClients() throws {
+        try start()
+        bridge.attach(host: host)
+        let a = try connect()
+        let b = try connect()
+        a.send(.watch(id: 1, items: ["ino:9"], on: true))
+        XCTAssertTrue(pump { a.replies().count == 1 })
+        XCTAssertEqual([.ok(id: 1)], a.replies())
+        // The second extension process asks for the same folder: the phone is
+        // told once.
+        b.send(.watch(id: 1, items: ["ino:9"], on: true))
+        XCTAssertTrue(pump { b.replies().count == 1 })
+        XCTAssertEqual(["ino:9"], host.watches.map(\.0))
+        XCTAssertEqual([true], host.watches.map(\.1))
+
+        a.send(.watch(id: 2, items: ["ino:9"], on: false))
+        XCTAssertTrue(pump { a.replies().count == 2 })
+        XCTAssertEqual(1, host.watches.count, "b still holds the folder")
+        b.send(.watch(id: 2, items: ["ino:9"], on: false))
+        XCTAssertTrue(pump { b.replies().count == 2 })
+        XCTAssertEqual([true, false], host.watches.map(\.1))
+    }
+
+    func testAClientGoingAwayDropsItsWatches() throws {
+        try start()
+        bridge.attach(host: host)
+        let client = try connect()
+        client.send(.watch(id: 1, items: ["ino:9", FilesMap.rootIdentifier], on: true))
+        XCTAssertTrue(pump { client.replies().count == 1 })
+        XCTAssertEqual(2, host.watches.count)
+        // A killed extension process: its socket closes with no request.
+        client.shutdown()
+        XCTAssertTrue(pump { host.watches.filter { !$0.1 }.count == 2 })
+        XCTAssertEqual(Set(["ino:9", FilesMap.rootIdentifier]),
+                       Set(host.watches.filter { !$0.1 }.map(\.0)))
+    }
+
+    func testASignalReachesOnlyTheWatchingClient() throws {
+        try start()
+        bridge.attach(host: host)
+        let a = try connect()
+        let b = try connect()
+        a.send(.watch(id: 1, items: ["ino:9"], on: true))
+        b.send(.watch(id: 1, items: ["ino:11"], on: true))
+        XCTAssertTrue(pump { a.replies().count == 1 && b.replies().count == 1 })
+        bridge.signal(containers: ["ino:9"])
+        XCTAssertTrue(pump { !a.signals().isEmpty })
+        XCTAssertEqual([["ino:9"]], a.signals())
+        _ = b.poll()
+        XCTAssertTrue(b.signals().isEmpty)
+    }
+
+    func testChangesAndAnchorForwardTheHostsAnswer() throws {
+        try start()
+        bridge.attach(host: host)
+        let item = fileItem("a.txt")
+        host.changesReply = FilesChangesReply(
+            anchor: "g2.ino:9", delta: FilesDelta(items: [item], deleted: ["ino:8"]),
+            expired: false)
+        let client = try connect()
+        client.send(.changes(id: 1, item: "ino:9", from: "g1.ino:9"))
+        client.send(.anchor(id: 2, item: "ino:9"))
+        XCTAssertTrue(pump { client.replies().count == 2 })
+        XCTAssertEqual([.changes(id: 1, anchor: "g2.ino:9", items: [item],
+                                 deleted: ["ino:8"], expired: false),
+                        .anchor(id: 2, anchor: "g2.ino:9")], client.replies())
+        XCTAssertEqual("g1.ino:9", host.changeRequests.first?.1)
+    }
+
+    func testAnExpiredAnchorIsForwarded() throws {
+        try start()
+        bridge.attach(host: host)
+        host.changesReply = FilesChangesReply(anchor: "g0.ino:9", delta: .none, expired: true)
+        let client = try connect()
+        client.send(.changes(id: 1, item: "ino:9", from: "files-s3"))
+        XCTAssertTrue(pump { client.replies().count == 1 })
+        XCTAssertEqual([.changes(id: 1, anchor: "g0.ino:9", items: [], deleted: [],
+                                 expired: true)], client.replies())
     }
 
     func testStopRemovesTheSocket() throws {

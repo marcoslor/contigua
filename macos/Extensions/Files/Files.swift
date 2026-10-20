@@ -44,6 +44,8 @@ final class BridgeConnection {
     enum Reply {
         case reply(BridgeReply)
         case data([UInt8])
+        /// The app pushed a change on the watch connection (design §5).
+        case signal([String])
     }
 
     private let fd: Int32
@@ -51,7 +53,7 @@ final class BridgeConnection {
     private var decoder = BridgeDecoder(maxLineBytes: BridgeWire.maxReplyLineBytes)
     private var queue: [Reply] = []
 
-    init?(path: String) {
+    init?(path: String, readTimeout: Int = 20) {
         fd = socket(AF_UNIX, SOCK_STREAM, 0)
         guard fd >= 0 else { return nil }
         var address = sockaddr_un()
@@ -76,9 +78,12 @@ final class BridgeConnection {
         var noSigPipe: Int32 = 1
         setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &noSigPipe,
                    socklen_t(MemoryLayout<Int32>.size))
-        var timeout = timeval(tv_sec: 20, tv_usec: 0)
-        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
-        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+        var timeout = timeval(tv_sec: readTimeout, tv_usec: 0)
+        if readTimeout > 0 {
+            setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+        }
+        var sendTimeout = timeval(tv_sec: 20, tv_usec: 0)
+        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &sendTimeout, socklen_t(MemoryLayout<timeval>.size))
     }
 
     deinit { Darwin.close(fd) }
@@ -115,11 +120,19 @@ final class BridgeConnection {
     }
 
     /// The next reply frame, blocking until one arrives; nil means the bridge
-    /// closed or answered something this side does not understand.
-    func next() -> Reply? {
+    /// closed or answered something this side does not understand. With
+    /// [waitForever] the socket's receive timeout is bypassed: the watch
+    /// connection is idle between changes and must not mistake quiet for death.
+    func next(waitForever: Bool = false) -> Reply? {
         var buffer = [UInt8](repeating: 0, count: 64 * 1024)
         while true {
             if !queue.isEmpty { return queue.removeFirst() }
+            if waitForever {
+                var descriptor = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
+                let ready = poll(&descriptor, 1, -1)
+                if ready < 0 && errno == EINTR { continue }
+                if ready <= 0 { return nil }
+            }
             let count = read(fd, &buffer, buffer.count)
             if count <= 0 {
                 if count < 0 && errno == EINTR { continue }
@@ -133,12 +146,108 @@ final class BridgeConnection {
                     queue.append(.data(bytes))
                 case .dataHeader:
                     break
+                case .signal(let items):
+                    queue.append(.signal(items))
                 case .invalid, .request:
                     return nil
                 }
             }
             if decoder.broken { return nil }
         }
+    }
+}
+
+/// The extension's standing subscription to the folders it has open (design
+/// §5, S5). One connection per process, kept open by a reader thread: the app
+/// answers `changed` push lines on it and the extension signals the enumerator
+/// the system gave it. The connection sends `watch`/`unwatch` and nothing else;
+/// if the app restarts, the next enumerator call reconnects and re-subscribes.
+final class WatchChannel {
+    private let domain: NSFileProviderDomain
+    private let lock = NSLock()
+    private var items: Set<String> = []
+    private var connection: BridgeConnection?
+    private var thread: Thread?
+
+    init(domain: NSFileProviderDomain) {
+        self.domain = domain
+    }
+
+    /// Adds or removes one container. A container that is already in the set is
+    /// a no-op, so an enumerator being rebuilt is cheap.
+    func set(_ item: String, on: Bool) {
+        lock.lock()
+        let known = items.contains(item)
+        if on && known {
+            lock.unlock()
+            return
+        }
+        if on { items.insert(item) } else { items.remove(item) }
+        lock.unlock()
+        if !send(.watch(id: 1, items: [item], on: on)) {
+            // The app is not there (yet, or any more): one reconnect, then a
+            // full re-subscription, so a restarted app knows the whole set.
+            if !connect() { return }
+            _ = send(.watch(id: 1, items: Array(items), on: true))
+        }
+    }
+
+    /// Sends on the current connection; false means it is gone.
+    private func send(_ request: BridgeRequest) -> Bool {
+        lock.lock()
+        let connection = self.connection
+        lock.unlock()
+        guard let connection else { return false }
+        if connection.send(request) { return true }
+        lock.lock()
+        if self.connection === connection { self.connection = nil }
+        lock.unlock()
+        return false
+    }
+
+    /// Opens the connection and starts its reader; false when the app is away.
+    @discardableResult
+    private func connect() -> Bool {
+        lock.lock()
+        if connection != nil { lock.unlock(); return true }
+        lock.unlock()
+        guard let path = bridgeSocketPath(domain: domain),
+              let live = BridgeConnection(path: path),
+              live.send(.hello(id: 1, version: filesBridgeVersion)),
+              let hello = live.next(), case .reply(.hello(_, let version, _, _)) = hello,
+              version == filesBridgeVersion else { return false }
+        lock.lock()
+        connection = live
+        let reader = Thread { [weak self] in self?.readLoop(live) }
+        reader.name = "pd-files-watch"
+        thread = reader
+        lock.unlock()
+        reader.start()
+        return true
+    }
+
+    private func readLoop(_ live: BridgeConnection) {
+        while true {
+            guard let frame = live.next(waitForever: true) else { break }
+            if case .signal(let containers) = frame { signal(containers) }
+        }
+        lock.lock()
+        if connection === live {
+            connection = nil
+            thread = nil
+        }
+        lock.unlock()
+    }
+
+    private func signal(_ containers: [String]) {
+        guard let manager = NSFileProviderManager(for: domain) else { return }
+        for container in containers {
+            let identifier = container == FilesMap.rootIdentifier
+                ? NSFileProviderItemIdentifier.rootContainer
+                : NSFileProviderItemIdentifier(container)
+            manager.signalEnumerator(for: identifier) { _ in }
+        }
+        log.notice("watch: signal containers=\(containers.count, privacy: .public)")
     }
 }
 
@@ -358,6 +467,66 @@ final class FilesExtension: NSObject, NSFileProviderReplicatedExtension {
         NSFileProviderManager(for: domain)?.signalEnumerator(for: item) { _ in }
     }
 
+    // MARK: Watching (design §5, S5)
+
+    /// One standing subscription per extension process.
+    private lazy var watchChannel = WatchChannel(domain: domain)
+
+    /// A container's enumerator exists: the app watches it on the phone.
+    func watch(_ identifier: String, on: Bool) {
+        watchChannel.set(identifier, on: on)
+    }
+
+    /// Reads a container's deltas off the main thread, for the enumerator.
+    func loadChanges(item: String, from: String?,
+                     completion: @escaping (Result<FilesChangesReply, FilesFailure>) -> Void) {
+        work.async { completion(self.changes(item: item, from: from)) }
+    }
+
+    func loadAnchor(item: String, completion: @escaping (Result<String, FilesFailure>) -> Void) {
+        work.async { completion(self.anchor(item: item)) }
+    }
+
+    private func changes(item: String, from: String?) -> Result<FilesChangesReply, FilesFailure> {
+        guard case .success(let connection) = connect(), hello(connection) else {
+            return .failure(.offline)
+        }
+        guard connection.send(.changes(id: 1, item: item, from: from)) else { return .failure(.offline) }
+        while let frame = connection.next() {
+            guard case .reply(let reply) = frame else { continue }
+            switch reply {
+            case .changes(_, let anchor, let items, let deleted, let expired):
+                return .success(FilesChangesReply(
+                    anchor: anchor, delta: FilesDelta(items: items, deleted: deleted),
+                    expired: expired))
+            case .error(_, let code):
+                return .failure(FilesFailure.from(code: code))
+            default:
+                continue
+            }
+        }
+        return .failure(.offline)
+    }
+
+    private func anchor(item: String) -> Result<String, FilesFailure> {
+        guard case .success(let connection) = connect(), hello(connection) else {
+            return .failure(.offline)
+        }
+        guard connection.send(.anchor(id: 1, item: item)) else { return .failure(.offline) }
+        while let frame = connection.next() {
+            guard case .reply(let reply) = frame else { continue }
+            switch reply {
+            case .anchor(_, let anchor):
+                return .success(anchor)
+            case .error(_, let code):
+                return .failure(FilesFailure.from(code: code))
+            default:
+                continue
+            }
+        }
+        return .failure(.offline)
+    }
+
     // MARK: NSFileProviderReplicatedExtension
 
     func item(for identifier: NSFileProviderItemIdentifier,
@@ -467,6 +636,8 @@ final class FilesExtension: NSObject, NSFileProviderReplicatedExtension {
                 received += bytes.count
                 progress.completedUnitCount = Int64(received)
                 if received > metadata.size { failure = .io; break }
+            case .signal:
+                continue
             case .reply(let reply):
                 switch reply {
                 case .end(_, let size, let sha256):
@@ -911,7 +1082,15 @@ final class FilesEnumerator: NSObject, NSFileProviderEnumerator {
         self.container = container
     }
 
-    func invalidate() {}
+    func invalidate() {
+        // The system is done with this folder: stop watching it on the phone
+        // when this was the last holder (design §5).
+        owner?.watch(containerIdentifier, on: false)
+    }
+
+    private var containerIdentifier: String {
+        container == .rootContainer ? FilesMap.rootIdentifier : container.rawValue
+    }
 
     func enumerateItems(for observer: NSFileProviderEnumerationObserver,
                         startingAt page: NSFileProviderPage) {
@@ -926,11 +1105,13 @@ final class FilesEnumerator: NSObject, NSFileProviderEnumerator {
            page.rawValue as Data != initialByDate {
             cursor = String(data: page.rawValue, encoding: .utf8)
         }
-        let identifier = container == .rootContainer
-            ? FilesMap.rootIdentifier : container.rawValue
+        let identifier = containerIdentifier
         owner.loadListing(item: identifier, page: cursor) { result in
             switch result {
             case .success(let listing):
+                // The folder is open in the system's eyes: watch it on the phone
+                // from now on (design §5).
+                owner.watch(identifier, on: true)
                 observer.didEnumerate(listing.items.map(ProviderItem.init))
                 let next = listing.next.map { NSFileProviderPage(Data($0.utf8)) }
                 log.notice("enumerate items=\(listing.items.count, privacy: .public) more=\(next != nil, privacy: .public)")
@@ -944,12 +1125,46 @@ final class FilesEnumerator: NSObject, NSFileProviderEnumerator {
 
     func enumerateChanges(for observer: NSFileProviderChangeObserver,
                           from anchor: NSFileProviderSyncAnchor) {
-        // S3 reports no remote changes: the current anchor is the answer (S5
-        // turns fs.changes into real deltas).
-        observer.finishEnumeratingChanges(upTo: owner?.anchor ?? anchor, moreComing: false)
+        guard let owner else {
+            observer.finishEnumeratingWithError(FilesFailure.offline.error)
+            return
+        }
+        let from = String(data: anchor.rawValue, encoding: .utf8) ?? ""
+        owner.loadChanges(item: containerIdentifier, from: from) { result in
+            switch result {
+            case .failure(let failure):
+                log.notice("changes failed code=\(failure.rawValue, privacy: .public)")
+                observer.finishEnumeratingWithError(failure.error)
+            case .success(let reply) where reply.expired:
+                // Older than the app's kept history (or from another process):
+                // the system starts over with a fresh enumeration.
+                log.notice("changes anchor expired")
+                observer.finishEnumeratingWithError(NSFileProviderError(.syncAnchorExpired))
+            case .success(let reply):
+                if !reply.delta.items.isEmpty {
+                    observer.didUpdate(reply.delta.items.map(ProviderItem.init))
+                }
+                if !reply.delta.deleted.isEmpty {
+                    observer.didDeleteItems(withIdentifiers: reply.delta.deleted.map {
+                        NSFileProviderItemIdentifier($0)
+                    })
+                }
+                log.notice("changes items=\(reply.delta.items.count, privacy: .public) deleted=\(reply.delta.deleted.count, privacy: .public)")
+                observer.finishEnumeratingChanges(
+                    upTo: NSFileProviderSyncAnchor(Data(reply.anchor.utf8)), moreComing: false)
+            }
+        }
     }
 
     func currentSyncAnchor(completionHandler: @escaping (NSFileProviderSyncAnchor?) -> Void) {
-        completionHandler(owner?.anchor)
+        guard let owner else { return completionHandler(nil) }
+        owner.loadAnchor(item: containerIdentifier) { result in
+            switch result {
+            case .success(let anchor):
+                completionHandler(NSFileProviderSyncAnchor(Data(anchor.utf8)))
+            case .failure:
+                completionHandler(nil)
+            }
+        }
     }
 }

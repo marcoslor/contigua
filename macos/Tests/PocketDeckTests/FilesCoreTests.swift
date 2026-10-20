@@ -19,6 +19,11 @@ final class FilesBridgeWireTests: XCTestCase {
                       fs: FsItem(name: name, dir: false, size: 4, mtime: 5, ino: 6, etag: "aa"))
     }
 
+    func testSignalsAreNotReplies() {
+        let line = BridgeWire.signal(items: ["ino:10", FilesMap.rootIdentifier])
+        XCTAssertEqual([.signal(items: ["ino:10", FilesMap.rootIdentifier])], decode(line))
+    }
+
     func testRequestsRoundTrip() {
         let requests: [BridgeRequest] = [
             .hello(id: 1, version: filesBridgeVersion),
@@ -37,6 +42,10 @@ final class FilesBridgeWireTests: XCTestCase {
                                                 name: "renamed.txt", parent: nil, mtime: nil,
                                                 size: 0, sha256: nil)),
             .delete(id: 10, item: "ino:13", base: "bb", recursive: true),
+            .watch(id: 11, items: ["ino:10", FilesMap.rootIdentifier], on: true),
+            .watch(id: 12, items: ["ino:10"], on: false),
+            .changes(id: 13, item: "ino:10", from: "g2.ino:10"),
+            .anchor(id: 14, item: "ino:10"),
             .cancel(id: 5),
         ]
         for request in requests {
@@ -57,6 +66,10 @@ final class FilesBridgeWireTests: XCTestCase {
             .ok(id: 5),
             .end(id: 6, size: 1024, sha256: "ff"),
             .error(id: 7, code: "fs_not_found"),
+            .changes(id: 8, anchor: "g3.ino:10", items: [item],
+                     deleted: ["ino:99"], expired: false),
+            .changes(id: 9, anchor: "g0.ino:10", items: [], deleted: [], expired: true),
+            .anchor(id: 10, anchor: "g0.ino:10"),
         ]
         for reply in replies {
             XCTAssertEqual([.reply(reply)], decode(BridgeWire.line(reply)), "\(reply)")

@@ -102,13 +102,21 @@ enum BridgeRequest: Equatable {
     /// `ready` as `data` frames.
     case modify(id: UInt32, request: BridgeModify)
     case delete(id: UInt32, item: String, base: String, recursive: Bool)
+    /// The folders an enumerator has open (design §5, S5): the app ref-counts
+    /// them and only then sends `fs.watch`/`fs.unwatch` to the phone.
+    case watch(id: UInt32, items: [String], on: Bool)
+    /// The deltas a container recorded after `from` (`nil` = everything it has).
+    case changes(id: UInt32, item: String, from: String?)
+    /// A container's current sync anchor.
+    case anchor(id: UInt32, item: String)
     case cancel(id: UInt32)
 
     var id: UInt32 {
         switch self {
         case .hello(let id, _), .list(let id, _, _), .stat(let id, _),
              .read(let id, _, _, _, _), .create(let id, _), .modify(let id, _),
-             .delete(let id, _, _, _), .cancel(let id):
+             .delete(let id, _, _, _), .watch(let id, _, _), .changes(let id, _, _),
+             .anchor(let id, _), .cancel(let id):
             return id
         }
     }
@@ -154,10 +162,15 @@ enum BridgeReply: Equatable {
     case data(id: UInt32, length: Int)
     case end(id: UInt32, size: Int, sha256: String)
     case error(id: UInt32, code: String)
+    /// A container's deltas after an anchor; `expired` means the anchor is too
+    /// old (or foreign) and the system must re-enumerate.
+    case changes(id: UInt32, anchor: String, items: [FileItem], deleted: [String], expired: Bool)
+    /// A container's current anchor.
+    case anchor(id: UInt32, anchor: String)
 }
 
 /// The bridge protocol version. Both sides refuse anything else.
-let filesBridgeVersion = 2
+let filesBridgeVersion = 3
 
 enum BridgeWire {
     /// A request line is at most 64 KiB (design §3's cap, applied locally).
@@ -214,6 +227,17 @@ enum BridgeWire {
             object["item"] = item
             object["base"] = base
             object["recursive"] = recursive
+        case .watch(_, let items, let on):
+            object["t"] = "watch"
+            object["items"] = items
+            object["on"] = on
+        case .changes(_, let item, let from):
+            object["t"] = "changes"
+            object["item"] = item
+            if let from { object["from"] = from }
+        case .anchor(_, let item):
+            object["t"] = "anchor"
+            object["item"] = item
         case .cancel:
             object["t"] = "cancel"
         }
@@ -241,6 +265,12 @@ enum BridgeWire {
             object = ["t": "end", "id": Int(id), "size": size, "sha256": sha256]
         case .error(let id, let code):
             object = ["t": "error", "id": Int(id), "code": code]
+        case .changes(let id, let anchor, let items, let deleted, let expired):
+            object = ["t": "changes", "id": Int(id), "anchor": anchor,
+                      "items": items.map(\.jsonObject), "deleted": deleted,
+                      "expired": expired]
+        case .anchor(let id, let anchor):
+            object = ["t": "anchor", "id": Int(id), "anchor": anchor]
         }
         return jsonLine(object)
     }
@@ -248,6 +278,11 @@ enum BridgeWire {
     /// The header that announces a chunk of raw bytes.
     static func dataHeader(id: UInt32, length: Int) -> Data {
         line(.data(id: id, length: length))
+    }
+
+    /// A watch-connection push: one JSON line with the containers that moved.
+    static func signal(items: [String]) -> Data {
+        jsonLine(["t": "changed", "items": items])
     }
 
     private static func jsonLine(_ object: [String: Any]) -> Data {
@@ -263,6 +298,9 @@ enum BridgeEvent: Equatable {
     case reply(BridgeReply)
     case dataHeader(id: UInt32, length: Int)
     case data(id: UInt32, bytes: [UInt8])
+    /// A push from the app: this connection watches these containers and one
+    /// of them moved. It is not a reply: the watch connection sends no requests.
+    case signal(items: [String])
     /// A malformed line; the code never carries a name or a path.
     case invalid(String)
 }
@@ -336,6 +374,10 @@ struct BridgeDecoder {
               let type = object["t"] as? String else {
             return .invalid("bad_json")
         }
+        if type == "changed" {
+            let items = (object["items"] as? [String]) ?? []
+            return .signal(items: items)
+        }
         guard let number = object["id"] as? NSNumber,
               number.intValue > 0, number.intValue <= Int(UInt32.max) else {
             return .invalid("bad_id")
@@ -394,6 +436,28 @@ struct BridgeDecoder {
                   let base = object["base"] as? String else { return .invalid("bad_request") }
             return .request(.delete(id: id, item: item, base: base,
                                     recursive: object["recursive"] as? Bool ?? false))
+        case "watch":
+            guard let items = object["items"] as? [String],
+                  let on = object["on"] as? Bool else { return .invalid("bad_request") }
+            return .request(.watch(id: id, items: items, on: on))
+        case "changes":
+            // The request names a container; the reply carries the anchor.
+            if let anchor = object["anchor"] as? String {
+                let items = (object["items"] as? [[String: Any]])?.compactMap(FileItem.init(json:)) ?? []
+                let deleted = (object["deleted"] as? [String]) ?? []
+                let expired = object["expired"] as? Bool ?? false
+                return .reply(.changes(id: id, anchor: anchor, items: items,
+                                       deleted: deleted, expired: expired))
+            }
+            guard let item = object["item"] as? String else { return .invalid("bad_request") }
+            return .request(.changes(id: id, item: item, from: object["from"] as? String))
+        case "anchor":
+            // The request names a container; the reply carries the anchor.
+            if let anchor = object["anchor"] as? String {
+                return .reply(.anchor(id: id, anchor: anchor))
+            }
+            guard let item = object["item"] as? String else { return .invalid("bad_request") }
+            return .request(.anchor(id: id, item: item))
         case "cancel":
             return .request(.cancel(id: id))
         case "items":
@@ -423,6 +487,7 @@ struct BridgeDecoder {
         case "error":
             guard let code = object["code"] as? String else { return .invalid("bad_error") }
             return .reply(.error(id: id, code: code))
+
         default:
             return .invalid("unknown_type")
         }
