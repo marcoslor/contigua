@@ -232,6 +232,102 @@ final class NotifyMacTests: XCTestCase {
         XCTAssertTrue(line.contains("rate=1.00"))
     }
 
+    // MARK: media part 2
+
+    func testNowPlayingInfoCarriesTheArtwork() {
+        var state = MediaState.empty
+        state.title = "tone440"
+        state.receivedAt = 1_000.0
+        // A 1x1 JPEG: the smallest picture the wire could carry.
+        let jpeg = Data(base64Encoded: "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/wAALCAABAAEBAREA/8QAFAABAAAAAAAAAAAAAAAAAAAACf/EABQQAQAAAAAAAAAAAAAAAAAAAAD/2gAIAQEAAD8AKp//2Q==")!
+        let art = MediaArtwork.accepted(mime: "image/jpeg", width: 1, height: 1, data: jpeg).0
+        XCTAssertNotNil(art)
+        let info = MediaMapping.nowPlayingInfo(state, artwork: art)!
+        XCTAssertNotNil(info[MPMediaItemPropertyArtwork])
+        XCTAssertNil(MediaMapping.nowPlayingInfo(state)![MPMediaItemPropertyArtwork],
+                     "without artwork the info carries none")
+    }
+
+    func testArtworkCapsAreTheWireCaps() {
+        let jpeg = Data(base64Encoded: "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/wAALCAABAAEBAREA/8QAFAABAAAAAAAAAAAAAAAAAAAACf/EABQQAQAAAAAAAAAAAAAAAAAAAAD/2gAIAQEAAD8AKp//2Q==")!
+        XCTAssertNil(MediaArtwork.accepted(mime: "image/png", width: 1, height: 1, data: jpeg).0)
+        XCTAssertNil(MediaArtwork.accepted(mime: "image/jpeg", width: 513, height: 1, data: jpeg).0)
+        XCTAssertNil(MediaArtwork.accepted(mime: "image/jpeg", width: 0, height: 1, data: jpeg).0)
+        XCTAssertNil(MediaArtwork.accepted(mime: "image/jpeg", width: 1, height: 1,
+                                           data: Data(repeating: 0, count: MediaArtwork.maxBytes + 1)).0)
+        XCTAssertNil(MediaArtwork.accepted(mime: "image/jpeg", width: 1, height: 1, data: Data()).0)
+        XCTAssertNil(MediaArtwork.accepted(mime: "image/jpeg", width: 1, height: 1,
+                                           data: Data(repeating: 0x41, count: 100)).0,
+                     "bytes that do not decode are refused")
+        // The log only ever sees a short hash, never the picture.
+        let art = MediaArtwork.accepted(mime: "image/jpeg", width: 1, height: 1, data: jpeg).0!
+        XCTAssertEqual(art.hashPrefix.count, 8)
+        XCTAssertFalse(art.hashPrefix.contains("jpeg"))
+    }
+
+    func testMediaCommandWireShapes() {
+        XCTAssertEqual(MediaMessage.command(.transport("play")) as NSDictionary,
+                       ["t": "media.command", "action": "play"] as NSDictionary)
+        let seek = MediaMessage.command(.seek(45_000), key: "s2")
+        XCTAssertEqual(seek["t"] as? String, "media.command")
+        XCTAssertEqual(seek["action"] as? String, "seek")
+        XCTAssertEqual(seek["positionMs"] as? Int, 45_000)
+        XCTAssertEqual(seek["key"] as? String, "s2")
+        let volume = MediaMessage.command(.volume(9))
+        XCTAssertEqual(volume["action"] as? String, "volume")
+        XCTAssertEqual(volume["level"] as? Int, 9)
+        XCTAssertNil(volume["key"], "no key acts on the chosen session, as an older Mac's command")
+        XCTAssertEqual(MediaMessage.choose(key: "s2") as NSDictionary,
+                       ["t": "media.choose", "key": "s2"] as NSDictionary)
+        // Recording lines carry numbers only.
+        XCTAssertEqual(MediaCommand.seek(1_500).record, "media command seek positionMs=1500")
+        XCTAssertEqual(MediaCommand.volume(9).record, "media command volume level=9")
+        XCTAssertEqual(MediaCommand.transport("next").record, "media command next")
+    }
+
+    func testTheSessionPickerAppearsOnlyWithTwoSessions() {
+        let one = [MediaSessionRow(key: "s1", pkg: "com.one", app: "One", playing: true)]
+        let two = one + [MediaSessionRow(key: "s2", pkg: "com.two", app: "Two", playing: false)]
+        XCTAssertFalse(MediaMenu.showsSessionPicker(one))
+        XCTAssertTrue(MediaMenu.showsSessionPicker(two))
+        XCTAssertEqual(MediaMenu.pickerTitle(two, chosen: "s2"), "Playing on phone: Two")
+        XCTAssertEqual(MediaMenu.pickerTitle(two, chosen: "gone"), "Playing on phone: One",
+                       "an unknown pick falls back to the system's first")
+        XCTAssertEqual(MediaMenu.chosenApp(two, chosen: nil), "One")
+    }
+
+    func testSeekAndSkipStayInsideTheTrack() {
+        var state = MediaState.empty
+        state.playing = true
+        state.positionMs = 20_000
+        state.durationMs = 30_000
+        state.rate = 1
+        state.receivedAt = 1_000.0
+        XCTAssertEqual(MediaMapping.seekTarget(seconds: 45, durationMs: 30_000), 30_000)
+        XCTAssertEqual(MediaMapping.seekTarget(seconds: -5, durationMs: 30_000), 0)
+        XCTAssertEqual(MediaMapping.skipTarget(of: state, seconds: 15, at: 1_000.0), 30_000)
+        XCTAssertEqual(MediaMapping.skipTarget(of: state, seconds: -30, at: 1_000.0), 0)
+        // A session without a duration: no upper clamp to invent.
+        XCTAssertEqual(MediaMapping.seekTarget(seconds: 45, durationMs: nil), 45_000)
+    }
+
+    func testMediaStateCarriesThePartTwoFieldsWithoutText() {
+        var state = MediaState.empty
+        state.title = "tone440"
+        state.artist = "someone"
+        state.key = "s2"
+        state.canSeek = true
+        state.volume = 9
+        state.volumeMax = 15
+        state.receivedAt = 1_000.0
+        XCTAssertEqual(state.volumeFraction ?? 0, 0.6, accuracy: 0.001)
+        let line = MediaMapping.record(set: state)
+        XCTAssertTrue(line.contains("canSeek=1"))
+        XCTAssertTrue(line.contains("volume=9 volumeMax=15"))
+        XCTAssertFalse(line.contains("tone440"))
+        XCTAssertEqual(MediaMenu.trackLine(state), "tone440 — someone")
+    }
+
     // MARK: banner actions (part 2)
 
     private func replyNotification() -> PhoneNotification {

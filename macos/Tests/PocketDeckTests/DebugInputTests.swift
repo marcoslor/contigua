@@ -49,6 +49,24 @@ final class DebugInputTests: XCTestCase {
         ])
     }
 
+    func testParsesTheMediaPartTwoVerbs() throws {
+        let actions = try DebugInputScript.parse("""
+        mediacmd seek 45000
+        mediacmd volume 9
+        mediacmd choose s2
+        """)
+        XCTAssertEqual(actions, [
+            .mediaSeek(45_000),
+            .mediaVolume(9),
+            .mediaChoose("s2"),
+        ])
+        XCTAssertThrowsError(try DebugInputScript.parse("mediacmd seek"))
+        XCTAssertThrowsError(try DebugInputScript.parse("mediacmd seek -1"))
+        XCTAssertThrowsError(try DebugInputScript.parse("mediacmd volume loud"))
+        XCTAssertThrowsError(try DebugInputScript.parse("mediacmd choose"))
+        XCTAssertThrowsError(try DebugInputScript.parse("mediacmd rewind"))
+    }
+
     func testParsesNotifyPartTwoVerbs() throws {
         let actions = try DebugInputScript.parse("""
         notifyaction pd-a1 1 hello there

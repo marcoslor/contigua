@@ -119,6 +119,11 @@ final class ConnectionController {
     @ObservationIgnored let notifyCenter = NotifyCenter()
     /// The phone's media session in macOS Now Playing.
     @ObservationIgnored let nowPlaying = NowPlayingController()
+    /// What the menu bar's media row shows (a mirror of `nowPlaying`, which is
+    /// not observed so test hooks can replace it).
+    private(set) var mediaNow: MediaState?
+    private(set) var mediaSessions: [MediaSessionRow] = []
+    private(set) var mediaArt: NSImage?
     /// "Show phone files in Finder" (docs/design/files.md §1): the setting, the
     /// one domain per profile, and its reconnect/disconnect on session changes.
     @ObservationIgnored lazy var filesDomain = FilesDomainController(profile: profile)
@@ -411,8 +416,14 @@ final class ConnectionController {
             }
         }
         nowPlaying.log = shareLog
-        nowPlaying.onCommand = { [weak self] action in
-            MainActor.assumeIsolated { self?.session?.mediaCommand(action) }
+        nowPlaying.onCommand = { [weak self] command in
+            MainActor.assumeIsolated { self?.session?.mediaCommand(command, key: self?.nowPlaying.current?.key) }
+        }
+        nowPlaying.onChoose = { [weak self] key in
+            MainActor.assumeIsolated { self?.session?.mediaChoose(key) }
+        }
+        nowPlaying.onChange = { [weak self] in
+            MainActor.assumeIsolated { self?.refreshMedia() }
         }
         mcp.configure(profile: profile, forced: options.mcpEnable)
         mcp.hostProvider = { [weak self] in self.map { MCPToolHost(controller: $0) } }
@@ -1733,6 +1744,10 @@ final class ConnectionController {
             notifyCenter.remove(id: id)
         case .mediaState(let media):
             nowPlaying.apply(media)
+        case .mediaSessions(let rows, let chosen):
+            nowPlaying.applySessions(rows, chosen: chosen)
+        case .mediaArt(let key, let mime, let w, let h, let data):
+            nowPlaying.applyArt(key: key, mime: mime, width: w, height: h, data: data)
         case .apps(let list):
             appsReceived(list)
         case .icon(let pkg, let png, let fg, let bg, let mono):
@@ -1871,6 +1886,27 @@ final class ConnectionController {
     }
 
     /// `livedump PATH` (the e2e reads the menu bar section without opening it).
+    /// The menu bar's media row mirrors the controller (it is not observed).
+    private func refreshMedia() {
+        mediaNow = nowPlaying.current
+        mediaSessions = nowPlaying.sessions
+        mediaArt = nowPlaying.artwork.flatMap { NSImage(data: $0.data) }
+    }
+
+    /// The menu bar's "Playing on phone" pick.
+    func chooseMediaSession(_ key: String) {
+        guard link.isOnline else { return }
+        nowPlaying.choose(key)
+    }
+
+    /// The volume slider: a fraction of the phone session's own maximum.
+    func setPhoneMediaVolume(_ fraction: Double) {
+        guard let max = nowPlaying.current?.volumeMax, max > 0 else { return }
+        let level = Int((fraction * Double(max)).rounded())
+        nowPlaying.perform(.volume(min(Swift.max(level, 0), max)))
+    }
+
+    /// The recording line's own path: no volume keys are intercepted.
     func writeLiveDump(_ path: String) -> Bool {
         do {
             try NotifyLiveDump.write(liveNotifications, to: path)
@@ -2090,7 +2126,19 @@ final class ConnectionController {
             MainActor.assumeIsolated { self?.writeLiveDump(path) ?? false }
         }
         debugInput?.mediaCommand = { [weak self] action in
-            MainActor.assumeIsolated { self?.nowPlaying.perform(action) }
+            MainActor.assumeIsolated { self?.nowPlaying.perform(.transport(action)) }
+        }
+        debugInput?.mediaSeek = { [weak self] ms in
+            MainActor.assumeIsolated { self?.nowPlaying.perform(.seek(ms)) }
+        }
+        debugInput?.mediaVolume = { [weak self] level in
+            MainActor.assumeIsolated { self?.nowPlaying.perform(.volume(level)) }
+        }
+        debugInput?.mediaChoose = { [weak self] key in
+            MainActor.assumeIsolated {
+                guard let self, self.link.isOnline else { return }
+                self.nowPlaying.choose(key)
+            }
         }
         // The dockapps action writes the setting the way Settings'
         // @AppStorage does, then calls the same handler its onChange does.

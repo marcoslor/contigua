@@ -70,6 +70,7 @@ struct MenuBarContent: View {
             .disabled(controller.apkInstaller.isBusy)
         Divider()
         audioSection
+        mediaSection
         liveSection
         Divider()
         SettingsLink { Text("Settings…") }
@@ -93,6 +94,49 @@ struct MenuBarContent: View {
             ))
         } else {
             Text("Phone audio: off")
+        }
+    }
+
+    /// The phone's Now Playing (docs/design/notify.md "Media part 2"): the
+    /// artwork small, the track, the phone's media volume and, with two or more
+    /// playing apps, the choice of which one Now Playing follows. The Mac's own
+    /// volume keys stay the Mac's: this slider is the only volume control here.
+    @ViewBuilder
+    private var mediaSection: some View {
+        if let media = controller.mediaNow, MediaMenu.trackLine(media) != nil || media.pkg != nil {
+            Divider()
+            HStack(spacing: 8) {
+                if let art = controller.mediaArt {
+                    Image(nsImage: art)
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                        .frame(width: 28, height: 28)
+                        .clipShape(RoundedRectangle(cornerRadius: 4))
+                }
+                Text(MediaMenu.trackLine(media) ?? "Phone media")
+            }
+            if let fraction = media.volumeFraction {
+                Slider(
+                    value: Binding(
+                        get: { fraction },
+                        set: { controller.setPhoneMediaVolume($0) },
+                    ),
+                    in: 0...1,
+                ) {
+                    Text("Phone volume")
+                }
+            }
+            if MediaMenu.showsSessionPicker(controller.mediaSessions) {
+                Menu(MediaMenu.pickerTitle(controller.mediaSessions, chosen: media.key)) {
+                    ForEach(controller.mediaSessions) { row in
+                        Button {
+                            controller.chooseMediaSession(row.key)
+                        } label: {
+                            Text(row.playing ? "\(row.app) — playing" : row.app)
+                        }
+                    }
+                }
+            }
         }
     }
 

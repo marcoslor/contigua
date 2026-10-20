@@ -54,8 +54,10 @@
 //                            runs: `notify.action` for that advertised index
 //   notifydismiss ID         the same routing a banner clear runs: `notify.dismiss`
 //   notifycopy ID            the same routing Copy code runs (clipboard rule applies)
-//   mediacmd ACTION          the same routing a Now Playing control runs: play, pause,
-//                            next or prev (`media.command`); not a stream action
+//   mediacmd ACTION [VALUE]  the same routing a Now Playing control runs: play, pause,
+//                            next or prev; seek MS (the position bar); volume LEVEL
+//                            (the media row's slider) — all `media.command`; choose KEY
+//                            (`media.choose`) picks another playing app. Not a stream action
 //   wait SECONDS             let the app run (timers, animations) before the next action
 //   type TEXT                text typed as key presses (rest of the line)
 //   key [cmd+][shift+][ctrl+][opt+]NAME
@@ -114,6 +116,9 @@ enum DebugInputAction: Equatable {
     case notifyDismiss(String)
     case notifyCopy(String)
     case mediaCommand(String)
+    case mediaSeek(Int64)
+    case mediaVolume(Int)
+    case mediaChoose(String)
     case wait(Double)
     case type(String)
     case key(KeyStroke)
@@ -292,10 +297,19 @@ enum DebugInputScript {
             guard args.count == 1, !args[0].isEmpty else { throw LineError(message: "notifycopy needs an id") }
             return .notifyCopy(args[0])
         case "mediacmd":
-            guard args.count == 1, ["play", "pause", "next", "prev"].contains(args[0]) else {
-                throw LineError(message: "mediacmd needs play, pause, next or prev")
+            if args.count == 1, ["play", "pause", "next", "prev"].contains(args[0]) {
+                return .mediaCommand(args[0])
             }
-            return .mediaCommand(args[0])
+            if args.count == 2, args[0] == "seek", let ms = Int64(args[1]), ms >= 0, ms <= 86_400_000 {
+                return .mediaSeek(ms)
+            }
+            if args.count == 2, args[0] == "volume", let level = Int(args[1]), (0...1000).contains(level) {
+                return .mediaVolume(level)
+            }
+            if args.count == 2, args[0] == "choose", !args[1].isEmpty {
+                return .mediaChoose(args[1])
+            }
+            throw LineError(message: "mediacmd needs play, pause, next, prev, seek MS, volume LEVEL or choose KEY")
         case "wait":
             guard args.count == 1, let seconds = Double(args[0]), (0...60).contains(seconds) else {
                 throw LineError(message: "wait needs SECONDS (0...60)")
@@ -414,8 +428,15 @@ final class DebugInputDriver {
     var notifyCopy: ((String) -> Bool)?
     /// `livedump PATH`: the menu bar's Live section as JSON.
     var liveDump: ((String) -> Bool)?
-    /// `mediacmd ACTION`: the Now Playing transport controls' target.
+    /// `mediacmd ACTION`, `mediacmd seek MS`, `mediacmd volume LEVEL`: the Now
+    /// Playing controls' target (the media row included).
     var mediaCommand: ((String) -> Void)?
+    /// `mediacmd seek MS`: the position bar.
+    var mediaSeek: ((Int64) -> Void)?
+    /// `mediacmd volume LEVEL`: the media row's slider.
+    var mediaVolume: ((Int) -> Void)?
+    /// `mediacmd choose KEY`: `media.choose`.
+    var mediaChoose: ((String) -> Void)?
     /// `dockapps on|off`: the Settings → General toggle, through the same
     /// write-then-handle path its onChange runs (e2e).
     var dockApps: ((Bool) -> Void)?
@@ -574,6 +595,12 @@ final class DebugInputDriver {
             waitForNotify { self.notifyCopy?(id) == true }
         case .mediaCommand(let action):
             mediaCommand?(action)
+        case .mediaSeek(let ms):
+            mediaSeek?(ms)
+        case .mediaVolume(let level):
+            mediaVolume?(level)
+        case .mediaChoose(let key):
+            mediaChoose?(key)
         case .wait(let seconds):
             let deadline = Date(timeIntervalSinceNow: seconds)
             while !cancelled, Date() < deadline {
