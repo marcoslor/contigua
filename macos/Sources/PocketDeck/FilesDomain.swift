@@ -93,6 +93,11 @@ enum FilesDomainHooks {
             NSFileProviderManager.add(FilesDomain.domain(profile: profile), completionHandler: $0)
         }
         filesPrint(filesErrorLine("files-domain add", error))
+        if error == nil {
+            // This process keeps running as the bridge: let its controller manage
+            // the domain the hook just added (session reconnect/disconnect).
+            AppEnvironment.shared.controller.filesDomain.adopt()
+        }
     }
 
     private static func startBridge(_ profile: Profile) {

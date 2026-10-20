@@ -245,11 +245,16 @@ The experiment's code becomes the slice's product code; this is what it does.
   `files-<profile>.sock` otherwise. The domain identifier is the profile name
   (production: `default`); its display name is the phone's nickname, else
   "PocketDeck".
-- **Identifiers** are §3's: `ino:<st_ino>`, `path:<relative path>` when the
-  phone reports `ino: 0`, `.rootContainer` for the root; `contentVersion` is
-  the etag, `metadataVersion` a SHA-256 of (name, size, mtime, ino). The
-  extension keeps the id ↔ path map in memory, fills it from listings and
-  stats, invalidates a subtree on delete, and a rename only moves paths.
+- **Identifiers**: `ino:<st_ino>:<relative path>`, or `path:<relative path>`
+  when the phone reports `ino: 0`; `.rootContainer` for the root. The ino is
+  the identity, and the path rides along because the system runs the
+  extension in more than one process and restarts it: an id must resolve
+  without the in-memory map (the VM showed a fresh process asking for items a
+  previous one had enumerated). The id ↔ path map is still kept and filled by
+  listings and stats, the parent identifier is looked up there (or one stat
+  supplies its ino), and a subtree is invalidated on delete. `contentVersion`
+  is the etag, `metadataVersion` a SHA-256 of (name, size, mtime, ino). A
+  rename keeps the id, so S4 must move the path part of it too.
 - **Errors**: the pure map (`FilesFailure.from(code:)`) turns `offline` and
   `closed` into `NSFileProviderError(.serverUnreachable)`, `fs_not_found` into
   `.noSuchItem`, `fs_denied` into `CocoaError(.fileReadNoPermission)`,

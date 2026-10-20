@@ -243,9 +243,13 @@ final class FilesExtension: NSObject, NSFileProviderReplicatedExtension {
         return body(&map)
     }
 
+    /// The map first, then the path the identifier itself carries: the system
+    /// runs more than one extension process, so a fresh one must resolve what
+    /// another enumerated.
     private func path(for identifier: NSFileProviderItemIdentifier) -> String? {
         if identifier == .rootContainer { return "" }
-        return withMap { $0.path(for: identifier.rawValue) }
+        if let known = withMap({ $0.path(for: identifier.rawValue) }) { return known }
+        return FilesMap.path(fromIdentifier: identifier.rawValue)
     }
 
     func remember(_ items: [FsItem], parentPath: String,
@@ -259,12 +263,24 @@ final class FilesExtension: NSObject, NSFileProviderReplicatedExtension {
     }
 
     func remember(fs: FsItem, path: String) -> FileItem {
-        withMap { map in
-            let parentPath = (path as NSString).deletingLastPathComponent
-            let parentID = map.identifier(for: parentPath)
-                ?? (parentPath.isEmpty ? FilesMap.rootIdentifier : "path:\(parentPath)")
-            return map.insert(fs: fs, path: path, parentIdentifier: parentID)
+        let parentID = parentIdentifier(forPath: path)
+        return withMap { $0.insert(fs: fs, path: path, parentIdentifier: parentID) }
+    }
+
+    /// The parent's identifier as the system knows it. A fresh instance has no
+    /// map entry for the parent, so one stat supplies its ino (design §3: an id
+    /// is ino-based); without an answer the path fallback is still a valid id.
+    private func parentIdentifier(forPath path: String) -> String {
+        let parentPath = (path as NSString).deletingLastPathComponent
+        if parentPath.isEmpty { return FilesMap.rootIdentifier }
+        if let known = withMap({ $0.identifier(for: parentPath) }) { return known }
+        if case .success(let info) = stat(path: parentPath) {
+            let identifier = FilesMap.identifier(path: parentPath, ino: info.ino)
+            withMap { _ = $0.insert(fs: info, path: parentPath,
+                                    parentIdentifier: FilesMap.rootIdentifier) }
+            return identifier
         }
+        return "path:\(parentPath)"
     }
 
     private func rootItem() -> FileItem {

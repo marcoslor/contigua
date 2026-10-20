@@ -185,6 +185,21 @@ final class FilesDomainControllerTests: XCTestCase {
         XCTAssertEqual(1, manager.removes.count)
     }
 
+    func testAnAdoptedDomainFollowsTheSessionWithTheSettingOff() {
+        // The VM hook (`--files-domain add`) adds the domain itself; its app
+        // process is the bridge, so session transitions must still reach it.
+        manager.info = FilesDomainInfo(identifier: FilesDomain.identifier(profile: profile),
+                                       displayName: "PocketDeck", isDisconnected: false,
+                                       userEnabled: true)
+        controller.adopt()
+        controller.sessionReady(true)
+        XCTAssertEqual(1, manager.reconnects.count)
+        XCTAssertEqual(1, manager.signals.count)
+        controller.sessionReady(false)
+        XCTAssertEqual(1, manager.disconnects.count)
+        XCTAssertEqual(["Phone not connected"], manager.disconnects.map(\.reason))
+    }
+
     func testThePromptButtonOpensSystemSettings() {
         controller.setEnabled(true)
         XCTAssertEqual(.needsSwitch, controller.state)

@@ -324,12 +324,25 @@ enum FilesMap {
     static let rootIdentifier = filesRootIdentifier
 
     /// `ino:<st_ino>` identifies the item; a phone that reports ino 0 (some
-    /// FUSE mounts do) falls back to the relative path, which a rename breaks
-    /// but an ino-less phone cannot do better (design §3 "Identifiers").
+    /// FUSE mounts do) falls back to `<path>`. The identifier also carries the
+    /// relative path after the ino, because the system runs the extension in
+    /// more than one process (and restarts it), so an id must resolve without
+    /// the in-memory map (design §3 "Identifiers").
     static func identifier(path: String, ino: Int) -> String {
         if path.isEmpty { return rootIdentifier }
-        if ino > 0 { return "ino:\(ino)" }
+        if ino > 0 { return "ino:\(ino):\(path)" }
         return "path:\(path)"
+    }
+
+    /// The relative path an identifier carries, or nil when it is not one of
+    /// ours (a stale id from another provider is not worth guessing about).
+    static func path(fromIdentifier identifier: String) -> String? {
+        if identifier == rootIdentifier { return "" }
+        if identifier.hasPrefix("path:") { return String(identifier.dropFirst("path:".count)) }
+        guard identifier.hasPrefix("ino:") else { return nil }
+        let rest = identifier.dropFirst("ino:".count)
+        guard let colon = rest.firstIndex(of: ":") else { return nil }
+        return String(rest[rest.index(after: colon)...])
     }
 
     static func contentTypeIdentifier(name: String, isDirectory: Bool) -> String {

@@ -74,6 +74,11 @@ window you give it.
   Not Disturb on (priority, alarms only or nothing) and back when it ends. A DND
   you set yourself is never turned off. The menu bar toggles the phone's DND by
   hand, and a Shortcut can too.
+- **Phone files in Finder** — the phone's shared storage appears as a
+  **PocketDeck** location in Finder: browse folders, open and Quick Look files,
+  copy them out. Read-only for now. The first time, turn PocketDeck on in
+  System Settings › General › Login Items & Extensions (Settings › General has
+  the switch and the link).
 
 **Notifications and Now Playing** (opt-in on both sides)
 
