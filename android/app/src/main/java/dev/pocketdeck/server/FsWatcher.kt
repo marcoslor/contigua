@@ -85,12 +85,18 @@ class FsWatcher(
     private val timers: FsTimers = FsTimers.Real,
     private val maxWatches: Int = MAX_WATCHES,
     private val pollMs: Long = GENERATION_POLL_MS,
+    private val folderPollMs: Long = FOLDER_POLL_MS,
     private val log: (String) -> Unit = {},
 ) {
     private val lock = Any()
 
     /** Wanted folder → its live watch, or null when the fallback covers it. */
     private val wanted = LinkedHashMap<String, FsWatchHandle?>()
+    /** Wanted folder → its directory, for the poll (design §5 round 2). */
+    private val dirs = HashMap<String, File>()
+    /** Each watched folder's last reported shape, so the poll can see a move. */
+    private val fingerprints = HashMap<String, Long>()
+    private var folderPoll: FsWatchHandle? = null
     private val pending = LinkedHashSet<String>()
     private var flushScheduled = false
     private var lastFlush = Long.MIN_VALUE / 4
@@ -108,9 +114,11 @@ class FsWatcher(
             if (closed) return
             for ((rel, dir) in folders) {
                 if (wanted.containsKey(rel)) continue
+                dirs[rel] = dir
                 wanted[rel] = startLocked(rel, dir)
             }
             ensurePollLocked()
+            scheduleFolderPollLocked()
         }
     }
 
@@ -123,11 +131,14 @@ class FsWatcher(
             if (closed) return
             for (rel in folders) {
                 wanted.remove(rel)?.close()
+                dirs.remove(rel)
+                fingerprints.remove(rel)
                 pending.remove(rel)
             }
             if (wanted.isEmpty()) {
                 pending.clear()
                 lastGeneration = null
+                stopFolderPollLocked()
             }
         }
     }
@@ -139,8 +150,11 @@ class FsWatcher(
             closed = true
             for (handle in wanted.values) handle?.close()
             wanted.clear()
+            dirs.clear()
+            fingerprints.clear()
             pending.clear()
             lastGeneration = null
+            stopFolderPollLocked()
         }
     }
 
@@ -201,6 +215,14 @@ class FsWatcher(
             batch = pending.toList()
             pending.clear()
         }
+        // This batch *is* the change: the poll's next look starts from here, so
+        // one change is one message whether inotify, the poll or both saw it.
+        synchronized(lock) {
+            for (rel in batch) {
+                val dir = dirs[rel] ?: continue
+                fingerprint(dir)?.let { fingerprints[rel] = it }
+            }
+        }
         send(mapOf("t" to "fs.changes", "paths" to batch))
         log("fs: changes ${batch.size} folders")
     }
@@ -240,6 +262,70 @@ class FsWatcher(
         }
     }
 
+    // MARK: the folder poll (S5 round 2)
+
+    /**
+     * One tick of the folder poll while anything is watched. Only a timer is
+     * scheduled here — no thread of our own — and nothing is scheduled at all
+     * when no folder is wanted.
+     */
+    private fun scheduleFolderPollLocked() {
+        if (closed || folderPoll != null || wanted.isEmpty()) return
+        folderPoll = timers.after(folderPollMs) { pollFolders() }
+    }
+
+    private fun stopFolderPollLocked() {
+        folderPoll?.close()
+        folderPoll = null
+    }
+
+    /**
+     * Compares every wanted folder with the shape it had last time. The first
+     * look at a folder is its baseline, not a change. A folder that moved is
+     * reported through the same pending set as the watches, so a change seen by
+     * both is still one `fs.changes`.
+     */
+    private fun pollFolders() {
+        val due: List<Pair<String, File>>
+        synchronized(lock) {
+            folderPoll = null
+            if (closed || wanted.isEmpty()) return
+            due = wanted.keys.mapNotNull { rel -> dirs[rel]?.let { rel to it } }
+        }
+        val moved = ArrayList<String>(1)
+        for ((rel, dir) in due) {
+            val now = fingerprint(dir) ?: continue
+            synchronized(lock) {
+                val before = fingerprints.put(rel, now)
+                if (before != null && before != now && wanted.containsKey(rel)) moved += rel
+            }
+        }
+        for (rel in moved) changed(rel)
+        synchronized(lock) { scheduleFolderPollLocked() }
+    }
+
+    /**
+     * A folder's shape, never its names: a hash over the entry names (our own
+     * staging names left out), the folder's own mtime and the entry count, plus
+     * each entry's size and mtime while the folder is small enough for the
+     * stats to stay cheap.
+     */
+    private fun fingerprint(dir: File): Long? {
+        val names = dir.list()?.filterNot { FsPaths.isTempName(it) } ?: return null
+        var hash = 1125899906842597L
+        for (name in names) hash = 31 * hash + name.hashCode()
+        hash = 31 * hash + dir.lastModified()
+        hash = 31 * hash + names.size
+        if (names.size <= MAX_STAT_ENTRIES) {
+            for (name in names) {
+                val entry = File(dir, name)
+                hash = 31 * hash + entry.length()
+                hash = 31 * hash + entry.lastModified()
+            }
+        }
+        return hash
+    }
+
     companion object {
         /** Live watches per session (docs/design/files.md §2, §5). */
         const val MAX_WATCHES = 256
@@ -247,5 +333,13 @@ class FsWatcher(
         const val FLUSH_MS = 250L
         /** The media-generation fallback's period. */
         const val GENERATION_POLL_MS = 5_000L
+        /**
+         * How often a watched folder is compared by hand (S5 round 2). inotify
+         * is silent on the FUSE mount for changes another process makes, so the
+         * watch alone cannot be trusted; this poll is the guarantee behind it.
+         */
+        const val FOLDER_POLL_MS = 2_000L
+        /** Entries whose size and mtime the poll looks at (big folders: names only). */
+        const val MAX_STAT_ENTRIES = 300
     }
 }
