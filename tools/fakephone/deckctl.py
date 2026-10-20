@@ -1508,6 +1508,63 @@ def cmd_media(client, args):
     an artist, an album or a package name (the emulator log stays textless).
     """
     what = args.what
+    if what == "drive":
+        # One session, a scripted sequence (the emulator check): opt in, then
+        # seek, set the volume and choose the other session a few seconds
+        # apart, printing every media message as it arrives. The phone allows
+        # one session, so the commands cannot come from separate processes.
+        client.send_json({"t": "notify.enable", "on": True})
+        print("sent notify.enable on=true (driving %.0fs)" % args.seconds)
+        started = time.time()
+        plan = [(3.0, "seek"), (6.0, "volume"), (9.0, "choose")]
+        chosen, keys = None, []
+        deadline = started + args.seconds
+        while time.time() < deadline:
+            frame = client.recv(0.25)
+            if frame is not TIMEOUT:
+                if frame is None:
+                    raise DeckError("phone closed during media drive")
+                if frame.type == proto.TYPE_JSON:
+                    msg = proto.unpack_json(frame)
+                    t = msg.get("t")
+                    if t == "media.state":
+                        print("media.state playing=%s key=%s titleLen=%d durationMs=%s "
+                              "positionMs=%s rate=%.2f canSeek=%s volume=%s/%s"
+                              % ("true" if msg.get("playing") else "false", msg.get("key") or "-",
+                                 len(msg.get("title") or ""), msg.get("durationMs"),
+                                 msg.get("positionMs"), (msg.get("rate") or 0.0),
+                                 "true" if msg.get("canSeek") else "false",
+                                 msg.get("volume"), msg.get("volumeMax")), flush=True)
+                    elif t == "media.sessions":
+                        rows = msg.get("list") or []
+                        chosen = msg.get("chosen")
+                        keys = [row.get("key") for row in rows]
+                        print("media.sessions n=%d playing=%d chosen=%s keys=%s"
+                              % (len(rows), sum(1 for row in rows if row.get("playing")),
+                                 chosen or "-", ",".join(str(k) for k in keys) or "-"),
+                              flush=True)
+                    elif t == "media.art":
+                        data = msg.get("data") or ""
+                        print("media.art key=%s mime=%s w=%s h=%s size=%d"
+                              % (msg.get("key"), msg.get("mime"), msg.get("w"), msg.get("h"),
+                                 len(data) * 3 // 4), flush=True)
+            elapsed = time.time() - started
+            while plan and elapsed >= plan[0][0]:
+                _, step = plan.pop(0)
+                if step == "seek":
+                    client.send_json({"t": "media.command", "action": "seek",
+                                      "positionMs": args.position})
+                    print("sent media.command seek positionMs=%d" % args.position, flush=True)
+                elif step == "volume":
+                    client.send_json({"t": "media.command", "action": "volume",
+                                      "level": args.level})
+                    print("sent media.command volume level=%d" % args.level, flush=True)
+                elif step == "choose":
+                    other = next((k for k in keys if k != chosen), None)
+                    if other:
+                        client.send_json({"t": "media.choose", "key": other})
+                        print("sent media.choose key=%s" % other, flush=True)
+        return 0
     if what == "watch":
         client.send_json({"t": "notify.enable", "on": True})
         print("sent notify.enable on=true (watching %.0fs)" % args.seconds)
@@ -1533,8 +1590,10 @@ def cmd_media(client, args):
             elif t == "media.sessions":
                 rows = msg.get("list") or []
                 playing = sum(1 for row in rows if row.get("playing"))
-                print("media.sessions n=%d playing=%d chosen=%s"
-                      % (len(rows), playing, msg.get("chosen") or "-"), flush=True)
+                keys = ",".join(str(row.get("key")) for row in rows)
+                print("media.sessions n=%d playing=%d chosen=%s keys=%s"
+                      % (len(rows), playing, msg.get("chosen") or "-", keys or "-"),
+                      flush=True)
             elif t == "media.art":
                 data = msg.get("data") or ""
                 print("media.art key=%s mime=%s w=%s h=%s size=%d"
@@ -2312,7 +2371,7 @@ def build_parser():
     sp.add_argument("--chip", default=None, help="live update chip text (length only is printed)")
 
     sp = sub.add_parser("media", help="media: watch/seek/volume/choose (counts, keys and numbers only)", **spp)
-    sp.add_argument("what", choices=["watch", "seek", "volume", "choose"])
+    sp.add_argument("what", choices=["watch", "seek", "volume", "choose", "drive"])
     sp.add_argument("--seconds", type=float, default=20.0, help="watch window")
     sp.add_argument("--position", type=int, default=0, help="seek target in ms")
     sp.add_argument("--level", type=int, default=0, help="volume level")

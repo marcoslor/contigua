@@ -63,8 +63,9 @@ playing apps with generated artwork, a seekable position and an absolute volume
 `media.command seek|volume` moves the fake and the next `media.state` confirms,
 and `media.choose` switches the chosen app. `--older-phone` sends today's
 `media.state` only (no sessions, no artwork, no new fields), which is how the
-e2e checks that an older phone keeps today's behaviour. `deckctl media
-watch|seek|volume|choose` drives it; the event log records action names, keys,
+e2e checks that an older phone keeps today's behaviour. `deckctl media watch|seek|volume|choose` drives it, and `deckctl media drive`
+(one session: seek, volume and choose 3 s apart) is what the emulator script
+uses, because the phone allows a single session; the event log records action names, keys,
 positions, levels and artwork dimensions/bytes only.
 
 Do Not Disturb (docs/design/focus.md): `state` carries `dnd` and `phone.dnd`
