@@ -117,6 +117,9 @@ final class ConnectionController {
     @ObservationIgnored let notifyCenter = NotifyCenter()
     /// The phone's media session in macOS Now Playing.
     @ObservationIgnored let nowPlaying = NowPlayingController()
+    /// "Show phone files in Finder" (docs/design/files.md §1): the setting, the
+    /// one domain per profile, and its reconnect/disconnect on session changes.
+    @ObservationIgnored lazy var filesDomain = FilesDomainController(profile: profile)
 
     // MARK: Published state
 
@@ -1552,6 +1555,7 @@ final class ConnectionController {
                 filesBridgeClient?.connectionLost()
                 filesBridgeClient = nil
                 FilesBridge.shared.detach()
+                filesDomain.sessionReady(false)
                 clipImageBuffer.discard()
                 shareInbox.connectionLost()
                 nowPlaying.clear()
@@ -1572,6 +1576,7 @@ final class ConnectionController {
                 filesBridgeClient?.connectionLost()
                 filesBridgeClient = nil
                 FilesBridge.shared.detach()
+                filesDomain.sessionReady(false)
                 clipImageBuffer.discard()
                 shareInbox.connectionLost()
                 nowPlaying.clear()
@@ -1803,6 +1808,7 @@ final class ConnectionController {
             let client = FsClient(channel: session)
             filesBridgeClient = client
             FilesBridge.shared.attach(host: SessionBridgeHost(client: client, name: displayName(for: ref)))
+            filesDomain.sessionReady(true)
         }
         everOnline = true
         if let session { startClipboardSync(on: session) }

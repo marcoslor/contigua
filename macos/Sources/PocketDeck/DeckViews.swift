@@ -402,6 +402,12 @@ struct PhoneDeckView: View {
                     .padding(.top, 8)
                     .transition(.opacity.combined(with: .move(edge: .top)))
             }
+            if controller.filesDomain.needsSwitch {
+                FilesFinderPromptLine()
+                    .padding(.horizontal, 16)
+                    .padding(.top, 8)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+            }
             if controller.apkInstaller.phase != .idle {
                 ApkInstallView(installer: controller.apkInstaller)
                     .padding(.horizontal, 16)
@@ -415,6 +421,7 @@ struct PhoneDeckView: View {
         }
         .animation(.smooth(duration: 0.3), value: controller.banner)
         .animation(.smooth(duration: 0.3), value: controller.apkInstaller.phase)
+        .animation(.smooth(duration: 0.3), value: controller.filesDomain.needsSwitch)
         .navigationTitle(controller.activePhone.map { controller.displayName(for: $0) } ?? "PocketDeck")
         .searchable(text: $query, placement: .toolbar, prompt: "Search apps")
         .searchFocused($searchFocused)
