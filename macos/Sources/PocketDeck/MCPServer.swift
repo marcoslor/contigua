@@ -253,6 +253,13 @@ final class MCPSocketServer {
                 let written = Darwin.write(fd, base.advanced(by: offset), raw.count - offset)
                 if written < 0 {
                     if errno == EINTR { continue }
+                    if errno == EAGAIN || errno == EWOULDBLOCK {
+                        // A screenshot response can be well over a megabyte and
+                        // the accepted socket is non-blocking. Wait for room
+                        // instead of truncating the line.
+                        var descriptor = pollfd(fd: fd, events: Int16(POLLOUT), revents: 0)
+                        if poll(&descriptor, 1, 5000) > 0 { continue }
+                    }
                     return false
                 }
                 guard written > 0 else { return false }
