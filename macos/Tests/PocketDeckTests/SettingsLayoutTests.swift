@@ -10,8 +10,14 @@ import XCTest
 
 @MainActor
 final class SettingsLayoutTests: XCTestCase {
-    /// A 1280×800 screen's visible height with the menu bar.
-    private let visibleHeight: CGFloat = 800 - 25
+    /// The smallest supported screen's visible height with the menu bar, from
+    /// docs/NFR.md's limit (not a literal here).
+    private let visibleHeight: CGFloat = CGFloat(NFRTestLimits.shared.smallestScreen.height) - 25
+
+    func testTheDesignHeightIsTheOneInTheLimitsFile() {
+        XCTAssertEqual(SettingsLayout.designHeight,
+                       CGFloat(NFRTestLimits.shared.int("settings_design_height_pt")))
+    }
 
     func testTheWindowNeverOutgrowsTheScreen() {
         XCTAssertEqual(SettingsLayout.maxContentHeight(for: 1050), SettingsLayout.designHeight)

@@ -195,8 +195,9 @@ final class BarContrastTests: XCTestCase {
             }
         }
         XCTAssertGreaterThan(inkPixels, 40, "the render drew no symbols", file: file, line: line)
-        XCTAssertGreaterThanOrEqual(worst, 3.0,
-            "\(dark ? "dark" : "light") appearance over \(backdrop): worst symbol contrast \(worst):1",
+        let required = NFRTestLimits.shared.double("contrast_min")
+        XCTAssertGreaterThanOrEqual(worst, required,
+            "\(dark ? "dark" : "light") appearance over \(backdrop): worst symbol contrast \(worst):1, wanted \(required):1",
             file: file, line: line)
     }
 
