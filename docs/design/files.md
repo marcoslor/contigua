@@ -614,6 +614,21 @@ while the list is empty. No watcher thread, timer or poll exists when idle.
   are watched only when the Mac has them open itself. A directory created under
   a watched one is seen as an entry change in the parent; opening it later adds
   its own watch.
+- **A watch alone is not enough on `/storage/emulated`.** Round 2's emulator run
+  placed a watch, logged it, and then got no `fs.changes` at all while `adb`
+  created, deleted and burst files in the folder: inotify on the FUSE mount
+  does not report changes another process makes through it on that build, and
+  the failure is silent — the watch "succeeds". So while at least one folder is
+  watched, `FsWatcher` also compares each watched folder every 2 s: a hash of
+  the entry names (our own staging names left out), the folder's own mtime and
+  count, plus size and mtime per entry while the folder is small enough for the
+  stats to stay cheap. A folder whose shape moved goes through the same pending
+  set as the watches, and a flush refreshes the fingerprints it reports, so one
+  change seen by both paths is one `fs.changes`. inotify stays the fast path;
+  the poll is the guarantee. Nothing is scheduled while nothing is wanted, and
+  unwatch or session end stops it — the idle rule is unchanged. The cost is one
+  readdir (plus up to 300 stats) per watched folder per 2 s, and only while the
+  Mac has folders open.
 - **Cap:** 256 live watches per session. The emulator's
   `fs.inotify.max_user_watches` is measured in S5 and recorded below; 256 is the
   budget we keep because the phone also watches for its own reasons and because
@@ -649,6 +664,13 @@ while the list is empty. No watcher thread, timer or poll exists when idle.
   container's anchor; `enumerateChanges(from:)` replays the deltas after it, and
   an anchor older than the kept history — or one from another process — is
   `NSFileProviderError(.syncAnchorExpired)` so the system re-enumerates.
+  **The app must do that itself, not only the extension.** Round 2's VM run
+  showed the push going only to *connected* extension clients while Finder kept
+  none alive between two operations, so the change reached nobody and the mount
+  did not move. The bridge now also asks the domain to re-enumerate the changed
+  container (`NSFileProviderManager.signalEnumerator(for: <container>)`, one
+  cached domain lookup per app run); that call is what starts an extension when
+  none is running. The push to a live client stays as the fast path.
 - **A rename replaces only when the caller says so.** The platform seam is explicit:
   `rename(from, to, replace)` / `plainRename(from, to, replace)`. An exclusive
   create and `fs.move` pass `false`; only a write whose etag matched passes
@@ -715,21 +737,52 @@ Checks: K2 805/0; `files-watch` 20/0 (create, edit, a rename keeping the id, a
 delete, unwatch on close, a change after close sends nothing, coalesced
 `fs.changes`, the drop when its client goes away, no file names in the app
 log); regressions `files-write` 24/0, `files-bridge` 18/0, `files` 8/0.
-**VM.** The collision leftover is proven: a POSIX copy onto a taken name lands
+**VM (round 1).** The collision leftover is proven: a POSIX copy onto a taken name lands
 as `collide 2.bin` and nothing is left pending in `fileproviderctl dump`. The
 watch is only partly proven: the phone was asked to watch (and unwatched) the
 open folder, but the phone-side create and rename still did not reach the mount
 in the run (47 of 49). The change→mount path was fixed after that run (a
 watched folder with no listing now gets a quiet baseline; the check waits for a
 new phone watch instead of any earlier one, so a file cannot predate the
-watch's own baseline), and no VM boot was left to re-run it. Host `files-watch`
-drives the same wire with the driver, not the File Provider stack.
-**Emulator.** The unlock fix works (the bouncer dump lands in
+watch's own baseline). Host `files-watch` drives the same wire with the driver,
+not the File Provider stack.
+**VM (round 2).** `files-domain` in one session: 46 of 49. The watch was still
+not proven and the run says why. The fake phone logged `watch on 1` and its three
+change batches, so the phone's half worked; the mount's create and rename never
+moved, and the delete step passed only because nothing had appeared. The app's
+bridge sent a change to *connected extension clients* only, and Finder does not
+keep an extension process alive between two operations (the run's log is full of
+`client gone`), so the change reached nobody. Fixed after the run: the bridge
+also asks the domain to re-enumerate the changed **container**
+(`NSFileProviderManager.signalEnumerator(for:)`, one cached lookup per domain),
+which is the call that starts an extension; the push to a live client stays as
+the fast path. Not re-run: budgets are spent, so "watch reaches the mount" is
+unverified end to end until the real-phone pass. The third failure, `many lists
+0 names, wanted 1500`, is a 1500-entry listing that returned nothing while the
+four root listings before it worked; nothing in this epic changed that path and
+round 1 passed it, so it is recorded as unexplained, not fixed.
+**Emulator (round 1).** The unlock fix works (the bouncer dump lands in
 `/data/local/tmp` and the PIN is entered): `fs-write.sh` passed mkdir, the
 write, the sha256 and the MediaStore row, then the app's shell service went
 away (TLS `UNEXPECTED_EOF_WHILE_READING` on every later call while adb stayed
-healthy). A MediaProvider rename's `_id` is therefore still unverified and
-`fs-watch.sh` (now executable) has not run: `max_user_watches` is unmeasured.
+healthy).
+**Emulator (round 2, one boot).** The service died twice, and the crash buffer
+named it: `FATAL EXCEPTION: android.bg`, `SecurityException: Given calling
+package … does not match caller's uid 2000`, raised inside
+`MediaScannerConnection` (see the notes above). The scan now never uses the app
+Context from this process and only runs when the plain rename fallback did the
+work. The same boot measured the write path end to end: the JPEG reached the
+phone with the Mac's sha256, MediaStore listed it, a rename **kept its `_id`**
+(41 before and after), a delete dropped the row, a write into `Android/data`
+answered `fs_denied`, and no staging file was left. The watch half is *not*
+proven on the device: `fs.watch` answered ok and no `fs.changes` arrived in
+13 s while adb created, deleted and burst files in the folder — i.e. inotify
+does not report another process's changes through the FUSE mount on API 36 —
+and `cat /proc/sys/fs/inotify/max_user_watches` returned nothing for the shell
+user, so **`max_user_watches` is still unmeasured**. Fixed from that evidence
+after the boot: `FsWatcher` compares every watched folder every 2 s (names,
+sizes and mtimes hashed; no names logged) while anything is watched, and
+inotify stays the fast path. Not re-run on a device.
 
 5. **S5 — watching and the idle rule.** Phone: `FsWatcher` (bounded inotify + the generation
    fallback) + `fs.watch`/`fs.changes`; the platform seam lets the JVM test drive a fake watch
@@ -771,8 +824,11 @@ healthy). A MediaProvider rename's `_id` is therefore still unverified and
 - Does fileproviderd launch the extension and hold the domain when the app is closed (E1/E3)?
   If not, the domain is only live while the app runs — acceptable, but the Deck must say so.
 - Watch cap: 256 is a guess. S5 should measure the real `max_user_watches` per uid on the
-  emulator and tune; the generation poll is the safety net either way. S5's
-  `fs-watch.sh` did not get to run, so the number is still a guess.
+  emulator and tune; the generation poll is the safety net either way. S5's `fs-watch.sh` did
+  not get to run in round 1, and in round 2 `cat /proc/sys/fs/inotify/max_user_watches`
+  returned nothing for the shell user on API 36, so **the number is still unmeasured**. The
+  folder poll above is now the real safety net: it does not depend on inotify at all, so the
+  cap only decides how many folders get the fast path.
 - Should thumbnails come from the phone (`fetchThumbnails` → an `fs.thumb` read) or from the
   Mac's own Quick Look once a file is materialized? S6 decides; the cheap answer is the
   latter for downloaded files and the former for the working set.
