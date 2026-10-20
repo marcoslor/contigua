@@ -660,7 +660,9 @@ while the list is empty. No watcher thread, timer or poll exists when idle.
   through the item identifier (which is the ino, so the same file under a new
   name is an update, not a delete plus an add), bumps that container's anchor,
   keeps the last 32 deltas and pushes a signal to the extension, which calls
-  `NSFileProviderManager.signalEnumerator(for:)`. `currentSyncAnchor` answers the
+  `NSFileProviderManager.signalEnumerator(for:)`. **Corrected in round 3: that
+  per-container call is ignored by a replicated extension (see "S5 round 3"
+  below); the app signals the working set instead.** `currentSyncAnchor` answers the
   container's anchor; `enumerateChanges(from:)` replays the deltas after it, and
   an anchor older than the kept history — or one from another process — is
   `NSFileProviderError(.syncAnchorExpired)` so the system re-enumerates.
@@ -671,6 +673,10 @@ while the list is empty. No watcher thread, timer or poll exists when idle.
   container (`NSFileProviderManager.signalEnumerator(for: <container>)`, one
   cached domain lookup per app run); that call is what starts an extension when
   none is running. The push to a live client stays as the fast path.
+  **Corrected in round 3:** that container signal is ignored too — a replicated
+  extension may only signal the working set — so neither the push nor the
+  container call moved the mount. Round 3's working-set signal is the one the
+  system acts on.
 - **A rename replaces only when the caller says so.** The platform seam is explicit:
   `rename(from, to, replace)` / `plainRename(from, to, replace)`. An exclusive
   create and `fs.move` pass `false`; only a write whose etag matched passes
@@ -756,8 +762,10 @@ keep an extension process alive between two operations (the run's log is full of
 also asks the domain to re-enumerate the changed **container**
 (`NSFileProviderManager.signalEnumerator(for:)`, one cached lookup per domain),
 which is the call that starts an extension; the push to a live client stays as
-the fast path. Not re-run: budgets are spent, so "watch reaches the mount" is
-unverified end to end until the real-phone pass. The third failure, `many lists
+the fast path. **Round 3 found that call is a no-op too** (a replicated
+extension may only signal the working set); the working-set signal replaced it
+and is what the next VM run tests. Not re-run in round 2: budgets were spent, so
+"watch reaches the mount" is unverified end to end until the real-phone pass. The third failure, `many lists
 0 names, wanted 1500`, is a 1500-entry listing that returned nothing while the
 four root listings before it worked; nothing in this epic changed that path and
 round 1 passed it, so it is recorded as unexplained, not fixed.
@@ -784,7 +792,91 @@ after the boot: `FsWatcher` compares every watched folder every 2 s (names,
 sizes and mtimes hashed; no names logged) while anything is watched, and
 inotify stays the fast path. Not re-run on a device.
 
-5. **S5 — watching and the idle rule.** Phone: `FsWatcher` (bounded inotify + the generation
+### S5 round 3: the working set
+
+Rounds 1 and 2 signalled the changed *folder*
+(`signalEnumerator(for: <container>)`) from the extension, and round 2 added the
+same call from the app. Apple's `NSFileProviderManager.h`, above
+`signalEnumeratorForContainerItemIdentifier:`, says why neither moved the mount:
+
+> When using NSFileProviderReplicatedExtension, only call this method with
+> NSFileProviderWorkingSetContainerItemIdentifier. Other container identifiers
+> are ignored. The system will automatically propagate working set changes to
+> the UI, without explicitly signaling the containers currently being viewed in
+> the UI.
+
+The extension is replicated, so every container signal was a no-op. Round 3
+signals the working set and gives it a real enumerator.
+
+- **The working-set enumerator.** `enumerator(for: .workingSet)` returns a
+  `WorkingSetEnumerator` (never a phone listing and never a phone `fs.watch`);
+  `.trashContainer` returns an enumerator that lists nothing and watches
+  nothing, because there is no trash. `NSFileProviderReplicatedExtension.h`:
+  "The working set enumerator is a special enumerator
+  (NSFileProviderWorkingSetContainerItemIdentifier) the system uses to detect
+  changes that should be synced to the disk and/or searchable in Spotlight.
+  Because that enumerator is by definition used for change detection, the
+  working set enumerator must implement
+  `enumerateChangesForObserver:fromSyncAnchor:` and
+  `currentSyncAnchorWithCompletionHandler:`."
+- **The anchor is one domain-wide sequence.** The app keeps one ordered log of
+  deltas across every container: each entry is a sequence number, the container
+  it happened in, and the container's `FilesDelta` (full items, deletions by
+  identifier). It is capped at 512 entries. The working-set anchor is
+  `w:<epoch>:<sequence>`; a folder enumerator's anchor is
+  `g:<epoch>:<sequence>:<container>`. The epoch changes when the app starts, so
+  an anchor from an earlier process cannot be replayed against a fresh log.
+  `enumerateChanges(from:)` returns every update after the anchor with the item's
+  **real** `parentItemIdentifier` (not the working set), then
+  `finishEnumeratingChanges(upTo:moreComing:)`; an anchor that is unparseable,
+  from another epoch, from the future, or older than the kept entries is
+  `NSFileProviderError(.syncAnchorExpired)`. A first enumeration (`nil` anchor)
+  answers every item the app currently has in its cached listings.
+- **Why `enumerateItems` may be a snapshot.** The working set is enumerated
+  with `enumerateChangesFromSyncAnchor:` (NSFileProviderEnumerating.h: "This
+  method is also called with NSFileProviderWorkingSetContainerItemIdentifier,
+  which is enumerated with
+  -[NSFileProviderEnumerator enumerateChangesForObserver:fromSyncAnchor:]"), and
+  the system removes an item from its replica only when the change observer
+  calls `didDeleteItemsWithIdentifiers:` ("Delete existing items. No-op if the
+  item was unknown."). So an item that a re-enumeration does not return is not
+  treated as gone; on an expired anchor the system "will drop all cached data
+  and start the enumeration over starting with sync anchor nil"
+  (NSFileProviderEnumerating.h). Round 3 therefore answers `enumerateItems` for
+  the working set with every item the app currently has in its cached listings,
+  paged by index, and never turns "not returned" into a deletion.
+- **The signal.** When a phone `fs.changes` produced a delta, the app calls
+  `NSFileProviderManager(for: domain).signalEnumerator(for: .workingSet)`, at
+  most twice a second (the first change of a burst goes out at once, later ones
+  coalesce; one cached manager per domain, as in round 2). The completion's
+  error domain and code are logged ("domain: signal working set" plus
+  "failed domain=… code=…") — round 2 discarded them. The per-container calls
+  are gone from the extension and from the app; they were ignored anyway. The
+  push on a live watch connection stays as the fast path for a connected
+  extension.
+- **What the phone watches (a deliberate change to §5).** A replicated extension
+  is not told what Finder is showing and its enumerators are short-lived, so
+  "watch only while an enumerator exists" left the phone watching nothing
+  exactly when a change arrived with no extension running. The new rule: a
+  folder is watched on the phone from the moment the system touches it — its
+  container enumerator, `enumerateItems`/`enumerateChanges`/`currentSyncAnchor`
+  on it, or a fetch/create/modify/delete of an item in it — until **10 minutes
+  after the last touch** (every touch refreshes it), at most **64 folders**
+  (the least recently touched drops first), all dropped on disconnect and
+  re-sent on reconnect while their 10 minutes last. The phone side is
+  unchanged: its 2 s folder poll while anything is watched is still the
+  guarantee, so idle means no watch and no poll. The TTL and the cap are unit
+  tested with an injected clock, and the TTL is shortened through the
+  environment for the host check (`PD_FILES_WATCH_TTL`).
+- **`.workingSet` and `.trashContainer` are never phone folders.** Before this
+  round `enumerator(for: .workingSet)` fell through to the phone path: it sent
+  `fs.watch` for a folder literally named after the identifier and listed it
+  (an `fs_not_found` in the VM log). The app also refuses those identifiers on
+  every phone-facing request, so a protocol mistake cannot turn one into a
+  listing or a watch.
+
+**Done (round 3).** Filled in after the checks ran; see "S5 Done" below.
+
    fallback) + `fs.watch`/`fs.changes`; the platform seam lets the JVM test drive a fake watch
    source. Mac: `enumerateChanges`/`currentSyncAnchor` + `signalEnumerator` from the bridge.
    Checks: `FsWatcherTest` (nothing watched when idle; only the requested paths; teardown on
