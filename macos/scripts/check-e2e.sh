@@ -91,6 +91,26 @@ say()  { printf '%s\n' "$*"; }
 ok()   { PASS=$((PASS + 1)); printf 'PASS %s\n' "$*"; }
 bad()  { FAIL=$((FAIL + 1)); printf 'FAIL %s\n' "$*"; }
 
+# The one machine-readable place for NFR limits (docs/NFR.md).
+NFR_LIMITS="${POCKETDECK_NFR_LIMITS:-$MACOS/scripts/nfr-limits.json}"
+
+# nfr_limit KEY — that limit from nfr-limits.json. A missing key is a broken
+# check, not a pass: it stops the run instead of silently disabling a limit.
+nfr_limit() {
+    local value
+    value="$(python3 - "$NFR_LIMITS" "$1" <<'PY'
+import json, sys
+with open(sys.argv[1]) as handle:
+    limits = json.load(handle)
+value = limits.get(sys.argv[2])
+if isinstance(value, bool) or value is None:
+    sys.exit(3)
+print(value)
+PY
+)" || { say "NFR limits: no '$1' in $NFR_LIMITS"; exit 3; }
+    printf '%s\n' "$value"
+}
+
 # PIDs of the e2e app only: the command line must start with the e2e executable.
 # The user's build/PocketDeck.app is a different path and never matches.
 e2e_app_pids() {
@@ -3084,11 +3104,15 @@ check_mirror() {
         && ok "MIRROR landscape VIDEO_CONFIG sent" || bad "MIRROR no landscape VIDEO_CONFIG"
 
     # repro stale-frame: the panel times out, the fake stops frames, and the
-    # window shows "screen off" within 2 s — never the last frame as if live.
+    # window shows "screen off" within the limit docs/NFR.md sets — never the
+    # last frame as if live.
+    local stale_ms stale_s
+    stale_ms="$(nfr_limit stale_picture_ms)"
+    stale_s="$(( (stale_ms + 999) / 1000 ))"
     wait_until 20 events_have '"ev":"screen","state":"off"' \
         || bad "MIRROR the fake never reported the screen off"
-    if wait_until 2 chrome_has "screen=off overlay=1"; then
-        ok "MIRROR repro stale-frame: screen off put the cover up within 2 s ($(chrome_state))"
+    if wait_until "$stale_s" chrome_has "screen=off overlay=1"; then
+        ok "MIRROR repro stale-frame: screen off put the cover up within ${stale_ms} ms ($(chrome_state))"
     else
         bad "MIRROR repro stale-frame: the window kept the last frame as live ($(chrome_state))"
     fi
@@ -5096,8 +5120,9 @@ check_files_domain() {
     # -- A fetch is one round trip, not twenty seconds ("Fixes 10-20") --------
     # The extension used to wait for a terminal reply that never came, until
     # the socket's 20 s receive timeout: a 412-byte Quick Look file took 20 s,
-    # twice. Small (≤ 1 KB) and 1 MiB reads must finish well under 3 s.
-    local small_size small_ms small_log big_ms big_log
+    # twice. The budget is docs/NFR.md's fetch_small_ms.
+    local small_size small_ms small_log big_ms big_log fetch_limit
+    fetch_limit="$(nfr_limit fetch_small_ms)"
     small_size="$(stat -f%z "$WORK/fsroot/Documents/file01.txt" 2>/dev/null || echo 0)"
     small_ms="$(files_fetch_ms_warm "$root/Documents/file01.txt")"
     big_ms="$(files_fetch_ms_warm "$root/open1m.bin")"
@@ -5107,17 +5132,17 @@ check_files_domain() {
     [ "$small_size" -gt 0 ] && [ "$small_size" -le 1024 ] \
         && ok "FILES the small file is $small_size bytes" \
         || bad "FILES the small file is $small_size bytes, wanted ≤ 1024"
-    [ -n "$small_ms" ] && [ "$small_ms" -lt 3000 ] \
-        && ok "FILES a $small_size-byte fetch takes ${small_ms} ms (extension logged ${small_log:-?} ms)" \
-        || bad "FILES the $small_size-byte fetch took ${small_ms} ms (wanted < 3000; extension ${small_log:-no line})"
-    [ -n "$big_ms" ] && [ "$big_ms" -lt 3000 ] \
-        && ok "FILES a 1 MiB fetch takes ${big_ms} ms (extension logged ${big_log:-?} ms)" \
-        || bad "FILES the 1 MiB fetch took ${big_ms} ms (wanted < 3000; extension ${big_log:-no line})"
-    [ -n "$small_log" ] && [ "$small_log" -lt 3000 ] \
-        && ok "FILES the extension logged the small fetch at ${small_log} ms" \
+    [ -n "$small_ms" ] && [ "$small_ms" -lt "$fetch_limit" ] \
+        && ok "FILES a $small_size-byte fetch takes ${small_ms} ms (limit ${fetch_limit}; extension logged ${small_log:-?} ms)" \
+        || bad "FILES the $small_size-byte fetch took ${small_ms} ms (wanted < ${fetch_limit}; extension ${small_log:-no line})"
+    [ -n "$big_ms" ] && [ "$big_ms" -lt "$fetch_limit" ] \
+        && ok "FILES a 1 MiB fetch takes ${big_ms} ms (limit ${fetch_limit}; extension logged ${big_log:-?} ms)" \
+        || bad "FILES the 1 MiB fetch took ${big_ms} ms (wanted < ${fetch_limit}; extension ${big_log:-no line})"
+    [ -n "$small_log" ] && [ "$small_log" -lt "$fetch_limit" ] \
+        && ok "FILES the extension logged the small fetch at ${small_log} ms (limit ${fetch_limit})" \
         || bad "FILES the extension's small fetch line is '${small_log:-missing}'"
-    [ -n "$big_log" ] && [ "$big_log" -lt 3000 ] \
-        && ok "FILES the extension logged the 1 MiB fetch at ${big_log} ms" \
+    [ -n "$big_log" ] && [ "$big_log" -lt "$fetch_limit" ] \
+        && ok "FILES the extension logged the 1 MiB fetch at ${big_log} ms (limit ${fetch_limit})" \
         || bad "FILES the extension's 1 MiB fetch line is '${big_log:-missing}'"
 
     # -- A name that appeared on the phone after the listing (collision) ------
