@@ -43,6 +43,8 @@ Limits live in one place (docs/NFR.md once it exists), not as numbers scattered 
 4. The Android emulator (`tools/emulator/`) for phone-side behaviour the JVM can't show.
 5. A person's real phone and Mac: the last pass, done by the reviewer, never by an agent.
 
+**Drive the real control.** An e2e step that proves a button, menu item, shortcut or gesture works must go through the same path a person uses (a click at the control's location through the window's event handling, the menu item, the key event) — a debug verb that calls the action directly proves the action, not the control. Debug verbs are fine for setup and for reading state.
+
 **Check hygiene:** never weaken, skip or rewrite a check to make it pass; if you think a check is wrong, say why in your report. Mac e2e on a developer's machine runs quiet: never `PD_E2E_VISIBLE=1` and never the real pointer outside a VM. Never run a PocketDeck Mac binary without `--profile <name>` (it would rewrite the person's own profile).
 
 ## Goal-loop protocol (every delegated task follows this)
