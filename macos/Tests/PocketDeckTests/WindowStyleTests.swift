@@ -385,6 +385,30 @@ final class PhoneChromeTests: XCTestCase {
         XCTAssertNil(PhoneChrome.turnedPhone(phone: phone, video: .zero))
     }
 
+    /// No full screen for the phone window: the green button zooms to the
+    /// phone's aspect fit inside the visible frame, never to the whole display.
+    func testThePhoneZoomIsTheAspectFitInsideTheVisibleFrame() {
+        let visible = NSRect(x: 100, y: 50, width: 1440, height: 900)
+        let bar = WindowStyle.framed.insets(fullScreen: false).top
+        let portrait = PhoneChrome.zoomFrame(phone: CGSize(width: 1080, height: 2340),
+                                             style: .framed, visible: visible)
+        XCTAssertEqual(portrait.height, visible.height, accuracy: 1)
+        XCTAssertEqual(portrait.width, (visible.height - bar) * 1080 / 2340, accuracy: 1)
+        XCTAssertEqual(portrait.midX, visible.midX, accuracy: 1)
+        XCTAssertEqual(portrait.midY, visible.midY, accuracy: 1)
+
+        let landscape = PhoneChrome.zoomFrame(phone: CGSize(width: 2340, height: 1080),
+                                              style: .framed, visible: visible)
+        XCTAssertEqual(landscape.width, visible.width, accuracy: 1)
+        XCTAssertEqual(landscape.height, visible.width * 1080 / 2340 + bar, accuracy: 1)
+        XCTAssertTrue(visible.contains(landscape), "the zoom stays inside the screen")
+        XCTAssertTrue(visible.contains(portrait), "the zoom stays inside the screen")
+
+        let immersive = PhoneChrome.zoomFrame(phone: CGSize(width: 1080, height: 2340),
+                                              style: .immersive, visible: visible)
+        XCTAssertEqual(immersive.height, visible.height, accuracy: 1, "no bar to subtract")
+    }
+
     func testThePhoneFrameKeepsThePhonesAspectRatioInTheStream() {
         let phone = CGSize(width: 1080, height: 2400)
         let pad = WindowStyle.framed.windowSize(stream: .zero)

@@ -2108,6 +2108,14 @@ check_chrome() {
     chrome_is "style=framed lights=shown pill=hidden" \
         && ok "C14 framed: the bar is up with the traffic lights ($(chrome_state))" \
         || bad "C14 framed at rest: $(chrome_state)"
+    # Only the phone window opts out: an app window keeps the Window menu's
+    # Enter Full Screen (full screen stays available where a mirror is not the
+    # thing filling the display).
+    if chrome_has "menu_fullscreen=1"; then
+        ok "C14 an app window keeps full screen (the Window menu's item is enabled)"
+    else
+        bad "C14 an app window lost full screen ($(chrome_state))"
+    fi
 
     screencapture -x -o -l"$win" "$WORK/chrome-framed.png"
     local bar spread seam tries=40
@@ -3121,6 +3129,19 @@ check_mirror() {
         ok "MIRROR phone window is portrait ($(windows | awk -v i="$portrait" '$1 == i {print $4 "x" $5}'))"
     else
         bad "MIRROR no portrait phone window"; stop_app; stop_fakephone; return 1
+    fi
+    # No full screen for the phone window (the mirror in native full screen
+    # looks bad): it opts out in its collection behavior, so the green button
+    # only zooms and the Window menu's Enter Full Screen is disabled for it.
+    if wait_until 3 chrome_has "menu_fullscreen=0"; then
+        ok "MIRROR the phone window offers no full screen ($(chrome_state))"
+    else
+        bad "MIRROR the phone window still offers full screen ($(chrome_state))"
+    fi
+    if chrome_has "collection_none=1"; then
+        ok "MIRROR the phone window's collection behavior is fullScreenNone"
+    else
+        bad "MIRROR the phone window's collection behavior allows full screen ($(chrome_state))"
     fi
     wait_until 15 events_have '"ev":"video"' || true
     case "$(mirror_aspect)" in
