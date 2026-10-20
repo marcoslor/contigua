@@ -917,6 +917,23 @@ the run directory (`vm-e2e.sh` clears it at start), so session 1's work
 directory — including its Finder screenshots — is gone; the two console logs are
 in `macos/build/vm-e2e/files-s5r3/`.
 
+**VM (supervisor re-run, after the merge).** `vm-e2e.sh files-domain` from main:
+**54 of 54**. Every watch step passed: a phone-side create, rename and delete
+reached the mount in 0–1 s; closing Finder left the folder watched for its ten
+minutes; then, with no extension process running in the guest, a phone-side
+create reached the mount in **1 s** — the case rounds 1–2 lost. The app logged
+the working-set signal with no error and the system enumerated the working set
+after it (counts only). Two earlier attempts failed for a reason outside the
+extension: the VM's disk persists between runs, a run cut short left its domain
+registered, the check's pre-run remove ran before the bundle was registered (so
+it said "not found"), and an add that comes right after a remove finds the old
+domain's CloudStorage folder still there and imports it from disk — the root is
+then never asked of the extension and every listing stalls (`importing: true`,
+MaterializationError). The check now removes after registering and waits for the
+folder to go before the add; `wait_until` is a wall-clock deadline (it counted
+tries, so a 15 s `ls` per try stretched a 90 s wait toward 90 minutes).
+Still unverified: the same on a real Mac with the real phone (the hands-on pass).
+
    fallback) + `fs.watch`/`fs.changes`; the platform seam lets the JVM test drive a fake watch
    source. Mac: `enumerateChanges`/`currentSyncAnchor` + `signalEnumerator` from the bridge.
    Checks: `FsWatcherTest` (nothing watched when idle; only the requested paths; teardown on
