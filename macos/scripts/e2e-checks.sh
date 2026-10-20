@@ -6,7 +6,7 @@
 # share, to drop) run back to back; every other check launches its own app.
 ALL_CHECKS=(tls qr pair gates direct mirror spotlight clip sharein links share apk dock nickname notify notify-actions notify-media notify-vm handoff
             deck render resize input hover mouseback pinch chrome livetext menus density trackpad pause nav audio drop files files-bridge files-write files-watch intents mcp focus controls
-            files-domain)
+            cam-wire files-domain)
 
 # True when $1 is one of ALL_CHECKS.
 valid_check() {

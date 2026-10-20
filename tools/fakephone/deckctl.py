@@ -805,6 +805,8 @@ def cmd_cam(client, args):
     first_has_sps = None
     key_times = []
     terminal = None
+    terminal_at = None
+    after_terminal_frames = 0
     busy_state = None
     busy_sent = False
     output = open(args.save_h264, "wb") if args.save_h264 else None
@@ -816,6 +818,8 @@ def cmd_cam(client, args):
         while True:
             now = time.time()
             if now >= deadline:
+                break
+            if terminal_at is not None and now >= terminal_at + args.after_terminal_wait:
                 break
             measuring = measure_until is not None and now >= measure_until
             if measuring and not args.await_terminal and (not args.busy_stream or busy_sent):
@@ -844,7 +848,10 @@ def cmd_cam(client, args):
                     measure_until = streamed_at + args.seconds
                 elif state in CAM_TERMINAL:
                     terminal = state
-                    break
+                    terminal_at = time.time()
+                    # Keep reading a moment: nothing of this capture may follow.
+                    if args.after_terminal_wait <= 0:
+                        break
                 continue
             if frame.type != proto.TYPE_VIDEO_FRAME:
                 raise proto.ProtocolError("unexpected frame type 0x%02x in a capture" % frame.type)
@@ -855,6 +862,9 @@ def cmd_cam(client, args):
             if not au or au[:3] not in (proto.START_CODE4[:3], proto.START_CODE3):
                 raise proto.ProtocolError("camera VIDEO_FRAME payload is not Annex-B")
             key = bool(flags & proto.FRAME_FLAG_KEY)
+            if terminal_at is not None:
+                after_terminal_frames += 1
+                continue
             if counting():
                 frames += 1
                 byte_count += len(au)
@@ -866,7 +876,7 @@ def cmd_cam(client, args):
                     key_times.append(time.time())
                 if output is not None:
                     output.write(au)
-            if args.busy_stream and not busy_sent and frames >= max(1, int(args.seconds * 2)):
+            if args.busy_stream and not busy_sent and frames >= 3:
                 busy_sent = True
                 client.send_json({"t": "cam.start", "stream": args.busy_stream})
     finally:
@@ -886,6 +896,8 @@ def cmd_cam(client, args):
            "%.0f" % gap_ms if gap_ms is not None else "none", measured_s))
     if args.busy_stream:
         print("cam.busy stream=%d state=%s" % (args.busy_stream, busy_state or "none"))
+    if terminal_at is not None:
+        print("cam.after_terminal frames=%d" % after_terminal_frames)
     if terminal is None:
         client.send_json({"t": "cam.stop", "stream": stream})
         print("cam.stop stream=%d" % stream)
@@ -2320,6 +2332,9 @@ def build_parser():
     sp.add_argument("--await-terminal", action="store_true",
                     help="start: after measuring, keep reading until a terminal state "
                          "(eviction) or --wait expires")
+    sp.add_argument("--after-terminal-wait", type=float, default=1.0, metavar="SECONDS",
+                    help="start: after a terminal state (evicted/off/...), keep reading "
+                         "this long and count anything that still arrives")
 
     sp = sub.add_parser("frame-png", help="decode a frame of a recorded .h264 to PNG (no session)", **spp)
     sp.add_argument("file")
