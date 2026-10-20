@@ -83,7 +83,7 @@ Batch D (M-L)
 |---|---|---|---|
 | 1 | Phone files in Finder (protocol and phone side built: list, stat, ranged reads; Finder part next) | File Provider extension (replicated): the phone's shared storage as a Finder location, listed and fetched on demand over the session at shell UID; thumbnails and Quick Look; cached files stay readable offline, edits upload when the phone is back | L |
 | 2 | ✅ Shortcuts, Siri and Spotlight actions (built; needs a hands-on check in Shortcuts and on the phone) | App Intents: open a phone app, ring the phone, send a link or file to the phone, phone battery; macOS 26 Spotlight runs them directly | M |
-| 3 | Live Text and images in phone windows | VisionKit on a frozen frame of the window: select and copy text, lift an image subject or drag the whole frame out, Visual Look Up, translate. Its own mode (a shortcut or holding a modifier key), because a click-and-hold already selects text in the Android app | S‑M |
+| 3 | ✅ Live Text and images in phone windows (built; needs a hands-on check) | VisionKit on a frozen frame of the window: select and copy text, lift an image subject or drag the whole frame out, Visual Look Up, translate. Its own mode (View ▸ Live Text, ⌘⇧T), because a click-and-hold already selects text in the Android app. Design: docs/design/livetext.md | S‑M |
 | 4 | Control Center and menu bar controls | ControlWidget toggles: phone Do Not Disturb, ringer mode, hotspot, ring the phone | S‑M |
 | 5 | Focus sync | a Mac Focus turns on the phone's Do Not Disturb and back (Focus filter + the phone's zen mode at shell UID) | S‑M |
 | 6 | Automation server (MCP) | local stdio MCP server on the Mac over the existing session: list apps, open, screenshot a window, tap/type/swipe, read the UI tree | M |

@@ -39,6 +39,12 @@ window you give it.
   Switch with View ▸ Window Style or ⌥⌘F; the choice is remembered per app.
 - **Continue on Mac (handoff)** — move the task in the phone's foreground onto
   the Mac (menu bar, app menu, or ⌘⇧C): same app, a new window.
+- **Live Text** — View ▸ Live Text (⌘⇧T) freezes a window on its current frame:
+  select and copy text, use data detectors (links, numbers, dates), lift an
+  image subject, Visual Look Up, translate where macOS offers it. ⌘C without a
+  selection copies the whole frame, and the bar's `text.viewfinder` button drags
+  it out as a PNG. Input stays paused while the mode is on; Esc (or the shortcut
+  again) brings live video back.
 
 **Phone mode, audio**
 

@@ -8,23 +8,31 @@ clicks and click-and-hold on the video keep going to Android.
 
 ## Frame route
 
-`AVSampleBufferDisplayLayer.sampleBufferRenderer.copyDisplayedPixelBuffer()`
-(macOS 14.4+; this app targets macOS 26) returns exactly the pixel buffer the
-layer is showing, so it is the route. It is read on the main thread (the layer
-is main-thread-only here, see VideoLayerView) and only when the person enters
-the mode, never per frame: no CPU readback on the normal path.
+Two routes, in this order:
 
-Falls back to nothing else: a `VTDecompressionSession` decoding a fresh
-`window.keyframe` was the second choice and would need protocol work, but route
-one covers it. If the buffer is missing (no frame displayed yet, or the layer
-was flushed), entering the mode does nothing and the window keeps showing live
-video.
+1. `AVSampleBufferDisplayLayer.sampleBufferRenderer.displayedPixelBuffer()`
+   (the API header's `copyDisplayedPixelBuffer`, macOS 14.4+) returns exactly
+   the buffer the layer is showing. It is read on the main thread (the layer is
+   main-thread-only here, see VideoLayerView) and only when the person enters
+   the mode, never per frame. The renderer answers only while its timebase is
+   stopped, so the rate is paused for the copy and put back at once.
+2. The layer reports no displayed buffer when its window is occluded (a quiet
+   e2e run, a window fully or partly behind another). Entering then asks the
+   phone for a keyframe (`window.keyframe`) and decodes the next samples with a
+   private `VTDecompressionSession` in `KeyframeSnapshotter`, which is torn down
+   after the first frame: the same picture the phone is sending, one frame
+   behind. The phone restarts its encoder for that keyframe, so a `VIDEO_CONFIG`
+   arriving while the mode is still capturing is the answer to our request and
+   is not treated as a window change.
 
-The frozen frame is an `NSImageView` over the video rect; the video is paused
-at the phone (`window.pause`, the same message occlusion uses) so the mode
-really is still and costs no encode/decode while it is up. Leaving resumes
-(`window.resume`), which restarts the phone's encoder with a fresh
-`VIDEO_CONFIG`; the mode is idle by then, so that config is ignored.
+If neither route delivers a frame within 5 s, the mode leaves again
+(`captureFailed`) and the window keeps showing live video.
+
+The frozen frame is an `NSImageView` over the video rect; the phone's stream is
+paused (`window.pause`, the same message occlusion uses) once the frame is
+frozen, so the mode really is still and costs no encode/decode while it is up.
+Leaving resumes (`window.resume`), which restarts the phone's encoder with a
+fresh `VIDEO_CONFIG`; the mode is idle by then, so that config is ignored.
 
 ## States
 
@@ -32,15 +40,17 @@ really is still and costs no encode/decode while it is up. Leaving resumes
 
 ```
 idle --enter--> capturing --frameCaptured--> analyzing --analysisFinished--> shown
-                                                       \--analysisFailed----> shown
-any non-idle --exit(reason)--> idle
+      |                                             \--analysisFailed------> shown
+      \--------captureFailed / any exit(reason)-------------------> idle
 ```
 
 - `enter` while capturing/analyzing/shown is ignored (a second Enter does not
   start a second capture).
-- `exit` reasons: Esc, the shortcut/menu again, the bar button, a window resize,
-  the window closing, the link dropping, a new stream config (rotation, size).
-  Every one drops the overlay and brings live video back.
+- `capturing` is the window between pressing the shortcut and having a frame:
+  route one is synchronous, route two waits for the keyframe.
+- `exit` reasons: Esc, the shortcut/menu/bar button again, a window resize, the
+  window closing, the link dropping, a new stream config (rotation, size), and
+  the capture timeout. Every one drops the overlay and brings live video back.
 - `analysisFailed` still shows the frozen frame: copying it and leaving work,
   only text selection is missing.
 
@@ -55,22 +65,24 @@ menu/chrome state.
 While the state is not idle, `InputMapper` forwards nothing: keyboard, pointer
 (touch down/move/up, right and side buttons, swipe), scroll, trackpad fingers,
 pinch/rotate, hover and pending text are all dropped. Esc is the one key the
-mapper reads: it asks the window to leave the mode instead of sending Back.
+mode reads: it leaves instead of sending Back.
 
 Entering clears any pending text batch and any local gesture/hover state without
 sending their release frames: the mode is entered from the keyboard or the bar,
 so there is normally nothing held, and a held touch must not leak into the
 frozen frame either.
 
-## Copy and drag
+## Chrome, copy and drag
 
+- View ▸ Live Text (⌘⇧T) and the bar's `text.viewfinder` button toggle the mode.
+  The button is at the right end of the framed bar, or inside the immersive
+  dwell pill; full screen has no bar, so the menu is the way in there.
+- A small "Live Text" pill in the bar (top centre of the stream where there is
+  no bar) says the window is frozen and input is paused.
 - ⌘C while the overlay has no text selection copies the frozen frame as PNG +
   TIFF to the general pasteboard; with a selection VisionKit's own copy runs.
-- The bar button (SF Symbol `text.viewfinder`) drags the frozen frame out as a
-  PNG file. It toggles the mode on click; the drag starts after a small
-  movement.
-- A small "Live Text" pill in the bar (top centre in immersive/full screen)
-  says input is paused.
+- The bar button drags the frozen frame out as a PNG file (written to a
+  temporary directory when the drag starts).
 
 ## Privacy
 
@@ -79,3 +91,14 @@ process, nothing is uploaded and nothing leaves the Mac. The mode logs state
 transitions only, never recognized text, frame pixels or file names. The debug
 hook reports `hasText`, transcript length and whether one token from the test
 script occurs — never the transcript.
+
+## Tests
+
+- `LiveTextModeTests`: every transition, every exit reason.
+- `LiveTextInputGateTests`: pointer, keys (Esc included), scroll, hover,
+  trackpad and pending text are dropped while the mode is on.
+- `LiveTextDebugScriptTests`: the `--debug-livetext` script grammar.
+- e2e `livetext`: enter → VisionKit reads `POCKETDECK` from the fake phone's
+  text frame; no `INPUT` frame reaches the phone while the mode is on and the
+  phone stops sending frames; `copy-image` writes a PNG at the stream's pixel
+  size; exit resumes the frames; a resize while in the mode drops to idle.
