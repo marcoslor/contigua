@@ -93,10 +93,11 @@ policy and drop limits. There is deliberately no notification reading and no UI
 tree in this batch: screenshots plus input cover the screen, and notifications
 are a separate privacy surface.
 
-Screenshots come from a small `FrameGrab` helper over
-`AVSampleBufferDisplayLayer.sampleBufferRenderer.copyDisplayedPixelBuffer()`;
-the last frame the window displayed is what the agent sees (the same frame the
-person sees, or the frozen last frame while the link is down).
+Screenshots use the frame routes Live Text freezes on (docs/design/livetext.md):
+the frame the display layer shows (`copyDisplayedFrame()`, the same frame the
+person sees), else the phone's next keyframe decoded once
+(`beginFrameSnapshot`), for a window whose layer reports no displayed buffer.
+`FrameGrab` only scales the frame (longest side ≤ 1280 px) and encodes the PNG.
 
 ### Input
 
