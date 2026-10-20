@@ -13,17 +13,23 @@ hashes, counts, byte lengths and codes only (design §4).
 
     files-bridge-driver.py --socket PATH --root DIR --work DIR --phase online
     files-bridge-driver.py --socket PATH --root DIR --work DIR --phase offline
+    files-bridge-driver.py --socket PATH --root DIR --work DIR --phase write
+    files-bridge-driver.py --socket PATH --root DIR --work DIR --phase kill --fake-pid N
 """
 
 import argparse
 import hashlib
 import json
 import os
+import signal
 import socket
 import sys
 import time
 
 CHUNK_KIND = ("json", "data")
+WRITE_CHUNK = 256 * 1024
+# The bridge wire version (FilesCore.swift): 2 is the S4 id-carrying wire.
+BRIDGE_VERSION = 2
 
 
 def report(ok, text):
@@ -104,7 +110,7 @@ class Bridge(object):
     # -- requests --------------------------------------------------------
 
     def hello(self):
-        self.send({"t": "hello", "id": self.new_id(), "version": 1})
+        self.send({"t": "hello", "id": self.new_id(), "version": BRIDGE_VERSION})
         while True:
             kind, obj = self.frame()
             if kind == "json" and obj.get("t") == "hello":
@@ -144,15 +150,92 @@ class Bridge(object):
     def stat(self, path):
         return self.reply({"t": "stat", "id": self.new_id(), "path": path})
 
-    def read(self, path, offset, length, cancel_after_chunks=None, limit_bytes=None):
-        """Reads a range, hashing as it goes.
+    def stat_item(self, item):
+        return self.reply({"t": "stat", "id": self.new_id(), "item": item})
+
+    def list_item(self, item, page=None):
+        request = {"t": "list", "id": self.new_id(), "item": item}
+        if page is not None:
+            request["page"] = page
+        return self.reply(request)
+
+    def list_item_all(self, item):
+        names, page, items = [], None, []
+        while True:
+            reply = self.list_item(item, page)
+            if reply.get("t") != "items":
+                return reply, items
+            items.extend(reply.get("items") or [])
+            page = reply.get("page")
+            if not page:
+                return reply, items
+
+    def wait_for(self, request_id):
+        """The next JSON frame for this id (data frames are not expected here)."""
+        while True:
+            kind, obj = self.frame()
+            if kind == "data":
+                continue
+            if obj.get("id") == request_id:
+                return obj
+
+    def create_item(self, parent, name, data, directory=False):
+        """create + ready + data chunks + item. Returns the reply object."""
+        request_id = self.new_id()
+        request = {"t": "create", "id": request_id, "parent": parent,
+                   "name": name, "dir": directory}
+        if not directory:
+            request["size"] = len(data)
+            request["sha256"] = hashlib.sha256(data).hexdigest()
+        self.send(request)
+        reply = self.wait_for(request_id)
+        if reply.get("t") != "ready":
+            return reply
+        for offset in range(0, len(data), WRITE_CHUNK):
+            self.send_chunk(request_id, data[offset:offset + WRITE_CHUNK])
+        return self.wait_for(request_id)
+
+    def modify_item(self, item, base, data=None, name=None, parent=None, mtime=None):
+        request_id = self.new_id()
+        fields = {"content": data is not None}
+        if name is not None:
+            fields["name"] = name
+        if parent is not None:
+            fields["parent"] = parent
+        if mtime is not None:
+            fields["mtime"] = mtime
+        request = {"t": "modify", "id": request_id, "item": item, "base": base,
+                   "fields": fields}
+        if data is not None:
+            request["size"] = len(data)
+            request["sha256"] = hashlib.sha256(data).hexdigest()
+        self.send(request)
+        reply = self.wait_for(request_id)
+        if reply.get("t") != "ready":
+            return reply
+        for offset in range(0, len(data), WRITE_CHUNK):
+            self.send_chunk(request_id, data[offset:offset + WRITE_CHUNK])
+        return self.wait_for(request_id)
+
+    def delete_item(self, item, base, recursive=False):
+        request_id = self.new_id()
+        self.send({"t": "delete", "id": request_id, "item": item, "base": base,
+                   "recursive": recursive})
+        return self.wait_for(request_id)
+
+    def send_chunk(self, request_id, payload):
+        header = json.dumps({"t": "data", "id": request_id, "len": len(payload)}).encode() + b"\n"
+        self.sock.sendall(header + payload)
+
+    def read(self, item, offset, length, cancel_after_chunks=None, limit_bytes=None):
+        """Reads a range of an item, hashing as it goes.
 
         With cancel_after_chunks the read is abandoned after that many data
         chunks: (code, bytes_before, chunks_before, chunks_after_error,
         digest_hex). Otherwise (None, total, chunks, -, digest_hex).
         """
         request_id = self.new_id()
-        self.send({"t": "read", "id": request_id, "path": path,
+        self.send({"t": "read", "id": request_id, "item": item,
                    "offset": offset, "length": length})
         digest = hashlib.sha256()
         total, chunks, before = 0, 0, None
@@ -206,13 +289,33 @@ class Bridge(object):
                 return (code, before or 0, chunks, 0, "")
 
 
+def item_id(bridge, path):
+    """The identifier of a relative path, walking the tree by name (the app
+    resolves identifiers, so this is what the extension does not have to do)."""
+    if path == "":
+        return ".rootContainer"
+    parent = ".rootContainer"
+    parts = path.split("/")
+    for index, part in enumerate(parts):
+        _, items = bridge.list_item_all(parent)
+        match = next((entry for entry in items if entry["name"] == part), None)
+        if match is None:
+            return None
+        if index == len(parts) - 1:
+            return match["id"]
+        parent = match["id"]
+    return None
+
+
 def visible_root(root):
     return {name for name in os.listdir(root)
             if not name.startswith(".") and name != "Android"}
 
 
 def check_root_listing(bridge, root):
-    last, names, pages, items = bridge.list_all("")
+    _, items = bridge.list_item_all(".rootContainer")
+    names = [entry["name"] for entry in items]
+    pages = 1
     expected = visible_root(root)
     got = set(names)
     sizes_ok = True
@@ -232,7 +335,19 @@ def check_root_listing(bridge, root):
 
 
 def check_paging(bridge, root, path, minimum_pages):
-    last, names, pages, _ = bridge.list_all(path)
+    ident = item_id(bridge, path)
+    if ident is None:
+        return report(False, "BRIDGE no identifier for a folder (%s)" % name_hash(path))
+    names, pages, page, last = [], 0, None, {"t": "items"}
+    while True:
+        last = bridge.list_item(ident, page)
+        if last.get("t") != "items":
+            break
+        pages += 1
+        names.extend(entry["name"] for entry in (last.get("items") or []))
+        page = last.get("page")
+        if not page:
+            break
     expected = {name for name in os.listdir(os.path.join(root, path))}
     report(last.get("t") == "items" and len(names) == len(expected)
            and len(set(names)) == len(names) and set(names) == expected and pages >= minimum_pages,
@@ -242,7 +357,8 @@ def check_paging(bridge, root, path, minimum_pages):
 
 
 def check_stat(bridge, root, name):
-    reply = bridge.stat(name)
+    ident = item_id(bridge, name)
+    reply = bridge.stat_item(ident) if ident else {"t": "error", "code": "no_id"}
     size = os.path.getsize(os.path.join(root, name))
     report(reply.get("t") == "item" and not reply.get("item", {}).get("dir")
            and int(reply.get("item", {}).get("size", -1)) == size,
@@ -251,8 +367,9 @@ def check_stat(bridge, root, name):
 
 def check_read(bridge, root, name, size):
     expected = sha_file(os.path.join(root, name))
+    ident = item_id(bridge, name)
     try:
-        code, total, chunks, _, digest = bridge.read(name, 0, size, limit_bytes=size)
+        code, total, chunks, _, digest = bridge.read(ident, 0, size, limit_bytes=size)
     except BridgeError as error:
         report(False, "BRIDGE read %s failed: %s" % (name_hash(name), error))
         return
@@ -262,8 +379,9 @@ def check_read(bridge, root, name, size):
 
 
 def check_cancel(bridge, root, name, size, fake_err):
+    ident = item_id(bridge, name)
     try:
-        result = bridge.read(name, 0, size, cancel_after_chunks=3, limit_bytes=size)
+        result = bridge.read(ident, 0, size, cancel_after_chunks=3, limit_bytes=size)
     except BridgeError as error:
         report(False, "BRIDGE cancel of %s failed: %s" % (name_hash(name), error))
         return
@@ -293,13 +411,15 @@ def check_cancel(bridge, root, name, size, fake_err):
            "BRIDGE a 32 MiB read cancelled after %d chunk(s) (%d bytes): no data after the "
            "cancel, phone sent %d chunk(s) after its cancel" % (chunks, before, sent_after))
     # The connection is usable afterwards.
-    reply = bridge.stat(name)
+    reply = bridge.stat_item(ident)
     report(reply.get("t") == "item",
            "BRIDGE the next request on the same connection still answers")
 
 
 def check_denied(bridge):
-    reply = bridge.list_page("Android/data/x")
+    # No identifier can name Android/data (the app has none for it), so the
+    # refusal is asked for by name on a create, which touches nothing.
+    reply = bridge.create_item(".rootContainer", "Android/data/x", b"")
     report(reply.get("t") == "error" and reply.get("code") == "fs_denied",
            "BRIDGE Android/data/x answers fs_denied (%s)" % reply.get("code"))
 
@@ -319,11 +439,11 @@ def check_offline(socket_path):
             hello = bridge.hello()
         report(hello.get("t") == "hello" and hello.get("connected") is False,
                "BRIDGE hello answers not connected while the phone is away")
-        reply = bridge.list_page("")
+        reply = bridge.list_item(".rootContainer")
         report(reply.get("t") == "error" and reply.get("code") == "offline",
                "BRIDGE a listing with no phone answers offline (%s)" % reply.get("code"))
         try:
-            code, _, _, _, _ = bridge.read("big3.bin", 0, 1024)
+            code, _, _, _, _ = bridge.read("ino:1", 0, 1024)
             report(code == "offline",
                    "BRIDGE a read with no phone answers offline (%s)" % code)
         except BridgeError as error:
@@ -332,17 +452,234 @@ def check_offline(socket_path):
         bridge.close()
 
 
+# --- the extension's write side (slice S4) ---------------------------------
+# The driver plays the sandboxed extension: it speaks the bridge, never the
+# phone, and checks the fake phone's tree on disk. Names are hashed in the
+# output; the tree itself (in $WORK) is the test's own.
+
+def on_disk(root, rel):
+    return os.path.join(root, rel)
+
+
+def sha_file(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for block in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def staging_files(root):
+    found = []
+    for base, _dirs, names in os.walk(root):
+        for name in names:
+            if name.startswith(".pocketdeck-") and name.endswith(".part"):
+                found.append(os.path.join(base, name))
+    return found
+
+
+def conflict_name(name, taken):
+    base, dot, ext = name.rpartition(".")
+    if not dot or not base:
+        base, ext = name, ""
+    suffix = "." + ext if ext else ""
+    number = 1
+    while True:
+        label = " (from Mac)" if number == 1 else " (from Mac %d)" % number
+        candidate = base + label + suffix
+        if candidate not in taken:
+            return candidate
+        number += 1
+
+
+def create_ok(reply, size):
+    return reply.get("t") == "item" and not reply["item"]["dir"] \
+        and int(reply["item"]["size"]) == size
+
+
+def phase_write(bridge, root):
+    hello = bridge.hello()
+    report(hello.get("connected") is True, "WRITE hello: connected")
+
+    made = bridge.create_item(".rootContainer", "PDWrite", b"", directory=True)
+    ok = made.get("t") == "item" and made["item"]["dir"] \
+        and os.path.isdir(on_disk(root, "PDWrite"))
+    report(ok, "WRITE mkdir made a folder on the fake phone")
+    if not ok:
+        return
+    folder = made["item"]["id"]
+    folder_etag = made["item"]["etag"]
+
+    # A 3 MiB file: the bytes, the hash, and no staging file left behind.
+    data3 = os.urandom(3 * 1024 * 1024)
+    reply = bridge.create_item(folder, "a3.bin", data3)
+    path = on_disk(root, "PDWrite/a3.bin")
+    landed = create_ok(reply, len(data3)) and os.path.exists(path) \
+        and sha_file(path) == hashlib.sha256(data3).hexdigest()
+    report(landed, "WRITE a 3 MiB create lands byte-identical")
+    first = reply.get("item") if reply.get("t") == "item" else {}
+    if not first:
+        return
+
+    # A 32 MiB file: the same through the drop pacing.
+    data32 = os.urandom(32 * 1024 * 1024)
+    reply32 = bridge.create_item(folder, "a32.bin", data32)
+    path32 = on_disk(root, "PDWrite/a32.bin")
+    report(create_ok(reply32, len(data32)) and os.path.exists(path32)
+           and sha_file(path32) == hashlib.sha256(data32).hexdigest(),
+           "WRITE a 32 MiB create lands byte-identical")
+    report(staging_files(root) == [], "WRITE no staging file is left in the phone's tree")
+
+    # Edit: new bytes, a new etag, the same item id.
+    edited = b"edited by the Mac\n" * 70000
+    reply = bridge.modify_item(first["id"], first["etag"], data=edited)
+    path = on_disk(root, "PDWrite/a3.bin")
+    item = reply.get("item") if reply.get("t") == "item" else {}
+    report(item.get("id") == first["id"] and item.get("etag") != first["etag"]
+           and os.path.exists(path) and sha_file(path) == hashlib.sha256(edited).hexdigest(),
+           "WRITE an edit changes the bytes and the etag, the id stays")
+    if not item:
+        return
+
+    # Rename: still the same id, the folder's listing follows.
+    reply = bridge.modify_item(item["id"], item["etag"], name="renamed.bin")
+    renamed = reply.get("item") if reply.get("t") == "item" else {}
+    stat = bridge.stat_item(item["id"])
+    _, listing = bridge.list_item_all(folder)
+    names = {entry["name"] for entry in listing}
+    report(renamed.get("id") == item["id"] and renamed.get("name") == "renamed.bin"
+           and stat.get("t") == "item" and stat["item"]["name"] == "renamed.bin"
+           and "renamed.bin" in names and "a3.bin" not in names,
+           "WRITE a rename keeps the item id and moves the name (%s)"
+           % name_hash("renamed.bin"))
+
+    # Move into another folder: the same id again.
+    made = bridge.create_item(".rootContainer", "PDMove", b"", directory=True)
+    move_folder = made["item"]["id"] if made.get("t") == "item" else None
+    move_folder_etag = made["item"]["etag"] if made.get("t") == "item" else ""
+    if move_folder:
+        reply = bridge.modify_item(renamed["id"], renamed["etag"], parent=move_folder)
+        moved = reply.get("item") if reply.get("t") == "item" else {}
+        stat = bridge.stat_item(renamed["id"])
+        report(moved.get("id") == renamed["id"] and stat.get("t") == "item"
+               and os.path.exists(on_disk(root, "PDMove/renamed.bin"))
+               and not os.path.exists(on_disk(root, "PDWrite/renamed.bin")),
+               "WRITE a move to another folder keeps the item id")
+        if moved:
+            reply = bridge.delete_item(moved["id"], moved["etag"])
+            report(reply.get("t") == "ok"
+                   and not os.path.exists(on_disk(root, "PDMove/renamed.bin")),
+                   "WRITE delete removes the file on the phone")
+        fresh = bridge.stat_item(move_folder)
+        base = fresh["item"]["etag"] if fresh.get("t") == "item" else move_folder_etag
+        reply = bridge.delete_item(move_folder, base, recursive=True)
+        report(reply.get("t") == "ok" and not os.path.exists(on_disk(root, "PDMove")),
+               "WRITE recursive delete removes the folder")
+
+    # Conflict: the phone's copy changes behind the Mac's back.
+    original = os.urandom(4096)
+    reply = bridge.create_item(folder, "stale.bin", original)
+    stale = reply.get("item") if reply.get("t") == "item" else {}
+    if stale:
+        phone_bytes = b"the phone's own bytes\n" * 100
+        with open(on_disk(root, "PDWrite/stale.bin"), "wb") as handle:
+            handle.write(phone_bytes)
+            handle.flush()
+            os.fsync(handle.fileno())
+        mine = b"the Mac's edit\n" * 5000
+        reply = bridge.modify_item(stale["id"], stale["etag"], data=mine)
+        report(reply.get("t") == "error" and reply.get("code") == "fs_stale",
+               "WRITE a stale base answers fs_stale (%s)" % reply.get("code"))
+        # The conflict rule: keep both, upload as "<name> (from Mac).<ext>".
+        _, listing = bridge.list_item_all(folder)
+        taken = {entry["name"] for entry in listing}
+        conflict = conflict_name("stale.bin", taken)
+        reply = bridge.create_item(folder, conflict, mine)
+        current = bridge.stat_item(stale["id"])
+        original_path = on_disk(root, "PDWrite/stale.bin")
+        conflict_ok = reply.get("t") == "item" and os.path.exists(
+            on_disk(root, "PDWrite/" + conflict)) \
+            and sha_file(on_disk(root, "PDWrite/" + conflict)) == hashlib.sha256(mine).hexdigest()
+        report(conflict_ok and current.get("t") == "item"
+               and sha_file(original_path) == hashlib.sha256(phone_bytes).hexdigest(),
+               "WRITE a conflict keeps the phone's bytes and adds a (from Mac) copy")
+        if reply.get("t") == "item":
+            bridge.delete_item(reply["item"]["id"], reply["item"]["etag"])
+        bridge.delete_item(stale["id"], current["item"]["etag"] if current.get("t") == "item" else "")
+
+    # Leave the tree as the check's next phase expects: PDWrite stays (the
+    # mid-write phase writes into it by name).
+    report(folder_etag != "", "WRITE the folder is there for the next phase")
+
+    # A path the person must never see from the Mac is refused.
+    refused = bridge.create_item(".rootContainer", "Android/data/x", b"nope")
+    report(refused.get("t") == "error" and refused.get("code") == "fs_denied",
+           "WRITE a write into Android/data answers fs_denied (%s)" % refused.get("code"))
+
+
+def phase_kill(bridge, root, fake_pid):
+    hello = bridge.hello()
+    report(hello.get("connected") is True, "WRITE hello: connected")
+    data = os.urandom(32 * 1024 * 1024)
+    request_id = bridge.new_id()
+    bridge.send({"t": "create", "id": request_id, "parent": ".rootContainer",
+                 "name": "PDWrite-kill.bin", "dir": False, "size": len(data),
+                 "sha256": hashlib.sha256(data).hexdigest()})
+    reply = bridge.wait_for(request_id)
+    if reply.get("t") != "ready":
+        report(False, "WRITE the mid-write check never got ready (%s)" % reply.get("code"))
+        return
+    sent, killed, broke = 0, False, False
+    try:
+        for offset in range(0, len(data), WRITE_CHUNK):
+            bridge.send_chunk(request_id, data[offset:offset + WRITE_CHUNK])
+            sent += min(WRITE_CHUNK, len(data) - offset)
+            if not killed and fake_pid and sent >= 8 * 1024 * 1024:
+                os.kill(fake_pid, signal.SIGKILL)
+                killed = True
+    except OSError:
+        broke = True
+    code = None
+    if not broke:
+        try:
+            final = bridge.wait_for(request_id)
+            code = final.get("code")
+        except (BridgeError, socket.timeout):
+            code = "closed"
+    report(killed and (code in ("offline", "closed") or broke),
+           "WRITE a phone killed mid-write ends the request as offline (%s, %d bytes sent)"
+           % (code or "socket closed", sent))
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--socket", required=True)
     parser.add_argument("--root", required=True)
     parser.add_argument("--work", required=True)
     parser.add_argument("--fake-err", default=None)
-    parser.add_argument("--phase", choices=["online", "offline"], required=True)
+    parser.add_argument("--fake-pid", type=int, default=None)
+    parser.add_argument("--phase", choices=["online", "offline", "write", "kill"], required=True)
     args = parser.parse_args()
 
     if args.phase == "offline":
         check_offline(args.socket)
+        return 0
+    if args.phase in ("write", "kill"):
+        try:
+            bridge = Bridge(args.socket, timeout=60.0)
+        except OSError as error:
+            report(False, "WRITE cannot connect to the bridge socket (%s)" % error)
+            return 1
+        try:
+            if args.phase == "write":
+                phase_write(bridge, args.root)
+            else:
+                phase_kill(bridge, args.root, args.fake_pid)
+        except (BridgeError, socket.timeout, OSError) as error:
+            report(False, "WRITE the bridge stopped answering (%s)" % error)
+            return 1
+        finally:
+            bridge.close()
         return 0
 
     try:

@@ -4403,9 +4403,10 @@ files_bridge_socket() {
 # files_bridge_driver <phase> — run the driver and turn its lines into PASS/FAIL.
 files_bridge_driver() {
     local phase="$1" out="$WORK/bridge-$1.txt"
+    shift || true
     "$MACOS/scripts/files-bridge-driver.py" --socket "$(files_bridge_socket)" \
         --root "$WORK/fsroot" --work "$WORK" --fake-err "$WORK/fake.err" \
-        --phase "$phase" > "$out" 2>&1
+        --phase "$phase" "$@" > "$out" 2>&1
     while IFS= read -r line; do
         case "$line" in
             ok\ *) ok "${line#ok }" ;;
@@ -4479,6 +4480,85 @@ PY
     stop_app
 }
 
+
+# check_files_write — the write path (slice S4, docs/design/files.md §6): the
+# driver plays the extension and drives create/modify/delete over the app's
+# bridge. Asserts a 3 MiB and a 32 MiB create land byte-identical with no
+# staging file left, edit/rename/move keep the item id, delete removes it, a
+# stale base keeps both copies, a write into Android/data is denied, and a
+# phone killed mid-write ends the request offline with nothing partial left
+# after it restarts. No File Provider anywhere.
+check_files_write() {
+    clean
+    python3 - "$WORK" <<'PY'
+import os, sys
+work = sys.argv[1]
+root = os.path.join(work, "fsroot")
+for folder in ("Documents", "DCIM/Camera", "Android/data/x"):
+    os.makedirs(os.path.join(root, folder), exist_ok=True)
+open(os.path.join(root, "Android/data/x/y"), "wb").write(b"hidden")
+open(os.path.join(root, ".hidden"), "wb").write(b"hidden")
+with open(os.path.join(root, "Documents/notes.txt"), "wb") as handle:
+    handle.write(b"small notes\n")
+with open(os.path.join(root, "DCIM/Camera/photo.jpg"), "wb") as handle:
+    handle.write(b"\xff\xd8\xff\xe0" + b"p" * 4096)
+PY
+    FAKE_ARGS="--fs-root $WORK/fsroot --fs-write-delay-ms 1" start_fake || return 1
+    launch --connect "127.0.0.1:$PORT" --files-bridge-dir "$WORK/bridge"
+    wait_until 30 file_has "files-bridge: ok" "$WORK/app.log" \
+        && ok "WRITE the app listens on the test bridge socket" \
+        || bad "WRITE no bridge socket: $(grep 'files-bridge' "$WORK/app.log" | tail -2)"
+    if ! wait_until 30 eval 'events_have "\"state\":\"paired\"" || events_have "\"state\":\"auth_ok\""'; then
+        bad "WRITE the app never authenticated"
+        stop_app; stop_fakephone; return 1
+    fi
+    files_bridge_driver write
+    files_bridge_driver kill --fake-pid "$FAKE_PID"
+    wait_until 10 no_fakephone
+    # The phone comes back on the same tree: a killed write must have left
+    # neither its staging file nor a partial target.
+    FAKE_ARGS="--fs-root $WORK/fsroot" start_fake || { bad "WRITE fakephone did not restart"; stop_app; return 1; }
+    sleep 1
+    if python3 - "$WORK/fsroot" <<'PY'
+import os, sys
+root = sys.argv[1]
+staging = [os.path.join(base, name) for base, _d, names in os.walk(root)
+           for name in names if name.startswith(".pocketdeck-") and name.endswith(".part")]
+partial = os.path.exists(os.path.join(root, "PDWrite-kill.bin"))
+print("staging=%d partial=%s" % (len(staging), partial))
+sys.exit(1 if staging or partial else 0)
+PY
+    then
+        ok "WRITE the killed write left no staging file and no partial file"
+    else
+        bad "WRITE the killed write left something behind on the fake tree"
+    fi
+    # Nothing about a write may put a name or a byte value in the app log.
+    log show --last 3m --info \
+        --predicate 'subsystem == "dev.pocketdeck.mac" AND category == "files"' 2>/dev/null \
+        | grep -o 'bridge: write.*' > "$WORK/write-log.txt" 2>/dev/null || true
+    if grep -q "bridge: write" "$WORK/write-log.txt"; then
+        ok "WRITE the app logged write op names and sizes only"
+    else
+        bad "WRITE the app logged no write activity"
+    fi
+    if python3 - "$WORK/fsroot" "$WORK/write-log.txt" <<'PY'
+import os, sys
+root, log = sys.argv[1], sys.argv[2]
+text = open(log, errors="replace").read()
+names = set(os.listdir(root)) | {"a3.bin", "a32.bin", "stale.bin", "renamed.bin", "PDWrite"}
+bad = [name for name in names if name and (name + " (from Mac)" in text or "/" + name in text)]
+sys.exit(1 if bad else 0)
+PY
+    then
+        ok "WRITE no file name from the tree appears in the app log"
+    else
+        bad "WRITE a file name appears in the app log"
+    fi
+    stop_app
+    stop_fakephone
+    wait_until 5 no_fakephone
+}
 
 # --- Phone files in Finder (docs/design/files.md §1/§5, files-domain) ------
 #
