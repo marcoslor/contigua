@@ -649,6 +649,10 @@ class EventLog(object):
     def tx(self, msg):
         self._emit({"ev": "tx", "msg": redact_event(msg), "ts": time.time()})
 
+    def screen(self, state):
+        """Display 0's power state changed (`state.screen`)."""
+        self._emit({"ev": "screen", "state": state, "ts": time.time()})
+
     def rx(self, msg):
         self._emit({"ev": "rx", "msg": redact_event(msg), "ts": time.time()})
 
@@ -1974,7 +1978,8 @@ class Session(object):
 
     def send_state(self):
         """The `state` message, with `dnd` only when the phone supports it."""
-        state = {"t": "state", "locked": True, "battery": BATTERY, "charging": False}
+        state = {"t": "state", "locked": True, "battery": BATTERY, "charging": False,
+                 "screen": self.phone.screen_state}
         if self.phone.zen.supported:
             state["dnd"] = self.phone.zen.name()
         if self.phone.fake_ringer.supported:
@@ -2093,6 +2098,7 @@ class Session(object):
         # is an unknown message, and the events log stays silent about it.
         if self.phone.fake_ringer.supported:
             handlers["phone.ringer"] = self._on_phone_ringer
+        handlers["phone.wake"] = self._on_phone_wake
         handlers["phone.ring"] = self._on_phone_ring
         handlers["phone.ring.stop"] = self._on_phone_ring_stop
         handler = handlers.get(kind)
@@ -2134,6 +2140,16 @@ class Session(object):
             self._send_error("unsupported", "phone.ringer needs the shell service")
             return
         self.phone.events.ringer(self.phone.fake_ringer.mode)
+        self.send_state()
+
+    def _on_phone_wake(self, _msg):
+        """phone.wake: display 0 comes back on and the mirror repaints. The fake
+        has no keyguard to keep; it reports the panel state the real phone does."""
+        self.phone.screen_state = "on"
+        self.phone.events.screen("on")
+        for window in self.windows.values():
+            if window.mode == "phone":
+                window.start()
         self.send_state()
 
     def _on_phone_ring(self, msg):
@@ -3074,6 +3090,8 @@ class Session(object):
         window.start()
         if mode == "phone" and self.phone.args.rotate_after > 0:
             threading.Thread(target=self._rotate_later, args=(window,), daemon=True).start()
+        if mode == "phone" and self.phone.args.screen_off_after > 0:
+            threading.Thread(target=self._screen_off_later, args=(window,), daemon=True).start()
 
     def _rotate_later(self, window):
         """The phone turns to landscape: the mirror turns with it (new VIDEO_CONFIG)."""
@@ -3085,6 +3103,18 @@ class Session(object):
         box = turn_box(window.w, window.h, *self.phone.screen)
         window.w, window.h = mirror_fit(*box + self.phone.screen)
         window.start()
+
+    def _screen_off_later(self, window):
+        """The panel times out: `state.screen off` and no more mirror frames."""
+        time.sleep(self.phone.args.screen_off_after)
+        if self.windows.get(window.stream_id) is not window or self.phone.screen_state == "off":
+            return
+        self.phone.screen_state = "off"
+        self.phone.events.screen("off")
+        for other in self.windows.values():
+            if other.mode == "phone":
+                other.pause()
+        self.send_state()
 
     # -- task.continue (docs/design/handoff.md): the Mac wants a window for the
     # app in the foreground on the phone. The default foreground is Settings;
@@ -3279,6 +3309,8 @@ class FakePhone(object):
         self.name = args.name
         # The screen as it is turned now (the phone mirror follows it).
         self.screen = (SCREEN_W, SCREEN_H)
+        # Display 0's power state (`state.screen`).
+        self.screen_state = "on"
         tls_guard()
         self.store = Store(args.state)
         if args.qr_uri:
@@ -3518,6 +3550,8 @@ def build_parser():
                    help="pad the app list to N apps (grid screenshots)")
     p.add_argument("--no-icon-every", type=int, default=0, metavar="K",
                    help="with --demo-apps, every K-th app has no icon")
+    p.add_argument("--screen-off-after", type=float, default=0.0, metavar="SECONDS",
+                   help="after the phone window opens, the panel times out: send state.screen off and stop frames")
     p.add_argument("--rotate-after", type=float, default=0.0, metavar="SECONDS",
                    help="turn the screen to landscape this long after a phone window opens")
     p.add_argument("--qr-uri", metavar="URI",
