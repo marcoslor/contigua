@@ -55,7 +55,8 @@ One per-phone opt-in covers both features; default OFF on the Mac and the phone.
   `UNNotificationCategory` with `.customDismissAction` (`didReceive` gets
   `UNNotificationDismissActionIdentifier`; the person still sees no Mac UI). The phone then
   cancels its own notification (`cancelNotification(key)` as the listener) and skips
-  ongoing/no-clear ones. Verified in the VM on macOS 26 (part 2 results below).
+  ongoing/no-clear ones. **Not yet proven on macOS 26**: the VM run (part 2 results) did not
+  reach a banner clear, so this rests on the API being documented, not on a measurement.
 
 ## Protocol (docs/PROTOCOL.md, session-level JSON)
 
@@ -140,6 +141,46 @@ The set is stored per phone in the profile's defaults as `notify.mute.<deviceId>
 Ids, package names, action indexes, field lengths and category counts only — never titles,
 texts, codes or replies, on either side and in the e2e share log.
 
+## Part 2 results (v0.2 #8, part 1)
+
+Built: actions/buttons and inline reply, dismiss Mac ↔ phone, per-app mute, Copy code. Images
+and Live Updates / Now Bar are part 2 and untouched.
+
+Verified (K1 468 unit tests 0 failures; K2 774 tests 0 failures; host e2e `notify-actions`
+19/19, regressions `notify` 22/22 twice, `dock` 29/29, `menus` 8/8, all quiet share-log runs):
+
+- the phone advertises at most three actions with trimmed, capped titles and the original
+  action index; contextual and unusable ones are skipped; `notify.action` reaches the phone
+  with the right index and a reply of the right length (fakephone logs it), a non-reply action
+  gets no text;
+- `notify.dismiss` reaches the phone for a clearable notification and is refused for one the
+  wire marked `ongoing`; `notify.remove` still clears the delivered banner;
+- a muted package's post is dropped at the Mac (`notify muted pkg=…`) and never shown;
+- a code notification gets a category that carries Copy code, the pasteboard then holds the
+  code (hash compared), the item is `org.nspasteboard.ConcealedType` +
+  `org.nspasteboard.TransientType`, and the e2e clears it; no title, text, code or reply
+  appears in any log;
+- unit tests cover the action selection/validation, the category hash and its 64-entry LRU,
+  the banner-action parser, the code scanner (23 positive / 24 negative samples) and the
+  90 s pasteboard clear by changeCount.
+
+Not verified (both hardware sessions were spent on the test client, not on the feature):
+
+- **Emulator (1 boot used, API 36)**: the real server installed, the debug prefs were seeded,
+  the listener grant and the v2 pairing succeeded. The actions/reply/dismiss checks never ran
+  because the ad-hoc verification client was started with the macOS system `python3` (3.9,
+  no TLS 1.3) instead of the rig's `$PYTHON`; it printed `Unsupported protocol version 0x304`
+  and the run had no forwarded ids. With that one line fixed (use `$PYTHON`) the same script
+  (`.agent/notify2/emu.sh`) should run. So on a real listener **unverified**: action mapping,
+  RemoteInput fill, `cancelNotification`, the ongoing refusal.
+- **VM (1 session used)**: the guest booted and the app received the reply-shaped
+  `notify.post` (id, 2 actions, reply=1) over a healthy session, but the new visible check
+  waited on the wrong event marker (`"kind":"notify"` instead of the id) and returned before
+  any banner interaction. `.customDismissAction`, the real Reply field, Copy code from a real
+  banner and the banner's buttons therefore remain **unproven**. `check-e2e.sh notify-vm` is
+  fixed (waits for the notification id) for the next VM session; the screenshots the brief
+  asked for do not exist yet.
+
 ## Checks
 
 - Unit tests: notification mapping (title/text extraction incl. BIG_TEXT, caps, skip rules),
@@ -153,5 +194,11 @@ texts, codes or replies, on either side and in the e2e share log.
   toggle off → no forwarding; Fossify player → Now Playing at the Mac (values logged); play/
   pause/next/prev from the Mac move the phone session (`dumpsys media_session`); click →
   window.open on the phone (window opens that app's display).
+- Part 2 unit tests: action selection/caps/skips, index and reply-text validation, ongoing
+  refusal, debug-poster gate; category hash/LRU and banner-action parsing; sign-in code samples
+  and the pasteboard write/clear. e2e `notify-actions` (quiet) covers the wire, fakephone's
+  action/dismiss logs, mute, the ongoing refusal, Copy code's value hash and concealed types,
+  and the no-text rule. `notify-vm` (SKIP on the host) drives real banners with AX inside the
+  VM: Reply, Send, Copy code, and a banner clear.
 - ROADMAP #7 is marked done only if notifications AND media controls both work end to end on
   the emulator; otherwise the gaps are listed in `.agent/notify/progress.md` and the doc.
