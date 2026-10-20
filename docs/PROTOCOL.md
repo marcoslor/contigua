@@ -478,8 +478,48 @@ Rules:
 - `fs.setAttrs` answers `fs.result` with the item; a platform that cannot set
   the time answers `ok: true` with the item's real metadata (best effort).
 
-`fs.watch` and `fs.changes` are designed (design §2, §5) but are not part of
-the wire yet.
+### Watching
+
+Watching is opt-in and request-scoped (docs/design/files.md §2, §5): the phone
+watches a folder only while the Mac says it has that folder open, and nothing at
+all while the set is empty.
+
+| t | fields | meaning |
+|---|---|---|
+| `fs.watch` | `id`, `paths` | add these folders to the watched set; idempotent |
+| `fs.unwatch` | `id`, `paths` | remove them; a folder that is not watched is ignored |
+
+Phone → Mac:
+
+| t | fields |
+|---|---|
+| `fs.changes` | `paths`: the watched folders whose contents moved, coalesced (≤ 4 messages per second per session) |
+
+Rules:
+
+- `paths` holds relative folder paths (`""` = the root). One that the shape
+  rules refuse — `Android/…`, a dot-prefixed top-level entry, `..` — answers
+  `fs_denied` and adds or removes nothing. An entry that is not a directory is
+  `fs_not_a_dir`; one that is gone is `fs_not_found`. A refused batch changes no
+  watch.
+- Both answer `fs.result` with `ok: true` and no item. `fs.watch` on a folder
+  that is already watched is a no-op; `fs.unwatch` on one that is not is a
+  no-op, so the Mac needs no exact bookkeeping.
+- `fs.changes` carries paths only: no names, no metadata, no deleted list. The
+  Mac re-lists each path and diffs against the listing it handed out last, which
+  covers creates, edits, deletions and renames in one message. Folders are
+  coalesced: a burst inside one folder is one occurrence in one message, and
+  messages are at most 4 per second. A change in a folder nobody watches is
+  never reported.
+- A watch is one folder, non-recursively (inotify semantics); the Mac must ask
+  for a child folder itself. Our own staging writes (`.pocketdeck-*.part`) never
+  produce a change.
+- At most 256 folders are watched per session. Past that, or when a watch cannot
+  start, the phone falls back to a 5 s media-generation poll while anything is
+  wanted, and reports the affected folders in `fs.changes` when it moves.
+- A session end removes every watch and stops the poll. The phone keeps no
+  watcher, timer or poll while no folder is watched.
+
 
 ## Notifications + media
 
