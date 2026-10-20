@@ -247,13 +247,68 @@ one uid 2000 owns, and the `app_process` system context's package is `android` (
   reports `evicted` with the exact callback/error, stops the encoder and never
   retries in a loop.
 
+## C1 implementation notes
+
+Built on the shape above; the wire is docs/PROTOCOL.md "Camera". Numbers from the
+one C1 emulator boot are at the end of this section.
+
+- **Consent is a setting, default off.** "Let Macs use the camera" sits on the Home
+  screen next to the notification-sharing toggle. Turning it on asks for `CAMERA`
+  through the normal runtime dialog; the setting only becomes true once the
+  permission is granted. Turning it off writes the preference and stops a running
+  capture. The app pushes `{allowed, cams}` to the shell service through
+  `IDeckService.cameraState` whenever the setting or the permission changes and when
+  the deck service starts; the shell refuses `cam.start` with `off` while it is
+  false or was never pushed (fail closed). The rig enables it with the preference
+  write the toggle makes plus `pm grant` (tools/emulator/cam-c1.sh) — production
+  code never grants the permission itself.
+- **Start path: the shell spawns `am start-foreground-service`.** The shell service
+  has no `ContextImpl` for our package (C0's finding), so the start is the C0b
+  stage-a mechanism run as a child process — `am start-foreground-service -n
+  dev.pocketdeck/.app.CameraCaptureService --es params <json>` — rather than
+  `IActivityManager.startService`, whose binder signature needs the caller's package
+  as well. `android:exported="true"` plus `android.permission.DUMP` on the service is
+  what lets uid 2000 start it while ordinary apps cannot (the C0b probe's protection,
+  kept for production). The service has 5 s to call `startForeground`, so it calls it
+  first thing and only then waits for its pipe.
+- **Frames app → shell: one reliable pipe per capture.** The shell creates
+  `ParcelFileDescriptor.createReliablePipe()` and passes the write end in the one new
+  `IDeckCallback.onCameraStart(String paramsJson, in ParcelFileDescriptor sink)`;
+  the app's write end is read as `u32 len · u64 ptsUs · u8 flags` (bit0 = keyframe)
+  `· Annex-B access unit`. The shell turns each into `VIDEO_FRAME` on the stream
+  (keyframes on the control queue, deltas on the delta queue, the existing
+  backpressure and drop rules apply). Closing the read end (stop, session end) is
+  the signal the other way: the app's next write fails, it stops the camera and
+  reports `stopped`; a failed write is never retried.
+- **State app → shell: `IDeckService.cameraState(String json)`**, method 16. It
+  carries `{"stream":N,"state":"...","reason":"..."}` for the wire and
+  `{"allowed":bool,"cams":[...]}` for the gate and the camera list. The session
+  relays state to `cam.state`; a terminal state also tears the pipe down. `cam.list`
+  is answered from the last pushed list (empty while the setting is off).
+- **The app service** (`CameraCaptureService`, main source set) is `camera`-typed,
+  shows an ongoing "Your Mac is using the camera" notification with Stop, and runs
+  the state machine in `CameraControl` (pure JVM code behind `CameraEngine`/`AuSink`
+  seams) with `Camera2Engine` (Camera2 → MediaCodec surface) and `CameraAuWriter` as
+  the real implementations. `onDisconnected` is `evicted`; `ERROR_CAMERA_DISABLED`
+  is `disabled`; `ERROR_CAMERA_IN_USE`/`MAX_CAMERAS_IN_USE` are `busy`; nothing is
+  retried. The encoder is the `WindowStream` shape: `video/avc`, surface colour
+  format, VBR, no B-frames, I-frame interval 2 s.
+- **Encoder details.** Bitrate ~0.12 bpp·fps, capped at 8 Mbps; SPS+PPS from the
+  output format (`csd-0`, `csd-1`) are prepended to the first keyframe only; every
+  later keyframe is a plain IDR. The first keyframe therefore decodes without a
+  prior config.
+- **One capture at a time, service-wide.** A second `cam.start` answers `busy` in the
+  shell before anything is spawned; the app service refuses one too (its registry
+  holds one stream) if it somehow receives two.
+
 ## Slices
+
 
 | | Slice | What | Size | Gate |
 |---|---|---|---|---|
 | C0 | Finish the phone probe | done 2026-10-20: staged probe, one boot. Shell UID lists the camera and cannot open it (package/uid refusal); P2–P5 are blocked by P1 | S | none |
 | C0b | App-process camera FGS probe | **done** 2026-10-20: shell-started `camera` FGS captures in the background and locked; the app starting itself is refused; eviction = `onDisconnected`; indicator to check on a real phone | S | none |
-| C1 | Phone capture service | Camera2 in the **app process** (foreground service, `CAMERA` permission) → MediaCodec H.264 1280×720@30 (the `WindowStream` encoder settings) → `VIDEO_FRAME` to the shell session, start/stop, busy/disabled/evicted errors, one stream | M | C0b (done) |
+| C1 | Phone capture service | **built** (see "C1 implementation notes"): Camera2 in the **app process** (foreground service, `CAMERA` permission) → MediaCodec H.264 1280×720@30 (the `WindowStream` encoder settings) → `VIDEO_FRAME` to the shell session, start/stop, busy/disabled/evicted errors, one stream | M | C0b (done) |
 | C2 | "Phone camera" window | the existing H.264 decode path in a normal Mac window, a menu item and start/stop; no extension, ships with today's ad-hoc signing | S-M | C1 |
 | C3 | CMIO camera extension | provider/device/stream, decode H.264 into `CVPixelBuffer`, App Group socket between app and extension, stream on first client and stop when none; replaces the solid-colour source | M-L | C1; **Developer ID** |
 | C4 | Signing and install | System-Extension App ID, Developer ID profiles for app and extension, notarization, `/Applications` install, approval deep-link, uninstall/upgrade | M | signing decision |
