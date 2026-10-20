@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # End-to-end checks C3-C13 for the macOS client against tools/fakephone.
 #
-#   ./scripts/check-e2e.sh [qr|pair|gates|tls|render|resize|input|hover|mouseback|input-global|pause|direct|nav|mirror|spotlight|intents|mcp|focus|controls|pinch|chrome|menus|density|trackpad|clip|sharein|links|share|apk|drop|dock|nickname|notify|notify-actions|audio|handoff|deck|all [--shard N/M]]
+#   ./scripts/check-e2e.sh [qr|pair|gates|tls|render|resize|input|hover|mouseback|input-global|pause|direct|nav|mirror|spotlight|intents|mcp|focus|controls|pinch|chrome|menus|density|trackpad|clip|sharein|links|share|apk|drop|dock|nickname|notify|notify-actions|notify-media|audio|handoff|deck|all [--shard N/M]]
 #
 # Every check starts from a clean slate (the shared-app checks share one, see
 # "The shared app" below): no PocketDeck or fakephone processes
@@ -5908,6 +5908,181 @@ EOF
     stop_app
     stop_fakephone
     wait_until 5 no_fakephone
+}
+
+# check_notify_media — notification pictures and Android 16 Live Updates
+# (docs/design/notify.md, "Part 2b design"). Quiet share-log run: the post line
+# carries the picture's mime/size/dimensions and its temp path, the live lines
+# carry ids, progress buckets and timestamps, and `livedump` reads the menu bar's
+# Live section. Nothing reaches Notification Center; no picture bytes are logged.
+check_notify_media() {
+    clean
+    local log="$WORK/notify-media.log" script="$WORK/notify-media-input.txt" device path dir mode
+    log_has() { grep -qF -- "$1" "$log" 2>/dev/null; }
+    # live_rx ID — one line per applied update, oldest first.
+    live_lines() { grep -E "notify live id=$1 progress=" "$log" 2>/dev/null || true; }
+
+    FAKE_ARGS="--notify-media" start_fake '' || return 1
+    device="$(sed -n 's/^fakephone \([^ ]*\) listening.*/\1/p' "$WORK/fake.log" "$WORK/fake.err" | head -1)"
+    [ -n "$device" ] || { bad "NOTIFY-MEDIA no device id in the fakephone listening line"; stop_fakephone; return 1; }
+    defaults write "$DEFAULTS_SUITE" "notify.$device" -bool YES
+    defaults write "$DEFAULTS_SUITE" "showAppsInDock" -bool NO
+    # A live row click runs the click route; "none" keeps it from opening a window.
+    defaults write "$DEFAULTS_SUITE" "notify.click.$device" -string none
+
+    cat > "$script" <<EOF
+wait 3
+notifyclick pd-l1
+livedump $WORK/notify-media-live-1.json
+wait 3
+livedump $WORK/notify-media-live-2.json
+wait 6
+livedump $WORK/notify-media-live-3.json
+wait 3
+livedump $WORK/notify-media-live-4.json
+EOF
+    # The picture and Live Update shapes arrive on notify.enable; the fake also
+    # ends pd-m1 after 8 s and pd-l1 after its twenty seconds of updates.
+    launch --connect "127.0.0.1:$PORT" --quit-after 70 \
+        --open com.whatsapp --share-log "$log" --debug-input-script "$script"
+
+    # (a) the picture joins its post: mime, dimensions, size and a temp file.
+    wait_until 20 log_has "notify post id=pd-m1 pkg=com.whatsapp" \
+        || { bad "NOTIFY-MEDIA pd-m1 not recorded: $(tr '\n' '|' < "$log" 2>/dev/null)"; stop_app; stop_fakephone; return 1; }
+    log_has "image=image/jpeg w=160 h=120 size=1615 attachment=" \
+        && ok "NOTIFY-MEDIA the picture joined the post (jpeg 160x120, 1615 B)" \
+        || bad "NOTIFY-MEDIA the post carries no image facts"
+    path="$(sed -n 's/.*attachment=\([^ ]*\).*/\1/p' "$log" | head -1)"
+    if [ -n "$path" ] && [ -f "$path" ]; then
+        ok "NOTIFY-MEDIA the attachment temp file exists"
+        mode="$(stat -f %Lp "$path" 2>/dev/null)"
+        [ "$mode" = "600" ] \
+            && ok "NOTIFY-MEDIA the temp file is 0600" \
+            || bad "NOTIFY-MEDIA the temp file is $mode, not 600"
+        dir="$(dirname "$path")"
+        mode="$(stat -f %Lp "$dir" 2>/dev/null)"
+        [ "$mode" = "700" ] \
+            && ok "NOTIFY-MEDIA its directory is 0700" \
+            || bad "NOTIFY-MEDIA its directory is $mode, not 700"
+        case "$path" in
+            */Caches/PocketDeck-notify3/notify/*) ok "NOTIFY-MEDIA the temp file is in the profile's caches" ;;
+            *) bad "NOTIFY-MEDIA the temp file is outside the profile's caches ($path)" ;;
+        esac
+    else
+        bad "NOTIFY-MEDIA no attachment temp file"
+    fi
+
+    # (b) an oversized picture is refused and the banner still posts without it.
+    wait_until 20 log_has "notify post id=pd-m2 pkg=com.whatsapp" \
+        && ok "NOTIFY-MEDIA the oversized picture's banner still posted" \
+        || bad "NOTIFY-MEDIA pd-m2 not recorded"
+    log_has "notify image id=pd-m2 refused=bytes" \
+        && ok "NOTIFY-MEDIA the oversized picture was refused" \
+        || bad "NOTIFY-MEDIA the oversized picture was not refused"
+    ! grep -q "notify post id=pd-m2 .*image=" "$log" 2>/dev/null \
+        && ok "NOTIFY-MEDIA the refused picture was not attached" \
+        || bad "NOTIFY-MEDIA the refused picture was attached anyway"
+
+    # (c) the phone taking pd-m1 away removes the attachment temp file.
+    wait_until 25 log_has "notify remove id=pd-m1" \
+        && ok "NOTIFY-MEDIA the phone removed the picture notification" \
+        || bad "NOTIFY-MEDIA no notify.remove for pd-m1"
+    if [ -n "$path" ] && [ ! -e "$path" ]; then
+        ok "NOTIFY-MEDIA the temp file went away with the banner"
+    else
+        bad "NOTIFY-MEDIA the temp file outlived its banner"
+    fi
+
+    # (d) Live Updates: one banner, in-place updates at most once per second.
+    grep -q "notify post id=pd-l1 pkg=com.uber .* live=1" "$log" 2>/dev/null \
+        && ok "NOTIFY-MEDIA the first live post is marked live" \
+        || bad "NOTIFY-MEDIA pd-l1 was not recorded as live"
+    [ "$(grep -c "notify post id=pd-l1 " "$log" 2>/dev/null)" = "1" ] \
+        && ok "NOTIFY-MEDIA live updates never posted a second banner" \
+        || bad "NOTIFY-MEDIA a live update posted another banner"
+    local updates
+    updates="$(live_lines pd-l1)"
+    [ "$(printf '%s\n' "$updates" | grep -c .)" -ge 2 ] \
+        && ok "NOTIFY-MEDIA live updates arrived in place ($(printf '%s\n' "$updates" | grep -c .) lines)" \
+        || bad "NOTIFY-MEDIA no in-place live updates in the share log"
+    printf '%s\n' "$updates" | python3 -c '
+import sys, re
+times = []
+for line in sys.stdin:
+    m = re.search(r" at=(\d+)$", line.strip())
+    if m:
+        times.append(int(m.group(1)))
+if len(times) < 2:
+    print("fewer than two timed updates"); sys.exit(1)
+gaps = [b - a for a, b in zip(times, times[1:])]
+if min(gaps) < 950:
+    print("updates %.0f ms apart" % min(gaps)); sys.exit(1)
+print("gaps at least %d ms" % min(gaps))
+' > "$WORK/notify-media-gaps.txt" 2>&1 \
+        && ok "NOTIFY-MEDIA live updates are coalesced to one per second ($(cat "$WORK/notify-media-gaps.txt"))" \
+        || bad "NOTIFY-MEDIA live updates are faster than one per second ($(cat "$WORK/notify-media-gaps.txt"))"
+    wait_until 10 log_has "notify live id=pd-l1 end" \
+        && ok "NOTIFY-MEDIA the ended live item was removed from the section" \
+        || bad "NOTIFY-MEDIA no live-end line"
+    wait_until 10 log_has "notify remove id=pd-l1" \
+        && ok "NOTIFY-MEDIA the phone's notify.remove ended the live item" \
+        || bad "NOTIFY-MEDIA no notify.remove for pd-l1"
+
+    # (e) the menu bar's Live section: the rows, an advancing item, the end.
+    for f in 1 2 3 4; do
+        wait_until 30 [ -s "$WORK/notify-media-live-$f.json" ] \
+            || { bad "NOTIFY-MEDIA no livedump $f"; break; }
+    done
+    python3 - "$WORK" <<'PY' && ok "NOTIFY-MEDIA the Live section lists both items and drops the ended one" \
+        || bad "NOTIFY-MEDIA the Live section does not match"
+import json, sys, os
+work = sys.argv[1]
+def load(n):
+    path = os.path.join(work, "notify-media-live-%d.json" % n)
+    return {row["id"]: row for row in json.load(open(path))["live"]}
+first, second, third, fourth = load(1), load(2), load(3), load(4)
+if set(first) != {"pd-l1", "pd-l2"}:
+    print("first rows:", sorted(first)); sys.exit(1)
+if first["pd-l1"]["pkg"] != "com.uber" or first["pd-l1"]["chipLen"] != 5:
+    print("pd-l1 row:", first["pd-l1"]); sys.exit(1)
+if not first["pd-l2"]["chrono"] or not first["pd-l2"]["countDown"]:
+    print("pd-l2 is not a countdown chronometer:", first["pd-l2"]); sys.exit(1)
+if ":" not in first["pd-l2"]["title"]:
+    print("pd-l2 has no clock:", first["pd-l2"]["title"]); sys.exit(1)
+if not (0 <= first["pd-l1"]["progress"] < second["pd-l1"]["progress"] <= 1):
+    print("pd-l1 did not advance:", first["pd-l1"]["progress"], second["pd-l1"]["progress"]); sys.exit(1)
+if "▮" not in first["pd-l1"]["title"] or "▯" not in first["pd-l1"]["title"]:
+    print("no text progress bar:", first["pd-l1"]["title"]); sys.exit(1)
+if "pd-l1" in third or "pd-l1" in fourth:
+    print("the ended item is still listed:", sorted(third), sorted(fourth)); sys.exit(1)
+PY
+
+    # (f) a live row's click runs the click route; "none" opened nothing.
+    log_has "notify click id=pd-l1" \
+        && ok "NOTIFY-MEDIA clicking a live row ran the click route" \
+        || bad "NOTIFY-MEDIA the live row click was not recorded"
+    ! grep -q '"kind":"open"' "$WORK/events.jsonl" 2>/dev/null \
+        && ok "NOTIFY-MEDIA the 'do nothing' choice sent no notify.open" \
+        || bad "NOTIFY-MEDIA a notify.open was sent anyway"
+
+    # (g) nothing about the notification or the picture reached a log.
+    ! grep -qE 'pd-notify-(title|text)-[0-9]|/9j/4AAQ|[A-Za-z0-9+/]{200,}' \
+        "$WORK/app.log" "$log" "$WORK/fake.log" "$WORK/fake.err" "$WORK/events.jsonl" 2>/dev/null \
+        && ok "NOTIFY-MEDIA no notification text or picture bytes reached a log" \
+        || bad "NOTIFY-MEDIA notification text or picture bytes leaked"
+
+    stop_fakephone
+    wait_until 10 no_fakephone
+    # A disconnect deletes the attachment directory (nothing outlives the phone).
+    sleep 2
+    [ -z "$(ls -A "$HOME/Library/Caches/PocketDeck-$PROFILE/notify" 2>/dev/null)" ] \
+        && ok "NOTIFY-MEDIA the disconnect left no attachment behind" \
+        || bad "NOTIFY-MEDIA an attachment survived the disconnect"
+    stop_app
+
+    defaults delete "$DEFAULTS_SUITE" "notify.$device" >/dev/null 2>&1
+    defaults delete "$DEFAULTS_SUITE" "notify.click.$device" >/dev/null 2>&1
+    defaults delete "$DEFAULTS_SUITE" "showAppsInDock" >/dev/null 2>&1
 }
 
 check_notify_vm() {

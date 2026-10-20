@@ -188,7 +188,7 @@ NOTIFY_IMAGE = {
 }
 NOTIFY_MEDIA_POSTS = [
     {"id": "pd-m1", "pkg": "com.whatsapp", "title": "pd-notify-title-8",
-     "text": "pd-notify-text-8", "image": "good"},
+     "text": "pd-notify-text-8", "image": "good", "removeAfter": 8},
     {"id": "pd-m2", "pkg": "com.whatsapp", "title": "pd-notify-title-9",
      "text": "pd-notify-text-9", "image": "bad"},
     {"id": "pd-l1", "pkg": "com.uber", "title": "pd-notify-title-10",
@@ -543,6 +543,10 @@ def redact_event(msg):
     if msg.get("t") == "notify.action" and isinstance(msg.get("text"), str):
         msg = dict(msg)
         msg["text"] = "<%d chars>" % len(msg["text"])
+    # The test hook's chip is notification text too: its length only.
+    if msg.get("t") == "notify.fake" and isinstance(msg.get("chip"), str):
+        msg = dict(msg)
+        msg["chip"] = "<%d chars>" % len(msg["chip"])
     return msg
 
 
@@ -2663,6 +2667,7 @@ class Session(object):
             wire = dict(post, t="notify.post", when=int(time.time() * 1000))
             wire.pop("image", None)
             wire.pop("tick", None)
+            wire.pop("removeAfter", None)
             if live is not None:
                 wire["live"] = live
             self._send(wire)
@@ -2677,6 +2682,8 @@ class Session(object):
                 self._send_notify_image(post["id"], post["image"])
             if post.get("tick"):
                 self._start_live(post)
+            if post.get("removeAfter"):
+                self._remove_later(post["id"], post["removeAfter"])
         if not only:
             self._send({"t": "notify.remove", "id": NOTIFY_REMOVE})
             self.phone.events.notify("remove", id=NOTIFY_REMOVE)
@@ -2684,6 +2691,17 @@ class Session(object):
         self.phone.events.notify("media.state", playing=NOTIFY_MEDIA_STATE["playing"],
                                  titleLen=len(NOTIFY_MEDIA_STATE["title"]),
                                  durationMs=NOTIFY_MEDIA_STATE["durationMs"])
+
+    def _remove_later(self, notify_id, delay):
+        """The app took the picture notification away after a while."""
+        def run():
+            time.sleep(delay)
+            if self.sender is None or self._live_stop.is_set():
+                return
+            self._send({"t": "notify.remove", "id": notify_id})
+            self.phone.events.notify("remove", id=notify_id)
+
+        threading.Thread(target=run, daemon=True).start()
 
     def _live_wire(self, live):
         """The live object with a chronometer's epoch filled in; no text logs."""
@@ -2769,7 +2787,8 @@ class Session(object):
                     return
 
     def _send_live_now(self, post, live):
-        message = {k: v for k, v in post.items() if k not in ("image", "tick", "live")}
+        message = {k: v for k, v in post.items()
+                   if k not in ("image", "tick", "live", "removeAfter")}
         message.update({"t": "notify.post", "when": int(time.time() * 1000), "live": live})
         self._send(message)
         self.phone.events.notify(
@@ -2796,7 +2815,8 @@ class Session(object):
             self._send_error("bad_request", "notify.fake needs a media shape id")
             return
         if kind == "image":
-            wire = {k: v for k, v in post.items() if k not in ("image", "tick", "live")}
+            wire = {k: v for k, v in post.items()
+                    if k not in ("image", "tick", "live", "removeAfter")}
             wire.update({"t": "notify.post", "when": int(time.time() * 1000)})
             self._send(wire)
             self.phone.events.notify("post", id=post["id"], pkg=post["pkg"],
