@@ -627,6 +627,17 @@ class FsError(Exception):
 class FsFake(object):
     def __init__(self, root):
         self.root = os.path.realpath(root)
+        self.sweep_temps()
+
+    def sweep_temps(self):
+        """Removes a write's staging file a killed process left behind."""
+        for base, _dirs, names in os.walk(self.root):
+            for name in names:
+                if fs_temp_name(name):
+                    try:
+                        os.unlink(os.path.join(base, name))
+                    except OSError:
+                        pass
 
     def resolve(self, rel):
         if rel is None:

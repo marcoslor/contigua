@@ -82,6 +82,7 @@ class FsWriter(
         if (etag != null && (meta == null || etag != paths.etag(meta))) {
             return refusal(id, FsPaths.stale())
         }
+        sweepStaleTemps(target)
         val next = Job(id, target, tempFor(target), size, sha256, etag)
         synchronized(lock) {
             if (job != null) return refusal(id, FsPaths.busy())
@@ -184,6 +185,20 @@ class FsWriter(
             "code" to failure.code, "message" to (failure.message ?: "")))
     }
 
+    /**
+     * Removes staging files a killed process left in the target's folder. One
+     * directory per write, and only files older than a day: a live write's temp
+     * is never touched, and no one has to walk the whole card.
+     */
+    private fun sweepStaleTemps(target: File) {
+        val cutoff = wallClock() - STALE_TEMP_MS
+        target.parentFile?.listFiles()?.forEach { file ->
+            if (FsPaths.isTempName(file.name) && file.lastModified() < cutoff) {
+                runCatching { file.delete() }
+            }
+        }
+    }
+
     private fun tempFor(target: File): File =
         File(target.parentFile ?: paths.rootFile(), FsPaths.TEMP_PREFIX +
             java.util.UUID.randomUUID().toString().replace("-", "") + FsPaths.TEMP_SUFFIX)
@@ -193,6 +208,8 @@ class FsWriter(
         const val MAX_WRITE_BYTES = 1L shl 30
         const val QUEUE_CHUNKS = 8
         const val PROGRESS_INTERVAL_MS = 250L
+        /** A staging file older than this is a crash leftover, not a live write. */
+        const val STALE_TEMP_MS = 24 * 60 * 60 * 1000L
         private val SHA256_HEX = Regex("^[0-9a-f]{64}$")
     }
 }

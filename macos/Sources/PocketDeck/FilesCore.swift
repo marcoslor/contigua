@@ -546,10 +546,19 @@ enum FilesMap {
     }
 
     static func item(path: String, parentIdentifier: String, fs: FsItem) -> FileItem {
+        item(identifier: identifier(path: path, ino: fs.ino), path: path,
+             parentIdentifier: parentIdentifier, fs: fs)
+    }
+
+    /// The same item under an identifier the app already handed out: a save
+    /// replaces the file (and its inode) but must not change the item Finder
+    /// knows.
+    static func item(identifier: String, path: String, parentIdentifier: String,
+                     fs: FsItem) -> FileItem {
         let date = Date(timeIntervalSince1970: TimeInterval(fs.mtime) / 1000)
         let contentType = contentTypeIdentifier(name: fs.name, isDirectory: fs.dir)
         return FileItem(
-            identifier: identifier(path: path, ino: fs.ino),
+            identifier: identifier,
             parentIdentifier: parentIdentifier,
             name: fs.name,
             isDirectory: fs.dir,
@@ -614,8 +623,23 @@ struct FilesIdMap: Equatable {
     /// and returns its mapped item.
     @discardableResult
     mutating func insert(fs: FsItem, path: String, parentIdentifier: String) -> FileItem {
-        let item = FilesMap.item(path: path, parentIdentifier: parentIdentifier, fs: fs)
-        remember(identifier: item.identifier, path: path, parentIdentifier: parentIdentifier)
+        // A path keeps the identifier it was first seen under: a verified save
+        // renames a temp over the file, which changes its inode, and Finder must
+        // still see the same item (design §3, S4).
+        let identifier = identifierByPath[path] ?? FilesMap.identifier(path: path, ino: fs.ino)
+        let item = FilesMap.item(identifier: identifier, path: path,
+                                 parentIdentifier: parentIdentifier, fs: fs)
+        remember(identifier: identifier, path: path, parentIdentifier: parentIdentifier)
+        return item
+    }
+
+    /// Registers an item's current metadata under the identifier the caller
+    /// already uses (a save or a move answered for a known item).
+    mutating func insert(fs: FsItem, path: String, parentIdentifier: String,
+                         identifier: String) -> FileItem {
+        let item = FilesMap.item(identifier: identifier, path: path,
+                                 parentIdentifier: parentIdentifier, fs: fs)
+        remember(identifier: identifier, path: path, parentIdentifier: parentIdentifier)
         return item
     }
 

@@ -287,6 +287,34 @@ final class FilesIdMapTests: XCTestCase {
         XCTAssertEqual("path:b.txt", map.identifier(for: "b.txt"))
     }
 
+    func testAPathKeepsItsIdentifierWhenTheInoChanges() {
+        // A verified save renames a temp over the file: the inode is the temp's
+        // now, but the item Finder knows must stay the same one.
+        var map = FilesIdMap()
+        _ = map.insert(childrenOf: "", parentIdentifier: FilesMap.rootIdentifier,
+                       items: [fs("a.txt", ino: 10)])
+        let replaced = map.insert(fs: FsItem(name: "a.txt", dir: false, size: 9,
+                                             mtime: 9, ino: 99, etag: "new"),
+                                  path: "a.txt", parentIdentifier: FilesMap.rootIdentifier)
+        XCTAssertEqual("ino:10", replaced.identifier)
+        XCTAssertEqual("ino:10", map.identifier(for: "a.txt"))
+        XCTAssertEqual("a.txt", map.path(for: "ino:10"))
+    }
+
+    func testAStalePathIsReResolvedFromTheParentListing() {
+        // The map forgot the path (a delete); the next listing of the parent is
+        // the one source that can give the item an identity again.
+        var map = FilesIdMap()
+        _ = map.insert(childrenOf: "", parentIdentifier: FilesMap.rootIdentifier,
+                       items: [fs("a.txt", ino: 10)])
+        map.invalidate(subtree: "a.txt")
+        XCTAssertNil(map.identifier(for: "a.txt"))
+        let again = map.insert(childrenOf: "", parentIdentifier: FilesMap.rootIdentifier,
+                               items: [fs("a.txt", ino: 11)])
+        XCTAssertEqual("ino:11", again.first?.identifier)
+        XCTAssertEqual("ino:11", map.identifier(for: "a.txt"))
+    }
+
     func testAPersistedMapRoundTrips() {
         var map = FilesIdMap()
         _ = map.insert(childrenOf: "", parentIdentifier: FilesMap.rootIdentifier,

@@ -354,12 +354,14 @@ final class SessionBridgeHost: FilesBridgeHost {
             guard let self else { return }
             switch result {
             case .success(let fs):
-                if FilesMap.identifier(path: path, ino: fs.ino) == identifier {
-                    // Refresh what the reply says; the path is the same.
-                    self.map.insert(fs: fs, path: path, parentIdentifier: self.parent(of: identifier))
-                    return completion(.success(path))
-                }
-                self.reresolve(identifier, completion: completion)
+                // The path still has a file: that is this item. Its ino may have
+                // moved (a verified save renames a temp over it), which must not
+                // change the identifier Finder knows.
+                _ = self.map.insert(fs: fs, path: path,
+                                    parentIdentifier: self.parent(of: identifier),
+                                    identifier: identifier)
+                self.save()
+                completion(.success(path))
             case .failure(let error):
                 if error.code == "fs_not_found" {
                     self.map.invalidate(subtree: path)
@@ -675,14 +677,12 @@ final class SessionBridgeHost: FilesBridgeHost {
 
     private func remember(_ fs: FsItem, path: String, item: String,
                           parentIdentifier: String? = nil) -> FileItem {
-        let identifier = FilesMap.identifier(path: path, ino: fs.ino)
-        if identifier != item {
-            // The phone's identity moved (a rename MediaProvider re-created):
-            // the old id is worth nothing now.
-            map.invalidate(subtree: path)
-        }
+        // The item Finder knows keeps its identifier: a save may replace the
+        // inode and a move may re-create the row, but the person's item is the
+        // same one (design §3, S4).
         let mapped = map.insert(fs: fs, path: path,
-                                parentIdentifier: parentIdentifier ?? parent(of: item))
+                                parentIdentifier: parentIdentifier ?? parent(of: item),
+                                identifier: item)
         save()
         return mapped
     }
@@ -875,8 +875,9 @@ final class FilesBridge {
                             client.send(.end(id: id, size: read.bytes, sha256: read.sha256))
                             Log.files.notice("bridge: read done bytes=\(read.bytes, privacy: .public)")
                         case .failure(let error):
-                            client.send(.error(id: id, code: error.code))
-                            Log.files.notice("bridge: read failed code=\(error.code, privacy: .public)")
+                            let code = FilesFailure.from(code: error.code) == .offline ? "offline" : error.code
+                            client.send(.error(id: id, code: code))
+                            Log.files.notice("bridge: read failed code=\(code, privacy: .public)")
                         }
                     }
                 })
@@ -966,8 +967,11 @@ final class FilesBridge {
             client.send(.item(id: id, item: item))
             Log.files.notice("bridge: write done dir=\(item.isDirectory, privacy: .public) size=\(item.size, privacy: .public)")
         case .failure(let error):
-            client.send(.error(id: id, code: error.code))
-            Log.files.notice("bridge: write failed code=\(error.code, privacy: .public)")
+            // A session that ended mid-write is "offline" to the extension: the
+            // system keeps the change pending and retries on reconnect.
+            let code = FilesFailure.from(code: error.code) == .offline ? "offline" : error.code
+            client.send(.error(id: id, code: code))
+            Log.files.notice("bridge: write failed code=\(code, privacy: .public)")
         }
     }
 

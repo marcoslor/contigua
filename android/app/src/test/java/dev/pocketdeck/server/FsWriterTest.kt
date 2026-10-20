@@ -301,6 +301,25 @@ class FsWriterTest {
     }
 
     @Test
+    fun aCrashLeftoverInTheTargetFolderIsSweptByTheNextWrite() {
+        setup()
+        File(paths.rootPath, "DCIM").mkdirs()
+        val stale = File(paths.rootPath, "DCIM/${FsPaths.TEMP_PREFIX}old${FsPaths.TEMP_SUFFIX}")
+        stale.writeText("x")
+        stale.setLastModified(System.currentTimeMillis() - 2 * FsWriter.STALE_TEMP_MS)
+        val fresh = File(paths.rootPath, "DCIM/${FsPaths.TEMP_PREFIX}live${FsPaths.TEMP_SUFFIX}")
+        fresh.writeText("y")
+        val bytes = "new".toByteArray()
+        val writer = writer()
+        writer.begin(write(26, "DCIM/a.txt", bytes))
+        feed(writer, 26, bytes)
+        assertEquals(true, awaitResult(26)["ok"])
+        assertFalse(stale.exists())
+        assertTrue(fresh.exists())
+        fresh.delete()
+    }
+
+    @Test
     fun aStagingFileIsNeverListedOrReachable() {
         setup()
         File(paths.rootPath, "DCIM").mkdirs()
