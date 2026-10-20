@@ -17,7 +17,7 @@ promise in `AGENTS.md`, not from a measurement.
 
 | Requirement | Limit (json key) | Measured today | Why | Enforced by |
 | --- | --- | --- | --- | --- |
-| Connect to a phone | `connect_ms` = 1500 ms | 418 ms (launch → `paired`/`auth_ok`) | A person waiting at a spinner loses trust in the app after a few seconds | e2e `nfr` (time limits) |
+| Connect to a phone | `connect_ms` = 1500 ms | 418–696 ms (launch → `paired`/`auth_ok`) | A person waiting at a spinner loses trust in the app after a few seconds | e2e `nfr` (time limits) |
 | First frame of an app window | `first_frame_ms` = 1500 ms | 133 ms (`window.open` → `VIDEO_CONFIG`) | The window must show the app, not a blank surface | e2e `nfr` |
 | First frame of the phone window | `first_frame_phone_ms` = 1500 ms | 136 ms (`window.open` → `VIDEO_CONFIG`) | Mirroring is the app's first screen | e2e `nfr` |
 | App list | `app_list_ms` = 1500 ms | 60 ms (`apps.list` → its reply) | The Deck is what a person sees first | e2e `nfr` |
