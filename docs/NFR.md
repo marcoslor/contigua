@@ -17,10 +17,10 @@ promise in `AGENTS.md`, not from a measurement.
 
 | Requirement | Limit (json key) | Measured today | Why | Enforced by |
 | --- | --- | --- | --- | --- |
-| Connect to a phone | `connect_ms` = 1500 ms | 120 ms (TLS accept → `paired`) | A person waiting at a spinner loses trust in the app after a few seconds | e2e `nfr` (time limits) |
-| First frame of an app window | `first_frame_ms` = 1500 ms | 150 ms (`window.open` → `VIDEO_CONFIG`) | The window must show the app, not a blank surface | e2e `nfr` |
-| First frame of the phone window | `first_frame_phone_ms` = 1500 ms | 150 ms (`window.open` → `VIDEO_CONFIG`) | Mirroring is the app's first screen | e2e `nfr` |
-| App list | `app_list_ms` = 1500 ms | 25 ms (`apps.list` → its reply) | The Deck is what a person sees first | e2e `nfr` |
+| Connect to a phone | `connect_ms` = 1500 ms | 418 ms (launch → `paired`/`auth_ok`) | A person waiting at a spinner loses trust in the app after a few seconds | e2e `nfr` (time limits) |
+| First frame of an app window | `first_frame_ms` = 1500 ms | 133 ms (`window.open` → `VIDEO_CONFIG`) | The window must show the app, not a blank surface | e2e `nfr` |
+| First frame of the phone window | `first_frame_phone_ms` = 1500 ms | 136 ms (`window.open` → `VIDEO_CONFIG`) | Mirroring is the app's first screen | e2e `nfr` |
+| App list | `app_list_ms` = 1500 ms | 60 ms (`apps.list` → its reply) | The Deck is what a person sees first | e2e `nfr` |
 | Small Finder fetch | `fetch_small_ms` = 3000 ms | not measured on the host (the files domain is VM-only; pre-fix it was 20 s) | A Quick Look preview is a person's first hour bug: it took 20 s | e2e `files-domain` (VM) |
 | Stale picture | `stale_picture_ms` = 2000 ms | — (safety limit) | A frozen frame shown as live makes a person act on a lie | e2e `mirror` and `nfr` |
 | Control contrast | `contrast_min` = 3.0 | — (safety limit) | Bar controls sit over white, black and busy video | K2 `BarContrastTests` |
