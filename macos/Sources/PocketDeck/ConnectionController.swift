@@ -2182,6 +2182,14 @@ final class ConnectionController {
         debugInput?.liveDump = { [weak self] path in
             MainActor.assumeIsolated { self?.writeLiveDump(path) ?? false }
         }
+        debugInput?.openSettings = { [weak self] in
+            MainActor.assumeIsolated {
+                self?.settingsRequest += 1
+                // Belt and braces: the Deck's scene opener is the route that
+                // works in a quiet run, and the responder action costs nothing.
+                NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+            }
+        }
         debugInput?.mediaCommand = { [weak self] action in
             MainActor.assumeIsolated { self?.nowPlaying.perform(.transport(action)) }
         }
@@ -2249,6 +2257,22 @@ final class ConnectionController {
                 return "the \(name) button is not showing"
             }
             DebugInputDriver.clickControl(at: centre, in: window)
+            return nil
+        case "settings-dump":
+            // Settings' real window geometry (SettingsProbe) for the host e2e.
+            guard let path = arguments.first, path.hasPrefix("/") else { return "missing path" }
+            guard let window = SettingsProbe.settingsWindow() else {
+                return "no settings window (\(SettingsProbe.windowList()))"
+            }
+            let label = arguments.count > 1
+                ? arguments.dropFirst().joined(separator: " ")
+                : "Reveal controls after"
+            let report = SettingsProbe.report(window: window, lastRow: label)
+            do {
+                try report.write(toFile: path, atomically: true, encoding: .utf8)
+            } catch {
+                return "cannot write \(path)"
+            }
             return nil
         default:
             return "unknown command \(command)"

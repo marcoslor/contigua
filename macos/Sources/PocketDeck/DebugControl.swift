@@ -18,6 +18,9 @@
 //   nav-click back|home|recents  a click on that bar button: synthetic NSEvents
 //                    at the button's window location, to the control the
 //                    content's hit test finds (never the action itself)
+//   settings-dump PATH [LAST ROW]  the Settings window's real geometry: its
+//                    frame against the screen, the tab's scroll view, and
+//                    whether the last row shows once scrolled to the end
 //
 // Arguments are separated by spaces; paths with spaces are not supported.
 

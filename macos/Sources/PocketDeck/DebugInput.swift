@@ -462,6 +462,9 @@ final class DebugInputDriver {
     var notifyCopy: ((String) -> Bool)?
     /// `livedump PATH`: the menu bar's Live section as JSON.
     var liveDump: ((String) -> Bool)?
+    /// `opensettings`: the app's own Settings scene opener. The responder
+    /// action only exists while the app is active, which a quiet run is not.
+    var openSettings: (() -> Void)?
     /// `mediacmd ACTION`, `mediacmd seek MS`, `mediacmd volume LEVEL`: the Now
     /// Playing controls' target (the media row included).
     var mediaCommand: ((String) -> Void)?
@@ -588,7 +591,11 @@ final class DebugInputDriver {
             default: break
             }
         case .openSettings:
-            NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+            if let openSettings {
+                openSettings()
+            } else {
+                NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+            }
         case .fullScreen:
             // The menu item's action, through the responder chain: in full
             // screen the content can live in the system's full-screen window,
