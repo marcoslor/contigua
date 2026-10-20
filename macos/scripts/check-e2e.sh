@@ -7538,9 +7538,11 @@ PY
     # Disconnected: the phone goes away; input stays home until it is back.
     : > "$WORK/events.jsonl"
     start_fake || return 1
-    rm -f "$WORK/disc-go" "$WORK/disc-re"
+    rm -f "$WORK/disc-go"
+    # The script ends with the outage: the reconnect wait happens outside the
+    # app, so its retry timers are never inside a nested script run loop.
     printf '%s\n' "waitfile $WORK/disc-go 120" "scroll 120" "type hello" \
-        "key cmd+shift+h" "waitfile $WORK/disc-re 300" "nav back" > "$WORK/input-disc.txt"
+        "key cmd+shift+h" > "$WORK/input-disc.txt"
     nfr_launch --open-phone --debug-input-script "$WORK/input-disc.txt"
     nfr_wait_ready 30 || bad "NFR the app never paired (disconnected)"
     wait_until 20 events_have '"ev":"video"' || bad "NFR no video before the disconnect"
@@ -7562,8 +7564,7 @@ PY
     # The new fake starts its counters at zero; the phone is back, so one Back
     # must now move them.
     after="$(fake_counter input)"
-    say "NFR disconnected: reconnected; input $after (last $(fake_counter last_input))"
-    touch "$WORK/disc-re"
+    control nav back || bad "NFR the Navigate action did not run after the reconnect: $CONTROL_REPLY"
     wait_until 40 [ "$(fake_counter input)" -ge $((after + 1)) ] \
         && ok "NFR frozen disconnected: Back after the reconnect reached the phone (input $(fake_counter input))" \
         || bad "NFR frozen disconnected: Back after the reconnect sent nothing (input $(fake_counter input))"

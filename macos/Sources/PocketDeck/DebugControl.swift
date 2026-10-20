@@ -15,6 +15,9 @@
 //                    --resize-stream, --minimize-stream, --deminimize-stream,
 //                    --close-stream (timers count from the command)
 //   wake-phone       the phone window's Wake Screen button (phone mode)
+//   nav back|home|recents  the Navigate menu's action on the first stream
+//                    window (what its bar button and shortcut run): for a check
+//                    that must act after a wait the app cannot run inline
 //
 // Arguments are separated by spaces; paths with spaces are not supported.
 

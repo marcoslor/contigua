@@ -13,7 +13,13 @@ set -uo pipefail
 
 MACOS="$(cd "$(dirname "$0")/.." && pwd)"
 ROOT="$(cd "$MACOS/.." && pwd)"
-HEAVY="$ROOT/.agent/heavy.sh"
+# .agent is not part of a checkout's git tree; the lock lives in the main one.
+HEAVY="${POCKETDECK_HEAVY:-$HOME/dev/pocketdeck/.agent/heavy.sh}"
+[ -x "$HEAVY" ] || HEAVY="$ROOT/.agent/heavy.sh"
+if [ ! -x "$HEAVY" ]; then
+    echo "nfr: no heavy.sh at $HEAVY (set POCKETDECK_HEAVY)" >&2
+    exit 3
+fi
 PORT="${PD_E2E_PORT:-47980}"
 PROFILE="${PD_E2E_PROFILE:-nfr1}"
 
