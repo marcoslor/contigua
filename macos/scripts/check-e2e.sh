@@ -4209,6 +4209,101 @@ check_share() {
         && ok "SHARE $SHARE_ID unregistered after the check" || bad "SHARE $SHARE_ID still registered"
 }
 
+# --- Finder bridge (docs/design/files.md §3, files-bridge) ------------------
+#
+# The app's side of phone files in Finder, with no File Provider on this Mac:
+# the app listens on a socket in the run's work dir (`--files-bridge-dir`, a
+# test hook) and scripts/files-bridge-driver.py speaks the extension's wire at
+# it. Asserts hello, the root listing (hidden/Android rules), paging, stat, two
+# byte-identical whole-file reads, a cancel that stops the phone's stream, the
+# fs_denied path, and `offline` after fakephone is killed.
+
+# files_bridge_socket — the socket path `--files-bridge-dir $WORK/bridge` uses.
+files_bridge_socket() {
+    if [ "$PROFILE" = default ]; then
+        printf '%s\n' "$WORK/bridge/files.sock"
+    else
+        printf '%s\n' "$WORK/bridge/files-$PROFILE.sock"
+    fi
+}
+
+# files_bridge_driver <phase> — run the driver and turn its lines into PASS/FAIL.
+files_bridge_driver() {
+    local phase="$1" out="$WORK/bridge-$1.txt"
+    "$MACOS/scripts/files-bridge-driver.py" --socket "$(files_bridge_socket)" \
+        --root "$WORK/fsroot" --work "$WORK" --fake-err "$WORK/fake.err" \
+        --phase "$phase" > "$out" 2>&1
+    while IFS= read -r line; do
+        case "$line" in
+            ok\ *) ok "${line#ok }" ;;
+            bad\ *) bad "${line#bad }" ;;
+            *) [ -n "$line" ] && say "    $line" ;;
+        esac
+    done < "$out"
+}
+
+check_files_bridge() {
+    clean
+    python3 - "$WORK" <<'PY'
+import os, sys
+work = sys.argv[1]
+root = os.path.join(work, "fsroot")
+for folder in ("Documents", "Documents/notes", "DCIM/Camera", "many", "Android/data/x"):
+    os.makedirs(os.path.join(root, folder), exist_ok=True)
+open(os.path.join(root, "Android/data/x/y"), "wb").write(b"hidden")
+open(os.path.join(root, ".hidden"), "wb").write(b"hidden")
+# ~40 files in Documents; the rest of the root is the same shape as `files`.
+for i in range(40):
+    with open(os.path.join(root, "Documents", "file%02d.txt" % i), "wb") as handle:
+        handle.write(("small %d\n" % i).encode() * (i + 1))
+with open(os.path.join(root, "DCIM/Camera/photo.jpg"), "wb") as handle:
+    handle.write(b"\xff\xd8\xff\xe0" + os.urandom(4096))
+with open(os.path.join(root, "big3.bin"), "wb") as handle:
+    handle.write(os.urandom(3 * 1024 * 1024))
+with open(os.path.join(root, "big32.bin"), "wb") as handle:
+    handle.write(os.urandom(32 * 1024 * 1024))
+for i in range(1500):
+    open(os.path.join(root, "many", "m%04d.txt" % i), "wb").close()
+PY
+    FAKE_ARGS="--fs-root $WORK/fsroot --fs-chunk-delay-ms 4" start_fake || return 1
+    launch --connect "127.0.0.1:$PORT" --files-bridge-dir "$WORK/bridge"
+    wait_until 30 file_has "files-bridge: ok" "$WORK/app.log" \
+        && ok "BRIDGE the app listens on the test bridge socket" \
+        || bad "BRIDGE no bridge socket: $(grep 'files-bridge' "$WORK/app.log" | tail -2)"
+    wait_until 30 eval 'events_have "\"state\":\"paired\"" || events_have "\"state\":\"auth_ok\""' \
+        || { bad "BRIDGE the app never authenticated"; stop_app; stop_fakephone; return 1; }
+    files_bridge_driver online
+    # The phone goes away: every dataless request must answer offline.
+    stop_fakephone
+    wait_until 5 no_fakephone
+    files_bridge_driver offline
+    # Nothing about the bridge may put a name, a path or bytes in the app log:
+    # os_log carries op names, counts and lengths only (design §4).
+    log show --last 3m --info \
+        --predicate 'subsystem == "dev.pocketdeck.mac" AND category == "files"' 2>/dev/null \
+        | grep -o 'bridge: .*' > "$WORK/bridge-log.txt" 2>/dev/null || true
+    if grep -q "bridge: list page" "$WORK/bridge-log.txt"; then
+        ok "BRIDGE the app logged op names and counts only"
+    else
+        bad "BRIDGE the app logged no bridge activity: $(head -2 "$WORK/bridge-log.txt")"
+    fi
+    if python3 - "$WORK/fsroot" "$WORK/bridge-log.txt" <<'PY'
+import os, sys
+root, log = sys.argv[1], sys.argv[2]
+text = open(log, errors="replace").read()
+names = set(os.listdir(root)) | set(os.listdir(os.path.join(root, "Documents")))
+bad = [name for name in names if name in text]
+sys.exit(1 if bad else 0)
+PY
+    then
+        ok "BRIDGE no file name from the tree appears in the app log"
+    else
+        bad "BRIDGE a file name appears in the app log"
+    fi
+    stop_app
+}
+
+
 # --- File Provider experiment (docs/design/files.md §1, files-exp) ---------
 #
 # E1 (does an ad-hoc replicated extension load?), E2 (extension ⇄ app over the

@@ -304,6 +304,10 @@ final class ConnectionController {
     /// client that carries them.
     private var fsScriptActions: [FsScriptAction]?
     private var fsClient: FsClient?
+    /// The FsClient the Finder bridge answers through. Separate from the debug
+    /// client, but fed the same session events (ConnectionController routes
+    /// every fs.* reply to both).
+    private var filesBridgeClient: FsClient?
     private var fsDebug: FsDebugDriver?
     /// `--debug-livetext`: the script runs once the first stream window has a
     /// video size (DebugLiveText.swift, e2e `livetext`).
@@ -1545,6 +1549,9 @@ final class ConnectionController {
                 apkInstaller.connectionLost()
                 dropSender.connectionLost()
                 fsClient?.connectionLost()
+                filesBridgeClient?.connectionLost()
+                filesBridgeClient = nil
+                FilesBridge.shared.detach()
                 clipImageBuffer.discard()
                 shareInbox.connectionLost()
                 nowPlaying.clear()
@@ -1562,6 +1569,9 @@ final class ConnectionController {
                 apkInstaller.connectionLost()
                 dropSender.connectionLost()
                 fsClient?.connectionLost()
+                filesBridgeClient?.connectionLost()
+                filesBridgeClient = nil
+                FilesBridge.shared.detach()
                 clipImageBuffer.discard()
                 shareInbox.connectionLost()
                 nowPlaying.clear()
@@ -1608,14 +1618,19 @@ final class ConnectionController {
             ready(info, address: address)
         case .fsItems(let id, let page, let items):
             fsClient?.items(id: id, page: page, items: items)
+            filesBridgeClient?.items(id: id, page: page, items: items)
         case .fsItem(let id, let item):
             fsClient?.item(id: id, item: item)
+            filesBridgeClient?.item(id: id, item: item)
         case .fsData(let id, let bytes):
             fsClient?.data(id: id, bytes: bytes)
+            filesBridgeClient?.data(id: id, bytes: bytes)
         case .fsReadEnd(let id, let size, let sha256):
             fsClient?.readEnd(id: id, size: size, sha256: sha256)
+            filesBridgeClient?.readEnd(id: id, size: size, sha256: sha256)
         case .fsError(let id, let code, let message):
             fsClient?.failure(id: id, code: code, message: message)
+            filesBridgeClient?.failure(id: id, code: code, message: message)
         case .notifyState(let on):
             Log.app.notice("phone notify \(on ? "on" : "off", privacy: .public)")
             if !on { nowPlaying.clear() }
@@ -1782,6 +1797,13 @@ final class ConnectionController {
         }
         if apps.isEmpty || link.phone?.id != info.id { resetPhoneData(for: ref) }
         send(.welcome(ref))
+        // The File Provider bridge answers from here on (docs/design/files.md
+        // §1): the app owns the session, so the extension asks this socket.
+        if let session {
+            let client = FsClient(channel: session)
+            filesBridgeClient = client
+            FilesBridge.shared.attach(host: SessionBridgeHost(client: client, name: displayName(for: ref)))
+        }
         everOnline = true
         if let session { startClipboardSync(on: session) }
         session?.requestApps()

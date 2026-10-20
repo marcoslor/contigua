@@ -21,6 +21,7 @@ enum Log {
     static let session = Logger(subsystem: subsystem, category: "session")
     static let video = Logger(subsystem: subsystem, category: "video")
     static let input = Logger(subsystem: subsystem, category: "input")
+    static let files = Logger(subsystem: subsystem, category: "files")
 }
 
 enum ClientIdentity {
