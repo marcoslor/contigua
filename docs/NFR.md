@@ -44,7 +44,8 @@ reply) is far outside them.
 - **Frozen modes send zero input.** While the picture is frozen (Live Text in
   an app window or the phone window, screen off, disconnected/reconnecting),
   bar controls, menu shortcuts, clicks, scrolls and typing send no input
-  event. Leaving the mode restores the same controls.
+  event (pointer, key, scroll, hover, or a `nav`/`text` action from a
+  control). Leaving the mode restores the same controls.
 - **Honest settings.** A control whose capability the build or the phone does
   not have is disabled and says why. An error only suggests a restart when a
   restart would change the state.
@@ -61,6 +62,14 @@ reply) is far outside them.
 macos/scripts/nfr.sh
 ```
 
-It runs the NFR K2 tests and the host e2e check `nfr`, one after the other
+It runs the NFR K2 tests (`NFRTestLimits`, `BarContrastTests`,
+`SettingsLayoutTests`, `LayoutTests`, `HangingPeerTests`,
+`HonestSettingsTests`, `IconReferenceTests`, `ControlsRealPathTests`) and the
+host e2e check `nfr`, one after the other through the machine-wide heavy lock
 (never beside a second heavy step). On a UI or protocol change, run it before
 asking for review.
+
+`nfr.sh` uses `PD_E2E_PORT` (47980) and `PD_E2E_PROFILE` (nfr1), like the
+single-check command above. A red run names the limit and the measured value;
+`failures` in `nfr` are product bugs, not flaky numbers, so read the line
+before re-running.
