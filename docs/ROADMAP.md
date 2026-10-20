@@ -101,6 +101,7 @@ Batch D (M-L)
       (Kotlin, Swift, Python, shell); docs, generated files, lockfiles and baselines are exempt.
       Today's offenders get a shrinking allowlist, then splits (Session.kt, ConnectionController.swift,
       Session.swift, WindowStream.kt, check-e2e.sh → e2e-lib.sh + check files).
+- [ ] Remove backward-compatibility code and deprecations (alpha: nothing released, the phone and Mac ship together; AGENTS.md). Older-peer branches and fallbacks in both apps (optional-field fallbacks, "older phone/Mac" paths, protocol v1 leftovers), fakephone/deckctl `--older-phone` modes and the e2e/JVM tests that cover them, PROTOCOL.md "what an older peer does" notes; deprecated platform APIs (Android and macOS) replaced by their current ones; dead code found on the way. About 80 hits in ~24 files today.
 - [ ] Warnings as errors on both sides; a separate Swift core target (protocol, session, TLS, geometry).
 - [ ] CI (gradle build, swift build/test, fakephone selfcheck, the size gate).
 
