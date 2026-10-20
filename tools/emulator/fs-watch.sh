@@ -99,6 +99,14 @@ deckctl fs delete "$FOLDER" --recursive > "$WORK/delete.json" 2> "$WORK/delete.e
     && ok "fs.delete removed the test folder" || bad "fs.delete failed: $(tail -1 "$WORK/delete.err")"
 emu shell "rm -rf /sdcard/$FOLDER" >/dev/null 2>&1 || true
 
+# The service that answered the watch must still be the same one: round 1 lost
+# it in the write path, and a watch that only works while the process survives
+# would be worthless. Evidence under $AGENT_DIR, never committed.
+PIDS_AFTER="$(server_pids)"
+[ -n "$PIDS_AFTER" ] && ok "the shell service is up after the watch (pid $(printf '%s' "$PIDS_AFTER" | cut -d' ' -f1))" \
+    || bad "the shell service is gone after the watch"
+capture_crash final
+
 printf '\npassed=%d failed=%d\n' "$PASS" "$FAIL"
 printf '%s\n' "$(cat "$WORK/inotify.txt")"
 [ "$FAIL" = "0" ]

@@ -38,11 +38,40 @@ deckctl() {
 }
 
 # Pair if the rig has no key yet (the flow the POC check uses).
-if ! "$PYTHON" "$EMU_DIR/poc.py" --state "$STATE" --addr "127.0.0.1:$PORT" check >/dev/null 2>&1; then
+pair_if_needed() {
+    "$PYTHON" "$EMU_DIR/poc.py" --state "$STATE" --addr "127.0.0.1:$PORT" check >/dev/null 2>&1 && return 0
     "$EMU_DIR/unlock.sh" || true
-    "$PYTHON" "$EMU_DIR/poc.py" --state "$STATE" --addr "127.0.0.1:$PORT" --serial "$SERIAL" --adb "$ADB" pair \
-        || die "could not pair with the rig"
-fi
+    "$PYTHON" "$EMU_DIR/poc.py" --state "$STATE" --addr "127.0.0.1:$PORT" --serial "$SERIAL" --adb "$ADB" pair
+}
+pair_if_needed || die "could not pair with the rig"
+
+# Round 1 lost the shell service silently in the middle of this script, so
+# every step now pins whether the process that serves the Mac is still there.
+# A death is recorded where it happened and the run goes on: one boot has to
+# cover every step. Evidence lands in $AGENT_DIR, never in the repo.
+LIVENESS="$AGENT_DIR/fs-write-liveness.txt"
+: > "$LIVENESS"
+ALIVE_CHECKS=0
+check_alive() { # check_alive <what just finished>
+    local name="$1" pids
+    ALIVE_CHECKS=$((ALIVE_CHECKS + 1))
+    pids="$(server_pids)"
+    if [ -n "$pids" ]; then
+        ok "the shell service is up after $name (pid $(printf '%s' "$pids" | cut -d' ' -f1))"
+        printf 'up after %s\n' "$name" >> "$LIVENESS"
+        return 0
+    fi
+    bad "the shell service is gone after $name"
+    printf 'DIED after %s\n' "$name" >> "$LIVENESS"
+    capture_crash "after-$ALIVE_CHECKS"
+    if restart_server; then
+        ok "the app and its shell service came back"
+        sleep 2
+        pair_if_needed >/dev/null 2>&1 || bad "could not pair again after the restart"
+    else
+        bad "the app's shell service did not come back"
+    fi
+}
 
 # A small but real JPEG: MediaStore classifies it by its magic bytes. ffmpeg is
 # a rig requirement (tools/emulator/README.md).
@@ -57,17 +86,20 @@ if deckctl fs mkdir "$FOLDER" > "$WORK/mkdir.json" 2> "$WORK/mkdir.err"; then
 else
     bad "mkdir failed: $(tail -1 "$WORK/mkdir.err")"
 fi
+check_alive "mkdir"
 
 if deckctl fs write "$FOLDER/$NAME" "$WORK/$NAME" > "$WORK/write.json" 2> "$WORK/write.err"; then
     ok "fs.write answered ok"
 else
     bad "fs.write failed: $(tail -1 "$WORK/write.err")"
 fi
+check_alive "fs.write"
 
 GOT_SHA="$(emu shell "sha256sum /sdcard/$FOLDER/$NAME" 2>/dev/null | tr -d '\r' | cut -d' ' -f1)"
 [ -n "$GOT_SHA" ] && [ "$GOT_SHA" = "$WANT_SHA" ] \
     && ok "the phone's file has the Mac's sha256 ($WANT_SHA..." \
     || bad "the phone's bytes differ (want $WANT_SHA got ${GOT_SHA:-none})"
+check_alive "the sha256 check"
 
 STAGING="$(emu shell "ls -a /sdcard/$FOLDER" 2>/dev/null | tr -d '\r' | grep -c '^\.pocketdeck-')"
 [ "$STAGING" = "0" ] && ok "no staging file left in the folder" || bad "a staging file is left"
@@ -92,13 +124,15 @@ else
     ROW_ID=""
     bad "MediaStore has no row for the new photo: $ROW"
 fi
+check_alive "the MediaStore query"
 
 # --- rename -----------------------------------------------------------------
-if deckctl fs move "$FOLDER/$NAME" "$FOLDER/$RENAMED" > "$WORK/move.json" 2> "$WORK/move.err"; then
+if deckctl fs move "$FOLDER/$NAME" --to "$FOLDER/$RENAMED" > "$WORK/move.json" 2> "$WORK/move.err"; then
     ok "fs.move renamed the file"
 else
     bad "fs.move failed: $(tail -1 "$WORK/move.err")"
 fi
+check_alive "fs.move"
 
 OLD_ROW="$(query_name "$NAME")"
 NEW_ROW="$(query_name "$RENAMED")"
@@ -126,6 +160,7 @@ else
         && ok "a write into Android/data answers fs_denied" \
         || bad "a write into Android/data failed with the wrong code: $(cat "$WORK/deny.json" 2>/dev/null)"
 fi
+check_alive "the Android/data refusal"
 
 # --- delete -----------------------------------------------------------------
 if deckctl fs delete "$FOLDER" --recursive > "$WORK/delete.json" 2> "$WORK/delete.err"; then
@@ -133,6 +168,7 @@ if deckctl fs delete "$FOLDER" --recursive > "$WORK/delete.json" 2> "$WORK/delet
 else
     bad "fs.delete failed: $(tail -1 "$WORK/delete.err")"
 fi
+check_alive "fs.delete"
 LEFT="$(emu shell "ls -d /sdcard/$FOLDER" 2>/dev/null | tr -d '\r')"
 [ -z "$LEFT" ] && ok "the test folder is gone from the phone" || bad "the test folder is still there"
 
@@ -143,6 +179,11 @@ printf '%s' "$DEL_ROW" | grep -q "_id=" \
 
 emu shell "rm -rf /sdcard/$FOLDER" >/dev/null 2>&1 || true
 rm -rf "$WORK"
+
+# The whole run's evidence: the crash buffer (empty when nothing died) and the
+# app's own lines, bounded, under $AGENT_DIR (never committed).
+capture_crash final
+printf 'liveness: %s\n' "$(tr '\n' ';' < "$LIVENESS")"
 
 printf '\npassed=%d failed=%d\n' "$PASS" "$FAIL"
 printf '%s\n' "$RECORDED"
