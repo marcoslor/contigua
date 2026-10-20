@@ -164,7 +164,10 @@ final class FilesDomainController {
     /// signal a replicated extension may act on is the working set, and it also
     /// starts an extension when none is running.
     func signalWorkingSet() {
-        guard enabled else { return }
+        // The VM hook and a domain added outside Settings follow the session
+        // without the stored setting; a guard on `enabled` alone would drop
+        // every signal there (round 3's first VM run did exactly that).
+        guard enabled || addedLocally else { return }
         manager.signalWorkingSet(identifier: identifier) { error in
             guard let error = error as NSError? else {
                 Log.files.notice("domain: signal working set")

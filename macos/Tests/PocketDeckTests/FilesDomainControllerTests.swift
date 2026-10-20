@@ -137,6 +137,19 @@ final class FilesDomainControllerTests: XCTestCase {
         XCTAssertTrue(manager.signals.isEmpty)
     }
 
+    /// The VM hook (`--files-domain add`) adopts a domain without the stored
+    /// setting: its phone-side changes must still signal the working set, or
+    /// the mount never moves with no extension running (round 3's first VM
+    /// run).
+    func testAnAdoptedDomainSignalsWithTheSettingOff() {
+        manager.info = FilesDomainInfo(identifier: FilesDomain.identifier(profile: profile),
+                                       displayName: "PocketDeck", isDisconnected: false,
+                                       userEnabled: true)
+        controller.adopt()
+        controller.signalWorkingSet()
+        XCTAssertEqual([FilesDomain.identifier(profile: profile)], manager.signals)
+    }
+
     func testTheSwitchTurningOnMovesTheStateToOn() {
         controller.setEnabled(true)
         manager.info?.userEnabled = true
