@@ -96,6 +96,12 @@ window you give it.
 
 - The phone's notifications appear in macOS Notification Center; clicking one
   opens that app's window.
+- A notification's own buttons and a **Reply** field ride along on its banner;
+  clearing the banner clears it on the phone, and a phone-side removal clears
+  the banner.
+- **Muted apps** per phone drop those apps' notifications before they appear,
+  and a sign-in code gets a **Copy code** button that copies it concealed for
+  90 seconds.
 - Media on the phone shows up in **Now Playing** on the Mac with
   play/pause/next/previous, even while the phone is locked and its screen is
   off.
