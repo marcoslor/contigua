@@ -383,6 +383,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // the registration domain and the person's defaults stay untouched.
         UserDefaults.standard.register(defaults: ["NSFullScreenMenuItemEverywhere": false])
         FullScreenMenu.install()
+        ImmersiveMenuInstaller.install()
         if let path = environment.options.debugBanner {
             let probe = DebugBanner(path: path) { [controller = environment.controller] in
                 controller.banner?.text

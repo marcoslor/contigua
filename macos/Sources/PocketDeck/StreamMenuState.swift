@@ -17,6 +17,9 @@ final class StreamMenuState {
     var showTouches = false
     /// The key stream window is in Live Text mode (the View menu's check).
     var liveText = false
+    /// Settings → General "Reveal controls after", for the Immersive submenu's
+    /// checkmark (one value for every window).
+    var revealDelay: RevealDelay = .short
 
     /// The app the key stream window shows; nil for the phone window and for
     /// a link window before the phone names its package. Without one the

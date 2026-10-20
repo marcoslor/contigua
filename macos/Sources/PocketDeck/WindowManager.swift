@@ -90,6 +90,7 @@ final class WindowManager {
         StreamMenuState.shared.showTouches = ShowTouchesDefault.resolve(
             hasTrackpad: hasTrackpad, stored: defaults.object(forKey: Self.showTouchesKey) as? Bool)
         StreamMenuState.shared.settingsDensity = WindowDensity.value(in: defaults)
+        StreamMenuState.shared.revealDelay = RevealDelay.stored(in: defaults)
     }
 
     /// The View menu's Window Style: toggle/switch the key stream window's
@@ -213,6 +214,7 @@ final class WindowManager {
     /// rest already running included.
     func revealDelayChanged() {
         let seconds = revealDelay.seconds
+        StreamMenuState.shared.revealDelay = revealDelay
         for controller in allControllers() { controller.setRevealDelay(seconds) }
     }
 
@@ -221,6 +223,14 @@ final class WindowManager {
     func setRevealDelay(_ delay: RevealDelay) {
         frames.set(delay.rawValue, forKey: RevealDelay.key)
         revealDelayChanged()
+    }
+
+    /// View ▸ Immersive's pick: store the choice for every window and take the
+    /// focused one to immersive (as the plain "Immersive" item did).
+    func pickImmersive(_ item: ImmersiveMenuItem) {
+        guard let pick = ImmersiveMenuModel.pick(item) else { return }
+        setRevealDelay(pick.reveal)
+        setKeyWindowStyle(pick.style)
     }
 
     /// A remembered frame may belong to a display that is gone.
