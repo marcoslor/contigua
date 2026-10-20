@@ -3143,7 +3143,7 @@ except (OSError, ValueError):
     sys.exit(1)
 actions = set(data.get("actions") or {})
 want = {"OpenPhoneAppIntent", "OpenPhoneScreenIntent", "PhoneBatteryIntent",
-        "SendLinkToPhoneIntent", "SendFileToPhoneIntent"}
+        "SendLinkToPhoneIntent", "SendFileToPhoneIntent", "RingPhoneIntent"}
 shortcuts = data.get("autoShortcuts") or []
 phrases = [p.get("key", "") for s in shortcuts for p in (s.get("phraseTemplates") or [])]
 ok = actions == want \
@@ -3162,7 +3162,7 @@ PY
 check_intents() {
     # What the system reads, before anything starts (a fast plist/JSON read).
     intents_metadata_ok \
-        && ok "INTENTS the bundle's Metadata.appintents lists 5 intents, 2 entities and 5 shortcuts" \
+        && ok "INTENTS the bundle's Metadata.appintents lists 6 intents, 2 entities and 6 shortcuts" \
         || bad "INTENTS the bundle's Metadata.appintents is missing or incomplete ($E2E_BUNDLE)"
     clean
     start_fake || return 1
