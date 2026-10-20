@@ -754,9 +754,19 @@ struct FilesIdMap: Equatable {
         let directory = url.deletingLastPathComponent()
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
                                                  attributes: [.posixPermissions: 0o700])
-        try? map.encoded().write(to: url, options: [.atomic])
-        try? FileManager.default.setAttributes([.posixPermissions: 0o600],
-                                               ofItemAtPath: url.path)
+        // The id map says which phone files the person has; it is theirs alone.
+        // It is written to a fresh temp that is 0600 from the moment it exists
+        // and renamed over the target: `Data.write(.atomic)` followed by chmod
+        // leaves a window in which the umask decides the permissions.
+        let temp = directory.appendingPathComponent(
+            ".\(url.lastPathComponent).\(UUID().uuidString)")
+        guard FileManager.default.createFile(atPath: temp.path, contents: map.encoded(),
+                                             attributes: [.posixPermissions: 0o600]) else {
+            return
+        }
+        if Darwin.rename(temp.path, url.path) != 0 {
+            try? FileManager.default.removeItem(at: temp)
+        }
     }
 }
 
