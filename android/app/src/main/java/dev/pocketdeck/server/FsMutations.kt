@@ -34,15 +34,21 @@ class FsMutations(
         if (meta.dir && to.path.startsWith(from.path + File.separator)) {
             throw FsPaths.denied("a folder cannot move into itself")
         }
-        val renamed = try {
-            platform.rename(from, to, replace = false) || platform.plainRename(from, to, replace = false)
+        val mediaRenamed: Boolean
+        val renamed: Boolean
+        try {
+            mediaRenamed = platform.rename(from, to, replace = false)
+            renamed = mediaRenamed || platform.plainRename(from, to, replace = false)
         } catch (e: FileAlreadyExistsException) {
             // The name was taken between the check above and the rename: the
             // other file stays exactly as it is.
             throw FsPaths.exists()
         }
         if (!renamed) throw FsPaths.denied("the move failed")
-        runCatching { platform.scan(listOf(to, from)) }
+        // A media-aware rename already moved MediaStore's row with the file. The
+        // plain fallback bypassed MediaProvider, so the row needs the scan (and
+        // the old path's row has to go).
+        if (!mediaRenamed) runCatching { platform.scan(listOf(to, from)) }
         log("fs: move ok dir=${meta.dir}")
         return paths.item(to)
     }

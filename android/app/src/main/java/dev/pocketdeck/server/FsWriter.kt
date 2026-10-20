@@ -181,9 +181,9 @@ class FsWriter(
                 // A create says so to the seam too, so a name that appears
                 // between the check above and the rename cannot be overwritten.
                 val replace = !job.exclusive && job.etag != null
-                val named = try {
-                    platform.rename(job.temp, job.target, replace) ||
-                        platform.plainRename(job.temp, job.target, replace)
+                val (mediaRenamed, named) = try {
+                    val media = platform.rename(job.temp, job.target, replace)
+                    media to (media || platform.plainRename(job.temp, job.target, replace))
                 } catch (e: FileAlreadyExistsException) {
                     log("fs: write id=${job.id} name taken at the rename")
                     return refusal(job.id, FsPaths.exists())
@@ -193,7 +193,10 @@ class FsWriter(
                     return refusal(job.id, FsPaths.denied("could not name the file"))
                 }
                 ok = true
-                runCatching { platform.scan(listOf(job.target)) }
+                // The media-aware rename goes through MediaProvider, which
+                // indexes the file itself (the emulator's row was there before
+                // any scan). Only the plain fallback leaves it behind.
+                if (!mediaRenamed) runCatching { platform.scan(listOf(job.target)) }
                 val item = paths.item(job.target)
                 sendJson(mapOf("t" to "fs.result", "id" to job.id, "ok" to true,
                     "item" to item.toJson(), "etag" to item.etag))
