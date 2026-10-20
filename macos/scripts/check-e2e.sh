@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # End-to-end checks C3-C13 for the macOS client against tools/fakephone.
 #
-#   ./scripts/check-e2e.sh [qr|pair|gates|tls|render|resize|input|hover|mouseback|input-global|pause|direct|nav|mirror|spotlight|intents|mcp|focus|controls|pinch|chrome|menus|density|trackpad|clip|sharein|links|share|apk|drop|dock|nickname|notify|notify-actions|notify-media|media|audio|handoff|deck|all [--shard N/M]]
+#   ./scripts/check-e2e.sh [qr|pair|gates|tls|render|resize|input|hover|mouseback|input-global|pause|direct|nav|mirror|spotlight|intents|mcp|focus|controls|pinch|chrome|menus|density|trackpad|clip|sharein|links|share|apk|drop|dock|nickname|notify|notify-actions|notify-media|media|audio|handoff|deck|nfr|all [--shard N/M]]
 #
 # Every check starts from a clean slate (the shared-app checks share one, see
 # "The shared app" below): no PocketDeck or fakephone processes
@@ -788,7 +788,7 @@ for line in open(sys.argv[1], errors="replace"):
         continue
     if event.get("ev") == "counters":
         value = event.get(sys.argv[2], value)
-print(int(value))
+print(value if isinstance(value, str) else int(value))
 PY
 }
 
@@ -7266,6 +7266,327 @@ PY
     stop_app
     stop_fakephone
 }
+
+# --- NFR: the limits in docs/NFR.md, end to end -----------------------------
+
+# now_ms — wall-clock milliseconds, the unit every person-facing limit uses.
+now_ms() { python3 -c 'import time; print(int(time.time() * 1000))'; }
+
+# first_event_ms KEY [VALUE] — the first event whose KEY (a dotted path) is
+# VALUE (any value when omitted), in milliseconds. Empty when it never came.
+first_event_ms() {
+    python3 - "$WORK/events.jsonl" "$1" "${2:-}" <<'PY'
+import json, sys
+source, path, wanted = sys.argv[1], sys.argv[2], sys.argv[3]
+for line in open(source, errors="replace"):
+    try:
+        event = json.loads(line)
+    except ValueError:
+        continue
+    value = event
+    for key in path.split("."):
+        value = value.get(key) if isinstance(value, dict) else None
+    if wanted and str(value).lower() != wanted.lower():
+        continue
+    if event.get("ts") is not None:
+        print(int(float(event["ts"]) * 1000))
+    break
+PY
+}
+
+# first_event_after_ms KEY [VALUE] AFTER_MS — like first_event_ms, but only an
+# event at or after AFTER_MS: the phone window's first frame is not the app
+# window's, and a later window reuses a stream id only by opening again.
+first_event_after_ms() {
+    python3 - "$WORK/events.jsonl" "$1" "${2:-}" "$3" <<'PY'
+import json, sys
+source, path, wanted, after = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
+for line in open(source, errors="replace"):
+    try:
+        event = json.loads(line)
+    except ValueError:
+        continue
+    if event.get("ts") is None or int(float(event["ts"]) * 1000) < after:
+        continue
+    value = event
+    for key in path.split("."):
+        value = value.get(key) if isinstance(value, dict) else None
+    if wanted and str(value).lower() != wanted.lower():
+        continue
+    print(int(float(event["ts"]) * 1000))
+    break
+PY
+}
+
+# first_ready_ms — the session is usable at `paired` (a fresh pairing) or
+# `auth_ok` (a reconnect with the stored pin); both are the moment a person
+# can act.
+first_ready_ms() {
+    local paired auth
+    paired="$(first_event_ms state paired)"
+    auth="$(first_event_ms state auth_ok)"
+    if [ -z "$paired" ]; then echo "$auth"; return; fi
+    if [ -z "$auth" ]; then echo "$paired"; return; fi
+    [ "$paired" -lt "$auth" ] && echo "$paired" || echo "$auth"
+}
+
+# nfr_limit_s <key> — a millisecond limit as whole seconds (ceil), for wait_until.
+nfr_limit_s() { local ms; ms="$(nfr_limit "$1")"; echo $(( (ms + 999) / 1000 )); }
+
+# nfr_launch [args...] — one phase's app, quiet, with the control and chrome
+# state files. `launch` truncates app.log; the events log is cleared by phase.
+nfr_launch() {
+    rm -rf "$WORK-control"
+    mkdir -p "$WORK-control"
+    rm -f "$WORK/chrome.txt"
+    launch --connect "127.0.0.1:$PORT" --debug-control "$WORK-control" \
+        --debug-chrome-state "$WORK/chrome.txt" --quit-after 420 "$@"
+}
+
+nfr_paired() {
+    events_have '"state":"paired"' || events_have '"state":"auth_ok"'
+}
+
+# nfr_wait_ready <seconds> — the session is ready for a phase.
+nfr_wait_ready() { wait_until "$1" nfr_paired; }
+
+# nfr_measure <name> <limit-key> <start-ms> <event-path> [value] — one limit,
+# logged with its value whether it passes or fails.
+nfr_measure() {
+    local name="$1" key="$2" start="$3" path="$4" value="${5:-}" limitMs limit arrived spent
+    limitMs="$(nfr_limit "$key")"
+    wait_until "$(nfr_limit_s "$key")" eval '[ -n "$(first_event_after_ms "$path" "${value:-}" "$start")" ]'
+    arrived="$(first_event_after_ms "$path" "$value" "$start")"
+    spent=$(( arrived - start ))
+    say "NFR $name: ${spent} ms (limit ${limitMs} ms)"
+    [ -n "$arrived" ] && [ "$spent" -le "$limitMs" ] \
+        && ok "NFR $name: ${spent} ms < ${limitMs} ms" \
+        || bad "NFR $name: ${spent:-?} ms, wanted <= ${limitMs} ms"
+}
+
+# nfr_writes_unchanged <phase> <before> — a read-only flow sent no write.
+nfr_writes_unchanged() {
+    local phase="$1" before="$2" after
+    after="$(fake_counter writes)"
+    [ "$after" = "$before" ] \
+        && ok "NFR read-only $phase: writes stayed $after" \
+        || bad "NFR read-only $phase: writes $before -> $after (last $(fake_counter last_write))"
+}
+
+# nfr_input_unchanged <mode> <before> — a frozen mode swallowed every input.
+nfr_input_unchanged() {
+    local mode="$1" before="$2" after
+    after="$(fake_counter input)"
+    [ "$after" = "$before" ] \
+        && ok "NFR frozen $mode: input stayed $after" \
+        || bad "NFR frozen $mode: input $before -> $after (last $(fake_counter last_input))"
+}
+
+# check_nfr — the gate in docs/NFR.md: time limits, read-only flows, frozen
+# modes, stale picture, and the real-control family (the event path a person
+# uses, with the phone counting the effect). Layout, contrast, honest settings
+# and icon references are K2 (`nfr.sh` runs both).
+check_nfr() {
+    local connect_ms first_phone app_list first_app before after t0 start
+    local pair_limit="$(nfr_limit connect_ms)"
+    clean
+    python3 - "$WORK" <<'PY'
+import os, sys
+work = sys.argv[1]
+root = os.path.join(work, "fsroot")
+for folder in ("Documents", "Documents/notes", "DCIM/Camera", "many", "Android/data/x"):
+    os.makedirs(os.path.join(root, folder), exist_ok=True)
+open(os.path.join(root, "Android/data/x/y"), "wb").write(b"hidden")
+open(os.path.join(root, ".hidden"), "wb").write(b"hidden")
+for i in range(40):
+    with open(os.path.join(root, "Documents", "file%02d.txt" % i), "wb") as handle:
+        handle.write(("small %d\n" % i).encode() * (i + 1))
+with open(os.path.join(root, "DCIM/Camera/photo.jpg"), "wb") as handle:
+    handle.write(b"\xff\xd8\xff\xe0" + os.urandom(4096))
+with open(os.path.join(root, "big3.bin"), "wb") as handle:
+    handle.write(os.urandom(3 * 1024 * 1024))
+with open(os.path.join(root, "big32.bin"), "wb") as handle:
+    handle.write(os.urandom(32 * 1024 * 1024))
+for i in range(1500):
+    open(os.path.join(root, "many", "m%04d.txt" % i), "wb").close()
+PY
+    FAKE_ARGS="--fs-root $WORK/fsroot --fs-chunk-delay-ms 2" start_fake || return 1
+    t0="$(now_ms)"
+    nfr_launch --files-bridge-dir "$WORK/bridge"
+    nfr_wait_ready 30 || { bad "NFR the app never paired"; stop_app; stop_fakephone; return 1; }
+    connect_ms="$(first_ready_ms)"
+    say "NFR connect: $((connect_ms - t0)) ms (limit ${pair_limit} ms)"
+    [ $((connect_ms - t0)) -le "$pair_limit" ] \
+        && ok "NFR connect: $((connect_ms - t0)) ms < ${pair_limit} ms" \
+        || bad "NFR connect: $((connect_ms - t0)) ms, wanted <= ${pair_limit} ms"
+
+    # The Deck's first list and its icons are read-only.
+    nfr_measure "app list" app_list_ms "$connect_ms" msg.t apps.list
+    # The session's own setup (a paired phone answers with the DND/ringer sync)
+    # is not one of the read-only flows; the flow starts once it settles.
+    sleep 1
+    before="$(fake_counter writes)"
+    wait_until 20 have_layered_icons || bad "NFR no app icons arrived"
+    nfr_writes_unchanged "Deck browsing and icons" "$before"
+
+    # Phone window: open (first frame), close — no writes.
+    start="$(now_ms)"
+    control open --open-phone || bad "NFR the phone window did not open: $CONTROL_REPLY"
+    nfr_measure "phone window's first frame" first_frame_phone_ms "$start" config true
+    before="$(fake_counter writes)"
+    control open --close-stream 1:0.1 || bad "NFR the phone window did not close: $CONTROL_REPLY"
+    sleep 1
+    nfr_writes_unchanged "phone window open/close" "$before"
+
+    # An app window: first frame, then close. Read-only too.
+    start="$(now_ms)"
+    control open --open com.android.settings || bad "NFR the app window did not open: $CONTROL_REPLY"
+    nfr_measure "app window's first frame" first_frame_ms "$start" config true
+    before="$(fake_counter writes)"
+    control open --close-stream 2:0.1 || bad "NFR the app window did not close: $CONTROL_REPLY"
+    sleep 1
+    nfr_writes_unchanged "app window open/close" "$before"
+
+    # The files bridge: list/stat/read/cancel through the app, no write.
+    wait_until 30 file_has "files-bridge: ok" "$WORK/app.log" \
+        || bad "NFR the files bridge never listened"
+    before="$(fake_counter writes)"
+    files_bridge_driver read
+    nfr_writes_unchanged "files list/stat/read" "$before"
+    stop_app
+    stop_fakephone
+
+    # Live Text in an app window: enter/exit sends no write, and the frozen
+    # mode sends no input (clicks, scroll, typing, the nav shortcuts).
+    : > "$WORK/events.jsonl"
+    start_fake || return 1
+    rm -f "$WORK/lt-go" "$WORK/lt-exit"
+    printf '%s\n' "enter 1" "wait-analysis" "waitfile $WORK/lt-go 120" \
+        "waitfile $WORK/lt-exit 120" "exit" "wait-idle 30" "nav back" > "$WORK/lt-app.txt"
+    printf '%s\n' "waitfile $WORK/lt-go 120" "click 0.5 0.5" "scroll 120" \
+        "type hello" "key cmd+shift+h" "key cmd+[" "hover 0.5 0.5" "wait 1" > "$WORK/input-lt-app.txt"
+    nfr_launch --open com.android.settings --debug-livetext "$WORK/lt-app.txt" \
+        --debug-input-script "$WORK/input-lt-app.txt"
+    nfr_wait_ready 30 || bad "NFR the app never paired (Live Text)"
+    wait_until 120 grep -q '"op":"analysis"' "$WORK/app.log" \
+        || bad "NFR Live Text never finished its analysis"
+    before="$(fake_counter input)"
+    touch "$WORK/lt-go"
+    sleep 4
+    nfr_input_unchanged "Live Text (app window)" "$before"
+    after="$(fake_counter writes)"
+    touch "$WORK/lt-exit"
+    wait_until 30 grep -q '"op":"idle"' "$WORK/app.log" || bad "NFR Live Text never left the mode"
+    wait_until 20 [ "$(fake_counter input)" -ge $((before + 1)) ] \
+        && ok "NFR frozen Live Text: Back after the exit reached the phone (input $(fake_counter input))" \
+        || bad "NFR frozen Live Text: Back after the exit sent nothing (input $(fake_counter input))"
+    nfr_writes_unchanged "Live Text enter/exit" "$after"
+    stop_app
+    stop_fakephone
+
+    # Live Text in the phone window (the 10-20 merge regressed it there).
+    : > "$WORK/events.jsonl"
+    start_fake || return 1
+    rm -f "$WORK/lt-go" "$WORK/lt-exit"
+    printf '%s\n' "enter 1" "wait-analysis" "waitfile $WORK/lt-go 120" \
+        "waitfile $WORK/lt-exit 120" "exit" "wait-idle 30" "nav back" > "$WORK/lt-phone.txt"
+    printf '%s\n' "waitfile $WORK/lt-go 120" "click 0.5 0.5" "scroll 120" \
+        "type hello" "key cmd+shift+h" "key cmd+[" "hover 0.5 0.5" "wait 1" > "$WORK/input-lt-phone.txt"
+    nfr_launch --open-phone --debug-livetext "$WORK/lt-phone.txt" \
+        --debug-input-script "$WORK/input-lt-phone.txt"
+    nfr_wait_ready 30 || bad "NFR the app never paired (phone Live Text)"
+    wait_until 120 grep -q '"op":"analysis"' "$WORK/app.log" \
+        || bad "NFR phone Live Text never finished its analysis"
+    before="$(fake_counter input)"
+    touch "$WORK/lt-go"
+    sleep 4
+    nfr_input_unchanged "Live Text (phone window)" "$before"
+    after="$(fake_counter writes)"
+    touch "$WORK/lt-exit"
+    wait_until 30 grep -q '"op":"idle"' "$WORK/app.log" || bad "NFR phone Live Text never left the mode"
+    wait_until 20 [ "$(fake_counter input)" -ge $((before + 1)) ] \
+        && ok "NFR frozen phone Live Text: Back after the exit reached the phone (input $(fake_counter input))" \
+        || bad "NFR frozen phone Live Text: Back after the exit sent nothing (input $(fake_counter input))"
+    nfr_writes_unchanged "phone Live Text enter/exit" "$after"
+    stop_app
+    stop_fakephone
+
+    # Screen off: the cover swallows scroll, typing and the nav shortcuts. A
+    # click on the cover is the Wake Screen button by design, so it is not
+    # part of the frozen set here; the same click is covered in Live Text.
+    : > "$WORK/events.jsonl"
+    FAKE_ARGS="--screen-off-after 6" start_fake || return 1
+    rm -f "$WORK/off-go" "$WORK/off-wake"
+    printf '%s\n' "waitfile $WORK/off-go 120" "scroll 120" "type hello" \
+        "key cmd+shift+h" "key cmd+[" "waitfile $WORK/off-wake 120" "nav back" > "$WORK/input-off.txt"
+    nfr_launch --open-phone --debug-input-script "$WORK/input-off.txt"
+    nfr_wait_ready 30 || bad "NFR the app never paired (screen off)"
+    wait_until 20 chrome_has "overlay=1" || bad "NFR the screen-off cover never appeared"
+    before="$(fake_counter input)"
+    touch "$WORK/off-go"
+    sleep 3
+    nfr_input_unchanged "screen off" "$before"
+    control wake-phone >/dev/null 2>&1 || true
+    wait_until 20 chrome_has "screen=on overlay=0" || bad "NFR the screen never came back"
+    touch "$WORK/off-wake"
+    wait_until 20 [ "$(fake_counter input)" -ge $((before + 1)) ] \
+        && ok "NFR frozen screen off: Back after the wake reached the phone (input $(fake_counter input))" \
+        || bad "NFR frozen screen off: Back after the wake sent nothing (input $(fake_counter input))"
+    stop_app
+    stop_fakephone
+
+    # Disconnected: the phone goes away; input stays home until it is back.
+    : > "$WORK/events.jsonl"
+    start_fake || return 1
+    rm -f "$WORK/disc-go" "$WORK/disc-re"
+    printf '%s\n' "waitfile $WORK/disc-go 120" "scroll 120" "type hello" \
+        "key cmd+shift+h" "waitfile $WORK/disc-re 240" "nav back" > "$WORK/input-disc.txt"
+    nfr_launch --open-phone --debug-input-script "$WORK/input-disc.txt"
+    nfr_wait_ready 30 || bad "NFR the app never paired (disconnected)"
+    wait_until 20 events_have '"ev":"video"' || bad "NFR no video before the disconnect"
+    stop_fakephone
+    wait_until 20 events_have '"state":"closed"' || bad "NFR the link never reported the disconnect"
+    sleep 1
+    before="$(fake_counter input)"
+    touch "$WORK/disc-go"
+    sleep 3
+    nfr_input_unchanged "disconnected" "$before"
+    start_fake || bad "NFR the phone did not come back"
+    # The reconnect backoff doubles; a 64 s wait can fall between attempts.
+    wait_until 150 events_have '"state":"auth_ok"' || bad "NFR the window never reconnected"
+    wait_until 20 events_have '"ev":"video"' || true
+    # The new fake starts its counters at zero; the phone is back, so one Back
+    # must now move them.
+    after="$(fake_counter input)"
+    touch "$WORK/disc-re"
+    wait_until 20 [ "$(fake_counter input)" -ge $((after + 1)) ] \
+        && ok "NFR frozen disconnected: Back after the reconnect reached the phone (input $(fake_counter input))" \
+        || bad "NFR frozen disconnected: Back after the reconnect sent nothing (input $(fake_counter input))"
+    stop_app
+    stop_fakephone
+
+    # Frozen picture: the phone stops sending frames with the session still up.
+    # The window must say so within stale_picture_ms; today it has no such
+    # state, so this FAILs on purpose and ask.md carries the smallest change.
+    : > "$WORK/events.jsonl"
+    FAKE_ARGS="--stall-after 3" start_fake || return 1
+    nfr_launch --open-phone --open com.android.settings
+    nfr_wait_ready 30 || bad "NFR the app never paired (stall)"
+    wait_until 30 events_have '"ev":"stall"' || bad "NFR the fake never stalled"
+    local stall_ms stale_ms stale_s
+    stall_ms="$(first_event_ms ev stall)"
+    stale_ms="$(nfr_limit stale_picture_ms)"
+    stale_s="$(( (stale_ms + 999) / 1000 ))"
+    if wait_until "$stale_s" chrome_has "stall=1"; then
+        ok "NFR no stale picture: the window said the picture stopped within ${stale_ms} ms"
+    else
+        bad "NFR no stale picture: the window kept the last frame as live for ${stale_ms} ms (state: $(chrome_state))"
+    fi
+    say "NFR stall: frames stopped at ${stall_ms} ms; state $(chrome_state)"
+    stop_app
+    stop_fakephone
+}
+
 
 check_orphans() {
     end_shared
