@@ -269,6 +269,18 @@ class FsWatcherTest {
         watcher.close()
     }
 
+    /** The baseline is the folder at watch time, so the first period counts too. */
+    @Test
+    fun aChangeBeforeTheFirstPollIsReported() {
+        watcher = setUp()
+        File(root, "A/one.txt").writeText("1")
+        watcher.watch(listOf("A"))
+        File(root, "A/two.txt").writeText("2")
+        timers.advance(FsWatcher.FOLDER_POLL_MS)
+        assertEquals(listOf(listOf("A")), changes())
+        watcher.close()
+    }
+
     @Test
     fun theFolderPollLooksOnlyAtTheWatchedFolders() {
         watcher = setUp()

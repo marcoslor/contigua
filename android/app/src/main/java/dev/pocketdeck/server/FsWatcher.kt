@@ -110,11 +110,16 @@ class FsWatcher(
      */
     fun watch(requested: List<String?>) {
         val folders = requested.map { folder(it) }
+        // The poll's baseline is taken now, outside the lock (a listing can be
+        // slow on FUSE): a change in the first poll period would otherwise
+        // become the baseline and never be reported.
+        val baselines = folders.associate { (rel, dir) -> rel to fingerprint(dir) }
         synchronized(lock) {
             if (closed) return
             for ((rel, dir) in folders) {
                 if (wanted.containsKey(rel)) continue
                 dirs[rel] = dir
+                baselines[rel]?.let { fingerprints[rel] = it }
                 wanted[rel] = startLocked(rel, dir)
             }
             ensurePollLocked()
@@ -311,7 +316,8 @@ class FsWatcher(
      * stats to stay cheap.
      */
     private fun fingerprint(dir: File): Long? {
-        val names = dir.list()?.filterNot { FsPaths.isTempName(it) } ?: return null
+        // Sorted: the hash must not depend on the order the mount lists in.
+        val names = dir.list()?.filterNot { FsPaths.isTempName(it) }?.sorted() ?: return null
         var hash = 1125899906842597L
         for (name in names) hash = 31 * hash + name.hashCode()
         hash = 31 * hash + dir.lastModified()
