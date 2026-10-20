@@ -134,6 +134,37 @@ Every detail: [docs/TRY-IT.md](docs/TRY-IT.md).
   dismisses the keyguard, and never opens the phone's panel; apps run on a
   virtual display Android treats as unlocked (docs/ARCHITECTURE.md).
 
+## Use with AI agents (MCP)
+
+PocketDeck can hand the connected phone to an AI agent on the same Mac over a
+local MCP server: see what a window shows, tap, type, swipe, open apps, send
+links and files, read the phone's state. It is **off by default** —
+Settings › Automation › **Allow AI agents to control your phone**. While an
+agent is connected the menu bar shows a small indicator, and its menu has
+**Disconnect agent**.
+
+Everything stays local: a private UNIX socket in the PocketDeck support folder,
+same user only, no network listener. The app logs a tool call as name and
+duration only — never arguments, typed text, URLs, file names or pixels.
+[Setting up an MCP client](docs/design/mcp.md).
+
+Point an MCP client at the shim that ships inside the app:
+
+```json
+{"command": "/Applications/PocketDeck.app/Contents/Helpers/pocketdeck-mcp"}
+```
+
+Settings › Automation shows this snippet with a Copy button (it adds
+`"args": ["--profile", "NAME"]` for a non-default profile). With Claude Code:
+
+```sh
+claude mcp add pocketdeck -- /Applications/PocketDeck.app/Contents/Helpers/pocketdeck-mcp
+```
+
+The agent gets 13 tools: phone status, list apps, open an app, list windows,
+screenshot, tap, long-press, swipe, type text, press a key, close a window,
+send a link, send a file.
+
 ## Status
 
 Pre-release. Traffic is end-to-end encrypted: **mutual TLS 1.3 with the
