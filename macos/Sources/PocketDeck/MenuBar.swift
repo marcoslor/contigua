@@ -233,11 +233,9 @@ struct AppCommands: Commands {
                 set: { if $0 { controller.windows.setKeyWindowStyle(.framed) } })) {
                 Text(WindowStyle.framed.label)
             }
-            Toggle(isOn: Binding(
-                get: { streamMenu.style == .immersive },
-                set: { if $0 { controller.windows.setKeyWindowStyle(.immersive) } })) {
-                Text(WindowStyle.immersive.label)
-            }
+            // View ▸ Immersive ▸ (ImmersiveMenuInstaller.swift): the parent
+            // item and its submenu are AppKit's, so the parent can carry the
+            // checkmark AppKit gives a submenu item.
             Divider()
             // View ▸ Density: the key stream window's app override, remembered
             // per app (WindowDensityStore) and applied to every open window of
@@ -280,18 +278,21 @@ struct AppCommands: Commands {
                 Label("Back", systemImage: "chevron.backward")
             }
             .keyboardShortcut("[")
+            .disabled(streamMenu.liveText)
             Button {
                 send(#selector(PhoneWindowController.navigateHome(_:)))
             } label: {
                 Label("Home", systemImage: "house")
             }
             .keyboardShortcut("h", modifiers: [.command, .shift])
+            .disabled(streamMenu.liveText)
             Button {
                 send(#selector(PhoneWindowController.navigateRecents(_:)))
             } label: {
                 Label("Recents", systemImage: "square.stack")
             }
             .keyboardShortcut(.upArrow, modifiers: .command)
+            .disabled(streamMenu.liveText)
         }
     }
 
