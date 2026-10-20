@@ -4806,6 +4806,57 @@ check_files_domain() {
         && ok "FILES many lists all 1500 names across pages" \
         || bad "FILES many lists $many names, wanted 1500"
 
+    # -- A name that appeared on the phone after the listing (collision) ------
+    # A photo taken since the Mac looked: the name is not in the enumeration,
+    # so the copy is a create. The phone refuses it (exclusive); the Mac's file
+    # must not replace the phone's. A POSIX create has no "pick another name"
+    # step, so the system retries the same name: what matters here is that the
+    # phone's bytes survive every retry.
+    python3 - "$WORK/fsroot/Documents/collide.bin" "$WORK/collide-mac.bin" <<'PY'
+import os, sys
+open(sys.argv[1], "wb").write(b"the phone's own bytes\n" * 900)
+open(sys.argv[2], "wb").write(os.urandom(64 * 1024))
+PY
+    local phone_collide_sha mac_collide_sha
+    phone_collide_sha="$(shasum -a 256 "$WORK/fsroot/Documents/collide.bin" | cut -c1-64)"
+    mac_collide_sha="$(shasum -a 256 "$WORK/collide-mac.bin" | cut -c1-64)"
+    run_limited 180 cp "$WORK/collide-mac.bin" "$root/Documents/collide.bin" 2> "$WORK/collide.err" || true
+    local landed=""
+    for _ in $(seq 1 90); do
+        landed="$(python3 - "$WORK/fsroot/Documents" "$mac_collide_sha" "$phone_collide_sha" <<'PY'
+import hashlib, os, sys
+folder, want, phone = sys.argv[1], sys.argv[2], sys.argv[3]
+for name in sorted(os.listdir(folder)):
+    path = os.path.join(folder, name)
+    if not os.path.isfile(path):
+        continue
+    digest = hashlib.sha256(open(path, "rb").read()).hexdigest()
+    if digest == want and digest != phone:
+        print(name)
+        break
+PY
+)"
+        [ -n "$landed" ] && break
+        sleep 2
+    done
+    files_log > "$WORK/collide-log.txt" 2>/dev/null || true
+    local refusals=0
+    refusals="$(grep -c 'write failed code=fs_exists' "$WORK/collide-log.txt" 2>/dev/null || true)"
+    local phone_kept="no"
+    [ "$(shasum -a 256 "$WORK/fsroot/Documents/collide.bin" | cut -c1-64)" = "$phone_collide_sha" ] \
+        && phone_kept="yes"
+    printf 'name=%s\nphone_kept=%s\nrefusals=%s\ncp_error=%s\n' \
+        "$landed" "$phone_kept" "$refusals" "$(head -1 "$WORK/collide.err")" > "$WORK/collision.txt"
+    [ "$phone_kept" = "yes" ] && [ "${refusals:-0}" -ge 1 ] \
+        && ok "WRITE a copy onto a name the phone has is refused as fs_exists and leaves the phone's bytes ($refusals refusals, landed=${landed:+another name})" \
+        || bad "WRITE the collision copy: phone_kept=$phone_kept refusals=$refusals landed='${landed:-none}' err=$(head -1 "$WORK/collide.err")"
+    if [ -n "$landed" ]; then
+        ok "WRITE the system named the copy differently ($(printf '%s' "$landed" | shasum -a 256 | cut -c1-12))"
+        rm -f "$WORK/fsroot/Documents/$landed"
+    else
+        say "    collision: the system kept retrying the same name (no second name yet)"
+    fi
+
     # -- Bytes: the phone's exact file, out of the mount ----------------------
     local want
     want="$(shasum -a 256 "$WORK/fsroot/big3.bin" | cut -c1-64)"
@@ -4950,11 +5001,24 @@ PY
         || bad "FILES the 32 MiB file after reconnect is not identical"
 
     # -- Finder shows it (screenshot) -----------------------------------------
+    # The collision retries can still be in flight minutes later: after all of
+    # that, the phone's own file must still be the phone's.
+    if [ -n "${phone_collide_sha:-}" ] && [ -f "$WORK/fsroot/Documents/collide.bin" ]; then
+        [ "$(shasum -a 256 "$WORK/fsroot/Documents/collide.bin" | cut -c1-64)" = "$phone_collide_sha" ] \
+            && ok "WRITE late create retries still did not replace the phone's file" \
+            || bad "WRITE a late create retry replaced the phone's file"
+        rm -f "$WORK/fsroot/Documents/collide.bin"
+    fi
     open -a Finder "$root" >/dev/null 2>&1 || true
     sleep 4
     screencapture -x "$WORK/finder.png" 2>/dev/null \
         && ok "FILES screenshot of Finder at the domain root: $WORK/finder.png" \
         || bad "FILES screencapture failed"
+    open -a Finder "$root/Documents" >/dev/null 2>&1 || true
+    sleep 4
+    screencapture -x "$WORK/finder-documents.png" 2>/dev/null \
+        && ok "FILES screenshot of Finder in Documents: $WORK/finder-documents.png" \
+        || bad "FILES screencapture (Documents) failed"
     # -- Remove the domain, it must be gone -----------------------------------
     kill_e2e_app
     stop_fakephone
