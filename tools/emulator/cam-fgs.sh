@@ -125,7 +125,7 @@ start_stage() { # start_stage <stage> <mode> <seconds>
   step "start $stage ($mode): $cmd"
   out="$(emu_long shell "$cmd" 2>&1)" || rc=$?
   {
-    printf '--- start %s mode=%s rc=%s\n' "$stage" "$mode" "$rc"
+    printf -- '--- start %s mode=%s rc=%s\n' "$stage" "$mode" "$rc"
     printf '%s\n' "$out"
   } > "$AGENT_DIR/cam-fgs-am-$stage.txt"
   cat "$AGENT_DIR/cam-fgs-am-$stage.txt" >> "$LOG"
@@ -162,8 +162,14 @@ record_stage() { # record_stage <stage> <mode> <seconds>
     if "$ADB" -s "$SERIAL" exec-out run-as "$PKG" cat "$FRAME_CACHE" > "$EVIDENCE/c0b-frame.jpg" 2>/dev/null; then
       bytes="$(wc -c < "$EVIDENCE/c0b-frame.jpg" | tr -d ' ')"
       step "frame: $EVIDENCE/c0b-frame.jpg ($bytes bytes)"
-      if [ "$bytes" -gt 0 ]; then FRAME_PULLED=1; fi
+      if [ "$bytes" -gt 0 ]; then
+        FRAME_PULLED=1
+      else
+        rm -f "$EVIDENCE/c0b-frame.jpg"
+        step "warn: the frame file is empty"
+      fi
     else
+      rm -f "$EVIDENCE/c0b-frame.jpg"
       step "warn: could not pull the frame"
     fi
   fi
@@ -231,11 +237,16 @@ evict_stage() { # evict_stage <capturing stage> <mode>
 
 background_state() {
   local uid=""
-  uid="$(emu shell dumpsys package "$PKG" 2>/dev/null | sed -n 's/.*userId=\([0-9]*\).*/\1/p' | head -1 | tr -d '\r' || true)"
+  uid="$(emu shell cmd package list packages -U "$PKG" 2>/dev/null |
+    sed -n 's/.*uid:\([0-9]*\).*/\1/p' | head -1 | tr -d '\r' || true)"
   step "app uid: ${uid:-unknown}"
   {
     printf -- '--- uid state (the app must be in the background)\n'
-    emu shell am get-uid-state "$uid" 2>&1 || true
+    if [ -n "$uid" ]; then
+      emu shell am get-uid-state "$uid" 2>&1 || true
+    else
+      printf 'uid: unknown\n'
+    fi
     emu_long shell dumpsys activity processes 2>/dev/null |
       grep -A3 -E "ProcessRecord.*$PKG|uid $uid" | head -40 || true
     printf -- '--- deck service\n'
