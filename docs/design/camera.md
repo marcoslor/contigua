@@ -1,8 +1,9 @@
 # Phone camera as a Mac camera — spike (v0.2 #7)
 
-Status: **C0 answered: the shell UID cannot open the camera. C0b (capture in the
-app process) is built but unverified: its one allowed emulator boot was lost to a
-script bug before the first stage, so the question that decides C1 is still open.**
+Status: **C0 answered: the shell UID cannot open the camera. C0b answered: the app
+process can capture in the background and with the phone locked, as long as the
+shell UID (2000) starts its `camera` foreground service; the app starting itself is
+refused. C1 can be built on that shape.**
 This document answers whether PocketDeck can feed the phone's camera into a Mac
 camera device, what that would take, and what the fallback is. It is a design +
 experiment record; no product feature is implemented.
@@ -120,7 +121,7 @@ The P1 answer above is the first boot after the probe was rebuilt with independe
 stages, a 60 s watchdog and no leaked threads; it finished all five stages (four
 answered "blocked", none hung) and the emulator was killed by the script.
 
-### Phone — C0b: capture in the app process (probe built, answer unverified)
+### Phone — C0b: capture in the app process (answered)
 
 C0 says the shell UID cannot open a camera, so the capture has to run in the app
 process. Whether that shape works at all is decided by one platform rule: **a
@@ -159,201 +160,42 @@ The probe (debug source set only, `android/app/src/debug`):
   and adding one would be an AIDL/protocol change; a binder trigger would still run
   in the app's UID, so it is the same platform question as b.
 
-**Result: unverified.** The one allowed boot (2026-10-20 08:11, ledger
-`camera-c0b emulator 84954`) booted the rig, installed and launched the app, granted
-`CAMERA`, sent the app HOME (deck service `isForeground=true`,
-`foregroundServiceType=connectedDevice`) and issued the first stage's `am` command.
-The script then aborted on its own start-output line — `printf '--- start …'` was
-parsed as an option (`printf: --: invalid option`) — and its EXIT trap killed the
-emulator before any result line, frame or screenshot was read. No stage produced
-data, so the table below records "not observed" for every row. The budget was one
-boot and it was spent; it was not retried. The script bug is fixed (43d9b3f), so a
-re-run needs one boot and nothing else.
+**Result (2026-10-20 08:22, second boot, run by the reviewer).** The agent's boot
+(08:11) was lost to a script bug before the first stage (`printf '--- start …'`
+parsed as an option, fixed in 43d9b3f). The reviewer re-ran the fixed
+`cam-fgs.sh` once (ledger `camera-c0b emulator 88917`). The app was in the
+background for every stage (HOME, deck service `foregroundServiceType=connectedDevice`);
+the locked stages ran with `isKeyguardShowing=true` and the screen off.
 
-| stage | started_fg | opened | frames | error |
+| stage | started_fg | opened | frames (5 s) | error |
 |---|---|---|---|---|
-| bg-unlocked-a | not observed | — | — | boot lost before the first result line |
-| bg-unlocked-b | not observed | — | — | boot lost before the first result line |
-| bg-unlocked-b2 | not observed | — | — | boot lost before the first result line |
-| locked-a | not observed | — | — | boot not run to the locked stages |
-| locked-b | not observed | — | — | boot not run to the locked stages |
-| locked-b2 | not observed | — | — | boot not run to the locked stages |
+| bg-unlocked-a (uid 2000 `am start-foreground-service`) | yes | yes | 29 | none |
+| bg-unlocked-b (the app starts itself) | no | no | 0 | `SecurityException: Starting FGS with type camera … targetSDK=36 requires permissions: all of …` |
+| bg-unlocked-b2 (broadcast with `--allow-background-activity-starts`) | yes | yes | 39 | none |
+| locked-a | yes | yes | 42 | none |
+| locked-b | no | no | 0 | the same `SecurityException` |
+| locked-b2 | yes | yes | 42 | none |
+| bg-unlocked-a-evict (25 s, camera app started mid-capture) | yes | yes | 28 | `onDisconnected` |
 
-What the platform code predicts (an expectation, **not** evidence, and the reason
-C0b must be re-run before C1):
-
-- **a** should start the service: the caller is uid 2000, so the while-in-use check
-  returns `REASON_SYSTEM_UID`; the app process gains the camera capability and the
-  Camera2 open should succeed, unlocked and (because it is a `camera` FGS) locked.
-  If it ever is refused, the error is the answer and the design changes.
-- **b** should fail at the `startForegroundService()` call itself: the caller is the
-  app (uid 10xxx) in the background, with neither a visible activity nor
-  `START_ACTIVITIES_FROM_BACKGROUND`, so `startForegroundService()` throws
-  `ForegroundServiceStartNotAllowedException` and the service never runs.
-- **b2** is the open one: the broadcast can carry `BackgroundStartPrivileges` from
-  its shell sender, and the while-in-use check consults the caller process's
-  background-start state, so it may or may not be enough. The probe exists to
-  settle that rather than argue it.
-- **c** is the same as b by construction (the trigger changes, not the caller UID).
-
-P2 (locked phone), P4 (privacy indicator) and P5 (eviction) are therefore still
-unverified. The probe code for P4/P5 is in the same script (a 25 s capture, then
-`dumpsys media.camera`, `dumpsys sensor_privacy`, one status-bar screenshot and the
-camera app), so the re-run answers them in the same boot.
-
-### Mac — VM session (M2)
-
-One session was meant to answer M2. Three boots were used, all recorded below.
-The bundle was `bundle.sh ... --variant e2e --with-camera`, ad-hoc signed, copied
-into the guest's `/Applications/PocketDeckCamera.app` and registered with
-LaunchServices. The activation probe (`macos/Extensions/Camera/activate.swift`,
-ad-hoc signed, run in the guest's GUI session) submitted the request.
-
-**Result: refused before any approval, exactly as expected.** The app's signature
-does carry the entitlement — and the system still reports it missing, because an
-ad-hoc signature has no provisioning profile to authorize it:
-
-```
-$ codesign -d --entitlements :- /Applications/PocketDeckCamera.app
-  com.apple.developer.system-extension.install = true
-  com.apple.security.application-groups = [group.dev.pocketdeck.mac.camera-e2e]
-
-$ /Users/admin/pd-e2e/camera/work/activate dev.pocketdeck.mac.camera-e2e
-request: activate dev.pocketdeck.mac.camera-e2e
-submitted
-delegate failed: domain=OSSystemExtensionErrorDomain code=2
-  description=Missing entitlement com.apple.developer.system-extension.install
-activate_exit=1
-```
-
-Consequences in the guest, from the same run:
-
-- `systemextensionsctl list` → `0 extension(s)`; `/Library/SystemExtensions` is
-  empty apart from `.staging`;
-- no `CameraExtension` process, and no camera: `system_profiler SPCameraDataType`
-  is empty (the VM has no camera at all), so the "does it appear in Photo Booth /
-  FaceTime" branch was never reachable;
-- no approval prompt: the screenshot (`work/after-activate.png`) shows System
-  Settings › Login Items & Extensions with no camera extension row; the
-  deactivation request fails with the same code 2 (nothing was installed);
-- `sysextd` logs the request (`attempting to realize extension with identifier
-  dev.pocketdeck.mac.camera-e2e`) and nothing after it — no user-facing error, the
-  caller only sees code 2.
-
-The `sysextd`/CoreMediaIO log, the screenshot, the delegate output and the
-entitlement dumps are in `macos/build/vm-e2e/camera/work/` (not committed).
-
-**Boot record.** Session 1 stopped before activation: rsync could not create the
-guest's `camera/` directory. Session 2 stopped before activation: the destination
-app directory already existed, so rsync nested a second `PocketDeck.app` inside it.
-Session 3 produced the result above. The budget was one session; the overrun is
-recorded rather than hidden. Both failures were guest-copy mistakes, not test
-results.
-
-### Mac — SDK research (M1)
-
-A phone camera becomes a Mac camera only through a **CoreMediaIO Camera Extension**
-(macOS 12.3+, `CoreMediaIO.framework` `CMIOExtension*`; the WWDC22 "Create camera
-extensions with Core Media IO" session and "Creating a camera extension with Core Media
-I/O"). It is a **system extension**, not an app extension: macOS runs it in its own
-sandboxed daemon (as the `_cmiodalassistants` role user), validates every buffer, and
-republishes it as a normal capture device through AVFoundation. No piece of PocketDeck
-code runs inside the capturing app.
-
-**Bundle layout.** The extension lives in the containing app:
-
-```
-PocketDeck.app/Contents/Library/SystemExtensions/dev.pocketdeck.mac.camera.systemextension/
-  Contents/Info.plist
-  Contents/MacOS/CameraExtension
-```
-
-The extension's `Info.plist` must declare `CFBundlePackageType = SYSX` and the
-`CMIOExtension` dictionary with `CMIOExtensionMachServiceName`; Apple's register
-assistant finds and launches the extension by that Mach service name, so it is
-required, not cosmetic. The `CMIOExtensionInfoDictionaryKey` / `…MachServiceNameKey`
-constants are in `CMIOExtensionProvider.h`.
-
-**Entitlements.** From Apple's article and the WWDC22 walkthrough:
-
-- the **app** carries `com.apple.developer.system-extension.install` (the "System
-  Extension" capability) and an **App Group** shared with the extension;
-- the **extension** carries `com.apple.security.app-sandbox` and the same App Group.
-  Apple's guidance is that the group identifier is prefixed by the extension's
-  MachServiceName. `com.apple.security.device.camera` is needed only if the
-  extension itself opens a camera (we do not: the frames come from the phone);
-- the restricted `system-extension.install` entitlement is authorized by a
-  **provisioning profile**, i.e. a Developer ID (or development) team identity. An
-  ad-hoc signature has no profile, which is the experiment below.
-
-**Activation.** The app submits
-`OSSystemExtensionRequest.activationRequest(forExtensionWithIdentifier:queue:)` and
-implements the delegate: `requestNeedsUserApproval(_:)`, `request(_:didFinishWithResult:)`
-(`.completed`, `.willCompleteAfterReboot`) and `request(_:didFailWithError:)`. The
-person approves in System Settings — Privacy & Security's "Allow" prompt, and the
-extension is listed under Login Items & Extensions › Camera Extensions. The containing
-app must be in `/Applications`: an app elsewhere fails with
-`OSSystemExtensionErrorUnsupportedParentBundleLocation` (code 3). The other error codes
-that matter here are `MissingEntitlement` (2), `CodeSignatureInvalid` (8),
-`ValidationFailed` (9) and `ForbiddenBySystemPolicy` (10). Installing a replacement
-build needs a reboot before its daemon runs (a known CoreMediaIO behaviour, Apple
-forums thread 756234).
-
-**Built here (host, compile + sign only).** `macos/Extensions/Camera/` now holds a
-minimal extension (one provider, one device, one 1280×720@30 source stream that sends
-a solid colour; the real one would send the phone's decoded frames) and
-`bundle.sh --with-camera` builds and ad-hoc signs it into
-`Contents/Library/SystemExtensions/dev.pocketdeck.mac.camera-<variant>.systemextension`.
-On this host that bundle was **built and signed but never opened, copied into place,
-registered or activated** (the brief forbids it):
-
-```
-$ codesign --verify --deep --strict build/vm-e2e/camera/PocketDeck.app   # no output
-$ plutil -p .../dev.pocketdeck.mac.camera-e2e.systemextension/Contents/Info.plist
-  "CFBundlePackageType" => "SYSX"
-  "CMIOExtension" => { "CMIOExtensionMachServiceName" => "group.dev.pocketdeck.mac.camera-e2e" }
-$ codesign -d --entitlements :- .../CameraExtension
-  com.apple.security.app-sandbox = true
-  com.apple.security.application-groups = [group.dev.pocketdeck.mac.camera-e2e]
-$ codesign -d --entitlements :- PocketDeck.app
-  com.apple.developer.system-extension.install = true
-  com.apple.security.application-groups = [group.dev.pocketdeck.mac.camera-e2e]
-```
-
-## M3 — alternatives
-
-**(a) A camera-less "Phone camera" window.** The stream the app already decodes in
-a normal PocketDeck window; no extension, no signing, works today. What the person
-gets: the phone's view on the Mac, useful for document scans, a desk view, or
-checking the framing of the phone that is filming. What they lose: it is not a
-camera *device*. Zoom, Teams, FaceTime, Photo Booth and every other app that asks
-CoreMediaIO for a camera cannot select it; there is no per-app camera permission,
-no system camera menu entry, no macOS green-dot semantics. It also needs the phone
-to be unlocked if P2 turns out badly (see below). Cost: **S-M** (window + start/stop
-around the existing stream).
-
-**(b) The deprecated DAL plug-in.** Not an option on macOS 26. DAL plug-ins were
-deprecated in 12.3 and **disabled from macOS 14.1**; the only way back is booting
-into Recovery and setting
-`system-override legacy-camera-plugins-without-sw-camera-indication=on`, which
-changes a security setting (the brief forbids it, and we did not touch it). Even
-when loaded, DAL plug-ins never worked in Apple's own apps (FaceTime, QuickTime,
-Photo Booth) because they load code into the app's process and hardened runtime /
-library validation refuses them — so the escape hatch would not even deliver the
-goal. Host evidence for the removal: `/Library/CoreMediaIO/Plug-Ins/DAL` does not
-exist and `/System/Library/CoreMediaIO/Plug-Ins` holds only `plugins-info.txt`.
-
-**(c) What a Developer ID account unlocks.** The restricted
-`com.apple.developer.system-extension.install` entitlement is authorized by a
-provisioning profile, so the CMIO path needs an Apple Developer Program team: a
-System-Extension-enabled App ID, **Developer ID provisioning profiles for both the
-app and the extension**, the Developer ID certificate, and notarization for
-distribution. That turns M2 from a code-2 refusal into a real extension, at the
-cost of the membership and a signing/notarization pipeline — no new engineering
-beyond C3. It ties directly to the pending "release signing key" decision: if
-PocketDeck is going to ship any system extension (camera, File Provider for
-release, future drivers), that decision is now on the critical path for the camera
-feature; without it the camera can only be a window.
+- **Exemption.** As the platform code predicts: a start whose caller is uid 2000
+  (stage a) is exempt (`REASON_SYSTEM_UID`), and so is the app's own start when it
+  runs inside a broadcast that carries the shell's background-start privileges
+  (b2). The app starting itself with no such privilege (b) is refused at
+  `startForegroundService` with a `SecurityException`, unlocked and locked.
+- **P2 (locked phone): yes.** A shell-started `camera` FGS opens the camera and
+  delivers frames with the keyguard up and the screen off (locked-a, locked-b2).
+- **P3 (feed): partly.** 29–42 frames per 5 s (6–8 fps) into a 1280×720
+  `ImageReader` on the emulator's synthetic camera under software GPU; not a
+  measure of a real phone, and the MediaCodec feed/keyframe interval is still
+  unmeasured (C1 measures it).
+- **P4 (indicator): not seen on the emulator.** `dumpsys media.camera` lists the
+  active client as package `dev.pocketdeck` (PID of the app), so the platform
+  attributes the capture to the app, which is what the privacy indicator keys on;
+  the one `screencap` taken during the capture shows no green dot in the status bar,
+  but `screencap` may not include the indicator overlay. To be checked on a real
+  phone before C1 ships.
+- **P5 (eviction): answered.** Starting the camera app mid-capture disconnected the
+  probe (`onDisconnected` after 28 frames); the person's own camera app wins.
 
 ## Recommended path
 
@@ -365,13 +207,12 @@ signed-out workaround. Until the signing decision is made:
 - build the phone-side capture (C0/C1) and the **"Phone camera" window** fallback
   (C2), which are useful on their own for scanning and desk views;
 - keep C3/C4 behind `--with-camera` and behind the Developer ID/notarization work;
-- **re-run C0b with one boot before C1**: the app-process answer (while-in-use
-  exemption, locked phone, indicator, eviction) is the part still unverified, and
-  the window fallback depends on the same locked-phone answer as the extension.
+- C0b answered the phone half (a shell-started app FGS captures in the background
+  and locked); C1 is next, then C2; the privacy indicator is checked on a real phone.
 
 ## Phone-side design
 
-Decided after C0 (2026-10-20), **not yet verified** (C0b). The shell service cannot
+Decided after C0 and verified by C0b (2026-10-20, emulator). The shell service cannot
 open a camera: the platform refuses every Camera2 call whose caller package is not
 one uid 2000 owns, and the `app_process` system context's package is `android` (uid
 1000) in a field this process cannot rewrite. So:
@@ -385,31 +226,24 @@ one uid 2000 owns, and the `app_process` system context's package is `android` (
   `IDeckCallback` bridge, which enqueues them into the session's send queue as
   `VIDEO_FRAME`; the wire protocol does not change. One capture at a time: a second
   `cam.start` answers `busy`.
-- **Who starts it — the open part.** Android 14+ refuses to create a `camera` FGS
-  from the background unless a while-in-use exemption applies, and the only one
-  available here keys off the **caller's UID**: `SHELL_UID` (2000) is in the
-  special-UID list, an ordinary background app is not. So the start must originate
-  as a uid-2000 start — the shell service issuing `am`/`cmd activity
-  start-foreground-service` (stage a) — and **not** as a request to the app to start
-  itself (stage b, or a new binder callback: the callback runs in the app's UID and
-  changes nothing). Whether the platform honours that reading is C0b, and C0b is
-  **unverified** (its one boot was lost to a script bug before the first stage). If
-  the re-run shows stage a works, C1 keeps this shape and the shell service is the
-  starter. If stage a is refused too, the automatic shape does not work on this
-  platform and the remaining options are (i) an explicit on-phone tap that starts a
-  capture (a user-visible action, which is exempt) or (ii) an unlocked-only mode
-  where the Mac asks while the person has the app open. This document does not
-  choose between them; that is a product decision.
-- **Locked phone.** Unverified (C0b's locked stages never ran). A `camera` FGS is the
-  platform's supported way to keep capturing with the keyguard up, and the service
-  treats `ERROR_CAMERA_DISABLED` and `onDisconnected` as a pause: it stops the
-  encoder, reports `locked`/`disabled`, and retries exactly once when the phone
-  becomes interactive. The Mac window must show that state instead of a black frame.
-- **What the person sees.** Unverified (P4). The green camera dot is per client, so
+- **Who starts it: the shell service.** Android 14+ refuses to create a `camera`
+  FGS from the background unless a while-in-use exemption applies, and the one
+  available keys off the caller: C0b showed a uid-2000 start works (the shell
+  service issuing the equivalent of `am start-foreground-service`), and the app
+  starting itself is refused. So on `cam.start` the shell service starts the app's
+  camera service itself (through the activity manager, as uid 2000) and the app
+  never starts it on its own.
+- **Locked phone.** Works (C0b P2): a shell-started `camera` FGS captures with the
+  keyguard up. The service still treats `ERROR_CAMERA_DISABLED` and `onDisconnected`
+  as a stop: it stops the encoder, reports `locked`/`disabled`/`evicted`, and never
+  loops. The Mac window shows that state instead of a black frame.
+- **What the person sees.** Partly answered (P4): the camera service attributes
+  the capture to `dev.pocketdeck`; the green dot was not visible in the emulator's
+  screencap, so it is checked on a real phone. The green camera dot is per client, so
   an app-process client should get it; the app must say so before the first use. If
   the re-run shows the indicator is not reliable for a background service, the
   fallback is an explicit on-phone confirmation for the first capture.
-- **Eviction.** Unverified (P5). A person's own camera app always wins: the service
+- **Eviction.** Answered (P5): the camera app's open disconnects ours. A person's own camera app always wins: the service
   reports `evicted` with the exact callback/error, stops the encoder and never
   retries in a loop.
 
@@ -418,8 +252,8 @@ one uid 2000 owns, and the `app_process` system context's package is `android` (
 | | Slice | What | Size | Gate |
 |---|---|---|---|---|
 | C0 | Finish the phone probe | done 2026-10-20: staged probe, one boot. Shell UID lists the camera and cannot open it (package/uid refusal); P2–P5 are blocked by P1 | S | none |
-| C0b | App-process camera FGS probe | built 2026-10-20 (`CamFgsProbe`, `CamFgsTrigger`, `cam-fgs.sh`); **unverified**: the one boot was lost to a script bug before the first stage. Answers the while-in-use exemption (stage a/b/b2, unlocked + locked) and P2/P4/P5; re-run needs one boot | S | none |
-| C1 | Phone capture service | Camera2 in the **app process** (foreground service, `CAMERA` permission) → MediaCodec H.264 1280×720@30 (the `WindowStream` encoder settings) → `VIDEO_FRAME` to the shell session, start/stop, busy/disabled/evicted errors, one stream | M | C0b (unverified; needs its boot) |
+| C0b | App-process camera FGS probe | **done** 2026-10-20: shell-started `camera` FGS captures in the background and locked; the app starting itself is refused; eviction = `onDisconnected`; indicator to check on a real phone | S | none |
+| C1 | Phone capture service | Camera2 in the **app process** (foreground service, `CAMERA` permission) → MediaCodec H.264 1280×720@30 (the `WindowStream` encoder settings) → `VIDEO_FRAME` to the shell session, start/stop, busy/disabled/evicted errors, one stream | M | C0b (done) |
 | C2 | "Phone camera" window | the existing H.264 decode path in a normal Mac window, a menu item and start/stop; no extension, ships with today's ad-hoc signing | S-M | C1 |
 | C3 | CMIO camera extension | provider/device/stream, decode H.264 into `CVPixelBuffer`, App Group socket between app and extension, stream on first client and stop when none; replaces the solid-colour source | M-L | C1; **Developer ID** |
 | C4 | Signing and install | System-Extension App ID, Developer ID profiles for app and extension, notarization, `/Applications` install, approval deep-link, uninstall/upgrade | M | signing decision |
