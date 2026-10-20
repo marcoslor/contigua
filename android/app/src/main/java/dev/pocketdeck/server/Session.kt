@@ -94,6 +94,8 @@ class Session(
     private val notifyOpen: ((String, Int) -> Unit)? = null,
     /** `phone.ring` (docs/PROTOCOL.md "Ring"); null refuses it. */
     private val ringer: Ringer? = null,
+    /** The phone's DND, shared by the service (docs/design/focus.md); null refuses `phone.dnd`. */
+    private val zen: ZenControl? = null,
 ) : VideoSink, AudioSink {
 
     /** What the TLS layer knows about this connection (§1/§4b). */
@@ -202,11 +204,22 @@ class Session(
 
     private var writerThread: Thread? = null
     private var stateHandle: AutoCloseable? = null
+    private var dndHandle: AutoCloseable? = null
     private var watchThread: Thread? = null
 
     /** The protocol's `state` stream: one emission per real change. */
-    private val stateTracker = DeviceStateTracker { state ->
-        sendJson(mapOf("t" to "state", "locked" to state.locked, "battery" to state.battery, "charging" to state.charging))
+    private val stateTracker = DeviceStateTracker { state -> sendState(state) }
+
+    private fun sendState(state: DeviceState) {
+        val message = linkedMapOf<String, Any?>(
+            "t" to "state",
+            "locked" to state.locked,
+            "battery" to state.battery,
+            "charging" to state.charging,
+        )
+        // Absent (not null) for a phone that cannot read its zen mode.
+        state.dnd?.let { message["dnd"] = it.wire }
+        sendJson(message)
     }
 
     val isClosed: Boolean get() = closed.get()
@@ -728,6 +741,7 @@ class Session(
                 "media.command" -> onMediaCommand(obj)
                 "phone.ring" -> onPhoneRing(obj)
                 "phone.ring.stop" -> onPhoneRingStop()
+                "phone.dnd" -> onPhoneDnd(obj)
                 else -> logOnce("unknown message '$t'")
             }
         } catch (e: Throwable) {
@@ -1077,6 +1091,27 @@ class Session(
             return
         }
         sendJson(mapOf("t" to "ring.state", "ringing" to false))
+    }
+
+    /**
+     * `phone.dnd` (docs/PROTOCOL.md "Focus and Do Not Disturb"): the one write
+     * path is the shell's `cmd notification set_dnd`. The session answers with
+     * a fresh `state`, which carries the mode the phone actually reports.
+     */
+    private fun onPhoneDnd(obj: Map<String, Any?>) {
+        val control = zen ?: run {
+            sendError("unsupported", "phone.dnd needs the shell service", 0)
+            return
+        }
+        val mode = DndMode.fromWire(Json.str(obj["mode"])) ?: run {
+            sendError("bad_request", "phone.dnd needs mode priority, alarms, none or off", 0)
+            return
+        }
+        control.apply(mode)
+        // The design's answer is a new `state` even when the mode did not move
+        // (the person's own DND is left alone but the Mac still gets the truth).
+        val state = (stateTracker.current ?: device.state()).copy(dnd = control.current())
+        if (!stateTracker.update(state)) sendState(state)
     }
 
     /**
@@ -1552,9 +1587,19 @@ class Session(
             return
         }
         stateHandle = handle
+        // A mode the person changes on the phone reaches the Mac through the
+        // same state stream. The observer (or poll) lives while the session is up.
+        dndHandle = runCatching {
+            zen?.start { mode ->
+                val current = stateTracker.current
+                if (current != null) stateTracker.update(current.copy(dnd = mode))
+            }
+        }.getOrNull()
     }
 
     private fun stopStateWatch() {
+        dndHandle?.let { runCatching { it.close() } }
+        dndHandle = null
         val handle = stateHandle ?: return
         stateHandle = null
         runCatching { handle.close() }

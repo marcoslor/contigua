@@ -17,20 +17,21 @@ internal class DeviceStateTracker(private val emit: (DeviceState) -> Unit) {
     /** The last emitted state, or null before the first emission. */
     val current: DeviceState? get() = synchronized(lock) { last }
 
-    /** Emits [state] unless it equals the previous one. */
-    fun update(state: DeviceState) {
+    /** Emits [state] unless it equals the previous one; true when it emitted. */
+    fun update(state: DeviceState): Boolean {
         synchronized(lock) {
-            if (state == last) return
+            if (state == last) return false
             last = state
             emit(state)
+            return true
         }
     }
 
     /** A keyguard event: only `locked` changes. */
     fun onLockChanged(locked: Boolean) =
-        update(DeviceState(locked, current?.battery ?: 0, current?.charging ?: false))
+        update(DeviceState(locked, current?.battery ?: 0, current?.charging ?: false, current?.dnd))
 
     /** A battery event: only the battery fields change. */
     fun onBatteryChanged(battery: Int, charging: Boolean) =
-        update(DeviceState(current?.locked ?: false, battery, charging))
+        update(DeviceState(current?.locked ?: false, battery, charging, current?.dnd))
 }
