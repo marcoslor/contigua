@@ -293,6 +293,9 @@ final class ConnectionController {
     private var fsScriptActions: [FsScriptAction]?
     private var fsClient: FsClient?
     private var fsDebug: FsDebugDriver?
+    /// `--debug-livetext`: the script runs once the first stream window has a
+    /// video size (DebugLiveText.swift, e2e `livetext`).
+    private var liveTextDebug: LiveTextDebugDriver?
     private var pairingTarget: PairingTarget?
     private var qrTimer: Timer?
     private var qrProbes: [QRProbe] = []
@@ -410,6 +413,16 @@ final class ConnectionController {
                 fsScriptActions = try FsDebugScript.parse(String(contentsOfFile: path, encoding: .utf8))
             } catch {
                 FileHandle.standardError.write(Data("debug-fs-script \(path): \(error)\n".utf8))
+                exit(2)
+            }
+        }
+        if let path = options.debugLiveText {
+            do {
+                let driver = try LiveTextDebugDriver(scriptPath: path, windows: windows)
+                liveTextDebug = driver
+                driver.arm()
+            } catch {
+                FileHandle.standardError.write(Data("debug-livetext \(path): \(error)\n".utf8))
                 exit(2)
             }
         }

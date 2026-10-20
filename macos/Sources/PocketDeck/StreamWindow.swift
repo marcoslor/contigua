@@ -38,9 +38,9 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     var density: Double { DensityRules.effective(override: densityOverride, settings: manager.defaultDensity) }
 
     private(set) var isPaused = false
-    /// The mode was active at the last change; pause/resume only happen on a
-    /// real transition.
+    /// The mode was active at the last change, and the phone is paused for it.
     private var liveTextWasActive = false
+    private var liveTextPaused = false
     /// The standard buttons' slots before the chrome moved them, as an x and a
     /// distance from the window's top edge (the titlebar's anchor).
     private var standardLightSlots: [NSWindow.ButtonType: (x: CGFloat, fromTop: CGFloat, size: NSSize)] = [:]
@@ -476,10 +476,17 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         let active = state.isActive
         if active, !liveTextWasActive {
             videoView.inputMapper?.dropPendingInput()
+        }
+        if state == .analyzing, !liveTextPaused {
+            // The frame is frozen and the overlay is up: the picture can stop
+            // arriving. (While capturing, the keyframe route is still asking
+            // the phone for that frame, so the stream keeps running.)
             if !isPaused { session.pauseWindow(stream: stream) }
-        } else if !active, liveTextWasActive {
+            liveTextPaused = true
+        } else if !active, liveTextPaused {
             let streamEnded = reason == .close || reason == .disconnect
             if !streamEnded, !isPaused { session.resumeWindow(stream: stream) }
+            liveTextPaused = false
         }
         liveTextWasActive = active
         chrome.setLiveText(active: active)

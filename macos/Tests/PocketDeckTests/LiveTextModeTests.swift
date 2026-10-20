@@ -5,6 +5,7 @@ final class LiveTextModeTests: XCTestCase {
 
     private let reasons: [LiveTextExitReason] = [
         .escape, .toggle, .menu, .barButton, .resize, .close, .disconnect, .streamConfig,
+        .captureFailed,
     ]
 
     func testStartsIdle() {
