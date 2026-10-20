@@ -48,6 +48,50 @@ PIN), `start.sh --window` (visible emulator window), `start.sh --no-build`
 `POCKETDECK_DEVICE_ID` (the rig's stable device id, default
 `e0e0e0e0e0e0e0e0`), `POCKETDECK_SERIAL` / `POCKETDECK_PORT` (address).
 
+### One boot, all the checks
+
+```sh
+bash tools/emulator/preflight.sh              # no device: syntax, APK, manifest, budget
+bash tools/emulator/verify-batch.sh --check   # the rehearsal of the boot command
+~/dev/pocketdeck/.agent/heavy.sh timeout 1800 bash tools/emulator/verify-batch.sh
+```
+
+`verify-batch.sh` boots once, pairs once, then runs three sections that do not
+depend on each other — media part 2, screen off/wake, and `apps.icon` at 216 and
+1296 px — and kills the emulator at the end, whatever happened. Its result is one
+line per section in `.agent/emu/verify-batch.log`:
+
+```
+SECTION media PASS 12 checks: sessions: 2 1 s2 s1,s2 art: ... w=512 h=512 ...
+SECTION phone-screen PASS 8 checks: screen-off: state screen=off locked=True ...
+SECTION icons PASS apps=3 px=216,1296 flat=144,864 layers=3/3 max_ms=693
+```
+
+`media.sh` and `phone-screen.sh` still run alone (`--no-boot` reuses a rig that
+is already up and paired).
+
+### Reliability rules (each one cost a boot once)
+
+- **Run every script as `bash <script>`.** Do not rely on the exec bit: a fresh
+  clone that loses it fails with `Permission denied` after the emulator is up.
+  The scripts call each other through `bash` too.
+- **Install with `adb install -r -d`, never uninstall.** Another worktree may
+  have left a higher versionCode on the AVD. `start.sh` then reads the installed
+  versionCode (`dumpsys package`) and the APK's (`aapt2 dump badging`) and stops
+  with one line if they differ, instead of testing a stale build.
+- **Name the component in every debug broadcast** (`am broadcast -n
+  dev.pocketdeck/dev.pocketdeck.app.MediaDebugTrigger`). An implicit broadcast
+  is dropped while the app is in the background, and nothing says so.
+- **Wait for the shell service's listening port, then retry it.** The first
+  launch after a boot sometimes leaves the Shizuku user service without a socket;
+  `start.sh` restarts it up to three times, logging each try, and fails with the
+  service's own logcat lines.
+- **`preflight.sh` runs first in every `--check`.** It checks what no device can
+  show: `bash -n` on every rig script, the APK's versionCode against the build
+  file, every component the scripts name against the APK's merged manifest,
+  deckctl's subcommands (parser and handler) and TLS 1.3, and the boot budget in
+  `.agent/budgets/<worktree>` against `/tmp/pocketdeck-boots.ledger`.
+
 ## What start.sh does
 
 1. Boots the AVD `pocketdeck-api36` headless (`-no-window -no-audio -no-boot-anim
@@ -56,7 +100,8 @@ PIN), `start.sh --window` (visible emulator window), `start.sh --no-build`
    the first unlock.
 2. Installs, from `tools/emulator/.cache/` (downloaded once):
    - **Shizuku** — newest release APK from its GitHub release feed;
-   - **dev.pocketdeck** — `./gradlew :app:assembleDebug` + `adb install -r -g`;
+   - **dev.pocketdeck** — `./gradlew :app:assembleDebug` + `adb install -r -d -g`,
+     where the installed versionCode must then equal the APK's;
    - two F-Droid test apps standing in for a browser and a messenger:
      `acr.browser.lightning` (small WebView browser, renders immediately) and
      `org.fossify.messages`. Override with `POCKETDECK_BROWSER` /
@@ -84,7 +129,10 @@ PIN), `start.sh --window` (visible emulator window), `start.sh --no-build`
    pairing prompt — `lock.sh` still sleeps the panel explicitly).
 7. Finds the server port from the kernel (`ss -ltnp`, filtered by the
    `dev.pocketdeck:pocketdeck` pid; falls back to the `PocketDeckSvc: listening on
-   0.0.0.0:<port>` logcat line), sets `adb forward tcp:47811 tcp:<port>` and
+   0.0.0.0:<port>` logcat line). If nothing listens within 60 s it restarts the
+   shell service (up to three times, one log line each) and then fails with the
+   service's own logcat lines; a first launch that never binds is a known flake,
+   not a product bug. It sets `adb forward tcp:47811 tcp:<port>` and
    prints `127.0.0.1:47811`. The emulator sits behind NAT, so mDNS never reaches
    the Mac — connect by address. `flow.sh` re-asserts the forward every run,
    because forward rules die whenever the adb server restarts (a wireless device
@@ -162,3 +210,12 @@ Frames and raw H.264 land in `.agent/emu/frames/` (gitignored).
   deliberately never roots: Shizuku and the server must run as the shell user.
 - `tools/emulator/.cache/` holds the downloads (Shizuku APK, F-Droid APKs, the
   seeded prefs, deckctl's state) and is gitignored.
+- The first device run of the media section (2026-10-20) delivered its three
+  debug broadcasts and got no media messages back at all, so media control on a
+  real listener is still unverified (docs/design/notify.md says what is open).
+  The section now records which probe it gets to — enabled listener, logcat
+  lines, the session's last output — so a failing boot names the cause instead
+  of going silent.
+- fakephone's TLS server needs pyOpenSSL in its interpreter; this Mac's
+  interpreters do not have it, so the icon dry run in `verify-batch.sh --check`
+  drives fakephone's own icon renderer through a stub instead of a socket.

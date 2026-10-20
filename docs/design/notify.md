@@ -432,17 +432,27 @@ quiet share-log runs):
 
 Not verified:
 
-- **Emulator (1 boot spent, API 36)**: the rig booted and unlocked, but
-  `start.sh` could not install this tree's APK — the rig carried versionCode 101
-  from another epic and this tree builds 100 (`INSTALL_FAILED_VERSION_DOWNGRADE`);
-  uninstalling the app is forbidden and the budget allows one boot, so the run
-  ended there. `tools/emulator/media.sh` never reached its checks; only its
-  `--check` and `--self-test` dry runs ran. `start.sh` now installs with `-d`
-  (unverified) for the next run. Unproven on a real listener:
-  `getActiveSessions` ordering and key minting, artwork from a real
-  `MediaMetadata` (bitmap and `*_URI` sources), `transportControls.seekTo`, the
-  local-playback volume (`playbackInfo` + `setVolumeTo`), and the session list
-  shrinking when an app stops.
+- **Emulator (second boot spent, API 36, `tools/emulator/verify-batch.sh`)**:
+  the rig booted, installed 102 (the versionCode check passed), paired over v2
+  and the icon section passed, but the media section got no media messages at
+  all. The three debug broadcasts were delivered to the explicit component
+  (`cmp=dev.pocketdeck/.app.MediaDebugTrigger`, `Broadcast completed:
+  result=0`), `notify.enable on=true` went out, and then the phone sent nothing
+  for 40 s: no `media.sessions`, no `media.state`, no `media.art`, and no
+  `PdMediaDebug` seek/volume lines. `media.sh` reports 12 failed assertions and
+  the run's logcat was gone with the emulator, so the cause is narrower but not
+  settled: either the notification listener was not bound after the section's
+  own app restart (the phone scans media sessions from it, and nothing else
+  would explain complete silence), or the fake sessions do not surface through
+  `getActiveSessions` on this image. The rig now waits for the enabled listener
+  and records the debug/server logcat lines and the listener setting when the
+  section fails, so the next boot's log names the cause. The boot budget allows
+  no second boot here.
+
+  Still unproven on a real listener: `getActiveSessions` ordering and key
+  minting, artwork from a real `MediaMetadata` (bitmap and `*_URI` sources),
+  `transportControls.seekTo`, the local-playback volume (`playbackInfo` +
+  `setVolumeTo`), and the session list shrinking when an app stops.
 - **Real apps** (YouTube Music, Spotify) and **the Mac menu bar's look** (the
   small artwork, the slider, the picker) were not seen on screen: host e2e is
   quiet and the VM is out of this brief's budget.

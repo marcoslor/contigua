@@ -83,13 +83,16 @@ and aspect checks. `pair` and `chrome` are unaffected (13/13 and 21/21, the
 usual native-full-screen SKIP).
 
 Not verified, and why:
-- The emulator run never reached its checks: one boot was spent and the rig's
-  Shizuku shell service did not bind its port after the app launch (`start.sh`
-  failed at the listening-socket step). The boot budget allows no second boot,
-  so `state.screen` on a real device, `phone.wake ok` and the keyguard staying
-  locked are unverified here. `tools/emulator/phone-screen.sh --check` passes,
-  and the script now retries that known first-launch flake through the rig's
-  `restart_server`; the reviewer's boot is the first real test.
+- **Emulator (second boot spent, API 36)**: the rig booted, installed 102,
+  paired and stayed locked, but the section never reached its checks: deckctl
+  had `wake-test` in its argument parser and no handler in `COMMANDS`, so it
+  died with `KeyError: 'wake-test'` before sending `phone.wake`. The device was
+  left in Dozing by the `KEYCODE_SLEEP`, which is why `dumpsys power` read
+  `mWakefulness=Dozing` and the keyguard mask did not show. deckctl now
+  dispatches `wake`/`wake-test`, and preflight asserts that every subcommand has
+  a handler (it failed on the old file), so the next boot's section is the first
+  real test of `state.screen`, `phone.wake` and the keyguard staying locked. No
+  second boot is allowed here.
 - The real phone's Always-On Display: Samsung may report display 0 as `doze`
   (or `doze-suspend`) while the AOD clock is lit. `ScreenState.of` maps doze to
   `off`, so the window shows the cover rather than the clock; that mapping is
