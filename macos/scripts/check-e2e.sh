@@ -6035,6 +6035,19 @@ check_dock() {
     wait_until 40 eval '[ "$(/usr/libexec/PlistBuddy -c "Print :PDIconVersion" "$chrome/Contents/Info.plist" 2>/dev/null)" -ge 1 ] 2>/dev/null' \
         && ok "DOCK icon: an old-version shim was rebuilt" \
         || bad "DOCK icon: the old-version shim was not rebuilt"
+
+    # A visible run (the VM) records what the person sees: the Dock with a
+    # phone app's shim next to the native icons, and the Deck grid.
+    if [ "$VISIBLE" = "1" ]; then
+        sleep 2
+        screencapture -x "$WORK/shot-dock.png" >/dev/null 2>&1 \
+            && ok "DOCK screenshot: $WORK/shot-dock.png" || say "no Dock screenshot"
+        local deck_window
+        if deck_window="$(await_window '$4 >= 600')"; then
+            screencapture -x -l"$deck_window" "$WORK/shot-deck.png" >/dev/null 2>&1 \
+                && ok "DOCK screenshot: Deck grid $WORK/shot-deck.png" || say "no Deck screenshot"
+        fi
+    fi
     stop_app
     remove_dock_apps
 

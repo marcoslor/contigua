@@ -66,6 +66,16 @@ every place.
   `lsregister -f` runs on it so the Dock reads the new icon. Shims of other profiles are
   never touched.
 
+### Result (2026-10-20, macOS 26 in the e2e VM)
+
+A shape-perfect legacy `.icns` is **not** put in the grey plate: the shim's tile sits in
+the Dock at the same size and shape as the native icons around it, with its own white
+squircle and the phone's colours, and the Deck grid draws every app in one shape
+(adaptive layers at full opacity, legacy icons on the plate). The `.icns` carries a
+1024 px representation, its canvas corners are transparent and its centre is the bg
+colour — the dock e2e asserts all three. The real Mac's Dock with the user's own apps is
+still unverified (test profiles only).
+
 ### Step 0: can a runtime-built icon get Liquid Glass?
 
 No supported runtime path exists. macOS 26 only draws a layered Liquid Glass icon from an
