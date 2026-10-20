@@ -140,7 +140,10 @@ for check in "$@"; do
     mkdir -p "$art/$check"
     # /bin/bash, like the host: the guest's bash 3.2 is the same one a run on
     # the Mac uses, so the VM reproduces the host's behaviour, not its own.
-    /bin/bash scripts/check-e2e.sh "$check" 2>&1 | tee "$art/$check/run.log"
+    # A check that hangs still ends here (PD_VM_CHECK_SECS, default 40 min), so
+    # its work dir comes back to the host instead of dying with the session.
+    perl -e 'alarm shift; exec @ARGV' "${PD_VM_CHECK_SECS:-2400}" \
+        /bin/bash scripts/check-e2e.sh "$check" 2>&1 | tee "$art/$check/run.log"
     last=${PIPESTATUS[0]}
     [ "$last" = 0 ] || failed=$((failed + 1))
     work="/tmp/pocketdeck-e2e-$port"
@@ -157,7 +160,7 @@ exit "$failed"
 EOS
 
 rsync_to_guest "$OUT/run-check.sh" "$VM_ROOT/run-check.sh" || { say "run-check copy failed"; exit 3; }
-run_cmd="sudo launchctl asuser \$(id -u) sudo -u admin bash $VM_ROOT/run-check.sh $VISIBLE $VM_PORT ${CHECKS[*]}"
+run_cmd="sudo launchctl asuser \$(id -u) sudo -u admin env PD_VM_CHECK_SECS=${PD_VM_CHECK_SECS:-2400} bash $VM_ROOT/run-check.sh $VISIBLE $VM_PORT ${CHECKS[*]}"
 ssh_guest "$run_cmd" 2>&1 | tee "$OUT/run.log"
 rc=${PIPESTATUS[0]}
 
