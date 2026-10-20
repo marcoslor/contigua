@@ -665,6 +665,41 @@ while the list is empty. No watcher thread, timer or poll exists when idle.
   taken" give-up. Renames and moves (`modifyItem`) are unchanged: a name already
   taken there is still a collision for the person to resolve.
 
+**Done (watching).** What shipped: the phone's `FsWatcher` (one `FileObserver`
+per folder, 256 cap, 250 ms coalescing, `.pocketdeck-*.part` dropped, the 5 s
+`MediaStore.getGeneration()` poll while any wanted folder is unwatched),
+`fs.watch`/`fs.unwatch`/`fs.changes` on the wire (bridge v3) and the session
+re-applying its counted watches after a reconnect; on the Mac the ref-counted
+watch per container, the per-container delta log (32 deltas, `g<gen>.<scope>`
+anchors, `syncAnchorExpired` past the history), a quiet baseline for a watched
+folder the system never listed, and the extension subscribing in
+`enumerator(for:)`, `enumerateChanges` and `currentSyncAnchor` (with
+`invalidate()` as the unwatch, and a dead bridge socket re-opened and
+re-subscribed). A phone-side rename is an update of the same identifier: a
+persisted id whose inode no longer matches is re-derived on its first listing,
+so a path that came to hold another file cannot hand it an old id. Re-listings
+are serialized per folder and settle for 150 ms, so a rename's two
+notifications cannot surface as a delete followed by an add.
+Checks: K2 805/0; `files-watch` 20/0 (create, edit, a rename keeping the id, a
+delete, unwatch on close, a change after close sends nothing, coalesced
+`fs.changes`, the drop when its client goes away, no file names in the app
+log); regressions `files-write` 24/0, `files-bridge` 18/0, `files` 8/0.
+**VM.** The collision leftover is proven: a POSIX copy onto a taken name lands
+as `collide 2.bin` and nothing is left pending in `fileproviderctl dump`. The
+watch is only partly proven: the phone was asked to watch (and unwatched) the
+open folder, but the phone-side create and rename still did not reach the mount
+in the run (47 of 49). The change→mount path was fixed after that run (a
+watched folder with no listing now gets a quiet baseline; the check waits for a
+new phone watch instead of any earlier one, so a file cannot predate the
+watch's own baseline), and no VM boot was left to re-run it. Host `files-watch`
+drives the same wire with the driver, not the File Provider stack.
+**Emulator.** The unlock fix works (the bouncer dump lands in
+`/data/local/tmp` and the PIN is entered): `fs-write.sh` passed mkdir, the
+write, the sha256 and the MediaStore row, then the app's shell service went
+away (TLS `UNEXPECTED_EOF_WHILE_READING` on every later call while adb stayed
+healthy). A MediaProvider rename's `_id` is therefore still unverified and
+`fs-watch.sh` (now executable) has not run: `max_user_watches` is unmeasured.
+
 5. **S5 — watching and the idle rule.** Phone: `FsWatcher` (bounded inotify + the generation
    fallback) + `fs.watch`/`fs.changes`; the platform seam lets the JVM test drive a fake watch
    source. Mac: `enumerateChanges`/`currentSyncAnchor` + `signalEnumerator` from the bridge.
@@ -705,7 +740,8 @@ while the list is empty. No watcher thread, timer or poll exists when idle.
 - Does fileproviderd launch the extension and hold the domain when the app is closed (E1/E3)?
   If not, the domain is only live while the app runs — acceptable, but the Deck must say so.
 - Watch cap: 256 is a guess. S5 should measure the real `max_user_watches` per uid on the
-  emulator and tune; the generation poll is the safety net either way.
+  emulator and tune; the generation poll is the safety net either way. S5's
+  `fs-watch.sh` did not get to run, so the number is still a guess.
 - Should thumbnails come from the phone (`fetchThumbnails` → an `fs.thumb` read) or from the
   Mac's own Quick Look once a file is materialized? S6 decides; the cheap answer is the
   latter for downloaded files and the former for the working set.
