@@ -128,6 +128,9 @@ final class ConnectionController {
     private(set) var machine = LinkMachine()
     var link: Link { machine.link }
     private(set) var transientBanner: Banner?
+    /// Packages each phone's notifications came from this session (Settings ›
+    /// Devices "Muted apps"); package names only, never any text.
+    private(set) var notifySeen: [String: Set<String>] = [:]
     /// APK installs (docs/design/apk.md); the Deck shows its phase.
     let apkInstaller = ApkInstaller()
     /// Files dropped on a window (docs/design/dragdrop.md); windows show the pill.
@@ -387,6 +390,12 @@ final class ConnectionController {
         notifyCenter.log = shareLog
         notifyCenter.onOpen = { [weak self] click in
             MainActor.assumeIsolated { self?.notificationClicked(click) }
+        }
+        notifyCenter.onAction = { [weak self] click, index, text in
+            MainActor.assumeIsolated { self?.notifyActionPressed(click, index: index, text: text) }
+        }
+        notifyCenter.onDismiss = { [weak self] click in
+            MainActor.assumeIsolated { self?.notifyDismissed(click) }
         }
         nowPlaying.log = shareLog
         nowPlaying.onCommand = { [weak self] action in
@@ -1665,12 +1674,20 @@ final class ConnectionController {
         case .notifyState(let on):
             Log.app.notice("phone notify \(on ? "on" : "off", privacy: .public)")
             if !on { nowPlaying.clear() }
-        case .notifyPosted(let id, let pkg, let when, let title, let text):
+        case .notifyPosted(let id, let pkg, let when, let title, let text, let actions, let ongoing):
             let ref = link.phone?.id.isEmpty == false ? link.phone
                 : session?.phone.map { PhoneRef(id: $0.id, name: $0.name, model: $0.model) }
             guard let phone = ref, !phone.id.isEmpty else { break }
+            // Part 2: a muted app's post is dropped here, before it is shown
+            // (it still crossed the encrypted link; docs/design/notify.md).
+            if NotifyMute.isMuted(pkg, deviceId: phone.id, defaults: profile.defaults) {
+                notifyCenter.recordMuted(pkg: pkg, phoneId: phone.id)
+                break
+            }
+            notifySeen[phone.id, default: []].insert(pkg)
             notifyCenter.post(
-                PhoneNotification(id: id, pkg: pkg, when: when, title: title, text: text),
+                PhoneNotification(id: id, pkg: pkg, when: when, title: title, text: text,
+                                  ongoing: ongoing, actions: actions),
                 phoneId: phone.id,
                 phoneName: displayName(for: phone, fallback: "your phone"),
                 labelFor: { [weak self] in self?.labelFor($0) ?? nil },
@@ -1801,6 +1818,33 @@ final class ConnectionController {
     func notifyClickSettingChanged(deviceId: String, target: NotifyClickTarget) {
         profile.defaults.set(target.rawValue, forKey: NotifyClickTarget.key(deviceId: deviceId))
     }
+
+    /// `notify.action`: a banner button or reply. The id is the phone's; nothing
+    /// else crosses the wire.
+    func notifyActionPressed(_ click: NotifyClick, index: Int, text: String?) {
+        guard link.isOnline else { return }
+        session?.notifyAction(id: click.id, index: index, text: text)
+    }
+
+    /// A banner clear: dismiss the forward notification on the phone.
+    func notifyDismissed(_ click: NotifyClick) {
+        guard link.isOnline else { return }
+        session?.notifyDismiss(id: click.id)
+    }
+
+    /// Settings › Devices "Muted apps": one package toggled for this phone.
+    func notifyMuteChanged(deviceId: String, pkg: String, muted: Bool) {
+        NotifyMute.setMuted(muted, pkg: pkg, deviceId: deviceId, defaults: profile.defaults)
+    }
+
+    /// Packages to offer in "Muted apps": seen this session plus already muted.
+    func notifyMutedAppChoices(deviceId: String) -> [String] {
+        let seen = notifySeen[deviceId] ?? []
+        return Array(seen.union(NotifyMute.muted(deviceId: deviceId, defaults: profile.defaults))).sorted()
+    }
+
+    /// The app's own name for the package, when the phone's list has it.
+    func appLabel(for pkg: String) -> String? { labelFor(pkg) }
 
     private func labelFor(_ pkg: String) -> String? {
         windows.appsByPkg[pkg]?.label ?? apps.first { $0.pkg == pkg }?.label
@@ -1953,6 +1997,15 @@ final class ConnectionController {
         // and a Now Playing control do. The driver runs on the main thread.
         debugInput?.notifyClick = { [weak self] id in
             MainActor.assumeIsolated { self?.notifyCenter.performOpen(id: id) ?? false }
+        }
+        debugInput?.notifyAction = { [weak self] id, index, text in
+            MainActor.assumeIsolated { self?.notifyCenter.performAction(id: id, index: index, text: text) ?? false }
+        }
+        debugInput?.notifyDismiss = { [weak self] id in
+            MainActor.assumeIsolated { self?.notifyCenter.performDismiss(id: id) ?? false }
+        }
+        debugInput?.notifyCopy = { [weak self] id in
+            MainActor.assumeIsolated { self?.notifyCenter.performCopy(id: id) ?? false }
         }
         debugInput?.mediaCommand = { [weak self] action in
             MainActor.assumeIsolated { self?.nowPlaying.perform(action) }

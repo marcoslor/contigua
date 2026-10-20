@@ -1,4 +1,5 @@
 import MediaPlayer
+import UserNotifications
 import XCTest
 @testable import PocketDeck
 
@@ -74,8 +75,10 @@ final class NotifyMacTests: XCTestCase {
     func testRecordsCarrySizesAndPackagesNotText() {
         let line = NotifyMapping.record(
             posted: notification(pkg: "com.whatsapp", title: "Design review", text: "Deck vs slides at 4"),
-            title: "Design review", body: "Deck vs slides at 4", thread: "phone-1")
-        XCTAssertEqual(line, "notify post id=k1 pkg=com.whatsapp titleLen=13 bodyLen=19 thread=phone-1")
+            title: "Design review", body: "Deck vs slides at 4", thread: "phone-1",
+            code: false, category: "pd.n.0123456789abcdef")
+        XCTAssertEqual(line, "notify post id=k1 pkg=com.whatsapp titleLen=13 bodyLen=19 thread=phone-1"
+            + " actions=0 reply=0 code=0 ongoing=0 category=pd.n.0123456789abcdef")
         XCTAssertFalse(line.contains("Design"))
         XCTAssertFalse(line.contains("slides"))
         XCTAssertFalse(line.contains("Deck"))
@@ -84,6 +87,15 @@ final class NotifyMacTests: XCTestCase {
         let click = NotifyMapping.record(opened: "com.whatsapp", id: "k1")
         XCTAssertFalse(click.contains("Design"))
         XCTAssertEqual(click, "notify click id=k1 pkg=com.whatsapp")
+
+        // Part 2 lines: ids, indexes and lengths, never the reply or the code.
+        XCTAssertEqual(NotifyMapping.record(action: "k1", index: 1, textLen: 9),
+                       "notify action id=k1 i=1 textLen=9")
+        XCTAssertEqual(NotifyMapping.record(dismissed: "k1"), "notify dismiss id=k1")
+        XCTAssertEqual(NotifyMapping.record(dismissRefused: "k1"), "notify dismiss id=k1 refused=ongoing")
+        XCTAssertEqual(NotifyMapping.record(copied: "k1", len: 4), "notify copy id=k1 len=4")
+        XCTAssertEqual(NotifyMapping.record(muted: "com.x", phone: "phone-1"),
+                       "notify muted pkg=com.x phone=phone-1")
     }
 
     // MARK: session decode → events
@@ -218,5 +230,78 @@ final class NotifyMacTests: XCTestCase {
         XCTAssertTrue(line.contains("titleLen=7"))
         XCTAssertTrue(line.contains("durationMs=30000"))
         XCTAssertTrue(line.contains("rate=1.00"))
+    }
+
+    // MARK: banner actions (part 2)
+
+    private func replyNotification() -> PhoneNotification {
+        PhoneNotification(
+            id: "pd-a1", pkg: "com.chat", when: nil, title: "Design review", text: "Deck at 4",
+            ongoing: false,
+            actions: [NotifyActionInfo(i: 0, title: "Mark as read"),
+                      NotifyActionInfo(i: 1, title: "Reply", reply: true)],
+        )
+    }
+
+    func testBannerActionIdentifiersParse() {
+        XCTAssertEqual(NotifyBannerAction.parse(identifier: UNNotificationDefaultActionIdentifier, text: nil), .open)
+        XCTAssertEqual(NotifyBannerAction.parse(identifier: UNNotificationDismissActionIdentifier, text: nil), .dismiss)
+        XCTAssertEqual(NotifyBannerAction.parse(identifier: "pd.copy", text: nil), .copyCode)
+        XCTAssertEqual(NotifyBannerAction.parse(identifier: "pd.a.0", text: nil), .button(0))
+        XCTAssertEqual(NotifyBannerAction.parse(identifier: "pd.r.1", text: "hi"), .reply(1, "hi"))
+        XCTAssertNil(NotifyBannerAction.parse(identifier: "pd.a.x", text: nil))
+        XCTAssertNil(NotifyBannerAction.parse(identifier: "pd.other", text: nil))
+    }
+
+    func testCategoryIdIsStablePerShapeAndCarriesNoText() {
+        let a = NotifyCategories.identifier(titles: ["Mark as read", "Reply"], reply: true, code: false)
+        let b = NotifyCategories.identifier(titles: ["Mark as read", "Reply"], reply: true, code: false)
+        XCTAssertEqual(a, b)
+        XCTAssertTrue(a.hasPrefix("pd.n."))
+        XCTAssertEqual(a.count, "pd.n.".count + 16, "a 64-bit hash, fixed width")
+        XCTAssertFalse(a.contains("Mark"))
+        XCTAssertFalse(a.contains("Reply"))
+        XCTAssertNotEqual(a, NotifyCategories.identifier(titles: ["Reply", "Mark as read"], reply: true, code: false))
+        XCTAssertNotEqual(a, NotifyCategories.identifier(titles: ["Mark as read", "Reply"], reply: true, code: true))
+        XCTAssertNotEqual(a, NotifyCategories.identifier(titles: ["Mark as read", "Reply"], reply: false, code: false))
+    }
+
+    func testCategoryRegistryReusesShapesAndStaysBounded() {
+        let registry = NotifyCategoryRegistry()
+        var updates = 0
+        registry.onUpdate = { _ in updates += 1 }
+
+        let first = registry.category(for: replyNotification(), hasCode: false)
+        XCTAssertEqual(registry.category(for: replyNotification(), hasCode: false), first)
+        XCTAssertEqual(updates, 1, "the same shape is registered once")
+        XCTAssertEqual(registry.count, 1)
+
+        let withCode = registry.category(for: replyNotification(), hasCode: true)
+        XCTAssertNotEqual(withCode, first)
+        XCTAssertEqual(registry.count, 2)
+
+        for index in 0..<100 {
+            let n = PhoneNotification(id: "k\(index)", pkg: "com.chat", when: nil, title: nil, text: nil,
+                                      actions: [NotifyActionInfo(i: 0, title: "button \(index)")])
+            _ = registry.category(for: n, hasCode: false)
+        }
+        XCTAssertEqual(registry.count, NotifyCategories.maxRegistered)
+        XCTAssertEqual(registry.all().count, NotifyCategories.maxRegistered)
+    }
+
+    func testMutedSetIsPerPhoneAndSorted() {
+        let suite = "notify-mute-tests-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        XCTAssertTrue(NotifyMute.muted(deviceId: "p1", defaults: defaults).isEmpty)
+        NotifyMute.setMuted(true, pkg: "com.b", deviceId: "p1", defaults: defaults)
+        NotifyMute.setMuted(true, pkg: "com.a", deviceId: "p1", defaults: defaults)
+        NotifyMute.setMuted(true, pkg: "com.c", deviceId: "p2", defaults: defaults)
+        XCTAssertTrue(NotifyMute.isMuted("com.a", deviceId: "p1", defaults: defaults))
+        XCTAssertFalse(NotifyMute.isMuted("com.c", deviceId: "p1", defaults: defaults))
+        XCTAssertEqual(defaults.stringArray(forKey: NotifyMute.key(deviceId: "p1")), ["com.a", "com.b"],
+                       "sorted, package names only")
+        NotifyMute.setMuted(false, pkg: "com.a", deviceId: "p1", defaults: defaults)
+        XCTAssertFalse(NotifyMute.isMuted("com.a", deviceId: "p1", defaults: defaults))
     }
 }

@@ -49,6 +49,25 @@ final class DebugInputTests: XCTestCase {
         ])
     }
 
+    func testParsesNotifyPartTwoVerbs() throws {
+        let actions = try DebugInputScript.parse("""
+        notifyaction pd-a1 1 hello there
+        notifyaction pd-a1 0
+        notifydismiss pd-a2
+        notifycopy pd-a4
+        """)
+        XCTAssertEqual(actions, [
+            .notifyAction("pd-a1", 1, "hello there"),
+            .notifyAction("pd-a1", 0, nil),
+            .notifyDismiss("pd-a2"),
+            .notifyCopy("pd-a4"),
+        ])
+        XCTAssertThrowsError(try DebugInputScript.parse("notifyaction pd-a1"))
+        XCTAssertThrowsError(try DebugInputScript.parse("notifyaction pd-a1 -1"))
+        XCTAssertThrowsError(try DebugInputScript.parse("notifydismiss"))
+        XCTAssertThrowsError(try DebugInputScript.parse("notifycopy"))
+    }
+
     func testParsesTheQuietRunVerbs() throws {
         let actions = try DebugInputScript.parse("""
         hoverat 0 200

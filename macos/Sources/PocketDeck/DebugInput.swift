@@ -50,6 +50,10 @@
 //                                  says when the next step may run
 //   notifyclick ID           the same routing a click on that phone notification runs
 //                            (opens the app's window); not a stream action
+//   notifyaction ID I [TEXT] the same routing a banner button (or reply, with TEXT)
+//                            runs: `notify.action` for that advertised index
+//   notifydismiss ID         the same routing a banner clear runs: `notify.dismiss`
+//   notifycopy ID            the same routing Copy code runs (clipboard rule applies)
 //   mediacmd ACTION          the same routing a Now Playing control runs: play, pause,
 //                            next or prev (`media.command`); not a stream action
 //   wait SECONDS             let the app run (timers, animations) before the next action
@@ -104,6 +108,9 @@ enum DebugInputAction: Equatable {
     case windowTop
     case waitFile(String, timeout: Double)
     case notifyClick(String)
+    case notifyAction(String, Int, String?)
+    case notifyDismiss(String)
+    case notifyCopy(String)
     case mediaCommand(String)
     case wait(Double)
     case type(String)
@@ -265,6 +272,18 @@ enum DebugInputScript {
         case "notifyclick":
             guard args.count == 1, !args[0].isEmpty else { throw LineError(message: "notifyclick needs an id") }
             return .notifyClick(args[0])
+        case "notifyaction":
+            guard args.count >= 2, !args[0].isEmpty, let index = Int(args[1]), index >= 0 else {
+                throw LineError(message: "notifyaction needs an id, an index and optionally TEXT")
+            }
+            let text = args.count > 2 ? args.dropFirst(2).joined(separator: " ") : nil
+            return .notifyAction(args[0], index, text)
+        case "notifydismiss":
+            guard args.count == 1, !args[0].isEmpty else { throw LineError(message: "notifydismiss needs an id") }
+            return .notifyDismiss(args[0])
+        case "notifycopy":
+            guard args.count == 1, !args[0].isEmpty else { throw LineError(message: "notifycopy needs an id") }
+            return .notifyCopy(args[0])
         case "mediacmd":
             guard args.count == 1, ["play", "pause", "next", "prev"].contains(args[0]) else {
                 throw LineError(message: "mediacmd needs play, pause, next or prev")
@@ -381,6 +400,11 @@ final class DebugInputDriver {
     /// `notifyclick ID`: true once that notification is known (it may not have
     /// arrived yet, so the driver retries for a while).
     var notifyClick: ((String) -> Bool)?
+    /// `notifyaction ID I [TEXT]`, `notifydismiss ID`, `notifycopy ID`: the same
+    /// handlers a banner response runs; also retried until the id is known.
+    var notifyAction: ((String, Int, String?) -> Bool)?
+    var notifyDismiss: ((String) -> Bool)?
+    var notifyCopy: ((String) -> Bool)?
     /// `mediacmd ACTION`: the Now Playing transport controls' target.
     var mediaCommand: ((String) -> Void)?
     /// `dockapps on|off`: the Settings → General toggle, through the same
@@ -530,12 +554,13 @@ final class DebugInputDriver {
                 RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.05))
             }
         case .notifyClick(let id):
-            // The phone's posts arrive on their own schedule; give a late one
-            // ~10 s, pumping the run loop so its frames can land.
-            for _ in 0..<40 where !cancelled {
-                if notifyClick?(id) == true { return }
-                RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.25))
-            }
+            waitForNotify { self.notifyClick?(id) == true }
+        case .notifyAction(let id, let index, let text):
+            waitForNotify { self.notifyAction?(id, index, text) == true }
+        case .notifyDismiss(let id):
+            waitForNotify { self.notifyDismiss?(id) == true }
+        case .notifyCopy(let id):
+            waitForNotify { self.notifyCopy?(id) == true }
         case .mediaCommand(let action):
             mediaCommand?(action)
         case .wait(let seconds):
@@ -582,6 +607,16 @@ final class DebugInputDriver {
             // a lowercased one would match ⌘H (Hide) in the menu instead.
             press(keyCode: stroke.keyCode, characters: stroke.characters,
                   ignoring: stroke.characters, flags: flags, in: view)
+        }
+    }
+
+    /// The phone's posts arrive on their own schedule; give a late one ~10 s,
+    /// pumping the run loop so its frames can land (also used by the part 2
+    /// notify actions, which need the id's record).
+    private func waitForNotify(_ ready: () -> Bool) {
+        for _ in 0..<40 where !cancelled {
+            if ready() { return }
+            RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.25))
         }
     }
 
@@ -748,8 +783,7 @@ final class DebugInputDriver {
         return NSEvent(cgEvent: cgEvent)
     }
 
-    /// A line-unit wheel event. A window-less NSEvent(cgEvent:) reports its
-    /// location as a global AppKit point (CG y flipped against the primary
+    /// A line-unit wheel event. A window-less NSEvent(cgEvent:) reports its    /// location as a global AppKit point (CG y flipped against the primary
     /// screen) and does not convert it, so the CG location is written so that
     /// the event reads back as the window point the view will convert.
     private func scrollEvent(dy: Int, at point: CGPoint, in view: VideoLayerView) -> NSEvent? {

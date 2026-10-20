@@ -83,3 +83,26 @@ enum NotifyOpenMessage {
         return message
     }
 }
+
+/// Per-app mute (docs/design/notify.md, part 2): a package the person muted on
+/// this phone is dropped before the Mac posts it. Stored per phone in the
+/// profile's defaults as a sorted array of package names (never any text).
+enum NotifyMute {
+
+    static func key(deviceId: String) -> String { "notify.mute.\(deviceId)" }
+
+    static func muted(deviceId: String, defaults: UserDefaults) -> Set<String> {
+        Set(defaults.stringArray(forKey: key(deviceId: deviceId)) ?? [])
+    }
+
+    static func isMuted(_ pkg: String, deviceId: String, defaults: UserDefaults) -> Bool {
+        muted(deviceId: deviceId, defaults: defaults).contains(pkg)
+    }
+
+    static func setMuted(_ muted: Bool, pkg: String, deviceId: String, defaults: UserDefaults) {
+        var set = self.muted(deviceId: deviceId, defaults: defaults)
+        if muted { set.insert(pkg) } else { set.remove(pkg) }
+        defaults.set(set.sorted(), forKey: key(deviceId: deviceId))
+    }
+}
+

@@ -238,6 +238,7 @@ struct DevicesSettings: View {
                 VStack(alignment: .trailing, spacing: 6) {
                     PhoneNotifyToggle(deviceId: phone.id)
                     PhoneNotifyClickPicker(deviceId: phone.id)
+                    PhoneMutedApps(deviceId: phone.id)
                 }
             }
         } label: {
@@ -335,5 +336,51 @@ private struct PhoneNotifyClickPicker: View {
         .controlSize(.small)
         .disabled(!notifyEnabled)
         .help("What a click on this phone's notification does.")
+    }
+}
+
+/// "Muted apps" (ROADMAP v0.2 #8): the packages this phone's notifications came
+/// from this session, plus the already muted ones, toggled per phone. Package
+/// names and labels only — never any notification text.
+private struct PhoneMutedApps: View {
+    let deviceId: String
+
+    @Environment(ConnectionController.self) private var controller
+    @AppStorage private var notifyEnabled: Bool
+    @State private var muted: Set<String> = []
+
+    init(deviceId: String) {
+        self.deviceId = deviceId
+        _notifyEnabled = AppStorage(
+            wrappedValue: false,
+            NotifyToggle.key(deviceId: deviceId),
+            store: Profile.active.defaults,
+        )
+    }
+
+    private var packages: [String] {
+        Array(Set(controller.notifyMutedAppChoices(deviceId: deviceId)).union(muted)).sorted()
+    }
+
+    var body: some View {
+        if notifyEnabled, !packages.isEmpty {
+            DisclosureGroup("Muted apps") {
+                ForEach(packages, id: \.self) { pkg in
+                    Toggle(isOn: Binding(
+                        get: { muted.contains(pkg) },
+                        set: { on in
+                            if on { muted.insert(pkg) } else { muted.remove(pkg) }
+                            controller.notifyMuteChanged(deviceId: deviceId, pkg: pkg, muted: on)
+                        },
+                    )) {
+                        Text(controller.appLabel(for: pkg) ?? pkg)
+                    }
+                    .toggleStyle(.checkbox)
+                    .controlSize(.small)
+                }
+            }
+            .controlSize(.small)
+            .onAppear { muted = NotifyMute.muted(deviceId: deviceId, defaults: Profile.active.defaults) }
+        }
     }
 }
