@@ -4,9 +4,10 @@
 #   tools/emulator/cam-c1.sh [--check]
 #
 # Boots the rig (start.sh --no-build: run K1 first), turns on "Let Macs use the
-# camera" the way the toggle does (the pref write plus `pm grant`; production
-# code never grants the permission), sends the app HOME so the Mac asks a
-# backgrounded app, then drives the real phone server through deckctl:
+# camera" through the DUMP-protected debug receiver (the toggle's own calls; the
+# rig only grants the runtime permission, as the dialog would), sends the app
+# HOME so the Mac asks a backgrounded app, then drives the real phone server
+# through deckctl:
 #
 #   1. cam.list, cam.start -> 5 s of frames (fps, keyframe interval, the first
 #      keyframe's SPS/PPS), and ONE decoded frame as evidence (never committed)
@@ -39,6 +40,7 @@ POC="$EMU_DIR/poc.py"
 STATE="$CACHE_DIR/deckctl-state.json"
 APK="$REPO_ROOT/android/app/build/outputs/apk/debug/app-debug.apk"
 MANIFEST="$REPO_ROOT/android/app/src/main/AndroidManifest.xml"
+DEBUG_MANIFEST="$REPO_ROOT/android/app/src/debug/AndroidManifest.xml"
 LOG="$AGENT_DIR/cam-c1.log"
 EVIDENCE="$REPO_ROOT/.agent/camera-c1"
 H264="$CACHE_DIR/cam-c1-live.h264"
@@ -61,7 +63,27 @@ check_only() {
     die "the camera service is not protected for the shell UID"
   grep -q 'KEY_CAMERA_ALLOWED = "camera_allowed"' \
     "$REPO_ROOT/android/app/src/main/java/dev/pocketdeck/app/Prefs.kt" ||
-    die "the pref write below does not match Prefs"
+    die "Prefs has no camera_allowed key"
+  # The setting is flipped by a debug-only receiver, never by a pref write.
+  [ -f "$DEBUG_MANIFEST" ] || die "no debug manifest at $DEBUG_MANIFEST"
+  grep -q 'android:name="dev.pocketdeck.app.CameraDebugSetting"' "$DEBUG_MANIFEST" ||
+    die "the debug manifest has no CameraDebugSetting receiver"
+  grep -A4 'android:name="dev.pocketdeck.app.CameraDebugSetting"' "$DEBUG_MANIFEST" |
+    grep -q 'android.permission.DUMP' ||
+    die "the camera setting receiver is not DUMP-protected"
+  grep -q 'android:name="dev.pocketdeck.DEBUG_CAMERA_SETTING"' "$DEBUG_MANIFEST" ||
+    die "the camera setting receiver has no action"
+  grep -q 'CameraDebugArgs' \
+    "$REPO_ROOT/android/app/src/debug/java/dev/pocketdeck/app/CameraDebugSetting.kt" ||
+    die "the receiver does not parse its argument through CameraDebugArgs"
+  # The merged manifest is what the boot will use: a debug source set that did
+  # not land would cost the boot.
+  local AAPT2
+  AAPT2="$(ls "$ANDROID_HOME"/build-tools/*/aapt2 2>/dev/null | tail -1 || true)"
+  [ -n "$AAPT2" ] || die "no aapt2 under $ANDROID_HOME/build-tools"
+  "$AAPT2" dump xmltree "$APK" --file AndroidManifest.xml 2>/dev/null |
+    grep -A2 'dev.pocketdeck.app.CameraDebugSetting' | grep -q 'android.permission.DUMP' ||
+    die "the built APK has no DUMP-protected CameraDebugSetting (stale APK?)"
   bash -n "$0" || die "syntax error in $0"
   [ -x "$DECKCTL" ] || [ -f "$DECKCTL" ] || die "deckctl missing: $DECKCTL"
   [ -f "$POC" ] || die "poc.py missing: $POC"
@@ -96,68 +118,42 @@ fail() { FAILED=1; step "FAIL: $*"; }
 deckctl() { "$PYTHON" "$DECKCTL" --host 127.0.0.1 --port "$PORT" --state "$STATE" "$@"; }
 DECK_PID=""
 
-# --- the toggle's pref write -------------------------------------------------
-# The app is debuggable, so run-as reaches its prefs. The app is stopped first:
-# a live SharedPreferences instance would rewrite the file from its in-memory
-# map and drop the key.
-set_camera_setting() { # set_camera_setting true|false
-  local want="$1" old="$CACHE_DIR/camera_prefs.old.xml" new="$CACHE_DIR/camera_prefs.xml"
-  emu shell am force-stop "$PKG" >/dev/null 2>&1 || true
-  sleep 1
-  emu shell "run-as $PKG cat shared_prefs/pocketdeck.xml" >"$old" 2>/dev/null || true
-  python3 - "$new" "$old" "$want" <<'PY'
-import sys
-
-out_path, old_path, want = sys.argv[1], sys.argv[2], sys.argv[3]
-try:
-    with open(old_path) as fp:
-        lines = fp.read().splitlines()
-except OSError:
-    lines = []
-if not any("<map" in line for line in lines):
-    lines = ["<?xml version='1.0' encoding='utf-8' standalone='yes' ?>", "<map>", "</map>"]
-lines = [line for line in lines if "camera_allowed" not in line]
-out = []
-done = False
-for line in reversed(lines):
-    out.append(line)
-    if not done and "</map>" in line:
-        out.append('    <boolean name="camera_allowed" value="%s" />' % want)
-        done = True
-out.reverse()
-text = "\n".join(out) + "\n"
-# The key must be INSIDE <map>; a straggler line after </map> is silently
-# invisible to SharedPreferences, which is how C1's first boot was lost.
-start, end = text.find("<map"), text.rfind("</map>")
-key = text.find('name="camera_allowed"')
-if not done or start < 0 or end < 0 or not (start < key < end):
-    raise SystemExit("camera_allowed did not land inside <map>")
-with open(out_path, "w") as fp:
-    fp.write(text)
-PY
-  emu shell "run-as $PKG mkdir -p shared_prefs" >/dev/null 2>&1 || true
-  emu shell "run-as $PKG sh -c 'cat > shared_prefs/pocketdeck.xml'" <"$new" ||
-    die "cannot write the camera pref (is the build debuggable?)"
-  local seen
-  seen="$(emu shell "run-as $PKG cat shared_prefs/pocketdeck.xml" 2>/dev/null | grep -o "camera_allowed\" value=\"$want\"" || true)"
-  step "pref camera_allowed=$want: ${seen:-MISSING}"
-  [ -n "$seen" ] || fail "the camera pref did not stick"
-  # The deck service re-reads the prefs and pushes the gate on bind.
-  for _ in $(seq 1 10); do
-    emu shell am start -n "$PKG/.app.MainActivity" >/dev/null 2>&1 || true
-    sleep 3
-    [ -n "$(emu shell "pidof $PKG" 2>/dev/null | tr -d '\r')" ] && break
-  done
-  [ -n "$(emu shell "pidof $PKG" 2>/dev/null | tr -d '\r')" ] || die "could not launch $PKG"
-  local _dev="" _
-  for _ in $(seq 1 60); do
-    _dev="$(ensure_forward || true)"
-    [ -n "$_dev" ] && break
+# --- the toggle's setting, through the app --------------------------------
+# The DUMP-protected debug receiver calls Prefs.setCameraAllowed + CameraGate.push,
+# the same code the toggle runs after the CAMERA dialog. A pref write is not an
+# option: the notification listener restarts the app ~260 ms after a force-stop,
+# and the reloaded process can write the old value back (C1's lost gate).
+# The rig grants CAMERA with `pm grant` above; the receiver never grants it.
+#
+# Returns 0 only when the shell's own cam.list agrees: on -> non-empty, off ->
+# empty. That is the gate the Mac sees, not a sleep.
+set_camera_setting() { # set_camera_setting on|off
+  local want="$1" ok=0
+  step "camera setting $want (debug receiver, DUMP-protected)"
+  emu shell am broadcast -a dev.pocketdeck.DEBUG_CAMERA_SETTING --es state "$want" >>"$LOG" 2>&1 ||
+    die "cannot broadcast the camera setting"
+  for _ in $(seq 1 20); do
+    deckctl cam list >"$CACHE_DIR/cam-c1-gate.txt" 2>&1 || true
+    if [ "$want" = on ]; then
+      grep -q 'cam.cams count=[1-9]' "$CACHE_DIR/cam-c1-gate.txt" && { ok=1; break; }
+    else
+      grep -q 'cam.cams count=0' "$CACHE_DIR/cam-c1-gate.txt" && { ok=1; break; }
+    fi
     sleep 1
   done
-  [ -n "$_dev" ] || die "the server did not come back after the pref write"
-  step "forward: 127.0.0.1:$PORT -> device tcp:$_dev"
-  sleep 2
+  cat "$CACHE_DIR/cam-c1-gate.txt" >>"$LOG"
+  step "camera setting $want: cam.list $(sed -n 's/cam.cams count=//p' "$CACHE_DIR/cam-c1-gate.txt" | tail -1) cameras"
+  [ "$ok" -eq 1 ]
+}
+
+# Every capture's failure evidence: the encoder's own diagnostic line, so a
+# refused step names itself instead of only the state.
+pd_camera_diagnostics() { # pd_camera_diagnostics <label>
+  {
+    printf -- '--- PdCamera diagnostics (%s)\n' "$1"
+    emu logcat -d -s PdCamera:I 2>/dev/null |
+      grep -E 'encoder failed|CodecException|diagnostic|error=|state=error' | tail -40 || true
+  } >>"$LOG"
 }
 
 # A cam.state line out of a deckctl run, last one only.
@@ -187,9 +183,6 @@ emu shell pm grant "$PKG" android.permission.CAMERA >/dev/null 2>&1 || true
 emu shell dumpsys package "$PKG" 2>/dev/null |
   sed -n '/runtime permissions:/,/^$/p' | grep -E 'CAMERA|POST_NOTIFICATIONS' >> "$LOG" || true
 
-step "turning on 'Let Macs use the camera' (the toggle's pref write + the grant)"
-set_camera_setting true
-
 step "pairing (poc.py reads the prompt; deckctl keeps the pin)"
 "$EMU_DIR/unlock.sh" >>"$LOG" 2>&1 || true
 PAIRED=0
@@ -217,18 +210,8 @@ if [ "$PAIRED" -eq 0 ]; then
 fi
 [ "$PAIRED" -eq 1 ] || fail "could not pair deckctl with the rig"
 
-step "checking the app sees the setting (cam.list must not be empty)"
-GATE_OK=0
-for _ in $(seq 1 10); do
-  deckctl cam list >"$CACHE_DIR/cam-c1-gate.txt" 2>&1 || true
-  if grep -q 'cam.cams count=[1-9]' "$CACHE_DIR/cam-c1-gate.txt"; then
-    GATE_OK=1
-    break
-  fi
-  sleep 2
-done
-cat "$CACHE_DIR/cam-c1-gate.txt" >>"$LOG"
-if [ "$GATE_OK" -eq 0 ]; then
+step "turning on 'Let Macs use the camera' (the toggle's own calls; cam.list is the proof)"
+if ! set_camera_setting on; then
   # Evidence for the next fix, ids/states only: a cam.start says whether the
   # shell holds the gate closed ("off") or open with no cameras; the camera
   # lines of logcat say whether the app pushed the gate and what it found.
@@ -238,6 +221,7 @@ if [ "$GATE_OK" -eq 0 ]; then
     emu shell "dumpsys package $PKG" 2>/dev/null | grep -E 'android.permission.CAMERA:' | head -2
     emu shell "ps -A -o USER,PID,NAME" 2>/dev/null | grep -E 'pocketdeck' | awk '{print $1, $3}'
     emu shell "logcat -d -v brief" 2>/dev/null | grep -iE 'camera gate|gate push|cam\.start|camera service|consent|PocketDeckApp.*cam' | tail -20
+    emu shell "logcat -d -s PdCameraDebug:I PdCamera:I" 2>/dev/null | tail -20
   } >>"$LOG" 2>&1
   die "the app does not see 'Let Macs use the camera' (cam.list empty); not burning the boot on the rest"
 fi
@@ -249,9 +233,9 @@ sleep 2
 emu logcat -c >/dev/null 2>&1 || true
 
 step "cam.start stream=7, 5 s"
+START_RC=0
 deckctl cam start --stream 7 --seconds 5 --busy-stream 8 --save-h264 "$H264" \
-  >"$CACHE_DIR/cam-c1-start.txt" 2>"$CACHE_DIR/cam-c1-start.err"
-START_RC=$?
+  >"$CACHE_DIR/cam-c1-start.txt" 2>"$CACHE_DIR/cam-c1-start.err" || START_RC=$?
 {
   printf -- '--- cam start (stream 7, 5 s)\n'
   cat "$CACHE_DIR/cam-c1-start.txt" 2>/dev/null || true
@@ -286,6 +270,9 @@ else
   fi
   ffprobe -v error -show_entries stream=codec_name,width,height -of csv=p=0 "$H264" >>"$LOG" 2>&1 || true
 fi
+if grep -q 'state=error' "$CACHE_DIR/cam-c1-start.txt"; then
+  pd_camera_diagnostics "stream 7"
+fi
 
 step "cam.list on the real server"
 DECK_LIST="$CACHE_DIR/cam-c1-list.txt"
@@ -319,6 +306,9 @@ case "$(last_state "$CACHE_DIR/cam-c1-locked.txt")" in
   *stopped*) : ;;
   *) fail "the locked capture ended as $(last_state "$CACHE_DIR/cam-c1-locked.txt")" ;;
 esac
+if grep -q 'state=error' "$CACHE_DIR/cam-c1-locked.txt"; then
+  pd_camera_diagnostics "stream 8 across the lock"
+fi
 
 # --- 3. the person's camera app wins --------------------------------------
 step "eviction: starting a capture, then opening the camera app"
@@ -346,6 +336,9 @@ if grep -q 'cam.state stream=9 state=evicted' "$CACHE_DIR/cam-c1-evict.txt"; the
 else
   fail "no evicted state: $(last_state "$CACHE_DIR/cam-c1-evict.txt")"
 fi
+if grep -q 'state=error' "$CACHE_DIR/cam-c1-evict.txt"; then
+  pd_camera_diagnostics "stream 9 eviction"
+fi
 
 # --- 4. capture again, stop, the service goes away ------------------------
 step "closing the camera app, capturing again, cam.stop"
@@ -364,6 +357,9 @@ if deckctl cam start --stream 10 --seconds 4 --wait 15 \
 else
   fail "the capture after the camera app failed: $(tail -1 "$CACHE_DIR/cam-c1-again.err" 2>/dev/null)"
 fi
+if grep -q 'state=error' "$CACHE_DIR/cam-c1-again.txt"; then
+  pd_camera_diagnostics "stream 10 after the camera app"
+fi
 SERVICES=1
 for _ in $(seq 1 10); do
   SERVICES="$(emu shell dumpsys activity services "$PKG" 2>/dev/null | grep -c 'CameraCaptureService' || true)"
@@ -375,10 +371,9 @@ RESULTS+=("service records after stop=${SERVICES:-0}")
 [ "${SERVICES:-0}" -eq 0 ] || fail "the camera service is still in dumpsys after cam.stop"
 
 # --- 5. the setting off ----------------------------------------------------
-step "turning the setting off (the toggle's pref write)"
-set_camera_setting false
+step "turning the setting off (the toggle's own calls; cam.list must empty)"
+set_camera_setting off || fail "cam.list still lists cameras after the setting off"
 emu shell input keyevent KEYCODE_HOME >/dev/null 2>&1 || true
-sleep 2
 deckctl cam start --stream 11 --wait 8 >"$CACHE_DIR/cam-c1-off.txt" 2>"$CACHE_DIR/cam-c1-off.err" || true
 cat "$CACHE_DIR/cam-c1-off.txt" >>"$LOG" 2>/dev/null || true
 if grep -q 'state=off' "$CACHE_DIR/cam-c1-off.txt"; then
@@ -386,6 +381,9 @@ if grep -q 'state=off' "$CACHE_DIR/cam-c1-off.txt"; then
   RESULTS+=("off refused")
 else
   fail "the setting off did not answer off: $(last_state "$CACHE_DIR/cam-c1-off.txt")"
+fi
+if grep -q 'state=error' "$CACHE_DIR/cam-c1-off.txt"; then
+  pd_camera_diagnostics "stream 11 with the setting off"
 fi
 deckctl cam list >"$CACHE_DIR/cam-c1-off-list.txt" 2>&1 || true
 cat "$CACHE_DIR/cam-c1-off-list.txt" >>"$LOG"
