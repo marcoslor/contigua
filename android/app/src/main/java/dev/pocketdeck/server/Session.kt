@@ -811,13 +811,16 @@ class Session(
 
     private fun onAppsIcon(obj: Map<String, Any?>) {
         val pkg = Json.str(obj["pkg"]) ?: return
+        // `px` is optional (docs/PROTOCOL.md): the Mac asks for the size it will
+        // draw; an old Mac asks for none and gets the historical 96/216 px.
+        val px = Json.int(obj["px"])
         // The layers ride along as optional fields; a non-adaptive icon sends
         // none and an old Mac just ignores them.
         val fields = LinkedHashMap<String, Any?>()
         fields["t"] = "icon"
         fields["pkg"] = pkg
-        fields["png"] = catalog.iconPng(pkg) ?: ""
-        catalog.iconLayers(pkg)?.let { layers ->
+        fields["png"] = catalog.iconPng(pkg, px) ?: ""
+        catalog.iconLayers(pkg, px)?.let { layers ->
             fields["fg"] = layers.fg
             fields["bg"] = layers.bg
             layers.mono?.let { fields["mono"] = it }

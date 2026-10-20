@@ -93,19 +93,21 @@ internal class AndroidLauncher(private val ctx: Context, private val log: (Strin
         return out.sortedBy { it.label.lowercase() }
     }
 
-    override fun iconPng(pkg: String): String? {
-        synchronized(iconCache) { iconCache[pkg]?.let { return it } }
+    override fun iconPng(pkg: String, px: Int?): String? {
+        val flatSize = IconSizes.flat(px)
+        val key = "$pkg@$flatSize"
+        synchronized(iconCache) { iconCache[key]?.let { return it } }
         return try {
             val drawable = pm.getApplicationIcon(pkg)
-            val bitmap = Bitmap.createBitmap(ICON_SIZE, ICON_SIZE, Bitmap.Config.ARGB_8888)
+            val bitmap = Bitmap.createBitmap(flatSize, flatSize, Bitmap.Config.ARGB_8888)
             val canvas = Canvas(bitmap)
-            drawable.setBounds(0, 0, ICON_SIZE, ICON_SIZE)
+            drawable.setBounds(0, 0, flatSize, flatSize)
             drawable.draw(canvas)
             val out = ByteArrayOutputStream()
             bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
             bitmap.recycle()
             val png = Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP)
-            synchronized(iconCache) { iconCache[pkg] = png }
+            synchronized(iconCache) { iconCache[key] = png }
             png
         } catch (e: Throwable) {
             log("icon $pkg failed: ${e.message}")
@@ -114,32 +116,34 @@ internal class AndroidLauncher(private val ctx: Context, private val log: (Strin
     }
 
     /** Layers of an adaptive icon, cached like the flat one; null is cached too. */
-    override fun iconLayers(pkg: String): IconLayers? {
-        synchronized(layersCache) { layersCache[pkg]?.let { return it } }
+    override fun iconLayers(pkg: String, px: Int?): IconLayers? {
+        val size = IconSizes.layer(px)
+        val key = "$pkg@$size"
+        synchronized(layersCache) { layersCache[key]?.let { return it } }
         val layers = try {
             val drawable = pm.getApplicationIcon(pkg) as? AdaptiveIconDrawable
                 ?: return null
-            val fg = renderLayer(drawable.foreground) ?: return null
-            val bg = renderLayer(drawable.background) ?: return null
+            val fg = renderLayer(drawable.foreground, size) ?: return null
+            val bg = renderLayer(drawable.background, size) ?: return null
             IconLayers(
                 fg = fg,
                 bg = bg,
-                mono = if (Build.VERSION.SDK_INT >= 33) renderLayer(drawable.monochrome) else null,
+                mono = if (Build.VERSION.SDK_INT >= 33) renderLayer(drawable.monochrome, size) else null,
             )
         } catch (e: Throwable) {
             log("layers $pkg failed: ${e.message}")
             null
         }
-        synchronized(layersCache) { layersCache[pkg] = layers }
+        synchronized(layersCache) { layersCache[key] = layers }
         return layers
     }
 
-    /** The whole 108 dp layer at 216x216 px (for the Mac's glass tile). */
-    private fun renderLayer(layer: Drawable?): String? {
+    /** The whole 108 dp layer at `size` px. */
+    private fun renderLayer(layer: Drawable?, size: Int): String? {
         layer ?: return null
-        val bitmap = Bitmap.createBitmap(LAYER_SIZE, LAYER_SIZE, Bitmap.Config.ARGB_8888)
+        val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(bitmap)
-        layer.setBounds(0, 0, LAYER_SIZE, LAYER_SIZE)
+        layer.setBounds(0, 0, size, size)
         layer.draw(canvas)
         val out = ByteArrayOutputStream()
         bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
@@ -229,11 +233,22 @@ internal class AndroidLauncher(private val ctx: Context, private val log: (Strin
             false
         }
     }
+}
 
-    private companion object {
-        const val ICON_SIZE = 96
+/**
+ * The pixel sizes an icon is rendered at (`apps.icon`'s optional `px`, the side
+ * of the 108 dp layer). A phone that predates `px` answers 216 px layers and a
+ * 96 px flat icon, exactly as before.
+ */
+internal object IconSizes {
+    const val DEFAULT_LAYER = 216
+    const val MIN_LAYER = 216
+    const val MAX_LAYER = 1296
+    const val FLAT = 96
 
-        /** The whole 108 dp adaptive-icon layer, rendered at 2x for the Mac. */
-        const val LAYER_SIZE = 216
-    }
+    /** The layer side for a requested `px`, clamped to what the launcher can draw. */
+    fun layer(px: Int?): Int = (px ?: DEFAULT_LAYER).coerceIn(MIN_LAYER, MAX_LAYER)
+
+    /** The flat icon stays 96 px unless `px` is given: then it covers the visible 2/3. */
+    fun flat(px: Int?): Int = if (px == null) FLAT else layer(px) * 2 / 3
 }

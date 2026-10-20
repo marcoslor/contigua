@@ -192,14 +192,20 @@ interface DisplayLayer {
 
 interface AppCatalog {
     fun list(): List<AppEntry>
-    fun iconPng(pkg: String): String?
+
+    /**
+     * The flat icon as base64 PNG. `px` is the optional 108 dp size the Mac asked
+     * for (`apps.icon`): null keeps the historical 96 px flat icon, otherwise the
+     * flat icon is rendered at px·2/3.
+     */
+    fun iconPng(pkg: String, px: Int? = null): String?
 
     /**
      * The adaptive icon's layers as base64 PNGs (`fg`/`bg`/`mono` fields of the
-     * `icon` message), each the whole 108 dp layer at 216x216 px; null when the
-     * icon is not adaptive.
+     * `icon` message), each the whole 108 dp layer at `px` pixels (default 216,
+     * clamped to 216…1296); null when the icon is not adaptive.
      */
-    fun iconLayers(pkg: String): IconLayers? = null
+    fun iconLayers(pkg: String, px: Int? = null): IconLayers? = null
 }
 
 /** @property fg foreground layer; @property bg background layer; `mono` only on API 33+. */

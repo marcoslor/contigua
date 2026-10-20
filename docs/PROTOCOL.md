@@ -213,7 +213,7 @@ Mac → phone (after `welcome`):
 |---|---|---|
 | `ping` | `ts` | phone replies `pong` with same `ts` |
 | `apps.list` | — | phone replies `apps` |
-| `apps.icon` | `pkg` | phone replies `icon` (with `fg`/`bg`/`mono` layers when the icon is adaptive) |
+| `apps.icon` | `pkg`, optional `px` | phone replies `icon` (with `fg`/`bg`/`mono` layers when the icon is adaptive); `px` is the pixel side of the 108 dp layer it should render (default 216, clamped to 216…1296), an older phone ignores it |
 | `window.open` | `stream`, `w`, `h`, `dpi`, and `pkg` (+ optional `activity`) **or** `"mode":"phone"` | create VD + encoder, launch app on it; `mode: phone` mirrors display 0 instead (`window.opened` has `displayId` 0 and the size at the phone screen's aspect inside `w`×`h`; a rotation sends a new VIDEO_CONFIG with the turned size; error `mirror_unavailable` if the phone can't) |
 | `window.resize` | `stream`, `w`, `h`, `dpi` | resize VD + reconfigure encoder; phone sends new VIDEO_CONFIG |
 | `window.close` | `stream` | tear down that VD/encoder |
@@ -252,7 +252,7 @@ Phone → Mac:
 | `pong` | `ts` |
 | `clip.set` | `text` | plain-text clipboard, either direction; see "Clipboard sync" |
 | `apps` | `apps`: `[{"pkg","label","activity"}]` — launchable activities, sorted by label |
-| `icon` | `pkg`, `png` (base64, 96×96 px); for an adaptive icon also the whole 108 dp layers as base64 PNGs at 216×216 px: `fg`, `bg` and, when present (API 33+), `mono` — optional, so an old Mac ignores them. Mac ▸ docs/design/mac-redesign.md for how the Deck uses them |
+| `icon` | `pkg`, `png` (base64, 96×96 px, or 2/3 of `px` when the request had one); for an adaptive icon also the whole 108 dp layers as base64 PNGs at the requested `px` (216×216 px by default): `fg`, `bg` and, when present (API 33+), `mono` — optional, so an old Mac ignores them. Mac ▸ docs/design/dock.md §Icons for how the icons are drawn |
 | `window.opened` | `stream`, `displayId`, `w`, `h` — `started`: `"moved"` (default; the task the display shows was moved to it, state kept) or `"fresh"` (the phone couldn't move the task and relaunched the same package; the app's state may be lost) |
 | `window.closed` | `stream`, `reason` (`requested`/`app_exited`/`error`) |
 | `window.title` | `stream`, `label`, `pkg` — top app changed on that display (phone mode) |

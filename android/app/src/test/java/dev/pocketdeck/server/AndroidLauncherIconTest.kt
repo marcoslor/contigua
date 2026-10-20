@@ -30,11 +30,17 @@ class AndroidLauncherIconTest {
     private val ctx: Context = ApplicationProvider.getApplicationContext()
     private val launcher = AndroidLauncher(ctx, log = {})
 
+    private fun pngSize(base64: String): Int {
+        val bytes = android.util.Base64.decode(base64, android.util.Base64.DEFAULT)
+        val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+        val side = bitmap.width
+        bitmap.recycle()
+        return side
+    }
+
     private fun pngPixel(base64: String, x: Int, y: Int): Int {
         val bytes = android.util.Base64.decode(base64, android.util.Base64.DEFAULT)
         val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-        assertEquals(216, bitmap.width)
-        assertEquals(216, bitmap.height)
         val pixel = bitmap.getPixel(x, y)
         bitmap.recycle()
         return pixel
@@ -47,7 +53,9 @@ class AndroidLauncherIconTest {
         val layers = launcher.iconLayers("com.test.adaptive")
 
         assertNotNull(layers)
-        assertEquals(Color.RED, pngPixel(layers!!.fg, 108, 108))
+        assertEquals(216, pngSize(layers!!.fg))
+        assertEquals(216, pngSize(layers.bg))
+        assertEquals(Color.RED, pngPixel(layers.fg, 108, 108))
         assertEquals(Color.BLUE, pngPixel(layers.bg, 108, 108))
         assertNull(layers.mono)
     }
@@ -59,6 +67,36 @@ class AndroidLauncherIconTest {
 
         assertEquals(Color.TRANSPARENT, pngPixel(layers.fg, 8, 8))
         assertEquals(Color.RED, pngPixel(layers.fg, 108, 108))
+    }
+
+    @Test
+    fun pxRendersLayersAtTheAskedSizeAndKeepsTheOldOne() {
+        adaptively("com.test.big", makeDisc(Color.RED), ColorDrawable(Color.BLUE))
+
+        val big = launcher.iconLayers("com.test.big", 1296)!!
+        assertEquals(1296, pngSize(big.fg))
+        assertEquals(1296, pngSize(big.bg))
+        assertEquals(Color.BLUE, pngPixel(big.bg, 648, 648))
+        // The size the Mac draws for the Deck is a separate cache entry.
+        assertEquals(216, pngSize(launcher.iconLayers("com.test.big", null)!!.fg))
+        assertEquals(432, pngSize(launcher.iconLayers("com.test.big", 432)!!.fg))
+    }
+
+    @Test
+    fun pxIsClamped() {
+        adaptively("com.test.clamp", makeDisc(Color.RED), ColorDrawable(Color.BLUE))
+
+        assertEquals(216, pngSize(launcher.iconLayers("com.test.clamp", 8)!!.fg))
+        assertEquals(1296, pngSize(launcher.iconLayers("com.test.clamp", 9999)!!.fg))
+    }
+
+    @Test
+    fun flatIconsFollowPxToo() {
+        icon("com.test.flatpx", ColorDrawable(Color.GREEN))
+
+        assertEquals(96, pngSize(launcher.iconPng("com.test.flatpx", null)!!))
+        assertEquals(144, pngSize(launcher.iconPng("com.test.flatpx", 216)!!))
+        assertEquals(864, pngSize(launcher.iconPng("com.test.flatpx", 1296)!!))
     }
 
     @Test
