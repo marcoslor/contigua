@@ -1137,35 +1137,74 @@ final class FilesEnumerator: NSObject, NSFileProviderEnumerator {
         container == .rootContainer ? FilesMap.rootIdentifier : container.rawValue
     }
 
+    /// One `didEnumerate` batch. A phone page holds up to 1000 items; handing
+    /// 1000 to the system in one callback made a 1500-entry folder list as
+    /// empty in the round-2 VM run, so a page is delivered in batches of this
+    /// size and the page cursor carries the offset.
+    static let batchSize = 250
+
+    /// The phone page last fetched, so the four batches of one page cost one
+    /// listing.
+    private var cachedPage: (cursor: String?, items: [FileItem], next: String?)?
+
     func enumerateItems(for observer: NSFileProviderEnumerationObserver,
                         startingAt page: NSFileProviderPage) {
         guard let owner else {
             observer.finishEnumeratingWithError(FilesFailure.offline.error)
             return
         }
-        var cursor: String?
-        let initialByName = NSFileProviderPage.initialPageSortedByName as Data
-        let initialByDate = NSFileProviderPage.initialPageSortedByDate as Data
-        if page.rawValue as Data != initialByName,
-           page.rawValue as Data != initialByDate {
-            cursor = String(data: page.rawValue, encoding: .utf8)
-        }
+        let (cursor, offset) = pageToken(page)
         let identifier = containerIdentifier
+        owner.watch(identifier, on: true)
+        if let cache = cachedPage, cache.cursor == cursor {
+            deliver(cache.items, offset: offset, cursor: cursor,
+                    nextPhonePage: cache.next, identifier: identifier, observer: observer)
+            return
+        }
         owner.loadListing(item: identifier, page: cursor) { result in
             switch result {
             case .success(let listing):
-                // The folder is open in the system's eyes: watch it on the phone
-                // from now on (design §5).
-                owner.watch(identifier, on: true)
-                observer.didEnumerate(listing.items.map(ProviderItem.init))
-                let next = listing.next.map { NSFileProviderPage(Data($0.utf8)) }
-                log.notice("enumerate items=\(listing.items.count, privacy: .public) more=\(next != nil, privacy: .public)")
-                observer.finishEnumerating(upTo: next)
+                self.cachedPage = (cursor: cursor, items: listing.items, next: listing.next)
+                self.deliver(listing.items, offset: offset, cursor: cursor,
+                             nextPhonePage: listing.next, identifier: identifier,
+                             observer: observer)
             case .failure(let failure):
                 log.notice("enumerate failed code=\(failure.rawValue, privacy: .public)")
                 observer.finishEnumeratingWithError(failure.error)
             }
         }
+    }
+
+    /// `b<offset>@<phone page>`; the initial pages are offset 0 of the first
+    /// phone page.
+    private func pageToken(_ page: NSFileProviderPage) -> (cursor: String?, offset: Int) {
+        let initialByName = NSFileProviderPage.initialPageSortedByName as Data
+        let initialByDate = NSFileProviderPage.initialPageSortedByDate as Data
+        guard page.rawValue as Data != initialByName,
+              page.rawValue as Data != initialByDate,
+              let text = String(data: page.rawValue, encoding: .utf8),
+              text.hasPrefix("b"),
+              let at = text.firstIndex(of: "@") else { return (nil, 0) }
+        let offset = Int(text[text.index(after: text.startIndex)..<at]) ?? 0
+        let rest = String(text[text.index(after: at)...])
+        return (rest.isEmpty ? nil : rest, offset)
+    }
+
+    private func deliver(_ items: [FileItem], offset: Int, cursor: String?,
+                         nextPhonePage: String?, identifier: String,
+                         observer: NSFileProviderEnumerationObserver) {
+        let slice = Array(items.dropFirst(max(0, offset)).prefix(Self.batchSize))
+        observer.didEnumerate(slice.map(ProviderItem.init))
+        let next: String?
+        if offset + slice.count < items.count {
+            next = "b\(offset + slice.count)@\(cursor ?? "")"
+        } else if let nextPhonePage {
+            next = "b0@\(nextPhonePage)"
+        } else {
+            next = nil
+        }
+        log.notice("enumerate items=\(slice.count, privacy: .public) more=\(next != nil, privacy: .public)")
+        observer.finishEnumerating(upTo: next.map { NSFileProviderPage(Data($0.utf8)) })
     }
 
     func enumerateChanges(for observer: NSFileProviderChangeObserver,

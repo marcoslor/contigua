@@ -449,9 +449,26 @@ final class SessionBridgeHost: FilesBridgeHost {
         map.parent(for: identifier) ?? FilesMap.rootIdentifier
     }
 
+    /// Writing the id map is a cache update, not a durability promise: a big
+    /// listing (1500 entries, one `insert` per item) used to rewrite the whole
+    /// JSON file per item. Coalesce to one write per quarter second.
+    private var saveScheduled = false
+    private var saveDirty = false
+
     private func save() {
-        guard let mapURL else { return }
-        FilesIdMap.save(map, to: mapURL)
+        guard mapURL != nil else { return }
+        saveDirty = true
+        guard !saveScheduled else { return }
+        saveScheduled = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(250)) { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.saveScheduled = false
+                guard self.saveDirty, let url = self.mapURL else { return }
+                self.saveDirty = false
+                FilesIdMap.save(self.map, to: url)
+            }
+        }
     }
 
     // MARK: Reads
