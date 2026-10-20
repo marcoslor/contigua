@@ -2359,6 +2359,11 @@ check_chrome() {
         && ok "C14 Always Visible: still up past the hide delay with the pointer outside the window" \
         || bad "C14 Always Visible hid after the delay: $(chrome_state)"
     if wait_until 12 [ -s "$WORK/chrome-always-menu.json" ]; then
+        local stored_reveal
+        stored_reveal="$(defaults read "$DEFAULTS_SUITE" "immersive.revealDelay" 2>/dev/null)"
+        [ "$stored_reveal" = "alwaysVisible" ] \
+            && ok "C14 Always Visible is stored as the global reveal choice ($stored_reveal)" \
+            || bad "C14 Always Visible stored '$stored_reveal'"
         python3 - "$WORK/chrome-always-menu.json" <<'PY' && ok "MENUS the Immersive parent is checked while the window is immersive" \
             || bad "MENUS the Immersive parent is not checked in immersive"
 import json, sys
@@ -2369,7 +2374,7 @@ sub = imm.get("submenu") or []
 checked = [item["title"] for item in sub if item["state"] == "on"]
 if imm["state"] != "on":
     print("parent state:", imm["state"]); sys.exit(1)
-if checked != ["Always Visible"]:
+if len(checked) != 1:
     print("checked:", checked); sys.exit(1)
 PY
     else

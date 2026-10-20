@@ -55,22 +55,44 @@ final class ImmersiveMenuInstaller: NSObject, NSMenuDelegate {
             view.addItem(item)
         }
         parentItem = item
+        // The dump (and an opened menu) asks the menu to update itself; the
+        // delegate refreshes the checks right before it is read.
+        view.delegate = self
         refresh()
     }
 
     @objc private func pick(_ sender: NSMenuItem) {
         guard let entry = sender.representedObject as? ImmersiveMenuItem else { return }
         AppEnvironment.shared.controller.windows.pickImmersive(entry)
+        // The pick's own checks now, from the choice itself: correct even
+        // before the store's change has reached the display copy.
+        for child in parent(submenu: sender.menu) {
+            guard let other = child.representedObject as? ImmersiveMenuItem else { continue }
+            child.state = ImmersiveMenuModel.isChecked(other, reveal: entryReveal(entry)) ? .on : .off
+        }
         refresh()
     }
 
+    private func entryReveal(_ entry: ImmersiveMenuItem) -> RevealDelay {
+        ImmersiveMenuModel.pick(entry)?.reveal ?? .short
+    }
+
+    private func parent(submenu: NSMenu?) -> [NSMenuItem] {
+        submenu?.items ?? []
+    }
+
     /// The states a person sees: the parent checked while the key window is
-    /// immersive, one checkmark on the stored reveal choice.
+    /// immersive, one checkmark on the stored reveal choice. Looked up fresh
+    /// each time: SwiftUI can rebuild the View menu's items, and an old
+    /// reference would be a detached item.
     func refresh(style: WindowStyle? = nil) {
-        guard let parentItem else { return }
-        parentItem.state = ImmersiveMenuModel.parentChecked(style: style ?? StreamMenuState.shared.style) ? .on : .off
-        let reveal = StreamMenuState.shared.revealDelay
-        for child in children {
+        guard let main = NSApp.mainMenu,
+              let view = main.items.first(where: { $0.title == "View" })?.submenu,
+              let parent = view.items.first(where: { $0.title == "Immersive" }) else { return }
+        parentItem = parent
+        parent.state = ImmersiveMenuModel.parentChecked(style: style ?? StreamMenuState.shared.style) ? .on : .off
+        let reveal = AppEnvironment.shared.controller.windows.revealDelay
+        for child in parent.submenu?.items ?? [] {
             guard let entry = child.representedObject as? ImmersiveMenuItem else { continue }
             child.state = ImmersiveMenuModel.isChecked(entry, reveal: reveal) ? .on : .off
         }
