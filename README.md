@@ -75,10 +75,15 @@ window you give it.
   you set yourself is never turned off. The menu bar toggles the phone's DND by
   hand, and a Shortcut can too.
 - **Phone files in Finder** — the phone's shared storage appears as a
-  **PocketDeck** location in Finder: browse folders, open and Quick Look files,
-  copy them out. Read-only for now. The first time, turn PocketDeck on in
-  System Settings › General › Login Items & Extensions (Settings › General has
-  the switch and the link).
+  **PocketDeck** location in Finder: browse, open and Quick Look files, copy
+  them out, and copy files in, edit, rename, move, make folders and delete.
+  Writes are verified on the phone and scanned, so a new photo shows up in the
+  Gallery. A delete is **immediate** — the phone has no Trash — and Finder says
+  so. Cached files stay readable while the phone is away, and edits made then
+  upload when it is back; when both sides changed a file, both copies are kept
+  (`name (from Mac).ext`). The first time, turn PocketDeck on in System
+  Settings › General › Login Items & Extensions (Settings › General has the
+  switch and the link).
 - **Control Center controls** (in progress, opt-in build: the controls do not yet appear in Control Center) —
   Phone Do Not Disturb as a toggle, Ring Phone, a ringer-mode control and Open
   PocketDeck, built as a small widget extension that reads a snapshot the app
