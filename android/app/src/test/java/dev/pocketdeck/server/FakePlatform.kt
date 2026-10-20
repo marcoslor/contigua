@@ -84,6 +84,8 @@ class FakePlatform : DisplayLayer, AppCatalog, Launcher, Injector, Power, Device
     var apps: List<AppEntry> = emptyList()
     var iconResult: String? = null
     var iconLayersResult: IconLayers? = null
+    val iconPngPx = mutableListOf<Int?>()
+    val iconLayersPx = mutableListOf<Int?>()
     var launchResult = true
     var deviceInfo = DeviceInfo("dev1", "Pixel", "Pixel 9", 36, 1080, 2340, 450, true)
     var deviceState = DeviceState(true, 55, false)
@@ -149,9 +151,15 @@ class FakePlatform : DisplayLayer, AppCatalog, Launcher, Injector, Power, Device
 
     override fun list(): List<AppEntry> = apps
 
-    override fun iconPng(pkg: String): String? = iconResult
+    override fun iconPng(pkg: String, px: Int?): String? {
+        iconPngPx.add(px)
+        return iconResult
+    }
 
-    override fun iconLayers(pkg: String): IconLayers? = iconLayersResult
+    override fun iconLayers(pkg: String, px: Int?): IconLayers? {
+        iconLayersPx.add(px)
+        return iconLayersResult
+    }
 
     // ---- Launcher -----------------------------------------------------
 

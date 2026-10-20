@@ -451,6 +451,18 @@ class SessionTest {
     }
 
     @Test
+    fun iconRequestsForwardTheOptionalPx() {
+        addAndAuthenticate()
+        platform.iconResult = "AAAA"
+        send(mapOf("t" to "apps.icon", "pkg" to "com.a"))
+        readUntil("icon")
+        send(mapOf("t" to "apps.icon", "pkg" to "com.a", "px" to 1296))
+        readUntil("icon")
+        assertEquals(listOf(null, 1296), platform.iconPngPx)
+        assertEquals(listOf(null, 1296), platform.iconLayersPx)
+    }
+
+    @Test
     fun iconMessageCarriesTheAdaptiveLayersAsOptionalFields() {
         addAndAuthenticate()
         platform.apps = listOf(AppEntry("com.a", "Alpha", "com.a/.Main"))
