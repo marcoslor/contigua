@@ -7211,6 +7211,10 @@ for line in open(sys.argv[1]):
 print(n)
 PY
     }
+    # The script's own result lines, counted by re-reading the log on every
+    # poll (a $( ) inside a wait_until argument is evaluated once, at the call).
+    idle_count() { grep -c '"op":"idle"' "$WORK/app.log" 2>/dev/null; }
+    two_idles() { [ "$(idle_count)" -ge 2 ]; }
     FAKE_ARGS="--text-frame POCKETDECK --frame-events" start_fake || return 1
     FAKE_ARGS=""
     rm -f "$WORK/lt-copy-go" "$WORK/livetext.png"
@@ -7250,6 +7254,13 @@ PY
         case "$line" in
             *'"contains":true'*) ok "LT the analysis reads POCKETDECK" ;;
             *) bad "LT the analysis does not contain POCKETDECK ($line)" ;;
+        esac
+        # Entry starts with VisionKit's Live Text button on: every recognised
+        # item is highlighted. (Before v103's hotfix it started off, so the
+        # person saw the text but no highlights until they pressed the button.)
+        case "$line" in
+            *'"highlights":true'*) ok "LT the Live Text highlight button is on after the analysis" ;;
+            *) bad "LT the Live Text highlight button is off after the analysis ($line)" ;;
         esac
     else
         bad "LT no analysis result (app log: $(tail -3 "$WORK/app.log"))"
@@ -7347,8 +7358,8 @@ PY
     # A stream resize while in the mode drops back to idle.
     # The second enter runs VisionKit again; under load that alone can take
     # half a minute.
-    if wait_until 220 [ "$(grep -c '"op":"resize"' "$WORK/app.log")" -ge 1 ]; then
-        wait_until 15 [ "$(grep -c '"op":"idle"' "$WORK/app.log")" -ge 2 ] \
+    if wait_until 220 grep -qF '"op":"resize"' "$WORK/app.log"; then
+        wait_until 15 two_idles \
             && ok "LT a stream resize while in the mode dropped back to idle" \
             || bad "LT the resize did not return the mode to idle"
     else

@@ -53,6 +53,11 @@ idle --enter--> capturing --frameCaptured--> analyzing --analysisFinished--> sho
   the capture timeout. Every one drops the overlay and brings live video back.
 - `analysisFailed` still shows the frozen frame: copying it and leaving work,
   only text selection is missing.
+- The first analysis turns VisionKit's supplementary Live Text button on
+  (`selectableItemsHighlighted = true`), so every recognised item is highlighted
+  as soon as the overlay appears. The button remains the person's: it toggles
+  the highlights for the session and nothing re-applies the default until the
+  next entry.
 
 The mode is per stream window. The video view owns the freeze image and the
 `ImageAnalysisOverlayView` (VisionKit: `ImageAnalyzer` with `.text`,

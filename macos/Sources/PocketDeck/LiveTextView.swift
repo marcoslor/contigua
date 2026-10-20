@@ -169,9 +169,6 @@ final class LiveTextSession {
         imageView.layer?.zPosition = 5
         imageView.isHidden = true
         overlay.preferredInteractionTypes = .automatic
-        // Force click has to reach stage 2 for the copy; the overlay still
-        // gets the event (and its Look Up) when no subject is under it.
-        overlay.pressureConfiguration = NSPressureConfiguration(pressureBehavior: .primaryGeneric)
         overlay.trackingImageView = imageView
         overlay.isHidden = true
         overlay.layer?.zPosition = 6
@@ -305,6 +302,11 @@ final class LiveTextSession {
                 await MainActor.run {
                     guard let self, self.generation == generation, self.mode.state == .analyzing else { return }
                     self.overlay.analysis = analysis
+                    // Entering the mode starts with VisionKit's Live Text button
+                    // on: every recognised item is highlighted. The button and
+                    // its toggle stay the person's afterwards (set once here,
+                    // never re-applied while the mode is up).
+                    self.overlay.selectableItemsHighlighted = true
                     self.analysisReady = true
                     self.mode.handle(.analysisFinished)
                     self.onStateChange?(.shown, nil)
@@ -351,6 +353,10 @@ final class LiveTextSession {
         if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
         keyMonitor = nil
     }
+
+    /// VisionKit's supplementary Live Text button state: true from the first
+    /// analysis, and whatever the person's toggle made it afterwards.
+    var selectableItemsHighlighted: Bool { overlay.selectableItemsHighlighted }
 
     /// The analysed transcript's length, never the text itself (the debug hook
     /// reports lengths and one token's presence).
