@@ -12,6 +12,7 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
@@ -74,18 +75,19 @@ class NotifyDebugPoster : BroadcastReceiver() {
                 Notification.BigPictureStyle().bigPicture(testPicture(640, 480)),
             )
             KIND_ICON -> builder.setLargeIcon(testIcon(512))
-            KIND_LIVE -> builder
-                .setOngoing(true)
-                .setOnlyAlertOnce(true)
-                .setShortCriticalText(LIVE_CHIP)
-                .setStyle(progressStyle(0))
-            KIND_CHRONO -> builder
-                .setOngoing(true)
-                .setOnlyAlertOnce(true)
-                .setShortCriticalText(CHRONO_CHIP)
-                .setUsesChronometer(true)
-                .setChronometerCountDown(true)
-                .setWhen(System.currentTimeMillis() + CHRONO_MS)
+            KIND_LIVE -> {
+                builder.setOngoing(true).setOnlyAlertOnce(true)
+                if (Build.VERSION.SDK_INT >= 36) {
+                    builder.setShortCriticalText(LIVE_CHIP).setStyle(progressStyle(0))
+                }
+            }
+            KIND_CHRONO -> {
+                builder.setOngoing(true).setOnlyAlertOnce(true)
+                    .setUsesChronometer(true)
+                    .setChronometerCountDown(true)
+                    .setWhen(System.currentTimeMillis() + CHRONO_MS)
+                if (Build.VERSION.SDK_INT >= 36) builder.setShortCriticalText(CHRONO_CHIP)
+            }
         }
         manager.notify(id, builder.build())
         Log.i(TAG, "posted kind=$kind id=$id")
@@ -115,7 +117,8 @@ class NotifyDebugPoster : BroadcastReceiver() {
                     return
                 }
                 val value = step * 10
-                val notification = Notification.Builder(app, CHANNEL)
+                val live = if (Build.VERSION.SDK_INT >= 36) progressStyle(value) else null
+                val builder = Notification.Builder(app, CHANNEL)
                     .setSmallIcon(android.R.drawable.ic_dialog_info)
                     .setAutoCancel(false)
                     .setContentIntent(contentIntent(app))
@@ -124,10 +127,11 @@ class NotifyDebugPoster : BroadcastReceiver() {
                     .setContentText("A trip in progress")
                     .setOngoing(true)
                     .setOnlyAlertOnce(true)
-                    .setShortCriticalText(LIVE_CHIP)
-                    .setStyle(progressStyle(value))
-                    .build()
-                manager.notify(id, notification)
+                if (Build.VERSION.SDK_INT >= 36) {
+                    builder.setShortCriticalText(LIVE_CHIP)
+                    live?.let { builder.setStyle(it) }
+                }
+                manager.notify(id, builder.build())
                 Log.i(TAG, "live tick id=$id progress=$value")
                 LIVE_HANDLER.postDelayed(this, LIVE_INTERVAL_MS)
             }
