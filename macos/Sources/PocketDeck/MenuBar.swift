@@ -8,13 +8,20 @@ struct MenuBarIcon: View {
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
-        icon
-            .task {
-                // This view exists from launch. Started from a shell (the test
-                // harness) SwiftUI sometimes does not present the Deck by itself.
-                try? await Task.sleep(for: .seconds(0.5))
-                if DeckWindow.window == nil { openWindow(id: DeckWindow.id) }
+        HStack(spacing: 3) {
+            icon
+            if controller.mcp.clientCount > 0 {
+                Image(systemName: "circle.fill")
+                    .font(.system(size: 5))
+                    .accessibilityLabel("An AI agent is connected")
             }
+        }
+        .task {
+            // This view exists from launch. Started from a shell (the test
+            // harness) SwiftUI sometimes does not present the Deck by itself.
+            try? await Task.sleep(for: .seconds(0.5))
+            if DeckWindow.window == nil { openWindow(id: DeckWindow.id) }
+        }
     }
 
     @ViewBuilder
@@ -36,6 +43,10 @@ struct MenuBarContent: View {
 
     var body: some View {
         Text(statusLine)
+        if controller.mcp.clientCount > 0 {
+            Text("AI agent connected (\(controller.mcp.clientCount))")
+            Button("Disconnect agent") { controller.mcp.disconnectAgents() }
+        }
         Divider()
         Button("Open PocketDeck") { showDeck() }.keyboardShortcut("k")
         Button("Phone screen") { controller.openPhoneWindow() }

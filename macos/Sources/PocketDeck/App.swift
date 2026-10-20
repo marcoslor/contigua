@@ -68,6 +68,9 @@ struct LaunchOptions {
     /// `--open-requests DIR` (background mode only): each `*.path` file put in DIR
     /// names files to open, as LaunchServices' Open With would (e2e, apk).
     var openRequests: String?
+    /// `--mcp-enable` (test builds only): turn the automation server's setting
+    /// on for this profile at launch (e2e `mcp`).
+    var mcpEnable = false
 
     /// nil when `--profile` was missing or not a usable name.
     var profile: Profile? { Profile(name: profileName) }
@@ -108,6 +111,7 @@ struct LaunchOptions {
         "--continue-on-mac": false,
         "--background": false,
         "--open-requests": true,
+        "--mcp-enable": false,
     ]
 
     /// One line on stderr (the harness captures stderr into app.log); the
@@ -204,6 +208,8 @@ struct LaunchOptions {
                 options.background = true
             case "--open-requests":
                 options.openRequests = next()
+            case "--mcp-enable":
+                options.mcpEnable = true
             default:
                 break
             }

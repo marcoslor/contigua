@@ -105,6 +105,9 @@ final class ConnectionController {
     /// Dock and Launchpad apps (docs/design/dock.md).
     let dockApps: DockApps
     let windows: WindowManager
+    /// The automation server (docs/design/mcp.md); off unless the profile's
+    /// setting says otherwise.
+    @ObservationIgnored let mcp = MCPAutomation()
     let audio = AudioEngine()
     private let discovery = Discovery()
     private var audioStarted = false
@@ -367,6 +370,7 @@ final class ConnectionController {
         nowPlaying.onCommand = { [weak self] action in
             MainActor.assumeIsolated { self?.session?.mediaCommand(action) }
         }
+        mcp.configure(profile: profile, forced: options.mcpEnable)
     }
 
     var audioVolume: Float {
