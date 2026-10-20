@@ -14,6 +14,8 @@
 //                    --debug-chrome-state, --debug-input-script, --audio-stats,
 //                    --resize-stream, --minimize-stream, --deminimize-stream,
 //                    --close-stream (timers count from the command)
+//   camera CMD       the camera window's own controls: open, close, retry,
+//                    switch (docs/design/camera.md, C2)
 //
 // Arguments are separated by spaces; paths with spaces are not supported.
 

@@ -83,6 +83,8 @@ data class DeckUiState(
     val allowPairings: Boolean = true,
     val notifyShared: Boolean = false,
     val notifyGrantFailed: Boolean = false,
+    /** "Let Macs use the camera": the setting AND the granted permission. */
+    val cameraAllowed: Boolean = false,
     val shizukuInstalled: Boolean = false,
     val shizukuRunning: Boolean = false,
     val shizukuGranted: Boolean = false,

@@ -77,6 +77,7 @@ fun HomeScreen(
     onToggleAllowConnections: (Boolean) -> Unit,
     onToggleAllowPairings: (Boolean) -> Unit,
     onToggleNotify: (Boolean) -> Unit,
+    onToggleCamera: (Boolean) -> Unit,
     onStatusAction: (AttentionKind) -> Unit,
     onForget: (PairedMacUi) -> String,
     onUndoForget: (PairedMacUi) -> Unit,
@@ -176,6 +177,22 @@ fun HomeScreen(
                 modifier = Modifier.toggleable(
                     value = state.notifyShared,
                     onValueChange = onToggleNotify,
+                    role = androidx.compose.ui.semantics.Role.Switch,
+                ),
+            )
+            ListItem(
+                headlineContent = { Text(stringResource(R.string.home_camera_share)) },
+                supportingContent = {
+                    if (state.cameraAllowed) {
+                        Text(stringResource(R.string.home_camera_hint))
+                    }
+                },
+                trailingContent = {
+                    Switch(checked = state.cameraAllowed, onCheckedChange = null)
+                },
+                modifier = Modifier.toggleable(
+                    value = state.cameraAllowed,
+                    onValueChange = onToggleCamera,
                     role = androidx.compose.ui.semantics.Role.Switch,
                 ),
             )

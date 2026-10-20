@@ -5432,6 +5432,356 @@ PY
 }
 
 
+# --- C1: the camera wire (docs/PROTOCOL.md "Camera") ----------------------
+#
+# fakephone + deckctl only: the check is the wire, not the Mac app. It runs
+# three fake phones: a normal one (list → start → frames → busy → stop), one
+# that evicts the capture after a second (the person's camera app wins), and
+# one whose "Let Macs use the camera" is off.
+
+# camctl <deckctl args...> — one deckctl run against this check's fake phone.
+camctl() {
+    "$FAKE_PY" "$ROOT/tools/fakephone/deckctl.py" --host 127.0.0.1 --port "$PORT" \
+        --state "$WORK/deck.json" --pair "$@"
+}
+
+check_cam_wire() {
+    clean
+    start_fake || return 1
+
+    camctl cam list > "$WORK/cam-list.txt" 2> "$WORK/cam-list.err"
+    if [ $? -ne 0 ]; then
+        bad "CAM-WIRE cam.list failed: $(cat "$WORK/cam-list.err")"
+    elif grep -q "cam.cams count=2" "$WORK/cam-list.txt" && grep -q "facing=back" "$WORK/cam-list.txt"; then
+        ok "CAM-WIRE cam.list: 2 cameras"
+    else
+        bad "CAM-WIRE cam.list: $(tr '\n' ' ' < "$WORK/cam-list.txt")"
+    fi
+
+    # Start, measure 3 s, ask for a second stream while the first runs, stop.
+    camctl cam start --stream 7 --seconds 3 --busy-stream 8 \
+        --save-h264 "$WORK/cam.h264" > "$WORK/cam-start.txt" 2> "$WORK/cam-start.err"
+    local rc=$?
+    local frames fps
+    if [ "$rc" -ne 0 ]; then
+        bad "CAM-WIRE cam.start failed: $(tail -2 "$WORK/cam-start.err")"
+    else
+        frames="$(sed -n 's/.*cam\.stats .*frames=\([0-9]*\).*/\1/p' "$WORK/cam-start.txt" | tail -1)"
+        fps="$(sed -n 's/.*cam\.stats .*\(fps=[0-9.]*\).*/\1/p' "$WORK/cam-start.txt" | tail -1)"
+        [ -n "$frames" ] && [ "$frames" -ge 60 ] \
+            && ok "CAM-WIRE 3 s of frames: $frames ($fps)" \
+            || bad "CAM-WIRE only $frames frames in 3 s ($fps)"
+        grep -q "first_key=True sps_pps=True" "$WORK/cam-start.txt" \
+            && ok "CAM-WIRE the first keyframe carries SPS/PPS" \
+            || bad "CAM-WIRE first frame: $(grep 'cam.stats' "$WORK/cam-start.txt")"
+        grep -q "key_gap_ms=none" "$WORK/cam-start.txt" \
+            && bad "CAM-WIRE only one keyframe in 3 s (interval is 2 s)" \
+            || ok "CAM-WIRE keyframe interval: $(sed -n 's/.*\(key_gap_ms=[0-9]*\).*/\1/p' "$WORK/cam-start.txt")"
+        grep -q "state=streaming" "$WORK/cam-start.txt" \
+            && ok "CAM-WIRE cam.state streaming" \
+            || bad "CAM-WIRE no streaming state"
+        grep -q "cam.busy stream=8 state=busy" "$WORK/cam-start.txt" \
+            && ok "CAM-WIRE a second cam.start is busy" \
+            || bad "CAM-WIRE second start: $(grep 'cam.busy' "$WORK/cam-start.txt")"
+        grep -q "state=stopped" "$WORK/cam-start.txt" \
+            && ok "CAM-WIRE cam.stop answers stopped" \
+            || bad "CAM-WIRE cam.stop: $(grep 'cam.state' "$WORK/cam-start.txt" | tail -1)"
+        # Frames really stopped: the camera is free again, so a second capture
+        # on the same stream starts and streams instead of answering busy.
+        local again
+        camctl cam start --stream 7 --seconds 2 > "$WORK/cam-again.txt" 2> "$WORK/cam-again.err"
+        again="$(sed -n 's/.*cam\.stats .*frames=\([0-9]*\).*/\1/p' "$WORK/cam-again.txt" | tail -1)"
+        if grep -q "^cam.state stream=7 state=streaming" "$WORK/cam-again.txt" \
+            && [ -n "$again" ] && [ "$again" -ge 20 ]; then
+            ok "CAM-WIRE the camera was free again after stop ($again frames)"
+        else
+            bad "CAM-WIRE the camera was not free after stop: $(tail -2 "$WORK/cam-again.txt" | tr '\n' ' ')"
+        fi
+        [ -s "$WORK/cam.h264" ] && ffprobe -v error -show_entries stream=codec_name,width,height \
+            -of csv=p=0 "$WORK/cam.h264" > "$WORK/cam-probe.txt" 2>/dev/null \
+            && grep -q "h264,1280,720" "$WORK/cam-probe.txt" \
+            && ok "CAM-WIRE the Annex-B decodes as 1280x720 H.264" \
+            || bad "CAM-WIRE the Annex-B does not probe as 1280x720 H.264"
+    fi
+    stop_fakephone
+    sleep 1
+
+    # The person's own camera app takes the camera: evicted, no retry, no frames.
+    FAKE_ARGS="--cam-evict-after 1" start_fake || return 1
+    camctl cam start --stream 9 --seconds 2 --await-terminal --wait 10 \
+        > "$WORK/cam-evict.txt" 2> "$WORK/cam-evict.err"
+    if grep -q "cam.state stream=9 state=evicted" "$WORK/cam-evict.txt"; then
+        ok "CAM-WIRE eviction reports evicted"
+        grep -q "cam.after_terminal frames=0" "$WORK/cam-evict.txt" \
+            && ok "CAM-WIRE no frames after the eviction" \
+            || bad "CAM-WIRE frames arrived after the eviction"
+        grep -q "^cam.state stream=9 state=streaming" "$WORK/cam-evict.txt" \
+            && ok "CAM-WIRE the capture streamed before the eviction" \
+            || bad "CAM-WIRE the capture never streamed"
+    else
+        bad "CAM-WIRE eviction: $(grep 'cam.state' "$WORK/cam-evict.txt" | tail -1)"
+    fi
+    # A capture is never retried: after evicted, nothing starts on its own.
+    grep -q "state=streaming" <(tail -2 "$WORK/cam-evict.txt") \
+        && bad "CAM-WIRE the capture restarted after the eviction" \
+        || ok "CAM-WIRE the capture was not retried"
+    stop_fakephone
+    sleep 1
+
+    # The setting off: empty list, every start refused with off.
+    FAKE_ARGS="--camera-off" start_fake || return 1
+    camctl cam list > "$WORK/cam-off-list.txt" 2>&1
+    grep -q "cam.cams count=0" "$WORK/cam-off-list.txt" \
+        && ok "CAM-WIRE the setting off lists no camera" \
+        || bad "CAM-WIRE the setting off still lists cameras"
+    camctl cam start --stream 11 --wait 5 > "$WORK/cam-off.txt" 2>&1
+    grep -q "state=off" "$WORK/cam-off.txt" \
+        && ok "CAM-WIRE the setting off refuses cam.start with off" \
+        || bad "CAM-WIRE off: $(grep 'cam.state' "$WORK/cam-off.txt" | tail -1)"
+    stop_fakephone
+}
+
+# --- C2: the Phone Camera window (docs/design/camera.md) ------------------
+#
+# fakephone + the Mac app, quiet. The window is opened from --debug-control:
+# it lists the fake's two cameras and starts 1280x720@30 on the stream id the
+# window allocator chose; frames decode, the window follows the stream's
+# aspect; switching camera stops the first capture and starts the other on a
+# fresh stream; closing sends cam.stop. Then the phone with the setting off
+# (state off), one whose camera app evicts mid-stream (evicted, nothing
+# restarts until Try Again) and a session end (disconnected, no restart on
+# reconnect). The no-Mac-camera rule is repeated against the built bundle.
+
+camline() { grep 'camera window: state=' "$WORK/app.log" 2>/dev/null | tail -1; }
+cam_state() { camline | sed -n 's/.*state=\([a-z]*\).*/\1/p'; }
+cam_frames() { local f; f="$(camline | sed -n 's/.*frames=\([0-9]*\).*/\1/p')"; echo "${f:-0}"; }
+cam_starts() { local n; n="$(grep -c '"t":"cam.start"' "$WORK/events.jsonl" 2>/dev/null)"; echo "${n:-0}"; }
+cam_stops() { local n; n="$(grep -c '"t":"cam.stop"' "$WORK/events.jsonl" 2>/dev/null)"; echo "${n:-0}"; }
+cam_start_line() { grep -o '"t":"cam.start"[^}]*}' "$WORK/events.jsonl" 2>/dev/null | sed -n "${1}p"; }
+# cam_start_field INDEX FIELD — one field of the INDEXth cam.start the phone
+# received. JSON key order is not stable, so the checks never match on it.
+cam_start_field() {
+    python3 - "$WORK/events.jsonl" "$1" "$2" <<'PY'
+import json, sys
+path, index, field = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+rows = []
+try:
+    with open(path) as f:
+        for line in f:
+            try:
+                event = json.loads(line)
+            except ValueError:
+                continue
+            message = event.get("msg") or {}
+            if event.get("ev") == "rx" and message.get("t") == "cam.start":
+                rows.append(message)
+except OSError:
+    pass
+if 0 < index <= len(rows):
+    value = rows[index - 1].get(field)
+    if value is not None:
+        print(value)
+PY
+}
+cam_frames_at_least() { [ "$(cam_state)" = streaming ] && [ "$(cam_frames)" -ge "$1" ]; }
+cam_state_is() { [ "$(cam_state)" = "$1" ]; }
+cam_starts_at_least() { [ "$(cam_starts)" -ge "$1" ]; }
+cam_starts_above() { [ "$(cam_starts)" -gt "$1" ]; }
+cam_stops_above() { [ "$(cam_stops)" -gt "$1" ]; }
+cam_size_720() { camline | grep -q 'size=1280x720'; }
+
+# cam_open_window — the debug command, waiting for the session after a phone
+# restart ("not online" until it reconnects).
+cam_open_window() {
+    local tries=60
+    while ! control camera open; do
+        if [ "$CONTROL_REPLY" != "not online" ] || [ "$tries" -le 0 ]; then
+            bad "CAM-WINDOW camera open answered '$CONTROL_REPLY'"
+            return 1
+        fi
+        tries=$((tries - 1))
+        sleep 0.5
+    done
+    return 0
+}
+
+# cam_window_aspect — some window of the app has 16:9 content (the framed
+# window's frame carries the 28 pt bar above the stream).
+cam_window_aspect() {
+    windows | awk '{ content = $5 - 28; if (content > 0) { r = $4 / content; if (r > 1.70 && r < 1.85) found = 1 } } END { exit found ? 0 : 1 }'
+}
+
+# cam_window_id — that window's id, for the visible run's screenshots.
+cam_window_id() {
+    windows | awk '{ content = $5 - 28; if (content > 0) { r = $4 / content; if (r > 1.70 && r < 1.85) { print $1; exit } } }'
+}
+
+check_cam_window() {
+    clean
+    rm -rf "$WORK-control"
+    mkdir -p "$WORK-control"
+    start_fake || return 1
+    launch --debug-control "$WORK-control" --connect "127.0.0.1:$PORT" --quit-after 240
+
+    # -- The no-Mac-camera rule, against what ships: the app binary and plist.
+    if strings -a "$APP" | grep -qE 'AVCaptureDevice|CMIOExtension|CoreMediaIO'; then
+        bad "CAM-WINDOW the app binary names a Mac camera API"
+    elif /usr/libexec/PlistBuddy -c "Print :NSCameraUsageDescription" \
+        "$E2E_BUNDLE/Contents/Info.plist" >/dev/null 2>&1; then
+        bad "CAM-WINDOW the app bundle asks for camera permission"
+    else
+        ok "CAM-WINDOW no Mac camera API in the app target"
+    fi
+
+    # -- Open: cam.list, then a 1280x720 capture on a Mac-chosen stream.
+    cam_open_window || return 1
+    wait_until 20 cam_frames_at_least 1 \
+        || { bad "CAM-WINDOW no frame (state=$(cam_state) line=$(camline))"; stop_fakephone; return 1; }
+    wait_until 10 cam_starts_at_least 1 \
+        || { bad "CAM-WINDOW the phone saw no cam.start"; stop_fakephone; return 1; }
+    local stream1 w1 h1 id1
+    stream1="$(cam_start_field 1 stream)"
+    w1="$(cam_start_field 1 w)"
+    h1="$(cam_start_field 1 h)"
+    id1="$(cam_start_field 1 id)"
+    if [ -n "$stream1" ] && [ "$stream1" -ge 1 ]; then
+        ok "CAM-WINDOW cam.start on the Mac-chosen stream $stream1"
+    else
+        bad "CAM-WINDOW cam.start stream: $(cam_start_line 1)"
+    fi
+    if [ "$w1" = "1280" ] && [ "$h1" = "720" ] && [ "$id1" = "0" ]; then
+        ok "CAM-WINDOW the default back camera at 1280x720"
+    else
+        bad "CAM-WINDOW cam.start fields: $(cam_start_line 1)"
+    fi
+
+    # 3 s more of frames, then the stream's size and the window's aspect.
+    sleep 3
+    local frames
+    frames="$(cam_frames)"
+    [ "$frames" -ge 30 ] \
+        && ok "CAM-WINDOW $frames frames in 3 s" \
+        || bad "CAM-WINDOW only $frames frames in 3 s"
+    wait_until 5 cam_size_720 \
+        && ok "CAM-WINDOW the stream is 1280x720" \
+        || bad "CAM-WINDOW size: $(camline)"
+    wait_until 5 cam_window_aspect \
+        && ok "CAM-WINDOW the window follows the stream's 16:9 aspect" \
+        || bad "CAM-WINDOW window shape: $(windows | tr '\n' ' ')"
+    titles_have "Phone Camera" \
+        && ok "CAM-WINDOW the window is titled Phone Camera" \
+        || bad "CAM-WINDOW title: $(window_titles "$APP_PID" | tr '\n' '|')"
+    # Visible runs (the VM) keep one screenshot of the streaming window; a
+    # quiet host run never takes one.
+    if [ "$VISIBLE" = "1" ]; then
+        local shot
+        shot="$(cam_window_id)"
+        if [ -n "$shot" ] && shot_window "$shot" "$WORK/camera-streaming.png"; then
+            ok "CAM-WINDOW screenshot: $WORK/camera-streaming.png"
+        else
+            bad "CAM-WINDOW no screenshot of the streaming window"
+        fi
+    fi
+
+    # -- Switch camera (fakephone lists two): stop, then start the other id on
+    #    a fresh stream.
+    local stops_before
+    stops_before="$(cam_stops)"
+    control camera switch || bad "CAM-WINDOW switch answered '$CONTROL_REPLY'"
+    wait_until 10 cam_starts_at_least 2 \
+        || { bad "CAM-WINDOW the switch sent no second cam.start"; stop_fakephone; return 1; }
+    local stream2 id2
+    stream2="$(cam_start_field 2 stream)"
+    id2="$(cam_start_field 2 id)"
+    [ -n "$stream2" ] && [ "$stream2" != "$stream1" ] \
+        && ok "CAM-WINDOW the switch moved to a fresh stream ($stream1 -> $stream2)" \
+        || bad "CAM-WINDOW switch stream: $(cam_start_line 2)"
+    [ "$id2" = "1" ] \
+        && ok "CAM-WINDOW switched to the front camera (id 1)" \
+        || bad "CAM-WINDOW switch camera: $(cam_start_line 2)"
+    [ "$(cam_stops)" -gt "$stops_before" ] \
+        && ok "CAM-WINDOW cam.stop before the switch" \
+        || bad "CAM-WINDOW no cam.stop before the switch"
+    wait_until 15 cam_frames_at_least 1 \
+        && ok "CAM-WINDOW the other camera streams" \
+        || bad "CAM-WINDOW the other camera sent no frame (line=$(camline))"
+
+    # -- Close: cam.stop and no camera lines afterwards.
+    stops_before="$(cam_stops)"
+    control camera close || bad "CAM-WINDOW close answered '$CONTROL_REPLY'"
+    wait_until 10 cam_stops_above "$stops_before" \
+        && ok "CAM-WINDOW closing sent cam.stop" \
+        || bad "CAM-WINDOW closing sent no cam.stop"
+    local last
+    last="$(camline)"
+    sleep 1.5
+    [ "$(camline)" = "$last" ] \
+        && ok "CAM-WINDOW frames stopped after close" \
+        || bad "CAM-WINDOW camera lines continued after close: $(camline)"
+
+    # -- The setting off on the phone: the window says so.
+    stop_fakephone
+    sleep 1
+    FAKE_ARGS="--camera-off" start_fake || return 1
+    cam_open_window || return 1
+    wait_until 20 cam_state_is off \
+        && ok "CAM-WINDOW the setting off shows the off message" \
+        || bad "CAM-WINDOW off state: $(camline)"
+    control camera close || true
+
+    # -- The person's camera app takes the camera: evicted, no retry until the
+    #    button is pressed.
+    stop_fakephone
+    sleep 1
+    FAKE_ARGS="--cam-evict-after 2" start_fake || return 1
+    cam_open_window || return 1
+    wait_until 20 cam_state_is evicted \
+        && ok "CAM-WINDOW the eviction shows the evicted message" \
+        || bad "CAM-WINDOW eviction state: $(camline)"
+    if [ "$VISIBLE" = "1" ]; then
+        local shot
+        shot="$(cam_window_id)"
+        if [ -n "$shot" ] && shot_window "$shot" "$WORK/camera-evicted.png"; then
+            ok "CAM-WINDOW screenshot: $WORK/camera-evicted.png"
+        else
+            bad "CAM-WINDOW no screenshot of the evicted message"
+        fi
+    fi
+    local starts_before
+    starts_before="$(cam_starts)"
+    sleep 3
+    [ "$(cam_starts)" = "$starts_before" ] \
+        && ok "CAM-WINDOW nothing restarted the capture after evicted" \
+        || bad "CAM-WINDOW the capture restarted on its own after evicted"
+    control camera retry || bad "CAM-WINDOW retry answered '$CONTROL_REPLY'"
+    wait_until 10 cam_starts_above "$starts_before" \
+        && ok "CAM-WINDOW Try Again started a new capture" \
+        || bad "CAM-WINDOW Try Again sent no cam.start"
+    local stream3
+    stream3="$(cam_start_field "$(cam_starts)" stream)"
+    [ -n "$stream3" ] && [ "$stream3" != "$stream2" ] \
+        && ok "CAM-WINDOW the retry used a fresh stream ($stream3)" \
+        || bad "CAM-WINDOW retry stream: $(cam_start_line "$(cam_starts)")"
+
+    # -- Session end: disconnected, and a reconnect never restarts it.
+    stop_fakephone
+    wait_until 20 cam_state_is disconnected \
+        && ok "CAM-WINDOW the session end shows Phone disconnected" \
+        || bad "CAM-WINDOW session end state: $(camline)"
+    start_fake || return 1
+    wait_until 30 grep -q '"ev":"session","state":"auth_ok"' "$WORK/events.jsonl" \
+        || wait_until 5 grep -q '"ev":"session","state":"paired"' "$WORK/events.jsonl"
+    sleep 2
+    grep -q '"t":"cam.list"' "$WORK/events.jsonl" \
+        && bad "CAM-WINDOW the reconnect restarted the camera on its own" \
+        || ok "CAM-WINDOW the reconnect sent no cam.list"
+    [ "$(cam_state)" = disconnected ] \
+        && ok "CAM-WINDOW still disconnected after the reconnect" \
+        || bad "CAM-WINDOW reconnect state: $(camline)"
+
+    stop_fakephone
+}
+
 # --- Dock apps (docs/design/dock.md) --------------------------------------
 
 # Dock apps of this run live only in $WORK/dock-apps, never in ~/Applications.

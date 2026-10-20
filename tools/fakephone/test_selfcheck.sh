@@ -124,6 +124,34 @@ wait "$BUSY_PID" || die "first session failed while the second was rejected: $(c
 BUSY_PID=""
 grep -q "fps=" "$WORK/busy1.txt" || die "first session produced no video"
 
+# --- camera (docs/PROTOCOL.md "Camera") -----------------------------------
+note "cam list"
+"${DECK[@]}" cam list > "$WORK/camlist.txt" 2>"$WORK/camlist.err" \
+    || die "cam list failed: $(cat "$WORK/camlist.err")"
+grep -q "cam.cams count=2" "$WORK/camlist.txt" || die "cam list is not 2 cameras: $(cat "$WORK/camlist.txt")"
+grep -q "facing=back" "$WORK/camlist.txt" || die "cam list has no back camera"
+
+note "cam start (3s, second stream busy, stop)"
+"${DECK[@]}" cam start --stream 7 --seconds 3 --busy-stream 8 \
+    --save-h264 "$WORK/cam.h264" > "$WORK/cam.txt" 2>"$WORK/cam.err" \
+    || die "cam start failed: $(cat "$WORK/cam.err")"
+cat "$WORK/cam.txt"
+grep -q "state=streaming" "$WORK/cam.txt" || die "cam.start never reported streaming"
+grep -q "state=busy" "$WORK/cam.txt" || die "a second cam.start was not busy"
+grep -q "first_key=True sps_pps=True" "$WORK/cam.txt" \
+    || die "the first camera keyframe is not key+SPS/PPS"
+grep -q "state=stopped" "$WORK/cam.txt" || die "cam.stop did not answer stopped"
+CAM_FRAMES="$("$PY" - "$WORK/cam.txt" <<'PY2'
+import re, sys
+text = open(sys.argv[1]).read()
+m = re.search(r"frames=(\d+)", text)
+print(m.group(1) if m else "0")
+PY2
+)"
+[ "$CAM_FRAMES" -ge 45 ] || die "cam start received only $CAM_FRAMES frames in 3 s"
+CAM_PROBE="$("$FFPROBE" -v error -show_entries stream=codec_name,width,height -of csv=p=0 "$WORK/cam.h264")"
+[ "$CAM_PROBE" = "h264,1280,720" ] || die "camera Annex-B is not 1280x720 H.264: $CAM_PROBE"
+
 # --- event log -------------------------------------------------------------
 note "event log"
 "$PY" - "$WORK/events.jsonl" <<'PY' || die "event log assertions failed"
@@ -145,6 +173,11 @@ for e in touches:
 configs = [(e["w"], e["h"]) for e in events if e["ev"] == "video" and e.get("config")]
 assert (1072, 2336) in configs, "no VIDEO_CONFIG for 1072x2336: %r" % configs
 assert (720, 1280) in configs, "no VIDEO_CONFIG for 720x1280 after resize: %r" % configs
+
+cam_states = [e["state"] for e in events if e["ev"] == "camera"]
+assert "streaming" in cam_states, "no camera streaming event: %r" % cam_states
+assert "busy" in cam_states, "no camera busy event: %r" % cam_states
+assert "stopped" in cam_states, "no camera stopped event: %r" % cam_states
 
 qualities = [e for e in events if e["ev"] == "quality"]
 assert qualities, "no quality event from window.quality"

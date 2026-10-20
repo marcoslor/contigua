@@ -714,6 +714,13 @@ final class ConnectionController {
         windows.openPhoneWindow()
     }
 
+    /// "Phone Camera" (docs/design/camera.md, C2): the phone's camera in a
+    /// window. One per session; picking it again brings the open one forward.
+    func openCameraWindow() {
+        guard link.isOnline else { return }
+        windows.openCameraWindow()
+    }
+
     /// "Continue on Mac" (docs/ROADMAP.md #9): a window for the app in the
     /// foreground on the phone's screen. The phone answers with `window.opened`
     /// (and the video) for the stream, or `nothing_to_continue` — which shows
@@ -2225,6 +2232,29 @@ final class ConnectionController {
             if let path = check.debugInputScript, let error = armDebugInput(path, phoneOnly: phoneOnly) { return error }
             applyAutoOpen(check)
             return nil
+        case "camera":
+            // The camera window's own controls (docs/design/camera.md, C2).
+            guard let action = arguments.first else { return "camera needs open|close|retry|switch" }
+            switch action {
+            case "open":
+                guard link.isOnline else { return "not online" }
+                windows.openCameraWindow()
+                return nil
+            case "close":
+                guard let camera = windows.cameraWindow else { return "no camera window" }
+                camera.window?.performClose(nil)
+                return nil
+            case "retry":
+                guard let camera = windows.cameraWindow else { return "no camera window" }
+                camera.pressTryAgain()
+                return nil
+            case "switch":
+                guard let camera = windows.cameraWindow else { return "no camera window" }
+                camera.switchCamera()
+                return nil
+            default:
+                return "unknown camera command \(action)"
+            }
         default:
             return "unknown command \(command)"
         }

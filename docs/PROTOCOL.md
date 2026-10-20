@@ -73,6 +73,8 @@ display id on every injected event.
   received before the new CONFIG are old-size frames and may be shown or dropped.
   `window.resume` and `window.keyframe` may also be answered with CONFIG + keyframe.
 - No frames are sent while the display content is static (that's normal).
+- A camera stream (`cam.start`) is the exception: no VIDEO_CONFIG, SPS/PPS with the
+  first keyframe (see "Camera").
 - Backpressure: the phone never queues more than ~250 ms of video per stream.
   If the socket can't keep up it drops non-key frames for that stream until the
   next keyframe, and requests one from the encoder (`PARAMETER_KEY_REQUEST_SYNC_FRAME`).
@@ -640,6 +642,60 @@ the sender may be either side:
   manager. From the phone the image is read out of the clipboard's first item when its bytes
   are readable. The receiver keeps the SHA-256 of the bytes it last sent or received, so images
   are never echoed back, like `clip.set`.
+
+## Camera
+
+The phone's camera as a stream on the session (docs/design/camera.md). The Mac asks,
+the phone captures in its app process and sends ordinary `VIDEO_FRAME`s on a stream
+id the Mac chose, like a window stream.
+
+Mac → phone:
+
+| t | fields | meaning |
+|---|---|---|
+| `cam.list` | — | phone replies `cam.cams` |
+| `cam.start` | `stream`, `id` (optional), `facing` (optional), `w`, `h`, `fps` (all optional) | start one capture on `stream` |
+| `cam.stop` | `stream` | stop that capture |
+
+Phone → Mac:
+
+| t | fields |
+|---|---|
+| `cam.cams` | `cams`: `[{"id":"0","facing":"back","w":1920,"h":1080}]` — the phone's cameras, best capture size each |
+| `cam.state` | `stream`, `state`, optional `reason` |
+
+Rules:
+
+- **One capture at a time.** The camera belongs to the phone: a second `cam.start`
+  while one runs (or while the person's camera app holds it) answers
+  `cam.state {stream, state:"busy"}` and nothing starts.
+- `cam.start` defaults: back camera, 1280×720, 30 fps. `w`/`h`/`fps` are clamped to
+  the camera's sizes and `1920×1080@30`; `id` names a camera from `cam.cams` and wins
+  over `facing` (`back`/`front`).
+- `cam.state.state` is one of:
+  - `streaming` — frames follow on `stream`;
+  - `busy` — another capture (ours or the person's camera app) holds the camera;
+  - `off` — "Let Macs use the camera" is off on the phone, or the camera permission
+    is not granted: nothing starts, no prompt appears;
+  - `locked` — the platform refused the camera while the phone is locked
+    (`ERROR_CAMERA_DISABLED`); it is not retried;
+  - `disabled` — privacy switch or device policy disabled the camera;
+  - `evicted` — the person's own camera app (or another app) took the camera: the
+    capture stopped and is never retried;
+  - `stopped` — `cam.stop` (or the session ending) stopped it;
+  - `error` — anything else, with `reason` a short token (class name, error code).
+  `cam.stop` always answers `stopped`, running or not.
+- **Frames** are `VIDEO_FRAME` (`0x03`) on `stream`, one access unit each, exactly as
+  for a window, with two differences: no `VIDEO_CONFIG` is sent for a camera stream,
+  and **the first keyframe carries the SPS and PPS** (Annex-B, before the IDR) so the
+  decoder can start from it. Sending SPS/PPS before every keyframe is allowed. A
+  keyframe arrives at least every 2 s.
+- A camera `stream` id must not collide with a window stream on the same session.
+  A phone that predates this section ignores `cam.*` like any unknown message
+  (docs/PROTOCOL.md "JSON messages"): the Mac times out and shows "This phone does
+  not share its camera."
+- **Session end** (disconnect, `window` teardown, a new session) stops the capture
+  and releases the camera. A capture never outlives its session.
 
 ## Ring
 

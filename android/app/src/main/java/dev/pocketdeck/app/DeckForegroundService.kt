@@ -75,6 +75,12 @@ class DeckForegroundService : Service() {
         override fun onNotifyDismiss(id: String?) {
             PdNotificationBridge.dismissSink?.invoke(id ?: return)
         }
+
+        override fun onCameraStart(paramsJson: String?, sink: android.os.ParcelFileDescriptor?) {
+            // Park the pipe; the shell starts CameraCaptureService next and the
+            // service picks it up by stream id (docs/design/camera.md C1).
+            CameraCaptureService.offerPipe(paramsJson, sink)
+        }
     }
 
     private val nsd by lazy { NsdAdvertiser(this) }
@@ -158,6 +164,9 @@ class DeckForegroundService : Service() {
             // The notify toggle also lives only in the app: hand it over so the
             // session can answer `notify.state` without a round trip.
             syncNotifyShared()
+            // Likewise the camera gate and list (`cam.list`); a shell that never
+            // hears it answers `off`.
+            CameraGate.push(this)
         } catch (e: Throwable) {
             Log.i(TAG, "startServer failed: ${e.message}")
         }

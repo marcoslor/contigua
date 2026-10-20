@@ -6,8 +6,9 @@ import AppKit
 import SwiftUI
 
 class StreamWindowController: NSWindowController, NSWindowDelegate {
-    /// The stream this window shows.
-    let stream: UInt32
+    /// The stream this window shows. A camera window moves to a fresh id when it
+    /// switches camera (`WindowManager.rebind`); every other kind keeps one.
+    private(set) var stream: UInt32
     let videoView: VideoLayerView
     let chrome: StreamChromeView
     unowned let manager: WindowManager
@@ -282,10 +283,15 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     }
 
     func sendOpen() {}
-    /// The window closed: what the phone is told, before it is forgotten.
+    /// The window closed: what the phone is told, before it is forgotten. A
+    /// camera window stops its capture instead of closing a window stream.
     func sendClose() { session.closeWindow(stream: stream) }
     /// Reapply the window's title after the phone's display name changed.
     func retitle() {}
+    /// One VIDEO_FRAME was routed to this window (the camera window counts them).
+    func receivedFrame() {}
+    /// This controller now shows another stream id (a camera switching camera).
+    func rebind(to stream: UInt32) { self.stream = stream }
     func sendResize() {
         let pixels = displayPixels()
         session.resizeWindow(stream: stream, width: Int(pixels.width), height: Int(pixels.height), dpi: dpi())

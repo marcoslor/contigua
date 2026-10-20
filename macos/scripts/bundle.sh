@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Builds PocketDeck.app from the SwiftPM package and ad-hoc codesigns it.
 #
-#   ./scripts/bundle.sh [APP] [--variant NAME] [--with-files] [--with-controls]
+#   ./scripts/bundle.sh [APP] [--variant NAME] [--with-files] [--with-controls] [--with-camera]
 #
 # APP defaults to build/PocketDeck.app; only that path is ever replaced.
 # The app carries the "Open on Phone" Share extension (Contents/PlugIns/Share.appex)
@@ -12,6 +12,10 @@
 # --with-controls adds the Control Center extension (Contents/PlugIns/Controls.appex)
 # and its App Group; only the VM controls bundle uses it, because a host run
 # must have nothing to register.
+# --with-camera adds the CoreMediaIO Camera Extension
+# (Contents/Library/SystemExtensions/<id>.systemextension) and its App Group;
+# only the VM camera spike uses it. A camera extension is a system extension
+# and must never be embedded in a bundle that is opened on the host.
 # Only `--variant release` (install.sh) gets the real extension id; every other
 # bundle (default `dev`, check-e2e's `e2e`) gets `dev.pocketdeck.mac.share-NAME` and
 # a "(NAME)" title, so a test copy never competes with the installed app's extension.
@@ -22,23 +26,29 @@ APP="build/PocketDeck.app"
 VARIANT="dev"
 WITH_FILES=0
 WITH_CONTROLS=0
+WITH_CAMERA=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --variant) VARIANT="${2:?--variant needs a name}"; shift 2 ;;
         --with-files) WITH_FILES=1; shift ;;
         --with-controls) WITH_CONTROLS=1; shift ;;
+        --with-camera) WITH_CAMERA=1; shift ;;
         *) APP="$1"; shift ;;
     esac
 done
 case "$VARIANT" in
     release) SHARE_ID="dev.pocketdeck.mac.share"; SHARE_TITLE="Open on Phone"; FILES_ID="dev.pocketdeck.mac.files"; FILES_TITLE="PocketDeck Files"
              FILES_GROUP="group.dev.pocketdeck.mac.files"
-             CONTROLS_ID="dev.pocketdeck.mac.controls"; CONTROLS_TITLE="PocketDeck Controls" ;;
+             CONTROLS_ID="dev.pocketdeck.mac.controls"; CONTROLS_TITLE="PocketDeck Controls"
+             CAMERA_ID="dev.pocketdeck.mac.camera"; CAMERA_TITLE="PocketDeck Camera"
+             CAMERA_GROUP="group.dev.pocketdeck.mac.camera" ;;
     *[!a-z0-9]*|"") echo "bundle.sh: --variant must be a-z0-9" >&2; exit 2 ;;
     *) SHARE_ID="dev.pocketdeck.mac.share-$VARIANT"; SHARE_TITLE="Open on Phone ($VARIANT)"
        FILES_ID="dev.pocketdeck.mac.files-$VARIANT"; FILES_TITLE="PocketDeck Files ($VARIANT)"
        FILES_GROUP="group.dev.pocketdeck.mac.files-$VARIANT"
-       CONTROLS_ID="dev.pocketdeck.mac.controls-$VARIANT"; CONTROLS_TITLE="PocketDeck Controls ($VARIANT)" ;;
+       CONTROLS_ID="dev.pocketdeck.mac.controls-$VARIANT"; CONTROLS_TITLE="PocketDeck Controls ($VARIANT)"
+       CAMERA_ID="dev.pocketdeck.mac.camera-$VARIANT"; CAMERA_TITLE="PocketDeck Camera ($VARIANT)"
+       CAMERA_GROUP="group.dev.pocketdeck.mac.camera-$VARIANT" ;;
 esac
 
 # The e2e/debug launch hooks are compiled in only for non-release bundles:
@@ -401,6 +411,29 @@ if [ "$WITH_CONTROLS" = 1 ]; then
     codesign --force --sign - --entitlements Extensions/Controls/Controls.entitlements "$CONTROLS_APPEX"
 fi
 
+# Camera extension (docs/design/camera.md): a CoreMediaIO system extension, so
+# it lives in Contents/Library/SystemExtensions and is activated by the system,
+# not loaded as an app extension. Opt-in (--with-camera): a host bundle must
+# never carry one. swiftc compiles it as a normal executable because the
+# extension has its own @main and calls CMIOExtensionProvider.startService.
+if [ "$WITH_CAMERA" = 1 ]; then
+    CAMERA_EXT="$APP/Contents/Library/SystemExtensions/$CAMERA_ID.systemextension"
+    mkdir -p "$CAMERA_EXT/Contents/MacOS"
+    swiftc -O -parse-as-library -module-name CameraExtension -target "$(uname -m)-apple-macos26.0" \
+        -swift-version 5 Extensions/Camera/CameraExtension.swift \
+        -o "$CAMERA_EXT/Contents/MacOS/CameraExtension"
+    sed -e "s/__CAMERA_ID__/$CAMERA_ID/" -e "s/__CAMERA_TITLE__/$CAMERA_TITLE/" \
+        -e "s/__CAMERA_MACH__/$CAMERA_GROUP/" \
+        Extensions/Camera/Info.plist > "$CAMERA_EXT/Contents/Info.plist"
+    CAMERA_ENTITLEMENTS="build/CameraExtension-$VARIANT.entitlements"
+    sed -e "s/__CAMERA_GROUP__/$CAMERA_GROUP/" Extensions/Camera/CameraExtension.entitlements \
+        > "$CAMERA_ENTITLEMENTS"
+    codesign --force --sign - --entitlements "$CAMERA_ENTITLEMENTS" "$CAMERA_EXT"
+    APP_CAMERA_ENTITLEMENTS="build/PocketDeckCamera-$VARIANT.entitlements"
+    sed -e "s/__CAMERA_GROUP__/$CAMERA_GROUP/" Extensions/Camera/PocketDeckCamera.entitlements \
+        > "$APP_CAMERA_ENTITLEMENTS"
+fi
+
 # Dock app executable (docs/design/dock.md): copied into each per-app shim bundle.
 swiftc -O -module-name PocketDeckShim -target "$(uname -m)-apple-macos26.0" -swift-version 5 \
     Shim/main.swift Sources/PocketDeck/DockMessages.swift -o "$APP/Contents/MacOS/PocketDeckShim"
@@ -413,7 +446,11 @@ swiftc -O -module-name PocketDeckMCP -target "$(uname -m)-apple-macos26.0" -swif
     Shim/mcp.swift -o "$APP/Contents/Helpers/pocketdeck-mcp"
 codesign --force --sign - "$APP/Contents/Helpers/pocketdeck-mcp"
 
-if [ "$WITH_CONTROLS" = 1 ]; then
+if [ "$WITH_CAMERA" = 1 ]; then
+    # The install entitlement and the App Group the camera extension shares
+    # with the app. Only the VM bundle uses this.
+    codesign --force --sign - --entitlements "$APP_CAMERA_ENTITLEMENTS" "$APP"
+elif [ "$WITH_CONTROLS" = 1 ]; then
     # The app carries the App Group the controls extension shares with it (an
     # unsandboxed app may hold an app group, docs/design/files.md §1).
     codesign --force --sign - --entitlements Extensions/Controls/PocketDeckControls.entitlements "$APP"

@@ -16,6 +16,10 @@ final class VideoLayerView: NSView {
     /// Size (px) of the last VIDEO_CONFIG; drives aspect-fit letterboxing.
     private(set) var videoSize: CGSize = .zero
 
+    /// A camera stream sends no VIDEO_CONFIG: its first keyframe carries SPS
+    /// and PPS, and the decoder learns the format and size from it instead.
+    var learnsFormatFromFrames = false
+
     /// The phone window mirrors a fixed screen: its letterbox is never filled
     /// (Letterbox.placement). The app window's is.
     var isPhoneMode = false
@@ -335,8 +339,25 @@ final class VideoLayerView: NSView {
     func enqueue(_ frame: VideoFrameData) {
         videoQueue.async { [weak self] in
             guard let self else { return }
-            // Every stream sends VIDEO_CONFIG before its frames; without one
-            // there is nothing to decode.
+            if self.formatDescription == nil {
+                // The camera's first keyframe names the format (SPS+PPS), and
+                // with it the stream's size.
+                guard self.learnsFormatFromFrames,
+                      let (sps, pps) = AnnexB.parameterSets(from: frame.annexB),
+                      let format = Self.makeFormatDescription(sps: sps, pps: pps) else { return }
+                self.formatDescription = format
+                self.lastPtsUs = 0
+                let dimensions = CMVideoFormatDescriptionGetDimensions(format)
+                let size = CGSize(width: CGFloat(dimensions.width), height: CGFloat(dimensions.height))
+                DispatchQueue.main.async {
+                    self.videoSize = size
+                    self.updateGravity()
+                    self.needsLayout = true
+                    self.needsDisplay = true
+                    NotificationCenter.default.post(name: Self.videoSizeDidChange, object: self)
+                    self.liveText.noteStreamConfig()
+                }
+            }
             guard let format = self.formatDescription else { return }
             let avcc = AnnexB.avcc(fromAnnexB: frame.annexB)
             guard !avcc.isEmpty else { return }
