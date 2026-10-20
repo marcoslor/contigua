@@ -5,7 +5,7 @@
 # The order `all` runs in. The shared-app checks (from deck, whose launch they
 # share, to drop) run back to back; every other check launches its own app.
 ALL_CHECKS=(tls qr pair gates direct mirror spotlight clip sharein links share apk dock nickname notify handoff
-            deck render resize input hover mouseback pinch chrome livetext menus density trackpad pause nav audio drop files intents)
+            deck render resize input hover mouseback pinch chrome livetext menus density trackpad pause nav audio drop files intents mcp)
 
 # True when $1 is one of ALL_CHECKS.
 valid_check() {
