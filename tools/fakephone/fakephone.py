@@ -137,6 +137,29 @@ ZEN_MODES = {"off": 0, "priority": 1, "none": 2, "alarms": 3}
 ZEN_NAMES = {code: name for name, code in ZEN_MODES.items()}
 
 
+RINGER_MODES = {"silent": 0, "vibrate": 1, "normal": 2}
+
+
+class FakeRinger(object):
+    """The fake phone's ringer mode (docs/design/controls.md). A real phone at
+    API 36 refuses a ringer change while DND is on, because that can end an
+    "alarms" DND; the fake keeps the same rule."""
+
+    def __init__(self, supported=True):
+        self.supported = supported
+        self.mode = "normal"
+
+    def apply_from_mac(self, name, dnd):
+        if not self.supported:
+            return "unsupported"
+        if name not in RINGER_MODES:
+            return "bad_request"
+        if dnd != "off":
+            return "dnd_on"
+        self.mode = name
+        return None
+
+
 class FakeZen(object):
     """The fake phone's DND setting plus the setByMac memory: the restore rule
     never turns off a DND the person set themselves."""
@@ -465,6 +488,14 @@ class EventLog(object):
     def dnd(self, mode, by_mac):
         """The phone's DND after a Mac command (mode name only, never a person)."""
         self._emit({"ev": "dnd", "mode": mode, "byMac": by_mac, "ts": time.time()})
+
+    def ringer(self, mode):
+        """The phone's ringer after a Mac command (mode name only)."""
+        self._emit({"ev": "ringer", "mode": mode, "ts": time.time()})
+
+    def ring(self, seconds):
+        """phone.ring (seconds) or phone.ring.stop (0); never any phone data."""
+        self._emit({"ev": "ring", "seconds": seconds, "ts": time.time()})
 
     def tx(self, msg):
         self._emit({"ev": "tx", "msg": redact_pairing(msg), "ts": time.time()})
@@ -1515,6 +1546,8 @@ class Session(object):
         state = {"t": "state", "locked": True, "battery": BATTERY, "charging": False}
         if self.phone.zen.supported:
             state["dnd"] = self.phone.zen.name()
+        if self.phone.fake_ringer.supported:
+            state["ringer"] = self.phone.fake_ringer.mode
         self._send(state)
 
     def _send_shares(self):
@@ -1612,6 +1645,12 @@ class Session(object):
         # A phone without DND support keeps phone.dnd unknown (logged once).
         if self.phone.zen.supported:
             handlers["phone.dnd"] = self._on_phone_dnd
+        # Likewise an old build has no ringer: state carries none, phone.ringer
+        # is an unknown message, and the events log stays silent about it.
+        if self.phone.fake_ringer.supported:
+            handlers["phone.ringer"] = self._on_phone_ringer
+        handlers["phone.ring"] = self._on_phone_ring
+        handlers["phone.ring.stop"] = self._on_phone_ring_stop
         handler = handlers.get(kind)
         if handler is None:
             if kind not in self._unknown_types:
@@ -1635,6 +1674,34 @@ class Session(object):
         # Like the real phone, the answer is a new state even when the mode did
         # not move (the person's own DND is left alone but the Mac gets truth).
         self.send_state()
+
+    def _on_phone_ringer(self, msg):
+        """phone.ringer (docs/design/controls.md): one exact mode, never a
+        volume; refused while DND is on (the shell control has the same rule)."""
+        mode = msg.get("mode")
+        error = self.phone.fake_ringer.apply_from_mac(mode, self.phone.zen.name())
+        if error == "bad_request":
+            self._send_error("bad_request", "phone.ringer needs mode normal|vibrate|silent")
+            return
+        if error == "dnd_on":
+            self._send_error("dnd_on", "phone.ringer needs Do Not Disturb off")
+            return
+        if error == "unsupported":
+            self._send_error("unsupported", "phone.ringer needs the shell service")
+            return
+        self.phone.events.ringer(self.phone.fake_ringer.mode)
+        self.send_state()
+
+    def _on_phone_ring(self, msg):
+        """phone.ring: the app process rings; the fake answers the same
+        ring.state the real phone does (the e2e checks the request arrived)."""
+        seconds = int(msg.get("seconds") or 30)
+        self.phone.events.ring(max(1, min(30, seconds)))
+        self._send({"t": "ring.state", "ringing": True})
+
+    def _on_phone_ring_stop(self, _msg):
+        self.phone.events.ring(0)
+        self._send({"t": "ring.state", "ringing": False})
 
     # -- APK install (docs/design/apk.md): acts like pm; a part holding the bytes
     # PD_FAKE_DOWNGRADE fails the commit with INSTALL_FAILED_VERSION_DOWNGRADE.
@@ -2309,6 +2376,7 @@ class FakePhone(object):
         # (no state.dnd, phone.dnd is an unknown message); --dnd-person starts
         # in a mode the person set, which the restore rule must leave alone.
         self.zen = FakeZen(person=args.dnd_person, supported=not args.dnd_unsupported)
+        self.fake_ringer = FakeRinger(supported=not args.ringer_unsupported)
         # The fake /sdcard (docs/design/files.md §6): the e2e check builds a
         # tree here and the fs.* handlers serve it with the phone's rules.
         self.fs = FsFake(args.fs_root) if args.fs_root else None
@@ -2531,6 +2599,9 @@ def build_parser():
     p.add_argument("--dnd-unsupported", action="store_true",
                    help="act like a build without Focus support: state carries no "
                         "dnd and phone.dnd is an unknown message")
+    p.add_argument("--ringer-unsupported", action="store_true",
+                   help="act like a build without ringer support: state carries no "
+                        "ringer and phone.ringer is an unknown message")
     p.add_argument("--tls-identity", metavar="DIR", default=None,
                    help="TLS identity dir (cert.pem/key.pem; generated once); "
                         "default is next to --state, so restarts keep the pin. "

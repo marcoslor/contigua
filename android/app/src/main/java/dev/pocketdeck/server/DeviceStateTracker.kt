@@ -29,9 +29,9 @@ internal class DeviceStateTracker(private val emit: (DeviceState) -> Unit) {
 
     /** A keyguard event: only `locked` changes. */
     fun onLockChanged(locked: Boolean) =
-        update(DeviceState(locked, current?.battery ?: 0, current?.charging ?: false, current?.dnd))
+        update(DeviceState(locked, current?.battery ?: 0, current?.charging ?: false, current?.dnd, current?.ringer))
 
     /** A battery event: only the battery fields change. */
     fun onBatteryChanged(battery: Int, charging: Boolean) =
-        update(DeviceState(current?.locked ?: false, battery, charging, current?.dnd))
+        update(DeviceState(current?.locked ?: false, battery, charging, current?.dnd, current?.ringer))
 }

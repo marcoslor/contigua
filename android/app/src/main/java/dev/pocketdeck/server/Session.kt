@@ -96,6 +96,8 @@ class Session(
     private val ringer: Ringer? = null,
     /** The phone's DND, shared by the service (docs/design/focus.md); null refuses `phone.dnd`. */
     private val zen: ZenControl? = null,
+    /** The phone's ringer mode (docs/design/controls.md); null refuses `phone.ringer`. */
+    private val ringerMode: RingerControl? = null,
 ) : VideoSink, AudioSink {
 
     /** What the TLS layer knows about this connection (§1/§4b). */
@@ -205,6 +207,7 @@ class Session(
     private var writerThread: Thread? = null
     private var stateHandle: AutoCloseable? = null
     private var dndHandle: AutoCloseable? = null
+    private var ringerHandle: AutoCloseable? = null
     private var watchThread: Thread? = null
 
     /** The protocol's `state` stream: one emission per real change. */
@@ -217,8 +220,9 @@ class Session(
             "battery" to state.battery,
             "charging" to state.charging,
         )
-        // Absent (not null) for a phone that cannot read its zen mode.
+        // Absent (not null) for a phone that cannot read its zen mode / ringer.
         state.dnd?.let { message["dnd"] = it.wire }
+        state.ringer?.let { message["ringer"] = it.wire }
         sendJson(message)
     }
 
@@ -742,6 +746,7 @@ class Session(
                 "phone.ring" -> onPhoneRing(obj)
                 "phone.ring.stop" -> onPhoneRingStop()
                 "phone.dnd" -> onPhoneDnd(obj)
+                "phone.ringer" -> onPhoneRinger(obj)
                 else -> logOnce("unknown message '$t'")
             }
         } catch (e: Throwable) {
@@ -1112,6 +1117,34 @@ class Session(
         // (the person's own DND is left alone but the Mac still gets the truth).
         val state = (stateTracker.current ?: device.state()).copy(dnd = control.current())
         if (!stateTracker.update(state)) sendState(state)
+    }
+
+    /**
+     * `phone.ringer` (docs/design/controls.md): one ringer mode, written with
+     * the shell's `cmd audio set-ringer-mode`. The answer is a fresh `state`
+     * carrying the mode the phone actually reports; nothing else is touched.
+     */
+    private fun onPhoneRinger(obj: Map<String, Any?>) {
+        val control = ringerMode ?: run {
+            sendError("unsupported", "phone.ringer needs the shell service", 0)
+            return
+        }
+        val mode = RingerMode.fromWire(Json.str(obj["mode"])) ?: run {
+            sendError("bad_request", "phone.ringer needs mode normal, vibrate or silent", 0)
+            return
+        }
+        when (control.apply(mode)) {
+            RingerControl.Result.SET, RingerControl.Result.SAME -> {
+                val state = (stateTracker.current ?: device.state()).copy(ringer = control.current())
+                if (!stateTracker.update(state)) sendState(state)
+            }
+            RingerControl.Result.REFUSED_DND ->
+                sendError("dnd_on", "phone.ringer needs Do Not Disturb off", 0)
+            RingerControl.Result.REFUSED ->
+                sendError("unavailable", "the phone refused the ringer mode", 0)
+            RingerControl.Result.UNREADABLE ->
+                sendError("unsupported", "phone.ringer cannot read the ringer mode", 0)
+        }
     }
 
     /**
@@ -1595,11 +1628,19 @@ class Session(
                 if (current != null) stateTracker.update(current.copy(dnd = mode))
             }
         }.getOrNull()
+        ringerHandle = runCatching {
+            ringerMode?.start { mode ->
+                val current = stateTracker.current
+                if (current != null) stateTracker.update(current.copy(ringer = mode))
+            }
+        }.getOrNull()
     }
 
     private fun stopStateWatch() {
         dndHandle?.let { runCatching { it.close() } }
         dndHandle = null
+        ringerHandle?.let { runCatching { it.close() } }
+        ringerHandle = null
         val handle = stateHandle ?: return
         stateHandle = null
         runCatching { handle.close() }

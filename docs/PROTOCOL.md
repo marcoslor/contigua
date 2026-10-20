@@ -237,6 +237,7 @@ Mac → phone (after `welcome`):
 | `phone.ring` | `seconds`? | ring the phone (app process, alarm over the lock screen, ≤ 30 s); see "Ring" |
 | `phone.ring.stop` | — | stop a running ring |
 | `phone.dnd` | `mode`: `priority`/`alarms`/`none`/`off` | set the phone's Do Not Disturb (its zen mode) for a Mac Focus or a manual set; see "Focus and Do Not Disturb" |
+| `phone.ringer` | `mode`: `normal`/`vibrate`/`silent` | set the phone's ringer mode (never a volume); see "Ringer" |
 | `fs.list` | `id`, `path`, `page`? | children of `path`; `page` is the phone's opaque cursor, absent = first |
 | `fs.stat` | `id`, `path` | one item's metadata |
 | `fs.read` | `id`, `path`, `offset`, `length`, `etag`? | stream `length` bytes from `offset` (`FS_DATA`, then `fs.read.end`); an `etag` that no longer matches answers `fs_stale` |
@@ -253,7 +254,7 @@ Phone → Mac:
 | `window.opened` | `stream`, `displayId`, `w`, `h` — `started`: `"moved"` (default; the task the display shows was moved to it, state kept) or `"fresh"` (the phone couldn't move the task and relaunched the same package; the app's state may be lost) |
 | `window.closed` | `stream`, `reason` (`requested`/`app_exited`/`error`) |
 | `window.title` | `stream`, `label`, `pkg` — top app changed on that display (phone mode) |
-| `state` | `locked`: bool, `battery`: int, `charging`: bool, `dnd`: `"off"`/`"priority"`/`"alarms"`/`"none"` — sent on change; `dnd` is absent on a phone that does not support it (old builds) |
+| `state` | `locked`: bool, `battery`: int, `charging`: bool, `dnd`: `"off"`/`"priority"`/`"alarms"`/`"none"`, `ringer`: `"normal"`/`"vibrate"`/`"silent"` — sent on change; `dnd`/`ringer` are absent on a phone that does not support them (old builds) |
 | `audio.state` | `on`: bool, `codec`: int — audio capture on/off (for the UI dot) |
 | `ring.state` | `ringing`: bool — a `phone.ring` started (`true`) or ended (`false`) |
 | `error` | `code`, `message`, optional `stream` |
@@ -492,6 +493,22 @@ lock screen, for at most 30 s.
 A phone build whose app process cannot show the ring answers `error` `unsupported`; the
 shell service never rings on its own.
 
+## Ringer
+
+The Control Center ringer control (docs/design/controls.md) sets one of the phone's three
+ringer modes. It never touches a volume level, the lock settings or any other setting.
+
+1. Mac → `{"t":"phone.ringer","mode":"normal"|"vibrate"|"silent"}`. The phone writes it at
+   shell UID with `cmd audio set-ringer-mode NORMAL|VIBRATE|SILENT` and sends `state` again
+   with `ringer` set to the mode it now reports (`Settings.Global.mode_ringer`: 0 silent,
+   1 vibrate, 2 normal).
+2. A mode other than the three above answers `error` `bad_request`; nothing changes.
+3. The phone refuses the write while its Do Not Disturb is on (`error` `dnd_on`): on
+   Android 16 a ringer change can end an "alarms" DND, and PocketDeck does not turn off a
+   DND on the side. The Mac checks `state.dnd` first and does not send.
+4. A phone that predates the field omits `ringer` from `state`, and `phone.ringer` is an
+   unknown message to it. An older Mac ignores the new field.
+
 ## Focus and Do Not Disturb
 
 A Mac Focus, the menu bar's "Phone Do Not Disturb" and a Shortcut all use the phone's zen
@@ -516,7 +533,9 @@ identity changed. Pair again."), `pair_denied`, `pair_commit` (the revealed nonc
 not match the commit), `version`, `protocol` (message not allowed in the current state;
 then close), `pair_timeout` (nobody answered the pairing prompt in 120 s; then close),
 `no_stream` (unknown `stream`), `launch_failed`, `bad_url` (a `link.open` URL that is
-not allowed), `bad_size` (`task.continue` without w/h), `connections_off` (the phone's
+not allowed), `bad_size` (`task.continue` without w/h) — plus the device commands'
+own codes: `dnd_on` (a `phone.ringer` while Do Not Disturb is on) and `unavailable`
+(the phone would not write the ringer setting), `connections_off` (the phone's
 "Allow connections" switch is off: the Mac shows "Connections are turned off on
 <phone name>."), `pairing_off` (the phone's "Allow new pairings" switch is off and
 this Mac is not paired: "<phone name> isn't accepting new pairings."),
