@@ -4858,6 +4858,57 @@ PY
         && ok "FILES fileproviderctl says the domain is enabled" \
         || bad "FILES fileproviderctl does not show an enabled domain"
 
+    # -- Writes: create, edit, rename, mkdir, delete (S4) --------------------
+    # The person's actions are Finder's ordinary ones; the check looks at the
+    # fake phone's tree, which is the only side that can prove the bytes.
+    local up3
+    python3 - "$WORK/up3.bin" <<'PY'
+import os, sys
+open(sys.argv[1], "wb").write(os.urandom(3 * 1024 * 1024))
+PY
+    up3="$(shasum -a 256 "$WORK/up3.bin" | cut -c1-64)"
+    run_limited 240 cp "$WORK/up3.bin" "$root/Documents/upload3.bin" 2> "$WORK/up3.err" || true
+    wait_until 180 eval "[ -f \"$WORK/fsroot/Documents/upload3.bin\" ]" \
+        && ok "WRITE a 3 MiB copy into the mount lands on the fake phone" \
+        || bad "WRITE the copy never reached the phone: $(head -1 "$WORK/up3.err")"
+    wait_until 120 eval "[ \"\$(shasum -a 256 \"$WORK/fsroot/Documents/upload3.bin\" 2>/dev/null | cut -c1-64)\" = \"$up3\" ]" \
+        && ok "WRITE the phone's bytes are the copied file's (sha ${up3:0:12}...)" \
+        || bad "WRITE the phone's bytes differ from the copy"
+
+    # An edit in place: append and let the provider upload the new content.
+    printf 'an edit from the Mac\n' >> "$root/Documents/upload3.bin" 2>/dev/null || true
+    # Appending changed the bytes; the phone must reach the mount's new size.
+    local want_size
+    want_size="$(stat -f%z "$root/Documents/upload3.bin" 2>/dev/null || echo 0)"
+    wait_until 120 eval "[ \"\$(stat -f%z \"$WORK/fsroot/Documents/upload3.bin\" 2>/dev/null || echo 0)\" = \"$want_size\" ]" \
+        && ok "WRITE an edit in place reaches the phone (size $want_size)" \
+        || bad "WRITE the edit never reached the phone (mount $want_size, phone $(stat -f%z "$WORK/fsroot/Documents/upload3.bin" 2>/dev/null || echo 0))"
+
+    # A rename in the same folder: the fake tree follows, and the mount still
+    # shows one entry (the item was not duplicated). The identifier itself is
+    # asserted by the host `files-write` driver (same id before and after).
+    run_limited 120 mv "$root/Documents/upload3.bin" "$root/Documents/renamed3.bin" 2> "$WORK/mv.err" || true
+    wait_until 120 eval "[ -f \"$WORK/fsroot/Documents/renamed3.bin\" ] && [ ! -f \"$WORK/fsroot/Documents/upload3.bin\" ]" \
+        && ok "WRITE a rename follows on the phone (name hash $(printf renamed3.bin | shasum -a 256 | cut -c1-12))" \
+        || bad "WRITE the rename did not reach the phone: $(head -1 "$WORK/mv.err")"
+    local renamed_count
+    renamed_count="$(run_limited 60 ls "$root/Documents" 2>/dev/null | grep -c '^renamed3.bin$' || true)"
+    [ "$renamed_count" = "1" ] \
+        && ok "WRITE the renamed item appears once in the folder (no duplicate)" \
+        || bad "WRITE the renamed item appears $renamed_count times"
+
+    # mkdir and delete.
+    run_limited 120 mkdir "$root/Documents/PDNew" 2> "$WORK/mkdir-write.err" || true
+    wait_until 120 eval "[ -d \"$WORK/fsroot/Documents/PDNew\" ]" \
+        && ok "WRITE mkdir reaches the phone" \
+        || bad "WRITE mkdir did not reach the phone: $(head -1 "$WORK/mkdir-write.err")"
+    run_limited 120 rm "$root/Documents/renamed3.bin" 2> "$WORK/rm-write.err" || true
+    wait_until 120 eval "[ ! -f \"$WORK/fsroot/Documents/renamed3.bin\" ]" \
+        && ok "WRITE delete removes the file on the phone" \
+        || bad "WRITE delete did not reach the phone: $(head -1 "$WORK/rm-write.err")"
+    run_limited 120 rmdir "$root/Documents/PDNew" 2>/dev/null || true
+    wait_until 60 eval "[ ! -d \"$WORK/fsroot/Documents/PDNew\" ]" || true
+
     # -- The phone goes away: disconnected, cached file still opens -----------
     stop_fakephone
     wait_until 5 no_fakephone
@@ -4868,6 +4919,14 @@ PY
     [ "$(shasum -a 256 "$WORK/cached3.bin" 2>/dev/null | cut -c1-64)" = "$want" ] \
         && ok "FILES the already-fetched file still opens while the phone is away" \
         || bad "FILES the cached file did not open while the phone is away"
+    # While the phone is away a copy is accepted locally (a pending item); it
+    # must land once the phone is back.
+    local pending_sha
+    pending_sha="$(shasum -a 256 "$WORK/up3.bin" | cut -c1-64)"
+    run_limited 120 cp "$WORK/up3.bin" "$root/Documents/pending.bin" 2> "$WORK/pending.err" || true
+    PENDING_WRITTEN=0
+    [ -e "$root/Documents/pending.bin" ] && PENDING_WRITTEN=1
+    ok "WRITE a copy made while the phone is away is accepted locally"
 
     # -- The phone comes back: reconnect --------------------------------------
     FAKE_ARGS="--fs-root $WORK/fsroot" start_fake "$WORK/state.json" || true
@@ -4875,6 +4934,14 @@ PY
         && ok "FILES the domain reconnects when the phone is back" \
         || bad "FILES the domain did not reconnect: $(grep "id=$PROFILE " "$WORK/list.txt" | head -1)"
     wait_until 60 files_root_lists "$root" || true
+    if [ "${PENDING_WRITTEN:-0}" = "1" ]; then
+        wait_until 180 eval "[ \"\$(shasum -a 256 \"$WORK/fsroot/Documents/pending.bin\" 2>/dev/null | cut -c1-64)\" = \"$pending_sha\" ]" \
+            && ok "WRITE the pending copy lands on the phone after the reconnect (sha ${pending_sha:0:12}...)" \
+            || bad "WRITE the pending copy never landed"
+        rm -f "$WORK/fsroot/Documents/pending.bin"
+    else
+        bad "WRITE the offline copy was refused instead of kept pending: $(head -1 "$WORK/pending.err")"
+    fi
     local want32
     want32="$(shasum -a 256 "$WORK/fsroot/big32.bin" | cut -c1-64)"
     run_limited 240 cat "$root/big32.bin" > "$WORK/cat32.bin" 2>/dev/null
