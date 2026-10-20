@@ -546,6 +546,45 @@ def check_paging(bridge, root, path, minimum_pages):
               hashlib.sha256("".join(sorted(names)).encode()).hexdigest()[:12]))
 
 
+def check_paging_fresh_connections(socket_path, root, path, minimum_pages):
+    """A big folder the way the extension lists it: the extension opens one
+    connection per request, so every page arrives on a new socket, with the
+    page cursor the previous reply carried. 1500 entries used to list as
+    nothing in the VM; the wire must carry them all exactly once."""
+    bridge = Bridge(socket_path, timeout=30.0)
+    try:
+        ident = item_id(bridge, path)
+    finally:
+        bridge.close()
+    if ident is None:
+        return report(False, "BRIDGE no identifier for the big folder (%s)" % name_hash(path))
+    names, pages, page = [], 0, None
+    while True:
+        bridge = Bridge(socket_path, timeout=30.0)
+        try:
+            reply = bridge.list_item(ident, page)
+        finally:
+            bridge.close()
+        if reply.get("t") != "items":
+            return report(False, "BRIDGE the big folder's page %d failed (%s)"
+                          % (pages + 1, reply.get("code")))
+        pages += 1
+        batch = reply.get("items") or []
+        if len(batch) > 1000 or (pages > 1 and len(batch) == 0):
+            return report(False, "BRIDGE the big folder's page %d carries %d items"
+                          % (pages, len(batch)))
+        names.extend(entry.get("name") for entry in batch)
+        page = reply.get("page")
+        if not page:
+            break
+    expected = {name for name in os.listdir(os.path.join(root, path))}
+    report(len(names) == len(expected) and len(set(names)) == len(names)
+           and set(names) == expected and pages >= minimum_pages,
+           "BRIDGE %s lists %d names exactly once in %d page(s), one connection each (hash %s)"
+           % (name_hash(path), len(names), pages,
+              hashlib.sha256("".join(sorted(names)).encode()).hexdigest()[:12]))
+
+
 def check_stat(bridge, root, name):
     ident = item_id(bridge, name)
     reply = bridge.stat_item(ident) if ident else {"t": "error", "code": "no_id"}
@@ -985,6 +1024,7 @@ def main():
         check_paging(bridge, args.root, "Documents", 1)
         check_paging(bridge, args.root, "DCIM/Camera", 1)
         check_paging(bridge, args.root, "many", 2)
+        check_paging_fresh_connections(args.socket, args.root, "many", 2)
         check_stat(bridge, args.root, "big3.bin")
         check_stat(bridge, args.root, "big32.bin")
         check_read(bridge, args.root, "big3.bin", 3 * 1024 * 1024)
