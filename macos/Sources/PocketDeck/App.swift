@@ -77,8 +77,12 @@ struct LaunchOptions {
     /// on for this profile at launch (e2e `mcp`).
     var mcpEnable = false
     /// `--files-domain add|remove|list|disconnect|reconnect` — the File Provider
-    /// experiment (docs/design/files.md §1). Refused outside the e2e VM.
+    /// domain (docs/design/files.md). Refused outside the e2e VM.
     var filesDomain: String?
+    /// `--files-bridge-dir DIR`: put the bridge socket in DIR instead of the App
+    /// Group container, so a host check can drive the bridge without any File
+    /// Provider (e2e `files-bridge`).
+    var filesBridgeDir: String?
 
     /// nil when `--profile` was missing or not a usable name.
     var profile: Profile? { Profile(name: profileName) }
@@ -123,6 +127,7 @@ struct LaunchOptions {
         "--open-requests": true,
         "--mcp-enable": false,
         "--files-domain": true,
+        "--files-bridge-dir": true,
     ]
 
     /// One line on stderr (the harness captures stderr into app.log); the
@@ -227,6 +232,8 @@ struct LaunchOptions {
                 options.mcpEnable = true
             case "--files-domain":
                 options.filesDomain = next()
+            case "--files-bridge-dir":
+                options.filesBridgeDir = next()
             default:
                 break
             }
@@ -341,6 +348,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // `add` started the bridge and must stay up for the extension;
             // every other action is a one-shot the check waits on.
             if action != .add { exit(0) }
+        }
+        if let directory = environment.options.filesBridgeDir {
+            // The e2e hook: the socket in a test directory, so a host check can
+            // speak the bridge with no File Provider on this Mac.
+            let path = URL(fileURLWithPath: directory, isDirectory: true)
+                .appendingPathComponent(FilesSocket.fileName(profile: environment.profile)).path
+            let result = FilesBridge.shared.start(path: path)
+            FileHandle.standardError.write(Data("files-bridge: \(result)\n".utf8))
         }
         // SwiftUI makes the app regular while it launches; background mode stays an accessory.
         if environment.options.background { NSApp.setActivationPolicy(.accessory) }
