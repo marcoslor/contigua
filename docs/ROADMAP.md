@@ -86,7 +86,7 @@ Batch D (M-L)
 | 3 | ✅ Live Text and images in phone windows (built; needs a hands-on check) | VisionKit on a frozen frame of the window: select and copy text, lift an image subject or drag the whole frame out, Visual Look Up, translate. Its own mode (View ▸ Live Text, ⌘⇧T), because a click-and-hold already selects text in the Android app. Design: docs/design/livetext.md | S‑M |
 | 4 | Control Center and menu bar controls | ControlWidget toggles: phone Do Not Disturb, ringer mode, hotspot, ring the phone | S‑M |
 | 5 | Focus sync | a Mac Focus turns on the phone's Do Not Disturb and back (Focus filter + the phone's zen mode at shell UID) | S‑M |
-| 6 | Automation server (MCP) | local stdio MCP server on the Mac over the existing session: list apps, open, screenshot a window, tap/type/swipe, read the UI tree | M |
+| 6 | ✅ Automation server (MCP) (built; needs a hands-on check) | local stdio MCP server on the Mac over the existing session: list apps, open, screenshot a window, tap/type/swipe, read the UI tree | M |
 | 7 | Camera sharing | phone camera as a Mac camera: CoreMediaIO camera extension fed by a Camera2 stream from the phone. Spike first: can the shell process open the camera with the phone locked, or does it need the app with a foreground service | L |
 | 8 | Deeper notifications | notification actions (inline reply, buttons), dismiss synced both ways, per-app filters, images; a sign-in code from an SMS becomes "Code copied" on the Mac; Android 16 Live Updates / Samsung Now Bar shown live on the Mac | M‑L |
 | 9 | Deeper media control | artwork, position and seeking, choosing among several playing apps, Mac media keys and volume, where the audio plays (phone or Mac) | M |
