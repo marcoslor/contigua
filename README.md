@@ -30,6 +30,9 @@ window you give it.
   out. Several app windows at once.
 - **Phone window** — a mirror of the phone's own screen (status bar, lock
   screen, home, apps), turning with the phone, with Back/Home/Recents buttons.
+- **Phone Camera** — see the phone's camera in a Mac window (⌥⌘C), with a
+  front/back switch, and plain words when the phone isn't sharing its camera or
+  the phone's own camera app is using it.
 - **Real input** — typed keys, clicks, drags and scroll; right-click is Android
   Back, middle-click is Home, and a mouse's side **Back** button sends Back. On
   a trackpad, two-finger scroll drags the page like a finger (with fling) and
