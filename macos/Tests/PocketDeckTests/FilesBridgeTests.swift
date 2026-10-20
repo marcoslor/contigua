@@ -140,6 +140,13 @@ private final class StubSink: FilesWriteSink {
     func cancel() { cancelled = true }
 }
 
+/// One host watch call, comparable in the assertions.
+@MainActor
+private struct WatchCall: Equatable {
+    var item: String
+    var on: Bool
+}
+
 @MainActor
 private final class StubBridgeHost: FilesBridgeHost {
     var isConnected = true
@@ -156,8 +163,10 @@ private final class StubBridgeHost: FilesBridgeHost {
     var creates: [BridgeCreate] = []
     var modifies: [BridgeModify] = []
     var deletes = 0
-    var watches: [(String, Bool)] = []
+    var watches: [WatchCall] = []
     var watchError: FsError?
+    var touched: [String] = []
+    var onTouch: ((String) -> Void)?
     var changesReply = FilesChangesReply(anchor: "g0.ino:9", delta: .none, expired: false)
     var changeRequests: [(String, String?)] = []
     var changedPaths: [[String]] = []
@@ -234,8 +243,22 @@ private final class StubBridgeHost: FilesBridgeHost {
         completion(deleteResult)
     }
 
-    func watch(item: String, on: Bool, completion: @escaping (Result<Void, FsError>) -> Void) {
-        watches.append((item, on))
+    /// The real host sends `fs.watch` only for the first touch of a folder.
+    private var phoneWatched: Set<String> = []
+
+    func touch(item: String, completion: @escaping (Result<Void, FsError>) -> Void) {
+        touched.append(item)
+        if phoneWatched.insert(item).inserted {
+            watches.append(WatchCall(item: item, on: true))
+        }
+        if let error = watchError { return completion(.failure(error)) }
+        completion(.success(()))
+    }
+
+    func unwatch(item: String, completion: @escaping (Result<Void, FsError>) -> Void) {
+        if phoneWatched.remove(item) != nil {
+            watches.append(WatchCall(item: item, on: false))
+        }
         if let error = watchError { return completion(.failure(error)) }
         completion(.success(()))
     }
@@ -573,7 +596,9 @@ final class FilesBridgeTests: XCTestCase {
         XCTAssertTrue(pump { host.cancels == [id] })
     }
 
-    func testWatchingIsRefCountedAcrossClients() throws {
+    // MARK: The watch set (design "S5 round 3")
+
+    func testATouchAsksThePhoneOnceAndARepeatedOneNothing() throws {
         try start()
         bridge.attach(host: host)
         let a = try connect()
@@ -581,33 +606,76 @@ final class FilesBridgeTests: XCTestCase {
         a.send(.watch(id: 1, items: ["ino:9"], on: true))
         XCTAssertTrue(pump { a.replies().count == 1 })
         XCTAssertEqual([.ok(id: 1)], a.replies())
-        // The second extension process asks for the same folder: the phone is
-        // told once.
+        // A second extension process touches the same folder: the phone is
+        // told once (a second `fs.watch` would be idempotent, but pointless).
         b.send(.watch(id: 1, items: ["ino:9"], on: true))
         XCTAssertTrue(pump { b.replies().count == 1 })
-        XCTAssertEqual(["ino:9"], host.watches.map(\.0))
-        XCTAssertEqual([true], host.watches.map(\.1))
+        XCTAssertEqual(["ino:9", "ino:9"], host.touched, "both processes touched it")
+        XCTAssertEqual([WatchCall(item: "ino:9", on: true)], host.watches,
+                       "the phone was told once")
 
+        // Closing the enumerator stops the pushes but not the phone's watch.
         a.send(.watch(id: 2, items: ["ino:9"], on: false))
         XCTAssertTrue(pump { a.replies().count == 2 })
-        XCTAssertEqual(1, host.watches.count, "b still holds the folder")
-        b.send(.watch(id: 2, items: ["ino:9"], on: false))
-        XCTAssertTrue(pump { b.replies().count == 2 })
-        XCTAssertEqual([true, false], host.watches.map(\.1))
+        XCTAssertEqual([WatchCall(item: "ino:9", on: true)], host.watches)
     }
 
-    func testAClientGoingAwayDropsItsWatches() throws {
+    func testAClientGoingAwayKeepsItsFoldersWatched() throws {
         try start()
         bridge.attach(host: host)
         let client = try connect()
         client.send(.watch(id: 1, items: ["ino:9", FilesMap.rootIdentifier], on: true))
         XCTAssertTrue(pump { client.replies().count == 1 })
         XCTAssertEqual(2, host.watches.count)
-        // A killed extension process: its socket closes with no request.
+        // A killed extension process is not the end of the ten minutes.
         client.shutdown()
-        XCTAssertTrue(pump { host.watches.filter { !$0.1 }.count == 2 })
-        XCTAssertEqual(Set(["ino:9", FilesMap.rootIdentifier]),
-                       Set(host.watches.filter { !$0.1 }.map(\.0)))
+        for _ in 0..<50 { RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.01)) }
+        XCTAssertEqual(["ino:9", FilesMap.rootIdentifier], host.watches.map(\.item),
+                       "no unwatch from a dead client")
+        XCTAssertEqual([true, true], host.watches.map(\.on))
+    }
+
+    func testAFolderIsUnwatchedWhenItsTenMinutesAreOver() throws {
+        try start()
+        var now: TimeInterval = 1000
+        bridge.watchClock = { now }
+        bridge.attach(host: host)
+        let client = try connect()
+        client.send(.watch(id: 1, items: ["ino:9"], on: true))
+        XCTAssertTrue(pump { client.replies().count == 1 })
+        now += 599
+        bridge.expireWatches()
+        XCTAssertEqual([WatchCall(item: "ino:9", on: true)], host.watches, "still inside the ten minutes")
+        now += 2
+        bridge.expireWatches()
+        XCTAssertEqual([WatchCall(item: "ino:9", on: true), WatchCall(item: "ino:9", on: false)], host.watches)
+    }
+
+    func testTheSixtyFifthFolderDropsTheLeastRecentlyTouched() throws {
+        try start()
+        bridge.watchSet = FilesWatchSet(capacity: 2, ttl: 600)
+        var now: TimeInterval = 1000
+        bridge.watchClock = { now }
+        bridge.attach(host: host)
+        let client = try connect()
+        for (index, item) in ["ino:1", "ino:2", "ino:3"].enumerated() {
+            now += 1
+            client.send(.watch(id: UInt32(index + 1), items: [item], on: true))
+            XCTAssertTrue(pump { client.replies().count == index + 1 })
+        }
+        XCTAssertEqual(["ino:1", "ino:2", "ino:3"], host.touched)
+        XCTAssertEqual(["ino:1", "ino:2", "ino:1", "ino:3"], host.watches.map(\.item))
+        XCTAssertEqual([true, true, false, true], host.watches.map(\.on))
+    }
+
+    func testAWorkingSetIdentifierNeverTouchesThePhone() throws {
+        try start()
+        bridge.attach(host: host)
+        let client = try connect()
+        client.send(.watch(id: 1, items: [filesWorkingSetIdentifier], on: true))
+        XCTAssertTrue(pump { client.replies().count == 1 })
+        XCTAssertEqual([.error(id: 1, code: "fs_not_found")], client.replies())
+        XCTAssertTrue(host.watches.isEmpty)
     }
 
     func testASignalReachesOnlyTheWatchingClient() throws {
@@ -627,30 +695,32 @@ final class FilesBridgeTests: XCTestCase {
 
     /// The extension that asked for the watch is short-lived: a phone-side
     /// change often arrives with no client connected, and the mount only moves
-    /// because the bridge asks the system itself.
-    func testASignalAsksTheSystemEvenWithNoClientConnected() throws {
+    /// because the app signals the working set itself (the one container a
+    /// replicated extension may signal).
+    func testASignalAsksTheWorkingSetEvenWithNoClientConnected() throws {
         try start()
         bridge.attach(host: host)
-        var asked: [String] = []
-        bridge.signalDomain = { asked.append($0) }
+        var asked = 0
+        bridge.signalWorkingSet = { asked += 1 }
         bridge.signal(containers: ["ino:9"])
-        XCTAssertEqual(["ino:9"], asked)
+        XCTAssertEqual(1, asked)
         bridge.signal(containers: [])
-        XCTAssertEqual(["ino:9"], asked, "an empty batch asks for nothing")
+        XCTAssertEqual(1, asked, "an empty batch asks for nothing")
     }
 
-    func testASignalForADeadClientsContainerStillReachesTheSystem() throws {
+    func testWorkingSetSignalsAreCoalescedToTwoASecond() throws {
         try start()
         bridge.attach(host: host)
-        var asked: [String] = []
-        bridge.signalDomain = { asked.append($0) }
-        let client = try connect()
-        client.send(.watch(id: 1, items: ["ino:9"], on: true))
-        XCTAssertTrue(pump { client.replies().count == 1 })
-        client.shutdown()
-        XCTAssertTrue(pump { host.watches.contains { !$0.1 } })
+        var now: TimeInterval = 1000
+        bridge.watchClock = { now }
+        var asked = 0
+        bridge.signalWorkingSet = { asked += 1 }
         bridge.signal(containers: ["ino:9"])
-        XCTAssertEqual(["ino:9"], asked)
+        bridge.signal(containers: ["ino:9"])
+        XCTAssertEqual(1, asked, "a burst in the same half second is one call")
+        now += 0.6
+        bridge.signal(containers: ["ino:9"])
+        XCTAssertEqual(2, asked)
     }
 
     func testChangesAndAnchorForwardTheHostsAnswer() throws {
@@ -658,26 +728,27 @@ final class FilesBridgeTests: XCTestCase {
         bridge.attach(host: host)
         let item = fileItem("a.txt")
         host.changesReply = FilesChangesReply(
-            anchor: "g2.ino:9", delta: FilesDelta(items: [item], deleted: ["ino:8"]),
+            anchor: "w:e1:2", delta: FilesDelta(items: [item], deleted: ["ino:8"]),
             expired: false)
         let client = try connect()
-        client.send(.changes(id: 1, item: "ino:9", from: "g1.ino:9"))
-        client.send(.anchor(id: 2, item: "ino:9"))
+        client.send(.changes(id: 1, item: filesWorkingSetIdentifier, from: "w:e1:1"))
+        client.send(.anchor(id: 2, item: filesWorkingSetIdentifier))
         XCTAssertTrue(pump { client.replies().count == 2 })
-        XCTAssertEqual([.changes(id: 1, anchor: "g2.ino:9", items: [item],
+        XCTAssertEqual([.changes(id: 1, anchor: "w:e1:2", items: [item],
                                  deleted: ["ino:8"], expired: false),
-                        .anchor(id: 2, anchor: "g2.ino:9")], client.replies())
-        XCTAssertEqual("g1.ino:9", host.changeRequests.first?.1)
+                        .anchor(id: 2, anchor: "w:e1:2")], client.replies())
+        XCTAssertEqual(filesWorkingSetIdentifier, host.changeRequests.first?.0)
+        XCTAssertEqual("w:e1:1", host.changeRequests.first?.1)
     }
 
     func testAnExpiredAnchorIsForwarded() throws {
         try start()
         bridge.attach(host: host)
-        host.changesReply = FilesChangesReply(anchor: "g0.ino:9", delta: .none, expired: true)
+        host.changesReply = FilesChangesReply(anchor: "w:e1:0", delta: .none, expired: true)
         let client = try connect()
         client.send(.changes(id: 1, item: "ino:9", from: "files-s3"))
         XCTAssertTrue(pump { client.replies().count == 1 })
-        XCTAssertEqual([.changes(id: 1, anchor: "g0.ino:9", items: [], deleted: [],
+        XCTAssertEqual([.changes(id: 1, anchor: "w:e1:0", items: [], deleted: [],
                                  expired: true)], client.replies())
     }
 

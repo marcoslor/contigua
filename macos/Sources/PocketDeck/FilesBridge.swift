@@ -326,13 +326,21 @@ protocol FilesBridgeHost: AnyObject {
                 completion: @escaping (Result<FileItem, FsError>) -> Void)
     func delete(item: String, base: String, recursive: Bool,
                 completion: @escaping (Result<Void, FsError>) -> Void)
-    /// One container entered or left the watched set (design §5).
-    func watch(item: String, on: Bool, completion: @escaping (Result<Void, FsError>) -> Void)
+    /// One container entered the system's view (design "S5 round 3"): make sure
+    /// the phone watches its folder, and remember its path. A repeated touch is
+    /// cheap and never sends a second `fs.watch`.
+    func touch(item: String, completion: @escaping (Result<Void, FsError>) -> Void)
+    /// The ten minutes are over (or the LRU cap dropped it): stop watching the
+    /// folder on the phone.
+    func unwatch(item: String, completion: @escaping (Result<Void, FsError>) -> Void)
     /// A container's deltas after an anchor.
     func changes(item: String, from: String?,
                  completion: @escaping (Result<FilesChangesReply, FsError>) -> Void)
     /// A container's current sync anchor.
     func anchor(item: String, completion: @escaping (Result<String, FsError>) -> Void)
+    /// A folder was touched (a listing, a stat of its child, a write): the
+    /// bridge keeps it watched on the phone for ten minutes.
+    var onTouch: ((String) -> Void)? { get set }
     /// A watched folder moved: re-list, diff and signal the extension.
     func filesChanged(paths: [String])
     func cancel(id: UInt32)
@@ -348,12 +356,15 @@ final class SessionBridgeHost: FilesBridgeHost {
     private var map: FilesIdMap
     /// The app tells the extension which containers moved (design §5).
     private let signal: ([String]) -> Void
+    /// The app's watch set keeps a touched folder on the phone for ten minutes.
+    var onTouch: ((String) -> Void)?
 
     /// The last listing handed out per container, and the page being built.
     private var snapshots: [String: [String: FileItem]] = [:]
     private var building: [String: [String: FileItem]] = [:]
-    /// Each watched container's anchor log.
-    private var logs: [String: FilesChangeLog] = [:]
+    /// One ordered delta log for the whole domain: the working set replays all
+    /// of it, a folder enumerator its own entries (design "S5 round 3").
+    private var log = FilesChangeLog()
     /// Which containers a folder belongs to, for a phone-side change.
     private var pathByItem: [String: String] = [:]
     private var itemsByPath: [String: Set<String>] = [:]
@@ -447,6 +458,10 @@ final class SessionBridgeHost: FilesBridgeHost {
 
     func list(item: String, page: String?,
               completion: @escaping (Result<(items: [FileItem], next: String?), FsError>) -> Void) {
+        guard !filesSystemContainer(item) else {
+            return completion(.failure(FsError(code: "fs_not_found")))
+        }
+        onTouch?(item)
         resolve(item) { [weak self] result in
             guard let self else { return }
             switch result {
@@ -480,6 +495,14 @@ final class SessionBridgeHost: FilesBridgeHost {
     }
 
     func stat(item: String, completion: @escaping (Result<FileItem, FsError>) -> Void) {
+        guard !filesSystemContainer(item) else {
+            return completion(.failure(FsError(code: "fs_not_found")))
+        }
+        if item == FilesMap.rootIdentifier {
+            onTouch?(item)
+        } else {
+            onTouch?(parent(of: item))
+        }
         resolve(item) { [weak self] result in
             guard let self else { return }
             switch result {
@@ -505,6 +528,7 @@ final class SessionBridgeHost: FilesBridgeHost {
                     onStart: @escaping (UInt32) -> Void,
                     chunk: @escaping ([UInt8]) -> Bool,
                     completion: @escaping (Result<FsReadResult, FsError>) -> Void) {
+        onTouch?(parent(of: item))
         resolve(item) { [weak self] result in
             guard let self else { return }
             switch result {
@@ -522,6 +546,7 @@ final class SessionBridgeHost: FilesBridgeHost {
     func create(_ request: BridgeCreate,
                 ready: @escaping (FilesWriteSink?) -> Void,
                 completion: @escaping (Result<FileItem, FsError>) -> Void) {
+        onTouch?(request.parent)
         resolve(request.parent) { [weak self] result in
             guard let self else { return }
             switch result {
@@ -572,6 +597,8 @@ final class SessionBridgeHost: FilesBridgeHost {
     func modify(_ request: BridgeModify,
                 ready: @escaping (FilesWriteSink?) -> Void,
                 completion: @escaping (Result<FileItem, FsError>) -> Void) {
+        onTouch?(parent(of: request.item))
+        if let parent = request.parent { onTouch?(parent) }
         resolve(request.item) { [weak self] result in
             guard let self else { return }
             switch result {
@@ -731,6 +758,7 @@ final class SessionBridgeHost: FilesBridgeHost {
 
     func delete(item: String, base: String, recursive: Bool,
                 completion: @escaping (Result<Void, FsError>) -> Void) {
+        onTouch?(parent(of: item))
         resolve(item) { [weak self] result in
             guard let self else { return }
             switch result {
@@ -753,42 +781,84 @@ final class SessionBridgeHost: FilesBridgeHost {
         }
     }
 
-    // MARK: Watching (design §5, S5)
+    // MARK: Watching (design "S5 round 3")
 
-    func watch(item: String, on: Bool, completion: @escaping (Result<Void, FsError>) -> Void) {
+    /// The folder is in the system's view (its enumerator, a listing, a stat of
+    /// its child, or a write in it): tell the phone to watch it. The app's watch
+    /// set owns the ten minutes and the cap; this only asks for the transition.
+    func touch(item: String, completion: @escaping (Result<Void, FsError>) -> Void) {
+        guard !filesSystemContainer(item) else {
+            return completion(.failure(FsError(code: "fs_not_found")))
+        }
         resolve(item) { [weak self] result in
             guard let self else { return }
             switch result {
             case .failure(let error):
                 completion(.failure(error))
             case .success(let path):
-                if on {
-                    self.pathByItem[item] = path
-                    self.itemsByPath[path, default: []].insert(item)
-                    self.baseline(item)
-                } else if let old = self.pathByItem.removeValue(forKey: item) {
-                    self.itemsByPath[old]?.remove(item)
-                    if self.itemsByPath[old]?.isEmpty == true { self.itemsByPath.removeValue(forKey: old) }
+                if self.pathByItem[item] == path {
+                    return completion(.success(()))
                 }
-                self.client.watch(paths: [path], on: on, completion: completion)
+                self.pathByItem[item] = path
+                self.itemsByPath[path, default: []].insert(item)
+                self.baseline(item)
+                self.client.watch(paths: [path], on: true, completion: completion)
             }
+        }
+    }
+
+    /// The ten minutes are over or the cap dropped this folder: the phone stops
+    /// watching its path when no other container shares it.
+    func unwatch(item: String, completion: @escaping (Result<Void, FsError>) -> Void) {
+        guard let path = pathByItem.removeValue(forKey: item) else {
+            return completion(.success(()))
+        }
+        itemsByPath[path]?.remove(item)
+        if itemsByPath[path]?.isEmpty != false {
+            itemsByPath.removeValue(forKey: path)
+            client.watch(paths: [path], on: false, completion: completion)
+        } else {
+            completion(.success(()))
         }
     }
 
     func changes(item: String, from: String?,
                  completion: @escaping (Result<FilesChangesReply, FsError>) -> Void) {
-        let log = logs[item] ?? FilesChangeLog(scope: item)
-        logs[item] = log
-        let from = from ?? FilesChangeLog.anchor(0, scope: item)
-        guard let delta = log.changes(from: from) else {
-            return completion(.success(FilesChangesReply(anchor: log.anchor, delta: .none, expired: true)))
+        if item == filesWorkingSetIdentifier {
+            // The working set's first enumeration: every item the app still has
+            // in a cached listing, not just what the delta log happens to keep.
+            if from == nil {
+                var seen: [String: FileItem] = [:]
+                for page in snapshots.values {
+                    for (identifier, mapped) in page { seen[identifier] = mapped }
+                }
+                return completion(.success(FilesChangesReply(
+                    anchor: log.anchor, delta: FilesDelta(items: Array(seen.values), deleted: []),
+                    expired: false)))
+            }
+        } else {
+            guard !filesSystemContainer(item) else {
+                return completion(.failure(FsError(code: "fs_not_found")))
+            }
+            onTouch?(item)
         }
-        completion(.success(FilesChangesReply(anchor: log.anchor, delta: delta, expired: false)))
+        let container: String? = item == filesWorkingSetIdentifier ? nil : item
+        guard let delta = log.changes(from: from, container: container) else {
+            return completion(.success(FilesChangesReply(anchor: log.anchor, delta: .none,
+                                                        expired: true)))
+        }
+        let anchor = container.map { log.containerAnchor($0) } ?? log.anchor
+        completion(.success(FilesChangesReply(anchor: anchor, delta: delta, expired: false)))
     }
 
     func anchor(item: String, completion: @escaping (Result<String, FsError>) -> Void) {
-        let log = logs[item] ?? FilesChangeLog(scope: item)
-        logs[item] = log
+        if item != filesWorkingSetIdentifier {
+            guard !filesSystemContainer(item) else {
+                return completion(.failure(FsError(code: "fs_not_found")))
+            }
+            onTouch?(item)
+            return completion(.success(log.containerAnchor(item)))
+        }
         completion(.success(log.anchor))
     }
 
@@ -837,9 +907,7 @@ final class SessionBridgeHost: FilesBridgeHost {
                 if case .success = result, let before {
                     let after = self.snapshots[item] ?? [:]
                     let delta = FilesDiff.delta(old: before, new: Array(after.values))
-                    var log = self.logs[item] ?? FilesChangeLog(scope: item)
-                    let moved = log.record(delta)
-                    self.logs[item] = log
+                    let moved = self.log.record(container: item, delta: delta)
                     if moved { self.signal([item]) }
                 }
                 if self.refreshAgain.remove(item) != nil { self.refresh(item) }
@@ -878,18 +946,31 @@ final class FilesBridge {
     private var readIDs: [ObjectIdentifier: [UInt32: UInt32]] = [:]
     /// The sink a create/modify's data frames go into, per client and id.
     private var writeSinks: [ObjectIdentifier: [UInt32: FilesWriteSink]] = [:]
-    /// The watch subscription each client holds, and the ref-count per container
-    /// across every extension process (design §5).
+    /// The watch subscriptions the extension clients hold, so a push reaches the
+    /// ones that asked for that container (design §5). The phone's watches are
+    /// the bridge's `watchSet`, not a per-client ref-count (round 3).
     private var watchSets: [ObjectIdentifier: Set<String>] = [:]
     private var watchClients: [ObjectIdentifier: FilesBridgeClient] = [:]
-    private var watchCounts: [String: Int] = [:]
+    /// Folders the system touched, kept for ten minutes after the last touch,
+    /// at most 64 (design "S5 round 3"). It outlives a session: the phone's
+    /// watches are dropped on disconnect and re-sent on reconnect.
+    var watchSet = FilesWatchSet()
+    /// The clock the watch set uses; the tests move it by hand.
+    var watchClock: () -> TimeInterval = { Date().timeIntervalSince1970 }
+    private var expiryTimer: DispatchWorkItem?
+    /// Working-set signals are coalesced: at most two a second (design).
+    static let minSignalGap: TimeInterval = 0.5
+    private var lastSignal: TimeInterval = -.greatestFiniteMagnitude
+    private var signalScheduled = false
 
     private var listener: FilesBridgeListener?
     private var host: FilesBridgeHost?
     private(set) var socketPath: String?
-    /// Asks the system to re-enumerate one container. Set once by the app: the
-    /// bridge cannot reach NSFileProviderManager without the live domain.
-    var signalDomain: ((String) -> Void)?
+    /// Asks the system to re-enumerate the working set. Set once by the app: the
+    /// bridge cannot reach NSFileProviderManager without the live domain. A
+    /// replicated extension may only be signalled through the working set
+    /// (NSFileProviderManager.h), so this is the only signal there is.
+    var signalWorkingSet: (() -> Void)?
 
     /// The shared bridge the app runs; tests make their own instance so two
     /// listeners never share state.
@@ -941,55 +1022,156 @@ final class FilesBridge {
         writeSinks.removeAll()
         watchSets.removeAll()
         watchClients.removeAll()
-        watchCounts.removeAll()
+        watchSet.removeAll()
+        expiryTimer?.cancel()
+        expiryTimer = nil
     }
 
-    /// A session became ready: the bridge answers from now on.
+    /// A session became ready: the bridge answers from now on, and the folders
+    /// whose ten minutes have not run out are watched on the phone again
+    /// (design "S5 round 3": dropped on disconnect, re-sent on reconnect).
     func attach(host: FilesBridgeHost) {
         self.host?.cancelAll()
         self.host = host
-        // The extension processes kept their watch connections across the phone
-        // session (their socket is this app, not the phone), so they will not
-        // ask again: the phone's watches are re-applied here (design §5).
-        let wanted = watchCounts.keys.sorted()
+        host.onTouch = { [weak self] item in self?.touchWatch(item) }
+        expireWatches()
+        let wanted = watchSet.lastTouch.keys.sorted()
         for item in wanted {
-            host.watch(item: item, on: true) { result in
+            host.touch(item: item) { result in
                 if case .failure(let error) = result {
                     Log.files.notice("bridge: re-watch failed code=\(error.code, privacy: .public)")
                 }
             }
         }
+        scheduleExpiry()
         Log.files.notice("bridge: session attached, re-watched \(wanted.count, privacy: .public)")
     }
 
-    /// The session ended: requests answer `offline` until the next attach.
+    /// The session ended: requests answer `offline` until the next attach. The
+    /// phone's watches are gone with the session; the timestamps stay so a quick
+    /// reconnect re-sends the folders that are still inside their ten minutes.
     func detach() {
         host?.cancelAll()
         host = nil
         liveIDs.removeAll()
         readIDs.removeAll()
         writeSinks.removeAll()
-        // The watch subscriptions belong to the extension processes, not to the
-        // phone session: the next attach re-applies them.
         Log.files.notice("bridge: session detached")
     }
 
-    /// A watched container moved: tell every extension process that holds it,
-    /// and tell the system too. The extension processes are short-lived — Finder
-    /// does not keep one alive between two operations — so a signal that only
-    /// went to a live client was lost exactly when a phone-side change arrived
-    /// with nobody's extension running. `signalDomain` makes fileproviderd start
-    /// one and ask for the container's changes (design §5).
+    /// A watched container moved: push the news to every extension process that
+    /// asked for it, and signal the working set once. The extension processes are
+    /// short-lived — Finder does not keep one alive between two operations — so a
+    /// push alone reaches nobody exactly when a phone-side change arrives with no
+    /// extension running. Since round 3 the only signal a replicated extension
+    /// may send is the working set (`NSFileProviderManager.h`: other container
+    /// identifiers are ignored), so `signalWorkingSet` is that one call,
+    /// coalesced to at most two a second.
     func signal(containers: [String]) {
         guard !containers.isEmpty else { return }
         for (slot, client) in watchClients {
             let mine = (watchSets[slot] ?? []).filter { containers.contains($0) }
             if !mine.isEmpty { client.sendSignal(items: Array(mine)) }
         }
-        if let signalDomain {
-            for container in containers { signalDomain(container) }
-        }
+        requestWorkingSetSignal()
         Log.files.notice("bridge: signal containers=\(containers.count, privacy: .public)")
+    }
+
+    /// One working-set signal now, or one scheduled for the end of the current
+    /// half second (a phone-side burst becomes one call).
+    private func requestWorkingSetSignal() {
+        guard signalWorkingSet != nil else { return }
+        let now = watchClock()
+        let wait = Self.minSignalGap - (now - lastSignal)
+        if wait <= 0 {
+            fireWorkingSetSignal()
+            return
+        }
+        guard !signalScheduled else { return }
+        signalScheduled = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + wait) { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.signalScheduled = false
+                self.fireWorkingSetSignal()
+            }
+        }
+    }
+
+    private func fireWorkingSetSignal() {
+        lastSignal = watchClock()
+        signalWorkingSet?()
+    }
+
+    // MARK: The watch set (design "S5 round 3")
+
+    /// A touch keeps the folder on the phone for ten minutes. The first touch
+    /// adds it (and drops the least recently touched when 64 are held); a later
+    /// one only refreshes its time.
+    private func touchWatch(_ item: String,
+                            completion: ((Result<Void, FsError>) -> Void)? = nil) {
+        guard !filesSystemContainer(item) else {
+            completion?(.failure(FsError(code: "fs_not_found")))
+            return
+        }
+        let now = watchClock()
+        switch watchSet.touch(item, now: now) {
+        case .added(let evicted):
+            if let evicted {
+                Log.files.notice("bridge: watch set full, dropped the oldest")
+                host?.unwatch(item: evicted) { _ in }
+            }
+            guard let host, host.isConnected else {
+                completion?(.failure(FsError(code: "offline")))
+                return
+            }
+            host.touch(item: item) { [weak self] result in
+                guard let self else { return }
+                if case .failure(let error) = result {
+                    // Nothing is watching that folder: let a later touch try again.
+                    self.watchSet.remove(item)
+                    Log.files.notice("bridge: phone watch failed code=\(error.code, privacy: .public)")
+                } else {
+                    Log.files.notice("bridge: phone watch on")
+                }
+                completion?(result)
+            }
+        case .refreshed:
+            // A new session's host has no path for it yet; a repeated touch in
+            // the same session answers from its own map and sends nothing.
+            host?.touch(item: item) { result in completion?(result) }
+        }
+        scheduleExpiry()
+    }
+
+    /// Expires everything whose ten minutes are over, then re-arms the timer for
+    /// the next one.
+    func expireWatches() {
+        let gone = watchSet.expire(now: watchClock())
+        for item in gone {
+            host?.unwatch(item: item) { _ in }
+        }
+        if !gone.isEmpty {
+            Log.files.notice("bridge: watch ttl off count=\(gone.count, privacy: .public)")
+        }
+    }
+
+    private func scheduleExpiry() {
+        expiryTimer?.cancel()
+        expiryTimer = nil
+        let now = watchClock()
+        guard let next = watchSet.lastTouch.values.map({ $0 + watchSet.ttl }).min() else { return }
+        let wait = max(0.05, next - now + 0.05)
+        let work = DispatchWorkItem { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.expiryTimer = nil
+                self.expireWatches()
+                self.scheduleExpiry()
+            }
+        }
+        expiryTimer = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + wait, execute: work)
     }
 
     /// The phone reported these folders changed: the host re-lists them.
@@ -1124,7 +1306,7 @@ final class FilesBridge {
         case .watch(let id, let items, let on):
             guard let host, host.isConnected else { return client.send(.error(id: id, code: "offline")) }
             guard begin(id, client) else { return }
-            applyWatch(items, on: on, client: client, host: host) { [weak self] result in
+            applyWatch(items, on: on, client: client) { [weak self] result in
                 MainActor.assumeIsolated {
                     self?.end(id, client)
                     switch result {
@@ -1182,55 +1364,30 @@ final class FilesBridge {
         }
     }
 
-    /// Ref-counts one watch toggle across every client, and asks the phone only
-    /// for the transitions (design §5).
+    /// One client says which containers it is showing. Since round 3 a watch is
+    /// a touch: the folder stays on the phone for ten minutes after it, so
+    /// `on: false` only ends the pushes, not the subscription (design "S5
+    /// round 3").
     private func applyWatch(_ items: [String], on: Bool, client: FilesBridgeClient,
-                            host: FilesBridgeHost,
                             completion: @escaping (Result<Void, FsError>) -> Void) {
         let slot = ObjectIdentifier(client)
         var set = watchSets[slot] ?? []
         watchClients[slot] = client
-        var toggles: [(String, Bool)] = []
-        for item in items {
-            let count = watchCounts[item] ?? 0
-            if on {
-                guard !set.contains(item) else { continue }
-                set.insert(item)
-                watchCounts[item] = count + 1
-                if count == 0 { toggles.append((item, true)) }
-            } else {
-                guard set.remove(item) != nil else { continue }
-                if count <= 1 { watchCounts.removeValue(forKey: item) } else { watchCounts[item] = count - 1 }
-                if count <= 1 { toggles.append((item, false)) }
-            }
+        if on {
+            set.formUnion(items)
+        } else {
+            set.subtract(items)
         }
         watchSets[slot] = set
-        guard !toggles.isEmpty else { return completion(.success(())) }
+        guard on else { return completion(.success(())) }
+        var rest = items
         func next() {
-            guard !toggles.isEmpty else { return completion(.success(())) }
-            let (item, on) = toggles.removeFirst()
-            host.watch(item: item, on: on) { result in
-                MainActor.assumeIsolated {
-                    switch result {
-                    case .success:
-                        Log.files.notice("bridge: phone watch on=\(on, privacy: .public)")
-                        next()
-                    case .failure(let error):
-                        // Undo this item's count so a later attempt tries again.
-                        if on {
-                            let count = self.watchCounts[item] ?? 1
-                            if count <= 1 {
-                                self.watchCounts.removeValue(forKey: item)
-                            } else {
-                                self.watchCounts[item] = count - 1
-                            }
-                            self.watchSets[slot]?.remove(item)
-                        } else {
-                            self.watchCounts[item] = (self.watchCounts[item] ?? 0) + 1
-                        }
-                        Log.files.notice("bridge: phone watch failed code=\(error.code, privacy: .public)")
-                        completion(.failure(error))
-                    }
+            guard !rest.isEmpty else { return completion(.success(())) }
+            let item = rest.removeFirst()
+            touchWatch(item) { result in
+                switch result {
+                case .success: next()
+                case .failure(let error): completion(.failure(error))
                 }
             }
         }
@@ -1294,19 +1451,10 @@ final class FilesBridge {
         readIDs.removeValue(forKey: slot)
         writeSinks.removeValue(forKey: slot)
         liveIDs.removeValue(forKey: slot)
-        // An extension process that went away stops looking: its containers drop
-        // out of the ref-count, and the last holder unwatches them on the phone.
-        if let set = watchSets.removeValue(forKey: slot) {
-            for item in set {
-                let count = watchCounts[item] ?? 0
-                if count <= 1 {
-                    watchCounts.removeValue(forKey: item)
-                    host?.watch(item: item, on: false) { _ in }
-                } else {
-                    watchCounts[item] = count - 1
-                }
-            }
-        }
+        // An extension process that went away stops receiving pushes. Its
+        // folders stay watched on the phone until their ten minutes run out
+        // (design "S5 round 3"): the extension was not the thing keeping them.
+        watchSets.removeValue(forKey: slot)
         watchClients.removeValue(forKey: slot)
         Log.files.notice("bridge: client gone")
     }
