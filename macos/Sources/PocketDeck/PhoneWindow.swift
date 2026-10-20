@@ -39,8 +39,12 @@ final class PhoneWindowController: StreamWindowController {
         videoView.isPhoneMode = true
         chrome.phoneOverlay.onWake = { [weak self] in self?.wakeFromOverlay() }
         // While the panel sleeps the frame is frozen: no click, key, scroll or
-        // hover reaches the phone through any path.
-        videoView.inputMapper?.inputSuspended = { [weak self] in self?.screenModel.isShowing ?? false }
+        // hover reaches the phone through any path. Live Text freezes it too
+        // (StreamWindow sets that rule; this one must keep it).
+        videoView.inputMapper?.inputSuspended = { [weak self] in
+            guard let self else { return false }
+            return self.liveText.isActive || self.screenModel.isShowing
+        }
         rotationObserver = NotificationCenter.default.addObserver(
             forName: VideoLayerView.videoSizeDidChange, object: videoView, queue: .main
         ) { [weak self] _ in
