@@ -1213,6 +1213,64 @@ def cmd_clip_set(client, args):
     return 0
 
 
+def cmd_notify(client, args):
+    """Notifications as the Mac (docs/design/notify.md, part 2).
+
+    `action`/`dismiss` opt in on their own session first (the gate is per
+    session), so they work after an earlier `watch` saw the ids. Nothing here
+    prints notification or reply text: ids, indexes and lengths only.
+    """
+    what = args.what
+    if what == "enable":
+        on = args.on == "on"
+        client.send_json({"t": "notify.enable", "on": on})
+        print("sent notify.enable on=%s" % ("true" if on else "false"))
+        return 0
+    if what in ("action", "dismiss"):
+        if not args.id:
+            raise DeckError("notify %s needs an ID" % what)
+        client.send_json({"t": "notify.enable", "on": True})
+        if what == "action":
+            if args.index is None:
+                raise DeckError("notify action needs ID and INDEX")
+            text = args.text or ""
+            msg = {"t": "notify.action", "id": args.id, "i": args.index}
+            if text:
+                msg["text"] = text
+            client.send_json(msg)
+            print("sent notify.action id=%s i=%d textLen=%d" % (args.id, args.index, len(text)))
+        else:
+            client.send_json({"t": "notify.dismiss", "id": args.id})
+            print("sent notify.dismiss id=%s" % args.id)
+        return 0
+    # watch: opt in, then print the phone's notification events (lengths only).
+    client.send_json({"t": "notify.enable", "on": True})
+    print("sent notify.enable on=true (watching %.0fs)" % args.seconds)
+    deadline = time.time() + args.seconds
+    while time.time() < deadline:
+        frame = client.recv(0.25)
+        if frame is TIMEOUT:
+            continue
+        if frame is None:
+            raise DeckError("phone closed during notify watch")
+        if frame.type != proto.TYPE_JSON:
+            continue
+        msg = proto.unpack_json(frame)
+        t = msg.get("t")
+        if t == "notify.post":
+            title = msg.get("title") or ""
+            text = msg.get("text") or ""
+            actions = msg.get("actions") or []
+            print("notify.post id=%s pkg=%s titleLen=%d textLen=%d actions=%d ongoing=%s"
+                  % (msg.get("id"), msg.get("pkg"), len(title), len(text), len(actions),
+                     "true" if msg.get("ongoing") else "false"), flush=True)
+        elif t == "notify.remove":
+            print("notify.remove id=%s" % msg.get("id"), flush=True)
+        elif t == "notify.state":
+            print("notify.state on=%s" % ("true" if msg.get("on") else "false"), flush=True)
+    return 0
+
+
 def cmd_ring(client, args):
     """Send `phone.ring` (or stop it) and print the phone's ring.state answer."""
     if args.stop:
@@ -1895,6 +1953,14 @@ def build_parser():
     sp = sub.add_parser("clip-watch", help="print every clip.set the phone sends", **spp)
     sp.add_argument("--seconds", type=float, default=30.0)
 
+    sp = sub.add_parser("notify", help="notifications: enable/action/dismiss/watch (ids and lengths only)", **spp)
+    sp.add_argument("what", choices=["enable", "action", "dismiss", "watch"])
+    sp.add_argument("id", nargs="?")
+    sp.add_argument("index", nargs="?", type=int)
+    sp.add_argument("--text", default="", help="reply text for notify action (never printed)")
+    sp.add_argument("--on", choices=["on", "off"], default="on")
+    sp.add_argument("--seconds", type=float, default=20.0)
+
     sp = sub.add_parser("probe", help="open, run steps, record one phase file per step", **spp)
     sp.add_argument("target", nargs="?", help="package to launch")
     sp.add_argument("--phone", action="store_true", help="phone mode instead of an app")
@@ -1979,6 +2045,7 @@ COMMANDS = {
     "ring": cmd_ring,
     "clip-set": cmd_clip_set,
     "clip-watch": cmd_clip_watch,
+    "notify": cmd_notify,
     "probe": cmd_probe,
     "multi": cmd_multi,
     "resize-stress": cmd_resize_stress,

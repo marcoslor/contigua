@@ -127,6 +127,23 @@ NOTIFY_POSTS = [
      "title": "pd-notify-title-2", "text": "pd-notify-text-2"},
 ]
 NOTIFY_REMOVE = "pd-n2"
+# Part 2 shapes (docs/design/notify.md): a reply-capable chat, two buttons, an
+# ongoing service notification, a sign-in code and a package for the mute test.
+# The code in pd-a4 is a fake fixture; no log ever carries text.
+NOTIFY_SHAPES = [
+    {"id": "pd-a1", "pkg": "com.whatsapp", "title": "pd-notify-title-3", "text": "pd-notify-text-3",
+     "actions": [{"i": 0, "title": "Mark as read"}, {"i": 1, "title": "Reply", "reply": True}]},
+    {"id": "pd-a2", "pkg": "com.android.settings", "title": "pd-notify-title-4", "text": "pd-notify-text-4",
+     "actions": [{"i": 0, "title": "Mark as read"}, {"i": 1, "title": "Archive"}]},
+    {"id": "pd-a3", "pkg": "com.android.settings", "title": "pd-notify-title-5", "text": "pd-notify-text-5",
+     "ongoing": True},
+    {"id": "pd-a4", "pkg": "com.whatsapp", "title": "pd-notify-title-6",
+     "text": "pd-notify-text-6 code 482913"},
+    {"id": "pd-a5", "pkg": "com.slack", "title": "pd-notify-title-7", "text": "pd-notify-text-7"},
+]
+# The fake reply the e2e sends; only its length is ever recorded.
+NOTIFY_REPLY_INDEX = 1
+NOTIFY_REPLY_TEXT = "pd-reply-1"
 NOTIFY_MEDIA_STATE = {"playing": True, "pkg": "com.spotify.music", "title": "Fake Song",
                       "artist": "Fake Artist", "album": "Fake Album", "durationMs": 30000,
                       "positionMs": 0, "rate": 1.0}
@@ -463,6 +480,16 @@ def redact_pairing(msg):
             for k, v in msg.items()}
 
 
+def redact_event(msg):
+    """The event log's privacy rule: notification and reply text never land in
+    it (docs/design/notify.md). `notify.action`'s reply keeps its length only."""
+    msg = redact_pairing(msg)
+    if msg.get("t") == "notify.action" and isinstance(msg.get("text"), str):
+        msg = dict(msg)
+        msg["text"] = "<%d chars>" % len(msg["text"])
+    return msg
+
+
 class EventLog(object):
     """Writes the exact JSON Lines format other agents' tests consume."""
 
@@ -499,10 +526,10 @@ class EventLog(object):
         self._emit({"ev": "ring", "seconds": seconds, "ts": time.time()})
 
     def tx(self, msg):
-        self._emit({"ev": "tx", "msg": redact_pairing(msg), "ts": time.time()})
+        self._emit({"ev": "tx", "msg": redact_event(msg), "ts": time.time()})
 
     def rx(self, msg):
-        self._emit({"ev": "rx", "msg": redact_pairing(msg), "ts": time.time()})
+        self._emit({"ev": "rx", "msg": redact_event(msg), "ts": time.time()})
 
     def touch(self, stream, action, pointer, nx, ny):
         self._emit({"ev": "input", "kind": "touch", "stream": stream, "action": action,
@@ -1797,6 +1824,8 @@ class Session(object):
             "audio.stop": self._on_audio_stop,
             "notify.enable": self._on_notify_enable,
             "notify.open": self._on_notify_open,
+            "notify.action": self._on_notify_action,
+            "notify.dismiss": self._on_notify_dismiss,
             "media.command": self._on_media_command,
             "fs.list": self._on_fs_list,
             "fs.stat": self._on_fs_stat,
@@ -2413,12 +2442,30 @@ class Session(object):
             self._send(dict(post, t="notify.post", when=int(time.time() * 1000)))
             self.phone.events.notify("post", id=post["id"], pkg=post["pkg"],
                                      titleLen=len(post["title"]), bodyLen=len(post["text"]))
+        shapes = NOTIFY_SHAPES
+        for post in shapes:
+            self._send(dict(post, t="notify.post", when=int(time.time() * 1000)))
+            actions = post.get("actions", [])
+            self.phone.events.notify("post", id=post["id"], pkg=post["pkg"],
+                                     titleLen=len(post["title"]), bodyLen=len(post["text"]),
+                                     actions=len(actions),
+                                     reply=1 if any(a.get("reply") for a in actions) else 0,
+                                     ongoing=1 if post.get("ongoing") else 0)
         self._send({"t": "notify.remove", "id": NOTIFY_REMOVE})
         self.phone.events.notify("remove", id=NOTIFY_REMOVE)
         self._send(dict(NOTIFY_MEDIA_STATE, t="media.state"))
         self.phone.events.notify("media.state", playing=NOTIFY_MEDIA_STATE["playing"],
                                  titleLen=len(NOTIFY_MEDIA_STATE["title"]),
                                  durationMs=NOTIFY_MEDIA_STATE["durationMs"])
+
+    def _on_notify_action(self, msg):
+        # A Mac pressed an advertised action: id, index and the reply's length.
+        text = msg.get("text")
+        self.phone.events.notify("action", id=msg.get("id"), i=msg.get("i"),
+                                 textLen=len(text) if isinstance(text, str) else 0)
+
+    def _on_notify_dismiss(self, msg):
+        self.phone.events.notify("dismiss", id=msg.get("id"))
 
     def _on_media_command(self, msg):
         self.phone.events.media(msg.get("action"))
