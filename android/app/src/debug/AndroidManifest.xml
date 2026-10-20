@@ -38,6 +38,17 @@
             </intent-filter>
         </receiver>
 
+        <!-- One or two fake media sessions (artwork, seek, volume, choosing
+             between apps), driven from adb like the poster above. -->
+        <receiver
+            android:name="dev.pocketdeck.app.MediaDebugTrigger"
+            android:exported="true"
+            android:permission="android.permission.DUMP">
+            <intent-filter>
+                <action android:name="dev.pocketdeck.DEBUG_MEDIA" />
+            </intent-filter>
+        </receiver>
+
         <!-- C0b: a camera-type foreground service in the app process. Exported
              because uid 2000 is a stage of the probe itself (a system component
              starting the service); DUMP keeps ordinary apps out. -->
