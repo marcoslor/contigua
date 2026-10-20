@@ -2438,12 +2438,11 @@ class Session(object):
         self.phone.events.notify("enable", on=on)
         if not on:
             return
-        for post in NOTIFY_POSTS:
-            self._send(dict(post, t="notify.post", when=int(time.time() * 1000)))
-            self.phone.events.notify("post", id=post["id"], pkg=post["pkg"],
-                                     titleLen=len(post["title"]), bodyLen=len(post["text"]))
-        shapes = NOTIFY_SHAPES
-        for post in shapes:
+        only = getattr(self.phone.args, "notify_only", None)
+        posts = NOTIFY_POSTS + NOTIFY_SHAPES
+        if only:
+            posts = [p for p in posts if p["id"] == only]
+        for post in posts:
             self._send(dict(post, t="notify.post", when=int(time.time() * 1000)))
             actions = post.get("actions", [])
             self.phone.events.notify("post", id=post["id"], pkg=post["pkg"],
@@ -2451,8 +2450,9 @@ class Session(object):
                                      actions=len(actions),
                                      reply=1 if any(a.get("reply") for a in actions) else 0,
                                      ongoing=1 if post.get("ongoing") else 0)
-        self._send({"t": "notify.remove", "id": NOTIFY_REMOVE})
-        self.phone.events.notify("remove", id=NOTIFY_REMOVE)
+        if not only:
+            self._send({"t": "notify.remove", "id": NOTIFY_REMOVE})
+            self.phone.events.notify("remove", id=NOTIFY_REMOVE)
         self._send(dict(NOTIFY_MEDIA_STATE, t="media.state"))
         self.phone.events.notify("media.state", playing=NOTIFY_MEDIA_STATE["playing"],
                                  titleLen=len(NOTIFY_MEDIA_STATE["title"]),
@@ -3028,6 +3028,10 @@ def build_parser():
                    help="repeat the last drop.progress and hold the result this long, "
                         "so the phone's confirmation for the tail lands after the Mac "
                         "has sent everything (a slow phone)")
+    p.add_argument("--notify-only", default=None, metavar="ID",
+                   help="on notify.enable post only this shape (pd-a1 reply, pd-a2 "
+                        "buttons, pd-a3 ongoing, pd-a4 code, pd-n1/n2 plain); the VM "
+                        "check needs one banner at a time")
     p.add_argument("--resize-delay-ms", type=int, default=0, metavar="MS",
                    help="hold back a window's new VIDEO_CONFIG this long after "
                         "window.resize (the Mac's live-resize fill); 0 answers at once")

@@ -5732,6 +5732,202 @@ EOF
     wait_until 5 no_fakephone
 }
 
+check_notify_vm() {
+    if [ "${PD_E2E_IN_VM:-0}" != "1" ] || [ "${VISIBLE:-0}" != "1" ]; then
+        skip "notify-vm" "real banners and AX presses, inside the VM's visible run"
+        return 0
+    fi
+    clean
+    local shots="$WORK/shots" device result
+    mkdir -p "$shots"
+    notify_rx() {
+        python3 - "$WORK/events.jsonl" "$@" <<'PY'
+import json, sys
+path = sys.argv[1]
+kind = sys.argv[2]
+want_id = sys.argv[3] if len(sys.argv) > 3 else None
+want_i = sys.argv[4] if len(sys.argv) > 4 else None
+want_len = sys.argv[5] if len(sys.argv) > 5 else None
+for line in open(path):
+    try:
+        event = json.loads(line)
+    except ValueError:
+        continue
+    if event.get("ev") != "notify" or event.get("kind") != kind:
+        continue
+    if want_id is not None and event.get("id") != want_id:
+        continue
+    if want_i is not None and str(event.get("i")) != want_i:
+        continue
+    if want_len is not None and str(event.get("textLen")) != want_len:
+        continue
+    sys.exit(0)
+sys.exit(1)
+PY
+    }
+    # ax_press NAME [PROCESS] — click the first AX button with that title/
+    # description in Notification Center. Names only, never the notification text.
+    ax_press() {
+        osascript - "$1" "${2:-NotificationCenter}" <<'OSA' 2>/dev/null
+on run argv
+    set wanted to item 1 of argv
+    set procName to item 2 of argv
+    tell application "System Events"
+        if not (exists process procName) then return "noproc"
+        tell process procName
+            with timeout of 20 seconds
+                repeat with w in windows
+                    if my walk(w, wanted) is "clicked" then return "clicked"
+                end repeat
+            end timeout
+        end tell
+    end tell
+    return "notfound"
+end run
+
+on walk(container, wanted)
+    tell application "System Events"
+        try
+            set kids to UI elements of container
+        on error
+            return "no"
+        end try
+        repeat with e in kids
+            try
+                if role of e is "AXButton" then
+                    set label to ""
+                    try
+                        set label to title of e
+                    end try
+                    if label is "" then
+                        try
+                            set label to description of e
+                        end try
+                    end if
+                    if label is "" then
+                        try
+                            set label to help of e
+                        end try
+                    end if
+                    if label is wanted then
+                        click e
+                        return "clicked"
+                    end if
+                end if
+            end try
+            try
+                if my walk(e, wanted) is "clicked" then return "clicked"
+            end try
+        end repeat
+    end tell
+    return "no"
+end walk
+OSA
+    }
+    # banner_close — the usual close names, else the banner's top-left corner.
+    banner_close() {
+        ax_press "Close" >/dev/null && return 0
+        ax_press "Clear" >/dev/null && return 0
+        ax_press "Dismiss" >/dev/null && return 0
+        ax_press "Close Notification" >/dev/null && return 0
+        local frame x y
+        frame="$(osascript <<'OSA' 2>/dev/null
+tell application "System Events" to tell process "NotificationCenter"
+    repeat with w in windows
+        set s to size of w
+        if (item 1 of s) > 250 and (item 1 of s) < 700 and (item 2 of s) > 40 then
+            set p to position of w
+            return ((item 1 of p) as string) & "," & ((item 2 of p) as string)
+        end if
+    end repeat
+end tell
+return ""
+OSA
+)"
+        [ -n "$frame" ] || return 1
+        x="$(echo "$frame" | cut -d, -f1)"
+        y="$(echo "$frame" | cut -d, -f2)"
+        "$CGBIN" click "$((x + 16))" "$((y + 16))" >/dev/null 2>&1 || return 1
+        return 0
+    }
+    shot() { screencapture -x "$shots/$1" >/dev/null 2>&1 || true; }
+
+    # One shape at a time: a single banner is unambiguous for AX and the person.
+    defaults write "$DEFAULTS_SUITE" "showAppsInDock" -bool NO
+    stop_fakephone
+    FAKE_ARGS="--notify-only pd-a1" start_fake || return 1
+    device="$(sed -n 's/^fakephone \([^ ]*\) listening.*/\1/p' "$WORK/fake.log" "$WORK/fake.err" | head -1)"
+    [ -n "$device" ] || { bad "NOTIFY-VM no device id"; stop_fakephone; return 1; }
+    defaults write "$DEFAULTS_SUITE" "notify.$device" -bool YES
+    launch --connect "127.0.0.1:$PORT" --quit-after 150
+    # The first real banner may come with the system's permission prompt.
+    sleep 2
+    ax_press "Allow" "NotificationCenter" >/dev/null
+    ax_press "Allow" "UserNotificationCenter" >/dev/null
+    wait_until 20 events_have '"id":"pd-a1"' \
+        || { bad "NOTIFY-VM the phone never posted"; stop_app; stop_fakephone; return 1; }
+    sleep 3
+    shot "reply-banner.png"
+    result="$(ax_press "Reply")"
+    [ "$result" = "clicked" ] \
+        && ok "NOTIFY-VM the banner's Reply button was pressed" \
+        || bad "NOTIFY-VM no Reply button in the banner ($result)"
+    sleep 1
+    shot "reply-field.png"
+    osascript -e 'tell application "System Events" to keystroke "pd-reply-1"' >/dev/null 2>&1 || true
+    sleep 0.5
+    ax_press "Send" >/dev/null
+    sleep 0.5
+    osascript -e 'tell application "System Events" to key code 36' >/dev/null 2>&1 || true
+    wait_until 20 notify_rx action pd-a1 1 10 \
+        && ok "NOTIFY-VM the typed reply reached the phone (i=1, length 10)" \
+        || bad "NOTIFY-VM the phone got no reply action"
+    shot "reply-sent.png"
+    stop_app
+    stop_fakephone
+    wait_until 5 no_fakephone
+
+    # Copy code on a real banner; the guest's pasteboard is read and cleared.
+    FAKE_ARGS="--notify-only pd-a4" start_fake || return 1
+    launch --connect "127.0.0.1:$PORT" --quit-after 90
+    wait_until 20 events_have '"id":"pd-a4"' \
+        || { bad "NOTIFY-VM the code shape never posted"; stop_app; stop_fakephone; return 1; }
+    sleep 3
+    shot "code-banner.png"
+    result="$(ax_press "Copy code")"
+    [ "$result" = "clicked" ] \
+        && ok "NOTIFY-VM the banner's Copy code button was pressed" \
+        || bad "NOTIFY-VM no Copy code button ($result)"
+    sleep 1
+    [ "$(pbpaste 2>/dev/null | wc -c | tr -d ' ')" = "6" ] \
+        && ok "NOTIFY-VM the code is on the guest's pasteboard (6 bytes)" \
+        || bad "NOTIFY-VM the pasteboard does not hold a 6-byte code"
+    pbcopy < /dev/null
+    stop_app
+    stop_fakephone
+    wait_until 5 no_fakephone
+
+    # A banner clear must reach the delegate (.customDismissAction) and become
+    # notify.dismiss at the phone.
+    FAKE_ARGS="--notify-only pd-a2" start_fake || return 1
+    launch --connect "127.0.0.1:$PORT" --quit-after 90
+    wait_until 20 events_have '"id":"pd-a2"' \
+        || { bad "NOTIFY-VM the dismissable shape never posted"; stop_app; stop_fakephone; return 1; }
+    sleep 3
+    shot "dismiss-banner.png"
+    banner_close
+    sleep 2
+    shot "dismiss-after.png"
+    wait_until 20 notify_rx dismiss pd-a2 \
+        && ok "NOTIFY-VM clearing the banner sent notify.dismiss (customDismissAction works)" \
+        || bad "NOTIFY-VM no notify.dismiss after clearing the banner (.customDismissAction not delivered)"
+    defaults delete "$DEFAULTS_SUITE" "notify.$device" >/dev/null 2>&1
+    defaults delete "$DEFAULTS_SUITE" "showAppsInDock" >/dev/null 2>&1
+    stop_app
+    stop_fakephone
+    wait_until 5 no_fakephone
+}
+
 # --- DECK: the app grid's icon kinds ---------------------------------------
 icons_kind() { grep '"ev":"icon"' "$WORK/events.jsonl" 2>/dev/null | grep -c "$1" || true; }
 
