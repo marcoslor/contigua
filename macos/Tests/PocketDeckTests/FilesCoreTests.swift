@@ -328,6 +328,45 @@ final class FilesIdMapTests: XCTestCase {
         XCTAssertEqual("ino:11", map.identifier(for: "a.txt"))
     }
 
+    func testAPersistedPathThatHoldsAnotherFileGetsANewIdentifier() {
+        var map = FilesIdMap()
+        _ = map.insert(childrenOf: "", parentIdentifier: FilesMap.rootIdentifier,
+                       items: [fs("a.txt", ino: 6)])
+        var reopened = FilesIdMap.decode(map.encoded())!
+        XCTAssertEqual("ino:6", reopened.identifier(for: "a.txt"))
+        // While the app was closed the phone's path came to hold another file.
+        let second = reopened.insert(fs: fs("a.txt", ino: 7), path: "a.txt",
+                                     parentIdentifier: FilesMap.rootIdentifier)
+        XCTAssertEqual("ino:7", second.identifier)
+        XCTAssertNil(reopened.path(for: "ino:6"))
+    }
+
+    func testAMapFromBeforeTheInodeWasRecordedIsCheckedToo() {
+        // A map written before inodes were persisted has no "i": the first
+        // listing is what says whether its path still holds that file.
+        let legacy = Data("""
+        {"version":2,"ids":{".rootContainer":{"p":"","n":".rootContainer"},"ino:6":{"p":"a.txt","n":".rootContainer"}}}
+        """.utf8)
+        var map = FilesIdMap.decode(legacy)!
+        let listed = map.insert(fs: fs("a.txt", ino: 7), path: "a.txt",
+                                parentIdentifier: FilesMap.rootIdentifier)
+        XCTAssertEqual("ino:7", listed.identifier)
+    }
+
+    func testASavesIdentifierSurvivesARestart() {
+        var map = FilesIdMap()
+        _ = map.insert(childrenOf: "", parentIdentifier: FilesMap.rootIdentifier,
+                       items: [fs("a.txt", ino: 10)])
+        // A verified save renames a temp over the file: the map records the
+        // temp's ino with the identifier Finder already has.
+        _ = map.insert(fs: fs("a.txt", ino: 99), path: "a.txt",
+                       parentIdentifier: FilesMap.rootIdentifier, identifier: "ino:10")
+        var reopened = FilesIdMap.decode(map.encoded())!
+        let listed = reopened.insert(fs: fs("a.txt", ino: 99), path: "a.txt",
+                                     parentIdentifier: FilesMap.rootIdentifier)
+        XCTAssertEqual("ino:10", listed.identifier)
+    }
+
     func testAPersistedMapRoundTrips() {
         var map = FilesIdMap()
         _ = map.insert(childrenOf: "", parentIdentifier: FilesMap.rootIdentifier,
