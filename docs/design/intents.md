@@ -5,7 +5,7 @@ how a SwiftPM-built bundle gets the metadata they need.
 
 ## The intent surface
 
-Five intents, all optional-phone (default: the connected phone, else the only paired one):
+Six intents, all optional-phone (default: the connected phone, else the only paired one):
 
 | intent | does |
 |---|---|
@@ -88,3 +88,20 @@ identifier and mangled type name, so the route is the same for SwiftPM bundles.
   Shortcuts editor's UI. Those belong to the system's own index (Siri/Shortcuts register the
   bundle by its LaunchServices record), so the VM check only looks for index evidence in
   `log show` and must not register the test copy on the host.
+
+## Evidence collected
+
+- The e2e `intents` check reads the built bundle's metadata before it starts anything and
+  runs all six intents through the debug bridge; it passes 11/11.
+- The emulator ring was checked once: `phone.ring` answered `ring.state` `ringing=true`,
+  `dumpsys activity` showed `dev.pocketdeck/.app.RingActivity` resumed over the rig's
+  keyguard, `dumpsys audio` showed `dev.pocketdeck` holding `GAIN_TRANSIENT` with
+  `usage=USAGE_ALARM`, and `phone.ring.stop` answered `ringing=false` with the activity gone.
+  The rig granted `USE_FULL_SCREEN_INTENT` through `appops` (the one-tap Settings grant a
+  person would give); nothing was granted on the host.
+- The VM indexing check was **not run**: the guest boot needs swap below 2 GB, and the host
+  sat at 2.4 GB for the whole session (free memory 60–67% throughout). To run it later:
+  boot the `pd-e2e` VM, copy `build/e2e/PocketDeck.app` in, `open -g -a` it once with
+  `--profile intents --background`, then read
+  `log show --last 5m --predicate '(process == "appintentsd" OR process == "linkd") AND eventMessage CONTAINS "pocketdeck"'`
+  and `shortcuts list` in the guest.
