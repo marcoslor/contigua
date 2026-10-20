@@ -36,7 +36,7 @@ final class BridgeConnection {
 
     private let fd: Int32
     private let writeLock = NSLock()
-    private var decoder = BridgeDecoder()
+    private var decoder = BridgeDecoder(maxLineBytes: BridgeWire.maxReplyLineBytes)
     private var queue: [Reply] = []
 
     init?(path: String) {

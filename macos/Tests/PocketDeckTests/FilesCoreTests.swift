@@ -100,6 +100,28 @@ final class FilesBridgeWireTests: XCTestCase {
         XCTAssertEqual([], decoder.feed([UInt8](BridgeWire.line(.cancel(id: 1)))))
     }
 
+    func testAListingPageIsAllowedToBeOneLargeLine() {
+        // 1000 items is one `items` reply; the request cap must not clip it.
+        let items = (0..<1000).map { index in
+            FsItem(name: "file-\(index)-0123456789.txt", dir: false, size: index,
+                   mtime: 1_700_000_000_000, ino: index + 1, etag: "etag-\(index)")
+        }
+        let line = BridgeWire.line(.items(id: 3, page: "1000", items: items))
+        XCTAssertGreaterThan(line.count, BridgeWire.maxLineBytes)
+        var reply = BridgeDecoder(maxLineBytes: BridgeWire.maxReplyLineBytes)
+        let events = reply.feed([UInt8](line))
+        guard case .reply(.items(let id, let page, let parsed)) = events.first else {
+            return XCTFail("no items reply: \(events)")
+        }
+        XCTAssertEqual(3, id)
+        XCTAssertEqual("1000", page)
+        XCTAssertEqual(1000, parsed.count)
+        XCTAssertFalse(reply.broken)
+        // The same line on a request channel is refused.
+        var request = BridgeDecoder()
+        XCTAssertEqual([.invalid("line_too_long")], request.feed([UInt8](line)))
+    }
+
     func testMalformedLinesBecomeInvalidWithoutTheirContents() {
         XCTAssertEqual([.invalid("bad_json")], decode(Data("not json\n".utf8)))
         XCTAssertEqual([.invalid("bad_id")], decode(Data("{\"t\":\"list\"}\n".utf8)))

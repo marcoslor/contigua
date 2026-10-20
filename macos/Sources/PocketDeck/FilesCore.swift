@@ -108,6 +108,9 @@ let filesBridgeVersion = 1
 enum BridgeWire {
     /// A request line is at most 64 KiB (design §3's cap, applied locally).
     static let maxLineBytes = 64 * 1024
+    /// A reply may carry a whole listing page: the phone caps one at 1 MiB of
+    /// JSON, so the bridge's re-encoding gets twice that.
+    static let maxReplyLineBytes = 2 * 1024 * 1024
     /// A data chunk is one fs.read frame (≤ 256 KiB); the cap is a sanity check.
     static let maxChunkBytes = 8 * 1024 * 1024
 
@@ -183,6 +186,9 @@ enum BridgeEvent: Equatable {
 /// after a `data` header. Feed it whatever the socket returned; a line or a
 /// chunk may arrive split across any number of reads.
 struct BridgeDecoder {
+    /// Request channels keep the 64 KiB cap; a reply channel passes the larger
+    /// one, because an `items` page is one line.
+    private let maxLineBytes: Int
     private var line: [UInt8] = []
     private var chunk: [UInt8] = []
     private var chunkID: UInt32 = 0
@@ -190,6 +196,10 @@ struct BridgeDecoder {
     /// Set when a line grew past the cap: the stream cannot be trusted, the
     /// caller closes the connection.
     private(set) var broken = false
+
+    init(maxLineBytes: Int = BridgeWire.maxLineBytes) {
+        self.maxLineBytes = maxLineBytes
+    }
 
     mutating func feed(_ input: [UInt8]) -> [BridgeEvent] {
         guard !broken else { return [] }
@@ -210,7 +220,7 @@ struct BridgeDecoder {
             if let newline = bytes.firstIndex(of: 0x0A) {
                 line.append(contentsOf: bytes[0..<newline])
                 bytes.removeFirst(newline + 1)
-                if line.count > BridgeWire.maxLineBytes {
+                if line.count > maxLineBytes {
                     broken = true
                     events.append(.invalid("line_too_long"))
                     return events
@@ -227,7 +237,7 @@ struct BridgeDecoder {
             } else {
                 line.append(contentsOf: bytes)
                 bytes = []
-                if line.count > BridgeWire.maxLineBytes {
+                if line.count > maxLineBytes {
                     broken = true
                     events.append(.invalid("line_too_long"))
                 }
