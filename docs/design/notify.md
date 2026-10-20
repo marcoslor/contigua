@@ -141,6 +141,95 @@ The set is stored per phone in the profile's defaults as `notify.mute.<deviceId>
 Ids, package names, action indexes, field lengths and category counts only — never titles,
 texts, codes or replies, on either side and in the e2e share log.
 
+## Part 2b design: images and Live Updates
+
+Part 2 of v0.2 #8: a forwarded notification's picture and Android 16 Live Updates
+(promoted ongoing notifications). Part 1 (actions, reply, dismiss, mute, codes) is
+unchanged except for the promoted-ongoing gate below.
+
+### Images
+
+The phone picks **at most one picture per notification**, in this order: the
+big-picture bitmap/icon (`EXTRA_PICTURE`, else `EXTRA_PICTURE_ICON`), else the
+large icon (`Notification.getLargeIcon()`). The pick happens in the app process
+(the listener already holds the notification), and the mapping rules are a pure,
+JVM-tested seam (`NotifyImageRules` + a bitmap-source interface) so the cap math
+is tested without Android:
+
+- the long side is scaled to at most 512 px (aspect kept, no upscaling);
+- encoded as JPEG quality 80, or PNG when the source has an alpha channel;
+- at most 200 KiB after encoding; if it does not fit, the long side is halved
+  (512 → 256 → 128 → 64 → 32) and re-encoded; still over the cap at 32 px, or
+  the source cannot be read: no image is sent (the notification itself still goes);
+- the wire carries `notify.image {id, mime, w, h, data}` (data = base64 of the
+  encoded bytes) right after the `notify.post` for that id. An older Mac ignores
+  an unknown `t`, so the banner is unaffected. An update that repeats the same
+  picture for the same id is not sent again.
+
+The Mac refuses a received image that breaks its own caps (decoded > 256 KiB,
+mime other than `image/jpeg`/`image/png`, w or h ≤ 0 or > 1024, base64 that does
+not decode, or an id it never posted) and keeps the banner without a picture:
+`notify image id=… refused=<reason>`. A valid one becomes a
+`UNNotificationAttachment` in a temp file under the profile's caches folder
+(`~/Library/Caches/<support dir>/notify/<requestId>.<ext>`, directory 0700, file
+0600, the attachment's own temp copy is the system's). The temp file is deleted
+when the banner is removed (`notify.remove`, a phone-side dismiss), on
+disconnect, and on app quit; the image lives nowhere else.
+
+**Post timing:** the phone sends the post and then the image, so the Mac holds a
+post for up to **300 ms** (`NotifyCenter.hold`, 0 in tests) before submitting it
+to Notification Center, and the image that arrives in that window rides on the
+same request. A post that is already delivered is never re-posted for a late
+image: the image is dropped with `notify image id=… late` (a second banner for
+one notification is worse than a missing thumbnail). Late means the hold has
+elapsed; deeper queues are not reordered.
+
+### Live Updates
+
+Android 16 promotes an eligible ongoing notification (a ProgressStyle, CallStyle
+or BigTextStyle ongoing notification with a title, no custom view, no colorized
+flag, a non-MIN channel and a promotion request) into a Live Update. The listener
+forwards an **ongoing** notification only when the system marked it promoted:
+`notification.flags and Notification.FLAG_PROMOTED_ONGOING != 0` (API 36). The
+system's own `hasPromotableCharacteristics()` is recorded in the logcat line
+`notify live id=… promoted=0|1 promotable=0|1 style=…` (never text), which is how
+the emulator run records exactly what Android 16 did. `EXTRA_REQUEST_PROMOTED_ONGOING`
+(and its `NotificationCompat.Builder#setRequestPromotedOngoing`) only exists from
+API 36.1 and is not in this project's compileSdk 36; on 36 promotion is the
+system's decision for a notification that already qualifies, so nothing requests
+it. A notification that is ongoing and not promoted is skipped exactly as before
+(service chrome). The debug poster's own ongoing notifications stay forwardable
+in debug builds (the test seam that made the dismiss rule testable) and carry
+their own `promoted=` record.
+
+The wire adds `live` to `notify.post`: `{progress?: 0..1, chip?: ≤ 16 chars,
+chrono?: <epoch ms>, countDown?: bool}`.
+
+- `progress` is the ProgressStyle fraction: `getProgress()/getProgressMax()`,
+  or, for a segmented style, `getProgress()/sum(segment lengths)`; clamped to
+  0..1; absent when indeterminate or unknown.
+- `chip` is `Notification.getShortCriticalText()` (trimmed, capped at 16 chars).
+- `chrono` is `when` when the notification shows a chronometer, and `countDown`
+  says whether it counts down (`EXTRA_CHRONOMETER_COUNT_DOWN`).
+- Updates re-send `notify.post` with the **same id**, coalesced to at most one
+  per second per id (the newest state wins; a scheduled trailing send delivers
+  whatever is current at the boundary). Ending the activity is the phone's normal
+  `notify.remove`.
+
+On the Mac the first post of a live item banners once (like any notification);
+later posts for that id update the item in place and never banner again,
+recorded as `notify live id=… progress=<0|1..10 bucket> chip=<len> chrono=0|1
+countDown=0|1` in the share log. `notify.remove` (or a disconnect) removes both
+the banner and the item. The menu bar extra's **Live on <phone>** section lists
+the items with the app label, the chip, and either a ten-cell text progress bar
+or the running chronometer, computed when the menu opens; a click runs the same
+route a banner click runs (`notify.open`). Nothing about the items goes to the
+host's Notification Center in e2e (`--share-log` records instead).
+
+Samsung's Now Bar has no public API; One UI 8 shows Android 16 Live Updates
+there, so the same promoted notification appears in it with no Samsung-specific
+code.
+
 ## Part 2 results (v0.2 #8, part 1)
 
 Built: actions/buttons and inline reply, dismiss Mac ↔ phone, per-app mute, Copy code. Images

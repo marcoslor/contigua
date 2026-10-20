@@ -541,7 +541,8 @@ Phone → Mac:
 | t | fields |
 |---|---|
 | `notify.state` | `on` — forwarding is live (both gates) |
-| `notify.post` | `id`, `pkg`, `app`?, `when`, `title`?, `text`?, `ongoing`?, `actions`? |
+| `notify.post` | `id`, `pkg`, `app`?, `when`, `title`?, `text`?, `ongoing`?, `actions`?, `live`? |
+| `notify.image` | `id`, `mime`, `w`, `h`, `data` (base64) |
 | `notify.remove` | `id` |
 | `media.state` | `playing`, `pkg`?, `title`?, `artist`?, `album`?, `durationMs`?, `positionMs`, `rate` |
 
@@ -553,6 +554,24 @@ non-reply action or over the cap. The phone answers nothing: the app's own updat
 comes back as `notify.post`/`notify.remove`. An id or index it does not hold logs
 `notify.action unknown` without the text. `notify.dismiss` cancels the phone's notification
 (the listener calls `cancelNotification`), skipping ongoing and no-clear ones.
+
+`live` marks an Android 16 Live Update (a **promoted** ongoing notification:
+`Notification.FLAG_PROMOTED_ONGOING` set by the system) and carries
+`{"progress": 0..1, "chip": "≤ 16 chars", "chrono": <epoch ms>, "countDown": bool}`
+— every field optional. `progress` is the notification's ProgressStyle fraction
+(segments are summed into one length), `chip` the system's short critical text,
+`chrono` the `when` of a chronometer notification. An update is a second
+`notify.post` with the same `id`; the phone coalesces updates to at most one per
+second per id. The first post of such an id banners on the Mac, later ones update
+in place and never banner again; `notify.remove` ends the item. A phone that does
+not know `live` never sends it; an older Mac ignores it.
+
+`notify.image {id, mime, w, h, data}` follows the `notify.post` for the same id:
+one picture from that notification, `mime` `image/jpeg` or `image/png`, `data` its
+base64 bytes (≤ 200 KiB encoded, long side ≤ 512 px). The Mac decodes at most
+256 KiB, refuses other mimes and w/h over 1024, and attaches the picture to the
+banner it posts within 300 ms of the post; a late image is dropped rather than
+re-bannering. A Mac that predates the message ignores it.
 
 `notify.open` carries only an id the phone issued in `notify.post`: the Mac
 never sends an intent, a package or a component. `target: window` names the
