@@ -64,6 +64,26 @@ class ZenControlTest {
     }
 
     @Test
+    fun `a mac DND moves to another level and still turns off when the focus ends`() {
+        setUp()
+        assertTrue(control.apply(DndMode.PRIORITY))
+        assertTrue(control.apply(DndMode.ALARMS))
+        assertEquals(DndMode.ALARMS, zen.mode)
+        assertEquals(DndMode.ALARMS, control.setByMac)
+        assertTrue(control.apply(DndMode.OFF))
+        assertEquals(DndMode.OFF, zen.mode)
+        assertEquals(listOf(DndMode.PRIORITY, DndMode.ALARMS, DndMode.OFF), zen.writes.toList())
+    }
+
+    @Test
+    fun `a person's DND is not moved to another level`() {
+        setUp(DndMode.PRIORITY)
+        assertFalse(control.apply(DndMode.ALARMS))
+        assertEquals(DndMode.PRIORITY, zen.mode)
+        assertTrue(zen.writes.isEmpty())
+    }
+
+    @Test
     fun `alarms and nothing map through the same rule`() {
         setUp()
         assertTrue(control.apply(DndMode.ALARMS))

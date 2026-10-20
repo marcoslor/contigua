@@ -52,7 +52,9 @@ class ZenControl(
             if (owned != wanted) owned = null
             return false
         }
-        if (now != DndMode.OFF) {
+        // A DND that is PocketDeck's may move to another level (the Focus's
+        // "Allow" changed); anyone else's DND is left alone.
+        if (now != DndMode.OFF && owned != now) {
             owned = null
             log("dnd: person's own $now; left alone")
             return false
