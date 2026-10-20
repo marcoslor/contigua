@@ -18,6 +18,16 @@ object NotifyEvents {
     /** A reply sent back from the Mac; over this the listener refuses it. */
     const val MAX_REPLY_CHARS = 4 * 1024
 
+    /** The Live Update chip's own cap (docs/design/notify.md). */
+    const val MAX_CHIP = 16
+
+    /**
+     * `Notification.FLAG_PROMOTED_ONGOING`: the system promoted this ongoing
+     * notification into an Android 16 Live Update. Kept as a literal so the
+     * rule is JVM-tested; the constant itself is API 36.
+     */
+    const val FLAG_PROMOTED_ONGOING = 0x00040000
+
     /** The marker a debug build's test poster puts on its own notifications. */
     const val DEBUG_POSTER_EXTRA = "dev.pocketdeck.debug.poster"
 
@@ -89,6 +99,47 @@ object NotifyEvents {
     fun canDismiss(ongoing: Boolean, noClear: Boolean): Boolean = !ongoing && !noClear
 
     /**
+     * An ongoing notification is forwarded only when Android promoted it into a
+     * Live Update (docs/design/notify.md). Everything else ongoing is service
+     * chrome, as before part 2.
+     */
+    fun promoted(flags: Int, ongoing: Boolean): Boolean =
+        ongoing && flags and FLAG_PROMOTED_ONGOING != 0
+
+    /**
+     * A ProgressStyle fraction: `progress / max`, clamped. `max` is the style's
+     * own maximum, which is the sum of the segment lengths for a segmented
+     * style. Null when there is no usable maximum (indeterminate or absent).
+     */
+    fun progressFraction(progress: Int, max: Int): Double? {
+        if (max <= 0 || progress < 0) return null
+        return (progress.toDouble() / max).coerceIn(0.0, 1.0)
+    }
+
+    /**
+     * The `live` field of `notify.post`, or null when the notification says
+     * nothing about its progress (a promoted notification with a plain title is
+     * still live, so it gets at least the empty marker from the caller).
+     */
+    fun liveWire(
+        progress: Double?,
+        chip: String?,
+        chronoMs: Long?,
+        countDown: Boolean,
+    ): Map<String, Any?>? {
+        val cleanChip = chip?.trim()?.take(MAX_CHIP)?.takeIf { it.isNotEmpty() }
+        val cleanProgress = progress?.takeIf { it.isFinite() }?.coerceIn(0.0, 1.0)
+        val cleanChrono = chronoMs?.takeIf { it > 0L }
+        if (cleanProgress == null && cleanChip == null && cleanChrono == null) return null
+        return buildMap {
+            cleanProgress?.let { put("progress", it) }
+            cleanChip?.let { put("chip", it) }
+            cleanChrono?.let { put("chrono", it) }
+            if (countDown && cleanChrono != null) put("countDown", true)
+        }
+    }
+
+    /**
      * Our own package's notifications are not forwarded, except a debug build's
      * test poster (never in release), so the emulator/E2E can exercise the
      * listener with notifications it created itself.
@@ -110,6 +161,7 @@ object NotifyEvents {
         actions: List<ActionCandidate> = emptyList(),
         ongoing: Boolean = false,
         debugPoster: Boolean = false,
+        live: Map<String, Any?>? = null,
     ): Map<String, Any?>? {
         val validPkg = validPackage(pkg) ?: return null
         if (id.isEmpty() || id.length > 64) return null
@@ -128,6 +180,7 @@ object NotifyEvents {
             cleanText?.let { put("text", it) }
             if (when_ > 0L) put("when", when_)
             if (ongoing) put("ongoing", true)
+            live?.let { put("live", it) }
             val wire = actionWire(actions)
             if (wire.isNotEmpty()) put("actions", wire)
         }
