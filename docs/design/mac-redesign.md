@@ -219,10 +219,27 @@ that address." (no codes). On success it continues into the code sheet (§4.3). 
   high, SwiftUI content "Reconnecting…" `.caption` + small `ProgressView`; "Phone offline" after 15 s) fades in at the
   bottom center after 1 s of link loss and out when the link returns. Input is dropped while down (no queueing).
   Windows are re-opened on reconnect with the existing `reopenAll()` (unchanged protocol behaviour).
-- **Phone window:** Back/Home/Recents (`chevron.backward` · `circle` · `square.on.square`, tooltips) sit at the right of
-  the same hover header band (DESIGN.md), replacing the hand-drawn layer (A18) and the separate capsule.
 - Unchanged: `VideoLayerView`, `AVSampleBufferDisplayLayer`, `InputMapper`, `DebugInput`, gestures, resize debounce,
   pause/resume, density, edge swipe.
+
+#### Bar controls (glass capsules)
+
+The window kind's actions and the Live Text button sit in Liquid Glass capsules at the bar's right end, like a macOS 26
+toolbar item group:
+
+- one capsule for the phone navigation trio (Back · Home · Recents), one for Live Text, and one per other group (the
+  camera window's switch). Buttons in a capsule keep the 32×28 pt hit area; capsules are 28 pt tall (capsule radius),
+  symbols 14 pt medium, and capsules are 6 pt apart. In immersive the same capsules ride the dwell pill; in full screen
+  there is no bar or pill, as before.
+- symbols (same meaning, more Apple-like): Back `chevron.backward` · Home `house` · Recents `rectangle.stack` · Live
+  Text `text.viewfinder` (Apple's own Live Text symbol) · camera switch `arrow.triangle.2.circlepath.camera`. Tooltips
+  are unchanged.
+- symbols use the label colour the glass provides, so they stay readable over a white and over a black frame.
+- **Live Text freezes the controls.** While a window is in Live Text mode every bar action except Live Text itself is
+  disabled (dimmed, no hover, no action, accessibility "dimmed"), and the phone navigation shortcuts (⌘[, ⇧⌘H, ⌘↑) do
+  nothing, because they would drive the live phone behind the frozen picture. Leaving the mode re-enables them.
+  "Continue on Mac" is left alone: it opens another window for the phone's current app, it does not act on this
+  window's frozen frame. `HeaderActionPolicy` is the one decision, unit tested.
 
 ### 3.8 Menu bar item and app menu
 
@@ -235,6 +252,12 @@ that address." (no codes). On success it continues into the code sheet (§4.3). 
   *Edit* (standard Undo/Redo/Cut/Copy/Paste/Select All, so paste works in the code and search fields) · *View*
   (Find Apps ⌘K, Phone Window ⌘P, Enter Full Screen ⌃⌘F; ⌘+ ⌘− ⌘0 are handled by the stream window itself, as before) · *Navigate* (Back ⌘[,
   Home ⇧⌘H, Recents ⌘↑ — unchanged) · *Window* (Minimize ⌘M, Zoom, Bring All to Front, window list).
+- **View ▸ Immersive** is a submenu: *Instantly* · *Short* · *Long* (the reveal delays, checkmark on the current one) ·
+  separator · *Always Visible*. Picking any item switches the focused window to Immersive and stores the choice as the
+  global setting under `immersive.revealDelay`, the same store Settings ▸ General uses; the Settings picker gains
+  *Always Visible*. The parent item is checked while the key window is immersive; *Framed* stays a plain checkable
+  item. *Always Visible* keeps the traffic lights and the bar capsules over the stream at rest — no hot zone, no dwell
+  pill, no hiding — and the stream still fills the window.
 
 ### 3.9 Dock / lifecycle
 
