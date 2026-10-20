@@ -17,18 +17,16 @@ class ShellLanding(
 ) : DropReceiver.Landing {
 
     override fun land(file: File, mime: String) {
-        scan(file, mime)
+        scan(file)
         offerSend(file, mime)
     }
 
     /** Makes the file visible without waiting for the card to be remounted. */
-    private fun scan(file: File, mime: String) {
-        val app = app ?: return
-        runCatching {
-            android.media.MediaScannerConnection.scanFile(
-                app, arrayOf(file.absolutePath), arrayOf(mime), null,
-            )
-        }.onFailure { log("drop: media scan failed: ${it.message}") }
+    private fun scan(file: File) {
+        // Not MediaScannerConnection with the app's Context: from a uid-2000
+        // process that provider call has the wrong package and the system kills
+        // the process (see [MediaScan]).
+        MediaScan.request(app, listOf(file.absolutePath), log)
     }
 
     /**

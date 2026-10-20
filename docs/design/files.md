@@ -663,6 +663,24 @@ while the list is empty. No watcher thread, timer or poll exists when idle.
   is the gap between that check and the rename — microseconds instead of the
   whole transfer. A create used to replace a file that appeared after its last
   check, i.e. one that landed while the bytes streamed.
+- **Who indexes a finished file.** A rename on the FUSE mount goes through MediaProvider even
+  at shell uid (§2), and MediaProvider indexes the new path as part of that rename: in the
+  round-2 emulator run the written photo had a MediaStore row right after the write and the
+  same `_id` after a rename, with no scan of ours in between. So a write or a move calls the
+  media scan only when the **plain** fallback did the rename; the media-aware path does not
+  scan on top of MediaProvider's own work.
+- **Why the shell service died in round 1.** `MediaScannerConnection.scanFile` with the Context
+  Shizuku hands in — the app's package, inside a process that runs as uid 2000 — acquires
+  MediaProvider on a background HandlerThread, and the system refuses it
+  (`SecurityException: Given calling package … does not match caller's uid 2000`) on that
+  thread. No `runCatching` can catch that: the uncaught exception kills the process. It
+  happened right after the write and again right after the move, while the rows themselves
+  were fine. `MediaScan` replaces it with one synchronous `scan_file` provider call per path (the
+  call the framework's own `MediaStore.scanFile` makes) on its own daemon thread, from a context
+  whose package is the one this uid really is (`com.android.shell`), all inside `runCatching`;
+  the drop path's scan had the same call shape and got the same fix. The fix is from that
+  logcat evidence and was not re-run (one boot this round), so a fallback-path scan that the
+  provider still refuses costs a log line, never the process.
 - **Collision (S4 leftover).** Apple's replicated-provider contract says a  `createItem` that answers `NSFileProviderError.filenameCollision` is retried
   by the system with another name, and `NSFileProviderCreateItemOptions.mayAlreadyExist`
   means "the name may now be there, it is yours to resolve". A POSIX `cp` is not

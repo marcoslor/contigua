@@ -138,7 +138,7 @@ class FsWriterTest {
     // MARK: Happy path
 
     @Test
-    fun aVerifiedWriteRenamesItsTempAndScansTheResult() {
+    fun aVerifiedWriteRenamesItsTempAndTheMediaPathIndexesIt() {
         setup()
         val bytes = ByteArray(3 * 256 * 1024) { (it % 251).toByte() }
         val writer = writer()
@@ -150,7 +150,9 @@ class FsWriterTest {
         assertArrayEquals(bytes, target.readBytes())
         assertEquals(1, platform.renamed.size)
         assertEquals(target, platform.renamed[0].second)
-        assertEquals(listOf(target), platform.scanned.toList())
+        // The media-aware rename keeps MediaStore's rows itself (the emulator's
+        // row was there before any scan), so the write does not scan on top.
+        assertTrue(platform.scanned.isEmpty())
         assertEquals(paths.item(target).etag, result["etag"])
         awaitNoStaging()
         assertEquals(bytes.size.toString(), (result["item"] as Map<*, *>)["size"].toString())
@@ -189,7 +191,7 @@ class FsWriterTest {
     }
 
     @Test
-    fun theFallbackRenameRunsWhenTheMediaPathRefuses() {
+    fun theFallbackRenameRunsAndScansWhenTheMediaPathRefuses() {
         setup()
         platform.refuseRename = true
         val bytes = "hello".toByteArray()
@@ -199,6 +201,7 @@ class FsWriterTest {
         assertEquals(true, awaitResult(4)["ok"])
         assertEquals(1, platform.plain.size)
         assertArrayEquals(bytes, File(paths.rootPath, "fallback.txt").readBytes())
+        // The fallback bypassed MediaProvider, so this one does scan.
         assertEquals(listOf(File(paths.rootPath, "fallback.txt")), platform.scanned.toList())
     }
 

@@ -56,13 +56,9 @@ class AndroidFsPlatform(
     }
 
     override fun scan(files: List<File>) {
-        val app = app ?: return
-        if (files.isEmpty()) return
-        runCatching {
-            android.media.MediaScannerConnection.scanFile(
-                app, files.map { it.absolutePath }.toTypedArray(), null, null,
-            )
-        }.onFailure { log("fs: media scan failed: ${it.javaClass.simpleName}") }
+        // Never MediaScannerConnection with the app's Context here: see
+        // [MediaScan] and the S5 notes in docs/design/files.md.
+        MediaScan.request(app, files.map { it.absolutePath }, log)
     }
 
     override fun setLastModified(file: File, mtimeMs: Long): Boolean =

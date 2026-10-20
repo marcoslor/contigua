@@ -87,7 +87,8 @@ class FsMutationsTest {
         assertEquals(source, platform.renamed[0].first)
         assertFalse(source.exists())
         assertEquals("hello", File(paths.rootPath, "b.txt").readText())
-        assertEquals(listOf(File(paths.rootPath, "b.txt"), source), platform.scanned.toList())
+        // The media-aware rename keeps MediaStore's rows in step by itself.
+        assertEquals(0, platform.scanned.size)
         // A move never asks the seam to replace; a taken name is a refusal.
         assertEquals(listOf(false), platform.replaceFlags.toList())
     }
@@ -114,6 +115,12 @@ class FsMutationsTest {
         ops.move("a.txt", "b.txt", null)
         assertEquals(1, platform.plain.size)
         assertTrue(File(paths.rootPath, "b.txt").exists())
+        // The fallback bypassed MediaProvider: the new path is scanned and the
+        // old one too, so its row does not stay behind.
+        assertEquals(
+            listOf(File(paths.rootPath, "b.txt"), File(paths.rootPath, "a.txt")),
+            platform.scanned.toList(),
+        )
     }
 
     @Test
