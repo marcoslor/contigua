@@ -1655,8 +1655,81 @@ def _fs_list_all(client, path):
             return items
 
 
+def _fs_result(client, request, timeout=120.0):
+    """Sends one fs.* write-side request and prints the fs.result."""
+    fs_id = request["id"]
+    client.send_json(request)
+    while True:
+        frame = client.recv(timeout)
+        if frame is TIMEOUT:
+            raise DeckError("fs.%s timed out" % request.get("t"))
+        if frame is None:
+            raise DeckError("phone closed the connection during %s" % request.get("t"))
+        if frame.type != proto.TYPE_JSON:
+            continue
+        msg = proto.unpack_json(frame)
+        if msg.get("id") != fs_id:
+            continue
+        if msg.get("t") == "error":
+            raise DeckError("fs error: %s (%s)" % (msg.get("code"), msg.get("message", "")))
+        if msg.get("t") != "fs.result":
+            continue
+        print(json.dumps(msg, indent=None, separators=(",", ":"), sort_keys=True))
+        if not msg.get("ok"):
+            return 1
+        return 0
+
+
+def _fs_write(client, path, local):
+    with open(local, "rb") as handle:
+        data = handle.read()
+    digest = hashlib.sha256(data).hexdigest()
+    fs_id = _fs_id()
+    request = {"t": "fs.write", "id": fs_id, "path": path,
+               "size": len(data), "sha256": digest}
+    client.send_json(request)
+    sent = 0
+    while sent < len(data):
+        payload = data[sent:sent + 256 * 1024]
+        client.send_raw(proto.pack_frame(proto.TYPE_FS_DATA, fs_id, payload))
+        sent += len(payload)
+    while True:
+        frame = client.recv(180.0)
+        if frame is TIMEOUT:
+            raise DeckError("fs.write timed out after %d bytes" % sent)
+        if frame is None:
+            raise DeckError("phone closed the connection during fs.write")
+        if frame.type != proto.TYPE_JSON:
+            continue
+        msg = proto.unpack_json(frame)
+        if msg.get("id") != fs_id:
+            continue
+        if msg.get("t") == "error":
+            raise DeckError("fs error: %s (%s)" % (msg.get("code"), msg.get("message", "")))
+        if msg.get("t") != "fs.result":
+            continue
+        print(json.dumps(msg, indent=None, separators=(",", ":"), sort_keys=True))
+        return 0 if msg.get("ok") else 1
+
+
 def cmd_fs(client, args):
-    """Read-only phone files (docs/PROTOCOL.md): list, stat, read."""
+    """Phone files (docs/PROTOCOL.md "Phone files"): list/stat/read and the
+    write side (write/mkdir/move/delete/setattrs)."""
+    if args.action == "write":
+        return _fs_write(client, args.path, args.out)
+    if args.action == "mkdir":
+        return _fs_result(client, {"t": "fs.mkdir", "id": _fs_id(), "path": args.path})
+    if args.action == "move":
+        request = {"t": "fs.move", "id": _fs_id(), "from": args.path, "to": args.to}
+        if args.etag:
+            request["etag"] = args.etag
+        return _fs_result(client, request)
+    if args.action == "delete":
+        return _fs_result(client, {"t": "fs.delete", "id": _fs_id(), "path": args.path,
+                                   "recursive": bool(args.recursive)})
+    if args.action == "setattrs":
+        return _fs_result(client, {"t": "fs.setAttrs", "id": _fs_id(), "path": args.path,
+                                   "mtime": args.mtime})
     if args.action == "list":
         items = _fs_list_all(client, args.path)
         print(json.dumps(items, indent=None, separators=(",", ":"), sort_keys=True))
@@ -1873,10 +1946,14 @@ def build_parser():
     sp.add_argument("--interval", type=float, default=2.5)
     sp.add_argument("--launch-settle", type=float, default=2.0)
 
-    sp = sub.add_parser("fs", help="read-only phone files: list/stat/read (docs/PROTOCOL.md)", **spp)
-    sp.add_argument("action", choices=["list", "stat", "read"])
+    sp = sub.add_parser("fs", help="phone files: list/stat/read/write/mkdir/move/delete/setattrs (docs/PROTOCOL.md)", **spp)
+    sp.add_argument("action", choices=["list", "stat", "read", "write", "mkdir", "move",
+                                       "delete", "setattrs"])
     sp.add_argument("path", help="path relative to the phone's shared storage ('' = the root)")
-    sp.add_argument("out", nargs="?", help="read: write the range here")
+    sp.add_argument("out", nargs="?", help="read: write the range here; write: the local file")
+    sp.add_argument("--to", help="move: the destination path")
+    sp.add_argument("--recursive", action="store_true", help="delete: a whole folder")
+    sp.add_argument("--mtime", type=int, help="setattrs: milliseconds since the epoch")
     sp.add_argument("--offset", type=int, default=0, help="read: first byte (default 0)")
     sp.add_argument("--length", type=int, default=None, help="read: byte count (default: offset..EOF via stat)")
     sp.add_argument("--etag", help="read: the version the Mac believes (fs_stale on mismatch)")
