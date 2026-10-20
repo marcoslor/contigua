@@ -911,7 +911,18 @@ final class FilesBridge {
     func attach(host: FilesBridgeHost) {
         self.host?.cancelAll()
         self.host = host
-        Log.files.notice("bridge: session attached")
+        // The extension processes kept their watch connections across the phone
+        // session (their socket is this app, not the phone), so they will not
+        // ask again: the phone's watches are re-applied here (design §5).
+        let wanted = watchCounts.keys.sorted()
+        for item in wanted {
+            host.watch(item: item, on: true) { result in
+                if case .failure(let error) = result {
+                    Log.files.notice("bridge: re-watch failed code=\(error.code, privacy: .public)")
+                }
+            }
+        }
+        Log.files.notice("bridge: session attached, re-watched \(wanted.count, privacy: .public)")
     }
 
     /// The session ended: requests answer `offline` until the next attach.
@@ -921,9 +932,8 @@ final class FilesBridge {
         liveIDs.removeAll()
         readIDs.removeAll()
         writeSinks.removeAll()
-        watchSets.removeAll()
-        watchClients.removeAll()
-        watchCounts.removeAll()
+        // The watch subscriptions belong to the extension processes, not to the
+        // phone session: the next attach re-applies them.
         Log.files.notice("bridge: session detached")
     }
 
@@ -1157,8 +1167,24 @@ final class FilesBridge {
             host.watch(item: item, on: on) { result in
                 MainActor.assumeIsolated {
                     switch result {
-                    case .success: next()
-                    case .failure(let error): completion(.failure(error))
+                    case .success:
+                        Log.files.notice("bridge: phone watch on=\(on, privacy: .public)")
+                        next()
+                    case .failure(let error):
+                        // Undo this item's count so a later attempt tries again.
+                        if on {
+                            let count = self.watchCounts[item] ?? 1
+                            if count <= 1 {
+                                self.watchCounts.removeValue(forKey: item)
+                            } else {
+                                self.watchCounts[item] = count - 1
+                            }
+                            self.watchSets[slot]?.remove(item)
+                        } else {
+                            self.watchCounts[item] = (self.watchCounts[item] ?? 0) + 1
+                        }
+                        Log.files.notice("bridge: phone watch failed code=\(error.code, privacy: .public)")
+                        completion(.failure(error))
                     }
                 }
             }
