@@ -41,10 +41,13 @@ class FsMutations(
     }
 
     /** `fs.delete`: one file, or a folder when empty or [recursive]. */
-    fun delete(path: String?, recursive: Boolean) {
+    fun delete(path: String?, recursive: Boolean, etag: String? = null) {
         val file = paths.resolve(path)
         if (file.path == paths.rootPath) throw FsPaths.denied("the root does not delete")
         val meta = paths.meta(file) ?: throw FsPaths.notFound()
+        // Checked here, right before the delete, so a stat the Mac made earlier
+        // cannot hide a change made since.
+        if (etag != null && etag != paths.etag(meta)) throw FsPaths.stale()
         if (meta.dir) {
             val children = file.listFiles().orEmpty()
             if (children.isNotEmpty() && !recursive) {

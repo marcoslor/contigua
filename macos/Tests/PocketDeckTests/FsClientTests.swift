@@ -25,7 +25,7 @@ private final class FakeFsChannel: FsChannel {
     private(set) var writes: [(id: UInt32, path: String, size: Int, sha256: String, etag: String?, exclusive: Bool)] = []
     private(set) var writeData: [(id: UInt32, bytes: [UInt8])] = []
     private(set) var moves: [(id: UInt32, from: String, to: String, etag: String?)] = []
-    private(set) var deletes: [(id: UInt32, path: String, recursive: Bool)] = []
+    private(set) var deletes: [(id: UInt32, path: String, recursive: Bool, etag: String?)] = []
     private(set) var mkdirs: [(id: UInt32, path: String)] = []
     private(set) var setAttrs: [(id: UInt32, path: String, mtime: Int)] = []
     /// The session's write completions, held so a test decides when a chunk landed.
@@ -64,9 +64,9 @@ private final class FakeFsChannel: FsChannel {
         moves.append((id, from, to, etag))
     }
 
-    func fsDelete(id: UInt32, path: String, recursive: Bool) {
+    func fsDelete(id: UInt32, path: String, recursive: Bool, etag: String?) {
         lock.lock(); defer { lock.unlock() }
-        deletes.append((id, path, recursive))
+        deletes.append((id, path, recursive, etag))
     }
 
     func fsMkdir(id: UInt32, path: String) {
@@ -356,9 +356,10 @@ final class FsClientTests: XCTestCase {
         XCTAssertEqual("New", try created?.get()?.name)
 
         var deleted: Result<FsItem?, FsError>?
-        client.delete(path: "New", recursive: true) { deleted = $0 }
+        client.delete(path: "New", recursive: true, etag: "e") { deleted = $0 }
         let del = try XCTUnwrap(channel.deletes.first)
         XCTAssertTrue(del.recursive)
+        XCTAssertEqual("e", del.etag)
         client.result(id: del.id, ok: true, item: nil, code: nil, message: nil)
         XCTAssertEqual(.success(nil), deleted)
     }

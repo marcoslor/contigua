@@ -540,6 +540,10 @@ with the phone's bytes verified and nothing lost when both sides changed a file.
   same numbered retry (`(from Mac 2)` … `(from Mac 20)`, then it fails with that collision error);
   unlike the listing-based pick it survives a name taken between the listing and the upload.
   Without `exclusive`, a replace must name the version it replaces (`etag`); neither → `fs_exists`.
+- **Delete names its version.** `fs.delete` carries the base etag and the phone checks it right
+  before deleting (`fs_stale`, nothing removed), so there is no stat-then-delete window. A
+  folder's etag is the folder's own, which catches children added or removed directly in it; a
+  recursive delete removes what is in the folder at that moment, deeper changes included.
 - **No trash**: `deleteItem` deletes forever on the phone; there is no `.trash` container on
   either side (a phone-side trash would change what the person sees in Files on the phone).
   Finder warns that the delete cannot be undone.
