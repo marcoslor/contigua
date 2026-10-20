@@ -1,5 +1,7 @@
 package dev.pocketdeck.server
 
+import dev.pocketdeck.app.MediaArtRules
+import dev.pocketdeck.app.MediaControl
 import dev.pocketdeck.app.NotifyEvents
 import dev.pocketdeck.camera.CameraInfo
 import dev.pocketdeck.camera.CameraMessages
@@ -95,7 +97,10 @@ class Session(
     private val tlsView: TlsView? = null,
     private val audioCapture: AudioCaptureLayer? = null,
     private val notifyShared: () -> Boolean = { false },
+    /** `media.command`: the validated command as JSON, for the app process. */
     private val mediaCommand: ((String) -> Unit)? = null,
+    /** `media.choose`: which phone session Now Playing follows. */
+    private val mediaChoose: ((String) -> Unit)? = null,
     private val notifyForward: ((Boolean) -> Unit)? = null,
     /** Asks the app for the forwarded notification's action; it answers over AIDL. */
     private val notifyOpen: ((String, Int) -> Unit)? = null,
@@ -779,6 +784,7 @@ class Session(
                 "notify.action" -> onNotifyAction(obj)
                 "notify.dismiss" -> onNotifyDismiss(obj)
                 "media.command" -> onMediaCommand(obj)
+                "media.choose" -> onMediaChoose(obj)
                 "phone.ring" -> onPhoneRing(obj)
                 "phone.ring.stop" -> onPhoneRingStop()
                 "phone.dnd" -> onPhoneDnd(obj)
@@ -1155,18 +1161,61 @@ class Session(
         log("notify.dismiss id=$id")
     }
 
+    /**
+     * `media.command` (docs/design/notify.md, "Media part 2"): a transport
+     * control, a seek or a volume level, optionally for one session key. The
+     * shell validates what the wire can carry; the app process clamps the
+     * position to the track and the level to the session's own maximum and
+     * logs the value it used. A command without a key acts on the chosen
+     * session, exactly as an older Mac's does.
+     */
     private fun onMediaCommand(obj: Map<String, Any?>) {
         val action = Json.str(obj["action"])
-        val command = action?.let { NotifyEvents.validMediaCommand(it) }
-        if (command == null) {
+        if (action == null || NotifyEvents.validMediaCommand(action) == null) {
             logOnce("media.command dropped (unknown action)")
             return
+        }
+        val command = LinkedHashMap<String, Any?>()
+        command["action"] = action
+        validToken(Json.str(obj["key"]), MediaControl.MAX_KEY)?.let { command["key"] = it }
+        when (action) {
+            "seek" -> {
+                val position = Json.long(obj["positionMs"])?.takeIf { it in 0..MediaControl.MAX_POSITION_MS }
+                    ?: run {
+                        log("media.command dropped: positionMs")
+                        return
+                    }
+                command["positionMs"] = position
+            }
+            "volume" -> {
+                val level = (obj["level"] as? Number)?.toInt()?.takeIf { it in 0..MediaControl.MAX_LEVEL }
+                    ?: run {
+                        log("media.command dropped: level")
+                        return
+                    }
+                command["level"] = level
+            }
         }
         val driver = mediaCommand ?: run {
             logOnce("media.command dropped (no consumer)")
             return
         }
-        driver(command)
+        driver(Json.encode(command))
+        log("media.command ${command["action"]} key=${command["key"] ?: "-"}")
+    }
+
+    /** `media.choose`: pick the session Now Playing follows; the phone confirms. */
+    private fun onMediaChoose(obj: Map<String, Any?>) {
+        val key = validToken(Json.str(obj["key"]), MediaControl.MAX_KEY) ?: run {
+            log("media.choose dropped: key")
+            return
+        }
+        val choose = mediaChoose ?: run {
+            logOnce("media.choose dropped (no consumer)")
+            return
+        }
+        choose(key)
+        log("media.choose key=$key")
     }
 
     /**
@@ -1251,6 +1300,8 @@ class Session(
             "notify.post" -> deviceNotifyPost(obj)
             "notify.remove" -> deviceNotifyRemove(obj)
             "media.state" -> deviceMedia(obj)
+            "media.sessions" -> deviceMediaSessions(obj)
+            "media.art" -> deviceMediaArt(obj)
             else -> logOnce("device event '$t' ignored")
         }
     }
@@ -1325,6 +1376,7 @@ class Session(
         message["t"] = "media.state"
         message["playing"] = playing
         Json.str(obj["pkg"])?.let { validToken(it, 255) }?.let { message["pkg"] = it }
+        validToken(Json.str(obj["key"]), MediaControl.MAX_KEY)?.let { message["key"] = it }
         for (key in listOf("title", "artist", "album")) {
             Json.str(obj[key])?.takeIf { it.isNotEmpty() && it.length <= NotifyEvents.MAX_CHARS }?.let { message[key] = it }
         }
@@ -1336,7 +1388,82 @@ class Session(
             if (rate !in 0.05..8.0) { log("media.state dropped: rate range"); return }
             message["rate"] = rate
         }
+        // "Media part 2" fields: an older Mac ignores them, an older phone
+        // never sends them.
+        if (Json.bool(obj["canSeek"]) == true) message["canSeek"] = true
+        val volumeMax = (obj["volumeMax"] as? Number)?.toInt()?.takeIf { it in 1..MediaControl.MAX_LEVEL }
+        if (volumeMax != null) {
+            message["volumeMax"] = volumeMax
+            (obj["volume"] as? Number)?.toInt()?.coerceIn(0, volumeMax)?.let { message["volume"] = it }
+        }
         sendJson(message)
+    }
+
+    /**
+     * `media.sessions`: the active sessions in the system's order and the chosen
+     * key. Keys, packages, app labels and playing flags only — never a title.
+     */
+    private fun deviceMediaSessions(obj: Map<String, Any?>) {
+        val raw = obj["list"] as? List<*> ?: run {
+            log("media.sessions dropped: list")
+            return
+        }
+        val list = ArrayList<Map<String, Any?>>(minOf(raw.size, MediaControl.MAX_SESSIONS))
+        for (entry in raw) {
+            if (list.size == MediaControl.MAX_SESSIONS) break
+            val map = entry as? Map<*, *> ?: continue
+            val key = validToken(Json.str(map["key"]), MediaControl.MAX_KEY) ?: continue
+            val pkg = validToken(Json.str(map["pkg"]), 255) ?: continue
+            val app = Json.str(map["app"])?.trim()?.take(MediaControl.MAX_APP)?.takeIf { it.isNotEmpty() } ?: pkg
+            val item = LinkedHashMap<String, Any?>()
+            item["key"] = key
+            item["pkg"] = pkg
+            item["app"] = app
+            item["playing"] = Json.bool(map["playing"]) == true
+            list += item
+        }
+        val message = LinkedHashMap<String, Any?>()
+        message["t"] = "media.sessions"
+        message["list"] = list
+        validToken(Json.str(obj["chosen"]), MediaControl.MAX_KEY)?.let { message["chosen"] = it }
+        sendJson(message)
+        log("media.sessions n=${list.size} chosen=${message["chosen"] ?: "-"}")
+    }
+
+    /**
+     * `media.art`: the chosen session's picture for one key. The Mac takes JPEG
+     * up to 512 px and 256 KiB and shows nothing else. No data clears it.
+     */
+    private fun deviceMediaArt(obj: Map<String, Any?>) {
+        val key = validToken(Json.str(obj["key"]), MediaControl.MAX_KEY) ?: run {
+            log("media.art dropped: key")
+            return
+        }
+        val message = LinkedHashMap<String, Any?>()
+        message["t"] = "media.art"
+        message["key"] = key
+        val data = Json.str(obj["data"])
+        if (!data.isNullOrEmpty()) {
+            if (Json.str(obj["mime"]) != "image/jpeg") return dropMediaArt("mime")
+            val width = (obj["w"] as? Number)?.toInt() ?: return dropMediaArt("w")
+            val height = (obj["h"] as? Number)?.toInt() ?: return dropMediaArt("h")
+            if (width !in 1..MediaArtRules.MAX_SIDE || height !in 1..MediaArtRules.MAX_SIDE) {
+                return dropMediaArt("size")
+            }
+            val bytes = runCatching { android.util.Base64.decode(data, android.util.Base64.DEFAULT) }
+                .getOrNull() ?: return dropMediaArt("data")
+            if (bytes.isEmpty() || bytes.size > MediaArtRules.MAX_BYTES) return dropMediaArt("bytes")
+            message["mime"] = "image/jpeg"
+            message["w"] = width
+            message["h"] = height
+            message["data"] = data
+        }
+        sendJson(message)
+        log("media.art key=$key bytes=${data?.length ?: 0}")
+    }
+
+    private fun dropMediaArt(why: String) {
+        log("media.art dropped: $why")
     }
 
     private fun validToken(v: String?, maxLength: Int): String? {

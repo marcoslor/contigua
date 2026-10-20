@@ -43,9 +43,13 @@ class DeckForegroundService : Service() {
             DeckState.notifyChanged()
         }
 
-        override fun onMediaCommand(action: String?) {
-            val command = action ?: return
+        override fun onMediaCommand(json: String?) {
+            val command = json ?: return
             PdNotificationBridge.mediaSink?.invoke(command)
+        }
+
+        override fun onMediaChoose(key: String?) {
+            PdNotificationBridge.chooseSink?.invoke(key ?: return)
         }
 
         override fun onRing(seconds: Int) {

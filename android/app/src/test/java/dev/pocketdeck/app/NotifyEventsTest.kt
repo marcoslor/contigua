@@ -77,10 +77,45 @@ class NotifyEventsTest {
     fun `media clear and commands`() {
         val clear = NotifyEvents.mediaState(false, null, null, null, null, null, null, 0.0)
         assertEquals(2, clear.size) // t + playing only
-        assertEquals("play", NotifyEvents.validMediaCommand("play"))
-        assertEquals("prev", NotifyEvents.validMediaCommand("prev"))
-        assertNull(NotifyEvents.validMediaCommand("seek"))
+        for (action in listOf("play", "pause", "next", "prev", "seek", "volume")) {
+            assertEquals(action, NotifyEvents.validMediaCommand(action))
+        }
+        assertNull(NotifyEvents.validMediaCommand("rewind"))
         assertNull(NotifyEvents.validMediaCommand(""))
+    }
+
+    @Test
+    fun `media state carries the part 2 fields only when they mean something`() {
+        val rich = NotifyEvents.mediaState(
+            playing = true, pkg = "org.fossify.musicplayer", title = "tone440", artist = null,
+            album = null, durationMs = 30_000, positionMs = 2_111, rate = 1.0,
+            key = "s2", canSeek = true, volume = 7, volumeMax = 15,
+        )
+        assertEquals("s2", rich["key"])
+        assertEquals(true, rich["canSeek"])
+        assertEquals(7, rich["volume"])
+        assertEquals(15, rich["volumeMax"])
+
+        // An older phone sends none of them; a plain state must stay as small.
+        val plain = NotifyEvents.mediaState(
+            playing = false, pkg = "p", title = "t", artist = null, album = null,
+            durationMs = null, positionMs = null, rate = 0.0,
+        )
+        assertEquals(0, plain.keys.count { it in setOf("key", "canSeek", "volume", "volumeMax") })
+
+        // A bad key or a bogus maximum is dropped rather than sent.
+        val odd = NotifyEvents.mediaState(
+            playing = false, pkg = "p", title = "t", artist = null, album = null,
+            durationMs = null, positionMs = null, rate = 0.0,
+            key = "bad key", volume = 3, volumeMax = 0,
+        )
+        assertEquals(0, odd.keys.count { it in setOf("key", "volume", "volumeMax") })
+        // The level is clamped to the maximum the session reports.
+        val clamped = NotifyEvents.mediaState(
+            playing = false, pkg = "p", title = "t", artist = null, album = null,
+            durationMs = null, positionMs = null, rate = 0.0, volume = 99, volumeMax = 15,
+        )
+        assertEquals(15, clamped["volume"])
     }
 
     // ---- actions (ROADMAP v0.2 #8) ----------------------------------------

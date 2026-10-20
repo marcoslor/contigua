@@ -24,6 +24,15 @@ class PdNotificationBridge(private val context: Context) {
         push(event, "media.state")
     }
 
+    /** `media.sessions` and `media.art` ride the same gate as `media.state`. */
+    fun sessions(event: Map<String, Any?>) {
+        push(event, "media.sessions")
+    }
+
+    fun art(event: Map<String, Any?>) {
+        push(event, "media.art")
+    }
+
     private fun push(event: Map<String, Any?>, kind: String) {
         if (!gate()) {
             if (event["t"] == "media.state" && event["playing"] == true) Log.i(TAG, "gated, media.state held")
@@ -39,7 +48,7 @@ class PdNotificationBridge(private val context: Context) {
     }
 
     companion object {
-        /** Set by the listener while it runs; the shell callback thread invokes it. */
+        /** `media.command` (JSON: action, optional key/positionMs/level) from the Mac. */
         @Volatile
         var mediaSink: ((String) -> Unit)? = null
 
@@ -50,6 +59,10 @@ class PdNotificationBridge(private val context: Context) {
         /** `notify.dismiss` (id) from the Mac. */
         @Volatile
         var dismissSink: ((String) -> Unit)? = null
+
+        /** `media.choose` (session key) from the Mac. */
+        @Volatile
+        var chooseSink: ((String) -> Unit)? = null
 
         private const val TAG = "PocketDeckApp"
     }

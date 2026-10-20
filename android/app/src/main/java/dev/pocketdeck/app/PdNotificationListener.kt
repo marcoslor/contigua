@@ -2,7 +2,9 @@ package dev.pocketdeck.app
 
 import android.content.ComponentName
 import android.content.Intent
+import android.media.MediaMetadata
 import android.media.session.MediaController
+import android.media.session.MediaSession
 import android.media.session.MediaSessionManager
 import android.media.session.PlaybackState
 import android.os.Build
@@ -15,6 +17,7 @@ import android.service.notification.StatusBarNotification
 import android.app.Notification
 import android.app.RemoteInput
 import android.util.Log
+import dev.pocketdeck.proto.Json
 
 /**
  * Reads notifications and the media session for a connected Mac (docs/design/
@@ -34,6 +37,25 @@ class PdNotificationListener : NotificationListenerService() {
     private var sessionManager: MediaSessionManager? = null
     private var attachedController: MediaController? = null
 
+    /** Every active session, in the system's order (docs/design/notify.md). */
+    private var sessions: List<MediaController> = emptyList()
+    private var callbacksOn: List<MediaController> = emptyList()
+
+    /** The Mac's pick, while that session is still active. */
+    private var chosenKey: String? = null
+
+    /** Opaque per-session keys the phone mints; never a package or a title. */
+    private val sessionKeys = HashMap<MediaSession.Token, String>()
+    private var keyCounter = 0
+    private val labels = HashMap<String, String>()
+
+    /** `media.sessions` is sent only when it changes. */
+    private var lastSessions: Map<String, Any?>? = null
+
+    /** Artwork dedupe: the hash of the scaled bytes last sent, per session key. */
+    private val lastArtHash = HashMap<String, String>()
+    private var lastArtMetadata: MediaMetadata? = null
+
     /** Live Update coalescing (docs/design/notify.md): one per second per id. */
     private val throttle = NotifyLiveThrottle()
     private val pendingLive = HashMap<String, Map<String, Any?>>()
@@ -41,7 +63,8 @@ class PdNotificationListener : NotificationListenerService() {
 
     private val sessionCallback = object : MediaController.Callback() {
         override fun onPlaybackStateChanged(state: PlaybackState?) = scheduleMediaPush()
-        override fun onMetadataChanged(metadata: android.media.MediaMetadata?) = scheduleMediaPush()
+        override fun onMetadataChanged(metadata: MediaMetadata?) = scheduleMediaPush()
+        override fun onSessionDestroyed() = scheduleMediaPush()
     }
 
     private val activeSessionsListener = object : MediaSessionManager.OnActiveSessionsChangedListener {
@@ -53,13 +76,15 @@ class PdNotificationListener : NotificationListenerService() {
         super.onCreate()
         // The pushes need the shell-service binder; bind once, not per event.
         ShizukuClient.ensureBound(this)
-        PdNotificationBridge.mediaSink = { action -> deliverMediaAction(action) }
+        PdNotificationBridge.mediaSink = { json -> deliverMediaAction(json) }
+        PdNotificationBridge.chooseSink = { key -> deliverChoose(key) }
         PdNotificationBridge.actionSink = { id, index, text -> deliverAction(id, index, text) }
         PdNotificationBridge.dismissSink = { id -> deliverDismiss(id) }
     }
 
     override fun onDestroy() {
         PdNotificationBridge.mediaSink = null
+        PdNotificationBridge.chooseSink = null
         PdNotificationBridge.actionSink = null
         PdNotificationBridge.dismissSink = null
         NotifyIntents.clear()
@@ -72,6 +97,10 @@ class PdNotificationListener : NotificationListenerService() {
         sessionManager?.let { runCatching { it.removeOnActiveSessionsChangedListener(activeSessionsListener) } }
         sessionManager = null
         detachSession()
+        lastArtHash.clear()
+        lastArtMetadata = null
+        lastSessions = null
+        sessionKeys.clear()
         worker.quitSafely()
         super.onDestroy()
     }
@@ -88,20 +117,56 @@ class PdNotificationListener : NotificationListenerService() {
         }.onFailure { Log.w(TAG, "media session watch failed: ${it.message}") }
     }
 
-    /** The priority stack's top session is the one Now Playing shows. */
+    /**
+     * Keeps the active sessions in the system's order and follows the chosen
+     * one: the Mac's pick while it is still there, else the first session.
+     * The callbacks are registered on every session so the list's `playing`
+     * flags stay true.
+     */
     private fun attachSession(controllers: List<MediaController>?) {
-        val chosen = controllers?.firstOrNull()
-        val current = attachedController
-        if (chosen === current) return
-        current?.let { runCatching { it.unregisterCallback(sessionCallback) } }
-        attachedController = chosen
-        chosen?.registerCallback(sessionCallback)
+        val list = controllers.orEmpty()
+        for (controller in callbacksOn) {
+            if (list.none { it === controller }) runCatching { controller.unregisterCallback(sessionCallback) }
+        }
+        for (controller in list) {
+            if (callbacksOn.none { it === controller }) runCatching { controller.registerCallback(sessionCallback) }
+        }
+        callbacksOn = list
+        sessions = list
+        attachedController = pickChosen()
         scheduleMediaPush()
     }
 
     private fun detachSession() {
-        attachedController?.let { runCatching { it.unregisterCallback(sessionCallback) } }
+        for (controller in callbacksOn) runCatching { controller.unregisterCallback(sessionCallback) }
+        callbacksOn = emptyList()
+        sessions = emptyList()
         attachedController = null
+    }
+
+    /** The session Now Playing follows, and the key the Mac knows it by. */
+    private fun pickChosen(): MediaController? {
+        val keys = sessions.map { keyOf(it) }
+        val chosen = MediaControl.chooseKey(keys, chosenKey)
+        chosenKey = chosen
+        return sessions.firstOrNull { keyOf(it) == chosen }
+    }
+
+    /** An opaque per-session key, stable while the session lives. */
+    private fun keyOf(controller: MediaController): String {
+        val token = controller.sessionToken
+        sessionKeys[token]?.let { return it }
+        val key = "s${++keyCounter}"
+        sessionKeys[token] = key
+        return key
+    }
+
+    /** The app label for `media.sessions`; never a title. */
+    private fun label(pkg: String): String = labels.getOrPut(pkg) {
+        runCatching {
+            val info = packageManager.getApplicationInfo(pkg, 0)
+            packageManager.getApplicationLabel(info).toString()
+        }.getOrDefault(pkg)
     }
 
     /** Coalesces stormy state/metadata callbacks into at most one push per [MEDIA_MERGE_MS]. */
@@ -117,40 +182,124 @@ class PdNotificationListener : NotificationListenerService() {
         val state = controller?.playbackState
         if (controller == null || state == null) {
             bridge.media(NotifyEvents.mediaState(false, null, null, null, null, null, null, 0.0))
+            pushSessions()
             return
         }
+        val key = keyOf(controller)
+        val metadata = controller.metadata
         val playing = state.state == PlaybackState.STATE_PLAYING
+        val volume = runCatching { controller.playbackInfo }.getOrNull()
         bridge.media(
             NotifyEvents.mediaState(
                 playing = playing,
                 pkg = controller.packageName,
-                title = controller.metadata?.getString(android.media.MediaMetadata.METADATA_KEY_TITLE),
-                artist = controller.metadata?.getString(android.media.MediaMetadata.METADATA_KEY_ARTIST),
-                album = controller.metadata?.getString(android.media.MediaMetadata.METADATA_KEY_ALBUM),
-                durationMs = controller.metadata?.getLong(android.media.MediaMetadata.METADATA_KEY_DURATION)
-                    ?.takeIf { it > 0 },
+                title = metadata?.getString(MediaMetadata.METADATA_KEY_TITLE),
+                artist = metadata?.getString(MediaMetadata.METADATA_KEY_ARTIST),
+                album = metadata?.getString(MediaMetadata.METADATA_KEY_ALBUM),
+                durationMs = metadata?.getLong(MediaMetadata.METADATA_KEY_DURATION)?.takeIf { it > 0 },
                 positionMs = state.position.takeIf { it >= 0 },
                 rate = if (playing) state.playbackSpeed.toDouble() else 0.0,
+                key = key,
+                canSeek = state.actions and PlaybackState.ACTION_SEEK_TO != 0L,
+                volume = volume?.currentVolume,
+                volumeMax = volume?.maxVolume,
             ),
         )
+        pushSessions()
+        pushArtwork(controller, key, metadata)
     }
 
-    private fun deliverMediaAction(action: String) {
-        val command = NotifyEvents.validMediaCommand(action) ?: return
+    /** `media.sessions`, only when the list or the chosen key moved. */
+    private fun pushSessions() {
+        val infos = sessions.map { controller ->
+            MediaSessionInfo(
+                key = keyOf(controller),
+                pkg = controller.packageName,
+                app = label(controller.packageName),
+                playing = controller.playbackState?.state == PlaybackState.STATE_PLAYING,
+            )
+        }
+        val wire = MediaControl.sessionsWire(infos, chosenKey)
+        if (wire == lastSessions) return
+        lastSessions = wire
+        bridge.sessions(wire)
+    }
+
+    /**
+     * `media.art` once per change (docs/design/notify.md): the scaled bytes are
+     * hashed, and a session that lost its artwork sends the key alone to clear
+     * it. Only the size, the dimensions and a hash prefix are logged.
+     */
+    private fun pushArtwork(controller: MediaController, key: String, metadata: MediaMetadata?) {
+        // The metadata object changes exactly when the session's artwork may have.
+        if (metadata != null && metadata === lastArtMetadata) return
+        lastArtMetadata = metadata
+        val art = MediaArtRules.encode(MediaArtwork.sourceFor(this, metadata))
+        if (art == null) {
+            if (lastArtHash.remove(key) != null) {
+                bridge.art(mapOf("t" to "media.art", "key" to key))
+                Log.i(TAG, "media.art cleared")
+            }
+            return
+        }
+        val hash = MediaArtRules.hash(art.data)
+        if (lastArtHash[key] == hash) return
+        lastArtHash[key] = hash
+        bridge.art(art.wire(key, NotifyPictures::base64))
+        Log.i(TAG, "media.art w=${art.width} h=${art.height} size=${art.data.size} hash=${hash.take(8)}")
+    }
+
+    /** `media.command`, as the shell service validated and re-encoded it. */
+    private fun deliverMediaAction(json: String) {
+        val obj = runCatching { Json.parseObject(json) }.getOrNull() ?: return
+        val command = MediaControl.commandFromWire(obj) ?: return
         mediaHandler.post { runMediaCommand(command) }
     }
 
-    private fun runMediaCommand(command: String) {
-        val controls = attachedController?.transportControls
-        if (controls == null) {
-            Log.i(TAG, "media command $command ignored: no session attached")
+    private fun runMediaCommand(command: MediaCommand) {
+        val controller = when (val key = command.key) {
+            null -> attachedController
+            else -> sessions.firstOrNull { keyOf(it) == key }
+        }
+        if (controller == null) {
+            Log.i(TAG, "media command ${command.action} ignored: no session attached")
             return
         }
-        when (command) {
+        val controls = controller.transportControls
+        when (command.action) {
             "play" -> controls.play()
             "pause" -> controls.pause()
             "next" -> controls.skipToNext()
             "prev" -> controls.skipToPrevious()
+            "seek" -> {
+                val duration = controller.metadata?.getLong(MediaMetadata.METADATA_KEY_DURATION)
+                    ?.takeIf { it > 0 }
+                val position = MediaControl.positionClamp(command.positionMs ?: return, duration)
+                controls.seekTo(position)
+                Log.i(TAG, "media seek positionMs=$position")
+            }
+            "volume" -> {
+                val max = runCatching { controller.playbackInfo?.maxVolume }.getOrNull()
+                val level = MediaControl.levelClamp(command.level ?: return, max)
+                runCatching { controller.setVolumeTo(level, 0) }
+                    .onFailure { Log.w(TAG, "media volume failed: ${it.javaClass.simpleName}") }
+                Log.i(TAG, "media volume level=$level max=${max ?: -1}")
+            }
+        }
+    }
+
+    /** `media.choose`: the Mac picks which app Now Playing follows. */
+    private fun deliverChoose(key: String) {
+        mediaHandler.post {
+            val match = sessions.firstOrNull { keyOf(it) == key }
+            if (match == null) {
+                Log.i(TAG, "media.choose unknown key")
+                return@post
+            }
+            chosenKey = key
+            attachedController = match
+            pushMediaState()
+            Log.i(TAG, "media.choose key=$key")
         }
     }
 
