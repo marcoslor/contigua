@@ -350,6 +350,12 @@ final class FilesIdMapTests: XCTestCase {
         XCTAssertEqual(map, FilesIdMap.load(url))
         let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
         XCTAssertEqual(0o600, (attributes[.posixPermissions] as? NSNumber)?.intValue)
+        // The temp the write goes through is 0600 from the start and gone.
+        XCTAssertEqual(["files-ids.json"], try FileManager.default.contentsOfDirectory(atPath: directory.path))
+        // A second save replaces the file through the same temp: still one file.
+        FilesIdMap.save(map, to: url)
+        XCTAssertEqual(["files-ids.json"], try FileManager.default.contentsOfDirectory(atPath: directory.path))
+        XCTAssertEqual(0o600, (try FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions] as? NSNumber)?.intValue)
         // A corrupt file on disk loads as a fresh map, never a crash.
         try Data("garbage".utf8).write(to: url)
         XCTAssertTrue(FilesIdMap.load(url).isEmpty)
