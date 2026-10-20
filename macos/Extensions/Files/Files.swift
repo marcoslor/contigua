@@ -1,15 +1,23 @@
 // Phone files in Finder: the replicated File Provider extension (docs/design/
-// files.md §1, §3; slice S3). It owns no phone session and holds no keys: the
-// app does, so every answer here comes from the app over a UNIX socket in the
-// shared App Group container. File bytes arrive as framed chunks and are written
-// into the extension's own temporary file, which Finder then takes.
+// files.md §1, §3, §4; slices S3 and S4). It owns no phone session and holds no
+// keys: the app does, so every answer here comes from the app over a UNIX socket
+// in the shared App Group container. Requests name items by identifier; the app
+// owns the id ↔ path map, so a rename or a move keeps the item Finder knows.
 //
-// Read-only in S3: items allow reading and enumerating, and every write op
-// answers featureUnsupported. Nothing here logs a file name, a path or content:
-// op names, lengths, ids and codes only (design §4).
+// Reads stream file bytes app → extension into the extension's own temp file.
+// Writes stream the extension's bytes extension → app after the app's `ready`,
+// with a real Progress; a cancel sends the bridge's `cancel` (which becomes
+// `fs.cancel`). With the phone away the answer is serverUnreachable, so the
+// system keeps the change pending and retries after reconnect. A write whose
+// base version is stale keeps both: the Mac's bytes become a "(from Mac)" copy
+// and the phone's item is returned. There is no trash container: a delete is
+// immediate, and the capabilities say so.
+//
+// Nothing here logs a file name, a path or content: op names, lengths, ids and
+// codes only (design §4).
 //
 // Built by macos/scripts/bundle.sh with swiftc, together with FilesCore.swift
-// (the wire, the item mapping, the id ↔ path map and the error map). The class
+// (the wire, the item mapping, the id map's shape and the error map). The class
 // is named in the Info.plist's NSExtensionPrincipalClass as FilesExtension.
 
 import CryptoKit
@@ -20,14 +28,18 @@ import UniformTypeIdentifiers
 
 private let log = Logger(subsystem: "dev.pocketdeck.mac", category: "files")
 
-/// The read cap (design §3: a write body is capped at 1 GiB; reads follow the
-/// file, and anything this large is refused with a clear error).
-private let maxFetchBytes = 1024 * 1024 * 1024
+/// The read and write cap (design §3: a write body is at most 1 GiB; reads
+/// follow the file, and anything this large is refused with a clear error).
+private let maxTransferBytes = 1024 * 1024 * 1024
+
+/// The extension's chunk size on the bridge: the phone's FS_DATA frame, and the
+/// drop pacing's unit.
+private let transferChunk = 256 * 1024
 
 // MARK: - Bridge connection
 
-/// One request (or one streamed read) per connection. The app serialises the
-/// work; the extension only maps calls onto the wire.
+/// One request (or one streamed transfer) per connection. The app serialises
+/// the work; the extension only maps calls onto the wire.
 final class BridgeConnection {
     enum Reply {
         case reply(BridgeReply)
@@ -72,7 +84,17 @@ final class BridgeConnection {
     deinit { Darwin.close(fd) }
 
     func send(_ request: BridgeRequest) -> Bool {
-        let data = BridgeWire.line(request)
+        write(BridgeWire.line(request))
+    }
+
+    /// One chunk of an upload: the `data` header and exactly its bytes.
+    func sendData(id: UInt32, bytes: [UInt8]) -> Bool {
+        var data = BridgeWire.dataHeader(id: id, length: bytes.count)
+        data.append(contentsOf: bytes)
+        return write(data)
+    }
+
+    private func write(_ data: Data) -> Bool {
         writeLock.lock()
         defer { writeLock.unlock() }
         return data.withUnsafeBytes { raw in
@@ -156,7 +178,8 @@ extension FilesFailure: Error {
         case .tooLarge:
             return CocoaError(.fileReadTooLarge)
         case .exists:
-            return CocoaError(.fileWriteFileExists)
+            // A rename or move onto a name that is already taken.
+            return NSFileProviderError(.filenameCollision)
         case .notADirectory:
             return CocoaError(.fileReadInvalidFileName)
         case .busy:
@@ -200,8 +223,51 @@ final class ProviderItem: NSObject, NSFileProviderItem {
         NSFileProviderItemVersion(contentVersion: mapped.contentVersion,
                                   metadataVersion: mapped.metadataVersion)
     }
+    /// No trash container on the phone: Finder's delete is immediate, and it
+    /// says so because `allowsTrashing` is absent (design §4).
     var capabilities: NSFileProviderItemCapabilities {
-        mapped.isDirectory ? [.allowsReading, .allowsContentEnumerating] : [.allowsReading]
+        if mapped.isDirectory {
+            return [.allowsReading, .allowsContentEnumerating, .allowsAddingSubItems,
+                    .allowsRenaming, .allowsReparenting, .allowsDeleting]
+        }
+        return [.allowsReading, .allowsWriting, .allowsRenaming,
+                .allowsReparenting, .allowsDeleting]
+    }
+}
+
+/// What one upload needs from the wire: the request id (for cancel) and the
+/// connection it runs on.
+final class WriteState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var cancelled = false
+    private var connection: BridgeConnection?
+    private var id: UInt32?
+
+    func begin(connection: BridgeConnection, id: UInt32) {
+        lock.lock()
+        self.connection = connection
+        self.id = id
+        lock.unlock()
+        if isCancelled {
+            _ = connection.send(.cancel(id: id))
+        }
+    }
+
+    var isCancelled: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return cancelled
+    }
+
+    func cancel() {
+        lock.lock()
+        cancelled = true
+        let connection = self.connection
+        let id = self.id
+        lock.unlock()
+        guard let connection, let id else { return }
+        _ = connection.send(.cancel(id: id))
+        log.notice("write cancelled")
     }
 }
 
@@ -211,8 +277,6 @@ final class ProviderItem: NSObject, NSFileProviderItem {
 final class FilesExtension: NSObject, NSFileProviderReplicatedExtension {
     let domain: NSFileProviderDomain
     private let work = DispatchQueue(label: "dev.pocketdeck.mac.files-extension", qos: .utility)
-    private let mapLock = NSLock()
-    private var map = FilesPathMap()
     /// The anchor S3 answers with: no changes are reported (S5 adds them).
     let anchor = NSFileProviderSyncAnchor(Data("files-s3".utf8))
 
@@ -227,69 +291,12 @@ final class FilesExtension: NSObject, NSFileProviderReplicatedExtension {
         log.notice("invalidate")
     }
 
-    /// A folder's listing is gone: forget it and everything below it.
-    func invalidateSubtree(path: String) {
-        withMap { $0.invalidate(subtree: path) }
-    }
-
     /// One listing off the main thread, for the enumerator.
-    func loadListing(path: String, page: String?,
-                     completion: @escaping (Result<(items: [FsItem], next: String?), FilesFailure>) -> Void) {
+    func loadListing(item: String, page: String?,
+                     completion: @escaping (Result<(items: [FileItem], next: String?), FilesFailure>) -> Void) {
         work.async {
-            completion(self.list(path: path, page: page))
+            completion(self.list(item: item, page: page))
         }
-    }
-
-    // MARK: The id ↔ path map
-
-    private func withMap<T>(_ body: (inout FilesPathMap) -> T) -> T {
-        mapLock.lock()
-        defer { mapLock.unlock() }
-        return body(&map)
-    }
-
-    /// The map first, then the path the identifier itself carries: the system
-    /// runs more than one extension process, so a fresh one must resolve what
-    /// another enumerated.
-    private func path(for identifier: NSFileProviderItemIdentifier) -> String? {
-        if identifier == .rootContainer { return "" }
-        if let known = withMap({ $0.path(for: identifier.rawValue) }) { return known }
-        return FilesMap.path(fromIdentifier: identifier.rawValue)
-    }
-
-    func remember(_ items: [FsItem], parentPath: String,
-                          parentIdentifier: NSFileProviderItemIdentifier) -> [FileItem] {
-        withMap { map in
-            map.insert(childrenOf: parentPath,
-                       parentIdentifier: parentIdentifier == .rootContainer
-                           ? FilesMap.rootIdentifier : parentIdentifier.rawValue,
-                       items: items)
-        }
-    }
-
-    func remember(fs: FsItem, path: String) -> FileItem {
-        let parentID = parentIdentifier(forPath: path)
-        return withMap { $0.insert(fs: fs, path: path, parentIdentifier: parentID) }
-    }
-
-    /// The parent's identifier as the system knows it. A fresh instance has no
-    /// map entry for the parent, so one stat supplies its ino (design §3: an id
-    /// is ino-based); without an answer the path fallback is still a valid id.
-    private func parentIdentifier(forPath path: String) -> String {
-        let parentPath = (path as NSString).deletingLastPathComponent
-        if parentPath.isEmpty { return FilesMap.rootIdentifier }
-        if let known = withMap({ $0.identifier(for: parentPath) }) { return known }
-        if case .success(let info) = stat(path: parentPath) {
-            let identifier = FilesMap.identifier(path: parentPath, ino: info.ino)
-            withMap { _ = $0.insert(fs: info, path: parentPath,
-                                    parentIdentifier: FilesMap.rootIdentifier) }
-            return identifier
-        }
-        return "path:\(parentPath)"
-    }
-
-    private func rootItem() -> FileItem {
-        FilesMap.rootItem(name: domain.displayName, version: Data("root-s3".utf8))
     }
 
     // MARK: Bridge operations
@@ -299,10 +306,17 @@ final class FilesExtension: NSObject, NSFileProviderReplicatedExtension {
         return .success(connection)
     }
 
-    func list(path: String, page: String?) -> Result<(items: [FsItem], next: String?), FilesFailure> {
+    /// Sends `hello` on a fresh connection so the app knows the wire version.
+    private func hello(_ connection: BridgeConnection) -> Bool {
+        guard connection.send(.hello(id: 1, version: filesBridgeVersion)),
+              let frame = connection.next(), case .reply(.hello(_, let version, _, _)) = frame
+        else { return false }
+        return version == filesBridgeVersion
+    }
+
+    func list(item: String, page: String?) -> Result<(items: [FileItem], next: String?), FilesFailure> {
         guard case .success(let connection) = connect() else { return .failure(.offline) }
-        let request = BridgeRequest.list(id: 1, path: path, page: page)
-        guard connection.send(request) else { return .failure(.offline) }
+        guard connection.send(.list(id: 1, item: item, page: page)) else { return .failure(.offline) }
         while let frame = connection.next() {
             guard case .reply(let reply) = frame else { continue }
             switch reply {
@@ -317,9 +331,9 @@ final class FilesExtension: NSObject, NSFileProviderReplicatedExtension {
         return .failure(.offline)
     }
 
-    private func stat(path: String) -> Result<FsItem, FilesFailure> {
+    private func stat(item: String) -> Result<FileItem, FilesFailure> {
         guard case .success(let connection) = connect() else { return .failure(.offline) }
-        guard connection.send(.stat(id: 1, path: path)) else { return .failure(.offline) }
+        guard connection.send(.stat(id: 1, item: item)) else { return .failure(.offline) }
         while let frame = connection.next() {
             guard case .reply(let reply) = frame else { continue }
             switch reply {
@@ -334,6 +348,16 @@ final class FilesExtension: NSObject, NSFileProviderReplicatedExtension {
         return .failure(.offline)
     }
 
+    private func rootItem() -> FileItem {
+        FilesMap.rootItem(name: domain.displayName, version: Data("root-s4".utf8))
+    }
+
+    private func signal(_ identifier: String) {
+        let item = NSFileProviderItemIdentifier(identifier == FilesMap.rootIdentifier
+                                                ? FilesMap.rootIdentifier : identifier)
+        NSFileProviderManager(for: domain)?.signalEnumerator(for: item) { _ in }
+    }
+
     // MARK: NSFileProviderReplicatedExtension
 
     func item(for identifier: NSFileProviderItemIdentifier,
@@ -343,20 +367,11 @@ final class FilesExtension: NSObject, NSFileProviderReplicatedExtension {
             completionHandler(ProviderItem(rootItem()), nil)
             return Progress()
         }
-        guard let path = path(for: identifier) else {
-            log.notice("item unknown id")
-            completionHandler(nil, NSFileProviderError(.noSuchItem))
-            return Progress()
-        }
         work.async {
-            switch self.stat(path: path) {
-            case .success(let fs):
-                let item = self.remember(fs: fs, path: path)
-                log.notice("item stat ok dir=\(fs.dir, privacy: .public) size=\(fs.size, privacy: .public)")
+            switch self.stat(item: identifier.rawValue) {
+            case .success(let item):
+                log.notice("item stat ok dir=\(item.isDirectory, privacy: .public) size=\(item.size, privacy: .public)")
                 completionHandler(ProviderItem(item), nil)
-            case .failure(.notFound):
-                self.withMap { $0.invalidate(subtree: path) }
-                completionHandler(nil, FilesFailure.notFound.error)
             case .failure(let failure):
                 log.notice("item stat failed code=\(failure.rawValue, privacy: .public)")
                 completionHandler(nil, failure.error)
@@ -367,10 +382,7 @@ final class FilesExtension: NSObject, NSFileProviderReplicatedExtension {
 
     func enumerator(for containerItemIdentifier: NSFileProviderItemIdentifier,
                     request: NSFileProviderRequest) throws -> NSFileProviderEnumerator {
-        guard let path = path(for: containerItemIdentifier) else {
-            throw FilesFailure.notFound.error
-        }
-        return FilesEnumerator(extension: self, container: containerItemIdentifier, path: path)
+        return FilesEnumerator(extension: self, container: containerItemIdentifier)
     }
 
     func fetchContents(for itemIdentifier: NSFileProviderItemIdentifier,
@@ -378,44 +390,39 @@ final class FilesExtension: NSObject, NSFileProviderReplicatedExtension {
                        request: NSFileProviderRequest,
                        completionHandler: @escaping (URL?, NSFileProviderItem?, Error?) -> Void) -> Progress {
         let progress = Progress(totalUnitCount: 1)
-        guard let path = path(for: itemIdentifier) else {
-            completionHandler(nil, nil, FilesFailure.notFound.error)
-            return progress
-        }
         progress.isCancellable = true
         work.async {
-            self.fetch(path: path, requested: requestedVersion, progress: progress,
-                       retried: false, completion: completionHandler)
+            self.fetch(item: itemIdentifier.rawValue, requested: requestedVersion,
+                       progress: progress, retried: false, completion: completionHandler)
         }
         return progress
     }
 
     /// stat → read the whole file into a temporary file → size + sha256 check.
     /// One `fs_stale` refetches the metadata and retries once (design §3).
-    private func fetch(path: String, requested: NSFileProviderItemVersion?, progress: Progress,
+    private func fetch(item: String, requested: NSFileProviderItemVersion?, progress: Progress,
                        retried: Bool,
                        completion: @escaping (URL?, NSFileProviderItem?, Error?) -> Void) {
         let etag = requested.flatMap { String(data: $0.contentVersion, encoding: .utf8) }
-        let metadata: FsItem
-        switch stat(path: path) {
+        let metadata: FileItem
+        switch stat(item: item) {
         case .success(let item):
             metadata = item
         case .failure(let failure):
-            if failure == .notFound { withMap { $0.invalidate(subtree: path) } }
             log.notice("fetch stat failed code=\(failure.rawValue, privacy: .public)")
             completion(nil, nil, failure.error)
             return
         }
-        guard !metadata.dir else {
+        guard !metadata.isDirectory else {
             completion(nil, nil, FilesFailure.notFound.error)
             return
         }
-        guard metadata.size <= maxFetchBytes else {
+        guard metadata.size <= maxTransferBytes else {
             log.notice("fetch refused size=\(metadata.size, privacy: .public)")
             completion(nil, nil, FilesFailure.tooLarge.error)
             return
         }
-        guard case .success(let connection) = connect() else {
+        guard case .success(let connection) = connect(), hello(connection) else {
             completion(nil, nil, FilesFailure.offline.error)
             return
         }
@@ -433,7 +440,7 @@ final class FilesExtension: NSObject, NSFileProviderReplicatedExtension {
         progress.cancellationHandler = { [weak state] in
             state?.cancel()
         }
-        guard connection.send(.read(id: id, path: path, offset: 0, length: metadata.size,
+        guard connection.send(.read(id: id, item: item, offset: 0, length: metadata.size,
                                     etag: etag)) else {
             handle.closeFile()
             try? FileManager.default.removeItem(at: target)
@@ -482,7 +489,7 @@ final class FilesExtension: NSObject, NSFileProviderReplicatedExtension {
             try? FileManager.default.removeItem(at: target)
             log.notice("fetch failed code=\(failure.rawValue, privacy: .public) bytes=\(received, privacy: .public)")
             if failure == .stale && !retried {
-                fetch(path: path, requested: nil, progress: progress, retried: true,
+                fetch(item: item, requested: nil, progress: progress, retried: true,
                       completion: completion)
                 return
             }
@@ -491,9 +498,8 @@ final class FilesExtension: NSObject, NSFileProviderReplicatedExtension {
             return
         }
         progress.completedUnitCount = progress.totalUnitCount
-        let item = remember(fs: metadata, path: path)
         log.notice("fetch done bytes=\(received, privacy: .public)")
-        completion(target, ProviderItem(item), nil)
+        completion(target, ProviderItem(metadata), nil)
     }
 
     /// A file in the extension's own temporary directory: `temporaryDirectoryURL`
@@ -507,15 +513,149 @@ final class FilesExtension: NSObject, NSFileProviderReplicatedExtension {
 
     // MARK: Writes (S4)
 
+    /// The announced size and hash of one upload.
+    private struct Upload {
+        var size: Int
+        var sha256: String
+    }
+
+    private func prepare(_ url: URL) throws -> Upload {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        var hasher = SHA256()
+        var size = 0
+        while let chunk = try handle.read(upToCount: 1 << 20), !chunk.isEmpty {
+            hasher.update(data: chunk)
+            size += chunk.count
+        }
+        return Upload(size: size,
+                      sha256: hasher.finalize().map { String(format: "%02x", $0) }.joined())
+    }
+
+    /// Sends one create/modify and, when it asks for the body, streams `url`
+    /// after the app's `ready`, then waits for the item (or the refusal).
+    private func upload(_ request: BridgeRequest, url: URL?, announced: Upload?,
+                        progress: Progress, state: WriteState) -> Result<FileItem, FilesFailure> {
+        guard case .success(let connection) = connect(), hello(connection) else {
+            return .failure(.offline)
+        }
+        let requestID = request.id
+        state.begin(connection: connection, id: requestID)
+        guard connection.send(request) else { return .failure(.offline) }
+        // The app answers `ready` (bytes may come), or the item (nothing to
+        // stream), or an error.
+        var ready = false
+        while let frame = connection.next() {
+            guard case .reply(let reply) = frame else { continue }
+            switch reply {
+            case .ready:
+                ready = true
+            case .item(_, let item):
+                return .success(item)
+            case .error(_, let code):
+                return .failure(FilesFailure.from(code: code))
+            default:
+                continue
+            }
+            break
+        }
+        guard ready, let url, let announced else {
+            return ready ? .failure(.protocolError) : .failure(.offline)
+        }
+        guard let handle = try? FileHandle(forReadingFrom: url) else {
+            _ = connection.send(.cancel(id: requestID))
+            return .failure(.io)
+        }
+        var sent = 0
+        do {
+            while let chunk = try handle.read(upToCount: transferChunk), !chunk.isEmpty {
+                if state.isCancelled {
+                    _ = connection.send(.cancel(id: requestID))
+                    return .failure(.cancelled)
+                }
+                if !connection.sendData(id: requestID, bytes: [UInt8](chunk)) {
+                    return .failure(.offline)
+                }
+                sent += chunk.count
+                progress.completedUnitCount = Int64(sent)
+                if sent > announced.size { return .failure(.io) }
+            }
+        } catch {
+            _ = connection.send(.cancel(id: requestID))
+            return .failure(.io)
+        }
+        try? handle.close()
+        // The phone's answer: the new item, or why it refused.
+        while let frame = connection.next() {
+            guard case .reply(let reply) = frame else { continue }
+            switch reply {
+            case .item(_, let item):
+                progress.completedUnitCount = progress.totalUnitCount
+                return .success(item)
+            case .error(_, let code):
+                return .failure(FilesFailure.from(code: code))
+            default:
+                continue
+            }
+        }
+        return .failure(.offline)
+    }
+
     func createItem(basedOn itemTemplate: NSFileProviderItem,
                     fields: NSFileProviderItemFields,
                     contents url: URL?,
                     options: NSFileProviderCreateItemOptions,
                     request: NSFileProviderRequest,
                     completionHandler: @escaping (NSFileProviderItem?, NSFileProviderItemFields, Bool, Error?) -> Void) -> Progress {
-        log.notice("createItem refused: read-only slice")
-        completionHandler(nil, [], false, CocoaError(.featureUnsupported))
-        return Progress()
+        let progress = Progress(totalUnitCount: 1)
+        let parent = itemTemplate.parentItemIdentifier == .rootContainer
+            ? FilesMap.rootIdentifier : itemTemplate.parentItemIdentifier.rawValue
+        let name = itemTemplate.filename
+        let isDirectory = itemTemplate.contentType == .folder || url == nil && itemTemplate.documentSize == nil
+
+        if isDirectory {
+            work.async {
+                let result = self.mutate(.create(id: 1, request: BridgeCreate(
+                    parent: parent, name: name, dir: true, size: 0, sha256: nil)))
+                switch result {
+                case .success(let item):
+                    completionHandler(ProviderItem(item), [], false, nil)
+                case .failure(let failure):
+                    log.notice("create failed code=\(failure.rawValue, privacy: .public)")
+                    completionHandler(nil, [], false, failure.error)
+                }
+            }
+            return progress
+        }
+
+        guard let url else {
+            completionHandler(nil, [], false, CocoaError(.fileNoSuchFile))
+            return progress
+        }
+        let upload: Upload
+        do {
+            upload = try prepare(url)
+        } catch {
+            completionHandler(nil, [], false, CocoaError(.fileReadUnknown))
+            return progress
+        }
+        let state = WriteState()
+        progress.isCancellable = true
+        progress.totalUnitCount = Int64(max(upload.size, 1))
+        progress.cancellationHandler = { state.cancel() }
+        work.async {
+            let request = BridgeRequest.create(id: 1, request: BridgeCreate(
+                parent: parent, name: name, dir: false,
+                size: upload.size, sha256: upload.sha256))
+            let result = self.upload(request, url: url, announced: upload,
+                                     progress: progress, state: state)
+            self.report(result, progress: progress) { item in
+                completionHandler(ProviderItem(item), [], false, nil)
+            } failure: { failure in
+                completionHandler(nil, [], false, failure.error)
+            }
+        }
+        return progress
     }
 
     func modifyItem(_ item: NSFileProviderItem,
@@ -525,9 +665,109 @@ final class FilesExtension: NSObject, NSFileProviderReplicatedExtension {
                     options: NSFileProviderModifyItemOptions,
                     request: NSFileProviderRequest,
                     completionHandler: @escaping (NSFileProviderItem?, NSFileProviderItemFields, Bool, Error?) -> Void) -> Progress {
-        log.notice("modifyItem refused: read-only slice")
-        completionHandler(nil, [], false, CocoaError(.featureUnsupported))
-        return Progress()
+        let progress = Progress(totalUnitCount: 1)
+        let base = String(data: version.contentVersion, encoding: .utf8) ?? ""
+        let identifier = item.itemIdentifier.rawValue
+        let wantsContent = changedFields.contains(.contents)
+        let newName = changedFields.contains(.filename) ? item.filename : nil
+        let newParent = changedFields.contains(.parentItemIdentifier)
+            ? (item.parentItemIdentifier == .rootContainer
+                ? FilesMap.rootIdentifier : item.parentItemIdentifier.rawValue) : nil
+        var mtime: Int?
+        let changedDate: Date? = item.contentModificationDate ?? nil
+        if changedFields.contains(.contentModificationDate), let changedDate {
+            mtime = Int(changedDate.timeIntervalSince1970 * 1000)
+        }
+
+        if !wantsContent {
+            work.async {
+                let request = BridgeRequest.modify(id: 1, request: BridgeModify(
+                    item: identifier, base: base, content: false,
+                    name: newName, parent: newParent, mtime: mtime, size: 0, sha256: nil))
+                switch self.mutate(request) {
+                case .success(let mapped):
+                    completionHandler(ProviderItem(mapped), [], false, nil)
+                case .failure(let failure):
+                    log.notice("modify failed code=\(failure.rawValue, privacy: .public)")
+                    completionHandler(nil, [], false, failure.error)
+                }
+            }
+            return progress
+        }
+
+        guard let newContents else {
+            completionHandler(nil, [], false, CocoaError(.fileNoSuchFile))
+            return progress
+        }
+        let upload: Upload
+        do {
+            upload = try prepare(newContents)
+        } catch {
+            completionHandler(nil, [], false, CocoaError(.fileReadUnknown))
+            return progress
+        }
+        let state = WriteState()
+        progress.isCancellable = true
+        progress.totalUnitCount = Int64(max(upload.size, 1))
+        progress.cancellationHandler = { state.cancel() }
+        work.async {
+            let request = BridgeRequest.modify(id: 1, request: BridgeModify(
+                item: identifier, base: base, content: true,
+                name: newName, parent: newParent, mtime: mtime,
+                size: upload.size, sha256: upload.sha256))
+            let result = self.upload(request, url: newContents, announced: upload,
+                                     progress: progress, state: state)
+            if case .failure(.stale) = result {
+                self.resolveConflict(item, contents: newContents, announced: upload,
+                                     progress: progress, completion: completionHandler)
+                return
+            }
+            self.report(result, progress: progress) { mapped in
+                completionHandler(ProviderItem(mapped), [], false, nil)
+            } failure: { failure in
+                completionHandler(nil, [], false, failure.error)
+            }
+        }
+        return progress
+    }
+
+    /// Keep both: the phone's item comes back as it is, and the Mac's bytes land
+    /// next to it as `<name> (from Mac).<ext>` (design §4 "Conflicts"). No name
+    /// reaches the log.
+    private func resolveConflict(_ item: NSFileProviderItem, contents: URL,
+                                 announced: Upload, progress: Progress,
+                                 completion: @escaping (NSFileProviderItem?, NSFileProviderItemFields, Bool, Error?) -> Void) {
+        let parent = item.parentItemIdentifier == .rootContainer
+            ? FilesMap.rootIdentifier : item.parentItemIdentifier.rawValue
+        let taken: Set<String>
+        switch list(item: parent, page: nil) {
+        case .failure:
+            taken = []
+        case .success(let page):
+            taken = Set(page.items.map(\.name))
+        }
+        let name = FilesConflict.name(for: item.filename, taken: { taken.contains($0) })
+        log.notice("conflict: keeping both")
+        let copy = BridgeRequest.create(id: 1, request: BridgeCreate(
+            parent: parent, name: name, dir: false,
+            size: announced.size, sha256: announced.sha256))
+        let copyState = WriteState()
+        let copied = upload(copy, url: contents, announced: announced,
+                            progress: progress, state: copyState)
+        signal(parent)
+        // The item the system asked about is the phone's current one.
+        if case .success(let current) = stat(item: item.itemIdentifier.rawValue) {
+            if case .failure = copied {
+                log.notice("conflict: the copy failed")
+            }
+            completion(ProviderItem(current), [], false, nil)
+            return
+        }
+        if case .failure(let failure) = copied {
+            completion(nil, [], false, failure.error)
+            return
+        }
+        completion(nil, [], false, NSFileProviderError(.noSuchItem))
     }
 
     func deleteItem(identifier: NSFileProviderItemIdentifier,
@@ -535,9 +775,76 @@ final class FilesExtension: NSObject, NSFileProviderReplicatedExtension {
                     options: NSFileProviderDeleteItemOptions,
                     request: NSFileProviderRequest,
                     completionHandler: @escaping (Error?) -> Void) -> Progress {
-        log.notice("deleteItem refused: read-only slice")
-        completionHandler(CocoaError(.featureUnsupported))
-        return Progress()
+        let progress = Progress(totalUnitCount: 1)
+        let base = String(data: version.contentVersion, encoding: .utf8) ?? ""
+        let recursive = options.contains(.recursive)
+        work.async {
+            // The parent is only needed to refresh the listing after the change.
+            let parent: String
+            switch self.stat(item: identifier.rawValue) {
+            case .success(let item): parent = item.parentIdentifier
+            case .failure(let failure):
+                log.notice("delete stat failed code=\(failure.rawValue, privacy: .public)")
+                return completionHandler(failure.error)
+            }
+            let request = BridgeRequest.delete(id: 1, item: identifier.rawValue,
+                                               base: base, recursive: recursive)
+            switch self.mutate(request) {
+            case .success:
+                self.signal(parent)
+                completionHandler(nil)
+            case .failure(.stale):
+                // The phone's copy moved on: do not delete it; it comes back in
+                // Finder on the next enumeration.
+                log.notice("delete refused: stale (keeping the phone's item)")
+                self.signal(parent)
+                completionHandler(NSFileProviderError(.cannotSynchronize))
+            case .failure(let failure):
+                log.notice("delete failed code=\(failure.rawValue, privacy: .public)")
+                self.signal(parent)
+                completionHandler(failure.error)
+            }
+        }
+        return progress
+    }
+
+    /// One create/modify/delete with no body: a folder, a rename, a date or a
+    /// delete. Answers from the phone's `item` / `ok`, or its refusal.
+    private func mutate(_ request: BridgeRequest) -> Result<FileItem, FilesFailure> {
+        guard case .success(let connection) = connect(), hello(connection) else {
+            return .failure(.offline)
+        }
+        guard connection.send(request) else { return .failure(.offline) }
+        while let frame = connection.next() {
+            guard case .reply(let reply) = frame else { continue }
+            switch reply {
+            case .item(_, let item):
+                return .success(item)
+            case .ok:
+                // A delete has no item; the caller only needs the success.
+                return .success(FilesMap.rootItem(name: "", version: Data()))
+            case .error(_, let code):
+                return .failure(FilesFailure.from(code: code))
+            default:
+                continue
+            }
+        }
+        return .failure(.offline)
+    }
+
+    private func report(_ result: Result<FileItem, FilesFailure>, progress: Progress,
+                        success: (FileItem) -> Void, failure onFailure: (FilesFailure) -> Void) {
+        switch result {
+        case .success(let item):
+            log.notice("write done dir=\(item.isDirectory, privacy: .public) size=\(item.size, privacy: .public)")
+            success(item)
+        case .failure(let refusal):
+            log.notice("write failed code=\(refusal.rawValue, privacy: .public)")
+            if refusal == .cancelled {
+                progress.cancel()
+            }
+            onFailure(refusal)
+        }
     }
 }
 
@@ -579,16 +886,15 @@ final class ReadState {
 // MARK: - Enumeration
 
 /// A folder's children, one phone page at a time. The cursor is the phone's own
-/// opaque page string in an NSFileProviderPage.
+/// opaque page string in an NSFileProviderPage; the container is an identifier
+/// the app resolves.
 final class FilesEnumerator: NSObject, NSFileProviderEnumerator {
     private weak var owner: FilesExtension?
     private let container: NSFileProviderItemIdentifier
-    private let path: String
 
-    init(extension owner: FilesExtension, container: NSFileProviderItemIdentifier, path: String) {
+    init(extension owner: FilesExtension, container: NSFileProviderItemIdentifier) {
         self.owner = owner
         self.container = container
-        self.path = path
     }
 
     func invalidate() {}
@@ -606,21 +912,17 @@ final class FilesEnumerator: NSObject, NSFileProviderEnumerator {
            page.rawValue as Data != initialByDate {
             cursor = String(data: page.rawValue, encoding: .utf8)
         }
-        owner.loadListing(path: path, page: cursor) { [weak self] result in
-            guard let self else { return }
+        let identifier = container == .rootContainer
+            ? FilesMap.rootIdentifier : container.rawValue
+        owner.loadListing(item: identifier, page: cursor) { result in
             switch result {
             case .success(let listing):
-                let items = owner.remember(listing.items, parentPath: self.path,
-                                           parentIdentifier: self.container)
-                observer.didEnumerate(items.map(ProviderItem.init))
+                observer.didEnumerate(listing.items.map(ProviderItem.init))
                 let next = listing.next.map { NSFileProviderPage(Data($0.utf8)) }
-                log.notice("enumerate items=\(items.count, privacy: .public) more=\(next != nil, privacy: .public)")
+                log.notice("enumerate items=\(listing.items.count, privacy: .public) more=\(next != nil, privacy: .public)")
                 observer.finishEnumerating(upTo: next)
             case .failure(let failure):
                 log.notice("enumerate failed code=\(failure.rawValue, privacy: .public)")
-                if failure == .notFound {
-                    owner.invalidateSubtree(path: self.path)
-                }
                 observer.finishEnumeratingWithError(failure.error)
             }
         }
