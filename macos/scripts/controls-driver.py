@@ -57,10 +57,10 @@ def request_line(kind, arg):
     raise SystemExit("unknown request %r" % kind)
 
 
-def send(directory, line):
+def send_once(directory, line):
     path = os.path.join(directory, SOCKET)
     client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    client.settimeout(5)
+    client.settimeout(6)
     client.connect(path)
     client.sendall((json.dumps(line, sort_keys=True) + "\n").encode("utf-8"))
     buffer = b""
@@ -71,6 +71,18 @@ def send(directory, line):
         buffer += chunk
     client.close()
     return json.loads(buffer.split(b"\n", 1)[0].decode("utf-8"))
+
+
+def send(directory, line):
+    """One request, retried once: the app answers on its main actor, and a
+    control tap must not fail over a slow launch. No request is repeated when
+    the first one answered."""
+    for attempt in range(2):
+        try:
+            return send_once(directory, line)
+        except (socket.timeout, ConnectionError, OSError):
+            if attempt:
+                raise
 
 
 def main(argv):

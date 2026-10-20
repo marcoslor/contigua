@@ -3519,7 +3519,7 @@ PY
 controls_error_is() {
     local expected="$1" reply
     shift
-    reply="$(controls_request "$@" 2>/dev/null)"
+    reply="$(controls_request "$@" 2>> "$WORK/controls-driver.err")"
     printf '%s\n' "$reply" >> "$WORK/controls-replies.jsonl"
     python3 - "$reply" "$expected" <<'PY'
 import json, sys
@@ -3605,6 +3605,7 @@ check_controls() {
     stop_fakephone
     wait_until 5 no_fakephone
     FAKE_ARGS="--dnd-person priority" start_fake || return 1
+    rm -rf "$WORK/controls"
     launch --connect "127.0.0.1:$PORT" --controls-dir "$WORK/controls" --quit-after 90
     controls_snapshot_is 25 dnd=priority \
         && ok "CONTROLS a person's DND shows in the snapshot" \
@@ -3625,6 +3626,7 @@ check_controls() {
     stop_fakephone
     wait_until 5 no_fakephone
     FAKE_ARGS="--ringer-unsupported" start_fake || return 1
+    rm -rf "$WORK/controls"
     launch --connect "127.0.0.1:$PORT" --controls-dir "$WORK/controls" --quit-after 60
     controls_snapshot_is 25 connected=true \
         && ok "CONTROLS the old phone still connects" \
