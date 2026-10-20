@@ -157,12 +157,26 @@ recorded here rather than hidden). The bundle was the `e2e` variant built with
   `Controls.appex/Contents/Resources/Metadata.appintents` listing the four
   actions. The gallery was not re-checked with it.
 
-**Consequence.** The extension and the socket route are committed as
-**unverified in the VM**. The last remaining VM session (step 5) checks
-registration and the gallery again with the metadata, and presses the controls
-if they appear; if they still do not, the exact manual step is: enable the
-extension in System Settings › General › Login Items & Extensions › Extensions,
-then add the controls from Control Center › Edit Controls.
+**Step 5 session (the last one allowed).** With the metadata-bearing extension
+in `/Applications`, the app opened through LaunchServices, `pluginkit -p
+com.apple.widgetkit-extension` listing the appex, `pluginkit -e use`, and both
+ControlCenter and pkd restarted:
+
+- The gallery's search for "Pocket" is empty, and Control Center shows none of
+  the four controls.
+- System Settings › General › Login Items & Extensions › **Extensions** lists
+  only Books; there is no PocketDeck row at all, so there is no switch to turn
+  on (not even the app's Share extension appears for this e2e copy).
+- No `controls-ext.log` was created; the extension was never launched.
+
+**Consequence.** The extension and the socket route stay **unverified in the
+VM**, and the control catalogue does not accept this ad-hoc, e2e-variant
+extension in the guest. What is left for a person to check on a machine where
+the app is installed normally: build with `--with-controls`, open Control
+Center › Edit Controls; if PocketDeck is absent there and in Login Items &
+Extensions, the remaining cause is the extension's signing/registration (ad-hoc
+signing is enough for the File Provider extension, but not proven for a
+ControlCenter control).
 
 ## Checks
 
