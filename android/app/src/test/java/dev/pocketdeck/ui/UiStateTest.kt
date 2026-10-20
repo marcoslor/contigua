@@ -98,8 +98,10 @@ class UiStateTest {
             PairedMacUi("a", "Alpha", 10),
             PairedMacUi("b", "Beta", 20),
         )
-        assertEquals(listOf(false, true), pairedRows(rows, "b").map { it.connected })
-        assertEquals(listOf(false, false), pairedRows(rows, null).map { it.connected })
+        val live = pairedRows(rows, "b")
+        assertEquals(listOf("b", "a"), live.map { it.clientId })
+        assertEquals(listOf(true, false), live.map { it.connected })
+        assertEquals(rows.map { false }, pairedRows(rows, null).map { it.connected })
     }
 
     @Test
