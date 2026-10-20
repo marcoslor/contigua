@@ -79,7 +79,7 @@ window you give it.
   copy them out. Read-only for now. The first time, turn PocketDeck on in
   System Settings › General › Login Items & Extensions (Settings › General has
   the switch and the link).
-- **Control Center controls** (opt-in build; needs a hands-on check in the VM) —
+- **Control Center controls** (in progress, opt-in build: the controls do not yet appear in Control Center) —
   Phone Do Not Disturb as a toggle, Ring Phone, a ringer-mode control and Open
   PocketDeck, built as a small widget extension that reads a snapshot the app
   writes and sends its actions over a private socket in the app's group. A
