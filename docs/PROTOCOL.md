@@ -699,10 +699,10 @@ Android blanks secure surfaces in a screen capture: a `FLAG_SECURE` app (banking
 managers) and the lock screen's PIN/password pad. In the display-0 mirror those areas arrive
 black, so the Mac must say why instead of showing a dead picture.
 
-1. Every `state` carries `secure`: `true` while display 0 shows a secure window or the
-   keyguard bouncer, otherwise `false`. It is sent on change. The phone reads the focused
-   window's `FLAG_SECURE` at shell UID and SystemUI's bouncer state (a debuggable build skips
-   the window flag for the bouncer, a release build sets it).
+1. Once the phone has read it, every `state` carries `secure`: `true` while display 0 shows
+   a secure window or the keyguard bouncer, otherwise `false`. It is sent on change. The
+   phone reads the focused window's `FLAG_SECURE` at shell UID and SystemUI's bouncer state
+   (a debuggable build skips the window flag for the bouncer, a release build sets it).
 2. The phone polls this at most once a second, and only while a phone window stream is open.
    With no phone window it stops polling; `secure` is absent until the first read, and the
    last value is cleared when the last phone window closes.
