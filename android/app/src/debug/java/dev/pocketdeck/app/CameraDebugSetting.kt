@@ -14,8 +14,10 @@ import android.util.Log
  * write the old value back (docs/design/camera.md C1).
  *
  * ```
- * adb shell am broadcast -a dev.pocketdeck.DEBUG_CAMERA_SETTING --es state on
- * adb shell am broadcast -a dev.pocketdeck.DEBUG_CAMERA_SETTING --es state off
+ * adb shell am broadcast -n dev.pocketdeck/.app.CameraDebugSetting \
+ *   -a dev.pocketdeck.DEBUG_CAMERA_SETTING --es state on
+ * (same with `off`). The component is named because an implicit broadcast to a
+ * manifest receiver is dropped while the app is in the background.
  * ```
  *
  * It never grants the permission itself: the rig does that with `pm grant`,
