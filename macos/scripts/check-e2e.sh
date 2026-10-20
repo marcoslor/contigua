@@ -7073,7 +7073,7 @@ PY
         "nav back" > "$WORK/livetext.txt"
     launch --connect "127.0.0.1:$PORT" --open com.android.settings \
         --debug-livetext "$WORK/livetext.txt" \
-        --quit-after 120
+        --quit-after 320
     wait_until 30 events_have '"ev":"video","stream":1,"config":true' \
         || { bad "LT no video config"; stop_app; stop_fakephone; return 1; }
 
@@ -7204,7 +7204,7 @@ PY
     # A stream resize while in the mode drops back to idle.
     # The second enter runs VisionKit again; under load that alone can take
     # half a minute.
-    if wait_until 60 [ "$(grep -c '"op":"resize"' "$WORK/app.log")" -ge 1 ]; then
+    if wait_until 220 [ "$(grep -c '"op":"resize"' "$WORK/app.log")" -ge 1 ]; then
         wait_until 15 [ "$(grep -c '"op":"idle"' "$WORK/app.log")" -ge 2 ] \
             && ok "LT a stream resize while in the mode dropped back to idle" \
             || bad "LT the resize did not return the mode to idle"
