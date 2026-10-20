@@ -500,3 +500,55 @@ final class FilesErrorMapTests: XCTestCase {
         XCTAssertFalse(FilesFailure.offline.needsAnotherName)
     }
 }
+
+final class FilesModifyDecisionTests: XCTestCase {
+    private let old = FilesModifyValues(name: "a.txt", parent: "ino:2", mtime: 1000)
+    private let new = FilesModifyValues(name: "a.txt", parent: "ino:2", mtime: 1000)
+
+    /// The 20 s bug's other half: after a preview the system sends a modify for
+    /// its replica only (last-used date, tags, favourite rank). Nothing here
+    /// reaches the phone.
+    func testNothingStoredChangedIsNoWrite() {
+        XCTAssertFalse(FilesModifyDecision.needsPhoneWrite(
+            FilesModifyChange(), old: old, new: new))
+        XCTAssertFalse(FilesModifyDecision.needsPhoneWrite(
+            FilesModifyChange(), old: nil, new: new))
+    }
+
+    func testEachStoredFieldIsAWrite() {
+        XCTAssertTrue(FilesModifyDecision.needsPhoneWrite(
+            FilesModifyChange(contents: true), old: old, new: new))
+        XCTAssertTrue(FilesModifyDecision.needsPhoneWrite(
+            FilesModifyChange(filename: true), old: old,
+            new: FilesModifyValues(name: "b.txt", parent: "ino:2", mtime: 1000)))
+        XCTAssertTrue(FilesModifyDecision.needsPhoneWrite(
+            FilesModifyChange(parent: true), old: old,
+            new: FilesModifyValues(name: "a.txt", parent: "ino:3", mtime: 1000)))
+        XCTAssertTrue(FilesModifyDecision.needsPhoneWrite(
+            FilesModifyChange(modificationDate: true), old: old,
+            new: FilesModifyValues(name: "a.txt", parent: "ino:2", mtime: 2000)))
+    }
+
+    /// A field the system flags but whose value is the old one (the system can
+    /// send `.contentModificationDate` with the cached date) is not a change.
+    func testAFlaggedFieldWithTheSameValueIsNoWrite() {
+        XCTAssertFalse(FilesModifyDecision.needsPhoneWrite(
+            FilesModifyChange(filename: true, parent: true, modificationDate: true),
+            old: old, new: new))
+        // A missing date and a missing new date are the same nothing.
+        let noDate = FilesModifyValues(name: "a.txt", parent: "ino:2", mtime: nil)
+        XCTAssertFalse(FilesModifyDecision.needsPhoneWrite(
+            FilesModifyChange(modificationDate: true), old: noDate, new: noDate))
+    }
+
+    /// A fresh extension process has no old values: a field the system reports
+    /// as changed is a change then.
+    func testWithoutOldValuesAFlaggedFieldIsAWrite() {
+        XCTAssertTrue(FilesModifyDecision.needsPhoneWrite(
+            FilesModifyChange(filename: true), old: nil, new: new))
+        XCTAssertTrue(FilesModifyDecision.needsPhoneWrite(
+            FilesModifyChange(parent: true), old: nil, new: new))
+        XCTAssertTrue(FilesModifyDecision.needsPhoneWrite(
+            FilesModifyChange(modificationDate: true), old: nil, new: new))
+    }
+}
