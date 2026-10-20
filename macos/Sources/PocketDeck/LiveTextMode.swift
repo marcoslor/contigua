@@ -27,6 +27,8 @@ enum LiveTextExitReason: String, Equatable {
     case close
     case disconnect
     case streamConfig
+    /// No frame could be frozen in time (the keyframe route timed out).
+    case captureFailed
 }
 
 enum LiveTextEvent: Equatable {

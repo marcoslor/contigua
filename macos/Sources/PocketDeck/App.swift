@@ -26,6 +26,9 @@ struct LaunchOptions {
     /// `--debug-intent "<name> <args>"` (repeatable): run that intent's perform
     /// path and log its result (IntentsDebug.swift, e2e `intents` check).
     var debugIntents: [String] = []
+    /// `--debug-livetext FILE`: scripted Live Text mode steps (DebugLiveText.swift,
+    /// e2e `livetext` check). Results on stderr.
+    var debugLiveText: String?
     /// `--debug-control DIR`: commands from the e2e checks that share this
     /// running app (DebugControl.swift).
     var debugControl: String?
@@ -88,6 +91,7 @@ struct LaunchOptions {
         "--debug-input-script": true,
         "--debug-fs-script": true,
         "--debug-intent": true,
+        "--debug-livetext": true,
         "--debug-control": true,
         "--dump-video": true,
         "--float-windows": false,
@@ -162,6 +166,8 @@ struct LaunchOptions {
                 options.debugFsScript = next()
             case "--debug-intent":
                 if let value = next() { options.debugIntents.append(value) }
+            case "--debug-livetext":
+                options.debugLiveText = next()
             case "--debug-control":
                 options.debugControl = next()
             case "--dump-video":

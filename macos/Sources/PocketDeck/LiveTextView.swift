@@ -12,6 +12,7 @@ import AppKit
 import CoreImage
 import ImageIO
 import UniformTypeIdentifiers
+import VideoToolbox
 import VisionKit
 
 /// Pixel-buffer to image helpers, shared by the freeze image, copy and drag.
@@ -41,6 +42,92 @@ enum LiveTextImage {
     }
 }
 
+/// Route two for the frozen frame: decode the phone's next keyframe with a
+/// VTDecompressionSession of its own, only while a snapshot is pending. The
+/// display layer's own pixel output is unavailable when the window is occluded
+/// (a quiet e2e run, a half-covered window), and a keyframe decodes to the same
+/// picture the phone is sending.
+final class KeyframeSnapshotter {
+    private let lock = NSLock()
+    private var session: VTDecompressionSession?
+    private var handler: ((CVPixelBuffer?) -> Void)?
+    private var finished = true
+
+    /// Prepares a decoder for `format`; `handler` gets the first decoded frame
+    /// on an arbitrary queue (the video view hops to main).
+    func begin(format: CMVideoFormatDescription, handler: @escaping (CVPixelBuffer?) -> Void) {
+        let attributes: [String: Any] = [
+            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
+            kCVPixelBufferIOSurfacePropertiesKey as String: [:] as [String: Any],
+        ]
+        var session: VTDecompressionSession?
+        let status = VTDecompressionSessionCreate(
+            allocator: kCFAllocatorDefault, formatDescription: format,
+            decoderSpecification: nil, imageBufferAttributes: attributes as CFDictionary,
+            outputCallback: nil, decompressionSessionOut: &session)
+        guard status == noErr, let session else {
+            handler(nil)
+            return
+        }
+        lock.lock()
+        self.session = session
+        self.handler = handler
+        self.finished = false
+        lock.unlock()
+    }
+
+    /// Feeds one sample (in decode order). Errors are ignored: a frame from
+    /// before the requested keyframe cannot decode, and the keyframe follows.
+    func feed(_ sample: CMSampleBuffer) {
+        lock.lock()
+        guard !finished, let session else { lock.unlock(); return }
+        lock.unlock()
+        let status = VTDecompressionSessionDecodeFrame(
+            session, sampleBuffer: sample, flags: [._EnableAsynchronousDecompression],
+            infoFlagsOut: nil
+        ) { [weak self] status, _, image, _, _ in
+            guard status == noErr, let image else { return }
+            self?.finish(image)
+        }
+        if status != noErr {
+            Log.video.debug("livetext: snapshot decode refused (\(status, privacy: .public))")
+        }
+    }
+
+    func cancel() {
+        lock.lock()
+        guard !finished else { lock.unlock(); return }
+        finished = true
+        let session = self.session
+        self.session = nil
+        self.handler = nil
+        lock.unlock()
+        if let session {
+            VTDecompressionSessionInvalidate(session)
+        }
+    }
+
+    private func finish(_ image: CVPixelBuffer) {
+        lock.lock()
+        guard !finished else { lock.unlock(); return }
+        finished = true
+        let handler = self.handler
+        let session = self.session
+        self.session = nil
+        self.handler = nil
+        lock.unlock()
+        // Not from inside the decoder callback: the session is released once
+        // its queue has drained.
+        if let session {
+            DispatchQueue.global(qos: .utility).async {
+                VTDecompressionSessionWaitForAsynchronousFrames(session)
+                VTDecompressionSessionInvalidate(session)
+            }
+        }
+        handler?(image)
+    }
+}
+
 /// One stream window's Live Text mode: freeze image, analysis overlay and the
 /// captured frame.
 @MainActor
@@ -49,6 +136,9 @@ final class LiveTextSession {
     private(set) var frame: CVPixelBuffer?
     /// VisionKit finished (text may still be empty: an image with no words).
     private(set) var analysisReady = false
+    /// Why the last enter did nothing (the scripted check reports it; state
+    /// only, never pixels).
+    private(set) var lastFailure = ""
 
     /// Every state change, with the reason for a move to idle.
     var onStateChange: ((LiveTextState, LiveTextExitReason?) -> Void)?
@@ -64,6 +154,7 @@ final class LiveTextSession {
     /// monitor reads the two keys before AppKit dispatches them, and only
     /// while the mode is up.
     private var keyMonitor: Any?
+    private var snapshotTimeout: DispatchWorkItem?
 
     var state: LiveTextState { mode.state }
     var isActive: Bool { mode.isActive }
@@ -90,13 +181,49 @@ final class LiveTextSession {
     /// and nothing happens.
     @discardableResult
     func enter() -> Bool {
-        guard mode.state == .idle else { return false }
-        guard let host, let displayed = host.copyDisplayedFrame(),
-              let image = LiveTextImage.nsImage(displayed) else {
-            Log.video.notice("livetext: no displayed frame to freeze")
-            return false
+        guard mode.state == .idle else { lastFailure = "already active"; return false }
+        guard let host else { lastFailure = "no view"; return false }
+        // Route one: the layer's displayed buffer, the exact frame on screen.
+        if let displayed = host.copyDisplayedFrame(), let image = LiveTextImage.nsImage(displayed) {
+            lastFailure = ""
+            freeze(displayed, image: image, on: host)
+            Log.video.notice("livetext: entered on the displayed frame")
+            return true
         }
-        frame = displayed
+        // Route two: the window is occluded (or the layer has no current
+        // buffer), so decode the next keyframe in parallel.
+        lastFailure = "waiting for a keyframe: " + host.frameDiagnostics()
+        mode.handle(.enter)
+        onStateChange?(.capturing, nil)
+        host.beginFrameSnapshot { [weak self] buffer in
+            guard let self else { return }
+            guard self.mode.state == .capturing, let buffer,
+                  let image = LiveTextImage.nsImage(buffer) else {
+                self.captureFailed()
+                return
+            }
+            self.lastFailure = ""
+            self.freeze(buffer, image: image, on: host)
+            Log.video.notice("livetext: entered on a decoded keyframe")
+        }
+        let work = DispatchWorkItem { [weak self] in self?.captureFailed() }
+        snapshotTimeout = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5, execute: work)
+        return true
+    }
+
+    /// The frame is in hand (either route): freeze it, analyze it, put the
+    /// overlay up.
+    private func freeze(_ buffer: CVPixelBuffer, image: NSImage, on host: VideoLayerView) {
+        snapshotTimeout?.cancel()
+        snapshotTimeout = nil
+        freezeImage(buffer, image: image, on: host)
+    }
+
+    private func freezeImage(_ buffer: CVPixelBuffer, image: NSImage, on host: VideoLayerView) {
+        if mode.state == .idle { mode.handle(.enter) }
+        guard mode.state == .capturing else { return }
+        frame = buffer
         imageView.image = image
         imageView.isHidden = false
         overlay.isHidden = false
@@ -104,14 +231,18 @@ final class LiveTextSession {
         analysisReady = false
         generation += 1
         layout(in: host.videoRect())
-        mode.handle(.enter)
         mode.handle(.frameCaptured)
         onStateChange?(.analyzing, nil)
         host.window?.makeFirstResponder(overlay)
         installKeyMonitor()
-        analyze(displayed, generation: generation)
-        Log.video.notice("livetext: entered, frozen at \(Int(image.size.width), privacy: .public)x\(Int(image.size.height), privacy: .public)")
-        return true
+        analyze(buffer, generation: generation)
+    }
+
+    /// No frame in time: leave the mode (the window shows live video again).
+    private func captureFailed() {
+        guard mode.state == .capturing else { return }
+        lastFailure = "no keyframe after 5 s"
+        exit(.captureFailed)
     }
 
     /// Leave for any reason; a no-op while idle. The frame and the overlay go
@@ -121,6 +252,9 @@ final class LiveTextSession {
         guard mode.exit(reason) else { return false }
         generation += 1
         removeKeyMonitor()
+        snapshotTimeout?.cancel()
+        snapshotTimeout = nil
+        host?.cancelFrameSnapshot()
         frame = nil
         analysisReady = false
         overlay.analysis = nil
@@ -150,6 +284,9 @@ final class LiveTextSession {
     /// A new VIDEO_CONFIG: the picture under the overlay may be gone or a
     /// different shape. Leaving drops back to live video.
     func noteStreamConfig() {
+        // A keyframe request is answered by a fresh encoder, so a config while
+        // the snapshot is still on its way is ours, not a window change.
+        guard mode.state != .capturing else { return }
         exit(.streamConfig)
     }
 

@@ -237,8 +237,66 @@ final class VideoLayerView: NSView {
     /// The frame the display layer is showing right now (Live Text's freeze
     /// source). Main thread only, like the rest of the layer's work; the copy
     /// is one buffer per entry, never per frame.
+    ///
+    /// `displayedPixelBuffer()` answers only while the renderer's timebase is
+    /// stopped ("NULL if the rate is non-zero"), so the rate is paused around
+    /// the copy and put back at once: the layer keeps showing what it showed,
+    /// and the next enqueued frame paints as before.
     func copyDisplayedFrame() -> CVPixelBuffer? {
-        displayLayer.sampleBufferRenderer.displayedPixelBuffer()
+        let renderer = displayLayer.sampleBufferRenderer
+        let timebase = renderer.timebase
+        let rate = CMTimebaseGetRate(timebase)
+        if rate != 0 { CMTimebaseSetRate(timebase, rate: 0) }
+        defer { if rate != 0 { CMTimebaseSetRate(timebase, rate: rate) } }
+        return renderer.displayedPixelBuffer()
+    }
+
+    // MARK: Frame snapshot (Live Text's second route)
+
+    /// Touched only on `videoQueue`.
+    private var snapshotter: KeyframeSnapshotter?
+
+    /// Asks the phone for a keyframe and decodes it with a private
+    /// decompression session, only until the first frame arrives. This is the
+    /// route for windows whose display layer reports no displayed buffer
+    /// (occluded windows, quiet e2e runs). `handler(nil)` when there is no
+    /// format yet or the decoder cannot start.
+    func beginFrameSnapshot(_ handler: @escaping (CVPixelBuffer?) -> Void) {
+        videoQueue.async { [weak self] in
+            guard let self else { return }
+            self.snapshotter?.cancel()
+            guard let format = self.formatDescription else {
+                DispatchQueue.main.async { handler(nil) }
+                return
+            }
+            let snapshotter = KeyframeSnapshotter()
+            self.snapshotter = snapshotter
+            snapshotter.begin(format: format) { buffer in
+                DispatchQueue.main.async { handler(buffer) }
+            }
+            DispatchQueue.main.async { [weak self] in self?.onRequestKeyframe?() }
+        }
+    }
+
+    /// The mode left before a frame arrived: drop the decoder.
+    func cancelFrameSnapshot() {
+        videoQueue.async { [weak self] in
+            self?.snapshotter?.cancel()
+            self?.snapshotter = nil
+        }
+    }
+
+    /// Why there is no frame to freeze, for the scripted check (state only, no
+    /// pixels). "renderer=…" is the API's own status; the rest is the layer and
+    /// its window.
+    func frameDiagnostics() -> String {
+        let renderer = displayLayer.sampleBufferRenderer
+        let rate = CMTimebaseGetRate(renderer.timebase)
+        let visible = window?.isVisible ?? false
+        let occluded = !(window?.occlusionState.contains(.visible) ?? false)
+        return "renderer=\(renderer.status.rawValue) rate=\(rate) ready=\(renderer.isReadyForMoreMediaData)"
+            + " bounds=\(Int(bounds.width))x\(Int(bounds.height)) video=\(Int(videoSize.width))x\(Int(videoSize.height))"
+            + " window=\(visible) occluded=\(occluded) paused=\(isPaused)"
     }
 
     func configure(_ config: VideoConfig) {
@@ -282,6 +340,7 @@ final class VideoLayerView: NSView {
             let pts = max(frame.ptsUs, self.lastPtsUs &+ 1)
             self.lastPtsUs = pts
             guard let sample = Self.makeSampleBuffer(avcc: avcc, format: format, ptsUs: pts) else { return }
+            self.snapshotter?.feed(sample)
             // The byte work above is the expensive part and stays off the main
             // thread, but CALayer is main-thread-only: reading or mutating the
             // display layer from here is undefined and leaves it accepting

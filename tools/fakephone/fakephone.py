@@ -448,6 +448,10 @@ class EventLog(object):
         self._emit({"ev": "input", "kind": "hover", "stream": stream, "action": action,
                     "nx": nx, "ny": ny, "ts": time.time()})
 
+    def frames(self, stream, n):
+        """--frame-events: the stream's cumulative frame count, once a second."""
+        self._emit({"ev": "frames", "stream": stream, "n": n, "ts": time.time()})
+
     def video_config(self, stream, w, h):
         self._emit({"ev": "video", "stream": stream, "config": True, "w": w, "h": h,
                     "ts": time.time()})
@@ -897,6 +901,9 @@ class WindowStream(object):
         self._configured = False
         self._resize_timer = None
         self._au_index = 0
+        # Cumulative across encoder restarts (pause/resume, keyframes), so the
+        # e2e can tell that frames flowed again after a resume.
+        self._frames_sent = 0
         self._paused = False
         self._lock = threading.Lock()
 
@@ -917,6 +924,9 @@ class WindowStream(object):
         # fast as the CPU allows (thousands of fps for cheap patterns).
         cmd = [FFMPEG, "-hide_banner", "-loglevel", "error", "-re",
                "-f", "lavfi", "-i", self._source()]
+        # Still overlays, in order: the stream id/size label and, with
+        # --text-frame, a large word on a white band for Live Text's analyser.
+        overlays = []
         if self.phone.label_dir and self.h >= 48:
             text = "stream=%d %dx%d" % (self.stream_id, self.w, self.h)
             path = os.path.join(self.phone.label_dir,
@@ -925,7 +935,30 @@ class WindowStream(object):
                 with open(path, "wb") as fp:
                     fp.write(render_text_png(text, 8 + len(text) * 12, 18,
                                              (255, 255, 255), (16, 16, 16), scale=2))
-            cmd += ["-i", path, "-filter_complex", "[0:v][1:v]overlay=8:8[v]", "-map", "[v]"]
+            overlays.append((path, "8:8"))
+        word = getattr(self.phone.args, "text_frame", None)
+        if word:
+            digest = hashlib.md5(word.encode("utf-8")).hexdigest()[:8]
+            path = os.path.join(self.phone.label_dir or tempfile.gettempdir(),
+                                "livetext-%s-%dx%d.png" % (digest, self.w, self.h))
+            band = max(64, self.h // 3)
+            if not os.path.exists(path):
+                with open(path, "wb") as fp:
+                    fp.write(render_text_png(word, self.w, band,
+                                             (16, 16, 16), (255, 255, 255)))
+            # The band is static for the whole stream: the word never moves,
+            # so an analysis taken at any moment sees the same picture.
+            overlays.append((path, "0:%d" % ((self.h - band) // 2)))
+        for index, (path, position) in enumerate(overlays):
+            cmd += ["-i", path]
+        if overlays:
+            chain = []
+            source = "[0:v]"
+            for index, (_, position) in enumerate(overlays, start=1):
+                out = "[v]" if index == len(overlays) else "[v%d]" % index
+                chain.append("%s[%d:v]overlay=%s%s" % (source, index, position, out))
+                source = out
+            cmd += ["-filter_complex", ";".join(chain), "-map", "[v]"]
         cmd += ["-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
                 "-bf", "0", "-g", str(FRAME_RATE * 10), "-profile:v", "high",
                 "-pix_fmt", "yuv420p", "-x264-params", "aud=1", "-an", "-f", "h264", "-"]
@@ -1007,6 +1040,9 @@ class WindowStream(object):
         pts = self._au_index * (1000000 // FRAME_RATE)
         self._au_index += 1
         self.phone.sender.send_frame(self.stream_id, pts, flags, access_unit)
+        self._frames_sent += 1
+        if self.phone.args.frame_events and self._frames_sent % FRAME_RATE == 0:
+            self.phone.events.frames(self.stream_id, self._frames_sent)
 
 
 # --- device-wide audio tone (440 Hz sine → AAC, 48 kHz stereo) ---------------
@@ -2400,6 +2436,11 @@ def build_parser():
     p.add_argument("--events", metavar="PATH", help="write JSON Lines session events here")
     p.add_argument("--no-labels", dest="labels", action="store_false",
                    help="do not overlay the stream id/size label")
+    p.add_argument("--text-frame", metavar="WORD", default=None,
+                   help="draw WORD large on a white band in every app stream "
+                        "(a stable frame for the Live Text check)")
+    p.add_argument("--frame-events", action="store_true",
+                   help="log each stream's cumulative frame count once a second")
     p.add_argument("--demo-apps", type=int, default=0, metavar="N",
                    help="pad the app list to N apps (grid screenshots)")
     p.add_argument("--no-icon-every", type=int, default=0, metavar="K",

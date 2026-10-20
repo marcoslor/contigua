@@ -2368,7 +2368,7 @@ view = next((i for i in root["items"] if i["title"] == "View"), None)
 if view is None:
     print("no View menu"); sys.exit(1)
 seq = ["—" if item["isSeparator"] else item["title"] for item in view["submenu"]]
-want = ["Find Apps", "Phone Window", "Continue on Mac", "—", "Show Touches", "—",
+want = ["Find Apps", "Phone Window", "Continue on Mac", "—", "Show Touches", "Live Text", "—",
         "Framed", "Immersive", "—", "Density", "Toggle Window Style"]
 if seq != want:
     print("View:", seq, "wanted:", want); sys.exit(1)
@@ -2441,7 +2441,8 @@ root = json.load(open(sys.argv[1]))
 items = list(walk(root["items"]))
 missing = []
 for title in ["Add Phone…", "Find Apps", "Phone Window", "Continue on Mac", "Show Touches",
-              "Density", "Toggle Window Style", "Back", "Home", "Recents", "Enter Full Screen"]:
+              "Live Text", "Density", "Toggle Window Style", "Back", "Home", "Recents",
+              "Enter Full Screen"]:
     found = next((i for i in items if i["title"] == title), None)
     if found is None:
         missing.append(title + " (missing)")
@@ -4568,6 +4569,142 @@ check_deck() {
         bad "DECK no Deck window to capture"
     fi
     stop_app
+}
+
+
+# --- Live Text (ROADMAP v0.2 #3) ------------------------------------------
+
+# frames_n — the newest frame counter line's cumulative count (--frame-events).
+frames_n() {
+    grep '"ev":"frames"' "$WORK/events.jsonl" 2>/dev/null | tail -1 \
+        | grep -o '"n":[0-9]*' | cut -d: -f2
+}
+
+# The mode's script (--debug-livetext, DebugLiveText.swift): enter on the
+# video-filled stream, read the word back through VisionKit, stay in the mode
+# while the harness sends input that must not reach the phone, copy the frozen
+# frame, leave, then enter again and resize the window: that drops to idle.
+check_livetext() {
+    clean
+    FAKE_ARGS="--text-frame POCKETDECK --frame-events" start_fake || return 1
+    FAKE_ARGS=""
+    rm -f "$WORK/lt-input-go" "$WORK/lt-copy-go" "$WORK/livetext.png"
+    printf '%s\n' \
+        "enter 1" \
+        "wait-analysis POCKETDECK" \
+        "waitfile $WORK/lt-copy-go" \
+        "copy-image $WORK/livetext.png" \
+        "exit" \
+        "wait-idle" \
+        "enter 1" \
+        "wait-analysis" \
+        "resize 1 1200 800" \
+        "wait-idle" > "$WORK/livetext.txt"
+    printf '%s\n' \
+        "waitfile $WORK/lt-input-go" \
+        "click 0.5 0.5" \
+        "type hi" \
+        "scroll 3" \
+        "hover 0.5 0.5" \
+        "rightclick 0.5 0.5" > "$WORK/lt-input.txt"
+    launch --connect "127.0.0.1:$PORT" --open com.android.settings \
+        --debug-livetext "$WORK/livetext.txt" --debug-input-script "$WORK/lt-input.txt" \
+        --quit-after 120
+    wait_until 30 events_have '"ev":"video","stream":1,"config":true' \
+        || { bad "LT no video config"; stop_app; stop_fakephone; return 1; }
+
+    # Enter + VisionKit: the frozen frame carries POCKETDECK.
+    if wait_until 45 grep -q '"op":"analysis"' "$WORK/app.log"; then
+        local line
+        line="$(grep '"op":"analysis"' "$WORK/app.log" | tail -1)"
+        case "$line" in
+            *'"state":"shown"'*) ok "LT enter froze the frame and VisionKit finished" ;;
+            *) bad "LT analysis did not reach shown ($line)" ;;
+        esac
+        case "$line" in
+            *'"hasText":true'*) ok "LT the overlay found text" ;;
+            *) bad "LT no text in the frozen frame ($line)" ;;
+        esac
+        case "$line" in
+            *'"contains":true'*) ok "LT the analysis reads POCKETDECK" ;;
+            *) bad "LT the analysis does not contain POCKETDECK ($line)" ;;
+        esac
+    else
+        bad "LT no analysis result (app log: $(tail -3 "$WORK/app.log"))"
+    fi
+
+    # While frozen the phone must receive no input at all and send no frames.
+    sleep 0.5
+    local frames_frozen inputs_before inputs_after frames_after
+    frames_frozen="$(frames_n)"
+    inputs_before="$(count_events '"ev":"input"')"
+    touch "$WORK/lt-input-go"
+    sleep 3
+    inputs_after="$(count_events '"ev":"input"')"
+    [ "$inputs_after" = "$inputs_before" ] \
+        && ok "LT no INPUT frame reached the phone in the mode ($inputs_before before, $inputs_after after click/type/scroll/hover/right-click)" \
+        || bad "LT input reached the phone in the mode ($inputs_before -> $inputs_after)"
+    frames_after="$(frames_n)"
+    [ "${frames_after:-0}" = "${frames_frozen:-0}" ] \
+        && ok "LT the phone stopped sending frames while frozen (n=$frames_after)" \
+        || bad "LT frames kept flowing in the mode (n ${frames_frozen:-0} -> ${frames_after:-0})"
+
+    # Copy Window Image: a PNG of exactly the stream's pixels.
+    touch "$WORK/lt-copy-go"
+    if wait_until 20 grep -q '"op":"copy"' "$WORK/app.log"; then
+        local copy pw ph
+        copy="$(grep '"op":"copy"' "$WORK/app.log" | tail -1)"
+        if [ -s "$WORK/livetext.png" ]; then
+            read -r pw ph <<< "$(python3 - "$WORK/livetext.png" <<'PY'
+import struct, sys
+data = open(sys.argv[1], "rb").read(33)
+if data[:8] != b"\x89PNG\r\n\x1a\n":
+    sys.exit(1)
+w, h = struct.unpack(">II", data[16:24])
+print(w, h)
+PY
+)"
+            local want_w want_h
+            want_w="$(grep -o '"w":[0-9]*' <<< "$copy" | cut -d: -f2)"
+            want_h="$(grep -o '"h":[0-9]*' <<< "$copy" | cut -d: -f2)"
+            if [ "${pw:-0}" = "${want_w:-x}" ] && [ "${ph:-0}" = "${want_h:-x}" ]; then
+                ok "LT copy-image wrote a ${pw}x${ph} PNG, the stream's own pixels"
+            else
+                bad "LT copy-image is ${pw:-?}x${ph:-?}, the frame says ${want_w:-?}x${want_h:-?}"
+            fi
+        else
+            bad "LT copy-image wrote no file ($copy)"
+        fi
+    else
+        bad "LT no copy-image result"
+    fi
+
+    # Exit: live video again, the phone's frames flow (the counter moves).
+    if wait_until 20 grep -q '"op":"idle"' "$WORK/app.log" \
+        && grep '"op":"idle"' "$WORK/app.log" | tail -1 | grep -q '"ok":true' \
+        && grep '"op":"idle"' "$WORK/app.log" | tail -1 | grep -q '"state":"idle"'; then
+        ok "LT exit left the mode"
+    else
+        bad "LT exit stayed in the mode"
+    fi
+    local resumed
+    resumed="$(frames_n)"
+    if wait_until 20 eval '[ "$(frames_n)" -gt "${resumed:-0}" ]'; then
+        ok "LT video frames render again after exit (n $resumed -> $(frames_n))"
+    else
+        bad "LT no frames after exit (n $resumed -> $(frames_n))"
+    fi
+
+    # A stream resize while in the mode drops back to idle.
+    if wait_until 30 [ "$(grep -c '"op":"resize"' "$WORK/app.log")" -ge 1 ]; then
+        wait_until 15 [ "$(grep -c '"op":"idle"' "$WORK/app.log")" -ge 2 ] \
+            && ok "LT a stream resize while in the mode dropped back to idle" \
+            || bad "LT the resize did not return the mode to idle"
+    else
+        bad "LT the second enter/resize phase did not run"
+    fi
+    stop_app
+    stop_fakephone
 }
 
 check_orphans() {
