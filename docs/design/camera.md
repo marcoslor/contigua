@@ -301,6 +301,34 @@ one C1 emulator boot are at the end of this section.
   shell before anything is spawned; the app service refuses one too (its registry
   holds one stream) if it somehow receives two.
 
+### C1 verification
+
+- **Host, `cam-wire` (fakephone + deckctl, no Mac app): PASS 15/15.** list (2
+  cameras) → 3 s capture (92 frames, 30.7 fps, keyframe first and with SPS/PPS, a
+  1906 ms keyframe gap) → a second stream `busy` → `cam.stop` → `stopped` → the
+  camera free again (61 frames) → the Annex-B decodes as 1280×720 H.264 →
+  eviction after 29 frames (`evicted`, 0 frames after, no retry) → setting off
+  (empty list, `off`).
+- **JVM (K1):** the state machine (start/frames framing/busy/evict/pipe EOF/off) and
+  the wire shapes in `CameraCaptureTest` (9) and `CameraBridgeTest` (8).
+- **Emulator: NOT verified — C1's one boot was lost to a rig bug.** The boot
+  (2026-10-20 10:55, ledger `camera-c1 emulator 32633`) reached the app with the
+  permission granted and the wire up (deckctl paired on the rig, real phone
+  server), but `tools/emulator/cam-c1.sh` wrote the `camera_allowed` pref *after*
+  `</map>`, where SharedPreferences cannot see it: `cam.start` answered `off` on
+  the wire (frames 0), which is the gate working, and the script then died on an
+  undefined helper (`stats_field`). Both are fixed (the key is asserted inside
+  `<map>`, and `cam.list` must be non-empty before the capture stages), but the
+  budget is one boot, so the emulator numbers — fps, keyframe interval with the
+  phone locked, eviction and recovery, `stopped` and the service gone, the `off`
+  path after the setting is turned off — are unverified until a re-run:
+  `tools/emulator/cam-c1.sh --check` then the script inside one
+  `heavy.sh` call. Evidence from the lost boot: `.agent/emu/cam-c1.log`,
+  `.cache/cam-c1-start.txt`.
+- **Unverified on a real phone:** the privacy dot for an app-process camera client
+  (C0b's P4 note); the emulator's synthetic camera is not a measure of a real
+  camera's fps or keyframe timing.
+
 ## Slices
 
 
@@ -308,7 +336,7 @@ one C1 emulator boot are at the end of this section.
 |---|---|---|---|---|
 | C0 | Finish the phone probe | done 2026-10-20: staged probe, one boot. Shell UID lists the camera and cannot open it (package/uid refusal); P2–P5 are blocked by P1 | S | none |
 | C0b | App-process camera FGS probe | **done** 2026-10-20: shell-started `camera` FGS captures in the background and locked; the app starting itself is refused; eviction = `onDisconnected`; indicator to check on a real phone | S | none |
-| C1 | Phone capture service | **built** (see "C1 implementation notes"): Camera2 in the **app process** (foreground service, `CAMERA` permission) → MediaCodec H.264 1280×720@30 (the `WindowStream` encoder settings) → `VIDEO_FRAME` to the shell session, start/stop, busy/disabled/evicted errors, one stream | M | C0b (done) |
+| C1 | Phone capture service | **built; host-verified, emulator boot lost to a rig bug (see "C1 verification")**: Camera2 in the **app process** (foreground service, `CAMERA` permission) → MediaCodec H.264 1280×720@30 (the `WindowStream` encoder settings) → `VIDEO_FRAME` to the shell session, start/stop, busy/disabled/evicted errors, one stream | M | C0b (done) |
 | C2 | "Phone camera" window | the existing H.264 decode path in a normal Mac window, a menu item and start/stop; no extension, ships with today's ad-hoc signing | S-M | C1 |
 | C3 | CMIO camera extension | provider/device/stream, decode H.264 into `CVPixelBuffer`, App Group socket between app and extension, stream on first client and stop when none; replaces the solid-colour source | M-L | C1; **Developer ID** |
 | C4 | Signing and install | System-Extension App ID, Developer ID profiles for app and extension, notarization, `/Applications` install, approval deep-link, uninstall/upgrade | M | signing decision |
