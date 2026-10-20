@@ -5182,12 +5182,75 @@ PY
     [ "$seen" = "yes" ] && [ "$took" -le 10 ] \
         && ok "WATCH a delete on the phone removes the entry from the mount in ${took}s" \
         || bad "WATCH the phone-side delete did not reach the mount"
+    # Round 3 keeps a folder for ten minutes after the last touch: closing the
+    # window ends the pushes, not the phone's watch, because the change that
+    # arrives with no extension running is exactly the one this round is for.
     osascript -e 'tell application "Finder" to close every window' >/dev/null 2>&1 || true
-    sleep 8
+    sleep 4
     watch_after="$(grep -c "watch off" "$WORK/fake.err" 2>/dev/null || true)"
-    [ "${watch_after:-0}" -gt "${watch_before:-0}" ] \
-        && ok "WATCH closing the Finder window stopped the phone's watch" \
-        || bad "WATCH the phone kept watching after Finder closed the folder"
+    [ "${watch_after:-0}" -eq "${watch_before:-0}" ] \
+        && ok "WATCH closing Finder leaves the folder watched for its ten minutes" \
+        || bad "WATCH closing Finder dropped the phone's watch at once"
+
+    # -- With no extension process running (the case rounds 1-2 lost) ---------
+    # The phone keeps watching; the app re-lists, records the delta and signals
+    # the working set, which is what starts an extension again.
+    local extension_alive
+    extension_alive="$(pgrep -f "Files.appex/Contents/MacOS/Files" 2>/dev/null | head -1 || true)"
+    if [ -n "$extension_alive" ]; then
+        for _ in $(seq 1 20); do
+            extension_alive="$(pgrep -f "Files.appex/Contents/MacOS/Files" 2>/dev/null | head -1 || true)"
+            [ -z "$extension_alive" ] && break
+            sleep 0.5
+        done
+    fi
+    if [ -n "$extension_alive" ]; then
+        pkill -f "Files.appex/Contents/MacOS/Files" 2>/dev/null || true
+        sleep 1
+        extension_alive="$(pgrep -f "Files.appex/Contents/MacOS/Files" 2>/dev/null | head -1 || true)"
+    fi
+    [ -z "$extension_alive" ] \
+        && ok "WATCH no extension process is running in the guest" \
+        || bad "WATCH an extension process is still running ($extension_alive)"
+    files_log > "$WORK/files-log-pre-signal.txt" 2>/dev/null || true
+    local signals_before changes_before
+    signals_before="$(grep -c "signal working set" "$WORK/files-log-pre-signal.txt" 2>/dev/null || true)"
+    changes_before="$(grep -c "working set changes" "$WORK/files-log-pre-signal.txt" 2>/dev/null || true)"
+    python3 - "$WORK/fsroot/Documents" <<'PY'
+import os, sys
+open(os.path.join(sys.argv[1], "phonechange2.txt"), "wb").write(b"no extension running\n")
+PY
+    seen="no"
+    started=$SECONDS
+    while [ $((SECONDS - started)) -lt 10 ]; do
+        if run_limited 15 ls "$root/Documents" 2>/dev/null | grep -qx 'phonechange2.txt'; then
+            seen="yes"; break
+        fi
+        sleep 0.5
+    done
+    took=$((SECONDS - started))
+    [ "$seen" = "yes" ] && [ "$took" -le 10 ] \
+        && ok "WATCH with no extension running a phone-side create reaches the mount in ${took}s" \
+        || bad "WATCH the phone-side create was lost with no extension running"
+    sleep 2
+    screencapture -x "$WORK/finder-signal.png" 2>/dev/null \
+        && ok "WATCH screenshot of Finder after the working-set signal: $WORK/finder-signal.png" \
+        || bad "WATCH the screenshot after the working-set signal failed"
+    files_log > "$WORK/files-log-signal.txt" 2>/dev/null || true
+    local signals_after changes_after errors_after
+    signals_after="$(grep -c "signal working set" "$WORK/files-log-signal.txt" 2>/dev/null || true)"
+    changes_after="$(grep -c "working set changes" "$WORK/files-log-signal.txt" 2>/dev/null || true)"
+    errors_after="$(grep -c "signal working set failed" "$WORK/files-log-signal.txt" 2>/dev/null || true)"
+    [ "${signals_after:-0}" -gt "${signals_before:-0}" ] \
+        && ok "WATCH the app signalled the working set (${signals_before:-0} -> ${signals_after:-0}, errors ${errors_after:-0})" \
+        || bad "WATCH the app never signalled the working set"
+    [ "${changes_after:-0}" -gt "${changes_before:-0}" ] \
+        && ok "WATCH the working set was enumerated after the signal (${changes_before:-0} -> ${changes_after:-0})" \
+        || bad "WATCH the working-set enumeration never ran after the signal"
+    if [ "${errors_after:-0}" -gt 0 ]; then
+        say "    $(grep "signal working set failed" "$WORK/files-log-signal.txt" | tail -2 | sed 's/^[^]]*] //')"
+    fi
+    rm -f "$WORK/fsroot/Documents/phonechange2.txt"
 
     # -- Finder shows it (screenshot) -----------------------------------------
     # The collision retries can still be in flight minutes later: after all of
