@@ -148,6 +148,10 @@ enum SessionEvent {
     case notifyImage(id: String, mime: String, width: Int, height: Int, data: Data)
     case notifyRemoved(id: String)
     case mediaState(MediaState)
+    /// "Media part 2": the active sessions and the chosen one, and the chosen
+    /// session's artwork. A phone that does not know them never sends them.
+    case mediaSessions([MediaSessionRow], chosen: String?)
+    case mediaArt(key: String, mime: String?, width: Int?, height: Int?, data: Data?)
 }
 
 /// The phone's `drop.result` (docs/design/dragdrop.md).
@@ -915,14 +919,32 @@ final class Session {
             emit(.mediaState(MediaState(
                 playing: message.bool("playing") ?? false,
                 pkg: message.string("pkg"),
+                key: message.string("key"),
                 title: message.string("title"),
                 artist: message.string("artist"),
                 album: message.string("album"),
                 durationMs: message.int("durationMs").map { Int64($0) },
                 positionMs: message.int("positionMs").map { Int64($0) },
                 rate: message.double("rate") ?? 0,
+                canSeek: message.bool("canSeek") ?? false,
+                volume: message.int("volume"),
+                volumeMax: message.int("volumeMax"),
                 receivedAt: Date().timeIntervalSince1970,
             )))
+        case "media.sessions":
+            let rows = (message.array("list") ?? []).compactMap { row -> MediaSessionRow? in
+                guard let key = row["key"] as? String, !key.isEmpty,
+                      let pkg = row["pkg"] as? String else { return nil }
+                return MediaSessionRow(key: key, pkg: pkg,
+                                       app: (row["app"] as? String) ?? pkg,
+                                       playing: (row["playing"] as? Bool) ?? false)
+            }
+            emit(.mediaSessions(rows, chosen: message.string("chosen")))
+        case "media.art":
+            guard let key = message.string("key"), !key.isEmpty else { return }
+            emit(.mediaArt(key: key, mime: message.string("mime"),
+                           width: message.int("w"), height: message.int("h"),
+                           data: message.data("data")))
         case "fs.items":
             guard let raw = message.int("id"), let id = UInt32(exactly: raw), id > 0 else { return }
             emit(.fsItems(id: id, page: message.string("page"),
@@ -1117,7 +1139,14 @@ final class Session {
         sendJSON(["t": "notify.dismiss", "id": id])
     }
 
-    func mediaCommand(_ action: String) { sendJSON(["t": "media.command", "action": action]) }
+    /// `media.command` (docs/design/notify.md "Media part 2"): transport, a
+    /// seek position or a volume level, optionally for one session key.
+    func mediaCommand(_ command: MediaCommand, key: String? = nil) {
+        sendJSON(MediaMessage.command(command, key: key))
+    }
+
+    /// `media.choose`: which phone session Now Playing follows.
+    func mediaChoose(_ key: String) { sendJSON(MediaMessage.choose(key: key)) }
 
     /// `phone.ring` (docs/PROTOCOL.md "Ring"): the phone's app plays its alarm
     /// over the lock screen, at the alarm volume, for at most 30 s.
