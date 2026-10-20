@@ -299,8 +299,14 @@ final class CameraWindowController: StreamWindowController {
         }
     }
 
-    /// Called by the window manager for every VIDEO_FRAME routed here.
+    /// Called by the window manager for every VIDEO_FRAME routed here. Video
+    /// arrives on the session queue; the counter and the overlay are main
+    /// thread work.
     override func receivedFrame() {
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async { [weak self] in self?.receivedFrame() }
+            return
+        }
         guard status == .streaming else { return }
         frames += 1
         if !hasFrame {
