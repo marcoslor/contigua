@@ -29,7 +29,13 @@ DEVPORT="$(ensure_forward)" || die "cannot find the PocketDeck server port on $S
 step "forward: 127.0.0.1:$PORT -> device tcp:$DEVPORT"
 mkdir -p "$WORK"
 
-deckctl() { "$PYTHON" "$DECKCTL" --host 127.0.0.1 --port "$PORT" --state "$STATE" "$@"; }
+# The app's shell service can be restarted by the system between commands (a
+# new listening port each time), so the forward is re-read per call; a stale
+# one connects and is closed, which reads as a TLS failure.
+deckctl() {
+    ensure_forward >/dev/null 2>&1 || true
+    "$PYTHON" "$DECKCTL" --host 127.0.0.1 --port "$PORT" --state "$STATE" "$@"
+}
 
 # Pair if the rig has no key yet (the flow the POC check uses).
 if ! "$PYTHON" "$EMU_DIR/poc.py" --state "$STATE" --addr "127.0.0.1:$PORT" check >/dev/null 2>&1; then

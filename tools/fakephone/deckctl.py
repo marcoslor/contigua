@@ -1792,7 +1792,38 @@ def cmd_fs(client, args):
         paths = list(args.paths or ([args.path] if args.path else []))
         request = {"t": "fs.watch" if args.action == "watch" else "fs.unwatch",
                    "id": _fs_id(), "paths": paths}
-        return _fs_result(client, request)
+        rc = _fs_result(client, request)
+        print("watch ok" if args.action == "watch" and rc == 0 else "unwatch ok")
+        if rc != 0 or not args.hold:
+            return rc
+        # Keep the session open so the watch lives: print each coalesced batch
+        # (counts only), optionally unwatch part-way and report anything after.
+        deadline = time.time() + args.hold
+        off_at = time.time() + args.off_after if args.off_after else None
+        off = False
+        while True:
+            now = time.time()
+            if off_at is not None and now >= off_at:
+                _fs_result(client, {"t": "fs.unwatch", "id": _fs_id(), "paths": paths})
+                print("watch off")
+                sys.stdout.flush()
+                off_at = None
+                off = True
+            if now >= deadline:
+                break
+            frame = client.recv(min(0.2, max(0.05, deadline - now)))
+            if frame is TIMEOUT:
+                continue
+            if frame is None:
+                raise DeckError("phone closed the connection while watching")
+            if frame.type != proto.TYPE_JSON:
+                continue
+            msg = proto.unpack_json(frame)
+            if msg.get("t") == "fs.changes":
+                print("%s %d" % ("change after-off" if off else "change",
+                                 len(msg.get("paths") or [])))
+                sys.stdout.flush()
+        return 0
     if args.action == "changes":
         # The next coalesced fs.changes; printed as a count (no names).
         deadline = time.time() + (args.timeout or 10.0)
@@ -2047,6 +2078,10 @@ def build_parser():
     sp.add_argument("--paths", nargs="+", help="watch/unwatch: the folders (relative)")
     sp.add_argument("--timeout", type=float, default=10.0,
                     help="changes: seconds to wait for a change (default 10)")
+    sp.add_argument("--hold", type=float, default=0.0,
+                    help="watch: keep the session open this many seconds and print each change")
+    sp.add_argument("--off-after", type=float, default=0.0,
+                    help="watch --hold: unwatch this many seconds in, report what comes after")
 
     sp = sub.add_parser("frame-png", help="decode a frame of a recorded .h264 to PNG (no session)", **spp)
     sp.add_argument("file")
