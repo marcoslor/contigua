@@ -313,6 +313,9 @@ Design:
   `fs.watch paths,on:true` per folder it enumerates (and the working set), capped at 256
   watches on the phone. "Watch" means one `FileObserver` per folder (CREATE/DELETE/MOVED_TO/
   MOVED_FROM/CLOSE_WRITE), re-established for folders created under a watched one.
+  *(S5 round 3 changed the Mac's half of this rule: a folder the system touches stays
+  watched for ten minutes after the last touch, at most 64 — see "S5 round 3: the
+  working set". The phone's cap and poll below are unchanged.)*
 - When the cap would be exceeded, fall back to **`MediaStore.getGeneration(context, volumeName)`**
   (API 30+), a single `long` that changes whenever the volume's database changes, polled every
   5 s *while* something is watched; on a change, re-list only the folders the Mac has open and
@@ -875,7 +878,44 @@ signals the working set and gives it a real enumerator.
   every phone-facing request, so a protocol mistake cannot turn one into a
   listing or a watch.
 
-**Done (round 3).** Filled in after the checks ran; see "S5 Done" below.
+**Done (round 3).** What shipped: one domain-wide delta log (`FilesChangeLog`:
+sequence + container + delta, 512 entries) behind two anchor shapes,
+`w:<epoch>:<sequence>` for the working set and
+`g:<epoch>:<sequence>:<container>` for a folder; a `WorkingSetEnumerator` that
+answers `currentSyncAnchor`/`enumerateChanges` from it and pages the app's
+cached listings for `enumerateItems`, and an `EmptyEnumerator` for
+`.trashContainer`; both identifiers refused by the app on every phone-facing
+request. The app signals the working set on a delta (coalesced to two a second)
+and logs the completion's error domain/code; the extension and the domain
+controller no longer signal containers. `FilesWatchSet` keeps a touched folder
+for ten minutes after the last touch, at most 64 (LRU), unit tested with an
+injected clock; `PD_FILES_WATCH_TTL` shortens the TTL for the host check. A big
+folder is enumerated in 250-item batches with the page cursor carrying the
+offset (`b<offset>@<phone page>`) and the phone page cached, and the id-map JSON
+is written once per quarter second instead of once per item.
+Checks: K2 849/0; host `files-watch` 29/0 (working-set updates with the real
+parent, a delete, `.workingSet`/`.trashContainer` no phone traffic, 65 folders
+→ 64, TTL → `watch off`); regressions `files-write` 24/0, `files-bridge` 24/0,
+`files` 8/0.
+
+**VM (round 3).** Session 1: 49 of 54. The 1500-entry folder listed **all 1500
+names** (round 2's `many lists 0 names` is fixed by the 250-item batches), and
+the working-set enumerator answered a full scan after an expired anchor (1547
+cached items, two pages). The phone-side create and rename still did not reach
+the mount, and the run's log showed why: the app logged `bridge: signal
+containers` but never `domain: signal working set`, because the controller's
+signal guarded on the stored setting while `--files-domain add` adopts a domain
+without it. Fixed after the run (`enabled || addedLocally`, with a unit test for
+the adopted case; K2 849/0, host `files-watch` 29/0 again). Session 2 was meant
+to prove the fix end to end; the memory watchdog stopped the VM four minutes in
+(swap 5.4 GB, free 16%), which spends the round's second boot, so there was no
+third session. **Unverified:** "with no extension process running, a phone-side
+create reaches the mount within 10 s" — the fix is unit-tested and the host wire
+is green, but the system's response to the working-set signal was not observed.
+The next VM round (or the real-phone pass) must run that step. Session 2 reused
+the run directory (`vm-e2e.sh` clears it at start), so session 1's work
+directory — including its Finder screenshots — is gone; the two console logs are
+in `macos/build/vm-e2e/files-s5r3/`.
 
    fallback) + `fs.watch`/`fs.changes`; the platform seam lets the JVM test drive a fake watch
    source. Mac: `enumerateChanges`/`currentSyncAnchor` + `signalEnumerator` from the bridge.
