@@ -61,6 +61,9 @@ class DeckService(private val appContext: Context?) :
     @Volatile private var batteryPercent = 0
     @Volatile private var batteryCharging = false
 
+    /** The phone's DND, shared by every session (docs/design/focus.md). */
+    private var zen: ZenControl? = null
+
     /** The live state watcher of the current session, if any. */
     @Volatile private var stateWatcher: AndroidDeviceState? = null
 
@@ -84,6 +87,10 @@ class DeckService(private val appContext: Context?) :
         val launcher = AndroidLauncher(shell, ::log)
         val power = AndroidPower(base, ::log)
         this.power = power
+        // One zen memory for the whole service: a session ending must not make
+        // PocketDeck forget that it owns the phone's DND.
+        val zenControl = ZenControl(AndroidZenSettings(base, ::log), ShellZenSetter(::log), ::log)
+        zen = zenControl
         val titles = AndroidWindowObserver(shell, ::log)
         val uids = AppUids(base, ::log)
         val audio = AudioCapture(shell, ::log, uids::uidOf)
@@ -140,6 +147,7 @@ class DeckService(private val appContext: Context?) :
                     override fun start(seconds: Int) = sendToApp { it.onRing(seconds) }
                     override fun stop() = sendToApp { it.onRingStop() }
                 },
+                zen = zenControl,
                 tlsView = Session.TlsView.from(socket).also { view ->
                     // K4/e2e evidence, hashes only, debug builds only: the
                     // platform stack really backs the v2 pairing
@@ -320,14 +328,17 @@ class DeckService(private val appContext: Context?) :
         )
     }
 
-    override fun state(): DeviceState = DeviceState(isLocked(), batteryPercent, batteryCharging)
+    override fun state(): DeviceState =
+        DeviceState(isLocked(), batteryPercent, batteryCharging, zen?.current())
 
     /** Event-driven updates; null when the service has no context to register with. */
     override fun subscribeState(onChange: (DeviceState) -> Unit): AutoCloseable? {
         val base = appContext ?: return null
         val watcher = AndroidDeviceState(base, { batteryPercent to batteryCharging }, ::log)
         stateWatcher = watcher
-        return runCatching { watcher.start(onChange) }
+        // Every state build reads zen_mode: the state the person sees always
+        // names the DND as it is at that moment.
+        return runCatching { watcher.start { state -> onChange(state.copy(dnd = zen?.current())) } }
             .onFailure { stateWatcher = null }
             .getOrNull()
     }

@@ -25,7 +25,43 @@ data class DeviceInfo(
     val locked: Boolean,
 )
 
-data class DeviceState(val locked: Boolean, val battery: Int, val charging: Boolean)
+data class DeviceState(val locked: Boolean, val battery: Int, val charging: Boolean, val dnd: DndMode? = null)
+
+/**
+ * The phone's Do Not Disturb mode, named as the wire names it
+ * (docs/PROTOCOL.md "Focus and Do Not Disturb"). [zen] is the value of
+ * `Settings.Global.zen_mode`.
+ */
+enum class DndMode(val wire: String, val zen: Int) {
+    OFF("off", 0),
+    PRIORITY("priority", 1),
+    NONE("none", 2),
+    ALARMS("alarms", 3),
+    ;
+
+    companion object {
+        fun fromWire(value: String?): DndMode? = entries.firstOrNull { it.wire == value }
+
+        /** An unknown zen value is read as off: nothing is changed by guessing. */
+        fun fromZen(value: Int): DndMode = entries.firstOrNull { it.zen == value } ?: OFF
+    }
+}
+
+/** Reads the phone's zen mode; null when this build cannot read it. */
+interface ZenSettings {
+    fun read(): DndMode?
+
+    /**
+     * Delivers mode changes made by the person (and our own). Null when the
+     * shell UID cannot register an observer on this build; the caller polls.
+     */
+    fun listen(onChange: (DndMode?) -> Unit): AutoCloseable?
+}
+
+/** Runs `cmd notification set_dnd <mode>` at shell UID; false when the phone refused. */
+fun interface ZenSetter {
+    fun set(mode: DndMode): Boolean
+}
 
 /** What a window shows: an app on its own virtual display, or a mirror of the phone's screen. */
 sealed class WindowContent {
