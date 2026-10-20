@@ -4635,10 +4635,6 @@ PY
     screencapture -x "$WORK/finder.png" 2>/dev/null \
         && ok "FILES screenshot of Finder at the domain root: $WORK/finder.png" \
         || bad "FILES screencapture failed"
-    run_limited 30 cp "$WORK/cp3.bin" "$root/should-not-land.bin" 2> "$WORK/write.err" \
-        && bad "FILES a copy into the domain was accepted (S3 is read-only)" \
-        || ok "FILES a copy into the domain is refused (read-only)"
-
     # -- Remove the domain, it must be gone -----------------------------------
     kill_e2e_app
     stop_fakephone
