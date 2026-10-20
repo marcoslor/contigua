@@ -87,49 +87,14 @@ final class BarContrastTests: XCTestCase {
     private let barWidth: CGFloat = 900
     private let barHeight = HeaderBar.buttonHeight
 
-    private final class BackdropView: NSView {
-        enum Kind { case white, black, busy }
-        let kind: Kind
-        init(kind: Kind, frame: NSRect) {
-            self.kind = kind
-            super.init(frame: frame)
-        }
-        @available(*, unavailable)
-        required init?(coder: NSCoder) { fatalError() }
-
-        override func draw(_ dirtyRect: NSRect) {
-            switch kind {
-            case .white:
-                NSColor.white.setFill()
-                bounds.fill()
-            case .black:
-                NSColor.black.setFill()
-                bounds.fill()
-            case .busy:
-                // Saturated quadrants and stripes: the bright, noisy frame that
-                // made bare symbols disappear.
-                let colors: [NSColor] = [.white, .black, .systemRed, .systemCyan, .systemYellow, .systemBlue]
-                let w = bounds.width / CGFloat(colors.count)
-                for (index, color) in colors.enumerated() {
-                    color.setFill()
-                    NSRect(x: CGFloat(index) * w, y: 0, width: w, height: bounds.height).fill()
-                }
-                NSColor.white.setFill()
-                for x in stride(from: 0, to: bounds.width, by: 12) {
-                    NSRect(x: x, y: 0, width: 3, height: bounds.height).fill()
-                }
-            }
-        }
-    }
-
     private func actions() -> [HeaderAction] {
         [.back {}, .home {}, .recents {}]
     }
 
-    private func render(kind: BackdropView.Kind, material: HeaderBar.Material,
+    private func render(kind: NFRBackdropView.Kind, material: HeaderBar.Material,
                         symbols: Bool) -> NSBitmapImageRep {
         let container = NSView(frame: NSRect(x: 0, y: 0, width: barWidth, height: barHeight))
-        let backdrop = BackdropView(kind: kind, frame: container.bounds)
+        let backdrop = NFRBackdropView(kind: kind, frame: container.bounds)
         container.addSubview(backdrop)
         let width = HeaderBar.rowWidth(actions())
         let bar = HeaderBarView(frame: NSRect(x: barWidth - HeaderBar.rightInset - width, y: 0,
@@ -142,23 +107,7 @@ final class BarContrastTests: XCTestCase {
             bar.subviews.compactMap { $0 as? HeaderActionButton }.forEach { $0.removeFromSuperview() }
         }
         container.addSubview(bar)
-        container.layoutSubtreeIfNeeded()
-        guard let rep = container.bitmapImageRepForCachingDisplay(in: container.bounds) else {
-            fatalError("no bitmap")
-        }
-        container.cacheDisplay(in: container.bounds, to: rep)
-        return rep
-    }
-
-    private func luminance(_ color: NSColor) -> Double {
-        guard let srgb = color.usingColorSpace(.sRGB) ?? color.usingColorSpace(.deviceRGB) else { return 0 }
-        func channel(_ value: CGFloat) -> Double {
-            let v = Double(value)
-            return v <= 0.03928 ? v / 12.92 : pow((v + 0.055) / 1.055, 2.4)
-        }
-        return 0.2126 * channel(srgb.redComponent)
-            + 0.7152 * channel(srgb.greenComponent)
-            + 0.0722 * channel(srgb.blueComponent)
+        return NFROffscreen.render(container, size: container.bounds.size)
     }
 
     /// The glyph's own pixels in the mask render: magenta, not the capsule or
@@ -168,12 +117,7 @@ final class BarContrastTests: XCTestCase {
         return srgb.redComponent > 0.5 && srgb.blueComponent > 0.5 && srgb.greenComponent < 0.35
     }
 
-    private func ratio(_ a: Double, _ b: Double) -> Double {
-        let high = max(a, b), low = min(a, b)
-        return (high + 0.05) / (low + 0.05)
-    }
-
-    private func assertContrast(_ dark: Bool, backdrop: BackdropView.Kind,
+    private func assertContrast(_ dark: Bool, backdrop: NFRBackdropView.Kind,
                                 file: StaticString = #filePath, line: UInt = #line) {
         let material = HeaderBar.material(dark: dark)
         // The glyph mask comes from a render with an unmistakable ink (so the
@@ -183,7 +127,7 @@ final class BarContrastTests: XCTestCase {
         maskMaterial.symbol = .magenta
         let masked = render(kind: backdrop, material: maskMaterial, symbols: true)
         let bare = render(kind: backdrop, material: material, symbols: false)
-        let inkLum = luminance(material.symbol)
+        let inkLum = NFRContrast.relativeLuminance(material.symbol)
         var worst = Double.infinity
         var inkPixels = 0
         for x in 0..<masked.pixelsWide {
@@ -191,7 +135,7 @@ final class BarContrastTests: XCTestCase {
                 guard let mask = masked.colorAt(x: x, y: y), let background = bare.colorAt(x: x, y: y),
                       isMaskColor(mask) else { continue }
                 inkPixels += 1
-                worst = min(worst, ratio(inkLum, luminance(background)))
+                worst = min(worst, NFRContrast.ratio(inkLum, NFRContrast.relativeLuminance(background)))
             }
         }
         XCTAssertGreaterThan(inkPixels, 40, "the render drew no symbols", file: file, line: line)
@@ -203,7 +147,7 @@ final class BarContrastTests: XCTestCase {
 
     func testSymbolsKeepThreeToOneOverWhiteBlackAndBusyFrames() {
         for dark in [false, true] {
-            for backdrop in [BackdropView.Kind.white, .black, .busy] {
+            for backdrop in [NFRBackdropView.Kind.white, .black, .busy] {
                 assertContrast(dark, backdrop: backdrop)
             }
         }

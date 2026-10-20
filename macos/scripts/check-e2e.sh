@@ -774,6 +774,24 @@ lit_screenshot() {
 
 count_events() { grep -c "$1" "$WORK/events.jsonl" 2>/dev/null || echo 0; }
 
+# fake_counter writes|input — the fake phone's cumulative counter (the newest
+# `counters` event). 0 before the phone has seen anything. A read-only flow's
+# side effects are the difference between two reads (docs/NFR.md).
+fake_counter() {
+    python3 - "$WORK/events.jsonl" "$1" <<'PY'
+import json, sys
+value = 0
+for line in open(sys.argv[1], errors="replace"):
+    try:
+        event = json.loads(line)
+    except ValueError:
+        continue
+    if event.get("ev") == "counters":
+        value = event.get(sys.argv[2], value)
+print(int(value))
+PY
+}
+
 # --- C3: QR pairing -------------------------------------------------------
 
 # check_qr — the Mac shows a QR (c/n/f/s), the phone "scans" it (--qr-uri),
