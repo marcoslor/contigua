@@ -238,9 +238,10 @@ class Session(
             "battery" to state.battery,
             "charging" to state.charging,
         )
-        // Absent (not null) for a phone that cannot read its zen mode / ringer.
+        // Absent (not null) for a phone that cannot read its zen mode / ringer / screen.
         state.dnd?.let { message["dnd"] = it.wire }
         state.ringer?.let { message["ringer"] = it.wire }
+        state.screen?.let { message["screen"] = it.wire }
         sendJson(message)
     }
 
@@ -780,6 +781,7 @@ class Session(
                 "phone.ring.stop" -> onPhoneRingStop()
                 "phone.dnd" -> onPhoneDnd(obj)
                 "phone.ringer" -> onPhoneRinger(obj)
+                "phone.wake" -> onPhoneWake()
                 else -> logOnce("unknown message '$t'")
             }
         } catch (e: Throwable) {
@@ -1278,6 +1280,21 @@ class Session(
             RingerControl.Result.UNREADABLE ->
                 sendError("unsupported", "phone.ringer cannot read the ringer mode", 0)
         }
+    }
+
+    /**
+     * `phone.wake` (docs/PROTOCOL.md "Phone screen"): wake display 0 once, never
+     * unlocking it. The outcome is logged by name; the answer is the state the
+     * phone reports afterwards, which carries the `screen` the panel is in.
+     */
+    private fun onPhoneWake() {
+        val result = power.wakeScreen()
+        log("phone.wake ${result.wire}")
+        // The display changes a moment after the wake; the listener sends the
+        // real transition. This answer is the state as it is now.
+        val fresh = device.state()
+        val state = (stateTracker.current ?: fresh).copy(screen = fresh.screen)
+        if (!stateTracker.update(state)) sendState(state)
     }
 
     /**

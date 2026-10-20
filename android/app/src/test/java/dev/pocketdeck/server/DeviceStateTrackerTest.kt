@@ -68,6 +68,17 @@ class DeviceStateTrackerTest {
     }
 
     @Test
+    fun `the screen changing sends one state and keeps the other fields`() {
+        tracker.update(DeviceState(true, 80, true, screen = ScreenState.ON))
+        tracker.onScreenChanged(ScreenState.OFF)
+        tracker.onScreenChanged(ScreenState.OFF)
+        assertEquals(2, emitted.size)
+        assertEquals(DeviceState(true, 80, true, screen = ScreenState.OFF), emitted.last())
+        tracker.onScreenChanged(ScreenState.ON)
+        assertEquals(DeviceState(true, 80, true, screen = ScreenState.ON), emitted.last())
+    }
+
+    @Test
     fun `events keep the fields they do not carry`() {
         tracker.update(DeviceState(true, 80, true))
         tracker.onLockChanged(false)

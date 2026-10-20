@@ -89,6 +89,9 @@ class FakePlatform : DisplayLayer, AppCatalog, Launcher, Injector, Power, Device
     var launchResult = true
     var deviceInfo = DeviceInfo("dev1", "Pixel", "Pixel 9", 36, 1080, 2340, 450, true)
     var deviceState = DeviceState(true, 55, false)
+    val wakeCalls = CopyOnWriteArrayList<WakeResult>()
+    var wakeResult = WakeResult.OK
+    var onWake: (() -> Unit)? = null
     var video: CannedVideo? = null
     var onPairingRequestHandler: ((PairingReq) -> Unit)? = null
 
@@ -206,6 +209,12 @@ class FakePlatform : DisplayLayer, AppCatalog, Launcher, Injector, Power, Device
     }
 
     override fun onSessionEnded() = Unit
+
+    override fun wakeScreen(): WakeResult {
+        wakeCalls.add(wakeResult)
+        onWake?.invoke()
+        return wakeResult
+    }
 
     // ---- DeviceSource -------------------------------------------------
 
