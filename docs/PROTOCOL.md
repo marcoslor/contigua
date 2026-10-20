@@ -492,6 +492,8 @@ Mac → phone:
 |---|---|---|
 | `notify.enable` | `on` | the Mac's per-phone opt-in; the phone answers `notify.state` |
 | `notify.open` | `id`, `target` (`window`/`phone`), `stream` (window only) | a banner click: run that forwarded notification's own action |
+| `notify.action` | `id`, `i`, `text`? | press that forwarded notification's advertised action; `text` only for a reply action |
+| `notify.dismiss` | `id` | clear that forwarded notification on the phone |
 | `media.command` | `action`: `play`/`pause`/`next`/`prev` | drive the phone's playing session |
 
 Phone → Mac:
@@ -499,9 +501,18 @@ Phone → Mac:
 | t | fields |
 |---|---|
 | `notify.state` | `on` — forwarding is live (both gates) |
-| `notify.post` | `id`, `pkg`, `app`?, `when`, `title`?, `text`?, `ongoing`? |
+| `notify.post` | `id`, `pkg`, `app`?, `when`, `title`?, `text`?, `ongoing`?, `actions`? |
 | `notify.remove` | `id` |
 | `media.state` | `playing`, `pkg`?, `title`?, `artist`?, `album`?, `durationMs`?, `positionMs`, `rate` |
+
+`actions` is an array of up to 3 `{"i": <index in the phone's Notification.actions>,
+"title": "≤ 64 chars", "reply": true?}`; `reply` marks an action with a free-form RemoteInput.
+A Mac that does not know the field ignores it. `notify.action` names only an id the phone
+issued and an advertised index (0–2); its `text` is at most 4 KiB and is refused on a
+non-reply action or over the cap. The phone answers nothing: the app's own update/removal
+comes back as `notify.post`/`notify.remove`. An id or index it does not hold logs
+`notify.action unknown` without the text. `notify.dismiss` cancels the phone's notification
+(the listener calls `cancelNotification`), skipping ongoing and no-clear ones.
 
 `notify.open` carries only an id the phone issued in `notify.post`: the Mac
 never sends an intent, a package or a component. `target: window` names the
