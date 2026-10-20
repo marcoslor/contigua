@@ -329,6 +329,58 @@ one C1 emulator boot are at the end of this section.
   (C0b's P4 note); the emulator's synthetic camera is not a measure of a real
   camera's fps or keyframe timing.
 
+## C2 implementation notes
+
+The "Phone Camera" window: the phone's camera in a normal Mac window, decoded
+by the same H.264 path as every stream window. No extension, no Mac camera API.
+
+- **Entry points.** "Phone Camera" in the menu bar extra and in the app's
+  phone/Window menu next to Phone Window and Continue on Mac; ⌥⌘C (free at the
+  time of writing). Both are enabled only while a phone session is up. One
+  camera window per session: picking it again brings the existing one forward.
+- **Window.** `CameraWindowController`, a `StreamWindowController` subclass
+  (the LinkWindow/HandoffWindow pattern). Title "Phone Camera — <phone name>".
+  Opening it sends `cam.list`, then `cam.start` on the stream id the window
+  allocator gave the window, with the default back camera at 1280×720@30.
+  Closing it sends `cam.stop`. The window's aspect follows the stream's size
+  once the first keyframe names it (the camera sends no `VIDEO_CONFIG`; the
+  first keyframe carries SPS+PPS and the decoder learns the format from it).
+  A camera window takes no touch, keyboard or hover input: the video is not an
+  Android surface. Live Text and ⌘C copy of the frame work through the shared
+  stream-window path, unchanged.
+- **Camera choice.** When `cam.cams` lists more than one camera, a bar button
+  (front/back) switches by `cam.stop` on the old stream and `cam.start` with
+  the other camera's id on a freshly allocated stream id. With one camera the
+  button is hidden.
+- **States** (a centred message over the last frame or the black placeholder;
+  no retry button means nothing restarts the capture on its own):
+
+  | state | message | button |
+  |---|---|---|
+  | `off` | Camera sharing is off on your phone. Turn on "Let Macs use the camera" in PocketDeck on the phone. | Try Again |
+  | `busy` | The phone's camera is in use by another Mac window. | — |
+  | `evicted` | Your phone's camera app is using the camera. | Try Again |
+  | `locked`, `disabled` | The phone's camera is not available right now. | Try Again |
+  | `error`, unknown `cam.*` (an older phone) | This phone can't share its camera. Update PocketDeck on the phone. | — |
+  | `streaming`, no frame yet | (spinner) | — |
+  | session end | Phone disconnected | — |
+
+  "Try Again" sends `cam.start` again, on a new stream id, only when clicked.
+  A person's own camera app always wins: after `evicted` nothing is restarted.
+  An unknown-request phone is detected by `cam.list` going unanswered; that is
+  the unsupported message, without a retry button.
+- **Debug hooks** (`--debug-control`, debug builds only): `camera open`,
+  `camera close`, `camera retry`, `camera switch`. The window writes
+  `camera window: state=<s> frames=<n> size=<w>x<h>` to stderr on every state
+  change and twice a second while it is open; the e2e checks read those lines.
+- **No Mac camera, ever.** The app target contains no AVCaptureDevice,
+  AVCaptureSession or CoreMediaIO code, no camera extension and no
+  NSCameraUsageDescription, so it can never raise the macOS camera permission
+  prompt; the window only decodes H.264 the phone sends. A K2 test
+  (`NoMacCameraTests`) greps the app target's sources and Info.plist and fails
+  on those names, and the `cam-window` e2e check greps the built bundle's
+  binary and Info.plist for the same.
+
 ## Slices
 
 
