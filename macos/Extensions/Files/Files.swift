@@ -815,11 +815,31 @@ final class FilesExtension: NSObject, NSFileProviderReplicatedExtension {
         progress.totalUnitCount = Int64(max(upload.size, 1))
         progress.cancellationHandler = { state.cancel() }
         work.async {
-            let request = BridgeRequest.create(id: 1, request: BridgeCreate(
-                parent: parent, name: name, dir: false,
-                size: upload.size, sha256: upload.sha256))
-            let result = self.upload(request, url: url, announced: upload,
+            // A name taken on the phone (a photo taken since the listing) is
+            // resolved here, not by the system: a POSIX copy is not replayed
+            // with a new name by every client, and S4's VM run left such a copy
+            // pending forever. The next free name is our own create.
+            var result: Result<FileItem, FilesFailure> = .failure(.exists)
+            for attempt in 0...FilesConflict.maxAttempts {
+                let candidate: String
+                if attempt == 0 {
+                    candidate = name
+                } else if let next = FilesConflict.collisionName(for: name, attempt: attempt) {
+                    candidate = next
+                } else {
+                    break
+                }
+                let request = BridgeRequest.create(id: 1, request: BridgeCreate(
+                    parent: parent, name: candidate, dir: false,
+                    size: upload.size, sha256: upload.sha256))
+                result = self.upload(request, url: url, announced: upload,
                                      progress: progress, state: state)
+                if case .failure(.exists) = result { continue }
+                break
+            }
+            if case .failure(.exists) = result {
+                log.notice("create: no free name after \(FilesConflict.maxAttempts, privacy: .public) tries")
+            }
             self.report(result, progress: progress) { item in
                 completionHandler(ProviderItem(item), [], false, nil)
             } failure: { failure in

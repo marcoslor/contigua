@@ -397,6 +397,18 @@ final class FilesConflictTests: XCTestCase {
         XCTAssertEqual(".gitignore (from Mac)", FilesConflict.name(for: ".gitignore"))
     }
 
+    func testACollectedCreateGetsTheNextFreeName() {
+        XCTAssertEqual("a 2.jpg", FilesConflict.collisionName(for: "a.jpg", attempt: 1))
+        XCTAssertEqual("a 3.jpg", FilesConflict.collisionName(for: "a.jpg", attempt: 2))
+        XCTAssertEqual("a 21.jpg", FilesConflict.collisionName(for: "a.jpg", attempt: 20))
+        XCTAssertEqual("report 2.pdf", FilesConflict.collisionName(for: "report.pdf", attempt: 1))
+        XCTAssertEqual("README 2", FilesConflict.collisionName(for: "README", attempt: 1))
+        XCTAssertEqual("archive.tar 2.gz",
+                       FilesConflict.collisionName(for: "archive.tar.gz", attempt: 1))
+        XCTAssertNil(FilesConflict.collisionName(for: "a.jpg", attempt: 0))
+        XCTAssertNil(FilesConflict.collisionName(for: "a.jpg", attempt: 21))
+    }
+
     func testTheNumberedRetryStopsAtTwenty() {
         // Attempt 1 is the plain copy; 2…20 are numbered; there is no 21st.
         XCTAssertEqual("a (from Mac).jpg", FilesConflict.candidate(for: "a.jpg", attempt: 1))

@@ -857,6 +857,18 @@ enum FilesConflict {
         return "\(base) (from Mac \(attempt))\(suffix)"
     }
 
+    /// A create that landed on a taken name gets the next free one: `name 2.ext`,
+    /// `name 3.ext`, … (`attempt` 1 is the first rename). nil past the cap, when
+    /// the extension answers `filenameCollision` and gives up.
+    static func collisionName(for name: String, attempt: Int) -> String? {
+        guard attempt >= 1, attempt <= maxAttempts else { return nil }
+        let ns = name as NSString
+        let ext = ns.pathExtension
+        let base = ns.deletingPathExtension
+        let suffix = ext.isEmpty ? "" : ".\(ext)"
+        return "\(base) \(attempt + 1)\(suffix)"
+    }
+
     /// The first candidate the listing says is free; nil when all are taken.
     static func name(for name: String, taken: (String) -> Bool = { _ in false }) -> String? {
         for attempt in 1...maxAttempts {

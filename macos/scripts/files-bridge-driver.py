@@ -289,6 +289,169 @@ class Bridge(object):
                 return (code, before or 0, chunks, 0, "")
 
 
+def watch_folders(bridge, items, on):
+    return bridge.reply({"t": "watch", "id": bridge.new_id(), "items": items, "on": on})
+
+
+def sync_anchor(bridge, item):
+    reply = bridge.reply({"t": "anchor", "id": bridge.new_id(), "item": item})
+    return reply.get("anchor") if reply.get("t") == "anchor" else None
+
+
+def change_set(bridge, item, anchor):
+    request = {"t": "changes", "id": bridge.new_id(), "item": item}
+    if anchor:
+        request["from"] = anchor
+    return bridge.reply(request)
+
+
+def wait_signal(bridge, timeout):
+    """The next `changed` push, or None after [timeout] seconds."""
+    deadline = time.time() + timeout
+    previous = bridge.sock.gettimeout()
+    try:
+        while True:
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                return None
+            bridge.sock.settimeout(remaining)
+            try:
+                kind, obj = bridge.frame()
+            except socket.timeout:
+                return None
+            if kind != "json":
+                continue
+            if obj.get("t") == "changed":
+                return obj
+    finally:
+        bridge.sock.settimeout(previous)
+
+
+def drain_signals(bridge, seconds):
+    """Drops signals already on the wire; returns how many there were."""
+    count = 0
+    deadline = time.time() + seconds
+    while True:
+        remaining = deadline - time.time()
+        if remaining <= 0:
+            return count
+        if wait_signal(bridge, remaining) is None:
+            return count
+        count += 1
+
+
+def write_file(path, data):
+    with open(path, "wb") as handle:
+        handle.write(data)
+        handle.flush()
+        os.fsync(handle.fileno())
+
+
+def phase_watch(bridge, root):
+    """Phone-side changes reach the Mac: the open folder is watched, moves in
+    it arrive as a signal within 3 s plus a delta (create, edit, rename by ino,
+    delete), an unwatched folder says nothing, and closing the folder stops it.
+    """
+    hello = bridge.hello()
+    report(hello.get("connected") is True, "WATCH hello: connected")
+    a = item_id(bridge, "A")
+    b = item_id(bridge, "B")
+    report(bool(a) and bool(b), "WATCH the fake tree has folders A and B")
+    if not a or not b:
+        return
+    _, baseline = bridge.list_item_all(a)
+    anchor = sync_anchor(bridge, a)
+    report(anchor is not None, "WATCH the open folder has a baseline and an anchor (%d items)"
+           % len(baseline))
+    if anchor is None:
+        return
+    reply = watch_folders(bridge, [a], True)
+    report(reply.get("t") == "ok", "WATCH opening the folder watches it on the phone")
+
+    # Nothing is watched but A: a move in B sends nothing.
+    write_file(os.path.join(root, "B", "b1.txt"), b"b\n")
+    report(wait_signal(bridge, 1.5) is None,
+           "WATCH a change in an unwatched folder sends nothing")
+
+    current = anchor
+    one = None
+    write_file(os.path.join(root, "A", "one.txt"), b"one\n")
+    signal = wait_signal(bridge, 3.0)
+    report(signal is not None and a in (signal.get("items") or []),
+           "WATCH a create in the open folder signals within 3 s")
+    reply = change_set(bridge, a, current)
+    items = reply.get("items") or [] if reply.get("t") == "changes" else []
+    match = [entry for entry in items if entry.get("name") == "one.txt"]
+    report(reply.get("t") == "changes" and reply.get("expired") is False and len(match) == 1,
+           "WATCH the change set carries the created file as an add")
+    if not match:
+        return
+    one = match[0]
+    current = reply.get("anchor") or current
+
+    write_file(os.path.join(root, "A", "one.txt"), b"one edited\n" * 2)
+    wait_signal(bridge, 3.0)
+    reply = change_set(bridge, a, current)
+    items = reply.get("items") or [] if reply.get("t") == "changes" else []
+    match = [entry for entry in items if entry.get("id") == one["id"]]
+    report(len(match) == 1 and match[0].get("etag") != one.get("etag")
+           and match[0].get("size") != one.get("size"),
+           "WATCH an edit is an update of the same id with a new etag")
+    current = reply.get("anchor") or current
+
+    os.rename(os.path.join(root, "A", "one.txt"), os.path.join(root, "A", "one-renamed.txt"))
+    wait_signal(bridge, 3.0)
+    reply = change_set(bridge, a, current)
+    items = reply.get("items") or [] if reply.get("t") == "changes" else []
+    deleted = reply.get("deleted") or []
+    match = [entry for entry in items if entry.get("id") == one["id"]]
+    report(len(match) == 1 and match[0].get("name") == "one-renamed.txt"
+           and one["id"] not in deleted,
+           "WATCH a rename keeps the id and reports the new name")
+    current = reply.get("anchor") or current
+
+    os.unlink(os.path.join(root, "A", "one-renamed.txt"))
+    wait_signal(bridge, 3.0)
+    reply = change_set(bridge, a, current)
+    report(reply.get("t") == "changes" and one["id"] in (reply.get("deleted") or []),
+           "WATCH a delete is reported as the id that is gone")
+    current = reply.get("anchor") or current
+
+    # Our own write through the bridge: one change, never a storm.
+    drain_signals(bridge, 1.0)
+    data = b"from the Mac\n"
+    reply = bridge.create_item(a, "two.txt", data)
+    seen = 0
+    deadline = time.time() + 3.0
+    while time.time() < deadline:
+        signal = wait_signal(bridge, deadline - time.time())
+        if signal is None:
+            break
+        if a in (signal.get("items") or []):
+            seen += 1
+    report(create_ok(reply, len(data)) and seen <= 1,
+           "WATCH the Mac's own create signals at most once (%d)" % seen)
+
+    reply = watch_folders(bridge, [a], False)
+    report(reply.get("t") == "ok", "WATCH closing the folder unwatches it")
+    drain_signals(bridge, 1.0)
+    write_file(os.path.join(root, "A", "after.txt"), b"after\n")
+    report(wait_signal(bridge, 1.5) is None,
+           "WATCH a change after the folder closed sends nothing")
+
+
+def phase_hold(bridge, root):
+    """Watches the folder and stays; the check kills this process to prove the
+    app drops the watch when its client goes away."""
+    hello = bridge.hello()
+    a = item_id(bridge, "A")
+    reply = watch_folders(bridge, [a], True)
+    report(hello.get("connected") is True and reply.get("t") == "ok",
+           "WATCH holding the folder open")
+    while True:
+        time.sleep(1)
+
+
 def item_id(bridge, path):
     """The identifier of a relative path, walking the tree by name (the app
     resolves identifiers, so this is what the extension does not have to do)."""
@@ -488,6 +651,15 @@ def conflict_candidate(name, attempt):
     return base + label + suffix
 
 
+def collision_candidate(name, attempt):
+    """The extension's FilesConflict.collisionName: attempt 1 is `<name> 2.ext`."""
+    base, dot, ext = name.rpartition(".")
+    if not dot or not base:
+        base, ext = name, ""
+    suffix = "." + ext if ext else ""
+    return "%s %d%s" % (base, attempt + 1, suffix)
+
+
 CONFLICT_ATTEMPTS = 20
 
 
@@ -637,12 +809,25 @@ def phase_write(bridge, root):
         handle.write(taken_bytes)
         handle.flush()
         os.fsync(handle.fileno())
-    reply = bridge.create_item(".rootContainer", "taken.bin", b"the Mac's version\n")
+    mac_bytes = b"the Mac's version\n"
+    reply = bridge.create_item(".rootContainer", "taken.bin", mac_bytes)
     report(reply.get("t") == "error" and reply.get("code") == "fs_exists"
            and sha_file(taken_path) == hashlib.sha256(taken_bytes).hexdigest(),
            "WRITE a create onto an existing name answers fs_exists and keeps its bytes (%s)"
            % reply.get("code"))
+    # The extension resolves the collision itself under the phone's next free
+    # name (FilesConflict.collisionName); the original is untouched.
+    free = collision_candidate("taken.bin", 1)
+    free_path = on_disk(root, free)
+    reply = bridge.create_item(".rootContainer", free, mac_bytes)
+    report(create_ok(reply, len(mac_bytes)) and os.path.exists(free_path)
+           and sha_file(free_path) == hashlib.sha256(mac_bytes).hexdigest()
+           and sha_file(taken_path) == hashlib.sha256(taken_bytes).hexdigest(),
+           "WRITE the collision copy lands as <name> 2.<ext>, the phone's file unchanged (%s)"
+           % name_hash(free))
     os.unlink(taken_path)
+    if os.path.exists(free_path):
+        os.unlink(free_path)
 
     # A delete names the version it removes; the phone checks it right before
     # deleting, so a change made since the Mac's last look is not lost.
@@ -716,12 +901,31 @@ def main():
     parser.add_argument("--work", required=True)
     parser.add_argument("--fake-err", default=None)
     parser.add_argument("--fake-pid", type=int, default=None)
-    parser.add_argument("--phase", choices=["online", "offline", "write", "kill"], required=True)
+    parser.add_argument("--phase", choices=["online", "offline", "write", "kill", "watch", "hold"],
+                        required=True)
     args = parser.parse_args()
 
     if args.phase == "offline":
         check_offline(args.socket)
         return 0
+    if args.phase in ("watch", "hold"):
+        try:
+            bridge = Bridge(args.socket, timeout=60.0)
+        except OSError as error:
+            report(False, "WATCH cannot connect to the bridge socket (%s)" % error)
+            return 1
+        try:
+            if args.phase == "watch":
+                phase_watch(bridge, args.root)
+            else:
+                phase_hold(bridge, args.root)
+        except (BridgeError, socket.timeout, OSError) as error:
+            report(False, "WATCH the bridge stopped answering (%s)" % error)
+            return 1
+        finally:
+            bridge.close()
+        return 0
+
     if args.phase in ("write", "kill"):
         try:
             bridge = Bridge(args.socket, timeout=60.0)
