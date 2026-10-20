@@ -16,6 +16,8 @@ object DeckState {
     @Volatile var shizukuGranted: Boolean = false
     @Volatile var port: Int = -1
     @Volatile var connectedMac: String? = null
+    /** The paired client id of [connectedMac]; null when nothing is connected. */
+    @Volatile var connectedClientId: String? = null
     @Volatile var windows: Int = 0
     @Volatile var paired: List<Prefs.PairedMac> = emptyList()
     @Volatile var pending: PendingPairing? = null

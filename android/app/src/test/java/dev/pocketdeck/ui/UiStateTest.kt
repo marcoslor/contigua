@@ -1,5 +1,6 @@
 package dev.pocketdeck.ui
 
+import dev.pocketdeck.app.Prefs
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -89,5 +90,34 @@ class UiStateTest {
     fun `pair step completes on the first pairing`() {
         assertFalse(isOnboardingComplete(OnboardingStep.PAIR, OnboardingInput(false, false, false, false, 0)))
         assertTrue(isOnboardingComplete(OnboardingStep.PAIR, OnboardingInput(false, false, false, false, 1)))
+    }
+
+    @Test
+    fun `only the live client's paired row is connected`() {
+        val rows = listOf(
+            PairedMacUi("a", "Alpha", 10),
+            PairedMacUi("b", "Beta", 20),
+        )
+        assertEquals(listOf(false, true), pairedRows(rows, "b").map { it.connected })
+        assertEquals(listOf(false, false), pairedRows(rows, null).map { it.connected })
+    }
+
+    @Test
+    fun `a session start or end stamps only that Mac`() {
+        val macs = listOf(
+            Prefs.PairedMac("a", "Alpha", "f".repeat(64), 10),
+            Prefs.PairedMac("b", "Beta", "e".repeat(64), 20),
+        )
+        val after = Prefs.stamped(macs, "a", 99)
+        assertEquals(99L, after.first { it.clientId == "a" }.lastConnected)
+        assertEquals(20L, after.first { it.clientId == "b" }.lastConnected)
+    }
+
+    @Test
+    fun `the relative-time ticker wakes on the next whole minute`() {
+        val now = 1_700_000_030_000L
+        assertEquals(10_000L, nextRelativeTick(now) - now)
+        assertEquals(0L, nextRelativeTick(now) % RELATIVE_TICK_MS)
+        assertEquals(60_000L, nextRelativeTick(0L))
     }
 }

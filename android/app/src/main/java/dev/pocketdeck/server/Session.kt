@@ -365,7 +365,7 @@ class Session(
         queue.close()
         runCatching { writerThread?.join(1000) }
         runCatching { socket.close() }
-        if (phase == Phase.READY) runCatching { callback.onSessionChanged(false, null, 0) }
+        if (phase == Phase.READY) runCatching { callback.onSessionChanged(false, clientId.ifEmpty { null }, null, 0) }
     }
 
     private fun writerLoop() {
@@ -718,7 +718,7 @@ class Session(
         // The read timeout only guards the handshake; a live session may be
         // silent for long stretches (static content, no input).
         runCatching { socket.soTimeout = 0 }
-        runCatching { callback.onSessionChanged(true, currentMacName ?: clientName, windowCount()) }
+        runCatching { callback.onSessionChanged(true, clientId, currentMacName ?: clientName, windowCount()) }
         startStateWatch()
         startClipboardSync()
         startClipImagePoll()
@@ -886,7 +886,7 @@ class Session(
             ),
         )
         power.setActiveStreams(activeDisplayIds())
-        runCatching { callback.onSessionChanged(true, currentMacName ?: clientName, windowCount()) }
+        runCatching { callback.onSessionChanged(true, clientId, currentMacName ?: clientName, windowCount()) }
         startStreamWatch()
     }
 
@@ -930,7 +930,7 @@ class Session(
             }
         }
         power.setActiveStreams(activeDisplayIds())
-        runCatching { callback.onSessionChanged(true, currentMacName ?: clientName, windowCount()) }
+        runCatching { callback.onSessionChanged(true, clientId, currentMacName ?: clientName, windowCount()) }
         startStreamWatch()
         notifyAudioWindowsChanged()
     }
@@ -960,7 +960,7 @@ class Session(
         power.setActiveStreams(activeDisplayIds())
         stopAudioIfIdle()
         notifyAudioWindowsChanged()
-        runCatching { callback.onSessionChanged(true, currentMacName ?: clientName, windowCount()) }
+        runCatching { callback.onSessionChanged(true, clientId, currentMacName ?: clientName, windowCount()) }
         log("closed stream $stream (display ${state.displayId})")
     }
 
@@ -2045,7 +2045,7 @@ class Session(
         power.setActiveStreams(activeDisplayIds())
         stopAudioIfIdle()
         notifyAudioWindowsChanged()
-        runCatching { callback.onSessionChanged(true, currentMacName ?: clientName, windowCount()) }
+        runCatching { callback.onSessionChanged(true, clientId, currentMacName ?: clientName, windowCount()) }
         log("closed stream $stream: app exited (display ${state.displayId})")
     }
 

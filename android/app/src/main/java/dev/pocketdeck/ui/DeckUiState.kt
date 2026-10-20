@@ -72,7 +72,13 @@ fun isOnboardingComplete(step: OnboardingStep, input: OnboardingInput): Boolean 
     OnboardingStep.PAIR -> input.pairedCount > 0
 }
 
-data class PairedMacUi(val clientId: String, val name: String, val lastConnected: Long)
+data class PairedMacUi(
+    val clientId: String,
+    val name: String,
+    val lastConnected: Long,
+    /** True while this Mac has a live session; the row then says "Connected now". */
+    val connected: Boolean = false,
+)
 
 data class PendingPairingUi(val requestId: String, val macName: String, val code: String)
 

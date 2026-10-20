@@ -388,7 +388,7 @@ interface DeckCallback {
     /** The request ended without an answer (Mac cancelled, connection lost, timed out). */
     fun onPairingEnded(requestId: String)
     fun onPaired(clientId: String, name: String, keyHex: String)
-    fun onSessionChanged(connected: Boolean, macName: String?, windows: Int)
+    fun onSessionChanged(connected: Boolean, clientId: String?, macName: String?, windows: Int)
 }
 
 /**

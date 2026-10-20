@@ -9,8 +9,8 @@ oneway interface IDeckCallback {
     /** A Mac was paired; the app must persist {clientId,name,macFp} (v2 pins). */
     void onPaired(String clientId, String name, String macFp);
 
-    /** Session state changed: connected, which Mac, how many windows are open. */
-    void onSessionChanged(boolean connected, String macName, int windows);
+    /** Session state changed: connected, which Mac (paired client id and name), how many windows are open. */
+    void onSessionChanged(boolean connected, String clientId, String macName, int windows);
 
     /** The pairing request ended unanswered; the app should dismiss its prompt. */
     void onPairingEnded(String requestId);

@@ -50,7 +50,7 @@ class FakePlatform : DisplayLayer, AppCatalog, Launcher, Injector, Power, Device
     data class KeyCall(val displayId: Int, val action: Int, val keycode: Int, val metaState: Int, val downTime: Long, val eventTime: Long)
     data class HoverCall(val displayId: Int, val action: Int, val nx: Float, val ny: Float)
     data class PairingReq(val requestId: String, val macName: String, val code: String)
-    data class SessionChange(val connected: Boolean, val macName: String?, val windows: Int)
+    data class SessionChange(val connected: Boolean, val clientId: String?, val macName: String?, val windows: Int)
     data class QualityCall(val stream: Int, val bitrate: Int?, val maxFps: Int?)
 
     val opens = CopyOnWriteArrayList<OpenCall>()
@@ -298,7 +298,7 @@ class FakePlatform : DisplayLayer, AppCatalog, Launcher, Injector, Power, Device
         paired.add(PairedClient(clientId, name, macFp))
     }
 
-    override fun onSessionChanged(connected: Boolean, macName: String?, windows: Int) {
-        sessionChanges.add(SessionChange(connected, macName, windows))
+    override fun onSessionChanged(connected: Boolean, clientId: String?, macName: String?, windows: Int) {
+        sessionChanges.add(SessionChange(connected, clientId, macName, windows))
     }
 }
