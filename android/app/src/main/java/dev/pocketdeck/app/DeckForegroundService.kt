@@ -60,8 +60,16 @@ class DeckForegroundService : Service() {
             val key = id ?: return
             // An id the listener did not keep is answered with a null intent so
             // the server can log `notify.open unknown id` (no text).
-            val intent = NotifyIntents.get(key)
+            val intent = NotifyIntents.get(key)?.contentIntent
             ShizukuClient.current()?.openNotification(key, displayId, intent)
+        }
+
+        override fun onNotifyAction(id: String?, index: Int, text: String?) {
+            PdNotificationBridge.actionSink?.invoke(id ?: return, index, text)
+        }
+
+        override fun onNotifyDismiss(id: String?) {
+            PdNotificationBridge.dismissSink?.invoke(id ?: return)
         }
     }
 

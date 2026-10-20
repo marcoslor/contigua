@@ -94,6 +94,10 @@ class Session(
     private val notifyForward: ((Boolean) -> Unit)? = null,
     /** Asks the app for the forwarded notification's action; it answers over AIDL. */
     private val notifyOpen: ((String, Int) -> Unit)? = null,
+    /** `notify.action`: press an advertised action (id, index, reply text). */
+    private val notifyAction: ((String, Int, String?) -> Unit)? = null,
+    /** `notify.dismiss`: clear the forwarded notification on the phone. */
+    private val notifyDismiss: ((String) -> Unit)? = null,
     /** `phone.ring` (docs/PROTOCOL.md "Ring"); null refuses it. */
     private val ringer: Ringer? = null,
     /** The phone's DND, shared by the service (docs/design/focus.md); null refuses `phone.dnd`. */
@@ -755,6 +759,8 @@ class Session(
                 "audio.stop" -> onAudioStop()
                 "notify.enable" -> onNotifyEnable(obj)
                 "notify.open" -> onNotifyOpen(obj, frame)
+                "notify.action" -> onNotifyAction(obj)
+                "notify.dismiss" -> onNotifyDismiss(obj)
                 "media.command" -> onMediaCommand(obj)
                 "phone.ring" -> onPhoneRing(obj)
                 "phone.ring.stop" -> onPhoneRingStop()
@@ -1075,6 +1081,60 @@ class Session(
         open(id, displayId)
     }
 
+    /**
+     * `notify.action`: press one of the actions the phone advertised in
+     * `notify.post`. The shell validates the id, the index and the text cap; the
+     * app process is the one that knows whether the index is a reply action and
+     * logs `notify.action unknown` without the text (docs/design/notify.md).
+     */
+    private fun onNotifyAction(obj: Map<String, Any?>) {
+        if (!notifyForwarding) {
+            logOnce("notify.action dropped (not forwarding)")
+            return
+        }
+        val id = validToken(Json.str(obj["id"]), 64) ?: run {
+            log("notify.action dropped: id")
+            return
+        }
+        val index = Json.long(obj["i"])?.toInt() ?: run {
+            log("notify.action dropped: i")
+            return
+        }
+        if (index < 0 || index > MAX_ACTION_INDEX) {
+            log("notify.action dropped: i")
+            return
+        }
+        val text = Json.str(obj["text"])?.takeIf { it.isNotEmpty() }
+        if (text != null && text.length > NotifyEvents.MAX_REPLY_CHARS) {
+            log("notify.action refused: text cap")
+            return
+        }
+        val action = notifyAction ?: run {
+            logOnce("notify.action dropped (no consumer)")
+            return
+        }
+        action(id, index, text)
+        log("notify.action id=$id i=$index textLen=${text?.length ?: 0}")
+    }
+
+    /** `notify.dismiss`: clear the forwarded notification on the phone. */
+    private fun onNotifyDismiss(obj: Map<String, Any?>) {
+        if (!notifyForwarding) {
+            logOnce("notify.dismiss dropped (not forwarding)")
+            return
+        }
+        val id = validToken(Json.str(obj["id"]), 64) ?: run {
+            log("notify.dismiss dropped: id")
+            return
+        }
+        val dismiss = notifyDismiss ?: run {
+            logOnce("notify.dismiss dropped (no consumer)")
+            return
+        }
+        dismiss(id)
+        log("notify.dismiss id=$id")
+    }
+
     private fun onMediaCommand(obj: Map<String, Any?>) {
         val action = Json.str(obj["action"])
         val command = action?.let { NotifyEvents.validMediaCommand(it) }
@@ -1185,6 +1245,8 @@ class Session(
         val text = Json.str(obj["text"])?.takeIf { it.isNotEmpty() && it.length <= NotifyEvents.MAX_CHARS }
         if (title == null && text == null) return dropNotifyPost("empty content")
         val whenMs = Json.long(obj["when"])?.takeIf { it > 0 }
+        val ongoing = Json.bool(obj["ongoing"]) == true
+        val actions = validActions(obj["actions"])
         val message = LinkedHashMap<String, Any?>()
         message["t"] = "notify.post"
         message["id"] = id
@@ -1192,7 +1254,33 @@ class Session(
         if (title != null) message["title"] = title
         if (text != null) message["text"] = text
         if (whenMs != null) message["when"] = whenMs
+        if (ongoing) message["ongoing"] = true
+        if (actions.isNotEmpty()) message["actions"] = actions
         sendJson(message)
+    }
+
+    /**
+     * Re-validates the `actions` the app process built: an index in the phone's
+     * array, a non-empty capped title, at most three, and `reply` only when true.
+     * A malformed entry is dropped; the rest still go out.
+     */
+    private fun validActions(raw: Any?): List<Map<String, Any?>> {
+        val list = raw as? List<*> ?: return emptyList()
+        val kept = ArrayList<Map<String, Any?>>(NotifyEvents.MAX_ACTIONS)
+        for (entry in list) {
+            if (kept.size == NotifyEvents.MAX_ACTIONS) break
+            val map = entry as? Map<*, *> ?: continue
+            val index = (map["i"] as? Number)?.toInt() ?: continue
+            if (index < 0 || index > MAX_ACTION_INDEX) continue
+            val title = Json.str(map["title"])?.trim()?.take(NotifyEvents.MAX_ACTION_TITLE) ?: continue
+            if (title.isEmpty()) continue
+            val action = LinkedHashMap<String, Any?>()
+            action["i"] = index
+            action["title"] = title
+            if (Json.bool(map["reply"]) == true) action["reply"] = true
+            kept += action
+        }
+        return kept
     }
 
     /** Drops a notification event; the reason names a field, never the content. */
@@ -1841,6 +1929,9 @@ class Session(
 
         /** The phone's own screen: where "Continue on Mac" looks. */
         const val PHONE_DISPLAY_ID = 0
+
+        /** A sanity bound on `notify.action`'s index (the app checks the real set). */
+        const val MAX_ACTION_INDEX = 64
 
         /** The clipboard-image poll: images are user-paced, not sub-second. */
         const val CLIP_IMAGE_POLL_MS = 1_000L

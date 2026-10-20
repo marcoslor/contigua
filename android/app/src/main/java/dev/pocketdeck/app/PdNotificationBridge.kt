@@ -43,6 +43,14 @@ class PdNotificationBridge(private val context: Context) {
         @Volatile
         var mediaSink: ((String) -> Unit)? = null
 
+        /** `notify.action` (id, advertised index, reply text) from the Mac. */
+        @Volatile
+        var actionSink: ((String, Int, String?) -> Unit)? = null
+
+        /** `notify.dismiss` (id) from the Mac. */
+        @Volatile
+        var dismissSink: ((String) -> Unit)? = null
+
         private const val TAG = "PocketDeckApp"
     }
 }

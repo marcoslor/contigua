@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Debug builds only: the test notification poster the emulator/E2E checks
+     drive from adb (docs/design/notify.md). Release builds never see it. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application>
+        <receiver
+            android:name="dev.pocketdeck.app.NotifyDebugPoster"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="dev.pocketdeck.DEBUG_NOTIFY" />
+            </intent-filter>
+        </receiver>
+        <receiver
+            android:name="dev.pocketdeck.app.NotifyDebugResult"
+            android:exported="false" />
+    </application>
+</manifest>
