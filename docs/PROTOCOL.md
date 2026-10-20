@@ -236,6 +236,7 @@ Mac → phone (after `welcome`):
 | `audio.stop` | — | stop device-wide audio |
 | `phone.ring` | `seconds`? | ring the phone (app process, alarm over the lock screen, ≤ 30 s); see "Ring" |
 | `phone.ring.stop` | — | stop a running ring |
+| `phone.dnd` | `mode`: `priority`/`alarms`/`none`/`off` | set the phone's Do Not Disturb (its zen mode) for a Mac Focus or a manual set; see "Focus and Do Not Disturb" |
 | `fs.list` | `id`, `path`, `page`? | children of `path`; `page` is the phone's opaque cursor, absent = first |
 | `fs.stat` | `id`, `path` | one item's metadata |
 | `fs.read` | `id`, `path`, `offset`, `length`, `etag`? | stream `length` bytes from `offset` (`FS_DATA`, then `fs.read.end`); an `etag` that no longer matches answers `fs_stale` |
@@ -252,7 +253,7 @@ Phone → Mac:
 | `window.opened` | `stream`, `displayId`, `w`, `h` — `started`: `"moved"` (default; the task the display shows was moved to it, state kept) or `"fresh"` (the phone couldn't move the task and relaunched the same package; the app's state may be lost) |
 | `window.closed` | `stream`, `reason` (`requested`/`app_exited`/`error`) |
 | `window.title` | `stream`, `label`, `pkg` — top app changed on that display (phone mode) |
-| `state` | `locked`: bool, `battery`: int, `charging`: bool — sent on change |
+| `state` | `locked`: bool, `battery`: int, `charging`: bool, `dnd`: `"off"`/`"priority"`/`"alarms"`/`"none"` — sent on change; `dnd` is absent on a phone that does not support it (old builds) |
 | `audio.state` | `on`: bool, `codec`: int — audio capture on/off (for the UI dot) |
 | `ring.state` | `ringing`: bool — a `phone.ring` started (`true`) or ended (`false`) |
 | `error` | `code`, `message`, optional `stream` |
@@ -490,6 +491,22 @@ lock screen, for at most 30 s.
 
 A phone build whose app process cannot show the ring answers `error` `unsupported`; the
 shell service never rings on its own.
+
+## Focus and Do Not Disturb
+
+A Mac Focus, the menu bar's "Phone Do Not Disturb" and a Shortcut all use the phone's zen
+mode (docs/design/focus.md):
+
+1. Mac → `{"t":"phone.dnd","mode":"priority"|"alarms"|"none"|"off"}`. The phone changes
+   `Settings.Global.zen_mode` with `cmd notification set_dnd` at shell UID and sends `state`
+   again with `dnd` set to the mode it now reports.
+2. A mode other than the four above answers `error` `bad_request`; nothing changes.
+3. The phone remembers whether PocketDeck turned DND on. `phone.dnd off` turns it off only
+   when that is still the mode PocketDeck set; a mode the person chose is never turned off.
+   The memory lives in the shell service, survives a disconnect and is cleared on reboot.
+4. Every `state` carries `dnd` while the phone supports it; a person's change on the phone
+   arrives as the next `state`. A phone that predates this field omits it, and the Mac reads
+   that as "not supported".
 
 ## Error codes
 
