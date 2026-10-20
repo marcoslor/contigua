@@ -510,7 +510,7 @@ final class SessionBridgeHost: FilesBridgeHost {
                     return completion(.failure(FsError(code: "fs_denied", message: "no digest")))
                 }
                 let sink = self.client.beginWrite(path: path, size: request.size, sha256: sha256,
-                                                  etag: nil) { result in
+                                                  etag: nil, exclusive: true) { result in
                     switch result {
                     case .success(let fs):
                         let finalPath = FilesMap.childPath(parentPath, fs.name)

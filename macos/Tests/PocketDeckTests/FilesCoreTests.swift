@@ -377,6 +377,24 @@ final class FilesConflictTests: XCTestCase {
         XCTAssertEqual(".env (from Mac)", FilesConflict.name(for: ".env"))
         XCTAssertEqual(".gitignore (from Mac)", FilesConflict.name(for: ".gitignore"))
     }
+
+    func testTheNumberedRetryStopsAtTwenty() {
+        // Attempt 1 is the plain copy; 2…20 are numbered; there is no 21st.
+        XCTAssertEqual("a (from Mac).jpg", FilesConflict.candidate(for: "a.jpg", attempt: 1))
+        XCTAssertEqual("a (from Mac 2).jpg", FilesConflict.candidate(for: "a.jpg", attempt: 2))
+        XCTAssertEqual("a (from Mac 20).jpg", FilesConflict.candidate(for: "a.jpg", attempt: 20))
+        XCTAssertNil(FilesConflict.candidate(for: "a.jpg", attempt: 0))
+        XCTAssertNil(FilesConflict.candidate(for: "a.jpg", attempt: 21))
+        // A folder full of conflict copies: the retry gives up instead of
+        // looping on the same taken name forever.
+        let all = Set((1...20).compactMap { FilesConflict.candidate(for: "a.jpg", attempt: $0) })
+        XCTAssertEqual(20, all.count)
+        XCTAssertNil(FilesConflict.name(for: "a.jpg", taken: { all.contains($0) }))
+        var almost = all
+        almost.remove("a (from Mac 20).jpg")
+        XCTAssertEqual("a (from Mac 20).jpg",
+                       FilesConflict.name(for: "a.jpg", taken: { almost.contains($0) }))
+    }
 }
 
 final class FilesErrorMapTests: XCTestCase {
@@ -401,5 +419,14 @@ final class FilesErrorMapTests: XCTestCase {
         for (code, failure) in expected {
             XCTAssertEqual(failure, FilesFailure.from(code: code), code)
         }
+    }
+
+    func testACreateCollisionAsksForAnotherName() {
+        // `fs_exists` on a create means the system must retry under another
+        // name; every other refusal is not a name collision.
+        XCTAssertTrue(FilesFailure.from(code: "fs_exists").needsAnotherName)
+        XCTAssertFalse(FilesFailure.from(code: "fs_denied").needsAnotherName)
+        XCTAssertFalse(FilesFailure.from(code: "fs_stale").needsAnotherName)
+        XCTAssertFalse(FilesFailure.offline.needsAnotherName)
     }
 }

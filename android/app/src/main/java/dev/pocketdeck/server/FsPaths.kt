@@ -101,6 +101,8 @@ class FsPaths(val root: File, private val stats: FsStats = FsStats.Default) {
 
         fun denied(why: String) = FsFailure("fs_denied", "denied: $why")
         fun notFound() = FsFailure("fs_not_found", "no such file")
+        /** A create (or a replace without a version) found something there. */
+        fun exists() = FsFailure("fs_exists", "that name is taken")
         fun notADir() = FsFailure("fs_not_a_dir", "not a directory")
         fun stale() = FsFailure("fs_stale", "the file changed")
         fun busy() = FsFailure("fs_busy", "too many reads")

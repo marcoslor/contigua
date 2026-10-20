@@ -732,8 +732,10 @@ final class FilesExtension: NSObject, NSFileProviderReplicatedExtension {
     }
 
     /// Keep both: the phone's item comes back as it is, and the Mac's bytes land
-    /// next to it as `<name> (from Mac).<ext>` (design §4 "Conflicts"). No name
-    /// reaches the log.
+    /// next to it as `<name> (from Mac).<ext>` (design §4 "Conflicts"). The copy
+    /// is an exclusive create, so a name taken while we tried it answers
+    /// `fs_exists` and the next number is tried, up to 20. No name reaches the
+    /// log.
     private func resolveConflict(_ item: NSFileProviderItem, contents: URL,
                                  announced: Upload, progress: Progress,
                                  completion: @escaping (NSFileProviderItem?, NSFileProviderItemFields, Bool, Error?) -> Void) {
@@ -746,14 +748,26 @@ final class FilesExtension: NSObject, NSFileProviderReplicatedExtension {
         case .success(let page):
             taken = Set(page.items.map(\.name))
         }
-        let name = FilesConflict.name(for: item.filename, taken: { taken.contains($0) })
         log.notice("conflict: keeping both")
-        let copy = BridgeRequest.create(id: 1, request: BridgeCreate(
-            parent: parent, name: name, dir: false,
-            size: announced.size, sha256: announced.sha256))
-        let copyState = WriteState()
-        let copied = upload(copy, url: contents, announced: announced,
+        var copied: Result<FileItem, FilesFailure> = .failure(.exists)
+        for attempt in 1...FilesConflict.maxAttempts {
+            // A name the listing shows is skipped without uploading the file.
+            guard let name = FilesConflict.candidate(for: item.filename, attempt: attempt),
+                  !taken.contains(name) else { continue }
+            let copy = BridgeRequest.create(id: 1, request: BridgeCreate(
+                parent: parent, name: name, dir: false,
+                size: announced.size, sha256: announced.sha256))
+            let copyState = WriteState()
+            copied = upload(copy, url: contents, announced: announced,
                             progress: progress, state: copyState)
+            // A name that was free a moment ago can be taken by the phone: the
+            // next number is next, not a failure of the whole conflict copy.
+            if case .failure(.exists) = copied { continue }
+            break
+        }
+        if case .failure(.exists) = copied {
+            log.notice("conflict: no free name after \(FilesConflict.maxAttempts, privacy: .public) tries")
+        }
         signal(parent)
         // The item the system asked about is the phone's current one.
         if case .success(let current) = stat(item: item.itemIdentifier.rawValue) {

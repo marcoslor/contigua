@@ -18,7 +18,8 @@ protocol FsChannel: AnyObject {
     func fsList(id: UInt32, path: String, page: String?)
     func fsStat(id: UInt32, path: String)
     func fsRead(id: UInt32, path: String, offset: Int, length: Int, etag: String?)
-    func fsWrite(id: UInt32, path: String, size: Int, sha256: String, etag: String?)
+    func fsWrite(id: UInt32, path: String, size: Int, sha256: String, etag: String?,
+                 exclusive: Bool)
     func fsWriteData(id: UInt32, bytes: [UInt8], sent: @escaping @Sendable (Bool) -> Void)
     func fsMove(id: UInt32, from: String, to: String, etag: String?)
     func fsDelete(id: UInt32, path: String, recursive: Bool)
@@ -283,7 +284,10 @@ final class FsClient {
 
     /// Starts `fs.write` and returns the handle the bridge feeds. The phone
     /// answers `fs.result` (or an `error`) through [result]/[failure].
+    /// `exclusive` is a create: the phone refuses a name that is already there
+    /// instead of replacing it.
     func beginWrite(path: String, size: Int, sha256: String, etag: String?,
+                    exclusive: Bool = false,
                     progress: @escaping (Int) -> Void = { _ in },
                     completion: @escaping (Result<FsItem, FsError>) -> Void) -> FilesWriteSink? {
         guard let channel else {
@@ -297,7 +301,8 @@ final class FsClient {
         let job = FsWrite(id: id, size: size, channel: channel, onProgress: progress,
                           completion: completion)
         pending[id] = .write(job)
-        channel.fsWrite(id: id, path: path, size: size, sha256: sha256, etag: etag)
+        channel.fsWrite(id: id, path: path, size: size, sha256: sha256, etag: etag,
+                        exclusive: exclusive)
         return job
     }
 
