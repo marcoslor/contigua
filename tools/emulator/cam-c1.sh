@@ -229,6 +229,16 @@ for _ in $(seq 1 10); do
 done
 cat "$CACHE_DIR/cam-c1-gate.txt" >>"$LOG"
 if [ "$GATE_OK" -eq 0 ]; then
+  # Evidence for the next fix, ids/states only: a cam.start says whether the
+  # shell holds the gate closed ("off") or open with no cameras; the camera
+  # lines of logcat say whether the app pushed the gate and what it found.
+  {
+    echo "--- gate diagnosis"
+    deckctl cam start --stream 7 --seconds 2 2>&1 | grep -E '^cam\.(state|terminal)' | head -3
+    emu shell "dumpsys package $PKG" 2>/dev/null | grep -E 'android.permission.CAMERA:' | head -2
+    emu shell "ps -A -o USER,PID,NAME" 2>/dev/null | grep -E 'pocketdeck' | awk '{print $1, $3}'
+    emu shell "logcat -d -v brief" 2>/dev/null | grep -iE 'camera gate|gate push|cam\.start|camera service|consent|PocketDeckApp.*cam' | tail -20
+  } >>"$LOG" 2>&1
   die "the app does not see 'Let Macs use the camera' (cam.list empty); not burning the boot on the rest"
 fi
 step "gate open: $(sed -n 's/cam.cams count=//p' "$CACHE_DIR/cam-c1-gate.txt" | tail -1) cameras"
