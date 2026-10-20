@@ -299,25 +299,6 @@ final class StreamChromeView: NSView {
         needsLayout = true
     }
 
-    /// A subject was copied by force click: the status pill says so for a
-    /// moment, then goes back to "Live Text" (or away when the mode is off).
-    func flashSubjectCopied() {
-        copyStatusWork?.cancel()
-        liveTextStatus.setText("Subject copied")
-        liveTextStatus.isHidden = false
-        layoutLiveTextStatus(bar: barHeight > 0)
-        let work = DispatchWorkItem { [weak self] in
-            guard let self else { return }
-            self.liveTextStatus.setText("Live Text")
-            self.liveTextStatus.isHidden = !self.liveTextActive
-            self.layoutLiveTextStatus(bar: self.barHeight > 0)
-        }
-        copyStatusWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: work)
-    }
-
-    private var copyStatusWork: DispatchWorkItem?
-
     /// True while the status pill is up (the chrome state file reports it).
     var showsLiveTextStatus: Bool { !liveTextStatus.isHidden }
 

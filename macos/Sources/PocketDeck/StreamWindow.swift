@@ -130,9 +130,6 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         videoView.liveText.onStateChange = { [weak self] state, reason in
             self?.liveTextChanged(state, reason)
         }
-        videoView.liveText.onSubjectCopied = { [weak self] in
-            self?.chrome.flashSubjectCopied()
-        }
     }
 
     @available(*, unavailable)
