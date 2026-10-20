@@ -336,11 +336,13 @@ enum NotifyMapping {
     static func record(imageLate id: String) -> String { "notify image id=\(id) late" }
 
     /// An in-place Live Update. The progress is a 0–10 bucket, never a value.
+    /// `at` is when it was applied (ms), so a check can see the one-per-second rule.
     static func record(live id: String, progress: Double?, chip: String?,
-                       chrono: Bool, countDown: Bool) -> String {
+                       chrono: Bool, countDown: Bool, at: Date = Date()) -> String {
         let bucket = progress.map { String(Int(($0 * 10).rounded())) } ?? "-"
         return "notify live id=\(id) progress=\(bucket) chip=\(chip?.count ?? 0)"
             + " chrono=\(chrono ? 1 : 0) countDown=\(countDown ? 1 : 0)"
+            + " at=\(Int((at.timeIntervalSince1970 * 1000).rounded()))"
     }
 
     static func record(liveEnded id: String) -> String { "notify live id=\(id) end" }
@@ -837,6 +839,9 @@ final class NotifyCenter {
 
     /// The poster's app took the notification away: drop the Mac banner too.
     func remove(id: String) {
+        // A post still inside its hold is delivered first, so the phone's own
+        // post → remove order survives (the banner is then taken away at once).
+        if pending[id] != nil { deliver(id: id) }
         if log != nil { record(NotifyMapping.record(removed: id)) }
         pending.removeValue(forKey: id)?.work.cancel()
         if liveStore.end(id) {

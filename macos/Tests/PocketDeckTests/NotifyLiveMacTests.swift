@@ -168,12 +168,13 @@ final class NotifyLiveMacTests: XCTestCase {
         XCTAssertEqual(NotifyMapping.record(imageRefused: "k1", reason: "bytes"),
                        "notify image id=k1 refused=bytes")
         XCTAssertEqual(NotifyMapping.record(imageLate: "k1"), "notify image id=k1 late")
+        let at = Date(timeIntervalSince1970: 1_700_000_000.5)
         XCTAssertEqual(NotifyMapping.record(live: "l1", progress: 0.62, chip: "4 min",
-                                            chrono: false, countDown: false),
-                       "notify live id=l1 progress=6 chip=5 chrono=0 countDown=0")
+                                            chrono: false, countDown: false, at: at),
+                       "notify live id=l1 progress=6 chip=5 chrono=0 countDown=0 at=1700000000500")
         XCTAssertEqual(NotifyMapping.record(live: "l1", progress: nil, chip: nil,
-                                            chrono: true, countDown: true),
-                       "notify live id=l1 progress=- chip=0 chrono=1 countDown=1")
+                                            chrono: true, countDown: true, at: at),
+                       "notify live id=l1 progress=- chip=0 chrono=1 countDown=1 at=1700000000500")
         XCTAssertEqual(NotifyMapping.record(liveEnded: "l1"), "notify live id=l1 end")
     }
 
