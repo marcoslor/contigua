@@ -144,6 +144,62 @@ NOTIFY_SHAPES = [
 # The fake reply the e2e sends; only its length is ever recorded.
 NOTIFY_REPLY_INDEX = 1
 NOTIFY_REPLY_TEXT = "pd-reply-1"
+
+# Part 2b (docs/design/notify.md): pictures and Android 16 Live Updates. The
+# picture is a generated 160x120 test card (nobody's content); only its mime,
+# size and dimensions ever reach a log. `image: "bad"` sends an oversized one
+# the Mac must refuse while still showing the banner.
+NOTIFY_IMAGE = {
+    "mime": "image/jpeg",
+    "w": 160,
+    "h": 120,
+    "data": base64.b64decode(
+        "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAYEBQYFBAYGBQYHBwYIChAKCgkJChQODwwQFxQY"
+        "GBcUFhYaHSUfGhsjHBYWICwgIyYnKSopGR8tMC0oMCUoKSj/2wBDAQcHBwoIChMKChMoGhYa"
+        "KCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCj/wAAR"
+        "CAB4AKADASIAAhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAA"
+        "AgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkK"
+        "FhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWG"
+        "h4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl"
+        "5ufo6erx8vP09fb3+Pn6/8QAHwEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoL/8QAtREA"
+        "AgECBAQDBAcFBAQAAQJ3AAECAxEEBSExBhJBUQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYk"
+        "NOEl8RcYGRomJygpKjU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6goOE"
+        "hYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3uLm6wsPExcbHyMnK0tPU1dbX2Nna4uPk"
+        "5ebn6Onq8vP09fb3+Pn6/9oADAMBAAIRAxEAPwDgqKKK+5PlAooooAKKKKACiiigAooooAKK"
+        "KKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiig"
+        "AooooAKKKKACirmnXkFp5nn6daXu7GPPaUbMZ6bHXr756Vc/tey/6F3Sv+/l1/8AHqlya6fk"
+        "NJPqY9FbH9r2X/Qu6V/38uv/AI9R/a9l/wBC7pX/AH8uv/j1LmfZ/h/mPlXf8zHorY/tey/6"
+        "F3Sv+/l1/wDHqP7Xsv8AoXdK/wC/l1/8eo5n2f4f5hyrv+Zj0Vsf2vZf9C7pX/fy6/8Aj1H9"
+        "r2X/AELulf8Afy6/+PUcz7P8P8w5V3/Mx6K2P7Xsv+hd0r/v5df/AB6j+17L/oXdK/7+XX/x"
+        "6jmfZ/h/mHKu/wCZj0Vsf2vZf9C7pX/fy6/+PUf2vZf9C7pX/fy6/wDj1HM+z/D/ADDlXf8A"
+        "Mx6K2P7Xsv8AoXdK/wC/l1/8eo/tey/6F3Sv+/l1/wDHqOZ9n+H+Ycq7/mY9FbH9r2X/AELu"
+        "lf8Afy6/+PVT1G8gu/L8jTrSy25z5DSnfnHXe7dPbHWmpN9PyE0u5ToooqhBRRRQBc06PT5P"
+        "M/tK6u7fGNnkWyzbuuc5kTHb1/Crn2fw/wD9BPVf/BdH/wDH6x6Klxb6/kNNLobH2fw//wBB"
+        "PVf/AAXR/wDx+j7P4f8A+gnqv/guj/8Aj9Y9FLlfd/h/kPmXb8zY+z+H/wDoJ6r/AOC6P/4/"
+        "R9n8P/8AQT1X/wAF0f8A8frHoo5X3f4f5BzLt+ZsfZ/D/wD0E9V/8F0f/wAfo+z+H/8AoJ6r"
+        "/wCC6P8A+P1j0Ucr7v8AD/IOZdvzNj7P4f8A+gnqv/guj/8Aj9H2fw//ANBPVf8AwXR//H6x"
+        "6KOV93+H+Qcy7fmbH2fw/wD9BPVf/BdH/wDH6Ps/h/8A6Ceq/wDguj/+P1j0Ucr7v8P8g5l2"
+        "/M2Ps/h//oJ6r/4Lo/8A4/R9n8P/APQT1X/wXR//AB+seijlfd/h/kHMu35mx9n8P/8AQT1X"
+        "/wAF0f8A8fqnqMenx+X/AGbdXdxnO/z7ZYdvTGMSPnv6fjVOimotdfyE2uwUUUVQgooooAKK"
+        "KKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiig"
+        "AooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKK"
+        "KKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooA//2Q==",
+    ),
+}
+NOTIFY_MEDIA_POSTS = [
+    {"id": "pd-m1", "pkg": "com.whatsapp", "title": "pd-notify-title-8",
+     "text": "pd-notify-text-8", "image": "good"},
+    {"id": "pd-m2", "pkg": "com.whatsapp", "title": "pd-notify-title-9",
+     "text": "pd-notify-text-9", "image": "bad"},
+    {"id": "pd-l1", "pkg": "com.uber", "title": "pd-notify-title-10",
+     "text": "pd-notify-text-10", "live": {"progress": 0.1, "chip": "4 min"}, "tick": True},
+    {"id": "pd-l2", "pkg": "com.uber", "title": "pd-notify-title-11",
+     "text": "pd-notify-text-11", "live": {"chrono": "future", "countDown": True}},
+]
+NOTIFY_IMAGE_MAX = 200 * 1024
+NOTIFY_LIVE_INTERVAL = 2.0
+NOTIFY_LIVE_TICKS = 5
+
 NOTIFY_MEDIA_STATE = {"playing": True, "pkg": "com.spotify.music", "title": "Fake Song",
                       "artist": "Fake Artist", "album": "Fake Album", "durationMs": 30000,
                       "positionMs": 0, "rate": 1.0}
@@ -1535,6 +1591,14 @@ class Session(object):
         self._watcher = FsWatchFake(phone.fs) if phone.fs is not None else None
         if self._watcher is not None:
             self._watcher.on_changes(self._on_fs_changes)
+        # Fake Live Updates (docs/design/notify.md): one ticker per session and
+        # the same one-per-second coalescing the real phone applies.
+        self._live_thread = None
+        self._live_stop = threading.Event()
+        self._live_lock = threading.Lock()
+        self._live_last = {}
+        self._live_pending = {}
+        self._live_flusher = None
         self._thread = threading.Thread(target=self._run, daemon=True)
     def start(self):
         self._thread.start()
@@ -1585,6 +1649,7 @@ class Session(object):
             self._main_loop()
 
     def _teardown(self):
+        self._live_stop.set()
         try:
             self.audio.stop()
         except Exception:
@@ -1937,6 +2002,7 @@ class Session(object):
             "notify.open": self._on_notify_open,
             "notify.action": self._on_notify_action,
             "notify.dismiss": self._on_notify_dismiss,
+            "notify.fake": self._on_notify_fake,
             "media.command": self._on_media_command,
             "fs.list": self._on_fs_list,
             "fs.stat": self._on_fs_stat,
@@ -2586,17 +2652,31 @@ class Session(object):
         if not on:
             return
         only = getattr(self.phone.args, "notify_only", None)
-        posts = NOTIFY_POSTS + NOTIFY_SHAPES
+        media = bool(getattr(self.phone.args, "notify_media", False))
+        posts = NOTIFY_POSTS + NOTIFY_SHAPES + (NOTIFY_MEDIA_POSTS if media else [])
         if only:
             posts = [p for p in posts if p["id"] == only]
         for post in posts:
-            self._send(dict(post, t="notify.post", when=int(time.time() * 1000)))
+            live = post.get("live")
+            if isinstance(live, dict):
+                live = self._live_wire(live)
+            wire = dict(post, t="notify.post", when=int(time.time() * 1000))
+            wire.pop("image", None)
+            wire.pop("tick", None)
+            if live is not None:
+                wire["live"] = live
+            self._send(wire)
             actions = post.get("actions", [])
             self.phone.events.notify("post", id=post["id"], pkg=post["pkg"],
                                      titleLen=len(post["title"]), bodyLen=len(post["text"]),
                                      actions=len(actions),
                                      reply=1 if any(a.get("reply") for a in actions) else 0,
-                                     ongoing=1 if post.get("ongoing") else 0)
+                                     ongoing=1 if post.get("ongoing") or live is not None else 0,
+                                     live=1 if live is not None else 0)
+            if post.get("image"):
+                self._send_notify_image(post["id"], post["image"])
+            if post.get("tick"):
+                self._start_live(post)
         if not only:
             self._send({"t": "notify.remove", "id": NOTIFY_REMOVE})
             self.phone.events.notify("remove", id=NOTIFY_REMOVE)
@@ -2604,6 +2684,97 @@ class Session(object):
         self.phone.events.notify("media.state", playing=NOTIFY_MEDIA_STATE["playing"],
                                  titleLen=len(NOTIFY_MEDIA_STATE["title"]),
                                  durationMs=NOTIFY_MEDIA_STATE["durationMs"])
+
+    def _live_wire(self, live):
+        """The live object with a chronometer's epoch filled in; no text logs."""
+        out = dict(live)
+        if out.get("chrono") == "future":
+            out["chrono"] = int(time.time() * 1000) + 5 * 60 * 1000
+        out.pop("tick", None)
+        return out
+
+    def _send_notify_image(self, notify_id, kind):
+        """`notify.image` right after the post; bad means over the Mac's cap."""
+        if kind == "bad":
+            data = b"\\x00" * (NOTIFY_IMAGE_MAX + 1)
+            mime, w, h = NOTIFY_IMAGE["mime"], NOTIFY_IMAGE["w"], NOTIFY_IMAGE["h"]
+        else:
+            data = NOTIFY_IMAGE["data"]
+            mime, w, h = NOTIFY_IMAGE["mime"], NOTIFY_IMAGE["w"], NOTIFY_IMAGE["h"]
+        self._send({"t": "notify.image", "id": notify_id, "mime": mime, "w": w, "h": h,
+                    "data": base64.b64encode(data).decode("ascii")})
+        self.phone.events.notify("image", id=notify_id, mime=mime, w=w, h=h, size=len(data),
+                                 refused=1 if kind == "bad" else 0)
+
+    def _start_live(self, post):
+        """Advance a fake Live Update every 2 s, then end it (a ride's ETA)."""
+        if self._live_thread is not None:
+            return
+
+        def run():
+            progress = post["live"]["progress"]
+            for tick in range(NOTIFY_LIVE_TICKS):
+                time.sleep(NOTIFY_LIVE_INTERVAL)
+                if self._live_stop.is_set() or self.sender is None:
+                    return
+                progress = min(0.98, progress + 0.15)
+                self._post_live(post, progress, "3 min" if tick % 2 == 0 else "2 min")
+            time.sleep(NOTIFY_LIVE_INTERVAL)
+            if self._live_stop.is_set() or self.sender is None:
+                return
+            self._live_stop.set()
+            self._send({"t": "notify.remove", "id": post["id"]})
+            self.phone.events.notify("live.end", id=post["id"])
+
+        self._live_thread = threading.Thread(target=run, daemon=True)
+        self._live_thread.start()
+
+    def _post_live(self, post, progress, chip=None):
+        """One in-place update, coalesced to at most one per second per id."""
+        live = {"progress": round(min(1.0, max(0.0, progress)), 3)}
+        if chip:
+            live["chip"] = chip
+        live_id = post["id"]
+        now = time.time()
+        with self._live_lock:
+            last = self._live_last.get(live_id)
+            if last is not None and now - last < 1.0:
+                self._live_pending[live_id] = (post, live)
+                self._live_flusher_start()
+                return
+            self._live_last[live_id] = now
+        self._send_live_now(post, live)
+
+    def _live_flusher_start(self):
+        if self._live_flusher is not None:
+            return
+        self._live_flusher = threading.Thread(target=self._live_flush_loop, daemon=True)
+        self._live_flusher.start()
+
+    def _live_flush_loop(self):
+        while not self._live_stop.is_set():
+            time.sleep(0.2)
+            now = time.time()
+            ready = []
+            with self._live_lock:
+                for live_id, (post, live) in list(self._live_pending.items()):
+                    if now - self._live_last.get(live_id, 0) >= 1.0:
+                        self._live_pending.pop(live_id, None)
+                        self._live_last[live_id] = now
+                        ready.append((post, live))
+            for post, live in ready:
+                try:
+                    self._send_live_now(post, live)
+                except Exception:
+                    return
+
+    def _send_live_now(self, post, live):
+        message = {k: v for k, v in post.items() if k not in ("image", "tick", "live")}
+        message.update({"t": "notify.post", "when": int(time.time() * 1000), "live": live})
+        self._send(message)
+        self.phone.events.notify(
+            "live", id=post["id"], progress=int(round(live.get("progress", 0) * 100)),
+            chipLen=len(live["chip"]) if live.get("chip") else 0, update=1)
 
     def _on_notify_action(self, msg):
         # A Mac pressed an advertised action: id, index and the reply's length.
@@ -2613,6 +2784,34 @@ class Session(object):
 
     def _on_notify_dismiss(self, msg):
         self.phone.events.notify("dismiss", id=msg.get("id"))
+
+    def _on_notify_fake(self, msg):
+        """Test-only hook (deckctl `notify image|live|end`): make the fake phone
+        post a picture or advance/finish a Live Update. The real phone decides
+        these itself; this is how the e2e drives one deterministically."""
+        kind = msg.get("kind")
+        notify_id = msg.get("id")
+        post = next((p for p in NOTIFY_MEDIA_POSTS if p["id"] == notify_id), None)
+        if post is None or kind not in ("image", "live", "end"):
+            self._send_error("bad_request", "notify.fake needs a media shape id")
+            return
+        if kind == "image":
+            wire = {k: v for k, v in post.items() if k not in ("image", "tick", "live")}
+            wire.update({"t": "notify.post", "when": int(time.time() * 1000)})
+            self._send(wire)
+            self.phone.events.notify("post", id=post["id"], pkg=post["pkg"],
+                                     titleLen=len(post["title"]), bodyLen=len(post["text"]),
+                                     actions=0, reply=0, ongoing=0, live=0)
+            self._send_notify_image(notify_id, "good")
+        elif kind == "live":
+            try:
+                progress = float(msg.get("progress", 0.5))
+            except (TypeError, ValueError):
+                progress = 0.5
+            self._post_live(post, progress, msg.get("chip"))
+        else:
+            self._send({"t": "notify.remove", "id": notify_id})
+            self.phone.events.notify("live.end", id=notify_id)
 
     def _on_media_command(self, msg):
         self.phone.events.media(msg.get("action"))
@@ -3177,8 +3376,12 @@ def build_parser():
                         "has sent everything (a slow phone)")
     p.add_argument("--notify-only", default=None, metavar="ID",
                    help="on notify.enable post only this shape (pd-a1 reply, pd-a2 "
-                        "buttons, pd-a3 ongoing, pd-a4 code, pd-n1/n2 plain); the VM "
-                        "check needs one banner at a time")
+                        "buttons, pd-a3 ongoing, pd-a4 code, pd-m1 picture, pd-m2 "
+                        "refused picture, pd-l1/pd-l2 Live Updates, pd-n1/n2 plain); "
+                        "the VM check needs one banner at a time")
+    p.add_argument("--notify-media", action="store_true",
+                   help="on notify.enable also post the picture and Live Update shapes "
+                        "(pd-m1, pd-m2, pd-l1, pd-l2) and advance pd-l1 every 2 s")
     p.add_argument("--resize-delay-ms", type=int, default=0, metavar="MS",
                    help="hold back a window's new VIDEO_CONFIG this long after "
                         "window.resize (the Mac's live-resize fill); 0 answers at once")

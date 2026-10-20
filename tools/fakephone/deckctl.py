@@ -1243,6 +1243,25 @@ def cmd_notify(client, args):
             client.send_json({"t": "notify.dismiss", "id": args.id})
             print("sent notify.dismiss id=%s" % args.id)
         return 0
+    if what in ("image", "live", "end"):
+        if not args.id:
+            raise DeckError("notify %s needs an ID" % what)
+        client.send_json({"t": "notify.enable", "on": True})
+        if what == "image":
+            client.send_json({"t": "notify.fake", "kind": "image", "id": args.id})
+            print("sent notify.fake image id=%s" % args.id)
+        elif what == "live":
+            msg = {"t": "notify.fake", "kind": "live", "id": args.id,
+                   "progress": args.progress}
+            if args.chip:
+                msg["chip"] = args.chip
+            client.send_json(msg)
+            print("sent notify.fake live id=%s progress=%.2f chipLen=%d"
+                  % (args.id, args.progress, len(args.chip or "")))
+        else:
+            client.send_json({"t": "notify.fake", "kind": "end", "id": args.id})
+            print("sent notify.fake end id=%s" % args.id)
+        return 0
     # watch: opt in, then print the phone's notification events (lengths only).
     client.send_json({"t": "notify.enable", "on": True})
     print("sent notify.enable on=true (watching %.0fs)" % args.seconds)
@@ -1261,9 +1280,19 @@ def cmd_notify(client, args):
             title = msg.get("title") or ""
             text = msg.get("text") or ""
             actions = msg.get("actions") or []
-            print("notify.post id=%s pkg=%s titleLen=%d textLen=%d actions=%d ongoing=%s"
+            live = msg.get("live")
+            print("notify.post id=%s pkg=%s titleLen=%d textLen=%d actions=%d ongoing=%s live=%s"
                   % (msg.get("id"), msg.get("pkg"), len(title), len(text), len(actions),
-                     "true" if msg.get("ongoing") else "false"), flush=True)
+                     "true" if msg.get("ongoing") else "false",
+                     "-" if not isinstance(live, dict) else
+                     "progress=%s chipLen=%d chrono=%s"
+                     % (live.get("progress"), len(live.get("chip") or ""),
+                        "true" if live.get("chrono") else "false")), flush=True)
+        elif t == "notify.image":
+            data = msg.get("data") or ""
+            print("notify.image id=%s mime=%s w=%s h=%s size=%d"
+                  % (msg.get("id"), msg.get("mime"), msg.get("w"), msg.get("h"),
+                     len(data) * 3 // 4), flush=True)
         elif t == "notify.remove":
             print("notify.remove id=%s" % msg.get("id"), flush=True)
         elif t == "notify.state":
@@ -2005,13 +2034,15 @@ def build_parser():
     sp = sub.add_parser("clip-watch", help="print every clip.set the phone sends", **spp)
     sp.add_argument("--seconds", type=float, default=30.0)
 
-    sp = sub.add_parser("notify", help="notifications: enable/action/dismiss/watch (ids and lengths only)", **spp)
-    sp.add_argument("what", choices=["enable", "action", "dismiss", "watch"])
+    sp = sub.add_parser("notify", help="notifications: enable/action/dismiss/watch/image/live/end (ids and lengths only)", **spp)
+    sp.add_argument("what", choices=["enable", "action", "dismiss", "watch", "image", "live", "end"])
     sp.add_argument("id", nargs="?")
     sp.add_argument("index", nargs="?", type=int)
     sp.add_argument("--text", default="", help="reply text for notify action (never printed)")
     sp.add_argument("--on", choices=["on", "off"], default="on")
     sp.add_argument("--seconds", type=float, default=20.0)
+    sp.add_argument("--progress", type=float, default=0.5, help="live update fraction 0..1")
+    sp.add_argument("--chip", default=None, help="live update chip text (length only is printed)")
 
     sp = sub.add_parser("probe", help="open, run steps, record one phase file per step", **spp)
     sp.add_argument("target", nargs="?", help="package to launch")
