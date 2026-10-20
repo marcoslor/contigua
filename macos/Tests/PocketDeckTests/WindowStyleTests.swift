@@ -212,7 +212,8 @@ final class RevealDelayTests: XCTestCase {
         XCTAssertEqual(RevealDelay.instantly.label, "Instantly")
         XCTAssertEqual(RevealDelay.short.label, "Short")
         XCTAssertEqual(RevealDelay.long.label, "Long")
-        XCTAssertEqual(RevealDelay.allCases, [.instantly, .short, .long])
+        XCTAssertEqual(RevealDelay.alwaysVisible.label, "Always Visible")
+        XCTAssertEqual(RevealDelay.allCases, [.instantly, .short, .long, .alwaysVisible])
     }
 }
 
