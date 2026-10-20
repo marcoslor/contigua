@@ -238,6 +238,7 @@ Mac → phone (after `welcome`):
 | `phone.ring.stop` | — | stop a running ring |
 | `phone.dnd` | `mode`: `priority`/`alarms`/`none`/`off` | set the phone's Do Not Disturb (its zen mode) for a Mac Focus or a manual set; see "Focus and Do Not Disturb" |
 | `phone.ringer` | `mode`: `normal`/`vibrate`/`silent` | set the phone's ringer mode (never a volume); see "Ringer" |
+| `phone.wake` | — | wake the phone's own screen (display 0) without unlocking it; see "Phone screen" |
 | `fs.list` | `id`, `path`, `page`? | children of `path`; `page` is the phone's opaque cursor, absent = first |
 | `fs.stat` | `id`, `path` | one item's metadata |
 | `fs.read` | `id`, `path`, `offset`, `length`, `etag`? | stream `length` bytes from `offset` (`FS_DATA`, then `fs.read.end`); an `etag` that no longer matches answers `fs_stale` |
@@ -254,7 +255,7 @@ Phone → Mac:
 | `window.opened` | `stream`, `displayId`, `w`, `h` — `started`: `"moved"` (default; the task the display shows was moved to it, state kept) or `"fresh"` (the phone couldn't move the task and relaunched the same package; the app's state may be lost) |
 | `window.closed` | `stream`, `reason` (`requested`/`app_exited`/`error`) |
 | `window.title` | `stream`, `label`, `pkg` — top app changed on that display (phone mode) |
-| `state` | `locked`: bool, `battery`: int, `charging`: bool, `dnd`: `"off"`/`"priority"`/`"alarms"`/`"none"`, `ringer`: `"normal"`/`"vibrate"`/`"silent"` — sent on change; `dnd`/`ringer` are absent on a phone that does not support them (old builds) |
+| `state` | `locked`: bool, `battery`: int, `charging`: bool, `dnd`: `"off"`/`"priority"`/`"alarms"`/`"none"`, `ringer`: `"normal"`/`"vibrate"`/`"silent"`, `screen`: `"on"`/`"off"` — sent on change; `dnd`/`ringer` are absent on a phone that does not support them (old builds); see "Phone screen" |
 | `audio.state` | `on`: bool, `codec`: int — audio capture on/off (for the UI dot) |
 | `ring.state` | `ringing`: bool — a `phone.ring` started (`true`) or ended (`false`) |
 | `error` | `code`, `message`, optional `stream` |
@@ -673,6 +674,24 @@ ringer modes. It never touches a volume level, the lock settings or any other se
    DND on the side. The Mac checks `state.dnd` first and does not send.
 4. A phone that predates the field omits `ringer` from `state`, and `phone.ringer` is an
    unknown message to it. An older Mac ignores the new field.
+
+## Phone screen
+
+The phone window mirrors display 0 (docs/design/phone-mirror.md), so its picture is only
+live while the panel is on.
+
+1. Every `state` carries `screen`: `"on"` or `"off"`, display 0's power state at shell UID
+   (`PowerManager.isInteractive`; doze and doze-suspend read as off). It is sent on change,
+   from a display listener on display 0 — no polling. A phone that predates the field
+   omits it, and the Mac reads that as "on".
+2. `{"t":"phone.wake"}` wakes display 0 without unlocking it: the display-scoped
+   `wakeUpWithDisplayId(0)` at shell UID, else `input keyevent KEYCODE_WAKEUP`. The phone
+   logs `phone.wake ok`, `phone.wake fallback` or `phone.wake failed` and sends a fresh
+   `state`; the next `state` carries the `screen` the phone reports. The keyguard stays,
+   no lock or screen-timeout setting changes, and the panel sleeps again on the phone's
+   own timeout.
+3. The Mac sends it when a phone window opens, is reopened or reconnects, and from the
+   window's Wake Screen button. Nothing else sends it.
 
 ## Focus and Do Not Disturb
 

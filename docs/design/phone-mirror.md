@@ -23,8 +23,9 @@ Why this and not `SurfaceControl.createDisplay` + `setDisplayProjection`
 
 - Nothing is launched and no VD flags are set: the mirror is passive. Phone
   streams never enter the power keep-alive (`activeDisplayIds` skips them, input
-  doesn't poke). The panel is never woken, unlocked or turned off: a locked or
-  off phone shows the lock screen or black.
+  doesn't poke, and a mirrored frame is not a reason to light the panel). The
+  panel is woken only by an explicit `phone.wake` (window open, Wake Screen);
+  it is never unlocked or turned off: a locked phone shows its lock screen.
 - The stream fits inside the Mac's box at display 0's aspect (`MirrorFit`),
   never above display 0's size. Input maps over display 0's real size.
 - Rotation: the stream polls display 0's logical size every 300 ms while open.
@@ -37,3 +38,35 @@ Why this and not `SurfaceControl.createDisplay` + `setDisplayProjection`
 
 The old phone mode (a VD running PocketDeck's own launcher activity) was
 deleted with its activity: nothing else used it.
+
+## Screen off and wake
+
+A mirror is only useful while the phone's own panel is on. Two things follow:
+
+**The window says when the screen is off.** `state` carries `screen` (`"on"` /
+`"off"`, display 0's power state; doze counts as off, so an Always-On Display
+does not pass for a live picture). The phone sends it with every `state`, on
+change, from a display listener on display 0 (event driven, no polling). A Mac
+that gets no `screen` field treats the screen as on: nothing is overlaid.
+
+While `screen` is `"off"` the phone window blurs the frame it is holding,
+dims it, and shows "The phone's screen is off" with a **Wake Screen** button.
+The window no longer shows the last frame as if it were live. A click anywhere
+on the blurred frame is the Wake Screen button, never a touch: while the
+overlay is up the window sends no input at all to the phone. `screen: "on"`
+(and the first new frame that follows it) clears the overlay. App windows get
+no overlay: virtual displays do not sleep with the panel.
+
+**Opening the window wakes the panel.** A new, re-opened or reconnected phone
+window sends `phone.wake` with no fields after its `window.open`. The phone
+wakes display 0 at shell UID with the display-scoped wake used for virtual
+displays (`wakeUpWithDisplayId(0)`) and falls back to
+`input keyevent KEYCODE_WAKEUP` when that call is unavailable, then logs
+`phone.wake ok`, `phone.wake fallback` or `phone.wake failed`. Waking only:
+the keyguard stays up, nothing is unlocked, no lock or screen-timeout setting
+is touched, and the panel turns off again on the phone's own screen timeout.
+There is no keep-awake for display 0 beyond the platform's normal input
+activity.
+
+The Wake Screen button sends the same `phone.wake`; it is there for a person
+who does not want to reopen the window.
