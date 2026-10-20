@@ -22,6 +22,8 @@
 	<string>1</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>26.0</string>
+	<key>PDFilesGroup</key>
+	<string>__FILES_GROUP__</string>
 	<key>NSExtension</key>
 	<dict>
 		<key>NSExtensionPointIdentifier</key>
@@ -31,7 +33,7 @@
 		<key>NSExtensionFileProviderSupportsEnumeration</key>
 		<true/>
 		<key>NSExtensionFileProviderDocumentGroup</key>
-		<string>group.dev.pocketdeck.mac.files.filesexp</string>
+		<string>__FILES_GROUP__</string>
 	</dict>
 </dict>
 </plist>

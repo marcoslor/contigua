@@ -25,10 +25,12 @@ while [ $# -gt 0 ]; do
     esac
 done
 case "$VARIANT" in
-    release) SHARE_ID="dev.pocketdeck.mac.share"; SHARE_TITLE="Open on Phone"; FILES_ID="dev.pocketdeck.mac.files"; FILES_TITLE="PocketDeck Files" ;;
+    release) SHARE_ID="dev.pocketdeck.mac.share"; SHARE_TITLE="Open on Phone"; FILES_ID="dev.pocketdeck.mac.files"; FILES_TITLE="PocketDeck Files"
+             FILES_GROUP="group.dev.pocketdeck.mac.files" ;;
     *[!a-z0-9]*|"") echo "bundle.sh: --variant must be a-z0-9" >&2; exit 2 ;;
     *) SHARE_ID="dev.pocketdeck.mac.share-$VARIANT"; SHARE_TITLE="Open on Phone ($VARIANT)"
-       FILES_ID="dev.pocketdeck.mac.files-$VARIANT"; FILES_TITLE="PocketDeck Files ($VARIANT)" ;;
+       FILES_ID="dev.pocketdeck.mac.files-$VARIANT"; FILES_TITLE="PocketDeck Files ($VARIANT)"
+       FILES_GROUP="group.dev.pocketdeck.mac.files-$VARIANT" ;;
 esac
 
 # The e2e/debug launch hooks are compiled in only for non-release bundles:
@@ -318,21 +320,29 @@ cat > "$APPEX/Contents/Info.plist" <<PLIST
 PLIST
 codesign --force --sign - --entitlements Extensions/Share/Share.entitlements "$APPEX"
 
-# File Provider extension (docs/design/files.md §1, experiment files-exp): the
-# same swiftc shape as Share, because SwiftPM cannot link an app extension's
-# entry point. It is a replicated provider, so it needs an App Group (the app's
-# side is FilesDomain.swift) and no portal capability. Opt-in (--with-files)
-# because the extension only belongs in the VM experiment's bundle: a host e2e
-# run must not have a File Provider extension to register.
+# File Provider extension (docs/design/files.md §1): the same swiftc shape as
+# Share, because SwiftPM cannot link an app extension's entry point. It is a
+# replicated provider, so it needs an App Group (the app's side is
+# FilesBridge.swift) and no portal capability. Opt-in (--with-files) because the
+# extension only belongs in the bundle that shows phone files in Finder: a host
+# e2e run must not have a File Provider extension to register.
 if [ "$WITH_FILES" = 1 ]; then
+    # The group is per bundle: production keeps the plain id, every test copy
+    # its own, so one copy's domain and socket never meet another's.
+    /usr/libexec/PlistBuddy -c "Add :PDFilesGroup string $FILES_GROUP" "$APP/Contents/Info.plist"
+    FILES_ENTITLEMENTS="build/Files-$VARIANT.entitlements"
+    APP_ENTITLEMENTS="build/PocketDeckFiles-$VARIANT.entitlements"
+    sed -e "s/__FILES_GROUP__/$FILES_GROUP/" Extensions/Files/Files.entitlements > "$FILES_ENTITLEMENTS"
+    sed -e "s/__FILES_GROUP__/$FILES_GROUP/" Extensions/Files/PocketDeckFiles.entitlements > "$APP_ENTITLEMENTS"
     FILES_APPEX="$APP/Contents/PlugIns/Files.appex"
     mkdir -p "$FILES_APPEX/Contents/MacOS"
     swiftc -O -application-extension -module-name Files -target "$(uname -m)-apple-macos26.0" \
         -swift-version 5 Extensions/Files/Files.swift Sources/PocketDeck/FilesCore.swift \
         -Xlinker -e -Xlinker _NSExtensionMain -o "$FILES_APPEX/Contents/MacOS/Files"
     sed -e "s/__FILES_ID__/$FILES_ID/" -e "s/__FILES_TITLE__/$FILES_TITLE/" \
+        -e "s/__FILES_GROUP__/$FILES_GROUP/" \
         Extensions/Files/Info.plist > "$FILES_APPEX/Contents/Info.plist"
-    codesign --force --sign - --entitlements Extensions/Files/Files.entitlements "$FILES_APPEX"
+    codesign --force --sign - --entitlements "$FILES_ENTITLEMENTS" "$FILES_APPEX"
 fi
 
 # Dock app executable (docs/design/dock.md): copied into each per-app shim bundle.
@@ -350,7 +360,7 @@ codesign --force --sign - "$APP/Contents/Helpers/pocketdeck-mcp"
 if [ "$WITH_FILES" = 1 ]; then
     # The app carries the App Group the Files extension shares with it (an
     # unsandboxed app may hold an app group, docs/design/files.md §1).
-    codesign --force --sign - --entitlements Extensions/Files/PocketDeckFiles.entitlements "$APP"
+    codesign --force --sign - --entitlements "$APP_ENTITLEMENTS" "$APP"
 else
     codesign --force --sign - "$APP"
 fi
