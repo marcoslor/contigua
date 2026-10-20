@@ -168,6 +168,9 @@ final class WatchChannel {
     private var items: Set<String> = []
     private var connection: BridgeConnection?
     private var thread: Thread?
+    /// A fresh id per request: a reply that never came must not poison the next
+    /// subscribe (the app refuses a duplicate live id).
+    private var nextID: UInt32 = 1
 
     init(domain: NSFileProviderDomain) {
         self.domain = domain
@@ -184,12 +187,25 @@ final class WatchChannel {
         }
         if on { items.insert(item) } else { items.remove(item) }
         lock.unlock()
-        if !send(.watch(id: 1, items: [item], on: on)) {
+        if !send(.watch(id: freshID(), items: [item], on: on)) {
             // The app is not there (yet, or any more): one reconnect, then a
             // full re-subscription, so a restarted app knows the whole set.
-            if !connect() { return }
-            _ = send(.watch(id: 1, items: Array(items), on: true))
+            if !connect() {
+                log.notice("watch: the app is not reachable")
+                return
+            }
+            let set = Array(items)
+            if !set.isEmpty {
+                _ = send(.watch(id: freshID(), items: set, on: true))
+            }
         }
+    }
+
+    private func freshID() -> UInt32 {
+        lock.lock(); defer { lock.unlock() }
+        nextID += 1
+        if nextID == 0 { nextID = 2 }
+        return nextID
     }
 
     /// Sends on the current connection; false means it is gone.

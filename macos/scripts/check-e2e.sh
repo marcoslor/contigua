@@ -4930,14 +4930,24 @@ PY
         && phone_kept="yes"
     printf 'name=%s\nphone_kept=%s\nrefusals=%s\ncp_error=%s\n' \
         "$landed" "$phone_kept" "$refusals" "$(head -1 "$WORK/collide.err")" > "$WORK/collision.txt"
-    [ "$phone_kept" = "yes" ] && [ "${refusals:-0}" -ge 1 ] \
-        && ok "WRITE a copy onto a name the phone has is refused as fs_exists and leaves the phone's bytes ($refusals refusals, landed=${landed:+another name})" \
-        || bad "WRITE the collision copy: phone_kept=$phone_kept refusals=$refusals landed='${landed:-none}' err=$(head -1 "$WORK/collide.err")"
+    [ "$phone_kept" = "yes" ] \
+        && ok "WRITE a copy onto a name the phone has leaves the phone's bytes" \
+        || bad "WRITE the collision copy replaced the phone's file"
+    # S5: the extension resolves the collision itself, so the Mac's copy lands
+    # as `collide 2.bin` and nothing is left pending for it.
+    [ "$landed" = "collide 2.bin" ] \
+        && ok "WRITE the copy lands under the next free name (name hash $(printf '%s' "$landed" | shasum -a 256 | cut -c1-12))" \
+        || bad "WRITE the collision copy landed as '${landed:-nothing}' (refusals=$refusals)"
     if [ -n "$landed" ]; then
-        ok "WRITE the system named the copy differently ($(printf '%s' "$landed" | shasum -a 256 | cut -c1-12))"
         rm -f "$WORK/fsroot/Documents/$landed"
-    else
-        say "    collision: the system kept retrying the same name (no second name yet)"
+    fi
+    if command -v fileproviderctl >/dev/null 2>&1; then
+        perl -e 'alarm 20; exec @ARGV' fileproviderctl dump > "$WORK/fp-collide.txt" 2>&1 || true
+        local pending_collide
+        pending_collide="$(grep -Eic 'collide.*(pending|upload)' "$WORK/fp-collide.txt" || true)"
+        [ "${pending_collide:-0}" = "0" ] \
+            && ok "WRITE nothing is pending for the collision copy in fileproviderctl dump" \
+            || bad "WRITE the collision copy is still pending ($pending_collide lines)"
     fi
 
     # -- Bytes: the phone's exact file, out of the mount ----------------------
@@ -5082,6 +5092,84 @@ PY
     [ "$(shasum -a 256 "$WORK/cat32.bin" 2>/dev/null | cut -c1-64)" = "$want32" ] \
         && ok "FILES after the reconnect the 32 MiB file reads byte-identical" \
         || bad "FILES the 32 MiB file after reconnect is not identical"
+
+    # -- Phone-side changes reach the mount (S5, design §2/§5) ---------------
+    # Documents is open in Finder: a file made on the phone must appear in the
+    # mount within 10 s, a rename must replace it, a delete must remove it, and
+    # closing Finder must stop the phone's watch.
+    local watch_before watch_after
+    watch_before="$(grep -c "watch off" "$WORK/fake.err" 2>/dev/null || true)"
+    open -a Finder "$root/Documents" >/dev/null 2>&1 || true
+    sleep 3
+    python3 - "$WORK/fsroot/Documents" <<'PY'
+import os, sys
+open(os.path.join(sys.argv[1], "phonechange.txt"), "wb").write(b"made on the phone\n")
+PY
+    local seen="no" started took
+    started=$SECONDS
+    while [ $((SECONDS - started)) -lt 10 ]; do
+        if run_limited 15 ls "$root/Documents" 2>/dev/null | grep -qx 'phonechange.txt'; then
+            seen="yes"; break
+        fi
+        sleep 0.5
+    done
+    took=$((SECONDS - started))
+    [ "$seen" = "yes" ] && [ "$took" -le 10 ] \
+        && ok "WATCH a file created on the phone appears in the mount in ${took}s" \
+        || bad "WATCH the phone-side create never reached the mount"
+    python3 - "$WORK/fsroot/Documents" <<'PY'
+import os, sys
+folder = sys.argv[1]
+os.rename(os.path.join(folder, "phonechange.txt"),
+          os.path.join(folder, "phonechange-renamed.txt"))
+PY
+    seen="no"
+    started=$SECONDS
+    while [ $((SECONDS - started)) -lt 10 ]; do
+        listing="$(run_limited 15 ls "$root/Documents" 2>/dev/null)"
+        if printf '%s\n' "$listing" | grep -qx 'phonechange-renamed.txt' \
+            && ! printf '%s\n' "$listing" | grep -qx 'phonechange.txt'; then
+            seen="yes"; break
+        fi
+        sleep 0.5
+    done
+    took=$((SECONDS - started))
+    [ "$seen" = "yes" ] && [ "$took" -le 10 ] \
+        && ok "WATCH a rename on the phone follows in the mount in ${took}s (one entry)" \
+        || bad "WATCH the phone-side rename did not follow in the mount"
+    sleep 2
+    screencapture -x "$WORK/finder-watch.png" 2>/dev/null \
+        && ok "WATCH screenshot of Finder after the phone-side change: $WORK/finder-watch.png" \
+        || bad "WATCH the screenshot after the phone-side change failed"
+    files_log > "$WORK/files-log-watch.txt" 2>/dev/null || true
+    if grep -q "phone watch on=true" "$WORK/files-log-watch.txt" 2>/dev/null \
+        || grep -q "watch on" "$WORK/fake.err" 2>/dev/null; then
+        ok "WATCH the extension asked the phone to watch the open folder"
+    else
+        bad "WATCH the phone was never asked to watch anything (bridge watch lines: $(grep -c 'bridge: watch' "$WORK/files-log-watch.txt" 2>/dev/null || echo 0), phone watch lines: $(grep -c 'phone watch' "$WORK/files-log-watch.txt" 2>/dev/null || echo 0))"
+    fi
+    python3 - "$WORK/fsroot/Documents" <<'PY'
+import os, sys
+os.unlink(os.path.join(sys.argv[1], "phonechange-renamed.txt"))
+PY
+    seen="no"
+    started=$SECONDS
+    while [ $((SECONDS - started)) -lt 10 ]; do
+        if ! run_limited 15 ls "$root/Documents" 2>/dev/null | grep -qx 'phonechange-renamed.txt'; then
+            seen="yes"; break
+        fi
+        sleep 0.5
+    done
+    took=$((SECONDS - started))
+    [ "$seen" = "yes" ] && [ "$took" -le 10 ] \
+        && ok "WATCH a delete on the phone removes the entry from the mount in ${took}s" \
+        || bad "WATCH the phone-side delete did not reach the mount"
+    osascript -e 'tell application "Finder" to close every window' >/dev/null 2>&1 || true
+    sleep 8
+    watch_after="$(grep -c "watch off" "$WORK/fake.err" 2>/dev/null || true)"
+    [ "${watch_after:-0}" -gt "${watch_before:-0}" ] \
+        && ok "WATCH closing the Finder window stopped the phone's watch" \
+        || bad "WATCH the phone kept watching after Finder closed the folder"
 
     # -- Finder shows it (screenshot) -----------------------------------------
     # The collision retries can still be in flight minutes later: after all of
