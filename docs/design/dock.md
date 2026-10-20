@@ -12,7 +12,7 @@ Launching it opens (or focuses) that app's PocketDeck window; quitting it closes
                        CFBundleName/DisplayName "WhatsApp (Pixel)", CFBundleIconFile AppIcon,
                        PDDeviceId, PDPackage, PDProfile, PDHostPath (the PocketDeck.app that made it)
   MacOS/PocketDeckShim the shim binary, copied from the host's Contents/MacOS
-  Resources/AppIcon.icns from IconCache (icons/<deviceId>/<pkg>.png), 16–1024 px
+  Resources/AppIcon.icns rendered by PhoneAppIcon (all sizes from one 1024 px render)
 ```
 
 - The folder is `~/Applications/PocketDeck Apps/` for the default profile (where Launchpad
@@ -24,6 +24,60 @@ Launching it opens (or focuses) that app's PocketDeck window; quitting it closes
   by `PropertyListSerialization`, so no escaping can break the plist.
 - Signing: the copied binary is ad-hoc signed with the bundle (`codesign --sign -`), like the
   host; then `LSRegisterURL` so `open`, Launchpad and Spotlight see it at once.
+
+## Icons
+
+One renderer, one image. `PhoneAppIcon.render(layers:flat:px:)` (pure CoreGraphics, no
+window) makes every app icon the Mac draws: the Deck tile, the Dock shim's `AppIcon.icns`,
+Spotlight thumbnails. The same pixels at different sizes, so a phone app looks the same in
+every place.
+
+### Shape, grid and finish
+
+- Canvas 1024×1024, body 824×824 centred (100 px margin on every side), transparent
+  outside the body. The body is a continuous squircle (a superellipse, exponent 4.9) whose
+  corner radius is 22.5 % of the side (185 px at 824) — the same fraction as the Deck's
+  glass tile (`GlassIcon.cornerFraction`).
+- Adaptive icons: `bg` then `fg` at **full opacity**, each cropped to the central 72 dp of
+  its 108 dp layer (the tile's `cropRect`/`zoomFactor` math, `zoomFactor` 3/2), clipped to
+  the body. No tint, no material over the colours: this is what the phone's launcher draws,
+  in Apple's shape.
+- Legacy (flat) icons: the flat image at 78 % of the body on a white plate, the way the
+  phone's launcher shows an icon with no adaptive layers.
+- Finish: two constants only — a soft top light (white 0 → 5.5 % over the top 40 % of the
+  body) and a thin inner specular edge (2 px at 8 % white, inset 1.5 % of the body). Neither
+  changes the colour at the centre (unit test: ΔE below 2 against the layer's colour).
+- Drop shadow: black at 30 %, blur 24 px, offset (0, −12) inside the margin, so the icon
+  has the platform's lift without drawing outside its canvas.
+
+### Sizes and caching
+
+- `apps.icon` gained an optional `px`: the pixel side of the 108 dp layer (default 216,
+  clamped to 216…1296). The phone renders `fg`/`bg`/`mono` at that size; `flat` stays 96 px
+  unless `px` is given, then it is rendered at `px`·2/3. An older phone ignores `px` and
+  answers at 216: the Mac upscales those, which is still better than a 96 px flat icon.
+- The Deck asks 432 and renders the 56 pt tile from a 224 px render; building a Dock shim
+  asks 1296 and renders one 1024 px icon (its 864 px visible crop downscales into the
+  824 px body, so nothing is upscaled), from which every `.icns` size is scaled.
+- `IconCache` keeps one slot per size class (`deck` = 432, `dock` = 1296), so a 1296 render
+  is never replaced by a 216 one; entries from before size classes are read as `deck`.
+- The shim's `Info.plist` carries `PDIconVersion`, bumped with the renderer. A shim with an
+  older or missing version is rebuilt the next time it is followed or launched, then
+  `lsregister -f` runs on it so the Dock reads the new icon. Shims of other profiles are
+  never touched.
+
+### Step 0: can a runtime-built icon get Liquid Glass?
+
+No supported runtime path exists. macOS 26 only draws a layered Liquid Glass icon from an
+`Assets.car` built from an Icon Composer `.icon` package by `actool` (Xcode 26) and named by
+`CFBundleIconName` — Apple's "Creating your app icon using Icon Composer" and WWDC25
+session 361, which describe the `.icon` → `Assets.car` pipeline as the only delivery route.
+`iconutil` converts `.iconset`/`.icns` and extracts icons from an existing `.car`; it cannot
+write layers. `CFBundleIconName` names a catalog entry, and no public API writes
+`Assets.car`. `NSWorkspace.setIcon(_:forFile:options:)` and `NSApplication.applicationIconImage`
+take a single bitmap, which the platform treats as a legacy icon (the grey plate). A stock
+Mac has no `actool` either (it ships with Xcode). So the shim keeps a shape-perfect legacy
+`.icns`; step 5 records what the platform does with it.
 
 ## Launch → window (IPC)
 
