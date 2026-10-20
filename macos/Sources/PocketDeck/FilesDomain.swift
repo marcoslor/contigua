@@ -42,16 +42,27 @@ func filesWait(_ timeout: TimeInterval, _ start: (@escaping (Error?) -> Void) ->
 }
 
 /// The one domain this profile owns. The identifier is the profile name (one
-/// domain per profile, as the socket name is); the display name is the phone's
-/// nickname when the profile knows one, else "PocketDeck" (design §3).
+/// domain per profile, as the socket name is); the display name is the Finder
+/// location: "PocketDeck (<phone name>)" (design §3, "Fixes 10-20").
 enum FilesDomain {
     static func identifier(profile: Profile) -> String { profile.name }
 
     static func displayName(profile: Profile) -> String {
-        let remembered = RememberedPhones(profile: profile)
-        guard let phone = remembered.active else { return "PocketDeck" }
-        let nickname = PhoneNicknames.read(from: profile.defaults, deviceId: phone.id)
-        return nickname.isEmpty ? "PocketDeck" : nickname
+        guard let phone = RememberedPhones(profile: profile).active else {
+            return locationName(phoneName: "")
+        }
+        // The one name every other surface uses: the nickname if set, else the
+        // name the phone reports.
+        let name = RememberedPhones(profile: profile).displayName(for: phone.ref, fallback: "")
+        return locationName(phoneName: name)
+    }
+
+    /// The Finder location for a phone name: "PocketDeck (<name>)", and plain
+    /// "PocketDeck" while no name is known (no phone remembered, or one that
+    /// has not reported a name yet).
+    static func locationName(phoneName: String) -> String {
+        let name = PhoneNicknames.normalize(phoneName)
+        return name.isEmpty ? "PocketDeck" : "PocketDeck (\(name))"
     }
 
     static func domain(profile: Profile) -> NSFileProviderDomain {

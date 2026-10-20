@@ -193,6 +193,9 @@ final class ConnectionController {
     private func refreshNickname(deviceId: String) {
         nicknamesRevision += 1
         rememberedPhones = remembered.all
+        // The Finder location carries the phone's name too (design "Fixes
+        // 10-20"); a rename updates the mounted domain in place.
+        filesDomain.refreshDisplayName()
         guard let phone = remembered.phone(id: deviceId)?.ref else { return }
         let name = displayName(for: phone)
         if link.phone?.id == deviceId { windows.setPhoneName(name) }
