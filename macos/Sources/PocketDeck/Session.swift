@@ -1073,7 +1073,13 @@ final class Session {
     }
 
     func requestApps() { sendJSON(["t": "apps.list"]) }
-    func requestIcon(pkg: String) { sendJSON(["t": "apps.icon", "pkg": pkg]) }
+    /// `px` is the pixel side of the 108 dp layer the Mac will draw (docs/PROTOCOL.md);
+    /// an older phone ignores it and answers at 216.
+    func requestIcon(pkg: String, px: Int? = nil) {
+        var message: [String: Any] = ["t": "apps.icon", "pkg": pkg]
+        if let px { message["px"] = px }
+        sendJSON(message)
+    }
     func openApp(stream: UInt32, pkg: String, activity: String?, width: Int, height: Int, dpi: Double) {
         var message: [String: Any] = ["t": "window.open", "stream": Int(stream), "w": width, "h": height, "dpi": Int(dpi.rounded()), "pkg": pkg]
         if let activity { message["activity"] = activity }

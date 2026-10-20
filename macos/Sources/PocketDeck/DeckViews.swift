@@ -591,7 +591,7 @@ struct AppGrid: View {
                         grid {
                             ForEach(apps, id: \.pkg) { app in
                                 AppCell(app: app, icon: controller.icons[app.pkg],
-                                        layers: controller.iconLayers[app.pkg],
+                                        rendered: controller.deckIcons[app.pkg],
                                         iconIsMissing: iconIsMissing(app),
                                         selected: navigator.selection == app.pkg) { controller.openApp(app) }
                                     .id(app.pkg)
@@ -636,7 +636,8 @@ struct AppGrid: View {
 struct AppCell: View {
     let app: AppInfo
     let icon: NSImage?
-    let layers: AppIconLayers?
+    /// The shared renderer's icon for the tile (docs/design/dock.md §Icons).
+    let rendered: NSImage?
     let iconIsMissing: Bool
     let selected: Bool
     let open: () -> Void
@@ -646,7 +647,7 @@ struct AppCell: View {
     var body: some View {
         Button(action: open) {
             VStack(spacing: 6) {
-                AppIconView(app: app, image: icon, layers: layers, isMissing: iconIsMissing,
+                AppIconView(app: app, image: icon, rendered: rendered, isMissing: iconIsMissing,
                             glassOn: glassIconsOn, hovering: hovering)
                 Text(app.label)
                     .font(.caption)

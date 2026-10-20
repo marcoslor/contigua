@@ -31,6 +31,13 @@ enum DockMessage {
     /// ones write false. Turning "Show phone apps in the Dock" off stops only
     /// the unpinned ones.
     static let plistPinned = "PDPinned"
+    /// The renderer version the shim's icon was made with (docs/design/dock.md
+    /// §Icons): a bundle with an older or missing one is rebuilt.
+    static let plistIconVersion = "PDIconVersion"
+    /// Whether that icon was drawn from the phone's adaptive layers (true) or
+    /// from a flat icon on the plate (false). Layers arriving later make a
+    /// plate-built shim stale, so it is rebuilt the next time it is followed.
+    static let plistIconLayers = "PDIconLayers"
 
     /// The shim executable inside PocketDeck.app/Contents/MacOS and every shim bundle.
     static let shimExecutable = "PocketDeckShim"

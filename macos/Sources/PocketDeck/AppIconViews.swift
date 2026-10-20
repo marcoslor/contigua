@@ -26,10 +26,10 @@ struct AppIconLayers: Equatable {
 }
 
 /// The glass tile's pure geometry and the variant a grid icon renders
-/// (docs/DESIGN.md "The app grid"). The tile is a continuous squircle at
-/// 22.5 % of its side; a layered (adaptive) icon is cropped to the central
-/// 2/3 of its 216 px canvas (the 72 dp visible area of the 108 dp canvas)
-/// and laid over the glass; a flat icon sits inset at 78 % of the side.
+/// (docs/DESIGN.md "The app grid"). With glass icons on, the tile draws the
+/// shared renderer's output (docs/design/dock.md §Icons): the macOS squircle,
+/// the adaptive layers at full opacity or the flat icon on its plate. With the
+/// setting off it keeps the bare flat image.
 enum GlassIcon {
     static let tileSide: CGFloat = 56
     static let cornerFraction: CGFloat = 0.225
@@ -54,12 +54,9 @@ enum GlassIcon {
     /// What the grid draws for one app cell, in order of what the phone sent
     /// and the setting's state.
     enum Variant: Equatable {
-        /// The glass tile, tinted with the cropped `bg` under the material
-        /// and the cropped `fg` on top.
-        case adaptiveTile(AppIconLayers)
-        /// The glass tile, the flat image inset at 78 %, no tint.
-        case flatTile(NSImage)
-        /// Setting off: today's flat look.
+        /// The shared renderer's icon (macOS shape, the phone's colours).
+        case rendered(NSImage)
+        /// Setting off: the phone's flat image as it arrives.
         case bare(NSImage)
         /// Quietly waiting for the phone's answer.
         case placeholder
@@ -67,10 +64,10 @@ enum GlassIcon {
         case fallback
     }
 
-    static func variant(layers: AppIconLayers?, image: NSImage?,
+    static func variant(rendered: NSImage?, image: NSImage?,
                         isMissing: Bool, glassOn: Bool) -> Variant {
         guard let image else { return isMissing ? .fallback : .placeholder }
-        if glassOn { return layers.map { .adaptiveTile($0) } ?? .flatTile(image) }
+        if glassOn, let rendered { return .rendered(rendered) }
         return .bare(image)
     }
 }
@@ -112,50 +109,37 @@ struct FallbackAppIcon: View {
     }
 }
 
-/// One grid icon. With the setting on: a Liquid Glass tile (docs/DESIGN.md
-/// "The app grid") — an adaptive icon tints the glass with its cropped
-/// `bg` layer and its `fg` sits on top; a flat icon is centred at 78 % of
-/// the tile. With it off: today's look exactly (the flat image, the
-/// generated tile or the quiet placeholder).
+/// One grid icon. With the setting on: the shared renderer's image
+/// (docs/design/dock.md §Icons), already shaped, so the tile only scales it —
+/// no material over the colours, a small lift on hover. With it off: today's
+/// look exactly (the flat image, the generated tile or the quiet placeholder).
 struct AppIconView: View {
     let app: AppInfo
     let image: NSImage?
-    private(set) var layers: AppIconLayers?
+    /// The renderer's output at the tile's size (`ConnectionController.deckIcons`).
+    private(set) var rendered: NSImage?
     /// The phone is not going to send one (it said so, or the link is down).
     private(set) var isMissing: Bool
     private(set) var glassOn: Bool
     /// The pointer is over the cell: the tile responds to it.
     private(set) var hovering = false
 
-    init(app: AppInfo, image: NSImage?, layers: AppIconLayers? = nil,
+    init(app: AppInfo, image: NSImage?, rendered: NSImage? = nil,
          isMissing: Bool = false, glassOn: Bool = true, hovering: Bool = false) {
         self.app = app
         self.image = image
-        self.layers = layers
+        self.rendered = rendered
         self.isMissing = isMissing
         self.glassOn = glassOn
         self.hovering = hovering
     }
 
-    private var shape: RoundedRectangle {
-        RoundedRectangle(cornerRadius: GlassIcon.cornerRadius, style: .continuous)
-    }
-
     var body: some View {
-        switch GlassIcon.variant(layers: layers, image: image, isMissing: isMissing, glassOn: glassOn) {
-        case .adaptiveTile(let layers):
-            ZStack {
-                cropped(layers.bg).opacity(0.35)
-                cropped(layers.fg)
-            }
-            .frame(width: GlassIcon.tileSide, height: GlassIcon.tileSide)
-            .clipShape(shape)
-            .glassEffect(hovering ? .regular.interactive() : .regular, in: shape)
-        case .flatTile(let image):
-            Image(nsImage: image).resizable().interpolation(.high)
-                .frame(width: GlassIcon.flatSide, height: GlassIcon.flatSide)
+        switch GlassIcon.variant(rendered: rendered, image: image, isMissing: isMissing, glassOn: glassOn) {
+        case .rendered(let rendered):
+            Image(nsImage: rendered).resizable().interpolation(.high)
                 .frame(width: GlassIcon.tileSide, height: GlassIcon.tileSide)
-                .glassEffect(hovering ? .regular.interactive() : .regular, in: shape)
+                .scaleEffect(hovering ? 1.04 : 1)
         case .bare(let image):
             Image(nsImage: image).resizable().interpolation(.high)
                 .clipShape(.rect(cornerRadius: 13, style: .continuous))
@@ -164,15 +148,5 @@ struct AppIconView: View {
         case .fallback:
             FallbackAppIcon(label: app.label, pkg: app.pkg)
         }
-    }
-
-    /// A 108 dp layer drawn so its central 2/3 (the 72 dp visible area of the
-    /// 216 px canvas) covers the tile: the layer is scaled up once and a half
-    /// and centred, and the squircle above clips whatever reaches past it.
-    private func cropped(_ layer: NSImage) -> some View {
-        Image(nsImage: layer)
-            .resizable().interpolation(.high)
-            .frame(width: GlassIcon.tileSide * GlassIcon.zoomFactor,
-                   height: GlassIcon.tileSide * GlassIcon.zoomFactor)
     }
 }

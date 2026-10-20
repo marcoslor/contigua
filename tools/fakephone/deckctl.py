@@ -24,6 +24,7 @@ import select
 import signal
 import socket
 import ssl
+import struct
 import subprocess
 import sys
 import threading
@@ -919,15 +920,38 @@ def cmd_apps(client, _args):
     return 0
 
 
+def _png_side(raw):
+    """The pixel side of a PNG, or 0 when the bytes are not one."""
+    if len(raw) >= 24 and raw.startswith(b"\x89PNG\r\n\x1a\n"):
+        return struct.unpack(">I", raw[16:20])[0]
+    return 0
+
+
 def cmd_icon(client, args):
-    client.send_json({"t": "apps.icon", "pkg": args.pkg})
+    request = {"t": "apps.icon", "pkg": args.pkg}
+    if args.px is not None:
+        request["px"] = args.px
+    started = time.time()
+    client.send_json(request)
     msg = expect_json(client, "icon")
+    elapsed_ms = (time.time() - started) * 1000.0
     raw = base64.b64decode(msg.get("png", ""))
     if not raw.startswith(b"\x89PNG\r\n\x1a\n"):
         raise proto.ProtocolError("icon payload is not a PNG")
     with open(args.out, "wb") as fp:
         fp.write(raw)
-    print("icon %s -> %s (%d bytes)" % (args.pkg, args.out, len(raw)))
+    layers = []
+    for name in ("fg", "bg", "mono"):
+        if msg.get(name):
+            data = base64.b64decode(msg[name])
+            layers.append("%s=%dpx/%dB" % (name, _png_side(data), len(data)))
+            if args.layers_dir:
+                os.makedirs(args.layers_dir, exist_ok=True)
+                with open(os.path.join(args.layers_dir, "%s-%s.png" % (args.pkg, name)), "wb") as fp:
+                    fp.write(data)
+    print("icon %s px=%s png=%dpx/%dB %s total_ms=%.0f -> %s"
+          % (args.pkg, args.px if args.px is not None else "default", _png_side(raw), len(raw),
+             " ".join(layers) if layers else "flat", elapsed_ms, args.out))
     return 0
 
 
@@ -2279,6 +2303,8 @@ def build_parser():
     sp = sub.add_parser("icon", help="fetch an app icon PNG", **spp)
     sp.add_argument("pkg")
     sp.add_argument("--out", required=True, help="write the PNG here")
+    sp.add_argument("--px", type=int, help="the 108 dp layer size to ask for (apps.icon's px)")
+    sp.add_argument("--layers-dir", help="also write fg/bg/mono layer PNGs here")
 
     sp = sub.add_parser("open", help="open a window and record video", **spp)
     sp.add_argument("target", nargs="?", help="package to launch")

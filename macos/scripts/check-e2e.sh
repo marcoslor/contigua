@@ -5793,6 +5793,20 @@ dock_shim_pids() { [ -n "${WORK:-}" ] && pgrep -f -- "$(dock_dir)/.*/Contents/Ma
 # opens app windows without --dock-dir). Every run cleans its own.
 profile_dock_dir() { echo "$HOME/Library/Application Support/PocketDeck-$PROFILE/Dock Apps"; }
 
+# icon_pixel <png> <x> <y> — "R G B A" of one pixel of a rendered icon.
+icon_pixel() {
+    ffmpeg -v error -i "$1" -vf "crop=1:1:$2:$3" -f rawvideo -pix_fmt rgba - 2>/dev/null \
+        | od -An -tu1 | tr -s ' ' | sed 's/^ //;s/ $//'
+}
+
+# near <pixel> <r> <g> <b> <tolerance> — the pixel's RGB is within tolerance.
+near() {
+    echo "$1" | awk -v r="$2" -v g="$3" -v b="$4" -v t="$5" '{
+        dr = $1 - r; dg = $2 - g; db = $3 - b
+        exit !((dr * dr + dg * dg + db * db) <= t * t)
+    }'
+}
+
 # remove_dock_apps — this run's shims stop, leave LaunchServices and the disk.
 remove_dock_apps() {
     [ -n "${WORK:-}" ] || return 0
@@ -5967,9 +5981,57 @@ check_dock() {
         && ok "DOCK unregistered from LaunchServices" || bad "DOCK still registered with LaunchServices"
     stop_app
     defaults delete "$DEFAULTS_SUITE" showAppsInDock >/dev/null 2>&1
+    remove_dock_apps
+
+    # Icons (docs/design/dock.md §Icons): an adaptive app's shim carries one
+    # 1024 px render in the macOS grid — PDIconVersion, clear corners, the bg
+    # colour at the centre and the fg just off it — not a 96 px upscale.
+    local adaptive="com.android.chrome" chrome version big corner centre inside
+    chrome="$dir/Chrome (FakePhone).app"
+    launch --connect "127.0.0.1:$PORT" --dock-dir "$dir" --dock-add "$adaptive" --quit-after 60
+    wait_until 30 eval '[ -d "$chrome" ]' \
+        || { bad "DOCK icon: no shim for $adaptive"; stop_app; stop_fakephone; return 1; }
+    stop_app
+    version="$(/usr/libexec/PlistBuddy -c 'Print :PDIconVersion' "$chrome/Contents/Info.plist" 2>/dev/null)"
+    case "$version" in
+        ''|*[!0-9]*) bad "DOCK icon: no PDIconVersion in the shim" ;;
+        *) [ "$version" -ge 1 ] && ok "DOCK icon: PDIconVersion $version" \
+               || bad "DOCK icon: PDIconVersion is $version" ;;
+    esac
+    rm -rf "$WORK/shim.iconset"
+    iconutil -c iconset "$chrome/Contents/Resources/AppIcon.icns" -o "$WORK/shim.iconset" 2>/dev/null
+    big="$WORK/shim.iconset/icon_512x512@2x.png"
+    if [ -f "$big" ]; then
+        ok "DOCK icon: the .icns has a 1024 px representation"
+        corner="$(icon_pixel "$big" 2 2)"
+        centre="$(icon_pixel "$big" 512 512)"
+        inside="$(icon_pixel "$big" 256 512)"
+        if [ "$(echo "$corner" | awk '{print $4}')" = "0" ]; then
+            ok "DOCK icon: the canvas corners are transparent"
+        else
+            bad "DOCK icon: a corner pixel is not transparent ($corner)"
+        fi
+        near "$centre" 255 255 255 4 \
+            && ok "DOCK icon: the centre is the phone's bg colour ($centre)" \
+            || bad "DOCK icon: the centre is not the bg colour ($centre)"
+        near "$inside" 51 144 236 12 \
+            && ok "DOCK icon: the fg layer is drawn on top ($inside)" \
+            || bad "DOCK icon: the fg layer is missing ($inside)"
+    else
+        bad "DOCK icon: the .icns has no 1024 px representation"
+    fi
+
+    # A shim from an older renderer is rebuilt the next time it is followed,
+    # and LaunchServices re-reads it so the Dock shows the new icon.
+    /usr/libexec/PlistBuddy -c 'Set :PDIconVersion 0' "$chrome/Contents/Info.plist" 2>/dev/null
+    launch --connect "127.0.0.1:$PORT" --dock-dir "$dir" --open "$adaptive" --close-stream 1:12 --quit-after 45
+    wait_until 40 eval '[ "$(/usr/libexec/PlistBuddy -c "Print :PDIconVersion" "$chrome/Contents/Info.plist" 2>/dev/null)" -ge 1 ] 2>/dev/null' \
+        && ok "DOCK icon: an old-version shim was rebuilt" \
+        || bad "DOCK icon: the old-version shim was not rebuilt"
+    stop_app
+    remove_dock_apps
 
     stop_fakephone
-    remove_dock_apps
     wait_until 5 no_fakephone
 }
 

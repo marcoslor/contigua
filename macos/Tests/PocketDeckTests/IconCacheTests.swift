@@ -63,6 +63,43 @@ final class IconCacheTests: XCTestCase {
         XCTAssertNil(layers?.mono)
     }
 
+    func testTheDeckAndDockSlotsNeverReplaceEachOther() {
+        let cache = IconCache(directory: directory)
+        let deckFG = png(40), deckBG = png(120), dockFG = png(41), dockBG = png(121)
+        cache.store(png(10), fg: deckFG, bg: deckBG, pkg: "a.b", deviceId: "d1", px: 432)
+        cache.store(png(10), fg: dockFG, bg: dockBG, pkg: "a.b", deviceId: "d1", px: 1296)
+
+        XCTAssertEqual(cache.loadLayerData(pkg: "a.b", deviceId: "d1", sizeClass: .deck)?.fg, deckFG)
+        XCTAssertEqual(cache.loadLayerData(pkg: "a.b", deviceId: "d1", sizeClass: .dock)?.fg, dockFG)
+
+        // A later 216 px answer fills the Deck slot only: the 1296 render stays.
+        cache.store(png(11), fg: png(42), bg: png(122), pkg: "a.b", deviceId: "d1", px: 216)
+        XCTAssertEqual(cache.loadLayerData(pkg: "a.b", deviceId: "d1", sizeClass: .deck)?.fg, png(42))
+        XCTAssertEqual(cache.loadLayerData(pkg: "a.b", deviceId: "d1", sizeClass: .dock)?.fg, dockFG)
+        XCTAssertTrue(cache.hasLayers(pkg: "a.b", deviceId: "d1"))
+    }
+
+    func testAFlatAnswerClosesOnlyItsOwnSlot() {
+        let cache = IconCache(directory: directory)
+        cache.store(png(10), pkg: "a.b", deviceId: "d1", px: 432)
+        XCTAssertTrue(cache.layersAnswered(pkg: "a.b", deviceId: "d1", sizeClass: .deck),
+                      "the phone answered: no layers is an answer")
+        XCTAssertFalse(cache.layersAnswered(pkg: "a.b", deviceId: "d1", sizeClass: .dock),
+                       "the Dock's size class was never asked")
+
+        cache.store(png(10), pkg: "a.b", deviceId: "d1", px: 1296)
+        XCTAssertTrue(cache.layersAnswered(pkg: "a.b", deviceId: "d1", sizeClass: .dock))
+        XCTAssertFalse(cache.hasLayers(pkg: "a.b", deviceId: "d1"))
+    }
+
+    func testTheRequestSizeDecidesTheSlot() {
+        XCTAssertEqual(IconSizeClass.forRequest(216), .deck)
+        XCTAssertEqual(IconSizeClass.forRequest(432), .deck)
+        XCTAssertEqual(IconSizeClass.forRequest(1296), .dock)
+        XCTAssertEqual(IconSizeClass.deck.layerPx, 432)
+        XCTAssertEqual(IconSizeClass.dock.layerPx, 1296)
+    }
+
     func testAFlatOnlyEntryStaysFlat() {
         let cache = IconCache(directory: directory)
         cache.store(png(10), pkg: "com.a.b", deviceId: "d1")

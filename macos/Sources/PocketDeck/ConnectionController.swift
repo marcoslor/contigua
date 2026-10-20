@@ -204,7 +204,7 @@ final class ConnectionController {
         let apps = link.phone?.id == deviceId && appsLoaded ? self.apps : appsCache.load(deviceId: deviceId)
         guard !apps.isEmpty else { return }
         spotlight.index(apps: apps, deviceId: deviceId, phoneName: name,
-                        iconData: { IconCache.shared.loadData(pkg: $0, deviceId: deviceId) })
+                        iconData: { IconCache.shared.renderedPNG(pkg: $0, deviceId: deviceId, px: 256) })
         dockApps.reconcile(deviceId: deviceId, apps: apps, phoneName: name,
                            keep: deviceId == link.phone?.id ? dockPkgsOfOpenWindows : [])
         dockRevision += 1
@@ -224,10 +224,18 @@ final class ConnectionController {
     private(set) var icons: [String: NSImage] = [:]
     /// The adaptive layers of the icons that have them (`deck.glassIcons`).
     private(set) var iconLayers: [String: AppIconLayers] = [:]
+    /// The shared renderer's icon for the Deck tile (docs/design/dock.md §Icons).
+    private(set) var deckIcons: [String: NSImage] = [:]
     /// Packages the phone answered with no icon at all.
     private(set) var missingIcons: Set<String> = []
     /// The one re-request a flat cached icon gets per connection.
     private let layerRefresh = IconLayerRefresh()
+    /// The `px` sizes asked for but not answered yet, per package: a reply does
+    /// not echo `px`, so the request order says which size class it fills.
+    private var iconRequests: [String: [Int]] = [:]
+    /// The Dock's 1296 px icon was asked once this connection (the shim waits
+    /// for it the first time, docs/design/dock.md §Icons).
+    private var dockIconAsked: Set<String> = []
     private(set) var status: PhoneStatus?
     /// `ring.state` from the phone: a ring this Mac started is still playing.
     private(set) var ringing = false
@@ -903,12 +911,24 @@ final class ConnectionController {
         guard showAppsInDock, dockApps.isAvailable, let phone = link.phone else { return }
         guard let label = appLabel(pkg), !dockEstablishing.contains("\(phone.id)/\(pkg)") else { return }
         if dockApps.boundStreams.contains(stream) { return }
+        if dockApps.isRunning(deviceId: phone.id, pkg: pkg) { return }
+        let state = iconState(pkg: pkg, deviceId: phone.id)
+        // The Dock draws one 1024 px icon from the phone's 1296 px layers: ask
+        // for them once and wait (a flat icon, or a phone that predates `px`,
+        // needs no wait). docs/design/dock.md §Icons.
+        if state == .cached, !dockIconReady(pkg: pkg, deviceId: phone.id) {
+            if dockIconAsked.insert(pkg).inserted { requestIcon(pkg, px: IconSizeClass.dock.layerPx) }
+            return
+        }
+        let info = dockApps.shimIconInfo(deviceId: phone.id, pkg: pkg)
         let decision = DockFollow.decide(
             settingOn: showAppsInDock, shimBinary: dockApps.isAvailable, phoneKnown: true,
             shimExists: dockApps.hasShim(deviceId: phone.id, pkg: pkg),
-            shimRunning: dockApps.isRunning(deviceId: phone.id, pkg: pkg),
+            shimRunning: false,
             shimHasIcon: dockApps.shimHasIcon(deviceId: phone.id, pkg: pkg),
-            icon: iconState(pkg: pkg, deviceId: phone.id))
+            shimIconVersion: info?.version ?? 0, shimIconLayers: info?.layers ?? false,
+            hasLayers: IconCache.shared.hasLayers(pkg: pkg, deviceId: phone.id),
+            icon: state)
         switch decision {
         case .skip, .wait:
             return
@@ -966,6 +986,22 @@ final class ConnectionController {
     private func iconState(pkg: String, deviceId: String) -> DockFollow.IconState {
         if IconCache.shared.loadData(pkg: pkg, deviceId: deviceId) != nil { return .cached }
         return missingIcons.contains(pkg) ? .reportedMissing : .unknown
+    }
+
+    /// Whether the Dock's size class has an answer: 1296 px layers, or a flat
+    /// answer from a phone with no adaptive layers (it must not be asked again).
+    private func dockIconReady(pkg: String, deviceId: String) -> Bool {
+        let cache = IconCache.shared
+        if cache.layersAnswered(pkg: pkg, deviceId: deviceId, sizeClass: .dock) { return true }
+        return !cache.hasLayers(pkg: pkg, deviceId: deviceId)
+    }
+
+    /// Asks the phone for one icon at `px`, remembering the size so the reply
+    /// lands in the right cache slot.
+    private func requestIcon(_ pkg: String, px: Int) {
+        guard let session else { return }
+        iconRequests[pkg, default: []].append(px)
+        session.requestIcon(pkg: pkg, px: px)
     }
 
     // MARK: Links (docs/design/links.md)
@@ -1356,11 +1392,19 @@ final class ConnectionController {
         status = nil
         icons = [:]
         iconLayers = [:]
+        deckIcons = [:]
         missingIcons = []
         for app in apps {
             if let image = IconCache.shared.load(pkg: app.pkg, deviceId: ref.id) { icons[app.pkg] = image }
             loadCachedLayers(app.pkg, deviceId: ref.id)
+            refreshDeckIcon(app.pkg)
         }
+    }
+
+    /// The Deck tile's image: one render of the layers (or the flat icon) at the
+    /// size the 56 pt tile needs, so every cell draws the same shaped icon.
+    private func refreshDeckIcon(_ pkg: String) {
+        deckIcons[pkg] = PhoneAppIcon.image(layers: iconLayers[pkg], flat: icons[pkg], px: 224)
     }
 
     /// A cache entry that has layers goes straight into the grid (no
@@ -1368,6 +1412,7 @@ final class ConnectionController {
     private func loadCachedLayers(_ pkg: String, deviceId: String) {
         guard iconLayers[pkg] == nil, let data = IconCache.shared.loadLayerData(pkg: pkg, deviceId: deviceId) else { return }
         iconLayers[pkg] = Self.glassLayers(fg: data.fg, bg: data.bg, mono: data.mono)
+        refreshDeckIcon(pkg)
     }
 
     /// Decode the `icon` message's layer fields; incomplete or undecodable
@@ -1754,14 +1799,23 @@ final class ConnectionController {
         case .apps(let list):
             appsReceived(list)
         case .icon(let pkg, let png, let fg, let bg, let mono):
+            // The size class the reply fills: what was asked for this package,
+            // oldest request first (a reply does not echo `px`).
+            let askedPx = iconRequests[pkg]?.isEmpty == false ? iconRequests[pkg]!.removeFirst() : nil
             if let image = NSImage(data: png) {
                 icons[pkg] = image
                 windows.setIcon(image, pkg: pkg)
-                if let id = link.phone?.id { IconCache.shared.store(png, fg: fg, bg: bg, mono: mono, pkg: pkg, deviceId: id) }
+                if let id = link.phone?.id {
+                    IconCache.shared.store(png, fg: fg, bg: bg, mono: mono, pkg: pkg, deviceId: id,
+                                           px: askedPx ?? 216)
+                }
                 // A layered icon lands only when it decodes whole; without
                 // layers the entry is cleared, so a flat icon from a phone
                 // that predates layers replaces a stale one.
-                iconLayers[pkg] = Self.glassLayers(fg: fg, bg: bg, mono: mono)
+                if askedPx == nil || IconSizeClass.forRequest(askedPx!) == .deck {
+                    iconLayers[pkg] = Self.glassLayers(fg: fg, bg: bg, mono: mono)
+                }
+                refreshDeckIcon(pkg)
             } else {
                 missingIcons.insert(pkg)
             }
@@ -1975,6 +2029,8 @@ final class ConnectionController {
         }
         lastAttemptFailed = false
         layerRefresh.reset()
+        iconRequests = [:]
+        dockIconAsked = []
         let hadWindows = !windows.openStreams.isEmpty
         windows.phone = info
         // Every window title carries the display name from here on.
@@ -2062,19 +2118,19 @@ final class ConnectionController {
                 windows.setIcon(cached, pkg: app.pkg)
                 loadCachedLayers(app.pkg, deviceId: id)
             } else {
-                session?.requestIcon(pkg: app.pkg)
+                requestIcon(app.pkg, px: IconSizeClass.deck.layerPx)
             }
         }
         // A cached icon without layers may predate them: ask once per
-        // connection, so a phone that has layers catches the glass look up.
+        // connection, so a phone that has layers catches the rendered look up.
         if GlassIconsSetting.isEnabled(in: profile.defaults), let id = link.phone?.id {
             for app in list where iconLayers[app.pkg] == nil && icons[app.pkg] != nil && IconCache.shared.hasLayers(pkg: app.pkg, deviceId: id) == false {
-                if layerRefresh.allow(pkg: app.pkg) { session?.requestIcon(pkg: app.pkg) }
+                if layerRefresh.allow(pkg: app.pkg) { requestIcon(app.pkg, px: IconSizeClass.deck.layerPx) }
             }
         }
         if let ref = link.phone {
             spotlight.index(apps: list, deviceId: ref.id, phoneName: displayName(for: ref),
-                            iconData: { IconCache.shared.loadData(pkg: $0, deviceId: ref.id) })
+                            iconData: { IconCache.shared.renderedPNG(pkg: $0, deviceId: ref.id, px: 256) })
             dockApps.reconcile(deviceId: ref.id, apps: list, phoneName: displayName(for: ref),
                                keep: dockPkgsOfOpenWindows)
         }
