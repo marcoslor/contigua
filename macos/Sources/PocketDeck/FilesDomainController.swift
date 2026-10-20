@@ -139,7 +139,7 @@ final class FilesDomainController {
     func sessionReady(_ up: Bool) {
         guard up != sessionUp else { return }
         sessionUp = up
-        guard enabled, addedLocally || manager.domain(identifier: identifier) != nil else { return }
+        guard addedLocally || manager.domain(identifier: identifier) != nil else { return }
         if up {
             manager.reconnect(identifier: identifier) { _ in }
             manager.signalEnumerator(identifier: identifier) { _ in }
@@ -152,6 +152,13 @@ final class FilesDomainController {
 
     func openSystemSettings() {
         openSettings()
+    }
+
+    /// The VM hook adds the domain itself (so `--files-domain add` can report
+    /// the exact error); from then on this controller manages its session
+    /// transitions like a domain added from Settings.
+    func adopt() {
+        addedLocally = true
     }
 
     // MARK: Internals

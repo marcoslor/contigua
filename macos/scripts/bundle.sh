@@ -6,8 +6,9 @@
 # APP defaults to build/PocketDeck.app; only that path is ever replaced.
 # The app carries the "Open on Phone" Share extension (Contents/PlugIns/Share.appex)
 # and the Dock app executable (Contents/MacOS/PocketDeckShim). --with-files adds
-# the File Provider experiment's extension (Contents/PlugIns/Files.appex) and the
-# App Group the app shares with it; only the vm-e2e files-exp bundle uses it.
+# the "Phone files in Finder" File Provider extension (Contents/PlugIns/Files.appex)
+# and the App Group the app shares with it; only the vm-e2e files-domain bundle
+# uses it.
 # Only `--variant release` (install.sh) gets the real extension id; every other
 # bundle (default `dev`, check-e2e's `e2e`) gets `dev.pocketdeck.mac.share-NAME` and
 # a "(NAME)" title, so a test copy never competes with the installed app's extension.

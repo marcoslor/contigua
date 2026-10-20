@@ -4307,29 +4307,20 @@ PY
 }
 
 
-# --- File Provider experiment (docs/design/files.md §1, files-exp) ---------
+# --- Phone files in Finder (docs/design/files.md §1/§5, files-domain) ------
 #
-# E1 (does an ad-hoc replicated extension load?), E2 (extension ⇄ app over the
-# App Group, ad-hoc), then E4 (thumbnails without materializing) and E3
-# (offline cached read, pending edit, upload on reconnect) as far as the boot
-# allows. It adds a File Provider domain, so it refuses to run anywhere but the
+# The real thing end to end: the app adds its domain, the sandboxed replicated
+# extension answers from the app's bridge, and the mount shows the fake phone's
+# tree. It adds a File Provider domain, so it refuses to run anywhere but the
 # e2e VM (vm-e2e.sh exports PD_E2E_IN_VM=1). Every sub-step records its own
 # PASS/FAIL; the first failure never aborts the run.
 
+# The e2e bundle is built with --variant e2e, so its extension and group carry
+# that name; the domain identifier is the profile name.
 FILES_ID="dev.pocketdeck.mac.files-e2e"
-FILES_GROUP="group.dev.pocketdeck.mac.files.filesexp"
+FILES_GROUP="group.dev.pocketdeck.mac.files-e2e"
 
 files_appex() { printf '%s\n' "$E2E_BUNDLE/Contents/PlugIns/Files.appex"; }
-
-# files_exp_support — the profile folder the extension's fallback exception names.
-files_exp_support() { printf '%s\n' "$HOME/Library/Application Support/PocketDeck-filesexp"; }
-
-# files_ext_log — wherever the extension wrote its log (group container first).
-files_ext_log() {
-    local group="$HOME/Library/Group Containers/$FILES_GROUP/files-ext.log"
-    local support="$(files_exp_support)/files-ext.log"
-    if [ -f "$group" ]; then printf '%s\n' "$group"; else printf '%s\n' "$support"; fi
-}
 
 # files_oneshot <action> <logfile>: one `--files-domain` action; the app prints
 # its result and exits itself (except add, which stays up and runs the bridge).
@@ -4337,20 +4328,39 @@ files_oneshot() {
     PD_E2E_IN_VM=1 "$APP" --profile "$PROFILE" --files-domain "$1" > "$2" 2>&1
 }
 
+# files_list — refresh $WORK/list.txt from `--files-domain list`.
+files_list() {
+    files_oneshot list "$WORK/list.txt" || true
+}
+
+# files_field <name> — one field of this profile's domain line in list.txt.
+files_field() {
+    sed -n "s/^files-domain list: id=$PROFILE .* $1=\([^ ]*\).*/\1/p" "$WORK/list.txt" | tail -1
+}
+
 # files_domain_path — the domain root's user-visible URL, from `--files-domain list`.
 files_domain_path() {
-    sed -n 's/^files-domain list: path id=[^ ]* //p' "$WORK/list.txt" | tail -1
+    sed -n "s/^files-domain list: path id=$PROFILE //p" "$WORK/list.txt" | tail -1
 }
 
 file_has() { grep -qF -- "$1" "$2" 2>/dev/null; }
 
-# ext_has <text> — the extension's log (group container, else fallback) has it.
-ext_has() { file_has "$1" "$(files_ext_log)"; }
+# files_log — every line this app's files subsystems logged in the last minutes.
+files_log() {
+    log show --last 10m --info \
+        --predicate 'subsystem == "dev.pocketdeck.mac" AND category == "files"' 2>/dev/null
+}
 
 # files_root_lists <path> — the domain answers a listing (not a disabled or
 # timed-out mount).
 files_root_lists() {
     [ -n "${1:-}" ] && [ "$(run_limited 15 ls "$1" 2>/dev/null | wc -l | tr -d ' ')" -ge 1 ]
+}
+
+# files_disconnected <yes|no> — this profile's domain says so in list.txt.
+files_disconnected() {
+    files_list
+    [ "$(files_field disconnected)" = "$1" ]
 }
 
 # files_enable_provider — a new File Provider domain starts user-disabled: every
@@ -4407,30 +4417,67 @@ SH
 # hang the run (ls/cat on a stalled domain would).
 run_limited() { local secs="$1"; shift; perl -e 'alarm shift; exec @ARGV' "$secs" "$@"; }
 
-check_files_exp() {
+# files_tree — the fake /sdcard: folders, ~40 files in Documents, 1500 in many
+# (so the enumerator follows pages), a 3 MiB file, a 32 MiB file, a real JPEG,
+# and the things the domain must hide (Android/, dots).
+files_tree() {
+    python3 - "$WORK" <<'PY'
+import base64, os, sys
+work = sys.argv[1]
+root = os.path.join(work, "fsroot")
+for folder in ("Documents", "Documents/notes", "DCIM/Camera", "many",
+               "Android/data/x", ".Trash"):
+    os.makedirs(os.path.join(root, folder), exist_ok=True)
+open(os.path.join(root, "Android/data/x/y"), "wb").write(b"hidden")
+open(os.path.join(root, ".hidden"), "wb").write(b"hidden")
+open(os.path.join(root, ".Trash", "gone.txt"), "wb").write(b"hidden")
+for i in range(40):
+    with open(os.path.join(root, "Documents", "file%02d.txt" % i), "wb") as handle:
+        handle.write(("small %d\n" % i).encode() * (i + 1))
+# A valid 1x1 JPEG, so Quick Look has something to render.
+jpeg = base64.b64decode(
+    "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0a"
+    "HBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/wAALCAABAAEBAREA/8QAFAABAAAA"
+    "AAAAAAAAAAAAAAAACf/EABQQAQAAAAAAAAAAAAAAAAAAAAD/2gAIAQEAAD8AKp//2Q==")
+open(os.path.join(root, "DCIM/Camera/photo.jpg"), "wb").write(jpeg)
+with open(os.path.join(root, "big3.bin"), "wb") as handle:
+    handle.write(os.urandom(3 * 1024 * 1024))
+with open(os.path.join(root, "big32.bin"), "wb") as handle:
+    handle.write(os.urandom(32 * 1024 * 1024))
+for i in range(1500):
+    open(os.path.join(root, "many", "m%04d.txt" % i), "wb").close()
+PY
+}
+
+# files_visible_root — the names the person should see (sorted, one per line).
+files_visible_root() {
+    python3 - "$WORK/fsroot" <<'PY'
+import os, sys
+root = sys.argv[1]
+print("\n".join(sorted(name for name in os.listdir(root)
+                       if not name.startswith(".") and name != "Android")))
+PY
+}
+
+check_files_domain() {
     if [ "${PD_E2E_IN_VM:-0}" != "1" ]; then
-        bad "FILES-EXP refuses to run on the host (it adds a File Provider domain); run macos/scripts/vm-e2e.sh files-exp"
+        bad "FILES-DOMAIN refuses to run on the host (it adds a File Provider domain); run macos/scripts/vm-e2e.sh files-domain"
         return
     fi
-    # The experiment runs under its own profile: the extension's fallback
-    # exception names this folder, and so does the app's bridge. Restored at
-    # the end so a later check in the same run keeps its own profile.
-    local saved_profile="$PROFILE"
-    PROFILE="filesexp"
     clean
     local appex; appex="$(files_appex)"
-    local extlog; extlog="$(files_ext_log)"
 
-    # -- E1: the bundle shape the File Provider extension point needs ---------
+    # -- The bundle shape the File Provider extension point needs --------------
     /usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPointIdentifier' "$appex/Contents/Info.plist" 2>/dev/null \
         | grep -qx "com.apple.fileprovider-nonui" \
         && ok "FILES bundle has Files.appex (com.apple.fileprovider-nonui)" \
         || bad "FILES Files.appex missing or wrong NSExtensionPointIdentifier"
-    local principal documentgroup
+    local principal documentgroup bundle_group
     principal="$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPrincipalClass' "$appex/Contents/Info.plist" 2>/dev/null)"
     documentgroup="$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionFileProviderDocumentGroup' "$appex/Contents/Info.plist" 2>/dev/null)"
+    bundle_group="$(/usr/libexec/PlistBuddy -c 'Print :PDFilesGroup' "$appex/Contents/Info.plist" 2>/dev/null)"
     [ "$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionFileProviderSupportsEnumeration' "$appex/Contents/Info.plist" 2>/dev/null)" = "true" ] \
-        && [ "$documentgroup" = "$FILES_GROUP" ] && [ -n "$principal" ] \
+        && [ "$documentgroup" = "$FILES_GROUP" ] && [ "$bundle_group" = "$FILES_GROUP" ] && [ -n "$principal" ] \
         && ok "FILES principal=$principal, enumerates, document group $documentgroup" \
         || bad "FILES Info.plist lacks enumeration/document group/principal class"
     codesign --verify --deep --strict "$E2E_BUNDLE" 2>/dev/null \
@@ -4440,6 +4487,13 @@ check_files_exp() {
         || bad "FILES codesign verify failed or the extension lacks sandbox/app group"
     codesign -d --entitlements - "$E2E_BUNDLE" 2>/dev/null | grep -q "$FILES_GROUP" \
         && ok "FILES the app carries the same App Group" || bad "FILES the app has no App Group"
+    codesign -d --entitlements - "$appex" 2>/dev/null | grep -q "temporary-exception" \
+        && bad "FILES the extension still carries the experiment's temporary exception" \
+        || ok "FILES the extension has no temporary sandbox exception"
+
+    # -- The fake phone and the app (the domain is added at launch) ------------
+    files_tree
+    FAKE_ARGS="--fs-root $WORK/fsroot --fs-chunk-delay-ms 4" start_fake || return 1
     # The domain must not exist from an earlier run: remove first, then add.
     files_oneshot remove "$WORK/remove-before.txt" >/dev/null 2>&1 || true
 
@@ -4448,156 +4502,160 @@ check_files_exp() {
     pluginkit -e use -i "$FILES_ID" >/dev/null 2>&1
     pluginkit -m -p com.apple.fileprovider-nonui -v > "$WORK/pluginkit.txt" 2>&1
     file_has "$appex" "$WORK/pluginkit.txt" \
-        && ok "E1 pluginkit lists the extension at $appex" \
-        || bad "E1 pluginkit does not list $appex ($(head -3 "$WORK/pluginkit.txt" | tr '\n' ' '))"
+        && ok "FILES pluginkit lists the extension at $appex" \
+        || bad "FILES pluginkit does not list $appex ($(head -3 "$WORK/pluginkit.txt" | tr '\n' ' '))"
 
-    # -- E1: add the domain (the app keeps running: it is the bridge) --------
-    launch --files-domain add
+    launch --connect "127.0.0.1:$PORT" --files-domain add
     wait_until 30 file_has "files-domain add: ok" "$WORK/app.log" \
-        && ok "E1 NSFileProviderManager.add ok" \
-        || bad "E1 add failed: $(grep 'files-domain' "$WORK/app.log" | head -2 | tr '\n' ' ')"
-    grep 'files-domain bridge' "$WORK/app.log" | sed 's/^/    /' || true
-    wait_until 20 file_has "files-domain bridge group:" "$WORK/app.log" \
-        && ok "E2 bridge listening on the App Group socket" \
-        || bad "E2 no App Group socket: $(grep 'files-domain bridge' "$WORK/app.log" | tr '\n' ' ')"
+        && ok "FILES NSFileProviderManager.add ok" \
+        || bad "FILES add failed: $(grep 'files-domain' "$WORK/app.log" | head -2 | tr '\n' ' ')"
+    wait_until 20 file_has "files-domain bridge group: ok" "$WORK/app.log" \
+        && ok "FILES the bridge listens on the App Group socket" \
+        || bad "FILES no App Group socket: $(grep 'files-domain bridge' "$WORK/app.log" | tr '\n' ' ')"
+    wait_until 30 eval 'events_have "\"state\":\"paired\"" || events_have "\"state\":\"auth_ok\""' \
+        || { bad "FILES the app never authenticated"; stop_app; stop_fakephone; return 1; }
 
-    files_oneshot list "$WORK/list.txt" || true
-    file_has "files-domain list: id=dev.pocketdeck.mac.filesexp" "$WORK/list.txt" \
-        && ok "E1 getDomains shows the domain: $(grep 'files-domain list: id=' "$WORK/list.txt")" \
-        || bad "E1 getDomains does not show the domain: $(head -2 "$WORK/list.txt" | tr '\n' ' ')"
+    files_list
+    file_has "files-domain list: id=$PROFILE" "$WORK/list.txt" \
+        && ok "FILES getDomains shows the profile's domain" \
+        || bad "FILES getDomains does not show the domain: $(head -2 "$WORK/list.txt" | tr '\n' ' ')"
 
     local root; root="$(files_domain_path)"
     # The person's one-time step: a fresh domain is user-disabled (FP -2011).
     files_enable_provider > "$WORK/enable-files.txt" 2>&1 || true
     wait_until 90 files_root_lists "$root" \
-        && ok "E1 the System Settings switch is on; the domain enumerates" \
-        || bad "E1 still user-disabled after the System Settings switch ($(tail -2 "$WORK/enable-files.txt" | tr '\n' ' '))"
+        && ok "FILES the System Settings switch is on; the domain enumerates" \
+        || bad "FILES still user-disabled after the System Settings switch ($(tail -2 "$WORK/enable-files.txt" | tr '\n' ' '))"
+    if [ -z "$root" ] || [ ! -d "$root" ]; then
+        bad "FILES no visible domain path (list: $root)"
+        kill_e2e_app
+        files_oneshot remove "$WORK/remove.txt" || true
+        unregister_files
+        return 1
+    fi
+    ok "FILES the domain is mounted at $root"
     run_limited 15 ls -la "$HOME/Library/CloudStorage/" > "$WORK/cloudstorage.txt" 2>&1 || true
     echo "CloudStorage:"; sed 's/^/    /' "$WORK/cloudstorage.txt"
-    if [ -n "$root" ] && [ -d "$root" ]; then
-        ok "E1 the domain is mounted at $root"
-        run_limited 30 ls -la "$root" > "$WORK/domain-root.txt" 2>&1
-        run_limited 30 ls "$root/DCIM" > "$WORK/domain-dcim.txt" 2>&1
-        local rootcount
-        rootcount="$(run_limited 30 ls "$root" 2>/dev/null | wc -l | tr -d ' ')"
-        echo "    domain root: $(run_limited 30 ls "$root" 2>/dev/null | tr '\n' ' ')"
-        [ "$rootcount" -ge 1 ] && run_limited 30 ls "$root/DCIM" 2>/dev/null | grep -q "notes.txt" \
-            && ok "E1 the tree enumerates ($rootcount at root, DCIM has notes.txt)" \
-            || bad "E1 enumeration is not the experiment tree ($rootcount at root)"
+
+    # -- The mount is the phone's shared storage ------------------------------
+    run_limited 60 ls "$root" 2>/dev/null | sort > "$WORK/domain-root.txt"
+    files_visible_root > "$WORK/expected-root.txt"
+    cmp -s "$WORK/domain-root.txt" "$WORK/expected-root.txt" \
+        && ok "FILES the root lists the fake tree and leaves out Android and dots ($(wc -l < "$WORK/domain-root.txt" | tr -d ' ') items)" \
+        || bad "FILES root differs: $(diff "$WORK/expected-root.txt" "$WORK/domain-root.txt" | head -4 | tr '\n' ' ')"
+    local docs many
+    docs="$(run_limited 60 ls "$root/Documents" 2>/dev/null | wc -l | tr -d ' ')"
+    [ "$docs" = "41" ] \
+        && ok "FILES Documents lists its 40 files and one folder ($docs entries)" \
+        || bad "FILES Documents has $docs entries, wanted 41"
+    many="$(run_limited 120 ls "$root/many" 2>/dev/null | wc -l | tr -d ' ')"
+    [ "$many" = "1500" ] \
+        && ok "FILES many lists all 1500 names across pages" \
+        || bad "FILES many lists $many names, wanted 1500"
+
+    # -- Bytes: the phone's exact file, out of the mount ----------------------
+    local want
+    want="$(shasum -a 256 "$WORK/fsroot/big3.bin" | cut -c1-64)"
+    run_limited 180 cat "$root/big3.bin" > "$WORK/cat3.bin" 2> "$WORK/cat3.err"
+    [ "$(shasum -a 256 "$WORK/cat3.bin" 2>/dev/null | cut -c1-64)" = "$want" ] \
+        && ok "FILES cat of the 3 MiB file is byte-identical (sha ${want:0:12}...)" \
+        || bad "FILES cat differs: $(head -1 "$WORK/cat3.err")"
+    run_limited 180 cp "$root/big3.bin" "$WORK/cp3.bin" 2> "$WORK/cp3.err"
+    [ "$(shasum -a 256 "$WORK/cp3.bin" 2>/dev/null | cut -c1-64)" = "$want" ] \
+        && ok "FILES a copy out of the mount is byte-identical" \
+        || bad "FILES cp differs: $(head -1 "$WORK/cp3.err")"
+
+    # -- Quick Look of a jpg from the tree ------------------------------------
+    perl -e 'alarm 90; exec @ARGV' qlmanage -t -s 128 -o "$WORK" "$root/DCIM/Camera/photo.jpg" > "$WORK/qlmanage.txt" 2>&1 || true
+    ls "$WORK"/photo.jpg.png >/dev/null 2>&1 \
+        && ok "FILES Quick Look wrote a thumbnail of the jpg ($WORK/photo.jpg.png)" \
+        || bad "FILES Quick Look wrote no jpg thumbnail: $(tail -2 "$WORK/qlmanage.txt" | tr '\n' ' ')"
+
+    # -- The extension served it over the bridge ------------------------------
+    files_log > "$WORK/files-log.txt"
+    file_has "bridge: list page" "$WORK/files-log.txt" \
+        && ok "FILES the app's bridge logged listings" \
+        || bad "FILES no bridge listing in the log"
+    if grep -q "init profile=" "$WORK/files-log.txt" \
+        && grep -q "fetch done" "$WORK/files-log.txt"; then
+        ok "FILES the extension ran and fetched through the bridge"
     else
-        bad "E1 no visible domain path (list: $root)"
+        bad "FILES no extension init/fetch in the log: $(grep -E 'init|fetch' "$WORK/files-log.txt" | head -3 | tr '\n' ' ')"
+    fi
+    if python3 - "$WORK/fsroot" "$WORK/files-log.txt" <<'PY'
+import os, sys
+root, log = sys.argv[1], sys.argv[2]
+text = open(log, errors="replace").read()
+names = set(os.listdir(root)) | set(os.listdir(os.path.join(root, "Documents")))
+bad = [name for name in names
+       if ("/" + name) in text or (name + "/") in text or ('"' + name + '"') in text]
+sys.exit(1 if bad else 0)
+PY
+    then
+        ok "FILES no file name from the tree appears in the logs"
+    else
+        bad "FILES a file name appears in the logs"
     fi
     if command -v fileproviderctl >/dev/null 2>&1; then
         perl -e 'alarm 20; exec @ARGV' fileproviderctl dump > "$WORK/fileproviderctl.txt" 2>&1 || true
     else
         echo "fileproviderctl not found" > "$WORK/fileproviderctl.txt"
     fi
-    file_has "filesexp" "$WORK/fileproviderctl.txt" \
-        && ok "E1 fileproviderctl dump knows the domain" \
-        || bad "E1 fileproviderctl dump has no filesexp ($(head -2 "$WORK/fileproviderctl.txt" | tr '\n' ' '))"
+    grep -qE "enabled: +yes" "$WORK/fileproviderctl.txt" \
+        && ok "FILES fileproviderctl says the domain is enabled" \
+        || bad "FILES fileproviderctl does not show an enabled domain"
 
-    # -- E1: Quick Look materializes a real file -----------------------------
-    if [ -n "$root" ] && run_limited 20 test -f "$root/DCIM/notes.txt"; then
-        run_limited 30 cat "$root/DCIM/notes.txt" > "$WORK/notes-out.txt" 2>"$WORK/notes-err.txt"
-        file_has "PocketDeck files experiment" "$WORK/notes-out.txt" \
-            && ok "E1 cat materialized notes.txt, bytes match" \
-            || bad "E1 cat notes.txt: $(head -1 "$WORK/notes-err.txt")"
-        perl -e 'alarm 60; exec @ARGV' qlmanage -t -s 128 -o "$WORK" "$root/DCIM/notes.txt" > "$WORK/qlmanage.txt" 2>&1 || true
-        ls "$WORK"/notes.txt.png >/dev/null 2>&1 \
-            && ok "E1 Quick Look thumbnail of notes.txt written ($WORK/notes.txt.png)" \
-            || bad "E1 Quick Look wrote no thumbnail: $(tail -2 "$WORK/qlmanage.txt" | tr '\n' ' ')"
-    else
-        bad "E1 notes.txt not visible, skipping cat and Quick Look"
-    fi
+    # -- The phone goes away: disconnected, cached file still opens -----------
+    stop_fakephone
+    wait_until 5 no_fakephone
+    wait_until 45 files_disconnected true \
+        && ok "FILES the phone leaving disconnects the domain" \
+        || bad "FILES the domain is not disconnected: $(grep "id=$PROFILE " "$WORK/list.txt" | head -1)"
+    run_limited 60 cat "$root/big3.bin" > "$WORK/cached3.bin" 2>/dev/null
+    [ "$(shasum -a 256 "$WORK/cached3.bin" 2>/dev/null | cut -c1-64)" = "$want" ] \
+        && ok "FILES the already-fetched file still opens while the phone is away" \
+        || bad "FILES the cached file did not open while the phone is away"
 
-    # -- E2: the extension reached the app over the socket -------------------
-    if [ -n "$root" ] && run_limited 20 test -d "$root/DCIM"; then
-        run_limited 30 ls "$root/DCIM" >/dev/null 2>&1
-        wait_until 30 ext_has "socket group=pong" \
-            && ok "E2 extension got pong over the App Group socket" \
-            || bad "E2 extension socket: $(grep -a 'socket ' "$(files_ext_log)" 2>/dev/null | tr '\n' ' ')"
-    fi
-    # The whole extension log, for the write-up.
-    [ -f "$extlog" ] && cp "$extlog" "$WORK/extension.log" || echo "no extension log" > "$WORK/extension.log"
+    # -- The phone comes back: reconnect --------------------------------------
+    FAKE_ARGS="--fs-root $WORK/fsroot" start_fake "$WORK/state.json" || true
+    wait_until 60 files_disconnected false \
+        && ok "FILES the domain reconnects when the phone is back" \
+        || bad "FILES the domain did not reconnect: $(grep "id=$PROFILE " "$WORK/list.txt" | head -1)"
+    wait_until 60 files_root_lists "$root" || true
+    local want32
+    want32="$(shasum -a 256 "$WORK/fsroot/big32.bin" | cut -c1-64)"
+    run_limited 240 cat "$root/big32.bin" > "$WORK/cat32.bin" 2>/dev/null
+    [ "$(shasum -a 256 "$WORK/cat32.bin" 2>/dev/null | cut -c1-64)" = "$want32" ] \
+        && ok "FILES after the reconnect the 32 MiB file reads byte-identical" \
+        || bad "FILES the 32 MiB file after reconnect is not identical"
 
-    # -- E4: thumbnails for a dataless item ---------------------------------
-    # Finder's icon view asks the provider for thumbnails; `qlmanage` does not
-    # (a .bin has no Quick Look generator and produced nothing in the VM).
-    if [ -n "$root" ] && run_limited 20 test -f "$root/DCIM/big.bin"; then
-        local before; before="$(wc -l < "$(files_ext_log)" 2>/dev/null | tr -d ' ')"
-        gui_run open -g "$root/DCIM" >/dev/null 2>&1 || true
-        wait_until 30 ext_has "fetchThumbnails ids=big" \
-            && ok "E4 extension answered fetchThumbnails" \
-            || bad "E4 no fetchThumbnails in the extension log"
-        if [ -f "$extlog" ]; then
-            tail -n +"$((before + 1))" "$extlog" | grep -q "fetchContents big" \
-                && bad "E4 thumbnails materialized big.bin (fetchContents was called)" \
-                || ok "E4 no fetchContents for big.bin around the thumbnail request"
-        fi
-    fi
+    # -- Finder shows it (screenshot) -----------------------------------------
+    open -a Finder "$root" >/dev/null 2>&1 || true
+    sleep 4
+    screencapture -x "$WORK/finder.png" 2>/dev/null \
+        && ok "FILES screenshot of Finder at the domain root: $WORK/finder.png" \
+        || bad "FILES screencapture failed"
+    run_limited 30 cp "$WORK/cp3.bin" "$root/should-not-land.bin" 2> "$WORK/write.err" \
+        && bad "FILES a copy into the domain was accepted (S3 is read-only)" \
+        || ok "FILES a copy into the domain is refused (read-only)"
 
-    # -- E3: offline cached read, pending edit, upload on reconnect ----------
-    if [ -n "$root" ] && run_limited 20 test -f "$root/DCIM/big.bin"; then
-        local bytes
-        bytes="$(run_limited 90 cat "$root/DCIM/big.bin" 2>/dev/null | wc -c | tr -d ' ')"
-        [ "$bytes" = "$((5 * 1024 * 1024))" ] \
-            && ok "E3 cached 5 MiB read ($bytes bytes)" \
-            || bad "E3 5 MiB read gave $bytes bytes"
-        files_oneshot disconnect "$WORK/disconnect.txt" || true
-        file_has "files-domain disconnect: ok" "$WORK/disconnect.txt" \
-            && ok "E3 disconnect(.temporary) ok" \
-            || bad "E3 disconnect: $(head -1 "$WORK/disconnect.txt")"
-        run_limited 30 cat "$root/DCIM/notes.txt" > "$WORK/notes-offline.txt" 2>/dev/null
-        file_has "PocketDeck files experiment" "$WORK/notes-offline.txt" \
-            && ok "E3 cached file opens while disconnected" \
-            || bad "E3 cached file did not open while disconnected"
-        printf 'pending experiment\n' > "$WORK/pending.bin"
-        run_limited 45 cp "$WORK/pending.bin" "$root/DCIM/pending.bin" 2>"$WORK/copy-err.txt" \
-            && ok "E3 copy into the domain accepted locally" \
-            || bad "E3 copy into the domain failed: $(head -1 "$WORK/copy-err.txt")"
-        if wait_until 15 ext_has "rejected: domain disconnected -> pending"; then
-            ok "E3 createItem kept the copy pending while offline"
-        else
-            # macOS may hold the write in its own queue and never call the
-            # extension until reconnect; the upload check below is the real one.
-            ok "E3 no createItem while offline: the system queued the copy itself"
-        fi
-        files_oneshot reconnect "$WORK/reconnect.txt" || true
-        file_has "files-domain reconnect: ok" "$WORK/reconnect.txt" \
-            && ok "E3 reconnect ok" \
-            || bad "E3 reconnect: $(head -1 "$WORK/reconnect.txt")"
-        wait_until 30 ext_has "createItem pending.bin" \
-            && ok "E3 reconnect asked the extension to upload: $(grep -a 'createItem pending.bin' "$(files_ext_log)" | tail -1)" \
-            || bad "E3 no upload after reconnect"
-        [ -f "$extlog" ] && cp "$extlog" "$WORK/extension.log" || true
-    fi
-
-    # -- E1: Finder shows it in the sidebar (screenshot) ---------------------
-    if [ -n "$root" ] && [ -d "$root" ]; then
-        open -a Finder "$root" >/dev/null 2>&1 || true
-        sleep 4
-        screencapture -x "$WORK/finder.png" 2>/dev/null \
-            && ok "E1 screenshot of Finder at the domain root: $WORK/finder.png" \
-            || bad "E1 screencapture failed"
-    fi
-
-    # -- E1: remove the domain, it must be gone ------------------------------
+    # -- Remove the domain, it must be gone -----------------------------------
     kill_e2e_app
+    stop_fakephone
     files_oneshot remove "$WORK/remove.txt" || true
     file_has "files-domain remove: ok" "$WORK/remove.txt" \
-        && ok "E1 remove ok" \
-        || bad "E1 remove: $(head -1 "$WORK/remove.txt")"
-    files_oneshot list "$WORK/list-after.txt" || true
-    file_has "count=0" "$WORK/list-after.txt" \
-        && ok "E1 domain gone from getDomains" \
-        || bad "E1 domain still listed: $(grep 'count=' "$WORK/list-after.txt")"
+        && ok "FILES remove ok" \
+        || bad "FILES remove: $(head -1 "$WORK/remove.txt")"
+    files_list
+    file_has "count=0" "$WORK/list.txt" \
+        && ok "FILES domain gone from getDomains" \
+        || bad "FILES domain still listed: $(grep 'count=' "$WORK/list.txt")"
     unregister_files
     sleep 1
     pluginkit -m -p com.apple.fileprovider-nonui -v > "$WORK/pluginkit-after.txt" 2>&1
     file_has "$appex" "$WORK/pluginkit-after.txt" \
         && bad "FILES the extension is still registered after the check" \
         || ok "FILES $FILES_ID unregistered after the check"
-    PROFILE="$saved_profile"
 }
 
 # --- Dock apps (docs/design/dock.md) --------------------------------------
