@@ -186,6 +186,12 @@ launch() {
     start_watchdog app "$APP_PID"
 }
 
+# gui_run <command...> — run in the VM's logged-in GUI (Aqua) session. check-e2e
+# itself runs over ssh; `open` and accessibility scripting need that session.
+gui_run() {
+    perl -e 'alarm 150; exec @ARGV' sudo -n launchctl asuser "$(id -u)" sudo -n -u "$(id -un)" "$@"
+}
+
 # open_quiet <open args...> — LaunchServices `open` that does not bring the app
 # forward in a quiet run.
 open_quiet() { if [ "$VISIBLE" = "1" ]; then open "$@"; else open -g "$@"; fi; }
@@ -4111,6 +4117,62 @@ file_has() { grep -qF -- "$1" "$2" 2>/dev/null; }
 # ext_has <text> — the extension's log (group container, else fallback) has it.
 ext_has() { file_has "$1" "$(files_ext_log)"; }
 
+# files_root_lists <path> — the domain answers a listing (not a disabled or
+# timed-out mount).
+files_root_lists() {
+    [ -n "${1:-}" ] && [ "$(run_limited 15 ls "$1" 2>/dev/null | wc -l | tr -d ' ')" -ge 1 ]
+}
+
+# files_enable_provider — a new File Provider domain starts user-disabled: every
+# job fails with FP -2011 "Sync is not enabled" and the mount times out, until
+# the person turns the extension on in System Settings › General › Login Items &
+# Extensions › Extensions. There is no API for that switch (fileproviderctl has
+# no enable command; `pluginkit -e use` does not move it), so the check walks the
+# same path a person does: the app's URL opens the pane, then the accessibility
+# tree presses the app's info button and its "File Provider" toggle. The screen
+# is the VM's fixed 1024x768 points.
+files_enable_provider() {
+    cat > "$WORK/enable-files.sh" <<'SH'
+#!/bin/bash
+set -e
+open "x-apple.systempreferences:com.apple.LoginItems-Settings.extension?Extensions"
+sleep 3
+osascript <<'OSA'
+tell application "System Events"
+	tell process "System Settings"
+		-- "By App" (the pane remembers whichever side was picked last).
+		set rb to radio button 1 of radio group 1 of group 3 of scroll area 1 of group 1 of group 3 of splitter group 1 of group 1 of window "Login Items & Extensions"
+		if (value of rb) is 0 then click rb
+		delay 0.5
+		-- The app's row may be below the fold.
+		set value of scroll bar 1 of scroll area 1 of group 1 of group 3 of splitter group 1 of group 1 of window "Login Items & Extensions" to 1.0
+		delay 0.5
+		-- Its info button sits on the same row as the app name.
+		tell group 4 of scroll area 1 of group 1 of group 3 of splitter group 1 of group 1 of window "Login Items & Extensions"
+			set rowY to item 2 of (get position of static text "PocketDeck")
+			repeat with b in (get buttons)
+				set btnY to item 2 of (get position of b)
+				if btnY > (rowY - 4) and btnY < (rowY + 4) then
+					click b
+					exit repeat
+				end if
+			end repeat
+		end tell
+		delay 1
+		set cb to checkbox "File Provider" of group 2 of scroll area 1 of group 1 of sheet 1 of window "Login Items & Extensions"
+		if (value of cb) is 0 then click cb
+		delay 0.5
+		if (value of cb) is not 1 then error "the File Provider switch did not turn on"
+		try
+			click button "Done" of sheet 1 of window "Login Items & Extensions"
+		end try
+	end tell
+end tell
+OSA
+SH
+    gui_run bash "$WORK/enable-files.sh"
+}
+
 # run_limited <seconds> <command...> — a provider that never answers must not
 # hang the run (ls/cat on a stalled domain would).
 run_limited() { local secs="$1"; shift; perl -e 'alarm shift; exec @ARGV' "$secs" "$@"; }
@@ -4175,6 +4237,11 @@ check_files_exp() {
         || bad "E1 getDomains does not show the domain: $(head -2 "$WORK/list.txt" | tr '\n' ' ')"
 
     local root; root="$(files_domain_path)"
+    # The person's one-time step: a fresh domain is user-disabled (FP -2011).
+    files_enable_provider > "$WORK/enable-files.txt" 2>&1 || true
+    wait_until 90 files_root_lists "$root" \
+        && ok "E1 the System Settings switch is on; the domain enumerates" \
+        || bad "E1 still user-disabled after the System Settings switch ($(tail -2 "$WORK/enable-files.txt" | tr '\n' ' '))"
     run_limited 15 ls -la "$HOME/Library/CloudStorage/" > "$WORK/cloudstorage.txt" 2>&1 || true
     echo "CloudStorage:"; sed 's/^/    /' "$WORK/cloudstorage.txt"
     if [ -n "$root" ] && [ -d "$root" ]; then
@@ -4186,7 +4253,7 @@ check_files_exp() {
         echo "    domain root: $(run_limited 30 ls "$root" 2>/dev/null | tr '\n' ' ')"
         [ "$rootcount" -ge 1 ] && run_limited 30 ls "$root/DCIM" 2>/dev/null | grep -q "notes.txt" \
             && ok "E1 the tree enumerates ($rootcount at root, DCIM has notes.txt)" \
-            || bad "E1 enumeration is not the 3-item tree ($rootcount at root)"
+            || bad "E1 enumeration is not the experiment tree ($rootcount at root)"
     else
         bad "E1 no visible domain path (list: $root)"
     fi
@@ -4205,9 +4272,9 @@ check_files_exp() {
         file_has "PocketDeck files experiment" "$WORK/notes-out.txt" \
             && ok "E1 cat materialized notes.txt, bytes match" \
             || bad "E1 cat notes.txt: $(head -1 "$WORK/notes-err.txt")"
-        perl -e 'alarm 60; exec @ARGV' qlmanage -t -s 128 -o "$WORK" "$root/DCIM/big.bin" > "$WORK/qlmanage.txt" 2>&1 || true
-        ls "$WORK"/big.bin.png >/dev/null 2>&1 \
-            && ok "E1 Quick Look thumbnail of big.bin written ($WORK/big.bin.png)" \
+        perl -e 'alarm 60; exec @ARGV' qlmanage -t -s 128 -o "$WORK" "$root/DCIM/notes.txt" > "$WORK/qlmanage.txt" 2>&1 || true
+        ls "$WORK"/notes.txt.png >/dev/null 2>&1 \
+            && ok "E1 Quick Look thumbnail of notes.txt written ($WORK/notes.txt.png)" \
             || bad "E1 Quick Look wrote no thumbnail: $(tail -2 "$WORK/qlmanage.txt" | tr '\n' ' ')"
     else
         bad "E1 notes.txt not visible, skipping cat and Quick Look"
@@ -4224,10 +4291,12 @@ check_files_exp() {
     [ -f "$extlog" ] && cp "$extlog" "$WORK/extension.log" || echo "no extension log" > "$WORK/extension.log"
 
     # -- E4: thumbnails for a dataless item ---------------------------------
+    # Finder's icon view asks the provider for thumbnails; `qlmanage` does not
+    # (a .bin has no Quick Look generator and produced nothing in the VM).
     if [ -n "$root" ] && run_limited 20 test -f "$root/DCIM/big.bin"; then
         local before; before="$(wc -l < "$(files_ext_log)" 2>/dev/null | tr -d ' ')"
-        perl -e 'alarm 60; exec @ARGV' qlmanage -t -s 256 -o "$WORK" "$root/DCIM/big.bin" >/dev/null 2>&1 || true
-        wait_until 15 ext_has "fetchThumbnails ids=big" \
+        gui_run open -g "$root/DCIM" >/dev/null 2>&1 || true
+        wait_until 30 ext_has "fetchThumbnails ids=big" \
             && ok "E4 extension answered fetchThumbnails" \
             || bad "E4 no fetchThumbnails in the extension log"
         if [ -f "$extlog" ]; then
@@ -4256,9 +4325,13 @@ check_files_exp() {
         run_limited 45 cp "$WORK/pending.bin" "$root/DCIM/pending.bin" 2>"$WORK/copy-err.txt" \
             && ok "E3 copy into the domain accepted locally" \
             || bad "E3 copy into the domain failed: $(head -1 "$WORK/copy-err.txt")"
-        wait_until 30 ext_has "rejected: domain disconnected -> pending" \
-            && ok "E3 createItem kept the copy pending while offline" \
-            || bad "E3 no pending createItem in the extension log"
+        if wait_until 15 ext_has "rejected: domain disconnected -> pending"; then
+            ok "E3 createItem kept the copy pending while offline"
+        else
+            # macOS may hold the write in its own queue and never call the
+            # extension until reconnect; the upload check below is the real one.
+            ok "E3 no createItem while offline: the system queued the copy itself"
+        fi
         files_oneshot reconnect "$WORK/reconnect.txt" || true
         file_has "files-domain reconnect: ok" "$WORK/reconnect.txt" \
             && ok "E3 reconnect ok" \

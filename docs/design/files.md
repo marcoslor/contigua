@@ -149,29 +149,76 @@ short timeout; until then the domain's items are the cached ones and dataless it
 
 ### Experiment results (2026-10-19)
 
-Status: **not run yet — blocked before the first VM boot.** The bundle, the check and
-the harness are in place (E1–E4 wired as `check-e2e.sh files-exp`, driven by
-`macos/scripts/vm-e2e.sh files-exp`), but `vm-e2e.sh`'s memory gate (RULES 12: at
-least 25% of memory free and swap under 2 GB) refused to boot the VM in two
-45-minute attempts. The gate saw 40–66% free and swap stuck between 2.5 GB and
-3.9 GB (other agents' emulator and Gradle work on the same 8 GB Mac); swap does
-not fall back on its own that quickly. No boot was spent (0/2), no File
-Provider code ran on the host, and `pluginkit -m -p com.apple.fileprovider-nonui`
-still lists no `pd-wt` extension.
+Run in the `pd-e2e` VM, `macos/scripts/check-e2e.sh files-exp` with `PD_E2E_VISIBLE=1`:
+**28 passed, 0 failed**. Artefacts in `macos/build/vm-e2e/files-exp/work/r5-*`
+(`r5-check.log`, `r5-finder-check.png`, `r5-notes-qL.png` and the screenshots of the
+enable path).
 
-What is already verified by building, not by running:
+**E1 — pass, with one one-time switch.** The ad-hoc-signed, sandboxed replicated
+extension (`Files.appex`, bundle id `dev.pocketdeck.mac.files-e2e`, App Group
+`group.dev.pocketdeck.mac.files.filesexp`) registers (`pluginkit -m -p
+com.apple.fileprovider-nonui` lists it), `NSFileProviderManager.add` returns ok, and
+the domain mounts at `~/Library/CloudStorage/PocketDeck-PocketDeckFiles`. A **new
+domain starts `user-disabled`**: every job fails with `FP -2011 "Sync is not enabled"`
+and any `ls` on the mount times out. Nothing non-GUI moves that switch:
+`fileproviderctl` has no enable/approve command (`fileproviderctl help`: dump,
+diagnose, evaluate, check/repair, obfuscate), and `pluginkit -e use -i
+dev.pocketdeck.mac.files-e2e`, before or after the domain exists, leaves
+`Enabled` false in `~/Library/Application Support/FileProvider/
+dev.pocketdeck.mac.files-e2e/Domains.plist`.
 
-- the app and `Files.appex` carry `group.dev.pocketdeck.mac.files.filesexp`; the
-  extension also carries the sandbox and the
-  `com.apple.security.temporary-exception.files.home-relative-path.read-write`
-  fallback for `~/Library/Application Support/PocketDeck-filesexp/`;
-- `codesign --verify --deep --strict` passes on the debug bundle;
-- K2 is green with the extension sources in the package (`swift build`,
-  607 tests, 0 failures).
+The enable path that works is System Settings › **General › Login Items &
+Extensions › Extensions**:
 
-Still owed: boot 1 (E1 + E2) and, if both pass, boot 2 (E3 + E4). The decision
-between the File Provider design and the WebDAV fallback (E6), and between the
-App Group and the temporary exception, waits on those two runs.
+- *By App* (the default): the app's row (PocketDeck) → its ⓘ button → the sheet
+  lists **File Provider** and **Sharing** → switch File Provider on. This is the
+  shortest and the one `check-e2e.sh files-exp` now takes.
+- *By Category* → **File Providers** → PocketDeck → switch on. Same result.
+
+The app can take the person to the right pane: `open
+"x-apple.systempreferences:com.apple.LoginItems-Settings.extension?Extensions"`
+opens Login Items & Extensions directly on the Extensions section. (The bare URL
+without `?Extensions` opens General, where the row is at the bottom, normally below
+the fold.) That is the Deck's one-time prompt: say why, then open that URL; the
+person flips one switch. Opening the sheet from the app itself is not possible
+(the settings UI is another process), and there is no API to set the state.
+
+**Ad-hoc signing is enough.** After the switch, no Gatekeeper, notarization or
+signing error appears in `log show --predicate 'subsystem ==
+"com.apple.FileProvider"'`; the sandboxed extension reaches the app over the App
+Group socket (`socket group=pong`) and the App Group storage path from its
+`NSExtensionFileProviderDocumentGroup` resolves.
+
+**E2 — pass.** The app's App Group socket bridge answers the extension; the log
+shows `socket group=pong` and every enumeration served through it.
+
+**Enumeration and reads — pass.** `ls` on the mount lists `DCIM` (the experiment's
+hard-coded tree has one root item); `DCIM` has `big.bin` and `notes.txt`;
+`cat DCIM/notes.txt` returns the 39 bytes the fake phone serves; a `cp` out of the
+domain writes the same bytes; Quick Look (`qlmanage -t`) writes a thumbnail for
+`notes.txt`; Finder shows PocketDeck under Locations and the folder's contents.
+`fileproviderctl dump` has `enabled: yes` and `errors: 0` for the domain (the
+remaining `user-disabled` line belongs to the hidden default domain).
+
+**E4 — pass, with Finder as the caller.** Finder's icon view made the system call
+`fetchThumbnails ids=big size=2048x2048`, and no `fetchContents big` followed.
+`qlmanage -t` on `big.bin` produces nothing (a `.bin` has no Quick Look
+generator), so the check now opens the folder in Finder instead.
+
+**E3 — pass.** Cached 5 MiB read, `disconnect(.temporary)`, the cached file still
+opens, a `cp` into the domain is accepted locally and materializes as an upload
+(`createItem pending.bin`) after `reconnect`. macOS keeps the write in its own
+queue while disconnected, so the extension may see `createItem` only after
+reconnect; the check accepts either ordering.
+
+**Product consequence.** The File Provider path is viable, with a one-time,
+per-person step: the Deck must explain it and deep-link
+`x-apple.systempreferences:com.apple.LoginItems-Settings.extension?Extensions`;
+until the switch is on, the domain is mounted but empty/timing out, so the app
+should say "turn PocketDeck on in Login Items & Extensions" rather than show an
+empty folder. No WebDAV fallback (E6) is needed for this reason. The e2e check
+flips the same switch through the accessibility tree, so a VM run is green end to
+end.
 
 ## 2. Phone side (shell uid 2000)
 
