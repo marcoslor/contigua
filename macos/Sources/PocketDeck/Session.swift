@@ -91,11 +91,6 @@ enum SessionEvent {
                       started: HandoffStart)
     case windowClosed(stream: UInt32, reason: String)
     case windowTitle(stream: UInt32, label: String, pkg: String)
-    /// `cam.cams`: the phone's cameras (empty while "Let Macs use the camera"
-    /// is off). No stream id: one camera window per session asks.
-    case camCams([PhoneCamera])
-    /// `cam.state` for a camera capture (docs/PROTOCOL.md "Camera").
-    case camState(stream: UInt32, state: String, reason: String?)
     case phoneState(locked: Bool, battery: Int, charging: Bool, dnd: PhoneDndMode?, ringer: PhoneRingerMode?)
     /// `ring.state`: a `phone.ring` started or ended.
     case ringState(ringing: Bool)
@@ -823,14 +818,6 @@ final class Session {
             emit(.windowTitle(stream: UInt32(message.int("stream") ?? 0),
                               label: message.string("label") ?? "",
                               pkg: message.string("pkg") ?? ""))
-        case "cam.cams":
-            let cams = (message.array("cams") ?? []).compactMap(PhoneCamera.init(json:))
-            emit(.camCams(cams))
-        case "cam.state":
-            guard let stream = message.int("stream") else { break }
-            emit(.camState(stream: UInt32(truncatingIfNeeded: stream),
-                           state: message.string("state") ?? "error",
-                           reason: message.string("reason")))
         case "state":
             emit(.phoneState(locked: message.bool("locked") ?? false,
                              battery: message.int("battery") ?? 0,
@@ -1101,16 +1088,6 @@ final class Session {
     func pauseWindow(stream: UInt32) { sendJSON(["t": "window.pause", "stream": Int(stream)]) }
     func resumeWindow(stream: UInt32) { sendJSON(["t": "window.resume", "stream": Int(stream)]) }
     func requestKeyframe(stream: UInt32) { sendJSON(["t": "window.keyframe", "stream": Int(stream)]) }
-    /// `cam.list` (docs/PROTOCOL.md "Camera"): the phone answers `cam.cams`.
-    func camList() { sendJSON(["t": "cam.list"]) }
-    func camStart(stream: UInt32, id: String?, facing: String?, width: Int, height: Int, fps: Int) {
-        var message: [String: Any] = ["t": "cam.start", "stream": Int(stream),
-                                      "w": width, "h": height, "fps": fps]
-        if let id { message["id"] = id }
-        if let facing { message["facing"] = facing }
-        sendJSON(message)
-    }
-    func camStop(stream: UInt32) { sendJSON(["t": "cam.stop", "stream": Int(stream)]) }
     func launch(stream: UInt32, pkg: String, activity: String?) {
         var message: [String: Any] = ["t": "window.launch", "stream": Int(stream), "pkg": pkg]
         if let activity { message["activity"] = activity }
