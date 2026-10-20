@@ -895,7 +895,7 @@ offset (`b<offset>@<phone page>`) and the phone page cached, and the id-map JSON
 is written once per quarter second instead of once per item.
 Checks: K2 849/0; host `files-watch` 29/0 (working-set updates with the real
 parent, a delete, `.workingSet`/`.trashContainer` no phone traffic, 65 folders
-→ 64, TTL → `watch off`); regressions `files-write` 24/0, `files-bridge` 24/0,
+→ 64, TTL → `watch off`); regressions `files-write` 24/0, `files-bridge` 19/0,
 `files` 8/0.
 
 **VM (round 3).** Session 1: 49 of 54. The 1500-entry folder listed **all 1500
