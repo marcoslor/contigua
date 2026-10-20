@@ -70,3 +70,31 @@ activity.
 
 The Wake Screen button sends the same `phone.wake`; it is there for a person
 who does not want to reopen the window.
+
+## Results
+
+Host e2e (`check-e2e.sh mirror`, fakephone with `--rotate-after 6
+--screen-off-after 14`): opening the phone window sends one `phone.wake`; when
+the fake panel times out the window reports `screen=off overlay=1` within 2 s
+and the last frame is under the blurred cover; the Wake Screen route sends a
+second `phone.wake`, the fake comes back on, a new VIDEO_CONFIG follows and the
+cover clears (`screen=on overlay=0`). The same run still passes the rotation
+and aspect checks. `pair` and `chrome` are unaffected (13/13 and 21/21, the
+usual native-full-screen SKIP).
+
+Not verified, and why:
+- The emulator run never reached its checks: one boot was spent and the rig's
+  Shizuku shell service did not bind its port after the app launch (`start.sh`
+  failed at the listening-socket step). The boot budget allows no second boot,
+  so `state.screen` on a real device, `phone.wake ok` and the keyguard staying
+  locked are unverified here. `tools/emulator/phone-screen.sh --check` passes,
+  and the script now retries that known first-launch flake through the rig's
+  `restart_server`; the reviewer's boot is the first real test.
+- The real phone's Always-On Display: Samsung may report display 0 as `doze`
+  (or `doze-suspend`) while the AOD clock is lit. `ScreenState.of` maps doze to
+  `off`, so the window shows the cover rather than the clock; that mapping is
+  the intended reading but has only been unit-tested.
+- Samsung's lock screen after a wake: the code only ever calls the display
+  wake and never touches the keyguard, but whether One UI re-shows the lock
+  screen with its short timeout (or the AOD) right after the wake is a
+  device-only observation.
