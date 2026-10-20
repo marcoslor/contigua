@@ -31,7 +31,10 @@ class FsView(
         val topLevel = dir.path == paths.rootPath
         val names = children
             .filter { child ->
-                !topLevel || !(child.name.startsWith(".") || child.name == FsPaths.ANDROID)
+                // A write in flight stages its bytes next to the target; that
+                // file is never part of what the person sees.
+                !FsPaths.isTempName(child.name) &&
+                    (!topLevel || !(child.name.startsWith(".") || child.name == FsPaths.ANDROID))
             }
             .sortedBy { it.name }
         val start = page?.toIntOrNull()?.takeIf { it in 0 until names.size } ?: 0

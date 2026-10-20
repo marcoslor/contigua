@@ -46,6 +46,9 @@ class FsPaths(val root: File, private val stats: FsStats = FsStats.Default) {
         if (parts.size > MAX_COMPONENTS) throw denied("too many components")
         for (part in parts) {
             if (part.isEmpty() || part == "." || part == "..") throw denied("bad component")
+            // A write's staging file is ours, never an item a Mac may read,
+            // overwrite or delete by name.
+            if (isTempName(part)) throw denied("staging name")
         }
         if (parts[0].startsWith(".")) throw denied("hidden entry")
         if (parts[0] == ANDROID) throw denied("Android")
@@ -88,6 +91,13 @@ class FsPaths(val root: File, private val stats: FsStats = FsStats.Default) {
         const val MAX_PATH_BYTES = 4096
         const val MAX_COMPONENTS = 32
         const val ANDROID = "Android"
+        /** A write's hidden temp: `<TEMP_PREFIX><random><TEMP_SUFFIX>`. */
+        const val TEMP_PREFIX = ".pocketdeck-"
+        const val TEMP_SUFFIX = ".part"
+
+        fun isTempName(name: String): Boolean =
+            name.length > TEMP_PREFIX.length + TEMP_SUFFIX.length &&
+                name.startsWith(TEMP_PREFIX) && name.endsWith(TEMP_SUFFIX)
 
         fun denied(why: String) = FsFailure("fs_denied", "denied: $why")
         fun notFound() = FsFailure("fs_not_found", "no such file")

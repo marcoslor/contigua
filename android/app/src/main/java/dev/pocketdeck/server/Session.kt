@@ -56,6 +56,8 @@ class Session(
     private val filesRoot: File? = null,
     /** Metadata source for fs.*; the tests hand in a deterministic one. */
     private val fsStats: FsStats = FsStats.Default,
+    /** Rename/scan seam for writes (docs/design/files.md §2); tests fake it. */
+    private val fsPlatform: FsPlatform = FsPlatform.None,
     /** Clipboard image port (read + write); null leaves images unsynced. */
     private val clipImages: ClipboardImagePort? = null,
     private val now: () -> Long = { System.nanoTime() / 1_000_000 },
@@ -168,6 +170,8 @@ class Session(
         }
     }
     private val fsReader = files?.let { FsReader(it.paths, queue::enqueueBulk, ::sendJson, log) }
+    private val fsWriter = files?.let { FsWriter(it.paths, fsPlatform, ::sendJson, log) }
+    private val fsOps = files?.let { FsMutations(it.paths, fsPlatform, log) }
     private val clipImageSync = ClipImageSync()
     private val clipImageSender = ClipImageSender(queue::enqueueBulk, log)
     private val clipImageReceiver = ClipImageReceiver(ClipImageLand(clipImages, log), log)
@@ -331,6 +335,7 @@ class Session(
         runCatching { apk?.close() }
         runCatching { drop?.close() }
         runCatching { fsReader?.close() }
+        runCatching { fsWriter?.close() }
         stopStreamWatch()
         hoverExecutor.shutdownNow()
         runCatching { audioCapture?.stop() }
@@ -734,7 +739,15 @@ class Session(
                 "fs.list" -> onFsList(obj)
                 "fs.stat" -> onFsStat(obj)
                 "fs.read" -> onFsRead(obj)
-                "fs.cancel" -> (obj["id"] as? Number)?.toLong()?.let { fsReader?.cancel(it) }
+                "fs.write" -> fsWriter?.begin(obj)
+                "fs.move" -> onFsMove(obj)
+                "fs.delete" -> onFsDelete(obj)
+                "fs.mkdir" -> onFsMkdir(obj)
+                "fs.setAttrs" -> onFsSetAttrs(obj)
+                "fs.cancel" -> (obj["id"] as? Number)?.toLong()?.let {
+                    fsReader?.cancel(it)
+                    fsWriter?.cancel(it)
+                }
                 "clip.image.start" -> onClipImageStart(obj)
                 "clip.image.end" -> onClipImageEnd(obj)
                 "clip.image.abort" -> onClipImageAbort(obj)
@@ -1317,6 +1330,49 @@ class Session(
         }
     }
 
+    /** A write-op refusal or result: `fs.result`, always carrying its id. */
+    private fun fsResult(id: Long, item: FsItem?, failure: FsFailure? = null) {
+        if (failure != null) {
+            log("fs: id=$id ${failure.code}")
+            sendJson(mapOf("t" to "fs.result", "id" to id, "ok" to false,
+                "code" to failure.code, "message" to (failure.message ?: "")))
+            return
+        }
+        sendJson(mapOf("t" to "fs.result", "id" to id, "ok" to true,
+            "item" to item?.toJson(), "etag" to item?.etag))
+    }
+
+    /** The common shape of move/delete/mkdir/setAttrs: one op, one result. */
+    private fun fsMutation(obj: Map<String, Any?>, op: (FsMutations) -> FsItem?) {
+        val id = FsMutations.id(obj) ?: return
+        val ops = fsOps ?: return fsResult(id, null, FsPaths.denied("files are not served"))
+        try {
+            fsResult(id, op(ops))
+        } catch (e: FsFailure) {
+            fsResult(id, null, e)
+        } catch (e: Exception) {
+            log("fs: mutation $id failed: ${e.javaClass.simpleName}")
+            fsResult(id, null, FsFailure("internal", "the operation failed"))
+        }
+    }
+
+    private fun onFsMove(obj: Map<String, Any?>) = fsMutation(obj) { ops ->
+        ops.move(Json.str(obj["from"]), Json.str(obj["to"]), Json.str(obj["etag"]))
+    }
+
+    private fun onFsDelete(obj: Map<String, Any?>) = fsMutation(obj) { ops ->
+        ops.delete(Json.str(obj["path"]), Json.bool(obj["recursive"]) ?: false)
+        null
+    }
+
+    private fun onFsMkdir(obj: Map<String, Any?>) = fsMutation(obj) { ops ->
+        ops.mkdir(Json.str(obj["path"]))
+    }
+
+    private fun onFsSetAttrs(obj: Map<String, Any?>) = fsMutation(obj) { ops ->
+        ops.setAttrs(Json.str(obj["path"]), FsMutations.mtime(obj))
+    }
+
     // ------------------------------------------------------------------
     // clipboard images (docs/design/dragdrop.md)
     // ------------------------------------------------------------------
@@ -1415,6 +1471,7 @@ class Session(
             }
             Frames.TYPE_APK_DATA -> apk?.data(frame.stream.toLong() and 0xFFFF_FFFFL, frame.payload)
             Frames.TYPE_DROP_DATA -> drop?.data(frame.stream.toLong() and 0xFFFF_FFFFL, frame.payload)
+            Frames.TYPE_FS_DATA -> fsWriter?.data(frame.stream.toLong() and 0xFFFF_FFFFL, frame.payload)
             Frames.TYPE_CLIP_DATA -> clipImageReceiver.data(frame.stream, frame.payload)
             Frames.TYPE_KEY -> {
                 val p = Frames.decodeKey(frame.payload)
