@@ -247,9 +247,9 @@ The experiment's code becomes the slice's product code; this is what it does.
   "PocketDeck".
 - **Identifiers**: `ino:<st_ino>:<relative path>`, or `path:<relative path>`
   when the phone reports `ino: 0`; `.rootContainer` for the root. The ino is
-  the identity, and the path rides along because the system runs the
-  extension in more than one process and restarts it: an id must resolve
-  without the in-memory map (the VM showed a fresh process asking for items a
+  the identity, and the path rides along (percent-encoded, so an id is one
+  token) because the system runs the extension in more than one process and
+  restarts it: an id must resolve without the in-memory map (the VM showed a fresh process asking for items a
   previous one had enumerated). The id ↔ path map is still kept and filled by
   listings and stats, the parent identifier is looked up there (or one stat
   supplies its ino), and a subtree is invalidated on delete. `contentVersion`

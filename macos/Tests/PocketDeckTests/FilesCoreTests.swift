@@ -119,7 +119,7 @@ final class FilesItemMappingTests: XCTestCase {
     func testAFileMapsSizeDatesTypeAndVersions() {
         let item = FilesMap.item(path: "DCIM/photo.jpg", parentIdentifier: "ino:7",
                                  fs: fs("photo.jpg", size: 1234, ino: 99, mtime: 1_700_000_001_500))
-        XCTAssertEqual("ino:99:DCIM/photo.jpg", item.identifier)
+        XCTAssertEqual("ino:99:DCIM%2Fphoto.jpg", item.identifier)
         XCTAssertEqual("ino:7", item.parentIdentifier)
         XCTAssertEqual("photo.jpg", item.name)
         XCTAssertEqual(1234, item.size)
@@ -151,11 +151,11 @@ final class FilesItemMappingTests: XCTestCase {
     }
 
     func testInoZeroFallsBackToThePath() {
-        XCTAssertEqual("path:DCIM/notes.txt",
+        XCTAssertEqual("path:DCIM%2Fnotes.txt",
                        FilesMap.identifier(path: "DCIM/notes.txt", ino: 0))
         let item = FilesMap.item(path: "DCIM/notes.txt", parentIdentifier: "ino:1",
                                  fs: fs("notes.txt", ino: 0))
-        XCTAssertEqual("path:DCIM/notes.txt", item.identifier)
+        XCTAssertEqual("path:DCIM%2Fnotes.txt", item.identifier)
         XCTAssertEqual("ino:12:x", FilesMap.identifier(path: "x", ino: 12))
         XCTAssertEqual(".rootContainer", FilesMap.identifier(path: "", ino: 0))
     }
@@ -166,8 +166,10 @@ final class FilesItemMappingTests: XCTestCase {
         let item = FilesMap.item(path: "DCIM/Camera/photo.jpg", parentIdentifier: "ino:7",
                                  fs: fs("photo.jpg", ino: 99))
         XCTAssertEqual("DCIM/Camera/photo.jpg", FilesMap.path(fromIdentifier: item.identifier))
+        XCTAssertEqual("ino:5:a%252Fb", FilesMap.identifier(path: "a%2Fb", ino: 5))
+        XCTAssertEqual("a%2Fb", FilesMap.path(fromIdentifier: "ino:5:a%252Fb"))
         XCTAssertEqual("", FilesMap.path(fromIdentifier: FilesMap.rootIdentifier))
-        XCTAssertEqual("a/b c.txt", FilesMap.path(fromIdentifier: "path:a/b c.txt"))
+        XCTAssertEqual("a/b c.txt", FilesMap.path(fromIdentifier: "path:a%2Fb c.txt"))
         XCTAssertNil(FilesMap.path(fromIdentifier: "ino:99"))
         XCTAssertNil(FilesMap.path(fromIdentifier: "something-else"))
     }
@@ -195,13 +197,13 @@ final class FilesPathMapTests: XCTestCase {
                    items: [fs("DCIM", dir: true, ino: 10)])
         _ = map.insert(childrenOf: "DCIM", parentIdentifier: "ino:10:DCIM",
                        items: [fs("Camera", dir: true, ino: 20)])
-        _ = map.insert(childrenOf: "DCIM/Camera", parentIdentifier: "ino:20:DCIM/Camera",
+        _ = map.insert(childrenOf: "DCIM/Camera", parentIdentifier: "ino:20:DCIM%2FCamera",
                        items: [fs("a.jpg", ino: 21), fs("b.jpg", ino: 22)])
-        XCTAssertEqual("DCIM/Camera/a.jpg", map.path(for: "ino:21:DCIM/Camera/a.jpg"))
+        XCTAssertEqual("DCIM/Camera/a.jpg", map.path(for: "ino:21:DCIM%2FCamera%2Fa.jpg"))
         map.invalidate(subtree: "DCIM")
         XCTAssertNil(map.path(for: "ino:10:DCIM"))
-        XCTAssertNil(map.path(for: "ino:20:DCIM/Camera"))
-        XCTAssertNil(map.path(for: "ino:21:DCIM/Camera/a.jpg"))
+        XCTAssertNil(map.path(for: "ino:20:DCIM%2FCamera"))
+        XCTAssertNil(map.path(for: "ino:21:DCIM%2FCamera%2Fa.jpg"))
         XCTAssertNil(map.identifier(for: "DCIM/Camera/a.jpg"))
     }
 
@@ -222,8 +224,8 @@ final class FilesPathMapTests: XCTestCase {
         _ = map.insert(childrenOf: "old", parentIdentifier: "ino:40:old",
                        items: [fs("a.txt", ino: 41)])
         map.rename(identifier: "ino:40:old", to: "new")
-        XCTAssertEqual("new/a.txt", map.path(for: "ino:41:old/a.txt"))
-        XCTAssertEqual("ino:41:old/a.txt", map.identifier(for: "new/a.txt"))
+        XCTAssertEqual("new/a.txt", map.path(for: "ino:41:old%2Fa.txt"))
+        XCTAssertEqual("ino:41:old%2Fa.txt", map.identifier(for: "new/a.txt"))
     }
 }
 
