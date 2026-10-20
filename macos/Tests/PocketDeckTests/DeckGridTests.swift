@@ -67,28 +67,21 @@ final class DeckGridTests: XCTestCase {
     @MainActor
     func testWhichVariantAnEntryPicks() {
         let image = NSImage(size: NSSize(width: 96, height: 96))
-        let layers = AppIconLayers(
-            fg: NSImage(size: NSSize(width: 216, height: 216)),
-            bg: NSImage(size: NSSize(width: 216, height: 216)),
-            mono: nil)!
+        let rendered = NSImage(size: NSSize(width: 224, height: 224))
 
-        XCTAssertEqual(GlassIcon.variant(layers: layers, image: image, isMissing: false, glassOn: true),
-                       .adaptiveTile(layers))
-        XCTAssertEqual(GlassIcon.variant(layers: nil, image: image, isMissing: false, glassOn: true),
-                       .flatTile(image), "a flat icon sits centred on the glass tile")
-        XCTAssertEqual(GlassIcon.variant(layers: layers, image: image, isMissing: false, glassOn: false),
+        XCTAssertEqual(GlassIcon.variant(rendered: rendered, image: image, isMissing: false, glassOn: true),
+                       .rendered(rendered), "setting on: the shared renderer's image")
+        XCTAssertEqual(GlassIcon.variant(rendered: nil, image: image, isMissing: false, glassOn: true),
+                       .bare(image), "no render yet: the flat image, never a blank tile")
+        XCTAssertEqual(GlassIcon.variant(rendered: rendered, image: image, isMissing: false, glassOn: false),
                        .bare(image), "setting off: today's look")
-        XCTAssertEqual(GlassIcon.variant(layers: layers, image: image, isMissing: true, glassOn: false),
-                       .bare(image), "a missing icon that answered is still an image")
+        XCTAssertEqual(GlassIcon.variant(rendered: rendered, image: image, isMissing: true, glassOn: true),
+                       .rendered(rendered), "a missing icon that answered is still an image")
         XCTAssertNil(AppIconLayers(fg: nil, bg: NSImage(size: NSSize(width: 216, height: 216)), mono: nil),
                      "half an answer is no layers")
-        XCTAssertEqual(GlassIcon.variant(layers: nil, image: nil, isMissing: false, glassOn: true),
+        XCTAssertEqual(GlassIcon.variant(rendered: nil, image: nil, isMissing: false, glassOn: true),
                        .placeholder, "waiting for the phone")
-        XCTAssertEqual(GlassIcon.variant(layers: nil, image: nil, isMissing: true, glassOn: true),
+        XCTAssertEqual(GlassIcon.variant(rendered: nil, image: nil, isMissing: true, glassOn: true),
                        .fallback, "the phone said there is no icon")
-        // Layers without the flat image cannot render: the flat image always
-        // rode along, so take today's flat branch.
-        XCTAssertEqual(GlassIcon.variant(layers: layers, image: nil, isMissing: false, glassOn: true),
-                       .placeholder)
     }
 }

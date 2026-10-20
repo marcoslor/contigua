@@ -19,16 +19,13 @@ final class DockAppsTests: XCTestCase {
                      hostPath: "/tmp/PocketDeck.app")
     }
 
-    private func png(size: Int = 96) -> Data {
-        let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: size, pixelsHigh: size, bitsPerSample: 8,
-                                   samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB,
-                                   bytesPerRow: 0, bitsPerPixel: 0)!
-        NSGraphicsContext.saveGraphicsState()
-        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
-        NSColor.systemGreen.setFill()
-        NSRect(x: 0, y: 0, width: size, height: size).fill()
-        NSGraphicsContext.restoreGraphicsState()
-        return rep.representation(using: .png, properties: [:])!
+    private func cgImage(size: Int = 1024) -> CGImage {
+        let space = CGColorSpace(name: CGColorSpace.sRGB)!
+        let context = CGContext(data: nil, width: size, height: size, bitsPerComponent: 8, bytesPerRow: 0,
+                                space: space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+        context.setFillColor(CGColor(colorSpace: space, components: [0, 0.8, 0.2, 1])!)
+        context.fill(CGRect(x: 0, y: 0, width: size, height: size))
+        return context.makeImage()!
     }
 
     private func binary() throws -> URL {
@@ -94,7 +91,7 @@ final class DockAppsTests: XCTestCase {
         let label = "Tom & \"Jerry\" <1>"
         var pinned = spec(label: label)
         pinned.pinned = true
-        let url = try DockShimBuilder.build(pinned, in: folder, shimBinary: try binary(), iconPNG: png())
+        let url = try DockShimBuilder.build(pinned, in: folder, shimBinary: try binary(), icon: cgImage())
         let bundle = try XCTUnwrap(Bundle(url: url))
         XCTAssertEqual(bundle.bundleIdentifier, "dev.pocketdeck.dock.e2e.a1b2c3d4e5f60718.com-whatsapp")
         XCTAssertEqual(bundle.object(forInfoDictionaryKey: "CFBundleName") as? String, "\(label) (Pixel)")
@@ -102,6 +99,9 @@ final class DockAppsTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: url.appendingPathComponent("Contents/Resources/AppIcon.icns").path))
         XCTAssertEqual(DockShimBuilder.records(in: folder, profile: Profile(name: "e2e")!).map(\.pkg), ["com.whatsapp"])
         XCTAssertEqual(DockShimBuilder.records(in: folder, profile: Profile(name: "e2e")!).map(\.pinned), [true])
+        XCTAssertEqual(bundle.object(forInfoDictionaryKey: "PDIconVersion") as? Int, PhoneAppIcon.version)
+        XCTAssertEqual(bundle.object(forInfoDictionaryKey: "PDIconLayers") as? Bool, false,
+                       "a default spec has no layers")
         let token = try XCTUnwrap(bundle.object(forInfoDictionaryKey: "PDToken") as? String)
         XCTAssertTrue(DockToken.isWellFormed(token), "the bundle carries a token for the host's checks")
         XCTAssertEqual(DockShimBuilder.records(in: folder, profile: Profile(name: "e2e")!).map(\.token), [token])
@@ -110,19 +110,20 @@ final class DockAppsTests: XCTestCase {
 
     func testBuildWithoutIconStillWorksAndRebuildReplaces() throws {
         let binary = try binary()
-        let first = try DockShimBuilder.build(spec(), in: folder, shimBinary: binary, iconPNG: nil)
-        let second = try DockShimBuilder.build(spec(), in: folder, shimBinary: binary, iconPNG: png())
+        let first = try DockShimBuilder.build(spec(), in: folder, shimBinary: binary, icon: nil)
+        let second = try DockShimBuilder.build(spec(), in: folder, shimBinary: binary, icon: cgImage())
         XCTAssertEqual(first, second)
         XCTAssertEqual(DockShimBuilder.records(in: folder, profile: Profile(name: "e2e")!).count, 1)
     }
 
-    func testIcnsFromPNGHasEveryStandardSize() throws {
-        let icns = try XCTUnwrap(DockShimBuilder.icns(fromPNG: png()))
+    func testIcnsHasEveryStandardSizeFromOne1024Render() throws {
+        let source = cgImage(size: 1024)
+        let icns = try XCTUnwrap(DockShimBuilder.icns(from: source))
         XCTAssertEqual(Array(icns.prefix(4)), Array("icns".utf8))
         let image = try XCTUnwrap(NSImage(data: icns))
         let widths = Set(image.representations.map(\.pixelsWide))
-        XCTAssertTrue(widths.isSuperset(of: [16, 32, 128, 256, 512]), "\(widths.sorted())")
-        XCTAssertNil(DockShimBuilder.icns(fromPNG: Data("not a png".utf8)))
+        XCTAssertTrue(widths.isSuperset(of: [16, 32, 128, 256, 512, 1024]), "\(widths.sorted())")
+        XCTAssertEqual(widths.max(), 1024, "the largest representation is the render, not a 96 px upscale")
     }
 
     // MARK: Cleanup decisions
@@ -205,7 +206,7 @@ final class DockAppsTests: XCTestCase {
     func testLegacyShimsWithoutTheMarkerCountAsPinned() throws {
         // Bundles from before automatic identities: all added by hand, so a
         // missing PDPinned key must not make the setting stop them.
-        let url = try DockShimBuilder.build(spec(), in: folder, shimBinary: try binary(), iconPNG: nil)
+        let url = try DockShimBuilder.build(spec(), in: folder, shimBinary: try binary(), icon: nil)
         let plistURL = url.appendingPathComponent("Contents/Info.plist")
         var plist = try XCTUnwrap(PropertyListSerialization.propertyList(from: try Data(contentsOf: plistURL),
                                                                         format: nil) as? [String: Any])
@@ -226,9 +227,13 @@ final class DockAppsTests: XCTestCase {
 
     private func decide(settingOn: Bool = true, shimBinary: Bool = true, phoneKnown: Bool = true,
                         shimExists: Bool = false, shimRunning: Bool = false, shimHasIcon: Bool = false,
+                        shimIconVersion: Int = PhoneAppIcon.version, shimIconLayers: Bool = true,
+                        hasLayers: Bool = true,
                         icon: DockFollow.IconState = .cached) -> DockFollow {
         DockFollow.decide(settingOn: settingOn, shimBinary: shimBinary, phoneKnown: phoneKnown,
-                          shimExists: shimExists, shimRunning: shimRunning, shimHasIcon: shimHasIcon, icon: icon)
+                          shimExists: shimExists, shimRunning: shimRunning, shimHasIcon: shimHasIcon,
+                          shimIconVersion: shimIconVersion, shimIconLayers: shimIconLayers,
+                          hasLayers: hasLayers, icon: icon)
     }
 
     func testSettingOffSkipsEverything() {
@@ -255,6 +260,21 @@ final class DockAppsTests: XCTestCase {
                        "the bundle was built without an icon and there is one now: rebuild")
         XCTAssertEqual(decide(shimExists: true, shimHasIcon: false, icon: .reportedMissing), .launchExisting)
         XCTAssertEqual(decide(shimExists: true, shimHasIcon: false, icon: .unknown), .wait)
+    }
+
+    func testAnIconFromAnOlderRendererOrAPlateIsRebuilt() {
+        XCTAssertEqual(decide(shimExists: true, shimHasIcon: true, shimIconVersion: 0, icon: .cached),
+                       .createAndLaunch, "a bundle from before PDIconVersion is rebuilt")
+        XCTAssertEqual(decide(shimExists: true, shimHasIcon: true, shimIconVersion: PhoneAppIcon.version - 1,
+                              icon: .cached), .createAndLaunch)
+        XCTAssertEqual(decide(shimExists: true, shimHasIcon: true, shimIconLayers: false, hasLayers: true,
+                              icon: .cached), .createAndLaunch,
+                       "the plate was drawn before the phone's layers arrived")
+        XCTAssertEqual(decide(shimExists: true, shimHasIcon: true, shimIconLayers: false, hasLayers: false,
+                              icon: .cached), .launchExisting,
+                       "a flat icon has no layers to wait for")
+        XCTAssertEqual(decide(shimExists: true, shimHasIcon: true, shimIconVersion: 0, icon: .unknown), .wait,
+                       "the layers may still arrive: do not rebuild into another plate")
     }
 
     func testARunningIdentityIsNotDoubled() {

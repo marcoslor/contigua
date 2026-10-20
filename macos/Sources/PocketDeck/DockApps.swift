@@ -29,12 +29,20 @@ enum DockFollow: Equatable {
 
     static func decide(settingOn: Bool, shimBinary: Bool, phoneKnown: Bool,
                        shimExists: Bool, shimRunning: Bool, shimHasIcon: Bool,
-                       icon: IconState) -> DockFollow {
+                       shimIconVersion: Int = PhoneAppIcon.version, shimIconLayers: Bool = true,
+                       hasLayers: Bool = true, icon: IconState) -> DockFollow {
         guard settingOn, shimBinary, phoneKnown else { return .skip }
         if shimRunning { return .skip }
         // A bundle without its icon is rebuilt (or built) once the icon is known;
         // an unknown icon waits, so the Dock never shows a blank tile.
-        if shimExists, shimHasIcon || icon == .reportedMissing { return .launchExisting }
+        if shimExists, shimHasIcon {
+            // An icon from an older renderer, or a plate drawn while the phone
+            // had no layers yet, is stale: rebuild it (docs/design/dock.md §Icons).
+            let current = shimIconVersion >= PhoneAppIcon.version && (!hasLayers || shimIconLayers)
+            if current || icon == .reportedMissing { return .launchExisting }
+            return icon == .unknown ? .wait : .createAndLaunch
+        }
+        if shimExists, icon == .reportedMissing { return .launchExisting }
         return icon == .unknown ? .wait : .createAndLaunch
     }
 }
@@ -75,6 +83,10 @@ struct DockShimSpec: Equatable {
     /// The per-bundle token the shim carries in its Info.plist and echoes in
     /// every message (sec L-8). A new bundle gets a fresh one.
     var token = DockToken.make()
+    /// The renderer version the icon was drawn with, and whether it came from
+    /// the phone's adaptive layers (docs/design/dock.md §Icons).
+    var iconVersion = PhoneAppIcon.version
+    var iconLayers = false
 
     /// "WhatsApp (Pixel)", like the Spotlight titles.
     var displayName: String { SpotlightIndexer.title(label: label, phoneName: phoneName) }
@@ -125,6 +137,8 @@ struct DockShimSpec: Equatable {
             DockMessage.plistHostPath: hostPath,
             DockMessage.plistPinned: pinned,
             DockMessage.plistToken: token,
+            DockMessage.plistIconVersion: iconVersion,
+            DockMessage.plistIconLayers: iconLayers,
         ].merging(agent ? ["LSUIElement": true] : [:]) { current, _ in current }
     }
 }
@@ -143,12 +157,16 @@ struct DockShimRecord: Equatable {
     /// The bundle's token (sec L-8); empty in bundles written before it existed,
     /// which the next refresh rebuilds.
     var token = ""
+    /// The renderer version its AppIcon.icns was made with (0 when it has none).
+    var iconVersion = 0
+    /// Whether that icon was drawn from the phone's adaptive layers.
+    var iconLayers = false
 }
 
 enum DockShimBuilder {
     /// Writes the bundle into `folder` (replacing one for the same app) and returns its URL.
     /// Signing and LaunchServices registration are the caller's.
-    static func build(_ spec: DockShimSpec, in folder: URL, shimBinary: URL, iconPNG: Data?) throws -> URL {
+    static func build(_ spec: DockShimSpec, in folder: URL, shimBinary: URL, icon: CGImage?) throws -> URL {
         let fm = FileManager.default
         try fm.createDirectory(at: folder, withIntermediateDirectories: true)
         let app = folder.appendingPathComponent(spec.fileName, isDirectory: true)
@@ -159,9 +177,12 @@ enum DockShimBuilder {
         try fm.createDirectory(at: macOS, withIntermediateDirectories: true)
         try fm.createDirectory(at: resources, withIntermediateDirectories: true)
         try fm.copyItem(at: shimBinary, to: macOS.appendingPathComponent(DockMessage.shimExecutable))
-        let plist = try PropertyListSerialization.data(fromPropertyList: spec.infoPlist, format: .xml, options: 0)
+        var used = spec
+        used.iconVersion = PhoneAppIcon.version
+        used.iconLayers = icon != nil && spec.iconLayers
+        let plist = try PropertyListSerialization.data(fromPropertyList: used.infoPlist, format: .xml, options: 0)
         try plist.write(to: contents.appendingPathComponent("Info.plist"))
-        if let png = iconPNG, let icns = icns(fromPNG: png) {
+        if let icon, let icns = icns(from: icon) {
             try icns.write(to: resources.appendingPathComponent("AppIcon.icns"))
         }
         return app
@@ -169,17 +190,34 @@ enum DockShimBuilder {
 
     static let icnsSizes = [16, 32, 64, 128, 256, 512, 1024]
 
-    /// An .icns with every standard size, scaled from the phone's PNG icon.
-    static func icns(fromPNG png: Data) -> Data? {
-        guard let source = CGImageSourceCreateWithData(png as CFData, nil),
-              let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else { return nil }
-        let output = NSMutableData()
-        guard let destination = CGImageDestinationCreateWithData(output, UTType.icns.identifier as CFString,
-                                                                 icnsSizes.count, nil) else { return nil }
-        for size in icnsSizes {
-            guard let scaled = scale(image, to: size) else { return nil }
-            CGImageDestinationAddImage(destination, scaled, nil)
+    /// ICNS chunk types, including the 1024 px `ic10` that ImageIO's writer
+    /// drops (it stops at 512). PNG data is accepted for all of them.
+    private static let icnsTypes: [(type: String, size: Int)] = [
+        ("icp4", 16), ("icp5", 32), ("icp6", 64), ("ic07", 128),
+        ("ic08", 256), ("ic09", 512), ("ic10", 1024),
+    ]
+
+    /// An .icns with every standard size up to 1024, all scaled from one
+    /// 1024 px render (docs/design/dock.md §Icons).
+    static func icns(from image: CGImage) -> Data? {
+        var body = Data()
+        for entry in icnsTypes {
+            guard let scaled = scale(image, to: entry.size), let png = png(scaled) else { return nil }
+            body.append(entry.type.data(using: .ascii)!)
+            body.appendBigEndian(UInt32(png.count + 8))
+            body.append(png)
         }
+        var file = Data("icns".utf8)
+        file.appendBigEndian(UInt32(body.count + 8))
+        file.append(body)
+        return file
+    }
+
+    private static func png(_ image: CGImage) -> Data? {
+        let output = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(output, UTType.png.identifier as CFString, 1, nil)
+        else { return nil }
+        CGImageDestinationAddImage(destination, image, nil)
         guard CGImageDestinationFinalize(destination) else { return nil }
         return output as Data
     }
@@ -207,7 +245,9 @@ enum DockShimBuilder {
             return DockShimRecord(url: url, deviceId: deviceId, pkg: pkg, profile: owner,
                                   name: plist["CFBundleName"] as? String ?? "",
                                   pinned: plist[DockMessage.plistPinned] as? Bool ?? true,
-                                  token: plist[DockMessage.plistToken] as? String ?? "")
+                                  token: plist[DockMessage.plistToken] as? String ?? "",
+                                  iconVersion: plist[DockMessage.plistIconVersion] as? Int ?? 0,
+                                  iconLayers: plist[DockMessage.plistIconLayers] as? Bool ?? false)
         }.sorted { $0.url.path < $1.url.path }
     }
 }
@@ -340,6 +380,13 @@ final class DockApps: NSObject {
         }
     }
 
+    /// What the shim's icon was drawn with: the renderer version and whether
+    /// adaptive layers were used (docs/design/dock.md §Icons).
+    func shimIconInfo(deviceId: String, pkg: String) -> (version: Int, layers: Bool)? {
+        records().first { $0.deviceId == deviceId && $0.pkg == pkg }
+            .map { ($0.iconVersion, $0.iconLayers) }
+    }
+
     // MARK: Automatic identity (docs/design/dock.md §Lifecycle)
 
     /// The setting turned off: stop the running identities the person did not
@@ -389,10 +436,22 @@ final class DockApps: NSObject {
     /// path and the automatic one. Runs on the caller's thread.
     private func make(_ spec: DockShimSpec, shellBinary: URL) -> URL? {
         do {
-            let url = try DockShimBuilder.build(spec, in: folder, shimBinary: shellBinary,
-                                                iconPNG: IconCache.shared.loadData(pkg: spec.pkg, deviceId: spec.deviceId))
+            // The icon: the Dock's own 1296 px layers when the phone answered
+            // that request, else the Deck's layers upscaled, else the flat icon
+            // on the plate. One 1024 px render feeds every .icns size.
+            let dockLayers = IconCache.shared.loadLayerData(pkg: spec.pkg, deviceId: spec.deviceId,
+                                                            sizeClass: .dock)
+            let layers = dockLayers ?? IconCache.shared.loadLayerData(pkg: spec.pkg, deviceId: spec.deviceId)
+            let flat = IconCache.shared.loadData(pkg: spec.pkg, deviceId: spec.deviceId)
+            let icon = PhoneAppIcon.render(fg: layers?.fg, bg: layers?.bg, flat: flat, px: 1024)
+            var withIcon = spec
+            withIcon.iconLayers = layers != nil
+            let url = try DockShimBuilder.build(withIcon, in: folder, shimBinary: shellBinary, icon: icon)
             Self.run("/usr/bin/codesign", ["--force", "--sign", "-", url.path])
             LSRegisterURL(url as CFURL, true)
+            // A rebuilt bundle replaces its icon in place: LaunchServices must
+            // re-read it or the Dock keeps showing the old one.
+            Self.run(Self.lsregister, ["-f", url.path])
             Log.app.notice("dock: created \(url.path, privacy: .public)")
             return url
         } catch {
@@ -581,5 +640,13 @@ final class DockApps: NSObject {
         do { try process.run() } catch { return -1 }
         process.waitUntilExit()
         return process.terminationStatus
+    }
+}
+
+private extension Data {
+    /// The four-byte big-endian length an ICNS chunk starts with.
+    mutating func appendBigEndian(_ value: UInt32) {
+        var big = value.bigEndian
+        Swift.withUnsafeBytes(of: &big) { append(contentsOf: $0) }
     }
 }
