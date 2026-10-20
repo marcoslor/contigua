@@ -1193,9 +1193,10 @@ def cmd_watch_state(client, args):
         if msg.get("t") == "state":
             count += 1
             dnd = "" if "dnd" not in msg else " dnd=%s" % json.dumps(msg.get("dnd"))
-            print("%s state #%d locked=%s battery=%s charging=%s%s" % (
+            screen = "" if "screen" not in msg else " screen=%s" % json.dumps(msg.get("screen"))
+            print("%s state #%d locked=%s battery=%s charging=%s%s%s" % (
                 time.strftime("%H:%M:%S"), count, msg.get("locked"),
-                msg.get("battery"), msg.get("charging"), dnd))
+                msg.get("battery"), msg.get("charging"), dnd, screen))
     print("# %d state messages in %ss" % (count, args.seconds))
     return 0
 
@@ -1228,6 +1229,81 @@ def cmd_dnd(client, args):
             print("state dnd=%s" % json.dumps(msg.get("dnd")))
             return 0
     raise DeckError("no state with dnd within %ss (an old phone omits it)" % args.wait)
+
+
+def cmd_wake(client, args):
+    """Send `phone.wake` and print the state the phone reports afterwards.
+
+    The real phone answers the wake with a state as it is at that moment and
+    sends the display's own change as the next one, so wait for `screen: on`
+    rather than the first state.
+    """
+    # Drain the post-welcome state: the answer must be this command's.
+    while True:
+        frame = client.recv(0.25)
+        if frame is TIMEOUT:
+            break
+        if frame is None:
+            raise DeckError("phone closed during wake")
+    client.send_json({"t": "phone.wake"})
+    print("sent phone.wake")
+    deadline = time.time() + args.wait
+    while time.time() < deadline:
+        frame = client.recv(0.25)
+        if frame is TIMEOUT:
+            continue
+        if frame is None:
+            raise DeckError("phone closed during wake")
+        if frame.type != proto.TYPE_JSON:
+            continue
+        msg = proto.unpack_json(frame)
+        if msg.get("t") == "error":
+            raise DeckError("phone error: %s (%s)" % (msg.get("code"), msg.get("message")))
+        if msg.get("t") == "state":
+            print("state screen=%s locked=%s" % (json.dumps(msg.get("screen")), msg.get("locked")))
+            if msg.get("screen") == "on":
+                return 0
+    raise DeckError("no state with screen on within %ss" % args.wait)
+
+
+def cmd_wake_test(client, args):
+    """One session for the emulator's phone.wake check: wait for `screen off`
+    (the rig sleeps the panel), send `phone.wake`, wait for `screen on`."""
+    deadline = time.time() + args.off_timeout
+    saw_off = False
+    while time.time() < deadline:
+        frame = client.recv(0.25)
+        if frame is TIMEOUT:
+            continue
+        if frame is None:
+            raise DeckError("phone closed while waiting for screen off")
+        if frame.type != proto.TYPE_JSON:
+            continue
+        msg = proto.unpack_json(frame)
+        if msg.get("t") == "state" and msg.get("screen") == "off":
+            print("state screen=off locked=%s" % msg.get("locked"))
+            saw_off = True
+            break
+    if not saw_off:
+        raise DeckError("no state.screen off within %ss" % args.off_timeout)
+    client.send_json({"t": "phone.wake"})
+    print("sent phone.wake")
+    deadline = time.time() + args.on_timeout
+    while time.time() < deadline:
+        frame = client.recv(0.25)
+        if frame is TIMEOUT:
+            continue
+        if frame is None:
+            raise DeckError("phone closed while waiting for screen on")
+        if frame.type != proto.TYPE_JSON:
+            continue
+        msg = proto.unpack_json(frame)
+        if msg.get("t") == "error":
+            raise DeckError("phone error: %s (%s)" % (msg.get("code"), msg.get("message")))
+        if msg.get("t") == "state" and msg.get("screen") == "on":
+            print("state screen=on locked=%s" % msg.get("locked"))
+            return 0
+    raise DeckError("no state.screen on within %ss" % args.on_timeout)
 
 
 def cmd_clip_set(client, args):
@@ -2169,6 +2245,17 @@ def build_parser():
 
     sp = sub.add_parser("watch-state", help="print every state message; lock/unlock while it runs", **spp)
     sp.add_argument("--seconds", type=float, default=30.0)
+
+    sp = sub.add_parser("wake-test",
+                        help="phone.wake on one session: wait for screen off, wake, wait for on",
+                        **spp)
+    sp.add_argument("--off-timeout", type=float, default=40.0)
+    sp.add_argument("--on-timeout", type=float, default=20.0)
+
+    sp = sub.add_parser("wake", help="phone.wake: wake the phone's screen, print the state",
+                        **spp)
+    sp.add_argument("--wait", type=float, default=15.0,
+                    help="seconds to wait for a state carrying screen on")
 
     sp = sub.add_parser("dnd", help="phone.dnd: set the phone's DND, print the state",
                         **spp)

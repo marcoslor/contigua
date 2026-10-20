@@ -2981,12 +2981,22 @@ PY
 # the phone turns to landscape the stream and the window turn with it.
 check_mirror() {
     clean
-    FAKE_ARGS="--rotate-after 6" start_fake || return 1
+    # Screen off at 14 s (after the rotation at 6 s); the check wakes it again
+    # through the debug route and the phone resumes its frames.
+    FAKE_ARGS="--rotate-after 6 --screen-off-after 14" start_fake || return 1
     # The pointer comes to the top edge to bring the header in (glass nav buttons).
     printf '%s\n' "wait 1" "hoverat 0 200" "wait 0.03" "hoverat 0 150" "wait 0.03" "hoverat 0 120" \
         "wait 0.03" "hoverat 0 90" "wait 0.03" "hoverat 0 70" "wait 0.03" "hoverat 0 58" > "$WORK/mirror.txt"
+    mkdir -p "$WORK/control"
     launch --connect "127.0.0.1:$PORT" --open-phone --float-windows \
-        --debug-chrome-state "$WORK/chrome.txt" --debug-input-script "$WORK/mirror.txt" --quit-after 40
+        --debug-chrome-state "$WORK/chrome.txt" --debug-input-script "$WORK/mirror.txt" \
+        --debug-control "$WORK/control" --quit-after 60
+    # repro wake-on-open: opening the window sends one phone.wake.
+    if wait_until 15 events_have '"t":"phone.wake"'; then
+        ok "MIRROR repro wake-on-open: opening the phone window sent phone.wake"
+    else
+        bad "MIRROR repro wake-on-open: the phone got no phone.wake on open"
+    fi
     local portrait landscape
     if portrait="$(await_window '$5 > $4 * 1.5')"; then
         ok "MIRROR phone window is portrait ($(windows | awk -v i="$portrait" '$1 == i {print $4 "x" $5}'))"
@@ -3006,9 +3016,64 @@ check_mirror() {
     fi
     wait_until 10 landscape_config \
         && ok "MIRROR landscape VIDEO_CONFIG sent" || bad "MIRROR no landscape VIDEO_CONFIG"
+
+    # repro stale-frame: the panel times out, the fake stops frames, and the
+    # window shows "screen off" within 2 s — never the last frame as if live.
+    wait_until 20 events_have '"ev":"screen","state":"off"' \
+        || bad "MIRROR the fake never reported the screen off"
+    if wait_until 2 chrome_has "screen=off overlay=1"; then
+        ok "MIRROR repro stale-frame: screen off put the cover up within 2 s ($(chrome_state))"
+    else
+        bad "MIRROR repro stale-frame: the window kept the last frame as live ($(chrome_state))"
+    fi
+    if [ "$(phone_screen_log)" -ge 1 ]; then
+        ok "MIRROR the app logged phone window: screen=off overlay=1"
+    else
+        say "MIRROR the unified log has no screen-off line on this Mac (empty log store); the chrome state is the evidence"
+    fi
+    local configs_before
+    configs_before="$(count_events '"ev":"video"')"
+    # The Wake Screen route (the button is unit-tested; a scripted click needs
+    # real input): one more phone.wake, the fake sends screen on, frames resume.
+    printf 'wake-phone\n' > "$WORK/control/wake.cmd"
+    if wait_until 10 wake_done_ok; then
+        ok "MIRROR Wake Screen ran"
+    else
+        bad "MIRROR Wake Screen did not run: $(cat "$WORK/control/wake.done" 2>/dev/null)"
+    fi
+    if [ "$(grep -c '"t":"phone.wake"' "$WORK/events.jsonl")" -ge 2 ]; then
+        ok "MIRROR Wake Screen sent phone.wake ($(grep -c '"t":"phone.wake"' "$WORK/events.jsonl") total)"
+    else
+        bad "MIRROR Wake Screen sent no phone.wake"
+    fi
+    wait_until 10 events_have '"ev":"screen","state":"on"' \
+        && ok "MIRROR the fake came back on" || bad "MIRROR the fake never reported screen on"
+    if wait_until 10 chrome_has "screen=on overlay=0"; then
+        ok "MIRROR the cover cleared after the wake ($(chrome_state))"
+    else
+        bad "MIRROR the cover stayed up after the wake ($(chrome_state))"
+    fi
+    if wait_until 10 more_video_configs "$configs_before"; then
+        ok "MIRROR frames resumed after the wake (new VIDEO_CONFIG)"
+    else
+        bad "MIRROR frames did not resume after the wake"
+    fi
     stop_app
     stop_fakephone
 }
+
+# chrome_has <text> — the chrome state file contains text.
+chrome_has() { case "$(chrome_state)" in *"$1"*) return 0 ;; *) return 1 ;; esac; }
+
+# phone_screen_log — how many times the app logged the sleeping-panel line in
+# the last 2 minutes (states only, never pixels).
+phone_screen_log() { log show --last 2m --info \
+    --predicate 'subsystem == "dev.pocketdeck.mac" AND category == "video"' 2>/dev/null |
+    grep -c 'phone window: screen=off overlay=1' ; }
+
+wake_done_ok() { [ "$(cat "$WORK/control/wake.done" 2>/dev/null)" = "ok" ]; }
+
+more_video_configs() { [ "$(count_events '"ev":"video"')" -gt "$1" ]; }
 
 # landscape_config — stream 1 has had a VIDEO_CONFIG wider than tall.
 landscape_config() {
