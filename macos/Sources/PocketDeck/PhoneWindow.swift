@@ -50,13 +50,22 @@ final class PhoneWindowController: StreamWindowController {
         ) { [weak self] _ in
             MainActor.assumeIsolated { self?.followRotation() }
         }
+        // The black-frame fallback for phones that do not report `state.secure`
+        // yet: a look at the displayed frame five times a second.
+        let timer = Timer(timeInterval: 0.2, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.sampleFrameForBlackCover() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        blackTimer = timer
     }
 
     deinit {
+        blackTimer?.invalidate()
         if let rotationObserver { NotificationCenter.default.removeObserver(rotationObserver) }
     }
 
     private var rotationObserver: NSObjectProtocol?
+    private var blackTimer: Timer?
 
     /// The phone turned: the stream now has the other orientation, so the window
     /// turns too, keeping its top-left corner and its picture's area.
@@ -134,12 +143,44 @@ final class PhoneWindowController: StreamWindowController {
     /// Screen button over the held frame, on takes it away.
     func setPhoneScreen(_ screen: PhoneScreen?) {
         guard screenModel.set(screen: screen) else { return }
-        let off = screenModel.isShowing
-        if off { videoView.inputMapper?.dropPendingInput() }
-        chrome.phoneOverlay.isHidden = !off
+        applyCover()
+    }
+
+    /// `state.secure` from the session: the phone's PIN pad or another surface
+    /// Android blanks gets the blurred cover and its sentence, with no button.
+    func setPhoneSecure(_ secure: Bool) {
+        guard screenModel.setSecure(secure) else { return }
+        applyCover()
+    }
+
+    /// The cover follows the model: the sleeping panel offers Wake Screen, a
+    /// secure surface only explains itself.
+    private func applyCover() {
+        let cover = screenModel.cover
+        if cover != nil { videoView.inputMapper?.dropPendingInput() }
+        chrome.phoneOverlay.show(cover)
         chrome.needsLayout = true
         writeChromeState()
-        Log.video.notice("phone window: screen=\(off ? "off" : "on", privacy: .public) overlay=\(off ? 1 : 0, privacy: .public)")
+        switch cover {
+        case .screenOff:
+            Log.video.notice("phone window: screen=off overlay=1")
+        case .secure:
+            Log.video.notice("phone window: secure=1 overlay=1")
+        case nil:
+            Log.video.notice("phone window: screen=on overlay=0")
+        }
+    }
+
+    /// Samples the displayed frame for the black-frame fallback (phones that do
+    /// not report `state.secure` yet). Only while the window shows live phone
+    /// video; the pixel test is a grid, not a full scan.
+    private func sampleFrameForBlackCover() {
+        guard !screenModel.isShowing, screenModel.screen != .off,
+              window?.isVisible == true, !videoView.isPaused else { return }
+        guard let buffer = videoView.copyDisplayedFrame() else { return }
+        if screenModel.frame(at: ProcessInfo.processInfo.systemUptime, black: BlackFrame.isBlack(buffer)) {
+            applyCover()
+        }
     }
 
     /// A click on the blurred frame (or its Wake Screen button).

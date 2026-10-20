@@ -653,6 +653,10 @@ class EventLog(object):
         """Display 0's power state changed (`state.screen`)."""
         self._emit({"ev": "screen", "state": state, "ts": time.time()})
 
+    def secure(self, state):
+        """A secure surface covered or uncovered display 0 (`state.secure`)."""
+        self._emit({"ev": "secure", "state": "on" if state else "off", "ts": time.time()})
+
     def rx(self, msg):
         self._emit({"ev": "rx", "msg": redact_event(msg), "ts": time.time()})
 
@@ -3134,11 +3138,13 @@ class Session(object):
             return
         self.phone.secure_state = True
         self.send_state()
+        self.phone.events.secure(True)
         window.black_for(5, lambda: self.windows.get(window.stream_id) is window)
         if self.windows.get(window.stream_id) is not window:
             return
         self.phone.secure_state = False
         self.send_state()
+        self.phone.events.secure(False)
 
     def _screen_off_later(self, window):
         """The panel times out: `state.screen off` and no more mirror frames."""
