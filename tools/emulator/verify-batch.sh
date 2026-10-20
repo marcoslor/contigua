@@ -147,11 +147,19 @@ paired_row_section() { # paired_row_section <port> <state> <log>
     bash tools/emulator/unlock.sh >> "$log" 2>&1 || true
   fi
   emu shell input keyevent KEYCODE_WAKEUP >/dev/null 2>&1 || true
+  # The shade may be open from an earlier step: it would be the only window
+  # uiautomator dumps, hiding the app's text.
+  emu shell cmd statusbar collapse >/dev/null 2>&1 || true
   emu shell am start -n dev.pocketdeck/.app.MainActivity >/dev/null 2>&1 || true
   sleep 3
+  if ! wait_for_text "$dump" 'Paired Macs' 15; then
+    echo "paired-row: the home screen is not on top"
+    ui_text "$dump" > "$log.ui" 2>/dev/null || true
+    return 1
+  fi
 
   # A live session, without a window: `state` messages alone say it authenticated.
-  "$PYTHON" tools/fakephone/deckctl.py --host 127.0.0.1 --port "$port" \
+  PYTHONUNBUFFERED=1 "$PYTHON" tools/fakephone/deckctl.py --host 127.0.0.1 --port "$port" \
       --state "$state" watch-state --seconds 25 > "$watch" 2>&1 &
   pid=$!
   local deadline=$(( $(date +%s) + 15 )) live=0
@@ -163,6 +171,7 @@ paired_row_section() { # paired_row_section <port> <state> <log>
     echo "paired-row: the live Mac's row says Connected now"
   else
     echo "paired-row: no Connected now (session live=$live)"
+    ui_text "$dump" > "$log.ui" 2>/dev/null || true
     rc=1
   fi
 
@@ -192,7 +201,7 @@ secure_section() { # secure_section <port> <state> <log>
   local watch="$log.watch" unlock="$log.unlock" rc=0 pid
   : > "$log"
   ensure_forward >/dev/null || { echo "secure: no server port"; return 1; }
-  "$PYTHON" tools/fakephone/deckctl.py --host 127.0.0.1 --port "$port" \
+  PYTHONUNBUFFERED=1 "$PYTHON" tools/fakephone/deckctl.py --host 127.0.0.1 --port "$port" \
       --state "$state" watch-state --phone --seconds 90 > "$watch" 2>&1 &
   pid=$!
   local deadline=$(( $(date +%s) + 20 )) opened=0

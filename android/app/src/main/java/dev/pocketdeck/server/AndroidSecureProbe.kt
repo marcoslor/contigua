@@ -26,64 +26,15 @@ internal class AndroidSecureProbe(
 
     override fun read(): Boolean? {
         val dump = exec(WINDOW_DUMP) ?: return unreadable("window")
-        val focus = focusedWindow(dump) ?: return unreadable("no focused window block")
-        if (focus.secure) return true
-        // The bouncer is a SystemUI window; skip the heavier keyguard dump for
-        // every other app.
-        if (!focus.pkg.startsWith(SYSTEMUI)) return false
+        val secure = SecureDump.focusedSecure(dump) ?: return unreadable("focused window flags")
+        if (secure) return true
+        // The bouncer only exists while the keyguard is up; skip the heavier
+        // SystemUI dump on an unlocked phone.
         val keyguardShowing = runCatching {
             (ctx.getSystemService(Context.KEYGUARD_SERVICE) as? KeyguardManager)?.isDeviceLocked ?: false
         }.getOrDefault(false)
         if (!keyguardShowing) return false
-        return bouncerShowing()
-    }
-
-    private data class Focus(val token: String, val pkg: String, val secure: Boolean)
-
-    /**
-     * The focused window of display 0, from the per-display block first (a
-     * secondary display's focus must not leak into the mirror) and the window
-     * list for its flags.
-     */
-    private fun focusedWindow(dump: String): Focus? {
-        var display = -1
-        var token: String? = null
-        var pkg = ""
-        for (line in dump.lineSequence()) {
-            val displayLine = DISPLAY.find(line)
-            if (displayLine != null) {
-                display = displayLine.groupValues[1].toIntOrNull() ?: -1
-                continue
-            }
-            val m = FOCUS.find(line) ?: continue
-            if (display == 0) {
-                token = m.groupValues[1]
-                pkg = m.groupValues[2]
-            }
-        }
-        val focused = token ?: return null
-        val flags = windowFlags(dump, focused) ?: return null
-        return Focus(focused, pkg, flags and FLAG_SECURE != 0)
-    }
-
-    /** The `fl=` window flags of the window whose token is [token]. */
-    private fun windowFlags(dump: String, token: String): Int? {
-        var inWindow = false
-        for (line in dump.lineSequence()) {
-            if (WINDOW_HEADER.containsMatchIn(line)) {
-                if (inWindow) return null // moved past our block without mAttrs
-                inWindow = line.contains("Window{$token ")
-                continue
-            }
-            if (!inWindow) continue
-            ATTRS_FLAGS.find(line)?.let { return it.groupValues[1].toIntOrNull(16) }
-        }
-        return null
-    }
-
-    private fun bouncerShowing(): Boolean {
-        val out = exec(BOUNCER_DUMP) ?: return false
-        return BOUNCER_SHOWING.containsMatchIn(out)
+        return SecureDump.bouncerShowing(exec(BOUNCER_DUMP) ?: return false)
     }
 
     private fun exec(command: String): String? = runCatching {
@@ -107,22 +58,14 @@ internal class AndroidSecureProbe(
     }
 
     private companion object {
-        const val SYSTEMUI = "com.android.systemui"
-        const val FLAG_SECURE = 0x00002000
-
-        val DISPLAY = Regex("^\\s*Display: mDisplayId=(\\d+)")
-        val FOCUS = Regex("^\\s*mCurrentFocus=Window\\{([0-9a-f]+) u\\d+ ([^ }/]+)")
-        val WINDOW_HEADER = Regex("^\\s*Window #\\d+ Window\\{")
-        val ATTRS_FLAGS = Regex("\\bfl=0x([0-9a-fA-F]+)")
-        val BOUNCER_SHOWING = Regex("isBouncerShowing\\(\\):\\s*true")
-
         /**
-         * `dumpsys window` is large on OEM builds; keep the display blocks, the
-         * focus lines and the window list's flags, which is all the parse needs.
+         * `dumpsys window` is large on OEM builds; keep the display focus, the
+         * window list, its attrs and the flag lines (API 36 prints them on the
+         * next line). The flags may use the numeric or the named form.
          */
         const val WINDOW_DUMP =
             "/system/bin/dumpsys window | /system/bin/grep -E " +
-                "'^  Display: mDisplayId=|^    mCurrentFocus=|^  Window #|mAttrs='"
+                "'^ *Display: mDisplayId=|mCurrentFocus=|^ *Window #|mAttrs=|fl='"
 
         /** SystemUI's keyguard view manager is the only one that knows the bouncer. */
         const val BOUNCER_DUMP =
