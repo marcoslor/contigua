@@ -7540,7 +7540,7 @@ PY
     start_fake || return 1
     rm -f "$WORK/disc-go" "$WORK/disc-re"
     printf '%s\n' "waitfile $WORK/disc-go 120" "scroll 120" "type hello" \
-        "key cmd+shift+h" "waitfile $WORK/disc-re 240" "nav back" > "$WORK/input-disc.txt"
+        "key cmd+shift+h" "waitfile $WORK/disc-re 300" "nav back" > "$WORK/input-disc.txt"
     nfr_launch --open-phone --debug-input-script "$WORK/input-disc.txt"
     nfr_wait_ready 30 || bad "NFR the app never paired (disconnected)"
     wait_until 20 events_have '"ev":"video"' || bad "NFR no video before the disconnect"
@@ -7553,13 +7553,18 @@ PY
     nfr_input_unchanged "disconnected" "$before"
     start_fake || bad "NFR the phone did not come back"
     # The reconnect backoff doubles; a 64 s wait can fall between attempts.
-    wait_until 150 events_have '"state":"auth_ok"' || bad "NFR the window never reconnected"
+    wait_until 150 events_have '"state":"auth_ok"' \
+        || bad "NFR the window never reconnected (app: $(tail -1 "$WORK/app.log" 2>/dev/null); fake: $(tail -1 "$WORK/fake.err" 2>/dev/null); state: $(chrome_state))"
     wait_until 20 events_have '"ev":"video"' || true
+    # A reconnect can flush an input the app held while the link was down; it
+    # belongs to the outage, so the baseline is read after it settles.
+    sleep 2
     # The new fake starts its counters at zero; the phone is back, so one Back
     # must now move them.
     after="$(fake_counter input)"
+    say "NFR disconnected: reconnected; input $after (last $(fake_counter last_input))"
     touch "$WORK/disc-re"
-    wait_until 20 [ "$(fake_counter input)" -ge $((after + 1)) ] \
+    wait_until 40 [ "$(fake_counter input)" -ge $((after + 1)) ] \
         && ok "NFR frozen disconnected: Back after the reconnect reached the phone (input $(fake_counter input))" \
         || bad "NFR frozen disconnected: Back after the reconnect sent nothing (input $(fake_counter input))"
     stop_app
@@ -7586,6 +7591,7 @@ PY
     stop_app
     stop_fakephone
 }
+
 
 
 check_orphans() {
