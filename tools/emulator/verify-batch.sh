@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The combined device verification: ONE boot, three independent sections.
+# The combined device verification: ONE boot, five independent sections.
 #
 #   bash tools/emulator/verify-batch.sh            the run (heavy.sh owns the
 #                                                  lock and the boot budget; boot
@@ -10,9 +10,10 @@
 #                                                  the exact command to try with
 #                                                  --check before the boot.
 #
-# start.sh (hardened) -> pair -> media -> phone-screen -> icons. A section that
-# fails records its evidence and the next one still runs: one boot answers all
-# three questions. The emulator is killed at the end, whatever happened.
+# start.sh (hardened) -> pair -> paired-row -> media -> phone-screen -> secure
+# -> icons. A section that fails records its evidence and the next one still
+# runs: one boot answers all five questions. The emulator is killed at the end,
+# whatever happened.
 #
 # Results: one `SECTION <name> PASS|FAIL <key numbers>` line per section, in
 # .agent/emu/verify-batch.log, with one full log per section beside it. Icon
@@ -25,7 +26,7 @@ MODE=run
 for arg in "$@"; do
   case "$arg" in
     --check) MODE=check ;;
-    -h|--help) sed -n '2,21p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,23p' "$0"; exit 0 ;;
     *) echo "verify-batch.sh: unknown flag $arg" >&2; exit 2 ;;
   esac
 done
@@ -116,6 +117,128 @@ icons_section() { # icons_section <port> <state> <outdir> <layers-dir> <log>
   # the three must prove the 1296 fg/bg path.
   [ "$layered" -ge 1 ] || { echo "icons: no adaptive icon among the three (no fg/bg layers)" >> "$log"; rc=1; }
   echo "apps=$count px=216,1296 flat=144,864 layers=$layered/3 max_ms=$max_ms layer_pngs=$files"
+  return "$rc"
+}
+
+
+# --- the paired-Mac row -----------------------------------------------------
+# One live session (deckctl authenticates and holds it) must turn the app's
+# paired row into "Connected now"; after the session drops the same row must
+# read "Last connected ...". uiautomator reads the Compose text the person sees.
+ui_text() { # ui_text <dump-file> -> the dump's text nodes
+  emu shell uiautomator dump --compressed "$1" >/dev/null 2>&1 || true
+  emu shell cat "$1" 2>/dev/null | tr -d '\r'
+}
+
+wait_for_text() { # wait_for_text <dump-file> <grep-pattern> <timeout_s>
+  local dump="$1" pattern="$2" deadline=$(( $(date +%s) + $3 ))
+  while [ "$(date +%s)" -lt "$deadline" ]; do
+    ui_text "$dump" | grep -q "$pattern" && return 0
+    sleep 1
+  done
+  return 1
+}
+
+paired_row_section() { # paired_row_section <port> <state> <log>
+  local port="$1" state="$2" log="$3"
+  local dump=/data/local/tmp/pd-paired-row.xml watch="$log.watch" rc=0 pid
+  : > "$log"
+  if emu shell dumpsys window 2>/dev/null | grep -qiE 'isKeyguardShowing=true|mKeyguardShowing=true'; then
+    bash tools/emulator/unlock.sh >> "$log" 2>&1 || true
+  fi
+  emu shell input keyevent KEYCODE_WAKEUP >/dev/null 2>&1 || true
+  emu shell am start -n dev.pocketdeck/.app.MainActivity >/dev/null 2>&1 || true
+  sleep 3
+
+  # A live session, without a window: `state` messages alone say it authenticated.
+  "$PYTHON" tools/fakephone/deckctl.py --host 127.0.0.1 --port "$port" \
+      --state "$state" watch-state --seconds 25 > "$watch" 2>&1 &
+  pid=$!
+  local deadline=$(( $(date +%s) + 15 )) live=0
+  while [ "$(date +%s)" -lt "$deadline" ]; do
+    grep -q ' state #' "$watch" && { live=1; break; }
+    sleep 1
+  done
+  if [ "$live" -eq 1 ] && wait_for_text "$dump" 'Connected now' 10; then
+    echo "paired-row: the live Mac's row says Connected now"
+  else
+    echo "paired-row: no Connected now (session live=$live)"
+    rc=1
+  fi
+
+  wait "$pid" 2>/dev/null || true
+  if wait_for_text "$dump" 'Last connected' 15; then
+    echo "paired-row: after the session the row says Last connected"
+  else
+    echo "paired-row: no Last connected after the session ended"
+    rc=1
+  fi
+  if ui_text "$dump" | grep -q 'Connected now'; then
+    echo "paired-row: the row still says Connected now after the session ended"
+    rc=1
+  fi
+  return "$rc"
+}
+
+# --- secure screens ---------------------------------------------------------
+# Lock, wake, raise the rig's PIN bouncer: the phone must report state.secure
+# true. Unlocking with the rig's own PIN (the same path start.sh uses) must
+# report false again. The mirror is open the whole time, which is the only
+# condition under which the phone polls the secure state.
+secure_seen() { grep -q " secure=$2" "$1"; }
+
+secure_section() { # secure_section <port> <state> <log>
+  local port="$1" state="$2" log="$3"
+  local watch="$log.watch" unlock="$log.unlock" rc=0 pid
+  : > "$log"
+  ensure_forward >/dev/null || { echo "secure: no server port"; return 1; }
+  "$PYTHON" tools/fakephone/deckctl.py --host 127.0.0.1 --port "$port" \
+      --state "$state" watch-state --phone --seconds 90 > "$watch" 2>&1 &
+  pid=$!
+  local deadline=$(( $(date +%s) + 20 )) opened=0
+  while [ "$(date +%s)" -lt "$deadline" ]; do
+    grep -q 'phone window opened' "$watch" && { opened=1; break; }
+    sleep 1
+  done
+  if [ "$opened" -ne 1 ]; then
+    echo "secure: no phone window ($(tail -1 "$watch" 2>/dev/null))"
+    kill "$pid" >/dev/null 2>&1 || true
+    return 1
+  fi
+
+  # The panel sleeps and wakes again; the bouncer goes up the way the rig raises it.
+  emu shell input keyevent KEYCODE_SLEEP >/dev/null 2>&1 || true
+  sleep 2
+  emu shell input keyevent KEYCODE_WAKEUP >/dev/null 2>&1 || true
+  sleep 2
+  emu shell wm dismiss-keyguard >/dev/null 2>&1 || true
+  for _ in $(seq 1 5); do
+    emu shell input swipe 540 2000 540 700 250 >/dev/null 2>&1 || true
+    sleep 1
+  done
+
+  deadline=$(( $(date +%s) + 20 ))
+  while [ "$(date +%s)" -lt "$deadline" ] && ! secure_seen "$watch" true; do sleep 1; done
+  if secure_seen "$watch" true; then
+    echo "secure: true while the bouncer is up"
+  else
+    echo "secure: no secure=true at the bouncer"
+    rc=1
+  fi
+
+  # Exactly the rig's PIN unlock (unlock.sh): it never changes a lock setting.
+  bash tools/emulator/unlock.sh > "$unlock" 2>&1 || true
+  deadline=$(( $(date +%s) + 20 ))
+  while [ "$(date +%s)" -lt "$deadline" ] && ! secure_seen "$watch" false; do sleep 1; done
+  if secure_seen "$watch" false; then
+    echo "secure: false after the rig PIN unlock"
+  else
+    echo "secure: no secure=false after the unlock (unlock: $(tail -1 "$unlock" 2>/dev/null))"
+    rc=1
+  fi
+
+  kill "$pid" >/dev/null 2>&1 || true
+  wait "$pid" 2>/dev/null || true
   return "$rc"
 }
 
@@ -242,6 +365,21 @@ if ! "$PYTHON" tools/emulator/poc.py --state "$CACHE_DIR/deckctl-state.json" \
 fi
 section pair PASS "v2 handshake + Allow"
 
+# --- paired-row -------------------------------------------------------------
+echo "verify-batch: paired-row"
+if DETAIL="$(paired_row_section "$PORT" "$CACHE_DIR/deckctl-state.json" "$OUT/verify-batch-paired-row.log")"; then
+  {
+    echo "$DETAIL"
+    echo "SECTION paired-row PASS $(printf '%s' "$DETAIL" | tr '\n' ';' | cut -c1-90)"
+  } | tee -a "$LOG" >> "$OUT/hotfix-phone.log"
+else
+  {
+    echo "$DETAIL"
+    echo "SECTION paired-row FAIL $(printf '%s' "$DETAIL" | tr '\n' ';' | cut -c1-90)"
+  } | tee -a "$LOG" >> "$OUT/hotfix-phone.log"
+  FAILED=1
+fi
+
 # --- media ------------------------------------------------------------------
 echo "verify-batch: media"
 if bash tools/emulator/media.sh --no-boot > "$OUT/verify-batch-media.log" 2>&1; then
@@ -258,6 +396,22 @@ else
   section phone-screen FAIL "$(grep -c '^FAIL phone-screen:' "$OUT/verify-batch-phone-screen.log") checks (see $OUT/verify-batch-phone-screen.log)"
 fi
 
+# --- secure -----------------------------------------------------------------
+echo "verify-batch: secure"
+if DETAIL="$(secure_section "$PORT" "$CACHE_DIR/deckctl-state.json" "$OUT/verify-batch-secure.log")"; then
+  {
+    echo "$DETAIL"
+    echo "SECTION secure PASS $(printf '%s' "$DETAIL" | tr '\n' ';' | cut -c1-90)"
+  } | tee -a "$LOG" >> "$OUT/hotfix-phone.log"
+else
+  {
+    echo "$DETAIL"
+    echo "secure: last states $(grep ' state #' "$OUT/verify-batch-secure.log.watch" 2>/dev/null | tail -3 | tr '\n' ';' | cut -c1-160)"
+    echo "SECTION secure FAIL $(printf '%s' "$DETAIL" | tr '\n' ';' | cut -c1-90)"
+  } | tee -a "$LOG" >> "$OUT/hotfix-phone.log"
+  FAILED=1
+fi
+
 # --- icons ------------------------------------------------------------------
 echo "verify-batch: icons"
 DETAIL="$(icons_section "$PORT" "$CACHE_DIR/deckctl-state.json" "$OUT" "$ICONS" "$OUT/verify-batch-icons.log")"
@@ -266,6 +420,6 @@ section icons "$([ "$ICONS_RC" -eq 0 ] && echo PASS || echo FAIL)" "$DETAIL"
 
 kill_emulator
 echo
-PASSED="$(grep -cE '^SECTION (media|phone-screen|icons) PASS' "$LOG")"
-echo "verify-batch: done — $PASSED of 3 sections passed; log $LOG"
+PASSED="$(grep -cE '^SECTION (paired-row|media|phone-screen|secure|icons) PASS' "$LOG")"
+echo "verify-batch: done — $PASSED of 5 sections passed; log $LOG"
 exit "$FAILED"
