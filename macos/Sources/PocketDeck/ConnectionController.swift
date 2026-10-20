@@ -371,6 +371,7 @@ final class ConnectionController {
             MainActor.assumeIsolated { self?.session?.mediaCommand(action) }
         }
         mcp.configure(profile: profile, forced: options.mcpEnable)
+        mcp.hostProvider = { [weak self] in self.map { MCPToolHost(controller: $0) } }
     }
 
     var audioVolume: Float {
@@ -445,6 +446,7 @@ final class ConnectionController {
             applyPreview(preview)
             return
         }
+        mcp.start()
         windows.onStreamClosed = { [weak self] stream in
             DispatchQueue.main.async { self?.dockFollowWindowClosed(stream) }
         }
@@ -494,6 +496,7 @@ final class ConnectionController {
     }
 
     func shutdown() {
+        mcp.stop()
         windows.beginShutdown()
         stopQR()
         attemptTimer?.cancel()
