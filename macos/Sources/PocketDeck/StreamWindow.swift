@@ -569,8 +569,9 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
             + " fullscreen=\(fullScreen ? "yes" : "no") clicks=\(barPresses)"
             + " dots=\(chrome.touchDotsOutsideMirror ? "outside" : "mirrored")"
             + " touches=\(videoView.showsTouches ? "on" : "off") dot_count=\(chrome.touchDotCount)"
-            + " screen=\(chrome.phoneOverlay.isHidden ? "on" : "off")"
-            + " overlay=\(chrome.phoneOverlay.isHidden ? 0 : 1)\n"
+            + " screen=\(chrome.phoneOverlay.cover == .screenOff ? "off" : "on")"
+            + " overlay=\(chrome.phoneOverlay.cover == nil ? 0 : 1)"
+            + " secure=\(chrome.phoneOverlay.cover == .secure ? 1 : 0)\n"
         try? Data(line.utf8).write(to: stateFile, options: .atomic)
     }
 

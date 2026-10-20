@@ -3195,9 +3195,54 @@ check_mirror() {
             bad "MIRROR the $button bar button click did not run: $(cat "$WORK/control/nav-$button.done" 2>/dev/null)"
         fi
     done
+    # A secure surface (fakephone --secure-after): Android blanks the phone's
+    # PIN pad, keyguard bouncer or a FLAG_SECURE app, so the phone reports
+    # state.secure and sends black frames. The window shows the same blurred
+    # cover with "Android doesn't let PocketDeck show this screen." and no
+    # button, within 2 s of the phone's report, and clears when it reports the
+    # surface gone.
+    stop_app
+    stop_fakephone
+    wait_until 5 no_fakephone
+    FAKE_ARGS="--secure-after 4" start_fake || return 1
+    launch --connect "127.0.0.1:$PORT" --open-phone --float-windows \
+        --debug-chrome-state "$WORK/chrome.txt" --quit-after 35
+    if wait_until 20 events_have '"ev":"secure","state":"on"'; then
+        local secure_at elapsed
+        secure_at="$(python3 -c 'import time; print(time.time())')"
+        # wait_until counts whole seconds, so it brackets the wait; the limit is
+        # measured on the clock.
+        if wait_until 5 chrome_has "overlay=1 secure=1"; then
+            elapsed="$(python3 -c "import time; print('%.2f' % (time.time() - $secure_at))")"
+            if python3 -c "import sys; sys.exit(0 if $elapsed <= 2 else 1)"; then
+                ok "MIRROR a secure surface covers the window within 2 s (${elapsed}s)"
+            else
+                bad "MIRROR a secure surface took ${elapsed}s to cover the window"
+            fi
+        else
+            bad "MIRROR a secure surface did not cover the window ($(chrome_state))"
+        fi
+    else
+        bad "MIRROR the fake never reported a secure surface"
+    fi
+    if [ "$(secure_log_count)" -ge 1 ]; then
+        ok "MIRROR the app logged phone window: secure=1 overlay=1"
+    else
+        say "MIRROR the unified log has no secure line on this Mac (empty log store); the chrome state is the evidence"
+    fi
+    if wait_until 15 chrome_has "secure=0"; then
+        ok "MIRROR the secure cover cleared when the phone reported the surface gone"
+    else
+        bad "MIRROR the secure cover stayed up ($(chrome_state))"
+    fi
     stop_app
     stop_fakephone
 }
+
+# secure_log_count — how many secure-cover lines the app wrote in the last 2 minutes.
+secure_log_count() { log show --last 2m --info \
+    --predicate 'subsystem == "dev.pocketdeck.mac" AND category == "video"' 2>/dev/null |
+    grep -c 'phone window: secure=1 overlay=1' ; }
 
 # nav_rx_count <action> — stream 1's `nav` messages of that action, as the
 # fakephone received them.

@@ -92,7 +92,7 @@ enum SessionEvent {
     case windowClosed(stream: UInt32, reason: String)
     case windowTitle(stream: UInt32, label: String, pkg: String)
     case phoneState(locked: Bool, battery: Int, charging: Bool, dnd: PhoneDndMode?, ringer: PhoneRingerMode?,
-                    screen: PhoneScreen?)
+                    screen: PhoneScreen?, secure: Bool?)
     /// `ring.state`: a `phone.ring` started or ended.
     case ringState(ringing: Bool)
     case audioState(on: Bool, codec: UInt8)
@@ -825,7 +825,8 @@ final class Session {
                              charging: message.bool("charging") ?? false,
                              dnd: message.string("dnd").flatMap(PhoneDndMode.init(rawValue:)),
                              ringer: message.string("ringer").flatMap(PhoneRingerMode.init(rawValue:)),
-                             screen: message.string("screen").flatMap(PhoneScreen.init(rawValue:))))
+                             screen: message.string("screen").flatMap(PhoneScreen.init(rawValue:)),
+                             secure: message.bool("secure")))
         case "ring.state":
             emit(.ringState(ringing: message.bool("ringing") ?? false))
         case "audio.state":

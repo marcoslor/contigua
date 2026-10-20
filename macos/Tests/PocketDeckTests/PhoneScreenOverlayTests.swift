@@ -59,6 +59,52 @@ final class PhoneScreenOverlayTests: XCTestCase {
         XCTAssertEqual(overlay.wakeRequests, 2)
     }
 
+    /// A secure surface (the PIN pad, the keyguard bouncer, a FLAG_SECURE app):
+    /// the phone reports `secure`, the cover is the blurred one with no Wake
+    /// button, and a click must not ask the phone to wake.
+    func testASecureSurfaceCoversWithNoWakeAndClearsOnTheReport() {
+        var overlay = PhoneScreenOverlay(screen: .on)
+        XCTAssertTrue(overlay.setSecure(true))
+        XCTAssertTrue(overlay.isShowing)
+        XCTAssertEqual(overlay.cover, .secure)
+        XCTAssertFalse(overlay.click(), "the secure cover has no Wake Screen button")
+        XCTAssertEqual(overlay.wakeRequests, 0)
+        overlay.opened()
+        XCTAssertEqual(overlay.wakeRequests, 1, "opening still asks the panel to wake")
+        XCTAssertTrue(overlay.setSecure(false))
+        XCTAssertFalse(overlay.isShowing)
+        XCTAssertNil(overlay.cover)
+    }
+
+    /// Phones that do not report `secure` yet: 500 ms of black frames while
+    /// the screen is on is a secure surface, and content clears it.
+    func testBlackFramesForHalfASecondCoverAndContentClears() {
+        var overlay = PhoneScreenOverlay(screen: .on)
+        XCTAssertFalse(overlay.frame(at: 10.0, black: true))
+        XCTAssertFalse(overlay.frame(at: 10.3, black: true), "not half a second yet")
+        XCTAssertFalse(overlay.isShowing)
+        XCTAssertTrue(overlay.frame(at: 10.5, black: true))
+        XCTAssertTrue(overlay.isShowing)
+        XCTAssertEqual(overlay.cover, .secure)
+        // Still black: no repeated change.
+        XCTAssertFalse(overlay.frame(at: 11.0, black: true))
+        XCTAssertTrue(overlay.frame(at: 11.2, black: false))
+        XCTAssertFalse(overlay.isShowing)
+    }
+
+    func testBlackFramesWhileTheScreenIsOffOrReportedSecureAddNothing() {
+        var off = PhoneScreenOverlay(screen: .off)
+        XCTAssertFalse(off.frame(at: 1.0, black: true))
+        XCTAssertFalse(off.frame(at: 2.0, black: true))
+        XCTAssertEqual(off.cover, .screenOff)
+
+        var secure = PhoneScreenOverlay(screen: .on)
+        secure.setSecure(true)
+        XCTAssertFalse(secure.frame(at: 1.0, black: true))
+        XCTAssertFalse(secure.frame(at: 2.0, black: false))
+        XCTAssertEqual(secure.cover, .secure, "the phone's own report wins until it clears it")
+    }
+
     // MARK: Window
 
     func testOpeningThePhoneWindowWakesOnce() {
