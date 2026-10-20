@@ -111,9 +111,11 @@ window you give it.
 - **Muted apps** per phone drop those apps' notifications before they appear,
   and a sign-in code gets a **Copy code** button that copies it concealed for
   90 seconds.
-- Media on the phone shows up in **Now Playing** on the Mac with
-  play/pause/next/previous, even while the phone is locked and its screen is
-  off.
+- Media on the phone shows up in **Now Playing** on the Mac with its
+  **artwork**, play/pause/next/previous, a **position bar** you can drag to
+  seek (plus 15-second skips), a **volume** slider for the phone's media
+  stream, and, when several apps are playing, the choice of which one the Mac
+  follows — even while the phone is locked and its screen is off.
 
 **The Mac knows the phone**
 
