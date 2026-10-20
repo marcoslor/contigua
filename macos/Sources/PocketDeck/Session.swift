@@ -138,7 +138,9 @@ enum SessionEvent {
     /// Notifications + media controls (docs/design/notify.md).
     case notifyState(on: Bool)
     case notifyPosted(id: String, pkg: String, when: Date?, title: String?, text: String?,
-                      actions: [NotifyActionInfo], ongoing: Bool)
+                      actions: [NotifyActionInfo], ongoing: Bool, live: NotifyLive? = nil)
+    /// The picture that follows a `notify.post` (docs/design/notify.md, 2b).
+    case notifyImage(id: String, mime: String, width: Int, height: Int, data: Data)
     case notifyRemoved(id: String)
     case mediaState(MediaState)
 }
@@ -879,11 +881,21 @@ final class Session {
             emit(.notifyState(on: message.bool("on") ?? false))
         case "notify.post":
             let whenMs = message.double("when")
+            let live = NotifyLive(json: message.object("live"))
             emit(.notifyPosted(id: message.string("id") ?? "", pkg: message.string("pkg") ?? "",
                                when: whenMs.map { Date(timeIntervalSince1970: $0 / 1000) },
                                title: message.string("title"), text: message.string("text"),
                                actions: (message.array("actions") ?? []).compactMap { NotifyActionInfo(json: $0) },
-                               ongoing: message.bool("ongoing") ?? false))
+                               ongoing: message.bool("ongoing") ?? false,
+                               live: live))
+        case "notify.image":
+            guard let encoded = message.string("data"),
+                  let data = Data(base64Encoded: encoded),
+                  let width = message.int("w"),
+                  let height = message.int("h") else { return }
+            emit(.notifyImage(id: message.string("id") ?? "",
+                              mime: (message.string("mime") ?? "").lowercased(),
+                              width: width, height: height, data: data))
         case "notify.remove":
             emit(.notifyRemoved(id: message.string("id") ?? ""))
         case "media.state":

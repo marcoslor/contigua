@@ -131,6 +131,8 @@ final class ConnectionController {
     /// Packages each phone's notifications came from this session (Settings ›
     /// Devices "Muted apps"); package names only, never any text.
     private(set) var notifySeen: [String: Set<String>] = [:]
+    /// The menu bar's "Live on <phone>" rows (docs/design/notify.md, 2b).
+    private(set) var liveNotifications: [NotifyLiveItem] = []
     /// APK installs (docs/design/apk.md); the Deck shows its phase.
     let apkInstaller = ApkInstaller()
     /// Files dropped on a window (docs/design/dragdrop.md); windows show the pill.
@@ -397,6 +399,9 @@ final class ConnectionController {
         notifyCenter.onDismiss = { [weak self] click in
             MainActor.assumeIsolated { self?.notifyDismissed(click) }
         }
+        notifyCenter.onLiveChange = { [weak self] items in
+            MainActor.assumeIsolated { self?.liveNotifications = items }
+        }
         nowPlaying.log = shareLog
         nowPlaying.onCommand = { [weak self] action in
             MainActor.assumeIsolated { self?.session?.mediaCommand(action) }
@@ -542,6 +547,7 @@ final class ConnectionController {
         audio.stop()
         audioOn = false
         nowPlaying.clear()
+        notifyCenter.clearAll()
         // Quit path only: give the teardown a bounded moment so the process
         // does not exit with a half-closed channel (arch H4).
         session?.closeAndWait()
@@ -1588,6 +1594,7 @@ final class ConnectionController {
                 clipImageBuffer.discard()
                 shareInbox.connectionLost()
                 nowPlaying.clear()
+                notifyCenter.clearAll()
                 // The TLS pin said the dialed phone is not the one this Mac
                 // pinned (a foreign phone took the cached address): keep the
                 // pin record — re-pair overturns it (§7) — and drop the stale
@@ -1609,6 +1616,7 @@ final class ConnectionController {
                 clipImageBuffer.discard()
                 shareInbox.connectionLost()
                 nowPlaying.clear()
+                notifyCenter.clearAll()
             default:
                 break
             }
@@ -1676,8 +1684,11 @@ final class ConnectionController {
             filesBridgeClient?.changes(paths: paths)
         case .notifyState(let on):
             Log.app.notice("phone notify \(on ? "on" : "off", privacy: .public)")
-            if !on { nowPlaying.clear() }
-        case .notifyPosted(let id, let pkg, let when, let title, let text, let actions, let ongoing):
+            if !on {
+                nowPlaying.clear()
+                notifyCenter.clearAll()
+            }
+        case .notifyPosted(let id, let pkg, let when, let title, let text, let actions, let ongoing, let live):
             let ref = link.phone?.id.isEmpty == false ? link.phone
                 : session?.phone.map { PhoneRef(id: $0.id, name: $0.name, model: $0.model) }
             guard let phone = ref, !phone.id.isEmpty else { break }
@@ -1690,11 +1701,13 @@ final class ConnectionController {
             notifySeen[phone.id, default: []].insert(pkg)
             notifyCenter.post(
                 PhoneNotification(id: id, pkg: pkg, when: when, title: title, text: text,
-                                  ongoing: ongoing, actions: actions),
+                                  ongoing: ongoing, actions: actions, live: live),
                 phoneId: phone.id,
                 phoneName: displayName(for: phone, fallback: "your phone"),
                 labelFor: { [weak self] in self?.labelFor($0) ?? nil },
             )
+        case .notifyImage(let id, let mime, let w, let h, let data):
+            notifyCenter.image(id: id, mime: mime, width: w, height: h, data: data)
         case .notifyRemoved(let id):
             notifyCenter.remove(id: id)
         case .mediaState(let media):
@@ -1806,6 +1819,28 @@ final class ConnectionController {
                 session?.openNotification(id: click.id, target: destination,
                                           stream: destination == .window ? stream : nil)
             }
+        }
+    }
+
+    /// A row of the menu bar's Live section: the same route a banner click runs
+    /// (docs/design/notify.md, 2b).
+    func openLiveNotification(_ id: String) {
+        notifyCenter.performOpen(id: id)
+    }
+
+    /// The menu bar's header, naming the phone the live rows belong to.
+    var livePhoneName: String? {
+        guard !liveNotifications.isEmpty, let phone = activePhone else { return nil }
+        return displayName(for: phone, fallback: "your phone")
+    }
+
+    /// `livedump PATH` (the e2e reads the menu bar section without opening it).
+    func writeLiveDump(_ path: String) -> Bool {
+        do {
+            try NotifyLiveDump.write(liveNotifications, to: path)
+            return true
+        } catch {
+            return false
         }
     }
 
@@ -2014,6 +2049,9 @@ final class ConnectionController {
         }
         debugInput?.notifyCopy = { [weak self] id in
             MainActor.assumeIsolated { self?.notifyCenter.performCopy(id: id) ?? false }
+        }
+        debugInput?.liveDump = { [weak self] path in
+            MainActor.assumeIsolated { self?.writeLiveDump(path) ?? false }
         }
         debugInput?.mediaCommand = { [weak self] action in
             MainActor.assumeIsolated { self?.nowPlaying.perform(action) }

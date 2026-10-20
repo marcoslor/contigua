@@ -104,6 +104,8 @@ enum DebugInputAction: Equatable {
     case clickAt(dx: Double, top: Double)
     /// The main menu tree written as JSON (e2e menus check).
     case menuDump(String)
+    /// The menu bar's Live section written as JSON (e2e notify-media check).
+    case liveDump(String)
     case sideButton(Int, hold: Double, dx: Double, dy: Double, steps: Int)
     case windowTop
     case waitFile(String, timeout: Double)
@@ -235,6 +237,11 @@ enum DebugInputScript {
                 throw LineError(message: "menudump needs an absolute PATH")
             }
             return .menuDump(args[0])
+        case "livedump":
+            guard args.count == 1, args[0].hasPrefix("/") else {
+                throw LineError(message: "livedump needs an absolute PATH")
+            }
+            return .liveDump(args[0])
         case "sidebutton":
             guard [1, 5].contains(args.count), let button = Int(args[0]), (2...31).contains(button) else {
                 throw LineError(message: "sidebutton needs N (2...31) and optionally HOLD DX DY STEPS")
@@ -405,6 +412,8 @@ final class DebugInputDriver {
     var notifyAction: ((String, Int, String?) -> Bool)?
     var notifyDismiss: ((String) -> Bool)?
     var notifyCopy: ((String) -> Bool)?
+    /// `livedump PATH`: the menu bar's Live section as JSON.
+    var liveDump: ((String) -> Bool)?
     /// `mediacmd ACTION`: the Now Playing transport controls' target.
     var mediaCommand: ((String) -> Void)?
     /// `dockapps on|off`: the Settings → General toggle, through the same
@@ -543,6 +552,8 @@ final class DebugInputDriver {
             // an open menu does (titles, checks, AppKit's own items).
             NSApp.mainMenu?.update()
             try? MenuDump.write(NSApp.mainMenu, to: path)
+        case .liveDump(let path):
+            _ = liveDump?(path)
         case .sideButton(let button, let hold, let dx, let dy, let steps):
             sideButton(button, hold: hold, dx: dx, dy: dy, steps: steps, in: view)
         case .windowTop:
