@@ -33,7 +33,22 @@ data class DeviceState(
     val ringer: RingerMode? = null,
     /** Display 0's power state; null when this build cannot read it. */
     val screen: ScreenState? = null,
+    /**
+     * Display 0 shows a secure window or the keyguard bouncer, so the mirror is
+     * blank; null while nothing has been read (no phone window is open).
+     */
+    val secure: Boolean? = null,
 )
+
+/**
+ * Display 0's secure-surface state (docs/PROTOCOL.md "Secure screens"). Read at
+ * shell UID because only the window manager and keyguard know it. Polled at
+ * most once a second, and only while a phone window stream is open.
+ */
+fun interface SecureProbe {
+    /** True while a secure window or the bouncer covers display 0; null when unreadable. */
+    fun read(): Boolean?
+}
 
 /**
  * The phone's own screen (display 0), as `state.screen` names it

@@ -1394,6 +1394,9 @@ class WindowStream(object):
         # e2e can tell that frames flowed again after a resume.
         self._frames_sent = 0
         self._paused = False
+        # --secure-after: the encoder sends solid black while a secure surface
+        # would be blanked in the mirror.
+        self._black = False
         self._lock = threading.Lock()
 
     @staticmethod
@@ -1404,6 +1407,8 @@ class WindowStream(object):
         return None
 
     def _source(self):
+        if self._black:
+            return "color=c=black:size=%dx%d:rate=%d" % (self.w, self.h, FRAME_RATE)
         if self.mode == "phone":
             return "smptehdbars=size=%dx%d:rate=%d" % (self.w, self.h, FRAME_RATE)
         return "testsrc2=size=%dx%d:rate=%d" % (self.w, self.h, FRAME_RATE)
@@ -1466,6 +1471,19 @@ class WindowStream(object):
             proc = self._enc
         self._reader = threading.Thread(target=self._read_loop, args=(proc,), daemon=True)
         self._reader.start()
+
+    def black_for(self, seconds, alive):
+        """Solid black frames for a secure surface, then the normal picture.
+
+        alive() says whether this window is still open; a closed window must not
+        be restarted by the timer.
+        """
+        self._black = True
+        self.start()
+        time.sleep(seconds)
+        self._black = False
+        if alive():
+            self.start()
 
     def pause(self):
         with self._lock:
@@ -1980,6 +1998,8 @@ class Session(object):
         """The `state` message, with `dnd` only when the phone supports it."""
         state = {"t": "state", "locked": True, "battery": BATTERY, "charging": False,
                  "screen": self.phone.screen_state}
+        if self.phone.secure_state is not None:
+            state["secure"] = self.phone.secure_state
         if self.phone.zen.supported:
             state["dnd"] = self.phone.zen.name()
         if self.phone.fake_ringer.supported:
@@ -3092,6 +3112,8 @@ class Session(object):
             threading.Thread(target=self._rotate_later, args=(window,), daemon=True).start()
         if mode == "phone" and self.phone.args.screen_off_after > 0:
             threading.Thread(target=self._screen_off_later, args=(window,), daemon=True).start()
+        if mode == "phone" and self.phone.args.secure_after > 0:
+            threading.Thread(target=self._secure_later, args=(window,), daemon=True).start()
 
     def _rotate_later(self, window):
         """The phone turns to landscape: the mirror turns with it (new VIDEO_CONFIG)."""
@@ -3103,6 +3125,20 @@ class Session(object):
         box = turn_box(window.w, window.h, *self.phone.screen)
         window.w, window.h = mirror_fit(*box + self.phone.screen)
         window.start()
+
+    def _secure_later(self, window):
+        """A secure surface covers display 0: state.secure true and black frames,
+        then false and the normal picture again (docs/PROTOCOL.md "Secure screens")."""
+        time.sleep(self.phone.args.secure_after)
+        if self.windows.get(window.stream_id) is not window or self.phone.secure_state:
+            return
+        self.phone.secure_state = True
+        self.send_state()
+        window.black_for(5, lambda: self.windows.get(window.stream_id) is window)
+        if self.windows.get(window.stream_id) is not window:
+            return
+        self.phone.secure_state = False
+        self.send_state()
 
     def _screen_off_later(self, window):
         """The panel times out: `state.screen off` and no more mirror frames."""
@@ -3311,6 +3347,8 @@ class FakePhone(object):
         self.screen = (SCREEN_W, SCREEN_H)
         # Display 0's power state (`state.screen`).
         self.screen_state = "on"
+        # None until --secure-after puts a secure surface over display 0.
+        self.secure_state = None
         tls_guard()
         self.store = Store(args.state)
         if args.qr_uri:
@@ -3552,6 +3590,10 @@ def build_parser():
                    help="with --demo-apps, every K-th app has no icon")
     p.add_argument("--screen-off-after", type=float, default=0.0, metavar="SECONDS",
                    help="after the phone window opens, the panel times out: send state.screen off and stop frames")
+    p.add_argument("--secure-after", type=float, default=0.0, metavar="SECONDS",
+                   help="after the phone window opens, a secure surface covers display 0: "
+                        "send state.secure true and solid black frames for 5 s, then false "
+                        "and the normal frames")
     p.add_argument("--rotate-after", type=float, default=0.0, metavar="SECONDS",
                    help="turn the screen to landscape this long after a phone window opens")
     p.add_argument("--qr-uri", metavar="URI",

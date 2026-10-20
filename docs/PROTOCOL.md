@@ -255,7 +255,7 @@ Phone → Mac:
 | `window.opened` | `stream`, `displayId`, `w`, `h` — `started`: `"moved"` (default; the task the display shows was moved to it, state kept) or `"fresh"` (the phone couldn't move the task and relaunched the same package; the app's state may be lost) |
 | `window.closed` | `stream`, `reason` (`requested`/`app_exited`/`error`) |
 | `window.title` | `stream`, `label`, `pkg` — top app changed on that display (phone mode) |
-| `state` | `locked`: bool, `battery`: int, `charging`: bool, `dnd`: `"off"`/`"priority"`/`"alarms"`/`"none"`, `ringer`: `"normal"`/`"vibrate"`/`"silent"`, `screen`: `"on"`/`"off"` — sent on change; `dnd`/`ringer` are absent on a phone that does not support them (old builds); see "Phone screen" |
+| `state` | `locked`: bool, `battery`: int, `charging`: bool, `dnd`: `"off"`/`"priority"`/`"alarms"`/`"none"`, `ringer`: `"normal"`/`"vibrate"`/`"silent"`, `screen`: `"on"`/`"off"`, `secure`: bool — sent on change; `dnd`/`ringer` are absent on a phone that does not support them (old builds), `secure` while no phone window is open; see "Phone screen" and "Secure screens" |
 | `audio.state` | `on`: bool, `codec`: int — audio capture on/off (for the UI dot) |
 | `ring.state` | `ringing`: bool — a `phone.ring` started (`true`) or ended (`false`) |
 | `error` | `code`, `message`, optional `stream` |
@@ -692,6 +692,21 @@ live while the panel is on.
    own timeout.
 3. The Mac sends it when a phone window opens, is reopened or reconnects, and from the
    window's Wake Screen button. Nothing else sends it.
+
+## Secure screens
+
+Android blanks secure surfaces in a screen capture: a `FLAG_SECURE` app (banking, password
+managers) and the lock screen's PIN/password pad. In the display-0 mirror those areas arrive
+black, so the Mac must say why instead of showing a dead picture.
+
+1. Every `state` carries `secure`: `true` while display 0 shows a secure window or the
+   keyguard bouncer, otherwise `false`. It is sent on change. The phone reads the focused
+   window's `FLAG_SECURE` at shell UID and SystemUI's bouncer state (a debuggable build skips
+   the window flag for the bouncer, a release build sets it).
+2. The phone polls this at most once a second, and only while a phone window stream is open.
+   With no phone window it stops polling; `secure` is absent until the first read, and the
+   last value is cleared when the last phone window closes.
+3. A Mac that gets no `secure` field treats the mirror as not secure.
 
 ## Focus and Do Not Disturb
 
