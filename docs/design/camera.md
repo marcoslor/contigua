@@ -381,6 +381,48 @@ by the same H.264 path as every stream window. No extension, no Mac camera API.
   on those names, and the `cam-window` e2e check greps the built bundle's
   binary and Info.plist for the same.
 
+### C2 verification
+
+Built 2026-10-20. The phone side is C1's (fakephone in every check here); the
+window was never pointed at a real phone's camera.
+
+- **Host, `cam-window` (quiet, fakephone): PASS 21/21.** Open → `cam.list` →
+  `cam.start` on the Mac-chosen stream 1 with the back camera (id 0) at
+  1280×720@30 → 107 frames in 3 s → the stream and the window are 1280×720 /
+  16:9, the title is "Phone Camera" → switch → `cam.stop` then the front camera
+  (id 1) on a fresh stream 2, streaming → close → `cam.stop`, frames stop → the
+  setting-off phone shows `off` → the evicting phone shows `evicted` and sends
+  no new `cam.start` for 3 s until the debug "Try Again" press (a fresh stream)
+  → the session end shows "Phone disconnected", and a reconnect sends no
+  `cam.list`. The check also greps the built bundle's binary and Info.plist for
+  the no-Mac-camera names. Regressions after the change: `cam-wire` 15/15,
+  `livetext` 9/9.
+- **K2:** the state → message/button mapping, `cam.cams` parsing, the stream-id
+  allocation and the one-window-per-session rule (14 tests), and the
+  no-Mac-camera guard (3 tests).
+- **VM (`vm-e2e.sh cam-window`, one visible boot): PASS 23/23** (the two
+  screenshot steps exist only in a visible run). The screenshots show:
+  - streaming: the ffmpeg test pattern (vertical colour bars, the moving
+    diagonal line and the burnt-in timecode) filling the window; the titlebar
+    is hidden, the traffic lights sit on the stream's top-left, and the Live
+    Text and camera-switch buttons are at the bar's right end.
+  - evicted: the last frame frozen (timecode 00:00:02.200, frame 66) with a
+    dark rounded box over it: "Your phone's camera app is using the camera."
+    and a "Try Again" button.
+  The screenshots were taken before a styling fix made just after the boot (the
+  box now lays out top-down, so the button sits under the message, and the
+  button's title is white on the dark glass). The states and the exact words are
+  unchanged; K2 and the host `cam-window` check were re-run green after it, but
+  the VM could not be re-booted within the one-boot budget, so the screenshots
+  show the earlier button styling.
+- **Unverified:** a real phone's camera through the window (fakephone's test
+  pattern only; C1's own emulator boot was lost, see "C1 verification"), the
+  phone's privacy dot during a window capture, and the `busy`, `locked` and
+  `disabled` messages against a phone (the mapping is unit-tested; no phone
+  reported those states in the VM). Live Text and ⌘C copy of the frame work
+  through the shared stream-window path; the VM's livetext check does not cover
+  a camera window, so that combination was not exercised.
+
 ## Slices
 
 
@@ -389,6 +431,6 @@ by the same H.264 path as every stream window. No extension, no Mac camera API.
 | C0 | Finish the phone probe | done 2026-10-20: staged probe, one boot. Shell UID lists the camera and cannot open it (package/uid refusal); P2–P5 are blocked by P1 | S | none |
 | C0b | App-process camera FGS probe | **done** 2026-10-20: shell-started `camera` FGS captures in the background and locked; the app starting itself is refused; eviction = `onDisconnected`; indicator to check on a real phone | S | none |
 | C1 | Phone capture service | **built; host-verified, emulator boot lost to a rig bug (see "C1 verification")**: Camera2 in the **app process** (foreground service, `CAMERA` permission) → MediaCodec H.264 1280×720@30 (the `WindowStream` encoder settings) → `VIDEO_FRAME` to the shell session, start/stop, busy/disabled/evicted errors, one stream | M | C0b (done) |
-| C2 | "Phone camera" window | the existing H.264 decode path in a normal Mac window, a menu item and start/stop; no extension, ships with today's ad-hoc signing | S-M | C1 |
+| C2 | "Phone camera" window | **done 2026-10-20** (see "C2 verification"): the existing H.264 decode path in a normal Mac window, Phone Camera in the menus + ⌥⌘C, front/back switch, plain-words states with Try Again, `cam.stop` on close, no camera API; host `cam-window` 21/21 and the visible VM run 23/23 against fakephone. Unverified: a real phone's camera through the window, the privacy dot | S-M | C1 |
 | C3 | CMIO camera extension | provider/device/stream, decode H.264 into `CVPixelBuffer`, App Group socket between app and extension, stream on first client and stop when none; replaces the solid-colour source | M-L | C1; **Developer ID** |
 | C4 | Signing and install | System-Extension App ID, Developer ID profiles for app and extension, notarization, `/Applications` install, approval deep-link, uninstall/upgrade | M | signing decision |
