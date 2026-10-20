@@ -312,6 +312,16 @@ process cannot rewrite. So:
   client, so an app-process client gets it; the app must say so before the first
   use. If a later probe shows the indicator is not reliable for a background
   service, the fallback is an explicit on-phone confirmation for the first capture.
+- **The open question this shape rests on (reviewer, 2026-10-20).** Camera is a
+  "while-in-use" permission: since Android 11 a foreground service only gets camera
+  access if it was started while the app could use it (an activity in front, or
+  one of the platform's exemptions), and since Android 14 starting a `camera`-type
+  foreground service from the background is refused outright unless an exemption
+  applies. PocketDeck's app is in the background (and the phone locked) exactly
+  when the Mac asks. Whether a service started on behalf of the shell UID (the
+  session asking the app process, or `am start-foreground-service` from uid 2000)
+  counts as exempt is unverified and decides whether this shape works at all. The
+  next probe (C0b) answers it first, on the emulator, before C1 is built.
 - **Eviction.** Still unverified (P5). A person's own camera app always wins: the
   service reports `evicted` with the exact callback/error, stops the encoder and
   never retries in a loop.
