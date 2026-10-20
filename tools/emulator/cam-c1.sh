@@ -128,21 +128,39 @@ DECK_PID=""
 # Returns 0 only when the shell's own cam.list agrees: on -> non-empty, off ->
 # empty. That is the gate the Mac sees, not a sleep.
 set_camera_setting() { # set_camera_setting on|off
-  local want="$1" ok=0
+  local want="$1" ok=0 i
   step "camera setting $want (debug receiver, DUMP-protected)"
-  emu shell am broadcast -a dev.pocketdeck.DEBUG_CAMERA_SETTING --es state "$want" >>"$LOG" 2>&1 ||
-    die "cannot broadcast the camera setting"
-  for _ in $(seq 1 20); do
+  send_setting() {
+    # Addressed to the receiver's component on purpose: an implicit broadcast
+    # to a manifest receiver is dropped while the app is in the background (the
+    # same trap the notification poster hit). -p keeps it to our package.
+    emu shell am broadcast -n "$PKG/dev.pocketdeck.app.CameraDebugSetting" -p "$PKG" \
+      -a dev.pocketdeck.DEBUG_CAMERA_SETTING --es state "$want" >>"$LOG" 2>&1 ||
+      die "cannot broadcast the camera setting"
+  }
+  send_setting
+  for i in $(seq 1 20); do
     deckctl cam list >"$CACHE_DIR/cam-c1-gate.txt" 2>&1 || true
     if [ "$want" = on ]; then
       grep -q 'cam.cams count=[1-9]' "$CACHE_DIR/cam-c1-gate.txt" && { ok=1; break; }
     else
       grep -q 'cam.cams count=0' "$CACHE_DIR/cam-c1-gate.txt" && { ok=1; break; }
     fi
+    # A push needs the app's binder; a fresh process may not have it yet.
+    case "$i" in 6|11) send_setting ;; esac
     sleep 1
   done
   cat "$CACHE_DIR/cam-c1-gate.txt" >>"$LOG"
   step "camera setting $want: cam.list $(sed -n 's/cam.cams count=//p' "$CACHE_DIR/cam-c1-gate.txt" | tail -1) cameras"
+  if [ "$ok" -eq 0 ]; then
+    {
+      printf -- '--- receiver diagnosis\n'
+      emu shell "logcat -d -s PdCameraDebug:I" 2>/dev/null | tail -5 || true
+      emu shell "logcat -d" 2>/dev/null |
+        grep -E "CameraDebugSetting|DEBUG_CAMERA_SETTING|Background execution not allowed|Permission Denial.*dev\.pocketdeck" |
+        tail -15 || true
+    } >>"$LOG" 2>&1
+  fi
   [ "$ok" -eq 1 ]
 }
 
