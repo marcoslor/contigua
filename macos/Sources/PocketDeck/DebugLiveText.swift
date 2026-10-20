@@ -181,6 +181,7 @@ final class LiveTextDebugDriver {    private let actions: [LiveTextScriptAction]
                 line["state"] = controller.liveText.state.rawValue
                 line["hasText"] = controller.liveText.hasText
                 line["textLen"] = controller.liveText.transcriptLength
+                line["highlights"] = controller.liveText.selectableItemsHighlighted
                 if let token { line["contains"] = controller.liveText.contains(token) }
             }
             emit(line)
