@@ -67,6 +67,7 @@ struct MenuBarContent: View {
             .disabled(controller.apkInstaller.isBusy)
         Divider()
         audioSection
+        liveSection
         Divider()
         SettingsLink { Text("Settings…") }
         Divider()
@@ -89,6 +90,22 @@ struct MenuBarContent: View {
             ))
         } else {
             Text("Phone audio: off")
+        }
+    }
+
+    @ViewBuilder
+    private var liveSection: some View {
+        let items = controller.liveNotifications
+        if !items.isEmpty {
+            Divider()
+            Text("Live on \(controller.livePhoneName ?? "your phone")")
+            ForEach(items) { item in
+                // A menu item cannot draw a control, so the row carries a
+                // ten-cell text bar or the running clock instead.
+                Button(NotifyLiveText.menuTitle(item, now: Date())) {
+                    controller.openLiveNotification(item.id)
+                }
+            }
         }
     }
 

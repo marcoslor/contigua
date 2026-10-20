@@ -15,6 +15,179 @@ import AppKit
 import Foundation
 import UserNotifications
 
+/// What the Mac accepted as a forwarded notification's picture, for the record
+/// and the attachment lifecycle. Never the bytes.
+struct NotifyImageInfo: Equatable {
+    var mime: String
+    var width: Int
+    var height: Int
+    var size: Int
+    var attachment: String = ""
+
+    var record: String {
+        "image=\(mime) w=\(width) h=\(height) size=\(size)"
+            + (attachment.isEmpty ? "" : " attachment=\(attachment)")
+    }
+}
+
+/// The Mac's own image caps (docs/design/notify.md): a phone bug or a hostile
+/// peer cannot make it hold unbounded data or a wrong format.
+enum NotifyImageCaps {
+    static let maxBytes = 256 * 1024
+    static let maxSide = 1024
+    static let mimes: Set<String> = ["image/jpeg", "image/png"]
+
+    static func fileExtension(_ mime: String) -> String {
+        mime.lowercased() == "image/png" ? "png" : "jpg"
+    }
+
+    static func refusal(mime: String, width: Int, height: Int, decoded: Int) -> String? {
+        guard mimes.contains(mime.lowercased()) else { return "mime" }
+        guard width > 0, height > 0, width <= maxSide, height <= maxSide else { return "size" }
+        guard decoded > 0, decoded <= maxBytes else { return "bytes" }
+        return nil
+    }
+}
+
+/// What a live post did to the store.
+enum NotifyLiveOutcome: Equatable {
+    /// The first post of this id: banner once and list it.
+    case banner
+    /// Applied in place (recorded, no banner).
+    case updated
+    /// Too soon after the last one: the newest state waits for the window.
+    case coalesced
+}
+
+/// The Live Update rows behind the menu bar's section, with in-place updates and
+/// the one-per-second rule (docs/design/notify.md). Pure, so the rules are
+/// unit-tested; the caller owns the banner and the recording.
+final class NotifyLiveStore {
+    let interval: TimeInterval
+    private(set) var items: [NotifyLiveItem] = []
+    private var lastApplied: [String: Date] = [:]
+    private var pending: [String: NotifyLiveItem] = [:]
+
+    init(interval: TimeInterval = 1) {
+        self.interval = interval
+    }
+
+    func item(_ id: String) -> NotifyLiveItem? { items.first { $0.id == id } }
+
+    /// A live post: the first banners, later ones update the row at most once
+    /// per second (the newest state wins; [flush] delivers what waited).
+    func post(id: String, pkg: String, label: String?, live: NotifyLive,
+              now: Date) -> NotifyLiveOutcome {
+        let item = NotifyLiveItem(id: id, pkg: pkg, label: label, chip: live.chip,
+                                  progress: live.progress, chrono: live.chrono,
+                                  countDown: live.countDown, updated: now)
+        guard let index = items.firstIndex(where: { $0.id == id }) else {
+            items.append(item)
+            lastApplied[id] = now
+            pending.removeValue(forKey: id)
+            return .banner
+        }
+        if let last = lastApplied[id], now.timeIntervalSince(last) < interval {
+            pending[id] = item
+            return .coalesced
+        }
+        items[index] = item
+        lastApplied[id] = now
+        pending.removeValue(forKey: id)
+        return .updated
+    }
+
+    /// The rows whose window opened; empty when nothing waited.
+    func flush(now: Date) -> [NotifyLiveItem] {
+        var applied: [NotifyLiveItem] = []
+        for (id, item) in pending {
+            guard let last = lastApplied[id], now.timeIntervalSince(last) >= interval else { continue }
+            guard let index = items.firstIndex(where: { $0.id == id }) else {
+                pending.removeValue(forKey: id)
+                continue
+            }
+            var fresh = item
+            fresh.updated = now
+            items[index] = fresh
+            lastApplied[id] = now
+            pending.removeValue(forKey: id)
+            applied.append(fresh)
+        }
+        return applied
+    }
+
+    /// The activity ended (the phone removed it): the row goes away.
+    @discardableResult
+    func end(_ id: String) -> Bool {
+        pending.removeValue(forKey: id)
+        lastApplied.removeValue(forKey: id)
+        guard let index = items.firstIndex(where: { $0.id == id }) else { return false }
+        items.remove(at: index)
+        return true
+    }
+
+    func clear() {
+        items.removeAll()
+        pending.removeAll()
+        lastApplied.removeAll()
+    }
+
+    /// True while an update waits for its window to open.
+    var hasPending: Bool { !pending.isEmpty }
+}
+
+/// How a live row reads in the menu bar: label, chip or running chronometer, and
+/// a ten-cell text progress bar (a menu item cannot draw a control).
+enum NotifyLiveText {    static let cells = 10
+
+    static func progressBar(_ progress: Double) -> String {
+        let filled = Int((min(1, max(0, progress)) * Double(cells)).rounded())
+        return String(repeating: "▮", count: filled) + String(repeating: "▯", count: cells - filled)
+    }
+
+    /// "1:05" / "1:02:03": a chronometer's distance from now, in its direction.
+    static func clock(_ chrono: Date, countDown: Bool, now: Date) -> String {
+        let seconds = max(0, Int((countDown ? chrono.timeIntervalSince(now) : now.timeIntervalSince(chrono)).rounded()))
+        let h = seconds / 3600, m = (seconds % 3600) / 60, s = seconds % 60
+        return h > 0 ? String(format: "%d:%02d:%02d", h, m, s) : String(format: "%d:%02d", m, s)
+    }
+
+    /// The row's title: app label (else package), then the live detail.
+    static func menuTitle(_ item: NotifyLiveItem, now: Date) -> String {
+        let name = item.label ?? item.pkg
+        var parts: [String] = []
+        if let chip = item.chip, !chip.isEmpty { parts.append(chip) }
+        else if let chrono = item.chrono { parts.append(clock(chrono, countDown: item.countDown, now: now)) }
+        if let progress = item.progress { parts.append(progressBar(progress)) }
+        return parts.isEmpty ? name : "\(name) — \(parts.joined(separator: " "))"
+    }
+}
+
+/// The menu bar's live section as JSON (DebugInput's `livedump` verb), so the
+/// e2e can assert on it without opening a menu or moving the pointer.
+enum NotifyLiveDump {
+    static func json(_ items: [NotifyLiveItem], now: Date = Date()) throws -> Data {
+        let rows: [[String: Any]] = items.map { item in
+            [
+                "id": item.id,
+                "pkg": item.pkg,
+                "label": item.label ?? "",
+                "chipLen": item.chip?.count ?? 0,
+                "progress": item.progress ?? -1,
+                "chrono": item.chrono != nil,
+                "countDown": item.countDown,
+                "title": NotifyLiveText.menuTitle(item, now: now),
+            ]
+        }
+        return try JSONSerialization.data(withJSONObject: ["live": rows],
+                                          options: [.prettyPrinted, .sortedKeys])
+    }
+
+    static func write(_ items: [NotifyLiveItem], to path: String) throws {
+        try json(items).write(to: URL(fileURLWithPath: path), options: .atomic)
+    }
+}
+
 /// One action the phone advertised in `notify.post` (docs/PROTOCOL.md).
 struct NotifyActionInfo: Equatable {
     var i: Int
@@ -39,6 +212,36 @@ struct NotifyActionInfo: Equatable {
     }
 }
 
+/// An Android 16 Live Update's own fields (docs/design/notify.md). Every field
+/// is optional; an empty object still marks the notification as live.
+struct NotifyLive: Equatable {
+    var progress: Double?
+    var chip: String?
+    var chrono: Date?
+    var countDown: Bool = false
+
+    init(progress: Double? = nil, chip: String? = nil, chrono: Date? = nil, countDown: Bool = false) {
+        self.progress = progress
+        self.chip = chip
+        self.chrono = chrono
+        self.countDown = countDown
+    }
+
+    /// The wire's `live` object; nil when the field is absent or not an object.
+    init?(json: Any?) {
+        guard let json = json as? [String: Any] else { return nil }
+        let rawProgress = (json["progress"] as? NSNumber)?.doubleValue
+        var chip = (json["chip"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if chip?.isEmpty == true { chip = nil }
+        if let text = chip, text.count > 16 { chip = String(text.prefix(16)) }
+        let chronoMs = (json["chrono"] as? NSNumber)?.doubleValue
+        self.progress = rawProgress.map { min(1, max(0, $0)) }
+        self.chip = chip
+        self.chrono = chronoMs.flatMap { $0 > 0 ? Date(timeIntervalSince1970: $0 / 1000) : nil }
+        self.countDown = json["countDown"] as? Bool ?? false
+    }
+}
+
 /// One notification as the phone sent it.
 struct PhoneNotification: Equatable {
     var id: String
@@ -48,7 +251,21 @@ struct PhoneNotification: Equatable {
     var text: String?
     var ongoing: Bool = false
     var actions: [NotifyActionInfo] = []
+    var live: NotifyLive? = nil
 }
+
+/// One row of the menu bar's "Live on <phone>" section, updated in place.
+struct NotifyLiveItem: Identifiable, Equatable {
+    var id: String
+    var pkg: String
+    var label: String?
+    var chip: String?
+    var progress: Double?
+    var chrono: Date?
+    var countDown: Bool
+    var updated: Date
+}
+
 
 /// What a banner click stands for: the forwarded id (the phone resolves it),
 /// the package and the phone whose setting decides where it runs.
@@ -96,12 +313,37 @@ enum NotifyMapping {
     /// Field sizes and counts only — never the text itself (privacy). The
     /// category id is a hash of the shape, so the e2e can see the counts.
     static func record(posted n: PhoneNotification, title: String, body: String,
-                       thread: String, code: Bool, category: String) -> String {
+                       thread: String, code: Bool, category: String,
+                       image: NotifyImageInfo? = nil) -> String {
         let reply = n.actions.contains { $0.reply } ? 1 : 0
-        return "notify post id=\(n.id) pkg=\(n.pkg) titleLen=\(title.count) bodyLen=\(body.count)"
+        var line = "notify post id=\(n.id) pkg=\(n.pkg) titleLen=\(title.count) bodyLen=\(body.count)"
             + " thread=\(thread) actions=\(n.actions.count) reply=\(reply) code=\(code ? 1 : 0)"
             + " ongoing=\(n.ongoing ? 1 : 0) category=\(category)"
+        if n.live != nil { line += " live=1" }
+        if let image { line += " " + image.record }
+        return line
     }
+
+    /// The attachment line: the picture's own facts, never its bytes.
+    static func record(image id: String, info: NotifyImageInfo) -> String {
+        "notify image id=\(id) \(info.record)"
+    }
+
+    static func record(imageRefused id: String, reason: String) -> String {
+        "notify image id=\(id) refused=\(reason)"
+    }
+
+    static func record(imageLate id: String) -> String { "notify image id=\(id) late" }
+
+    /// An in-place Live Update. The progress is a 0–10 bucket, never a value.
+    static func record(live id: String, progress: Double?, chip: String?,
+                       chrono: Bool, countDown: Bool) -> String {
+        let bucket = progress.map { String(Int(($0 * 10).rounded())) } ?? "-"
+        return "notify live id=\(id) progress=\(bucket) chip=\(chip?.count ?? 0)"
+            + " chrono=\(chrono ? 1 : 0) countDown=\(countDown ? 1 : 0)"
+    }
+
+    static func record(liveEnded id: String) -> String { "notify live id=\(id) end" }
 
     static func record(removed id: String) -> String { "notify remove id=\(id)" }
 
@@ -333,6 +575,15 @@ final class NotifyCenter {
     let categories = NotifyCategoryRegistry()
     /// Replaceable in tests so no private pasteboard is touched.
     var copyService = CodeCopy(pasteboard: SystemCodePasteboard())
+    /// The menu bar's live rows, updated in place (docs/design/notify.md).
+    private(set) var liveStore = NotifyLiveStore()
+    /// Called whenever the live rows change, so the controller can publish them.
+    var onLiveChange: (([NotifyLiveItem]) -> Void)?
+
+    /// How long a post waits for the `notify.image` that follows it. 0 in tests
+    /// and in `--share-log` mode (nothing reaches Notification Center there, so
+    /// there is nothing to attach to).
+    var hold: TimeInterval = 0.3
 
     /// What a banner response or a debug action needs, kept for the ids the
     /// phone issued. Bounded like the wire's own id map.
@@ -343,15 +594,46 @@ final class NotifyCenter {
         var actions: [NotifyActionInfo]
         var code: String?
         var ongoing: Bool
+        var live: NotifyLive?
+        var requestId: String?
+    }
+
+    /// A post that has not reached Notification Center yet: the `hold` window
+    /// is when its picture can still join it.
+    private struct PendingPost {
+        var notification: PhoneNotification
+        var phoneId: String
+        var phoneName: String
+        var title: String
+        var body: String
+        var category: String
+        var image: (info: NotifyImageInfo, data: Data)?
+        var work: DispatchWorkItem
     }
 
     private var known: [String: Known] = [:]
     private var knownOrder: [String] = []
     private var requestIds: [String: String] = [:]
+    private var pending: [String: PendingPost] = [:]
+    /// The id → temp attachment path; deleted with the banner or a disconnect.
+    private var attachments: [String: URL] = [:]
+    private var liveFlush: DispatchWorkItem?
     private var authorized = false
     private var registering = false
 
     private static let maxKnown = 200
+
+    /// Where a profile's attachment temp files live: caches, not Documents.
+    private static var attachmentDirectory: URL? {
+        guard let base = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first else {
+            return nil
+        }
+        return base.appendingPathComponent(Profile.active.supportDirectoryName, isDirectory: true)
+            .appendingPathComponent("notify", isDirectory: true)
+    }
+
+    /// The whole set of live rows (the menu bar reads this).
+    var liveItems: [NotifyLiveItem] { liveStore.items }
 
     /// Installing the delegate must happen before any notification from either
     /// side; with a log there is nothing to show, so neither happens.
@@ -381,37 +663,187 @@ final class NotifyCenter {
     func post(_ n: PhoneNotification, phoneId: String, phoneName: String, labelFor: (String) -> String?) {
         let (title, body) = NotifyMapping.content(n, phoneName: phoneName, labelFor: labelFor)
         let code = NotifyCode.find(title: n.title, text: n.text)
+        // A Live Update: the first post banners, later ones update the row in
+        // place and never banner again (docs/design/notify.md).
+        var outcome: NotifyLiveOutcome?
+        if let live = n.live {
+            outcome = liveStore.post(id: n.id, pkg: n.pkg, label: labelFor(n.pkg), live: live, now: Date())
+            publishLive()
+            if outcome == .updated, let item = liveStore.item(n.id) {
+                record(NotifyMapping.record(live: n.id, progress: item.progress, chip: item.chip,
+                                            chrono: item.chrono != nil, countDown: item.countDown))
+                return
+            }
+            if outcome == .coalesced {
+                scheduleLiveFlush()
+                return
+            }
+        }
         remember(PhoneNotification(id: n.id, pkg: n.pkg, when: n.when, title: n.title, text: n.text,
-                                   ongoing: n.ongoing, actions: n.actions),
+                                   ongoing: n.ongoing, actions: n.actions, live: n.live),
                  click: NotifyClick(id: n.id, pkg: n.pkg, phoneId: phoneId),
-                 code: code)
+                 code: code,
+                 requestId: requestId(phoneId: phoneId, id: n.id))
         let shape = NotifyCategories.identifier(
             titles: n.actions.map(\.title),
             reply: n.actions.contains { $0.reply },
             code: code != nil,
         )
-        if log != nil {
-            record(NotifyMapping.record(posted: n, title: title, body: body, thread: phoneId,
-                                        code: code != nil, category: shape))
+        // Nothing reaches Notification Center in share-log mode, but the post
+        // still waits its hold so the line can carry the picture that follows.
+        let category = log == nil ? categories.category(for: n, hasCode: code != nil) : shape
+        let requestId = requestId(phoneId: phoneId, id: n.id)
+        requestIds[n.id] = requestId
+        // A cancellation of an earlier post for the same id ends its wait too.
+        pending.removeValue(forKey: n.id)?.work.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            self?.deliver(id: n.id)
+        }
+        pending[n.id] = PendingPost(notification: n, phoneId: phoneId, phoneName: phoneName,
+                                    title: title, body: body, category: category,
+                                    image: nil, work: work)
+        if hold > 0 {
+            DispatchQueue.main.asyncAfter(deadline: .now() + hold, execute: work)
+        } else {
+            deliver(id: n.id)
+        }
+    }
+
+    /// `notify.image` (docs/design/notify.md): the picture that follows a post.
+    /// Refused when it breaks the Mac's caps, dropped when the post is already
+    /// out (a second banner is worse than a missing thumbnail).
+    func image(id: String, mime: String, width: Int, height: Int, data: Data) {
+        let reason = NotifyImageCaps.refusal(mime: mime, width: width, height: height,
+                                             decoded: data.count)
+        if let reason {
+            record(NotifyMapping.record(imageRefused: id, reason: reason))
             return
         }
-        let category = categories.category(for: n, hasCode: code != nil)
-        let requestId = "pd.\(phoneId).\(n.id)"
-        requestIds[n.id] = requestId
+        guard pending[id] != nil else {
+            if known[id] != nil {
+                record(NotifyMapping.record(imageLate: id))
+            } else {
+                record(NotifyMapping.record(imageRefused: id, reason: "unknown"))
+            }
+            return
+        }
+        let info = NotifyImageInfo(mime: mime.lowercased(), width: width, height: height, size: data.count)
+        pending[id]?.image = (info, data)
+    }
+
+    /// The post's wait is over: write its attachment (if any) and submit it.
+    private func deliver(id: String) {
+        guard let post = pending.removeValue(forKey: id) else { return }
+        var info = post.image?.info
+        var url: URL?
+        if let image = post.image, let written = writeAttachment(phoneId: post.phoneId, id: id,
+                                                                 info: image.info, data: image.data) {
+            url = written
+            info?.attachment = written.path
+            attachments[id] = written
+        }
+        record(NotifyMapping.record(posted: post.notification, title: post.title, body: post.body,
+                                    thread: post.phoneId, code: NotifyCode.find(title: post.notification.title,
+                                                                                 text: post.notification.text) != nil,
+                                    category: post.category, image: info))
+        guard log == nil else { return }
         let content = UNMutableNotificationContent()
-        content.title = title
-        if !body.isEmpty { content.body = body }
-        content.threadIdentifier = phoneId
+        content.title = post.title
+        if !post.body.isEmpty { content.body = post.body }
+        content.threadIdentifier = post.phoneId
         content.sound = nil
-        content.categoryIdentifier = category
-        content.userInfo = ["kind": NotificationRouter.phoneKind, "pkg": n.pkg, "id": n.id, "phone": phoneId]
-        let request = UNNotificationRequest(identifier: requestId, content: content, trigger: nil)
+        content.categoryIdentifier = post.category
+        content.userInfo = ["kind": NotificationRouter.phoneKind, "pkg": post.notification.pkg,
+                            "id": id, "phone": post.phoneId]
+        if let url, let attachment = try? UNNotificationAttachment(
+            identifier: "pd.img.\(id)", url: url, options: nil,
+        ) {
+            content.attachments = [attachment]
+        }
+        let request = UNNotificationRequest(identifier: requestId(phoneId: post.phoneId, id: id),
+                                            content: content, trigger: nil)
         postToCenter(request)
+    }
+
+    /// Writes the temp file 0600 in a 0700 directory; nil when it cannot.
+    private func writeAttachment(phoneId: String, id: String, info: NotifyImageInfo, data: Data) -> URL? {
+        guard let directory = Self.attachmentDirectory else { return nil }
+        let manager = FileManager.default
+        do {
+            try manager.createDirectory(at: directory, withIntermediateDirectories: true,
+                                        attributes: [.posixPermissions: 0o700])
+            let name = requestId(phoneId: phoneId, id: id).replacingOccurrences(of: "..", with: "_")
+                + "." + NotifyImageCaps.fileExtension(info.mime)
+            let url = directory.appendingPathComponent(name)
+            try data.write(to: url, options: [.atomic])
+            try manager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+            return url
+        } catch {
+            return nil
+        }
+    }
+
+    /// Deletes one id's temp file (banner removed, phone ended it).
+    private func dropAttachment(_ id: String) {
+        guard let url = attachments.removeValue(forKey: id) else { return }
+        try? FileManager.default.removeItem(at: url)
+    }
+
+    /// Disconnect: no banner, no attachment and no live row outlives the phone.
+    func clearAll() {
+        for (_, post) in pending { post.work.cancel() }
+        pending.removeAll()
+        liveFlush?.cancel()
+        liveFlush = nil
+        liveStore.clear()
+        publishLive()
+        for (_, url) in attachments { try? FileManager.default.removeItem(at: url) }
+        attachments.removeAll()
+        if let directory = Self.attachmentDirectory {
+            try? FileManager.default.removeItem(at: directory)
+        }
+        requestIds.values.forEach {
+            UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: [$0])
+        }
+        known.removeAll()
+        knownOrder.removeAll()
+        requestIds.removeAll()
+    }
+
+    private func scheduleLiveFlush() {
+        guard liveFlush == nil else { return }
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.liveFlush = nil
+            let applied = self.liveStore.flush(now: Date())
+            for item in applied {
+                self.record(NotifyMapping.record(live: item.id, progress: item.progress,
+                                                 chip: item.chip, chrono: item.chrono != nil,
+                                                 countDown: item.countDown))
+            }
+            if !applied.isEmpty { self.publishLive() }
+            if self.liveStore.hasPending { self.scheduleLiveFlush() }
+        }
+        liveFlush = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + liveStore.interval, execute: work)
+    }
+
+    /// A picture was refused, dropped as late, or a live item updated/ended.
+    private func publishLive() { onLiveChange?(liveStore.items) }
+
+    private func requestId(phoneId: String, id: String) -> String {
+        phoneId.isEmpty ? "pd.\(id)" : "pd.\(phoneId).\(id)"
     }
 
     /// The poster's app took the notification away: drop the Mac banner too.
     func remove(id: String) {
         if log != nil { record(NotifyMapping.record(removed: id)) }
+        pending.removeValue(forKey: id)?.work.cancel()
+        if liveStore.end(id) {
+            record(NotifyMapping.record(liveEnded: id))
+            publishLive()
+        }
+        dropAttachment(id)
         known.removeValue(forKey: id)
         knownOrder.removeAll { $0 == id }
         if let requestId = requestIds.removeValue(forKey: id) {
@@ -481,14 +913,19 @@ final class NotifyCenter {
         record(NotifyMapping.record(muted: pkg, phone: phoneId))
     }
 
-    private func remember(_ n: PhoneNotification, click: NotifyClick, code: String?) {
+    private func remember(_ n: PhoneNotification, click: NotifyClick, code: String?, requestId: String) {
         known[n.id] = Known(click: click, title: n.title, text: n.text,
-                            actions: n.actions, code: code, ongoing: n.ongoing)
+                            actions: n.actions, code: code, ongoing: n.ongoing,
+                            live: n.live, requestId: requestId)
         knownOrder.removeAll { $0 == n.id }
         knownOrder.append(n.id)
         while knownOrder.count > Self.maxKnown {
             let oldest = knownOrder.removeFirst()
             known.removeValue(forKey: oldest)
+            // The id is going away: its temp file must not outlive it.
+            if let url = attachments.removeValue(forKey: oldest) {
+                try? FileManager.default.removeItem(at: url)
+            }
         }
     }
 
