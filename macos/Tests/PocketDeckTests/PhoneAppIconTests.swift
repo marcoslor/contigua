@@ -108,6 +108,29 @@ final class PhoneAppIconTests: XCTestCase {
         XCTAssertEqual(plate.a, 255)
     }
 
+    // The two reported bugs, pinned as numeric repros: the old Deck tile put
+    // the bg layer at 35 % under the glass material, and the old Dock .icns
+    // upscaled the phone's 96 px flat icon to 1024.
+
+    func testTheOldWashedTileWouldShiftWhiteFarMoreThanTheRendererDoes() {
+        // White bg at 35 % over a dark glass material (around 30/255 in dark
+        // mode, the user's murky Telegram tile): about 69 % of the colour is
+        // the material, not the app.
+        let washed = 0.35 * 255 + 0.65 * 30
+        XCTAssertGreaterThan(deltaE((washed, washed, washed), (255, 255, 255)), 20,
+                             "the old tile never reached the bg colour")
+        XCTAssertLessThan(deltaE((255, 255, 255), (255, 255, 255)), 2,
+                          "the renderer draws the bg at full opacity")
+    }
+
+    func testTheDockRenderNeverUpscalesThePhoneLayers() {
+        // 1296 px layers, their visible 2/3 = 864 px, fill the 824 px body:
+        // 0.95×, a downscale. The old path scaled a 96 px PNG into 1024: 8.6×.
+        let visible = 1296.0 * 2 / 3
+        XCTAssertLessThanOrEqual(824.0 / visible, 1.0)
+        XCTAssertGreaterThan(1024.0 / 96.0, 8.0, "the old .icns was an 8.6× upscale")
+    }
+
     func testTheFinishLeavesWhiteAlone() throws {
         let image = try XCTUnwrap(PhoneAppIcon.render(layers: (solid(0, 0, 0, 0), solid(1, 1, 1)), px: 1024))
         let centre = rgba(image, x: 512, y: 512)
