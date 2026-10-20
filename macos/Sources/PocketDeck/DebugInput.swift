@@ -22,6 +22,11 @@
 //   showtouches on|off             View > Show Touches
 //   windowstyle framed|immersive|toggle   the key window's chrome style
 //                                  (View > Window Style / its ⌥⌘F toggle)
+//   immersive instantly|short|long|always   View > Immersive's pick: the reveal
+//                                  choice (stored globally) and the immersive style
+//   nav back|home|recents          the Navigate menu's own action for the window
+//                                  (what a bar button and the shortcut run)
+//   opensettings                   open the Settings window (⌘,)
 //   fullscreen                     native full screen on the key window
 //                                  (View > Enter Full Screen / ⌃⌘F)
 //   density PKG PERCENT|default    the app's density override (View > Density):
@@ -95,6 +100,12 @@ enum DebugInputAction: Equatable {
     case showTouches(Bool)
     case dockApps(Bool)
     case windowStyle(String)
+    /// View ▸ Immersive's pick (the reveal choice and the immersive style).
+    case immersive(ImmersiveMenuItem)
+    /// The Navigate menu's action: back, home or recents.
+    case nav(String)
+    /// Open the Settings window (⌘,).
+    case openSettings
     case fullScreen
     /// An app's density override; nil is "Default" (clear it).
     case density(pkg: String, value: Double?)
@@ -211,6 +222,22 @@ enum DebugInputScript {
             case "toggle" where args.count == 1: return .windowStyle("toggle")
             default: throw LineError(message: "windowstyle needs framed, immersive or toggle")
             }
+        case "immersive":
+            switch args.first {
+            case "instantly" where args.count == 1: return .immersive(.delay(.instantly))
+            case "short" where args.count == 1: return .immersive(.delay(.short))
+            case "long" where args.count == 1: return .immersive(.delay(.long))
+            case "always" where args.count == 1: return .immersive(.alwaysVisible)
+            default: throw LineError(message: "immersive needs instantly, short, long or always")
+            }
+        case "nav":
+            guard args.count == 1, ["back", "home", "recents"].contains(args[0]) else {
+                throw LineError(message: "nav needs back, home or recents")
+            }
+            return .nav(args[0])
+        case "opensettings":
+            guard args.isEmpty else { throw LineError(message: "opensettings takes no arguments") }
+            return .openSettings
         case "fullscreen":
             guard args.isEmpty else { throw LineError(message: "fullscreen takes no arguments") }
             return .fullScreen
@@ -263,7 +290,14 @@ enum DebugInputScript {
             guard (1...2).contains(args.count), args[0].hasPrefix("/") else {
                 throw LineError(message: "waitfile needs an absolute PATH and optionally SECONDS")
             }
-            return .waitFile(args[0], timeout: args.count == 2 ? try hold(args, index: 1) : 30)
+            var timeout = 30.0
+            if args.count == 2 {
+                guard let seconds = Double(args[1]), (1...600).contains(seconds) else {
+                    throw LineError(message: "waitfile SECONDS is seconds, 1...600")
+                }
+                timeout = seconds
+            }
+            return .waitFile(args[0], timeout: timeout)
         case "dropfile":
             guard args.count == 1, !args[0].isEmpty else {
                 throw LineError(message: "dropfile needs an absolute PATH")
@@ -466,7 +500,8 @@ final class DebugInputDriver {
             // spin the run loop: inside that block the main queue cannot drain, so
             // the video frames enqueued on it would wait for the whole script.
             // A run-loop block starts the script outside any main-queue block.
-            RunLoop.main.perform { self.run(on: view) }
+            let timer = Timer(timeInterval: 0.05, repeats: false) { [weak self] _ in self?.run(on: view) }
+            RunLoop.main.add(timer, forMode: .common)
         }
     }
 
@@ -542,6 +577,18 @@ final class DebugInputDriver {
             case "immersive": controller.setStyle(.immersive)
             default: controller.toggleStyle()
             }
+        case .immersive(let item):
+            (view.window?.windowController as? StreamWindowController)?.manager.pickImmersive(item)
+        case .nav(let target):
+            guard let controller = view.window?.windowController as? StreamWindowController else { return }
+            switch target {
+            case "back": controller.navigateBack(nil)
+            case "home": (controller as? PhoneWindowController)?.navigateHome(nil)
+            case "recents": (controller as? PhoneWindowController)?.navigateRecents(nil)
+            default: break
+            }
+        case .openSettings:
+            NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
         case .fullScreen:
             // The menu item's action, through the responder chain: in full
             // screen the content can live in the system's full-screen window,

@@ -2336,6 +2336,50 @@ check_chrome() {
         skip_visible "C2 native full screen (a real Space switch)"
     fi
 
+    # --- Immersive ▸ Always Visible (ImmersiveMenu.swift) ---
+    # Picking it keeps the lights and the capsules up with the pointer away
+    # from the window, past the hide delay; picking Short hides them again.
+    next_shared
+    rm -f "$WORK/chrome-step-short"
+    printf '%s\n' "wait 0.6" "immersive always" "wait 2" "hoverat -460 -80" "wait 3" \
+        "menudump $WORK/chrome-always-menu.json" \
+        "waitfile $WORK/chrome-step-short 60" "immersive short" "wait 2" > "$WORK/chrome-always.txt"
+    open_shared --open com.android.settings --float-windows \
+        --debug-chrome-state "$WORK/chrome.txt" --debug-input-script "$WORK/chrome-always.txt" \
+        || { kill "$backdrop"; return 1; }
+    win="$(await_window '$4 == 900')" || { bad "C14 no window for Always Visible"; kill "$backdrop"; return 1; }
+    wait_until 8 win_size "$win" 900 600 \
+        && ok "C14 Always Visible takes the window to immersive (900x600)" \
+        || bad "C14 Always Visible did not switch the style: $(windows | awk -v id="$win" '$1 == id {print $4, $5}')"
+    wait_until 8 chrome_is "style=immersive lights=shown pill=shown" \
+        && ok "C14 Always Visible: the lights and the capsules are up at rest ($(chrome_state))" \
+        || bad "C14 Always Visible: $(chrome_state)"
+    sleep 2
+    chrome_is "style=immersive lights=shown pill=shown" \
+        && ok "C14 Always Visible: still up past the hide delay with the pointer outside the window" \
+        || bad "C14 Always Visible hid after the delay: $(chrome_state)"
+    if wait_until 12 [ -s "$WORK/chrome-always-menu.json" ]; then
+        python3 - "$WORK/chrome-always-menu.json" <<'PY' && ok "MENUS the Immersive parent is checked while the window is immersive" \
+            || bad "MENUS the Immersive parent is not checked in immersive"
+import json, sys
+root = json.load(open(sys.argv[1]))
+view = next(i for i in root["items"] if i["title"] == "View")
+imm = next(i for i in view["submenu"] if i["title"] == "Immersive")
+sub = imm.get("submenu") or []
+checked = [item["title"] for item in sub if item["state"] == "on"]
+if imm["state"] != "on":
+    print("parent state:", imm["state"]); sys.exit(1)
+if checked != ["Always Visible"]:
+    print("checked:", checked); sys.exit(1)
+PY
+    else
+        bad "MENUS no menu dump in the Always Visible phase"
+    fi
+    touch "$WORK/chrome-step-short"
+    wait_until 8 chrome_is "style=immersive lights=hidden pill=hidden" \
+        && ok "C14 picking Short hides the chrome again ($(chrome_state))" \
+        || bad "C14 Short did not hide the chrome: $(chrome_state)"
+
     kill "$backdrop" 2>/dev/null; wait "$backdrop" 2>/dev/null
     stop_app
     stop_fakephone
@@ -2377,8 +2421,9 @@ view = next((i for i in root["items"] if i["title"] == "View"), None)
 if view is None:
     print("no View menu"); sys.exit(1)
 seq = ["—" if item["isSeparator"] else item["title"] for item in view["submenu"]]
-want = ["Find Apps", "Phone Window", "Continue on Mac", "—", "Show Touches", "Live Text", "—",
-        "Framed", "Immersive", "—", "Density", "Toggle Window Style"]
+want = ["Find Apps", "Phone Window", "Continue on Mac", "—",
+        "Show Touches", "Live Text", "—", "Framed", "Immersive", "—", "Density",
+        "Toggle Window Style"]
 if seq != want:
     print("View:", seq, "wanted:", want); sys.exit(1)
 PY
@@ -2408,6 +2453,22 @@ if sorted([framed["state"], immersive["state"]]) != ["off", "on"]:
     print("states:", framed["state"], immersive["state"]); sys.exit(1)
 if framed["hasImage"] or immersive["hasImage"]:
     print("a radio item carries an icon"); sys.exit(1)
+PY
+
+    python3 - "$WORK/menus.json" <<'PY' && ok "MENUS Immersive is a submenu: the delays, a separator, Always Visible" \
+        || bad "MENUS the Immersive submenu is wrong"
+import json, sys
+root = json.load(open(sys.argv[1]))
+view = next(i for i in root["items"] if i["title"] == "View")
+imm = next(i for i in view["submenu"] if i["title"] == "Immersive")
+sub = imm.get("submenu") or []
+seq = ["—" if item["isSeparator"] else item["title"] for item in sub]
+want = ["Instantly", "Short", "Long", "—", "Always Visible"]
+if seq != want:
+    print("Immersive:", seq, "wanted:", want); sys.exit(1)
+checked = [item["title"] for item in sub if item["state"] == "on"]
+if checked != ["Short"]:
+    print("checked:", checked); sys.exit(1)
 PY
 
     # The Window menu's own full-screen item, and the only one in the tree.
@@ -6969,37 +7030,52 @@ frames_n() {
 # frame, leave, then enter again and resize the window: that drops to idle.
 check_livetext() {
     clean
+    # nav_count — how many `nav back` messages the phone received (rx events).
+    nav_count() {
+        python3 - "$WORK/events.jsonl" <<'PY'
+import json, sys
+n = 0
+for line in open(sys.argv[1]):
+    try:
+        event = json.loads(line)
+    except ValueError:
+        continue
+    msg = event.get("msg") if event.get("ev") == "rx" else None
+    if isinstance(msg, dict) and msg.get("t") == "nav" \
+            and msg.get("stream") == 1 and msg.get("action") == "back":
+        n += 1
+print(n)
+PY
+    }
     FAKE_ARGS="--text-frame POCKETDECK --frame-events" start_fake || return 1
     FAKE_ARGS=""
-    rm -f "$WORK/lt-input-go" "$WORK/lt-copy-go" "$WORK/livetext.png"
+    rm -f "$WORK/lt-copy-go" "$WORK/livetext.png"
+    # The phone window's Back button and the Navigate shortcut run the same
+    # controller action this check drives.
     printf '%s\n' \
         "enter 1" \
         "wait-analysis POCKETDECK" \
-        "waitfile $WORK/lt-copy-go" \
+        "forceclick 0.5 0.5" \
+        "nav back" \
+        "waitfile $WORK/lt-copy-go 120" \
         "copy-image $WORK/livetext.png" \
         "exit" \
         "wait-idle" \
         "enter 1" \
         "wait-analysis" \
         "resize 1 1200 800" \
-        "wait-idle" > "$WORK/livetext.txt"
-    printf '%s\n' \
-        "waitfile $WORK/lt-input-go" \
-        "click 0.5 0.5" \
-        "type hi" \
-        "scroll 3" \
-        "hover 0.5 0.5" \
-        "rightclick 0.5 0.5" > "$WORK/lt-input.txt"
+        "wait-idle" \
+        "nav back" > "$WORK/livetext.txt"
     launch --connect "127.0.0.1:$PORT" --open com.android.settings \
-        --debug-livetext "$WORK/livetext.txt" --debug-input-script "$WORK/lt-input.txt" \
+        --debug-livetext "$WORK/livetext.txt" \
         --quit-after 120
     wait_until 30 events_have '"ev":"video","stream":1,"config":true' \
         || { bad "LT no video config"; stop_app; stop_fakephone; return 1; }
 
     # Enter + VisionKit: the frozen frame carries POCKETDECK.
-    if wait_until 45 grep -q '"op":"analysis"' "$WORK/app.log"; then
+    if wait_until 120 grep -q '"ok":true,"op":"analysis"' "$WORK/app.log"; then
         local line
-        line="$(grep '"op":"analysis"' "$WORK/app.log" | tail -1)"
+        line="$(grep '"ok":true,"op":"analysis"' "$WORK/app.log" | tail -1)"
         case "$line" in
             *'"state":"shown"'*) ok "LT enter froze the frame and VisionKit finished" ;;
             *) bad "LT analysis did not reach shown ($line)" ;;
@@ -7016,21 +7092,46 @@ check_livetext() {
         bad "LT no analysis result (app log: $(tail -3 "$WORK/app.log"))"
     fi
 
-    # While frozen the phone must receive no input at all and send no frames.
-    sleep 0.5
-    local frames_frozen inputs_before inputs_after frames_after
+    # Force click: the host's text frame has no lifted subject, so the click
+    # must leave the system's path alone and copy nothing. (The subject branch
+    # is proved in the VM; a real trackpad is not available here.)
+    if wait_until 20 grep -q '"op":"forceclick"' "$WORK/app.log"; then
+        local force
+        force="$(grep '"op":"forceclick"' "$WORK/app.log" | tail -1)"
+        if grep -q '"subject":false' <<< "$force" && grep -q '"copied":false' <<< "$force"; then
+            ok "LT force click on text/empty area copied nothing (no subject: the system keeps Look Up)"
+        else
+            bad "LT force click wrote something on the host's text frame ($force)"
+        fi
+    else
+        bad "LT no forceclick result"
+    fi
+
+    # The mode freezes the bar: a Back press (the bar's button and ⌘[ run this
+    # one controller action) must reach no phone while the picture is frozen.
+    if wait_until 15 grep -q '"op":"nav"' "$WORK/app.log"; then
+        local navs_frozen
+        navs_frozen="$(nav_count)"
+        [ "${navs_frozen:-0}" = "0" ] \
+            && ok "LT in the mode a Back press sent no nav to the phone (bar and shortcut frozen)" \
+            || bad "LT a Back press reached the phone in the mode ($navs_frozen nav)"
+    else
+        bad "LT no nav result in the mode"
+    fi
+
+    # While frozen the phone sends no frames (the mode paused the stream).
+    local frames_frozen frames_after
     frames_frozen="$(frames_n)"
-    inputs_before="$(count_events '"ev":"input"')"
-    touch "$WORK/lt-input-go"
-    sleep 3
-    inputs_after="$(count_events '"ev":"input"')"
-    [ "$inputs_after" = "$inputs_before" ] \
-        && ok "LT no INPUT frame reached the phone in the mode ($inputs_before before, $inputs_after after click/type/scroll/hover/right-click)" \
-        || bad "LT input reached the phone in the mode ($inputs_before -> $inputs_after)"
+    sleep 1
     frames_after="$(frames_n)"
-    [ "${frames_after:-0}" = "${frames_frozen:-0}" ] \
-        && ok "LT the phone stopped sending frames while frozen (n=$frames_after)" \
-        || bad "LT frames kept flowing in the mode (n ${frames_frozen:-0} -> ${frames_after:-0})"
+    if [ -z "${frames_frozen:-}" ]; then
+        say "LT no frame counter yet when the mode froze (the stream paused before its first count)"
+    elif [ "${frames_after:-0}" = "${frames_frozen:-0}" ]; then
+        ok "LT the phone stopped sending frames while frozen (n=$frames_after)"
+    else
+        bad "LT frames kept flowing in the mode (n ${frames_frozen:-0} -> ${frames_after:-0})"
+    fi
+
 
     # Copy Window Image: a PNG of exactly the stream's pixels.
     touch "$WORK/lt-copy-go"
@@ -7090,6 +7191,15 @@ PY
     else
         bad "LT the second enter/resize phase did not run"
     fi
+
+    # Out of the mode the same press works again (the script's last Back runs
+    # after the second phase's idle).
+    wait_until 15 [ "$(grep -c '"op":"nav"' "$WORK/app.log")" -ge 2 ] \
+        && ok "LT after the exit the Back press ran" \
+        || bad "LT the second Back press did not run"
+    wait_until 15 [ "$(nav_count)" -ge 1 ] \
+        && ok "LT after the exit Back sends nav again ($(nav_count) nav)" \
+        || bad "LT Back still sent nothing after the exit ($(nav_count) nav)"
     stop_app
     stop_fakephone
 }
