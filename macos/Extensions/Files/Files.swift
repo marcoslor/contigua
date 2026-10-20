@@ -180,17 +180,11 @@ final class WatchChannel {
     /// a no-op, so an enumerator being rebuilt is cheap.
     func set(_ item: String, on: Bool) {
         lock.lock()
-        let known = items.contains(item)
-        if on && known {
-            let alive = connection != nil
-            lock.unlock()
-            if !alive, connect() {
-                _ = send(.watch(id: freshID(), items: Array(items), on: true))
-            }
-            return
-        }
         if on { items.insert(item) } else { items.remove(item) }
         lock.unlock()
+        // Always re-assert: the app ref-counts, so a duplicate on/off is a
+        // no-op there, and a re-assert is what repairs a mismatch after the
+        // app's session (and its watch ref-counts) came back from a reconnect.
         if !send(.watch(id: freshID(), items: [item], on: on)) {
             // The app is not there (yet, or any more): one reconnect, then a
             // full re-subscription, so a restarted app knows the whole set.
