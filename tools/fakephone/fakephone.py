@@ -905,6 +905,110 @@ def _delete_tree(path):
         os.unlink(path)
 
 
+class FsWatchFake(object):
+    """The phone's folder watcher (docs/PROTOCOL.md "Watching").
+
+    A real phone uses one inotify watch per folder; the fake polls the tree,
+    which gives the same observable behaviour: only requested folders, a
+    coalesced ``fs.changes`` with the folders whose contents moved, and nothing
+    at all while the set is empty. A ``.pocketdeck-*.part`` staging file is not
+    a change. Names never reach the log: counts only.
+    """
+
+    POLL_S = 0.4
+
+    def __init__(self, fs):
+        self.fs = fs
+        self.paths = []                 # wanted folders, in request order
+        self.snapshots = {}
+        self.lock = threading.Lock()
+        self._stop = threading.Event()
+        self._thread = None
+        self._sink = None
+
+    def on_changes(self, sink):
+        self._sink = sink
+
+    def watch(self, paths):
+        folders = [self._folder(rel) for rel in paths]
+        with self.lock:
+            for rel in folders:
+                if rel in self.paths:
+                    continue
+                self.paths.append(rel)
+                self.snapshots[rel] = self._snapshot(rel)
+            if self.paths and self._thread is None:
+                self._stop.clear()
+                self._thread = threading.Thread(target=self._run, daemon=True)
+                self._thread.start()
+            return len(self.paths)
+
+    def unwatch(self, paths):
+        folders = [self._folder(rel) for rel in paths]
+        with self.lock:
+            for rel in folders:
+                if rel in self.paths:
+                    self.paths.remove(rel)
+                    self.snapshots.pop(rel, None)
+            count = len(self.paths)
+            if count == 0:
+                self._stop.set()
+                self._thread = None
+            return count
+
+    def close(self):
+        with self.lock:
+            self.paths = []
+            self.snapshots = {}
+            self._stop.set()
+            self._thread = None
+
+    # -- internals -------------------------------------------------------
+
+    def _folder(self, rel):
+        target = self.fs.resolve(rel)
+        meta = self.fs.meta(target)
+        if not meta["dir"]:
+            raise FsError("fs_not_a_dir", "not a directory")
+        return "" if target == self.fs.root else os.path.relpath(target, self.fs.root)
+
+    def _snapshot(self, rel):
+        try:
+            target = self.fs.resolve(rel)
+            with os.scandir(target) as entries:
+                out = {}
+                for entry in entries:
+                    if fs_temp_name(entry.name):
+                        continue
+                    try:
+                        st = entry.stat(follow_symlinks=False)
+                    except OSError:
+                        continue
+                    out[entry.name] = (st.st_mtime_ns, st.st_size, 1 if entry.is_dir() else 0)
+                return out
+        except (FsError, OSError):
+            return None
+
+    def _run(self):
+        while not self._stop.wait(self.POLL_S):
+            with self.lock:
+                paths = list(self.paths)
+            changed = []
+            for rel in paths:
+                now = self._snapshot(rel)
+                with self.lock:
+                    if rel not in self.paths:
+                        continue
+                    if self.snapshots.get(rel) == now:
+                        continue
+                    self.snapshots[rel] = now
+                changed.append(rel)
+            if changed and self._sink is not None:
+                sys.stderr.write("fakephone: changes %d\n" % len(changed))
+                sys.stderr.flush()
+                self._sink(changed)
+
+
 def _fs_id(msg):
     value = msg.get("id")
     if isinstance(value, int) and 0 < value <= 0xFFFFFFFF:
@@ -1426,6 +1530,11 @@ class Session(object):
         self._fs_jobs = {}              # id -> {"cancel": Event, "thread": Thread}
         self._fs_write = None           # the one fs.write in flight
         self._fs_lock = threading.Lock()
+        # The folders the Mac has open (docs/PROTOCOL.md "Watching"); nothing
+        # is watched before fs.watch and everything stops with the session.
+        self._watcher = FsWatchFake(phone.fs) if phone.fs is not None else None
+        if self._watcher is not None:
+            self._watcher.on_changes(self._on_fs_changes)
         self._thread = threading.Thread(target=self._run, daemon=True)
     def start(self):
         self._thread.start()
@@ -1481,6 +1590,8 @@ class Session(object):
         except Exception:
             pass
         self._cancel_fs_reads()
+        if self._watcher is not None:
+            self._watcher.close()
         for stream_id in list(self.windows):
             self.windows[stream_id].stop()
         self.windows.clear()
@@ -1835,6 +1946,8 @@ class Session(object):
             "fs.delete": self._on_fs_delete,
             "fs.mkdir": self._on_fs_mkdir,
             "fs.setAttrs": self._on_fs_set_attrs,
+            "fs.watch": self._on_fs_watch,
+            "fs.unwatch": self._on_fs_unwatch,
             "fs.cancel": self._on_fs_cancel,
         }
         # A phone without DND support keeps phone.dnd unknown (logged once).
@@ -2358,6 +2471,40 @@ class Session(object):
             return self._fs_result(read_id, code="fs_denied", message="could not create the folder")
         self.phone.events.fs("mkdir", id=read_id, ok=True, path=msg.get("path"))
         self._fs_result(read_id, item=item)
+
+    def _on_fs_watch(self, msg):
+        self._fs_watch(msg, on=True)
+
+    def _on_fs_unwatch(self, msg):
+        self._fs_watch(msg, on=False)
+
+    def _fs_watch(self, msg, on):
+        read_id = _fs_id(msg)
+        if read_id is None:
+            return
+        if self._watcher is None:
+            return self._fs_result(read_id, code="fs_denied", message="files are not served")
+        paths = msg.get("paths")
+        if not isinstance(paths, list) or not all(isinstance(p, str) for p in paths):
+            return self._fs_result(read_id, code="fs_denied", message="bad paths")
+        try:
+            count = self._watcher.watch(paths) if on else self._watcher.unwatch(paths)
+        except FsError as exc:
+            return self._fs_result(read_id, code=exc.code, message=exc.message)
+        except OSError:
+            return self._fs_result(read_id, code="fs_denied", message="the watch failed")
+        sys.stderr.write("fakephone: watch %s %d\n" % ("on" if on else "off", count))
+        sys.stderr.flush()
+        self.phone.events.fs("watch", on=on, count=count)
+        self._fs_result(read_id)
+
+    def _on_fs_changes(self, paths):
+        """One coalesced `fs.changes` for the folders whose contents moved."""
+        self.phone.events.fs("changes", count=len(paths))
+        try:
+            self._send({"t": "fs.changes", "paths": paths})
+        except Exception:
+            pass
 
     def _on_fs_set_attrs(self, msg):
         read_id = _fs_id(msg)
