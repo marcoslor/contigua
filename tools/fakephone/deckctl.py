@@ -1179,6 +1179,26 @@ def cmd_watch_state(client, args):
     per real change, nothing periodic. `dnd` is printed when the phone reports
     it (docs/design/focus.md); an old build omits it.
     """
+    if args.phone:
+        client.send_json({"t": "window.open", "stream": 1, "w": args.w, "h": args.h,
+                          "dpi": args.dpi, "mode": "phone"})
+        deadline = time.time() + DEFAULT_TIMEOUT
+        while time.time() < deadline:
+            frame = client.recv(0.25)
+            if frame is TIMEOUT:
+                continue
+            if frame is None:
+                raise DeckError("phone closed while opening the phone window")
+            if frame.type != proto.TYPE_JSON:
+                continue
+            msg = proto.unpack_json(frame)
+            if msg.get("t") == "error":
+                raise DeckError("phone window: %s" % msg.get("code"))
+            if msg.get("t") == "window.opened":
+                print("phone window opened displayId=%s" % msg.get("displayId"))
+                break
+        else:
+            raise DeckError("no window.opened for the phone window")
     deadline = time.time() + args.seconds
     count = 0
     while time.time() < deadline:
@@ -1194,9 +1214,12 @@ def cmd_watch_state(client, args):
             count += 1
             dnd = "" if "dnd" not in msg else " dnd=%s" % json.dumps(msg.get("dnd"))
             screen = "" if "screen" not in msg else " screen=%s" % json.dumps(msg.get("screen"))
-            print("%s state #%d locked=%s battery=%s charging=%s%s%s" % (
+            secure = "" if "secure" not in msg else " secure=%s" % json.dumps(msg.get("secure"))
+            print("%s state #%d locked=%s battery=%s charging=%s%s%s%s" % (
                 time.strftime("%H:%M:%S"), count, msg.get("locked"),
-                msg.get("battery"), msg.get("charging"), dnd, screen))
+                msg.get("battery"), msg.get("charging"), dnd, screen, secure))
+    if args.phone:
+        client.send_json({"t": "window.close", "stream": 1})
     print("# %d state messages in %ss" % (count, args.seconds))
     return 0
 
@@ -2252,6 +2275,11 @@ def build_parser():
 
     sp = sub.add_parser("watch-state", help="print every state message; lock/unlock while it runs", **spp)
     sp.add_argument("--seconds", type=float, default=30.0)
+    sp.add_argument("--phone", action="store_true",
+                    help="open a phone window first, so state.secure is polled")
+    sp.add_argument("--w", type=int, default=400)
+    sp.add_argument("--h", type=int, default=800)
+    sp.add_argument("--dpi", type=int, default=160)
 
     sp = sub.add_parser("wake-test",
                         help="phone.wake on one session: wait for screen off, wake, wait for on",

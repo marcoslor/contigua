@@ -43,7 +43,8 @@ class SessionTest {
                         pairCooldown: PairCooldown? = null,
                         pendingQr: (() -> Map<String, Any?>?)? = null,
                         onQrConsumed: (() -> Unit)? = null,
-                        gates: () -> GateSettings? = { GateSettings(true, true) }) {
+                        gates: () -> GateSettings? = { GateSettings(true, true) },
+                        secureProbe: SecureProbe? = null) {
         serverSocket = ServerSocket(0)
         val accept = Thread {
             val s = serverSocket.accept()
@@ -74,6 +75,7 @@ class SessionTest {
                 pendingQrConsumer = onQrConsumed ?: {},
                 tlsView = TlsV2Fixture.view,
                 gateProvider = gates,
+                secureProbe = secureProbe,
             )
             session = sess
             sess.run()
@@ -670,6 +672,24 @@ class SessionTest {
         assertEquals(false, state["locked"])
         assertEquals(44L, state["battery"])
         assertEquals(true, state["charging"])
+    }
+
+    @Test
+    fun secureStateIsSentOnlyWhileTheMirrorIsOpen() {
+        val secure = java.util.concurrent.atomic.AtomicBoolean(false)
+        // setUp() opened the default connection; use a fresh session with a probe.
+        tearDown()
+        connect(pairDecisionTimeoutMs = 30_000, secureProbe = SecureProbe { secure.get() })
+        addAndAuthenticate()
+        // No phone window is open: the phone has not read display 0 yet.
+        assertEquals(null, readUntil("state")["secure"])
+        // The bouncer is up before the stream opens: the first poll reports it.
+        secure.set(true)
+        send(mapOf("t" to "window.open", "stream" to 1, "w" to 400, "h" to 800, "dpi" to 160, "mode" to "phone"))
+        readUntil("window.opened")
+        assertEquals(true, readUntil("state")["secure"])
+        secure.set(false)
+        assertEquals(false, readUntil("state")["secure"])
     }
 
     @Test

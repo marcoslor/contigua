@@ -111,6 +111,11 @@ class Session(
     private val zen: ZenControl? = null,
     /** The phone's ringer mode (docs/design/controls.md); null refuses `phone.ringer`. */
     private val ringerMode: RingerControl? = null,
+    /**
+     * Display 0's secure-surface state (`state.secure`, docs/PROTOCOL.md "Secure
+     * screens"); null never reports it (tests, or a phone that cannot read it).
+     */
+    private val secureProbe: SecureProbe? = null,
 ) : VideoSink, AudioSink {
 
     /** What the TLS layer knows about this connection (§1/§4b). */
@@ -242,6 +247,7 @@ class Session(
         state.dnd?.let { message["dnd"] = it.wire }
         state.ringer?.let { message["ringer"] = it.wire }
         state.screen?.let { message["screen"] = it.wire }
+        state.secure?.let { message["secure"] = it }
         sendJson(message)
     }
 
@@ -1976,7 +1982,7 @@ class Session(
     // ------------------------------------------------------------------
 
     private fun startStreamWatch() {
-        if (titleObserver == null && taskPresence == null) return
+        if (titleObserver == null && taskPresence == null && secureProbe == null) return
         if (watchThread != null) return
         watchThread = Thread({ streamWatchLoop() }, "pocketdeck-watch").also { it.start() }
     }
@@ -1989,10 +1995,24 @@ class Session(
      */
     private fun streamWatchLoop() {
         var lastExitCheck = 0L
+        var lastSecureCheck = 0L
         while (!closed.get()) {
             val snapshot = synchronized(streams) { streams.values.toList() }
+            // The mirror's secure surface is only worth reading while a phone
+            // window can show it, and at most once a second (the protocol says
+            // state is sent on change, not on a poll tick).
+            if (secureProbe != null && snapshot.none { it.content == WindowContent.Phone }) {
+                if (stateTracker.current?.secure == true) stateTracker.onSecureChanged(false)
+            }
             if (snapshot.isNotEmpty()) {
                 val unpaused = snapshot.filter { !it.paused }
+                if (secureProbe != null && snapshot.any { it.content == WindowContent.Phone }) {
+                    val nowMs = System.currentTimeMillis()
+                    if (nowMs - lastSecureCheck >= SECURE_POLL_MS) {
+                        lastSecureCheck = nowMs
+                        pollSecure()
+                    }
+                }
 
                 titleObserver?.let { observer ->
                     var titlesChanged = false
@@ -2047,6 +2067,14 @@ class Session(
         notifyAudioWindowsChanged()
         runCatching { callback.onSessionChanged(true, clientId, currentMacName ?: clientName, windowCount()) }
         log("closed stream $stream: app exited (display ${state.displayId})")
+    }
+
+    /** One `state.secure` probe; a read failure leaves the last value alone. */
+    private fun pollSecure() {
+        val probe = secureProbe ?: return
+        val secure = runCatching { probe.read() }.getOrNull() ?: return
+        val state = (stateTracker.current ?: device.state()).copy(secure = secure)
+        stateTracker.update(state)
     }
 
     private fun stopStreamWatch() {
@@ -2114,6 +2142,9 @@ class Session(
 
         /** The clipboard-image poll: images are user-paced, not sub-second. */
         const val CLIP_IMAGE_POLL_MS = 1_000L
+
+        /** `state.secure` is polled at most this often, and only for a phone window. */
+        const val SECURE_POLL_MS = 1_000L
 
         /** Bounds the kernel's video backlog so the delta-drop rule can fire. */
         const val SEND_BUFFER_BYTES = 128 * 1024

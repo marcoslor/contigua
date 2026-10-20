@@ -162,6 +162,7 @@ class DeckService(private val appContext: Context?) :
                 },
                 zen = zenControl,
                 ringerMode = ringerControl,
+                secureProbe = AndroidSecureProbe(base, ::log),
                 tlsView = Session.TlsView.from(socket).also { view ->
                     // K4/e2e evidence, hashes only, debug builds only: the
                     // platform stack really backs the v2 pairing
