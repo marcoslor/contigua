@@ -134,7 +134,12 @@ parser = deckctl.build_parser()
 for argv in (["apps"], ["icon", "p", "--out", "/tmp/x.png", "--px", "216"],
              ["media", "drive", "--seconds", "1"], ["wake-test", "--off-timeout", "1"]):
     parser.parse_args(argv)
-print("PREFLIGHT OK: deckctl imports; apps, icon, media drive, wake-test parse")
+# Every subcommand needs a handler: `wake-test` parsed but was missing from
+# COMMANDS, so deckctl died with a KeyError only once the emulator was up.
+subs = [a for a in parser._actions if getattr(a, "choices", None) and a.dest == "command"]
+missing = [name for name in sorted(subs[0].choices) if name not in deckctl.COMMANDS]
+assert not missing, "subcommands without a handler: %s" % ", ".join(missing)
+print("PREFLIGHT OK: deckctl imports; %d subcommands, all handled" % len(deckctl.COMMANDS))
 PY
 "$PYTHON" tools/fakephone/fakephone.py --help >/dev/null 2>&1 ||
   fail "fakephone.py --help"

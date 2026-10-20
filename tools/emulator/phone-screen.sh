@@ -174,6 +174,17 @@ grep -qiE 'isKeyguardLocked=true|mKeyguardLocked=true' "$WINDOW" \
 } > "$RESULT"
 cat "$RESULT"
 
+if [ "$FAILED" -ne 0 ]; then
+  # Evidence for the next boot: the phone's own phone.wake lines and the
+  # session's last output (states only, never any content).
+  EMULOG="$OUT/phone-screen-logcat.log"
+  emu logcat -d -s PocketDeckSvc:I PocketDeckApp:I 2>/dev/null |
+    tr -d '\r' | tail -40 > "$EMULOG" || true
+  echo "phone-screen: logcat evidence ($EMULOG):"
+  tail -10 "$EMULOG"
+  echo "phone-screen: session tail: $(tail -3 "$WAKE" 2>/dev/null | tr '\n' ' ')"
+fi
+
 if [ "$BOOT" -eq 1 ]; then
   kill_emulator
 fi
