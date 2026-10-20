@@ -3,9 +3,6 @@ package dev.pocketdeck.server
 import dev.pocketdeck.app.MediaArtRules
 import dev.pocketdeck.app.MediaControl
 import dev.pocketdeck.app.NotifyEvents
-import dev.pocketdeck.camera.CameraInfo
-import dev.pocketdeck.camera.CameraMessages
-import dev.pocketdeck.camera.CameraSpec
 import dev.pocketdeck.proto.Crypto
 import dev.pocketdeck.proto.Frame
 import dev.pocketdeck.proto.FrameReader
@@ -114,8 +111,6 @@ class Session(
     private val zen: ZenControl? = null,
     /** The phone's ringer mode (docs/design/controls.md); null refuses `phone.ringer`. */
     private val ringerMode: RingerControl? = null,
-    /** The camera side (docs/PROTOCOL.md "Camera"); null answers `off`. */
-    private val camera: CameraPort? = null,
 ) : VideoSink, AudioSink {
 
     /** What the TLS layer knows about this connection (§1/§4b). */
@@ -304,9 +299,6 @@ class Session(
 
     fun run() {
         writerThread = Thread({ writerLoop() }, "pocketdeck-writer").also { it.start() }
-        // The camera belongs to the session that asked for it: detach in
-        // shutdown() closes the pipe, which stops the app's capture.
-        runCatching { camera?.attach(this) }
         try {
             socket.tcpNoDelay = true
             // The protocol promises at most ~250 ms of queued video per stream.
@@ -362,7 +354,6 @@ class Session(
         stopStreamWatch()
         hoverExecutor.shutdownNow()
         runCatching { audioCapture?.stop() }
-        runCatching { camera?.detach(this) }
         queue.clearAudio()
         synchronized(streams) {
             for (s in streams.values.toList()) runCatching { display.close(s.stream) }
@@ -789,9 +780,6 @@ class Session(
                 "phone.ring.stop" -> onPhoneRingStop()
                 "phone.dnd" -> onPhoneDnd(obj)
                 "phone.ringer" -> onPhoneRinger(obj)
-                "cam.list" -> onCamList()
-                "cam.start" -> onCamStart(obj)
-                "cam.stop" -> onCamStop(obj)
                 else -> logOnce("unknown message '$t'")
             }
         } catch (e: Throwable) {
@@ -1793,64 +1781,6 @@ class Session(
     }
 
     // ------------------------------------------------------------------
-    // camera (docs/PROTOCOL.md "Camera")
-    // ------------------------------------------------------------------
-
-    private fun onCamList() {
-        val cams: List<CameraInfo> = camera?.list().orEmpty()
-        sendJson(mapOf("t" to "cam.cams", "cams" to cams.map { it.toMap() }))
-    }
-
-    private fun onCamStart(obj: Map<String, Any?>) {
-        val spec = CameraSpec.from(obj)
-        if (spec == null) {
-            sendError("bad_request", "cam.start needs a stream")
-            return
-        }
-        val port = camera
-        if (port == null) {
-            sendCameraState(spec.stream, "off", "unsupported")
-            return
-        }
-        // A camera id shares the wire's stream space with windows, so the Mac
-        // must not reuse an open window's id (docs/PROTOCOL.md "Camera").
-        val taken = synchronized(streams) { streams.containsKey(spec.stream) }
-        if (taken) {
-            sendCameraState(spec.stream, "error", "stream_in_use")
-            return
-        }
-        when (port.start(spec)) {
-            CameraStart.STARTED -> Unit // the app reports `streaming`
-            CameraStart.BUSY -> sendCameraState(spec.stream, "busy", null)
-            CameraStart.OFF -> sendCameraState(spec.stream, "off", null)
-            CameraStart.ERROR -> sendCameraState(spec.stream, "error", "start_failed")
-        }
-    }
-
-    private fun onCamStop(obj: Map<String, Any?>) {
-        val stream = Json.int(obj["stream"]) ?: run {
-            sendError("bad_request", "cam.stop needs a stream")
-            return
-        }
-        camera?.stop(stream)
-        // Always answered, running or not; the hub suppresses the app's echo.
-        sendCameraState(stream, "stopped", null)
-    }
-
-    /** The shell hub's state relay: `cam.state` on the capture's stream. */
-    internal fun onCameraState(stream: Int, state: String, reason: String?) {
-        sendJson(CameraMessages.wireState(stream, state, reason))
-    }
-
-    /** One access unit from the capture pipe, wrapped exactly like a window frame. */
-    internal fun onCameraFrame(stream: Int, ptsUs: Long, key: Boolean, data: ByteArray) {
-        onFrame(stream, ptsUs, key, data)
-    }
-
-    private fun sendCameraState(stream: Int, state: String, reason: String?) =
-        onCameraState(stream, state, reason)
-
-    // ------------------------------------------------------------------
     // video sink
     // ------------------------------------------------------------------
 
@@ -1905,7 +1835,6 @@ class Session(
 
     private fun onAudioStop() {
         runCatching { audioCapture?.stop() }
-        runCatching { camera?.detach(this) }
         queue.clearAudio()
         sendJson(mapOf("t" to "audio.state", "on" to false, "codec" to 0))
     }

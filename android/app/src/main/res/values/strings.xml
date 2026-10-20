@@ -70,11 +70,6 @@
     <string name="home_allow_pairings">Allow new pairings</string>
     <string name="home_allow_pairings_hint">Turn on Allow connections first.</string>
     <string name="home_notify_share">Show notifications on the Mac</string>
-    <string name="home_camera_share">Let Macs use the camera</string>
-    <string name="home_camera_hint">Your camera shows in a Mac window only while a Mac asks for it. The phone shows a notification meanwhile.</string>
-    <string name="camera_notification_title">Your Mac is using the camera</string>
-    <string name="camera_notification_text">Tap Stop to end it.</string>
-    <string name="camera_notification_stop">Stop</string>
     <string name="home_notify_granting">Granting notification access…</string>
     <string name="home_notify_grant_failed">Couldn\'t grant notification access. Enable PocketDeck in Settings → Notification access.</string>
     <string name="home_notify_granted_hint">Notifications and the media session on this phone reach your Macs while a Mac is connected.</string>

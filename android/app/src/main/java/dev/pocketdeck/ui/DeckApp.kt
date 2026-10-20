@@ -26,11 +26,6 @@ fun DeckApp(deck: DeckViewModel) {
     val notificationsLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) { deck.onNotificationPermissionResult() }
-    // The camera consent dialog (docs/design/camera.md C1): only a grant turns
-    // the setting on; a denial leaves it off and the shell answers `off`.
-    val cameraLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestPermission(),
-    ) { granted -> deck.onCameraPermissionResult(granted) }
 
     LaunchedEffect(snackbarMessage) {
         snackbarMessage?.let { message ->
@@ -46,10 +41,6 @@ fun DeckApp(deck: DeckViewModel) {
             onToggleAllowConnections = deck::setAllowConnections,
             onToggleAllowPairings = deck::setAllowPairings,
             onToggleNotify = deck::setNotifyShared,
-            onToggleCamera = { value ->
-                if (value) cameraLauncher.launch(Manifest.permission.CAMERA)
-                else deck.setCameraAllowed(false)
-            },
             onStatusAction = deck::runStatusAction,
             onForget = deck::forget,
             onUndoForget = deck::undoForget,
