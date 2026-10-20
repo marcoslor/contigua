@@ -795,6 +795,25 @@ final class DebugInputDriver {
         pumpRunLoop()
     }
 
+    /// A click at a window point on the control the content's hit test finds,
+    /// for a check that must click a real control and not call its action.
+    /// AppKit's own window dispatch delivers no synthetic mouse event to a
+    /// quiet run (the app is never active, its windows sit on a virtual
+    /// display), so the pair goes to the view the window would have used.
+    static func clickControl(at point: CGPoint, in window: NSWindow) {
+        guard let content = window.contentView, let view = content.hitTest(point) else { return }
+        func event(_ type: NSEvent.EventType) -> NSEvent? {
+            NSEvent.mouseEvent(with: type, location: point, modifierFlags: [],
+                               timestamp: ProcessInfo.processInfo.systemUptime,
+                               windowNumber: window.windowNumber, context: nil,
+                               eventNumber: 0, clickCount: 1, pressure: 1)
+        }
+        guard let down = event(.leftMouseDown), let up = event(.leftMouseUp) else { return }
+        view.mouseDown(with: down)
+        view.mouseUp(with: up)
+        RunLoop.current.run(until: Date(timeIntervalSinceNow: Self.gestureStepInterval))
+    }
+
     /// An extra mouse button as AppKit delivers it: an event with that button
     /// number to the view under the pointer (NSEvent.mouseEvent cannot carry a
     /// button number, so the event comes from a CGEvent).

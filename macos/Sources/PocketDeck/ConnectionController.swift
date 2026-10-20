@@ -2236,6 +2236,20 @@ final class ConnectionController {
             guard let phone = windows.phoneWindow else { return "no phone window" }
             phone.wakeScreen()
             return nil
+        case "nav-click":
+            // A click on the phone window's Back / Home / Recents button,
+            // posted at the button's window location and resolved by the
+            // window's own hit test: the v103 capsule regression was invisible
+            // to a route that called the action.
+            guard let phone = windows.phoneWindow else { return "no phone window" }
+            guard let name = arguments.first, let kind = HeaderActionKind(rawValue: name) else {
+                return "unknown button \(arguments.first ?? "")"
+            }
+            guard let window = phone.window, let centre = phone.chrome.headerButtonCentre(kind) else {
+                return "the \(name) button is not showing"
+            }
+            DebugInputDriver.clickControl(at: centre, in: window)
+            return nil
         default:
             return "unknown command \(command)"
         }

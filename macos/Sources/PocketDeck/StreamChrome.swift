@@ -173,6 +173,13 @@ final class StreamChromeView: NSView {
 
     var actionCount: Int { actions.actionCount }
 
+    /// The centre of the bar button for one kind, in the window's coordinates:
+    /// where a click lands. nil while the bar and the dwell pill are hidden.
+    func headerButtonCentre(_ kind: HeaderActionKind) -> NSPoint? {
+        guard !actions.isHidden, let button = actions.button(for: kind), button.window != nil else { return nil }
+        return button.convert(NSPoint(x: button.bounds.midX, y: button.bounds.midY), to: nil)
+    }
+
     /// Right now: the framed bar above the stream, or nothing in immersive and
     /// in full screen.
     var barHeight: CGFloat {

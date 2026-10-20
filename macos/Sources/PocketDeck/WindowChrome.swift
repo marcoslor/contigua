@@ -251,8 +251,11 @@ final class HeaderActionButton: NSView {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
 
+    /// AppKit hands `hitTest` a point in the superview's coordinates; the
+    /// button's own bounds only match it for the first capsule slot.
     override func hitTest(_ point: NSPoint) -> NSView? {
-        bounds.contains(point) ? self : nil
+        guard let superview else { return nil }
+        return bounds.contains(convert(point, from: superview)) ? self : nil
     }
 
     override func resetCursorRects() {
@@ -389,5 +392,10 @@ final class HeaderBarView: NSView {
         for button in buttons {
             button.isEnabled = HeaderActionPolicy.isEnabled(button.action.kind, liveTextActive: liveTextActive)
         }
+    }
+
+    /// The button that runs one kind (the e2e clicks its real control).
+    func button(for kind: HeaderActionKind) -> HeaderActionButton? {
+        buttons.first { $0.action.kind == kind }
     }
 }
