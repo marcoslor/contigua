@@ -1,0 +1,193 @@
+package dev.pocketdeck.server
+
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
+import org.junit.Rule
+import org.junit.Test
+import org.junit.rules.TemporaryFolder
+import java.io.File
+import java.util.concurrent.CopyOnWriteArrayList
+
+/**
+ * `fs.move`, `fs.delete`, `fs.mkdir` and `fs.setAttrs` (docs/PROTOCOL.md "Phone
+ * files"): the media-aware rename and its fallback, the recursive-delete rule,
+ * `fs_exists`, and the path rules. The platform records what it was asked to do.
+ */
+class FsMutationsTest {
+
+    @get:Rule
+    val tmp = TemporaryFolder()
+
+    private lateinit var paths: FsPaths
+    private lateinit var platform: FakePlatform
+    private lateinit var ops: FsMutations
+
+    private class FakePlatform : FsPlatform {
+        val renamed = CopyOnWriteArrayList<Pair<File, File>>()
+        val plain = CopyOnWriteArrayList<Pair<File, File>>()
+        val scanned = CopyOnWriteArrayList<File>()
+        var refuseRename = false
+        var refusePlain = false
+
+        override fun rename(from: File, to: File): Boolean {
+            if (refuseRename) return false
+            renamed += from to to
+            return from.renameTo(to)
+        }
+
+        override fun plainRename(from: File, to: File): Boolean {
+            if (refusePlain) return false
+            plain += from to to
+            return from.renameTo(to)
+        }
+
+        override fun scan(files: List<File>) {
+            scanned += files
+        }
+
+        override fun setLastModified(file: File, mtimeMs: Long): Boolean =
+            file.setLastModified(mtimeMs)
+    }
+
+    private fun setup(): FsPaths {
+        paths = FsPaths(tmp.newFolder("sdcard"))
+        platform = FakePlatform()
+        ops = FsMutations(paths, platform)
+        return paths
+    }
+
+    private fun code(block: () -> Unit): String = try {
+        block()
+        fail("expected a failure")
+        ""
+    } catch (e: FsFailure) {
+        e.code
+    }
+
+    @Test
+    fun aRenameGoesThroughTheMediaSeamAndKeepsTheBytes() {
+        setup()
+        val source = File(paths.rootPath, "a.txt").also { it.writeText("hello") }
+        val item = ops.move("a.txt", "b.txt", null)
+        assertEquals("b.txt", item.name)
+        assertEquals(1, platform.renamed.size)
+        assertEquals(source, platform.renamed[0].first)
+        assertFalse(source.exists())
+        assertEquals("hello", File(paths.rootPath, "b.txt").readText())
+        assertEquals(listOf(File(paths.rootPath, "b.txt"), source), platform.scanned.toList())
+    }
+
+    @Test
+    fun thePlainRenameIsTheFallbackWhenTheMediaPathRefuses() {
+        setup()
+        platform.refuseRename = true
+        File(paths.rootPath, "a.txt").writeText("x")
+        ops.move("a.txt", "b.txt", null)
+        assertEquals(1, platform.plain.size)
+        assertTrue(File(paths.rootPath, "b.txt").exists())
+    }
+
+    @Test
+    fun aMoveOntoAnExistingNameIsExists() {
+        setup()
+        File(paths.rootPath, "a.txt").writeText("a")
+        File(paths.rootPath, "b.txt").writeText("b")
+        assertEquals("fs_exists", code { ops.move("a.txt", "b.txt", null) })
+        assertEquals("b", File(paths.rootPath, "b.txt").readText())
+        assertTrue(platform.renamed.isEmpty())
+    }
+
+    @Test
+    fun aStaleMoveEtagIsRefused() {
+        setup()
+        File(paths.rootPath, "a.txt").writeText("a")
+        File(paths.rootPath, "a.txt").writeText("changed")
+        assertEquals("fs_stale", code { ops.move("a.txt", "b.txt", "0".repeat(32)) })
+        assertEquals("fs_not_found", code { ops.move("nope", "b.txt", null) })
+        assertEquals("fs_denied", code { ops.move("a.txt", "Android/b.txt", null) })
+        assertTrue(File(paths.rootPath, "a.txt").exists())
+    }
+
+    @Test
+    fun aMoveIntoItselfIsRefused() {
+        setup()
+        File(paths.rootPath, "folder").mkdirs()
+        assertEquals("fs_denied", code { ops.move("folder", "folder/sub", null) })
+        assertTrue(File(paths.rootPath, "folder").isDirectory)
+    }
+
+    @Test
+    fun aFolderMovesWithItsContents() {
+        setup()
+        File(paths.rootPath, "folder").mkdirs()
+        File(paths.rootPath, "folder/a.txt").writeText("a")
+        ops.move("folder", "renamed", null)
+        assertEquals("a", File(paths.rootPath, "renamed/a.txt").readText())
+        assertFalse(File(paths.rootPath, "folder").exists())
+    }
+
+    @Test
+    fun aNonEmptyFolderNeedsRecursive() {
+        setup()
+        File(paths.rootPath, "folder").mkdirs()
+        File(paths.rootPath, "folder/a.txt").writeText("a")
+        assertEquals("fs_denied", code { ops.delete("folder", false) })
+        assertTrue(File(paths.rootPath, "folder/a.txt").exists())
+        ops.delete("folder", true)
+        assertFalse(File(paths.rootPath, "folder").exists())
+    }
+
+    @Test
+    fun anEmptyFolderAndAFileDeleteWithoutRecursive() {
+        setup()
+        File(paths.rootPath, "folder").mkdirs()
+        File(paths.rootPath, "a.txt").writeText("a")
+        ops.delete("folder", false)
+        ops.delete("a.txt", false)
+        assertFalse(File(paths.rootPath, "folder").exists())
+        assertFalse(File(paths.rootPath, "a.txt").exists())
+        assertEquals("fs_not_found", code { ops.delete("a.txt", false) })
+        assertEquals("fs_denied", code { ops.delete("", true) })
+        assertEquals("fs_denied", code { ops.delete("Android", true) })
+    }
+
+    @Test
+    fun aSymlinkedFolderIsRemovedAsItselfNotFollowed() {
+        setup()
+        val outside = tmp.newFolder("outside")
+        val kept = File(outside, "kept.txt").also { it.writeText("keep") }
+        File(paths.rootPath, "folder").mkdirs()
+        java.nio.file.Files.createSymbolicLink(
+            File(paths.rootPath, "folder/link").toPath(), outside.toPath(),
+        )
+        ops.delete("folder", true)
+        assertTrue(kept.exists())
+        assertFalse(File(paths.rootPath, "folder").exists())
+    }
+
+    @Test
+    fun mkdirCreatesOneFolderAndRefusesTheRest() {
+        setup()
+        val item = ops.mkdir("new")
+        assertTrue(item.dir)
+        assertTrue(File(paths.rootPath, "new").isDirectory)
+        assertEquals("fs_exists", code { ops.mkdir("new") })
+        assertEquals("fs_not_found", code { ops.mkdir("missing/child") })
+        assertEquals("fs_denied", code { ops.mkdir("Android/x") })
+        assertEquals("fs_denied", code { ops.mkdir(".hidden") })
+        assertEquals("fs_exists", code { ops.mkdir("") })
+    }
+
+    @Test
+    fun setAttrsSetsTheTimeBestEffort() {
+        setup()
+        val file = File(paths.rootPath, "a.txt").also { it.writeText("a") }
+        val item = ops.setAttrs("a.txt", 1_600_000_000_000)
+        assertTrue(item.mtime > 0)
+        assertTrue(file.lastModified() > 0)
+        assertEquals("fs_not_found", code { ops.setAttrs("nope", 1L) })
+        assertEquals("fs_denied", code { ops.setAttrs("../x", 1L) })
+    }
+}

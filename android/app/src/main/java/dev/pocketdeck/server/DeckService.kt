@@ -132,6 +132,7 @@ class DeckService(private val appContext: Context?) :
                 // path of /sdcard (docs/design/files.md §4).
                 filesRoot = File("/storage/emulated/0"),
                 fsStats = AndroidFsStats,
+                fsPlatform = AndroidFsPlatform(appContext, ::log),
                 now = { SystemClock.uptimeMillis() },
                 log = ::log,
                 // Read when this session starts, never cached: the property can
