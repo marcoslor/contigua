@@ -6088,6 +6088,9 @@ PY
 check_notify_vm() {
     if [ "${PD_E2E_IN_VM:-0}" != "1" ] || [ "${VISIBLE:-0}" != "1" ]; then
         skip "notify-vm" "real banners and AX presses, inside the VM's visible run"
+        # The quiet watcher needs a moment to install its handlers before
+        # stop_watch; without it a run this short has no QUIET line.
+        sleep 1
         return 0
     fi
     clean
@@ -6204,6 +6207,42 @@ OSA
         return 0
     }
     shot() { screencapture -x "$shots/$1" >/dev/null 2>&1 || true; }
+    # banner_present — a notification window is on screen (its frame is sane).
+    banner_present() {
+        [ -n "$(osascript <<'OSA' 2>/dev/null
+tell application "System Events" to tell process "NotificationCenter"
+    repeat with w in windows
+        set s to size of w
+        if (item 1 of s) > 250 and (item 1 of s) < 700 and (item 2 of s) > 40 then return "yes"
+    end repeat
+end tell
+return ""
+OSA
+)" ]
+    }
+    # status_menu open|titles — open the app's menu bar item, or read its items
+    # (open it first). One per line for titles.
+    status_menu() {
+        osascript - "$1" <<'OSA' 2>/dev/null
+on run argv
+    set mode to item 1 of argv
+    tell application "System Events" to tell process "PocketDeck"
+        if not (exists menu bar item 1 of menu bar 2) then return "nostatus"
+        if mode is "open" then
+            click menu bar item 1 of menu bar 2
+            delay 1
+            return "opened"
+        end if
+        set names to {}
+        repeat with i in menu items of menu 1 of menu bar item 1 of menu bar 2
+            set end of names to (title of i as string)
+        end repeat
+        return names
+    end tell
+end run
+OSA
+    }
+
 
     # One shape at a time: a single banner is unambiguous for AX and the person.
     defaults write "$DEFAULTS_SUITE" "showAppsInDock" -bool NO
@@ -6215,8 +6254,14 @@ OSA
     launch --connect "127.0.0.1:$PORT" --quit-after 150
     # The first real banner may come with the system's permission prompt.
     sleep 2
-    ax_press "Allow" "NotificationCenter" >/dev/null
-    ax_press "Allow" "UserNotificationCenter" >/dev/null
+    # The system asks once per guest image; "Allow" may belong to any of these.
+    for proc in NotificationCenter UserNotificationCenter PocketDeck "PocketDeck Notifications"; do
+        ax_press "Allow" "$proc" >/dev/null
+    done
+    wait_until 10 grep -q "notify authorization" "$WORK/app.log" 2>/dev/null || true
+    grep -q "notify authorization granted=true" "$WORK/app.log" 2>/dev/null \
+        && ok "NOTIFY-VM macOS authorized PocketDeck's notifications" \
+        || bad "NOTIFY-VM the guest refuses PocketDeck's notifications (no banner can appear; reset the guest's TCC answer)"
     wait_until 20 events_have '"id":"pd-a1"' \
         || { bad "NOTIFY-VM the phone never posted"; stop_app; stop_fakephone; return 1; }
     sleep 3
@@ -6274,12 +6319,58 @@ OSA
     wait_until 20 notify_rx dismiss pd-a2 \
         && ok "NOTIFY-VM clearing the banner sent notify.dismiss (customDismissAction works)" \
         || bad "NOTIFY-VM no notify.dismiss after clearing the banner (.customDismissAction not delivered)"
-    defaults delete "$DEFAULTS_SUITE" "notify.$device" >/dev/null 2>&1
-    defaults delete "$DEFAULTS_SUITE" "showAppsInDock" >/dev/null 2>&1
+
+    stop_fakephone
+    wait_until 5 no_fakephone
+    # Part 2b: a picture on a real banner. The screenshot is the proof for the
+    # person; the check asserts the banner window is really there.
+    FAKE_ARGS="--notify-only pd-m1" start_fake || return 1
+    launch --connect "127.0.0.1:$PORT" --quit-after 90
+    wait_until 25 events_have '"id":"pd-m1"' \
+        || { bad "NOTIFY-VM the picture notification never posted"; stop_app; stop_fakephone; return 1; }
+    sleep 4
+    shot "picture-banner.png"
+    banner_present \
+        && ok "NOTIFY-VM the picture notification is on screen (picture-banner.png)" \
+        || bad "NOTIFY-VM no banner for the picture notification"
+    banner_close || true
+    sleep 1
     stop_app
     stop_fakephone
     wait_until 5 no_fakephone
+
+    stop_fakephone
+    wait_until 5 no_fakephone
+    # Part 2b: the menu bar's Live section with a row that advances. Two shots a
+    # few seconds apart, the menu left open in between.
+    FAKE_ARGS="--notify-only pd-l1" start_fake || return 1
+    launch --connect "127.0.0.1:$PORT" --quit-after 90
+    wait_until 25 events_have '"id":"pd-l1"' \
+        || { bad "NOTIFY-VM the Live Update never posted"; stop_app; stop_fakephone; return 1; }
+    sleep 3
+    shot "live-banner.png"
+    result="$(status_menu open)"
+    result="$(status_menu titles)"
+    case "$result" in
+        *"Live on"*) ok "NOTIFY-VM the menu bar has a Live section on screen" ;;
+        *) bad "NOTIFY-VM no Live section in the menu bar ($result)" ;;
+    esac
+    shot "live-menu-1.png"
+    sleep 4
+    shot "live-menu-2.png"
+    result="$(status_menu titles)"
+    case "$result" in
+        *"com.uber — "*) ok "NOTIFY-VM the Live row shows its app and progress/clock" ;;
+        *) bad "NOTIFY-VM the Live row is not in the menu ($result)" ;;
+    esac
+    osascript -e 'tell application "System Events" to key code 53' >/dev/null 2>&1 || true
+    stop_app
+    stop_fakephone
+    wait_until 5 no_fakephone
+
+    defaults delete "$DEFAULTS_SUITE" "showAppsInDock" >/dev/null 2>&1
 }
+
 
 # --- DECK: the app grid's icon kinds ---------------------------------------
 icons_kind() { grep '"ev":"icon"' "$WORK/events.jsonl" 2>/dev/null | grep -c "$1" || true; }

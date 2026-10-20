@@ -96,13 +96,14 @@ struct MenuBarContent: View {
     @ViewBuilder
     private var liveSection: some View {
         let items = controller.liveNotifications
+        let now = controller.liveTick
         if !items.isEmpty {
             Divider()
             Text("Live on \(controller.livePhoneName ?? "your phone")")
             ForEach(items) { item in
                 // A menu item cannot draw a control, so the row carries a
                 // ten-cell text bar or the running clock instead.
-                Button(NotifyLiveText.menuTitle(item, now: Date())) {
+                Button(NotifyLiveText.menuTitle(item, now: now)) {
                     controller.openLiveNotification(item.id)
                 }
             }

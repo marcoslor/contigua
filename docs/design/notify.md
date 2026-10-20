@@ -270,6 +270,56 @@ Not verified (both hardware sessions were spent on the test client, not on the f
   fixed (waits for the notification id) for the next VM session; the screenshots the brief
   asked for do not exist yet.
 
+## Part 2 results (v0.2 #8, part 2)
+
+Built: a notification's picture (big picture, else its icon, else the large icon) scaled
+and encoded on the phone and attached to the Mac banner through a 0600 temp file; Android
+16 Live Updates (promoted ongoing notifications) with progress, chip and chronometer,
+coalesced to one per second per id and shown in a menu bar **Live on <phone>** section;
+the debug poster's picture/icon/live/chrono kinds; fakephone's picture and live shapes;
+host e2e `notify-media`.
+
+Verified (K1 519 unit tests 0 failures; K2 810 tests 0 failures; host e2e `notify-media`
+21/21, regressions `notify` 22/22, `notify-actions` 19/19, `menus` 8/8, all quiet
+share-log runs):
+
+- `notify.image` joins the post held for 300 ms; the attachment temp file is 0600 in a
+  0700 directory under the profile's caches, goes away with `notify.remove` and with a
+  disconnect, and only mime/size/dimensions ever reach a log;
+- an oversized picture is refused while its banner still posts without a picture;
+- a live item banners once, updates in place (never a second banner) at most once per
+  second, ends with `notify.remove`, and the menu bar's section (read through the
+  `livedump` test hook) lists both rows, advances one and drops the ended one;
+- a row click runs the normal click route; no notification text or picture bytes appear
+  in any log.
+
+Not verified (both hardware sessions were spent, and neither produced a forwarded
+notification):
+
+- **Emulator (1 boot used, API 36)**: the boot unlocked the locked rig with its PIN — the
+  first real run of the API 36 `unlock.sh` fix, which worked (`device is locked, unlocking
+  with the rig PIN`, then `[unlock.sh] unlocked`) — and the v2 pairing succeeded. But no
+  notification was ever forwarded: the watch client saw `notify.state on=true` and then
+  nothing. The emulator had to be killed at the end of the run (the boot budget), so no
+  logcat survived. The likely cause is the implicit `am broadcast` for the debug poster
+  never reaching the manifest receiver; `.agent/notify3/emu.sh` now sends it with
+  `-p dev.pocketdeck`, keeps each broadcast's output in `broadcast.log`, and its
+  assertions pass against a synthetic log (`--self-test`). So on a real listener
+  **unverified**: reply/button mapping, RemoteInput fill, `cancelNotification`, the
+  ongoing refusal, the picture extraction and the promoted flag the system sets.
+- **VM (1 session used)**: the guest showed its own system banner ("App Background
+  Activity") but no PocketDeck banner in any phase, so every AX press found nothing
+  (`notfound`) and the screenshots are of the same plain screen. The run's app log was
+  overwritten by the next phase, which failed to start fakephone because the previous one
+  still held the port (the check now stops the fake between phases), so the extended
+  picture and live phases never ran. `check_notify_vm` now also reports whether macOS
+  authorized the app (`notify authorization granted=…`) instead of only failing to find
+  buttons. Part 1's reply field, Copy code, banner clear (`customDismissAction`) and part
+  2's picture banner and live menu section remain **unproven**; ROADMAP #8 is not ticked.
+
+Screenshots from that session: `macos/build/vm-e2e/notify3/work/shots/` (the plain
+screen, plus the system banner — kept as the record of what did and did not appear).
+
 ## Checks
 
 - Unit tests: notification mapping (title/text extraction incl. BIG_TEXT, caps, skip rules),

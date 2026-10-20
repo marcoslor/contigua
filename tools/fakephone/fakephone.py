@@ -2657,9 +2657,13 @@ class Session(object):
             return
         only = getattr(self.phone.args, "notify_only", None)
         media = bool(getattr(self.phone.args, "notify_media", False))
-        posts = NOTIFY_POSTS + NOTIFY_SHAPES + (NOTIFY_MEDIA_POSTS if media else [])
         if only:
-            posts = [p for p in posts if p["id"] == only]
+            # Any shape can be asked for by id, media ones included (the VM
+            # check shows one picture banner at a time).
+            posts = [p for p in NOTIFY_POSTS + NOTIFY_SHAPES + NOTIFY_MEDIA_POSTS
+                     if p["id"] == only]
+        else:
+            posts = NOTIFY_POSTS + NOTIFY_SHAPES + (NOTIFY_MEDIA_POSTS if media else [])
         for post in posts:
             live = post.get("live")
             if isinstance(live, dict):

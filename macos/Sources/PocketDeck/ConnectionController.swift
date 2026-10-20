@@ -133,6 +133,10 @@ final class ConnectionController {
     private(set) var notifySeen: [String: Set<String>] = [:]
     /// The menu bar's "Live on <phone>" rows (docs/design/notify.md, 2b).
     private(set) var liveNotifications: [NotifyLiveItem] = []
+    /// Ticks once a second while a live row exists, so an open menu bar shows a
+    /// running chronometer instead of the time it was opened.
+    private(set) var liveTick: Date = Date()
+    @ObservationIgnored private var liveTicker: Timer?
     /// APK installs (docs/design/apk.md); the Deck shows its phase.
     let apkInstaller = ApkInstaller()
     /// Files dropped on a window (docs/design/dragdrop.md); windows show the pill.
@@ -400,7 +404,11 @@ final class ConnectionController {
             MainActor.assumeIsolated { self?.notifyDismissed(click) }
         }
         notifyCenter.onLiveChange = { [weak self] items in
-            MainActor.assumeIsolated { self?.liveNotifications = items }
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.liveNotifications = items
+                self.updateLiveTicker()
+            }
         }
         nowPlaying.log = shareLog
         nowPlaying.onCommand = { [weak self] action in
@@ -1828,9 +1836,24 @@ final class ConnectionController {
         notifyCenter.performOpen(id: id)
     }
 
+    /// One ticker while live rows exist; none when the last one ends.
+    private func updateLiveTicker() {
+        if liveNotifications.isEmpty {
+            liveTicker?.invalidate()
+            liveTicker = nil
+            return
+        }
+        guard liveTicker == nil else { return }
+        liveTicker = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, !self.liveNotifications.isEmpty else { return }
+                self.liveTick = Date()
+            }
+        }
+    }
+
     /// The menu bar's header, naming the phone the live rows belong to.
-    var livePhoneName: String? {
-        guard !liveNotifications.isEmpty, let phone = activePhone else { return nil }
+    var livePhoneName: String? {        guard !liveNotifications.isEmpty, let phone = activePhone else { return nil }
         return displayName(for: phone, fallback: "your phone")
     }
 
