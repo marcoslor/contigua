@@ -425,14 +425,19 @@ class FsWriterTest {
     }
 
     @Test
-    fun moreBytesThanAnnouncedNeverReachTheTarget() {
+    fun moreBytesThanAnnouncedNeverReachTheTargetAndAreAnsweredOnce() {
         setup()
         val writer = writer()
         val bytes = ByteArray(64 * 1024)
         writer.begin(write(33, "a.bin", bytes, size = 8L, digest = sha(bytes)))
         writer.data(33, bytes)
+        val result = awaitRefusal(33)
+        assertEquals("fs_denied", result["code"])
+        assertEquals("denied: more bytes than announced", result["message"])
         awaitNoStaging()
         assertFalse(File(paths.rootPath, "a.bin").exists())
+        // The Mac got one answer for the id, not a stream of them.
+        assertEquals(1, results(33).size)
     }
 
     @Test
