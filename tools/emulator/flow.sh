@@ -69,7 +69,7 @@ for _ in $(seq 1 6); do
     sleep 5
   else
     step "not paired yet: waking the rig and bringing the app forward"
-    "$EMU_DIR/unlock.sh"
+    bash "$EMU_DIR/unlock.sh"
     bring_app_forward
     break
   fi
@@ -84,7 +84,7 @@ if ! check_paired; then
       PAIRED=1
       break
     fi
-    "$EMU_DIR/unlock.sh" || true
+    bash "$EMU_DIR/unlock.sh" || true
     bring_app_forward
   done
   [ "$PAIRED" -eq 1 ] || die "could not pair with the rig"
@@ -104,7 +104,7 @@ done
 
 # --- lock ------------------------------------------------------------------
 step "locking the emulator"
-"$EMU_DIR/lock.sh"
+bash "$EMU_DIR/lock.sh"
 # E4's command, as given: the rig must show up as locked to the platform.
 emu shell dumpsys window | grep -i -E 'mDreamingLockscreen|isKeyguardShowing|showing=' | head -4 |
   tr -s ' ' | tr -d '\r' | sed 's/^/[flow.sh] dumpsys window |/'

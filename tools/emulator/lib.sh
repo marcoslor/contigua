@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 # Shared helpers for the PocketDeck emulator rig. Sourced, never executed.
 #
+# Every rig script is run as `bash tools/emulator/<script>.sh`: a fresh clone or
+# an unpacked archive can arrive without the exec bit, and a script that dies on
+# "Permission denied" after the emulator is already booting wastes the boot.
+# Scripts call each other through `bash` too, never through their own path.
+#
 # Every adb call goes through `emu`/`emu_long`, which pin one serial: a physical
 # phone may be attached to this Mac and must never be touched by the rig.
 
@@ -12,6 +17,7 @@ REPO_ROOT="$(cd "$EMU_DIR/../.." && pwd)"
 CACHE_DIR="$EMU_DIR/.cache"
 ADB="$ANDROID_HOME/platform-tools/adb"
 EMULATOR="$ANDROID_HOME/emulator/emulator"
+AAPT2="$ANDROID_HOME/build-tools/36.0.0/aapt2"
 AVD_NAME="${POCKETDECK_AVD:-pocketdeck-api36}"
 SERIAL="${POCKETDECK_SERIAL:-emulator-5554}"
 PORT="${POCKETDECK_PORT:-47811}"
@@ -148,6 +154,52 @@ ensure_forward() {
   emu forward --remove "tcp:$PORT" >/dev/null 2>&1 || true
   emu forward "tcp:$PORT" "tcp:$devport" >/dev/null || return 1
   echo "$devport"
+}
+
+# The APK's versionCode as the build wrote it. aapt2 keeps the historical
+# `versionCode='102'` shape; some outputs drop the quotes.
+apk_version_code() { # apk_version_code <apk>
+  "$AAPT2" dump badging "$1" 2>/dev/null |
+    sed -n "s/.*versionCode='\{0,1\}\([0-9][0-9]*\)'\{0,1\}.*/\1/p" | head -1
+}
+
+# The versionCode the device reports for an installed package.
+installed_version_code() { # installed_version_code <pkg>
+  emu shell dumpsys package "$1" 2>/dev/null |
+    sed -n 's/.*versionCode=\([0-9][0-9]*\).*/\1/p' | head -1 | tr -d '\r'
+}
+
+# The rig's debug receivers are exported to explicit intents only in practice:
+# an implicit broadcast from adb is dropped while the app sits in the background
+# (Android 8+ manifest-receiver rule), which cost a whole boot once. Every rig
+# broadcast therefore names its component.
+debug_component() { # debug_component <action>
+  case "$1" in
+    dev.pocketdeck.DEBUG_MEDIA) echo "dev.pocketdeck/dev.pocketdeck.app.MediaDebugTrigger" ;;
+    dev.pocketdeck.DEBUG_NOTIFY) echo "dev.pocketdeck/dev.pocketdeck.app.NotifyDebugPoster" ;;
+    *) return 1 ;;
+  esac
+}
+
+debug_broadcast() { # debug_broadcast <action> [am extras...]
+  local action="$1" comp
+  shift
+  comp="$(debug_component "$action")" ||
+    { echo "[${0##*/}] error: no debug component for $action" >&2; return 2; }
+  emu shell am broadcast -n "$comp" "$@" 2>&1
+}
+
+# Waits for the server to log and listen on a port. Prints the port, returns 1
+# on timeout. device_port returns 1 until the server is up, so the caller under
+# `set -e` needs `|| true`.
+wait_server_port() { # wait_server_port <timeout_s>
+  local deadline=$(( $(date +%s) + $1 )) port
+  while [ "$(date +%s)" -lt "$deadline" ]; do
+    port="$(device_port || true)"
+    [ -n "$port" ] && { echo "$port"; return 0; }
+    sleep 1
+  done
+  return 1
 }
 
 # Restarts the app and with it its shell user service, the way start.sh starts
