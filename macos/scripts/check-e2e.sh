@@ -5297,6 +5297,116 @@ PY
         || ok "FILES $FILES_ID unregistered after the check"
 }
 
+
+# --- C1: the camera wire (docs/PROTOCOL.md "Camera") ----------------------
+#
+# fakephone + deckctl only: the check is the wire, not the Mac app. It runs
+# three fake phones: a normal one (list → start → frames → busy → stop), one
+# that evicts the capture after a second (the person's camera app wins), and
+# one whose "Let Macs use the camera" is off.
+
+# camctl <deckctl args...> — one deckctl run against this check's fake phone.
+camctl() {
+    "$FAKE_PY" "$ROOT/tools/fakephone/deckctl.py" --host 127.0.0.1 --port "$PORT" \
+        --state "$WORK/deck.json" --pair "$@"
+}
+
+check_cam_wire() {
+    clean
+    start_fake || return 1
+
+    camctl cam list > "$WORK/cam-list.txt" 2> "$WORK/cam-list.err"
+    if [ $? -ne 0 ]; then
+        bad "CAM-WIRE cam.list failed: $(cat "$WORK/cam-list.err")"
+    elif grep -q "cam.cams count=2" "$WORK/cam-list.txt" && grep -q "facing=back" "$WORK/cam-list.txt"; then
+        ok "CAM-WIRE cam.list: 2 cameras"
+    else
+        bad "CAM-WIRE cam.list: $(tr '\n' ' ' < "$WORK/cam-list.txt")"
+    fi
+
+    # Start, measure 3 s, ask for a second stream while the first runs, stop.
+    camctl cam start --stream 7 --seconds 3 --busy-stream 8 \
+        --save-h264 "$WORK/cam.h264" > "$WORK/cam-start.txt" 2> "$WORK/cam-start.err"
+    local rc=$?
+    local frames fps
+    if [ "$rc" -ne 0 ]; then
+        bad "CAM-WIRE cam.start failed: $(tail -2 "$WORK/cam-start.err")"
+    else
+        frames="$(sed -n 's/.*cam\.stats .*frames=\([0-9]*\).*/\1/p' "$WORK/cam-start.txt" | tail -1)"
+        fps="$(sed -n 's/.*cam\.stats .*\(fps=[0-9.]*\).*/\1/p' "$WORK/cam-start.txt" | tail -1)"
+        [ -n "$frames" ] && [ "$frames" -ge 60 ] \
+            && ok "CAM-WIRE 3 s of frames: $frames ($fps)" \
+            || bad "CAM-WIRE only $frames frames in 3 s ($fps)"
+        grep -q "first_key=True sps_pps=True" "$WORK/cam-start.txt" \
+            && ok "CAM-WIRE the first keyframe carries SPS/PPS" \
+            || bad "CAM-WIRE first frame: $(grep 'cam.stats' "$WORK/cam-start.txt")"
+        grep -q "key_gap_ms=none" "$WORK/cam-start.txt" \
+            && bad "CAM-WIRE only one keyframe in 3 s (interval is 2 s)" \
+            || ok "CAM-WIRE keyframe interval: $(sed -n 's/.*\(key_gap_ms=[0-9]*\).*/\1/p' "$WORK/cam-start.txt")"
+        grep -q "state=streaming" "$WORK/cam-start.txt" \
+            && ok "CAM-WIRE cam.state streaming" \
+            || bad "CAM-WIRE no streaming state"
+        grep -q "cam.busy stream=8 state=busy" "$WORK/cam-start.txt" \
+            && ok "CAM-WIRE a second cam.start is busy" \
+            || bad "CAM-WIRE second start: $(grep 'cam.busy' "$WORK/cam-start.txt")"
+        grep -q "state=stopped" "$WORK/cam-start.txt" \
+            && ok "CAM-WIRE cam.stop answers stopped" \
+            || bad "CAM-WIRE cam.stop: $(grep 'cam.state' "$WORK/cam-start.txt" | tail -1)"
+        # Frames really stopped: the camera is free again, so a second capture
+        # on the same stream starts and streams instead of answering busy.
+        local again
+        camctl cam start --stream 7 --seconds 2 > "$WORK/cam-again.txt" 2> "$WORK/cam-again.err"
+        again="$(sed -n 's/.*cam\.stats .*frames=\([0-9]*\).*/\1/p' "$WORK/cam-again.txt" | tail -1)"
+        if grep -q "^cam.state stream=7 state=streaming" "$WORK/cam-again.txt" \
+            && [ -n "$again" ] && [ "$again" -ge 20 ]; then
+            ok "CAM-WIRE the camera was free again after stop ($again frames)"
+        else
+            bad "CAM-WIRE the camera was not free after stop: $(tail -2 "$WORK/cam-again.txt" | tr '\n' ' ')"
+        fi
+        [ -s "$WORK/cam.h264" ] && ffprobe -v error -show_entries stream=codec_name,width,height \
+            -of csv=p=0 "$WORK/cam.h264" > "$WORK/cam-probe.txt" 2>/dev/null \
+            && grep -q "h264,1280,720" "$WORK/cam-probe.txt" \
+            && ok "CAM-WIRE the Annex-B decodes as 1280x720 H.264" \
+            || bad "CAM-WIRE the Annex-B does not probe as 1280x720 H.264"
+    fi
+    stop_fakephone
+    sleep 1
+
+    # The person's own camera app takes the camera: evicted, no retry, no frames.
+    FAKE_ARGS="--cam-evict-after 1" start_fake || return 1
+    camctl cam start --stream 9 --seconds 2 --await-terminal --wait 10 \
+        > "$WORK/cam-evict.txt" 2> "$WORK/cam-evict.err"
+    if grep -q "cam.state stream=9 state=evicted" "$WORK/cam-evict.txt"; then
+        ok "CAM-WIRE eviction reports evicted"
+        grep -q "cam.after_terminal frames=0" "$WORK/cam-evict.txt" \
+            && ok "CAM-WIRE no frames after the eviction" \
+            || bad "CAM-WIRE frames arrived after the eviction"
+        grep -q "^cam.state stream=9 state=streaming" "$WORK/cam-evict.txt" \
+            && ok "CAM-WIRE the capture streamed before the eviction" \
+            || bad "CAM-WIRE the capture never streamed"
+    else
+        bad "CAM-WIRE eviction: $(grep 'cam.state' "$WORK/cam-evict.txt" | tail -1)"
+    fi
+    # A capture is never retried: after evicted, nothing starts on its own.
+    grep -q "state=streaming" <(tail -2 "$WORK/cam-evict.txt") \
+        && bad "CAM-WIRE the capture restarted after the eviction" \
+        || ok "CAM-WIRE the capture was not retried"
+    stop_fakephone
+    sleep 1
+
+    # The setting off: empty list, every start refused with off.
+    FAKE_ARGS="--camera-off" start_fake || return 1
+    camctl cam list > "$WORK/cam-off-list.txt" 2>&1
+    grep -q "cam.cams count=0" "$WORK/cam-off-list.txt" \
+        && ok "CAM-WIRE the setting off lists no camera" \
+        || bad "CAM-WIRE the setting off still lists cameras"
+    camctl cam start --stream 11 --wait 5 > "$WORK/cam-off.txt" 2>&1
+    grep -q "state=off" "$WORK/cam-off.txt" \
+        && ok "CAM-WIRE the setting off refuses cam.start with off" \
+        || bad "CAM-WIRE off: $(grep 'cam.state' "$WORK/cam-off.txt" | tail -1)"
+    stop_fakephone
+}
+
 # --- Dock apps (docs/design/dock.md) --------------------------------------
 
 # Dock apps of this run live only in $WORK/dock-apps, never in ~/Applications.
