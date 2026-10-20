@@ -25,6 +25,8 @@ protocol FsChannel: AnyObject {
     func fsDelete(id: UInt32, path: String, recursive: Bool, etag: String?)
     func fsMkdir(id: UInt32, path: String)
     func fsSetAttrs(id: UInt32, path: String, mtime: Int)
+    /// `fs.watch` / `fs.unwatch` (docs/PROTOCOL.md "Watching").
+    func fsWatch(id: UInt32, paths: [String], on: Bool)
     func fsCancel(id: UInt32)
 }
 
@@ -201,6 +203,9 @@ final class FsClient {
 
     private weak var channel: (any FsChannel)?
     private var pending: [UInt32: Pending] = [:]
+    /// A watched folder moved on the phone: the app re-lists and diffs it
+    /// (docs/design/files.md §5). Set by the connection once the bridge serves.
+    var onChanges: (([String]) -> Void)?
     private var loggedUnknown = Set<UInt32>()
 
     init(channel: any FsChannel) {
@@ -322,6 +327,22 @@ final class FsClient {
 
     func mkdir(path: String, completion: @escaping (Result<FsItem?, FsError>) -> Void) {
         mutate(completion) { channel, id in channel.fsMkdir(id: id, path: path) }
+    }
+
+    /// Adds or removes folders the Mac has open. The phone answers `fs.result`
+    /// like any other mutation.
+    func watch(paths: [String], on: Bool,
+               completion: @escaping (Result<Void, FsError>) -> Void) {
+        guard let id = freshID() else { return completion(.failure(FsError(code: "busy"))) }
+        pending[id] = .mutation { result in
+            completion(result.map { _ in () })
+        }
+        channel?.fsWatch(id: id, paths: paths, on: on)
+    }
+
+    /// The phone's `fs.changes`.
+    func changes(paths: [String]) {
+        onChanges?(paths)
     }
 
     func setAttrs(path: String, mtime: Int,

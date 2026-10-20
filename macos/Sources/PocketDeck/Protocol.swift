@@ -467,6 +467,7 @@ struct JSONMessage {
 
     func object(_ key: String) -> [String: Any]? { raw[key] as? [String: Any] }
     func array(_ key: String) -> [[String: Any]]? { raw[key] as? [[String: Any]] }
+    func strings(_ key: String) -> [String]? { raw[key] as? [String] }
 
     /// Base64 text decoded; `icon`'s `fg`/`bg`/`mono` layers arrive this way.
     func data(_ key: String) -> Data? {
