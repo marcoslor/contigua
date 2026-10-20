@@ -207,6 +207,12 @@ PY
     || { echo "CHECK FAIL: fakephone --help"; exit 1; }
   "$PYTHON" tools/fakephone/fakephone.py --help 2>&1 | grep -q -- "--older-phone" \
     || { echo "CHECK FAIL: fakephone has no --older-phone"; exit 1; }
+  # The receiver checks the intent's action first: a helper that sends only the
+  # component delivers a broadcast the debug code ignores (this is how the
+  # fake sessions stayed at zero on two boots).
+  ( emu() { echo "$@"; }; debug_broadcast dev.pocketdeck.DEBUG_MEDIA --es op start ) |
+    grep -q -- "-a dev.pocketdeck.DEBUG_MEDIA" \
+    || { echo "CHECK FAIL: debug_broadcast drops the action"; exit 1; }
   echo "CHECK OK: preflight, deckctl media, fakephone flags; $SERIAL free"
   exit 0
 fi
