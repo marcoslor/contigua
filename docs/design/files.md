@@ -220,6 +220,52 @@ empty folder. No WebDAV fallback (E6) is needed for this reason. The e2e check
 flips the same switch through the accessibility tree, so a VM run is green end to
 end.
 
+### S3 implementation notes
+
+The experiment's code becomes the slice's product code; this is what it does.
+
+- **Bridge wire** (`FilesCore.swift`, `FilesBridge.swift`): the App Group
+  socket carries newline-delimited JSON, every message with a `u32` `id`.
+  Requests: `hello` (version), `list` (path, page), `stat` (path), `read`
+  (path, offset, length, etag), `cancel` (id). Replies: `hello` (name,
+  connected), `items` (page, items), `item` (item), `data`, `end` (size,
+  sha256), `error` (code). A read streams `{"id":N,"t":"data","len":L}\n`
+  followed by exactly `L` raw bytes, repeatedly, then `end`; the extension
+  writes them into its own
+  `NSFileProviderManager(for:).temporaryDirectoryURL()` file, so the app never
+  writes in the extension's space. `BridgeDecoder` is incremental (a line or a
+  chunk may split across any reads); a request line is capped at 64 KiB and a
+  data chunk at 8 MiB. The listener is 0600 in the group container, refuses a
+  peer whose uid differs, takes at most 4 clients, and each client may have at
+  most 8 live ids.
+- **Names**: bundle.sh writes `PDFilesGroup` into the app's and the extension's
+  Info.plist and the same id into both entitlements. Production
+  `group.dev.pocketdeck.mac.files`; every non-release bundle keeps its own
+  (`…files-<variant>`). The socket is `files.sock` for the default profile and
+  `files-<profile>.sock` otherwise. The domain identifier is the profile name
+  (production: `default`); its display name is the phone's nickname, else
+  "PocketDeck".
+- **Identifiers** are §3's: `ino:<st_ino>`, `path:<relative path>` when the
+  phone reports `ino: 0`, `.rootContainer` for the root; `contentVersion` is
+  the etag, `metadataVersion` a SHA-256 of (name, size, mtime, ino). The
+  extension keeps the id ↔ path map in memory, fills it from listings and
+  stats, invalidates a subtree on delete, and a rename only moves paths.
+- **Errors**: the pure map (`FilesFailure.from(code:)`) turns `offline` and
+  `closed` into `NSFileProviderError(.serverUnreachable)`, `fs_not_found` into
+  `.noSuchItem`, `fs_denied` into `CocoaError(.fileReadNoPermission)`,
+  `fs_stale` into one metadata refetch then `.noSuchItem` if the item is gone,
+  `fs_too_large` into a clear "over 1 GiB" read error, `fs_busy`/`busy` into
+  `.serverUnreachable`, and everything else into the underlying error.
+- **What the experiment code becomes**: `Files.swift` loses the hard-coded
+  tree, the temporary-exception fallback and its log file (os_log only, no
+  names) and serves the real tree through the bridge; `FilesDomain.swift`
+  keeps `--files-domain` as a PD_TEST_HOOKS-only hook refused outside the VM and
+  gains `FilesDomainController` (the Settings toggle, session
+  reconnect/disconnect, the one-time System Settings prompt via
+  `NSFileProviderDomain.userEnabled`); `FilesBridge` is the only listener, and
+  `--files-bridge-dir` puts its socket in a test directory so the host e2e
+  check can drive it without any File Provider.
+
 ## 2. Phone side (shell uid 2000)
 
 **Listing and stat.** `/sdcard` is MediaProvider's FUSE mount, and at uid 2000 the FUSE
