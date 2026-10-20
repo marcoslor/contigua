@@ -1788,6 +1788,27 @@ def cmd_fs(client, args):
     if args.action == "setattrs":
         return _fs_result(client, {"t": "fs.setAttrs", "id": _fs_id(), "path": args.path,
                                    "mtime": args.mtime})
+    if args.action in ("watch", "unwatch"):
+        paths = list(args.paths or ([args.path] if args.path else []))
+        request = {"t": "fs.watch" if args.action == "watch" else "fs.unwatch",
+                   "id": _fs_id(), "paths": paths}
+        return _fs_result(client, request)
+    if args.action == "changes":
+        # The next coalesced fs.changes; printed as a count (no names).
+        deadline = time.time() + (args.timeout or 10.0)
+        while time.time() < deadline:
+            frame = client.recv(max(0.1, deadline - time.time()))
+            if frame is TIMEOUT:
+                continue
+            if frame is None:
+                raise DeckError("phone closed the connection")
+            if frame.type != proto.TYPE_JSON:
+                continue
+            msg = proto.unpack_json(frame)
+            if msg.get("t") == "fs.changes":
+                print("changes %d" % len(msg.get("paths") or []))
+                return 0
+        raise DeckError("no fs.changes within %ss" % (args.timeout or 10.0))
     if args.action == "list":
         items = _fs_list_all(client, args.path)
         print(json.dumps(items, indent=None, separators=(",", ":"), sort_keys=True))
@@ -2014,8 +2035,8 @@ def build_parser():
 
     sp = sub.add_parser("fs", help="phone files: list/stat/read/write/mkdir/move/delete/setattrs (docs/PROTOCOL.md)", **spp)
     sp.add_argument("action", choices=["list", "stat", "read", "write", "mkdir", "move",
-                                       "delete", "setattrs"])
-    sp.add_argument("path", help="path relative to the phone's shared storage ('' = the root)")
+                                       "delete", "setattrs", "watch", "unwatch", "changes"])
+    sp.add_argument("path", nargs="?", help="path relative to the phone's shared storage ('' = the root)")
     sp.add_argument("out", nargs="?", help="read: write the range here; write: the local file")
     sp.add_argument("--to", help="move: the destination path")
     sp.add_argument("--recursive", action="store_true", help="delete: a whole folder")
@@ -2023,6 +2044,9 @@ def build_parser():
     sp.add_argument("--offset", type=int, default=0, help="read: first byte (default 0)")
     sp.add_argument("--length", type=int, default=None, help="read: byte count (default: offset..EOF via stat)")
     sp.add_argument("--etag", help="read: the version the Mac believes (fs_stale on mismatch)")
+    sp.add_argument("--paths", nargs="+", help="watch/unwatch: the folders (relative)")
+    sp.add_argument("--timeout", type=float, default=10.0,
+                    help="changes: seconds to wait for a change (default 10)")
 
     sp = sub.add_parser("frame-png", help="decode a frame of a recorded .h264 to PNG (no session)", **spp)
     sp.add_argument("file")
