@@ -123,6 +123,24 @@ final class FilesDomainControllerTests: XCTestCase {
         XCTAssertEqual(1, started.count)
     }
 
+    /// The extension reaches the app through a socket in the App Group
+    /// container, and the socket dies with the process. A relaunch finds the
+    /// domain still in place, so `start()` must start the bridge for an
+    /// existing domain too: v103 returned before that and Finder showed
+    /// "Your device couldn't connect to the server".
+    func testARelaunchWithTheDomainInPlaceStartsTheBridge() {
+        FilesDomainSetting.write(true, in: profile.defaults)
+        manager.info = FilesDomainInfo(identifier: FilesDomain.identifier(profile: profile),
+                                       displayName: "PocketDeck", isDisconnected: false,
+                                       userEnabled: true)
+        rebuild() // the relaunch: a fresh controller over the same domain
+        controller.start()
+        XCTAssertEqual(["/tmp/pd-files-test.sock"], started,
+                       "an existing domain must still bring the bridge up")
+        XCTAssertEqual(.on, controller.state)
+        XCTAssertTrue(manager.adds.isEmpty, "the domain is not added again")
+    }
+
     /// A phone-side change signals the working set — the only container a
     /// replicated extension may signal (design "S5 round 3") — and the answer's
     /// error is kept, not discarded.

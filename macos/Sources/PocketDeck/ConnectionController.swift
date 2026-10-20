@@ -128,7 +128,21 @@ final class ConnectionController {
     private(set) var mediaArt: NSImage?
     /// "Show phone files in Finder" (docs/design/files.md §1): the setting, the
     /// one domain per profile, and its reconnect/disconnect on session changes.
-    @ObservationIgnored lazy var filesDomain = FilesDomainController(profile: profile)
+    @ObservationIgnored lazy var filesDomain: FilesDomainController = {
+        // The host e2e presents the domain as already added (no File Provider
+        // on the person's Mac) and the bundle as carrying its extension: the
+        // path a relaunch takes with Finder files already on.
+        let seen = options.filesDomainSeen
+        let socket = seen.map {
+            URL(fileURLWithPath: $0, isDirectory: true)
+                .appendingPathComponent(FilesSocket.fileName(profile: profile)).path
+        }
+        return FilesDomainController(
+            profile: profile,
+            manager: seen == nil ? nil : FilesDomainSeenManager(identifier: FilesDomain.identifier(profile: profile)),
+            socketPath: socket,
+            supported: seen == nil ? nil : true)
+    }()
 
     // MARK: Published state
 

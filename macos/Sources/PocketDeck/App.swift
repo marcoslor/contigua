@@ -83,6 +83,10 @@ struct LaunchOptions {
     /// Group container, so a host check can drive the bridge without any File
     /// Provider (e2e `files-bridge`).
     var filesBridgeDir: String?
+    /// `--files-domain-seen DIR`: the profile's Finder domain is already added
+    /// and the bridge socket lives in DIR. The host e2e's relaunch path; no
+    /// File Provider is touched on this Mac (e2e `files-bridge`).
+    var filesDomainSeen: String?
     /// `--controls-dir DIR`: where the Control Center snapshot and socket live,
     /// instead of the App Group container (e2e `controls` check; no extension).
     var controlsDirectory: String?
@@ -131,6 +135,7 @@ struct LaunchOptions {
         "--mcp-enable": false,
         "--files-domain": true,
         "--files-bridge-dir": true,
+        "--files-domain-seen": true,
         "--controls-dir": true,
     ]
 
@@ -238,6 +243,8 @@ struct LaunchOptions {
                 options.filesDomain = next()
             case "--files-bridge-dir":
                 options.filesBridgeDir = next()
+            case "--files-domain-seen":
+                options.filesDomainSeen = next()
             case "--controls-dir":
                 options.controlsDirectory = next()
             default:
