@@ -66,6 +66,9 @@ class FsWatcherTest {
             return FsWatchHandle { tasks.removeAll { it.second.first == id } }
         }
 
+        /** Tasks still waiting to run: a watcher that is idle schedules none. */
+        fun pending(): Int = tasks.size
+
         fun advance(ms: Long) {
             val target = clock + ms
             while (true) {
@@ -240,5 +243,92 @@ class FsWatcherTest {
         assertEquals(1, source.handles.size)
         assertEquals(1 to 1, watcher.counts())
         watcher.close()
+    }
+
+    // MARK: the folder poll (S5 round 2: inotify is silent on the FUSE mount)
+
+    /** An inotify source that never fires: the emulator's behaviour on /sdcard. */
+    @Test
+    fun aSilentWatchSourceIsCoveredByTheFolderPoll() {
+        watcher = setUp()
+        File(root, "A/one.txt").writeText("1")
+        watcher.watch(listOf("A"))
+        // The first look is the baseline, not a change.
+        timers.advance(FsWatcher.FOLDER_POLL_MS)
+        assertEquals(0, changes().size)
+        File(root, "A/two.txt").writeText("2")
+        timers.advance(FsWatcher.FOLDER_POLL_MS)
+        assertEquals(listOf(listOf("A")), changes())
+        // An in-place edit moves a size, and a delete removes a name.
+        File(root, "A/two.txt").writeText("more bytes")
+        timers.advance(FsWatcher.FOLDER_POLL_MS)
+        assertEquals(2, changes().size)
+        File(root, "A/two.txt").delete()
+        timers.advance(FsWatcher.FOLDER_POLL_MS)
+        assertEquals(3, changes().size)
+        watcher.close()
+    }
+
+    @Test
+    fun theFolderPollLooksOnlyAtTheWatchedFolders() {
+        watcher = setUp()
+        watcher.watch(listOf("A"))
+        timers.advance(FsWatcher.FOLDER_POLL_MS)
+        File(root, "B/unwatched.txt").writeText("x")
+        File(root, "A/watched.txt").writeText("x")
+        timers.advance(FsWatcher.FOLDER_POLL_MS)
+        assertEquals(listOf(listOf("A")), changes())
+        watcher.close()
+    }
+
+    @Test
+    fun oneChangeSeenByTheWatchAndThePollIsOneMessage() {
+        watcher = setUp()
+        watcher.watch(listOf("A"))
+        timers.advance(FsWatcher.FOLDER_POLL_MS)
+        // inotify fires first (the fast path)…
+        File(root, "A/one.txt").writeText("1")
+        source.emit("A", "one.txt")
+        timers.advance(FsWatcher.FLUSH_MS)
+        assertEquals(1, changes().size)
+        // …and the poll that looks afterwards must not report it again.
+        timers.advance(FsWatcher.FOLDER_POLL_MS)
+        assertEquals(1, changes().size)
+        watcher.close()
+    }
+
+    @Test
+    fun anIdleWatcherSchedulesNoPollAtAll() {
+        watcher = setUp()
+        assertEquals(0, timers.pending())
+        timers.advance(10 * FsWatcher.FOLDER_POLL_MS)
+        assertEquals(0, timers.pending())
+        assertEquals(0, changes().size)
+        assertEquals(0, source.handles.size)
+    }
+
+    @Test
+    fun unwatchStopsTheFolderPoll() {
+        watcher = setUp()
+        watcher.watch(listOf("A"))
+        timers.advance(FsWatcher.FOLDER_POLL_MS)
+        assertEquals(1, timers.pending())
+        watcher.unwatch(listOf("A"))
+        assertEquals(0, timers.pending())
+        File(root, "A/after.txt").writeText("x")
+        timers.advance(10 * FsWatcher.FOLDER_POLL_MS)
+        assertEquals(0, changes().size)
+        watcher.close()
+    }
+
+    @Test
+    fun sessionEndStopsTheFolderPoll() {
+        watcher = setUp()
+        watcher.watch(listOf("A"))
+        watcher.close()
+        assertEquals(0, timers.pending())
+        File(root, "A/after.txt").writeText("x")
+        timers.advance(10 * FsWatcher.FOLDER_POLL_MS)
+        assertEquals(0, changes().size)
     }
 }
