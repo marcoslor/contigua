@@ -64,6 +64,9 @@ class DeckService(private val appContext: Context?) :
     /** The phone's DND, shared by every session (docs/design/focus.md). */
     private var zen: ZenControl? = null
 
+    /** The camera side, one capture per service (docs/PROTOCOL.md "Camera"). */
+    @Volatile private var camera: CameraHub? = null
+
     /** The live state watcher of the current session, if any. */
     @Volatile private var stateWatcher: AndroidDeviceState? = null
 
@@ -108,6 +111,21 @@ class DeckService(private val appContext: Context?) :
         // One quiet window per server process, shared by every session: a
         // reconnect must not reset it (review M-1).
         val pairCooldown = PairCooldown()
+        // One camera hub for the service: the app's gate/list push arrives here
+        // (cameraState) and a capture is service-wide, not per session.
+        val cameraHub = CameraHub(
+            log = ::log,
+            newPipe = { ParcelFileDescriptor.createReliablePipe() },
+            handOff = { params, write ->
+                val cb = callback
+                val ok = cb != null && runCatching { cb.onCameraStart(params, write) }.isSuccess
+                // The app has its own dup once the binder call returned.
+                runCatching { write.close() }
+                ok
+            },
+            startApp = ::startCameraService,
+        )
+        camera = cameraHub
         val factory = SessionFactory { socket ->
             Session(
                 socket = socket,
@@ -161,6 +179,7 @@ class DeckService(private val appContext: Context?) :
                 },
                 zen = zenControl,
                 ringerMode = ringerControl,
+                camera = cameraHub,
                 tlsView = Session.TlsView.from(socket).also { view ->
                     // K4/e2e evidence, hashes only, debug builds only: the
                     // platform stack really backs the v2 pairing
@@ -291,13 +310,42 @@ class DeckService(private val appContext: Context?) :
     }
 
     /**
-     * The app's camera push (docs/PROTOCOL.md "Camera"). The shell half of C1
-     * (the hub, the pipe and the relay) lands with the next commit; until then
-     * the push is recorded only in the log's length, never its contents.
+     * The app's camera push (docs/design/camera.md C1): the gate + camera list
+     * and each capture's state. The hub keeps the gate and the list; a state on
+     * the active capture's stream is relayed to the session as `cam.state`.
      */
     override fun cameraState(json: String?) {
-        log("camera state not handled yet (${json?.length ?: 0} bytes)")
+        val hub = camera ?: return
+        hub.onAppState(json ?: return)
     }
+
+    /**
+     * The C0b stage-a mechanism: uid 2000 starts the app's camera FGS, which is
+     * the only caller Android exempts from the background start rule for a
+     * `camera` service. `IActivityManager.startService` needs the caller's
+     * package, which this process cannot present (C0), so it is the `am` child.
+     */
+    private fun startCameraService(paramsJson: String): Boolean {
+        val code = runStatus(
+            "am", "start-foreground-service",
+            "-n", "${dev.pocketdeck.BuildConfig.APPLICATION_ID}/.app.CameraCaptureService",
+            "--es", dev.pocketdeck.app.CameraCaptureService.EXTRA_PARAMS, paramsJson,
+        )
+        log("camera service start: am exit=$code")
+        return code == 0
+    }
+
+    /** Runs argv (no shell) and returns its exit code; -1 on failure or timeout. */
+    private fun runStatus(vararg argv: String): Int = runCatching {
+        val process = ProcessBuilder(*argv).redirectErrorStream(true).start()
+        process.inputStream.bufferedReader().readText()
+        if (!process.waitFor(10, TimeUnit.SECONDS)) {
+            process.destroy()
+            -1
+        } else {
+            process.exitValue()
+        }
+    }.getOrDefault(-1)
 
     /** `cmd notification allow_listener` at shell UID (docs/design/notify.md). */
     override fun grantListenerAccess(): Boolean {
