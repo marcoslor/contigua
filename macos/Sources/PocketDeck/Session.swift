@@ -91,7 +91,9 @@ enum SessionEvent {
                       started: HandoffStart)
     case windowClosed(stream: UInt32, reason: String)
     case windowTitle(stream: UInt32, label: String, pkg: String)
-    case phoneState(locked: Bool, battery: Int, charging: Bool, dnd: PhoneDndMode?)
+    case phoneState(locked: Bool, battery: Int, charging: Bool, dnd: PhoneDndMode?, ringer: PhoneRingerMode?)
+    /// `ring.state`: a `phone.ring` started or ended.
+    case ringState(ringing: Bool)
     case audioState(on: Bool, codec: UInt8)
     case phoneError(code: String, message: String?, stream: UInt32)
     /// The phone showed this code for the person to compare with its screen.
@@ -807,7 +809,10 @@ final class Session {
             emit(.phoneState(locked: message.bool("locked") ?? false,
                              battery: message.int("battery") ?? 0,
                              charging: message.bool("charging") ?? false,
-                             dnd: message.string("dnd").flatMap(PhoneDndMode.init(rawValue:))))
+                             dnd: message.string("dnd").flatMap(PhoneDndMode.init(rawValue:)),
+                             ringer: message.string("ringer").flatMap(PhoneRingerMode.init(rawValue:))))
+        case "ring.state":
+            emit(.ringState(ringing: message.bool("ringing") ?? false))
         case "audio.state":
             emit(.audioState(on: message.bool("on") ?? false,
                              codec: UInt8(message.int("codec") ?? 0)))
@@ -1055,6 +1060,9 @@ final class Session {
 
     /// `phone.dnd` (docs/PROTOCOL.md "Focus and Do Not Disturb").
     func setDnd(_ mode: PhoneDndMode) { sendJSON(["t": "phone.dnd", "mode": mode.rawValue]) }
+
+    /// `phone.ringer` (docs/PROTOCOL.md "Ringer").
+    func setRinger(_ mode: PhoneRingerMode) { sendJSON(["t": "phone.ringer", "mode": mode.rawValue]) }
     func sendApkData(id: UInt32, bytes: [UInt8], sent: @escaping @Sendable (Bool) -> Void) { sendData(.apkData, id: id, bytes: bytes, sent: sent) }
     func dropStart(id: UInt32, name: String, mime: String, size: Int, sha256: String, resume: Int = 0) {
         var message: [String: Any] = ["t": "drop.start", "id": Int(id), "name": name, "mime": mime, "size": size, "sha256": sha256]

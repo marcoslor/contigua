@@ -52,6 +52,8 @@ struct PhoneStatus: Equatable {
     var charging: Bool
     /// nil when the phone's `state` carries no `dnd` (old phone) or none arrived yet.
     var dnd: PhoneDndMode? = nil
+    /// nil when the phone's `state` carries no `ringer` (old phone).
+    var ringer: PhoneRingerMode? = nil
 }
 
 struct QRPairingState: Equatable {
@@ -210,6 +212,8 @@ final class ConnectionController {
     /// The one re-request a flat cached icon gets per connection.
     private let layerRefresh = IconLayerRefresh()
     private(set) var status: PhoneStatus?
+    /// `ring.state` from the phone: a ring this Mac started is still playing.
+    private(set) var ringing = false
     /// The stored Focus filter values (docs/design/focus.md).
     private let focusStore: FocusStore
     private(set) var focusValues = FocusFilterValues()
@@ -1020,6 +1024,22 @@ final class ConnectionController {
     /// The menu item is enabled only for a connected phone that sends `dnd`.
     var canSetPhoneDnd: Bool { link.isOnline && phoneDnd != nil }
 
+    /// The ringer mode the phone last reported; nil when it cannot set it.
+    var phoneRinger: PhoneRingerMode? { status?.ringer }
+
+    /// A control can change the ringer only on a live phone that reports it and
+    /// while DND is off: on API 36 a ringer change can end an "alarms" DND, and
+    /// the phone side refuses that write as well (docs/design/controls.md).
+    var canSetPhoneRinger: Bool { link.isOnline && phoneRinger != nil && phoneDnd?.isOn != true }
+
+    /// `phone.ringer` (docs/PROTOCOL.md "Ringer"): one mode, never a volume.
+    @discardableResult
+    func setPhoneRinger(_ mode: PhoneRingerMode) -> Bool {
+        guard link.isOnline, phoneRinger != nil, phoneDnd?.isOn != true, let session else { return false }
+        session.setRinger(mode)
+        return true
+    }
+
     /// The Focus filter's perform() (and the `--debug-focus` hook): store what
     /// it asks for, then tell a connected phone at once. A phone that connects
     /// later is reconciled once by [reconcileFocus].
@@ -1669,11 +1689,13 @@ final class ConnectionController {
             }
             runDockHooks()
             recheckOpenWindows()
-        case .phoneState(let locked, let battery, let charging, let dnd):
-            status = PhoneStatus(locked: locked, battery: battery, charging: charging, dnd: dnd)
+        case .phoneState(let locked, let battery, let charging, let dnd, let ringer):
+            status = PhoneStatus(locked: locked, battery: battery, charging: charging, dnd: dnd, ringer: ringer)
             if let id = link.phone?.id { batteryMemory.record(deviceId: id, level: battery, charging: charging) }
             reconcileFocusOnFirstState(dnd)
             runPendingDebugDnd()
+        case .ringState(let playing):
+            ringing = playing
         case .audioState(let on, _):
             audioOn = on
         case .windowClosed:
@@ -1794,7 +1816,7 @@ final class ConnectionController {
         windows.phone = info
         // Every window title carries the display name from here on.
         windows.setPhoneName(displayName(for: ref))
-        status = PhoneStatus(locked: info.locked, battery: info.battery, charging: info.charging ?? false)
+        status = PhoneStatus(locked: info.locked, battery: info.battery, charging: info.charging ?? false, ringer: status?.ringer)
         // A new connection: its first `state` reconciles the Focus once.
         focusReconciled = false
         if let battery = info.battery {

@@ -83,6 +83,9 @@ struct LaunchOptions {
     /// Group container, so a host check can drive the bridge without any File
     /// Provider (e2e `files-bridge`).
     var filesBridgeDir: String?
+    /// `--controls-dir DIR`: where the Control Center snapshot and socket live,
+    /// instead of the App Group container (e2e `controls` check; no extension).
+    var controlsDirectory: String?
 
     /// nil when `--profile` was missing or not a usable name.
     var profile: Profile? { Profile(name: profileName) }
@@ -128,6 +131,7 @@ struct LaunchOptions {
         "--mcp-enable": false,
         "--files-domain": true,
         "--files-bridge-dir": true,
+        "--controls-dir": true,
     ]
 
     /// One line on stderr (the harness captures stderr into app.log); the
@@ -234,6 +238,8 @@ struct LaunchOptions {
                 options.filesDomain = next()
             case "--files-bridge-dir":
                 options.filesBridgeDir = next()
+            case "--controls-dir":
+                options.controlsDirectory = next()
             default:
                 break
             }
@@ -327,6 +333,7 @@ final class AppEnvironment {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var openRequestInbox: OpenRequestInbox?
     private var debugBanner: DebugBanner?
+    private var controlsHost: ControlsHost?
 
     /// Started from a shell (the test harness) there is no LaunchServices to
     /// make the process a regular app; do it explicitly so it gets windows and a Dock icon.
@@ -387,6 +394,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // setting says otherwise its domain comes up with the app.
         environment.controller.filesDomain.start()
         environment.controller.start()
+        // The Control Center snapshot and socket (docs/design/controls.md): a
+        // release bundle only has one when it carries the extension's group,
+        // so the absence of the group simply leaves the controls at rest.
+        if let directory = ControlsHost.directory(options: environment.options) {
+            let host = ControlsHost(controller: environment.controller, directory: directory)
+            host?.start()
+            controlsHost = host
+        }
         #if !PD_TEST_HOOKS
         // The system does not call perform() for a Focus that has no PocketDeck
         // filter: read what is actually active once at launch so a Focus that
@@ -432,6 +447,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @MainActor
     func applicationWillTerminate(_ notification: Notification) {
+        controlsHost?.stop()
         AppEnvironment.shared.controller.shutdown()
     }
 }
