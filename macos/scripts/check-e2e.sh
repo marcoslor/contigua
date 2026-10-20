@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # End-to-end checks C3-C13 for the macOS client against tools/fakephone.
 #
-#   ./scripts/check-e2e.sh [qr|pair|gates|tls|render|resize|input|hover|mouseback|input-global|pause|direct|nav|mirror|spotlight|intents|pinch|chrome|menus|density|trackpad|clip|sharein|links|share|apk|drop|dock|nickname|notify|audio|handoff|deck|all [--shard N/M]]
+#   ./scripts/check-e2e.sh [qr|pair|gates|tls|render|resize|input|hover|mouseback|input-global|pause|direct|nav|mirror|spotlight|intents|mcp|pinch|chrome|menus|density|trackpad|clip|sharein|links|share|apk|drop|dock|nickname|notify|audio|handoff|deck|all [--shard N/M]]
 #
 # Every check starts from a clean slate (the shared-app checks share one, see
 # "The shared app" below): no PocketDeck or fakephone processes
@@ -3277,6 +3277,79 @@ PY
         bad "INTENTS no battery line after the phone left"
     fi
     stop_app
+}
+
+# --- Automation server (MCP) -------------------------------------------------
+# check_mcp — the app's private socket, the stdio shim and the 13 tools: state,
+# open an app, a screenshot, input frames, a link and a 1 MiB file. With the
+# setting off the shim must print the Settings hint and fail. The peer-uid check
+# cannot be exercised without a second local account; the unit tests cover the
+# server, this run notes the skip.
+check_mcp() {
+    local shim="$E2E_BUNDLE/Contents/Helpers/pocketdeck-mcp"
+    local support="$HOME/Library/Application Support/PocketDeck-$PROFILE"
+    local sock="$support/mcp.sock"
+    if [ ! -x "$shim" ]; then
+        bad "MCP the bundle has no Contents/Helpers/pocketdeck-mcp"
+        return 1
+    fi
+    clean
+    start_fake || return 1
+    rm -f "$sock"
+    launch --connect "127.0.0.1:$PORT" --quit-after 60
+    sleep 2
+    if [ -S "$sock" ]; then
+        bad "MCP a socket exists with the setting off"
+    else
+        local status=0
+        "$shim" --profile "$PROFILE" </dev/null > "$WORK/shim-off.out" 2> "$WORK/shim-off.err" || status=$?
+        if [ "$status" -ne 0 ] && grep -q "Turn on Settings › Automation in PocketDeck" "$WORK/shim-off.err"; then
+            ok "MCP with the setting off the shim prints the Settings hint and exits non-zero"
+        else
+            bad "MCP off: status $status, stderr: $(head -1 "$WORK/shim-off.err")"
+        fi
+    fi
+    stop_app
+
+    python3 - "$WORK/mcp-1mb.bin" <<'PY'
+import os, sys
+with open(sys.argv[1], "wb") as f:
+    f.write(os.urandom(1024 * 1024))
+PY
+    launch --mcp-enable --connect "127.0.0.1:$PORT" --quit-after 240
+    if ! wait_until 30 test -S "$sock"; then
+        bad "MCP --mcp-enable did not create $sock"
+        stop_app
+        return 1
+    fi
+    ok "MCP the setting on creates the private socket"
+    if "$FAKE_PY" "$MACOS/scripts/mcp-driver.py" \
+            --shim "$shim" --profile "$PROFILE" --events "$WORK/events.jsonl" \
+            --file "$WORK/mcp-1mb.bin" --link "https://example.com/mcp" \
+            > "$WORK/mcp-driver.log" 2>&1; then
+        :
+    else
+        say "mcp driver output:"; cat "$WORK/mcp-driver.log"
+    fi
+    local line
+    while IFS= read -r line; do
+        case "$line" in
+            PASS\ *) ok "${line#PASS }" ;;
+            FAIL\ *) bad "${line#FAIL }" ;;
+            DRIVER\ passed*) : ;;
+            DRIVER\ *) say "MCP ${line#DRIVER }" ;;
+        esac
+    done < "$WORK/mcp-driver.log"
+    if ! grep -q '^DRIVER passed=' "$WORK/mcp-driver.log"; then
+        bad "MCP the driver never completed"
+    fi
+    ! grep -qiE "fatal|protocol error" "$WORK/app.log" 2>/dev/null \
+        && ok "MCP the app logged no fatal/protocol error" \
+        || bad "MCP the app log has fatal/protocol lines"
+    stop_app
+    stop_fakephone
+    wait_until 5 no_fakephone
+    skip "MCP a second uid" "needs another local account; the peer uid check is unit-tested"
 }
 
 # --- C14: audio phone -> Mac -------------------------------------------------
