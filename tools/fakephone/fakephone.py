@@ -42,6 +42,7 @@ import tempfile
 import threading
 import time
 import urllib.parse
+import uuid
 import zlib
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -606,6 +607,14 @@ FS_MAX_COMPONENTS = 32
 FS_PAGE_ITEMS = 1000
 FS_PAGE_BYTES = 1 << 20
 FS_CHUNK = 256 * 1024
+FS_MAX_WRITE = 1 << 30
+FS_TEMP_PREFIX = ".pocketdeck-"
+FS_TEMP_SUFFIX = ".part"
+
+
+def fs_temp_name(name):
+    return name.startswith(FS_TEMP_PREFIX) and name.endswith(FS_TEMP_SUFFIX) \
+        and len(name) > len(FS_TEMP_PREFIX) + len(FS_TEMP_SUFFIX)
 
 
 class FsError(Exception):
@@ -640,6 +649,8 @@ class FsFake(object):
         for part in parts:
             if part in ("", ".", ".."):
                 raise FsError("fs_denied", "bad component")
+            if fs_temp_name(part):
+                raise FsError("fs_denied", "staging name")
         if parts[0].startswith("."):
             raise FsError("fs_denied", "hidden entry")
         if parts[0] == "Android":
@@ -675,7 +686,8 @@ class FsFake(object):
             raise FsError("fs_denied", "unreadable directory")
         top = path == self.root
         names = sorted(n for n in names
-                       if not top or not (n.startswith(".") or n == "Android"))
+                       if not fs_temp_name(n)
+                       and (not top or not (n.startswith(".") or n == "Android")))
         start = 0
         if isinstance(page, str) and page.isdigit() and int(page) < len(names):
             start = int(page)
@@ -718,6 +730,130 @@ class FsFake(object):
         if offset > size or length > size - offset:
             raise FsError("fs_denied", "range outside the file")
         return path
+
+
+    # -- writes (docs/PROTOCOL.md "Phone files") ---------------------------
+    def write_plan(self, rel, size, sha256, etag):
+        """The target and its hidden temp, or the refusal. Nothing is created."""
+        if not isinstance(size, int) or size < 0:
+            raise FsError("fs_denied", "no size")
+        if size > FS_MAX_WRITE:
+            raise FsError("fs_too_large", "over the write cap")
+        if not isinstance(sha256, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", sha256):
+            raise FsError("fs_denied", "bad digest")
+        target = self.resolve(rel)
+        if target == self.root:
+            raise FsError("fs_denied", "the root is not a file")
+        meta = None
+        try:
+            meta = self.meta(target)
+        except FsError as exc:
+            if exc.code != "fs_not_found":
+                raise
+            if not os.path.isdir(os.path.dirname(target)):
+                raise
+        if meta is not None and meta["dir"]:
+            raise FsError("fs_denied", "a directory is not a file")
+        if etag is not None and meta is not None and etag != meta["etag"]:
+            raise FsError("fs_stale", "the file changed")
+        if etag is not None and meta is None:
+            raise FsError("fs_stale", "the file changed")
+        temp = os.path.join(os.path.dirname(target),
+                            FS_TEMP_PREFIX + uuid.uuid4().hex + FS_TEMP_SUFFIX)
+        return target, temp
+
+    def finish_write(self, target, temp, size, sha256, etag):
+        """Verifies the temp, re-checks the etag and renames into place."""
+        try:
+            if os.path.getsize(temp) != size:
+                raise FsError("fs_denied", "the file arrived damaged")
+            digest = hashlib.sha256()
+            with open(temp, "rb") as handle:
+                for block in iter(lambda: handle.read(1 << 20), b""):
+                    digest.update(block)
+            if digest.hexdigest() != str(sha256).lower():
+                raise FsError("fs_denied", "the file arrived damaged")
+            if etag is not None:
+                try:
+                    meta = self.meta(target)
+                except FsError:
+                    raise FsError("fs_stale", "the file changed")
+                if meta["dir"] or meta["etag"] != etag:
+                    raise FsError("fs_stale", "the file changed")
+            os.replace(temp, target)
+        finally:
+            if os.path.exists(temp):
+                try:
+                    os.unlink(temp)
+                except OSError:
+                    pass
+        return self._item_at(target)
+
+    def move(self, src, dst, etag):
+        source = self.resolve(src)
+        if source == self.root:
+            raise FsError("fs_denied", "the root does not move")
+        meta = self.meta(source)
+        if etag is not None and etag != meta["etag"]:
+            raise FsError("fs_stale", "the file changed")
+        target = self.resolve(dst)
+        if target == source:
+            return self._item_at(target)
+        if os.path.exists(target) or os.path.islink(target):
+            raise FsError("fs_exists", "that name is taken")
+        if meta["dir"] and target.startswith(source + os.sep):
+            raise FsError("fs_denied", "a folder cannot move into itself")
+        os.rename(source, target)
+        return self._item_at(target)
+
+    def delete(self, rel, recursive):
+        path = self.resolve(rel)
+        if path == self.root:
+            raise FsError("fs_denied", "the root does not delete")
+        meta = self.meta(path)
+        if meta["dir"]:
+            children = os.listdir(path)
+            if children and not recursive:
+                raise FsError("fs_denied", "the folder is not empty")
+            _delete_tree(path)
+        else:
+            os.unlink(path)
+        return meta
+
+    def mkdir(self, rel):
+        path = self.resolve(rel)
+        if path == self.root or os.path.lexists(path):
+            raise FsError("fs_exists", "that name is taken")
+        parent = os.path.dirname(path)
+        if not os.path.isdir(parent):
+            raise FsError("fs_not_found", "no such folder")
+        os.mkdir(path)
+        return self._item_at(path)
+
+    def set_attrs(self, rel, mtime):
+        path = self.resolve(rel)
+        self.meta(path)
+        if isinstance(mtime, (int, float)) and mtime >= 0:
+            st = os.stat(path)
+            os.utime(path, ns=(st.st_atime_ns, int(mtime) * 1000000))
+        return self._item_at(path)
+
+    def _item_at(self, path):
+        item = self.meta(path)
+        item["name"] = "" if path == self.root else os.path.basename(path)
+        return item
+
+
+def _delete_tree(path):
+    """Deletes a tree without following a symlink out of it."""
+    if os.path.islink(path):
+        os.unlink(path)
+    elif os.path.isdir(path):
+        for name in os.listdir(path):
+            _delete_tree(os.path.join(path, name))
+        os.rmdir(path)
+    else:
+        os.unlink(path)
 
 
 def _fs_id(msg):
@@ -1239,6 +1375,7 @@ class Session(object):
         self._unknown_types = set()
         self.audio = AudioTone(phone)
         self._fs_jobs = {}              # id -> {"cancel": Event, "thread": Thread}
+        self._fs_write = None           # the one fs.write in flight
         self._fs_lock = threading.Lock()
         self._thread = threading.Thread(target=self._run, daemon=True)
     def start(self):
@@ -1602,6 +1739,8 @@ class Session(object):
                 self._on_drop_data(frame.stream, frame.payload)
             elif frame.type == proto.TYPE_CLIP_DATA:
                 self._on_clip_data(frame.stream, frame.payload)
+            elif frame.type == proto.TYPE_FS_DATA:
+                self._on_fs_data(frame.stream, frame.payload)
             elif frame.type not in self._unknown_types:
                 self._unknown_types.add(frame.type)
                 sys.stderr.write("fakephone: ignoring unknown frame type 0x%02x\n" % frame.type)
@@ -1640,6 +1779,11 @@ class Session(object):
             "fs.list": self._on_fs_list,
             "fs.stat": self._on_fs_stat,
             "fs.read": self._on_fs_read,
+            "fs.write": self._on_fs_write,
+            "fs.move": self._on_fs_move,
+            "fs.delete": self._on_fs_delete,
+            "fs.mkdir": self._on_fs_mkdir,
+            "fs.setAttrs": self._on_fs_set_attrs,
             "fs.cancel": self._on_fs_cancel,
         }
         # A phone without DND support keeps phone.dnd unknown (logged once).
@@ -1989,6 +2133,12 @@ class Session(object):
         read_id = _fs_id(msg)
         if read_id is None:
             return
+        write = self._fs_write
+        if write is not None and write["id"] == read_id:
+            # A cancelled write leaves nothing: the temp goes, no reply follows.
+            self._fail_write(write, "cancelled", "cancelled", silent=True)
+            self.phone.events.fs("cancel", id=read_id, kind="write")
+            return
         with self._fs_lock:
             job = self._fs_jobs.get(read_id)
         if job is None:
@@ -2002,7 +2152,180 @@ class Session(object):
             self.sender.cancel_bulk(read_id)
         self.phone.events.fs("cancel", id=read_id)
 
+    # -- fs.* writes: temp + verify + etag + rename, like the phone ---------
+    def _fs_result(self, read_id, item=None, code=None, message=""):
+        if code:
+            sys.stderr.write("fakephone: fs id=%d %s\n" % (read_id, code))
+            sys.stderr.flush()
+            self._send({"t": "fs.result", "id": read_id, "ok": False,
+                        "code": code, "message": message or code})
+        else:
+            reply = {"t": "fs.result", "id": read_id, "ok": True}
+            if item is not None:
+                reply["item"] = item
+                reply["etag"] = item.get("etag")
+            self._send(reply)
+
+    def _on_fs_write(self, msg):
+        read_id = _fs_id(msg)
+        if read_id is None:
+            return
+        fs = self.phone.fs
+        if fs is None:
+            return self._fs_result(read_id, code="fs_denied", message="files are not served")
+        if self._fs_write is not None:
+            return self._fs_result(read_id, code="fs_busy", message="another write is running")
+        size, sha, etag = msg.get("size"), msg.get("sha256"), msg.get("etag")
+        try:
+            target, temp = fs.write_plan(msg.get("path"), size, sha, etag)
+        except FsError as exc:
+            self.phone.events.fs("write", id=read_id, ok=False, code=exc.code)
+            return self._fs_result(read_id, code=exc.code, message=exc.message)
+        try:
+            handle = open(temp, "xb")
+        except OSError:
+            return self._fs_result(read_id, code="fs_denied", message="could not stage the file")
+        self._fs_write = {"id": read_id, "target": target, "temp": temp, "size": size,
+                          "sha256": sha, "etag": etag, "received": 0,
+                          "handle": handle, "digest": hashlib.sha256(),
+                          "last": time.time() - 1.0}
+        self.phone.events.fs("write.start", id=read_id, size=size)
+
+    def _on_fs_data(self, write_id, payload):
+        job = self._fs_write
+        if job is None or job["id"] != write_id or not payload:
+            return
+        if job["received"] + len(payload) > job["size"]:
+            self._fail_write(job, "fs_denied", "more bytes than announced")
+            return
+        try:
+            job["handle"].write(payload)
+        except OSError:
+            self._fail_write(job, "fs_denied", "the write failed")
+            return
+        job["digest"].update(payload)
+        job["received"] += len(payload)
+        if self.phone.args.fs_write_delay_ms > 0:
+            time.sleep(self.phone.args.fs_write_delay_ms / 1000.0)
+        now = time.time()
+        if job["received"] == job["size"]:
+            self._finish_write(job)
+        elif now - job["last"] >= 0.25:
+            job["last"] = now
+            self._send({"t": "fs.progress", "id": job["id"], "bytes": job["received"]})
+
+    def _finish_write(self, job):
+        self._fs_write = None
+        try:
+            job["handle"].flush()
+            os.fsync(job["handle"].fileno())
+            job["handle"].close()
+        except OSError:
+            pass
+        self._send({"t": "fs.progress", "id": job["id"], "bytes": job["size"]})
+        fs = self.phone.fs
+        try:
+            item = fs.finish_write(job["target"], job["temp"], job["size"],
+                                   job["sha256"], job["etag"])
+        except FsError as exc:
+            self.phone.events.fs("write", id=job["id"], size=job["size"], ok=False,
+                                 code=exc.code)
+            return self._fs_result(job["id"], code=exc.code, message=exc.message)
+        except OSError:
+            return self._fs_result(job["id"], code="fs_denied", message="the write failed")
+        self.phone.events.fs("write", id=job["id"], size=job["size"], ok=True,
+                             name=os.path.basename(job["target"]))
+        self._fs_result(job["id"], item=item)
+
+    def _fail_write(self, job, code, message, silent=False):
+        if self._fs_write is job:
+            self._fs_write = None
+        try:
+            job["handle"].close()
+        except OSError:
+            pass
+        try:
+            os.unlink(job["temp"])
+        except OSError:
+            pass
+        self.phone.events.fs("write", id=job["id"], size=job["received"], ok=False, code=code)
+        if not silent:
+            self._fs_result(job["id"], code=code, message=message)
+
+    def _on_fs_move(self, msg):
+        read_id = _fs_id(msg)
+        if read_id is None:
+            return
+        fs = self.phone.fs
+        if fs is None:
+            return self._fs_result(read_id, code="fs_denied", message="files are not served")
+        try:
+            item = fs.move(msg.get("from"), msg.get("to"), msg.get("etag"))
+        except FsError as exc:
+            self.phone.events.fs("move", id=read_id, ok=False, code=exc.code)
+            return self._fs_result(read_id, code=exc.code, message=exc.message)
+        except OSError:
+            return self._fs_result(read_id, code="fs_denied", message="the move failed")
+        self.phone.events.fs("move", id=read_id, ok=True, **{
+            "from": msg.get("from"), "to": msg.get("to")})
+        self._fs_result(read_id, item=item)
+
+    def _on_fs_delete(self, msg):
+        read_id = _fs_id(msg)
+        if read_id is None:
+            return
+        fs = self.phone.fs
+        if fs is None:
+            return self._fs_result(read_id, code="fs_denied", message="files are not served")
+        recursive = bool(msg.get("recursive"))
+        try:
+            meta = fs.delete(msg.get("path"), recursive)
+        except FsError as exc:
+            self.phone.events.fs("delete", id=read_id, ok=False, code=exc.code)
+            return self._fs_result(read_id, code=exc.code, message=exc.message)
+        except OSError:
+            return self._fs_result(read_id, code="fs_denied", message="the delete failed")
+        self.phone.events.fs("delete", id=read_id, ok=True, dir=bool(meta["dir"]),
+                             recursive=recursive, path=msg.get("path"))
+        self._fs_result(read_id)
+
+    def _on_fs_mkdir(self, msg):
+        read_id = _fs_id(msg)
+        if read_id is None:
+            return
+        fs = self.phone.fs
+        if fs is None:
+            return self._fs_result(read_id, code="fs_denied", message="files are not served")
+        try:
+            item = fs.mkdir(msg.get("path"))
+        except FsError as exc:
+            self.phone.events.fs("mkdir", id=read_id, ok=False, code=exc.code)
+            return self._fs_result(read_id, code=exc.code, message=exc.message)
+        except OSError:
+            return self._fs_result(read_id, code="fs_denied", message="could not create the folder")
+        self.phone.events.fs("mkdir", id=read_id, ok=True, path=msg.get("path"))
+        self._fs_result(read_id, item=item)
+
+    def _on_fs_set_attrs(self, msg):
+        read_id = _fs_id(msg)
+        if read_id is None:
+            return
+        fs = self.phone.fs
+        if fs is None:
+            return self._fs_result(read_id, code="fs_denied", message="files are not served")
+        try:
+            item = fs.set_attrs(msg.get("path"), msg.get("mtime"))
+        except FsError as exc:
+            self.phone.events.fs("setattrs", id=read_id, ok=False, code=exc.code)
+            return self._fs_result(read_id, code=exc.code, message=exc.message)
+        except OSError:
+            return self._fs_result(read_id, code="fs_denied", message="could not set the time")
+        self.phone.events.fs("setattrs", id=read_id, ok=True)
+        self._fs_result(read_id, item=item)
+
     def _cancel_fs_reads(self):
+        if self._fs_write is not None:
+            self._fail_write(self._fs_write, "closed", "the session ended", silent=True)
         with self._fs_lock:
             jobs = list(self._fs_jobs.items())
         for read_id, job in jobs:
@@ -2627,6 +2950,9 @@ def build_parser():
     p.add_argument("--fs-chunk-delay-ms", type=int, default=0, metavar="MS",
                    help="pause after each FS_DATA chunk (a slow phone, so a cancel "
                         "can land mid-file in the e2e check)")
+    p.add_argument("--fs-write-delay-ms", type=int, default=0, metavar="MS",
+                   help="pause after each incoming FS_DATA chunk of a write (a slow "
+                        "phone, so the e2e check can kill it mid-write)")
     p.add_argument("--drop-ack-delay", type=float, default=0.0, metavar="SECONDS",
                    help="repeat the last drop.progress and hold the result this long, "
                         "so the phone's confirmation for the tail lands after the Mac "
