@@ -1,9 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- Debug builds only: the test notification poster the emulator/E2E checks
-     drive from adb (docs/design/notify.md). Release builds never see it.
+     drive from adb (docs/design/notify.md), and the C0b camera foreground-service
+     probe (docs/design/camera.md). Release builds never see any of it.
      DUMP is held by the shell (adb) and by no ordinary app, so no other app
-     on a phone running a debug build can make PocketDeck post. -->
+     on a phone running a debug build can make PocketDeck post a notification,
+     start the probe or send it a stage. -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- The probe captures in the app process; release builds do not ask for
+         either permission. -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
 
     <application>
         <receiver
@@ -17,5 +24,25 @@
         <receiver
             android:name="dev.pocketdeck.app.NotifyDebugResult"
             android:exported="false" />
+
+        <!-- C0b: a camera-type foreground service in the app process. Exported
+             because uid 2000 is a stage of the probe itself (a system component
+             starting the service); DUMP keeps ordinary apps out. -->
+        <service
+            android:name="dev.pocketdeck.app.CamFgsProbe"
+            android:exported="true"
+            android:permission="android.permission.DUMP"
+            android:foregroundServiceType="camera" />
+
+        <!-- C0b stage b: the app starts its own camera service from the
+             background after a DUMP-protected broadcast. -->
+        <receiver
+            android:name="dev.pocketdeck.app.CamFgsTrigger"
+            android:exported="true"
+            android:permission="android.permission.DUMP">
+            <intent-filter>
+                <action android:name="dev.pocketdeck.DEBUG_CAM_FGS" />
+            </intent-filter>
+        </receiver>
     </application>
 </manifest>
