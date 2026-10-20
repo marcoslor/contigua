@@ -4560,6 +4560,89 @@ PY
     wait_until 5 no_fakephone
 }
 
+# check_files_watch — remote changes (slice S5, docs/design/files.md §2/§5):
+# the driver plays the extension, opens folder A (bridge watch), and creates,
+# edits, renames and deletes files there while fakephone watches. Each move must
+# arrive as a bridge signal plus the right delta (the rename keeps the item id),
+# a change in an unwatched folder B must say nothing, the Mac's own write must
+# not echo, and closing A (or killing the driver) must stop the watch on the
+# phone. No File Provider anywhere.
+check_files_watch() {
+    clean
+    python3 - "$WORK" <<'PY'
+import os, sys
+work = sys.argv[1]
+root = os.path.join(work, "fsroot")
+for folder in ("A", "B"):
+    os.makedirs(os.path.join(root, folder), exist_ok=True)
+open(os.path.join(root, "A", "seed.txt"), "wb").write(b"seed\n")
+open(os.path.join(root, "B", "other.txt"), "wb").write(b"other\n")
+PY
+    FAKE_ARGS="--fs-root $WORK/fsroot" start_fake || return 1
+    launch --connect "127.0.0.1:$PORT" --files-bridge-dir "$WORK/bridge"
+    wait_until 30 file_has "files-bridge: ok" "$WORK/app.log" \
+        && ok "WATCH the app listens on the test bridge socket" \
+        || bad "WATCH no bridge socket: $(grep 'files-bridge' "$WORK/app.log" | tail -2)"
+    if ! wait_until 30 eval 'events_have "\"state\":\"paired\"" || events_have "\"state\":\"auth_ok\""'; then
+        bad "WATCH the app never authenticated"
+        stop_app; stop_fakephone; return 1
+    fi
+    # Idle before anyone opens a folder.
+    if grep -q "watch on" "$WORK/fake.err" 2>/dev/null; then
+        bad "WATCH the phone watched something before a folder was opened"
+    else
+        ok "WATCH nothing is watched while no folder is open"
+    fi
+    files_bridge_driver watch
+    if grep -q "watch on 1" "$WORK/fake.err" 2>/dev/null; then
+        ok "WATCH the phone watched the open folder"
+    else
+        bad "WATCH the phone never watched the folder"
+    fi
+    if grep -q "changes" "$WORK/fake.err" 2>/dev/null; then
+        ok "WATCH the phone reported coalesced changes as counts"
+    else
+        bad "WATCH the phone logged no change batch"
+    fi
+    # A killed driver (an extension process going away) drops its watch.
+    local before hold
+    before=$(grep -c "watch off 0" "$WORK/fake.err" 2>/dev/null || true)
+    "$MACOS/scripts/files-bridge-driver.py" --socket "$(files_bridge_socket)" \
+        --root "$WORK/fsroot" --work "$WORK" --fake-err "$WORK/fake.err" \
+        --phase hold > "$WORK/bridge-hold.txt" 2>&1 &
+    hold=$!
+    if wait_until 15 file_has "ok WATCH holding" "$WORK/bridge-hold.txt"; then
+        kill -9 "$hold" 2>/dev/null
+        wait "$hold" 2>/dev/null
+        if wait_until 8 [ "$(grep -c "watch off 0" "$WORK/fake.err" 2>/dev/null || true)" -gt "$before" ]; then
+            ok "WATCH the app drops the watch when its client goes away"
+        else
+            bad "WATCH the watch outlived the client that asked for it"
+        fi
+    else
+        bad "WATCH the hold phase did not start: $(tail -2 "$WORK/bridge-hold.txt")"
+        kill -9 "$hold" 2>/dev/null
+    fi
+    # Names never reach the app log; counts and ids only (design §4).
+    log show --last 3m --info \
+        --predicate 'subsystem == "dev.pocketdeck.mac" AND category == "files"' 2>/dev/null \
+        | grep -o 'bridge: .*' > "$WORK/watch-log.txt" 2>/dev/null || true
+    if python3 - "$WORK/watch-log.txt" <<'PY'
+import sys
+text = open(sys.argv[1], errors="replace").read()
+names = ("A", "B", "seed.txt", "one.txt", "one-renamed.txt", "two.txt", "after.txt")
+sys.exit(1 if any(("/" + name) in text or ('"' + name + '"') in text for name in names) else 0)
+PY
+    then
+        ok "WATCH the app log carries no file names"
+    else
+        bad "WATCH a file name appears in the app log"
+    fi
+    stop_app
+    stop_fakephone
+    wait_until 5 no_fakephone
+}
+
 # --- Phone files in Finder (docs/design/files.md §1/§5, files-domain) ------
 #
 # The real thing end to end: the app adds its domain, the sandboxed replicated
