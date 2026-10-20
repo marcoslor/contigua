@@ -90,6 +90,7 @@ struct GeneralSettings: View {
 
     var body: some View {
         Form {
+            FilesFinderSettings()
             Toggle("Launch at login", isOn: $launchAtLogin)
                 .onChange(of: launchAtLogin) { _, on in
                     do {

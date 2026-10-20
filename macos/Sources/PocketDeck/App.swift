@@ -383,6 +383,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             probe.start()
             debugBanner = probe
         }
+        // "Show phone files in Finder" is off by default; when the profile's
+        // setting says otherwise its domain comes up with the app.
+        environment.controller.filesDomain.start()
         environment.controller.start()
         #if !PD_TEST_HOOKS
         // The system does not call perform() for a Focus that has no PocketDeck

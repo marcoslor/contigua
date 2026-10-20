@@ -4292,7 +4292,10 @@ import os, sys
 root, log = sys.argv[1], sys.argv[2]
 text = open(log, errors="replace").read()
 names = set(os.listdir(root)) | set(os.listdir(os.path.join(root, "Documents")))
-bad = [name for name in names if name in text]
+# A logged name would read like a path or a quoted name; op words ("too many
+# live ids") must not trip the check.
+bad = [name for name in names
+       if ("/" + name) in text or (name + "/") in text or ('"' + name + '"') in text]
 sys.exit(1 if bad else 0)
 PY
     then
