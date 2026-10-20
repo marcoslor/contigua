@@ -252,9 +252,10 @@ final class HeaderActionButton: NSView {
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
 
     /// AppKit hands `hitTest` a point in the superview's coordinates; the
-    /// button's own bounds only match it for the first capsule slot.
+    /// button's own bounds only match it for the first capsule slot. A frozen
+    /// (disabled) action is transparent: the bar takes the click, nothing runs.
     override func hitTest(_ point: NSPoint) -> NSView? {
-        guard let superview else { return nil }
+        guard isEnabled, let superview else { return nil }
         return bounds.contains(convert(point, from: superview)) ? self : nil
     }
 
