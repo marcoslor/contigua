@@ -41,15 +41,20 @@ private final class BridgeTestClient {
     deinit { Darwin.close(fd) }
 
     func send(_ request: BridgeRequest) {
-        let data = BridgeWire.line(request)
-        data.withUnsafeBytes { raw in
-            guard let base = raw.baseAddress else { return }
-            _ = Darwin.write(fd, base, raw.count)
-        }
+        write(BridgeWire.line(request))
+    }
+
+    func sendChunk(id: UInt32, bytes: [UInt8]) {
+        var data = BridgeWire.dataHeader(id: id, length: bytes.count)
+        data.append(contentsOf: bytes)
+        write(data)
     }
 
     func sendRaw(_ text: String) {
-        let data = Data(text.utf8)
+        write(Data(text.utf8))
+    }
+
+    private func write(_ data: Data) {
         data.withUnsafeBytes { raw in
             guard let base = raw.baseAddress else { return }
             var offset = 0
@@ -110,13 +115,43 @@ private final class BridgeTestClient {
 
 /// Stands in for the session: answers are decided by the test.
 @MainActor
+private final class StubSink: FilesWriteSink {
+    var chunks: [[UInt8]] = []
+    var finished = false
+    var cancelled = false
+
+    func append(_ bytes: [UInt8]) -> Bool {
+        guard !cancelled else { return false }
+        chunks.append(bytes)
+        return true
+    }
+
+    func finish() { finished = true }
+    func cancel() { cancelled = true }
+}
+
+@MainActor
 private final class StubBridgeHost: FilesBridgeHost {
     var isConnected = true
     var displayName: String? = "Nicky"
-    var listResult: Result<FsPage, FsError> = .success(FsPage(items: [], next: nil))
-    var statResult: Result<FsItem, FsError> = .failure(FsError(code: "fs_not_found"))
+    var listResult: Result<(items: [FileItem], next: String?), FsError> = .success(([], nil))
+    var statResult: Result<FileItem, FsError> = .failure(FsError(code: "fs_not_found"))
+    var createResult: Result<FileItem, FsError>?
+    /// A create that fails before any bytes can be ready for.
+    var createRefusal: FsError?
+    var modifyResult: Result<FileItem, FsError>?
+    var deleteResult: Result<Void, FsError> = .success(())
     var cancels: [UInt32] = []
     var cancelAllCount = 0
+    var creates: [BridgeCreate] = []
+    var modifies: [BridgeModify] = []
+    var deletes = 0
+
+    struct StubWrite {
+        let sink: StubSink
+        let completion: (Result<FileItem, FsError>) -> Void
+    }
+    var write: StubWrite?
 
     /// Manual reads stay open until the test cancels or finishes them.
     struct PendingRead {
@@ -127,15 +162,16 @@ private final class StubBridgeHost: FilesBridgeHost {
     var pending: [PendingRead] = []
     var nextID: UInt32 = 100
 
-    func list(path: String, page: String?, completion: @escaping (Result<FsPage, FsError>) -> Void) {
+    func list(item: String, page: String?,
+              completion: @escaping (Result<(items: [FileItem], next: String?), FsError>) -> Void) {
         completion(listResult)
     }
 
-    func stat(path: String, completion: @escaping (Result<FsItem, FsError>) -> Void) {
+    func stat(item: String, completion: @escaping (Result<FileItem, FsError>) -> Void) {
         completion(statResult)
     }
 
-    func streamRead(path: String, offset: Int, length: Int, etag: String?,
+    func streamRead(item: String, offset: Int, length: Int, etag: String?,
                     onStart: @escaping (UInt32) -> Void,
                     chunk: @escaping ([UInt8]) -> Bool,
                     completion: @escaping (Result<FsReadResult, FsError>) -> Void) {
@@ -143,6 +179,44 @@ private final class StubBridgeHost: FilesBridgeHost {
         nextID += 1
         onStart(id)
         pending.append(PendingRead(id: id, chunk: chunk, completion: completion))
+    }
+
+    func create(_ request: BridgeCreate,
+                ready: @escaping (FilesWriteSink?) -> Void,
+                completion: @escaping (Result<FileItem, FsError>) -> Void) {
+        creates.append(request)
+        if let refusal = createRefusal {
+            ready(nil)
+            return completion(.failure(refusal))
+        }
+        if request.dir {
+            ready(nil)
+            completion(createResult ?? .failure(FsError(code: "fs_denied")))
+            return
+        }
+        let sink = StubSink()
+        write = StubWrite(sink: sink, completion: completion)
+        ready(sink)
+    }
+
+    func modify(_ request: BridgeModify,
+                ready: @escaping (FilesWriteSink?) -> Void,
+                completion: @escaping (Result<FileItem, FsError>) -> Void) {
+        modifies.append(request)
+        if request.hasContent {
+            let sink = StubSink()
+            write = StubWrite(sink: sink, completion: completion)
+            ready(sink)
+            return
+        }
+        ready(nil)
+        completion(modifyResult ?? .failure(FsError(code: "fs_denied")))
+    }
+
+    func delete(item: String, base: String, recursive: Bool,
+                completion: @escaping (Result<Void, FsError>) -> Void) {
+        deletes += 1
+        completion(deleteResult)
     }
 
     func cancel(id: UInt32) {
@@ -204,6 +278,15 @@ final class FilesBridgeTests: XCTestCase {
         return done()
     }
 
+    private func fsItem(_ name: String, ino: Int = 9, dir: Bool = false) -> FsItem {
+        FsItem(name: name, dir: dir, size: dir ? 0 : 3, mtime: 5, ino: ino, etag: "aa")
+    }
+
+    private func fileItem(_ name: String, ino: Int = 9, dir: Bool = false) -> FileItem {
+        FilesMap.item(path: name, parentIdentifier: FilesMap.rootIdentifier,
+                      fs: fsItem(name, ino: ino, dir: dir))
+    }
+
     func testTheSocketIsPrivateAndTheListenerServes() throws {
         try start()
         let attributes = try FileManager.default.attributesOfItem(atPath: socketPath)
@@ -244,35 +327,33 @@ final class FilesBridgeTests: XCTestCase {
     func testRequestsAnswerOfflineWithoutASession() throws {
         try start()
         let client = try connect()
-        client.send(.list(id: 1, path: "", page: nil))
-        client.send(.stat(id: 2, path: "a"))
-        client.send(.read(id: 3, path: "a", offset: 0, length: 4, etag: nil))
-        XCTAssertTrue(pump { client.replies().count == 3 })
+        client.send(.list(id: 1, item: FilesMap.rootIdentifier, page: nil))
+        client.send(.stat(id: 2, item: "ino:1"))
+        client.send(.read(id: 3, item: "ino:1", offset: 0, length: 4, etag: nil))
+        client.send(.delete(id: 4, item: "ino:1", base: "aa", recursive: false))
+        XCTAssertTrue(pump { client.replies().count == 4 })
         XCTAssertEqual([.error(id: 1, code: "offline"),
                         .error(id: 2, code: "offline"),
-                        .error(id: 3, code: "offline")], client.replies())
+                        .error(id: 3, code: "offline"),
+                        .error(id: 4, code: "offline")], client.replies())
     }
 
     func testListAndStatForwardTheAnswers() throws {
         try start()
         bridge.attach(host: host)
-        host.listResult = .success(FsPage(
-            items: [FsItem(name: "DCIM", dir: true, size: 0, mtime: 5, ino: 9, etag: "aa")],
-            next: "40"))
-        host.statResult = .success(FsItem(name: "a.txt", dir: false, size: 3,
-                                          mtime: 6, ino: 10, etag: "bb"))
+        let listed = fileItem("DCIM", ino: 9, dir: true)
+        let stated = fileItem("a.txt", ino: 10)
+        host.listResult = .success(([listed], "40"))
+        host.statResult = .success(stated)
         let client = try connect()
-        client.send(.list(id: 1, path: "", page: nil))
-        client.send(.stat(id: 2, path: "a.txt"))
+        client.send(.list(id: 1, item: FilesMap.rootIdentifier, page: nil))
+        client.send(.stat(id: 2, item: "ino:10"))
         XCTAssertTrue(pump { client.replies().count == 2 })
         host.listResult = .failure(FsError(code: "fs_denied"))
-        client.send(.list(id: 3, path: "Android", page: nil))
+        client.send(.list(id: 3, item: "ino:99", page: nil))
         XCTAssertTrue(pump { client.replies().count == 3 })
-        XCTAssertEqual([.items(id: 1, page: "40",
-                               items: [FsItem(name: "DCIM", dir: true, size: 0,
-                                              mtime: 5, ino: 9, etag: "aa")]),
-                        .item(id: 2, item: FsItem(name: "a.txt", dir: false, size: 3,
-                                                  mtime: 6, ino: 10, etag: "bb")),
+        XCTAssertEqual([.items(id: 1, page: "40", items: [listed]),
+                        .item(id: 2, item: stated),
                         .error(id: 3, code: "fs_denied")], client.replies())
     }
 
@@ -280,7 +361,7 @@ final class FilesBridgeTests: XCTestCase {
         try start()
         bridge.attach(host: host)
         let client = try connect()
-        client.send(.read(id: 7, path: "big.bin", offset: 0, length: 5, etag: nil))
+        client.send(.read(id: 7, item: "ino:1", offset: 0, length: 5, etag: nil))
         XCTAssertTrue(pump { host.pending.count == 1 })
         let read = try XCTUnwrap(host.pending.first)
         XCTAssertTrue(read.chunk([1, 2]))
@@ -297,7 +378,7 @@ final class FilesBridgeTests: XCTestCase {
         try start()
         bridge.attach(host: host)
         let client = try connect()
-        client.send(.read(id: 7, path: "big.bin", offset: 0, length: 32, etag: nil))
+        client.send(.read(id: 7, item: "ino:1", offset: 0, length: 32, etag: nil))
         XCTAssertTrue(pump { host.pending.count == 1 })
         let read = try XCTUnwrap(host.pending.first)
         _ = read.chunk([1, 2, 3])
@@ -306,10 +387,94 @@ final class FilesBridgeTests: XCTestCase {
         XCTAssertEqual([read.id], host.cancels)
         XCTAssertEqual([.error(id: 7, code: "cancelled")], client.replies())
         // The next request on the same client still works.
-        host.listResult = .success(FsPage(items: [], next: nil))
-        client.send(.list(id: 8, path: "", page: nil))
+        host.listResult = .success(([], nil))
+        client.send(.list(id: 8, item: FilesMap.rootIdentifier, page: nil))
         XCTAssertTrue(pump { client.replies().count == 2 })
         XCTAssertEqual(.items(id: 8, page: nil, items: []), client.replies().last)
+    }
+
+    func testACreateAnswersReadyThenTakesTheDataThenTheItem() throws {
+        try start()
+        bridge.attach(host: host)
+        let client = try connect()
+        let request = BridgeCreate(parent: FilesMap.rootIdentifier, name: "new.bin", dir: false,
+                                   size: 4, sha256: String(repeating: "a", count: 64))
+        client.send(.create(id: 11, request: request))
+        XCTAssertTrue(pump { host.write != nil && client.replies() == [.ready(id: 11)] })
+        XCTAssertEqual(request, host.creates.first)
+        client.sendChunk(id: 11, bytes: [1, 2])
+        client.sendChunk(id: 11, bytes: [3, 4])
+        XCTAssertTrue(pump { host.write?.sink.chunks.count == 2 })
+        XCTAssertEqual([[1, 2], [3, 4]], host.write?.sink.chunks)
+        let made = fileItem("new.bin", ino: 77)
+        host.write?.completion(.success(made))
+        XCTAssertTrue(pump { client.replies().count == 2 })
+        XCTAssertEqual([.ready(id: 11), .item(id: 11, item: made)], client.replies())
+    }
+
+    func testACreateRefusalNeverAsksForData() throws {
+        try start()
+        bridge.attach(host: host)
+        host.createRefusal = FsError(code: "fs_not_found")
+        let client = try connect()
+        client.send(.create(id: 12, request: BridgeCreate(parent: "ino:404", name: "x", dir: false,
+                                                          size: 1, sha256: String(repeating: "b", count: 64))))
+        XCTAssertTrue(pump { !client.replies().isEmpty })
+        XCTAssertNil(host.write)
+        XCTAssertEqual([.error(id: 12, code: "fs_not_found")], client.replies())
+    }
+
+    func testAFolderCreateAnswersTheItemWithoutData() throws {
+        try start()
+        bridge.attach(host: host)
+        host.createResult = .success(fileItem("Folder", ino: 88, dir: true))
+        let client = try connect()
+        client.send(.create(id: 13, request: BridgeCreate(parent: FilesMap.rootIdentifier,
+                                                          name: "Folder", dir: true,
+                                                          size: 0, sha256: nil)))
+        XCTAssertTrue(pump { !client.replies().isEmpty })
+        XCTAssertEqual(1, host.creates.count)
+        XCTAssertEqual(0, client.dataChunks(id: 13).count)
+        XCTAssertEqual([.item(id: 13, item: fileItem("Folder", ino: 88, dir: true))], client.replies())
+    }
+
+    func testAModifyWithContentStreamsItsData() throws {
+        try start()
+        bridge.attach(host: host)
+        let client = try connect()
+        let request = BridgeModify(item: "ino:9", base: "aa", content: true, name: nil,
+                                   parent: nil, mtime: nil, size: 2,
+                                   sha256: String(repeating: "c", count: 64))
+        client.send(.modify(id: 14, request: request))
+        XCTAssertTrue(pump { host.write != nil && client.replies() == [.ready(id: 14)] })
+        client.sendChunk(id: 14, bytes: [9, 8])
+        XCTAssertTrue(pump { host.write?.sink.chunks == [[9, 8]] })
+        let updated = fileItem("a.txt", ino: 9)
+        host.write?.completion(.success(updated))
+        XCTAssertTrue(pump { client.replies().count == 2 })
+        XCTAssertEqual([.ready(id: 14), .item(id: 14, item: updated)], client.replies())
+    }
+
+    func testCancelOfAWriteCancelsTheSink() throws {
+        try start()
+        bridge.attach(host: host)
+        let client = try connect()
+        client.send(.create(id: 15, request: BridgeCreate(parent: FilesMap.rootIdentifier,
+                                                          name: "x", dir: false, size: 8,
+                                                          sha256: String(repeating: "d", count: 64))))
+        XCTAssertTrue(pump { host.write != nil && client.replies() == [.ready(id: 15)] })
+        client.send(.cancel(id: 15))
+        XCTAssertTrue(pump { host.write?.sink.cancelled == true })
+    }
+
+    func testDeleteAnswersOk() throws {
+        try start()
+        bridge.attach(host: host)
+        let client = try connect()
+        client.send(.delete(id: 16, item: "ino:9", base: "aa", recursive: true))
+        XCTAssertTrue(pump { !client.replies().isEmpty })
+        XCTAssertEqual(1, host.deletes)
+        XCTAssertEqual([.ok(id: 16)], client.replies())
     }
 
     func testAtMostEightLiveIdsPerClient() throws {
@@ -317,17 +482,17 @@ final class FilesBridgeTests: XCTestCase {
         bridge.attach(host: host)
         let client = try connect()
         for id in UInt32(1)...UInt32(8) {
-            client.send(.read(id: id, path: "big.bin", offset: 0, length: 32, etag: nil))
+            client.send(.read(id: id, item: "ino:1", offset: 0, length: 32, etag: nil))
         }
         XCTAssertTrue(pump { host.pending.count == 8 })
-        client.send(.read(id: 9, path: "big.bin", offset: 0, length: 32, etag: nil))
+        client.send(.read(id: 9, item: "ino:1", offset: 0, length: 32, etag: nil))
         XCTAssertTrue(pump { !client.replies().isEmpty })
         XCTAssertEqual([.error(id: 9, code: "busy")], client.replies())
         // Finishing one id frees a slot.
         let first = try XCTUnwrap(host.pending.first)
         first.completion(.success(FsReadResult(bytes: 0, sha256: "e3b0c442")))
         XCTAssertTrue(pump { client.replies().count == 2 })
-        client.send(.read(id: 10, path: "big.bin", offset: 0, length: 1, etag: nil))
+        client.send(.read(id: 10, item: "ino:1", offset: 0, length: 1, etag: nil))
         XCTAssertTrue(pump { host.pending.count == 9 })
         XCTAssertEqual(9, host.pending.count)
     }
@@ -365,7 +530,7 @@ final class FilesBridgeTests: XCTestCase {
         try start()
         bridge.attach(host: host)
         let client = try connect()
-        client.send(.read(id: 4, path: "a.bin", offset: 0, length: 9, etag: nil))
+        client.send(.read(id: 4, item: "ino:1", offset: 0, length: 9, etag: nil))
         XCTAssertTrue(pump { host.pending.count == 1 })
         let id = try XCTUnwrap(host.pending.first?.id)
         client.sendRaw("")   // nothing; close through stop below

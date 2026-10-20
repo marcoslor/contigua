@@ -22,6 +22,14 @@ private final class FakeFsChannel: FsChannel {
     private(set) var stats: [(id: UInt32, path: String)] = []
     private(set) var reads: [Read] = []
     private(set) var cancels: [UInt32] = []
+    private(set) var writes: [(id: UInt32, path: String, size: Int, sha256: String, etag: String?)] = []
+    private(set) var writeData: [(id: UInt32, bytes: [UInt8])] = []
+    private(set) var moves: [(id: UInt32, from: String, to: String, etag: String?)] = []
+    private(set) var deletes: [(id: UInt32, path: String, recursive: Bool)] = []
+    private(set) var mkdirs: [(id: UInt32, path: String)] = []
+    private(set) var setAttrs: [(id: UInt32, path: String, mtime: Int)] = []
+    /// The session's write completions, held so a test decides when a chunk landed.
+    private(set) var sends: [(Int, @Sendable (Bool) -> Void)] = []
 
     func fsList(id: UInt32, path: String, page: String?) {
         lock.lock(); defer { lock.unlock() }
@@ -38,9 +46,55 @@ private final class FakeFsChannel: FsChannel {
         reads.append(Read(id: id, path: path, offset: offset, length: length, etag: etag))
     }
 
+    func fsWrite(id: UInt32, path: String, size: Int, sha256: String, etag: String?) {
+        lock.lock(); defer { lock.unlock() }
+        writes.append((id, path, size, sha256, etag))
+    }
+
+    func fsWriteData(id: UInt32, bytes: [UInt8], sent: @escaping @Sendable (Bool) -> Void) {
+        lock.lock()
+        writeData.append((id, bytes))
+        sends.append((bytes.count, sent))
+        lock.unlock()
+    }
+
+    func fsMove(id: UInt32, from: String, to: String, etag: String?) {
+        lock.lock(); defer { lock.unlock() }
+        moves.append((id, from, to, etag))
+    }
+
+    func fsDelete(id: UInt32, path: String, recursive: Bool) {
+        lock.lock(); defer { lock.unlock() }
+        deletes.append((id, path, recursive))
+    }
+
+    func fsMkdir(id: UInt32, path: String) {
+        lock.lock(); defer { lock.unlock() }
+        mkdirs.append((id, path))
+    }
+
+    func fsSetAttrs(id: UInt32, path: String, mtime: Int) {
+        lock.lock(); defer { lock.unlock() }
+        setAttrs.append((id, path, mtime))
+    }
+
     func fsCancel(id: UInt32) {
         lock.lock(); defer { lock.unlock() }
         cancels.append(id)
+    }
+
+    /// Confirms every chunk on the wire so far (the NIO event loop's callback).
+    func landAll() {
+        lock.lock()
+        let pending = sends
+        sends = []
+        lock.unlock()
+        for (_, sent) in pending { sent(true) }
+    }
+
+    var lastWriteID: UInt32? {
+        lock.lock(); defer { lock.unlock() }
+        return writes.last?.id
     }
 
     var lastRead: Read? {
@@ -226,6 +280,89 @@ final class FsClientTests: XCTestCase {
         guard case .failure(let error) = result else { return XCTFail("expected a failure") }
         XCTAssertEqual("closed", error.code)
         XCTAssertFalse(FileManager.default.fileExists(atPath: out("out.bin").path))
+    }
+
+    func testAWriteAnnouncesItsSizeAndHashThenPacesChunks() throws {
+        let bytes = [UInt8](repeating: 7, count: 6 * 256 * 1024)
+        let sha = SHA256.hash(data: Data(bytes)).map { String(format: "%02x", $0) }.joined()
+        var results: [Result<FsItem, FsError>] = []
+        let sink = try XCTUnwrap(client.beginWrite(path: "DCIM/a.bin", size: bytes.count,
+                                                   sha256: sha, etag: "old") { results.append($0) })
+        let announced = try XCTUnwrap(channel.writes.first)
+        XCTAssertEqual("DCIM/a.bin", announced.path)
+        XCTAssertEqual(bytes.count, announced.size)
+        XCTAssertEqual(sha, announced.sha256)
+        XCTAssertEqual("old", announced.etag)
+        XCTAssertTrue(sink.append(bytes))
+        sink.finish()
+        // At most four chunks in flight; each completion lets the next go.
+        XCTAssertEqual(4, channel.writeData.count)
+        channel.landAll()
+        drain()
+        XCTAssertEqual(6, channel.writeData.count)
+        channel.landAll()
+        drain()
+        XCTAssertEqual(6, channel.writeData.count)
+        // The phone answers with the new metadata.
+        let item = FsItem(name: "a.bin", dir: false, size: bytes.count, mtime: 9, ino: 77, etag: "new")
+        client.result(id: announced.id, ok: true, item: item.jsonObject, code: nil, message: nil)
+        XCTAssertEqual([.success(item)], results)
+    }
+
+    func testAWriteCancelSendsFsCancelAndFailsTheSink() throws {
+        var results: [Result<FsItem, FsError>] = []
+        let sink = try XCTUnwrap(client.beginWrite(path: "a.bin", size: 1024, sha256: String(repeating: "a", count: 64),
+                                                   etag: nil) { results.append($0) })
+        let id = try XCTUnwrap(channel.lastWriteID)
+        sink.cancel()
+        XCTAssertEqual([id], channel.cancels)
+        guard case .failure(let error) = try XCTUnwrap(results.first) else {
+            return XCTFail("no failure")
+        }
+        XCTAssertEqual("cancelled", error.code)
+        // A phone answer for the abandoned id is dropped.
+        client.result(id: id, ok: true, item: nil, code: nil, message: nil)
+        XCTAssertEqual(1, results.count)
+    }
+
+    func testMutationsAnswerTheirResultItems() throws {
+        var moved: Result<FsItem?, FsError>?
+        client.move(from: "a.txt", to: "b.txt", etag: "e") { moved = $0 }
+        let move = try XCTUnwrap(channel.moves.first)
+        XCTAssertEqual("a.txt", move.from)
+        let item = FsItem(name: "b.txt", dir: false, size: 1, mtime: 2, ino: 5, etag: "f")
+        client.result(id: move.id, ok: true, item: item.jsonObject, code: nil, message: nil)
+        XCTAssertEqual(.success(item), moved)
+
+        var created: Result<FsItem?, FsError>?
+        client.mkdir(path: "New") { created = $0 }
+        let mkdir = try XCTUnwrap(channel.mkdirs.first)
+        XCTAssertEqual("New", mkdir.path)
+        client.result(id: mkdir.id, ok: true,
+                      item: FsItem(name: "New", dir: true, size: 0, mtime: 3, ino: 6, etag: "g").jsonObject,
+                      code: nil, message: nil)
+        XCTAssertEqual("New", try created?.get()?.name)
+
+        var deleted: Result<FsItem?, FsError>?
+        client.delete(path: "New", recursive: true) { deleted = $0 }
+        let del = try XCTUnwrap(channel.deletes.first)
+        XCTAssertTrue(del.recursive)
+        client.result(id: del.id, ok: true, item: nil, code: nil, message: nil)
+        XCTAssertEqual(.success(nil), deleted)
+    }
+
+    func testAMutationFailureCarriesThePhoneCode() throws {
+        var result: Result<FsItem?, FsError>?
+        client.setAttrs(path: "a.txt", mtime: 12) { result = $0 }
+        let call = try XCTUnwrap(channel.setAttrs.first)
+        client.result(id: call.id, ok: false, item: nil, code: "fs_stale", message: "changed")
+        guard case .failure(let error) = try XCTUnwrap(result) else { return XCTFail("no failure") }
+        XCTAssertEqual("fs_stale", error.code)
+    }
+
+    /// Lets the main queue run the write completions.
+    private func drain() {
+        RunLoop.current.run(mode: .default, before: Date(timeIntervalSinceNow: 0.02))
     }
 
     func testTheEtagRidesTheRead() throws {
