@@ -25,7 +25,7 @@ MODE=run
 for arg in "$@"; do
   case "$arg" in
     --check) MODE=check ;;
-    -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,21p' "$0"; exit 0 ;;
     *) echo "verify-batch.sh: unknown flag $arg" >&2; exit 2 ;;
   esac
 done
@@ -43,8 +43,6 @@ mkdir -p "$POCKETDECK_AGENT_DIR"
 OUT="$POCKETDECK_AGENT_DIR"
 LOG="$OUT/verify-batch.log"
 ICONS="$REPO_ROOT/.agent/rig-verify/icons"
-DC=("$PYTHON" tools/fakephone/deckctl.py --host 127.0.0.1 --port "$PORT" \
-    --state "$CACHE_DIR/deckctl-state.json")
 FAILED=0
 
 # One SECTION line on the console and in the log, the shape the brief asks for.
