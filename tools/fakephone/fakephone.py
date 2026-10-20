@@ -151,9 +151,8 @@ class FakeZen(object):
         return ZEN_NAMES[self.mode]
 
     def apply_from_mac(self, name):
-        """Applies one phone.dnd mode; True when the stored mode changed."""
+        """Applies one phone.dnd mode (the phone's restore rule)."""
         code = ZEN_MODES[name]
-        before = self.mode
         if code == ZEN_MODES["off"]:
             if self.set_by_mac is not None and self.mode == self.set_by_mac:
                 self.mode = ZEN_MODES["off"]
@@ -165,7 +164,6 @@ class FakeZen(object):
         else:
             self.mode = code
             self.set_by_mac = code
-        return self.mode != before
 
 
 
@@ -1632,10 +1630,11 @@ class Session(object):
         if mode not in ZEN_MODES:
             self._send_error("bad_request", "phone.dnd needs mode priority|alarms|none|off")
             return
-        changed = self.phone.zen.apply_from_mac(mode)
+        self.phone.zen.apply_from_mac(mode)
         self.phone.events.dnd(self.phone.zen.name(), self.phone.zen.set_by_mac is not None)
-        if changed:
-            self.send_state()
+        # Like the real phone, the answer is a new state even when the mode did
+        # not move (the person's own DND is left alone but the Mac gets truth).
+        self.send_state()
 
     # -- APK install (docs/design/apk.md): acts like pm; a part holding the bytes
     # PD_FAKE_DOWNGRADE fails the commit with INSTALL_FAILED_VERSION_DOWNGRADE.

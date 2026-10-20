@@ -1152,7 +1152,8 @@ def cmd_watch_state(client, args):
     """Print every `state` message as it arrives: event-driven evidence.
 
     Run it in the background, lock/unlock the phone, and count the lines: one
-    per real change, nothing periodic.
+    per real change, nothing periodic. `dnd` is printed when the phone reports
+    it (docs/design/focus.md); an old build omits it.
     """
     deadline = time.time() + args.seconds
     count = 0
@@ -1167,11 +1168,42 @@ def cmd_watch_state(client, args):
         msg = proto.unpack_json(frame)
         if msg.get("t") == "state":
             count += 1
-            print("%s state #%d locked=%s battery=%s charging=%s" % (
+            dnd = "" if "dnd" not in msg else " dnd=%s" % json.dumps(msg.get("dnd"))
+            print("%s state #%d locked=%s battery=%s charging=%s%s" % (
                 time.strftime("%H:%M:%S"), count, msg.get("locked"),
-                msg.get("battery"), msg.get("charging")))
+                msg.get("battery"), msg.get("charging"), dnd))
     print("# %d state messages in %ss" % (count, args.seconds))
     return 0
+
+
+def cmd_dnd(client, args):
+    """Send `phone.dnd` and print the state the phone reports afterwards."""
+    # The state that follows welcome (the phone's mode before this command) is
+    # not the answer: drain whatever is queued, then the next state is the reply.
+    while True:
+        frame = client.recv(0.25)
+        if frame is TIMEOUT:
+            break
+        if frame is None:
+            raise DeckError("phone closed during dnd")
+    client.send_json({"t": "phone.dnd", "mode": args.mode})
+    print("sent phone.dnd mode=%s" % args.mode)
+    deadline = time.time() + args.wait
+    while time.time() < deadline:
+        frame = client.recv(0.25)
+        if frame is TIMEOUT:
+            continue
+        if frame is None:
+            raise DeckError("phone closed during dnd")
+        if frame.type != proto.TYPE_JSON:
+            continue
+        msg = proto.unpack_json(frame)
+        if msg.get("t") == "error":
+            raise DeckError("phone error: %s (%s)" % (msg.get("code"), msg.get("message")))
+        if msg.get("t") == "state" and "dnd" in msg:
+            print("state dnd=%s" % json.dumps(msg.get("dnd")))
+            return 0
+    raise DeckError("no state with dnd within %ss (an old phone omits it)" % args.wait)
 
 
 def cmd_clip_set(client, args):
@@ -1773,6 +1805,12 @@ def build_parser():
     sp = sub.add_parser("watch-state", help="print every state message; lock/unlock while it runs", **spp)
     sp.add_argument("--seconds", type=float, default=30.0)
 
+    sp = sub.add_parser("dnd", help="phone.dnd: set the phone's DND, print the state",
+                        **spp)
+    sp.add_argument("mode", choices=["priority", "alarms", "none", "off"])
+    sp.add_argument("--wait", type=float, default=10.0,
+                    help="seconds to wait for a state carrying dnd")
+
     sp = sub.add_parser("clip-set", help="send clip.set TEXT: put TEXT on the phone's clipboard", **spp)
     sp.add_argument("text")
 
@@ -1860,6 +1898,7 @@ COMMANDS = {
     "latency": cmd_latency,
     "quality-test": cmd_quality_test,
     "watch-state": cmd_watch_state,
+    "dnd": cmd_dnd,
     "ring": cmd_ring,
     "clip-set": cmd_clip_set,
     "clip-watch": cmd_clip_watch,
