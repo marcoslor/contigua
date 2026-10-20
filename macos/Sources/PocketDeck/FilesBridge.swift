@@ -180,6 +180,11 @@ final class FilesBridgeListener {
                 usleep(20_000)
                 continue
             }
+            // A client that closes between a request and its reply must not
+            // raise SIGPIPE: the default action would kill the whole app.
+            var noSigPipe: Int32 = 1
+            setsockopt(accepted, SOL_SOCKET, SO_NOSIGPIPE, &noSigPipe,
+                       socklen_t(MemoryLayout<Int32>.size))
             // Same user only: the group container is not a public interface.
             var uid: uid_t = 0
             var gid: gid_t = 0

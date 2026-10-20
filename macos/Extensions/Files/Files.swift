@@ -59,6 +59,11 @@ final class BridgeConnection {
             Darwin.close(fd)
             return nil
         }
+        // The app may close a connection first; a write then fails instead of
+        // raising SIGPIPE, which would kill this process.
+        var noSigPipe: Int32 = 1
+        setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &noSigPipe,
+                   socklen_t(MemoryLayout<Int32>.size))
         var timeout = timeval(tv_sec: 20, tv_usec: 0)
         setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
         setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
