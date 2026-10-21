@@ -104,18 +104,12 @@ struct AppCommands: Commands {
             }
             .keyboardShortcut("t", modifiers: [.command, .shift])
             Divider()
-            // The key stream window's style as two radio items: no section
-            // title (a Picker's inline header does not look like a Mac menu),
-            // just the two checks between dividers. The checked item's own
-            // click sets true again; an uncheck is not a style.
-            Toggle(isOn: Binding(
-                get: { streamMenu.style == .framed },
-                set: { if $0 { controller.windows.setKeyWindowStyle(.framed) } })) {
-                Text(WindowStyle.framed.label)
-            }
-            // View ▸ Immersive ▸ (ImmersiveMenuInstaller.swift): the parent
-            // item and its submenu are AppKit's, so the parent can carry the
-            // checkmark AppKit gives a submenu item.
+            // View ▸ Framed / Immersive / Hide Controls: AppKit's items
+            // (ImmersiveMenuInstaller.swift), inserted here between the two
+            // dividers. Framed and Immersive are one radio pair for the front
+            // window; Hide Controls is the reveal choice's submenu and is only
+            // enabled while the window is immersive, so a choice is never also
+            // a submenu's parent.
             Divider()
             // View ▸ Density: the key stream window's app override, remembered
             // per app (WindowDensityStore) and applied to every open window of
