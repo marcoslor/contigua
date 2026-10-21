@@ -236,6 +236,18 @@ struct AppCommands: Commands {
             // View ▸ Immersive ▸ (ImmersiveMenuInstaller.swift): the parent
             // item and its submenu are AppKit's, so the parent can carry the
             // checkmark AppKit gives a submenu item.
+            // View ▸ Bar Prototype (2026-10-21, temporary): the two bar
+            // proportions the person is choosing between. Removed once they
+            // pick (docs/DESIGN.md "Bar prototype").
+            Menu {
+                ForEach(BarPrototype.allCases) { prototype in
+                    Toggle(prototype.label, isOn: Binding(
+                        get: { streamMenu.barPrototype == prototype },
+                        set: { on in if on { controller.windows.setBarPrototype(prototype) } }))
+                }
+            } label: {
+                Label("Bar Prototype", systemImage: "ruler")
+            }
             Divider()
             // View ▸ Density: the key stream window's app override, remembered
             // per app (WindowDensityStore) and applied to every open window of

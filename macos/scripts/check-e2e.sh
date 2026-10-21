@@ -2634,8 +2634,8 @@ if view is None:
     print("no View menu"); sys.exit(1)
 seq = ["—" if item["isSeparator"] else item["title"] for item in view["submenu"]]
 want = ["Find Apps", "Phone Window", "Continue on Mac", "—",
-        "Show Touches", "Live Text", "—", "Framed", "Immersive", "—", "Density",
-        "Toggle Window Style"]
+        "Show Touches", "Live Text", "—", "Framed", "Immersive", "Bar Prototype",
+        "—", "Density", "Toggle Window Style"]
 if seq != want:
     print("View:", seq, "wanted:", want); sys.exit(1)
 PY
@@ -2687,6 +2687,26 @@ if seq != want:
     print("Immersive submenu:", seq); sys.exit(1)
 if imm["state"] != "on":
     print("the parent is not checked while the window is immersive:", imm["state"]); sys.exit(1)
+PY
+
+    # View ▸ Bar Prototype (temporary, 2026-10-21): Compact and Standard,
+    # one checked. Compact is the default; the menu item goes once a person
+    # picks.
+    python3 - "$WORK/menus.json" <<'PY' && ok "MENUS Bar Prototype: Compact/Standard, Compact checked" \
+        || bad "MENUS the Bar Prototype submenu is wrong"
+import json, sys
+root = json.load(open(sys.argv[1]))
+view = next(i for i in root["items"] if i["title"] == "View")
+bar = next((i for i in view["submenu"] if i["title"] == "Bar Prototype"), None)
+if bar is None or not bar.get("submenu"):
+    print("no Bar Prototype submenu"); sys.exit(1)
+items = [item for item in bar["submenu"] if not item["isSeparator"]]
+seq = [item["title"] for item in items]
+if seq != ["Compact", "Standard"]:
+    print("items:", seq); sys.exit(1)
+states = {item["title"]: item["state"] for item in items}
+if states != {"Compact": "on", "Standard": "off"}:
+    print("states:", states); sys.exit(1)
 PY
 
     python3 - "$WORK/menus.json" <<'PY' && ok "MENUS Immersive is a submenu: the delays, a separator, Always Visible" \

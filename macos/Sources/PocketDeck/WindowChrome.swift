@@ -104,8 +104,9 @@ enum HeaderBar {
     static let buttonHeight: CGFloat = 28
     /// Between two capsules.
     static let capsuleGap: CGFloat = 6
-    /// The row ends this far in from the window's right edge.
-    static let rightInset: CGFloat = 12
+    /// The row ends this far in from the window's right edge: the lights'
+    /// left inset, mirrored (BarPrototype).
+    static var rightInset: CGFloat { BarPrototype.current.rightInset }
     static let symbolPointSize: CGFloat = 14
     static let symbolWeight: NSFont.Weight = .medium
     /// The Live Text button's side (LiveTextBarButton.side).
@@ -414,5 +415,27 @@ final class HeaderBarView: NSView {
     /// The button that runs one kind (the e2e clicks its real control).
     func button(for kind: HeaderActionKind) -> HeaderActionButton? {
         buttons.first { $0.action.kind == kind }
+    }
+
+    /// The capsules are 28 pt tall in a bar that may be taller (Standard): keep
+    /// them on the bar's centre line.
+    override func layout() {
+        super.layout()
+        let y = (bounds.height - HeaderBar.buttonHeight) / 2
+        let groups = HeaderBar.groups(actions)
+        let origins = HeaderBar.capsuleOrigins(actions)
+        guard groups.count == capsules.count else { return }
+        for (index, group) in groups.enumerated() {
+            capsules[index].frame = NSRect(x: origins[index], y: y,
+                                           width: HeaderBar.capsuleWidth(buttonCount: group.count),
+                                           height: HeaderBar.buttonHeight)
+            for offset in 0..<group.count {
+                let buttonIndex = index > 0 ? groups.prefix(index).reduce(0) { $0 + $1.count } : 0
+                guard buttonIndex + offset < buttons.count else { continue }
+                buttons[buttonIndex + offset].frame = NSRect(
+                    x: origins[index] + CGFloat(offset) * HeaderBar.buttonWidth, y: y,
+                    width: HeaderBar.buttonWidth, height: HeaderBar.buttonHeight)
+            }
+        }
     }
 }
