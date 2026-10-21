@@ -140,6 +140,10 @@ final class LiveTextSession {
     /// only, never pixels).
     private(set) var lastFailure = ""
 
+    /// What the overlay offers while the mode is up (see init).
+    static let interactions: ImageAnalysisOverlayView.InteractionTypes =
+        [.textSelection, .dataDetectors, .imageSubject, .visualLookUp]
+
     /// Every state change, with the reason for a move to idle.
     var onStateChange: ((LiveTextState, LiveTextExitReason?) -> Void)?
 
@@ -168,7 +172,13 @@ final class LiveTextSession {
         imageView.imageFrameStyle = .none
         imageView.layer?.zPosition = 5
         imageView.isHidden = true
-        overlay.preferredInteractionTypes = .automatic
+        // Every interaction the mode promises (docs/design/livetext.md): text
+        // selection and drag, data detectors, Copy Subject and Look Up. v104's
+        // first analysis turned the highlights on and left `.automatic` to
+        // resolve a set without text selection, so the person's drags selected
+        // nothing; the set is explicit so the highlight flag cannot take text
+        // selection away.
+        overlay.preferredInteractionTypes = Self.interactions
         overlay.trackingImageView = imageView
         overlay.isHidden = true
         overlay.layer?.zPosition = 6
@@ -213,8 +223,9 @@ final class LiveTextSession {
     }
 
     /// The frame is in hand (either route): freeze it, analyze it, put the
-    /// overlay up.
-    private func freeze(_ buffer: CVPixelBuffer, image: NSImage, on host: VideoLayerView) {
+    /// overlay up. Internal, so the view-tree test can present a synthetic
+    /// frame without a live session (the production entries call it too).
+    func freeze(_ buffer: CVPixelBuffer, image: NSImage, on host: VideoLayerView) {
         snapshotTimeout?.cancel()
         snapshotTimeout = nil
         freezeImage(buffer, image: image, on: host)
@@ -307,6 +318,9 @@ final class LiveTextSession {
                     // its toggle stay the person's afterwards (set once here,
                     // never re-applied while the mode is up).
                     self.overlay.selectableItemsHighlighted = true
+                    // VisionKit re-resolves the interactions when the
+                    // highlight flag changes; keep the explicit set.
+                    self.overlay.preferredInteractionTypes = LiveTextSession.interactions
                     self.analysisReady = true
                     self.mode.handle(.analysisFinished)
                     self.onStateChange?(.shown, nil)
