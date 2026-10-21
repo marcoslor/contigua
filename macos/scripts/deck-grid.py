@@ -13,9 +13,9 @@ cells, and the label-less entry falls back to its package's last part.
 import json
 import sys
 
-# The fake phone's app list: 40 apps (-demo-apps, a grid like the person's)
-# plus the duplicate launcher entry.
-EXPECTED_CELLS = int(sys.argv[2]) if len(sys.argv) > 2 else 41
+# The fake phone's app list: 200 apps (-demo-apps, a grid bigger than the
+# person's phone) plus the duplicate launcher entry.
+EXPECTED_CELLS = int(sys.argv[2]) if len(sys.argv) > 2 else 201
 DUPLICATE = "com.android.settings/"
 LABEL_LESS = "com.spotify.music/"
 

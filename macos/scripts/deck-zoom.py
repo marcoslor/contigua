@@ -1,15 +1,25 @@
 #!/usr/bin/env python3
-"""The Deck's double-click zoom, from --debug-deck-zoom (e2e `deck`).
+"""The Deck's double-click zoom and drag-resize, from --debug-deck-zoom (e2e
+`deck`, NFR `deck_zoom_frame_p95_ms`).
 
-`NSWindow.zoom` is the path the title bar's double-click takes. A display link
-samples the frames the window server draws during the zoom and the unzoom; a
-frame time above the limit is a dropped frame the person feels, and the way back
-is where the window shrinks and the grid lays itself out again.
+`NSWindow.zoom` is the path the title bar's double-click takes; the drag phase
+is the same window resized in scripted steps, the way a person drags its edge.
+A display link samples the frames the window server draws during each phase
+(zoom, unzoom, drag). A frame time above the limit is a dropped frame the person
+feels.
 
-Exit 0 when both p95 values are under the limit (ms, from nfr-limits.json).
+Every sampled frame also carries the grid as drawn (each cell's frame, the
+grid's visible bounds, the width it was given). The frame must fit the width it
+was drawn at: no cell outside the visible bounds, one inset on both sides, and
+the column count that width asks for. A layout that lags the window (the
+person's clipped edges during the way back) fails here by name.
+
+Exit 0 when every phase keeps p95 under the limit and every drawn frame fits.
 """
 import json
 import sys
+
+PHASES = ("zoom", "unzoom", "drag")
 
 
 def main(path, limit):
@@ -20,16 +30,7 @@ def main(path, limit):
         return 1
     limit = float(limit)
     problems = []
-    # The grid's own layout passes: one per display frame was the stutter's
-    # cause (the width went straight into the grid's state). A coalesced grid
-    # takes it a few times per zoom, plus the settle.
-    relayouts = int(root.get("relayouts", 0))
-    frames = sum(int((root.get(phase) or {}).get("frames", 0)) for phase in ("zoom", "unzoom"))
-    budget = max(12, frames // 3)
-    if relayouts > budget:
-        problems.append("%d grid relayouts for %d frames (budget %d): the grid re-lays out every frame"
-                        % (relayouts, frames, budget))
-    for phase in ("zoom", "unzoom"):
+    for phase in PHASES:
         data = root.get(phase) or {}
         p95 = float(data.get("p95", 0))
         if p95 <= 0:
@@ -43,6 +44,16 @@ def main(path, limit):
         elif float(data.get("settleMax", 0)) > 120:
             problems.append("%s settles with a %.0f ms frame"
                             % (phase, float(data.get("settleMax", 0))))
+        # The grid's drawn layout: every frame of the window's change, not just
+        # the settled one. Few frames is a broken measurement, not a pass.
+        measured = int(data.get("measured", 0))
+        bad = int(data.get("badFrames", 0))
+        if measured < 20:
+            problems.append("%s: only %d frames carry the grid as drawn" % (phase, measured))
+        elif bad:
+            problems.append("%s: %d of %d drawn frames do not fit the width they were drawn at (%s)"
+                            % (phase, bad, measured,
+                               "; ".join(str(example) for example in (data.get("examples") or []))))
     if problems:
         print("; ".join(problems))
         return 1

@@ -8026,9 +8026,9 @@ check_deck() {
     clean
     # The grid's fixtures (v105's empty slot): one package with two launcher
     # activities, and one entry with no label at all.
-    # A full grid (40 apps) like the person's: the zoom cost grows with the
-    # number of cells it lays out.
-    FAKE_ARGS="--dup-launcher --no-label-app com.spotify.music --demo-apps 40" start_fake || return 1
+    # A full grid (200 apps, more than the person's phone) like theirs: the
+    # zoom cost grows with the number of cells the grid lays out.
+    FAKE_ARGS="--dup-launcher --no-label-app com.spotify.music --demo-apps 200" start_fake || return 1
     FAKE_ARGS=""
     # The shared app's own launch: the checks after this one use it.
     launch_shared --connect "127.0.0.1:$PORT" --debug-deck-grid "$WORK/deck-grid.jsonl" \
@@ -8051,8 +8051,8 @@ check_deck() {
     # package are there with their own id and words under them, and the entry
     # the phone sent without a label still has words (the package's last part).
     # Equal ids drew neither cell — the person's empty slot.
-    if wait_until 30 test -s "$WORK/deck-grid.jsonl" && grep -q '"count":41' "$WORK/deck-grid.jsonl"; then
-        if python3 "$MACOS/scripts/deck-grid.py" "$WORK/deck-grid.jsonl" 41; then
+    if wait_until 30 test -s "$WORK/deck-grid.jsonl" && grep -q '"count":201' "$WORK/deck-grid.jsonl"; then
+        if python3 "$MACOS/scripts/deck-grid.py" "$WORK/deck-grid.jsonl" 201; then
             ok "DECK every cell has words and its own id (2 settings cells, the label-less one falls back)"
         else
             bad "DECK the grid has an empty or repeated cell ($(tail -1 "$WORK/deck-grid.jsonl"))"
@@ -8062,16 +8062,17 @@ check_deck() {
     fi
 
     # The Deck's double-click zoom (NSWindow.zoom, the same path the title
-    # bar's double-click takes) must draw its frames at the NFR limit: the grid
-    # re-laying out on every frame of the animation is what made it feel slow,
-    # worst on the way back.
-    if wait_until 40 [ -s "$WORK/deck-zoom.json" ]; then
+    # bar's double-click takes) and a scripted live drag-resize must draw their
+    # frames at the NFR limit, and the grid must fit the width it is drawn at on
+    # every sampled frame: a layout fed by a stored, debounced width clips the
+    # edge columns while the window animates.
+    if wait_until 45 [ -s "$WORK/deck-zoom.json" ]; then
         local zoom_limit
         zoom_limit="$(nfr_limit deck_zoom_frame_p95_ms)"
         if python3 "$MACOS/scripts/deck-zoom.py" "$WORK/deck-zoom.json" "$zoom_limit"; then
-            ok "DECK the zoom and unzoom keep p95 under ${zoom_limit} ms ($(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print("zoom p95=%s ms, unzoom p95=%s ms, relayouts=%s" % (d["zoom"]["p95"], d["unzoom"]["p95"], d.get("relayouts")))' "$WORK/deck-zoom.json"))"
+            ok "DECK zoom, unzoom and drag keep p95 under ${zoom_limit} ms and every drawn frame fits ($(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print("zoom p95=%s ms, unzoom p95=%s ms, drag p95=%s ms, relayouts=%s, bad frames=%s" % (d["zoom"]["p95"], d["unzoom"]["p95"], d["drag"]["p95"], d.get("relayouts"), sum(d[p].get("badFrames", 0) for p in ("zoom","unzoom","drag"))))' "$WORK/deck-zoom.json"))"
         else
-            bad "DECK the zoom is slower than the ${zoom_limit} ms limit ($(cat "$WORK/deck-zoom.json" 2>/dev/null))"
+            bad "DECK the zoom drags a clipped or slow grid ($(python3 "$MACOS/scripts/deck-zoom.py" "$WORK/deck-zoom.json" "$zoom_limit" 2>&1))"
         fi
     else
         bad "DECK no zoom measurement (--debug-deck-zoom)"
