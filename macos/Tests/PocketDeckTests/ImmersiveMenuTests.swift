@@ -67,47 +67,21 @@ final class ImmersiveMenuTests: XCTestCase {
         XCTAssertTrue(RevealDelay.alwaysVisible.keepsChromeVisible)
         XCTAssertFalse(RevealDelay.short.keepsChromeVisible)
     }
-    /// The View menu is SwiftUI's, and the style pair and Hide Controls are
-    /// AppKit's. A SwiftUI rebuild replaces every item and dropped Immersive in
-    /// v104; they are put back, in the design's order, and never lose their
-    /// state.
-    @MainActor
-    func testTheItemsComeBackAfterTheViewMenuRebuilds() throws {
-        _ = NSApplication.shared
-        let main = NSMenu()
-        let view = NSMenu(title: "View")
-        let root = NSMenuItem(title: "View", action: nil, keyEquivalent: "")
-        root.submenu = view
-        main.addItem(root)
-        view.addItem(NSMenuItem(title: "Live Text", action: nil, keyEquivalent: ""))
-        view.addItem(.separator())
-        view.addItem(NSMenuItem(title: "Density", action: nil, keyEquivalent: ""))
-        let saved = NSApp.mainMenu
-        NSApp.mainMenu = main
-        defer { NSApp.mainMenu = saved }
-
-        func titles() -> [String] {
-            view.items.map { $0.isSeparatorItem ? "—" : $0.title }
+    /// The View menu is SwiftUI's, and so are its Framed / Immersive / Hide
+    /// Controls items: the commands build every one of them, so a SwiftUI
+    /// rebuild of the menu cannot drop any (an AppKit item inserted into the
+    /// menu was dropped exactly that way, and the person's v104 and v107 menus
+    /// lost these). The decisions the commands read are here.
+    func testTheStylePairAndHideControlsAreTheModels() {
+        XCTAssertEqual(MenuModel.styles, [.framed, .immersive])
+        for key in WindowStyle.allCases {
+            let checked = MenuModel.styles.filter { MenuModel.styleChecked($0, key: key) }
+            XCTAssertEqual(checked, [key], "exactly one of the pair is checked for \(key)")
         }
-        ImmersiveMenuInstaller.shared.ensureInstalled()
-        XCTAssertEqual(titles(), ["Live Text", "—", "Framed", "Immersive", "Hide Controls", "Density"])
-
-        // SwiftUI rebuilds the View menu from its own items: the AppKit items
-        // are gone and every SwiftUI item is a new instance.
-        for item in view.items where ImmersiveMenuInstaller.titles.contains(item.title) {
-            view.removeItem(item)
-        }
-        XCTAssertEqual(titles(), ["Live Text", "—", "Density"])
-
-        ImmersiveMenuInstaller.shared.ensureInstalled()
-        XCTAssertEqual(titles(), ["Live Text", "—", "Framed", "Immersive", "Hide Controls", "Density"])
-        let framed = try XCTUnwrap(view.items.first { $0.title == "Framed" })
-        let immersive = try XCTUnwrap(view.items.first { $0.title == "Immersive" })
-        XCTAssertNil(framed.submenu, "a radio item is not a submenu parent")
-        XCTAssertNil(immersive.submenu, "Immersive is a radio item, not a submenu parent")
-        let hide = try XCTUnwrap(view.items.first { $0.title == "Hide Controls" })
-        let sub = hide.submenu?.items.map { $0.isSeparatorItem ? "—" : $0.title } ?? []
-        XCTAssertEqual(sub, ["Instantly", "Short", "Long", "—", "Always Visible"])
+        XCTAssertFalse(MenuModel.hideControlsEnabled(style: .framed))
+        XCTAssertTrue(MenuModel.hideControlsEnabled(style: .immersive))
+        XCTAssertEqual(MenuModel.hideControls.map(\.title),
+                       ["Instantly", "Short", "Long", "", "Always Visible"])
     }
 
 }

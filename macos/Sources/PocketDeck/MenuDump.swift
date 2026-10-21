@@ -17,6 +17,12 @@ enum MenuDump {
         /// Whether the item can be chosen now (a submenu whose choice is not
         /// active, like Hide Controls while framed, is disabled).
         var enabled: Bool
+        /// The class of the item's target, nil when it has none. An item the
+        /// app built with AppKit and put in the menu itself is owned by one of
+        /// the app's own types ("PocketDeck.ImmersiveMenuInstaller"); a SwiftUI
+        /// command's item is owned by SwiftUI. This is how the checks see the
+        /// injection pattern that loses items on a rebuild.
+        var targetClass: String?
         /// nil when the item has no submenu.
         var submenu: [Item]?
     }
@@ -36,6 +42,7 @@ enum MenuDump {
                     state: stateName(menuItem.state),
                     isSeparator: menuItem.isSeparatorItem,
                     enabled: menuItem.isEnabled,
+                    targetClass: menuItem.target.map { String(describing: type(of: $0)) },
                     submenu: menuItem.submenu.map(snapshot))
     }
 

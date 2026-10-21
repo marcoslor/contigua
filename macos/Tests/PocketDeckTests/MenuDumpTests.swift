@@ -52,7 +52,8 @@ final class MenuDumpTests: XCTestCase {
         func items(_ titles: [String]) -> [MenuDump.Item] {
             titles.map { title in
                 MenuDump.Item(title: title, hasImage: false, keyEquivalent: "", modifiers: [],
-                              state: "off", isSeparator: title == "—", enabled: true, submenu: nil)
+                              state: "off", isSeparator: title == "—", enabled: true,
+                              targetClass: nil, submenu: nil)
             }
         }
         XCTAssertEqual(MenuDump.shapeProblems("View", items(["A", "B"])), [])
@@ -63,7 +64,7 @@ final class MenuDumpTests: XCTestCase {
         // A submenu is reported under its parent's title.
         var parent = MenuDump.Item(title: "Density", hasImage: false, keyEquivalent: "", modifiers: [],
                                    state: "off", isSeparator: false, enabled: true,
-                                   submenu: items(["—", "100%"]))
+                                   targetClass: nil, submenu: items(["—", "100%"]))
         parent.submenu = items(["—", "100%"])
         XCTAssertEqual(MenuDump.shapeProblems("View", [parent]), ["View/Density: leading separator"])
     }
@@ -78,6 +79,17 @@ final class MenuDumpTests: XCTestCase {
         file.addItem(.separator())
         let broken = try XCTUnwrap(JSONSerialization.jsonObject(with: MenuDump.json(menu)) as? [String: Any])
         XCTAssertEqual(broken["problems"] as? [String], ["File: trailing separator"])
+    }
+
+    func testTheTargetsClassNamesTheItemsOwner() {
+        let menu = NSMenu(title: "Main")
+        let injected = NSMenuItem(title: "Injected", action: nil, keyEquivalent: "")
+        injected.target = menu
+        menu.addItem(injected)
+        menu.addItem(NSMenuItem(title: "Plain", action: nil, keyEquivalent: ""))
+        let items = MenuDump.snapshot(menu)
+        XCTAssertEqual(items[0].targetClass, "NSMenu", "an item the app installed is owned by the app's type")
+        XCTAssertNil(items[1].targetClass)
     }
 
     func testModifierNamesAreStableAndOrdered() {
