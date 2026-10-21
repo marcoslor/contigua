@@ -344,6 +344,13 @@ final class WindowManager {
         }
     }
 
+    /// `state.secure`: the phone's mirror is a surface Android blanks.
+    func setPhoneSecure(_ secure: Bool) {
+        for controller in allControllers() {
+            (controller as? PhoneWindowController)?.setPhoneSecure(secure)
+        }
+    }
+
     /// "Continue on Mac" (docs/ROADMAP.md #9): a window for the app in the
     /// foreground on the phone's screen. The phone answers with the stream it
     /// opened (`task.continue`) or an error; the video and the app label follow.
@@ -469,6 +476,7 @@ final class WindowManager {
             videoDump?.write(frame: frame, stream: stream)
             let controller = controller(for: stream)
             controller?.videoView.enqueue(frame)
+            controller?.frameClock.note()
         }
     }
 

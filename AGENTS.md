@@ -29,12 +29,13 @@
 - **Time limits** for every step a person waits on (open a file, first video frame, connect, a preview). A protocol loop must return as soon as its terminal reply arrives: test it against a fake peer that keeps the connection open.
 - **No side effects in read-only flows:** browsing, previewing, opening and listing send zero writes to the phone (the fake phone counts them).
 - **Modes block what they freeze:** while a mode shows a frozen or non-live picture (Live Text, screen off, disconnected, camera taken over), controls and shortcuts send zero input to the phone.
-- **No stale picture:** when frames stop, the window shows a state ("screen off", "disconnected") within 2 s instead of the last frame as if it were live.
+- **No stale picture:** when frames stop, the window shows a state ("screen off", "disconnected") within `docs/NFR.md`'s `stale_picture_ms` instead of the last frame as if it were live.
 - **Honest settings:** a setting the build or the phone can't support is disabled with a sentence saying why; an error message only suggests a step that can actually fix it.
 - **Layout fits** the smallest supported screen (1280×800): every control is visible or inside something that scrolls.
 - **Contrast:** controls drawn over video stay readable over white, black and busy frames (at least 3:1 against what's behind them).
 - **Icons and images** are never upscaled from a smaller source; visual output is compared to reference images with a tolerance.
-Limits live in one place (docs/NFR.md once it exists), not as numbers scattered through scripts.
+- Limits live in one place (`docs/NFR.md` and `macos/scripts/nfr-limits.json`), not as numbers scattered through scripts.
+- Run `macos/scripts/nfr.sh` before asking for review on any UI or protocol change: it runs the NFR K2 tests and the host e2e check `nfr` (time limits, zero writes in read-only flows, zero input in frozen modes, no stale picture, honest settings, layout, contrast, icons, and the real-control family).
 
 **Test tiers, cheapest first:**
 1. Unit tests: K1 (`cd android && ./gradlew -q :app:assembleDebug :app:testDebugUnitTest`) and K2 (`cd macos && swift build && swift test`). Pure logic goes behind a seam so it is testable here.

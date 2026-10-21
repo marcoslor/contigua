@@ -37,26 +37,49 @@ final class PhoneWindowController: StreamWindowController {
         videoView.inputMapper?.isPhoneMode = true
         // The mirror's letterbox is the phone's fixed screen, never a crop.
         videoView.isPhoneMode = true
+        // No full screen for the phone window: a phone mirror filling a whole
+        // display is letterboxed or stretched, and the person's report is that
+        // it looks bad. Without .fullScreenPrimary (and with .fullScreenNone)
+        // AppKit neither offers the mode nor the Window menu's item; the green
+        // button zooms to the phone's aspect fit instead
+        // (windowWillUseStandardFrame).
+        window?.collectionBehavior = [.fullScreenNone]
         chrome.phoneOverlay.onWake = { [weak self] in self?.wakeFromOverlay() }
-        // While the panel sleeps the frame is frozen: no click, key, scroll or
-        // hover reaches the phone through any path. Live Text freezes it too
-        // (StreamWindow sets that rule; this one must keep it).
-        videoView.inputMapper?.inputSuspended = { [weak self] in
-            guard let self else { return false }
-            return self.liveText.isActive || self.screenModel.isShowing
-        }
         rotationObserver = NotificationCenter.default.addObserver(
             forName: VideoLayerView.videoSizeDidChange, object: videoView, queue: .main
         ) { [weak self] _ in
             MainActor.assumeIsolated { self?.followRotation() }
         }
+        // The black-frame fallback for phones that do not report `state.secure`
+        // yet: a look at the displayed frame five times a second.
+        let timer = Timer(timeInterval: 0.2, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.sampleFrameForBlackCover() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        blackTimer = timer
     }
 
     deinit {
+        blackTimer?.invalidate()
         if let rotationObserver { NotificationCenter.default.removeObserver(rotationObserver) }
     }
 
+    /// A cover over the mirror (sleeping panel or secure surface) freezes it
+    /// exactly as Live Text does: the shortcuts, the bar's buttons, the
+    /// Navigate menu and every input path. Only the cover's Wake Screen button
+    /// stays allowed.
+    override var frozen: Bool { super.frozen || screenModel.isShowing }
+
+    /// No frames are expected while the cover is up: the panel sleeps or
+    /// Android blanks a secure surface. The watchdog's clock starts again when
+    /// the cover comes off.
+    override var expectsFrames: Bool {
+        guard super.expectsFrames else { return false }
+        return screenModel.cover == nil
+    }
+
     private var rotationObserver: NSObjectProtocol?
+    private var blackTimer: Timer?
 
     /// The phone turned: the stream now has the other orientation, so the window
     /// turns too, keeping its top-left corner and its picture's area.
@@ -101,6 +124,14 @@ final class PhoneWindowController: StreamWindowController {
     func windowWillResize(_ sender: NSWindow, to frameSize: NSSize) -> NSSize {
         PhoneChrome.frame(proposed: frameSize, current: sender.frame.size, phone: phoneScreen, style: style)
     }
+
+    /// The green button (and a double-click on the bar) zooms to the phone's
+    /// aspect fit inside the screen, never to the whole display: this window
+    /// has no full screen.
+    func windowWillUseStandardFrame(_ window: NSWindow, defaultFrame newFrame: NSRect) -> NSRect {
+        guard let screen = window.screen ?? NSScreen.main else { return newFrame }
+        return PhoneChrome.zoomFrame(phone: phoneScreen, style: style, visible: screen.visibleFrame)
+    }
     /// dpi = phoneDpi × vdWidth / phoneScreenWidth, so the phone's dp width is
     /// preserved whatever the Mac window size is.
     override func dpi() -> Double {
@@ -112,12 +143,12 @@ final class PhoneWindowController: StreamWindowController {
     /// ⇧⌘H / ⌘↑ only make sense here (home/recents are phone-mode actions).
     /// Live Text freezes them with the bar's buttons.
     @objc func navigateHome(_ sender: Any?) {
-        guard HeaderActionPolicy.allowsPhoneShortcut(liveTextActive: liveText.isActive) else { return }
+        guard HeaderActionPolicy.allowsPhoneShortcut(frozen: frozen) else { return }
         session.nav(stream: stream, action: "home")
     }
 
     @objc func navigateRecents(_ sender: Any?) {
-        guard HeaderActionPolicy.allowsPhoneShortcut(liveTextActive: liveText.isActive) else { return }
+        guard HeaderActionPolicy.allowsPhoneShortcut(frozen: frozen) else { return }
         session.nav(stream: stream, action: "recents")
     }
 
@@ -134,12 +165,44 @@ final class PhoneWindowController: StreamWindowController {
     /// Screen button over the held frame, on takes it away.
     func setPhoneScreen(_ screen: PhoneScreen?) {
         guard screenModel.set(screen: screen) else { return }
-        let off = screenModel.isShowing
-        if off { videoView.inputMapper?.dropPendingInput() }
-        chrome.phoneOverlay.isHidden = !off
+        applyCover()
+    }
+
+    /// `state.secure` from the session: the phone's PIN pad or another surface
+    /// Android blanks gets the blurred cover and its sentence, with no button.
+    func setPhoneSecure(_ secure: Bool) {
+        guard screenModel.setSecure(secure) else { return }
+        applyCover()
+    }
+
+    /// The cover follows the model: the sleeping panel offers Wake Screen, a
+    /// secure surface only explains itself.
+    private func applyCover() {
+        let cover = screenModel.cover
+        if cover != nil { videoView.inputMapper?.dropPendingInput() }
+        chrome.phoneOverlay.show(cover)
         chrome.needsLayout = true
-        writeChromeState()
-        Log.video.notice("phone window: screen=\(off ? "off" : "on", privacy: .public) overlay=\(off ? 1 : 0, privacy: .public)")
+        updateFrozen()
+        switch cover {
+        case .screenOff:
+            Log.video.notice("phone window: screen=off overlay=1")
+        case .secure:
+            Log.video.notice("phone window: secure=1 overlay=1")
+        case nil:
+            Log.video.notice("phone window: screen=on overlay=0")
+        }
+    }
+
+    /// Samples the displayed frame for the black-frame fallback (phones that do
+    /// not report `state.secure` yet). Only while the window shows live phone
+    /// video; the pixel test is a grid, not a full scan.
+    private func sampleFrameForBlackCover() {
+        guard !screenModel.isShowing, screenModel.screen != .off,
+              window?.isVisible == true, !videoView.isPaused else { return }
+        guard let buffer = videoView.copyDisplayedFrame() else { return }
+        if screenModel.frame(at: ProcessInfo.processInfo.systemUptime, black: BlackFrame.isBlack(buffer)) {
+            applyCover()
+        }
     }
 
     /// A click on the blurred frame (or its Wake Screen button).

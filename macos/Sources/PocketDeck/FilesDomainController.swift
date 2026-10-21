@@ -68,6 +68,44 @@ protocol FilesDomainManaging: AnyObject {
     func signalWorkingSet(identifier: String, completion: @escaping (Error?) -> Void)
 }
 
+/// A manager that reports this profile's domain as already added (`--files-domain-seen`,
+/// host e2e): the real one needs File Provider, and a check on the person's Mac
+/// must not touch it. Every change is a no-op that succeeds.
+@MainActor
+final class FilesDomainSeenManager: FilesDomainManaging {
+    private let seen: String
+
+    init(identifier: String) {
+        seen = identifier
+    }
+
+    func domain(identifier: String) -> FilesDomainInfo? {
+        guard identifier == seen else { return nil }
+        return FilesDomainInfo(identifier: identifier, displayName: "PocketDeck",
+                               isDisconnected: false, userEnabled: true)
+    }
+
+    func add(identifier: String, displayName: String, completion: @escaping (Error?) -> Void) {
+        completion(nil)
+    }
+
+    func remove(identifier: String, completion: @escaping (Error?) -> Void) {
+        completion(nil)
+    }
+
+    func reconnect(identifier: String, completion: @escaping (Error?) -> Void) {
+        completion(nil)
+    }
+
+    func disconnect(identifier: String, reason: String, completion: @escaping (Error?) -> Void) {
+        completion(nil)
+    }
+
+    func signalWorkingSet(identifier: String, completion: @escaping (Error?) -> Void) {
+        completion(nil)
+    }
+}
+
 @MainActor
 @Observable
 final class FilesDomainController {
@@ -262,22 +300,18 @@ final class FilesDomainController {
         if let info = manager.domain(identifier: identifier) {
             addedLocally = true
             state = info.userEnabled ? .on : .needsSwitch
+            // The bridge is this process's socket in the App Group container,
+            // and it dies with the process. A relaunch finds the domain still
+            // added, so this branch is the only place that brings it back; the
+            // extension had nothing to reach without it.
+            guard startBridgeIfNeeded() else { return }
             if info.userEnabled && sessionUp {
                 manager.reconnect(identifier: identifier) { _ in }
                 manager.signalWorkingSet(identifier: identifier) { _ in }
             }
             return
         }
-        guard let path = fixedSocketPath ?? FilesSocket.groupPath(profile: profile) else {
-            state = .failed
-            Log.files.notice("domain: this bundle has no app group")
-            return
-        }
-        guard startBridge(path) == "ok" else {
-            state = .failed
-            Log.files.notice("domain: the bridge socket did not come up")
-            return
-        }
+        guard startBridgeIfNeeded() else { return }
         state = .adding
         manager.add(identifier: identifier,
                     displayName: FilesDomain.displayName(profile: profile)) { [weak self] error in
@@ -296,6 +330,25 @@ final class FilesDomainController {
                 self.manager.signalWorkingSet(identifier: self.identifier) { _ in }
             }
         }
+    }
+
+    /// Starts the extension's bridge if this process has not already. The
+    /// socket lives in the App Group container and dies with the process, so
+    /// every launch needs it even when the domain already exists; the bridge
+    /// itself is idempotent.
+    @discardableResult
+    private func startBridgeIfNeeded() -> Bool {
+        guard let path = fixedSocketPath ?? FilesSocket.groupPath(profile: profile) else {
+            state = .failed
+            Log.files.notice("domain: this bundle has no app group")
+            return false
+        }
+        guard startBridge(path) == "ok" else {
+            state = .failed
+            Log.files.notice("domain: the bridge socket did not come up")
+            return false
+        }
+        return true
     }
 
     private func removeDomain() {

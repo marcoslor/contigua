@@ -155,14 +155,6 @@ final class LiveTextSession {
     /// while the mode is up.
     private var keyMonitor: Any?
     private var snapshotTimeout: DispatchWorkItem?
-    /// Stage-2 pressure (Force Touch) while the mode is up.
-    private var pressureMonitor: Any?
-    /// The lifted subjects VisionKit found on the frozen frame, with their
-    /// bounds in the overlay's coordinates. Read synchronously by the force
-    /// click so a subject can be told from text or empty area without waiting.
-    private var subjectItems: [(subject: ImageAnalysisOverlayView.Subject, bounds: CGRect)] = []
-    /// A subject was copied by force click (the chrome shows "Subject copied").
-    var onSubjectCopied: (() -> Void)?
 
     var state: LiveTextState { mode.state }
     var isActive: Bool { mode.isActive }
@@ -177,9 +169,6 @@ final class LiveTextSession {
         imageView.layer?.zPosition = 5
         imageView.isHidden = true
         overlay.preferredInteractionTypes = .automatic
-        // Force click has to reach stage 2 for the copy; the overlay still
-        // gets the event (and its Look Up) when no subject is under it.
-        overlay.pressureConfiguration = NSPressureConfiguration(pressureBehavior: .primaryGeneric)
         overlay.trackingImageView = imageView
         overlay.isHidden = true
         overlay.layer?.zPosition = 6
@@ -246,7 +235,6 @@ final class LiveTextSession {
         onStateChange?(.analyzing, nil)
         host.window?.makeFirstResponder(overlay)
         installKeyMonitor()
-        installPressureMonitor()
         analyze(buffer, generation: generation)
     }
 
@@ -264,8 +252,6 @@ final class LiveTextSession {
         guard mode.exit(reason) else { return false }
         generation += 1
         removeKeyMonitor()
-        removePressureMonitor()
-        subjectItems = []
         snapshotTimeout?.cancel()
         snapshotTimeout = nil
         host?.cancelFrameSnapshot()
@@ -316,10 +302,14 @@ final class LiveTextSession {
                 await MainActor.run {
                     guard let self, self.generation == generation, self.mode.state == .analyzing else { return }
                     self.overlay.analysis = analysis
+                    // Entering the mode starts with VisionKit's Live Text button
+                    // on: every recognised item is highlighted. The button and
+                    // its toggle stay the person's afterwards (set once here,
+                    // never re-applied while the mode is up).
+                    self.overlay.selectableItemsHighlighted = true
                     self.analysisReady = true
                     self.mode.handle(.analysisFinished)
                     self.onStateChange?(.shown, nil)
-                    self.beginSubjectTracking()
                     Log.video.notice("livetext: analysis ready, \(analysis.transcript.count, privacy: .public) characters")
                 }
             } catch {
@@ -364,98 +354,9 @@ final class LiveTextSession {
         keyMonitor = nil
     }
 
-    // MARK: Force click (copy the subject)
-
-    /// A stage-2 pressure (Force Touch) on a lifted subject copies it. On text
-    /// or empty area the event goes on untouched (the system's Look Up).
-    private func installPressureMonitor() {
-        guard pressureMonitor == nil else { return }
-        pressureMonitor = NSEvent.addLocalMonitorForEvents(matching: .pressure) { [weak self] event in
-            guard let self, self.isActive, event.stage == 2,
-                  let host = self.host, event.window === host.window else { return event }
-            let point = self.overlay.convert(event.locationInWindow, from: nil)
-            let hit = self.subjectItems.contains { $0.bounds.contains(point) }
-            guard ForceClick.action(active: self.isActive, subjectAtPoint: hit) == .copy else {
-                return event
-            }
-            self.copySubject(at: point)
-            return nil
-        }
-    }
-
-    private func removePressureMonitor() {
-        if let pressureMonitor { NSEvent.removeMonitor(pressureMonitor) }
-        pressureMonitor = nil
-    }
-
-    /// Ask VisionKit for the frame's subjects (only while the mode is up) and
-    /// keep their bounds for the synchronous hit test. Subject analysis runs
-    /// after the text analysis and can take a moment, so it is asked a few
-    /// times.
-    private func beginSubjectTracking() {
-        overlay.beginSubjectAnalysisIfNecessary()
-        for delay in [0.3, 1.0, 2.5] {
-            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
-                guard let self, self.isActive else { return }
-                Task { await self.refreshSubjects() }
-            }
-        }
-    }
-
-    func refreshSubjects() async {
-        guard isActive else {
-            subjectItems = []
-            return
-        }
-        overlay.beginSubjectAnalysisIfNecessary()
-        let subjects = await overlay.subjects
-        guard isActive else { return }
-        subjectItems = subjects.map { ($0, $0.bounds) }
-    }
-
-    private func copySubject(at point: CGPoint) {
-        guard let hit = subjectItems.first(where: { $0.bounds.contains(point) }) else { return }
-        Task { [weak self] in
-            guard let self else { return }
-            let copied = await self.copySubjectImage(hit.subject)
-            Log.video.notice("livetext: force-click subject=1 copied=\(copied ? 1 : 0)")
-        }
-    }
-
-    private func copySubjectImage(_ subject: ImageAnalysisOverlayView.Subject) async -> Bool {
-        guard let image = try? await overlay.image(for: [subject]) else { return false }
-        return copySubjectToPasteboard(image)
-    }
-
-    private func copySubjectToPasteboard(_ image: NSImage) -> Bool {
-        guard let tiff = image.tiffRepresentation,
-              let representation = NSBitmapImageRep(data: tiff),
-              let png = representation.representation(using: .png, properties: [:]) else { return false }
-        let pasteboard = NSPasteboard.general
-        pasteboard.clearContents()
-        pasteboard.setData(png, forType: .png)
-        pasteboard.setData(tiff, forType: .tiff)
-        NSHapticFeedbackManager.defaultPerformer.perform(.generic, performanceTime: .now)
-        onSubjectCopied?()
-        return true
-    }
-
-    /// `livetext forceclick NX NY`: the same path a stage-2 pressure takes,
-    /// with normalized coordinates over the frozen frame (top-left origin).
-    /// Returns whether a subject was under the point and whether it was copied.
-    func forceClickForDebug(at point: CGPoint) async -> (subject: Bool, copied: Bool) {
-        guard isActive else { return (false, false) }
-        await refreshSubjects()
-        let overlayPoint = CGPoint(x: point.x * overlay.bounds.width,
-                                   y: (1 - point.y) * overlay.bounds.height)
-        guard let hit = subjectItems.first(where: { $0.bounds.contains(overlayPoint) }) else {
-            Log.video.notice("livetext: force-click subject=0 copied=0")
-            return (false, false)
-        }
-        let copied = await copySubjectImage(hit.subject)
-        Log.video.notice("livetext: force-click subject=1 copied=\(copied ? 1 : 0)")
-        return (true, copied)
-    }
+    /// VisionKit's supplementary Live Text button state: true from the first
+    /// analysis, and whatever the person's toggle made it afterwards.
+    var selectableItemsHighlighted: Bool { overlay.selectableItemsHighlighted }
 
     /// The analysed transcript's length, never the text itself (the debug hook
     /// reports lengths and one token's presence).

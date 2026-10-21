@@ -173,6 +173,13 @@ final class StreamChromeView: NSView {
 
     var actionCount: Int { actions.actionCount }
 
+    /// The centre of the bar button for one kind, in the window's coordinates:
+    /// where a click lands. nil while the bar and the dwell pill are hidden.
+    func headerButtonCentre(_ kind: HeaderActionKind) -> NSPoint? {
+        guard !actions.isHidden, let button = actions.button(for: kind), button.window != nil else { return nil }
+        return button.convert(NSPoint(x: button.bounds.midX, y: button.bounds.midY), to: nil)
+    }
+
     /// Right now: the framed bar above the stream, or nothing in immersive and
     /// in full screen.
     var barHeight: CGFloat {
@@ -282,6 +289,11 @@ final class StreamChromeView: NSView {
 
     /// The mode came or went: the status pill, the button's accent, the drag
     /// source and the frozen controls follow it.
+    /// What freezes the phone-side kinds: Live Text or a cover over the mirror.
+    func setFrozen(_ frozen: Bool) {
+        actions.setFrozen(frozen)
+    }
+
     func setLiveText(active: Bool) {
         liveTextActive = active
         liveTextButton.isOn = active
@@ -291,25 +303,6 @@ final class StreamChromeView: NSView {
         if active { layoutLiveTextStatus(bar: barHeight > 0) }
         needsLayout = true
     }
-
-    /// A subject was copied by force click: the status pill says so for a
-    /// moment, then goes back to "Live Text" (or away when the mode is off).
-    func flashSubjectCopied() {
-        copyStatusWork?.cancel()
-        liveTextStatus.setText("Subject copied")
-        liveTextStatus.isHidden = false
-        layoutLiveTextStatus(bar: barHeight > 0)
-        let work = DispatchWorkItem { [weak self] in
-            guard let self else { return }
-            self.liveTextStatus.setText("Live Text")
-            self.liveTextStatus.isHidden = !self.liveTextActive
-            self.layoutLiveTextStatus(bar: self.barHeight > 0)
-        }
-        copyStatusWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: work)
-    }
-
-    private var copyStatusWork: DispatchWorkItem?
 
     /// True while the status pill is up (the chrome state file reports it).
     var showsLiveTextStatus: Bool { !liveTextStatus.isHidden }

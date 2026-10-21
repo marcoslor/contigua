@@ -39,6 +39,29 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     var density: Double { DensityRules.effective(override: densityOverride, settings: manager.defaultDensity) }
 
     private(set) var isPaused = false
+    /// What freezes the phone-side actions: Live Text (the frame is frozen),
+    /// a stalled picture, or, in the phone window, a cover over the mirror. One
+    /// predicate for the shortcuts, the bar's buttons, the Navigate menu and
+    /// the input mapper.
+    var frozen: Bool { liveText.isActive || isStalled }
+
+    /// The picture watchdog (FrameWatchdog): frames counted from the session
+    /// queue, the decision on the main thread.
+    @ObservationIgnored let frameClock = FrameClock()
+    private var watchdog = FrameWatchdog()
+    private var stallTimer: Timer?
+    private(set) var isStalled = false
+    private var linkIsDown = false
+
+    /// The watchdog's rule: a live session, the window on screen, and a picture
+    /// that is wanted (not paused, not Live Text, no cover). While it is false
+    /// the clock is idle and any stall is dropped: a covered or paused picture
+    /// has no "live" claim to be wrong about.
+    var expectsFrames: Bool {
+        guard !isPaused, !liveText.isActive, !linkIsDown,
+              let window, window.isVisible, !window.isMiniaturized else { return false }
+        return true
+    }
     /// The mode was active at the last change, and the phone is paused for it.
     private var liveTextWasActive = false
     private var liveTextPaused = false
@@ -103,7 +126,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         }
         // Live Text mode receives nothing: pointer, keys, scroll, hover and
         // trackpad all stop at the mapper (Esc leaves the mode instead).
-        mapper.inputSuspended = { [weak self] in self?.liveText.isActive ?? false }
+        mapper.inputSuspended = { [weak self] in self?.frozen ?? false }
         mapper.onLiveTextEscape = { [weak self] in self?.exitLiveText(.escape) }
         mapper.send = { [weak self] command in self?.handle(command) }
         mapper.touchPointsChanged = { [weak self] points in self?.videoView.showTouchPoints(points) }
@@ -130,13 +153,21 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         videoView.liveText.onStateChange = { [weak self] state, reason in
             self?.liveTextChanged(state, reason)
         }
-        videoView.liveText.onSubjectCopied = { [weak self] in
-            self?.chrome.flashSubjectCopied()
+        // The picture watchdog's clock: a quarter-second is finer than the
+        // one-second deadline and cheap.
+        let stall = Timer(timeInterval: 0.25, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.tickFrameWatchdog() }
         }
+        RunLoop.main.add(stall, forMode: .common)
+        stallTimer = stall
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+    deinit {
+        stallTimer?.invalidate()
+    }
 
     /// The defaults key this window's style is remembered under; nil while the
     /// window does not know the app it shows (a link window before the phone
@@ -459,6 +490,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         state.densityOverride = densityOverride
         state.settingsDensity = manager.defaultDensity
         state.liveText = liveText.isActive
+        state.frozen = frozen
         state.revealDelay = manager.revealDelay
         ImmersiveMenuInstaller.refresh(style: style)
     }
@@ -470,6 +502,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         state.densityPackage = nil
         state.densityOverride = nil
         state.liveText = false
+        state.frozen = false
         videoView.windowResignedKey()
     }
 
@@ -525,6 +558,15 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         liveTextWasActive = active
         chrome.setLiveText(active: active)
         StreamMenuState.shared.liveText = active
+        updateFrozen()
+    }
+
+    /// Applies `frozen` everywhere it is read: the bar's action buttons, the
+    /// Navigate menu, and the chrome state file. The cover (phone window) and
+    /// Live Text both call it.
+    func updateFrozen() {
+        chrome.setFrozen(frozen)
+        if window?.isKeyWindow ?? false { StreamMenuState.shared.frozen = frozen }
         writeChromeState()
     }
 
@@ -569,8 +611,13 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
             + " fullscreen=\(fullScreen ? "yes" : "no") clicks=\(barPresses)"
             + " dots=\(chrome.touchDotsOutsideMirror ? "outside" : "mirrored")"
             + " touches=\(videoView.showsTouches ? "on" : "off") dot_count=\(chrome.touchDotCount)"
-            + " screen=\(chrome.phoneOverlay.isHidden ? "on" : "off")"
-            + " overlay=\(chrome.phoneOverlay.isHidden ? 0 : 1)\n"
+            + " collection=\(window?.collectionBehavior.rawValue ?? 0)"
+            + " collection_none=\(window?.collectionBehavior.contains(.fullScreenNone) == true ? 1 : 0)"
+            + " menu_fullscreen=\(FullScreenMenu.allowsFullScreen(window) ? 1 : 0)"
+            + " screen=\(chrome.phoneOverlay.cover == .screenOff ? "off" : "on")"
+            + " overlay=\(chrome.phoneOverlay.cover == nil ? 0 : 1)"
+            + " secure=\(chrome.phoneOverlay.cover == .secure ? 1 : 0)"
+            + " stall=\(isStalled ? 1 : 0)\n"
         try? Data(line.utf8).write(to: stateFile, options: .atomic)
     }
 
@@ -681,6 +728,48 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         writeChromeState()
     }
 
+    // MARK: Picture watchdog
+
+    /// One watchdog tick: fold in any frame the clock saw, then ask whether the
+    /// silence has lasted long enough to call the picture stalled.
+    private func tickFrameWatchdog() {
+        let now = ProcessInfo.processInfo.systemUptime
+        if let last = frameClock.lastFrame {
+            if watchdog.frame(at: last) { setStalled(false) }
+        }
+        let expecting = expectsFrames
+        if !expecting {
+            // Paused, covered, Live Text or the link down: the picture is not
+            // presented as live, so there is nothing to call stale.
+            setStalled(false)
+        }
+        if watchdog.tick(at: now, expecting: expecting) { setStalled(true) }
+    }
+
+    /// The picture stopped (or came back): the same kind of pill as the
+    /// reconnecting one, "Not responding", and `stall=1` in the chrome state.
+    /// A stall is a frozen mode: input and the phone-side actions stop too.
+    private func setStalled(_ stalled: Bool) {
+        guard stalled != isStalled else { return }
+        isStalled = stalled
+        if stalled {
+            let pill = self.pill ?? GlassPillView(text: "Not responding", showsProgress: false)
+            if self.pill == nil {
+                self.pill = pill
+                videoView.addSubview(pill)
+                pill.alphaValue = 0
+            }
+            pill.setText("Not responding", showsProgress: false)
+            layoutPill()
+            pill.fade(to: 1)
+            Log.video.notice("stream \(self.stream, privacy: .public): stall=1")
+        } else {
+            pill?.fade(to: 0)
+            Log.video.notice("stream \(self.stream, privacy: .public): stall=0")
+        }
+        updateFrozen()
+    }
+
     // MARK: Link state
 
     private var pill: GlassPillView?
@@ -690,7 +779,11 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     /// The link dropped or came back: a pill over the last frame says so after
     /// 1 s (a blip shows nothing), and "Phone offline" after 15 s.
     func setLinkDown(_ down: Bool) {
-        if down { liveText.exit(.disconnect) }
+        linkIsDown = down
+        if down {
+            liveText.exit(.disconnect)
+            setStalled(false)
+        }
         pillShowWork?.cancel()
         pillOfflineWork?.cancel()
         guard down else {
@@ -801,7 +894,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     /// Menu action (target nil, responder chain). Enabled in every stream window.
     /// Live Text freezes it: the phone behind the frozen frame is paused.
     @objc func navigateBack(_ sender: Any?) {
-        guard HeaderActionPolicy.allowsPhoneShortcut(liveTextActive: liveText.isActive) else { return }
+        guard HeaderActionPolicy.allowsPhoneShortcut(frozen: frozen) else { return }
         session.nav(stream: stream, action: "back")
     }
 

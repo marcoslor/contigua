@@ -69,6 +69,28 @@ LOW_PENDING_DELTA = 4
 
 FAKE_DEBUG = os.environ.get("FAKE_DEBUG")
 
+# The counters the NFR checks read (docs/NFR.md): a write is a request that
+# changes what the phone stores or shows (a file write/move/delete, the
+# clipboard, a drop, an APK, a link, a media command, a notification action);
+# input is every event a person's pointer, keys or a control's action sends
+# (touch/scroll/key/hover frames, nav, text). Read-only flows (lists, icons,
+# window open/close, files list/stat/read, pause/resume, media state) are in
+# neither set.
+WRITE_TYPES = frozenset([
+    "clip.set", "link.open", "apk.install", "apk.cancel",
+    "drop.start", "drop.cancel", "clip.image.start", "clip.image.end",
+    "clip.image.abort", "fs.write", "fs.move", "fs.delete", "fs.mkdir",
+    "fs.setAttrs", "media.command", "media.choose", "notify.action",
+    "notify.dismiss", "notify.enable", "notify.open", "phone.dnd",
+    "phone.ringer", "phone.ring", "phone.ring.stop", "window.launch",
+    "task.continue",
+])
+
+# A control's action (Back/Home/Recents, typing) is input, not a write: the
+# frozen-mode checks read it to prove a control reached the phone only when it
+# was allowed to.
+INPUT_TYPES = frozenset(["nav", "text"])
+
 def dbg(message):
     if FAKE_DEBUG:
         sys.stderr.write("fakephone: %s\n" % message)
@@ -622,6 +644,10 @@ class EventLog(object):
         if path:
             open(path, "w").close()
         self._fp = open(path, "a") if path else None
+        self._writes = 0
+        self._input = 0
+        self._last_write = ""
+        self._last_input = ""
 
     def _emit(self, obj):
         if self._fp is None:
@@ -630,6 +656,29 @@ class EventLog(object):
         with self._lock:
             self._fp.write(line + "\n")
             self._fp.flush()
+
+    def counters(self):
+        """The cumulative NFR counters: every mutating request and every input
+        event. A check reads the newest line at any point, so a flow's side
+        effects are the difference between two reads."""
+        return {"ev": "counters", "writes": self._writes, "input": self._input,
+                "last_write": self._last_write, "last_input": self._last_input,
+                "ts": time.time()}
+
+    def emit_counters(self):
+        self._emit(self.counters())
+
+    def write(self, kind=""):
+        """One mutating request reached the phone (WRITE_TYPES)."""
+        self._writes += 1
+        self._last_write = kind
+        self._emit(self.counters())
+
+    def input(self, kind=""):
+        """One input event (touch/scroll/key/hover, nav, text) reached the phone."""
+        self._input += 1
+        self._last_input = kind
+        self._emit(self.counters())
 
     def session(self, state):
         self._emit({"ev": "session", "state": state, "ts": time.time()})
@@ -653,8 +702,21 @@ class EventLog(object):
         """Display 0's power state changed (`state.screen`)."""
         self._emit({"ev": "screen", "state": state, "ts": time.time()})
 
+    def secure(self, state):
+        """A secure surface covered or uncovered display 0 (`state.secure`)."""
+        self._emit({"ev": "secure", "state": "on" if state else "off", "ts": time.time()})
+
+    def stall(self, stream, frames):
+        """--stall-after: the stream stopped sending frames with the session
+        still up; the check times the window's "not live" state from here."""
+        self._emit({"ev": "stall", "stream": stream, "frames": frames,
+                    "ts": time.time()})
+
     def rx(self, msg):
         self._emit({"ev": "rx", "msg": redact_event(msg), "ts": time.time()})
+        # Every request leaves a fresh counters line, so a check that starts
+        # reading after a log truncation still sees the cumulative values.
+        self.emit_counters()
 
     def touch(self, stream, action, pointer, nx, ny):
         self._emit({"ev": "input", "kind": "touch", "stream": stream, "action": action,
@@ -1397,6 +1459,7 @@ class WindowStream(object):
         # --secure-after: the encoder sends solid black while a secure surface
         # would be blanked in the mirror.
         self._black = False
+        self._stall_timer = None
         self._lock = threading.Lock()
 
     @staticmethod
@@ -1491,8 +1554,16 @@ class WindowStream(object):
                 self._stop_locked()
                 self._paused = True
 
+    def _stall(self):
+        """--stall-after: stop the encoder but keep the session and its socket."""
+        self.pause()
+        self.phone.events.stall(self.stream_id, self._frames_sent)
+
     def stop(self):
         with self._lock:
+            if self._stall_timer is not None:
+                self._stall_timer.cancel()
+                self._stall_timer = None
             self._stop_locked()
             self._paused = True
 
@@ -1543,6 +1614,13 @@ class WindowStream(object):
             self._configured = True
             self.phone.sender.send_config(self.stream_id, proto.CODEC_H264, self.w, self.h, sps_pps)
             self.phone.events.video_config(self.stream_id, self.w, self.h)
+            if self.phone.args.stall_after and self._stall_timer is None:
+                # The phone's picture freezes while the session stays up: the
+                # stale-picture and frozen-mode checks start here.
+                self._stall_timer = threading.Timer(
+                    self.phone.args.stall_after, self._stall)
+                self._stall_timer.daemon = True
+                self._stall_timer.start()
         flags = proto.FRAME_FLAG_KEY if proto.is_idr(nals) else 0
         pts = self._au_index * (1000000 // FRAME_RATE)
         self._au_index += 1
@@ -2039,18 +2117,28 @@ class Session(object):
             if frame.type == proto.TYPE_JSON:
                 msg = proto.unpack_json(frame)
                 self.phone.events.rx(msg)
+                if msg.get("t") in WRITE_TYPES:
+                    self.phone.events.write(msg.get("t"))
+                # Back/Home/Recents and typed text reach the phone as one
+                # message, not as key frames: they are input events too.
+                if msg.get("t") in INPUT_TYPES:
+                    self.phone.events.input(msg.get("t"))
                 self._handle_json(msg)
             elif frame.type == proto.TYPE_TOUCH:
                 action, pointer, nx, ny = proto.unpack_touch(frame)
+                self.phone.events.input("touch")
                 self.phone.events.touch(frame.stream, action, pointer, nx, ny)
             elif frame.type == proto.TYPE_SCROLL:
                 nx, ny, h, v = proto.unpack_scroll(frame)
+                self.phone.events.input("scroll")
                 self.phone.events.scroll(frame.stream, nx, ny, h, v)
             elif frame.type == proto.TYPE_KEY:
                 action, keycode, meta = proto.unpack_key(frame)
+                self.phone.events.input("key")
                 self.phone.events.key(frame.stream, action, keycode, meta)
             elif frame.type == proto.TYPE_HOVER:
                 action, nx, ny = proto.unpack_hover(frame)
+                self.phone.events.input("hover")
                 self.phone.events.hover(frame.stream, action, nx, ny)
             elif frame.type == proto.TYPE_APK_DATA:
                 self._on_apk_data(frame.stream, frame.payload)
@@ -3134,11 +3222,13 @@ class Session(object):
             return
         self.phone.secure_state = True
         self.send_state()
+        self.phone.events.secure(True)
         window.black_for(5, lambda: self.windows.get(window.stream_id) is window)
         if self.windows.get(window.stream_id) is not window:
             return
         self.phone.secure_state = False
         self.send_state()
+        self.phone.events.secure(False)
 
     def _screen_off_later(self, window):
         """The panel times out: `state.screen off` and no more mirror frames."""
@@ -3361,6 +3451,9 @@ class FakePhone(object):
         if not args.no_tls:
             self.fp_hex = make_identity(self.tls_identity_dir)
         self.events = EventLog(args.events)
+        # A zero line first: a check that reads before anything happened still
+        # sees both counters.
+        self.events.emit_counters()
         # DND (docs/design/focus.md): --dnd-unsupported acts like an old build
         # (no state.dnd, phone.dnd is an unknown message); --dnd-person starts
         # in a mode the person set, which the restore rule must leave alone.
@@ -3594,6 +3687,8 @@ def build_parser():
                    help="after the phone window opens, a secure surface covers display 0: "
                         "send state.secure true and solid black frames for 5 s, then false "
                         "and the normal frames")
+    p.add_argument("--stall-after", type=float, default=0.0, metavar="SECONDS",
+                   help="after a stream's first frame, stop sending frames but keep the session up (a hung phone)")
     p.add_argument("--rotate-after", type=float, default=0.0, metavar="SECONDS",
                    help="turn the screen to landscape this long after a phone window opens")
     p.add_argument("--qr-uri", metavar="URI",

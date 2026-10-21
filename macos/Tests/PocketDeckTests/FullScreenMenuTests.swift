@@ -19,6 +19,17 @@ final class WindowFullScreenItemTests: XCTestCase {
         XCTAssertEqual(item.accessibilityAttributeValue(.init(rawValue: "AXMenuItemCmdModifiers")) as? Int, 24)
     }
 
+    /// The phone window opts out with .fullScreenNone; every other window may.
+    @MainActor
+    func testOnlyAWindowThatHasNotOptedOutMayGoFullScreen() {
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 100, height: 100),
+                              styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        XCTAssertTrue(FullScreenMenu.allowsFullScreen(window))
+        window.collectionBehavior = [.fullScreenNone]
+        XCTAssertFalse(FullScreenMenu.allowsFullScreen(window))
+        XCTAssertFalse(FullScreenMenu.allowsFullScreen(nil))
+    }
+
     func testTheTitleAndSymbolFollowTheKeyWindowsState() {
         let item = WindowFullScreenItem()
         XCTAssertNotNil(item.image)

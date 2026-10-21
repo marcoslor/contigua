@@ -278,21 +278,21 @@ struct AppCommands: Commands {
                 Label("Back", systemImage: "chevron.backward")
             }
             .keyboardShortcut("[")
-            .disabled(streamMenu.liveText)
+            .disabled(streamMenu.frozen)
             Button {
                 send(#selector(PhoneWindowController.navigateHome(_:)))
             } label: {
                 Label("Home", systemImage: "house")
             }
             .keyboardShortcut("h", modifiers: [.command, .shift])
-            .disabled(streamMenu.liveText)
+            .disabled(streamMenu.frozen)
             Button {
                 send(#selector(PhoneWindowController.navigateRecents(_:)))
             } label: {
                 Label("Recents", systemImage: "square.stack")
             }
             .keyboardShortcut(.upArrow, modifiers: .command)
-            .disabled(streamMenu.liveText)
+            .disabled(streamMenu.frozen)
         }
     }
 

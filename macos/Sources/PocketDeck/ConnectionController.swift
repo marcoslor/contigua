@@ -128,7 +128,21 @@ final class ConnectionController {
     private(set) var mediaArt: NSImage?
     /// "Show phone files in Finder" (docs/design/files.md §1): the setting, the
     /// one domain per profile, and its reconnect/disconnect on session changes.
-    @ObservationIgnored lazy var filesDomain = FilesDomainController(profile: profile)
+    @ObservationIgnored lazy var filesDomain: FilesDomainController = {
+        // The host e2e presents the domain as already added (no File Provider
+        // on the person's Mac) and the bundle as carrying its extension: the
+        // path a relaunch takes with Finder files already on.
+        let seen = options.filesDomainSeen
+        let socket = seen.map {
+            URL(fileURLWithPath: $0, isDirectory: true)
+                .appendingPathComponent(FilesSocket.fileName(profile: profile)).path
+        }
+        return FilesDomainController(
+            profile: profile,
+            manager: seen == nil ? nil : FilesDomainSeenManager(identifier: FilesDomain.identifier(profile: profile)),
+            socketPath: socket,
+            supported: seen == nil ? nil : true)
+    }()
 
     // MARK: Published state
 
@@ -1816,10 +1830,11 @@ final class ConnectionController {
             }
             runDockHooks()
             recheckOpenWindows()
-        case .phoneState(let locked, let battery, let charging, let dnd, let ringer, let screen):
+        case .phoneState(let locked, let battery, let charging, let dnd, let ringer, let screen, let secure):
             status = PhoneStatus(locked: locked, battery: battery, charging: charging, dnd: dnd, ringer: ringer,
                                  screen: screen)
             windows.setPhoneScreen(screen)
+            if let secure { windows.setPhoneSecure(secure) }
             if let id = link.phone?.id { batteryMemory.record(deviceId: id, level: battery, charging: charging) }
             reconcileFocusOnFirstState(dnd)
             runPendingDebugDnd()
@@ -2182,6 +2197,14 @@ final class ConnectionController {
         debugInput?.liveDump = { [weak self] path in
             MainActor.assumeIsolated { self?.writeLiveDump(path) ?? false }
         }
+        debugInput?.openSettings = { [weak self] in
+            MainActor.assumeIsolated {
+                self?.settingsRequest += 1
+                // Belt and braces: the Deck's scene opener is the route that
+                // works in a quiet run, and the responder action costs nothing.
+                NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+            }
+        }
         debugInput?.mediaCommand = { [weak self] action in
             MainActor.assumeIsolated { self?.nowPlaying.perform(.transport(action)) }
         }
@@ -2230,11 +2253,59 @@ final class ConnectionController {
             if let path = check.debugInputScript, let error = armDebugInput(path, phoneOnly: phoneOnly) { return error }
             applyAutoOpen(check)
             return nil
+        case "nav":
+            guard let action = arguments.first,
+                  ["back", "home", "recents"].contains(action) else {
+                return "nav needs back|home|recents"
+            }
+            guard let window = windows.controller(for: 1) else { return "no first window" }
+            switch action {
+            case "back":
+                window.navigateBack(nil)
+            case "home", "recents":
+                guard let phone = window as? PhoneWindowController else {
+                    return "home/recents need the phone window"
+                }
+                action == "home" ? phone.navigateHome(nil) : phone.navigateRecents(nil)
+            default:
+                return "nav needs back|home|recents"
+            }
+            return nil
         case "wake-phone":
             // The phone window's Wake Screen button, for the e2e (its click is
             // unit-tested; a scripted click would need real pointer input).
             guard let phone = windows.phoneWindow else { return "no phone window" }
             phone.wakeScreen()
+            return nil
+        case "nav-click":
+            // A click on the phone window's Back / Home / Recents button,
+            // posted at the button's window location and resolved by the
+            // window's own hit test: the v103 capsule regression was invisible
+            // to a route that called the action.
+            guard let phone = windows.phoneWindow else { return "no phone window" }
+            guard let name = arguments.first, let kind = HeaderActionKind(rawValue: name) else {
+                return "unknown button \(arguments.first ?? "")"
+            }
+            guard let window = phone.window, let centre = phone.chrome.headerButtonCentre(kind) else {
+                return "the \(name) button is not showing"
+            }
+            DebugInputDriver.clickControl(at: centre, in: window)
+            return nil
+        case "settings-dump":
+            // Settings' real window geometry (SettingsProbe) for the host e2e.
+            guard let path = arguments.first, path.hasPrefix("/") else { return "missing path" }
+            guard let window = SettingsProbe.settingsWindow() else {
+                return "no settings window (\(SettingsProbe.windowList()))"
+            }
+            let label = arguments.count > 1
+                ? arguments.dropFirst().joined(separator: " ")
+                : "Reveal controls after"
+            let report = SettingsProbe.report(window: window, lastRow: label)
+            do {
+                try report.write(toFile: path, atomically: true, encoding: .utf8)
+            } catch {
+                return "cannot write \(path)"
+            }
             return nil
         default:
             return "unknown command \(command)"

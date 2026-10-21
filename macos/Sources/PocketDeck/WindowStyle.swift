@@ -173,6 +173,27 @@ enum PhoneChrome {
         return CGSize(width: phone.height, height: phone.width)
     }
 
+    /// The frame the phone window's green button zooms to: the phone's aspect
+    /// fit inside the screen's visible frame. The mirror is never stretched or
+    /// cropped, and the window never goes full screen.
+    static func zoomFrame(phone: CGSize, style: WindowStyle, visible: NSRect) -> NSRect {
+        guard phone.width > 0, phone.height > 0, visible.width > 1, visible.height > 1 else {
+            return visible
+        }
+        let ratio = phone.width / phone.height
+        let bar = style.insets(fullScreen: false).top
+        var streamHeight = max(visible.height - bar, 1)
+        var streamWidth = streamHeight * ratio
+        if streamWidth > visible.width {
+            streamWidth = visible.width
+            streamHeight = streamWidth / ratio
+        }
+        let size = style.windowSize(stream: CGSize(width: streamWidth, height: streamHeight))
+        return NSRect(x: (visible.midX - size.width / 2).rounded(),
+                      y: (visible.midY - size.height / 2).rounded(),
+                      width: size.width.rounded(), height: size.height.rounded())
+    }
+
     /// A phone window keeps its phone's aspect ratio in the stream, not in the
     /// frame (the bar is not part of the picture). The dimension the user
     /// moved more leads; the other follows. Sizes are window frames.

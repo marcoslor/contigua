@@ -118,7 +118,7 @@ final class StreamChromeWindowTests: XCTestCase {
         controller.pointerMoved(toWindowPoint: NSPoint(x: 2, y: 20))
         pump(0.4)
         XCTAssertFalse(controller.dwell.shown)
-        XCTAssertEqual(try String(contentsOf: file, encoding: .utf8), "style=framed lights=shown pill=hidden title_visible=no lights_managed=us fullscreen=no clicks=0 dots=outside touches=\(manager.showTouches ? "on" : "off") dot_count=0 screen=on overlay=0\n")
+        XCTAssertEqual(try String(contentsOf: file, encoding: .utf8), "style=framed lights=shown pill=hidden title_visible=no lights_managed=us fullscreen=no clicks=0 dots=outside touches=\(manager.showTouches ? "on" : "off") dot_count=0 collection=0 collection_none=0 menu_fullscreen=1 screen=on overlay=0 secure=0 stall=0\n")
     }
 
     func testCloseAndMinimiseWorkWithTheBar() throws {
@@ -147,7 +147,7 @@ final class StreamChromeWindowTests: XCTestCase {
                                              label: "Example", manager: manager)
         defer { controller.window?.close() }
         controller.window?.orderFront(nil)
-        XCTAssertEqual(try String(contentsOf: file, encoding: .utf8), "style=framed lights=shown pill=hidden title_visible=no lights_managed=us fullscreen=no clicks=0 dots=outside touches=\(manager.showTouches ? "on" : "off") dot_count=0 screen=on overlay=0\n")
+        XCTAssertEqual(try String(contentsOf: file, encoding: .utf8), "style=framed lights=shown pill=hidden title_visible=no lights_managed=us fullscreen=no clicks=0 dots=outside touches=\(manager.showTouches ? "on" : "off") dot_count=0 collection=0 collection_none=0 menu_fullscreen=1 screen=on overlay=0 secure=0 stall=0\n")
     }
 
     func testFullScreenShowsTheTitleAndHandsTheLightsBackOnExit() throws {

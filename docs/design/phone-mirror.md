@@ -34,6 +34,13 @@ Why this and not `SurfaceControl.createDisplay` + `setDisplayProjection`
 - A mirror's projection is fixed at creation, so a size change recreates the
   mirror VD instead of `VirtualDisplay.resize` (which left the picture small).
 - Back / Home / Recents = KEYCODE_BACK / HOME / APP_SWITCH on display 0.
+- No full screen for the phone window. A phone mirror across a whole display is
+  letterboxed or stretched (the stream keeps the phone's aspect), and the
+  person's report is that it looks bad. The window opts out with
+  `.fullScreenNone`: no green-button full-screen mode, no Window ▸ Enter Full
+  Screen (disabled for it), no ⌃⌘F. The green button zooms to the phone's
+  aspect fit inside the screen's visible frame instead. App windows keep full
+  screen.
 - Failure → `error` `mirror_unavailable` (pre-14 phones).
 
 The old phone mode (a VD running PocketDeck's own launcher activity) was
@@ -56,6 +63,22 @@ on the blurred frame is the Wake Screen button, never a touch: while the
 overlay is up the window sends no input at all to the phone. `screen: "on"`
 (and the first new frame that follows it) clears the overlay. App windows get
 no overlay: virtual displays do not sleep with the panel.
+
+## Secure screens
+
+Android does not let a screen capture read a secure surface: the lock screen's
+PIN/password pad, the keyguard bouncer and any app window with `FLAG_SECURE`
+come back black. `state` carries `secure` (`true` while display 0 shows such a
+surface). The phone window shows the same blurred, dimmed cover as screen-off,
+with "Android doesn't let PocketDeck show this screen." and **no button**: there
+is nothing to wake, and a click must never reach the PIN pad. The cover clears
+when the phone reports `secure` false again.
+
+A phone that does not report `secure` yet is covered by its frames: half a
+second of (near) black frames while the screen is on is treated as a secure
+surface, and the first frame with any content takes the cover away again. A
+dark app or a dimmed picture is content, never a cover (the pixel test samples
+a grid and every sampled pixel has to be black).
 
 **Opening the window wakes the panel.** A new, re-opened or reconnected phone
 window sends `phone.wake` with no fields after its `window.open`. The phone
