@@ -74,8 +74,8 @@ enum PanelProbe {
         guard let host = Host(rawValue: host) else { return false }
         guard let state = currentState() else { return false }
         guard let window = window(for: host) else { return false }
-        fit(window)
         let items = PhonePanelItem.focusOrder(for: state)
+        settle(window, items: items)
         let controls = controlFrames(in: window)
         let rows: [[String: Any]] = items.enumerated().map { index, item in
             [
@@ -111,7 +111,7 @@ enum PanelProbe {
     static func click(host: String, id: String) -> Bool {
         guard let host = Host(rawValue: host), let state = currentState(),
               let window = window(for: host) else { return false }
-        fit(window)
+        settle(window, items: PhonePanelItem.focusOrder(for: state))
         guard let target = control(for: id, state: state, in: window) else { return false }
         let point = CGPoint(x: target.frame.midX, y: target.frame.midY)
         switch target.kind {
@@ -137,7 +137,7 @@ enum PanelProbe {
     static func drag(host: String, id: String, fraction: Double) -> Bool {
         guard let host = Host(rawValue: host), let state = currentState(),
               let window = window(for: host) else { return false }
-        fit(window)
+        settle(window, items: PhonePanelItem.focusOrder(for: state))
         guard let target = control(for: id, state: state, in: window) else { return false }
         let clamped = min(max(fraction, 0), 1)
         let startFraction = min(max(state.volumeFraction ?? 0.2, 0), 1)
@@ -189,10 +189,24 @@ enum PanelProbe {
         guard let view = window.contentView else { return }
         view.layoutSubtreeIfNeeded()
         let size = CGSize(width: PhonePanelView.width, height: view.fittingSize.height)
-        guard abs(view.frame.height - size.height) > 0.5 else { return }
+        guard size.height > 0, abs(view.frame.height - size.height) > 0.5 else { return }
         window.setContentSize(size)
         view.frame = NSRect(origin: .zero, size: size)
         view.layoutSubtreeIfNeeded()
+    }
+
+    /// The panel's view tree follows the controller's state: a row that was
+    /// disabled when the window opened has no key-view proxy until the next
+    /// render, and the panel's height follows the reason line. A dump or a click
+    /// that reads the tree in the same turn the state changed would see the old
+    /// one (fewer controls than rows, or rows in another order). Give SwiftUI
+    /// its turns first — the same ones a person's pointer sees.
+    private static func settle(_ window: NSWindow, items: [PhonePanelItem]) {
+        for _ in 0..<20 {
+            fit(window)
+            if controlViews(in: window).count == items.count { return }
+            RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.05))
+        }
     }
 
     private static func currentState() -> PhoneControlsState? {
