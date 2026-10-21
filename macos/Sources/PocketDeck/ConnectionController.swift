@@ -2318,6 +2318,36 @@ final class ConnectionController {
             }
             DebugInputDriver.clickControl(at: centre, in: window)
             return nil
+        case "panelopen":
+            // The menu bar panel's content in a window of its own: a quiet run
+            // cannot open the status item, and the panel is the content.
+            PanelProbe.open(controller: self)
+            return nil
+        case "panelclose":
+            PanelProbe.close()
+            return nil
+        case "deckpanel":
+            // The Deck's status pill popover (a toolbar item; opening it is
+            // setup for the switch inside).
+            PanelProbe.openDeckPopover(controller: self)
+            return nil
+        case "paneldump":
+            guard arguments.count == 2, ["panel", "deck"].contains(arguments[0]) else {
+                return "paneldump needs HOST (panel or deck) and PATH"
+            }
+            return PanelProbe.dump(host: arguments[0], to: arguments[1]) ? nil : "paneldump failed"
+        case "panelwindows":
+            guard let path = arguments.first, path.hasPrefix("/") else { return "panelwindows needs PATH" }
+            return PanelProbe.windowsReport(to: path) ? nil : "panelwindows failed"
+        case "panelclick":
+            guard arguments.count == 2 else { return "panelclick needs HOST and an item ID" }
+            return PanelProbe.click(host: arguments[0], id: arguments[1]) ? nil : "panelclick failed"
+        case "paneldrag":
+            guard arguments.count == 3, let fraction = Double(arguments[2]) else {
+                return "paneldrag needs HOST, an item ID and FRACTION"
+            }
+            return PanelProbe.drag(host: arguments[0], id: arguments[1], fraction: fraction)
+                ? nil : "paneldrag failed"
         case "settings-dump":
             // Settings' real window geometry (SettingsProbe) for the host e2e.
             guard let path = arguments.first, path.hasPrefix("/") else { return "missing path" }
