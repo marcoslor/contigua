@@ -37,140 +37,20 @@ struct MenuBarIcon: View {
     }
 }
 
+/// The menu bar's window panel: the shared phone controls with the menu bar's
+/// own way of creating the Deck window (the Deck popover needs none).
 struct MenuBarContent: View {
     @Environment(ConnectionController.self) private var controller
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
-        Text(statusLine)
-        if controller.mcp.clientCount > 0 {
-            Text("AI agent connected (\(controller.mcp.clientCount))")
-            Button("Disconnect agent") { controller.mcp.disconnectAgents() }
-        }
-        Divider()
-        Button("Open PocketDeck") { showDeck() }.keyboardShortcut("k")
-        Button("Phone screen") { controller.openPhoneWindow() }
-            .keyboardShortcut("p")
-            .disabled(!controller.link.isOnline)
-        Button("Continue on Mac") { controller.continueOnMac() }
-            .disabled(!controller.link.isOnline)
-        Button("Ring Phone") { controller.ringPhone() }
-            .disabled(!controller.link.isOnline)
-        Button("Stop Ringing") { controller.stopRingingPhone() }
-            .disabled(!controller.link.isOnline)
-        Toggle("Phone Do Not Disturb", isOn: Binding(
-            get: { controller.phoneDnd?.isOn ?? false },
-            set: { _ in controller.togglePhoneDnd() },
-        ))
-        .disabled(!controller.canSetPhoneDnd)
-        Button("Install APK…") { controller.chooseApk() }
-            .disabled(controller.apkInstaller.isBusy)
-        Divider()
-        audioSection
-        mediaSection
-        liveSection
-        Divider()
-        SettingsLink { Text("Settings…") }
-        Divider()
-        Button("Quit PocketDeck") { NSApp.terminate(nil) }.keyboardShortcut("q")
-    }
-
-    @ViewBuilder
-    private var audioSection: some View {
-        if controller.audioOn {
-            Text("Phone audio: on")
-            Slider(value: Binding(
-                get: { Double(controller.audioVolume) },
-                set: { controller.audioVolume = Float($0) },
-            ), in: 0...1) {
-                Text("Volume")
-            }
-            Toggle("Mute", isOn: Binding(
-                get: { controller.audioMuted },
-                set: { controller.audioMuted = $0 },
-            ))
-        } else {
-            Text("Phone audio: off")
-        }
-    }
-
-    /// The phone's Now Playing (docs/design/notify.md "Media part 2"): the
-    /// artwork small, the track, the phone's media volume and, with two or more
-    /// playing apps, the choice of which one Now Playing follows. The Mac's own
-    /// volume keys stay the Mac's: this slider is the only volume control here.
-    @ViewBuilder
-    private var mediaSection: some View {
-        if let media = controller.mediaNow, MediaMenu.trackLine(media) != nil || media.pkg != nil {
-            Divider()
-            HStack(spacing: 8) {
-                if let art = controller.mediaArt {
-                    Image(nsImage: art)
-                        .resizable()
-                        .aspectRatio(contentMode: .fit)
-                        .frame(width: 28, height: 28)
-                        .clipShape(RoundedRectangle(cornerRadius: 4))
-                }
-                Text(MediaMenu.trackLine(media) ?? "Phone media")
-            }
-            if let fraction = media.volumeFraction {
-                Slider(
-                    value: Binding(
-                        get: { fraction },
-                        set: { controller.setPhoneMediaVolume($0) },
-                    ),
-                    in: 0...1,
-                ) {
-                    Text("Phone volume")
-                }
-            }
-            if MediaMenu.showsSessionPicker(controller.mediaSessions) {
-                Menu(MediaMenu.pickerTitle(controller.mediaSessions, chosen: media.key)) {
-                    ForEach(controller.mediaSessions) { row in
-                        Button {
-                            controller.chooseMediaSession(row.key)
-                        } label: {
-                            Text(row.playing ? "\(row.app) — playing" : row.app)
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var liveSection: some View {
-        let items = controller.liveNotifications
-        let now = controller.liveTick
-        if !items.isEmpty {
-            Divider()
-            Text("Live on \(controller.livePhoneName ?? "your phone")")
-            ForEach(items) { item in
-                // A menu item cannot draw a control, so the row carries a
-                // ten-cell text bar or the running clock instead.
-                Button(NotifyLiveText.menuTitle(item, now: now)) {
-                    controller.openLiveNotification(item.id)
-                }
-            }
-        }
-    }
-
-    private var statusLine: String {
-        guard let phone = controller.activePhone else { return "No phone paired" }
-        let name = controller.displayName(for: phone, fallback: "your phone")
-        switch controller.link {
-        case .online: return "● Connected to \(name)"
-        case .connecting: return "Connecting…"
-        case .reconnecting: return "Reconnecting…"
-        case .offline: return "Offline"
-        case .needsPairing: return "Pair \(name) again"
-        case .pairing, .idle: return "No phone paired"
-        }
-    }
-
-    private func showDeck() {
-        if DeckWindow.window == nil { openWindow(id: DeckWindow.id) }
-        DeckWindow.show()
-        controller.requestSearchFocus()
+        PhonePanelView(
+            state: PhoneControlsState(controller: controller),
+            actions: PhoneControlsActions(controller: controller) {
+                if DeckWindow.window == nil { openWindow(id: DeckWindow.id) }
+                DeckWindow.show()
+            },
+        )
     }
 }
 
