@@ -51,6 +51,10 @@ mkdir -p "$POCKETDECK_AGENT_DIR"
 
 OUT="$POCKETDECK_AGENT_DIR"
 RESULT="$OUT/panel-power.log"
+# start.sh's failed-install diagnostic lands here; the start-failure path below
+# copies it into panel-power.log before the trap kills the emulator.
+PD_INSTALL_LOG="$OUT/install-failure.log"
+export PD_INSTALL_LOG
 SESSION="$OUT/panel-power-session.log"
 LOGCAT="$OUT/panel-power-logcat.log"
 DISPLAY="$OUT/panel-power-display.log"
@@ -176,7 +180,7 @@ if [ "$BOOT" -eq 1 ]; then
     echo "panel-power: start.sh failed; restarting the shell service"
     if ! restart_server; then
       echo "panel-power: the shell service never came up (unverified)"
-      echo "failed: 1 (start)" > "$RESULT"
+      { echo "failed: 1 (start)"; cat "$PD_INSTALL_LOG" 2>/dev/null; } > "$RESULT"
       exit 1
     fi
   fi
