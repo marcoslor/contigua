@@ -122,9 +122,11 @@ icons_section() { # icons_section <port> <state> <outdir> <layers-dir> <log>
 
 
 # --- the paired-Mac row -----------------------------------------------------
-# One live session (deckctl authenticates and holds it) must turn the app's
-# paired row into "Connected now"; after the session drops the same row must
-# read "Last connected ...". uiautomator reads the Compose text the person sees.
+# One live session (deckctl authenticates and holds it) must turn the paired row
+# at the top of the list into "Connected now"; after the session drops the same
+# row must read "Last connected ...". uiautomator reads the Compose text the
+# person sees, and uirows.py picks the row by its bounds: the dump only holds
+# the rows that are drawn, so the position is the check.
 ui_text() { # ui_text <dump-file> -> the dump's text nodes
   emu shell uiautomator dump --compressed "$1" >/dev/null 2>&1 || true
   emu shell cat "$1" 2>/dev/null | tr -d '\r'
@@ -139,9 +141,30 @@ wait_for_text() { # wait_for_text <dump-file> <grep-pattern> <timeout_s>
   return 1
 }
 
+# The paired row nearest the top of the screen, as "<y>\t<status>". Grepping
+# the whole dump only finds rows it drew, so the position is what the person
+# actually sees: uirows.py reads the dump's bounds.
+top_row() { # top_row <dump-file>
+  "$PYTHON" tools/emulator/uirows.py top "$1" 2>/dev/null || true
+}
+
+# Refreshes the dump until the topmost paired row matches <literal>. Prints
+# that row (or the last one seen) and returns 0 only on a match.
+wait_top_row() { # wait_top_row <dump-file> <ui-out> <literal> <timeout_s>
+  local dump="$1" out="$2" want="$3" deadline=$(( $(date +%s) + $4 )) top=""
+  while [ "$(date +%s)" -lt "$deadline" ]; do
+    ui_text "$dump" > "$out" 2>/dev/null || true
+    top="$(top_row "$out")"
+    [ -n "$top" ] && printf '%s\n' "$top" | grep -qF "$want" && { echo "$top"; return 0; }
+    sleep 1
+  done
+  echo "${top:-none}"
+  return 1
+}
+
 paired_row_section() { # paired_row_section <port> <state> <log>
   local port="$1" state="$2" log="$3"
-  local dump=/data/local/tmp/pd-paired-row.xml watch="$log.watch" rc=0 pid
+  local dump=/data/local/tmp/pd-paired-row.xml watch="$log.watch" rc=0 pid top=none
   : > "$log"
   if emu shell dumpsys window 2>/dev/null | grep -qiE 'isKeyguardShowing=true|mKeyguardShowing=true'; then
     bash tools/emulator/unlock.sh >> "$log" 2>&1 || true
@@ -167,19 +190,20 @@ paired_row_section() { # paired_row_section <port> <state> <log>
     grep -q ' state #' "$watch" && { live=1; break; }
     sleep 1
   done
-  if [ "$live" -eq 1 ] && wait_for_text "$dump" 'Connected now' 10; then
-    echo "paired-row: the live Mac's row says Connected now"
+  if [ "$live" -eq 1 ] && top="$(wait_top_row "$dump" "$log.ui" 'Connected now' 10)"; then
+    echo "paired-row: the row at the top says Connected now ($top)"
   else
-    echo "paired-row: no Connected now (session live=$live)"
+    echo "paired-row: the top paired row is not Connected now (session live=$live, top=$top)"
     ui_text "$dump" > "$log.ui" 2>/dev/null || true
     rc=1
   fi
 
   wait "$pid" 2>/dev/null || true
-  if wait_for_text "$dump" 'Last connected' 15; then
-    echo "paired-row: after the session the row says Last connected"
+  if top="$(wait_top_row "$dump" "$log.ui" 'Last connected' 15)"; then
+    echo "paired-row: after the session the row at the top says Last connected ($top)"
   else
-    echo "paired-row: no Last connected after the session ended"
+    echo "paired-row: the top row after the session is not Last connected (top=$top)"
+    ui_text "$dump" > "$log.ui" 2>/dev/null || true
     rc=1
   fi
   if ui_text "$dump" | grep -q 'Connected now'; then
@@ -336,6 +360,20 @@ PY
   fi
   echo "CHECK OK: icon dry run (fakephone's renderer, deckctl's output shape): $DETAIL"
   rm -rf "$WORK"
+  # The paired-row check reads the dump by position. Rehearse the parser on the
+  # saved dump from the boot that failed (a local fixture, never committed).
+  "$PYTHON" tools/emulator/uirows.py --self-test \
+    || { echo "CHECK FAIL: paired-row parser self-test"; exit 1; }
+  FIXTURE="$AGENT_DIR/paired-row.ui"
+  if [ -f "$FIXTURE" ]; then
+    ROW="$(top_row "$FIXTURE")"
+    case "$ROW" in
+      *"Last connected"*) echo "CHECK OK: paired-row parser on the saved dump: $ROW" ;;
+      *) echo "CHECK FAIL: paired-row parser read '$ROW' from $FIXTURE"; exit 1 ;;
+    esac
+  else
+    echo "CHECK NOTE: no $FIXTURE; the paired-row parser ran its self-test only"
+  fi
   echo "CHECK OK: preflight + media and phone-screen dry runs + start.sh; $SERIAL free"
   exit 0
 fi
@@ -400,7 +438,7 @@ fi
 # --- phone-screen -----------------------------------------------------------
 echo "verify-batch: phone-screen"
 if bash tools/emulator/phone-screen.sh --no-boot > "$OUT/verify-batch-phone-screen.log" 2>&1; then
-  section phone-screen PASS "$(grep -c '^PASS phone-screen:' "$OUT/verify-batch-phone-screen.log") checks: $(grep '^screen-off:' "$OUT/phone-screen.log" 2>/dev/null | tail -1 | cut -c1-40) $(grep '^power:' "$OUT/phone-screen.log" 2>/dev/null | tail -1 | cut -c1-60)"
+  section phone-screen PASS "$(grep -c '^PASS phone-screen:' "$OUT/verify-batch-phone-screen.log") checks: $(grep '^display-on:' "$OUT/phone-screen.log" 2>/dev/null | tail -1 | cut -c1-52) $(grep '^power:' "$OUT/phone-screen.log" 2>/dev/null | tail -1 | cut -c1-40)"
 else
   section phone-screen FAIL "$(grep -c '^FAIL phone-screen:' "$OUT/verify-batch-phone-screen.log") checks (see $OUT/verify-batch-phone-screen.log)"
 fi

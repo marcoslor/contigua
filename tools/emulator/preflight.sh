@@ -123,6 +123,20 @@ if [ -s "$APK" ] && [ -x "$AAPT2" ]; then
   else
     check_components "$NAMES"
   fi
+  # The media debug receiver is exported, and its only sender gate is the
+  # manifest permission: the system checks that the sender (adb shell) holds
+  # DUMP. A runtime check in the receiver cannot replace it, so pin it here.
+  if ! "$AAPT2" dump xmltree --file AndroidManifest.xml "$APK" 2>/dev/null |
+    awk '
+      /^[ \t]*E: / { in_recv = ($0 ~ /E: receiver/); named = 0; next }
+      in_recv && /:name\(/ && /MediaDebugTrigger/ { named = 1 }
+      in_recv && named && /:permission\(/ && /android\.permission\.DUMP/ { found = 1 }
+      END { exit !found }
+    '; then
+    fail "the media debug receiver is not gated by android.permission.DUMP in the APK's manifest"
+  else
+    ok "media debug receiver gated by android.permission.DUMP"
+  fi
 fi
 
 # --- 5. deckctl -------------------------------------------------------------

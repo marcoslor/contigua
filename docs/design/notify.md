@@ -482,6 +482,18 @@ intent carries it, and preflight counts the boot ledger by its actual columns
 (it reported "0 of 2 used" whatever the ledger held). The media section itself
 still has not run on a device: the budget for this round is spent.
 
+The next boot (2026-10-20 22:09, commit 60f1acb) paired, passed the paired-row,
+phone-screen, secure and icon sections, and the media section failed one step
+further in: the three broadcasts now carried their action and were delivered,
+and the receiver logged `refused: no DUMP` for the stop broadcast. Its runtime
+check (`checkCallingOrSelfPermission(DUMP)`) can never pass: `onReceive` runs
+outside a binder call, so it sees this app's own permissions and the app does
+not hold DUMP. The manifest's `android:permission="android.permission.DUMP"` on
+the receiver is the sender gate (adb shell holds it) and stays; the runtime
+check is gone, and preflight now fails if that manifest permission disappears.
+The media section is still unproven on a device (the boot budget for this round
+is spent): the fake sessions have never started under the current rig.
+
 Still unproven on a real listener: `getActiveSessions` ordering and key
   minting, artwork from a real `MediaMetadata` (bitmap and `*_URI` sources),
   `transportControls.seekTo`, the local-playback volume (`playbackInfo` +
