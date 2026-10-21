@@ -626,6 +626,10 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
 
     func writeChromeState() {
         guard let stateFile else { return }
+        // The state reports the picture as the window is now: the view must
+        // have taken the new size before the gap is measured (a did-resize
+        // notification can arrive before AppKit's layout pass).
+        videoView.layoutSubtreeIfNeeded()
         let lights = window?.standardWindowButton(.closeButton).map { !$0.isHidden } ?? false
         let pillUp = chrome.showsPill
         let titleUp = window?.titleVisibility == .visible
@@ -649,7 +653,9 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
             + " screen=\(chrome.phoneOverlay.cover == .screenOff ? "off" : "on")"
             + " overlay=\(chrome.phoneOverlay.cover == nil ? 0 : 1)"
             + " secure=\(chrome.phoneOverlay.cover == .secure ? 1 : 0)"
-            + " stall=\(isStalled ? 1 : 0) stall_pill=\(stallPill ? 1 : 0)\n"
+            + " stall=\(isStalled ? 1 : 0) stall_pill=\(stallPill ? 1 : 0)"
+            + " frame=\(Int((window?.frame.width ?? 0).rounded()))x\(Int((window?.frame.height ?? 0).rounded()))"
+            + " video_gap=\(Int(videoView.videoGap().rounded()))\n"
         try? Data(line.utf8).write(to: stateFile, options: .atomic)
     }
 
