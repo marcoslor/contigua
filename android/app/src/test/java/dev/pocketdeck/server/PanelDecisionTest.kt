@@ -2,6 +2,7 @@ package dev.pocketdeck.server
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -101,6 +102,37 @@ class PanelDecisionTest {
         assertTrue(policy.requestMirrorOff(false))
         val on = decide(policy, panelOn = false, mirrorOpen = true, mirrorOff = false)
         assertEquals(PanelPlan(wake = true, panelOff = false, transitional = false), on.plan)
+    }
+
+    @Test
+    fun `a held request applies on resume without a new request`() {
+        val policy = DarkPanelPolicy(forced = true)
+        policy.streamsStarted()
+        policy.requestMirrorOff(true)
+
+        val paused = decidePanelPlan(
+            policy = policy,
+            activeDisplayIds = emptyList(),
+            requestOnly = true,
+            mirrorOpen = false,
+            mirrorOff = true,
+            panelOn = false,
+            groupOf = { nonDefaultGroup },
+        )
+        assertNull("a paused mirror does not run a step", paused)
+        assertTrue("the request stays held", policy.mirrorOffRequested)
+
+        val resumed = decidePanelPlan(
+            policy = policy,
+            activeDisplayIds = emptyList(),
+            requestOnly = true,
+            mirrorOpen = true,
+            mirrorOff = true,
+            panelOn = false,
+            groupOf = { nonDefaultGroup },
+        )!!
+        assertEquals(PanelStrategy.PANEL_ALONE, resumed.strategy)
+        assertEquals(PanelPlan(wake = true, panelOff = true, transitional = true), resumed.plan)
     }
 
     @Test
