@@ -68,6 +68,17 @@ if [ "$MODE" = "check" ]; then
   bash tools/emulator/preflight.sh || { echo "CHECK FAIL: preflight"; exit 1; }
   "$PYTHON" tools/emulator/display-state.py --self-test \
     || { echo "CHECK FAIL: display-state parser"; exit 1; }
+  # The captures from the boot that proved the parser (fixtures, never
+  # committed): the real dumps say mScreenState in "Display Power State:".
+  for cap in "$OUT/phone-screen-display-on.log:ON" "$OUT/phone-screen-display-off.log:OFF"; do
+    file="${cap%:*}"
+    want="${cap##*:}"
+    [ -f "$file" ] || continue
+    got="$("$PYTHON" tools/emulator/display-state.py "$file" | cut -f1)"
+    [ "$got" = "$want" ] \
+      || { echo "CHECK FAIL: display-state read '$got' from $(basename "$file") (want $want)"; exit 1; }
+    echo "CHECK OK: display-state reads $got from $(basename "$file")"
+  done
   if "$ADB" devices 2>/dev/null | grep -q "^$SERIAL"; then
     echo "CHECK FAIL: $SERIAL is already running (not ours to touch)"
     exit 1

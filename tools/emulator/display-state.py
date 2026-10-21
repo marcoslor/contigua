@@ -3,9 +3,10 @@
 
 API 36's `dumpsys power` prints `Display Power: com.android.server.power.
 PowerManagerService$1@…` instead of `Display Power: state=ON`, so the old grep
-never matched and the wake check failed on a working phone. This reads the
-display's own dump (`dumpsys display`, display 0's `mState`) and keeps the old
-`Display Power: state=` line as the alternative when a build still prints it.
+never matched and the wake check failed on a working phone. `dumpsys display`
+says it two ways: the `Display 0:` block's `mState` and the `Display Power
+State:` section's `mScreenState`. This reads both, and keeps the old
+`Display Power: state=` line as the alternative for builds that still print it.
 
     display-state.py <display-dump> [--power <power-dump>]
     display-state.py --self-test
@@ -16,7 +17,11 @@ Exit 0 when a state was read, 1 when nothing in the dumps says it.
 import re
 import sys
 
-HEAD = re.compile(r"^(?P<indent>[ \t]*)Display (?P<id>\d+):[ \t]*$", re.M)
+# A `Display <id>:` or `Display Power State:` header sits inside a section, so
+# it is indented; a top-level header (`Logical Displays:`, `Photonic Modulator
+# State:`) starts at column 0 and ends the block above it.
+BLOCK_HEAD = re.compile(r"^(?P<indent>[ \t]*)(?P<name>Display (?P<id>\d+)|Display Power State):[ \t]*$", re.M)
+TOP_LEVEL = re.compile(r"^(?P<name>[A-Z][^:\n]*):[ \t]*$", re.M)
 STATE_LINE = re.compile(r"^[ \t]*(?P<key>mState|mScreenState)=(?P<value>[A-Z_]+)[ \t]*$", re.M)
 STATES_LINE = re.compile(r"^[ \t]*mDisplayStates=\[(?P<values>[0-9,\t ]*)\][ \t]*$", re.M)
 LEGACY = re.compile(r"Display Power: state=(?P<state>[A-Z_]+)")
@@ -27,26 +32,44 @@ INDEX_STATES = {0: "OFF", 1: "ON", 2: "DOZE", 3: "DOZE_SUSPEND", 4: "ON_SUSPEND"
 ON = {"ON", "ON_SUSPEND"}
 
 
-def display_zero_block(text):
-    """The text of the `Display 0:` block (Logical Displays), or None."""
-    heads = list(HEAD.finditer(text))
-    for pos, head in enumerate(heads):
-        if head.group("id") != "0":
+def block_after(text, head):
+    """The indented lines after <head>, up to the next header at any level."""
+    end = len(text)
+    for m in BLOCK_HEAD.finditer(text, head.end()):
+        end = min(end, m.start())
+    for m in TOP_LEVEL.finditer(text, head.end()):
+        end = min(end, m.start())
+    return text[head.end():end]
+
+
+def find_block(text, want):
+    """The body of the first `<want>` block (display 0 or Display Power State)."""
+    for m in BLOCK_HEAD.finditer(text):
+        if want == "display 0":
+            if m.group("id") != "0":
+                continue
+        elif m.group("name") != want:
             continue
-        end = heads[pos + 1].start() if pos + 1 < len(heads) else len(text)
-        return text[head.end():end]
+        return block_after(text, m)
     return None
 
 
 def read(text, power_text=None):
     """(state, evidence) for display 0; state UNKNOWN when the dumps are silent."""
-    block = display_zero_block(text)
-    if block:
-        m = STATE_LINE.search(block)
+    zero = find_block(text, "display 0")
+    if zero:
+        m = STATE_LINE.search(zero)
         if m:
             value = m.group("value")
             return ("ON" if value in ON else value, "%s=%s" % (m.group("key"), value))
-        m = STATES_LINE.search(block)
+    power_state = find_block(text, "Display Power State")
+    if power_state:
+        m = STATE_LINE.search(power_state)
+        if m:
+            value = m.group("value")
+            return ("ON" if value in ON else value, "%s=%s" % (m.group("key"), value))
+    if zero:
+        m = STATES_LINE.search(zero)
         if m:
             values = [v.strip() for v in m.group("values").split(",") if v.strip()]
             if values:
@@ -61,19 +84,25 @@ def read(text, power_text=None):
 
 
 SELF_TESTS = [
-    # API 36 `dumpsys display`, woken panel.
+    # API 36 `dumpsys display` (trimmed): the display block and the power
+    # controller's section, woken panel.
     (
-        "Logical Displays: size=2\n"
+        "Logical Displays: size=1\n"
         "  Display 0:\n"
         "    mDisplayId=0\n"
         "    mState=ON\n"
         "    mBaseDisplayInfo=DisplayInfo{...}\n"
-        "  Display 1:\n"
-        "    mDisplayId=1\n"
-        "    mState=OFF\n",
+        "\n"
+        "Display Power State:\n"
+        "  mStopped=false\n"
+        "  mScreenState=ON\n"
+        "\n"
+        "Photonic Modulator State:\n"
+        "  mScreenState=ON\n",
         "ON",
     ),
-    # Same dump with the panel off: display 0 decides, never display 1.
+    # The same dump with the panel asleep, including a second display that is
+    # ON: display 0 decides, and its block ends at the next top-level header.
     (
         "Logical Displays: size=2\n"
         "  Display 0:\n"
@@ -81,10 +110,16 @@ SELF_TESTS = [
         "    mState=OFF\n"
         "  Display 1:\n"
         "    mDisplayId=1\n"
-        "    mState=ON\n",
+        "    mState=ON\n"
+        "\n"
+        "Display Power State:\n"
+        "  mScreenState=OFF\n",
         "OFF",
     ),
-    # Older builds spell it mScreenState, others only the state array.
+    # Only the power controller's section says it.
+    ("Logical Displays: size=1\nDisplay Power State:\n  mScreenState=ON\n", "ON"),
+    # Older builds spell it mScreenState in the display block, others only the
+    # state array.
     ("Display 0:\n  mScreenState=ON\n", "ON"),
     ("Display 0:\n  mDisplayStates=[0]\n", "OFF"),
     ("Display 0:\n  mDisplayStates=[1]\n", "ON"),
@@ -93,6 +128,8 @@ SELF_TESTS = [
     # API 36's dumpsys power prints a binder, and a dozing panel is not ON.
     ("", "UNKNOWN", "Display Power: com.android.server.power.PowerManagerService$1@1a2b\n"),
     ("Display 0:\n  mState=DOZE\n", "DOZE"),
+    # A dump that only describes another display says nothing about display 0.
+    ("Display 1:\n  mState=ON\n", "UNKNOWN"),
 ]
 
 
@@ -102,7 +139,7 @@ def self_test():
         power = case[2] if len(case) > 2 else None
         got = read(text, power)[0]
         assert got == want, "want %s, got %s for %r" % (want, got, text or power)
-    print("SELF-TEST OK: display 0 state parsing (ON/OFF/DOZE, legacy line)")
+    print("SELF-TEST OK: display 0 state parsing (mState/mScreenState, ON/OFF/DOZE, legacy line)")
 
 
 def main(argv):
