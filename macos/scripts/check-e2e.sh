@@ -7305,6 +7305,7 @@ PY
     printf '%s\n' \
         "enter 1" \
         "wait-analysis POCKETDECK" \
+        "drag-check" \
         "nav back" \
         "waitfile $WORK/lt-copy-go 120" \
         "copy-image $WORK/livetext.png" \
@@ -7346,6 +7347,27 @@ PY
         esac
     else
         bad "LT no analysis result (app log: $(tail -3 "$WORK/app.log"))"
+    fi
+
+    # The overlay takes the person's drag through the window's own hit test:
+    # v104 set the highlight flag and the drag stopped reaching VisionKit.
+    if wait_until 20 grep -q '"op":"drag"' "$WORK/app.log"; then
+        local drag
+        drag="$(grep '"op":"drag"' "$WORK/app.log" | tail -1)"
+        case "$drag" in
+            *'"hit":"overlay"'*)
+                ok "LT a drag at a recognised word hits the analysis overlay" ;;
+            *) bad "LT the drag does not hit the overlay ($drag)" ;;
+        esac
+        # The quiet run's app is inactive, so VisionKit never starts the
+        # selection itself (it needs the person's active window); the hit route
+        # above is the e2e part, and LiveTextInteractionTests pins the set.
+        case "$drag" in
+            *'"supplementary":true'*) ok "LT the Live Text button is still there" ;;
+            *) bad "LT the supplementary Live Text button is hidden ($drag)" ;;
+        esac
+    else
+        bad "LT no drag-check result (app log: $(tail -3 "$WORK/app.log"))"
     fi
 
     # VM screenshots (visible runs only): the bar over the bright text frame,
