@@ -20,4 +20,16 @@ enum MenuModel {
     /// Hide Controls' items, top to bottom (the three delays, a separator,
     /// Always Visible).
     static let hideControls: [ImmersiveMenuItem] = ImmersiveMenuModel.items
+
+    /// The Density item that clears the app's override. It names the Settings
+    /// default, so the person knows what "Default" restores.
+    static func densityDefaultTitle(settings: Double) -> String {
+        "Default (\(DensityRules.percentLabel(settings)))"
+    }
+
+    /// The percentage items: every option except the one the Default item
+    /// already names, so the same value never appears twice.
+    static func densityOptions(settings: Double) -> [(label: String, value: Double)] {
+        WindowDensity.options.filter { abs($0.value - settings) > 0.0005 }
+    }
 }

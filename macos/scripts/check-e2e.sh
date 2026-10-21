@@ -2642,10 +2642,10 @@ if view is None:
 else:
     seq = ["—" if item["isSeparator"] else item["title"] for item in view["submenu"]]
     # The pair is an inline Picker, which draws its own section separator
-    # after it; Hide Controls follows, then the Density section.
+    # after it; Hide Controls follows, then Show Touches/Live Text and Density.
     want = ["Find Apps", "Phone Window", "Continue on Mac", "—",
-            "Show Touches", "Live Text", "—", "Framed", "Immersive", "—",
-            "Hide Controls", "—", "Density", "Toggle Window Style"]
+            "Framed", "Immersive", "—", "Hide Controls", "—",
+            "Show Touches", "Live Text", "—", "Density"]
     if seq != want:
         problems.append("View: %r wanted %r" % (seq, want))
     by_title = {item["title"]: item for item in view["submenu"]}
@@ -2787,7 +2787,7 @@ if any("Full Screen" in title for title in titles):
     print("a full-screen item is in View:", titles); sys.exit(1)
 PY
 
-    python3 - "$WORK/menus-1.json" <<'PY' && ok "MENUS Framed/Immersive are radio items with exactly one checked" \
+    python3 - "$WORK/menus-1.json" <<'PY' && ok "MENUS Framed/Immersive are radio items with exactly one checked, and ⌥⌘F is on the pair" \
         || bad "MENUS the style radios are wrong"
 import json, sys
 root = json.load(open(sys.argv[1]))
@@ -2805,6 +2805,32 @@ if framed.get("submenu"):
     print("Framed has a submenu"); sys.exit(1)
 if immersive.get("submenu"):
     print("Immersive has a submenu"); sys.exit(1)
+# ⌥⌘F belongs to the pair, and the old separate toggle is gone.
+shortcuts = [(i["title"], i["keyEquivalent"], i["modifiers"]) for i in (framed, immersive)
+             if i["keyEquivalent"] == "f"]
+if shortcuts != [("Framed", "f", ["command", "option"])] and shortcuts != [("Immersive", "f", ["command", "option"])]:
+    print("⌥⌘F on the pair:", shortcuts); sys.exit(1)
+if "Toggle Window Style" in by_title:
+    print("the separate Toggle Window Style item is still there"); sys.exit(1)
+PY
+
+    python3 - "$WORK/menus-1.json" <<'PY' && ok "MENUS Density is Default (N%), the other percentages, then Larger/Smaller/Actual Size" \
+        || bad "MENUS the Density submenu is wrong"
+import json, sys
+root = json.load(open(sys.argv[1]))
+view = next(i for i in root["items"] if i["title"] == "View")
+density = next(i for i in view["submenu"] if i["title"] == "Density")
+seq = ["—" if i["isSeparator"] else i["title"] for i in density.get("submenu") or []]
+want = ["Default (100%)", "—", "75%", "125%", "150%", "—", "Larger", "Smaller", "Actual Size"]
+if seq != want:
+    print("Density:", seq, "wanted:", want); sys.exit(1)
+by_title = {i["title"]: i for i in density["submenu"] if not i["isSeparator"]}
+for title, key in [("Larger", "+"), ("Smaller", "-"), ("Actual Size", "0")]:
+    item = by_title[title]
+    if item["keyEquivalent"] != key or item["modifiers"] != ["command"]:
+        print(title, "shortcut:", repr(item["keyEquivalent"]), item["modifiers"]); sys.exit(1)
+if by_title["Default (100%)"]["state"] != "on":
+    print("Default is not checked with no override:", by_title["Default (100%)"]["state"]); sys.exit(1)
 PY
 
     # The temporary Bar Prototype picker is gone: the bar has one geometry
@@ -2879,8 +2905,8 @@ root = json.load(open(sys.argv[1]))
 items = list(walk(root["items"]))
 missing = []
 for title in ["Add Phone…", "Find Apps", "Phone Window", "Continue on Mac", "Show Touches",
-              "Live Text", "Density", "Toggle Window Style", "Back", "Home", "Recents",
-              "Enter Full Screen"]:
+              "Live Text", "Density", "Larger", "Smaller", "Actual Size", "Back", "Home",
+              "Recents", "Enter Full Screen"]:
     found = next((i for i in items if i["title"] == title), None)
     if found is None:
         missing.append(title + " (missing)")

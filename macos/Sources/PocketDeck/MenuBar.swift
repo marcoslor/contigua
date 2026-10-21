@@ -91,31 +91,27 @@ struct AppCommands: Commands {
                 Label("Continue on Mac", systemImage: "arrow.up.forward.app")
             }
             .keyboardShortcut("c", modifiers: [.command, .shift])
-            Divider()
-            Toggle(isOn: Binding(
-                get: { streamMenu.showTouches },
-                set: { controller.windows.showTouches = $0 })) {
-                Label("Show Touches", systemImage: "hand.tap")
-            }
-            Toggle(isOn: Binding(
-                get: { streamMenu.liveText },
-                set: { controller.windows.setKeyWindowLiveText($0) })) {
-                Label("Live Text", systemImage: "text.viewfinder")
-            }
-            .keyboardShortcut("t", modifiers: [.command, .shift])
             // View ▸ Framed / Immersive: one radio pair for the key stream
-            // window, built by the commands themselves. A Picker's inline style
-            // renders the pair as checkmarked radio items and re-reads the
-            // selection when the menu updates; a Toggle does not (both radios
-            // stay checked after a pick), and an AppKit item inserted here is
-            // dropped the moment SwiftUI rebuilds the menu — how the person's
-            // v104 and v107 menus lost these.
+            // window, built by the commands themselves. An inline Picker renders
+            // it as checkmarked radio items with no section title; an AppKit
+            // item inserted here is dropped the moment SwiftUI rebuilds the
+            // menu — how the person's v104 and v107 menus lost these. ⌥⌘F is
+            // the pair's: it re-picks the checked style, which this binding
+            // reads as "the other one".
             Picker(selection: Binding(
                 get: { streamMenu.style },
-                set: { controller.windows.setKeyWindowStyle($0) })) {
-                ForEach(MenuModel.styles, id: \.self) { style in
-                    Text(style.label).tag(style)
-                }
+                set: { picked in
+                    if picked == streamMenu.style {
+                        controller.windows.toggleKeyWindowStyle()
+                    } else {
+                        controller.windows.setKeyWindowStyle(picked)
+                    }
+                })) {
+                Text(WindowStyle.framed.label)
+                    .tag(WindowStyle.framed)
+                    .keyboardShortcut("f", modifiers: [.command, .option])
+                Text(WindowStyle.immersive.label)
+                    .tag(WindowStyle.immersive)
             } label: {
                 EmptyView()
             }
@@ -123,7 +119,7 @@ struct AppCommands: Commands {
             .labelsHidden()
             // The reveal choice: enabled only while the window is immersive, so
             // a choice is never also a submenu's parent (Framed/Immersive above
-            // own the style).
+            // own the style). A pick stores the choice and leaves the style.
             Menu {
                 ForEach(MenuModel.hideControls, id: \.self) { entry in
                     if entry == .separator {
@@ -139,35 +135,57 @@ struct AppCommands: Commands {
             }
             .disabled(!MenuModel.hideControlsEnabled(style: streamMenu.style))
             Divider()
+            Toggle(isOn: Binding(
+                get: { streamMenu.showTouches },
+                set: { controller.windows.showTouches = $0 })) {
+                Label("Show Touches", systemImage: "hand.tap")
+            }
+            Toggle(isOn: Binding(
+                get: { streamMenu.liveText },
+                set: { controller.windows.setKeyWindowLiveText($0) })) {
+                Label("Live Text", systemImage: "text.viewfinder")
+            }
+            .keyboardShortcut("t", modifiers: [.command, .shift])
+            Divider()
             // View ▸ Density: the key stream window's app override, remembered
             // per app (WindowDensityStore) and applied to every open window of
             // that app. "Default" clears it; the check mark follows the
             // override (none checked when ⌘+/⌘- landed between two options).
             // Disabled without a key stream window that shows an app.
             Menu {
-                Toggle("Default (\(DensityRules.percentLabel(streamMenu.settingsDensity)))",
+                Toggle(MenuModel.densityDefaultTitle(settings: streamMenu.settingsDensity),
                        isOn: Binding(get: { densityCheck == .defaultItem },
                                      set: { _ in pickDensity(nil) }))
                 Divider()
-                ForEach(WindowDensity.options, id: \.value) { option in
+                ForEach(MenuModel.densityOptions(settings: streamMenu.settingsDensity), id: \.value) { option in
                     Toggle(option.label, isOn: Binding(
                         get: { densityCheck == .value(option.value) },
                         set: { _ in pickDensity(option.value) }))
                 }
+                Divider()
+                // The stream window's own ⌘+ ⌘− ⌘0, now visible.
+                Button {
+                    controller.windows.adjustKeyWindowDensity(DensityRules.step)
+                } label: {
+                    Label("Larger", systemImage: "plus.magnifyingglass")
+                }
+                .keyboardShortcut("+", modifiers: .command)
+                Button {
+                    controller.windows.adjustKeyWindowDensity(-DensityRules.step)
+                } label: {
+                    Label("Smaller", systemImage: "minus.magnifyingglass")
+                }
+                .keyboardShortcut("-", modifiers: .command)
+                Button {
+                    controller.windows.resetKeyWindowDensity()
+                } label: {
+                    Label("Actual Size", systemImage: "1.magnifyingglass")
+                }
+                .keyboardShortcut("0", modifiers: .command)
             } label: {
                 Label("Density", systemImage: "textformat.size")
             }
             .disabled(!streamMenu.hasStream || streamMenu.densityPackage == nil)
-            // No disabled gate here: key equivalents do not get re-evaluated
-            // when the state changes, and a disabled item eats its shortcut
-            // silently under NSEvent.performKeyEquivalent. The binding itself
-            // no-ops without a key stream window.
-            Button {
-                controller.windows.toggleKeyWindowStyle()
-            } label: {
-                Label("Toggle Window Style", systemImage: "rectangle.topthird.inset.filled")
-            }
-            .keyboardShortcut("f", modifiers: [.command, .option])
         }
         // Full screen is AppKit's own item, moved into the Window menu at
         // launch (FullScreenMenu.swift): only a system-provided item can carry
