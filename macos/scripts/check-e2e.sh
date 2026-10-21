@@ -2601,10 +2601,12 @@ PY
 # step is visible-only.
 check_menus() {
     begin_shared || return 1
-    rm -f "$WORK/menus.json" "$WORK/menus-after.json" "$WORK/menus-step-full" "$WORK/menus-step-exit" "$WORK/menus-full.json" \
+    rm -f "$WORK/menus.json" "$WORK/menus-after.json" "$WORK/menus-long.json" "$WORK/menus-picked" "$WORK/menus-step-full" "$WORK/menus-step-exit" "$WORK/menus-full.json" \
         "$WORK/menus-step-touch" "$WORK/menus-touch.png" "$WORK/chrome.txt"
     printf '%s\n' "wait 1.5" "menudump $WORK/menus.json" \
-        "windowstyle immersive" "wait 1" "menudump $WORK/menus-after.json" \
+        "menupick View/Immersive" "wait 1.5" "menudump $WORK/menus-after.json" \
+        "waitfile $WORK/menus-picked 60" \
+        "menupick View/Hide Controls/Long" "wait 0.7" "menudump $WORK/menus-long.json" \
         "windowstyle framed" "wait 0.5" "showtouches on" "wait 1" "hover 0.5 0.5" "wait 0.3" \
         "waitfile $WORK/menus-step-touch 60" "fingerpinch 0.5 0.01 1.25 4" "wait 1" \
         "waitfile $WORK/menus-step-full 60" "fullscreen" "wait 6" \
@@ -2635,7 +2637,7 @@ if view is None:
 seq = ["—" if item["isSeparator"] else item["title"] for item in view["submenu"]]
 want = ["Find Apps", "Phone Window", "Continue on Mac", "—",
         "Show Touches", "Live Text", "—", "Framed", "Immersive",
-        "—", "Density", "Toggle Window Style"]
+        "Hide Controls", "—", "Density", "Toggle Window Style"]
 if seq != want:
     print("View:", seq, "wanted:", want); sys.exit(1)
 PY
@@ -2665,6 +2667,51 @@ if sorted([framed["state"], immersive["state"]]) != ["off", "on"]:
     print("states:", framed["state"], immersive["state"]); sys.exit(1)
 if framed["hasImage"] or immersive["hasImage"]:
     print("a radio item carries an icon"); sys.exit(1)
+# A choice cannot also be a submenu's parent: both are plain items.
+if framed.get("submenu"):
+    print("Framed has a submenu"); sys.exit(1)
+if immersive.get("submenu"):
+    print("Immersive has a submenu"); sys.exit(1)
+PY
+
+    # Choosing the item itself (menupick: the item's own target and action)
+    # took the window to immersive, and the menu's checks follow the window.
+    # The chrome state is one line the window rewrites on every change, so the
+    # script holds on a marker until it is read here.
+    wait_until 10 grep -q "style=immersive" "$WORK/chrome.txt" \
+        && ok "MENUS choosing Immersive took the window to the immersive style" \
+        || bad "MENUS choosing Immersive left $(grep -o 'style=[a-z]*' "$WORK/chrome.txt" | tail -1)"
+    python3 - "$WORK/menus-after.json" <<'PY' && ok "MENUS after choosing Immersive: it is checked and Hide Controls is enabled" \
+        || bad "MENUS the View menu did not follow the style change"
+import json, sys
+root = json.load(open(sys.argv[1]))
+view = next(i for i in root["items"] if i["title"] == "View")
+by_title = {item["title"]: item for item in view["submenu"]}
+if by_title["Framed"]["state"] != "off" or by_title["Immersive"]["state"] != "on":
+    print("states:", by_title["Framed"]["state"], by_title["Immersive"]["state"]); sys.exit(1)
+hide = by_title.get("Hide Controls")
+if hide is None or not hide.get("enabled"):
+    print("Hide Controls:", hide); sys.exit(1)
+PY
+
+    # Let the script go on to the Hide Controls pick (it held for the read
+    # above).
+    touch "$WORK/menus-picked"
+
+    # A Hide Controls pick stores the reveal choice (the style is the radio
+    # pair's business, pinned above). The script writes this dump a moment
+    # after the pick: wait for it.
+    wait_until 20 [ -s "$WORK/menus-long.json" ] \
+        || bad "MENUS no dump after the Hide Controls pick"
+    python3 - "$WORK/menus-long.json" <<'PY' && ok "MENUS a Hide Controls pick checks Long" \
+        || bad "MENUS the Hide Controls pick did not store the choice"
+import json, sys
+root = json.load(open(sys.argv[1]))
+view = next(i for i in root["items"] if i["title"] == "View")
+hide = next(i for i in view["submenu"] if i["title"] == "Hide Controls")
+checked = [item["title"] for item in hide.get("submenu") or [] if item["state"] == "on"]
+if checked != ["Long"]:
+    print("checked:", checked); sys.exit(1)
 PY
 
     # SwiftUI rebuilds the View menu when the state the commands read changes
@@ -2680,13 +2727,15 @@ if view is None:
 imm = next((i for i in view["submenu"] if i["title"] == "Immersive"), None)
 if imm is None:
     print("Immersive missing:", [i["title"] for i in view["submenu"]]); sys.exit(1)
-sub = imm.get("submenu") or []
-want = ["Instantly", "Short", "Long", "—", "Always Visible"]
-seq = ["—" if item["isSeparator"] else item["title"] for item in sub]
-if seq != want:
-    print("Immersive submenu:", seq); sys.exit(1)
+if imm.get("submenu"):
+    print("Immersive still has a submenu"); sys.exit(1)
 if imm["state"] != "on":
-    print("the parent is not checked while the window is immersive:", imm["state"]); sys.exit(1)
+    print("Immersive is not checked while the window is immersive:", imm["state"]); sys.exit(1)
+hide = next((i for i in view["submenu"] if i["title"] == "Hide Controls"), None)
+if hide is None:
+    print("no Hide Controls item"); sys.exit(1)
+if not hide.get("enabled"):
+    print("Hide Controls is disabled while immersive"); sys.exit(1)
 PY
 
     # The temporary Bar Prototype picker is gone: the bar has one geometry
@@ -2700,17 +2749,24 @@ if any(i["title"] == "Bar Prototype" for i in view["submenu"]):
     print("Bar Prototype is still there"); sys.exit(1)
 PY
 
-    python3 - "$WORK/menus.json" <<'PY' && ok "MENUS Immersive is a submenu: the delays, a separator, Always Visible" \
-        || bad "MENUS the Immersive submenu is wrong"
+    # Immersive is a plain radio item (no submenu); the reveal choice lives in
+    # Hide Controls, which is disabled while the window is framed.
+    python3 - "$WORK/menus.json" <<'PY' && ok "MENUS Hide Controls holds the delays and is disabled while Framed" \
+        || bad "MENUS Hide Controls is wrong while framed"
 import json, sys
 root = json.load(open(sys.argv[1]))
 view = next(i for i in root["items"] if i["title"] == "View")
 imm = next(i for i in view["submenu"] if i["title"] == "Immersive")
-sub = imm.get("submenu") or []
+if imm.get("submenu"):
+    print("Immersive has a submenu"); sys.exit(1)
+hide = next(i for i in view["submenu"] if i["title"] == "Hide Controls")
+if hide.get("enabled"):
+    print("Hide Controls is enabled while framed"); sys.exit(1)
+sub = hide.get("submenu") or []
 seq = ["—" if item["isSeparator"] else item["title"] for item in sub]
 want = ["Instantly", "Short", "Long", "—", "Always Visible"]
 if seq != want:
-    print("Immersive:", seq, "wanted:", want); sys.exit(1)
+    print("Hide Controls:", seq, "wanted:", want); sys.exit(1)
 checked = [item["title"] for item in sub if item["state"] == "on"]
 if checked != ["Short"]:
     print("checked:", checked); sys.exit(1)
