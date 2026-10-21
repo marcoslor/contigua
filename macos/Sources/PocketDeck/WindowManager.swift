@@ -186,6 +186,18 @@ final class WindowManager {
         setDensity(value, forPackage: pkg)
     }
 
+    /// View ▸ Density ▸ Larger / Smaller: one ⌘+/⌘− step on the key stream
+    /// window's app, the same call the window's own key handling makes.
+    func adjustKeyWindowDensity(_ delta: Double) {
+        (NSApp.keyWindow?.windowController as? StreamWindowController)?.adjustDensity(delta)
+    }
+
+    /// View ▸ Density ▸ Actual Size (⌘0): the key stream window's app goes back
+    /// to the Settings default.
+    func resetKeyWindowDensity() {
+        (NSApp.keyWindow?.windowController as? StreamWindowController)?.resetDensity()
+    }
+
     /// View → Show Touches: the fingers Android sees while a trackpad gesture
     /// runs. On by default where a trackpad exists (built-in or connected);
     /// once the person toggles it, their stored choice always wins.
