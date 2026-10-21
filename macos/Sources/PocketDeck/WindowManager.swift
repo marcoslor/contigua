@@ -13,6 +13,9 @@ final class WindowManager {
 
     var appsByPkg: [String: AppInfo] = [:]
     private(set) var icons: [String: NSImage] = [:]
+    /// Streams whose first frame has reached this window (the opening cover's
+    /// end); touched on the session queue under `lock`.
+    private var firstFrameNoted: Set<UInt32> = []
     var phone: PhoneInfo?
     /// The active phone's display name (its nickname, else its own name):
     /// app and link window titles carry it — "WhatsApp (Nicky)".
@@ -91,6 +94,10 @@ final class WindowManager {
             hasTrackpad: hasTrackpad, stored: defaults.object(forKey: Self.showTouchesKey) as? Bool)
         StreamMenuState.shared.settingsDensity = WindowDensity.value(in: defaults)
         StreamMenuState.shared.revealDelay = RevealDelay.stored(in: defaults)
+        // The temporary bar prototype is a profile choice; every layout reads
+        // the global (WindowStyle.ChromeBar).
+        BarPrototype.current = BarPrototype.stored(in: defaults)
+        StreamMenuState.shared.barPrototype = BarPrototype.current
     }
 
     /// The View menu's Window Style: toggle/switch the key stream window's
@@ -210,6 +217,25 @@ final class WindowManager {
         set { frames.set(newValue, forKey: Self.hoverKey) }
     }
 
+    /// View ▸ Bar Prototype (temporary): store the choice and give every open
+    /// window the new bar, keeping its stream size and top edge.
+    func setBarPrototype(_ prototype: BarPrototype) {
+        let old = BarPrototype.current
+        guard prototype != old else { return }
+        let oldBar = old.barHeight
+        BarPrototype.current = prototype
+        frames.set(prototype.rawValue, forKey: BarPrototype.key)
+        StreamMenuState.shared.barPrototype = prototype
+        for controller in allControllers() { controller.barPrototypeChanged(fromBar: oldBar) }
+    }
+
+    /// Settings ▸ Input "Secondary click (two-finger click)": read live, so the
+    /// Settings change reaches every open window at once.
+    var secondaryClick: SecondaryClick {
+        get { SecondaryClick.stored(in: frames) }
+        set { frames.set(newValue.rawValue, forKey: SecondaryClick.key) }
+    }
+
     /// The setting changed: every open window takes the new delay at once, a
     /// rest already running included.
     func revealDelayChanged() {
@@ -283,6 +309,16 @@ final class WindowManager {
 
     @discardableResult
     func openApp(pkg: String, activity: String? = nil) -> AppWindowController {
+        // A dock click (or a second open request) while the app is still
+        // opening raises the window that is already waiting instead of asking
+        // the phone for another stream. The v104 log had seven opens of Chrome
+        // while the first window was black; each was a second launch on the
+        // phone and none of them made the picture come sooner.
+        if let opening = allControllers().compactMap({ $0 as? AppWindowController })
+            .first(where: { $0.pkg == pkg && $0.isOpening }) {
+            opening.window?.makeKeyAndOrderFront(nil)
+            return opening
+        }
         let label = appsByPkg[pkg]?.label ?? pkg
         let controller = open {
             AppWindowController(stream: $0, pkg: pkg, activity: activity, label: label, manager: self)
@@ -389,7 +425,10 @@ final class WindowManager {
     }
 
     func remove(stream: UInt32) {
-        lock.lock(); let removed = streams.removeValue(forKey: stream) != nil; lock.unlock()
+        lock.lock()
+        let removed = streams.removeValue(forKey: stream) != nil
+        firstFrameNoted.remove(stream)
+        lock.unlock()
         if removed { onStreamClosed?(stream) }
         onChange?()
     }
@@ -423,6 +462,8 @@ final class WindowManager {
         frames.removeObject(forKey: Self.framesKey)
         frames.removeObject(forKey: Self.showTouchesKey)
         frames.removeObject(forKey: Self.hoverKey)
+        frames.removeObject(forKey: SecondaryClick.key)
+        frames.removeObject(forKey: BarPrototype.key)
         frames.removeObject(forKey: RevealDelay.key)
         StreamMenuState.shared.showTouches = false
         for key in frames.dictionaryRepresentation().keys where key.hasPrefix(WindowStyleStore.prefix) {
@@ -477,6 +518,14 @@ final class WindowManager {
             let controller = controller(for: stream)
             controller?.videoView.enqueue(frame)
             controller?.frameClock.note()
+            // The opening cover ends at the stream's first frame; the note is
+            // main-thread state, sent once per stream.
+            lock.lock()
+            let first = firstFrameNoted.insert(stream).inserted
+            lock.unlock()
+            if first, let controller {
+                DispatchQueue.main.async { [weak controller] in controller?.noteFirstFrame() }
+            }
         }
     }
 

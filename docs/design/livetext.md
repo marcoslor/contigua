@@ -61,9 +61,12 @@ idle --enter--> capturing --frameCaptured--> analyzing --analysisFinished--> sho
 
 The mode is per stream window. The video view owns the freeze image and the
 `ImageAnalysisOverlayView` (VisionKit: `ImageAnalyzer` with `.text`,
-`.machineReadableCode`, `.visualLookUp`, `preferredInteractionTypes =
-.automatic`); the window controller owns the phone-side pause/resume and the
-menu/chrome state.
+`.machineReadableCode`, `.visualLookUp`). Its interactions are set explicitly
+to text selection, data detectors, image subject and Visual Look Up, and the
+set is re-applied after the first analysis turns the highlights on: the
+`.automatic` default does not resolve to text selection in v104's highlight
+state, and the person's drags then selected nothing. The window controller owns
+the phone-side pause/resume and the menu/chrome state.
 
 ## Input rules
 
@@ -106,7 +109,15 @@ script occurs — never the transcript.
 - `LiveTextInputGateTests`: pointer, keys (Esc included), scroll, hover,
   trackpad and pending text are dropped while the mode is on.
 - `LiveTextDebugScriptTests`: the `--debug-livetext` script grammar.
+- `LiveTextInteractionTests`: with a frozen frame and VisionKit's analysis, the
+  overlay offers text selection (preferred and active), keeps the supplementary
+  Live Text button, and the window's hit test over the frame lands on the
+  overlay or a VisionKit subview, never on the video view underneath.
 - e2e `livetext`: enter → VisionKit reads `POCKETDECK` from the fake phone's
   text frame; no `INPUT` frame reaches the phone while the mode is on and the
   phone stops sending frames; `copy-image` writes a PNG at the stream's pixel
-  size; exit resumes the frames; a resize while in the mode drops to idle.
+  size; `drag-check` takes the window's hit test at a recognised word and
+  sends a synthetic down/drag/up through the window (the quiet run's app is
+  inactive, so VisionKit starts no selection there; the check pins the hit
+  route, the button and the interaction set); exit resumes the frames; a resize
+  while in the mode drops to idle.

@@ -1309,7 +1309,7 @@ check_resize() {
         --resize-stream "1:${fw}x${fh}-pt" || return 1
     wait_until 30 events_have '"ev":"video","stream":1,"config":true' \
         || bad "C6 live resize: no first video config"
-    if win="$(await_window "\$4 == $fw")" && shot_window "$win" "$WORK/resize-fill.png"; then
+    if win="$(await_window "\$4 == $fw")" && { sleep 0.2; shot_window "$win" "$WORK/resize-fill.png"; }; then
         # The screenshot is taken as the window takes its new shape (inside
         # the 2 s fill timeout); the phone's held answer comes 0.3 s later.
         wait_until 5 events_have '"ev":"resize","held":true' \
@@ -1338,24 +1338,75 @@ check_resize() {
         || bad "C6 live resize: after the answer ($edges)"
     say "screenshot: $WORK/resize-fill-done.png"
 
+    # A fast drag: ten steps 30 ms apart while the phone holds its answer. At
+    # every step the last frame must cover the window (video_gap=0): the
+    # display layer follows the view with no implicit animation, so no black
+    # band appears while the picture catches up (the person's recording).
+    end_shared
+    : > "$WORK/events.jsonl"
+    FAKE_ARGS="--resize-delay-ms 6000" start_fake || return 1
+    FAKE_ARGS=""
+    launch_shared --connect "127.0.0.1:$PORT" --debug-chrome-state "$WORK/chrome.txt" || return 1
+    # The previous phase's last line is not this window's: start clean.
+    rm -f "$WORK/chrome.txt"
+    local step maxgap=0 gap deadline args=(--open com.android.settings --float-windows --debug-chrome-state "$WORK/chrome.txt")
+    for step in 0 1 2 3 4 5 6 7 8 9; do
+        args+=(--resize-stream "1:$(printf '%dx%d-pt@0.%02d' \
+            $((520 + step * 30)) $((520 + step * 22)) $((30 + step * 3)))")
+    done
+    open_shared "${args[@]}" || return 1
+    deadline=$(( $(now_ms) + 1500 ))
+    while [ "$(now_ms)" -lt "$deadline" ]; do
+        gap="$(chrome_state | grep -oE 'video_gap=[0-9]+' | cut -d= -f2)"
+        if [ -n "$gap" ] && [ "$gap" -gt "$maxgap" ]; then maxgap="$gap"; fi
+        sleep 0.02
+    done
+    [ "$maxgap" -le 1 ] \
+        && ok "C6 fast resize: the picture covered the window at every step (max video_gap ${maxgap} px)" \
+        || bad "C6 fast resize: a black band while the layer caught up (max video_gap ${maxgap} px)"
+    stop_app
+    stop_fakephone
+
     # The phone window mirrors the phone's own screen: no fill, no crop, and
     # the bar above it mirrors the screen's top rows (never a black gap).
     next_shared
-    open_shared --open-phone --float-windows || return 1
+    open_shared --open-phone --float-windows --debug-chrome-state "$WORK/chrome.txt" || return 1
     wait_until 30 events_have '"ev":"video","stream":1,"config":true' \
         || bad "C6 phone window: no video config"
     local pw ph
     read -r win _ _ pw ph <<< "$(windows | awk '$5 > $4 {print; exit}')"
     if [ -n "${win:-}" ] && shot_window "$win" "$WORK/resize-phone.png"; then
-        edges="$(edge_kinds "$WORK/resize-phone.png" "$pw" "$ph" "$bar")"
-        case "$edges" in
-            *"top=black"*) bad "C6 phone window: black under the bar ($edges)" ;;
-            *) ok "C6 phone window: the mirror's letterbox is unchanged, no black under the bar ($edges)" ;;
-        esac
+        # The phone's own pattern has black regions at its edges; the precise
+        # rule is the gap between the content and the drawn picture.
+        if chrome_has "video_gap=0"; then
+            ok "C6 phone window: the mirror fills the content, no black band (video_gap=0)"
+        else
+            bad "C6 phone window: a black band under the bar (state: $(chrome_state))"
+        fi
         say "screenshot: $WORK/resize-phone.png"
     else
         bad "C6 phone window: no portrait window to capture"
     fi
+
+    # A scripted drag on the phone window: ten monotonic proposals through the
+    # same windowWillResize call AppKit makes for a mouse move. The window must
+    # never snap back (v104 fought the hand: a mostly-down step after a
+    # mostly-across one returned a smaller frame).
+    local step prev_h="" frame_h monotonic=1
+    for step in 0 1 2 3 4 5 6 7 8 9; do
+        control resize-step $((500 + step * 30)) $((900 + step * 40)) \
+            || { bad "C6 phone drag: resize-step: $CONTROL_REPLY"; monotonic=0; break; }
+        frame_h="$(chrome_state | grep -oE 'frame=[0-9]+x[0-9]+' | tail -1 | cut -dx -f2)"
+        [ -n "$frame_h" ] || { bad "C6 phone drag: no frame in the chrome state"; monotonic=0; break; }
+        if [ -n "$prev_h" ] && [ "$frame_h" -lt "$prev_h" ]; then
+            bad "C6 phone drag: the window snapped back at step $step (${prev_h} -> ${frame_h})"
+            monotonic=0
+            break
+        fi
+        prev_h="$frame_h"
+    done
+    [ "$monotonic" = 1 ] \
+        && ok "C6 phone drag: a monotonic drag keeps a monotonic window (height ${prev_h} pt)"
     # The delayed phone must not serve the next check in a shared run.
     end_shared
 }
@@ -1418,6 +1469,10 @@ PY
 # signal that the whole script has been delivered.
 check_input() {
     begin_shared || return 1
+    # The script's right click is the "delivered" signal and asserts one Back,
+    # so the Input setting is Back here; the default (Long press) has its own
+    # steps in `mouseback`.
+    control secondary-click back || bad "C7 secondary-click back: $CONTROL_REPLY"
     printf '%s\n' "click 0.5 0.5" "drag 0.5 0.5 0.7 0.5" "scroll 3" "scroll -2" "type hi" \
         "rightclick 0.5 0.5" > "$WORK/input.txt"
     open_shared --open com.android.settings --debug-input-script "$WORK/input.txt" || return 1
@@ -1434,6 +1489,8 @@ check_input_global() {
     [ "$VISIBLE" = "1" ] || { skip_visible "input-global (real CGEvents through the window server are its point)"; return 0; }
     clean
     start_fake || return 1
+    # The real right click below is the "delivered" signal and asserts Back.
+    defaults write "$DEFAULTS_SUITE" "input.secondaryClick" -string back
     launch --connect "127.0.0.1:$PORT" \
         --open com.android.settings --quit-after 60
     wait_until 30 events_have '"ev":"video","stream":1,' || bad "C7 no video config"
@@ -1639,7 +1696,9 @@ check_mouseback() {
     rm -f "$WORK"/mb-step-*
     printf '%s\n' "sidebutton 3" "waitfile $WORK/mb-step-forward" "sidebutton 4" \
         "waitfile $WORK/mb-step-held" "sidebutton 3 0.4 80 6 12" \
-        "waitfile $WORK/mb-step-key" "key cmd+[" > "$WORK/mb-a.txt"
+        "waitfile $WORK/mb-step-key" "key cmd+[" \
+        "waitfile $WORK/mb-step-secondary" "rightclick 0.5 0.5" \
+        "waitfile $WORK/mb-step-backset" "rightclick 0.5 0.5" > "$WORK/mb-a.txt"
     open_shared --open com.android.settings --float-windows --debug-input-script "$WORK/mb-a.txt" || return 1
     wait_until 30 events_have '"ev":"video","stream":1,' \
         || { bad "MB no video config for the app window"; stop_app; stop_fakephone; return 1; }
@@ -1687,6 +1746,48 @@ check_mouseback() {
     [ "$keys" = "$navkeys" ] \
         && ok "MB Cmd-[ sent no key frames (all $keys keys are fakephone's nav emulation)" \
         || bad "MB Cmd-[ leaked $((keys - navkeys)) key frames of $keys"
+    # A secondary click (Settings ▸ Input, the default Long press): the touch
+    # goes down at the pointer and stays down for the long-press timeout, then
+    # up — no nav back. A quick two-finger click still opens the context menu.
+    control secondary-click longPress || bad "MB secondary-click longPress: $CONTROL_REPLY"
+    touch "$WORK/mb-step-secondary"
+    if wait_until 10 eval '[ "$(mb_touch_count 1)" = "2" ]'; then
+        ok "MB secondary click: the long press sent one down and one up"
+    else
+        bad "MB secondary click: $(mb_touch_count 1) touch frames (wanted 2)"
+    fi
+    hold="$(python3 - "$WORK/events.jsonl" <<'PY'
+import json, sys
+down = up = None
+for line in open(sys.argv[1]):
+    try:
+        event = json.loads(line)
+    except ValueError:
+        continue
+    if event.get("ev") == "input" and event.get("kind") == "touch" and event.get("stream") == 1:
+        if event.get("action") == 0: down = event["ts"]
+        if event.get("action") == 1: up = event["ts"]
+print("%.2f" % ((up - down) if down is not None and up is not None else 0))
+PY
+)"
+    if awk -v h="$hold" 'BEGIN { exit !(h >= 0.5) }'; then
+        ok "MB secondary click: the touch was held ${hold}s (Android's long press)"
+    else
+        bad "MB secondary click: the touch was held only ${hold}s"
+    fi
+    [ "$(mb_nav_count 1 back)" = "3" ] \
+        && ok "MB secondary click: the default long press sent no Back" \
+        || bad "MB secondary click leaked a Back: $(mb_nav_count 1 back)"
+    control secondary-click back || bad "MB secondary-click back: $CONTROL_REPLY"
+    touch "$WORK/mb-step-backset"
+    wait_until 10 eval '[ "$(mb_nav_count 1 back)" = "4" ]' \
+        && ok "MB secondary click with the Back setting -> exactly one nav back" \
+        || bad "MB secondary click Back: $(mb_nav_count 1 back) nav back"
+    [ "$(mb_touch_count 1)" = "2" ] \
+        && ok "MB secondary click with the Back setting made no touch" \
+        || bad "MB secondary click Back made $(mb_touch_count 1) touch frames"
+    control secondary-click longPress >/dev/null 2>&1 || true
+
     # Phase B: the phone-mode window (also a stream window -> stream 1 again).
     next_shared
     printf '%s\n' "sidebutton 3" > "$WORK/mb-b.txt"
@@ -1726,6 +1827,8 @@ check_mouseback() {
 # reason; the gestures land the same either way, just after the windows settle.
 check_pinch() {
     begin_shared || return 1
+    # The closing right click is the "delivered" signal and asserts Back.
+    control secondary-click back || bad "C13 secondary-click back: $CONTROL_REPLY"
     printf '%s\n' "wait 1.5" "pinch 0.5 0.5 1.5" "pinch 0.5 0.5 0.6" \
         "rotate 0.5 0.5 90" "rightclick 0.5 0.5" > "$WORK/pinch.txt"
     open_shared --open com.android.settings --debug-input-script "$WORK/pinch.txt" || return 1
@@ -2498,16 +2601,21 @@ PY
 # step is visible-only.
 check_menus() {
     begin_shared || return 1
-    rm -f "$WORK/menus.json" "$WORK/menus-step-full" "$WORK/menus-step-exit" "$WORK/menus-full.json" \
+    rm -f "$WORK/menus.json" "$WORK/menus-after.json" "$WORK/menus-step-full" "$WORK/menus-step-exit" "$WORK/menus-full.json" \
         "$WORK/menus-step-touch" "$WORK/menus-touch.png" "$WORK/chrome.txt"
     printf '%s\n' "wait 1.5" "menudump $WORK/menus.json" \
-        "showtouches on" "wait 1" "hover 0.5 0.5" "wait 0.3" \
+        "windowstyle immersive" "wait 1" "menudump $WORK/menus-after.json" \
+        "windowstyle framed" "wait 0.5" "showtouches on" "wait 1" "hover 0.5 0.5" "wait 0.3" \
         "waitfile $WORK/menus-step-touch 60" "fingerpinch 0.5 0.01 1.25 4" "wait 1" \
         "waitfile $WORK/menus-step-full 60" "fullscreen" "wait 6" \
         "menudump $WORK/menus-full.json" \
         "waitfile $WORK/menus-step-exit 60" "fullscreen" "wait 6" > "$WORK/menus.txt"
     open_shared --open com.android.settings --debug-chrome-state "$WORK/chrome.txt" \
         --debug-input-script "$WORK/menus.txt" || return 1
+    wait_until 30 [ -s "$WORK/menus-after.json" ] || {
+        bad "MENUS no menu dump after the style change in 30 s ($WORK/menus-after.json)"
+        stop_app; stop_fakephone; return 1
+    }
     wait_until 20 [ -s "$WORK/menus.json" ] || {
         bad "MENUS no menu dump in 20 s ($WORK/menus.json)"
         say "app log: $(tail -3 "$WORK/app.log")"
@@ -2526,8 +2634,8 @@ if view is None:
     print("no View menu"); sys.exit(1)
 seq = ["—" if item["isSeparator"] else item["title"] for item in view["submenu"]]
 want = ["Find Apps", "Phone Window", "Continue on Mac", "—",
-        "Show Touches", "Live Text", "—", "Framed", "Immersive", "—", "Density",
-        "Toggle Window Style"]
+        "Show Touches", "Live Text", "—", "Framed", "Immersive", "Bar Prototype",
+        "—", "Density", "Toggle Window Style"]
 if seq != want:
     print("View:", seq, "wanted:", want); sys.exit(1)
 PY
@@ -2557,6 +2665,48 @@ if sorted([framed["state"], immersive["state"]]) != ["off", "on"]:
     print("states:", framed["state"], immersive["state"]); sys.exit(1)
 if framed["hasImage"] or immersive["hasImage"]:
     print("a radio item carries an icon"); sys.exit(1)
+PY
+
+    # SwiftUI rebuilds the View menu when the state the commands read changes
+    # (the style switch above is one): an AppKit item inserted once would be
+    # dropped then. The person's v104 menu lost Immersive exactly this way.
+    python3 - "$WORK/menus-after.json" <<'PY' && ok "MENUS Immersive survives a View menu rebuild (style changed)" \
+        || bad "MENUS Immersive was dropped when the View menu rebuilt"
+import json, sys
+root = json.load(open(sys.argv[1]))
+view = next((i for i in root["items"] if i["title"] == "View"), None)
+if view is None:
+    print("no View menu"); sys.exit(1)
+imm = next((i for i in view["submenu"] if i["title"] == "Immersive"), None)
+if imm is None:
+    print("Immersive missing:", [i["title"] for i in view["submenu"]]); sys.exit(1)
+sub = imm.get("submenu") or []
+want = ["Instantly", "Short", "Long", "—", "Always Visible"]
+seq = ["—" if item["isSeparator"] else item["title"] for item in sub]
+if seq != want:
+    print("Immersive submenu:", seq); sys.exit(1)
+if imm["state"] != "on":
+    print("the parent is not checked while the window is immersive:", imm["state"]); sys.exit(1)
+PY
+
+    # View ▸ Bar Prototype (temporary, 2026-10-21): Compact and Standard,
+    # one checked. Compact is the default; the menu item goes once a person
+    # picks.
+    python3 - "$WORK/menus.json" <<'PY' && ok "MENUS Bar Prototype: Compact/Standard, Compact checked" \
+        || bad "MENUS the Bar Prototype submenu is wrong"
+import json, sys
+root = json.load(open(sys.argv[1]))
+view = next(i for i in root["items"] if i["title"] == "View")
+bar = next((i for i in view["submenu"] if i["title"] == "Bar Prototype"), None)
+if bar is None or not bar.get("submenu"):
+    print("no Bar Prototype submenu"); sys.exit(1)
+items = [item for item in bar["submenu"] if not item["isSeparator"]]
+seq = [item["title"] for item in items]
+if seq != ["Compact", "Standard"]:
+    print("items:", seq); sys.exit(1)
+states = {item["title"]: item["state"] for item in items}
+if states != {"Compact": "on", "Standard": "off"}:
+    print("states:", states); sys.exit(1)
 PY
 
     python3 - "$WORK/menus.json" <<'PY' && ok "MENUS Immersive is a submenu: the delays, a separator, Always Visible" \
@@ -3170,10 +3320,33 @@ PY
 # check_mirror — the phone window shows display 0 at the screen's aspect; when
 # the phone turns to landscape the stream and the window turn with it.
 check_mirror() {
+    # The opening cover (docs/UX.md): from the open until the first frame the
+    # window is frozen behind the phone's name and a spinner; after 20 s it
+    # says it could not open. The fake holds the first frame so a quiet run
+    # can see both ends.
     clean
-    # Screen off at 14 s (after the rotation at 6 s); the check wakes it again
-    # through the debug route and the phone resumes its frames.
-    FAKE_ARGS="--rotate-after 6 --screen-off-after 14" start_fake || return 1
+    rm -f "$WORK/chrome.txt"
+    FAKE_ARGS="--first-frame-delay 25" start_fake || return 1
+    launch --connect "127.0.0.1:$PORT" --open-phone --float-windows \
+        --debug-chrome-state "$WORK/chrome.txt" --quit-after 40
+    if wait_until 10 chrome_has "loading=1"; then
+        ok "MIRROR opening cover: loading=1 right after the window opened"
+    else
+        bad "MIRROR opening cover: no loading cover (state: $(chrome_state))"
+    fi
+    if wait_until 25 chrome_has "loading=failed"; then
+        ok "MIRROR opening cover: after 20 s without a frame it says it could not open"
+    else
+        bad "MIRROR opening cover: no failure after 20 s (state: $(chrome_state))"
+    fi
+    stop_app
+    stop_fakephone
+
+    clean
+    rm -f "$WORK/chrome.txt"
+    # The first frame 3 s in: long enough for the cover to be seen, short
+    # enough for the aspect and rotation steps below.
+    FAKE_ARGS="--first-frame-delay 3 --rotate-after 6 --screen-off-after 14" start_fake || return 1
     # The pointer comes to the top edge to bring the header in (glass nav buttons).
     printf '%s\n' "wait 1" "hoverat 0 200" "wait 0.03" "hoverat 0 150" "wait 0.03" "hoverat 0 120" \
         "wait 0.03" "hoverat 0 90" "wait 0.03" "hoverat 0 70" "wait 0.03" "hoverat 0 58" > "$WORK/mirror.txt"
@@ -3181,6 +3354,16 @@ check_mirror() {
     launch --connect "127.0.0.1:$PORT" --open-phone --float-windows \
         --debug-chrome-state "$WORK/chrome.txt" --debug-input-script "$WORK/mirror.txt" \
         --debug-control "$WORK/control" --quit-after 60
+    if wait_until 5 chrome_has "loading=1"; then
+        ok "MIRROR opening cover: the window is covered before its first frame"
+    else
+        bad "MIRROR opening cover: the window showed no cover before the first frame (state: $(chrome_state))"
+    fi
+    if wait_until 15 chrome_has "loading=0"; then
+        ok "MIRROR opening cover: the first frame took the cover away"
+    else
+        bad "MIRROR opening cover: the cover stayed after the first frame (state: $(chrome_state))"
+    fi
     # repro wake-on-open: opening the window sends one phone.wake.
     if wait_until 15 events_have '"t":"phone.wake"'; then
         ok "MIRROR repro wake-on-open: opening the phone window sent phone.wake"
@@ -7677,6 +7860,7 @@ PY
     printf '%s\n' \
         "enter 1" \
         "wait-analysis POCKETDECK" \
+        "drag-check" \
         "nav back" \
         "waitfile $WORK/lt-copy-go 120" \
         "copy-image $WORK/livetext.png" \
@@ -7718,6 +7902,27 @@ PY
         esac
     else
         bad "LT no analysis result (app log: $(tail -3 "$WORK/app.log"))"
+    fi
+
+    # The overlay takes the person's drag through the window's own hit test:
+    # v104 set the highlight flag and the drag stopped reaching VisionKit.
+    if wait_until 20 grep -q '"op":"drag"' "$WORK/app.log"; then
+        local drag
+        drag="$(grep '"op":"drag"' "$WORK/app.log" | tail -1)"
+        case "$drag" in
+            *'"hit":"overlay"'*)
+                ok "LT a drag at a recognised word hits the analysis overlay" ;;
+            *) bad "LT the drag does not hit the overlay ($drag)" ;;
+        esac
+        # The quiet run's app is inactive, so VisionKit never starts the
+        # selection itself (it needs the person's active window); the hit route
+        # above is the e2e part, and LiveTextInteractionTests pins the set.
+        case "$drag" in
+            *'"supplementary":true'*) ok "LT the Live Text button is still there" ;;
+            *) bad "LT the supplementary Live Text button is hidden ($drag)" ;;
+        esac
+    else
+        bad "LT no drag-check result (app log: $(tail -3 "$WORK/app.log"))"
     fi
 
     # VM screenshots (visible runs only): the bar over the bright text frame,
@@ -8289,6 +8494,49 @@ PY
         stop_app
         stop_fakephone
     done
+
+    # Occlusion: a covered window is not a live picture. AppKit throttles an
+    # occluded app, so the frames stop without the phone being at fault; the
+    # watchdog must not call that a stall, and the clock restarts when the
+    # window is visible again. The quiet run may not cover the window (no extra
+    # windows), so the app's `occlude` debug command reports what the
+    # WindowServer would have said for the first window.
+    : > "$WORK/events.jsonl"
+    defaults write "$DEFAULTS_SUITE" "chrome.style.com.android.settings" -string immersive
+    FAKE_ARGS="--stall-after 3 --stall-for 12" start_fake || return 1
+    nfr_launch --open com.android.settings
+    nfr_wait_ready 30 || bad "NFR the app never paired (occlusion)"
+    control occlude on || bad "NFR occlude on: $CONTROL_REPLY"
+    wait_until 30 events_have '"ev":"stall"' || bad "NFR the fake never stalled (occlusion)"
+    sleep 3
+    if chrome_has "stall=0 stall_pill=0"; then
+        ok "NFR occlusion: a covered window did not call the stopped picture a stall"
+    else
+        bad "NFR occlusion: the covered window said the picture stopped (state: $(chrome_state))"
+    fi
+    control occlude off || bad "NFR occlude off: $CONTROL_REPLY"
+    # The covered time must not count: no stall in the first second after the
+    # window is visible again...
+    sleep 1
+    if chrome_has "stall=0"; then
+        ok "NFR occlusion: uncovering did not stall the first second"
+    else
+        bad "NFR occlusion: the covered time counted as silence (state: $(chrome_state))"
+    fi
+    # ...and 1.5 s of real silence after that is a stall, with the pill.
+    if wait_ms "$stale_ms" chrome_has "stall=1 stall_pill=1"; then
+        ok "NFR occlusion: real silence after uncovering still stalls"
+    else
+        bad "NFR occlusion: a real silence after uncovering was not reported (state: $(chrome_state))"
+    fi
+    wait_until 20 events_have '"ev":"resume"' || bad "NFR the fake never resumed frames (occlusion)"
+    if wait_until 10 chrome_has "stall=0 stall_pill=0"; then
+        ok "NFR occlusion: frames resumed and the stall went away"
+    else
+        bad "NFR occlusion: the stall stayed after frames resumed (state: $(chrome_state))"
+    fi
+    stop_app
+    stop_fakephone
 }
 
 

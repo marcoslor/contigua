@@ -2298,6 +2298,40 @@ final class ConnectionController {
                 return "nav needs back|home|recents"
             }
             return nil
+        case "occlude":
+            // The quiet e2e run may not cover the window (no extra windows):
+            // tell the first window what the WindowServer would have said.
+            guard let state = arguments.first, ["on", "off"].contains(state) else {
+                return "occlude needs on|off"
+            }
+            guard let window = windows.controller(for: 1) else { return "no first window" }
+            window.setOcclusionVisible(state == "off")
+            return nil
+        case "barprototype":
+            // View ▸ Bar Prototype's same store; the screenshot run switches
+            // variants in one app process (the prototype is temporary).
+            guard let raw = arguments.first, let value = BarPrototype(rawValue: raw) else {
+                return "barprototype needs compact|standard"
+            }
+            windows.setBarPrototype(value)
+            return nil
+        case "secondary-click":
+            // Settings ▸ Input "Secondary click (two-finger click)", the same
+            // store the Settings picker writes.
+            guard let raw = arguments.first, let value = SecondaryClick(rawValue: raw) else {
+                return "secondary-click needs longPress|back|nothing"
+            }
+            windows.secondaryClick = value
+            return nil
+        case "resize-step":
+            // One step of a scripted drag on the first window: the same
+            // windowWillResize call AppKit makes for a mouse move, then the
+            // frame it returns. The chrome state's `frame=` records each step.
+            guard arguments.count >= 2, let w = Double(arguments[0]), let h = Double(arguments[1]),
+                  w > 0, h > 0 else { return "resize-step needs width height" }
+            guard let window = windows.controller(for: 1) else { return "no first window" }
+            window.liveResizeStep(to: NSSize(width: w, height: h))
+            return nil
         case "wake-phone":
             // The phone window's Wake Screen button, for the e2e (its click is
             // unit-tested; a scripted click would need real pointer input).

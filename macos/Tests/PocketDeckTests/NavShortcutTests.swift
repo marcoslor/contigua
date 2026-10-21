@@ -117,8 +117,9 @@ final class NavShortcutTests: XCTestCase {
         return NSEvent(cgEvent: cg)!
     }
 
-    func testRightMouseDownStillSendsBack() {
+    func testRightMouseDownSendsBackWithThatSetting() {
         let (map, sent) = mapper()
+        map.secondaryClick = { .back }
         map.rightMouseDown(mouse(.rightMouseDown, button: .right))
         XCTAssertEqual(sent(), [.nav("back")])
     }

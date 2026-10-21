@@ -26,6 +26,10 @@ struct FrameWatchdog: Equatable {
     /// is reset to the current time so paused/covered time is not evidence.
     private(set) var lastFrame: TimeInterval?
     private(set) var stalled = false
+    /// Whether the last tick expected frames: the first tick that expects
+    /// them again starts the clock, so covered/paused time never counts. A
+    /// fresh watchdog has heard no "stop", so the first tick keeps the clock.
+    private var wasExpecting = true
 
     /// A frame arrived (from the session queue, through the window's clock).
     /// True when it ended a stall.
@@ -43,11 +47,19 @@ struct FrameWatchdog: Equatable {
     /// screen on, visible, not paused, not Live Text). Returns true once when
     /// the picture turns stalled; the stall stays until `frame(at:)` ends it.
     mutating func tick(at now: TimeInterval, expecting: Bool) -> Bool {
+        if expecting, !wasExpecting {
+            // The window just became visible again (or the pause ended): the
+            // covered time is not evidence. Start the clock now.
+            lastFrame = now
+            stalled = false
+        }
+        wasExpecting = expecting
         guard expecting else {
             // Not expecting frames (paused, covered, Live Text, link down):
-            // that time says nothing about the encoder. Start the clock again
-            // when frames are wanted.
+            // that time says nothing about the encoder, and a stall from
+            // before it is over: the picture is not presented as live.
             lastFrame = now
+            stalled = false
             return false
         }
         guard !stalled, let lastFrame, now - lastFrame >= Self.staleAfter else { return false }
