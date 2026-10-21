@@ -130,6 +130,8 @@ Material 3, edge-to-edge, dynamic color, light/dark.
    - Divider, then the sharing switch: "Share notifications and Now Playing",
      always with a line under it — "Only while a Mac is connected. Off by
      default." when off, the granted hint when on. Default off.
+   - The card, every switch row and the "Paired Macs" title share one left
+     edge; no extra indent on the list rows.
    - "Paired Macs" list (name, last connected, Forget via swipe or overflow).
    - FAB or tonal button: **Pair new Mac** (QR scan).
 3. **Pairing prompt**: high-priority notification with the code and Allow/Deny, and,

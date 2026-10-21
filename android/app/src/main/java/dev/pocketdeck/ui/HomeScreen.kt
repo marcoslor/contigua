@@ -60,6 +60,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
@@ -118,17 +119,21 @@ fun HomeScreen(
                 .fillMaxSize()
                 .padding(padding)
                 .verticalScroll(rememberScrollState())
-                .padding(start = horizontal, end = horizontal, top = horizontal)
+                .padding(top = horizontal)
                 .padding(bottom = 88.dp),
         ) {
-            StatusCard(state = state, onAction = onStatusAction)
+            StatusCard(
+                state = state,
+                onAction = onStatusAction,
+                modifier = Modifier.padding(horizontal = horizontal),
+            )
             Spacer(Modifier.height(16.dp))
             SwitchRow(
                 headline = stringResource(R.string.home_keep_running),
                 checked = state.enabled,
                 onToggle = onToggleEnabled,
             )
-            HorizontalDivider(Modifier.padding(vertical = 8.dp))
+            HorizontalDivider(Modifier.padding(horizontal = horizontal, vertical = 8.dp))
             SwitchRow(
                 headline = stringResource(R.string.home_allow_connections),
                 checked = state.allowConnections,
@@ -145,7 +150,7 @@ fun HomeScreen(
                     null
                 },
             )
-            HorizontalDivider(Modifier.padding(vertical = 8.dp))
+            HorizontalDivider(Modifier.padding(horizontal = horizontal, vertical = 8.dp))
             SwitchRow(
                 headline = stringResource(R.string.home_notify_share),
                 checked = state.notifyShared,
@@ -161,7 +166,7 @@ fun HomeScreen(
                     text = stringResource(R.string.home_notify_grant_failed),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.error,
-                    modifier = Modifier.padding(vertical = 8.dp),
+                    modifier = Modifier.padding(horizontal = horizontal, vertical = 8.dp),
                 )
             }
             Spacer(Modifier.height(24.dp))
@@ -169,6 +174,7 @@ fun HomeScreen(
                 text = stringResource(R.string.home_paired_title),
                 style = MaterialTheme.typography.titleMedium,
                 color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.padding(horizontal = horizontal),
             )
             Spacer(Modifier.height(8.dp))
             if (state.paired.isEmpty()) {
@@ -176,7 +182,7 @@ fun HomeScreen(
                     text = stringResource(R.string.home_no_paired),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(vertical = 8.dp),
+                    modifier = Modifier.padding(horizontal = horizontal, vertical = 8.dp),
                 )
             } else {
                 // Relative times go stale while the screen stays visible: the
@@ -203,7 +209,7 @@ fun HomeScreen(
                     text = "Debug build: auto-approve pairing is on; any Mac on this network can connect",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(vertical = 8.dp),
+                    modifier = Modifier.padding(horizontal = horizontal, vertical = 8.dp),
                 )
             }
             Spacer(Modifier.height(24.dp))
@@ -235,7 +241,11 @@ private fun SwitchRow(
 }
 
 @Composable
-private fun StatusCard(state: DeckUiState, onAction: (AttentionKind) -> Unit) {
+private fun StatusCard(
+    state: DeckUiState,
+    onAction: (AttentionKind) -> Unit,
+    modifier: Modifier = Modifier,
+) {
     val status = state.status
     val (container, content, iconRes) = statusAppearance(status)
     val title = statusTitle(state)
@@ -243,7 +253,9 @@ private fun StatusCard(state: DeckUiState, onAction: (AttentionKind) -> Unit) {
     val actionLabel = statusActionLabel(status.attention)
 
     ElevatedCard(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = modifier
+            .fillMaxWidth()
+            .testTag("statusCard"),
         shape = MaterialTheme.shapes.extraLarge,
         colors = CardDefaults.elevatedCardColors(containerColor = container, contentColor = content),
     ) {
@@ -451,7 +463,11 @@ private fun PairedMacRow(
             },
         )
     }
-    HorizontalDivider()
+    HorizontalDivider(
+        Modifier.padding(
+            horizontal = if (LocalConfiguration.current.screenWidthDp >= 600) 24.dp else 16.dp,
+        ),
+    )
 }
 
 /**
