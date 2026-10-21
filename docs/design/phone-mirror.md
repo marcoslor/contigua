@@ -37,6 +37,29 @@ Why this and not `SurfaceControl.createDisplay` + `setDisplayProjection`
   for 2 s; the person's power button on the phone ends it (the Mac unchecks it
   and shows "Phone screen on" for 2 s), and closing the window, disconnecting or
   a crash restores the panel. It is remembered per phone.
+
+  The hold is one state machine on the phone (`PanelHold.kt`: `Off`, `Applying`,
+  `Held`, `Suspended`, `Restoring`, with a pure transition and an action list),
+  not a set of flags. Every way out of `Applying`/`Held` writes the panel back
+  to NORMAL — request on, power press, window close, session end, disconnect,
+  crash recovery — so the panel can never be left in power mode OFF once the
+  hold has ended. A paused phone window (covered, minimised) suspends the hold
+  instead of ending it: the panel comes back, `state.panel` reads `"on"`, and
+  the request is applied again on resume. `state.panel` is derived from the
+  machine's state, never from a local guess.
+
+  Settings ▸ Devices has a per-phone switch, "Keep the phone screen off until I
+  turn it on from the Mac", off by default, sent as `ignorePower` with the
+  request. On, a power press lights the screen only until the next keep-alive
+  step (2 s) re-applies the panel off, and the hold stands. It changes nothing
+  else: every end in the paragraph above still applies, so the phone can never
+  stay dark without a Mac holding it, and the phone stays locked either way.
+
+  **The Mac button tells the truth.** Its check and glyph follow `state.panel`
+  only. When the phone answers `phone.panel` with `error` (`bad_request`,
+  `unavailable`), or `state.panel` has not changed within 2 s of the request,
+  the window shows "The phone didn't turn its screen off" for 2 s and leaves
+  the button unchecked.
 - The stream fits inside the Mac's box at display 0's aspect (`MirrorFit`),
   never above display 0's size. Input maps over display 0's real size.
 - Rotation: the stream polls display 0's logical size every 300 ms while open.
