@@ -161,7 +161,18 @@ final class PhoneWindowController: StreamWindowController {
     func setPanelOff(_ off: Bool) {
         guard panelOffShown != off else { return }
         if let id = manager.phone?.id { PhonePanelOffSetting.write(off, for: id, to: manager.profileDefaults) }
-        session.setPhonePanel(off: off)
+        session.setPhonePanel(off: off, ignorePower: panelIgnorePower)
+        // The phone answers with a `state.panel`; if it does not within 2 s the
+        // window says the request failed instead of pretending it worked.
+        if off { screenModel.requestPanelOff(at: ProcessInfo.processInfo.systemUptime) }
+        applyPanelState()
+    }
+
+    /// Settings ▸ Devices, per phone: a power press on the phone does not end
+    /// the hold; the screen lights until the next keep-alive step re-applies it.
+    private var panelIgnorePower: Bool {
+        guard let id = manager.phone?.id else { return false }
+        return PhonePanelIgnorePowerSetting.read(from: manager.profileDefaults, deviceId: id)
     }
 
     func togglePanelOff() { setPanelOff(!panelOffShown) }
@@ -174,6 +185,13 @@ final class PhoneWindowController: StreamWindowController {
     func setPhonePanel(_ panel: PhonePanel?) {
         let changed = screenModel.setPanel(panel, at: ProcessInfo.processInfo.systemUptime)
         guard changed else { return }
+        applyPanelState()
+    }
+
+    /// The phone answered `phone.panel` with an error: it never turned the
+    /// screen off, so the button stays unchecked and a short pill says why.
+    func panelRequestFailed() {
+        guard screenModel.panelRequestFailed(at: ProcessInfo.processInfo.systemUptime) else { return }
         applyPanelState()
     }
 
@@ -236,7 +254,9 @@ final class PhoneWindowController: StreamWindowController {
         // power button, and then it stays off until they ask again).
         if let id = manager.phone?.id,
            PhonePanelOffSetting.read(from: manager.profileDefaults, deviceId: id) {
-            session.setPhonePanel(off: true)
+            session.setPhonePanel(off: true, ignorePower: panelIgnorePower)
+            screenModel.requestPanelOff(at: ProcessInfo.processInfo.systemUptime)
+            applyPanelState()
         }
     }
 
@@ -290,11 +310,11 @@ final class PhoneWindowController: StreamWindowController {
         session.wakePhone()
     }
 
-    /// The panel pill's two seconds are up: take it down.
+    /// The panel pill's state changed on the clock: the request failed after
+    /// two silent seconds, or the pill is due to come down.
     private func tickPanelPill() {
         guard screenModel.tick(at: ProcessInfo.processInfo.systemUptime) else { return }
-        chrome.setPanelPill(nil)
-        writeChromeState()
+        applyPanelState()
     }
 
     /// The e2e's debug route (`wake-phone`): the same path as the button.

@@ -117,6 +117,15 @@ class PanelPowerSessionTest {
         error("no power call matched; calls: ${platform.streamCalls.toList()}; logs: $logs")
     }
 
+    private fun awaitTrue(what: () -> Boolean) {
+        val deadline = System.currentTimeMillis() + 5_000
+        while (System.currentTimeMillis() < deadline) {
+            if (what()) return
+            Thread.sleep(10)
+        }
+        error("condition never held; requests: ${platform.panelRequests.toList()}; logs: $logs")
+    }
+
     @Test
     fun `a covered window is a pause not the end of streaming`() {
         connect()
@@ -199,12 +208,24 @@ class PanelPowerSessionTest {
         awaitPowerCall { (_, _, mirroring) -> !mirroring }
 
         send(mapOf("t" to "phone.panel", "off" to true))
-        assertEquals("on", readUntil("state")["panel"])
-        assertEquals(listOf(true), platform.mirrorPanelOffs.toList())
+        // Held, not applied: `state.panel` is still on, so nothing is sent.
+        awaitTrue { platform.panelRequests.isNotEmpty() }
+        assertEquals(listOf(true to false), platform.panelRequests.toList())
+        assertFalse("no hold without an unpaused window", platform.panelHeldOff)
 
         send(mapOf("t" to "window.resume", "stream" to 2))
         assertEquals("off", readUntil("state")["panel"])
         assertEquals("no new request on the resume", listOf(true), platform.mirrorPanelOffs.toList())
+    }
+
+    @Test
+    fun `the off request carries the keep-it-off setting`() {
+        connect()
+        authenticate()
+        openPhoneWindow()
+        send(mapOf("t" to "phone.panel", "off" to true, "ignorePower" to true))
+        assertEquals("off", readUntil("state")["panel"])
+        assertEquals(listOf(true to true), platform.panelRequests.toList())
     }
 
     @Test
@@ -215,7 +236,7 @@ class PanelPowerSessionTest {
         send(mapOf("t" to "phone.panel", "off" to true))
         assertEquals("off", readUntil("state")["panel"])
 
-        platform.onMirrorPanelEnded?.invoke()
+        platform.endPanelHold()
         assertEquals("on", readUntil("state")["panel"])
     }
 

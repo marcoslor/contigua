@@ -22,13 +22,13 @@ class PanelDecisionTest {
         policy: DarkPanelPolicy,
         panelOn: Boolean,
         mirrorOpen: Boolean = false,
-        mirrorOff: Boolean = false,
+        holdActive: Boolean = false,
     ): PanelDecision = decidePanelPlan(
         policy = policy,
         activeDisplayIds = listOf(appDisplay),
         requestOnly = false,
         mirrorOpen = mirrorOpen,
-        mirrorOff = mirrorOff,
+        holdActive = holdActive,
         panelOn = panelOn,
         groupOf = { nonDefaultGroup },
     )!!
@@ -69,70 +69,66 @@ class PanelDecisionTest {
     }
 
     @Test
-    fun `mirror-only phone panel off plans the dark take-over`() {
+    fun `mirror-only hold plans the panel off`() {
         val policy = DarkPanelPolicy(forced = true)
         policy.streamsStarted()
-        policy.requestMirrorOff(true)
 
         val decision = decidePanelPlan(
             policy = policy,
             activeDisplayIds = emptyList(),
             requestOnly = true,
             mirrorOpen = true,
-            mirrorOff = true,
+            holdActive = true,
             panelOn = false,
             groupOf = { nonDefaultGroup },
         )!!
 
         assertEquals(PanelStrategy.PANEL_ALONE, decision.strategy)
-        assertEquals(PanelPlan(wake = true, panelOff = true, transitional = true), decision.plan)
+        // The take-over's transitional re-apply belongs to the hold's own action.
+        assertEquals(PanelPlan(wake = true, panelOff = true, transitional = false), decision.plan)
     }
 
     @Test
-    fun `phone panel off plans a dark take-over and on plans it back`() {
+    fun `phone panel on plans the panel back`() {
         val policy = DarkPanelPolicy(forced = true)
         policy.streamsStarted()
-        decide(policy, panelOn = false, mirrorOpen = true) // the mirror, no request
+        decide(policy, panelOn = false, mirrorOpen = true) // the mirror, no hold
 
-        assertTrue(policy.requestMirrorOff(true))
-        val off = decide(policy, panelOn = false, mirrorOpen = true, mirrorOff = true)
+        val off = decide(policy, panelOn = false, mirrorOpen = true, holdActive = true)
         assertEquals(PanelStrategy.PANEL_ALONE, off.strategy)
-        assertEquals(PanelPlan(wake = true, panelOff = true, transitional = true), off.plan)
+        assertEquals(PanelPlan(wake = true, panelOff = true, transitional = false), off.plan)
 
-        assertTrue(policy.requestMirrorOff(false))
-        val on = decide(policy, panelOn = false, mirrorOpen = true, mirrorOff = false)
+        val on = decide(policy, panelOn = false, mirrorOpen = true, holdActive = false)
         assertEquals(PanelPlan(wake = true, panelOff = false, transitional = false), on.plan)
     }
 
     @Test
-    fun `a held request applies on resume without a new request`() {
+    fun `a suspended hold runs no step`() {
         val policy = DarkPanelPolicy(forced = true)
         policy.streamsStarted()
-        policy.requestMirrorOff(true)
 
         val paused = decidePanelPlan(
             policy = policy,
             activeDisplayIds = emptyList(),
             requestOnly = true,
             mirrorOpen = false,
-            mirrorOff = true,
+            holdActive = false,
             panelOn = false,
             groupOf = { nonDefaultGroup },
         )
-        assertNull("a paused mirror does not run a step", paused)
-        assertTrue("the request stays held", policy.mirrorOffRequested)
+        assertNull("a paused or ended hold does not run a step", paused)
 
         val resumed = decidePanelPlan(
             policy = policy,
             activeDisplayIds = emptyList(),
             requestOnly = true,
             mirrorOpen = true,
-            mirrorOff = true,
+            holdActive = true,
             panelOn = false,
             groupOf = { nonDefaultGroup },
         )!!
         assertEquals(PanelStrategy.PANEL_ALONE, resumed.strategy)
-        assertEquals(PanelPlan(wake = true, panelOff = true, transitional = true), resumed.plan)
+        assertEquals(PanelPlan(wake = true, panelOff = true, transitional = false), resumed.plan)
     }
 
     @Test

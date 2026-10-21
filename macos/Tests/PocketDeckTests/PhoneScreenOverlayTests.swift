@@ -314,6 +314,62 @@ final class PhoneScreenOverlayTests: XCTestCase {
         XCTAssertTrue(on.contains("panel_off=0"), on)
     }
 
+    /// The Mac button tells the truth (docs/design/phone-mirror.md): a request
+    /// the phone never answers is a failure after two seconds, and the button
+    /// stays unchecked because the phone's last report is the truth.
+    func testAPanelRequestThatGoesUnansweredSaysSoAfterTwoSeconds() {
+        var overlay = PhoneScreenOverlay(screen: .on)
+        overlay.setPanel(.on, at: 9)
+        overlay.requestPanelOff(at: 10)
+        XCTAssertFalse(overlay.tick(at: 11.9), "not two seconds yet")
+        XCTAssertNil(overlay.panelPill)
+        XCTAssertTrue(overlay.tick(at: 12.0), "two silent seconds are a failure")
+        XCTAssertEqual(overlay.panelPill, PhoneScreenOverlay.panelFailedText)
+        XCTAssertEqual(overlay.panelPillUntil, 14)
+        XCTAssertFalse(overlay.panelOff, "the button stays unchecked")
+        XCTAssertTrue(overlay.tick(at: 14.0), "the failure pill comes down after its two seconds")
+        XCTAssertNil(overlay.panelPill)
+    }
+
+    /// Any `state.panel` report answers the request: no failure pill, and the
+    /// button follows the report.
+    func testAPanelReportAnswersTheRequest() {
+        var overlay = PhoneScreenOverlay(screen: .on)
+        overlay.setPanel(.on, at: 9)
+        overlay.requestPanelOff(at: 10)
+        XCTAssertTrue(overlay.setPanel(.off, at: 11))
+        XCTAssertTrue(overlay.panelOff)
+        XCTAssertNil(overlay.panelRequestedAt)
+        XCTAssertEqual(overlay.panelPill, "Phone screen off")
+        XCTAssertTrue(overlay.tick(at: 13.0), "the panel-off pill comes down after its two seconds")
+        XCTAssertNil(overlay.panelPill)
+        XCTAssertFalse(overlay.tick(at: 20), "an answered request never fails")
+    }
+
+    /// A `phone.panel` error (`bad_request`/`unavailable`) says so at once and
+    /// leaves the button where the phone's last report put it.
+    func testAPanelErrorSaysSoAndLeavesTheButtonUnchecked() {
+        var overlay = PhoneScreenOverlay(screen: .on)
+        overlay.setPanel(.on, at: 9)
+        overlay.requestPanelOff(at: 10)
+        XCTAssertTrue(overlay.panelRequestFailed(at: 10.5))
+        XCTAssertEqual(overlay.panelPill, PhoneScreenOverlay.panelFailedText)
+        XCTAssertNil(overlay.panelRequestedAt, "the error ends the wait")
+        XCTAssertFalse(overlay.panelOff)
+    }
+
+    func testKeepItOffIsRememberedPerPhone() {
+        let defaults = makeDefaults()
+        XCTAssertFalse(PhonePanelIgnorePowerSetting.read(from: defaults, deviceId: "phone-a"),
+                       "off by default")
+        PhonePanelIgnorePowerSetting.write(true, for: "phone-a", to: defaults)
+        XCTAssertTrue(PhonePanelIgnorePowerSetting.read(from: defaults, deviceId: "phone-a"))
+        XCTAssertFalse(PhonePanelIgnorePowerSetting.read(from: defaults, deviceId: "phone-b"),
+                       "it is a choice about one phone")
+        PhonePanelIgnorePowerSetting.write(false, for: "phone-a", to: defaults)
+        XCTAssertNil(defaults.object(forKey: PhonePanelIgnorePowerSetting.key), "off stores nothing")
+    }
+
     func testTurnOffPhoneScreenIsRememberedPerPhone() {
         let defaults = makeDefaults()
         XCTAssertFalse(PhonePanelOffSetting.read(from: defaults, deviceId: "phone-a"))

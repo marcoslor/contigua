@@ -36,6 +36,27 @@ enum PhonePanelOffSetting {
     }
 }
 
+/// Settings ▸ Devices ▸ "Keep the phone screen off until I turn it on from the
+/// Mac", per phone, off by default. It only changes what the phone's power
+/// button does while the Mac holds the panel off; the phone stays locked either
+/// way, and the hold still ends on request on, window close, session end and
+/// the crash watchdog.
+enum PhonePanelIgnorePowerSetting {
+    static let key = "phonePanelIgnorePower"
+
+    static func read(from defaults: UserDefaults, deviceId: String) -> Bool {
+        guard !deviceId.isEmpty else { return false }
+        return (defaults.dictionary(forKey: key) as? [String: Bool])?[deviceId] ?? false
+    }
+
+    static func write(_ on: Bool, for deviceId: String, to defaults: UserDefaults) {
+        guard !deviceId.isEmpty else { return }
+        var all = (defaults.dictionary(forKey: key) as? [String: Bool]) ?? [:]
+        if on { all[deviceId] = true } else { all.removeValue(forKey: deviceId) }
+        if all.isEmpty { defaults.removeObject(forKey: key) } else { defaults.set(all, forKey: key) }
+    }
+}
+
 /// What covers the mirror: a sleeping panel, or a surface Android blanks.
 enum PhoneCover: Equatable {
     case screenOff
@@ -66,9 +87,19 @@ struct PhoneScreenOverlay: Equatable {
     /// starts or the phone ends it: "Phone screen off" / "Phone screen on".
     private(set) var panelPill: String?
     private(set) var panelPillUntil: TimeInterval?
+    /// When the Mac asked for the panel off and has heard nothing: a request
+    /// without an answer is a failure too (the phone never applied it).
+    private(set) var panelRequestedAt: TimeInterval?
 
     /// Enough to read one short sentence, then the mirror is quiet again.
     static let panelPillSeconds: TimeInterval = 2
+
+    /// How long a request may go unanswered before the Mac says it failed.
+    /// docs/design/phone-mirror.md "The Mac button tells the truth".
+    static let panelReplySeconds: TimeInterval = 2
+
+    /// The sentence for a request that did not turn the screen off.
+    static let panelFailedText = "The phone didn't turn its screen off"
 
     /// Half a second of black frames while the screen is on is a secure
     /// surface Android is hiding, not a dark app.
@@ -135,11 +166,13 @@ struct PhoneScreenOverlay: Equatable {
     }
 
     /// `state.panel` arrived at `time`. True when the panel's state changed
-    /// (the bar glyph and the menu check follow it).
+    /// (the bar glyph and the menu check follow it). Any report answers a
+    /// pending request, so it also clears the 2 s reply clock.
     @discardableResult
     mutating func setPanel(_ panel: PhonePanel?, at time: TimeInterval) -> Bool {
         // A phone that does not report it leaves the option alone.
         guard let panel else { return false }
+        panelRequestedAt = nil
         let off = panel == .off
         // The default reads as on, so the first report only says something when
         // it says off; a later one speaks only on a real transition.
@@ -155,9 +188,29 @@ struct PhoneScreenOverlay: Equatable {
         return changed
     }
 
-    /// Time passed: true when the panel pill has run out and came down.
+    /// The Mac asked the phone to turn its screen off at `time`; a `state.panel`
+    /// report ends the wait, [tick] gives up after [panelReplySeconds].
+    mutating func requestPanelOff(at time: TimeInterval) {
+        panelRequestedAt = time
+    }
+
+    /// The phone refused the request (`bad_request`/`unavailable`): say so for
+    /// two seconds and leave the button unchecked. The phone's truth stands.
+    @discardableResult
+    mutating func panelRequestFailed(at time: TimeInterval) -> Bool {
+        panelRequestedAt = nil
+        panelPill = Self.panelFailedText
+        panelPillUntil = time + Self.panelPillSeconds
+        return true
+    }
+
+    /// Time passed: true when the pill appeared or came down. A panel-off
+    /// request the phone never answered within [panelReplySeconds] is a failure.
     @discardableResult
     mutating func tick(at time: TimeInterval) -> Bool {
+        if let requested = panelRequestedAt, time - requested >= Self.panelReplySeconds {
+            return panelRequestFailed(at: time)
+        }
         guard let until = panelPillUntil, time >= until else { return false }
         panelPill = nil
         panelPillUntil = nil

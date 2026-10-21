@@ -243,7 +243,7 @@ Mac → phone (after `welcome`):
 | `phone.dnd` | `mode`: `priority`/`alarms`/`none`/`off` | set the phone's Do Not Disturb (its zen mode) for a Mac Focus or a manual set; see "Focus and Do Not Disturb" |
 | `phone.ringer` | `mode`: `normal`/`vibrate`/`silent` | set the phone's ringer mode (never a volume); see "Ringer" |
 | `phone.wake` | — | wake the phone's own screen (display 0) without unlocking it; see "Phone screen" |
-| `phone.panel` | `off`: bool | hold the mirrored panel off while the phone window keeps rendering, or give it back (`off: false`); see "Phone screen" |
+| `phone.panel` | `off`: bool, `ignorePower`?: bool | hold the mirrored panel off while the phone window keeps rendering, or give it back (`off: false`); `ignorePower` says a power press does not end the hold; see "Phone screen" |
 | `fs.list` | `id`, `path`, `page`? | children of `path`; `page` is the phone's opaque cursor, absent = first |
 | `fs.stat` | `id`, `path` | one item's metadata |
 | `fs.read` | `id`, `path`, `offset`, `length`, `etag`? | stream `length` bytes from `offset` (`FS_DATA`, then `fs.read.end`); an `etag` that no longer matches answers `fs_stale` |
@@ -697,6 +697,19 @@ live while the panel is on.
    own timeout.
 3. The Mac sends it when a phone window opens, is reopened or reconnects, and from the
    window's Wake Screen button. Nothing else sends it.
+4. "Turn Off Phone Screen" (`{"t":"phone.panel","off":true}`) holds the panel's power mode
+   off while the phone window keeps rendering. The phone reports `state.panel` `"off"` only
+   while it actually holds the panel. The hold ends — and the panel is always handed back
+   (power mode NORMAL) — on `off: false`, on the person's power press, when the phone window
+   closes, when the session ends or disconnects, and on the crash watchdog. A phone window
+   that only pauses (covered, minimised) does not end the hold: the phone suspends it (panel
+   back, `state.panel` `"on"`), keeps the request, and applies it again when the window
+   resumes. One power press brings the screen back by default.
+5. `ignorePower: true` (the Mac's "Keep the phone screen off until I turn it on from the Mac"
+   setting, off by default) changes only what a power press does: the press lights the screen
+   until the next keep-alive step re-applies the panel off, and the hold stands. It never
+   outlives the ends in point 4, so the phone cannot stay dark without a Mac holding it. The
+   phone stays locked either way.
 
 ## Secure screens
 

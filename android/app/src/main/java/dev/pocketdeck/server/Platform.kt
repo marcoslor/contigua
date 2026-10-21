@@ -300,7 +300,12 @@ interface Power {
     fun onInput(displayId: Int)
 
     /** The set of displays whose streams are currently unpaused. */
-    fun setActiveStreams(displayIds: List<Int>, allPaused: Boolean = false, mirroring: Boolean = false)
+    fun setActiveStreams(
+        displayIds: List<Int>,
+        allPaused: Boolean = false,
+        mirroring: Boolean = false,
+        phoneWindowOpen: Boolean = false,
+    )
 
     fun onSessionEnded()
 
@@ -313,16 +318,22 @@ interface Power {
 
     /**
      * `phone.panel` (docs/PROTOCOL.md "Phone screen"): hold the mirrored panel
-     * off while the mirror keeps rendering, or give it back. False when this
-     * build cannot control the panel at all.
+     * off while the mirror keeps rendering, or give it back. [ignorePower] is
+     * the Mac's "Keep the phone screen off until I turn it on from the Mac"
+     * setting, carried with every off request. False when this build cannot
+     * control the panel at all.
      */
-    fun setMirrorPanelOff(off: Boolean): Boolean = false
+    fun setMirrorPanelOff(off: Boolean, ignorePower: Boolean = false): Boolean = false
+
+    /** True while the phone itself holds the panel off: the only source of `state.panel`. */
+    val panelHeldOff: Boolean get() = false
 
     /**
-     * The phone ended a panel-off the Mac asked for by itself (the person's
-     * power button): the session sends the state that says the panel is on.
+     * The hold changed `state.panel` on its own (the person's power press, a
+     * paused window, the session ending): the session sends a fresh state.
+     * Runs on the power thread.
      */
-    var onMirrorPanelEnded: (() -> Unit)?
+    var onPanelChanged: ((off: Boolean) -> Unit)?
 }
 
 /** One paired Mac in v2: the pin is the Mac cert's point fingerprint (§3/§6);

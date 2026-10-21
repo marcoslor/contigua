@@ -73,6 +73,8 @@ class FakePlatform : DisplayLayer, AppCatalog, Launcher, Injector, Power, Device
     val activeStreams = CopyOnWriteArrayList<List<Int>>()
     /** Every setActiveStreams call with its flags, in order: (displays, allPaused, mirroring). */
     val streamCalls = CopyOnWriteArrayList<Triple<List<Int>, Boolean, Boolean>>()
+    /** Whether a phone window stream was open at each call (paused or not). */
+    val phoneWindows = CopyOnWriteArrayList<Boolean>()
     val inputs = CopyOnWriteArrayList<Int>()
     val qualities = CopyOnWriteArrayList<QualityCall>()
     val backpressures = CopyOnWriteArrayList<Int>()
@@ -206,9 +208,26 @@ class FakePlatform : DisplayLayer, AppCatalog, Launcher, Injector, Power, Device
         inputs.add(displayId)
     }
 
-    override fun setActiveStreams(displayIds: List<Int>, allPaused: Boolean, mirroring: Boolean) {
+    override fun setActiveStreams(
+        displayIds: List<Int>,
+        allPaused: Boolean,
+        mirroring: Boolean,
+        phoneWindowOpen: Boolean,
+    ) {
         activeStreams.add(displayIds)
         streamCalls.add(Triple(displayIds, allPaused, mirroring))
+        phoneWindows.add(phoneWindowOpen)
+        // Model the hold the way AndroidPower's machine does, so a session
+        // test sees the same `state.panel` truth the phone reports.
+        mirrorActive = mirroring
+        if (!phoneWindowOpen) {
+            heldRequested = false
+            if (panelHeld) setPanelHeld(false)
+        } else if (!mirroring && panelHeld) {
+            setPanelHeld(false)
+        } else if (mirroring && heldRequested && !panelHeld) {
+            setPanelHeld(true)
+        }
     }
 
     override fun onSessionEnded() = Unit
@@ -216,11 +235,37 @@ class FakePlatform : DisplayLayer, AppCatalog, Launcher, Injector, Power, Device
     /** False makes `phone.panel` answer `unavailable` (a build without panel control). */
     var mirrorPanelOffSupported = true
     val mirrorPanelOffs = CopyOnWriteArrayList<Boolean>()
-    override var onMirrorPanelEnded: (() -> Unit)? = null
+    /** Every `phone.panel` request with the Mac's keep-it-off setting. */
+    val panelRequests = CopyOnWriteArrayList<Pair<Boolean, Boolean>>()
+    override var onPanelChanged: ((Boolean) -> Unit)? = null
 
-    override fun setMirrorPanelOff(off: Boolean): Boolean {
+    @Volatile private var panelHeld = false
+    @Volatile private var heldRequested = false
+    @Volatile private var mirrorActive = false
+    override val panelHeldOff: Boolean get() = panelHeld
+
+    private fun setPanelHeld(on: Boolean) {
+        panelHeld = on
+        onPanelChanged?.invoke(on)
+    }
+
+    /** The phone ends the hold by itself (the person's power press). */
+    fun endPanelHold() {
+        heldRequested = false
+        setPanelHeld(false)
+    }
+
+    override fun setMirrorPanelOff(off: Boolean, ignorePower: Boolean): Boolean {
         mirrorPanelOffs.add(off)
-        return mirrorPanelOffSupported
+        panelRequests.add(off to ignorePower)
+        if (!mirrorPanelOffSupported) return false
+        heldRequested = off
+        if (off) {
+            if (mirrorActive) setPanelHeld(true)
+        } else {
+            setPanelHeld(false)
+        }
+        return true
     }
 
     override fun wakeScreen(): WakeResult {

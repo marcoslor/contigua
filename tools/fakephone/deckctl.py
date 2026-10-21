@@ -1453,6 +1453,121 @@ def cmd_panel_test(client, args):
     return 0
 
 
+def cmd_panel_hold(client, args):
+    """The bug's own shape: a lone phone window (no app window), `phone.panel
+    off`, the window stays open, then `phone.panel on`. The shell reads the phone
+    log for the power mode NORMAL that must follow the on, and for keep-alive
+    steps 1-3 while held."""
+    opened = set()
+    frames = [0]
+    states = []
+
+    def drain(seconds, want=None):
+        deadline = time.time() + seconds
+        while True:
+            if want is not None and want():
+                return True
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                return want is None
+            frame = client.recv(max(0.05, min(0.25, remaining)))
+            if frame is TIMEOUT:
+                continue
+            if frame is None:
+                raise DeckError("phone closed during panel-hold")
+            if frame.type == proto.TYPE_JSON:
+                msg = proto.unpack_json(frame)
+                if msg.get("t") == "error":
+                    raise DeckError("phone error %s: %s" % (msg.get("code"), msg.get("message", "")))
+                if msg.get("t") == "window.opened":
+                    opened.add(int(msg.get("stream") or 0))
+                elif msg.get("t") == "state":
+                    states.append(msg)
+                continue
+            frames[0] += 1
+
+    def panel_state():
+        for msg in reversed(states):
+            if msg.get("panel") is not None:
+                return msg.get("panel")
+        return None
+
+    client.send_json({"t": "window.open", "stream": 3, "w": 400, "h": 800, "dpi": 160, "mode": "phone"})
+    if not drain(args.open_timeout, lambda: 3 in opened and frames[0] > 0):
+        raise DeckError("the phone window never opened")
+
+    client.send_json({"t": "phone.panel", "off": True})
+    if not drain(args.panel_timeout, lambda: panel_state() == "off"):
+        raise DeckError("no state with panel off (the hold did not apply)")
+    print("state-panel=off")
+
+    before = frames[0]
+    if not drain(args.hold_seconds):
+        raise DeckError("the session closed while the panel was held")
+    print("frames-while-held=%d" % (frames[0] - before))
+    if frames[0] == before:
+        raise DeckError("the mirror stopped sending frames while the panel was held")
+
+    client.send_json({"t": "phone.panel", "off": False})
+    if not drain(args.panel_timeout, lambda: panel_state() == "on"):
+        raise DeckError("no state with panel on (the hold did not end)")
+    print("state-panel=on")
+    client.send_json({"t": "window.close", "stream": 3})
+    drain(1.0)
+    return 0
+
+
+def cmd_panel_press(client, args):
+    """The person's power press: the shell reads `ready` (the hold is applied)
+    and presses the phone's power key; the phone must end the hold by itself and
+    report `state.panel on`."""
+    opened = set()
+    states = []
+
+    def drain(seconds, want=None):
+        deadline = time.time() + seconds
+        while True:
+            if want is not None and want():
+                return True
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                return want is None
+            frame = client.recv(max(0.05, min(0.25, remaining)))
+            if frame is TIMEOUT:
+                continue
+            if frame is None:
+                raise DeckError("phone closed during panel-press")
+            if frame.type == proto.TYPE_JSON:
+                msg = proto.unpack_json(frame)
+                if msg.get("t") == "error":
+                    raise DeckError("phone error %s: %s" % (msg.get("code"), msg.get("message", "")))
+                if msg.get("t") == "window.opened":
+                    opened.add(int(msg.get("stream") or 0))
+                elif msg.get("t") == "state":
+                    states.append(msg)
+
+    def panel_state():
+        for msg in reversed(states):
+            if msg.get("panel") is not None:
+                return msg.get("panel")
+        return None
+
+    client.send_json({"t": "window.open", "stream": 4, "w": 400, "h": 800, "dpi": 160, "mode": "phone"})
+    if not drain(args.open_timeout, lambda: 4 in opened):
+        raise DeckError("the phone window never opened")
+    client.send_json({"t": "phone.panel", "off": True})
+    if not drain(args.panel_timeout, lambda: panel_state() == "off"):
+        raise DeckError("no state with panel off (the hold did not apply)")
+    print("ready")
+    sys.stdout.flush()
+    if not drain(args.press_timeout, lambda: panel_state() == "on"):
+        raise DeckError("the power press did not end the hold")
+    print("panel-on=1")
+    client.send_json({"t": "window.close", "stream": 4})
+    drain(1.0)
+    return 0
+
+
 def cmd_clip_set(client, args):
     """Send `clip.set` as the Mac: the phone's clipboard takes the text."""
     client.send_json({"t": "clip.set", "text": args.text})
@@ -2431,6 +2546,22 @@ def build_parser():
     sp.add_argument("--phase", choices=["all", "pause", "panel"], default="all",
                     help="pause: (a) only; panel: (b)+(c) only")
 
+    sp = sub.add_parser("panel-hold",
+                        help="mirror-only hold: off, keep the window open, then on (the NORMAL log line follows)",
+                        **spp)
+    sp.add_argument("--open-timeout", type=float, default=30.0)
+    sp.add_argument("--panel-timeout", type=float, default=10.0)
+    sp.add_argument("--hold-seconds", type=float, default=7.0,
+                    help="seconds the panel is held with only the mirror open (3+ keep-alive steps)")
+
+    sp = sub.add_parser("panel-press",
+                        help="mirror-only hold, then wait for the person's power press to end it (prints ready first)",
+                        **spp)
+    sp.add_argument("--open-timeout", type=float, default=30.0)
+    sp.add_argument("--panel-timeout", type=float, default=10.0)
+    sp.add_argument("--press-timeout", type=float, default=20.0,
+                    help="seconds to wait for state.panel on after the shell's power press")
+
     sp = sub.add_parser("panel", help="phone.panel: hold the mirrored panel off/on, print the state",
                         **spp)
     sp.add_argument("mode", choices=["off", "on"])
@@ -2563,6 +2694,8 @@ COMMANDS = {
     "wake": cmd_wake,
     "wake-test": cmd_wake_test,
     "panel": cmd_panel,
+    "panel-hold": cmd_panel_hold,
+    "panel-press": cmd_panel_press,
     "panel-test": cmd_panel_test,
     "clip-set": cmd_clip_set,
     "clip-watch": cmd_clip_watch,
