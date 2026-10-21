@@ -109,7 +109,7 @@ enum SessionEvent {
     case windowClosed(stream: UInt32, reason: String)
     case windowTitle(stream: UInt32, label: String, pkg: String)
     case phoneState(locked: Bool, battery: Int, charging: Bool, dnd: PhoneDndMode?, ringer: PhoneRingerMode?,
-                    screen: PhoneScreen?, secure: Bool?)
+                    screen: PhoneScreen?, secure: Bool?, panel: PhonePanel?)
     /// `ring.state`: a `phone.ring` started or ended.
     case ringState(ringing: Bool)
     case audioState(on: Bool, codec: UInt8)
@@ -843,7 +843,8 @@ final class Session {
                              dnd: message.string("dnd").flatMap(PhoneDndMode.init(rawValue:)),
                              ringer: message.string("ringer").flatMap(PhoneRingerMode.init(rawValue:)),
                              screen: message.string("screen").flatMap(PhoneScreen.init(rawValue:)),
-                             secure: message.bool("secure")))
+                             secure: message.bool("secure"),
+                             panel: message.string("panel").flatMap(PhonePanel.init(rawValue:))))
         case "ring.state":
             emit(.ringState(ringing: message.bool("ringing") ?? false))
         case "audio.state":
@@ -1117,6 +1118,8 @@ final class Session {
     /// `phone.wake`: wake the phone's own screen; the keyguard stays
     /// (docs/PROTOCOL.md "Phone screen").
     func wakePhone() { sendJSON(["t": "phone.wake"]) }
+    /// `phone.panel`: hold the mirrored panel off, or give it back.
+    func setPhonePanel(off: Bool) { sendJSON(["t": "phone.panel", "off": off]) }
     func startAudio(codecs: [Int] = [Int(AudioConfig.codecOpus), Int(AudioConfig.codecAAC)]) { sendJSON(["t": "audio.start", "codecs": codecs]) }
     func stopAudio() { sendJSON(["t": "audio.stop"]) }
     func text(stream: UInt32, text: String) { sendJSON(["t": "text", "stream": Int(stream), "text": text]) }

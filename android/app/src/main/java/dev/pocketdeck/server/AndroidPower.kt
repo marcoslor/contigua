@@ -74,6 +74,18 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
     /** True while the panel override is ours; cleared by restore, checked before each apply. */
     @Volatile private var darkEpisode = false
 
+    /** True while a phone window is showing display 0 (the person watches the panel). */
+    @Volatile private var mirrorOpen = false
+
+    /** True while we hold the mirrored panel off for the person's phone window. */
+    @Volatile private var mirrorOff = false
+
+    /** The session's listener for a panel-off the phone ended by itself. */
+    @Volatile override var onMirrorPanelEnded: (() -> Unit)? = null
+
+    /** True when this episode woke the phone's own group: handing back then sleeps it. */
+    @Volatile private var episodeWokeGroup = false
+
     /** True while a panel override we applied is live: the watchdog has work to do if we die. */
     @Volatile private var overrideLive = false
 
@@ -150,32 +162,91 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
         }
     }
 
-    override fun setActiveStreams(displayIds: List<Int>) {
+    override fun setActiveStreams(displayIds: List<Int>, allPaused: Boolean, mirroring: Boolean) {
         var started = false
         var stopped = false
+        var paused = false
+        var graceHandBack = false
+        mirrorOpen = mirroring
+        if (!mirroring && mirrorOff) {
+            // The phone window closed or went away: a request the person made
+            // for it ends with it, and the panel comes back.
+            synchronized(policyLock) { policy.requestMirrorOff(false) }
+            mirrorOff = false
+        }
         synchronized(lock) {
             val wasActive = activeDisplays.isNotEmpty()
-            activeDisplays.clear()
-            activeDisplays.addAll(displayIds)
-            val isActive = activeDisplays.isNotEmpty()
-            if (isActive && !wasActive) {
-                acquireWakeLockLocked()
-                startTimerLocked()
-                started = true
-            } else if (!isActive && wasActive) {
-                releaseWakeLockLocked()
-                stopTimerLocked()
-                stopped = true
+            if (displayIds.isEmpty() && wasActive && allPaused) {
+                // Every window is only paused (covered, minimised): keep the
+                // keep-alive, the locks and the panel state exactly as they
+                // are. The keep-alive loop hands the panel back once the grace
+                // period runs out (DarkPanelPolicy.PAUSE_GRACE_MS); an unpause
+                // in between is then no new episode at all.
+                paused = true
+                started = false
+            } else {
+                activeDisplays.clear()
+                activeDisplays.addAll(displayIds)
+                val isActive = activeDisplays.isNotEmpty()
+                if (isActive && !wasActive) {
+                    acquireWakeLockLocked()
+                    startTimerLocked()
+                    started = true
+                } else if (!isActive && wasActive) {
+                    releaseWakeLockLocked()
+                    stopTimerLocked()
+                    stopped = true
+                }
+                syncDisplayLocksLocked(activeDisplays)
             }
-            syncDisplayLocksLocked(activeDisplays)
+        }
+        if (paused) {
+            val now = SystemClock.uptimeMillis()
+            val nothingOfOurs = synchronized(policyLock) { policy.streamsPaused(now) }
+            if (nothingOfOurs) {
+                // The person has the phone: there is nothing to keep.
+                synchronized(lock) {
+                    activeDisplays.clear()
+                    releaseWakeLockLocked()
+                    stopTimerLocked()
+                }
+                graceHandBack = true
+            }
         }
         if (started) {
             synchronized(policyLock) { policy.streamsStarted() }
+            episodeWokeGroup = false
         }
+        if (!paused && displayIds.isNotEmpty()) synchronized(policyLock) { policy.streamsResumed() }
         if (stopped) restoreAfterStop()
-        // A window just opened: the keep-alive thread runs a step right away, so
-        // the wake (and the panel-off after it) never blocks the session thread.
+        if (graceHandBack) restoreAfterStop()
+        // A window just opened or paused: the keep-alive thread runs a step right
+        // away, so the wake (and the panel-off after it) never blocks the session
+        // thread.
         synchronized(lock) { lock.notifyAll() }
+    }
+
+    /**
+     * `phone.panel` (docs/PROTOCOL.md "Phone screen"): hold the mirrored panel
+     * off while the phone window keeps rendering, or give it back. The person's
+     * power button ends it on the phone (`onMirrorPanelEnded`).
+     */
+    override fun setMirrorPanelOff(off: Boolean): Boolean {
+        if (!panel.available && !policy.isForced) return false
+        synchronized(policyLock) { policy.requestMirrorOff(off) }
+        mirrorOff = off
+        if (off) log("phone.panel off: holding the mirrored panel off")
+        else log("phone.panel on: the mirrored panel comes back")
+        synchronized(lock) {
+            if (off) {
+                // With only the mirror open nothing else runs the keep-alive:
+                // its panel's own group is what keeps the frames coming.
+                acquireWakeLockLocked()
+                startTimerLocked()
+            }
+            lock.notifyAll()
+        }
+        return true
     }
 
     override fun onSessionEnded() {
@@ -231,13 +302,28 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
      * what turns the panel on.
      */
     private fun keepAliveStep() {
-        val ids = synchronized(lock) { activeDisplays.toIntArray() }
-        if (ids.isEmpty()) return
-        val strategy = policy.strategy(ids.map { DisplayProbe.displayGroupId(it) })
+        var ids = synchronized(lock) { activeDisplays.toIntArray() }
+        // Nothing of ours is open except possibly the person's phone window: with
+        // "Turn Off Phone Screen" only the mirror's own panel group has to stay
+        // up, so the step names display 0 and there is no virtual display.
+        val requestOnly = ids.isEmpty()
+        if (requestOnly) ids = intArrayOf(PANEL_DISPLAY_ID)
+        val panelOn = DisplayProbe.state(PANEL_DISPLAY_ID) == Display.STATE_ON
+        val decision = synchronized(policyLock) {
+            decidePanelPlan(policy, ids.toList(), requestOnly, mirrorOpen, mirrorOff, panelOn)
+        } ?: return
+        val strategy = decision.strategy
+        val plan = decision.plan
         groupOnly = strategy == PanelStrategy.GROUP_ONLY
         lastStrategy = strategy
-        val panelOn = DisplayProbe.state(PANEL_DISPLAY_ID) == Display.STATE_ON
-        val plan = synchronized(policyLock) { policy.step(panelOn, strategy) }
+        if (mirrorOff && !synchronized(policyLock) { policy.mirrorOffRequested }) {
+            // The request ended while this step decided (the person pressed
+            // power): never re-apply a panel-off the phone just gave back. The
+            // next step sees the old dark episode and restores the panel.
+            mirrorOff = false
+            onMirrorPanelEnded?.invoke()
+            return
+        }
         if (plan != lastPlan || panelOn != lastPanelOn) {
             log("power: panel ${DisplayProbe.stateName(DisplayProbe.state(PANEL_DISPLAY_ID))} -> $plan")
             lastPlan = plan
@@ -247,15 +333,18 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
         val wasDark = darkEpisode
         darkEpisode = plan.panelOff
         if (plan.panelOff) startPowerWatch()
-        if (!plan.wake) {
-            // Leaving a dark episode: the platform does not always rewrite the
-            // panel's power mode on its own, so give it back explicitly.
-            if (wasDark && DisplayProbe.state(PANEL_DISPLAY_ID) == Display.STATE_ON) panel.panelNormal()
-            // The user has the phone: the platform owns the panel again, so the
-            // crash guard has nothing left to restore.
+        if (wasDark && !plan.panelOff) {
+            // Leaving a dark episode (the person opened the mirror, or the
+            // strategy changed): the platform does not always rewrite the
+            // panel's power mode on its own, so give it back explicitly. The
+            // panel is only restored when the platform believes it is on (our
+            // override is masking it); otherwise its own mode is already right
+            // and re-writing NORMAL would flash the panel.
+            if (DisplayProbe.state(PANEL_DISPLAY_ID) == Display.STATE_ON) panel.panelNormal()
+            // The panel is the platform's again, so the crash guard is done.
             if (overrideLive) standDownOverride()
-            return
         }
+        if (!plan.wake) return
         // On the panel's group a wake is a full phone wake: it overrides a power
         // press the user just made and starts the keyguard's face unlock, which
         // unlocks the phone if the user is in front of it. So the shared group
@@ -263,6 +352,7 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
         // screen-off); between steps the 2 s user-activity poke keeps it awake,
         // and a poke cannot wake a group the user put to sleep.
         val wake = DarkPanelPolicy.wakesGroup(strategy, plan)
+        if (wake) episodeWokeGroup = true
         for (id in ids) {
             userActivity(id)
             if (wake) wakeDisplay(id)
@@ -314,6 +404,11 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
                         log("power: user pressed power while the panel was dark; panel given back" +
                             if (off) "" else " (display 0 never reported off)")
                         if (overrideLive) standDownOverride()
+                        if (mirrorOff) {
+                            // "Turn Off Phone Screen" is the person's to end.
+                            mirrorOff = false
+                            onMirrorPanelEnded?.invoke()
+                        }
                     }
                     break
                 }
@@ -383,7 +478,9 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
      */
     private fun restoreAfterStop() {
         val owned = synchronized(policyLock) { policy.streamsStopped() }
+        mirrorOff = false
         if (!owned) {
+            episodeWokeGroup = false
             if (overrideLive) standDownOverride()
             return
         }
@@ -394,8 +491,10 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
         }
         // goToSleep lets the platform re-apply its own power mode for the
         // transition and leaves the phone asleep and locked. Only ever called
-        // when we were the ones who woke the group.
-        if (SystemSleep.goToSleep()) log("phone back to sleep after the last stream")
+        // when we were the ones who woke the group: a mirror-only episode never
+        // woke it (its panel was on already), so the phone keeps its own state.
+        if (episodeWokeGroup && SystemSleep.goToSleep()) log("phone back to sleep after the last stream")
+        episodeWokeGroup = false
         // The panel is the platform's again, so the crash guard's job is done.
         standDownOverride()
     }
@@ -464,10 +563,40 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
                 nextStepAt = SystemClock.uptimeMillis() + interval
             }
             step++
+            if (synchronized(policyLock) { policy.pauseGraceExpired(SystemClock.uptimeMillis()) }) {
+                handBackAfterPause()
+                return
+            }
             // Shared-group steps run every 2 s: log the first few, then one a minute.
             if (step <= 3 || step % 30 == 0) log("keepalive step $step interval=${interval}ms displayLocks=$locks")
             runCatching { keepAliveStep() }
+            // A "Turn Off Phone Screen" request on a lone phone window is the
+            // only reason the timer can run with no stream of ours left.
+            val idle = synchronized(lock) { activeDisplays.isEmpty() } && !(mirrorOff && mirrorOpen)
+            if (idle) {
+                synchronized(lock) {
+                    releaseWakeLockLocked()
+                    stopTimerLocked()
+                }
+                log("power: the mirrored panel request ended; keep-alive stopped")
+                return
+            }
         }
+    }
+
+    /**
+     * Every window has been paused for the whole grace period: hand the phone
+     * back exactly as the last close does (restore the panel, sleep, stand
+     * down the crash guard), just later.
+     */
+    private fun handBackAfterPause() {
+        synchronized(lock) {
+            activeDisplays.clear()
+            releaseWakeLockLocked()
+            stopTimerLocked()
+        }
+        log("power: all windows paused for ${DarkPanelPolicy.PAUSE_GRACE_MS / 1000}s; handing the phone back")
+        restoreAfterStop()
     }
 
     private fun acquireWakeLockLocked() {
@@ -561,4 +690,36 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
 
         const val DISPLAY_WAKE_TAG = "pocketdeck:vd"
     }
+}
+
+/** The strategy and the plan for one keep-alive step (the testable half of [AndroidPower.keepAliveStep]). */
+internal data class PanelDecision(val strategy: PanelStrategy, val plan: PanelPlan)
+
+/**
+ * Decide one keep-alive step without touching the platform: which strategy the
+ * active displays get, then the plan. [requestOnly] is the mirror-only case
+ * (no virtual display; "Turn Off Phone Screen" holds display 0). [groupOf] is
+ * the platform's display-group reading, so the JVM tests pass a fake group.
+ *
+ * This is the exact decision [AndroidPower.keepAliveStep] makes: the emulator's
+ * 13:25:44 plan (`wake=true, panelOff=false, transitional=false`) is what
+ * GROUP_ONLY or PANEL_ALONE returns, never what PANEL_DARK returns.
+ */
+internal fun decidePanelPlan(
+    policy: DarkPanelPolicy,
+    activeDisplayIds: List<Int>,
+    requestOnly: Boolean,
+    mirrorOpen: Boolean,
+    mirrorOff: Boolean,
+    panelOn: Boolean,
+    groupOf: (Int) -> Int = { DisplayProbe.displayGroupId(it) },
+): PanelDecision? {
+    if (requestOnly && !(mirrorOff && mirrorOpen)) return null
+    val ids = if (requestOnly) listOf(0) else activeDisplayIds
+    val strategy = if (requestOnly) {
+        PanelStrategy.PANEL_ALONE
+    } else {
+        policy.strategy(ids.map(groupOf), mirroring = mirrorOpen)
+    }
+    return PanelDecision(strategy, policy.step(panelOn, strategy))
 }

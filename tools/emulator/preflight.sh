@@ -162,21 +162,27 @@ PY
 ok "python $("$PYTHON" -c 'import sys; print("%d.%d" % sys.version_info[:2])') with TLS 1.3"
 
 # --- 6. boot budget ---------------------------------------------------------
-NAME="$(basename "$REPO_ROOT")"
-BUDGET_FILE="$MAIN_REPO/.agent/budgets/$NAME"
-LEDGER=/tmp/pocketdeck-boots.ledger
-if [ -f "$BUDGET_FILE" ]; then
-  LIMIT="$(sed -n 's/^emulator=\([0-9][0-9]*\)$/\1/p' "$BUDGET_FILE" | head -1)"
-  USED="$(ledger_boots "$LEDGER" "$NAME")"
-  if [ -n "$LIMIT" ]; then
-    if [ "$USED" -ge "$LIMIT" ]; then
-      fail "emulator budget spent for $NAME ($USED of $LIMIT boots already in $LEDGER)"
-    else
-      ok "emulator budget: $USED of $LIMIT used"
-    fi
-  fi
+# A --check is a dry run: it must still exercise the parser fixtures after the
+# budget is spent. The boot itself is guarded by the budget in start.sh.
+if [ "${PD_PREFLIGHT_DRY_RUN:-0}" = "1" ]; then
+  ok "boot budget check skipped (dry run; the boot guard still enforces it)"
 else
-  ok "no boot budget file for $NAME (nothing to check)"
+  NAME="$(basename "$REPO_ROOT")"
+  BUDGET_FILE="$MAIN_REPO/.agent/budgets/$NAME"
+  LEDGER=/tmp/pocketdeck-boots.ledger
+  if [ -f "$BUDGET_FILE" ]; then
+    LIMIT="$(sed -n 's/^emulator=\([0-9][0-9]*\)$/\1/p' "$BUDGET_FILE" | head -1)"
+    USED="$(ledger_boots "$LEDGER" "$NAME")"
+    if [ -n "$LIMIT" ]; then
+      if [ "$USED" -ge "$LIMIT" ]; then
+        fail "emulator budget spent for $NAME ($USED of $LIMIT boots already in $LEDGER)"
+      else
+        ok "emulator budget: $USED of $LIMIT used"
+      fi
+    fi
+  else
+    ok "no boot budget file for $NAME (nothing to check)"
+  fi
 fi
 
 if [ "$FAILED" -ne 0 ]; then

@@ -702,6 +702,10 @@ class EventLog(object):
         """Display 0's power state changed (`state.screen`)."""
         self._emit({"ev": "screen", "state": state, "ts": time.time()})
 
+    def panel(self, state):
+        """`state.panel` changed: the mirrored panel is held off, or given back."""
+        self._emit({"ev": "panel", "state": state, "ts": time.time()})
+
     def secure(self, state):
         """A secure surface covered or uncovered display 0 (`state.secure`)."""
         self._emit({"ev": "secure", "state": "on" if state else "off", "ts": time.time()})
@@ -2111,7 +2115,7 @@ class Session(object):
     def send_state(self):
         """The `state` message, with `dnd` only when the phone supports it."""
         state = {"t": "state", "locked": True, "battery": BATTERY, "charging": False,
-                 "screen": self.phone.screen_state}
+                 "screen": self.phone.screen_state, "panel": self.phone.panel_state}
         if self.phone.secure_state is not None:
             state["secure"] = self.phone.secure_state
         if self.phone.zen.supported:
@@ -2243,6 +2247,7 @@ class Session(object):
         if self.phone.fake_ringer.supported:
             handlers["phone.ringer"] = self._on_phone_ringer
         handlers["phone.wake"] = self._on_phone_wake
+        handlers["phone.panel"] = self._on_phone_panel
         handlers["phone.ring"] = self._on_phone_ring
         handlers["phone.ring.stop"] = self._on_phone_ring_stop
         handler = handlers.get(kind)
@@ -2294,6 +2299,33 @@ class Session(object):
         for window in self.windows.values():
             if window.mode == "phone":
                 window.start()
+        self.send_state()
+
+    def _on_phone_panel(self, msg):
+        """phone.panel (docs/PROTOCOL.md "Phone screen"): the Mac holds the
+        mirrored panel off, or gives it back. The fake's screen never sleeps for
+        it: the mirror keeps sending frames, and `state.panel` says what the
+        panel is doing."""
+        off = msg.get("off")
+        if not isinstance(off, bool):
+            self._send_error("bad_request", "phone.panel needs off: true|false")
+            return
+        self.phone.panel_state = "off" if off else "on"
+        self.phone.events.panel(self.phone.panel_state)
+        self.send_state()
+        if off and self.phone.args.panel_ends_after > 0:
+            threading.Thread(target=self._end_panel_later,
+                             args=(self.phone.args.panel_ends_after,), daemon=True).start()
+
+    def _end_panel_later(self, seconds):
+        """--panel-ends-after: the person pressed power, so the request ends."""
+        time.sleep(seconds)
+        if self.phone.panel_state != "off":
+            return
+        self.phone.panel_state = "on"
+        self.phone.events.panel("on")
+        # The mirror never stopped for the panel: nothing to resume. A paused
+        # one (the panel's own timeout) comes back with the person's press.
         self.send_state()
 
     def _on_phone_ring(self, msg):
@@ -3477,6 +3509,8 @@ class FakePhone(object):
         self.screen = (SCREEN_W, SCREEN_H)
         # Display 0's power state (`state.screen`).
         self.screen_state = "on"
+        # `state.panel`: "off" while the Mac holds the mirrored panel off.
+        self.panel_state = "on"
         # None until --secure-after puts a secure surface over display 0.
         self.secure_state = None
         tls_guard()
@@ -3730,6 +3764,9 @@ def build_parser():
                         "(the Mac's opening cover: loading, then the first frame)")
     p.add_argument("--screen-off-after", type=float, default=0.0, metavar="SECONDS",
                    help="after the phone window opens, the panel times out: send state.screen off and stop frames")
+    p.add_argument("--panel-ends-after", type=float, default=0.0, metavar="SECONDS",
+                   help="after phone.panel off, the person's power button ends it this long "
+                        "later: send state.panel on and resume the mirror")
     p.add_argument("--secure-after", type=float, default=0.0, metavar="SECONDS",
                    help="after the phone window opens, a secure surface covers display 0: "
                         "send state.secure true and solid black frames for 5 s, then false "

@@ -81,6 +81,9 @@ final class StreamChromeView: NSView {
     let liveTextButton = LiveTextBarButton(frame: .zero)
     private let liveTextCapsule = HeaderCapsuleView(material: HeaderBar.material(dark: false))
     private let liveTextStatus = LiveTextStatusView(frame: .zero)
+    /// "Turn Off Phone Screen": the short pill that says the mirrored panel went
+    /// off, or came back when the person ended it on the phone.
+    private let panelStatus = LiveTextStatusView(frame: .zero)
     private(set) var style: WindowStyle
     /// Live Text is on: the kind's actions are frozen (HeaderActionPolicy).
     private(set) var liveTextActive = false
@@ -134,6 +137,9 @@ final class StreamChromeView: NSView {
         liveTextStatus.isHidden = true
         addSubview(liveTextButton)
         addSubview(liveTextStatus)
+        panelStatus.isHidden = true
+        addSubview(panelStatus)
+        panelStatus.layer?.zPosition = 3
         liveTextCapsule.isHidden = true
         liveTextButton.layer?.zPosition = 2
         liveTextStatus.layer?.zPosition = 3
@@ -283,6 +289,7 @@ final class StreamChromeView: NSView {
             liveTextCapsule.isHidden = true
             layoutLiveTextStatus(bar: false)
         }
+        layoutPanelStatus(bar: barVisible)
     }
 
     /// The status pill: centred in the framed bar, or just under the stream's
@@ -316,6 +323,44 @@ final class StreamChromeView: NSView {
 
     /// True while the status pill is up (the chrome state file reports it).
     var showsLiveTextStatus: Bool { !liveTextStatus.isHidden }
+
+    /// The phone window's mirrored panel is held off (`panel_off` in the state).
+    private(set) var panelOff = false
+
+    /// The phone window's panel-off state: the bar glyph and the chrome state.
+    func setPanelOff(_ off: Bool) {
+        panelOff = off
+        needsLayout = true
+    }
+
+    /// The "Phone screen off" / "Phone screen on" pill; nil takes it away.
+    /// It shares the Live Text pill's line and steps left while that one is up.
+    func setPanelPill(_ text: String?) {
+        if let text {
+            panelStatus.setText(text)
+            panelStatus.isHidden = false
+        } else {
+            panelStatus.isHidden = true
+        }
+        needsLayout = true
+        layoutPanelStatus(bar: barHeight > 0)
+    }
+
+    /// True while the phone's panel-off pill is up (the chrome state reports it).
+    var showsPanelStatus: Bool { !panelStatus.isHidden }
+
+    private func layoutPanelStatus(bar: Bool) {
+        guard !panelStatus.isHidden else { return }
+        let size = panelStatus.preferredSize
+        let y = bar
+            ? bounds.height - barHeight + (barHeight - size.height) / 2
+            : bounds.height - size.height - 10
+        // Live Text may already hold the centre: step left instead of stacking
+        // two pills on each other.
+        let shift = showsLiveTextStatus ? liveTextStatus.frame.width / 2 + size.width / 2 + 8 : 0
+        panelStatus.frame = NSRect(x: bounds.midX - size.width / 2 - shift, y: y,
+                                   width: size.width, height: size.height)
+    }
 
     override var isOpaque: Bool { false }
 

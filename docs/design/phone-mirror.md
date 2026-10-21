@@ -21,11 +21,22 @@ Why this and not `SurfaceControl.createDisplay` + `setDisplayProjection`
 
 ## Rules
 
-- Nothing is launched and no VD flags are set: the mirror is passive. Phone
-  streams never enter the power keep-alive (`activeDisplayIds` skips them, input
-  doesn't poke, and a mirrored frame is not a reason to light the panel). The
-  panel is woken only by an explicit `phone.wake` (window open, Wake Screen);
-  it is never unlocked or turned off: a locked phone shows its lock screen.
+- Nothing is launched and no VD flags are set: the mirror is passive. A phone
+  stream on its own never enters the power keep-alive (`activeDisplayIds` skips
+  display 0, input doesn't poke, and a mirrored frame is not a reason to light
+  the panel). The panel is woken only by an explicit `phone.wake` (window open,
+  Wake Screen); it is never unlocked: a locked phone shows its lock screen.
+  While a phone window is open and unpaused the panel is also never powered off
+  behind the mirror (`PanelStrategy.PANEL_ALONE`): the mirror shows what the
+  panel shows, and an app window sharing the panel's group still renders on the
+  group the keep-alive holds awake.
+- "Turn Off Phone Screen" (`phone.panel`, off by default) is the one exception,
+  and only when the person asks for it: their phone window's Navigate menu item
+  or its bar control holds the panel's power mode off while the mirror keeps
+  rendering. The bar shows an `iphone.slash` glyph and a "Phone screen off" pill
+  for 2 s; the person's power button on the phone ends it (the Mac unchecks it
+  and shows "Phone screen on" for 2 s), and closing the window, disconnecting or
+  a crash restores the panel. It is remembered per phone.
 - The stream fits inside the Mac's box at display 0's aspect (`MirrorFit`),
   never above display 0's size. Input maps over display 0's real size.
 - Rotation: the stream polls display 0's logical size every 300 ms while open.

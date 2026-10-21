@@ -300,7 +300,7 @@ interface Power {
     fun onInput(displayId: Int)
 
     /** The set of displays whose streams are currently unpaused. */
-    fun setActiveStreams(displayIds: List<Int>)
+    fun setActiveStreams(displayIds: List<Int>, allPaused: Boolean = false, mirroring: Boolean = false)
 
     fun onSessionEnded()
 
@@ -310,6 +310,19 @@ interface Power {
      * the display call and the key-event fallback.
      */
     fun wakeScreen(): WakeResult = WakeResult.FAILED
+
+    /**
+     * `phone.panel` (docs/PROTOCOL.md "Phone screen"): hold the mirrored panel
+     * off while the mirror keeps rendering, or give it back. False when this
+     * build cannot control the panel at all.
+     */
+    fun setMirrorPanelOff(off: Boolean): Boolean = false
+
+    /**
+     * The phone ended a panel-off the Mac asked for by itself (the person's
+     * power button): the session sends the state that says the panel is on.
+     */
+    var onMirrorPanelEnded: (() -> Unit)?
 }
 
 /** One paired Mac in v2: the pin is the Mac cert's point fingerprint (§3/§6);
