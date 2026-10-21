@@ -386,10 +386,24 @@ struct StatusChip: View {
     }
 }
 
+/// The Deck's status pill opens the same phone controls the menu bar panel
+/// shows (docs/DESIGN.md "Deck"): one component, one copy.
+struct DeckPhonePopover: View {
+    @Environment(ConnectionController.self) private var controller
+
+    var body: some View {
+        PhonePanelView(
+            state: PhoneControlsState(controller: controller),
+            actions: PhoneControlsActions(controller: controller) { DeckWindow.show() },
+        )
+    }
+}
+
 struct PhoneDeckView: View {
     @Environment(ConnectionController.self) private var controller
     @State private var query = ""
     @State private var navigator = GridNavigator()
+    @State private var showPanel = false
     @FocusState private var searchFocused: Bool
 
     private var filtered: [AppInfo] { GridNavigation.filter(controller.apps, query: query) }
@@ -430,7 +444,17 @@ struct PhoneDeckView: View {
             // lights, the connection chip and the title on the left; the
             // actions on the right. .status would float the chip in the
             // middle of the toolbar on macOS (docs/DESIGN.md "Deck").
-            ToolbarItem(placement: .navigation) { StatusChip() }
+            ToolbarItem(placement: .navigation) {
+                Button { showPanel = true } label: { StatusChip() }
+                    .buttonStyle(.plain)
+                    .help("Phone controls")
+                    .accessibilityLabel("Phone controls")
+                    .accessibilityIdentifier("deck.statusPill")
+                    .popover(isPresented: $showPanel, arrowEdge: .bottom) {
+                        DeckPhonePopover()
+                            .environment(controller)
+                    }
+            }
             ToolbarItem(placement: .primaryAction) {
                 Button { controller.openPhoneWindow() } label: { Label("Phone", systemImage: "iphone.gen3") }
                     .disabled(!controller.link.isOnline)
@@ -447,6 +471,7 @@ struct PhoneDeckView: View {
             DefaultToolbarItem(kind: .search, placement: .primaryAction)
         }
         .onChange(of: controller.searchFocusRequest) { searchFocused = true }
+        .onChange(of: controller.deckPanelRequest) { showPanel = true }
         .onChange(of: controller.sheet) { _, sheet in if sheet == nil { searchFocused = true } }
         .onChange(of: query) { navigator.selection = nil }
         .onAppear {

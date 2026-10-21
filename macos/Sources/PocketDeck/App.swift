@@ -518,6 +518,6 @@ struct PocketDeckApp: App {
             MenuBarIcon()
                 .environment(controller)
         }
-        .menuBarExtraStyle(.menu)
+        .menuBarExtraStyle(.window)
     }
 }
