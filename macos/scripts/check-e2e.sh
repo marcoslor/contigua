@@ -7931,11 +7931,14 @@ PY
         fi
         # The entry diagnostics: the frozen frame's size, its pixel format and
         # its mean luma, so a blank frame is visible in the log next time.
-        case "$line" in
-            *'"frameFormat":"BGRA"'*'"frameW":896'*'"frameH":592'*)
-                ok "LT the entry logs the frozen frame's size and format" ;;
-            *) bad "LT the entry does not log the frame diagnostics ($line)" ;;
-        esac
+        # The three facts, not their order: the log's keys are sorted.
+        if grep -q '"frameFormat":"BGRA"' <<< "$line" \
+            && grep -q '"frameW":896' <<< "$line" \
+            && grep -q '"frameH":592' <<< "$line"; then
+            ok "LT the entry logs the frozen frame's size and format"
+        else
+            bad "LT the entry does not log the frame diagnostics ($line)"
+        fi
         local mean
         mean="$(grep -o '"frameMean":[0-9]*' <<< "$line" | cut -d: -f2)"
         if [ -n "${mean:-}" ] && [ "${mean:-0}" -gt 20 ]; then
