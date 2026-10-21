@@ -95,24 +95,49 @@ final class DeckGridTests: XCTestCase {
 
     // MARK: the zoom's layout rate (NFR deck_zoom_frame_p95_ms)
 
-    /// The width a zoom or a live resize delivers every frame is coalesced: the
-    /// grid re-lays itself out a few times instead of once per display frame
-    /// (the person's zoom stutter, worst on the way back). The last width is
-    /// never dropped, so the settled layout is exact.
-    @MainActor
-    func testTheWidthIsCoalescedAndTheLastOneWins() {
-        let debouncer = WidthDebouncer()
-        var applied: [CGFloat] = []
-        for width in stride(from: CGFloat(600), through: 900, by: 10) {
-            debouncer.schedule(width, update: { _ in }) { applied.append($0) }
-        }
-        XCTAssertLessThan(applied.count, 31, "one state write per frame is the stutter")
-        XCTAssertEqual(applied.first, 600, "the first width lands at once")
+    // MARK: the drawn layout comes from the width it is given (the zoom bug)
 
-        // The trailing update arrives on the run loop (the animation's last
-        // width), and it is the last one scheduled.
-        RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.2))
-        XCTAssertEqual(applied.last, 900, "the settled width is the last one the window sent")
+    /// The layout places the columns the width asks for in the same pass: the
+    /// first tile one inset from the leading edge, the last one one inset from
+    /// the trailing edge, and no frame outside the width it was given.
+    func testTheDrawnLayoutFollowsTheWidthItIsGiven() {
+        for width in stride(from: CGFloat(640), through: 1600, by: 37) {
+            let columns = GridMetrics.columns(forWidth: width)
+            for index in 0..<(columns * 3) {
+                let frame = DeckGridLayout.frame(of: index, in: width)
+                XCTAssertEqual(frame.width, GridMetrics.cellWidth)
+                XCTAssertEqual(frame.height, GridMetrics.cellHeight)
+                XCTAssertGreaterThanOrEqual(frame.minX, GridMetrics.inset - 0.001, "width \(width)")
+                XCTAssertLessThanOrEqual(frame.maxX, width - GridMetrics.inset + 0.001, "width \(width)")
+            }
+            let last = DeckGridLayout.frame(of: columns - 1, in: width)
+            XCTAssertEqual(width - last.maxX, GridMetrics.inset, accuracy: 0.001,
+                           "the last column ends one inset from the trailing edge at \(width)")
+            XCTAssertEqual(DeckGridLayout.frame(of: columns - 1, in: width).minY,
+                           DeckGridLayout.frame(of: 0, in: width).minY,
+                           "the first row's cells share one row")
+        }
+    }
+
+    /// A narrower window re-flows in the same pass: fewer columns and a smaller
+    /// gap, never the old width's placement.
+    func testNarrowerWidthReflowsInTheSamePass() {
+        let wide = (0..<12).map { DeckGridLayout.frame(of: $0, in: 1200) }
+        let narrow = (0..<12).map { DeckGridLayout.frame(of: $0, in: 760) }
+        XCTAssertNotEqual(wide, narrow)
+        XCTAssertEqual(Set(narrow.map { $0.minX }).count, GridMetrics.columns(forWidth: 760))
+    }
+
+    /// The grid is tall enough for every row and its vertical padding.
+    func testTheHeightCoversEveryRow() {
+        let width: CGFloat = 760
+        let columns = GridMetrics.columns(forWidth: width)
+        let rows = 6
+        let height = DeckGridLayout.height(for: 6 * columns, width: width)
+        let expected = 2 * DeckGridLayout.verticalInset + CGFloat(rows) * GridMetrics.cellHeight
+            + CGFloat(rows - 1) * DeckGridLayout.rowSpacing
+        XCTAssertEqual(height, expected, accuracy: 0.001)
+        XCTAssertEqual(DeckGridLayout.height(for: 0, width: width), 2 * DeckGridLayout.verticalInset)
     }
 
     // MARK: the drawn frame fits its width (e2e `deck`, the person's clipped edges)
