@@ -92,8 +92,29 @@ fi
 package_installed() { [ -n "$(emu shell pm path "$1" 2>/dev/null | tr -d '\r')" ]; }
 
 FRESH_APPS=""
+# log_install_failure <pkg> <apk> <install output> — a failed install used to
+# die with an empty reason. Log the failed command's output in full, a plain
+# `adb install -r -t -g` retry, /data space and the package list, into the file
+# the caller names (panel-power.sh points it at panel-power.log). Logging only:
+# the boot still stops on the failure.
+log_install_failure() {
+  local pkg="$1" apk="$2" out="$3"
+  local log="${PD_INSTALL_LOG:-$AGENT_DIR/install-failure.log}"
+  {
+    echo "=== start.sh: could not install $pkg"
+    echo "=== adb install -r -d -g $apk"
+    printf '%s\n' "$out"
+    echo "=== adb install -r -t -g $apk"
+    emu install -r -t -g "$apk" 2>&1
+    echo "=== adb shell df /data"
+    emu shell df /data 2>&1
+    echo "=== adb shell pm list packages $pkg"
+    emu shell pm list packages "$pkg" 2>&1
+  } >> "$log" 2>&1
+}
+
 install_apk() { # install_apk <path> <pkg>
-  local path="$1" pkg="$2"
+  local path="$1" pkg="$2" out
   if package_installed "$pkg"; then
     return 0
   fi
@@ -101,7 +122,10 @@ install_apk() { # install_apk <path> <pkg>
   # -d: a newer build may already be on the rig (another worktree, an earlier
   # boot) and the boot budget never allows a clean second try. A downgrade is
   # accepted only when the signature matches, so an APK from this tree wins.
-  emu_long install -r -d -g "$path" >/dev/null || die "could not install $pkg"
+  if ! out="$(emu_long install -r -d -g "$path" 2>&1)"; then
+    log_install_failure "$pkg" "$path" "$out"
+    die "could not install $pkg (see ${PD_INSTALL_LOG:-$AGENT_DIR/install-failure.log})"
+  fi
   FRESH_APPS="$FRESH_APPS $pkg"
 }
 
@@ -161,7 +185,10 @@ step "installing $PKG"
 # -d: another epic's worktree may have left a higher versionCode on the rig and
 # the boot budget never allows a second boot. A downgrade is only accepted when
 # the debug signature matches, so this tree's APK always ends up installed.
-emu_long install -r -d -g "$APK" >/dev/null || die "could not install $PKG"
+if ! install_out="$(emu_long install -r -d -g "$APK" 2>&1)"; then
+  log_install_failure "$PKG" "$APK" "$install_out"
+  die "could not install $PKG (see ${PD_INSTALL_LOG:-$AGENT_DIR/install-failure.log})"
+fi
 
 # Fail fast and loudly: a silent downgrade failure leaves the previous build
 # answering on the port, and every later check would report the wrong code.
@@ -269,6 +296,13 @@ PY
 emu shell "run-as $PKG mkdir -p shared_prefs" >/dev/null 2>&1 || true
 emu shell "run-as $PKG sh -c 'cat > shared_prefs/pocketdeck.xml'" <"$PREFS" ||
   die "cannot seed $PKG prefs (is the build debuggable?)"
+
+if [ "${POCKETDECK_FORCE_PANEL_OFF:-0}" = "1" ]; then
+  step "setting debug.pocketdeck.force_panel_off=1 before the server starts"
+  emu shell setprop debug.pocketdeck.force_panel_off 1 >/dev/null 2>&1 || true
+  [ "$(emu shell getprop debug.pocketdeck.force_panel_off | tr -d '\r')" = "1" ] ||
+    die "debug.pocketdeck.force_panel_off did not stick"
+fi
 
 emu logcat -c >/dev/null 2>&1 || true
 step "launching $PKG"

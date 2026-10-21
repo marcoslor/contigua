@@ -53,7 +53,10 @@ final class PhoneWindowController: StreamWindowController {
         // The black-frame fallback for phones that do not report `state.secure`
         // yet: a look at the displayed frame five times a second.
         let timer = Timer(timeInterval: 0.2, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.sampleFrameForBlackCover() }
+            MainActor.assumeIsolated {
+                self?.sampleFrameForBlackCover()
+                self?.tickPanelPill()
+            }
         }
         RunLoop.main.add(timer, forMode: .common)
         blackTimer = timer
@@ -129,7 +132,50 @@ final class PhoneWindowController: StreamWindowController {
     override func headerActions() -> [HeaderAction] {
         [.back { [weak self] in self?.navigateBack(nil) },
          .home { [weak self] in self?.navigateHome(nil) },
-         .recents { [weak self] in self?.navigateRecents(nil) }]
+         .recents { [weak self] in self?.navigateRecents(nil) },
+         // "Turn Off Phone Screen" in the bar: the same control as the Navigate
+         // menu item, and the subtle indicator while it is on (`iphone.slash`).
+         HeaderAction(kind: .custom,
+                      customSymbol: panelOffShown ? "iphone.slash" : "iphone",
+                      help: panelOffShown ? "Phone Screen Off" : "Turn Off Phone Screen") { [weak self] in
+             self?.togglePanelOff()
+         }]
+    }
+
+    /// The check and the bar glyph follow the phone's `state.panel`, never a
+    /// local guess: the phone is the one that holds the panel.
+    var panelOffShown: Bool { screenModel.panelOff }
+
+    /// "Turn Off Phone Screen": the phone holds its own panel's power off while
+    /// this mirror keeps rendering. Remembered per phone, because it is a
+    /// choice about that phone.
+    func setPanelOff(_ off: Bool) {
+        guard panelOffShown != off else { return }
+        if let id = manager.phone?.id { PhonePanelOffSetting.write(off, for: id, to: manager.profileDefaults) }
+        session.setPhonePanel(off: off)
+    }
+
+    func togglePanelOff() { setPanelOff(!panelOffShown) }
+
+    /// Navigate ▸ Turn Off Phone Screen: the menu item's action, through the
+    /// responder chain (a nil target), so the e2e drives the same route.
+    @objc func togglePanelOffMenuAction(_ sender: Any?) { togglePanelOff() }
+
+    /// `state.panel` from the session: the check, the bar glyph and the pill.
+    func setPhonePanel(_ panel: PhonePanel?) {
+        let changed = screenModel.setPanel(panel, at: ProcessInfo.processInfo.systemUptime)
+        guard changed else { return }
+        applyPanelState()
+    }
+
+    private func applyPanelState() {
+        chrome.setPanelOff(screenModel.panelOff)
+        chrome.setPanelPill(screenModel.panelPill)
+        chrome.setActions(headerActions())
+        if window?.isKeyWindow ?? false {
+            StreamMenuState.shared.panelOff = screenModel.panelOff
+        }
+        writeChromeState()
     }
 
     override func windowWillResize(_ sender: NSWindow, to frameSize: NSSize) -> NSSize {
@@ -176,6 +222,13 @@ final class PhoneWindowController: StreamWindowController {
         // stays up and the phone's own screen timeout applies as usual.
         screenModel.opened()
         session.wakePhone()
+        // "Turn Off Phone Screen" is remembered per phone: a window that opens
+        // with it on asks the phone again (the phone ends it on the person's
+        // power button, and then it stays off until they ask again).
+        if let id = manager.phone?.id,
+           PhonePanelOffSetting.read(from: manager.profileDefaults, deviceId: id) {
+            session.setPhonePanel(off: true)
+        }
     }
 
     /// `state.screen` from the session: off puts the blurred cover and its Wake
@@ -226,6 +279,13 @@ final class PhoneWindowController: StreamWindowController {
     private func wakeFromOverlay() {
         guard screenModel.click() else { return }
         session.wakePhone()
+    }
+
+    /// The panel pill's two seconds are up: take it down.
+    private func tickPanelPill() {
+        guard screenModel.tick(at: ProcessInfo.processInfo.systemUptime) else { return }
+        chrome.setPanelPill(nil)
+        writeChromeState()
     }
 
     /// The e2e's debug route (`wake-phone`): the same path as the button.

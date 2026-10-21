@@ -3395,7 +3395,11 @@ check_mirror() {
     rm -f "$WORK/chrome.txt"
     # The first frame 3 s in: long enough for the cover to be seen, short
     # enough for the aspect and rotation steps below.
-    FAKE_ARGS="--first-frame-delay 3 --rotate-after 6 --screen-off-after 14" start_fake || return 1
+    # --frame-events: one `frames` event a second per stream, so the panel-off
+    # step can show the mirror kept rendering. --panel-ends-after: the person's
+    # power button on the phone ends "Turn Off Phone Screen" a few seconds later.
+    FAKE_ARGS="--first-frame-delay 3 --rotate-after 6 --screen-off-after 14 --frame-events --panel-ends-after 12" \
+        start_fake || return 1
     # The pointer comes to the top edge to bring the header in (glass nav buttons).
     printf '%s\n' "wait 1" "hoverat 0 200" "wait 0.03" "hoverat 0 150" "wait 0.03" "hoverat 0 120" \
         "wait 0.03" "hoverat 0 90" "wait 0.03" "hoverat 0 70" "wait 0.03" "hoverat 0 58" > "$WORK/mirror.txt"
@@ -3497,6 +3501,51 @@ check_mirror() {
     else
         bad "MIRROR frames did not resume after the wake"
     fi
+    # "Turn Off Phone Screen" (docs/design/phone-mirror.md): Navigate ▸ the item's
+    # own action, the phone hears phone.panel off, the mirror keeps sending
+    # frames and the bar says so; the phone's power press ends it and the Mac
+    # follows the echoed state.
+    if wait_until 3 chrome_has "panel_off=0"; then
+        ok "MIRROR Turn Off Phone Screen is off by default (panel_off=0)"
+    else
+        bad "MIRROR the phone window does not report panel_off ($(chrome_state))"
+    fi
+    local frames_before
+    frames_before="$(last_frame_event)"
+    printf 'panel-menu\n' > "$WORK/control/panel-menu.cmd"
+    if wait_until 5 panel_menu_done; then
+        ok "MIRROR the Turn Off Phone Screen menu item ran"
+    else
+        bad "MIRROR the menu item did not run: $(cat "$WORK/control/panel-menu.done" 2>/dev/null)"
+    fi
+    # The fake's own event for the request (its rx JSON sorts keys, so the
+    # request line itself is not a stable match).
+    if wait_until 10 events_have '"ev":"panel","state":"off"'; then
+        ok "MIRROR the menu item sent phone.panel off and the phone applied it"
+    else
+        bad "MIRROR the phone got no phone.panel off"
+    fi
+    if wait_until 5 chrome_has "panel_off=1"; then
+        ok "MIRROR the bar and the chrome state follow the phone's panel=off"
+    else
+        bad "MIRROR the indicator did not follow state.panel ($(chrome_state))"
+    fi
+    if wait_until 8 more_frame_events "$frames_before"; then
+        ok "MIRROR the mirror keeps sending frames while the panel is off (frame events to $(last_frame_event))"
+    else
+        bad "MIRROR the mirror stopped sending frames with the panel off (frame events $(last_frame_event))"
+    fi
+    if wait_until 15 events_have '"ev":"panel","state":"on"'; then
+        ok "MIRROR the phone ended the panel-off (the person's power button)"
+    else
+        bad "MIRROR the phone never ended the panel-off"
+    fi
+    if wait_until 5 chrome_has "panel_off=0"; then
+        ok "MIRROR the indicator went away when the phone ended it"
+    else
+        bad "MIRROR the indicator stayed after the phone ended it ($(chrome_state))"
+    fi
+
     # The bar's Back / Home / Recents buttons take a real click: the debug
     # route hit-tests each button's window location and posts the mouse events
     # to the control it finds, so the button's own mouseDown/mouseUp run. v103
@@ -3597,6 +3646,26 @@ phone_screen_log() { log show --last 2m --info \
     grep -c 'phone window: screen=off overlay=1' ; }
 
 wake_done_ok() { [ "$(cat "$WORK/control/wake.done" 2>/dev/null)" = "ok" ]; }
+
+panel_menu_done() { [ "$(cat "$WORK/control/panel-menu.done" 2>/dev/null)" = "ok" ]; }
+
+# last_frame_event — the last `frames` counter stream 1 reported (--frame-events).
+last_frame_event() {
+    python3 - "$WORK/events.jsonl" <<'FRAMES'
+import json, sys
+last = 0
+for line in open(sys.argv[1]):
+    try:
+        e = json.loads(line)
+    except ValueError:
+        continue
+    if e.get("ev") == "frames" and e.get("stream") == 1:
+        last = max(last, int(e.get("n") or 0))
+print(last)
+FRAMES
+}
+
+more_frame_events() { [ "$(last_frame_event)" -gt "$1" ]; }
 
 more_video_configs() { [ "$(count_events '"ev":"video"')" -gt "$1" ]; }
 
