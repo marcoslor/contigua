@@ -191,6 +191,23 @@ class PanelPowerSessionTest {
     }
 
     @Test
+    fun `phone panel off while paused is held and reported on until the resume`() {
+        connect()
+        authenticate()
+        openPhoneWindow()
+        send(mapOf("t" to "window.pause", "stream" to 2))
+        awaitPowerCall { (_, _, mirroring) -> !mirroring }
+
+        send(mapOf("t" to "phone.panel", "off" to true))
+        assertEquals("on", readUntil("state")["panel"])
+        assertEquals(listOf(true), platform.mirrorPanelOffs.toList())
+
+        send(mapOf("t" to "window.resume", "stream" to 2))
+        assertEquals("off", readUntil("state")["panel"])
+        assertEquals("no new request on the resume", listOf(true), platform.mirrorPanelOffs.toList())
+    }
+
+    @Test
     fun `the phone ending the panel off sends a state with the panel on`() {
         connect()
         authenticate()

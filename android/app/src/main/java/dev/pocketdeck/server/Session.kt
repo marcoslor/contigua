@@ -233,6 +233,14 @@ class Session(
      */
     @Volatile private var mirrorPanelOff = false
 
+    /**
+     * The person's `phone.panel off` request. It is held while the phone window
+     * is paused; [mirrorPanelOff] is the state actually applied (and reported
+     * as `state.panel`), so the Mac's glyph/check never claims off while the
+     * panel is still on.
+     */
+    @Volatile private var mirrorPanelRequested = false
+
     private var writerThread: Thread? = null
     private var stateHandle: AutoCloseable? = null
     private var dndHandle: AutoCloseable? = null
@@ -316,6 +324,7 @@ class Session(
         // The phone can end a mirror panel-off on its own (the person's power
         // button): tell the Mac at once, as a fresh state.
         power.onMirrorPanelEnded = {
+            mirrorPanelRequested = false
             mirrorPanelOff = false
             val state = stateTracker.current ?: device.state()
             if (!stateTracker.update(state)) sendState(state)
@@ -384,6 +393,7 @@ class Session(
         runCatching { power.setActiveStreams(emptyList()) }
         runCatching { power.onSessionEnded() }
         runCatching { power.onMirrorPanelEnded = null }
+        mirrorPanelRequested = false
         mirrorPanelOff = false
         queue.close()
         runCatching { writerThread?.join(1000) }
@@ -1340,7 +1350,9 @@ class Session(
             sendError("unavailable", "this phone can't control its panel")
             return
         }
-        mirrorPanelOff = off
+        mirrorPanelRequested = off
+        // A paused phone window holds the request; the panel is not off yet.
+        mirrorPanelOff = off && hasActivePhoneWindow()
         log(if (off) "phone.panel off" else "phone.panel on")
         val state = stateTracker.current ?: device.state()
         if (!stateTracker.update(state)) sendState(state)
@@ -1349,6 +1361,10 @@ class Session(
     /** True while a phone window stream is open (paused or not). */
     private fun hasPhoneWindow(): Boolean =
         synchronized(streams) { streams.values.any { it.content == WindowContent.Phone } }
+
+    /** True while a phone window is open and unpaused: the mirror strategy applies. */
+    private fun hasActivePhoneWindow(): Boolean =
+        synchronized(streams) { streams.values.any { it.content == WindowContent.Phone && !it.paused } }
 
     /**
      * An event pushed by the app-process listener after both gates. Everything is
@@ -2154,13 +2170,24 @@ class Session(
         val ids: List<Int>
         val allPaused: Boolean
         val mirroring: Boolean
+        var phoneOpen = false
         synchronized(streams) {
             val open = streams.values.toList()
             ids = open.filter { !it.paused && it.content != WindowContent.Phone }.map { it.displayId }
             allPaused = paused && open.isNotEmpty() && open.all { it.paused }
             mirroring = open.any { it.content == WindowContent.Phone && !it.paused }
+            phoneOpen = open.any { it.content == WindowContent.Phone }
         }
         power.setActiveStreams(ids, allPaused = allPaused, mirroring = mirroring)
+        if (!phoneOpen) mirrorPanelRequested = false
+        // The request is held while the phone window is paused; report off only
+        // once the window is back and the mirror strategy can apply it.
+        val applied = mirrorPanelRequested && mirroring
+        if (mirrorPanelOff != applied) {
+            mirrorPanelOff = applied
+            val state = stateTracker.current ?: device.state()
+            if (!stateTracker.update(state)) sendState(state)
+        }
     }
 
     private fun streamOf(obj: Map<String, Any?>, frame: Frame): Int =
