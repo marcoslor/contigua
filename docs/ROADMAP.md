@@ -94,6 +94,7 @@ Batch D (M-L)
 | 11 | Widgets | WidgetKit widgets (battery, now playing, latest notifications, app shortcuts). Built from a snapshot the Mac app keeps; timelines computed on the Mac so a refresh never wakes the phone; the phone pushes changes only; a disconnected phone shows the last state with its age, never an error | M |
 | 12 | WAN access | see "Remote access" below | L |
 | 13 | Remote wake | wake a dozing phone server from the Mac: the rendezvous connection doubles as the wake channel off the LAN; on the LAN, find the cheapest keepalive that survives doze | M |
+| 14 | Audio output switch (person, 2026-10-20) | in the menu bar panel: "Sound plays on: This Mac / Phone speaker". This Mac = the existing phone → Mac audio (REMOTE_SUBMIX capture, which also silences the phone speaker); Phone speaker = stop the capture so Android routes to its own output. Remembered per Mac; the panel row shows the current route from the phone's state | S‑M |
 
 ## After the v0.2 features: maintainability
 
