@@ -65,11 +65,52 @@ enum MenuDump {
         }
     }
 
+    /// Everything wrong with a menu's shape, as sentences the checks and the
+    /// tests print: a leading, trailing or doubled separator. A menu's shape is
+    /// what SwiftUI's rebuilds can break silently (an item vanishes and the two
+    /// dividers around it meet), so it is checked as data, not by eye.
+    static func shapeProblems(_ menu: String, _ items: [Item]) -> [String] {
+        var problems: [String] = []
+        func report(_ name: String, _ rows: [Item]) {
+            if let first = rows.first, first.isSeparator {
+                problems.append("\(name): leading separator")
+            }
+            if let last = rows.last, last.isSeparator {
+                problems.append("\(name): trailing separator")
+            }
+            for (index, item) in rows.enumerated() where item.isSeparator && index > 0 {
+                if rows[index - 1].isSeparator {
+                    problems.append("\(name): separator \(index + 1) follows another")
+                }
+            }
+        }
+        report(menu, items)
+        for item in items {
+            if let submenu = item.submenu { report("\(menu)/\(item.title)", submenu) }
+        }
+        return problems
+    }
+
+    /// Every menu bar item and its shape problems, so a check can assert on the
+    /// whole bar in one read.
+    static func problems(_ menu: NSMenu?) -> [String] {
+        guard let menu else { return [] }
+        return menu.items.flatMap { item in
+            shapeProblems(item.title, item.submenu.map(snapshot) ?? [])
+        }
+    }
+
+    /// The whole dump: the bar's items and the shape problems found in them.
+    private struct Document: Encodable {
+        var items: [Item]
+        var problems: [String]
+    }
+
     /// The JSON the checks read; a file at PATH replaces any earlier one.
     static func json(_ menu: NSMenu?) throws -> Data {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
-        return try encoder.encode(["items": snapshot(menu)])
+        return try encoder.encode(Document(items: snapshot(menu), problems: problems(menu)))
     }
 
     static func write(_ menu: NSMenu?, to path: String) throws {
