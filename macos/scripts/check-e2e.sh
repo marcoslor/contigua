@@ -3642,6 +3642,85 @@ check_mirror() {
             bad "MIRROR the $button bar button click did not run: $(cat "$WORK/control/nav-$button.done" 2>/dev/null)"
         fi
     done
+
+    # A person's click on the bar control (the menu route above is a different
+    # control): the click goes through the button's own mouse events, and the
+    # glyph must follow the phone's `state.panel` within panel_glyph_ms. The
+    # fake answers at once, so the limit is the Mac's hop from the report to the
+    # redraw. A second run reports 1000 ms late (--panel-delay-ms): the glyph
+    # must stay put until the report arrives — it follows the phone, never the
+    # click.
+    local glyph_ms glyph_limit
+    glyph_limit="$(nfr_limit panel_glyph_ms)"
+    for fake_delay in 0 1000; do
+        # A fresh profile per run: "Turn Off Phone Screen" is remembered per
+        # phone, so the first run's clicks would otherwise reopen it already off.
+        clean
+        mkdir -p "$WORK/control"
+        printf '%s\n' "wait 1" "hoverat 0 200" "wait 0.03" "hoverat 0 120" \
+            "wait 0.03" "hoverat 0 70" "wait 0.03" "hoverat 0 58" > "$WORK/panel-hover.txt"
+        FAKE_ARGS="--panel-delay-ms $fake_delay" start_fake || return 1
+        launch --connect "127.0.0.1:$PORT" --open-phone --float-windows \
+            --debug-chrome-state "$WORK/chrome.txt" --debug-input-script "$WORK/panel-hover.txt" \
+            --debug-control "$WORK/control" --quit-after 60
+        if ! wait_until 15 chrome_has "loading=0"; then
+            bad "MIRROR panel glyph (report +${fake_delay} ms): the window never showed a frame"
+            stop_app; stop_fakephone; return 1
+        fi
+        if ! wait_until 5 chrome_has "panel_off=0"; then
+            bad "MIRROR panel glyph (report +${fake_delay} ms): panel_off is not reported"
+            stop_app; stop_fakephone; return 1
+        fi
+        sleep 0.6
+        rm -f "$WORK/control/panel-click.done"
+        printf 'panel-click\n' > "$WORK/control/panel-click.cmd"
+        if ! wait_until 5 panel_click_done; then
+            bad "MIRROR panel glyph: the bar control click did not run: $(cat "$WORK/control/panel-click.done" 2>/dev/null)"
+            stop_app; stop_fakephone; return 1
+        fi
+        if [ "$fake_delay" = "0" ]; then
+            # Both ways: the same click turns it off, then back on.
+            for glyph_want in 1 0; do
+                if [ "$glyph_want" = "0" ]; then
+                    rm -f "$WORK/control/panel-click.done"
+                    printf 'panel-click\n' > "$WORK/control/panel-click.cmd"
+                    wait_until 5 panel_click_done \
+                        || bad "MIRROR panel glyph: the second bar control click did not run"
+                fi
+                if ! wait_until 5 chrome_has "panel_off=$glyph_want"; then
+                    bad "MIRROR panel glyph: the glyph did not follow state.panel (panel_off=$glyph_want, $(chrome_state))"
+                    continue
+                fi
+                glyph_ms="$(panel_glyph_ms)"
+                if python3 -c "import sys; sys.exit(0 if 0 <= $glyph_ms <= $glyph_limit else 1)"; then
+                    ok "MIRROR a bar-control click redrew the glyph in ${glyph_ms} ms (panel_off=$glyph_want, limit ${glyph_limit} ms)"
+                else
+                    bad "MIRROR a bar-control click took ${glyph_ms} ms to redraw the glyph (panel_off=$glyph_want, limit ${glyph_limit} ms)"
+                fi
+            done
+        else
+            sleep 0.3
+            if chrome_has "panel_off=0"; then
+                ok "MIRROR the glyph waits for the phone's report (+${fake_delay} ms), not the click"
+            else
+                bad "MIRROR the glyph changed on the click, before the phone reported (report +${fake_delay} ms)"
+            fi
+            if wait_until 5 chrome_has "panel_off=1"; then
+                glyph_ms="$(panel_glyph_ms)"
+                if python3 -c "import sys; sys.exit(0 if 900 <= $glyph_ms <= $fake_delay + $glyph_limit else 1)"; then
+                    ok "MIRROR the glyph followed the late report in ${glyph_ms} ms (Mac hop $((glyph_ms - fake_delay)) ms)"
+                else
+                    bad "MIRROR the late report took ${glyph_ms} ms to redraw the glyph (limit $((fake_delay + glyph_limit)) ms)"
+                fi
+            else
+                bad "MIRROR the glyph never followed the late state.panel"
+            fi
+        fi
+        stop_app
+        stop_fakephone
+        wait_until 5 no_fakephone
+    done
+
     # A secure surface (fakephone --secure-after): Android blanks the phone's
     # PIN pad, keyguard bouncer or a FLAG_SECURE app, so the phone reports
     # state.secure and sends black frames. The window shows the same blurred
@@ -3769,6 +3848,23 @@ phone_screen_log() { log show --last 2m --info \
 wake_done_ok() { [ "$(cat "$WORK/control/wake.done" 2>/dev/null)" = "ok" ]; }
 
 panel_menu_done() { [ "$(cat "$WORK/control/panel-menu.done" 2>/dev/null)" = "ok" ]; }
+
+panel_click_done() { [ "$(cat "$WORK/control/panel-click.done" 2>/dev/null)" = "ok" ]; }
+
+# panel_glyph_ms — the click -> glyph time the app recorded for its last panel
+# click: `panel_click_at` is the control's own click, `panel_glyph_at` the
+# `state.panel` that redrew the bar (host uptime ms, in the chrome state). -1
+# until both are written.
+panel_glyph_ms() {
+    python3 - "$(chrome_state)" <<'PY'
+import sys
+fields = dict(part.split("=", 1) for part in sys.argv[1].split() if "=" in part)
+try:
+    print(int(fields["panel_glyph_at"]) - int(fields["panel_click_at"]))
+except (KeyError, ValueError):
+    print(-1)
+PY
+}
 
 # last_frame_event — the last `frames` counter stream 1 reported (--frame-events).
 last_frame_event() {

@@ -776,6 +776,8 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
             + " secure=\(chrome.phoneOverlay.cover == .secure ? 1 : 0)"
             + " panel_off=\(chrome.panelOff ? 1 : 0) panel_pill=\(chrome.showsPanelStatus ? 1 : 0)"
             + " panel_pill_failed=\(chrome.showsPanelStatus && chrome.panelPillText == PhoneScreenOverlay.panelFailedText ? 1 : 0)"
+            + " panel_click_at=\((self as? PhoneWindowController)?.panelClickedAtMs ?? 0)"
+            + " panel_glyph_at=\((self as? PhoneWindowController)?.panelGlyphAtMs ?? 0)"
             + " stall=\(isStalled ? 1 : 0) stall_pill=\(stallPill ? 1 : 0)"
             + " loading=\(openingState)"
             + " frame=\(Int((window?.frame.width ?? 0).rounded()))x\(Int((window?.frame.height ?? 0).rounded()))"
