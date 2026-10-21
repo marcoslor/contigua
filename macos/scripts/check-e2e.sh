@@ -648,7 +648,12 @@ build_cgevent() {
 }
 
 # windows() — the CGWindow list of PocketDeck's own windows without a title:
-windows() { "$CGBIN" list; }
+# Only this run's app: the installed app and other checkouts put PocketDeck
+# windows on the same screen, and a check must never match theirs (a phone
+# window of the person's own app is portrait and never turns).
+windows() {
+    if [ -n "${APP_PID:-}" ]; then "$CGBIN" list --pid "$APP_PID"; else "$CGBIN" list; fi
+}
 
 # window_titles [pid>0] — the Dock/⌘-Tab-style AX title of each window, one per
 # line. A pid pins this run's app: other checkouts run their own PocketDeck.
@@ -3404,9 +3409,12 @@ check_mirror() {
     printf '%s\n' "wait 1" "hoverat 0 200" "wait 0.03" "hoverat 0 150" "wait 0.03" "hoverat 0 120" \
         "wait 0.03" "hoverat 0 90" "wait 0.03" "hoverat 0 70" "wait 0.03" "hoverat 0 58" > "$WORK/mirror.txt"
     mkdir -p "$WORK/control"
+    # The run's own waits (rotation, stale frame, wake, panel) exceed a minute on
+    # a loaded Mac; the app must outlive them or every later control command
+    # lands with no app to read it.
     launch --connect "127.0.0.1:$PORT" --open-phone --float-windows \
         --debug-chrome-state "$WORK/chrome.txt" --debug-input-script "$WORK/mirror.txt" \
-        --debug-control "$WORK/control" --quit-after 60
+        --debug-control "$WORK/control" --quit-after 120
     if wait_until 5 chrome_has "loading=1"; then
         ok "MIRROR opening cover: the window is covered before its first frame"
     else
