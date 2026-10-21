@@ -171,7 +171,7 @@ enum PanelProbe {
         case .dnd: return state.connection.isOnline && state.dnd != nil
         case .ring, .phoneScreen, .continueOnMac: return state.connection.isOnline
         case .installApk: return state.connection.isOnline && !state.installBusy
-        case .sessions, .live, .findApps, .settings, .quit: return true
+        case .sessions, .live, .findApps, .settings, .quit, .disconnectAgent: return true
         }
     }
 

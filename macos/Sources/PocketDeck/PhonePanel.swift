@@ -149,7 +149,8 @@ extension PhoneControlsState {
 /// The panel's rows in focus order, top to bottom: what the keyboard tabs
 /// through and what `PhonePanelProbe` maps the hosting view's key views to.
 enum PhonePanelItem: String, CaseIterable {
-    case volume, dnd, ring, sessions, live, phoneScreen, findApps, continueOnMac, installApk, settings, quit
+    case volume, dnd, ring, sessions, live, phoneScreen, findApps, continueOnMac, installApk,
+         disconnectAgent, settings, quit
 
     var id: String { "panel.\(rawValue)" }
 
@@ -164,18 +165,22 @@ enum PhonePanelItem: String, CaseIterable {
         case .findApps: return "Find Apps"
         case .continueOnMac: return "Continue on Mac"
         case .installApk: return "Install APK…"
+        case .disconnectAgent: return "Disconnect the AI agent"
         case .settings: return "Settings…"
         case .quit: return "Quit PocketDeck"
         }
     }
 
-    /// One entry per focusable control the state renders (a live row is one).
+    /// One entry per focusable control the state renders, in the order the view
+    /// lays them out (top to bottom): a live row is one, and the agent row's
+    /// Disconnect button exists only while an agent is connected.
     static func focusOrder(for state: PhoneControlsState) -> [PhonePanelItem] {
-        var items: [PhonePanelItem] = [.volume, .dnd, .ring]
+        var items: [PhonePanelItem] = []
+        if state.agentCount > 0 { items.append(.disconnectAgent) }
+        items += [.volume, .dnd, .ring]
         if state.showsPicker { items.append(.sessions) }
-        items += [.phoneScreen, .findApps, .continueOnMac, .installApk]
         items += Array(repeating: .live, count: state.live.count)
-        items += [.settings, .quit]
+        items += [.phoneScreen, .findApps, .continueOnMac, .installApk, .settings, .quit]
         return items
     }
 }
@@ -269,6 +274,7 @@ struct PhonePanelView: View {
                     .buttonStyle(.glass)
                     .controlSize(.mini)
                     .accessibilityLabel("Disconnect the AI agent")
+                    .accessibilityIdentifier(PhonePanelItem.disconnectAgent.id)
             }
         }
         .frame(height: 24)
