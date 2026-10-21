@@ -21,7 +21,11 @@
 #   (b) a phone window beside an app window: the panel is never powered off
 #       behind the mirror;
 #   (c) phone.panel off: the panel plan goes dark while the mirror keeps sending
-#       frames; phone.panel on: it comes back.
+#       frames; phone.panel on: it comes back;
+#   (d) a lone phone window (the reported shape): the hold survives three
+#       keep-alive steps, `phone.panel on` writes the panel back to NORMAL;
+#   (e) the person's power press (`input keyevent KEYCODE_POWER`) ends the hold
+#       by itself, with NORMAL.
 # The evidence is the app's own state lines (plans, mode transitions, counts),
 # never pixels. Results go to .agent/emu/panel-power.log. It never unlocks or
 # dismisses the keyguard, never changes lock settings and never touches a phone
@@ -98,6 +102,80 @@ print("first_close=%s" % ("none" if first_close is None else first_close))
 PLANS
 }
 
+# read_hold <logcat> — the hold's lifecycle lines: how many `phone.panel on`
+# requests were followed by a power mode NORMAL, how many keep-alive steps the
+# lone-mirror hold ran, whether it stopped by itself (the bug), and whether the
+# power press ended it with NORMAL. States only.
+read_hold() {
+  "$PYTHON" - "$1" <<'HOLD'
+import sys
+lines = [l.rstrip() for l in open(sys.argv[1], errors="replace")]
+off = "phone.panel off: holding the mirrored panel off"
+on = "phone.panel on: the mirrored panel comes back"
+ons = [i for i, l in enumerate(lines) if on in l]
+on_with_normal = 0
+on_without_normal = 0
+for i in ons:
+    normal = False
+    for j in range(i + 1, len(lines)):
+        if off in lines[j]:
+            break
+        if "panel power mode -> NORMAL" in lines[j]:
+            normal = True
+            break
+    on_with_normal += 1 if normal else 0
+    on_without_normal += 0 if normal else 1
+held_steps = 0
+stop_alone = 0
+holding = False
+steps = 0
+for l in lines:
+    if off in l:
+        holding = True
+        steps = 0
+    elif on in l:
+        if holding:
+            held_steps = max(held_steps, steps)
+        holding = False
+    elif holding and "keepalive step" in l:
+        steps += 1
+    elif holding and "no hold and no stream left" in l:
+        stop_alone += 1
+press = 0
+press_normal = 0
+for i, l in enumerate(lines):
+    if "user pressed power while the panel was dark" in l:
+        press += 1
+        for j in range(i + 1, len(lines)):
+            if "panel power mode ->" in lines[j]:
+                if "NORMAL" in lines[j]:
+                    press_normal += 1
+                break
+print("on_requests=%d" % len(ons))
+print("on_with_normal=%d" % on_with_normal)
+print("on_without_normal=%d" % on_without_normal)
+print("held_steps=%d" % held_steps)
+print("stopped_alone=%d" % stop_alone)
+print("power_press=%d" % press)
+print("power_press_normal=%d" % press_normal)
+HOLD
+}
+
+# The shape a correct run leaves: every on request restored the panel (two in
+# (c)/(d)), the lone hold ran three keep-alive steps and never stopped by
+# itself, and the power press ended it with NORMAL.
+hold_shape_ok() { # <read_hold output>
+  local h w o s p n
+  h="$(printf '%s\n' "$1" | sed -n 's/^on_requests=//p')"
+  w="$(printf '%s\n' "$1" | sed -n 's/^on_with_normal=//p')"
+  o="$(printf '%s\n' "$1" | sed -n 's/^on_without_normal=//p')"
+  s="$(printf '%s\n' "$1" | sed -n 's/^held_steps=//p')"
+  p="$(printf '%s\n' "$1" | sed -n 's/^stopped_alone=//p')"
+  n="$(printf '%s\n' "$1" | sed -n 's/^power_press_normal=//p')"
+  [ "${h:-0}" -ge 2 ] && [ "${w:-0}" -eq "${h:-0}" ] && [ "${o:-1}" -eq 0 ] \
+    && [ "${s:-0}" -ge 3 ] && [ "${p:-1}" -eq 0 ] && [ "${n:-0}" -ge 1 ]
+}
+
 # The forced shape boot #3 showed: 4 dark plans (the app-window take-over and
 # its re-apply in (a), phone.panel off and its re-apply in (c)); 2 transitional
 # plans (the two take-overs). A resume re-take would make 3, which item 1
@@ -125,6 +203,10 @@ args = parser.parse_args(["panel-test", "--pause-seconds", "4", "--off-seconds",
 assert args.command == "panel-test" and args.pause_seconds == 4 and args.off_seconds == 6
 args = parser.parse_args(["panel", "off"])
 assert args.command == "panel" and args.mode == "off"
+args = parser.parse_args(["panel-hold", "--hold-seconds", "7"])
+assert args.command == "panel-hold" and args.hold_seconds == 7
+args = parser.parse_args(["panel-press", "--press-timeout", "20"])
+assert args.command == "panel-press" and args.press_timeout == 20
 PY
   # The log parser must read the forced boot-3 shape: 4 dark plans (the
   # app-window take-over + re-apply, phone.panel off + re-apply) and 2
@@ -190,6 +272,50 @@ FIXTURE
     *) echo "CHECK FAIL: the parser did not place the sleep before the close ($BAD)"; exit 1 ;;
   esac
   echo "CHECK OK: boot-3 fixture passes; the extra-transitional fixture is rejected"
+  # The hold parser: a correct run (each on restores NORMAL, three held steps,
+  # the power press ends it with NORMAL) and the reported bug (the hold stopped
+  # by itself, no NORMAL after the on).
+  cat > "$FIX" <<'FIXTURE'
+10-21 15:33:29.322 I/PocketDeckSvc: phone.panel off: holding the mirrored panel off
+10-21 15:33:29.327 I/PocketDeckSvc: keepalive step 1 interval=2000ms displayLocks=0
+10-21 15:33:31.327 I/PocketDeckSvc: keepalive step 2 interval=2000ms displayLocks=0
+10-21 15:33:33.327 I/PocketDeckSvc: keepalive step 3 interval=2000ms displayLocks=0
+10-21 15:33:35.327 I/PocketDeckSvc: phone.panel on: the mirrored panel comes back
+10-21 15:33:35.330 I/PocketDeckSvc: panel power mode -> NORMAL (1 physical display)
+10-21 15:33:40.000 I/PocketDeckSvc: phone.panel off: holding the mirrored panel off
+10-21 15:33:40.100 I/PocketDeckSvc: keepalive step 1 interval=2000ms displayLocks=0
+10-21 15:33:42.100 I/PocketDeckSvc: keepalive step 2 interval=2000ms displayLocks=0
+10-21 15:33:44.100 I/PocketDeckSvc: keepalive step 3 interval=2000ms displayLocks=0
+10-21 15:33:46.000 I/PocketDeckSvc: phone.panel on: the mirrored panel comes back
+10-21 15:33:46.200 I/PocketDeckSvc: panel power mode -> NORMAL (1 physical display)
+10-21 15:33:50.000 I/PocketDeckSvc: phone.panel off: holding the mirrored panel off
+10-21 15:33:50.100 I/PocketDeckSvc: power: user pressed power while the panel was dark; panel given back
+10-21 15:33:50.300 I/PocketDeckSvc: panel power mode -> NORMAL (1 physical display)
+FIXTURE
+  GOOD="$(read_hold "$FIX")"
+  hold_shape_ok "$GOOD" ||
+    { echo "CHECK FAIL: the good hold fixture does not meet the shape ($GOOD)"; exit 1; }
+  cat > "$FIX" <<'FIXTURE'
+10-21 15:33:29.322 I/PocketDeckSvc: phone.panel off: holding the mirrored panel off
+10-21 15:33:29.327 I/PocketDeckSvc: keepalive step 1 interval=2000ms displayLocks=0
+10-21 15:33:30.391 I/PocketDeckSvc: keepalive step 2 interval=2000ms displayLocks=0
+10-21 15:33:30.394 I/PocketDeckSvc: power: no hold and no stream left; keep-alive stopped
+10-21 15:33:42.558 I/PocketDeckSvc: phone.panel on: the mirrored panel comes back
+FIXTURE
+  BAD="$(read_hold "$FIX")"
+  if hold_shape_ok "$BAD"; then
+    echo "CHECK FAIL: the reported-bug hold fixture passed the shape ($BAD)"
+    exit 1
+  fi
+  case "$BAD" in
+    *stopped_alone=1*) ;;
+    *) echo "CHECK FAIL: the hold parser missed the silent stop ($BAD)"; exit 1 ;;
+  esac
+  case "$BAD" in
+    *on_without_normal=1*) ;;
+    *) echo "CHECK FAIL: the hold parser missed the missing NORMAL ($BAD)"; exit 1 ;;
+  esac
+  echo "CHECK OK: hold fixture passes; the reported-bug hold fixture is rejected"
   rm -f "$FIX"
   if "$ADB" devices 2>/dev/null | grep -q "^$SERIAL"; then
     echo "CHECK FAIL: $SERIAL is already running (not ours to touch)"
@@ -283,6 +409,32 @@ sleep 2
 emu shell dumpsys display > "$DISPLAY" 2>/dev/null || true
 "${DC[@]}" panel-test --phase panel --off-seconds 6 >> "$SESSION" 2>&1
 SESSION_RC=$?
+
+# (d) the reported shape: a lone phone window, no app window. The hold must
+# survive three 2 s keep-alive steps and `phone.panel on` must write NORMAL.
+HOLDOUT="$OUT/panel-power-hold.log"
+"${DC[@]}" panel-hold --hold-seconds 7 > "$HOLDOUT" 2>&1
+HOLD_RC=$?
+
+# (e) the person's power press: deckctl prints `ready` once the panel is held,
+# the rig presses the phone's power key, and the phone must end the hold by
+# itself with NORMAL. The deckctl process is ours and is waited for.
+PRESSOUT="$OUT/panel-power-press.log"
+: > "$PRESSOUT"
+"${DC[@]}" panel-press > "$PRESSOUT" 2>&1 &
+PRESS_PID=$!
+PRESS_READY=0
+for _ in $(seq 1 60); do
+  if grep -q '^ready' "$PRESSOUT" 2>/dev/null; then PRESS_READY=1; break; fi
+  kill -0 "$PRESS_PID" 2>/dev/null || break
+  sleep 0.5
+done
+if [ "$PRESS_READY" -eq 1 ]; then
+  emu shell input keyevent KEYCODE_POWER >/dev/null 2>&1 || true
+fi
+wait "$PRESS_PID"
+PRESS_RC=$?
+
 emu logcat -d -s PocketDeckSvc:I PocketDeckApp:I PocketDeckPower:I 2>/dev/null | tr -d '\r' > "$LOGCAT" || true
 
 if [ "$PAUSE_RC" -ne 0 ]; then
@@ -348,10 +500,41 @@ else
   echo "note panel-power: this rig has no panel power control (emulator); the plans are the evidence"
 fi
 
+HOLD="$(read_hold "$LOGCAT")"
+ON_REQUESTS="$(printf '%s\n' "$HOLD" | sed -n 's/^on_requests=//p')"
+ON_NORMAL="$(printf '%s\n' "$HOLD" | sed -n 's/^on_with_normal=//p')"
+HELD_STEPS="$(printf '%s\n' "$HOLD" | sed -n 's/^held_steps=//p')"
+STOPPED_ALONE="$(printf '%s\n' "$HOLD" | sed -n 's/^stopped_alone=//p')"
+PRESS_NORMAL="$(printf '%s\n' "$HOLD" | sed -n 's/^power_press_normal=//p')"
+
+# (a) every `phone.panel on` wrote the panel back to NORMAL.
+if [ "${ON_REQUESTS:-0}" -ge 2 ] && [ "${ON_NORMAL:-0}" -eq "${ON_REQUESTS:-0}" ]; then
+  pass "every phone.panel on was followed by a panel power mode NORMAL ($ON_NORMAL/$ON_REQUESTS)"
+else
+  fail "phone.panel on left the panel in power mode OFF ($ON_NORMAL/$ON_REQUESTS restored)"
+fi
+# (b) the lone hold ran at least three keep-alive steps and never stopped by itself.
+if [ "${HELD_STEPS:-0}" -ge 3 ] && [ "${STOPPED_ALONE:-1}" -eq 0 ]; then
+  pass "the lone-mirror hold ran $HELD_STEPS keep-alive steps and never stopped by itself"
+else
+  fail "the hold stopped by itself or ran $HELD_STEPS step(s) (stopped_alone=$STOPPED_ALONE)"
+fi
+# (c) the power press restored the panel.
+if [ "${PRESS_NORMAL:-0}" -ge 1 ]; then
+  pass "the power press wrote the panel back to NORMAL"
+else
+  fail "the power press left the panel in power mode OFF"
+fi
+# The transitions are logged with their events, so field logs show the path.
+grep -q 'panelhold: Held --powerPress--> Restoring' "$LOGCAT" \
+  && pass "the hold logged Held --powerPress--> Restoring" \
+  || fail "the hold did not log the power-press transition"
+
 {
   echo "state-panel: $(grep '^state-panel' "$SESSION" | tr '\n' ' ')"
   echo "frames-while-off: ${FRAMES_OFF:-none}"
   echo "plans: $(printf '%s' "$PLANS" | tr '\n' ' ')"
+  echo "hold: $(printf '%s' "$HOLD" | tr '\n' ' ')"
   echo "display0: $(grep -m1 -E 'mScreenState|Display Power' "$DISPLAY" | tr -s ' ')"
   echo "failed: $FAILED"
 } > "$RESULT"
@@ -359,7 +542,7 @@ cat "$RESULT"
 
 if [ "$FAILED" -ne 0 ]; then
   EMULOG="$OUT/panel-power-logcat-tail.log"
-  grep -E 'power:|keepalive|closed stream|phone.panel' "$LOGCAT" | tail -30 > "$EMULOG" || true
+  grep -E 'power:|keepalive|closed stream|phone.panel|panelhold:' "$LOGCAT" | tail -30 > "$EMULOG" || true
   echo "panel-power: logcat evidence ($EMULOG):"
   tail -10 "$EMULOG"
 fi

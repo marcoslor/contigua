@@ -300,6 +300,7 @@ struct DevicesSettings: View {
                     PhoneNotifyToggle(deviceId: phone.id)
                     PhoneNotifyClickPicker(deviceId: phone.id)
                     PhoneMutedApps(deviceId: phone.id)
+                    PhonePanelIgnorePowerToggle(deviceId: phone.id)
                 }
             }
         } label: {
@@ -341,6 +342,32 @@ enum NotifyToggle {
 /// The per-phone opt-in row (privacy default OFF; docs/design/notify.md). The
 /// change tells the live session right away; a fresh session picks it up from
 /// the stored flag.
+/// "Keep the phone screen off until I turn it on from the Mac": what a press
+/// of the phone's own power button does while the Mac holds the screen off.
+/// Off by default; the phone stays locked either way.
+private struct PhonePanelIgnorePowerToggle: View {
+    let deviceId: String
+
+    private var defaults: UserDefaults { Profile.active.defaults }
+
+    var body: some View {
+        VStack(alignment: .trailing, spacing: 2) {
+            Toggle(isOn: Binding(
+                get: { PhonePanelIgnorePowerSetting.read(from: defaults, deviceId: deviceId) },
+                set: { PhonePanelIgnorePowerSetting.write($0, for: deviceId, to: defaults) },
+            )) {
+                Text("Keep the phone screen off until I turn it on from the Mac")
+            }
+            .toggleStyle(.switch)
+            .controlSize(.small)
+            Text("A press of the phone's power button lights its screen for a moment, then it goes dark again.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.trailing)
+        }
+    }
+}
+
 private struct PhoneNotifyToggle: View {
     let deviceId: String
 

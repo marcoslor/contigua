@@ -371,6 +371,14 @@ final class WindowManager {
         }
     }
 
+    /// The phone refused `phone.panel`: the window says so and leaves the
+    /// button unchecked (the phone's last report is the truth).
+    func failPhonePanelRequest() {
+        for controller in allControllers() {
+            (controller as? PhoneWindowController)?.panelRequestFailed()
+        }
+    }
+
     /// Navigate ▸ Turn Off Phone Screen for the open phone window. The phone is
     /// the one that holds the panel, so this only asks; the check follows its
     /// report.

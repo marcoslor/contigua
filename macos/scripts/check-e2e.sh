@@ -3606,6 +3606,49 @@ check_mirror() {
     fi
     stop_app
     stop_fakephone
+    # The Mac button tells the truth (fakephone --panel-refuse): a phone that
+    # answers `phone.panel` with error unavailable never turned its screen off,
+    # so the button stays unchecked and a 2 s pill says so.
+    wait_until 5 no_fakephone
+    rm -f "$WORK/control/panel-menu.done" "$WORK/control/panel-menu.cmd"
+    FAKE_ARGS="--panel-refuse --first-frame-delay 1" start_fake || return 1
+    launch --connect "127.0.0.1:$PORT" --open-phone --float-windows \
+        --debug-chrome-state "$WORK/chrome.txt" --debug-control "$WORK/control" --quit-after 30
+    if wait_until 20 chrome_has "loading=0"; then
+        ok "MIRROR refusal: the refused phone's window opened"
+    else
+        bad "MIRROR refusal: the phone window never got its first frame ($(chrome_state))"
+    fi
+    if wait_until 3 chrome_has "panel_off=0"; then
+        ok "MIRROR refusal: the button starts unchecked"
+    else
+        bad "MIRROR refusal: the button did not start unchecked ($(chrome_state))"
+    fi
+    printf 'panel-menu\n' > "$WORK/control/panel-menu.cmd"
+    if wait_until 5 panel_menu_done; then
+        ok "MIRROR refusal: Turn Off Phone Screen ran"
+    else
+        bad "MIRROR refusal: the menu item did not run: $(cat "$WORK/control/panel-menu.done" 2>/dev/null)"
+    fi
+    # The error is answered at once, and the pill lasts 2 s: read it before
+    # anything else could take it down.
+    if wait_until 3 chrome_has "panel_off=0 panel_pill=1 panel_pill_failed=1"; then
+        ok "MIRROR refusal: a 2 s pill says the phone didn't turn its screen off, button unchecked"
+    else
+        bad "MIRROR refusal: no failure pill or the button moved ($(chrome_state))"
+    fi
+    if wait_until 10 events_have '"t":"phone.panel"'; then
+        ok "MIRROR refusal: the phone heard phone.panel"
+    else
+        bad "MIRROR refusal: the phone got no phone.panel"
+    fi
+    if grep -F '"t":"phone.panel"' "$WORK/events.jsonl" | grep -qF '"ignorePower":false'; then
+        ok "MIRROR the request carries ignorePower (off by default)"
+    else
+        bad "MIRROR phone.panel carried no ignorePower field"
+    fi
+    stop_app
+    stop_fakephone
 }
 
 # secure_log_count — how many secure-cover lines the app wrote in the last 2 minutes.
