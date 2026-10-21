@@ -45,6 +45,10 @@ struct LaunchOptions {
     var debugChromeState: String?
     /// `--debug-banner FILE`: the deck window's banner text, one line per change (e2e).
     var debugBanner: String?
+    /// `--debug-deck-grid FILE`: the app grid's drawn cells (e2e `deck`).
+    var debugDeckGrid: String?
+    /// `--debug-deck-zoom FILE`: the Deck's double-click zoom, measured (e2e `deck`).
+    var debugDeckZoom: String?
     var audioStatsFile: String?
     var profileName = Profile.defaultName
     /// `--share-dir DIR`: where images shared from the phone are saved (default ~/Downloads/PocketDeck).
@@ -211,6 +215,10 @@ struct LaunchOptions {
                 options.debugChromeState = next()
             case "--debug-banner":
                 options.debugBanner = next()
+            case "--debug-deck-grid":
+                options.debugDeckGrid = next()
+            case "--debug-deck-zoom":
+                options.debugDeckZoom = next()
             case "--audio-stats":
                 options.audioStatsFile = next()
             case "--profile":
@@ -398,7 +406,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // the registration domain and the person's defaults stay untouched.
         UserDefaults.standard.register(defaults: ["NSFullScreenMenuItemEverywhere": false])
         FullScreenMenu.install()
-        ImmersiveMenuInstaller.install()
+        // VisionKit's analyser service is slow and unreliable on its first
+        // call (LiveTextWarmer): pay that while the app starts, not when the
+        // person presses Live Text.
+        LiveTextWarmer.start()
+        if let path = environment.options.debugDeckZoom {
+            DeckZoomProbe.start(path: path)
+        }
         if let path = environment.options.debugBanner {
             let probe = DebugBanner(path: path) { [controller = environment.controller] in
                 controller.banner?.text

@@ -94,10 +94,6 @@ final class WindowManager {
             hasTrackpad: hasTrackpad, stored: defaults.object(forKey: Self.showTouchesKey) as? Bool)
         StreamMenuState.shared.settingsDensity = WindowDensity.value(in: defaults)
         StreamMenuState.shared.revealDelay = RevealDelay.stored(in: defaults)
-        // The temporary bar prototype is a profile choice; every layout reads
-        // the global (WindowStyle.ChromeBar).
-        BarPrototype.current = BarPrototype.stored(in: defaults)
-        StreamMenuState.shared.barPrototype = BarPrototype.current
     }
 
     /// The View menu's Window Style: toggle/switch the key stream window's
@@ -215,18 +211,6 @@ final class WindowManager {
     var hoverEnabled: Bool {
         get { frames.object(forKey: Self.hoverKey) as? Bool ?? true }
         set { frames.set(newValue, forKey: Self.hoverKey) }
-    }
-
-    /// View ▸ Bar Prototype (temporary): store the choice and give every open
-    /// window the new bar, keeping its stream size and top edge.
-    func setBarPrototype(_ prototype: BarPrototype) {
-        let old = BarPrototype.current
-        guard prototype != old else { return }
-        let oldBar = old.barHeight
-        BarPrototype.current = prototype
-        frames.set(prototype.rawValue, forKey: BarPrototype.key)
-        StreamMenuState.shared.barPrototype = prototype
-        for controller in allControllers() { controller.barPrototypeChanged(fromBar: oldBar) }
     }
 
     /// Settings ▸ Input "Secondary click (two-finger click)": read live, so the
@@ -482,7 +466,6 @@ final class WindowManager {
         frames.removeObject(forKey: Self.showTouchesKey)
         frames.removeObject(forKey: Self.hoverKey)
         frames.removeObject(forKey: SecondaryClick.key)
-        frames.removeObject(forKey: BarPrototype.key)
         frames.removeObject(forKey: RevealDelay.key)
         StreamMenuState.shared.showTouches = false
         for key in frames.dictionaryRepresentation().keys where key.hasPrefix(WindowStyleStore.prefix) {

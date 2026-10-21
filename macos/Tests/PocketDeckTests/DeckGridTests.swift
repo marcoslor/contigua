@@ -48,6 +48,73 @@ final class DeckGridTests: XCTestCase {
         XCTAssertFalse(BatterySymbol.isLow(level: 24, charging: false))
     }
 
+    // MARK: grid identity (the person's empty slot)
+
+    /// A package with two launcher activities is two cells, each with its own
+    /// id: equal ids made SwiftUI draw neither cell (the empty slot the person
+    /// photographed).
+    func testTwoLaunchActivitiesOfOnePackageAreTwoCells() throws {
+        let main = try XCTUnwrap(AppInfo(json: ["pkg": "com.example.chat", "label": "Chat",
+                                                "activity": "com.example.chat/.Main"]))
+        let dual = try XCTUnwrap(AppInfo(json: ["pkg": "com.example.chat", "label": "Chat (dual)",
+                                                "activity": "com.example.chat/.Dual"]))
+        let entries = AppGrid.entries([main, dual])
+        XCTAssertEqual(entries.count, 2, "both launcher entries are launchable and must be drawn")
+        XCTAssertEqual(Set(entries.map(\.id)).count, 2, "the cells' ids are distinct")
+        XCTAssertEqual(entries.map(\.label), ["Chat", "Chat (dual)"])
+    }
+
+    /// The same entry sent twice is one cell, not two with the same id.
+    func testARepeatedEntryIsOneCell() throws {
+        let app = try XCTUnwrap(AppInfo(json: ["pkg": "com.example.app", "label": "App",
+                                               "activity": "com.example.app/.Main"]))
+        XCTAssertEqual(AppGrid.entries([app, app]).count, 1)
+    }
+
+    /// A phone that sends no label still gets words under the tile: an empty
+    /// label would leave the slot looking empty.
+    func testAnEntryWithoutALabelFallsBackToThePackage() throws {
+        let bare = try XCTUnwrap(AppInfo(json: ["pkg": "com.t3code.nightly"]))
+        XCTAssertEqual(bare.displayLabel, "nightly")
+        let blank = try XCTUnwrap(AppInfo(json: ["pkg": "com.example.notes", "label": "   ",
+                                                 "activity": "com.example.notes/.Main"]))
+        XCTAssertEqual(blank.displayLabel, "notes")
+        XCTAssertNotEqual(FallbackIcon.initial(label: bare.displayLabel, pkg: bare.pkg), "?",
+                          "the icon has a letter to draw")
+    }
+
+    /// A package without an icon and without an answer yet: the tile draws the
+    /// placeholder (never nothing), and a phone that said "no icon" draws the
+    /// generated one.
+    func testAMissingIconStillDrawsATile() {
+        XCTAssertEqual(GlassIcon.variant(rendered: nil, image: nil, isMissing: false, glassOn: true),
+                       .placeholder)
+        XCTAssertEqual(GlassIcon.variant(rendered: nil, image: nil, isMissing: true, glassOn: true),
+                       .fallback)
+    }
+
+    // MARK: the zoom's layout rate (NFR deck_zoom_frame_p95_ms)
+
+    /// The width a zoom or a live resize delivers every frame is coalesced: the
+    /// grid re-lays itself out a few times instead of once per display frame
+    /// (the person's zoom stutter, worst on the way back). The last width is
+    /// never dropped, so the settled layout is exact.
+    @MainActor
+    func testTheWidthIsCoalescedAndTheLastOneWins() {
+        let debouncer = WidthDebouncer()
+        var applied: [CGFloat] = []
+        for width in stride(from: CGFloat(600), through: 900, by: 10) {
+            debouncer.schedule(width, update: { _ in }) { applied.append($0) }
+        }
+        XCTAssertLessThan(applied.count, 31, "one state write per frame is the stutter")
+        XCTAssertEqual(applied.first, 600, "the first width lands at once")
+
+        // The trailing update arrives on the run loop (the animation's last
+        // width), and it is the last one scheduled.
+        RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.2))
+        XCTAssertEqual(applied.last, 900, "the settled width is the last one the window sent")
+    }
+
     // MARK: glass tile (docs/DESIGN.md "The app grid")
 
     func testGlassTileGeometry() {

@@ -32,8 +32,9 @@ final class PhoneWindowController: StreamWindowController {
         // nickname, else the phone's own name), and what the phone reports
         // once it sends `window.title` for this stream.
         window?.title = Self.title(name: manager.phoneName, phone: phone)
+        let minWidth = minWindowWidth
         window?.minSize = style.windowSize(stream: NSSize(
-            width: Self.minVideoWidth, height: Self.minVideoWidth * phoneScreen.height / phoneScreen.width))
+            width: minWidth, height: minWidth * phoneScreen.height / phoneScreen.width))
         videoView.inputMapper?.isPhoneMode = true
         // The mirror's letterbox is the phone's fixed screen, never a crop.
         videoView.isPhoneMode = true
@@ -95,9 +96,10 @@ final class PhoneWindowController: StreamWindowController {
         let current = style.streamSize(window: window.frame.size)
         let size = style.windowSize(stream: CGSize(width: current.height, height: current.width))
         let frame = window.frame
+        let minWidth = minWindowWidth
         window.minSize = style.windowSize(stream: turned.width < turned.height
-            ? CGSize(width: Self.minVideoWidth, height: Self.minVideoWidth * turned.height / turned.width)
-            : CGSize(width: Self.minVideoWidth * turned.width / turned.height, height: Self.minVideoWidth))
+            ? CGSize(width: minWidth, height: minWidth * turned.height / turned.width)
+            : CGSize(width: minWidth * turned.width / turned.height, height: minWidth))
         window.setFrame(NSRect(x: frame.minX, y: frame.maxY - size.height, width: size.width, height: size.height),
                         display: true, animate: false)
     }
@@ -128,6 +130,13 @@ final class PhoneWindowController: StreamWindowController {
     }
 
     private static let minVideoWidth: CGFloat = 240
+
+    /// The window's narrowest width: the video's own minimum, or the bar's
+    /// (the lights, the gap, the action row and the Live Text button), so the
+    /// phone's fourth bar control never sits over the traffic lights.
+    private var minWindowWidth: CGFloat {
+        max(Self.minVideoWidth, HeaderBar.minimumWidth(for: headerActions()))
+    }
 
     override func headerActions() -> [HeaderAction] {
         [.back { [weak self] in self?.navigateBack(nil) },

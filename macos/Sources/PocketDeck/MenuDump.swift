@@ -14,6 +14,9 @@ enum MenuDump {
         /// "on", "off" or "mixed" (NSControl.StateValue).
         var state: String
         var isSeparator: Bool
+        /// Whether the item can be chosen now (a submenu whose choice is not
+        /// active, like Hide Controls while framed, is disabled).
+        var enabled: Bool
         /// nil when the item has no submenu.
         var submenu: [Item]?
     }
@@ -32,6 +35,7 @@ enum MenuDump {
                     modifiers: key.isEmpty ? [] : modifierNames(menuItem.keyEquivalentModifierMask),
                     state: stateName(menuItem.state),
                     isSeparator: menuItem.isSeparatorItem,
+                    enabled: menuItem.isEnabled,
                     submenu: menuItem.submenu.map(snapshot))
     }
 

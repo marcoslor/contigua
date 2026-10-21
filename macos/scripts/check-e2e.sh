@@ -2519,10 +2519,12 @@ import json, sys
 root = json.load(open(sys.argv[1]))
 view = next(i for i in root["items"] if i["title"] == "View")
 imm = next(i for i in view["submenu"] if i["title"] == "Immersive")
-sub = imm.get("submenu") or []
-checked = [item["title"] for item in sub if item["state"] == "on"]
+if imm.get("submenu"):
+    print("Immersive still has a submenu"); sys.exit(1)
 if imm["state"] != "on":
-    print("parent state:", imm["state"]); sys.exit(1)
+    print("Immersive state:", imm["state"]); sys.exit(1)
+hide = next(i for i in view["submenu"] if i["title"] == "Hide Controls")
+checked = [item["title"] for item in hide.get("submenu") or [] if item["state"] == "on"]
 if len(checked) != 1:
     print("checked:", checked); sys.exit(1)
 PY
@@ -2601,10 +2603,12 @@ PY
 # step is visible-only.
 check_menus() {
     begin_shared || return 1
-    rm -f "$WORK/menus.json" "$WORK/menus-after.json" "$WORK/menus-step-full" "$WORK/menus-step-exit" "$WORK/menus-full.json" \
+    rm -f "$WORK/menus.json" "$WORK/menus-after.json" "$WORK/menus-long.json" "$WORK/menus-picked" "$WORK/menus-step-full" "$WORK/menus-step-exit" "$WORK/menus-full.json" \
         "$WORK/menus-step-touch" "$WORK/menus-touch.png" "$WORK/chrome.txt"
     printf '%s\n' "wait 1.5" "menudump $WORK/menus.json" \
-        "windowstyle immersive" "wait 1" "menudump $WORK/menus-after.json" \
+        "menupick View/Immersive" "wait 1.5" "menudump $WORK/menus-after.json" \
+        "waitfile $WORK/menus-picked 60" \
+        "menupick View/Hide Controls/Long" "wait 0.7" "menudump $WORK/menus-long.json" \
         "windowstyle framed" "wait 0.5" "showtouches on" "wait 1" "hover 0.5 0.5" "wait 0.3" \
         "waitfile $WORK/menus-step-touch 60" "fingerpinch 0.5 0.01 1.25 4" "wait 1" \
         "waitfile $WORK/menus-step-full 60" "fullscreen" "wait 6" \
@@ -2634,8 +2638,8 @@ if view is None:
     print("no View menu"); sys.exit(1)
 seq = ["—" if item["isSeparator"] else item["title"] for item in view["submenu"]]
 want = ["Find Apps", "Phone Window", "Continue on Mac", "—",
-        "Show Touches", "Live Text", "—", "Framed", "Immersive", "Bar Prototype",
-        "—", "Density", "Toggle Window Style"]
+        "Show Touches", "Live Text", "—", "Framed", "Immersive",
+        "Hide Controls", "—", "Density", "Toggle Window Style"]
 if seq != want:
     print("View:", seq, "wanted:", want); sys.exit(1)
 PY
@@ -2665,6 +2669,51 @@ if sorted([framed["state"], immersive["state"]]) != ["off", "on"]:
     print("states:", framed["state"], immersive["state"]); sys.exit(1)
 if framed["hasImage"] or immersive["hasImage"]:
     print("a radio item carries an icon"); sys.exit(1)
+# A choice cannot also be a submenu's parent: both are plain items.
+if framed.get("submenu"):
+    print("Framed has a submenu"); sys.exit(1)
+if immersive.get("submenu"):
+    print("Immersive has a submenu"); sys.exit(1)
+PY
+
+    # Choosing the item itself (menupick: the item's own target and action)
+    # took the window to immersive, and the menu's checks follow the window.
+    # The chrome state is one line the window rewrites on every change, so the
+    # script holds on a marker until it is read here.
+    wait_until 10 grep -q "style=immersive" "$WORK/chrome.txt" \
+        && ok "MENUS choosing Immersive took the window to the immersive style" \
+        || bad "MENUS choosing Immersive left $(grep -o 'style=[a-z]*' "$WORK/chrome.txt" | tail -1)"
+    python3 - "$WORK/menus-after.json" <<'PY' && ok "MENUS after choosing Immersive: it is checked and Hide Controls is enabled" \
+        || bad "MENUS the View menu did not follow the style change"
+import json, sys
+root = json.load(open(sys.argv[1]))
+view = next(i for i in root["items"] if i["title"] == "View")
+by_title = {item["title"]: item for item in view["submenu"]}
+if by_title["Framed"]["state"] != "off" or by_title["Immersive"]["state"] != "on":
+    print("states:", by_title["Framed"]["state"], by_title["Immersive"]["state"]); sys.exit(1)
+hide = by_title.get("Hide Controls")
+if hide is None or not hide.get("enabled"):
+    print("Hide Controls:", hide); sys.exit(1)
+PY
+
+    # Let the script go on to the Hide Controls pick (it held for the read
+    # above).
+    touch "$WORK/menus-picked"
+
+    # A Hide Controls pick stores the reveal choice (the style is the radio
+    # pair's business, pinned above). The script writes this dump a moment
+    # after the pick: wait for it.
+    wait_until 20 [ -s "$WORK/menus-long.json" ] \
+        || bad "MENUS no dump after the Hide Controls pick"
+    python3 - "$WORK/menus-long.json" <<'PY' && ok "MENUS a Hide Controls pick checks Long" \
+        || bad "MENUS the Hide Controls pick did not store the choice"
+import json, sys
+root = json.load(open(sys.argv[1]))
+view = next(i for i in root["items"] if i["title"] == "View")
+hide = next(i for i in view["submenu"] if i["title"] == "Hide Controls")
+checked = [item["title"] for item in hide.get("submenu") or [] if item["state"] == "on"]
+if checked != ["Long"]:
+    print("checked:", checked); sys.exit(1)
 PY
 
     # SwiftUI rebuilds the View menu when the state the commands read changes
@@ -2680,46 +2729,46 @@ if view is None:
 imm = next((i for i in view["submenu"] if i["title"] == "Immersive"), None)
 if imm is None:
     print("Immersive missing:", [i["title"] for i in view["submenu"]]); sys.exit(1)
-sub = imm.get("submenu") or []
-want = ["Instantly", "Short", "Long", "—", "Always Visible"]
-seq = ["—" if item["isSeparator"] else item["title"] for item in sub]
-if seq != want:
-    print("Immersive submenu:", seq); sys.exit(1)
+if imm.get("submenu"):
+    print("Immersive still has a submenu"); sys.exit(1)
 if imm["state"] != "on":
-    print("the parent is not checked while the window is immersive:", imm["state"]); sys.exit(1)
+    print("Immersive is not checked while the window is immersive:", imm["state"]); sys.exit(1)
+hide = next((i for i in view["submenu"] if i["title"] == "Hide Controls"), None)
+if hide is None:
+    print("no Hide Controls item"); sys.exit(1)
+if not hide.get("enabled"):
+    print("Hide Controls is disabled while immersive"); sys.exit(1)
 PY
 
-    # View ▸ Bar Prototype (temporary, 2026-10-21): Compact and Standard,
-    # one checked. Compact is the default; the menu item goes once a person
-    # picks.
-    python3 - "$WORK/menus.json" <<'PY' && ok "MENUS Bar Prototype: Compact/Standard, Compact checked" \
-        || bad "MENUS the Bar Prototype submenu is wrong"
+    # The temporary Bar Prototype picker is gone: the bar has one geometry
+    # (BarGeometry) and no menu item to choose another.
+    python3 - "$WORK/menus.json" <<'PY' && ok "MENUS no Bar Prototype item (one bar geometry)" \
+        || bad "MENUS a Bar Prototype item is still in View"
 import json, sys
 root = json.load(open(sys.argv[1]))
 view = next(i for i in root["items"] if i["title"] == "View")
-bar = next((i for i in view["submenu"] if i["title"] == "Bar Prototype"), None)
-if bar is None or not bar.get("submenu"):
-    print("no Bar Prototype submenu"); sys.exit(1)
-items = [item for item in bar["submenu"] if not item["isSeparator"]]
-seq = [item["title"] for item in items]
-if seq != ["Compact", "Standard"]:
-    print("items:", seq); sys.exit(1)
-states = {item["title"]: item["state"] for item in items}
-if states != {"Compact": "on", "Standard": "off"}:
-    print("states:", states); sys.exit(1)
+if any(i["title"] == "Bar Prototype" for i in view["submenu"]):
+    print("Bar Prototype is still there"); sys.exit(1)
 PY
 
-    python3 - "$WORK/menus.json" <<'PY' && ok "MENUS Immersive is a submenu: the delays, a separator, Always Visible" \
-        || bad "MENUS the Immersive submenu is wrong"
+    # Immersive is a plain radio item (no submenu); the reveal choice lives in
+    # Hide Controls, which is disabled while the window is framed.
+    python3 - "$WORK/menus.json" <<'PY' && ok "MENUS Hide Controls holds the delays and is disabled while Framed" \
+        || bad "MENUS Hide Controls is wrong while framed"
 import json, sys
 root = json.load(open(sys.argv[1]))
 view = next(i for i in root["items"] if i["title"] == "View")
 imm = next(i for i in view["submenu"] if i["title"] == "Immersive")
-sub = imm.get("submenu") or []
+if imm.get("submenu"):
+    print("Immersive has a submenu"); sys.exit(1)
+hide = next(i for i in view["submenu"] if i["title"] == "Hide Controls")
+if hide.get("enabled"):
+    print("Hide Controls is enabled while framed"); sys.exit(1)
+sub = hide.get("submenu") or []
 seq = ["—" if item["isSeparator"] else item["title"] for item in sub]
 want = ["Instantly", "Short", "Long", "—", "Always Visible"]
 if seq != want:
-    print("Immersive:", seq, "wanted:", want); sys.exit(1)
+    print("Hide Controls:", seq, "wanted:", want); sys.exit(1)
 checked = [item["title"] for item in sub if item["state"] == "on"]
 if checked != ["Short"]:
     print("checked:", checked); sys.exit(1)
@@ -7828,9 +7877,15 @@ have_flat_icons() { [ "$(icons_kind '"layers":false')" -ge 5 ]; }
 # log say both kinds arrived).
 check_deck() {
     clean
-    start_fake || return 1
+    # The grid's fixtures (v105's empty slot): one package with two launcher
+    # activities, and one entry with no label at all.
+    # A full grid (40 apps) like the person's: the zoom cost grows with the
+    # number of cells it lays out.
+    FAKE_ARGS="--dup-launcher --no-label-app com.spotify.music --demo-apps 40" start_fake || return 1
+    FAKE_ARGS=""
     # The shared app's own launch: the checks after this one use it.
-    launch_shared --connect "127.0.0.1:$PORT"
+    launch_shared --connect "127.0.0.1:$PORT" --debug-deck-grid "$WORK/deck-grid.jsonl" \
+        --debug-deck-zoom "$WORK/deck-zoom.json"
     wait_until 30 events_have '"t":"apps.list"' \
         && ok "DECK the app list was requested" || bad "DECK no apps.list"
     wait_until 30 have_layered_icons \
@@ -7845,6 +7900,36 @@ check_deck() {
     ! grep -qiE "fatal|protocol error" "$WORK/app.log" 2>/dev/null \
         && ok "DECK the app logged no fatal/protocol error" \
         || bad "DECK the app log has fatal/protocol lines"
+    # The cells the grid drew (--debug-deck-grid): both entries of the repeated
+    # package are there with their own id and words under them, and the entry
+    # the phone sent without a label still has words (the package's last part).
+    # Equal ids drew neither cell — the person's empty slot.
+    if wait_until 30 test -s "$WORK/deck-grid.jsonl" && grep -q '"count":41' "$WORK/deck-grid.jsonl"; then
+        if python3 "$MACOS/scripts/deck-grid.py" "$WORK/deck-grid.jsonl" 41; then
+            ok "DECK every cell has words and its own id (2 settings cells, the label-less one falls back)"
+        else
+            bad "DECK the grid has an empty or repeated cell ($(tail -1 "$WORK/deck-grid.jsonl"))"
+        fi
+    else
+        bad "DECK no grid dump (--debug-deck-grid)"
+    fi
+
+    # The Deck's double-click zoom (NSWindow.zoom, the same path the title
+    # bar's double-click takes) must draw its frames at the NFR limit: the grid
+    # re-laying out on every frame of the animation is what made it feel slow,
+    # worst on the way back.
+    if wait_until 40 [ -s "$WORK/deck-zoom.json" ]; then
+        local zoom_limit
+        zoom_limit="$(nfr_limit deck_zoom_frame_p95_ms)"
+        if python3 "$MACOS/scripts/deck-zoom.py" "$WORK/deck-zoom.json" "$zoom_limit"; then
+            ok "DECK the zoom and unzoom keep p95 under ${zoom_limit} ms ($(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print("zoom p95=%s ms, unzoom p95=%s ms, relayouts=%s" % (d["zoom"]["p95"], d["unzoom"]["p95"], d.get("relayouts")))' "$WORK/deck-zoom.json"))"
+        else
+            bad "DECK the zoom is slower than the ${zoom_limit} ms limit ($(cat "$WORK/deck-zoom.json" 2>/dev/null))"
+        fi
+    else
+        bad "DECK no zoom measurement (--debug-deck-zoom)"
+    fi
+
     # The deckMode transition (welcome -> grid) settles; a capture too early
     # shows both states overlapped, which is useless as the visual record.
     sleep 3
@@ -7936,6 +8021,7 @@ PY
     # The phone window's Back button and the Navigate shortcut run the same
     # controller action this check drives.
     printf '%s\n' \
+        "wait-warm 180" \
         "enter 1" \
         "wait-analysis POCKETDECK" \
         "drag-check" \
@@ -7954,6 +8040,16 @@ PY
         --quit-after 320
     wait_until 30 events_have '"ev":"video","stream":1,"config":true' \
         || { bad "LT no video config"; stop_app; stop_fakephone; return 1; }
+
+    # The launch warm-up finished (LiveTextWarmer): the analysis below is the
+    # one a person gets minutes into a session, not a cold service's first call.
+    if wait_until 200 grep -q '"op":"warm"' "$WORK/app.log"; then
+        grep '"op":"warm"' "$WORK/app.log" | tail -1 | grep -q '"ok":true' \
+            && ok "LT the launch warm-up finished" \
+            || bad "LT the launch warm-up never finished ($(grep '"op":"warm"' "$WORK/app.log" | tail -1))"
+    else
+        bad "LT the warm-up never reported"
+    fi
 
     # Enter + VisionKit: the frozen frame carries POCKETDECK.
     if wait_until 120 grep -q '"ok":true,"op":"analysis"' "$WORK/app.log"; then
@@ -7978,6 +8074,32 @@ PY
             *'"highlights":true'*) ok "LT the Live Text highlight button is on after the analysis" ;;
             *) bad "LT the Live Text highlight button is off after the analysis ($line)" ;;
         esac
+        # The person waits in the mode for the words: the entry is done when the
+        # analysis is (v105 took 8-13 s and left, or never had text at all).
+        local ms
+        ms="$(grep -o '"ms":[0-9]*' <<< "$line" | cut -d: -f2)"
+        if [ -n "${ms:-}" ] && [ "${ms:-0}" -lt 3000 ]; then
+            ok "LT the analysis read the frame ${ms} ms after entering (< 3000)"
+        else
+            bad "LT the analysis took ${ms:-?} ms after entering (limit 3000)"
+        fi
+        # The entry diagnostics: the frozen frame's size, its pixel format and
+        # its mean luma, so a blank frame is visible in the log next time.
+        # The three facts, not their order: the log's keys are sorted.
+        if grep -q '"frameFormat":"BGRA"' <<< "$line" \
+            && grep -q '"frameW":896' <<< "$line" \
+            && grep -q '"frameH":592' <<< "$line"; then
+            ok "LT the entry logs the frozen frame's size and format"
+        else
+            bad "LT the entry does not log the frame diagnostics ($line)"
+        fi
+        local mean
+        mean="$(grep -o '"frameMean":[0-9]*' <<< "$line" | cut -d: -f2)"
+        if [ -n "${mean:-}" ] && [ "${mean:-0}" -gt 20 ]; then
+            ok "LT the frozen frame is not blank (mean luma $mean)"
+        else
+            bad "LT the frozen frame looks blank (mean luma ${mean:-?})"
+        fi
     else
         bad "LT no analysis result (app log: $(tail -3 "$WORK/app.log"))"
     fi
@@ -8101,6 +8223,19 @@ PY
             || bad "LT the resize did not return the mode to idle"
     else
         bad "LT the second enter/resize phase did not run"
+    fi
+
+    # VisionKit's service sometimes answers "no text" for a frame full of words
+    # (v105's "analysis ready, 0 characters"); the mode asks again
+    # (LiveTextView.analysisAttempts). Both analyses this run took — the second
+    # enter included — must carry the text.
+    local analyses textless
+    analyses="$(grep -c '"op":"analysis"' "$WORK/app.log")"
+    textless="$(grep '"op":"analysis"' "$WORK/app.log" | grep -c '"hasText":false')"
+    if [ "${analyses:-0}" -ge 2 ] && [ "${textless:-1}" = "0" ]; then
+        ok "LT both analyses read text (no empty answer kept)"
+    else
+        bad "LT ${textless:-?} of ${analyses:-?} analysis result(s) came back with no text"
     fi
 
     # Out of the mode the same press works again (the script's last Back runs
