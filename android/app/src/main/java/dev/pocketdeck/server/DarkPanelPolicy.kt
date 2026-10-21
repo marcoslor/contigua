@@ -54,6 +54,14 @@ internal class DarkPanelPolicy(private val forced: Boolean) {
     /** When the streams paused, while the panel state is kept for [PAUSE_GRACE_MS]. */
     private var pausedAtMs: Long? = null
 
+    /**
+     * "Turn Off Phone Screen": the person asked for the mirrored panel to stay
+     * off while they look at the phone window. The phone's screen still reads
+     * ON to the platform (only its power mode is off), so this is its own state,
+     * not the app-window dark path, and the person's power button ends it.
+     */
+    private var mirrorOff = false
+
     val isForced: Boolean get() = forced
 
     /**
@@ -85,12 +93,21 @@ internal class DarkPanelPolicy(private val forced: Boolean) {
         }
         if (strategy == PanelStrategy.PANEL_ALONE) {
             // The mirror is the panel: keep the group awake for its app windows
-            // and otherwise leave the panel exactly as the person has it. A
-            // dark episode ends here (the caller powers the panel back on).
+            // and otherwise leave the panel exactly as the person has it.
             pausedAtMs = null
-            phase = Phase.INIT
-            sawPanelOn = false
-            return PanelPlan(wake = true, panelOff = false, transitional = false)
+            if (!mirrorOff) {
+                // A dark episode ends here (the caller powers the panel back on).
+                phase = Phase.INIT
+                sawPanelOn = false
+                return PanelPlan(wake = true, panelOff = false, transitional = false)
+            }
+            // "Turn Off Phone Screen": the mirror keeps rendering from the awake
+            // group while the panel shows nothing. The first step re-applies
+            // carefully, as a transitional take-over does.
+            val takeOver = phase != Phase.DARK
+            phase = Phase.DARK
+            sawPanelOn = panelOn
+            return PanelPlan(wake = true, panelOff = true, transitional = takeOver)
         }
         var transitional = false
         when (phase) {
@@ -131,9 +148,8 @@ internal class DarkPanelPolicy(private val forced: Boolean) {
     }
 
     /**
-     * The panel left ON while we held it dark: the user pressed power (our pokes
-     * hold off the timeout). The phone is theirs from here, exactly as after a
-     * hand-back in [step]: no darkening until their screen goes off again.
+     * The person pressed power while the panel was ours: they get the phone
+     * back, and a "Turn Off Phone Screen" request ends with it.
      *
      * @return true when this ends a dark episode, i.e. the caller must give the
      * panel back now.
@@ -143,8 +159,31 @@ internal class DarkPanelPolicy(private val forced: Boolean) {
         phase = Phase.USER
         // The caller wakes the phone for the user, so the screen is now on.
         sawPanelOn = true
+        mirrorOff = false
         return true
     }
+
+    /**
+     * "Turn Off Phone Screen": hold the mirrored panel off, or give it back.
+     * The request has no effect without a phone window (the strategy then never
+     * reaches [PanelStrategy.PANEL_ALONE]).
+     *
+     * @return true when the request changed.
+     */
+    fun requestMirrorOff(off: Boolean): Boolean {
+        if (mirrorOff == off) return false
+        mirrorOff = off
+        if (!off && phase == Phase.DARK) {
+            // Leaving the request's dark episode: the next step hands the panel
+            // back, and a later episode starts from scratch.
+            phase = Phase.INIT
+            sawPanelOn = false
+        }
+        return true
+    }
+
+    /** True while the person's "Turn Off Phone Screen" stands. */
+    val mirrorOffRequested: Boolean get() = mirrorOff
 
     /**
      * Every stream paused: the Mac covered or minimised the windows, or the
@@ -188,6 +227,7 @@ internal class DarkPanelPolicy(private val forced: Boolean) {
         phase = Phase.INIT
         sawPanelOn = false
         pausedAtMs = null
+        mirrorOff = false
         return owned
     }
 

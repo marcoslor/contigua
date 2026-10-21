@@ -213,6 +213,16 @@ class FakePlatform : DisplayLayer, AppCatalog, Launcher, Injector, Power, Device
 
     override fun onSessionEnded() = Unit
 
+    /** False makes `phone.panel` answer `unavailable` (a build without panel control). */
+    var mirrorPanelOffSupported = true
+    val mirrorPanelOffs = CopyOnWriteArrayList<Boolean>()
+    override var onMirrorPanelEnded: (() -> Unit)? = null
+
+    override fun setMirrorPanelOff(off: Boolean): Boolean {
+        mirrorPanelOffs.add(off)
+        return mirrorPanelOffSupported
+    }
+
     override fun wakeScreen(): WakeResult {
         wakeCalls.add(wakeResult)
         onWake?.invoke()
