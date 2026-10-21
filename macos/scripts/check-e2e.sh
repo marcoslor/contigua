@@ -5307,6 +5307,24 @@ check_files_domain() {
         && ok "FILES many lists all 1500 names across pages" \
         || bad "FILES many lists $many names, wanted 1500"
 
+    # -- A relaunch still works (the v103 regression) -------------------------
+    # The bridge socket is process state. ensureDomain() used to return as soon
+    # as the domain existed, before starting it, so after an app restart the
+    # extension had nothing to reach: "Your device couldn't connect to the
+    # server". Restart with the domain present and list again.
+    # The VM's --files-domain add is the privileged shortcut and does not write
+    # the setting a person's Settings toggle writes; set it first, or the
+    # relaunch starts with Finder files off (a state the product never has with
+    # the domain present) and the extension goes offline.
+    defaults write "$DEFAULTS_SUITE" files.showInFinder -bool true
+    stop_app
+    launch --connect "127.0.0.1:$PORT"
+    wait_until 30 eval 'events_have "\"state\":\"paired\"" || events_have "\"state\":\"auth_ok\""' \
+        || bad "FILES the relaunch never authenticated"
+    wait_until 60 files_root_lists "$root" \
+        && ok "FILES a relaunch with the domain present lists again (the bridge came up)" \
+        || bad "FILES a relaunch with the domain present lists nothing"
+
     # -- The location names the phone (user request, "Fixes 10-20") -----------
     # The domain was added at launch, before any phone was known; the session
     # then remembered the phone and its name, and the domain was updated in
