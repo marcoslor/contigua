@@ -1329,6 +1329,38 @@ def cmd_wake_test(client, args):
     raise DeckError("no state.screen on within %ss" % args.on_timeout)
 
 
+def cmd_panel(client, args):
+    """Send `phone.panel` as the Mac and print the `state.panel` it reports."""
+    while True:
+        frame = client.recv(0.25)
+        if frame is TIMEOUT:
+            break
+        if frame is None:
+            raise DeckError("phone closed during panel")
+    off = args.mode == "off"
+    client.send_json({"t": "phone.panel", "off": off})
+    print("sent phone.panel off=%s" % json.dumps(off))
+    want = "off" if off else "on"
+    deadline = time.time() + args.wait
+    while time.time() < deadline:
+        frame = client.recv(0.25)
+        if frame is TIMEOUT:
+            continue
+        if frame is None:
+            raise DeckError("phone closed during panel")
+        if frame.type != proto.TYPE_JSON:
+            continue
+        msg = proto.unpack_json(frame)
+        if msg.get("t") == "error":
+            raise DeckError("phone error: %s (%s)" % (msg.get("code"), msg.get("message")))
+        if msg.get("t") == "state":
+            print("state panel=%s screen=%s" % (json.dumps(msg.get("panel")),
+                                               json.dumps(msg.get("screen"))))
+            if msg.get("panel") == want:
+                return 0
+    raise DeckError("no state with panel %s within %ss" % (want, args.wait))
+
+
 def cmd_clip_set(client, args):
     """Send `clip.set` as the Mac: the phone's clipboard takes the text."""
     client.send_json({"t": "clip.set", "text": args.text})
@@ -2292,6 +2324,12 @@ def build_parser():
     sp.add_argument("--wait", type=float, default=15.0,
                     help="seconds to wait for a state carrying screen on")
 
+    sp = sub.add_parser("panel", help="phone.panel: hold the mirrored panel off/on, print the state",
+                        **spp)
+    sp.add_argument("mode", choices=["off", "on"])
+    sp.add_argument("--wait", type=float, default=15.0,
+                    help="seconds to wait for a state carrying panel")
+
     sp = sub.add_parser("dnd", help="phone.dnd: set the phone's DND, print the state",
                         **spp)
     sp.add_argument("mode", choices=["priority", "alarms", "none", "off"])
@@ -2417,6 +2455,7 @@ COMMANDS = {
     "ring": cmd_ring,
     "wake": cmd_wake,
     "wake-test": cmd_wake_test,
+    "panel": cmd_panel,
     "clip-set": cmd_clip_set,
     "clip-watch": cmd_clip_watch,
     "notify": cmd_notify,

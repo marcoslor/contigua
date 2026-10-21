@@ -166,4 +166,58 @@ class PanelPowerSessionTest {
         readUntil("window.opened")
         assertEquals(emptyList<Int>(), lastPowerCall().first)
     }
+
+    // --- "Turn Off Phone Screen" --------------------------------------
+
+    private fun openPhoneWindow() {
+        send(mapOf("t" to "window.open", "stream" to 2, "w" to 400, "h" to 800, "dpi" to 160,
+                   "mode" to "phone"))
+        readUntil("window.opened")
+    }
+
+    @Test
+    fun `turn off phone screen asks the panel and echoes the state`() {
+        connect()
+        authenticate()
+        openPhoneWindow()
+        send(mapOf("t" to "phone.panel", "off" to true))
+        assertEquals("off", readUntil("state")["panel"])
+        assertEquals(listOf(true), platform.mirrorPanelOffs.toList())
+        assertTrue(logs.any { it == "phone.panel off" })
+
+        send(mapOf("t" to "phone.panel", "off" to false))
+        assertEquals("on", readUntil("state")["panel"])
+        assertTrue(logs.any { it == "phone.panel on" })
+    }
+
+    @Test
+    fun `the phone ending the panel off sends a state with the panel on`() {
+        connect()
+        authenticate()
+        openPhoneWindow()
+        send(mapOf("t" to "phone.panel", "off" to true))
+        assertEquals("off", readUntil("state")["panel"])
+
+        platform.onMirrorPanelEnded?.invoke()
+        assertEquals("on", readUntil("state")["panel"])
+    }
+
+    @Test
+    fun `phone panel needs an open phone window`() {
+        connect()
+        authenticate()
+        send(mapOf("t" to "phone.panel", "off" to true))
+        assertEquals("bad_request", readUntil("error")["code"])
+        assertTrue(platform.mirrorPanelOffs.isEmpty())
+    }
+
+    @Test
+    fun `a build without panel control refuses the request`() {
+        platform.mirrorPanelOffSupported = false
+        connect()
+        authenticate()
+        openPhoneWindow()
+        send(mapOf("t" to "phone.panel", "off" to true))
+        assertEquals("unavailable", readUntil("error")["code"])
+    }
 }

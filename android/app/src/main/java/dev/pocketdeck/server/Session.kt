@@ -227,6 +227,12 @@ class Session(
     @Volatile private var notifyWanted = false
     @Volatile private var notifyForwarding = false
 
+    /**
+     * `state.panel`: the person's Mac asked for the mirrored panel to stay off
+     * while the phone window renders (docs/PROTOCOL.md "Phone screen").
+     */
+    @Volatile private var mirrorPanelOff = false
+
     private var writerThread: Thread? = null
     private var stateHandle: AutoCloseable? = null
     private var dndHandle: AutoCloseable? = null
@@ -248,6 +254,8 @@ class Session(
         state.ringer?.let { message["ringer"] = it.wire }
         state.screen?.let { message["screen"] = it.wire }
         state.secure?.let { message["secure"] = it }
+        // The phone's panel, when the person's Mac holds it off for the mirror.
+        message["panel"] = if (mirrorPanelOff) "off" else "on"
         sendJson(message)
     }
 
@@ -305,6 +313,13 @@ class Session(
     }
 
     fun run() {
+        // The phone can end a mirror panel-off on its own (the person's power
+        // button): tell the Mac at once, as a fresh state.
+        power.onMirrorPanelEnded = {
+            mirrorPanelOff = false
+            val state = stateTracker.current ?: device.state()
+            if (!stateTracker.update(state)) sendState(state)
+        }
         writerThread = Thread({ writerLoop() }, "pocketdeck-writer").also { it.start() }
         try {
             socket.tcpNoDelay = true
@@ -368,6 +383,8 @@ class Session(
         }
         runCatching { power.setActiveStreams(emptyList()) }
         runCatching { power.onSessionEnded() }
+        runCatching { power.onMirrorPanelEnded = null }
+        mirrorPanelOff = false
         queue.close()
         runCatching { writerThread?.join(1000) }
         runCatching { socket.close() }
@@ -788,6 +805,7 @@ class Session(
                 "phone.dnd" -> onPhoneDnd(obj)
                 "phone.ringer" -> onPhoneRinger(obj)
                 "phone.wake" -> onPhoneWake()
+                "phone.panel" -> onPhonePanel(obj)
                 else -> logOnce("unknown message '$t'")
             }
         } catch (e: Throwable) {
@@ -1302,6 +1320,35 @@ class Session(
         val state = (stateTracker.current ?: fresh).copy(screen = fresh.screen)
         if (!stateTracker.update(state)) sendState(state)
     }
+
+    /**
+     * `phone.panel` (docs/PROTOCOL.md "Phone screen"): the person's Mac asked
+     * for the mirrored panel to stay off while the phone window keeps
+     * rendering, or for it to come back. It only means something with a phone
+     * window open, and the person's power button on the phone always wins.
+     */
+    private fun onPhonePanel(obj: Map<String, Any?>) {
+        val off = obj["off"] as? Boolean ?: run {
+            sendError("bad_request", "phone.panel needs off: true|false")
+            return
+        }
+        if (!hasPhoneWindow()) {
+            sendError("bad_request", "phone.panel needs an open phone window")
+            return
+        }
+        if (!power.setMirrorPanelOff(off)) {
+            sendError("unavailable", "this phone can't control its panel")
+            return
+        }
+        mirrorPanelOff = off
+        log(if (off) "phone.panel off" else "phone.panel on")
+        val state = stateTracker.current ?: device.state()
+        if (!stateTracker.update(state)) sendState(state)
+    }
+
+    /** True while a phone window stream is open (paused or not). */
+    private fun hasPhoneWindow(): Boolean =
+        synchronized(streams) { streams.values.any { it.content == WindowContent.Phone } }
 
     /**
      * An event pushed by the app-process listener after both gates. Everything is
