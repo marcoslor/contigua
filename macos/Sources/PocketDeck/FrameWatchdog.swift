@@ -5,9 +5,10 @@
 // not a stall. The phone's encoder repeats its last frame at least every 500 ms
 // while a stream is open (WindowStream.configure,
 // KEY_REPEAT_PREVIOUS_FRAME_AFTER), which gives every live stream a steady
-// heartbeat even on an unchanging screen. Half the NFR limit (one second) of
-// silence against that heartbeat is a stalled picture: the window says "Not
-// responding" and blocks input until a frame arrives.
+// heartbeat even on an unchanging screen. 1.5 s of silence (three missed beats)
+// is a stalled picture: the window says "Not responding" and blocks input until
+// a frame arrives. One missed second is left alone: Wi-Fi drops that much now
+// and then, and a flashing pill on a healthy stream is worse than a late one.
 //
 // Pure: the window feeds it the clock, so a fake clock pins the rule.
 
@@ -15,9 +16,11 @@ import Foundation
 
 struct FrameWatchdog: Equatable {
     /// stale_picture_ms (nfr-limits.json) is 2000 ms, the limit for saying so;
-    /// the heartbeat is due twice in that window, so one second of silence is
-    /// already a missed beat. A test keeps this under the limit.
-    static let staleAfter: TimeInterval = 1
+    /// the deadline plus one timer tick stays under it (a test pins that).
+    static let staleAfter: TimeInterval = 1.5
+
+    /// How often the window asks; finer than the deadline and cheap.
+    static let tickInterval: TimeInterval = 0.25
 
     /// The last accepted frame; while the window is not expecting frames this
     /// is reset to the current time so paused/covered time is not evidence.
