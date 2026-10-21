@@ -1387,6 +1387,26 @@ check_resize() {
     else
         bad "C6 phone window: no portrait window to capture"
     fi
+
+    # A scripted drag on the phone window: ten monotonic proposals through the
+    # same windowWillResize call AppKit makes for a mouse move. The window must
+    # never snap back (v104 fought the hand: a mostly-down step after a
+    # mostly-across one returned a smaller frame).
+    local step prev_h="" frame_h monotonic=1
+    for step in 0 1 2 3 4 5 6 7 8 9; do
+        control resize-step $((500 + step * 30)) $((900 + step * 40)) \
+            || { bad "C6 phone drag: resize-step: $CONTROL_REPLY"; monotonic=0; break; }
+        frame_h="$(chrome_state | grep -oE 'frame=[0-9]+x[0-9]+' | tail -1 | cut -dx -f2)"
+        [ -n "$frame_h" ] || { bad "C6 phone drag: no frame in the chrome state"; monotonic=0; break; }
+        if [ -n "$prev_h" ] && [ "$frame_h" -lt "$prev_h" ]; then
+            bad "C6 phone drag: the window snapped back at step $step (${prev_h} -> ${frame_h})"
+            monotonic=0
+            break
+        fi
+        prev_h="$frame_h"
+    done
+    [ "$monotonic" = 1 ] \
+        && ok "C6 phone drag: a monotonic drag keeps a monotonic window (height ${prev_h} pt)"
     # The delayed phone must not serve the next check in a shared run.
     end_shared
 }

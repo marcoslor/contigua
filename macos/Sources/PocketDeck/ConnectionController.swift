@@ -2280,6 +2280,15 @@ final class ConnectionController {
             guard let window = windows.controller(for: 1) else { return "no first window" }
             window.setOcclusionVisible(state == "off")
             return nil
+        case "resize-step":
+            // One step of a scripted drag on the first window: the same
+            // windowWillResize call AppKit makes for a mouse move, then the
+            // frame it returns. The chrome state's `frame=` records each step.
+            guard arguments.count >= 2, let w = Double(arguments[0]), let h = Double(arguments[1]),
+                  w > 0, h > 0 else { return "resize-step needs width height" }
+            guard let window = windows.controller(for: 1) else { return "no first window" }
+            window.liveResizeStep(to: NSSize(width: w, height: h))
+            return nil
         case "wake-phone":
             // The phone window's Wake Screen button, for the e2e (its click is
             // unit-tested; a scripted click would need real pointer input).

@@ -82,10 +82,12 @@ final class PhoneWindowController: StreamWindowController {
     private var blackTimer: Timer?
 
     /// The phone turned: the stream now has the other orientation, so the window
-    /// turns too, keeping its top-left corner and its picture's area.
-    private func followRotation() {
+    /// turns too, keeping its top-left corner and its picture's area. A drag in
+    /// progress owns the frame; the turn waits for `windowDidEndLiveResize`.
+    func followRotation() {
         let video = videoView.videoSize
-        guard let window, let turned = PhoneChrome.turnedPhone(phone: phoneScreen, video: video) else { return }
+        guard let window, !isLiveResizing,
+              let turned = PhoneChrome.turnedPhone(phone: phoneScreen, video: video) else { return }
         phoneScreen = turned
         let current = style.streamSize(window: window.frame.size)
         let size = style.windowSize(stream: CGSize(width: current.height, height: current.width))
@@ -121,8 +123,14 @@ final class PhoneWindowController: StreamWindowController {
          .recents { [weak self] in self?.navigateRecents(nil) }]
     }
 
-    func windowWillResize(_ sender: NSWindow, to frameSize: NSSize) -> NSSize {
-        PhoneChrome.frame(proposed: frameSize, current: sender.frame.size, phone: phoneScreen, style: style)
+    override func windowWillResize(_ sender: NSWindow, to frameSize: NSSize) -> NSSize {
+        PhoneChrome.frame(proposed: frameSize, phone: phoneScreen, style: style)
+    }
+
+    override func windowDidEndLiveResize(_ notification: Notification) {
+        super.windowDidEndLiveResize(notification)
+        // A rotation the phone reported during the drag applies now.
+        followRotation()
     }
 
     /// The green button (and a double-click on the bar) zooms to the phone's
