@@ -391,7 +391,7 @@ final class WindowManager {
         }
     }
 
-    /// Navigate ▸ Turn Off Phone Screen for the open phone window. The phone is
+    /// Phone ▸ Turn Off Phone Screen for the open phone window. The phone is
     /// the one that holds the panel, so this only asks; the check follows its
     /// report.
     func togglePhonePanelOff() {

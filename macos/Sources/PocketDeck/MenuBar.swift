@@ -79,18 +79,6 @@ struct AppCommands: Commands {
                 Label("Find Apps", systemImage: "magnifyingglass")
             }
             .keyboardShortcut("k")
-            Button {
-                controller.openPhoneWindow()
-            } label: {
-                Label("Phone Window", systemImage: "iphone")
-            }
-            .keyboardShortcut("p")
-            Button {
-                controller.continueOnMac()
-            } label: {
-                Label("Continue on Mac", systemImage: "arrow.up.forward.app")
-            }
-            .keyboardShortcut("c", modifiers: [.command, .shift])
             // View ▸ Framed / Immersive: one radio pair for the key stream
             // window, built by the commands themselves. An inline Picker renders
             // it as checkmarked radio items with no section title; an AppKit
@@ -187,6 +175,62 @@ struct AppCommands: Commands {
             }
             .disabled(!streamMenu.hasStream || streamMenu.densityPackage == nil)
         }
+        // Phone ▸ the phone's own controls. The state and the actions are the
+        // menu-bar panel's and the Deck popover's (PhonePanel.swift), so one
+        // mapping decides what can work and a control that cannot is disabled,
+        // never hidden (AGENTS "Honest settings").
+        CommandMenu("Phone") {
+            let state = PhoneControlsState(controller: controller)
+            let actions = PhoneControlsActions(controller: controller) { show() }
+            Button {
+                actions.openPhoneScreen()
+            } label: {
+                Label("Phone Window", systemImage: "iphone")
+            }
+            .keyboardShortcut("p")
+            .disabled(!PhonePanelItem.phoneScreen.isEnabled(in: state))
+            Button {
+                actions.continueOnMac()
+            } label: {
+                Label("Continue on Mac", systemImage: "arrow.up.forward.app")
+            }
+            .keyboardShortcut("c", modifiers: [.command, .shift])
+            .disabled(!PhonePanelItem.continueOnMac.isEnabled(in: state))
+            Divider()
+            // The phone holds its own panel's power off while the mirror keeps
+            // rendering (docs/design/phone-mirror.md). The check follows the
+            // phone's `state.panel`, never a local guess.
+            Toggle(isOn: Binding(
+                get: { streamMenu.panelOff },
+                set: { _ in controller.windows.togglePhonePanelOff() })) {
+                Label("Turn Off Phone Screen", systemImage: "iphone.slash")
+            }
+            .disabled(!streamMenu.phoneWindow)
+            Toggle(isOn: Binding(
+                get: { state.dnd?.isOn ?? false },
+                set: { actions.setDnd($0) })) {
+                Label(PhonePanelItem.dnd.label, systemImage: "moon.fill")
+            }
+            .disabled(!PhonePanelItem.dnd.isEnabled(in: state))
+            Button {
+                if state.ringing {
+                    actions.stopRing()
+                } else {
+                    actions.ring()
+                }
+            } label: {
+                Label(state.ringTitle,
+                      systemImage: state.ringing ? "bell.slash" : "iphone.radiowaves.left.and.right")
+            }
+            .disabled(!PhonePanelItem.ring.isEnabled(in: state))
+            Divider()
+            Button {
+                actions.installApk()
+            } label: {
+                Label(state.installTitle, systemImage: "arrow.down.app")
+            }
+            .disabled(!PhonePanelItem.installApk.isEnabled(in: state))
+        }
         // Full screen is AppKit's own item, moved into the Window menu at
         // launch (FullScreenMenu.swift): only a system-provided item can carry
         // the standard 🌐F shortcut. Its title and symbol follow the key
@@ -213,16 +257,6 @@ struct AppCommands: Commands {
             }
             .keyboardShortcut(.upArrow, modifiers: .command)
             .disabled(streamMenu.frozen)
-            Divider()
-            // Phone window only: the phone holds its own panel's power off while
-            // the mirror keeps rendering (docs/design/phone-mirror.md). The
-            // check follows the phone's `state.panel`, never a local guess.
-            Toggle(isOn: Binding(
-                get: { streamMenu.panelOff },
-                set: { _ in controller.windows.togglePhonePanelOff() })) {
-                Label("Turn Off Phone Screen", systemImage: "iphone.slash")
-            }
-            .disabled(!streamMenu.phoneWindow)
         }
     }
 
