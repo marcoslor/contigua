@@ -8026,9 +8026,9 @@ check_deck() {
     clean
     # The grid's fixtures (v105's empty slot): one package with two launcher
     # activities, and one entry with no label at all.
-    # A full grid (40 apps) like the person's: the zoom cost grows with the
-    # number of cells it lays out.
-    FAKE_ARGS="--dup-launcher --no-label-app com.spotify.music --demo-apps 40" start_fake || return 1
+    # A full grid (200 apps, more than the person's phone) like theirs: the
+    # zoom cost grows with the number of cells the grid lays out.
+    FAKE_ARGS="--dup-launcher --no-label-app com.spotify.music --demo-apps 200" start_fake || return 1
     FAKE_ARGS=""
     # The shared app's own launch: the checks after this one use it.
     launch_shared --connect "127.0.0.1:$PORT" --debug-deck-grid "$WORK/deck-grid.jsonl" \
@@ -8051,8 +8051,8 @@ check_deck() {
     # package are there with their own id and words under them, and the entry
     # the phone sent without a label still has words (the package's last part).
     # Equal ids drew neither cell — the person's empty slot.
-    if wait_until 30 test -s "$WORK/deck-grid.jsonl" && grep -q '"count":41' "$WORK/deck-grid.jsonl"; then
-        if python3 "$MACOS/scripts/deck-grid.py" "$WORK/deck-grid.jsonl" 41; then
+    if wait_until 30 test -s "$WORK/deck-grid.jsonl" && grep -q '"count":201' "$WORK/deck-grid.jsonl"; then
+        if python3 "$MACOS/scripts/deck-grid.py" "$WORK/deck-grid.jsonl" 201; then
             ok "DECK every cell has words and its own id (2 settings cells, the label-less one falls back)"
         else
             bad "DECK the grid has an empty or repeated cell ($(tail -1 "$WORK/deck-grid.jsonl"))"

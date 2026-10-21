@@ -73,9 +73,27 @@ final class DeckZoomProbe {
             while Date() < gridDeadline, !DeckGridMetrics.hasCells {
                 try? await Task.sleep(for: .milliseconds(100))
             }
+            // A person zooms a settled Deck. With the phone's 150+ apps the
+            // icons keep arriving after the list; sampling while they do would
+            // measure the icon load, not the grid.
+            let iconsDeadline = Date(timeIntervalSinceNow: 20)
+            while Date() < iconsDeadline, !iconsSettled() {
+                try? await Task.sleep(for: .milliseconds(100))
+            }
             try? await Task.sleep(for: .milliseconds(800))
             probe.begin(on: window)
         }
+    }
+
+    /// Every app on the phone has an icon answer (a drawn one, the shared
+    /// renderer's, or "none").
+    private static func iconsSettled() -> Bool {
+        let controller = AppEnvironment.shared.controller
+        let answered = Set(controller.icons.keys)
+            .union(controller.deckIcons.keys)
+            .union(controller.missingIcons)
+        return !controller.apps.isEmpty
+            && Set(controller.apps.map(\.pkg)).isSubset(of: answered)
     }
 
     private func begin(on window: NSWindow) {
@@ -88,6 +106,7 @@ final class DeckZoomProbe {
         guard let window else { return }
         samples.removeAll()
         fits.removeAll()
+        DeckGridMetrics.resetLayoutTimes()
         started = Date()
         noteFrame(on: window)
         timer?.invalidate()
@@ -195,7 +214,21 @@ final class DeckZoomProbe {
             return sorted[index]
         }
         let bad = fits.filter { !$0.ok }
+        // One full layout pass (sizeThatFits + placeSubviews) on the main
+        // thread, beside the frame time: the grid's own cost at this cell
+        // count, without the rest of the window.
+        let layout = DeckGridMetrics.layoutTimes.sorted()
+        func layoutPercentile(_ p: Double) -> Double {
+            guard !layout.isEmpty else { return 0 }
+            let index = min(layout.count - 1, Int((Double(layout.count - 1) * p).rounded()))
+            return (layout[index] * 100).rounded() / 100
+        }
         var info: [String: Any] = ["frames": samples.count,
+                                   "cells": fits.first?.cells ?? 0,
+                                   "layoutSamples": layout.count,
+                                   "layoutP50": layoutPercentile(0.5),
+                                   "layoutP95": layoutPercentile(0.95),
+                                   "layoutMax": ((layout.last ?? 0) * 100).rounded() / 100,
                                    "p50": percentile(0.5).rounded(),
                                    "p95": percentile(0.95).rounded(),
                                    "max": (sorted.last ?? 0).rounded(),
@@ -279,6 +312,8 @@ enum DeckGridMetrics {
     /// The ScrollView's frame (window coordinates) and the cells' drawn frames.
     private static var viewport: CGRect = .zero
     private static var cellFrames: [String: CGRect] = [:]
+    private static var layoutStarted: Double?
+    private static var layoutSamples: [Double] = []
 
     static var hasCells: Bool { !cellFrames.isEmpty && viewport.width > 0 }
 
@@ -290,6 +325,26 @@ enum DeckGridMetrics {
     static func noteCell(_ id: String, _ frame: CGRect) {
         guard recording else { return }
         cellFrames[id] = frame
+    }
+
+    /// One grid layout pass: the clock starts in sizeThatFits and stops after
+    /// placeSubviews has placed every cell.
+    static func beginLayout() {
+        guard recording else { return }
+        layoutStarted = CACurrentMediaTime()
+    }
+
+    static func endLayout() {
+        guard recording, let start = layoutStarted else { return }
+        layoutStarted = nil
+        layoutSamples.append((CACurrentMediaTime() - start) * 1000)
+    }
+
+    static var layoutTimes: [Double] { layoutSamples }
+
+    static func resetLayoutTimes() {
+        layoutStarted = nil
+        layoutSamples.removeAll()
     }
 
     /// The drawn grid of the last layout pass, for the probe's frame sample.
