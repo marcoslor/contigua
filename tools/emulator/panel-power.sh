@@ -45,6 +45,10 @@ export JAVA_HOME="${JAVA_HOME:-/opt/homebrew/opt/openjdk@17}"
 export POCKETDECK_PORT="${POCKETDECK_PORT:-47812}"
 export POCKETDECK_SERIAL=emulator-5554
 export POCKETDECK_AGENT_DIR="$PWD/.agent/emu"
+# start.sh sets this property before it launches the server, so the policy is
+# built forced. Setting it after the boot (the old order) left the Shizuku
+# user-service process alive and unforced; the init-line check below catches it.
+export POCKETDECK_FORCE_PANEL_OFF=1
 mkdir -p "$POCKETDECK_AGENT_DIR"
 # shellcheck source=tools/emulator/lib.sh
 . tools/emulator/lib.sh
@@ -195,6 +199,19 @@ if [ "$BOOT" -eq 1 ]; then
     echo "failed: 1 (restart)" > "$RESULT"
     exit 1
   fi
+  # The init line is the only proof the running policy was built forced. The
+  # old order set the property after the server had started, and the Shizuku
+  # user service survived the app restart, so every plan came out unforced.
+  INIT_LINE="$(emu logcat -d -s PocketDeckSvc:I 2>/dev/null |
+    grep 'power: panel power control' | tail -1 | tr -d '\r')"
+  case "$INIT_LINE" in
+    *"forcing the panel-dark path"*) ;;
+    *)
+      echo "panel-power: the server did not start forced (init: ${INIT_LINE:-none})"
+      { echo "failed: 1 (not-forced)"; echo "init: ${INIT_LINE:-none}"; } > "$RESULT"
+      exit 1
+      ;;
+  esac
   if ! "$PYTHON" tools/emulator/poc.py --state "$CACHE_DIR/deckctl-state.json" \
         --addr "127.0.0.1:$PORT" --serial "$SERIAL" --adb "$ADB" pair; then
     echo "panel-power: pairing failed (unverified)"

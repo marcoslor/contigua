@@ -297,6 +297,13 @@ emu shell "run-as $PKG mkdir -p shared_prefs" >/dev/null 2>&1 || true
 emu shell "run-as $PKG sh -c 'cat > shared_prefs/pocketdeck.xml'" <"$PREFS" ||
   die "cannot seed $PKG prefs (is the build debuggable?)"
 
+if [ "${POCKETDECK_FORCE_PANEL_OFF:-0}" = "1" ]; then
+  step "setting debug.pocketdeck.force_panel_off=1 before the server starts"
+  emu shell setprop debug.pocketdeck.force_panel_off 1 >/dev/null 2>&1 || true
+  [ "$(emu shell getprop debug.pocketdeck.force_panel_off | tr -d '\r')" = "1" ] ||
+    die "debug.pocketdeck.force_panel_off did not stick"
+fi
+
 emu logcat -c >/dev/null 2>&1 || true
 step "launching $PKG"
 # A fresh boot sometimes swallows the first start; make sure the app really runs.
