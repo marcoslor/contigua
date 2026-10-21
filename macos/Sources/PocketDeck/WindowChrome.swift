@@ -105,8 +105,8 @@ enum HeaderBar {
     /// Between two capsules.
     static let capsuleGap: CGFloat = 6
     /// The row ends this far in from the window's right edge: the lights'
-    /// left inset, mirrored (BarPrototype).
-    static var rightInset: CGFloat { BarPrototype.current.rightInset }
+    /// left inset, mirrored (BarGeometry).
+    static let rightInset = BarGeometry.rightInset
     static let symbolPointSize: CGFloat = 14
     static let symbolWeight: NSFont.Weight = .medium
     /// The Live Text button's side (LiveTextBarButton.side).
@@ -187,6 +187,19 @@ enum HeaderBar {
         let actionsX = start
         let liveTextX = start + (hasActions ? actionsWidth + capsuleGap : 0)
         return Row(actionsX: actionsX, actionsWidth: actionsWidth, liveTextX: liveTextX, width: width)
+    }
+
+    /// The gap between the traffic lights and the row's first capsule.
+    static let barGap: CGFloat = 8
+
+    /// The narrowest window whose framed bar holds the lights and this row:
+    /// where the lights end, the gap, the row and the right inset. A control
+    /// added to a window's bar widens the row, so a window's minimum width
+    /// follows the geometry instead of a guess.
+    static func minimumWidth(for actions: [HeaderAction]) -> CGFloat {
+        let lightsEnd = BarGeometry.lightInset + 2 * BarGeometry.lightSpacing + BarGeometry.lightSide
+        let width = row(actions, rightEdge: 0)?.width ?? liveTextSide
+        return lightsEnd + barGap + width + rightInset
     }
 
     /// The capsule's material: a light, almost opaque fill in light

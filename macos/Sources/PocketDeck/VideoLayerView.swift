@@ -374,7 +374,7 @@ final class VideoLayerView: NSView {
                 self.needsLayout = true
                 self.needsDisplay = true
                 NotificationCenter.default.post(name: Self.videoSizeDidChange, object: self)
-                self.liveText.noteStreamConfig()
+                self.liveText.noteStreamConfig(size: size)
             }
         }
     }

@@ -41,6 +41,9 @@
 //                                  a mouse hover on the phone
 //   hoverout                       the pointer leaves the video (hover EXIT)
 //   hoversetting on|off            Settings ▸ Input "Hover over Android apps"
+//   menupick View/Immersive
+//                    choose that menu item, as a click does (the item's own
+//                    target and action)
 //   menudump PATH                  the main menu tree as JSON (MenuDump.swift):
 //                                  titles, images, shortcuts, state, submenus
 //   hoverat DX TOP                 the pointer at a window point: DX pt right of the
@@ -129,6 +132,9 @@ enum DebugInputAction: Equatable {
     case clickAt(dx: Double, top: Double)
     /// The main menu tree written as JSON (e2e menus check).
     case menuDump(String)
+    /// The menu item a person clicks, by its title path ("View/Immersive"):
+    /// AppKit's own dispatch, so the item's target and action run as on a click.
+    case menuPick(String)
     /// The menu bar's Live section written as JSON (e2e notify-media check).
     case liveDump(String)
     case sideButton(Int, hold: Double, dx: Double, dy: Double, steps: Int)
@@ -285,6 +291,14 @@ enum DebugInputScript {
                 throw LineError(message: "\(verb) needs DX TOP (points)")
             }
             return verb == "hoverat" ? .hoverAt(dx: dx, top: top) : .clickAt(dx: dx, top: top)
+        case "menupick":
+            // Titles may carry spaces ("Hide Controls"): the line's words are
+            // the path, joined back with the spaces the script wrote.
+            let path = args.joined(separator: " ")
+            guard !path.isEmpty, path.contains("/") else {
+                throw LineError(message: "menupick needs a title path, e.g. View/Immersive")
+            }
+            return .menuPick(path)
         case "menudump":
             guard args.count == 1, args[0].hasPrefix("/") else {
                 throw LineError(message: "menudump needs an absolute PATH")
@@ -684,6 +698,13 @@ final class DebugInputDriver {
             // an open menu does (titles, checks, AppKit's own items).
             NSApp.mainMenu?.update()
             try? MenuDump.write(NSApp.mainMenu, to: path)
+        case .menuPick(let path):
+            // Choosing the item is the control: the item's own target and
+            // action, after the same validation an open menu runs.
+            NSApp.mainMenu?.update()
+            guard let item = Self.menuItem(at: path, in: NSApp.mainMenu),
+                  item.isEnabled, let action = item.action else { return }
+            NSApp.sendAction(action, to: item.target, from: item)
         case .liveDump(let path):
             _ = liveDump?(path)
         case .sideButton(let button, let hold, let dx, let dy, let steps):
@@ -852,6 +873,19 @@ final class DebugInputDriver {
 
     /// `DX TOP`: DX pt right of the window's centre, TOP pt below its top edge,
     /// in window coordinates (origin bottom-left).
+    /// The item at "View/Hide Controls/Long": each component is a menu title,
+    /// the last one the item itself.
+    static func menuItem(at path: String, in menu: NSMenu?) -> NSMenuItem? {
+        let titles = path.split(separator: "/").map(String.init)
+        var current = menu
+        for (index, title) in titles.enumerated() {
+            guard let item = current?.items.first(where: { $0.title == title }) else { return nil }
+            if index == titles.count - 1 { return item }
+            current = item.submenu
+        }
+        return nil
+    }
+
     static func windowPoint(dx: Double, top: Double, in window: NSWindow) -> CGPoint {
         CGPoint(x: window.frame.width / 2 + dx, y: window.frame.height - top)
     }

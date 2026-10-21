@@ -1,14 +1,18 @@
 {
+  "app_list_ms": 1500,
   "connect_ms": 1500,
+  "contrast_min": 3.0,
+  "deck_zoom_frame_p95_ms": 40,
+  "fetch_small_ms": 3000,
   "first_frame_ms": 1500,
   "first_frame_phone_ms": 1500,
-  "app_list_ms": 1500,
-  "fetch_small_ms": 3000,
-  "stale_picture_ms": 2000,
-  "contrast_min": 3.0,
-  "layout_min_screen": [1280, 800],
-  "settings_design_height_pt": 560,
   "hanging_reply_ms": 100,
+  "icon_mean_tolerance": 3.0,
   "icon_min_source_scale": 1.0,
-  "icon_mean_tolerance": 3.0
+  "layout_min_screen": [
+    1280,
+    800
+  ],
+  "settings_design_height_pt": 560,
+  "stale_picture_ms": 2000
 }

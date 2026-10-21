@@ -30,7 +30,7 @@ final class LiveTextInteractionTests: XCTestCase {
     }
 
     /// A white frame with one big word across the middle (what VisionKit reads).
-    private func textFrame(_ word: String, offset: CGFloat = 0) -> (CVPixelBuffer, NSImage)? {
+    private func textFrame(_ word: String, offset: CGFloat = 0) -> (CVPixelBuffer, CGImage)? {
         let width = 1600, height = 800
         var buffer: CVPixelBuffer?
         guard CVPixelBufferCreate(kCFAllocatorDefault, width, height,
@@ -56,7 +56,7 @@ final class LiveTextInteractionTests: XCTestCase {
         context.textPosition = CGPoint(x: (CGFloat(width) - bounds.width) / 2 + offset,
                                        y: (CGFloat(height) - bounds.height) / 2)
         CTLineDraw(line, context)
-        guard let image = LiveTextImage.nsImage(buffer) else { return nil }
+        guard let image = LiveTextImage.cgImage(buffer) else { return nil }
         return (buffer, image)
     }
 

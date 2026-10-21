@@ -529,26 +529,6 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         manager.remove(stream: stream)
     }
 
-    /// View ▸ Bar Prototype: the bar changed height under a window that is
-    /// already open. The stream keeps its size; a framed window grows or
-    /// shrinks by the difference at its top (the top edge stays).
-    func barPrototypeChanged(fromBar oldBar: CGFloat) {
-        guard let window else { return }
-        chrome.layoutChrome()
-        chrome.placeTrafficLights()
-        if style == .framed, !window.styleMask.contains(.fullScreen) {
-            let delta = chrome.barHeight - oldBar
-            if delta != 0 {
-                var frame = window.frame
-                let top = frame.maxY
-                frame.size.height += delta
-                frame.origin.y = top - frame.height
-                window.setFrame(frame, display: true)
-            }
-        }
-        writeChromeState()
-    }
-
     // MARK: Resize
 
     /// The person is dragging a corner: only the drag sets the frame until it

@@ -10,6 +10,7 @@
 
 import AppKit
 import CoreImage
+import CoreVideo
 import ImageIO
 import UniformTypeIdentifiers
 import VideoToolbox
@@ -31,14 +32,74 @@ enum LiveTextImage {
         return NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
     }
 
-    static func pngData(_ buffer: CVPixelBuffer) -> Data? {
-        guard let cg = cgImage(buffer) else { return nil }
+    /// PNG bytes of an already rasterised frame.
+    static func pngData(_ image: CGImage) -> Data? {
         let data = NSMutableData()
         guard let destination = CGImageDestinationCreateWithData(
             data, UTType.png.identifier as CFString, 1, nil) else { return nil }
-        CGImageDestinationAddImage(destination, cg, nil)
+        CGImageDestinationAddImage(destination, image, nil)
         guard CGImageDestinationFinalize(destination) else { return nil }
         return data as Data
+    }
+
+    static func pngData(_ buffer: CVPixelBuffer) -> Data? {
+        guard let cg = cgImage(buffer) else { return nil }
+        return pngData(cg)
+    }
+
+    /// A private 32BGRA copy of `buffer`, on the CPU side.
+    ///
+    /// The display layer's displayed buffer is a surface of its own: the
+    /// picture renders from it (Metal) but a reader that goes through the
+    /// buffer's memory address gets nothing back, which is how Live Text showed
+    /// the right frame and recognised 0 characters. The copy is allocated here
+    /// and written by the same renderer that draws the frame, so every reader
+    /// (VisionKit, the PNG write, the drag) sees the pixels the person sees,
+    /// and the layer is free to recycle its own buffer.
+    static func snapshot(_ buffer: CVPixelBuffer) -> CVPixelBuffer? {
+        let width = CVPixelBufferGetWidth(buffer)
+        let height = CVPixelBufferGetHeight(buffer)
+        guard width > 0, height > 0, let image = cgImage(buffer) else { return nil }
+        let attributes: [String: Any] = [
+            kCVPixelBufferIOSurfacePropertiesKey as String: [:] as [String: Any],
+            kCVPixelBufferCGImageCompatibilityKey as String: true,
+            kCVPixelBufferCGBitmapContextCompatibilityKey as String: true,
+        ]
+        var copy: CVPixelBuffer?
+        guard CVPixelBufferCreate(kCFAllocatorDefault, width, height,
+                                  kCVPixelFormatType_32BGRA,
+                                  attributes as CFDictionary, &copy) == kCVReturnSuccess,
+              let copy else { return nil }
+        context.render(CIImage(cgImage: image), to: copy,
+                       bounds: CGRect(x: 0, y: 0, width: width, height: height),
+                       colorSpace: CGColorSpace(name: CGColorSpace.sRGB))
+        return copy
+    }
+
+    /// The buffer's four-character pixel format ("420v", "BGRA", …), for the
+    /// entry diagnostics: a blank frame next time starts with the format.
+    static func pixelFormat(_ buffer: CVPixelBuffer) -> String {
+        let code = CVPixelBufferGetPixelFormatType(buffer)
+        let bytes = [UInt8((code >> 24) & 0xFF), UInt8((code >> 16) & 0xFF),
+                     UInt8((code >> 8) & 0xFF), UInt8(code & 0xFF)]
+        let text = String(bytes: bytes, encoding: .ascii) ?? "?"
+        return text.trimmingCharacters(in: .whitespaces)
+    }
+
+    /// Mean luma, 0–255 (one number, never pixels): a frame that arrives blank
+    /// is visible in the person's log next time.
+    static func meanLuma(_ buffer: CVPixelBuffer) -> Double {
+        let image = CIImage(cvPixelBuffer: buffer)
+        guard !image.extent.isEmpty,
+              let filter = CIFilter(name: "CIAreaAverage",
+                                    parameters: [kCIInputImageKey: image,
+                                                 kCIInputExtentKey: CIVector(cgRect: image.extent)]),
+              let average = filter.outputImage else { return -1 }
+        var pixel = [UInt8](repeating: 0, count: 4)
+        context.render(average, toBitmap: &pixel, rowBytes: 4,
+                       bounds: CGRect(x: 0, y: 0, width: 1, height: 1),
+                       format: .RGBA8, colorSpace: CGColorSpace(name: CGColorSpace.sRGB))
+        return 0.2126 * Double(pixel[0]) + 0.7152 * Double(pixel[1]) + 0.0722 * Double(pixel[2])
     }
 }
 
@@ -136,6 +197,21 @@ final class LiveTextSession {
     private(set) var frame: CVPixelBuffer?
     /// VisionKit finished (text may still be empty: an image with no words).
     private(set) var analysisReady = false
+    /// The frozen frame's size, pixel format and mean luma (counts only): a
+    /// frame that arrives blank is then visible in the person's log.
+    struct FrameStats: Equatable {
+        let width: Int
+        let height: Int
+        let format: String
+        let mean: Int
+    }
+    private(set) var frameStats: FrameStats?
+    /// Analysis diagnostics (counts only): the characters each attempt read,
+    /// how long each took, and the applied analysis's own transcript length.
+    /// The scripted check reports them; no text ever leaves this type.
+    private(set) var attemptChars: [Int] = []
+    private(set) var attemptMs: [Int] = []
+    private(set) var analysisChars = 0
     /// Why the last enter did nothing (the scripted check reports it; state
     /// only, never pixels).
     private(set) var lastFailure = ""
@@ -194,27 +270,21 @@ final class LiveTextSession {
         guard mode.state == .idle else { lastFailure = "already active"; return false }
         guard let host else { lastFailure = "no view"; return false }
         // Route one: the layer's displayed buffer, the exact frame on screen.
-        if let displayed = host.copyDisplayedFrame(), let image = LiveTextImage.nsImage(displayed) {
-            lastFailure = ""
-            freeze(displayed, image: image, on: host)
-            Log.video.notice("livetext: entered on the displayed frame")
-            return true
-        }
+        if captureDisplayed(on: host) { return true }
         // Route two: the window is occluded (or the layer has no current
         // buffer), so decode the next keyframe in parallel.
-        lastFailure = "waiting for a keyframe: " + host.frameDiagnostics()
+        if lastFailure.isEmpty {
+            lastFailure = "waiting for a keyframe: " + host.frameDiagnostics()
+        }
         mode.handle(.enter)
         onStateChange?(.capturing, nil)
         host.beginFrameSnapshot { [weak self] buffer in
             guard let self else { return }
             guard self.mode.state == .capturing, let buffer,
-                  let image = LiveTextImage.nsImage(buffer) else {
+                  self.adopt(buffer, source: "a decoded keyframe", on: host) else {
                 self.captureFailed()
                 return
             }
-            self.lastFailure = ""
-            self.freeze(buffer, image: image, on: host)
-            Log.video.notice("livetext: entered on a decoded keyframe")
         }
         let work = DispatchWorkItem { [weak self] in self?.captureFailed() }
         snapshotTimeout = work
@@ -222,20 +292,56 @@ final class LiveTextSession {
         return true
     }
 
+    /// Route one, and the frame preparation both routes share. A buffer whose
+    /// raster fails falls through to the keyframe route rather than freezing a
+    /// blank picture.
+    private func captureDisplayed(on host: VideoLayerView) -> Bool {
+        guard let displayed = host.copyDisplayedFrame() else { return false }
+        return adopt(displayed, source: "the displayed frame", on: host)
+    }
+
+    /// Freezes `buffer` after moving it onto our side. What the layer shows is
+    /// a GPU surface: it draws correctly but a reader that addresses the
+    /// buffer's memory gets no pixels back, so VisionKit found 0 characters on
+    /// a frame that was visibly full of text. The snapshot is a 32BGRA buffer
+    /// this process owns, and the analysis runs on the rasterised image, so
+    /// overlays, PNG copies and the analyser all see the same picture.
+    private func adopt(_ buffer: CVPixelBuffer, source: String, on host: VideoLayerView) -> Bool {
+        let size = "\(CVPixelBufferGetWidth(buffer))x\(CVPixelBufferGetHeight(buffer))"
+        let format = LiveTextImage.pixelFormat(buffer)
+        let luma = Int(LiveTextImage.meanLuma(buffer).rounded())
+        guard let image = LiveTextImage.cgImage(buffer),
+              let snapshot = LiveTextImage.snapshot(buffer) else {
+            let why = "did not rasterise"
+            lastFailure = "the \(source) \(why) (format=\(format) size=\(size) mean=\(luma))"
+            Log.video.error("livetext: \(source, privacy: .public) \(why, privacy: .public) (format=\(format, privacy: .public) size=\(size, privacy: .public) mean=\(luma, privacy: .public))")
+            return false
+        }
+        lastFailure = ""
+        freeze(snapshot, image: image, on: host)
+        Log.video.notice("livetext: entered on \(source, privacy: .public) (format=\(format, privacy: .public) size=\(size, privacy: .public) mean=\(luma, privacy: .public))")
+        return true
+    }
+
     /// The frame is in hand (either route): freeze it, analyze it, put the
     /// overlay up. Internal, so the view-tree test can present a synthetic
     /// frame without a live session (the production entries call it too).
-    func freeze(_ buffer: CVPixelBuffer, image: NSImage, on host: VideoLayerView) {
+    func freeze(_ buffer: CVPixelBuffer, image: CGImage, on host: VideoLayerView) {
         snapshotTimeout?.cancel()
         snapshotTimeout = nil
         freezeImage(buffer, image: image, on: host)
     }
 
-    private func freezeImage(_ buffer: CVPixelBuffer, image: NSImage, on host: VideoLayerView) {
+    private func freezeImage(_ buffer: CVPixelBuffer, image: CGImage, on host: VideoLayerView) {
         if mode.state == .idle { mode.handle(.enter) }
         guard mode.state == .capturing else { return }
         frame = buffer
-        imageView.image = image
+        frameStats = FrameStats(width: CVPixelBufferGetWidth(buffer),
+                                height: CVPixelBufferGetHeight(buffer),
+                                format: LiveTextImage.pixelFormat(buffer),
+                                mean: Int(LiveTextImage.meanLuma(buffer).rounded()))
+        imageView.image = NSImage(cgImage: image,
+                                  size: NSSize(width: image.width, height: image.height))
         imageView.isHidden = false
         overlay.isHidden = false
         overlay.analysis = nil
@@ -246,13 +352,13 @@ final class LiveTextSession {
         onStateChange?(.analyzing, nil)
         host.window?.makeFirstResponder(overlay)
         installKeyMonitor()
-        analyze(buffer, generation: generation)
+        analyze(image, generation: generation)
     }
 
     /// No frame in time: leave the mode (the window shows live video again).
     private func captureFailed() {
         guard mode.state == .capturing else { return }
-        lastFailure = "no keyframe after 5 s"
+        if lastFailure.isEmpty { lastFailure = "no keyframe after 5 s" }
         exit(.captureFailed)
     }
 
@@ -267,6 +373,10 @@ final class LiveTextSession {
         snapshotTimeout = nil
         host?.cancelFrameSnapshot()
         frame = nil
+        frameStats = nil
+        attemptChars = []
+        attemptMs = []
+        analysisChars = 0
         analysisReady = false
         overlay.analysis = nil
         overlay.isHidden = true
@@ -294,24 +404,64 @@ final class LiveTextSession {
 
     /// A new VIDEO_CONFIG: the picture under the overlay may be gone or a
     /// different shape. Leaving drops back to live video.
-    func noteStreamConfig() {
+    func noteStreamConfig(size: CGSize? = nil) {
         // A keyframe request is answered by a fresh encoder, so a config while
         // the snapshot is still on its way is ours, not a window change.
         guard mode.state != .capturing else { return }
+        // The answering config can land just after the keyframe it belongs to,
+        // i.e. after the freeze: at the frozen picture's own size it is still
+        // our request's echo, and leaving would drop the mode the person just
+        // entered (16 ms after entering, in one run).
+        if let size, let frame,
+           CGSize(width: CVPixelBufferGetWidth(frame), height: CVPixelBufferGetHeight(frame)) == size {
+            Log.video.notice("livetext: config at the frozen size, kept")
+            return
+        }
         exit(.streamConfig)
     }
 
     // MARK: Analysis
 
-    private func analyze(_ buffer: CVPixelBuffer, generation: Int) {
+    /// Attempts per entry: VisionKit's service answers "no text" now and then
+    /// for a frame full of words (the same picture reads on the next call), so
+    /// an empty answer is asked again. The count is logged, never the text.
+    static let analysisAttempts = 3
+
+    private func analyze(_ image: CGImage, generation: Int) {
         let configuration = ImageAnalyzer.Configuration([.text, .machineReadableCode, .visualLookUp])
         let analyzer = ImageAnalyzer()
         Task { [weak self] in
-            do {
-                let analysis = try await analyzer.analyze(buffer, orientation: .up,
-                                                          configuration: configuration)
-                await MainActor.run {
-                    guard let self, self.generation == generation, self.mode.state == .analyzing else { return }
+            var analysis: ImageAnalysis?
+            var lastError: Error?
+            var attempts = 0
+            var chars: [Int] = []
+            var timings: [Int] = []
+            while attempts < Self.analysisAttempts {
+                attempts += 1
+                let started = Date()
+                do {
+                    let result = try await analyzer.analyze(image, orientation: .up,
+                                                            configuration: configuration)
+                    analysis = result
+                    chars.append(result.transcript.count)
+                    timings.append(Int(Date().timeIntervalSince(started) * 1000))
+                    if result.hasResults(for: .text) { break }
+                } catch {
+                    lastError = error
+                    chars.append(-1)
+                    timings.append(Int(Date().timeIntervalSince(started) * 1000))
+                }
+                if attempts < Self.analysisAttempts {
+                    try? await Task.sleep(for: .milliseconds(120))
+                }
+            }
+            let (attemptChars, attemptMs) = (chars, timings)
+            await MainActor.run {
+                guard let self, self.generation == generation, self.mode.state == .analyzing else { return }
+                self.attemptChars = attemptChars
+                self.attemptMs = attemptMs
+                self.analysisChars = analysis?.transcript.count ?? 0
+                if let analysis {
                     self.overlay.analysis = analysis
                     // Entering the mode starts with VisionKit's Live Text button
                     // on: every recognised item is highlighted. The button and
@@ -324,16 +474,14 @@ final class LiveTextSession {
                     self.analysisReady = true
                     self.mode.handle(.analysisFinished)
                     self.onStateChange?(.shown, nil)
-                    Log.video.notice("livetext: analysis ready, \(analysis.transcript.count, privacy: .public) characters")
+                    Log.video.notice("livetext: analysis ready, \(analysis.transcript.count, privacy: .public) characters, \(attempts, privacy: .public) attempt(s)")
+                    return
                 }
-            } catch {
-                await MainActor.run {
-                    guard let self, self.generation == generation, self.mode.state == .analyzing else { return }
-                    self.analysisReady = true
-                    self.mode.handle(.analysisFailed)
-                    self.onStateChange?(.shown, nil)
-                    Log.video.error("livetext: analysis failed (\(error.localizedDescription, privacy: .public))")
-                }
+                self.analysisReady = true
+                self.mode.handle(.analysisFailed)
+                self.onStateChange?(.shown, nil)
+                let why = lastError?.localizedDescription ?? "no result"
+                Log.video.error("livetext: analysis failed (\(why, privacy: .public))")
             }
         }
     }

@@ -28,8 +28,6 @@ final class StreamMenuState {
     /// Settings → General "Reveal controls after", for the Immersive submenu's
     /// checkmark (one value for every window).
     var revealDelay: RevealDelay = .short
-    /// View ▸ Bar Prototype (temporary): the proportions every window uses.
-    var barPrototype: BarPrototype = .compact
 
     /// The app the key stream window shows; nil for the phone window and for
     /// a link window before the phone names its package. Without one the

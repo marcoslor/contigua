@@ -596,3 +596,35 @@ final class StreamMenuTests: XCTestCase {
         XCTAssertEqual(state.showTouches, manager.showTouches, "and the menu state follows it")
     }
 }
+
+/// The bar's row against the lights: a control added to a phone window's bar
+/// (Turn Off Phone Screen) widens the row, and the window's minimum width has
+/// to follow it, or the first capsule sits over the traffic lights.
+final class HeaderBarFitTests: XCTestCase {
+    private var phoneActions: [HeaderAction] {
+        [.back {}, .home {}, .recents {},
+         HeaderAction(kind: .custom, customSymbol: "iphone", help: "Turn Off Phone Screen") {}]
+    }
+
+    func testThePhoneBarFitsBesideTheLightsAtItsMinimumWidth() throws {
+        let actions = phoneActions
+        let minWidth = HeaderBar.minimumWidth(for: actions)
+        let lightsEnd = BarGeometry.lightInset + 2 * BarGeometry.lightSpacing + BarGeometry.lightSide
+        let row = try XCTUnwrap(HeaderBar.row(actions, rightEdge: minWidth))
+        XCTAssertGreaterThanOrEqual(row.actionsX, lightsEnd + HeaderBar.barGap - 0.5,
+                                    "the first capsule clears the third light")
+        XCTAssertEqual(minWidth - (row.liveTextX + HeaderBar.liveTextSide), BarGeometry.rightInset,
+                       accuracy: 0.5, "the Live Text button still mirrors the lights' inset")
+        // Two capsules (navigation + the phone control), the gap and Live Text.
+        XCTAssertEqual(minWidth, 250, accuracy: 0.5)
+    }
+
+    /// The same row one point narrower than the minimum would overlap: the
+    /// check above is not vacuous.
+    func testOnePointNarrowerWouldOverlapTheLights() throws {
+        let actions = phoneActions
+        let row = try XCTUnwrap(HeaderBar.row(actions, rightEdge: HeaderBar.minimumWidth(for: actions) - 1))
+        let lightsEnd = BarGeometry.lightInset + 2 * BarGeometry.lightSpacing + BarGeometry.lightSide
+        XCTAssertLessThan(row.actionsX, lightsEnd + HeaderBar.barGap)
+    }
+}
