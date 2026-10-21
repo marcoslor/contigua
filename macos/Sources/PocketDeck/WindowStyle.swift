@@ -73,20 +73,18 @@ struct ChromeConfig: Equatable {
     }
 }
 
-/// The framed bar and the immersive pill: the numbers both styles share. The
-/// proportions come from the current BarPrototype (View ▸ Bar Prototype, a
-/// temporary choice between Compact and Standard).
+/// The framed bar and the immersive pill: the numbers both styles share.
 enum ChromeBar {
     /// The permanent bar above the stream.
-    static var height: CGFloat { BarPrototype.current.barHeight }
+    static let height = BarGeometry.barHeight
     /// The stream's own corners, as the window's in the immersive style.
     static let cornerRadius: CGFloat = 16
     /// Traffic lights: `trafficLightInset` in from the window's left edge and
     /// from the bar's top and bottom, `trafficLightButtonSide` square,
     /// `trafficLightSpacing` apart.
-    static var trafficLightInset: CGFloat { BarPrototype.current.lightInset }
-    static var trafficLightButtonSide: CGFloat { BarPrototype.current.lightSide }
-    static var trafficLightSpacing: CGFloat { BarPrototype.current.lightSpacing }
+    static let trafficLightInset = BarGeometry.lightInset
+    static let trafficLightButtonSide = BarGeometry.lightSide
+    static let trafficLightSpacing = BarGeometry.lightSpacing
 }
 
 /// The immersive style's hot zone, the dwell that brings the lights in and the

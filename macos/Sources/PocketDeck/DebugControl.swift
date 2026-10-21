@@ -24,9 +24,6 @@
 //   occlude on|off   the first stream window's occlusion state: the WindowServer
 //                    would say a covered window is not visible, and a quiet
 //                    check may not put a window over it
-//   barprototype compact|standard
-//                    View ▸ Bar Prototype (temporary): the same store the
-//                    menu writes
 //   secondary-click longPress|back|nothing
 //                    Settings ▸ Input "Secondary click (two-finger click)", the
 //                    same store the Settings picker writes

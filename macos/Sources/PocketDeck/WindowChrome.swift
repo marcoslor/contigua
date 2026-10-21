@@ -105,8 +105,8 @@ enum HeaderBar {
     /// Between two capsules.
     static let capsuleGap: CGFloat = 6
     /// The row ends this far in from the window's right edge: the lights'
-    /// left inset, mirrored (BarPrototype).
-    static var rightInset: CGFloat { BarPrototype.current.rightInset }
+    /// left inset, mirrored (BarGeometry).
+    static let rightInset = BarGeometry.rightInset
     static let symbolPointSize: CGFloat = 14
     static let symbolWeight: NSFont.Weight = .medium
     /// The Live Text button's side (LiveTextBarButton.side).

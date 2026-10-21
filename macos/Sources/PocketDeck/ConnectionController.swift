@@ -2307,14 +2307,6 @@ final class ConnectionController {
             guard let window = windows.controller(for: 1) else { return "no first window" }
             window.setOcclusionVisible(state == "off")
             return nil
-        case "barprototype":
-            // View ▸ Bar Prototype's same store; the screenshot run switches
-            // variants in one app process (the prototype is temporary).
-            guard let raw = arguments.first, let value = BarPrototype(rawValue: raw) else {
-                return "barprototype needs compact|standard"
-            }
-            windows.setBarPrototype(value)
-            return nil
         case "secondary-click":
             // Settings ▸ Input "Secondary click (two-finger click)", the same
             // store the Settings picker writes.
