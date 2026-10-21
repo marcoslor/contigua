@@ -13,6 +13,7 @@
     1280,
     800
   ],
+  "panel_glyph_ms": 300,
   "settings_design_height_pt": 560,
   "stale_picture_ms": 2000
 }

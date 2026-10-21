@@ -96,7 +96,11 @@ internal sealed interface PanelHoldAction {
 
     data object StopKeepAlive : PanelHoldAction
 
-    /** `state.panel`: the truth the Mac draws. */
+    /**
+     * `state.panel`: the truth the Mac draws. Always the machine's first action:
+     * the panel write, the wake wait and the watchdog's clean stop can take
+     * seconds, and the Mac's button must not wait behind them.
+     */
     data class ReportPanel(val off: Boolean) : PanelHoldAction
 }
 
@@ -129,17 +133,17 @@ internal fun panelHoldTransition(model: PanelHoldModel, event: PanelHoldEvent): 
 
     fun apply(mirror: PanelMirror = PanelMirror.Open, ignore: Boolean = model.ignorePower) = PanelHoldTransition(
         model.copy(state = PanelHoldState.Applying, mirror = mirror, ignorePower = ignore),
-        listOf(PanelHoldAction.PanelOff(true), PanelHoldAction.StartKeepAlive, PanelHoldAction.ReportPanel(true)),
+        listOf(PanelHoldAction.ReportPanel(true), PanelHoldAction.PanelOff(true), PanelHoldAction.StartKeepAlive),
     )
 
     fun suspend() = PanelHoldTransition(
         model.copy(state = PanelHoldState.Suspended, mirror = PanelMirror.Paused),
-        listOf(PanelHoldAction.PanelNormal(), PanelHoldAction.StopKeepAlive, PanelHoldAction.ReportPanel(false)),
+        listOf(PanelHoldAction.ReportPanel(false), PanelHoldAction.PanelNormal(), PanelHoldAction.StopKeepAlive),
     )
 
     fun restore(mirror: PanelMirror = model.mirror, wake: Boolean = false) = PanelHoldTransition(
         model.copy(state = PanelHoldState.Restoring, mirror = mirror),
-        listOf(PanelHoldAction.PanelNormal(wake), PanelHoldAction.StopKeepAlive, PanelHoldAction.ReportPanel(false)),
+        listOf(PanelHoldAction.ReportPanel(false), PanelHoldAction.PanelNormal(wake), PanelHoldAction.StopKeepAlive),
     )
 
     fun ignored() = PanelHoldTransition(model, emptyList())
