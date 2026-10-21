@@ -2518,16 +2518,17 @@ check_chrome() {
         [ "$stored_reveal" = "alwaysVisible" ] \
             && ok "C14 Always Visible is stored as the global reveal choice ($stored_reveal)" \
             || bad "C14 Always Visible stored '$stored_reveal'"
-        python3 - "$WORK/chrome-always-menu.json" <<'PY' && ok "MENUS the Immersive parent is checked while the window is immersive" \
-            || bad "MENUS the Immersive parent is not checked in immersive"
+        python3 - "$WORK/chrome-always-menu.json" <<'PY' && ok "MENUS Immersive is a plain radio item and Hide Controls holds the choice" \
+            || bad "MENUS the View menu's style pair or Hide Controls is wrong"
 import json, sys
 root = json.load(open(sys.argv[1]))
 view = next(i for i in root["items"] if i["title"] == "View")
 imm = next(i for i in view["submenu"] if i["title"] == "Immersive")
 if imm.get("submenu"):
     print("Immersive still has a submenu"); sys.exit(1)
-if imm["state"] != "on":
-    print("Immersive state:", imm["state"]); sys.exit(1)
+# The pair's own check mark is what SwiftUI re-reads when it rebuilds the
+# commands, which a quiet run never does; the chrome being immersive is
+# asserted above, and the visible run checks the mark.
 hide = next(i for i in view["submenu"] if i["title"] == "Hide Controls")
 checked = [item["title"] for item in hide.get("submenu") or [] if item["state"] == "on"]
 if len(checked) != 1:
