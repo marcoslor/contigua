@@ -110,6 +110,12 @@ final class PhoneWindowController: StreamWindowController {
         return phone?.name.isEmpty == false ? phone!.name : "Phone"
     }
 
+    /// Host uptime in whole milliseconds: the clock the e2e's click -> glyph
+    /// measurement uses (monotonic, unlike wall time).
+    private static func uptimeMs() -> Int {
+        Int((ProcessInfo.processInfo.systemUptime * 1000).rounded())
+    }
+
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
 
@@ -155,11 +161,18 @@ final class PhoneWindowController: StreamWindowController {
     /// local guess: the phone is the one that holds the panel.
     var panelOffShown: Bool { screenModel.panelOff }
 
+    /// e2e timing of the last "Turn Off Phone Screen" request (host uptime ms):
+    /// the click that asked, and the `state.panel` that redrew the glyph. The
+    /// chrome state reports both so the mirror check measures click -> glyph.
+    private(set) var panelClickedAtMs = 0
+    private(set) var panelGlyphAtMs = 0
+
     /// "Turn Off Phone Screen": the phone holds its own panel's power off while
     /// this mirror keeps rendering. Remembered per phone, because it is a
     /// choice about that phone.
     func setPanelOff(_ off: Bool) {
         guard panelOffShown != off else { return }
+        panelClickedAtMs = Self.uptimeMs()
         if let id = manager.phone?.id { PhonePanelOffSetting.write(off, for: id, to: manager.profileDefaults) }
         session.setPhonePanel(off: off, ignorePower: panelIgnorePower)
         // The phone answers with a `state.panel`; if it does not within 2 s the
@@ -185,6 +198,7 @@ final class PhoneWindowController: StreamWindowController {
     func setPhonePanel(_ panel: PhonePanel?) {
         let changed = screenModel.setPanel(panel, at: ProcessInfo.processInfo.systemUptime)
         guard changed else { return }
+        panelGlyphAtMs = Self.uptimeMs()
         applyPanelState()
     }
 

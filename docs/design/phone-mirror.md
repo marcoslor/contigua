@@ -46,7 +46,11 @@ Why this and not `SurfaceControl.createDisplay` + `setDisplayProjection`
   hold has ended. A paused phone window (covered, minimised) suspends the hold
   instead of ending it: the panel comes back, `state.panel` reads `"on"`, and
   the request is applied again on resume. `state.panel` is derived from the
-  machine's state, never from a local guess.
+  machine's state, never from a local guess. The transition reports it first,
+  before the panel write and the wake wait; the watchdog's clean stop reaps its
+  child on its own thread instead of stalling the session reader. On the 16:44
+  log those ran before the report and took 1.1 s, and the Mac's button follows
+  the report, so a report sent last is a button 1.1 s late.
 
   Settings ▸ Devices has a per-phone switch, "Keep the phone screen off until I
   turn it on from the Mac", off by default, sent as `ignorePower` with the
