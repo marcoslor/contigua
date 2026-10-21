@@ -6,6 +6,7 @@
 // token from the script occurs.
 //
 // Grammar (blank lines and lines starting with # are ignored):
+//   wait-warm [SECONDS]          wait for the launch warm-up analysis
 //   enter STREAM                 enter the mode on that stream's window
 //   wait-analysis [TOKEN]        wait for VisionKit; contains is TOKEN's answer
 //   waitfile PATH [SECONDS]      wait for the harness's go-ahead
@@ -19,7 +20,8 @@
 //   wait-idle [SECONDS]          wait for the mode to be idle again
 //
 // Results: {"op":"enter|analysis|copy|exit|resize|idle","state":...}
-// plus "hasText","textLen","contains" (analysis), "ok","bytes","w","h" (copy).
+// plus "hasText","textLen","contains","ms" and the frozen frame's size, pixel
+// format and mean luma (analysis), "ok","bytes","w","h" (copy).
 // The last line is {"op":"done"}.
 
 import AppKit
@@ -27,6 +29,7 @@ import CoreVideo
 import Foundation
 
 enum LiveTextScriptAction: Equatable {
+    case waitWarm(timeout: Double)
     case enter(UInt32)
     case waitAnalysis(token: String?)
     case waitFile(path: String, timeout: Double)
@@ -64,6 +67,11 @@ enum LiveTextDebugScript {
 
     private static func parseLine(_ words: [String]) throws -> LiveTextScriptAction {
         switch words.first?.lowercased() {
+        case "wait-warm":
+            guard words.count <= 2 else { throw LineError(message: "wait-warm takes at most SECONDS") }
+            let timeout = words.count == 2 ? (Double(words[1]) ?? 0) : 60
+            guard timeout > 0 else { throw LineError(message: "wait-warm SECONDS must be positive") }
+            return .waitWarm(timeout: timeout)
         case "enter":
             guard words.count == 2, let stream = UInt32(words[1]) else {
                 throw LineError(message: "enter needs STREAM")
@@ -122,6 +130,9 @@ final class LiveTextDebugDriver {    private let actions: [LiveTextScriptAction]
     /// The stream the last enter/resize named; wait-analysis and copy-image
     /// act on it.
     private var stream: UInt32 = 1
+    /// When the last enter ran: the analysis result carries how long VisionKit
+    /// took from it (docs/design/livetext.md's 3 s).
+    private var enteredAt = Date()
 
     init(actions: [LiveTextScriptAction], windows: WindowManager) {
         self.actions = actions
@@ -159,8 +170,13 @@ final class LiveTextDebugDriver {    private let actions: [LiveTextScriptAction]
 
     private func perform(_ action: LiveTextScriptAction) {
         switch action {
+        case .waitWarm(let timeout):
+            let deadline = Date(timeIntervalSinceNow: timeout)
+            while Date() < deadline, !LiveTextWarmer.isWarm { pump(0.1) }
+            emit(["op": "warm", "ok": LiveTextWarmer.isWarm])
         case .enter(let stream):
             self.stream = stream
+            enteredAt = Date()
             let deadline = Date(timeIntervalSinceNow: 15)
             while Date() < deadline {
                 if let controller = windows.controller(for: stream), controller.enterLiveText() {
@@ -188,6 +204,18 @@ final class LiveTextDebugDriver {    private let actions: [LiveTextScriptAction]
                 line["hasText"] = controller.liveText.hasText
                 line["textLen"] = controller.liveText.transcriptLength
                 line["highlights"] = controller.liveText.selectableItemsHighlighted
+                line["ms"] = Int(Date().timeIntervalSince(enteredAt) * 1000)
+                // Attempts and the applied analysis's own length: "0,0,0" with
+                // a frame full of text says the analyser, not the frame.
+                line["attemptChars"] = controller.liveText.attemptChars
+                line["attemptMs"] = controller.liveText.attemptMs
+                line["analysisChars"] = controller.liveText.analysisChars
+                if let stats = controller.liveText.frameStats {
+                    line["frameW"] = stats.width
+                    line["frameH"] = stats.height
+                    line["frameFormat"] = stats.format
+                    line["frameMean"] = stats.mean
+                }
                 if let token { line["contains"] = controller.liveText.contains(token) }
             }
             emit(line)

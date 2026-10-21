@@ -33,6 +33,11 @@ final class LiveTextDebugScriptTests: XCTestCase {
         ])
     }
 
+    func testWaitWarmTakesAnOptionalTimeout() throws {
+        XCTAssertEqual(try LiveTextDebugScript.parse("wait-warm"), [.waitWarm(timeout: 60)])
+        XCTAssertEqual(try LiveTextDebugScript.parse("wait-warm 5.5"), [.waitWarm(timeout: 5.5)])
+    }
+
     func testUnknownActionFailsWithItsLine() {
         XCTAssertThrowsError(try LiveTextDebugScript.parse("enter 1\nbogus")) { error in
             XCTAssertEqual("\(error)", "line 2: unknown action 'bogus'")
