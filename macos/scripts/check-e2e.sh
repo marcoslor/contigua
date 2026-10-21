@@ -7867,6 +7867,7 @@ PY
     # The phone window's Back button and the Navigate shortcut run the same
     # controller action this check drives.
     printf '%s\n' \
+        "wait-warm 180" \
         "enter 1" \
         "wait-analysis POCKETDECK" \
         "drag-check" \
@@ -7885,6 +7886,16 @@ PY
         --quit-after 320
     wait_until 30 events_have '"ev":"video","stream":1,"config":true' \
         || { bad "LT no video config"; stop_app; stop_fakephone; return 1; }
+
+    # The launch warm-up finished (LiveTextWarmer): the analysis below is the
+    # one a person gets minutes into a session, not a cold service's first call.
+    if wait_until 200 grep -q '"op":"warm"' "$WORK/app.log"; then
+        grep '"op":"warm"' "$WORK/app.log" | tail -1 | grep -q '"ok":true' \
+            && ok "LT the launch warm-up finished" \
+            || bad "LT the launch warm-up never finished ($(grep '"op":"warm"' "$WORK/app.log" | tail -1))"
+    else
+        bad "LT the warm-up never reported"
+    fi
 
     # Enter + VisionKit: the frozen frame carries POCKETDECK.
     if wait_until 120 grep -q '"ok":true,"op":"analysis"' "$WORK/app.log"; then
@@ -7909,6 +7920,29 @@ PY
             *'"highlights":true'*) ok "LT the Live Text highlight button is on after the analysis" ;;
             *) bad "LT the Live Text highlight button is off after the analysis ($line)" ;;
         esac
+        # The person waits in the mode for the words: the entry is done when the
+        # analysis is (v105 took 8-13 s and left, or never had text at all).
+        local ms
+        ms="$(grep -o '"ms":[0-9]*' <<< "$line" | cut -d: -f2)"
+        if [ -n "${ms:-}" ] && [ "${ms:-0}" -lt 3000 ]; then
+            ok "LT the analysis read the frame ${ms} ms after entering (< 3000)"
+        else
+            bad "LT the analysis took ${ms:-?} ms after entering (limit 3000)"
+        fi
+        # The entry diagnostics: the frozen frame's size, its pixel format and
+        # its mean luma, so a blank frame is visible in the log next time.
+        case "$line" in
+            *'"frameFormat":"BGRA"'*'"frameW":896'*'"frameH":592'*)
+                ok "LT the entry logs the frozen frame's size and format" ;;
+            *) bad "LT the entry does not log the frame diagnostics ($line)" ;;
+        esac
+        local mean
+        mean="$(grep -o '"frameMean":[0-9]*' <<< "$line" | cut -d: -f2)"
+        if [ -n "${mean:-}" ] && [ "${mean:-0}" -gt 20 ]; then
+            ok "LT the frozen frame is not blank (mean luma $mean)"
+        else
+            bad "LT the frozen frame looks blank (mean luma ${mean:-?})"
+        fi
     else
         bad "LT no analysis result (app log: $(tail -3 "$WORK/app.log"))"
     fi
@@ -8032,6 +8066,19 @@ PY
             || bad "LT the resize did not return the mode to idle"
     else
         bad "LT the second enter/resize phase did not run"
+    fi
+
+    # VisionKit's service sometimes answers "no text" for a frame full of words
+    # (v105's "analysis ready, 0 characters"); the mode asks again
+    # (LiveTextView.analysisAttempts). Both analyses this run took — the second
+    # enter included — must carry the text.
+    local analyses textless
+    analyses="$(grep -c '"op":"analysis"' "$WORK/app.log")"
+    textless="$(grep '"op":"analysis"' "$WORK/app.log" | grep -c '"hasText":false')"
+    if [ "${analyses:-0}" -ge 2 ] && [ "${textless:-1}" = "0" ]; then
+        ok "LT both analyses read text (no empty answer kept)"
+    else
+        bad "LT ${textless:-?} of ${analyses:-?} analysis result(s) came back with no text"
     fi
 
     # Out of the mode the same press works again (the script's last Back runs

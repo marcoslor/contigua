@@ -25,6 +25,26 @@ Two routes, in this order:
    arriving while the mode is still capturing is the answer to our request and
    is not treated as a window change.
 
+Whichever route delivers the buffer, it is copied onto our side before use: a
+private 32BGRA buffer plus the rasterised `CGImage` of the same picture. The
+layer's own buffer is a GPU surface — it draws correctly but a reader that goes
+through its memory gets nothing back, so v105 froze a frame full of text and
+VisionKit recognised 0 characters while the overlay showed the words. The
+snapshot is what the overlay, the PNG copy, the drag and the analyser all see;
+the layer is free to recycle its own buffer as soon as the pause ends.
+
+The analysis runs on the rasterised image. VisionKit's analyser lives in a
+service of its own and its first calls in a fresh service are slow (tens of
+seconds on a loaded machine) and can answer "no text" for a frame full of
+words, so:
+
+- the app warms the analyser at launch (`LiveTextWarmer`): it reads one word of
+  our own until VisionKit answers with it, nobody waiting;
+- an entry that comes back with no text results is asked again (a few attempts,
+  cheap once the service is warm); the attempt count is logged, never the text;
+- the entry logs the frozen frame's size, pixel format and mean luma (counts
+  only), so a blank frame is visible in the log next time.
+
 If neither route delivers a frame within 5 s, the mode leaves again
 (`captureFailed`) and the window keeps showing live video.
 
@@ -114,7 +134,8 @@ script occurs — never the transcript.
   Live Text button, and the window's hit test over the frame lands on the
   overlay or a VisionKit subview, never on the video view underneath.
 - e2e `livetext`: enter → VisionKit reads `POCKETDECK` from the fake phone's
-  text frame; no `INPUT` frame reaches the phone while the mode is on and the
+  text frame within 3 s of entering, with the frame diagnostics (size, BGRA,
+  mean luma) in the result, and every analysis of the run carrying text; no `INPUT` frame reaches the phone while the mode is on and the
   phone stops sending frames; `copy-image` writes a PNG at the stream's pixel
   size; `drag-check` takes the window's hit test at a recognised word and
   sends a synthetic down/drag/up through the window (the quiet run's app is

@@ -398,7 +398,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // the registration domain and the person's defaults stay untouched.
         UserDefaults.standard.register(defaults: ["NSFullScreenMenuItemEverywhere": false])
         FullScreenMenu.install()
-        ImmersiveMenuInstaller.install()
+        // VisionKit's analyser service is slow and unreliable on its first
+        // call (LiveTextWarmer): pay that while the app starts, not when the
+        // person presses Live Text.
+        LiveTextWarmer.start()
         if let path = environment.options.debugBanner {
             let probe = DebugBanner(path: path) { [controller = environment.controller] in
                 controller.banner?.text
