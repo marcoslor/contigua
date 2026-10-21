@@ -305,8 +305,13 @@ class DeckForegroundService : Service() {
 
     private fun updateOngoing() {
         val text = when {
-            DeckState.connectedMac != null -> getString(R.string.notif_connected, DeckState.connectedMac, DeckState.windows)
-            serviceReady && DeckState.port > 0 -> getString(R.string.notif_listening, DeckState.port)
+            DeckState.connectedMac != null -> resources.getQuantityString(
+                R.plurals.notif_connected,
+                DeckState.windows,
+                DeckState.connectedMac,
+                DeckState.windows,
+            )
+            serviceReady && DeckState.port > 0 -> getString(R.string.notif_listening)
             else -> getString(R.string.notif_starting)
         }
         getSystemService(NotificationManager::class.java).notify(NOTIF_ONGOING, ongoingNotification(text))

@@ -5,6 +5,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.test.getUnclippedBoundsInRoot
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -93,6 +94,17 @@ class HomeScreenTest {
         val paired = compose.onNodeWithText("Paired Macs").getUnclippedBoundsInRoot().left.value
         assertEquals("switch row must not be indented inside the card's edge", card, row, 1f)
         assertEquals("Paired Macs title must share the same edge", card, paired, 1f)
+    }
+
+    @Test
+    fun `the paired row overflow is named for its Mac`() {
+        shoot(
+            state(enabled = true).copy(
+                paired = listOf(PairedMacUi("client-1", "Marcos's MacBook", 5)),
+            ),
+        )
+        compose.onNodeWithContentDescription("More options for Marcos's MacBook")
+            .fetchSemanticsNode()
     }
 
     @Test
