@@ -2623,7 +2623,7 @@ import json, sys
 APP_ITEMS = ["Add Phone…", "Find Apps", "Phone Window", "Continue on Mac", "Show Touches",
              "Live Text", "Framed", "Immersive", "Hide Controls", "Density",
              "Turn Off Phone Screen", "Do Not Disturb", "Ring Phone", "Install APK…",
-             "Back", "Home", "Recents"]
+             "Back", "Home", "Recents", "Enter Full Screen"]
 # SwiftUI items often have no target at all (nil action target); an item the
 # app installed with AppKit carries one of the app's own classes.
 SYSTEM_OWNERS = {"MenuItemCallback", "SwiftUIMenu", "NSMenu", "NSWindow", "NSApplication",
@@ -2636,9 +2636,7 @@ def walk(items):
 root = json.load(open(sys.argv[1]))
 problems = []
 for line in root.get("problems") or []:
-    menu, _, what = line.partition(": ")
-    if "follows another" in what or "leading" in what or menu in ("View", "Phone", "Navigate"):
-        problems.append("shape " + line)
+    problems.append("shape " + line)
 titles = [i["title"] for i in root["items"]]
 if titles != ["PocketDeck", "File", "Edit", "View", "Phone", "Navigate", "Window", "Help"]:
     problems.append("menus: %r" % (titles,))
@@ -2648,6 +2646,8 @@ WANT = {
     "Phone": ["Phone Window", "Continue on Mac", "—", "Turn Off Phone Screen",
               "Do Not Disturb", "Ring Phone", "—", "Install APK…"],
     "Navigate": ["Back", "Home", "Recents"],
+    "File": ["Add Phone…", "—", "Close", "Close All"],
+    "Help": [],
 }
 for title, want in WANT.items():
     menu = next((i for i in root["items"] if i["title"] == title), None)
@@ -2896,7 +2896,7 @@ if checked != ["Short"]:
 PY
 
     # The Window menu's own full-screen item, and the only one in the tree.
-    python3 - "$WORK/menus-1.json" <<'PY' && ok "MENUS Window holds the only full-screen item, Enter Full Screen 🌐F" \
+    python3 - "$WORK/menus-1.json" <<'PY' && ok "MENUS Window holds the only full-screen item, Enter Full Screen ⌃⌘F" \
         || bad "MENUS the Window menu's full-screen item is wrong"
 import json, sys
 def walk(items):
@@ -2914,8 +2914,10 @@ if len(in_window) != 1:
 item = in_window[0]
 if item["title"] != "Enter Full Screen":
     print("title:", item["title"]); sys.exit(1)
-if item["keyEquivalent"] != "f" or item["modifiers"] != ["function"]:
+if item["keyEquivalent"] != "f" or sorted(item["modifiers"]) != ["command", "control"]:
     print("shortcut:", repr(item["keyEquivalent"]), item["modifiers"]); sys.exit(1)
+if not item["hasImage"]:
+    print("no icon"); sys.exit(1)
 everywhere = [i for i in walk(root["items"]) if "Full Screen" in i["title"]]
 if len(everywhere) != 1:
     print("full-screen items in the tree:", [i["title"] for i in everywhere]); sys.exit(1)
@@ -3040,8 +3042,10 @@ if len(everywhere) != 1:
 item = everywhere[0]
 if item["title"] != "Exit Full Screen":
     print("title:", item["title"]); sys.exit(1)
-if item["keyEquivalent"] != "f" or item["modifiers"] != ["function"]:
+if item["keyEquivalent"] != "f" or sorted(item["modifiers"]) != ["command", "control"]:
     print("shortcut:", repr(item["keyEquivalent"]), item["modifiers"]); sys.exit(1)
+if not item["hasImage"]:
+    print("no icon"); sys.exit(1)
 PY
         # Leave full screen; the next checks share this app.
         touch "$WORK/menus-step-exit"
