@@ -712,6 +712,12 @@ class EventLog(object):
         self._emit({"ev": "stall", "stream": stream, "frames": frames,
                     "ts": time.time()})
 
+    def resume(self, stream, frames):
+        """--stall-for: the stalled stream sends frames again from here (the
+        window must stop saying the picture is not live)."""
+        self._emit({"ev": "resume", "stream": stream, "frames": frames,
+                    "ts": time.time()})
+
     def rx(self, msg):
         self._emit({"ev": "rx", "msg": redact_event(msg), "ts": time.time()})
         # Every request leaves a fresh counters line, so a check that starts
@@ -1555,9 +1561,21 @@ class WindowStream(object):
                 self._paused = True
 
     def _stall(self):
-        """--stall-after: stop the encoder but keep the session and its socket."""
+        """--stall-after: stop the encoder but keep the session and its socket.
+
+        --stall-for restarts it after that many seconds: the picture comes
+        back and a check can see the window's stall state clear.
+        """
         self.pause()
         self.phone.events.stall(self.stream_id, self._frames_sent)
+        if self.phone.args.stall_for > 0:
+            timer = threading.Timer(self.phone.args.stall_for, self._resume_after_stall)
+            timer.daemon = True
+            timer.start()
+
+    def _resume_after_stall(self):
+        self.phone.events.resume(self.stream_id, self._frames_sent)
+        self.start()
 
     def stop(self):
         with self._lock:
@@ -3689,6 +3707,8 @@ def build_parser():
                         "and the normal frames")
     p.add_argument("--stall-after", type=float, default=0.0, metavar="SECONDS",
                    help="after a stream's first frame, stop sending frames but keep the session up (a hung phone)")
+    p.add_argument("--stall-for", type=float, default=0.0, metavar="SECONDS",
+                   help="with --stall-after, send frames again after this long (the picture comes back)")
     p.add_argument("--rotate-after", type=float, default=0.0, metavar="SECONDS",
                    help="turn the screen to landscape this long after a phone window opens")
     p.add_argument("--qr-uri", metavar="URI",

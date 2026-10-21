@@ -605,6 +605,13 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         let titleUp = window?.titleVisibility == .visible
         let managed = chrome.lightsManagedByAppKit ? "appkit" : "us"
         let fullScreen = window?.styleMask.contains(.fullScreen) ?? false
+        // The "Not responding" pill is the visible part of a stall: it must be
+        // in the view tree, saying so, and fading in (the state's `stall=` is
+        // only the flag). The e2e asserts this, so a window that stops the
+        // picture without telling the person fails the check.
+        let stallPill = pill.map {
+            $0.superview != nil && $0.text == "Not responding" && $0.fadeTarget == 1
+        } ?? false
         let line = "style=\(style.rawValue) lights=\(lights ? "shown" : "hidden") pill=\(pillUp ? "shown" : "hidden")"
             + " title_visible=\(titleUp ? "yes" : "no") lights_managed=\(managed)"
             + " fullscreen=\(fullScreen ? "yes" : "no") clicks=\(barPresses)"
@@ -616,7 +623,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
             + " screen=\(chrome.phoneOverlay.cover == .screenOff ? "off" : "on")"
             + " overlay=\(chrome.phoneOverlay.cover == nil ? 0 : 1)"
             + " secure=\(chrome.phoneOverlay.cover == .secure ? 1 : 0)"
-            + " stall=\(isStalled ? 1 : 0)\n"
+            + " stall=\(isStalled ? 1 : 0) stall_pill=\(stallPill ? 1 : 0)\n"
         try? Data(line.utf8).write(to: stateFile, options: .atomic)
     }
 
