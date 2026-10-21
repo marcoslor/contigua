@@ -96,4 +96,103 @@ final class PhonePanelTests: XCTestCase {
                            "the panel must not read the media \(forbidden)")
         }
     }
+
+    // MARK: - The panel's model
+
+    private func panelState(online: Bool = true, sessions: [MediaSessionRow] = [],
+                       dnd: PhoneDndMode? = .off, volume: Int? = 8) -> PhoneControlsState {
+        var state = PhoneControlsState()
+        state.phoneName = "Pixel 9"
+        state.connection = online ? .online : .offline
+        var media = MediaState()
+        media.volume = volume
+        media.volumeMax = 15
+        state.media = volume == nil ? nil : media
+        state.sessions = sessions
+        state.dnd = dnd
+        return state
+    }
+
+    private func row(_ key: String, _ app: String, playing: Bool = false) -> MediaSessionRow {
+        MediaSessionRow(key: key, pkg: "com.example.\(key)", app: app, playing: playing)
+    }
+
+    /// The rows in the order the view lays them out, because the e2e maps the
+    /// hosting view's key views (top to bottom) to this list by index: the
+    /// phone controls, the live notifications, then the window actions and the
+    /// footer.
+    func testTheRowsAreInTheOrderTheViewLaysThemOut() {
+        var state = panelState(sessions: [row("a", "Spotify"), row("b", "Music")])
+        state.live = [NotifyLiveItem(id: "n1", pkg: "com.example.clock", label: "Timer",
+                                     chip: nil, progress: nil, chrono: nil, countDown: false,
+                                     updated: Date())]
+        XCTAssertEqual(PhonePanelItem.focusOrder(for: state),
+                       [.volume, .dnd, .ring, .sessions, .live,
+                        .phoneScreen, .findApps, .continueOnMac, .installApk, .settings, .quit])
+
+        // The agent row's Disconnect button is the first focusable control.
+        state.agentCount = 1
+        XCTAssertEqual(PhonePanelItem.focusOrder(for: state).first, .disconnectAgent)
+
+        // Without live rows and with one session the picker is not there.
+        state = panelState(sessions: [row("a", "Spotify")])
+        XCTAssertEqual(PhonePanelItem.focusOrder(for: state),
+                       [.volume, .dnd, .ring,
+                        .phoneScreen, .findApps, .continueOnMac, .installApk, .settings, .quit])
+    }
+
+    /// Ring becomes Stop Ringing while the phone rings, and back.
+    func testRingFlipsToStopRinging() {
+        var state = panelState()
+        XCTAssertEqual(state.ringTitle, "Ring Phone")
+        state.ringing = true
+        XCTAssertEqual(state.ringTitle, "Stop Ringing")
+        XCTAssertEqual(PhonePanelItem.ring.label, "Ring Phone")
+    }
+
+    /// Offline: one honest line, and the phone controls are off (no volume, no
+    /// DND) even when the last state still had both.
+    func testOfflineExplainsWhyTheControlsAreOff() {
+        let state = panelState(online: false, sessions: [row("a", "Spotify")])
+        XCTAssertEqual(state.reason, "Connect your phone to use these.")
+        XCTAssertNil(state.volumeFraction)
+        XCTAssertEqual(state.connection.text, "Offline")
+    }
+
+    /// Online but the phone sent no volume, or no DND: say which, in that order.
+    func testTheReasonNamesTheMissingPhoneCapability() {
+        XCTAssertEqual(panelState(volume: nil).reason, "Your phone hasn't sent a volume.")
+        XCTAssertEqual(panelState(dnd: nil).reason, "This phone doesn't report Do Not Disturb.")
+        XCTAssertNil(panelState().reason)
+        // A volume without a maximum is not a fraction.
+        var noMax = panelState()
+        noMax.media?.volumeMax = nil
+        XCTAssertNil(noMax.volumeFraction)
+        XCTAssertEqual(noMax.reason, "Your phone hasn't sent a volume.")
+    }
+
+    /// The picker is a row only with two or more sessions, and its title names
+    /// the app Now Playing follows.
+    func testThePickerNeedsTwoSessionsAndNamesTheChosenApp() {
+        XCTAssertFalse(panelState(sessions: [row("a", "Spotify")]).showsPicker)
+        var state = panelState(sessions: [row("a", "Spotify"), row("b", "Music", playing: true)])
+        XCTAssertTrue(state.showsPicker)
+        XCTAssertEqual(state.pickerTitle, "Now Playing follows: Spotify")
+        state.media?.key = "b"
+        XCTAssertEqual(state.pickerTitle, "Now Playing follows: Music")
+    }
+
+    /// One item model for both hosts: the menu bar panel and the Deck popover
+    /// build the same view from the same state, and every row has its own id.
+    func testBothHostsBuildTheSameItems() throws {
+        let ids = PhonePanelItem.allCases.map(\.id)
+        XCTAssertEqual(Set(ids).count, ids.count, "row ids must be unique")
+        XCTAssertTrue(ids.allSatisfy { $0.hasPrefix("panel.") })
+        for name in ["MenuBar.swift", "DeckViews.swift"] {
+            let text = try source(name)
+            XCTAssertTrue(text.contains("PhonePanelView("), "\(name) hosts the shared panel")
+            XCTAssertTrue(text.contains("PhoneControlsState(controller: controller)"),
+                          "\(name) builds the panel state the same way")
+        }
+    }
 }
