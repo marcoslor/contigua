@@ -115,16 +115,24 @@ on = "phone.panel on: the mirrored panel comes back"
 ons = [i for i, l in enumerate(lines) if on in l]
 on_with_normal = 0
 on_without_normal = 0
-for i in ons:
-    normal = False
-    for j in range(i + 1, len(lines)):
-        if off in lines[j]:
-            break
-        if "panel power mode -> NORMAL" in lines[j]:
-            normal = True
-            break
-    on_with_normal += 1 if normal else 0
-    on_without_normal += 0 if normal else 1
+mode = None
+for i, l in enumerate(lines):
+    if "panel power mode -> " in l:
+        mode = "NORMAL" if "NORMAL" in l else "OFF"
+    if on in l:
+        # The panel is restored for this episode when a NORMAL was written
+        # before the on (the hold had already ended, e.g. a power press) or
+        # right after it.
+        normal = mode == "NORMAL"
+        if not normal:
+            for j in range(i + 1, len(lines)):
+                if off in lines[j]:
+                    break
+                if "panel power mode -> NORMAL" in lines[j]:
+                    normal = True
+                    break
+        on_with_normal += 1 if normal else 0
+        on_without_normal += 0 if normal else 1
 held_steps = 0
 stop_alone = 0
 holding = False
@@ -133,23 +141,26 @@ for l in lines:
     if off in l:
         holding = True
         steps = 0
-    elif on in l:
-        if holding:
-            held_steps = max(held_steps, steps)
-        holding = False
     elif holding and "keepalive step" in l:
         steps += 1
     elif holding and "no hold and no stream left" in l:
         stop_alone += 1
+    # The machine logs its own way out (request on, power press, close, session
+    # end); only lines inside that window are a hold that ended by itself.
+    if holding and (on in l or "panelhold:" in l and ("--> Restoring" in l or "--> Off" in l)):
+        held_steps = max(held_steps, steps)
+        holding = False
 press = 0
 press_normal = 0
 for i, l in enumerate(lines):
-    if "user pressed power while the panel was dark" in l:
+    if "Held --powerPress--> Restoring" in l:
         press += 1
         for j in range(i + 1, len(lines)):
             if "panel power mode ->" in lines[j]:
                 if "NORMAL" in lines[j]:
                     press_normal += 1
+                break
+            if "panelhold:" in lines[j]:
                 break
 print("on_requests=%d" % len(ons))
 print("on_with_normal=%d" % on_with_normal)
@@ -176,17 +187,18 @@ hold_shape_ok() { # <read_hold output>
     && [ "${s:-0}" -ge 3 ] && [ "${p:-1}" -eq 0 ] && [ "${n:-0}" -ge 1 ]
 }
 
-# The forced shape boot #3 showed: 4 dark plans (the app-window take-over and
-# its re-apply in (a), phone.panel off and its re-apply in (c)); 2 transitional
-# plans (the two take-overs). A resume re-take would make 3, which item 1
-# forbids. The sleep line is present; a pause hand-back would make grace > 0.
+# The forced shape: 4 dark plans (the app-window take-over and its re-apply in
+# (a), phone.panel off and its re-apply in (c)); 1 transitional plan (the
+# app-window take-over — the hold's own take-over re-applies from its action,
+# not from a plan). A resume re-take would make 2, which item 1 forbids. The
+# sleep line is present; a pause hand-back would make grace > 0.
 plans_shape_ok() { # <read_plans output>
   local p="$1" d t g s
   d="$(printf '%s\n' "$p" | sed -n 's/^dark_plans=//p')"
   t="$(printf '%s\n' "$p" | sed -n 's/^transitional_plans=//p')"
   g="$(printf '%s\n' "$p" | sed -n 's/^grace_handbacks=//p')"
   s="$(printf '%s\n' "$p" | sed -n 's/^first_sleep=//p')"
-  [ "${d:-0}" -eq 4 ] && [ "${t:-0}" -eq 2 ] && [ "${g:-1}" -eq 0 ] && [ "${s:-none}" != "none" ]
+  [ "${d:-0}" -eq 4 ] && [ "${t:-0}" -eq 1 ] && [ "${g:-1}" -eq 0 ] && [ "${s:-none}" != "none" ]
 }
 
 # ---- --check: everything that can be wrong before a boot -------------------
@@ -219,7 +231,7 @@ PY
 14:25:16.694 I/PocketDeckSvc: phone back to sleep after the last stream
 14:25:17.602 I/PocketDeckSvc: closed stream 1 (display 2)
 14:25:20.536 I/PocketDeckSvc: power: panel ON -> PanelPlan(wake=true, panelOff=false, transitional=false)
-14:25:23.500 I/PocketDeckSvc: power: panel ON -> PanelPlan(wake=true, panelOff=true, transitional=true)
+14:25:23.500 I/PocketDeckSvc: power: panel ON -> PanelPlan(wake=true, panelOff=true, transitional=false)
 14:25:25.511 I/PocketDeckSvc: power: panel ON -> PanelPlan(wake=true, panelOff=true, transitional=false)
 14:25:29.514 I/PocketDeckSvc: power: panel ON -> PanelPlan(wake=true, panelOff=false, transitional=false)
 14:25:29.630 I/PocketDeckSvc: closed stream 1 (display 4)
@@ -240,7 +252,7 @@ FIXTURE
 14:25:17.602 I/PocketDeckSvc: closed stream 1 (display 2)
 14:25:20.536 I/PocketDeckSvc: power: panel ON -> PanelPlan(wake=true, panelOff=false, transitional=false)
 14:25:21.000 I/PocketDeckSvc: power: panel ON -> PanelPlan(wake=true, panelOff=true, transitional=true)
-14:25:23.500 I/PocketDeckSvc: power: panel ON -> PanelPlan(wake=true, panelOff=true, transitional=true)
+14:25:23.500 I/PocketDeckSvc: power: panel ON -> PanelPlan(wake=true, panelOff=true, transitional=false)
 14:25:25.511 I/PocketDeckSvc: power: panel ON -> PanelPlan(wake=true, panelOff=true, transitional=false)
 14:25:29.514 I/PocketDeckSvc: power: panel ON -> PanelPlan(wake=true, panelOff=false, transitional=false)
 14:25:29.630 I/PocketDeckSvc: closed stream 1 (display 4)
@@ -251,7 +263,7 @@ FIXTURE
     exit 1
   fi
   case "$BAD" in
-    *transitional_plans=3*) ;;
+    *transitional_plans=2*) ;;
     *) echo "CHECK FAIL: the parser missed the extra transitional plan ($BAD)"; exit 1 ;;
   esac
   # And a log where the pause slept the phone (the bug) must read the other way.
@@ -289,8 +301,9 @@ FIXTURE
 10-21 15:33:46.000 I/PocketDeckSvc: phone.panel on: the mirrored panel comes back
 10-21 15:33:46.200 I/PocketDeckSvc: panel power mode -> NORMAL (1 physical display)
 10-21 15:33:50.000 I/PocketDeckSvc: phone.panel off: holding the mirrored panel off
-10-21 15:33:50.100 I/PocketDeckSvc: power: user pressed power while the panel was dark; panel given back
+10-21 15:33:50.100 I/PocketDeckSvc: panelhold: Held --powerPress--> Restoring
 10-21 15:33:50.300 I/PocketDeckSvc: panel power mode -> NORMAL (1 physical display)
+10-21 15:33:50.400 I/PocketDeckSvc: power: user pressed power while the panel was dark; panel given back
 FIXTURE
   GOOD="$(read_hold "$FIX")"
   hold_shape_ok "$GOOD" ||
@@ -466,18 +479,18 @@ GRACE="$(printf '%s\n' "$PLANS" | sed -n 's/^grace_handbacks=//p')"
 SLEEP_AT="$(printf '%s\n' "$PLANS" | sed -n 's/^first_sleep=//p')"
 CLOSE_AT="$(printf '%s\n' "$PLANS" | sed -n 's/^first_close=//p')"
 
-# The forced boot-3 shape: 4 dark plans (the app-window take-over + re-apply in
-# (a), phone.panel off + re-apply in (c)); 2 transitional plans (the two
-# take-overs). A resume re-take would make 3, which item 1 forbids.
+# The forced shape: 4 dark plans (the app-window take-over + re-apply in (a),
+# phone.panel off + re-apply in (c)); 1 transitional plan (the app take-over; a
+# resume re-take would make 2, which item 1 forbids).
 if [ "${DARK:-0}" -eq 4 ]; then
   pass "the panel went dark 4 times: the app window and phone.panel off, each with its re-apply ($DARK)"
 else
   fail "the panel went dark $DARK time(s), expected 4 (forced take-over + re-apply, twice)"
 fi
-if [ "${TRANS:-0}" -eq 2 ]; then
-  pass "the two take-overs were transitional; a resume did not re-take ($TRANS)"
+if [ "${TRANS:-0}" -eq 1 ]; then
+  pass "one transitional take-over (the app window); a resume did not re-take ($TRANS)"
 else
-  fail "the panel was taken over $TRANS time(s), expected 2 (a resume re-take would make 3)"
+  fail "the panel was taken over $TRANS time(s), expected 1 (a resume re-take would make 2)"
 fi
 if [ "${GRACE:-1}" -eq 0 ]; then
   pass "no grace hand-back inside a 4 s pause"
