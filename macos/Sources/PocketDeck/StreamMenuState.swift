@@ -20,6 +20,11 @@ final class StreamMenuState {
     /// The key stream window's phone-side actions are frozen: Live Text or a
     /// cover over the mirror. One rule for the buttons, shortcuts and menu.
     var frozen = false
+    /// The key window is the phone window (the whole Navigate menu acts on it).
+    var phoneWindow = false
+    /// The key phone window's mirrored panel is held off ("Turn Off Phone
+    /// Screen"): the Navigate menu item's check follows the phone's report.
+    var panelOff = false
     /// Settings → General "Reveal controls after", for the Immersive submenu's
     /// checkmark (one value for every window).
     var revealDelay: RevealDelay = .short

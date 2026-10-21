@@ -1834,11 +1834,13 @@ final class ConnectionController {
             }
             runDockHooks()
             recheckOpenWindows()
-        case .phoneState(let locked, let battery, let charging, let dnd, let ringer, let screen, let secure):
+        case .phoneState(let locked, let battery, let charging, let dnd, let ringer, let screen, let secure,
+                         let panel):
             status = PhoneStatus(locked: locked, battery: battery, charging: charging, dnd: dnd, ringer: ringer,
                                  screen: screen)
             windows.setPhoneScreen(screen)
             if let secure { windows.setPhoneSecure(secure) }
+            windows.setPhonePanel(panel)
             if let id = link.phone?.id { batteryMemory.record(deviceId: id, level: battery, charging: charging) }
             reconcileFocusOnFirstState(dnd)
             runPendingDebugDnd()
@@ -2337,6 +2339,13 @@ final class ConnectionController {
             // unit-tested; a scripted click would need real pointer input).
             guard let phone = windows.phoneWindow else { return "no phone window" }
             phone.wakeScreen()
+            return nil
+        case "panel-menu":
+            // Navigate ▸ Turn Off Phone Screen: the same WindowManager call the
+            // menu item's binding makes, which sends the phone window's own
+            // action (its target, like a menu item's).
+            guard windows.phoneWindow != nil else { return "no phone window" }
+            windows.togglePhonePanelOff()
             return nil
         case "nav-click":
             // A click on the phone window's Back / Home / Recents button,

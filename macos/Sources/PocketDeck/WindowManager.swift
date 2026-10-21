@@ -380,6 +380,25 @@ final class WindowManager {
         }
     }
 
+    /// `state.panel`: the phone holds its mirrored panel off for this window.
+    func setPhonePanel(_ panel: PhonePanel?) {
+        for controller in allControllers() {
+            (controller as? PhoneWindowController)?.setPhonePanel(panel)
+        }
+    }
+
+    /// Navigate ▸ Turn Off Phone Screen for the open phone window. The phone is
+    /// the one that holds the panel, so this only asks; the check follows its
+    /// report.
+    func togglePhonePanelOff() {
+        guard let phone = phoneWindow else { return }
+        NSApp.sendAction(#selector(PhoneWindowController.togglePanelOffMenuAction(_:)), to: phone, from: nil)
+    }
+
+    /// The profile's defaults, for what is remembered per phone (nicknames,
+    /// window styles and "Turn Off Phone Screen").
+    var profileDefaults: UserDefaults { frames }
+
     /// `state.secure`: the phone's mirror is a surface Android blanks.
     func setPhoneSecure(_ secure: Bool) {
         for controller in allControllers() {

@@ -247,4 +247,84 @@ final class PhoneScreenOverlayTests: XCTestCase {
         XCTAssertEqual(phone.screenModel.wakeRequests, 2, "open + click")
         XCTAssertTrue(commands.isEmpty)
     }
+
+    // MARK: "Turn Off Phone Screen" (docs/design/phone-mirror.md)
+
+    func testPanelStateNeedsItsFirstReportThenOnlySpeaksOnATransition() {
+        var overlay = PhoneScreenOverlay(screen: .on)
+        XCTAssertFalse(overlay.panelOff, "off by default: the phone holds nothing until asked")
+        // The first report is just the truth arriving: no pill for it.
+        XCTAssertFalse(overlay.setPanel(.on, at: 10))
+        XCTAssertNil(overlay.panelPill)
+        XCTAssertTrue(overlay.setPanel(.off, at: 12))
+        XCTAssertTrue(overlay.panelOff)
+        XCTAssertEqual(overlay.panelPill, "Phone screen off")
+        XCTAssertEqual(overlay.panelPillUntil, 14, "the pill lasts two seconds")
+        XCTAssertFalse(overlay.setPanel(.off, at: 13), "a repeated report is not a change")
+        // The phone ended it (the person's power button): the Mac says so.
+        XCTAssertTrue(overlay.setPanel(.on, at: 20))
+        XCTAssertFalse(overlay.panelOff)
+        XCTAssertEqual(overlay.panelPill, "Phone screen on")
+        XCTAssertEqual(overlay.panelPillUntil, 22)
+    }
+
+    func testThePanelPillComesDownOnItsOwn() {
+        var overlay = PhoneScreenOverlay()
+        overlay.setPanel(.on, at: 0)
+        overlay.setPanel(.off, at: 1)
+        XCTAssertFalse(overlay.tick(at: 2.9))
+        XCTAssertTrue(overlay.tick(at: 3.0))
+        XCTAssertNil(overlay.panelPill)
+        XCTAssertFalse(overlay.tick(at: 4.0), "nothing left to take down")
+    }
+
+    func testAPhoneThatDoesNotReportThePanelLeavesTheOptionAlone() {
+        var overlay = PhoneScreenOverlay()
+        XCTAssertFalse(overlay.setPanel(nil, at: 1))
+        XCTAssertFalse(overlay.panelReported)
+        XCTAssertFalse(overlay.panelOff)
+        XCTAssertNil(overlay.panelPill)
+    }
+
+    func testThePanelOffStateReachesTheMenuTheBarAndTheChromeState() throws {
+        let manager = makeManager()
+        let phone = manager.openPhoneWindow()
+        defer { phone.window?.close() }
+        let stateFile = FileManager.default.temporaryDirectory
+            .appendingPathComponent("phonepanel-\(UUID().uuidString).txt")
+        addTeardownBlock { try? FileManager.default.removeItem(at: stateFile) }
+        phone.stateFile = stateFile
+        // The bar control: one glyph while the panel is on, the indicator while off.
+        XCTAssertEqual(phone.headerActions().last?.symbol, "iphone")
+        XCTAssertEqual(phone.headerActions().last?.help, "Turn Off Phone Screen")
+
+        manager.setPhonePanel(.on)
+        manager.setPhonePanel(.off)
+        XCTAssertTrue(phone.panelOffShown)
+        XCTAssertEqual(phone.headerActions().last?.symbol, "iphone.slash")
+        XCTAssertTrue(phone.chrome.showsPanelStatus)
+        let off = try String(contentsOf: stateFile, encoding: .utf8)
+        XCTAssertTrue(off.contains("panel_off=1"), off)
+
+        // The phone ended it: no local guess, the report drives everything.
+        manager.setPhonePanel(.on)
+        XCTAssertFalse(phone.panelOffShown)
+        XCTAssertEqual(phone.headerActions().last?.symbol, "iphone")
+        let on = try String(contentsOf: stateFile, encoding: .utf8)
+        XCTAssertTrue(on.contains("panel_off=0"), on)
+    }
+
+    func testTurnOffPhoneScreenIsRememberedPerPhone() {
+        let defaults = makeDefaults()
+        XCTAssertFalse(PhonePanelOffSetting.read(from: defaults, deviceId: "phone-a"))
+        PhonePanelOffSetting.write(true, for: "phone-a", to: defaults)
+        XCTAssertTrue(PhonePanelOffSetting.read(from: defaults, deviceId: "phone-a"))
+        XCTAssertFalse(PhonePanelOffSetting.read(from: defaults, deviceId: "phone-b"),
+                       "it is a choice about one phone")
+        PhonePanelOffSetting.write(false, for: "phone-a", to: defaults)
+        XCTAssertFalse(PhonePanelOffSetting.read(from: defaults, deviceId: "phone-a"))
+        XCTAssertNil(defaults.object(forKey: PhonePanelOffSetting.key), "off stores nothing")
+        PhonePanelOffSetting.write(true, for: "", to: defaults)
+        XCTAssertFalse(PhonePanelOffSetting.read(from: defaults, deviceId: ""))
+    }
 }
