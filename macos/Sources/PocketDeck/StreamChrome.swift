@@ -333,9 +333,14 @@ final class StreamChromeView: NSView {
         needsLayout = true
     }
 
+    /// The panel pill's text, also while hidden: the chrome state reports whether
+    /// the last one said the request failed.
+    private(set) var panelPillText: String?
+
     /// The "Phone screen off" / "Phone screen on" pill; nil takes it away.
     /// It shares the Live Text pill's line and steps left while that one is up.
     func setPanelPill(_ text: String?) {
+        panelPillText = text
         if let text {
             panelStatus.setText(text)
             panelStatus.isHidden = false

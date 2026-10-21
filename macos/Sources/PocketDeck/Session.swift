@@ -1118,8 +1118,11 @@ final class Session {
     /// `phone.wake`: wake the phone's own screen; the keyguard stays
     /// (docs/PROTOCOL.md "Phone screen").
     func wakePhone() { sendJSON(["t": "phone.wake"]) }
-    /// `phone.panel`: hold the mirrored panel off, or give it back.
-    func setPhonePanel(off: Bool) { sendJSON(["t": "phone.panel", "off": off]) }
+    /// `phone.panel`: hold the mirrored panel off, or give it back. [ignorePower]
+    /// is the Mac's keep-it-off setting (docs/PROTOCOL.md "Phone screen").
+    func setPhonePanel(off: Bool, ignorePower: Bool = false) {
+        sendJSON(["t": "phone.panel", "off": off, "ignorePower": ignorePower])
+    }
     func startAudio(codecs: [Int] = [Int(AudioConfig.codecOpus), Int(AudioConfig.codecAAC)]) { sendJSON(["t": "audio.start", "codecs": codecs]) }
     func stopAudio() { sendJSON(["t": "audio.stop"]) }
     func text(stream: UInt32, text: String) { sendJSON(["t": "text", "stream": Int(stream), "text": text]) }
