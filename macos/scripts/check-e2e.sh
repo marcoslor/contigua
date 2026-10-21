@@ -2519,10 +2519,12 @@ import json, sys
 root = json.load(open(sys.argv[1]))
 view = next(i for i in root["items"] if i["title"] == "View")
 imm = next(i for i in view["submenu"] if i["title"] == "Immersive")
-sub = imm.get("submenu") or []
-checked = [item["title"] for item in sub if item["state"] == "on"]
+if imm.get("submenu"):
+    print("Immersive still has a submenu"); sys.exit(1)
 if imm["state"] != "on":
-    print("parent state:", imm["state"]); sys.exit(1)
+    print("Immersive state:", imm["state"]); sys.exit(1)
+hide = next(i for i in view["submenu"] if i["title"] == "Hide Controls")
+checked = [item["title"] for item in hide.get("submenu") or [] if item["state"] == "on"]
 if len(checked) != 1:
     print("checked:", checked); sys.exit(1)
 PY
