@@ -65,17 +65,17 @@ final class HeaderBarModelTests: XCTestCase {
 final class HeaderActionPolicyTests: XCTestCase {
     func testLiveTextFreezesEveryKindButItsOwn() {
         for kind in HeaderActionKind.allCases where kind != .liveText {
-            XCTAssertFalse(HeaderActionPolicy.isEnabled(kind, liveTextActive: true), "\(kind) must be frozen")
+            XCTAssertFalse(HeaderActionPolicy.isEnabled(kind, frozen: true), "\(kind) must be frozen")
         }
-        XCTAssertTrue(HeaderActionPolicy.isEnabled(.liveText, liveTextActive: true))
+        XCTAssertTrue(HeaderActionPolicy.isEnabled(.liveText, frozen: true))
     }
 
     func testOutsideTheModeEverythingIsEnabled() {
         for kind in HeaderActionKind.allCases {
-            XCTAssertTrue(HeaderActionPolicy.isEnabled(kind, liveTextActive: false))
+            XCTAssertTrue(HeaderActionPolicy.isEnabled(kind, frozen: false))
         }
-        XCTAssertTrue(HeaderActionPolicy.allowsPhoneShortcut(liveTextActive: false))
-        XCTAssertFalse(HeaderActionPolicy.allowsPhoneShortcut(liveTextActive: true))
+        XCTAssertTrue(HeaderActionPolicy.allowsPhoneShortcut(frozen: false))
+        XCTAssertFalse(HeaderActionPolicy.allowsPhoneShortcut(frozen: true))
     }
 }
 

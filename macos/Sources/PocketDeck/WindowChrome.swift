@@ -84,14 +84,17 @@ struct HeaderAction {
 /// phone's navigation shortcuts: Live Text freezes everything but its own
 /// button, because the picture is frozen and the phone behind it is paused.
 enum HeaderActionPolicy {
-    static func isEnabled(_ kind: HeaderActionKind, liveTextActive: Bool) -> Bool {
-        liveTextActive ? kind == .liveText : true
+    /// What is over the picture freezes the phone-side controls: Live Text
+    /// (the frame is frozen) or a cover (the panel sleeps, or a secure surface
+    /// is hidden). The Live Text button itself stays live.
+    static func isEnabled(_ kind: HeaderActionKind, frozen: Bool) -> Bool {
+        frozen ? kind == .liveText : true
     }
 
     /// The phone navigation shortcuts (⌘[, ⇧⌘H, ⌘↑) act on the phone: they are
     /// frozen with the buttons.
-    static func allowsPhoneShortcut(liveTextActive: Bool) -> Bool {
-        !liveTextActive
+    static func allowsPhoneShortcut(frozen: Bool) -> Bool {
+        !frozen
     }
 }
 
@@ -252,10 +255,12 @@ final class HeaderActionButton: NSView {
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
 
     /// AppKit hands `hitTest` a point in the superview's coordinates; the
-    /// button's own bounds only match it for the first capsule slot. A frozen
-    /// (disabled) action is transparent: the bar takes the click, nothing runs.
+    /// button's own bounds only match it for the first capsule slot. A disabled
+    /// button still takes the hit and swallows it (mouseDown/mouseUp are gated
+    /// on isEnabled): a click on a greyed-out control must never fall through
+    /// to the video under the bar and become a touch on the phone.
     override func hitTest(_ point: NSPoint) -> NSView? {
-        guard isEnabled, let superview else { return nil }
+        guard let superview else { return nil }
         return bounds.contains(convert(point, from: superview)) ? self : nil
     }
 
@@ -336,6 +341,7 @@ final class HeaderBarView: NSView {
     private var capsules: [HeaderCapsuleView] = []
     private var buttons: [HeaderActionButton] = []
     private var liveTextActive = false
+    private var frozen = false
 
     var material: HeaderBar.Material = HeaderBar.material(dark: false) {
         didSet { rebuild() }
@@ -391,8 +397,18 @@ final class HeaderBarView: NSView {
 
     private func applyEnabled() {
         for button in buttons {
-            button.isEnabled = HeaderActionPolicy.isEnabled(button.action.kind, liveTextActive: liveTextActive)
+            button.isEnabled = HeaderActionPolicy.isEnabled(button.action.kind,
+                                                            frozen: frozen || liveTextActive)
         }
+    }
+
+    /// What freezes the kinds (Live Text or a cover over the picture): every
+    /// action is disabled except Live Text's own button, and a disabled button
+    /// takes no click (hitTest).
+    func setFrozen(_ frozen: Bool) {
+        guard frozen != self.frozen else { return }
+        self.frozen = frozen
+        applyEnabled()
     }
 
     /// The button that runs one kind (the e2e clicks its real control).

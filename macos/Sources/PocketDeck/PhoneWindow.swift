@@ -45,13 +45,6 @@ final class PhoneWindowController: StreamWindowController {
         // (windowWillUseStandardFrame).
         window?.collectionBehavior = [.fullScreenNone]
         chrome.phoneOverlay.onWake = { [weak self] in self?.wakeFromOverlay() }
-        // While the panel sleeps the frame is frozen: no click, key, scroll or
-        // hover reaches the phone through any path. Live Text freezes it too
-        // (StreamWindow sets that rule; this one must keep it).
-        videoView.inputMapper?.inputSuspended = { [weak self] in
-            guard let self else { return false }
-            return self.liveText.isActive || self.screenModel.isShowing
-        }
         rotationObserver = NotificationCenter.default.addObserver(
             forName: VideoLayerView.videoSizeDidChange, object: videoView, queue: .main
         ) { [weak self] _ in
@@ -70,6 +63,12 @@ final class PhoneWindowController: StreamWindowController {
         blackTimer?.invalidate()
         if let rotationObserver { NotificationCenter.default.removeObserver(rotationObserver) }
     }
+
+    /// A cover over the mirror (sleeping panel or secure surface) freezes it
+    /// exactly as Live Text does: the shortcuts, the bar's buttons, the
+    /// Navigate menu and every input path. Only the cover's Wake Screen button
+    /// stays allowed.
+    override var frozen: Bool { super.frozen || screenModel.isShowing }
 
     private var rotationObserver: NSObjectProtocol?
     private var blackTimer: Timer?
@@ -136,12 +135,12 @@ final class PhoneWindowController: StreamWindowController {
     /// ⇧⌘H / ⌘↑ only make sense here (home/recents are phone-mode actions).
     /// Live Text freezes them with the bar's buttons.
     @objc func navigateHome(_ sender: Any?) {
-        guard HeaderActionPolicy.allowsPhoneShortcut(liveTextActive: liveText.isActive) else { return }
+        guard HeaderActionPolicy.allowsPhoneShortcut(frozen: frozen) else { return }
         session.nav(stream: stream, action: "home")
     }
 
     @objc func navigateRecents(_ sender: Any?) {
-        guard HeaderActionPolicy.allowsPhoneShortcut(liveTextActive: liveText.isActive) else { return }
+        guard HeaderActionPolicy.allowsPhoneShortcut(frozen: frozen) else { return }
         session.nav(stream: stream, action: "recents")
     }
 
@@ -175,7 +174,7 @@ final class PhoneWindowController: StreamWindowController {
         if cover != nil { videoView.inputMapper?.dropPendingInput() }
         chrome.phoneOverlay.show(cover)
         chrome.needsLayout = true
-        writeChromeState()
+        updateFrozen()
         switch cover {
         case .screenOff:
             Log.video.notice("phone window: screen=off overlay=1")

@@ -145,6 +145,84 @@ final class PhoneScreenOverlayTests: XCTestCase {
         XCTAssertFalse(phone.chrome.phoneOverlay.isHidden)
     }
 
+    /// A cover is a frozen mode (AGENTS.md "Modes block what they freeze"): the
+    /// one predicate disables the phone-side kinds and shortcuts and the bar's
+    /// buttons, while the cover's own Wake Screen button stays allowed. The
+    /// `nfr` e2e step drives a person's scroll, typing and ⌘[ at the real
+    /// window; this pins the rule.
+    func testACoverFreezesTheActionsAndTheShortcuts() {
+        let manager = makeManager()
+        let phone = manager.openPhoneWindow()
+        defer { phone.window?.close() }
+        XCTAssertFalse(phone.frozen)
+        manager.setPhoneScreen(.off)
+        XCTAssertTrue(phone.frozen)
+        XCTAssertFalse(HeaderActionPolicy.allowsPhoneShortcut(frozen: phone.frozen))
+        for kind in HeaderActionKind.allCases where kind != .liveText {
+            XCTAssertFalse(HeaderActionPolicy.isEnabled(kind, frozen: phone.frozen), "\(kind)")
+        }
+        XCTAssertTrue(HeaderActionPolicy.isEnabled(.liveText, frozen: phone.frozen))
+        if let back = buttons(in: phone.chrome).first(where: { $0.action.kind == .back }) {
+            let centre = phone.chrome.convert(NSPoint(x: back.bounds.midX, y: back.bounds.midY), from: back)
+            XCTAssertTrue(phone.chrome.hitTest(centre) === back, "the frozen Back takes and swallows its click")
+        } else {
+            XCTFail("the phone window has no Back button")
+        }
+        manager.setPhoneScreen(.on)
+        XCTAssertFalse(phone.frozen)
+        manager.setPhoneSecure(true)
+        XCTAssertTrue(phone.frozen, "the secure cover is a frozen mode too")
+        manager.setPhoneSecure(false)
+        XCTAssertFalse(phone.frozen)
+    }
+
+    /// A click on a disabled bar control never reaches the phone (AGENTS.md
+    /// "Modes block what they freeze"): the control takes the hit and swallows
+    /// it. If it answered nil, the click would fall through to the video under
+    /// the bar and become a tap on the phone. Frozen (the screen-off cover) and
+    /// disabled outside a frozen mode (a kind the phone cannot use) both count;
+    /// the input mapper is the witness.
+    func testAClickOnADisabledBarButtonNeverReachesThePhone() {
+        let manager = makeManager()
+        let phone = manager.openPhoneWindow()
+        defer { phone.window?.close() }
+        var commands: [InputMapper.Command] = []
+        phone.videoView.inputMapper?.send = { commands.append($0) }
+        guard let back = buttons(in: phone.chrome).first(where: { $0.action.kind == .back }) else {
+            return XCTFail("the phone window has no Back button")
+        }
+        let centre = phone.chrome.convert(NSPoint(x: back.bounds.midX, y: back.bounds.midY), from: back)
+        func deliverClick(at point: NSPoint) {
+            guard let hit = phone.chrome.hitTest(point) else { return }
+            hit.mouseDown(with: click())
+            hit.mouseUp(with: click())
+        }
+        // The witness works: a click on the video itself is a touch.
+        let videoCentre = phone.chrome.convert(NSPoint(x: phone.videoView.bounds.midX,
+                                                       y: phone.videoView.bounds.midY),
+                                               from: phone.videoView)
+        deliverClick(at: videoCentre)
+        XCTAssertFalse(commands.isEmpty, "a click on the video sends a touch (the witness)")
+        commands.removeAll()
+
+        manager.setPhoneScreen(.off)
+        XCTAssertTrue(phone.frozen)
+        XCTAssertTrue(phone.chrome.hitTest(centre) === back, "the frozen control takes its own click")
+        deliverClick(at: centre)
+        XCTAssertTrue(commands.isEmpty, "\(commands.count) touch(es) reached the phone through a frozen Back")
+
+        manager.setPhoneScreen(.on)
+        back.isEnabled = false
+        deliverClick(at: centre)
+        XCTAssertTrue(commands.isEmpty, "\(commands.count) touch(es) reached the phone through a disabled Back")
+    }
+
+    private func buttons(in view: NSView) -> [HeaderActionButton] {
+        view.subviews.flatMap { sub -> [HeaderActionButton] in
+            (sub as? HeaderActionButton).map { [$0] } .map { $0 + buttons(in: sub) } ?? buttons(in: sub)
+        }
+    }
+
     func testAClickOnTheCoverWakesAndNoInputLeaves() {
         let manager = makeManager()
         let phone = manager.openPhoneWindow()

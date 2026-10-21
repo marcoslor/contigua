@@ -100,8 +100,11 @@ final class ControlsRealPathTests: XCTestCase {
             XCTAssertEqual(buttons.count, 3)
             for button in buttons {
                 let point = centre(of: button, in: chrome)
-                XCTAssertFalse(chrome.hitTest(point) === button,
-                               "\(style): \(button.action.help) is frozen in Live Text")
+                // The frozen button still takes the click and swallows it: if
+                // it answered nil, the click would fall through to the video
+                // under the bar and become a tap on the phone. It runs nothing.
+                XCTAssertTrue(chrome.hitTest(point) === button,
+                              "\(style): \(button.action.help) swallows its click while frozen")
                 _ = click(button, in: chrome)
             }
             XCTAssertTrue(fired.isEmpty, "\(style): no kind action ran while frozen")
