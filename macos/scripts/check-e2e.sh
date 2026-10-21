@@ -3469,8 +3469,10 @@ check_mirror() {
     else
         bad "MIRROR the menu item did not run: $(cat "$WORK/control/panel-menu.done" 2>/dev/null)"
     fi
-    if wait_until 10 events_have '"t":"phone.panel","off":true'; then
-        ok "MIRROR the menu item sent phone.panel off"
+    # The fake's own event for the request (its rx JSON sorts keys, so the
+    # request line itself is not a stable match).
+    if wait_until 10 events_have '"ev":"panel","state":"off"'; then
+        ok "MIRROR the menu item sent phone.panel off and the phone applied it"
     else
         bad "MIRROR the phone got no phone.panel off"
     fi
