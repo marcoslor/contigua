@@ -374,17 +374,17 @@ enum DebugInputScript {
             guard args.isEmpty else { throw LineError(message: "deckpanel takes no arguments") }
             return .deckPanel
         case "paneldump":
-            guard args.count == 2, ["panel", "deck"].contains(args[0]), args[1].hasPrefix("/") else {
+            guard args.count == 2, ["panel", "deck", "real"].contains(args[0]), args[1].hasPrefix("/") else {
                 throw LineError(message: "paneldump needs HOST (panel or deck) and an absolute PATH")
             }
             return .panelDump(host: args[0], path: args[1])
         case "panelclick":
-            guard args.count == 2, ["panel", "deck"].contains(args[0]), !args[1].isEmpty else {
+            guard args.count == 2, ["panel", "deck", "real"].contains(args[0]), !args[1].isEmpty else {
                 throw LineError(message: "panelclick needs HOST (panel or deck) and an item ID")
             }
             return .panelClick(host: args[0], id: args[1])
         case "paneldrag":
-            guard args.count == 3, ["panel", "deck"].contains(args[0]), !args[1].isEmpty,
+            guard args.count == 3, ["panel", "deck", "real"].contains(args[0]), !args[1].isEmpty,
                   let fraction = Double(args[2]), (0...1).contains(fraction) else {
                 throw LineError(message: "paneldrag needs HOST (panel or deck), an item ID and FRACTION (0...1)")
             }

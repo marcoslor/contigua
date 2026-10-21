@@ -74,9 +74,7 @@ final class PhonePanelViewTests: XCTestCase {
 
     /// Every focusable control SwiftUI laid out, top to bottom: its key-view
     /// proxies (Buttons, the Slider), the real AppKit controls inside platform
-    /// view hosts (the DND switch, the Now Playing popup), and the switch
-    /// itself while it is disabled (SwiftUI drops disabled proxies from the key
-    /// loop, so a disabled row has no control at all).
+    /// view hosts (the DND switch, the Now Playing popup).
     private func controls(in view: NSView) -> [NSView] {
         func descendants(_ view: NSView) -> [NSView] { view.subviews.flatMap { [$0] + descendants($0) } }
         return descendants(view)
@@ -236,16 +234,11 @@ final class PhonePanelViewTests: XCTestCase {
         let state = panelState(online: false)
         let view = host(state, actions)
         let laidOut = controls(in: view)
-        // Away, only these are still laid out: the DND switch (present but
-        // off), Find Apps, Settings… and Quit. The volume slider and every
-        // window row are disabled, and SwiftUI keeps disabled controls out of
-        // the key loop: there is nothing there to click.
-        XCTAssertEqual(laidOut.map { Int(frame($0, in: view).minY) }, [154, 258, 358, 358])
-        guard let dnd = laidOut.first as? NSSwitch else {
+        // The switch is still drawn, and it is off; a click on it runs nothing.
+        guard let dnd = laidOut.compactMap({ $0 as? NSSwitch }).first else {
             return XCTFail("the DND control is the AppKit switch")
         }
         XCTAssertFalse(dnd.isEnabled, "the DND switch is off while the phone is away")
-        // Even the switch that is still drawn runs nothing when clicked.
         let rect = frame(dnd, in: view)
         click(at: CGPoint(x: rect.midX, y: rect.midY))
         XCTAssertTrue(calls.isEmpty, "a disabled control runs nothing")

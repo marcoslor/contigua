@@ -8,11 +8,9 @@
 // SwiftUI keeps its controls inside one hosting view, so the controls are
 // found in the view tree: one KeyViewProxy per focusable row, the DND switch
 // and the Now Playing popup as real AppKit views. They follow the panel's own
-// layout order (PhonePanelItem.focusOrder). A control is only mapped while
-// every item has one: SwiftUI keeps disabled controls out of the key loop, so
-// an offline panel has fewer controls than items and nothing to click.
-// A check that a click landed is the phone receiving `phone.dnd` /
-// `media.command`, not the action being called.
+// layout order (PhonePanelItem.focusOrder); a control is only mapped while
+// every item has one. A check that a click landed is the phone receiving
+// `phone.dnd` / `media.command`, not the action being called.
 
 import AppKit
 import SwiftUI
@@ -22,6 +20,10 @@ enum PanelProbe {
     enum Host: String {
         case panel
         case deck
+        /// The real status item's panel window (what a person sees). It is not
+        /// reachable in a quiet host run (no click on the status item), only in
+        /// the VM's visible run.
+        case real
     }
 
     private static var hostWindow: NSWindow?
@@ -191,6 +193,13 @@ enum PanelProbe {
             // one that carries the panel's controls.
             let candidates = NSApp.windows.filter { $0.isVisible && $0 !== DeckWindow.window }
             return candidates.first { !controlViews(in: $0).isEmpty }
+        case .real:
+            // The status item's window: panel-sized, not our host, not the
+            // Deck. (With the Deck popover also open, the frontmost wins.)
+            return NSApp.windows.first {
+                $0.isVisible && $0 !== hostWindow && $0 !== DeckWindow.window
+                    && (280...400).contains($0.frame.width) && $0.frame.height >= 250
+            }
         }
     }
 
