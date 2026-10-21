@@ -17,6 +17,9 @@ final class StreamMenuState {
     var showTouches = false
     /// The key stream window is in Live Text mode (the View menu's check).
     var liveText = false
+    /// The key stream window's phone-side actions are frozen: Live Text or a
+    /// cover over the mirror. One rule for the buttons, shortcuts and menu.
+    var frozen = false
     /// Settings → General "Reveal controls after", for the Immersive submenu's
     /// checkmark (one value for every window).
     var revealDelay: RevealDelay = .short

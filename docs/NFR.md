@@ -42,7 +42,8 @@ reply) is far outside them.
   the files bridge, entering and leaving Live Text, and watching media state
   must leave the fake phone's `writes` counter unchanged.
 - **Frozen modes send zero input.** While the picture is frozen (Live Text in
-  an app window or the phone window, screen off, disconnected/reconnecting),
+  an app window or the phone window, screen off, a secure surface hidden by
+  Android, disconnected/reconnecting),
   bar controls, menu shortcuts, clicks, scrolls and typing send no input
   event (pointer, key, scroll, hover, or a `nav`/`text` action from a
   control). Leaving the mode restores the same controls.

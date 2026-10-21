@@ -7710,6 +7710,24 @@ PY
     stop_app
     stop_fakephone
 
+    # Secure surface: the same frozen set behind the secure cover. There is no
+    # Wake button there (the phone clears the cover itself), so nothing on the
+    # window may reach the PIN pad.
+    : > "$WORK/events.jsonl"
+    FAKE_ARGS="--secure-after 6" start_fake || return 1
+    rm -f "$WORK/sec-go"
+    printf '%s\n' "waitfile $WORK/sec-go 120" "scroll 120" "type hello" \
+        "key cmd+shift+h" "key cmd+[" "wait 1" > "$WORK/input-secure.txt"
+    nfr_launch --open-phone --debug-input-script "$WORK/input-secure.txt"
+    nfr_wait_ready 30 || bad "NFR the app never paired (secure)"
+    wait_until 20 chrome_has "overlay=1 secure=1" || bad "NFR the secure cover never appeared"
+    before="$(fake_counter input)"
+    touch "$WORK/sec-go"
+    sleep 3
+    nfr_input_unchanged "secure cover" "$before"
+    stop_app
+    stop_fakephone
+
     # Disconnected: the phone goes away; input stays home until it is back.
     : > "$WORK/events.jsonl"
     start_fake || return 1

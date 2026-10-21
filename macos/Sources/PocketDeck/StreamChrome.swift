@@ -289,6 +289,11 @@ final class StreamChromeView: NSView {
 
     /// The mode came or went: the status pill, the button's accent, the drag
     /// source and the frozen controls follow it.
+    /// What freezes the phone-side kinds: Live Text or a cover over the mirror.
+    func setFrozen(_ frozen: Bool) {
+        actions.setFrozen(frozen)
+    }
+
     func setLiveText(active: Bool) {
         liveTextActive = active
         liveTextButton.isOn = active

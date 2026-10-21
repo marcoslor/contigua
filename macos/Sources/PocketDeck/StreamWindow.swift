@@ -39,6 +39,10 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     var density: Double { DensityRules.effective(override: densityOverride, settings: manager.defaultDensity) }
 
     private(set) var isPaused = false
+    /// What freezes the phone-side actions: Live Text (the frame is frozen) or,
+    /// in the phone window, a cover over the mirror. One predicate for the
+    /// shortcuts, the bar's buttons, the Navigate menu and the input mapper.
+    var frozen: Bool { liveText.isActive }
     /// The mode was active at the last change, and the phone is paused for it.
     private var liveTextWasActive = false
     private var liveTextPaused = false
@@ -103,7 +107,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         }
         // Live Text mode receives nothing: pointer, keys, scroll, hover and
         // trackpad all stop at the mapper (Esc leaves the mode instead).
-        mapper.inputSuspended = { [weak self] in self?.liveText.isActive ?? false }
+        mapper.inputSuspended = { [weak self] in self?.frozen ?? false }
         mapper.onLiveTextEscape = { [weak self] in self?.exitLiveText(.escape) }
         mapper.send = { [weak self] command in self?.handle(command) }
         mapper.touchPointsChanged = { [weak self] points in self?.videoView.showTouchPoints(points) }
@@ -456,6 +460,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         state.densityOverride = densityOverride
         state.settingsDensity = manager.defaultDensity
         state.liveText = liveText.isActive
+        state.frozen = frozen
         state.revealDelay = manager.revealDelay
         ImmersiveMenuInstaller.refresh(style: style)
     }
@@ -467,6 +472,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         state.densityPackage = nil
         state.densityOverride = nil
         state.liveText = false
+        state.frozen = false
         videoView.windowResignedKey()
     }
 
@@ -522,6 +528,15 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         liveTextWasActive = active
         chrome.setLiveText(active: active)
         StreamMenuState.shared.liveText = active
+        updateFrozen()
+    }
+
+    /// Applies `frozen` everywhere it is read: the bar's action buttons, the
+    /// Navigate menu, and the chrome state file. The cover (phone window) and
+    /// Live Text both call it.
+    func updateFrozen() {
+        chrome.setFrozen(frozen)
+        if window?.isKeyWindow ?? false { StreamMenuState.shared.frozen = frozen }
         writeChromeState()
     }
 
@@ -802,7 +817,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     /// Menu action (target nil, responder chain). Enabled in every stream window.
     /// Live Text freezes it: the phone behind the frozen frame is paused.
     @objc func navigateBack(_ sender: Any?) {
-        guard HeaderActionPolicy.allowsPhoneShortcut(liveTextActive: liveText.isActive) else { return }
+        guard HeaderActionPolicy.allowsPhoneShortcut(frozen: frozen) else { return }
         session.nav(stream: stream, action: "back")
     }
 
