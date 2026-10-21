@@ -7858,6 +7858,49 @@ PY
         stop_app
         stop_fakephone
     done
+
+    # Occlusion: a covered window is not a live picture. AppKit throttles an
+    # occluded app, so the frames stop without the phone being at fault; the
+    # watchdog must not call that a stall, and the clock restarts when the
+    # window is visible again. The quiet run may not cover the window (no extra
+    # windows), so the app's `occlude` debug command reports what the
+    # WindowServer would have said for the first window.
+    : > "$WORK/events.jsonl"
+    defaults write "$DEFAULTS_SUITE" "chrome.style.com.android.settings" -string immersive
+    FAKE_ARGS="--stall-after 3 --stall-for 12" start_fake || return 1
+    nfr_launch --open com.android.settings
+    nfr_wait_ready 30 || bad "NFR the app never paired (occlusion)"
+    control occlude on || bad "NFR occlude on: $CONTROL_REPLY"
+    wait_until 30 events_have '"ev":"stall"' || bad "NFR the fake never stalled (occlusion)"
+    sleep 3
+    if chrome_has "stall=0 stall_pill=0"; then
+        ok "NFR occlusion: a covered window did not call the stopped picture a stall"
+    else
+        bad "NFR occlusion: the covered window said the picture stopped (state: $(chrome_state))"
+    fi
+    control occlude off || bad "NFR occlude off: $CONTROL_REPLY"
+    # The covered time must not count: no stall in the first second after the
+    # window is visible again...
+    sleep 1
+    if chrome_has "stall=0"; then
+        ok "NFR occlusion: uncovering did not stall the first second"
+    else
+        bad "NFR occlusion: the covered time counted as silence (state: $(chrome_state))"
+    fi
+    # ...and 1.5 s of real silence after that is a stall, with the pill.
+    if wait_ms "$stale_ms" chrome_has "stall=1 stall_pill=1"; then
+        ok "NFR occlusion: real silence after uncovering still stalls"
+    else
+        bad "NFR occlusion: a real silence after uncovering was not reported (state: $(chrome_state))"
+    fi
+    wait_until 20 events_have '"ev":"resume"' || bad "NFR the fake never resumed frames (occlusion)"
+    if wait_until 10 chrome_has "stall=0 stall_pill=0"; then
+        ok "NFR occlusion: frames resumed and the stall went away"
+    else
+        bad "NFR occlusion: the stall stayed after frames resumed (state: $(chrome_state))"
+    fi
+    stop_app
+    stop_fakephone
 }
 
 

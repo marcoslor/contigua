@@ -21,6 +21,9 @@
 //   nav back|home|recents  the Navigate menu's action on the first stream
 //                    window (what its bar button and shortcut run): for a check
 //                    that must act after a wait the app cannot run inline
+//   occlude on|off   the first stream window's occlusion state: the WindowServer
+//                    would say a covered window is not visible, and a quiet
+//                    check may not put a window over it
 //   settings-dump PATH [LAST ROW]  the Settings window's real geometry: its
 //                    frame against the screen, the tab's scroll view, and
 //                    whether the last row shows once scrolled to the end
