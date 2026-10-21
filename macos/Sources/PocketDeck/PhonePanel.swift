@@ -166,7 +166,7 @@ enum PhonePanelItem: String, CaseIterable {
         case .ring: return "Ring Phone"
         case .sessions: return "Now Playing follows"
         case .live: return "Live notification"
-        case .phoneScreen: return "Phone Screen"
+        case .phoneScreen: return "Phone Window"
         case .findApps: return "Find Apps"
         case .continueOnMac: return "Continue on Mac"
         case .installApk: return "Install APK…"
@@ -254,7 +254,7 @@ struct PhonePanelView: View {
                 }
             }
             sectionLabel("WINDOWS")
-            PanelRow(symbol: "iphone.gen3", title: "Phone Screen", shortcut: "⌘P",
+            PanelRow(symbol: "iphone.gen3", title: "Phone Window", shortcut: "⌘P",
                      enabled: PhonePanelItem.phoneScreen.isEnabled(in: state)) { actions.openPhoneScreen() }
                 .accessibilityIdentifier(PhonePanelItem.phoneScreen.id)
             PanelRow(symbol: "magnifyingglass", title: "Find Apps", shortcut: "⌘K",
