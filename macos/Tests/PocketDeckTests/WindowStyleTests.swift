@@ -368,9 +368,15 @@ final class DwellPillTests: XCTestCase {
 }
 
 final class ChromeBarTests: XCTestCase {
-    func testTheBarIsTwentyEightPointsWithTheLightsAtTheStandardInset() {
+    /// The default BarPrototype (Compact; View ▸ Bar Prototype is temporary):
+    /// today's 28 pt bar, the 14 pt lights equally inset 7 pt. BarPrototypeTests
+    /// covers Standard and the real view geometry.
+    func testTheCompactBarIsTwentyEightPointsWithItsEqualInsets() {
+        let saved = BarPrototype.current
+        BarPrototype.current = .compact
+        defer { BarPrototype.current = saved }
         XCTAssertEqual(ChromeBar.height, 28)
-        XCTAssertEqual(ChromeBar.trafficLightInset, 20)
+        XCTAssertEqual(ChromeBar.trafficLightInset, 7)
         XCTAssertEqual(ChromeBar.trafficLightButtonSide, 14)
         XCTAssertEqual(ChromeBar.trafficLightSpacing, 23)
     }

@@ -255,10 +255,13 @@ final class StreamChromeView: NSView {
             liveTextCapsule.isHidden = false
             if let row = HeaderBar.row(actions.actions, rightEdge: bounds.width) {
                 let y = bounds.height - barHeight
-                // Center the 28 pt capsules in the 28 pt bar band.
+                // The capsules are centred vertically in the bar band; the
+                // Live Text button is a square on the lights' centre line,
+                // `rightInset` in from the right (the lights' left inset).
                 actions.frame = NSRect(x: row.actionsX, y: y, width: row.actionsWidth, height: barHeight)
-                liveTextCapsule.frame = NSRect(x: row.liveTextX, y: y, width: side, height: barHeight)
-                liveTextButton.frame = NSRect(x: row.liveTextX, y: y, width: side, height: barHeight)
+                let buttonY = y + (barHeight - side) / 2
+                liveTextCapsule.frame = NSRect(x: row.liveTextX, y: buttonY, width: side, height: side)
+                liveTextButton.frame = liveTextCapsule.frame
             }
             layoutLiveTextStatus(bar: true)
         } else if showsPill, let pill = pillFrame {
@@ -269,8 +272,9 @@ final class StreamChromeView: NSView {
             // pillActionsX, then a gap and the Live Text capsule.
             actions.frame = NSRect(x: pill.minX + DwellChrome.pillActionsX, y: pill.minY,
                                    width: HeaderBar.rowWidth(actions.actions), height: pill.height)
-            liveTextCapsule.frame = NSRect(x: actions.frame.maxX + HeaderBar.capsuleGap, y: pill.minY,
-                                           width: side, height: pill.height)
+            let buttonY = pill.minY + (pill.height - side) / 2
+            liveTextCapsule.frame = NSRect(x: actions.frame.maxX + HeaderBar.capsuleGap, y: buttonY,
+                                           width: side, height: side)
             liveTextButton.frame = liveTextCapsule.frame
             layoutLiveTextStatus(bar: false)
         } else {
@@ -421,7 +425,9 @@ final class StreamChromeView: NSView {
                 light.alphaValue = 1
                 // x 20/43/66, y from the window's bottom edge (titlebar views do
                 // not overlap the full-size content), measured by the demo.
-                let frame = NSRect(x: ChromeBar.trafficLightInset + CGFloat(i) * ChromeBar.trafficLightSpacing, y: height - 21, width: ChromeBar.trafficLightButtonSide, height: ChromeBar.trafficLightButtonSide)
+                let frame = NSRect(x: ChromeBar.trafficLightInset + CGFloat(i) * ChromeBar.trafficLightSpacing,
+                                   y: height - ChromeBar.trafficLightInset - ChromeBar.trafficLightButtonSide,
+                                   width: ChromeBar.trafficLightButtonSide, height: ChromeBar.trafficLightButtonSide)
                 light.frame = superview.convert(frame, from: nil)
             } else if showsPill {
                 light.isHidden = false

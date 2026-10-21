@@ -73,17 +73,20 @@ struct ChromeConfig: Equatable {
     }
 }
 
-/// The framed bar and the immersive pill: the numbers both styles share.
+/// The framed bar and the immersive pill: the numbers both styles share. The
+/// proportions come from the current BarPrototype (View ▸ Bar Prototype, a
+/// temporary choice between Compact and Standard).
 enum ChromeBar {
     /// The permanent bar above the stream.
-    static let height: CGFloat = 28
+    static var height: CGFloat { BarPrototype.current.barHeight }
     /// The stream's own corners, as the window's in the immersive style.
     static let cornerRadius: CGFloat = 16
-    /// Traffic lights: the standard 20 pt in from the window's left edge,
-    /// centred on the bar's own line. 14 pt square buttons, 23 pt apart.
-    static let trafficLightInset: CGFloat = 20
-    static let trafficLightButtonSide: CGFloat = 14
-    static let trafficLightSpacing: CGFloat = 23
+    /// Traffic lights: `trafficLightInset` in from the window's left edge and
+    /// from the bar's top and bottom, `trafficLightButtonSide` square,
+    /// `trafficLightSpacing` apart.
+    static var trafficLightInset: CGFloat { BarPrototype.current.lightInset }
+    static var trafficLightButtonSide: CGFloat { BarPrototype.current.lightSide }
+    static var trafficLightSpacing: CGFloat { BarPrototype.current.lightSpacing }
 }
 
 /// The immersive style's hot zone, the dwell that brings the lights in and the
@@ -93,7 +96,7 @@ enum DwellChrome {
     static let hotZone = CGSize(width: 72, height: 32)
     /// The pill is as tall as the framed bar, at the stream's top-left corner;
     /// its width follows what is in it.
-    static let pillHeight: CGFloat = 28
+    static var pillHeight: CGFloat { ChromeBar.height }
     static let pillCornerRadius: CGFloat = 8
     /// The dwell has to rest this long, without drifting more than
     /// `tolerance` pt, before the pill fades in over `fadeIn`.
@@ -104,12 +107,14 @@ enum DwellChrome {
     static let hideDelay: TimeInterval = 0.6
     /// The pill sits this far in from the stream's top-left corner.
     static let pillInset: CGFloat = 6
-    /// The lights ride the pill 8 pts in from its edge, on the pill's centre
-    /// line, 23 pt apart like the bar's 20/43/66.
-    static let pillLightInset: CGFloat = pillInset + 8
-    static let pillLightSpacing: CGFloat = 23
+    /// The lights ride the pill in from its edge, on the pill's centre line,
+    /// the same spacing as the bar's, with the bar's left inset mirrored.
+    static var pillLightInset: CGFloat { pillInset + ChromeBar.trafficLightInset }
+    static var pillLightSpacing: CGFloat { ChromeBar.trafficLightSpacing }
     /// The window kind's actions 8 pts right of the zoom light's slot.
-    static let pillActionsX: CGFloat = pillLightInset + 2 * pillLightSpacing + ChromeBar.trafficLightButtonSide + 8
+    static var pillActionsX: CGFloat {
+        pillLightInset + 2 * pillLightSpacing + ChromeBar.trafficLightButtonSide + 8
+    }
     /// The pill is as tall as the framed bar and as wide as its contents: the
     /// traffic lights, the window kind's action capsules, then Live Text's
     /// capsule, then the edge.
