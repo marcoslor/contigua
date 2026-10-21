@@ -187,9 +187,21 @@ struct GeneralSettings: View {
 /// Settings ▸ Input: how the Mac's pointer and keyboard reach the phone.
 struct InputSettings: View {
     @AppStorage(WindowManager.hoverKey, store: Profile.active.defaults) private var hover = true
+    @AppStorage(SecondaryClick.key, store: Profile.active.defaults)
+    private var secondary = SecondaryClick.longPress.rawValue
+
+    private var secondaryChoice: SecondaryClick {
+        SecondaryClick(rawValue: secondary) ?? .longPress
+    }
 
     var body: some View {
         Form {
+            Picker("Secondary click (two-finger click)", selection: $secondary) {
+                ForEach(SecondaryClick.allCases) { Text($0.label).tag($0.rawValue) }
+            }
+            .pickerStyle(.menu)
+            Text(secondaryChoice.explanation)
+                .font(.subheadline).foregroundStyle(.secondary)
             Toggle("Hover over Android apps", isOn: $hover)
             Text("Moving the pointer over a stream window moves a mouse over the app, so hover highlights, tooltips and hover menus react. Off sends no hover at all; clicks and scrolling are unaffected.")
                 .font(.subheadline).foregroundStyle(.secondary)

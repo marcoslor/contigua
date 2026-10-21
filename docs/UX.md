@@ -162,6 +162,16 @@ Material 3, edge-to-edge, dynamic color, light/dark.
 - The cover is a frozen mode: no input reaches the phone. The "Not responding"
   watchdog runs only after the first frame.
 
+### Secondary click
+
+Settings ▸ Input ▸ **Secondary click (two-finger click)**:
+
+- **Long press** (default): the touch goes down at the pointer, holds for
+  Android's long-press timeout, then comes up, so the app's context menu opens
+  as a right-click does. A drag while held moves the touch.
+- **Back**: one Back, like the mouse's side Back button.
+- **Nothing**: the gesture does nothing.
+
 ## Copy rules
 
 Sentence case. No jargon on primary surfaces ("virtual display", "VD", "stream",

@@ -245,12 +245,92 @@ final class InputMapper {
         send?(.hover(HoverEvent(action: action, nx: nx, ny: ny)))
     }
 
+    /// Settings ▸ Input "Secondary click (two-finger click)" (SecondaryClick).
+    var secondaryClick: () -> SecondaryClick = { .longPress }
+    /// Android's long-press timeout (500 ms) plus a margin: the touch must
+    /// stay down that long for the phone to open its context menu.
+    static let secondaryLongPressDelay: TimeInterval = 0.6
+    /// Schedules the end of the minimum hold; tests call the block directly.
+    var scheduleSecondaryLongPress: (@escaping () -> Void) -> Void = { work in
+        InputMapper.onMainRunLoop(after: InputMapper.secondaryLongPressDelay, work)
+    }
+    private var secondaryTouch: (nx: Float, ny: Float)?
+    private var secondaryPendingMove: (nx: Float, ny: Float)?
+    private var secondaryReleased = false
+    private var secondaryReady = false
+
     func rightMouseDown(_ event: NSEvent) {
         guard !suspended else { return }
         flushText()
         cancelTrackpadGestures()
         hoverExit()
-        send?(.nav("back"))
+        switch secondaryClick() {
+        case .back:
+            send?(.nav("back"))
+        case .nothing:
+            break
+        case .longPress:
+            let (nx, ny) = normalized(locationProvider(event))
+            startSecondaryTouch(nx: nx, ny: ny)
+        }
+    }
+
+    /// The secondary button moved while held: after the long press it moves
+    /// the touch; before it, the point is held for the long-press moment (a
+    /// move in the first 600 ms would cancel Android's own detector).
+    func rightMouseDragged(_ event: NSEvent) {
+        guard !suspended, secondaryTouch != nil else { return }
+        let (nx, ny) = normalized(locationProvider(event))
+        secondaryTouch = (nx, ny)
+        if secondaryReady {
+            send?(.touch(TouchEvent(action: .move, nx: nx, ny: ny)))
+        } else {
+            secondaryPendingMove = (nx, ny)
+        }
+    }
+
+    /// The button came up: a quick two-finger click still becomes a long press
+    /// (the touch is held to the timeout), a held one ends at once.
+    func rightMouseUp(_ event: NSEvent) {
+        guard !suspended, secondaryTouch != nil else { return }
+        let (nx, ny) = normalized(locationProvider(event))
+        secondaryTouch = (nx, ny)
+        if secondaryReady {
+            finishSecondaryTouch()
+        } else {
+            // The point is in `secondaryTouch`: the hold ends there, with no
+            // move of its own.
+            secondaryReleased = true
+        }
+    }
+
+    private func startSecondaryTouch(nx: Float, ny: Float) {
+        secondaryTouch = (nx, ny)
+        secondaryPendingMove = nil
+        secondaryReleased = false
+        secondaryReady = false
+        LatencyLog.shared.noteTouchDown(stream: stream)
+        send?(.touch(TouchEvent(action: .down, nx: nx, ny: ny)))
+        scheduleSecondaryLongPress { [weak self] in self?.secondaryLongPressReached() }
+    }
+
+    private func secondaryLongPressReached() {
+        guard secondaryTouch != nil else { return }
+        secondaryReady = true
+        if let pending = secondaryPendingMove {
+            secondaryPendingMove = nil
+            send?(.touch(TouchEvent(action: .move, nx: pending.nx, ny: pending.ny)))
+        }
+        if secondaryReleased { finishSecondaryTouch() }
+    }
+
+    private func finishSecondaryTouch() {
+        guard let point = secondaryTouch else { return }
+        secondaryTouch = nil
+        secondaryPendingMove = nil
+        secondaryReleased = false
+        secondaryReady = false
+        send?(.touch(TouchEvent(action: .up, nx: point.nx, ny: point.ny)))
     }
 
     /// Middle button -> home, side button 3 -> back (button 4, Forward, is inert).

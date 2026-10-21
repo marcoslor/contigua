@@ -213,6 +213,13 @@ final class WindowManager {
         set { frames.set(newValue, forKey: Self.hoverKey) }
     }
 
+    /// Settings ▸ Input "Secondary click (two-finger click)": read live, so the
+    /// Settings change reaches every open window at once.
+    var secondaryClick: SecondaryClick {
+        get { SecondaryClick.stored(in: frames) }
+        set { frames.set(newValue.rawValue, forKey: SecondaryClick.key) }
+    }
+
     /// The setting changed: every open window takes the new delay at once, a
     /// rest already running included.
     func revealDelayChanged() {
@@ -429,6 +436,7 @@ final class WindowManager {
         frames.removeObject(forKey: Self.framesKey)
         frames.removeObject(forKey: Self.showTouchesKey)
         frames.removeObject(forKey: Self.hoverKey)
+        frames.removeObject(forKey: SecondaryClick.key)
         frames.removeObject(forKey: RevealDelay.key)
         StreamMenuState.shared.showTouches = false
         for key in frames.dictionaryRepresentation().keys where key.hasPrefix(WindowStyleStore.prefix) {
