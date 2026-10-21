@@ -2549,16 +2549,21 @@ PY
 # step is visible-only.
 check_menus() {
     begin_shared || return 1
-    rm -f "$WORK/menus.json" "$WORK/menus-step-full" "$WORK/menus-step-exit" "$WORK/menus-full.json" \
+    rm -f "$WORK/menus.json" "$WORK/menus-after.json" "$WORK/menus-step-full" "$WORK/menus-step-exit" "$WORK/menus-full.json" \
         "$WORK/menus-step-touch" "$WORK/menus-touch.png" "$WORK/chrome.txt"
     printf '%s\n' "wait 1.5" "menudump $WORK/menus.json" \
-        "showtouches on" "wait 1" "hover 0.5 0.5" "wait 0.3" \
+        "windowstyle immersive" "wait 1" "menudump $WORK/menus-after.json" \
+        "windowstyle framed" "wait 0.5" "showtouches on" "wait 1" "hover 0.5 0.5" "wait 0.3" \
         "waitfile $WORK/menus-step-touch 60" "fingerpinch 0.5 0.01 1.25 4" "wait 1" \
         "waitfile $WORK/menus-step-full 60" "fullscreen" "wait 6" \
         "menudump $WORK/menus-full.json" \
         "waitfile $WORK/menus-step-exit 60" "fullscreen" "wait 6" > "$WORK/menus.txt"
     open_shared --open com.android.settings --debug-chrome-state "$WORK/chrome.txt" \
         --debug-input-script "$WORK/menus.txt" || return 1
+    wait_until 30 [ -s "$WORK/menus-after.json" ] || {
+        bad "MENUS no menu dump after the style change in 30 s ($WORK/menus-after.json)"
+        stop_app; stop_fakephone; return 1
+    }
     wait_until 20 [ -s "$WORK/menus.json" ] || {
         bad "MENUS no menu dump in 20 s ($WORK/menus.json)"
         say "app log: $(tail -3 "$WORK/app.log")"
@@ -2608,6 +2613,28 @@ if sorted([framed["state"], immersive["state"]]) != ["off", "on"]:
     print("states:", framed["state"], immersive["state"]); sys.exit(1)
 if framed["hasImage"] or immersive["hasImage"]:
     print("a radio item carries an icon"); sys.exit(1)
+PY
+
+    # SwiftUI rebuilds the View menu when the state the commands read changes
+    # (the style switch above is one): an AppKit item inserted once would be
+    # dropped then. The person's v104 menu lost Immersive exactly this way.
+    python3 - "$WORK/menus-after.json" <<'PY' && ok "MENUS Immersive survives a View menu rebuild (style changed)" \
+        || bad "MENUS Immersive was dropped when the View menu rebuilt"
+import json, sys
+root = json.load(open(sys.argv[1]))
+view = next((i for i in root["items"] if i["title"] == "View"), None)
+if view is None:
+    print("no View menu"); sys.exit(1)
+imm = next((i for i in view["submenu"] if i["title"] == "Immersive"), None)
+if imm is None:
+    print("Immersive missing:", [i["title"] for i in view["submenu"]]); sys.exit(1)
+sub = imm.get("submenu") or []
+want = ["Instantly", "Short", "Long", "—", "Always Visible"]
+seq = ["—" if item["isSeparator"] else item["title"] for item in sub]
+if seq != want:
+    print("Immersive submenu:", seq); sys.exit(1)
+if imm["state"] != "on":
+    print("the parent is not checked while the window is immersive:", imm["state"]); sys.exit(1)
 PY
 
     python3 - "$WORK/menus.json" <<'PY' && ok "MENUS Immersive is a submenu: the delays, a separator, Always Visible" \

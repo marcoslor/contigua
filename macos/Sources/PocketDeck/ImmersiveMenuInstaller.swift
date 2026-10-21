@@ -5,8 +5,13 @@
 // delays, a separator, Always Visible. Picking any of them stores the global
 // choice and takes the focused window to immersive (ImmersiveMenuModel).
 //
-// The parent stays put across SwiftUI's menu updates, as FullScreenMenu's
-// Window item does; its state follows the key window's style.
+// SwiftUI can rebuild the View menu after us (a state change, a relaunch, a
+// different activation path), and the rebuild replaces every item: an item
+// inserted once is then gone, which is how the person's v104 menu lost
+// Immersive. `ensureInstalled` builds it again whenever it is missing, from
+// the refresh points and from AppKit's did-add-item notification (the same
+// hook FullScreenMenu uses for its rebuilds). The parent is looked up fresh
+// each time; SwiftUI's rebuilds make the old references detached.
 
 import AppKit
 
@@ -14,22 +19,31 @@ import AppKit
 final class ImmersiveMenuInstaller: NSObject, NSMenuDelegate {
     static let shared = ImmersiveMenuInstaller()
 
-    private var parentItem: NSMenuItem?
-    private var children: [NSMenuItem] = []
+    private var observer: NSObjectProtocol?
 
     static func install() {
-        shared.install()
+        shared.startWatching()
+        shared.ensureInstalled()
+        shared.refreshState()
     }
 
     static func refresh(style: WindowStyle? = nil) {
-        shared.refresh(style: style)
+        shared.ensureInstalled()
+        shared.refreshState(style: style)
     }
 
-    private func install() {
-        guard parentItem == nil,
-              let main = NSApp.mainMenu,
-              let view = main.items.first(where: { $0.title == "View" })?.submenu,
-              !view.items.contains(where: { $0.title == "Immersive" }) else { return }
+    /// Rebuilds the AppKit items when the View menu is new or was rebuilt.
+    /// Internal for the rebuild test.
+    func ensureInstalled() {
+        guard let main = NSApp.mainMenu,
+              let view = main.items.first(where: { $0.title == "View" })?.submenu else { return }
+        if view.items.contains(where: { $0.title == "Immersive" }) {
+            view.delegate = self
+            return
+        }
+        // Wait for SwiftUI to add "Framed": the design puts Immersive right
+        // after it, and the did-add-item hook runs again on the next item.
+        guard let framed = view.items.firstIndex(where: { $0.title == "Framed" }) else { return }
 
         let item = NSMenuItem(title: "Immersive", action: nil, keyEquivalent: "")
         let submenu = NSMenu(title: "Immersive")
@@ -44,21 +58,26 @@ final class ImmersiveMenuInstaller: NSObject, NSMenuDelegate {
                 child.target = self
                 child.representedObject = entry
                 submenu.addItem(child)
-                children.append(child)
             }
         }
         item.submenu = submenu
-        // Right after Framed, where the design puts it.
-        if let framed = view.items.firstIndex(where: { $0.title == "Framed" }) {
-            view.insertItem(item, at: framed + 1)
-        } else {
-            view.addItem(item)
-        }
-        parentItem = item
-        // The dump (and an opened menu) asks the menu to update itself; the
-        // delegate refreshes the checks right before it is read.
+        view.insertItem(item, at: framed + 1)
         view.delegate = self
-        refresh()
+    }
+
+    /// One observer for the whole process: a rebuild adds items, and the item
+    /// is put back then. Re-adding it adds another item (and so on), but the
+    /// second pass finds it and stops.
+    private func startWatching() {
+        guard observer == nil else { return }
+        observer = NotificationCenter.default.addObserver(
+            forName: NSMenu.didAddItemNotification, object: nil, queue: .main
+        ) { _ in
+            Task { @MainActor in
+                ImmersiveMenuInstaller.shared.ensureInstalled()
+                ImmersiveMenuInstaller.shared.refreshState()
+            }
+        }
     }
 
     @objc private func pick(_ sender: NSMenuItem) {
@@ -70,7 +89,7 @@ final class ImmersiveMenuInstaller: NSObject, NSMenuDelegate {
             guard let other = child.representedObject as? ImmersiveMenuItem else { continue }
             child.state = ImmersiveMenuModel.isChecked(other, reveal: entryReveal(entry)) ? .on : .off
         }
-        refresh()
+        refreshState()
     }
 
     private func entryReveal(_ entry: ImmersiveMenuItem) -> RevealDelay {
@@ -85,11 +104,10 @@ final class ImmersiveMenuInstaller: NSObject, NSMenuDelegate {
     /// immersive, one checkmark on the stored reveal choice. Looked up fresh
     /// each time: SwiftUI can rebuild the View menu's items, and an old
     /// reference would be a detached item.
-    func refresh(style: WindowStyle? = nil) {
+    private func refreshState(style: WindowStyle? = nil) {
         guard let main = NSApp.mainMenu,
               let view = main.items.first(where: { $0.title == "View" })?.submenu,
               let parent = view.items.first(where: { $0.title == "Immersive" }) else { return }
-        parentItem = parent
         parent.state = ImmersiveMenuModel.parentChecked(style: style ?? StreamMenuState.shared.style) ? .on : .off
         let reveal = AppEnvironment.shared.controller.windows.revealDelay
         for child in parent.submenu?.items ?? [] {
@@ -99,6 +117,7 @@ final class ImmersiveMenuInstaller: NSObject, NSMenuDelegate {
     }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
-        refresh()
+        ensureInstalled()
+        refreshState()
     }
 }
