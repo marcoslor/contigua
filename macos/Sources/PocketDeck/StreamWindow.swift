@@ -153,9 +153,8 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         videoView.liveText.onStateChange = { [weak self] state, reason in
             self?.liveTextChanged(state, reason)
         }
-        // The picture watchdog's clock: a quarter-second is finer than the
-        // one-second deadline and cheap.
-        let stall = Timer(timeInterval: 0.25, repeats: true) { [weak self] _ in
+        // The picture watchdog's clock.
+        let stall = Timer(timeInterval: FrameWatchdog.tickInterval, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.tickFrameWatchdog() }
         }
         RunLoop.main.add(stall, forMode: .common)

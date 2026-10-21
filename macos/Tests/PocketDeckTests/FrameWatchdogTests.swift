@@ -7,13 +7,14 @@ import XCTest
 @testable import PocketDeck
 
 final class FrameWatchdogTests: XCTestCase {
-    func testSilenceOnALiveStreamStallsAfterOneSecond() {
+    func testSilenceOnALiveStreamStallsAfterThreeMissedBeats() {
         var watchdog = FrameWatchdog()
         XCTAssertFalse(watchdog.tick(at: 10, expecting: true), "no frame yet: nothing to time")
         watchdog.frame(at: 10)
         XCTAssertFalse(watchdog.tick(at: 10.5, expecting: true))
-        XCTAssertFalse(watchdog.tick(at: 10.9, expecting: true))
-        XCTAssertTrue(watchdog.tick(at: 11.0, expecting: true), "one second of silence is a stall")
+        XCTAssertFalse(watchdog.tick(at: 11.0, expecting: true), "a one-second Wi-Fi hiccup is not a stall")
+        XCTAssertFalse(watchdog.tick(at: 11.4, expecting: true))
+        XCTAssertTrue(watchdog.tick(at: 11.5, expecting: true), "1.5 s of silence is a stall")
         XCTAssertTrue(watchdog.stalled)
         XCTAssertFalse(watchdog.tick(at: 12, expecting: true), "the stall is reported once")
         XCTAssertTrue(watchdog.stalled, "it lasts until a frame")
@@ -48,7 +49,7 @@ final class FrameWatchdogTests: XCTestCase {
         XCTAssertFalse(watchdog.tick(at: 30, expecting: false))
         XCTAssertFalse(watchdog.tick(at: 30.5, expecting: true), "the clock restarted when frames were wanted")
         XCTAssertFalse(watchdog.stalled)
-        XCTAssertTrue(watchdog.tick(at: 31.6, expecting: true))
+        XCTAssertTrue(watchdog.tick(at: 32.0, expecting: true))
     }
 
     /// The deadline sits under docs/NFR.md's stale_picture_ms (the JSON is the
@@ -56,7 +57,7 @@ final class FrameWatchdogTests: XCTestCase {
     func testTheDeadlineIsWithinTheNfrLimit() {
         let limit = Double(NFRTestLimits.shared.int("stale_picture_ms")) / 1000
         XCTAssertLessThanOrEqual(FrameWatchdog.staleAfter, limit)
-        XCTAssertLessThanOrEqual(FrameWatchdog.staleAfter * 2, limit,
-                                 "the heartbeat gets two chances inside the limit")
+        XCTAssertLessThanOrEqual(FrameWatchdog.staleAfter + FrameWatchdog.tickInterval, limit,
+                                 "the stall is shown within the limit even when it lands just after a tick")
     }
 }

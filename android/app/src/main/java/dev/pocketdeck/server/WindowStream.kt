@@ -526,7 +526,7 @@ internal class WindowStream(
         // SurfaceFlinger compose nothing, so without this a live-but-idle
         // stream is indistinguishable from a hung encoder. Repeating the last
         // frame twice a second costs almost nothing (identical P-frames) and
-        // lets the Mac call "Not responding" after a second of silence.
+        // lets the Mac call "Not responding" after 1.5 s of silence.
         runCatching { format.setLong(MediaFormat.KEY_REPEAT_PREVIOUS_FRAME_AFTER, 500_000L) }
         format.setInteger(MediaFormat.KEY_PRIORITY, 0) // realtime
         format.setInteger(MediaFormat.KEY_MAX_B_FRAMES, 0)
