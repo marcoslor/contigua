@@ -93,12 +93,14 @@ final class PhonePanelViewTests: XCTestCase {
     }
 
     /// A click at the control's own frame through the window's event dispatch:
-    /// the path a person's pointer takes.
+    /// the path a person's pointer takes. An NSEvent's location is in window
+    /// coordinates, which is what `convert(_:to: nil)` gives.
     private func click(_ item: PhonePanelItem, state: PhoneControlsState,
                        in view: NSHostingView<PhonePanelView>) {
         guard let index = PhonePanelItem.focusOrder(for: state).firstIndex(of: item),
               index < controls(in: view).count else { return XCTFail("no \(item) control") }
-        let rect = frame(controls(in: view)[index], in: view)
+        let control = controls(in: view)[index]
+        let rect = control.convert(control.bounds, to: nil)
         click(at: CGPoint(x: rect.midX, y: rect.midY))
     }
 
@@ -152,8 +154,9 @@ final class PhonePanelViewTests: XCTestCase {
     // MARK: - What the panel is
 
     /// The v104 repro: the volume is an inline slider in its own row, not a
-    /// "Phone volume" stepper submenu. The only popup in the panel is the Now
-    /// Playing picker; the volume is a 14 pt track in its row.
+    /// "Phone volume" stepper submenu. Nothing in the panel is a popup control
+    /// (the picker is an ordinary row with a menu), and the volume is a 14 pt
+    /// track in its row.
     func testTheVolumeIsAnInlineSliderNotASubmenu() {
         let state = panelState(sessions: [MediaSessionRow(key: "a", pkg: "p.a", app: "Spotify", playing: false),
                                           MediaSessionRow(key: "b", pkg: "p.b", app: "Music", playing: true)])
@@ -171,14 +174,11 @@ final class PhonePanelViewTests: XCTestCase {
 
         func descendants(_ view: NSView) -> [NSView] { view.subviews.flatMap { [$0] + descendants($0) } }
         let popups = descendants(view).filter { String(describing: type(of: $0)).contains("PopupButton") }
-        XCTAssertEqual(popups.count, 1, "the panel's only menu is the Now Playing picker")
-        if let popup = popups.first {
-            XCTAssertGreaterThan(frame(popup, in: view).minY, rect.maxY,
-                                 "the one menu is below the volume row, not around it")
-        }
-        // With nothing to pick there is no menu at all.
+        XCTAssertTrue(popups.isEmpty, "no control in the panel is a popup (the volume is not a submenu)")
+        // With nothing to pick the picker row is gone too.
         let plain = host(panelState())
-        XCTAssertTrue(descendants(plain).filter { String(describing: type(of: $0)).contains("PopupButton") }.isEmpty)
+        let rows = controls(in: plain).count
+        XCTAssertEqual(rows, PhonePanelItem.focusOrder(for: panelState()).count)
     }
 
     /// The rows in the order the view lays them out: the phone controls, the
@@ -243,13 +243,21 @@ final class PhonePanelViewTests: XCTestCase {
         click(at: CGPoint(x: rect.midX, y: rect.midY))
         XCTAssertTrue(calls.isEmpty, "a disabled control runs nothing")
 
-        // The reason line is drawn, and it is the only thing that changes in
-        // that band: online with a volume and DND, the line is blank.
+        // The reason line is drawn in the one row band it takes below the
+        // slider; online there is no line and no gap, so the DND row follows
+        // the volume row directly.
         let away = try XCTUnwrap(render(state))
-        let online = try XCTUnwrap(render(panelState()))
-        let band = CGRect(x: 12, y: 131, width: 276, height: 18)
+        let dndTop = rect.minY - 14
+        let band = CGRect(x: 12, y: dndTop - 14, width: 276, height: 12)
         XCTAssertTrue(drawn(away, in: band), "the panel draws the reason line while offline")
-        XCTAssertFalse(drawn(online, in: band), "with nothing to explain the line stays blank")
+        let onlineView = host(panelState())
+        let onlineSlider = try XCTUnwrap(controls(in: onlineView).first { c in
+            let f = frame(c, in: onlineView)
+            return f.height < 20 && f.width > 150
+        })
+        let onlineDnd = try XCTUnwrap(controls(in: onlineView).compactMap { $0 as? NSSwitch }.first)
+        XCTAssertEqual(frame(onlineDnd, in: onlineView).midY - frame(onlineSlider, in: onlineView).midY,
+                       28, accuracy: 0.5, "online there is no reason line and no gap under the slider")
         XCTAssertEqual(state.reason, "Connect your phone to use these.")
     }
 
