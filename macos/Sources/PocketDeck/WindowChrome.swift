@@ -189,6 +189,19 @@ enum HeaderBar {
         return Row(actionsX: actionsX, actionsWidth: actionsWidth, liveTextX: liveTextX, width: width)
     }
 
+    /// The gap between the traffic lights and the row's first capsule.
+    static let barGap: CGFloat = 8
+
+    /// The narrowest window whose framed bar holds the lights and this row:
+    /// where the lights end, the gap, the row and the right inset. A control
+    /// added to a window's bar widens the row, so a window's minimum width
+    /// follows the geometry instead of a guess.
+    static func minimumWidth(for actions: [HeaderAction]) -> CGFloat {
+        let lightsEnd = BarGeometry.lightInset + 2 * BarGeometry.lightSpacing + BarGeometry.lightSide
+        let width = row(actions, rightEdge: 0)?.width ?? liveTextSide
+        return lightsEnd + barGap + width + rightInset
+    }
+
     /// The capsule's material: a light, almost opaque fill in light
     /// appearances and a dark one in dark appearances, with the symbol colour
     /// the fill carries. Opaque enough that the stream behind it (white, black
