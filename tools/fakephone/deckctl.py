@@ -1329,6 +1329,130 @@ def cmd_wake_test(client, args):
     raise DeckError("no state.screen on within %ss" % args.on_timeout)
 
 
+def cmd_panel(client, args):
+    """Send `phone.panel` as the Mac and print the `state.panel` it reports."""
+    while True:
+        frame = client.recv(0.25)
+        if frame is TIMEOUT:
+            break
+        if frame is None:
+            raise DeckError("phone closed during panel")
+    off = args.mode == "off"
+    client.send_json({"t": "phone.panel", "off": off})
+    print("sent phone.panel off=%s" % json.dumps(off))
+    want = "off" if off else "on"
+    deadline = time.time() + args.wait
+    while time.time() < deadline:
+        frame = client.recv(0.25)
+        if frame is TIMEOUT:
+            continue
+        if frame is None:
+            raise DeckError("phone closed during panel")
+        if frame.type != proto.TYPE_JSON:
+            continue
+        msg = proto.unpack_json(frame)
+        if msg.get("t") == "error":
+            raise DeckError("phone error: %s (%s)" % (msg.get("code"), msg.get("message")))
+        if msg.get("t") == "state":
+            print("state panel=%s screen=%s" % (json.dumps(msg.get("panel")),
+                                               json.dumps(msg.get("screen"))))
+            if msg.get("panel") == want:
+                return 0
+    raise DeckError("no state with panel %s within %ss" % (want, args.wait))
+
+
+def cmd_panel_test(client, args):
+    """One session for the emulator's panel checks (docs/design/phone-mirror.md):
+
+    (a) an app window paused for a few seconds and resumed, (b) a phone window
+    beside an app window, (c) phone.panel off/on with the mirror's frames counted
+    while the panel is off. Prints counts and states only; the shell check reads
+    the phone's own log for the panel plans (the session cannot).
+    """
+    frames = {}
+    states = []
+    opened = set()
+
+    def drain(seconds, want=None):
+        deadline = time.time() + seconds
+        while True:
+            if want is not None and want():
+                return True
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                return want is None
+            frame = client.recv(max(0.05, min(0.25, remaining)))
+            if frame is TIMEOUT:
+                continue
+            if frame is None:
+                raise DeckError("phone closed during panel-test")
+            if frame.type == proto.TYPE_JSON:
+                msg = proto.unpack_json(frame)
+                if msg.get("t") == "error":
+                    raise DeckError("phone error %s: %s" % (msg.get("code"), msg.get("message", "")))
+                if msg.get("t") == "window.opened":
+                    opened.add(int(msg.get("stream") or 0))
+                elif msg.get("t") == "state":
+                    states.append(msg)
+                continue
+            if frame.type == proto.TYPE_VIDEO_FRAME:
+                frames[frame.stream] = frames.get(frame.stream, 0) + 1
+
+    def panel_state():
+        for msg in reversed(states):
+            if msg.get("panel") is not None:
+                return msg.get("panel")
+        return None
+
+    # (a) covered and uncovered inside the grace period
+    if args.phase in ("all", "pause"):
+        client.send_json({"t": "window.open", "stream": 1, "w": 1280, "h": 800, "dpi": 240,
+                          "pkg": args.target})
+        if not drain(args.open_timeout, lambda: 1 in opened and frames.get(1, 0) > 0):
+            raise DeckError("the app window never sent a frame")
+        drain(args.settle)
+        client.send_json({"t": "window.pause", "stream": 1})
+        print("paused")
+        drain(args.pause_seconds)
+        client.send_json({"t": "window.resume", "stream": 1})
+        print("resumed")
+        if not drain(args.resume_seconds, lambda: frames.get(1, 0) > 2):
+            raise DeckError("no frame after the resume")
+        client.send_json({"t": "window.close", "stream": 1})
+        drain(1.0)
+        opened.discard(1)
+    if args.phase == "pause":
+        return 0
+
+    # (b) the mirror plus an app window on the panel's group
+    client.send_json({"t": "window.open", "stream": 2, "w": 400, "h": 800, "dpi": 160, "mode": "phone"})
+    if not drain(args.open_timeout, lambda: 2 in opened):
+        raise DeckError("the phone window never opened")
+    client.send_json({"t": "window.open", "stream": 1, "w": 1280, "h": 800, "dpi": 240,
+                      "pkg": args.target})
+    if not drain(args.open_timeout, lambda: 1 in opened and frames.get(2, 0) > 0):
+        raise DeckError("the app window never opened beside the mirror")
+    drain(args.settle)
+
+    # (c) the person asks for the mirrored panel to stay off
+    client.send_json({"t": "phone.panel", "off": True})
+    if not drain(args.panel_timeout, lambda: panel_state() == "off"):
+        raise DeckError("no state with panel off")
+    print("state-panel=off")
+    before = frames.get(2, 0)
+    drain(args.off_seconds)
+    print("frames-while-off=%d" % (frames.get(2, 0) - before))
+    client.send_json({"t": "phone.panel", "off": False})
+    if not drain(args.panel_timeout, lambda: panel_state() == "on"):
+        raise DeckError("no state with panel on")
+    print("state-panel=on")
+    client.send_json({"t": "window.close", "stream": 2})
+    client.send_json({"t": "window.close", "stream": 1})
+    drain(1.0)
+    print("frames-mirror=%d" % frames.get(2, 0))
+    return 0
+
+
 def cmd_clip_set(client, args):
     """Send `clip.set` as the Mac: the phone's clipboard takes the text."""
     client.send_json({"t": "clip.set", "text": args.text})
@@ -2292,6 +2416,27 @@ def build_parser():
     sp.add_argument("--wait", type=float, default=15.0,
                     help="seconds to wait for a state carrying screen on")
 
+    sp = sub.add_parser("panel-test",
+                        help="panel checks on one session: pause/resume, mirror + app, phone.panel off/on",
+                        **spp)
+    sp.add_argument("target", nargs="?", default="com.android.settings",
+                    help="package the app window launches")
+    sp.add_argument("--open-timeout", type=float, default=30.0)
+    sp.add_argument("--settle", type=float, default=3.0, help="seconds each window gets to settle")
+    sp.add_argument("--pause-seconds", type=float, default=4.0, help="inside the 30 s grace period")
+    sp.add_argument("--resume-seconds", type=float, default=10.0, help="bound on the frame after a resume")
+    sp.add_argument("--panel-timeout", type=float, default=10.0)
+    sp.add_argument("--off-seconds", type=float, default=6.0,
+                    help="seconds the mirror's frames are counted while the panel is off")
+    sp.add_argument("--phase", choices=["all", "pause", "panel"], default="all",
+                    help="pause: (a) only; panel: (b)+(c) only")
+
+    sp = sub.add_parser("panel", help="phone.panel: hold the mirrored panel off/on, print the state",
+                        **spp)
+    sp.add_argument("mode", choices=["off", "on"])
+    sp.add_argument("--wait", type=float, default=15.0,
+                    help="seconds to wait for a state carrying panel")
+
     sp = sub.add_parser("dnd", help="phone.dnd: set the phone's DND, print the state",
                         **spp)
     sp.add_argument("mode", choices=["priority", "alarms", "none", "off"])
@@ -2417,6 +2562,8 @@ COMMANDS = {
     "ring": cmd_ring,
     "wake": cmd_wake,
     "wake-test": cmd_wake_test,
+    "panel": cmd_panel,
+    "panel-test": cmd_panel_test,
     "clip-set": cmd_clip_set,
     "clip-watch": cmd_clip_watch,
     "notify": cmd_notify,

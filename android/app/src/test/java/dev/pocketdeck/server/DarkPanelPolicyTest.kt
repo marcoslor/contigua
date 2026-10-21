@@ -146,6 +146,94 @@ class DarkPanelPolicyTest {
         assertFalse(next.transitional)
     }
 
+    // --- the phone window and the panel it mirrors --------------------
+
+    @Test
+    fun `the mirror keeps the shared-group panel on`() {
+        val p = policy()
+        assertEquals("a phone window watching the panel is no reason to darken it",
+                     PanelStrategy.PANEL_ALONE, p.strategy(listOf(ownGroup, panelGroup), mirroring = true))
+        p.streamsStarted()
+        val plan = p.step(panelOn = true, strategy = PanelStrategy.PANEL_ALONE)
+        assertTrue("the app window's group stays awake", plan.wake)
+        assertFalse("never power off the panel the person mirrors", plan.panelOff)
+        assertFalse(plan.transitional)
+        assertFalse("a mirror never wakes the phone", DarkPanelPolicy.wakesGroup(PanelStrategy.PANEL_ALONE, plan))
+        assertTrue("the mirror steps at the shared-group cadence",
+                   DarkPanelPolicy.keepAliveIntervalMs(PanelStrategy.PANEL_ALONE, displayLockHeld = false) < 6_000)
+    }
+
+    @Test
+    fun `the forced debug path also spares the mirrored panel`() {
+        assertEquals(PanelStrategy.PANEL_ALONE, policy(forced = true).strategy(listOf(ownGroup), mirroring = true))
+    }
+
+    @Test
+    fun `a mirror opened during a dark episode hands the panel back`() {
+        val p = policy()
+        p.streamsStarted()
+        p.step(panelOn = false, strategy = PanelStrategy.PANEL_DARK)
+        val mirrored = p.step(panelOn = true, strategy = PanelStrategy.PANEL_ALONE)
+        assertFalse("the panel comes back for the mirror", mirrored.panelOff)
+        assertFalse(DarkPanelPolicy.wakesGroup(PanelStrategy.PANEL_ALONE, mirrored))
+        // Closing the mirror returns to the app window's path: the panel is on
+        // and belongs to the person, so it is not darkened under them.
+        val back = p.step(panelOn = true, strategy = PanelStrategy.PANEL_DARK)
+        assertFalse(back.panelOff)
+    }
+
+    @Test
+    fun `without a mirror the shared group still darkens the panel`() {
+        val p = policy()
+        p.streamsStarted()
+        val plan = p.step(panelOn = false, strategy = p.strategy(listOf(panelGroup), mirroring = false))
+        assertTrue(plan.panelOff)
+    }
+
+    // --- "Turn Off Phone Screen" --------------------------------------
+
+    @Test
+    fun `turn off phone screen holds the mirrored panel off`() {
+        val p = policy()
+        p.streamsStarted()
+        val on = p.step(panelOn = true, strategy = PanelStrategy.PANEL_ALONE)
+        assertFalse("by default the mirrored panel stays as it is", on.panelOff)
+        assertTrue(p.requestMirrorOff(true))
+        val off = p.step(panelOn = true, strategy = PanelStrategy.PANEL_ALONE)
+        assertTrue("the request powers the mirrored panel off", off.panelOff)
+        assertTrue("the first step re-applies like a take-over", off.transitional)
+        val steady = p.step(panelOn = true, strategy = PanelStrategy.PANEL_ALONE)
+        assertTrue(steady.panelOff)
+        assertFalse(steady.transitional)
+        assertTrue("the mirror's frames keep the group awake", steady.wake)
+
+        // The person's power button on the phone ends it: the phone wins.
+        assertTrue(p.userPressedPower())
+        assertFalse("the request ends with the power press", p.mirrorOffRequested)
+        assertFalse(p.step(panelOn = true, strategy = PanelStrategy.PANEL_ALONE).panelOff)
+    }
+
+    @Test
+    fun `turning the option off gives the mirror's panel back`() {
+        val p = policy()
+        p.streamsStarted()
+        assertTrue(p.requestMirrorOff(true))
+        assertTrue(p.step(panelOn = true, strategy = PanelStrategy.PANEL_ALONE).panelOff)
+        assertTrue(p.requestMirrorOff(false))
+        assertFalse(p.step(panelOn = true, strategy = PanelStrategy.PANEL_ALONE).panelOff)
+        assertFalse("no change, no state echo", p.requestMirrorOff(false))
+    }
+
+    @Test
+    fun `closing the phone window ends the request`() {
+        val p = policy()
+        p.streamsStarted()
+        p.requestMirrorOff(true)
+        p.step(panelOn = true, strategy = PanelStrategy.PANEL_ALONE)
+        assertTrue("we held the panel: the caller restores it", p.streamsStopped())
+        assertFalse(p.mirrorOffRequested)
+    }
+
     // --- stopping ----------------------------------------------------
 
     @Test
@@ -154,6 +242,60 @@ class DarkPanelPolicyTest {
         p.streamsStarted()
         p.step(panelOn = false, strategy = PanelStrategy.PANEL_DARK)
         assertTrue(p.streamsStopped())
+    }
+
+    // --- a paused window is not the end of streaming ------------------
+
+    @Test
+    fun `a pause keeps the panel state for the grace period`() {
+        val p = policy()
+        p.streamsStarted()
+        p.step(panelOn = false, strategy = PanelStrategy.PANEL_DARK) // take the panel over
+        p.step(panelOn = true, strategy = PanelStrategy.PANEL_DARK) // steady dark
+        assertFalse("a covered window must not hand the panel back", p.streamsPaused(nowMs = 1_000))
+        assertFalse("5 s into the pause the panel is still ours", p.pauseGraceExpired(nowMs = 6_000))
+        assertFalse("29 s is still inside the grace", p.pauseGraceExpired(nowMs = 29_999))
+    }
+
+    @Test
+    fun `a pause inside the grace period resumes without a new wake`() {
+        val p = policy()
+        p.streamsStarted()
+        p.step(panelOn = false, strategy = PanelStrategy.PANEL_DARK)
+        p.step(panelOn = true, strategy = PanelStrategy.PANEL_DARK)
+        p.streamsPaused(nowMs = 1_000)
+        assertFalse(p.pauseGraceExpired(nowMs = 6_000))
+        p.streamsResumed()
+        val resumed = p.step(panelOn = true, strategy = PanelStrategy.PANEL_DARK)
+        assertFalse("an unpause inside the grace is no new episode", resumed.transitional)
+        assertTrue("the panel is still held dark", resumed.panelOff)
+        assertFalse("a resume ends the pause", p.pauseGraceExpired(nowMs = 60_000))
+    }
+
+    @Test
+    fun `a pause longer than the grace hands the panel back`() {
+        val p = policy()
+        p.streamsStarted()
+        p.step(panelOn = false, strategy = PanelStrategy.PANEL_DARK)
+        p.streamsPaused(nowMs = 1_000)
+        assertTrue("31 s of a covered window hands the phone back", p.pauseGraceExpired(nowMs = 32_000))
+        assertTrue("the episode was ours: restore and sleep", p.streamsStopped())
+    }
+
+    @Test
+    fun `a pause while the person has the phone stops at once`() {
+        val p = policy()
+        p.streamsStarted()
+        p.step(panelOn = true, strategy = PanelStrategy.PANEL_DARK) // the person's own screen
+        assertTrue("nothing of ours to keep", p.streamsPaused(nowMs = 1_000))
+    }
+
+    @Test
+    fun `closing the last stream hands the panel back at once`() {
+        val p = policy()
+        p.streamsStarted()
+        p.step(panelOn = false, strategy = PanelStrategy.PANEL_DARK)
+        assertTrue("a close is not a pause", p.streamsStopped())
     }
 
     @Test
