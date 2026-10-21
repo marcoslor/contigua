@@ -404,10 +404,19 @@ final class LiveTextSession {
 
     /// A new VIDEO_CONFIG: the picture under the overlay may be gone or a
     /// different shape. Leaving drops back to live video.
-    func noteStreamConfig() {
+    func noteStreamConfig(size: CGSize? = nil) {
         // A keyframe request is answered by a fresh encoder, so a config while
         // the snapshot is still on its way is ours, not a window change.
         guard mode.state != .capturing else { return }
+        // The answering config can land just after the keyframe it belongs to,
+        // i.e. after the freeze: at the frozen picture's own size it is still
+        // our request's echo, and leaving would drop the mode the person just
+        // entered (16 ms after entering, in one run).
+        if let size, let frame,
+           CGSize(width: CVPixelBufferGetWidth(frame), height: CVPixelBufferGetHeight(frame)) == size {
+            Log.video.notice("livetext: config at the frozen size, kept")
+            return
+        }
         exit(.streamConfig)
     }
 
