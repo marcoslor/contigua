@@ -249,6 +249,45 @@ class PanelHoldTest {
         }
     }
 
+    /**
+     * The 16:44 log's cause: `state.panel` is reported the moment the hold
+     * changes, before any platform action that can block — the panel write, the
+     * wake wait, the keep-alive start/stop, and the watchdog's clean stop (it
+     * waits up to 2 s for the child). Reported last, the Mac's button landed
+     * 1.1 s after the phone's screen came back.
+     */
+    @Test
+    fun `repro 16-44 the panel is reported before any blocking platform action`() {
+        var reports = 0
+        for (state in allStates) {
+            for (event in allEvents) {
+                val actions = panelHoldTransition(open(state), event).actions
+                val report = actions.indexOfFirst { it is PanelHoldAction.ReportPanel }
+                if (report < 0) continue
+                reports++
+                assertEquals("$state --${event.wire}--> reports after a platform action: $actions",
+                    0, report)
+            }
+        }
+        assertTrue("no transition reported a panel change", reports >= 3)
+    }
+
+    /** The log's two request paths: request on, and a power press while held. */
+    @Test
+    fun `a request reports the panel before the panel write and the wake`() {
+        val hold = PanelHoldMachine()
+        hold.dispatch(PanelHoldEvent.WindowOpened)
+        hold.dispatch(PanelHoldEvent.RequestOff(ignorePower = false))
+        hold.dispatch(PanelHoldEvent.KeepAliveStep(panelOn = true))
+        assertEquals("the Mac hears panel on first", PanelHoldAction.ReportPanel(false),
+            hold.dispatch(PanelHoldEvent.RequestOn).first())
+
+        hold.dispatch(PanelHoldEvent.RequestOff(ignorePower = false))
+        hold.dispatch(PanelHoldEvent.KeepAliveStep(panelOn = true))
+        assertEquals("a power press reports before the blocking wake", PanelHoldAction.ReportPanel(false),
+            hold.dispatch(PanelHoldEvent.PowerPress).first())
+    }
+
     // --- item 2: one power press brings the screen back --------------------
 
     @Test
