@@ -164,6 +164,47 @@ class FramesTest {
         }
     }
 
+    /**
+     * A socket read can deliver part of a frame and then time out. What it
+     * already took is that frame's prefix, not a header: the next call must
+     * continue the frame. Reading it as a length prefix is how a full K1 run
+     * once failed with "frame length too large" on a stream that was fine.
+     */
+    @Test
+    fun aReadThatTimesOutMidFrameKeepsWhatItTook() {
+        val one = Frames.encodeJson(0, """{"t":"a"}""")
+        val two = Frames.encodeJson(0, """{"t":"b"}""")
+        val stream = StallingStream(one + two, stallAfter = 2)
+        val reader = FrameReader(stream)
+        try {
+            reader.readFrame()
+            fail("expected the stalled read to throw")
+        } catch (_: java.net.SocketTimeoutException) {
+            // the short socket read timing out two bytes into the header
+        }
+        stream.stall = false
+        assertEquals("a", Json.parseObject(String(reader.readFrame()!!.payload))["t"])
+        assertEquals("b", Json.parseObject(String(reader.readFrame()!!.payload))["t"])
+    }
+
+    /** Delivers [bytes], and times out on every read once [stallAfter] are out. */
+    private class StallingStream(private val bytes: ByteArray, private val stallAfter: Int) : java.io.InputStream() {
+        @Volatile var stall = true
+        private var at = 0
+
+        override fun read(): Int = throw UnsupportedOperationException("block reads only")
+
+        override fun read(b: ByteArray, off: Int, len: Int): Int {
+            if (stall && at >= stallAfter) throw java.net.SocketTimeoutException("read timed out")
+            val room = if (stall) minOf(len, stallAfter - at) else len
+            val n = minOf(room, bytes.size - at)
+            if (n <= 0) return -1
+            System.arraycopy(bytes, at, b, off, n)
+            at += n
+            return n
+        }
+    }
+
     @Test
     fun undersizeFrameRejected() {
         val header = byteArrayOf(0, 0, 0, 4, 0x01, 0, 0, 0)

@@ -221,23 +221,57 @@ object Frames {
 /** Reads whole frames from a stream; returns null on clean EOF at a frame boundary. */
 class FrameReader(private val input: InputStream) {
 
+    /**
+     * What an interrupted read already took, and which part of which frame it
+     * belongs to. A socket read may time out (a short receive timeout) after
+     * delivering part of a frame; those bytes are that frame's prefix, so the
+     * next call finishes it. Reading them as a length prefix instead is how a
+     * full run once failed with a frame-length error on a stream that was fine.
+     */
+    private var headerPrefix = ByteArray(0)
+    private var bodyPrefix = ByteArray(0)
+    private var bodyLength = 0
+
     fun readFrame(): Frame? {
-        val header = readFully(4) ?: return null
-        val len = readInt(header, 0)
-        if (len < 5) throw ProtocolException("frame length too small: $len")
-        if (len > Frames.MAX_FRAME) throw ProtocolException("frame length too large: $len")
-        val body = readFully(len) ?: throw ProtocolException("truncated frame body")
+        val body: ByteArray
+        if (bodyLength > 0) {
+            // An interrupted body: finish that frame, not a new header.
+            body = readChunk(bodyPrefix, bodyLength) { bodyPrefix = it }
+                ?: throw ProtocolException("truncated frame body")
+            bodyLength = 0
+        } else {
+            val header = readChunk(headerPrefix, 4) { headerPrefix = it } ?: return null
+            val len = readInt(header, 0)
+            if (len < 5) throw ProtocolException("frame length too small: $len")
+            if (len > Frames.MAX_FRAME) throw ProtocolException("frame length too large: $len")
+            bodyLength = len
+            body = readChunk(ByteArray(0), len) { bodyPrefix = it }
+                ?: throw ProtocolException("truncated frame body")
+            bodyLength = 0
+        }
         val type = body[0].toInt() and 0xFF
         val stream = readInt(body, 1)
         val payload = body.copyOfRange(5, body.size)
         return Frame(type, stream, payload)
     }
 
-    private fun readFully(n: Int): ByteArray? {
+    /**
+     * The next [n] bytes, starting after [prefix]; [keepPartial] is handed what
+     * an interrupted read took so the next call can continue it. Null only for a
+     * clean end of stream before the first byte.
+     */
+    private fun readChunk(prefix: ByteArray, n: Int, keepPartial: (ByteArray) -> Unit): ByteArray? {
         val buf = ByteArray(n)
-        var off = 0
+        prefix.copyInto(buf)
+        var off = prefix.size
+        keepPartial(ByteArray(0))
         while (off < n) {
-            val r = input.read(buf, off, n - off)
+            val r = try {
+                input.read(buf, off, n - off)
+            } catch (e: java.io.IOException) {
+                keepPartial(buf.copyOf(off))
+                throw e
+            }
             if (r < 0) {
                 if (off == 0) return null
                 throw ProtocolException("truncated frame (read $off/$n)")
