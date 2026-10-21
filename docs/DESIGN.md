@@ -47,6 +47,8 @@ Spec of every state, copy and transitions: [design/mac-redesign.md](design/mac-r
   `.symbolEffect(.pulse)` or pair again). **Connected shows the dot alone** (the title names the phone); every other state adds its text. When connected: `lock.fill` `.secondary` only
   while the phone is locked (unlocked shows nothing), then the battery glyph for the level — `battery.0/25/50/75/100percent` by nearest quarter, `battery.100percent.bolt` while
   charging — and the `%` `.monospacedDigit()`, `.secondary`, `.red` below 13 % when not charging. Tooltip: "Connected, phone locked, battery 24 %".
+  The pill is a button: it opens the phone controls (the menu bar panel's shared `PhonePanelView`) in a `.popover`, so the same
+  volume, Do Not Disturb, Ring/Stop Ringing, Now Playing picker and window actions are one click away in the Deck.
   `ToolbarItem(.primaryAction)` **Phone** (`iphone.gen3`); `.searchable(placement: .toolbar, prompt: "Search apps")`.
 - **Header groups** (at every width): one group packed at the left — traffic lights, then the connection
   chip (`ToolbarItem(.navigation)`; `.status` would float it in the middle of the toolbar on macOS), then the
