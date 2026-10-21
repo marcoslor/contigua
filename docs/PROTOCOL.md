@@ -72,7 +72,11 @@ display id on every injected event.
   keyframe. The Mac must rebuild its format description on every CONFIG. Frames
   received before the new CONFIG are old-size frames and may be shown or dropped.
   `window.resume` and `window.keyframe` may also be answered with CONFIG + keyframe.
-- No frames are sent while the display content is static (that's normal).
+- The display content being static is not silence: the encoder repeats its
+  last frame at least every 500 ms (`KEY_REPEAT_PREVIOUS_FRAME_AFTER`) while a
+  stream is open, so a live stream is never quiet for long. That heartbeat is
+  what lets the Mac tell a static picture from a stalled encoder (it says "Not
+  responding" after a second without frames).
 - Backpressure: the phone never queues more than ~250 ms of video per stream.
   If the socket can't keep up it drops non-key frames for that stream until the
   next keyframe, and requests one from the encoder (`PARAMETER_KEY_REQUEST_SYNC_FRAME`).

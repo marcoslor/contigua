@@ -462,6 +462,9 @@ final class DebugInputDriver {
     var notifyCopy: ((String) -> Bool)?
     /// `livedump PATH`: the menu bar's Live section as JSON.
     var liveDump: ((String) -> Bool)?
+    /// `opensettings`: the app's own Settings scene opener. The responder
+    /// action only exists while the app is active, which a quiet run is not.
+    var openSettings: (() -> Void)?
     /// `mediacmd ACTION`, `mediacmd seek MS`, `mediacmd volume LEVEL`: the Now
     /// Playing controls' target (the media row included).
     var mediaCommand: ((String) -> Void)?
@@ -588,7 +591,11 @@ final class DebugInputDriver {
             default: break
             }
         case .openSettings:
-            NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+            if let openSettings {
+                openSettings()
+            } else {
+                NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+            }
         case .fullScreen:
             // The menu item's action, through the responder chain: in full
             // screen the content can live in the system's full-screen window,
@@ -793,6 +800,25 @@ final class DebugInputDriver {
         NSApp.postEvent(up, atStart: false)
         window.sendEvent(down)
         pumpRunLoop()
+    }
+
+    /// A click at a window point on the control the content's hit test finds,
+    /// for a check that must click a real control and not call its action.
+    /// AppKit's own window dispatch delivers no synthetic mouse event to a
+    /// quiet run (the app is never active, its windows sit on a virtual
+    /// display), so the pair goes to the view the window would have used.
+    static func clickControl(at point: CGPoint, in window: NSWindow) {
+        guard let content = window.contentView, let view = content.hitTest(point) else { return }
+        func event(_ type: NSEvent.EventType) -> NSEvent? {
+            NSEvent.mouseEvent(with: type, location: point, modifierFlags: [],
+                               timestamp: ProcessInfo.processInfo.systemUptime,
+                               windowNumber: window.windowNumber, context: nil,
+                               eventNumber: 0, clickCount: 1, pressure: 1)
+        }
+        guard let down = event(.leftMouseDown), let up = event(.leftMouseUp) else { return }
+        view.mouseDown(with: down)
+        view.mouseUp(with: up)
+        RunLoop.current.run(until: Date(timeIntervalSinceNow: Self.gestureStepInterval))
     }
 
     /// An extra mouse button as AppKit delivers it: an event with that button

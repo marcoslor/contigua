@@ -158,6 +158,16 @@ ensure_forward() {
 
 # The APK's versionCode as the build wrote it. aapt2 keeps the historical
 # `versionCode='102'` shape; some outputs drop the quotes.
+# ledger_boots <ledger> <worktree> — how many emulator boots the boot guard
+# recorded for one worktree. The ledger's fields are:
+#   <date> <time> <worktree> <emulator|vm> <pid>
+# so the name is $3 and the kind $4 (a first version compared $2/$3 and read
+# every boot as 0 after a real one).
+ledger_boots() {
+  [ -f "$1" ] || { echo 0; return; }
+  awk -v n="$2" '$3 == n && $4 == "emulator" { c++ } END { print c + 0 }' "$1"
+}
+
 apk_version_code() { # apk_version_code <apk>
   "$AAPT2" dump badging "$1" 2>/dev/null |
     sed -n "s/.*versionCode='\{0,1\}\([0-9][0-9]*\)'\{0,1\}.*/\1/p" | head -1

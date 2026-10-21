@@ -21,12 +21,26 @@ final class WindowFullScreenItem: NSMenuItem {
 
     init() {
         super.init(title: "Enter Full Screen",
-                   action: #selector(NSWindow.toggleFullScreen(_:)),
+                   action: #selector(WindowFullScreenItem.toggle(_:)),
                    keyEquivalent: "f")
-        // The action goes through the responder chain to the key window, as
-        // AppKit's own item does.
-        target = nil
+        // The item itself owns the action so it can answer AppKit's validation
+        // even in a quiet (never activated) run: a phone window has no full
+        // screen, and the item must be disabled for it, not merely do nothing.
+        target = self
         image = Self.symbol(fullScreen: false)
+    }
+
+    /// The key window, as AppKit's responder chain would have found it.
+    @objc private func toggle(_ sender: Any?) {
+        (NSApp.keyWindow ?? NSApp.mainWindow)?.toggleFullScreen(sender)
+    }
+
+    func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        // Validation always runs on the main thread; the protocol's method is
+        // not actor-isolated on its own.
+        MainActor.assumeIsolated {
+            FullScreenMenu.allowsFullScreen(NSApp.keyWindow ?? NSApp.mainWindow)
+        }
     }
 
     @available(*, unavailable)
@@ -77,6 +91,14 @@ enum FullScreenMenu {
     /// The key window's full-screen state: the item's title and symbol.
     static func setState(fullScreen: Bool) {
         item?.setState(fullScreen: fullScreen)
+    }
+
+    /// Whether `window` may enter native full screen. A window that opts out
+    /// with `.fullScreenNone` (the phone window) may not: the phone mirror
+    /// would be letterboxed or stretched. Every other stream window may.
+    static func allowsFullScreen(_ window: NSWindow?) -> Bool {
+        guard let window else { return false }
+        return !window.collectionBehavior.contains(.fullScreenNone)
     }
 
     private static func removeStrays() {

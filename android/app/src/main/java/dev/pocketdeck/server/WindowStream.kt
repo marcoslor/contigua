@@ -522,6 +522,12 @@ internal class WindowStream(
         format.setInteger(MediaFormat.KEY_BIT_RATE, quality.bitrate)
         format.setInteger(MediaFormat.KEY_FRAME_RATE, FPS)
         format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, I_FRAME_INTERVAL_S)
+        // The Mac's picture watchdog needs a heartbeat: a static screen makes
+        // SurfaceFlinger compose nothing, so without this a live-but-idle
+        // stream is indistinguishable from a hung encoder. Repeating the last
+        // frame twice a second costs almost nothing (identical P-frames) and
+        // lets the Mac call "Not responding" after a second of silence.
+        runCatching { format.setLong(MediaFormat.KEY_REPEAT_PREVIOUS_FRAME_AFTER, 500_000L) }
         format.setInteger(MediaFormat.KEY_PRIORITY, 0) // realtime
         format.setInteger(MediaFormat.KEY_MAX_B_FRAMES, 0)
         format.setInteger(MediaFormat.KEY_BITRATE_MODE, MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR)
