@@ -52,7 +52,9 @@ reply) is far outside them.
   restart would change the state.
 - **No stale picture.** When frames stop without a state change, the window
   says so within `stale_picture_ms` instead of presenting the old frame as
-  live.
+  live. A covered or paused window is not a live picture: AppKit throttles an
+  occluded app, so its silence is not a stall, and the clock restarts when the
+  window is visible again.
 - **Drive the real control.** A check that proves a control works goes through
   the event path a person uses (a hit test and mouse events, a menu item, a
   key event), not a debug verb that calls the action directly.

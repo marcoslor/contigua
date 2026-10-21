@@ -59,9 +59,32 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     /// has no "live" claim to be wrong about.
     var expectsFrames: Bool {
         guard !isPaused, !liveText.isActive, !linkIsDown,
-              let window, window.isVisible, !window.isMiniaturized else { return false }
+              let window, window.isVisible, !window.isMiniaturized,
+              !isWindowOccluded else { return false }
         return true
     }
+
+    /// Tests and the e2e replace the WindowServer's occlusion state (a test
+    /// process cannot cover its own window, and the quiet e2e run may not put
+    /// another app's window over it). nil means the real state.
+    var occlusionVisibleOverride: Bool?
+
+    /// The WindowServer's answer, with the test override on top. A covered
+    /// window keeps its last frame on screen but is not a live picture: AppKit
+    /// throttles an occluded app, so its silence says nothing about the phone.
+    var isWindowOccluded: Bool {
+        if let occlusionVisibleOverride { return !occlusionVisibleOverride }
+        guard let window else { return true }
+        return !window.occlusionState.contains(.visible)
+    }
+
+    /// The e2e's `occlude` command: the WindowServer state a quiet run cannot
+    /// produce. Tests set `occlusionVisibleOverride` and drive the clock.
+    func setOcclusionVisible(_ visible: Bool?) {
+        occlusionVisibleOverride = visible
+        tickFrameWatchdog()
+    }
+
     /// The mode was active at the last change, and the phone is paused for it.
     private var liveTextWasActive = false
     private var liveTextPaused = false
@@ -455,6 +478,9 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         let sp = shouldPause
         Log.video.info("occlusion changed: visible=\(w?.isVisible ?? false) mini=\(w?.isMiniaturized ?? false) occl.hasVisible=\(w?.occlusionState.contains(.visible) ?? false) raw=\(String(describing: w?.occlusionState.rawValue)) -> pause=\(sp)")
         setPaused(sp)
+        // The watchdog's clock must not carry the covered time across: the
+        // notification also reaches a window whose timer AppKit has throttled.
+        tickFrameWatchdog()
     }
 
     /// Minimized windows are never "visible", and AppKit can briefly report a
@@ -739,7 +765,12 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     /// One watchdog tick: fold in any frame the clock saw, then ask whether the
     /// silence has lasted long enough to call the picture stalled.
     private func tickFrameWatchdog() {
-        let now = ProcessInfo.processInfo.systemUptime
+        tickFrameWatchdog(at: ProcessInfo.processInfo.systemUptime)
+    }
+
+    /// The tick with the clock passed in, so a test can drive the window's
+    /// rule (expectation changes included) without waiting in real time.
+    func tickFrameWatchdog(at now: TimeInterval) {
         if let last = frameClock.lastFrame {
             if watchdog.frame(at: last) { setStalled(false) }
         }

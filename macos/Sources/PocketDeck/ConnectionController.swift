@@ -2271,6 +2271,15 @@ final class ConnectionController {
                 return "nav needs back|home|recents"
             }
             return nil
+        case "occlude":
+            // The quiet e2e run may not cover the window (no extra windows):
+            // tell the first window what the WindowServer would have said.
+            guard let state = arguments.first, ["on", "off"].contains(state) else {
+                return "occlude needs on|off"
+            }
+            guard let window = windows.controller(for: 1) else { return "no first window" }
+            window.setOcclusionVisible(state == "off")
+            return nil
         case "wake-phone":
             // The phone window's Wake Screen button, for the e2e (its click is
             // unit-tested; a scripted click would need real pointer input).
