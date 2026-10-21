@@ -2332,8 +2332,8 @@ final class ConnectionController {
             PanelProbe.openDeckPopover(controller: self)
             return nil
         case "paneldump":
-            guard arguments.count == 2, ["panel", "deck"].contains(arguments[0]) else {
-                return "paneldump needs HOST (panel or deck) and PATH"
+            guard arguments.count == 2, ["panel", "deck", "real"].contains(arguments[0]) else {
+                return "paneldump needs HOST (panel, deck or real) and PATH"
             }
             return PanelProbe.dump(host: arguments[0], to: arguments[1]) ? nil : "paneldump failed"
         case "panelwindows":

@@ -337,7 +337,7 @@ struct PhonePanelView: View {
     }
 
     private var ringRow: some View {
-        PanelRow(symbol: state.ringing ? "iphone.radiowaves.left.and.right.slash"
+        PanelRow(symbol: state.ringing ? "bell.slash"
                                        : "iphone.radiowaves.left.and.right",
                  title: state.ringTitle,
                  enabled: state.connection.isOnline,

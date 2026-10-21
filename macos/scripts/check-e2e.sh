@@ -7122,9 +7122,12 @@ OSA
 # it for `screencapture -l`.
 shot_panel_window() {
     local frame x y w h
-    frame="$(osascript - "$APP_PID" <<'OSA' 2>/dev/null
+    # NAME [MIN WIDTH] [MAX WIDTH]: the panel is 300 pt, the Deck's popover 326.
+    frame="$(osascript - "$APP_PID" "${2:-280}" "${3:-400}" <<'OSA' 2>/dev/null
 on run argv
     set pidText to item 1 of argv
+    set minWidth to (item 2 of argv) as integer
+    set maxWidth to (item 3 of argv) as integer
     tell application "System Events"
         set matches to every process whose unix id is (pidText as integer)
         if (count of matches) is 0 then return ""
@@ -7132,7 +7135,7 @@ on run argv
             repeat with w in windows
                 try
                     set s to size of w
-                    if (item 1 of s) >= 280 and (item 1 of s) <= 400 and (item 2 of s) >= 300 then
+                    if (item 1 of s) >= minWidth and (item 1 of s) <= maxWidth and (item 2 of s) >= 300 then
                         set p to position of w
                         return ((item 1 of p) as string) & "," & ((item 2 of p) as string) & "," & ((item 1 of s) as string) & "," & ((item 2 of s) as string)
                     end if
@@ -7432,7 +7435,15 @@ check_menubar_vm() {
     clean
     local shots="$WORK/menubar" result device wanted
     mkdir -p "$shots"
-    shot_panel() { shot_panel_window "$1" || bad "MENUBAR-VM no panel window for $1"; }
+    shot() { screencapture -x "$shots/$1" >/dev/null 2>&1 || true; }
+    # The window's own rectangle when AX can see the panel; a full-screen capture
+    # keeps the visual record either way.
+    shot_panel() {
+        shot_panel_window "$1" || {
+            shot "$1"
+            bad "MENUBAR-VM no AX frame for the panel ($1: full-screen shot instead)"
+        }
+    }
     # The panel closes on Esc (a window-style extra), so every capture opens it
     # from a known closed state: clicking an open status item would close it.
     close_panel() { osascript -e 'tell application "System Events" to key code 53' >/dev/null 2>&1 || true; sleep 0.5; }
@@ -7443,7 +7454,9 @@ check_menubar_vm() {
     defaults write "$DEFAULTS_SUITE" "showAppsInDock" -bool NO
     defaults write "$DEFAULTS_SUITE" "notify.$device" -bool YES
     osascript -e 'tell application "System Events" to tell appearance preferences to set dark mode to false' >/dev/null 2>&1 || true
-    launch --connect "127.0.0.1:$PORT" --quit-after 240
+    rm -rf "$WORK-control"
+    mkdir -p "$WORK-control"
+    launch --connect "127.0.0.1:$PORT" --quit-after 240 --debug-control "$WORK-control"
     wait_until 30 events_have '"t":"apps.list"' \
         || { bad "MENUBAR-VM the session never started"; stop_app; stop_fakephone; return 1; }
     sleep 3
@@ -7455,33 +7468,37 @@ check_menubar_vm() {
         || bad "MENUBAR-VM the status item did not open ($result)"
     sleep 1
     shot_panel "panel-online-light.png"
-    result="$(panel_ax)"
-    for wanted in "PHONE" "Do Not Disturb" "Ring Phone" "Phone volume" "WINDOWS"; do
-        case "$result" in
-            *"$wanted"*) ok "MENUBAR-VM on screen: $wanted" ;;
-            *) bad "MENUBAR-VM missing from the panel: $wanted" ;;
-        esac
-    done
-    case "$result" in
-        *"Now Playing follows"*) ok "MENUBAR-VM the two-session picker is on screen" ;;
-        *) bad "MENUBAR-VM no picker with two playing apps" ;;
-    esac
+    # The status item's window is the phone card. (Its AX children are not
+    # exposed to System Events, so the card is read the way the host checks read
+    # it: `real` is that window.)
+    if control paneldump real "$WORK/menubar/panel-online.json"; then
+        if python3 "$MACOS/scripts/panel-card.py" "$WORK/menubar/panel-online.json" "sessions"; then
+            ok "MENUBAR-VM the panel is the phone card: 300 pt, one control per item, the picker with two apps"
+        else
+            bad "MENUBAR-VM the panel's window is not the phone card"
+        fi
+    else
+        bad "MENUBAR-VM paneldump real: $CONTROL_REPLY"
+    fi
 
-    # (b) ringing: the Ring row's own AX press, the phone answers ring.state,
-    # the one row flips to Stop Ringing.
-    result="$(ax_press "Ring Phone" PocketDeck)"
-    [ "$result" = "clicked" ] \
-        && ok "MENUBAR-VM pressed the Ring Phone row" \
-        || bad "MENUBAR-VM no Ring Phone row to press ($result)"
+    # (b) ringing: the Ring row's own click, the phone answers ring.state, and
+    # the one row reads Stop Ringing.
+    control panelclick real panel.ring \
+        && ok "MENUBAR-VM clicked the Ring Phone row" \
+        || bad "MENUBAR-VM panelclick real panel.ring: $CONTROL_REPLY"
     wait_until 20 events_have '"ev":"ring"' \
         && ok "MENUBAR-VM the phone rang" \
         || bad "MENUBAR-VM the phone did not ring"
     sleep 1
     shot_panel "panel-ringing-light.png"
-    result="$(ax_press "Stop Ringing" PocketDeck)"
-    [ "$result" = "clicked" ] \
-        && ok "MENUBAR-VM the row flipped to Stop Ringing" \
-        || bad "MENUBAR-VM no Stop Ringing row after the ring ($result)"
+    if control paneldump real "$WORK/menubar/panel-ringing.json"; then
+        if python3 "$MACOS/scripts/panel-card.py" "$WORK/menubar/panel-ringing.json" "ringing"; then
+            ok "MENUBAR-VM the row reads Stop Ringing while the phone rings"
+        else
+            bad "MENUBAR-VM the ring row did not flip"
+        fi
+    fi
+    control panelclick real panel.ring >/dev/null 2>&1 || true
     wait_until 20 events_have '"ev":"ring","seconds":0' \
         && ok "MENUBAR-VM the phone stopped" \
         || bad "MENUBAR-VM the phone did not stop"
@@ -7504,10 +7521,11 @@ check_menubar_vm() {
         bad "MENUBAR-VM deckpanel: $CONTROL_REPLY"
     fi
     sleep 2
-    if shot_panel_window "deck-popover-light.png"; then
+    if shot_panel_window "deck-popover-light.png" 320 340; then
         ok "MENUBAR-VM the Deck popover is on screen"
     else
-        bad "MENUBAR-VM no Deck popover window"
+        shot "deck-popover-light.png"
+        bad "MENUBAR-VM no Deck popover window (full-screen shot instead)"
     fi
     # Put the switch back where it was (the popover is left open for the shot).
     control panelclick deck panel.dnd >/dev/null 2>&1 || true
@@ -7811,6 +7829,87 @@ PY
         || bad "LT Back still sent nothing after the exit ($(nav_count) nav)"
     stop_app
     stop_fakephone
+}
+
+# check_menubar_shots — the panel's visual record on the run's own (quiet,
+# virtual) display: light with two playing apps, ringing, the Deck popover, then
+# offline. The VM check menubar-vm does the same in situ under the status item
+# and adds dark mode; this one is the host's copy, and the only place a quiet
+# run can drive the panel's rows (the status item's window is the window
+# server's). The shots go to $WORK/menubar-shots/ and are judged by eye.
+check_menubar_shots() {
+    clean
+    local shots="$WORK/menubar-shots" result device
+    mkdir -p "$shots"
+    shot_panel() {
+        local id
+        id="$(await_window '$4 == 300 && $5 >= 300 && $5 <= 800')" \
+            || { bad "MENUBAR-SHOTS no panel window for $1"; return 1; }
+        screencapture -x -l"$id" "$shots/$1" >/dev/null 2>&1 && say "shot: $shots/$1"
+    }
+
+    FAKE_ARGS="--media" start_fake || return 1
+    device="$(sed -n 's/^fakephone \([^ ]*\) listening.*/\1/p' "$WORK/fake.log" "$WORK/fake.err" | head -1)"
+    [ -n "$device" ] || { bad "MENUBAR-SHOTS no device id in the fakephone line"; stop_fakephone; return 1; }
+    defaults write "$DEFAULTS_SUITE" "showAppsInDock" -bool NO
+    defaults write "$DEFAULTS_SUITE" "notify.$device" -bool YES
+    rm -rf "$WORK-control"
+    mkdir -p "$WORK-control"
+    launch --connect "127.0.0.1:$PORT" --quit-after 120 --debug-control "$WORK-control" \
+        --open com.whatsapp
+    wait_until 30 events_have '"t":"apps.list"' \
+        || { bad "MENUBAR-SHOTS the session never started"; stop_app; stop_fakephone; return 1; }
+    control panelopen && ok "MENUBAR-SHOTS the panel host opened" \
+        || bad "MENUBAR-SHOTS panelopen: $CONTROL_REPLY"
+    control paneldump panel "$WORK/menubar-shots/panel.json" \
+        || bad "MENUBAR-SHOTS paneldump: $CONTROL_REPLY"
+    sleep 1
+    shot_panel "panel-online-light.png"
+
+    # Ringing: the row's own click; the phone answers ring.state, so the same
+    # row reads Stop Ringing in the shot.
+    control panelclick panel panel.ring || bad "MENUBAR-SHOTS panelclick ring: $CONTROL_REPLY"
+    wait_until 20 events_have '"ev":"ring"' \
+        && ok "MENUBAR-SHOTS the phone is ringing for the shot" \
+        || bad "MENUBAR-SHOTS the phone did not ring"
+    sleep 1
+    shot_panel "panel-ringing-light.png"
+    control panelclick panel panel.ring >/dev/null 2>&1 || true
+    wait_until 10 events_have '"ev":"ring","seconds":0' \
+        || bad "MENUBAR-SHOTS the phone kept ringing"
+
+    # The Deck's popover: the same card above the grid (its own window).
+    control panelclose >/dev/null 2>&1 || true
+    control deckpanel && ok "MENUBAR-SHOTS the Deck popover opened" \
+        || bad "MENUBAR-SHOTS deckpanel: $CONTROL_REPLY"
+    sleep 2
+    local id
+    id="$(await_window '$4 >= 320 && $4 <= 340 && $5 >= 300')" \
+        && screencapture -x -l"$id" "$shots/deck-popover-light.png" >/dev/null 2>&1 \
+        && say "shot: $shots/deck-popover-light.png" \
+        || bad "MENUBAR-SHOTS no Deck popover window"
+
+    # Offline: away, the card stays with its one reason line.
+    stop_fakephone
+    wait_until 10 no_fakephone
+    sleep 18
+    control panelopen >/dev/null 2>&1 || true
+    sleep 1
+    shot_panel "panel-offline-light.png"
+    result="$(control paneldump panel "$WORK/menubar-shots/panel-offline.json" && echo dumped)"
+    [ -n "$result" ] \
+        && python3 - "$WORK/menubar-shots/panel-offline.json" <<'PY' \
+        && ok "MENUBAR-SHOTS the offline card carries the one reason line" \
+        || bad "MENUBAR-SHOTS no reason in the offline card"
+import json, sys
+root = json.load(open(sys.argv[1]))
+if root["reason"] != "Connect your phone to use these.":
+    print("reason:", repr(root["reason"])); sys.exit(1)
+PY
+
+    stop_app
+    defaults delete "$DEFAULTS_SUITE" "notify.$device" >/dev/null 2>&1
+    defaults delete "$DEFAULTS_SUITE" "showAppsInDock" >/dev/null 2>&1
 }
 
 # --- NFR: the limits in docs/NFR.md, end to end -----------------------------
