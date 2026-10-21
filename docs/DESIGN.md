@@ -205,7 +205,8 @@ using the phone with fingers.
 | Needs attention (Shizuku not running, connections off) | `tertiaryContainer` / `onTertiaryContainer` | `ic_warning` + `FilledTonalButton` fix |
 | Error | `errorContainer` / `onErrorContainer` | `ic_error` + `FilledTonalButton` retry |
 
-- `ListItem(headlineContent = "Keep PocketDeck running", trailingContent = Switch(...))`, whole row toggles; then "Allow connections" (master) and "Allow new pairings" (disabled while the master is off, keeping its value), same shape.
+- `ListItem(headlineContent = "Keep running in the background", trailingContent = Switch(...))`, whole row toggles; then "Allow connections" (master) and "Allow new pairings" (disabled while the master is off, keeping its value), same shape.
+- Background switch off = `START_NOT_STICKY` and no boot start; the service still starts with the screen's task, and `onTaskRemoved` stops it and calls `stopServer()` on the shell service. On = `START_STICKY` and `BootReceiver` starts it after boot/update. The status card maps off to Ready with `untilTaskClosed = true`, so its subtitle is "Stops when you close PocketDeck from recent apps." and it has no action; the attention colours are only for Allow connections off and Shizuku problems.
 - "Paired Macs" header `titleMedium` `primary`; rows `ListItem` (leading `ic_laptop_mac`, headline name, supporting "Last connected *relative*", trailing `IconButton` overflow → `DropdownMenu` "Forget"), wrapped in `SwipeToDismissBox` (end-to-start, background `errorContainer` + `ic_delete`). Forget → `Snackbar` with **Undo** (4 s) before the key is deleted. Empty: `bodyMedium onSurfaceVariant` "No Macs paired yet."
 - `ExtendedFloatingActionButton(text = "Pair new Mac", icon = ic_qr_code_scanner)`, collapses (`expanded = !scrolled`).
 

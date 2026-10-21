@@ -14,6 +14,8 @@ object DeckState {
     @Volatile var enabled: Boolean = false
     @Volatile var shizukuRunning: Boolean = false
     @Volatile var shizukuGranted: Boolean = false
+    /** The foreground service exists in this process (not "the switch is on"). */
+    @Volatile var serviceRunning: Boolean = false
     @Volatile var port: Int = -1
     @Volatile var connectedMac: String? = null
     /** The paired client id of [connectedMac]; null when nothing is connected. */
