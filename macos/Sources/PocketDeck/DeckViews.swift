@@ -694,6 +694,7 @@ struct DeckGridLayout: Layout {
     static let verticalInset: CGFloat = 16
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        MainActor.assumeIsolated { DeckGridMetrics.beginLayout() }
         let width = proposal.replacingUnspecifiedDimensions().width
         return CGSize(width: width, height: Self.height(for: subviews.count, width: width))
     }
@@ -705,6 +706,7 @@ struct DeckGridLayout: Layout {
             subview.place(at: frame.origin, anchor: .topLeading,
                           proposal: ProposedViewSize(width: frame.width, height: frame.height))
         }
+        MainActor.assumeIsolated { DeckGridMetrics.endLayout() }
     }
 
     /// Where cell `index` is drawn in a grid `width` wide. Pure, so the tests
