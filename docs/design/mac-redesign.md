@@ -289,9 +289,14 @@ toolbar item group:
 - **View ▸ Density** names the Settings default in its first item — *Default (100%)* — then lists only the other
   percentages, so no value appears twice, then *Larger* ⌘+, *Smaller* ⌘− and *Actual Size* ⌘0: the same step and reset
   the stream window's own keys perform, now visible, disabled without a key stream window that shows an app.
-- **Enter Full Screen** ⌃⌘F is a plain command item; its title and symbol follow the key window ("Exit Full Screen"
-  in a Space) and it is disabled for the phone window, which opts out of native full screen because the mirror would be
-  letterboxed.
+- **Enter Full Screen** ⌃⌘F is a plain command item; it is disabled for the phone window, which opts out of native
+  full screen because the mirror would be letterboxed.
+- **What a SwiftUI item cannot do:** SwiftUI builds a command item once and never re-reads its state — measured in an
+  activated app, not only in the quiet e2e. A check mark or a title that depends on the running window
+  (Framed/Immersive, Exit Full Screen, Hide Controls' enablement) therefore shows what it was built with until the bar
+  is rebuilt at launch. The items themselves are never lost, which is what the rebuild-proof work is for. Making those
+  few marks live again means owning the View menu in AppKit; it is recorded, with the measurements, in
+  `.agent/menu-ux/report.md`.
 
 ### 3.9 Dock / lifecycle
 
