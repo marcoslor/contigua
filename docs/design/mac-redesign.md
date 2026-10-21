@@ -105,7 +105,8 @@ backgrounds), window background default.
 
 - `navigationTitle(phone.name)`; no subtitle. Toolbar: `ToolbarItem(placement: .status)` **chip**;
   `ToolbarItem(.primaryAction)` **Phone** button (`iphone.gen3`, label "Phone"); `.searchable(text:
-  placement: .toolbar, prompt: "Search apps")` + `.searchFocused($searchFocused)`.
+  placement: .toolbar, prompt: "Search apps")` + `.searchFocused($searchFocused)`. The chip is a button that opens the
+  shared phone controls (the menu bar panel's `PhonePanelView`) in a `.popover`.
 - **Chip** (one capsule, `.caption`, system glass via toolbar): dot (6 pt `circle.fill`) + text,
   then secondary details when connected.
 
