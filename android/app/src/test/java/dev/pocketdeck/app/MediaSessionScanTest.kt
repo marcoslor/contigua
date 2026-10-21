@@ -111,10 +111,17 @@ class MediaSessionScanTest {
         return controller.get()
     }
 
-    /** Lets the listener's worker thread run its queue (and its 200 ms merge). */
+    /**
+     * Runs the listener's worker thread to the end of what it has to do. A scan
+     * runs inside an idle pass and only schedules its push on the same worker
+     * (the 200 ms merge), which is due after that pass's clock advance: a second
+     * pass runs what the first one set in motion. Two fixed passes, not a
+     * longer wait.
+     */
     private fun settle(listener: PdNotificationListener) {
         val worker = ReflectionHelpers.getField<HandlerThread>(listener, "worker")
-        shadowOf(worker.looper).idleFor(1, TimeUnit.SECONDS)
+        val looper = shadowOf(worker.looper)
+        repeat(2) { looper.idleFor(1, TimeUnit.SECONDS) }
     }
 
     /** One active session as the system would report it (no artwork, no text sent). */
