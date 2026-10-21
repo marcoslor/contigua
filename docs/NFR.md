@@ -29,6 +29,7 @@ promise in `AGENTS.md`, not from a measurement.
 | Request/reply return | `hanging_reply_ms` = 100 ms | — (safety limit) | A terminal reply ends a request; a peer that keeps the socket open must not add the 20 s receive timeout | K2 `HangingPeerTests` |
 | Icon source size | `icon_min_source_scale` = 1.0 | — (safety limit) | An icon is never upscaled from a smaller source | K2 `IconReferenceTests` |
 | Icon reference tolerance | `icon_mean_tolerance` = 3.0 | — (safety limit) | Renderer output must match the committed references within a few 8-bit levels | K2 `IconReferenceTests` |
+| Deck zoom frame time | `deck_zoom_frame_p95_ms` = 40 ms | 40 ms (~25 fps) | Double-clicking the Deck's title bar must not jank. Measured on the e2e host before the fix: 58 grid relayouts in one zoom+unzoom (one per frame, p95 17–33 ms and multi-frame stalls on a loaded run); after the width is coalesced: 32 relayouts, p95 17 ms (zoom) and 33 ms (unzoom). 40 ms leaves room for the unzoom's two-frame settle on a 1× host while still catching a return to per-frame layout; the dump's relayout budget (`frames / 3`) is the strict part | e2e `deck` (display-link sampling of `NSWindow.zoom`, `deck_zoom_frame_p95_ms`) |
 
 The measured values are one warm run against the host `fakephone`; the
 budgets are three times the p95 of that run rounded up. A slower Mac has
