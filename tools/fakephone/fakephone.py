@@ -3721,6 +3721,10 @@ def build_parser():
                    help="pad the app list to N apps (grid screenshots)")
     p.add_argument("--no-icon-every", type=int, default=0, metavar="K",
                    help="with --demo-apps, every K-th app has no icon")
+    p.add_argument("--dup-launcher", action="store_true",
+                   help="send a second launcher activity for com.android.settings: two entries, one package")
+    p.add_argument("--no-label-app", metavar="PKG", default=None,
+                   help="send that package's entry with an empty label (a broken package)")
     p.add_argument("--first-frame-delay", type=float, default=0.0, metavar="SECONDS",
                    help="hold a window's first config/frame this long after window.open "
                         "(the Mac's opening cover: loading, then the first frame)")
@@ -3807,9 +3811,24 @@ def build_parser():
     return p
 
 
+def add_duplicate_launcher(no_label_pkg):
+    """The fixture for the Deck's empty slot: one package reachable through two
+    launcher activities (a dual-messenger clone looks exactly like this to the
+    launcher), plus optionally an entry with an empty label."""
+    APPS.append({"pkg": "com.android.settings", "label": "Settings (work)",
+                 "activity": "com.android.settings/.SettingsWork"})
+    APPS.sort(key=lambda a: a["label"].lower())
+    if no_label_pkg:
+        for app in APPS:
+            if app["pkg"] == no_label_pkg:
+                app["label"] = ""
+
+
 def main(argv=None):
     args = build_parser().parse_args(argv)
     add_demo_apps(args.demo_apps, args.no_icon_every)
+    if args.dup_launcher or args.no_label_app:
+        add_duplicate_launcher(args.no_label_app)
     phone = FakePhone(args)
     if phone.fp_hex:
         print("fakephone identity fp: %s" % phone.fp_hex, file=sys.stderr)
