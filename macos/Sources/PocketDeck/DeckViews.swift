@@ -609,6 +609,7 @@ struct AppGrid: View {
     let query: String
     let navigator: GridNavigator
     @State private var width: CGFloat = 760
+    @State private var widthUpdate = WidthDebouncer()
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -646,8 +647,17 @@ struct AppGrid: View {
             // shrink with the window) minus the space a legacy scroller takes.
             .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { outer in
                 let scroller = NSScroller.scrollerWidth(for: .regular, scrollerStyle: NSScroller.preferredScrollerStyle)
-                width = outer - scroller
-                navigator.columns = GridMetrics.columns(forWidth: width)
+                // A zoom or a live resize delivers a width on every frame. Writing
+                // it straight into the grid's state rebuilt every cell on every
+                // frame (the Deck's zoom stutter, worst on the way back); the
+                // grid follows the window in a few steps instead, and its final
+                // width is exact because the debounce flushes the last one.
+                widthUpdate.schedule(outer - scroller) { [navigator] width in
+                    navigator.columns = GridMetrics.columns(forWidth: width)
+                } apply: { [self] width in
+                    DeckGridMetrics.relayouts += 1
+                    self.width = width
+                }
             }
             .onChange(of: navigator.selection) { _, pkg in
                 if let pkg { withAnimation(.smooth(duration: 0.15)) { proxy.scrollTo(pkg) } }

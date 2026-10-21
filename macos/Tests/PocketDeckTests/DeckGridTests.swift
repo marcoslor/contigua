@@ -93,6 +93,28 @@ final class DeckGridTests: XCTestCase {
                        .fallback)
     }
 
+    // MARK: the zoom's layout rate (NFR deck_zoom_frame_p95_ms)
+
+    /// The width a zoom or a live resize delivers every frame is coalesced: the
+    /// grid re-lays itself out a few times instead of once per display frame
+    /// (the person's zoom stutter, worst on the way back). The last width is
+    /// never dropped, so the settled layout is exact.
+    @MainActor
+    func testTheWidthIsCoalescedAndTheLastOneWins() {
+        let debouncer = WidthDebouncer()
+        var applied: [CGFloat] = []
+        for width in stride(from: CGFloat(600), through: 900, by: 10) {
+            debouncer.schedule(width, update: { _ in }) { applied.append($0) }
+        }
+        XCTAssertLessThan(applied.count, 31, "one state write per frame is the stutter")
+        XCTAssertEqual(applied.first, 600, "the first width lands at once")
+
+        // The trailing update arrives on the run loop (the animation's last
+        // width), and it is the last one scheduled.
+        RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.2))
+        XCTAssertEqual(applied.last, 900, "the settled width is the last one the window sent")
+    }
+
     // MARK: glass tile (docs/DESIGN.md "The app grid")
 
     func testGlassTileGeometry() {
