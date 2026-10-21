@@ -175,6 +175,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         mapper.send = { [weak self] command in self?.handle(command) }
         mapper.touchPointsChanged = { [weak self] points in self?.videoView.showTouchPoints(points) }
         mapper.hoverEnabled = { [weak self] in self?.manager.hoverEnabled ?? false }
+        mapper.secondaryClick = { [weak self] in self?.manager.secondaryClick ?? .longPress }
         videoView.onDroppedFiles = { [weak manager] urls in manager?.onFilesDropped?(urls) }
         videoView.onTouchDotsChanged = { [weak self] in self?.writeChromeState() }
         videoView.inputMapper = mapper

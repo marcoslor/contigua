@@ -1469,6 +1469,10 @@ PY
 # signal that the whole script has been delivered.
 check_input() {
     begin_shared || return 1
+    # The script's right click is the "delivered" signal and asserts one Back,
+    # so the Input setting is Back here; the default (Long press) has its own
+    # steps in `mouseback`.
+    control secondary-click back || bad "C7 secondary-click back: $CONTROL_REPLY"
     printf '%s\n' "click 0.5 0.5" "drag 0.5 0.5 0.7 0.5" "scroll 3" "scroll -2" "type hi" \
         "rightclick 0.5 0.5" > "$WORK/input.txt"
     open_shared --open com.android.settings --debug-input-script "$WORK/input.txt" || return 1
@@ -1485,6 +1489,8 @@ check_input_global() {
     [ "$VISIBLE" = "1" ] || { skip_visible "input-global (real CGEvents through the window server are its point)"; return 0; }
     clean
     start_fake || return 1
+    # The real right click below is the "delivered" signal and asserts Back.
+    defaults write "$DEFAULTS_SUITE" "input.secondaryClick" -string back
     launch --connect "127.0.0.1:$PORT" \
         --open com.android.settings --quit-after 60
     wait_until 30 events_have '"ev":"video","stream":1,' || bad "C7 no video config"
@@ -1690,7 +1696,9 @@ check_mouseback() {
     rm -f "$WORK"/mb-step-*
     printf '%s\n' "sidebutton 3" "waitfile $WORK/mb-step-forward" "sidebutton 4" \
         "waitfile $WORK/mb-step-held" "sidebutton 3 0.4 80 6 12" \
-        "waitfile $WORK/mb-step-key" "key cmd+[" > "$WORK/mb-a.txt"
+        "waitfile $WORK/mb-step-key" "key cmd+[" \
+        "waitfile $WORK/mb-step-secondary" "rightclick 0.5 0.5" \
+        "waitfile $WORK/mb-step-backset" "rightclick 0.5 0.5" > "$WORK/mb-a.txt"
     open_shared --open com.android.settings --float-windows --debug-input-script "$WORK/mb-a.txt" || return 1
     wait_until 30 events_have '"ev":"video","stream":1,' \
         || { bad "MB no video config for the app window"; stop_app; stop_fakephone; return 1; }
@@ -1738,6 +1746,48 @@ check_mouseback() {
     [ "$keys" = "$navkeys" ] \
         && ok "MB Cmd-[ sent no key frames (all $keys keys are fakephone's nav emulation)" \
         || bad "MB Cmd-[ leaked $((keys - navkeys)) key frames of $keys"
+    # A secondary click (Settings ▸ Input, the default Long press): the touch
+    # goes down at the pointer and stays down for the long-press timeout, then
+    # up — no nav back. A quick two-finger click still opens the context menu.
+    control secondary-click longPress || bad "MB secondary-click longPress: $CONTROL_REPLY"
+    touch "$WORK/mb-step-secondary"
+    if wait_until 10 eval '[ "$(mb_touch_count 1)" = "2" ]'; then
+        ok "MB secondary click: the long press sent one down and one up"
+    else
+        bad "MB secondary click: $(mb_touch_count 1) touch frames (wanted 2)"
+    fi
+    hold="$(python3 - "$WORK/events.jsonl" <<'PY'
+import json, sys
+down = up = None
+for line in open(sys.argv[1]):
+    try:
+        event = json.loads(line)
+    except ValueError:
+        continue
+    if event.get("ev") == "input" and event.get("kind") == "touch" and event.get("stream") == 1:
+        if event.get("action") == 0: down = event["ts"]
+        if event.get("action") == 1: up = event["ts"]
+print("%.2f" % ((up - down) if down is not None and up is not None else 0))
+PY
+)"
+    if awk -v h="$hold" 'BEGIN { exit !(h >= 0.5) }'; then
+        ok "MB secondary click: the touch was held ${hold}s (Android's long press)"
+    else
+        bad "MB secondary click: the touch was held only ${hold}s"
+    fi
+    [ "$(mb_nav_count 1 back)" = "3" ] \
+        && ok "MB secondary click: the default long press sent no Back" \
+        || bad "MB secondary click leaked a Back: $(mb_nav_count 1 back)"
+    control secondary-click back || bad "MB secondary-click back: $CONTROL_REPLY"
+    touch "$WORK/mb-step-backset"
+    wait_until 10 eval '[ "$(mb_nav_count 1 back)" = "4" ]' \
+        && ok "MB secondary click with the Back setting -> exactly one nav back" \
+        || bad "MB secondary click Back: $(mb_nav_count 1 back) nav back"
+    [ "$(mb_touch_count 1)" = "2" ] \
+        && ok "MB secondary click with the Back setting made no touch" \
+        || bad "MB secondary click Back made $(mb_touch_count 1) touch frames"
+    control secondary-click longPress >/dev/null 2>&1 || true
+
     # Phase B: the phone-mode window (also a stream window -> stream 1 again).
     next_shared
     printf '%s\n' "sidebutton 3" > "$WORK/mb-b.txt"
@@ -1777,6 +1827,8 @@ check_mouseback() {
 # reason; the gestures land the same either way, just after the windows settle.
 check_pinch() {
     begin_shared || return 1
+    # The closing right click is the "delivered" signal and asserts Back.
+    control secondary-click back || bad "C13 secondary-click back: $CONTROL_REPLY"
     printf '%s\n' "wait 1.5" "pinch 0.5 0.5 1.5" "pinch 0.5 0.5 0.6" \
         "rotate 0.5 0.5 90" "rightclick 0.5 0.5" > "$WORK/pinch.txt"
     open_shared --open com.android.settings --debug-input-script "$WORK/pinch.txt" || return 1

@@ -24,6 +24,9 @@
 //   occlude on|off   the first stream window's occlusion state: the WindowServer
 //                    would say a covered window is not visible, and a quiet
 //                    check may not put a window over it
+//   secondary-click longPress|back|nothing
+//                    Settings ▸ Input "Secondary click (two-finger click)", the
+//                    same store the Settings picker writes
 //   resize-step W H  one step of a scripted drag on the first window: the same
 //                    windowWillResize call AppKit makes for a mouse move, then
 //                    the frame it returns (the chrome state's `frame=` records it)

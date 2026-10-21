@@ -528,6 +528,8 @@ final class VideoLayerView: NSView {
     override func mouseDragged(with event: NSEvent) { inputMapper?.mouseDragged(event) }
     override func mouseUp(with event: NSEvent) { inputMapper?.mouseUp(event) }
     override func rightMouseDown(with event: NSEvent) { inputMapper?.rightMouseDown(event) }
+    override func rightMouseDragged(with event: NSEvent) { inputMapper?.rightMouseDragged(event) }
+    override func rightMouseUp(with event: NSEvent) { inputMapper?.rightMouseUp(event) }
     override func otherMouseDown(with event: NSEvent) { inputMapper?.otherMouseDown(event) }
     // An extra button held down only drags and releases from here: the nav
     // fired on the down must not repeat and none of it may become a touch.

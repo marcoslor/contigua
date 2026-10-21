@@ -92,6 +92,19 @@ final class HonestSettingsTests: XCTestCase {
         XCTAssertEqual(automation.clientCount, 0)
     }
 
+    /// Settings ▸ Input "Secondary click (two-finger click)" offers the three
+    /// choices, explains the chosen one, and defaults to Long press.
+    func testTheSecondaryClickSettingIsHonest() throws {
+        let view = try source("SettingsViews.swift")
+        XCTAssertTrue(view.contains("Secondary click (two-finger click)"))
+        XCTAssertTrue(view.contains("ForEach(SecondaryClick.allCases)"))
+        XCTAssertTrue(view.contains("secondaryChoice.explanation"),
+                      "the picker explains the choice that is in force")
+        XCTAssertEqual(SecondaryClick.allCases.map(\.label), ["Long press", "Back", "Nothing"])
+        XCTAssertEqual(SecondaryClick.longPress.explanation,
+                       "A two-finger click presses and holds at the pointer, so the app's context menu opens as a right-click does. A drag while it is held moves the touch.")
+    }
+
     /// Error copy may say "restart" only where a restart changes the state.
     /// Today that is the failed File Provider add (a system state) alone.
     func testRestartCopyIsOnlyWhereRestartCanHelp() throws {

@@ -2280,6 +2280,14 @@ final class ConnectionController {
             guard let window = windows.controller(for: 1) else { return "no first window" }
             window.setOcclusionVisible(state == "off")
             return nil
+        case "secondary-click":
+            // Settings ▸ Input "Secondary click (two-finger click)", the same
+            // store the Settings picker writes.
+            guard let raw = arguments.first, let value = SecondaryClick(rawValue: raw) else {
+                return "secondary-click needs longPress|back|nothing"
+            }
+            windows.secondaryClick = value
+            return nil
         case "resize-step":
             // One step of a scripted drag on the first window: the same
             // windowWillResize call AppKit makes for a mouse move, then the
