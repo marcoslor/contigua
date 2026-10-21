@@ -1309,7 +1309,7 @@ check_resize() {
         --resize-stream "1:${fw}x${fh}-pt" || return 1
     wait_until 30 events_have '"ev":"video","stream":1,"config":true' \
         || bad "C6 live resize: no first video config"
-    if win="$(await_window "\$4 == $fw")" && shot_window "$win" "$WORK/resize-fill.png"; then
+    if win="$(await_window "\$4 == $fw")" && { sleep 0.2; shot_window "$win" "$WORK/resize-fill.png"; }; then
         # The screenshot is taken as the window takes its new shape (inside
         # the 2 s fill timeout); the phone's held answer comes 0.3 s later.
         wait_until 5 events_have '"ev":"resize","held":true' \
@@ -1338,20 +1338,51 @@ check_resize() {
         || bad "C6 live resize: after the answer ($edges)"
     say "screenshot: $WORK/resize-fill-done.png"
 
+    # A fast drag: ten steps 30 ms apart while the phone holds its answer. At
+    # every step the last frame must cover the window (video_gap=0): the
+    # display layer follows the view with no implicit animation, so no black
+    # band appears while the picture catches up (the person's recording).
+    end_shared
+    : > "$WORK/events.jsonl"
+    FAKE_ARGS="--resize-delay-ms 6000" start_fake || return 1
+    FAKE_ARGS=""
+    launch_shared --connect "127.0.0.1:$PORT" --debug-chrome-state "$WORK/chrome.txt" || return 1
+    # The previous phase's last line is not this window's: start clean.
+    rm -f "$WORK/chrome.txt"
+    local step maxgap=0 gap deadline args=(--open com.android.settings --float-windows --debug-chrome-state "$WORK/chrome.txt")
+    for step in 0 1 2 3 4 5 6 7 8 9; do
+        args+=(--resize-stream "1:$(printf '%dx%d-pt@0.%02d' \
+            $((520 + step * 30)) $((520 + step * 22)) $((30 + step * 3)))")
+    done
+    open_shared "${args[@]}" || return 1
+    deadline=$(( $(now_ms) + 1500 ))
+    while [ "$(now_ms)" -lt "$deadline" ]; do
+        gap="$(chrome_state | grep -oE 'video_gap=[0-9]+' | cut -d= -f2)"
+        if [ -n "$gap" ] && [ "$gap" -gt "$maxgap" ]; then maxgap="$gap"; fi
+        sleep 0.02
+    done
+    [ "$maxgap" -le 1 ] \
+        && ok "C6 fast resize: the picture covered the window at every step (max video_gap ${maxgap} px)" \
+        || bad "C6 fast resize: a black band while the layer caught up (max video_gap ${maxgap} px)"
+    stop_app
+    stop_fakephone
+
     # The phone window mirrors the phone's own screen: no fill, no crop, and
     # the bar above it mirrors the screen's top rows (never a black gap).
     next_shared
-    open_shared --open-phone --float-windows || return 1
+    open_shared --open-phone --float-windows --debug-chrome-state "$WORK/chrome.txt" || return 1
     wait_until 30 events_have '"ev":"video","stream":1,"config":true' \
         || bad "C6 phone window: no video config"
     local pw ph
     read -r win _ _ pw ph <<< "$(windows | awk '$5 > $4 {print; exit}')"
     if [ -n "${win:-}" ] && shot_window "$win" "$WORK/resize-phone.png"; then
-        edges="$(edge_kinds "$WORK/resize-phone.png" "$pw" "$ph" "$bar")"
-        case "$edges" in
-            *"top=black"*) bad "C6 phone window: black under the bar ($edges)" ;;
-            *) ok "C6 phone window: the mirror's letterbox is unchanged, no black under the bar ($edges)" ;;
-        esac
+        # The phone's own pattern has black regions at its edges; the precise
+        # rule is the gap between the content and the drawn picture.
+        if chrome_has "video_gap=0"; then
+            ok "C6 phone window: the mirror fills the content, no black band (video_gap=0)"
+        else
+            bad "C6 phone window: a black band under the bar (state: $(chrome_state))"
+        fi
         say "screenshot: $WORK/resize-phone.png"
     else
         bad "C6 phone window: no portrait window to capture"
