@@ -627,6 +627,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         state.showTouches = manager.showTouches
         state.style = style
         state.fullScreen = window?.styleMask.contains(.fullScreen) ?? false
+        state.fullScreenAllowed = FullScreenMenu.allowsFullScreen(window)
         state.densityPackage = densityPackage
         state.densityOverride = densityOverride
         state.settingsDensity = manager.defaultDensity
@@ -641,6 +642,10 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         let state = StreamMenuState.shared
         state.hasStream = false
         state.fullScreen = false
+        // The window that takes over is the Deck or another stream window, and
+        // both may go full screen; a phone window publishes its own refusal
+        // when it becomes key.
+        state.fullScreenAllowed = true
         state.densityPackage = nil
         state.densityOverride = nil
         state.liveText = false
@@ -875,7 +880,6 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     private func updateFullScreenMenuState(_ fullScreen: Bool) {
         guard window?.isKeyWindow ?? false else { return }
         StreamMenuState.shared.fullScreen = fullScreen
-        FullScreenMenu.setState(fullScreen: fullScreen)
     }
 
     /// Full screen drops the bar in either style and leaves the dwell alone:

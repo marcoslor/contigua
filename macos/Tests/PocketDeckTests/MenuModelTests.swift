@@ -38,6 +38,13 @@ final class MenuModelTests: XCTestCase {
         }
     }
 
+    func testTheFullScreenItemReadsWhatItWillDo() {
+        XCTAssertEqual(MenuModel.fullScreenTitle(fullScreen: false), "Enter Full Screen")
+        XCTAssertEqual(MenuModel.fullScreenTitle(fullScreen: true), "Exit Full Screen")
+        XCTAssertEqual(MenuModel.fullScreenSymbol(fullScreen: false), "arrow.up.left.and.arrow.down.right")
+        XCTAssertEqual(MenuModel.fullScreenSymbol(fullScreen: true), "arrow.down.right.and.arrow.up.left")
+    }
+
     private func labels(settings: Double) -> [String] {
         MenuModel.densityOptions(settings: settings).map { $0.label }
     }

@@ -14,6 +14,9 @@ final class StreamMenuState {
     /// The key window is in native full screen: the Window menu's item reads
     /// "Exit Full Screen" and the menu's checks follow.
     var fullScreen = false
+    /// The key window may enter native full screen: the phone window opts out
+    /// (the mirror would be letterboxed), so the Window item is disabled for it.
+    var fullScreenAllowed = true
     var showTouches = false
     /// The key stream window is in Live Text mode (the View menu's check).
     var liveText = false

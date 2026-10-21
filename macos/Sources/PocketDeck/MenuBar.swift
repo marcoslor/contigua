@@ -60,8 +60,8 @@ struct AppCommands: Commands {
     @Environment(\.openWindow) private var openWindow
 
     var body: some Commands {
-        // ⌘P is "Phone Window" (docs/design/mac-redesign.md §5); the app prints nothing.
-        CommandGroup(replacing: .printItem) {}
+        // ⌘P is "Phone Window" (docs/design/mac-redesign.md §5); the app prints
+        // nothing, so File is Add Phone…, Close and Close All.
         CommandGroup(after: .newItem) {
             Button {
                 show()
@@ -258,6 +258,29 @@ struct AppCommands: Commands {
             .keyboardShortcut(.upArrow, modifiers: .command)
             .disabled(streamMenu.frozen)
         }
+        // Window ▸ Enter/Exit Full Screen: ⌃⌘F, the system's own full-screen
+        // shortcut, and the title follows the key window. The phone window opts
+        // out of full screen (it would letterbox the mirror), so the item is
+        // disabled for it rather than doing nothing.
+        CommandGroup(after: .windowSize) {
+            Button {
+                guard let window = NSApp.keyWindow ?? NSApp.mainWindow,
+                      FullScreenMenu.allowsFullScreen(window) else { return }
+                window.toggleFullScreen(nil)
+            } label: {
+                Label(MenuModel.fullScreenTitle(fullScreen: streamMenu.fullScreen),
+                      systemImage: MenuModel.fullScreenSymbol(fullScreen: streamMenu.fullScreen))
+            }
+            .keyboardShortcut("f", modifiers: [.control, .command])
+            // The phone window opts out of full screen, so the item is disabled
+            // for it; the action asks the key window again before it acts.
+            .disabled(!streamMenu.fullScreenAllowed)
+        }
+        // Help has no help book and the app has no public issue tracker, so the
+        // menu is empty rather than carrying a dead item (AGENTS "Honest
+        // settings"). SwiftUI's own sidebar command lands here too; there is no
+        // sidebar to toggle.
+        CommandGroup(replacing: .help) {}
     }
 
     private func show() {
