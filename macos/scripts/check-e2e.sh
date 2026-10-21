@@ -7038,6 +7038,181 @@ EOF
     defaults delete "$DEFAULTS_SUITE" "showAppsInDock" >/dev/null 2>&1
 }
 
+# --- AX presses -------------------------------------------------------------
+
+# panel_open — click the app's menu bar item through System Events. The extra
+# is a `.window` panel now: it opens the card, not a menu (there is no `menu 1`
+# to read).
+panel_open() {
+    osascript <<'OSA' 2>/dev/null
+tell application "System Events" to tell process "PocketDeck"
+    if not (exists menu bar item 1 of menu bar 2) then return "nostatus"
+    click menu bar item 1 of menu bar 2
+    delay 1
+    return "opened"
+end tell
+OSA
+}
+
+# panel_ax — the AX labels inside the app's narrow window (the panel), one per
+# line: title, else description, else value. The panel is the window under
+# 420 pt wide; the Deck is the wide one.
+panel_ax() {
+    osascript - "$APP_PID" <<'OSA' 2>/dev/null
+on run argv
+    set pidText to item 1 of argv
+    tell application "System Events"
+        set matches to every process whose unix id is (pidText as integer)
+        if (count of matches) is 0 then return "noproc"
+        tell item 1 of matches
+            set out to {}
+            with timeout of 25 seconds
+                repeat with w in windows
+                    try
+                        set s to size of w
+                        if (item 1 of s) < 420 then
+                            set out to out & my labels(w)
+                        end if
+                    end try
+                end repeat
+            end timeout
+            set text item delimiters to linefeed
+            return out as string
+        end tell
+    end tell
+end run
+
+on labels(w)
+    tell application "System Events"
+        set out to {}
+        try
+            set kids to entire contents of w
+        on error
+            return out
+        end try
+        repeat with e in kids
+            try
+                set bits to ""
+                try
+                    if (title of e as string) is not "" then set bits to (title of e as string)
+                end try
+                if bits is "" then
+                    try
+                        if (description of e as string) is not "" then set bits to (description of e as string)
+                    end try
+                end if
+                if bits is "" then
+                    try
+                        if (value of e as string) is not "" then set bits to (value of e as string)
+                    end try
+                end if
+                if bits is not "" then set end of out to bits
+            end try
+        end repeat
+        return out
+    end tell
+end labels
+OSA
+}
+
+# shot_panel_window NAME — capture the panel's own window (the narrow one: the
+# Deck is 760 pt wide) into the caller's $shots; false when it is not there.
+# The window's frame comes from AX and the capture is that rectangle: the panel
+# lives above the normal window levels, where the CG window list does not list
+# it for `screencapture -l`.
+shot_panel_window() {
+    local frame x y w h
+    frame="$(osascript - "$APP_PID" <<'OSA' 2>/dev/null
+on run argv
+    set pidText to item 1 of argv
+    tell application "System Events"
+        set matches to every process whose unix id is (pidText as integer)
+        if (count of matches) is 0 then return ""
+        tell item 1 of matches
+            repeat with w in windows
+                try
+                    set s to size of w
+                    if (item 1 of s) >= 280 and (item 1 of s) <= 400 and (item 2 of s) >= 300 then
+                        set p to position of w
+                        return ((item 1 of p) as string) & "," & ((item 2 of p) as string) & "," & ((item 1 of s) as string) & "," & ((item 2 of s) as string)
+                    end if
+                end try
+            end repeat
+        end tell
+    end tell
+    return ""
+end run
+OSA
+)"
+    [ -n "$frame" ] || return 1
+    x="$(echo "$frame" | cut -d, -f1)"
+    y="$(echo "$frame" | cut -d, -f2)"
+    w="$(echo "$frame" | cut -d, -f3)"
+    h="$(echo "$frame" | cut -d, -f4)"
+    screencapture -x -R"$x,$y,$w,$h" "$shots/$1" >/dev/null 2>&1 || return 1
+    say "shot: $shots/$1"
+}
+
+# ax_press NAME [PROCESS] — click the first AX button with that title/
+# description in Notification Center. Names only, never the notification text.
+ax_press() {
+    osascript - "$1" "${2:-NotificationCenter}" <<'OSA' 2>/dev/null
+on run argv
+set wanted to item 1 of argv
+set procName to item 2 of argv
+tell application "System Events"
+    if not (exists process procName) then return "noproc"
+    tell process procName
+        with timeout of 20 seconds
+            repeat with w in windows
+                if my walk(w, wanted) is "clicked" then return "clicked"
+            end repeat
+        end timeout
+    end tell
+end tell
+return "notfound"
+end run
+
+on walk(container, wanted)
+tell application "System Events"
+    try
+        set kids to UI elements of container
+    on error
+        return "no"
+    end try
+    repeat with e in kids
+        try
+            if role of e is "AXButton" then
+                set label to ""
+                try
+                    set label to title of e
+                end try
+                if label is "" then
+                    try
+                        set label to description of e
+                    end try
+                end if
+                if label is "" then
+                    try
+                        set label to help of e
+                    end try
+                end if
+                if label is wanted then
+                    click e
+                    return "clicked"
+                end if
+            end if
+        end try
+        try
+            if my walk(e, wanted) is "clicked" then return "clicked"
+        end try
+    end repeat
+end tell
+return "no"
+end walk
+OSA
+}
+
 check_notify_vm() {
     if [ "${PD_E2E_IN_VM:-0}" != "1" ] || [ "${VISIBLE:-0}" != "1" ]; then
         skip "notify-vm" "real banners and AX presses, inside the VM's visible run"
@@ -7073,65 +7248,6 @@ for line in open(path):
     sys.exit(0)
 sys.exit(1)
 PY
-    }
-    # ax_press NAME [PROCESS] — click the first AX button with that title/
-    # description in Notification Center. Names only, never the notification text.
-    ax_press() {
-        osascript - "$1" "${2:-NotificationCenter}" <<'OSA' 2>/dev/null
-on run argv
-    set wanted to item 1 of argv
-    set procName to item 2 of argv
-    tell application "System Events"
-        if not (exists process procName) then return "noproc"
-        tell process procName
-            with timeout of 20 seconds
-                repeat with w in windows
-                    if my walk(w, wanted) is "clicked" then return "clicked"
-                end repeat
-            end timeout
-        end tell
-    end tell
-    return "notfound"
-end run
-
-on walk(container, wanted)
-    tell application "System Events"
-        try
-            set kids to UI elements of container
-        on error
-            return "no"
-        end try
-        repeat with e in kids
-            try
-                if role of e is "AXButton" then
-                    set label to ""
-                    try
-                        set label to title of e
-                    end try
-                    if label is "" then
-                        try
-                            set label to description of e
-                        end try
-                    end if
-                    if label is "" then
-                        try
-                            set label to help of e
-                        end try
-                    end if
-                    if label is wanted then
-                        click e
-                        return "clicked"
-                    end if
-                end if
-            end try
-            try
-                if my walk(e, wanted) is "clicked" then return "clicked"
-            end try
-        end repeat
-    end tell
-    return "no"
-end walk
-OSA
     }
     # banner_close — the usual close names, else the banner's top-left corner.
     banner_close() {
@@ -7173,30 +7289,6 @@ return ""
 OSA
 )" ]
     }
-    # status_menu open|titles — open the app's menu bar item, or read its items
-    # (open it first). One per line for titles.
-    status_menu() {
-        osascript - "$1" <<'OSA' 2>/dev/null
-on run argv
-    set mode to item 1 of argv
-    tell application "System Events" to tell process "PocketDeck"
-        if not (exists menu bar item 1 of menu bar 2) then return "nostatus"
-        if mode is "open" then
-            click menu bar item 1 of menu bar 2
-            delay 1
-            return "opened"
-        end if
-        set names to {}
-        repeat with i in menu items of menu 1 of menu bar item 1 of menu bar 2
-            set end of names to (title of i as string)
-        end repeat
-        return names
-    end tell
-end run
-OSA
-    }
-
-
     # One shape at a time: a single banner is unambiguous for AX and the person.
     defaults write "$DEFAULTS_SUITE" "showAppsInDock" -bool NO
     stop_fakephone
@@ -7294,27 +7386,28 @@ OSA
 
     stop_fakephone
     wait_until 5 no_fakephone
-    # Part 2b: the menu bar's Live section with a row that advances. Two shots a
-    # few seconds apart, the menu left open in between.
+    # Part 2b: the panel's LIVE section with a row that advances. Two shots a
+    # few seconds apart, the panel left open in between.
     FAKE_ARGS="--notify-only pd-l1" start_fake || return 1
     launch --connect "127.0.0.1:$PORT" --quit-after 90
     wait_until 25 events_have '"id":"pd-l1"' \
         || { bad "NOTIFY-VM the Live Update never posted"; stop_app; stop_fakephone; return 1; }
     sleep 3
     shot "live-banner.png"
-    result="$(status_menu open)"
-    result="$(status_menu titles)"
+    result="$(panel_open)"
+    [ "$result" = "opened" ] || bad "NOTIFY-VM the status item did not open the panel ($result)"
+    result="$(panel_ax)"
     case "$result" in
-        *"Live on"*) ok "NOTIFY-VM the menu bar has a Live section on screen" ;;
-        *) bad "NOTIFY-VM no Live section in the menu bar ($result)" ;;
+        *"LIVE"*) ok "NOTIFY-VM the panel has a LIVE section on screen" ;;
+        *) bad "NOTIFY-VM no LIVE section in the panel ($(printf '%s' "$result" | head -c 200))" ;;
     esac
-    shot "live-menu-1.png"
+    shot_panel_window "live-menu-1.png" >/dev/null 2>&1 || shot "live-menu-1.png"
     sleep 4
-    shot "live-menu-2.png"
-    result="$(status_menu titles)"
+    shot_panel_window "live-menu-2.png" >/dev/null 2>&1 || shot "live-menu-2.png"
+    result="$(panel_ax)"
     case "$result" in
-        *"com.uber — "*) ok "NOTIFY-VM the Live row shows its app and progress/clock" ;;
-        *) bad "NOTIFY-VM the Live row is not in the menu ($result)" ;;
+        *"com.uber"*) ok "NOTIFY-VM the Live row shows its app and progress/clock" ;;
+        *) bad "NOTIFY-VM the Live row is not in the panel ($(printf '%s' "$result" | head -c 200))" ;;
     esac
     osascript -e 'tell application "System Events" to key code 53' >/dev/null 2>&1 || true
     stop_app
@@ -7325,8 +7418,125 @@ OSA
 }
 
 
-# --- DECK: the app grid's icon kinds ---------------------------------------
-icons_kind() { grep '"ev":"icon"' "$WORK/events.jsonl" 2>/dev/null | grep -c "$1" || true; }
+# check_menubar_vm — the menu bar panel on a real screen, the person's review
+# copy (visible run only): online with two playing apps, ringing, dark, the
+# Deck's popover and offline. The screenshots go to $WORK/menubar/ and are
+# judged by eye; the checks assert the card is on screen and that the ring row
+# and the reason line are the ones drawn.
+check_menubar_vm() {
+    if [ "${PD_E2E_IN_VM:-0}" != "1" ] || [ "${VISIBLE:-0}" != "1" ]; then
+        skip "MENUBAR-VM" "the panel on a real screen, inside the VM's visible run"
+        sleep 1
+        return 0
+    fi
+    clean
+    local shots="$WORK/menubar" result device wanted
+    mkdir -p "$shots"
+    shot_panel() { shot_panel_window "$1" || bad "MENUBAR-VM no panel window for $1"; }
+    # The panel closes on Esc (a window-style extra), so every capture opens it
+    # from a known closed state: clicking an open status item would close it.
+    close_panel() { osascript -e 'tell application "System Events" to key code 53' >/dev/null 2>&1 || true; sleep 0.5; }
+
+    FAKE_ARGS="--media" start_fake || return 1
+    device="$(sed -n 's/^fakephone \([^ ]*\) listening.*/\1/p' "$WORK/fake.log" "$WORK/fake.err" | head -1)"
+    [ -n "$device" ] || { bad "MENUBAR-VM no device id in the fakephone line"; stop_fakephone; return 1; }
+    defaults write "$DEFAULTS_SUITE" "showAppsInDock" -bool NO
+    defaults write "$DEFAULTS_SUITE" "notify.$device" -bool YES
+    osascript -e 'tell application "System Events" to tell appearance preferences to set dark mode to false' >/dev/null 2>&1 || true
+    launch --connect "127.0.0.1:$PORT" --quit-after 240
+    wait_until 30 events_have '"t":"apps.list"' \
+        || { bad "MENUBAR-VM the session never started"; stop_app; stop_fakephone; return 1; }
+    sleep 3
+
+    # (a) online, light, two playing apps: the picker row is there.
+    result="$(panel_open)"
+    [ "$result" = "opened" ] \
+        && ok "MENUBAR-VM the status item opened the panel" \
+        || bad "MENUBAR-VM the status item did not open ($result)"
+    sleep 1
+    shot_panel "panel-online-light.png"
+    result="$(panel_ax)"
+    for wanted in "PHONE" "Do Not Disturb" "Ring Phone" "Phone volume" "WINDOWS"; do
+        case "$result" in
+            *"$wanted"*) ok "MENUBAR-VM on screen: $wanted" ;;
+            *) bad "MENUBAR-VM missing from the panel: $wanted" ;;
+        esac
+    done
+    case "$result" in
+        *"Now Playing follows"*) ok "MENUBAR-VM the two-session picker is on screen" ;;
+        *) bad "MENUBAR-VM no picker with two playing apps" ;;
+    esac
+
+    # (b) ringing: the Ring row's own AX press, the phone answers ring.state,
+    # the one row flips to Stop Ringing.
+    result="$(ax_press "Ring Phone" PocketDeck)"
+    [ "$result" = "clicked" ] \
+        && ok "MENUBAR-VM pressed the Ring Phone row" \
+        || bad "MENUBAR-VM no Ring Phone row to press ($result)"
+    wait_until 20 events_have '"ev":"ring"' \
+        && ok "MENUBAR-VM the phone rang" \
+        || bad "MENUBAR-VM the phone did not ring"
+    sleep 1
+    shot_panel "panel-ringing-light.png"
+    result="$(ax_press "Stop Ringing" PocketDeck)"
+    [ "$result" = "clicked" ] \
+        && ok "MENUBAR-VM the row flipped to Stop Ringing" \
+        || bad "MENUBAR-VM no Stop Ringing row after the ring ($result)"
+    wait_until 20 events_have '"ev":"ring","seconds":0' \
+        && ok "MENUBAR-VM the phone stopped" \
+        || bad "MENUBAR-VM the phone did not stop"
+
+    # (c) dark mode.
+    osascript -e 'tell application "System Events" to tell appearance preferences to set dark mode to true' >/dev/null 2>&1 || true
+    close_panel
+    result="$(panel_open)"
+    sleep 1
+    shot_panel "panel-online-dark.png"
+    osascript -e 'tell application "System Events" to tell appearance preferences to set dark mode to false' >/dev/null 2>&1 || true
+    close_panel
+    sleep 1
+
+    # (d) the Deck's popover: the same card, above the grid.
+    osascript -e 'tell application "PocketDeck" to activate' >/dev/null 2>&1 || true
+    if control deckpanel; then
+        ok "MENUBAR-VM the Deck popover opened"
+    else
+        bad "MENUBAR-VM deckpanel: $CONTROL_REPLY"
+    fi
+    sleep 2
+    if shot_panel_window "deck-popover-light.png"; then
+        ok "MENUBAR-VM the Deck popover is on screen"
+    else
+        bad "MENUBAR-VM no Deck popover window"
+    fi
+    # Put the switch back where it was (the popover is left open for the shot).
+    control panelclick deck panel.dnd >/dev/null 2>&1 || true
+    control panelclick deck panel.dnd >/dev/null 2>&1 || true
+
+    # (e) offline: the phone goes away; the card stays, dimmed, with one reason.
+    stop_fakephone
+    wait_until 10 no_fakephone
+    sleep 18
+    close_panel
+    result="$(panel_open)"
+    sleep 1
+    shot_panel "panel-offline-light.png"
+    result="$(panel_ax)"
+    case "$result" in
+        *"Connect your phone to use these."*) ok "MENUBAR-VM the offline reason line is on screen" ;;
+        *) bad "MENUBAR-VM no offline reason line ($(printf '%s' "$result" | head -c 200))" ;;
+    esac
+    case "$result" in
+        *"Offline"*) ok "MENUBAR-VM the header says Offline" ;;
+        *) bad "MENUBAR-VM the header does not say Offline" ;;
+    esac
+
+    stop_app
+    defaults delete "$DEFAULTS_SUITE" "notify.$device" >/dev/null 2>&1
+    defaults delete "$DEFAULTS_SUITE" "showAppsInDock" >/dev/null 2>&1
+}
+
+# --- DECK: the app grid's icon kinds ---------------------------------------icons_kind() { grep '"ev":"icon"' "$WORK/events.jsonl" 2>/dev/null | grep -c "$1" || true; }
 
 have_layered_icons() { [ "$(icons_kind '"layers":true')" -ge 4 ]; }
 have_flat_icons() { [ "$(icons_kind '"layers":false')" -ge 5 ]; }
