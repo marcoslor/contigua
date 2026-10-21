@@ -75,6 +75,7 @@ enum PanelProbe {
         guard let state = currentState() else { return false }
         guard let window = window(for: host) else { return false }
         let items = PhonePanelItem.focusOrder(for: state)
+        settle(window, items: items)
         let controls = controlFrames(in: window)
         let rows: [[String: Any]] = items.enumerated().map { index, item in
             [
@@ -93,7 +94,7 @@ enum PanelProbe {
             "width": PhonePanelView.width,
             "phone": state.phoneName,
             "status": state.connection.text,
-            "battery": state.battery ?? -1,
+            "battery": state.shownBattery ?? -1,
             "reason": state.reason ?? "",
             "mapped": items.count == controls.count,
             "items": rows,
@@ -109,8 +110,9 @@ enum PanelProbe {
     /// app's event queue.
     static func click(host: String, id: String) -> Bool {
         guard let host = Host(rawValue: host), let state = currentState(),
-              let window = window(for: host), let target = control(for: id, state: state, in: window)
-        else { return false }
+              let window = window(for: host) else { return false }
+        settle(window, items: PhonePanelItem.focusOrder(for: state))
+        guard let target = control(for: id, state: state, in: window) else { return false }
         let point = CGPoint(x: target.frame.midX, y: target.frame.midY)
         switch target.kind {
         case .switch:
@@ -134,8 +136,9 @@ enum PanelProbe {
     /// to the fraction of the track.
     static func drag(host: String, id: String, fraction: Double) -> Bool {
         guard let host = Host(rawValue: host), let state = currentState(),
-              let window = window(for: host), let target = control(for: id, state: state, in: window)
-        else { return false }
+              let window = window(for: host) else { return false }
+        settle(window, items: PhonePanelItem.focusOrder(for: state))
+        guard let target = control(for: id, state: state, in: window) else { return false }
         let clamped = min(max(fraction, 0), 1)
         let startFraction = min(max(state.volumeFraction ?? 0.2, 0), 1)
         // The track's interactive span, inset by the knob's radius.
@@ -177,6 +180,33 @@ enum PanelProbe {
     private struct Control {
         let frame: CGRect
         let kind: Kind
+    }
+
+    /// Resize a host window the panel's own content height: the panel gains
+    /// and loses the one reason line and the agent row, and the window is made
+    /// once, so it would otherwise keep the height of an earlier state.
+    private static func fit(_ window: NSWindow) {
+        guard let view = window.contentView else { return }
+        view.layoutSubtreeIfNeeded()
+        let size = CGSize(width: PhonePanelView.width, height: view.fittingSize.height)
+        guard size.height > 0, abs(view.frame.height - size.height) > 0.5 else { return }
+        window.setContentSize(size)
+        view.frame = NSRect(origin: .zero, size: size)
+        view.layoutSubtreeIfNeeded()
+    }
+
+    /// The panel's view tree follows the controller's state: a row that was
+    /// disabled when the window opened has no key-view proxy until the next
+    /// render, and the panel's height follows the reason line. A dump or a click
+    /// that reads the tree in the same turn the state changed would see the old
+    /// one (fewer controls than rows, or rows in another order). Give SwiftUI
+    /// its turns first — the same ones a person's pointer sees.
+    private static func settle(_ window: NSWindow, items: [PhonePanelItem]) {
+        for _ in 0..<20 {
+            fit(window)
+            if controlViews(in: window).count == items.count { return }
+            RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.05))
+        }
     }
 
     private static func currentState() -> PhoneControlsState? {
@@ -235,13 +265,7 @@ enum PanelProbe {
     }
 
     private static func enabled(_ item: PhonePanelItem, state: PhoneControlsState) -> Bool {
-        switch item {
-        case .volume: return state.volumeFraction != nil
-        case .dnd: return state.connection.isOnline && state.dnd != nil
-        case .ring, .phoneScreen, .continueOnMac: return state.connection.isOnline
-        case .installApk: return state.connection.isOnline && !state.installBusy
-        case .sessions, .live, .findApps, .settings, .quit, .disconnectAgent: return true
-        }
+        item.isEnabled(in: state)
     }
 
     /// The window's laid-out controls, top to bottom: SwiftUI's key-view

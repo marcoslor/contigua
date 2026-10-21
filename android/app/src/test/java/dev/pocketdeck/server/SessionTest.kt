@@ -11,6 +11,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
+import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.Socket
 import java.util.concurrent.CopyOnWriteArrayList
@@ -44,11 +45,18 @@ class SessionTest {
                         pendingQr: (() -> Map<String, Any?>?)? = null,
                         onQrConsumed: (() -> Unit)? = null,
                         gates: () -> GateSettings? = { GateSettings(true, true) },
-                        secureProbe: SecureProbe? = null) {
-        serverSocket = ServerSocket(0)
+                        secureProbe: SecureProbe? = null,
+                        strays: Int = 0) {
+        // Loopback only, with room in the backlog for a stray connection (a
+        // local scanner, another test's late client) to land before this test's
+        // client does: acceptOwnClient() takes only the one this test opened.
+        serverSocket = ServerSocket(0, 8, InetAddress.getLoopbackAddress())
+        repeat(strays) { Socket(InetAddress.getLoopbackAddress(), serverSocket.localPort).close() }
+        client = Socket(InetAddress.getLoopbackAddress(), serverSocket.localPort)
+        client.soTimeout = 5_000
+        reader = FrameReader(client.getInputStream())
         val accept = Thread {
-            val s = serverSocket.accept()
-            s.tcpNoDelay = true
+            val s = acceptOwnClient()
             val sess = Session(
                 socket = s,
                 display = platform,
@@ -82,9 +90,23 @@ class SessionTest {
         }
         accept.isDaemon = true
         accept.start()
-        client = Socket("127.0.0.1", serverSocket.localPort)
-        client.soTimeout = 5_000
-        reader = FrameReader(client.getInputStream())
+    }
+
+    /**
+     * The connection this test's client opened; anything else that reached the
+     * port first is closed. A stray local connection taken for the Mac would
+     * make the test read that peer's bytes as protocol frames (a full K1 run is
+     * not alone on the machine).
+     */
+    private fun acceptOwnClient(): Socket {
+        while (true) {
+            val socket = serverSocket.accept()
+            if (socket.port == client.localPort) {
+                socket.tcpNoDelay = true
+                return socket
+            }
+            runCatching { socket.close() }
+        }
     }
 
     /** A canned task list; records the move calls. */
@@ -414,6 +436,21 @@ class SessionTest {
         } catch (expected: java.net.SocketTimeoutException) {
             // Nothing arrived: the one-time secret is gone.
         }
+    }
+
+    /**
+     * A full K1 run is not alone on the machine: a local scanner can connect to
+     * the test's port before this test's client does. That connection must not
+     * become the session's peer — it used to be accepted as the Mac, and the
+     * test then read its bytes as frames.
+     */
+    @Test
+    fun aStrayLoopbackConnectionIsNotTheSessionPeer() {
+        closeCurrent()
+        connect(pairDecisionTimeoutMs = 30_000, strays = 2)
+        addAndAuthenticate()
+        send(mapOf("t" to "ping", "ts" to 12))
+        assertEquals(12L, readUntil("pong")["ts"])
     }
 
     @Test
