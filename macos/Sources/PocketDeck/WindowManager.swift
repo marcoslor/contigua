@@ -476,6 +476,7 @@ final class WindowManager {
             videoDump?.write(frame: frame, stream: stream)
             let controller = controller(for: stream)
             controller?.videoView.enqueue(frame)
+            controller?.frameClock.note()
         }
     }
 

@@ -70,6 +70,14 @@ final class PhoneWindowController: StreamWindowController {
     /// stays allowed.
     override var frozen: Bool { super.frozen || screenModel.isShowing }
 
+    /// No frames are expected while the cover is up: the panel sleeps or
+    /// Android blanks a secure surface. The watchdog's clock starts again when
+    /// the cover comes off.
+    override var expectsFrames: Bool {
+        guard super.expectsFrames else { return false }
+        return screenModel.cover == nil
+    }
+
     private var rotationObserver: NSObjectProtocol?
     private var blackTimer: Timer?
 
