@@ -124,7 +124,12 @@ internal class Watchdog(private val ctx: Context?, private val log: (String) -> 
         log("watchdog up, guarding the panel override")
     }
 
-    /** Tells a running watchdog to exit and waits for it. */
+    /**
+     * Tells a running watchdog to exit. The clean byte ends the child; the reap
+     * happens on its own thread, because waiting for another process's VM to
+     * shut down took ~0.9 s on the 16:44 log and that wait sat on the session's
+     * reader thread, behind every later `phone.panel` request.
+     */
     fun stopCleanly() = synchronized(this) {
         generation++
         val p = process
@@ -141,8 +146,10 @@ internal class Watchdog(private val ctx: Context?, private val log: (String) -> 
         runCatching { serverSocket?.close() }
         serverSocket = null
         if (p != null) {
-            runCatching { if (!p.waitFor(STOP_TIMEOUT_MS, TimeUnit.MILLISECONDS)) p.destroy() }
-            log("watchdog stopped")
+            Thread({
+                runCatching { if (!p.waitFor(STOP_TIMEOUT_MS, TimeUnit.MILLISECONDS)) p.destroy() }
+                log("watchdog stopped")
+            }, "pocketdeck-watchdog-stop").apply { isDaemon = true }.start()
         }
     }
 
