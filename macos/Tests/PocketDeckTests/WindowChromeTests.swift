@@ -119,7 +119,7 @@ final class StreamChromeWindowTests: XCTestCase {
         pump(0.4)
         XCTAssertFalse(controller.dwell.shown)
         let frame = "\(Int(window.frame.width.rounded()))x\(Int(window.frame.height.rounded()))"
-        XCTAssertEqual(try String(contentsOf: file, encoding: .utf8), "style=framed lights=shown pill=hidden title_visible=no lights_managed=us fullscreen=no clicks=0 dots=outside touches=\(manager.showTouches ? "on" : "off") dot_count=0 collection=0 collection_none=0 menu_fullscreen=1 screen=on overlay=0 secure=0 panel_off=0 panel_pill=0 stall=0 stall_pill=0 loading=1 frame=\(frame) video_gap=0\n")
+        XCTAssertEqual(try String(contentsOf: file, encoding: .utf8), "style=framed lights=shown pill=hidden title_visible=no lights_managed=us fullscreen=no clicks=0 dots=outside touches=\(manager.showTouches ? "on" : "off") dot_count=0 collection=0 collection_none=0 menu_fullscreen=1 screen=on overlay=0 secure=0 panel_off=0 panel_pill=0 panel_pill_failed=0 stall=0 stall_pill=0 loading=1 frame=\(frame) video_gap=0\n")
     }
 
     func testCloseAndMinimiseWorkWithTheBar() throws {
@@ -150,7 +150,7 @@ final class StreamChromeWindowTests: XCTestCase {
         let window = try XCTUnwrap(controller.window)
         window.orderFront(nil)
         let frame = "\(Int(window.frame.width.rounded()))x\(Int(window.frame.height.rounded()))"
-        XCTAssertEqual(try String(contentsOf: file, encoding: .utf8), "style=framed lights=shown pill=hidden title_visible=no lights_managed=us fullscreen=no clicks=0 dots=outside touches=\(manager.showTouches ? "on" : "off") dot_count=0 collection=0 collection_none=0 menu_fullscreen=1 screen=on overlay=0 secure=0 panel_off=0 panel_pill=0 stall=0 stall_pill=0 loading=1 frame=\(frame) video_gap=0\n")
+        XCTAssertEqual(try String(contentsOf: file, encoding: .utf8), "style=framed lights=shown pill=hidden title_visible=no lights_managed=us fullscreen=no clicks=0 dots=outside touches=\(manager.showTouches ? "on" : "off") dot_count=0 collection=0 collection_none=0 menu_fullscreen=1 screen=on overlay=0 secure=0 panel_off=0 panel_pill=0 panel_pill_failed=0 stall=0 stall_pill=0 loading=1 frame=\(frame) video_gap=0\n")
     }
 
     func testFullScreenShowsTheTitleAndHandsTheLightsBackOnExit() throws {

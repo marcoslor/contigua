@@ -227,19 +227,7 @@ class Session(
     @Volatile private var notifyWanted = false
     @Volatile private var notifyForwarding = false
 
-    /**
-     * `state.panel`: the person's Mac asked for the mirrored panel to stay off
-     * while the phone window renders (docs/PROTOCOL.md "Phone screen").
-     */
-    @Volatile private var mirrorPanelOff = false
-
-    /**
-     * The person's `phone.panel off` request. It is held while the phone window
-     * is paused; [mirrorPanelOff] is the state actually applied (and reported
-     * as `state.panel`), so the Mac's glyph/check never claims off while the
-     * panel is still on.
-     */
-    @Volatile private var mirrorPanelRequested = false
+    /** `state.panel` is the phone's hold (PanelHold.kt), never a local guess. */
 
     private var writerThread: Thread? = null
     private var stateHandle: AutoCloseable? = null
@@ -263,7 +251,7 @@ class Session(
         state.screen?.let { message["screen"] = it.wire }
         state.secure?.let { message["secure"] = it }
         // The phone's panel, when the person's Mac holds it off for the mirror.
-        message["panel"] = if (mirrorPanelOff) "off" else "on"
+        message["panel"] = if (power.panelHeldOff) "off" else "on"
         sendJson(message)
     }
 
@@ -321,11 +309,9 @@ class Session(
     }
 
     fun run() {
-        // The phone can end a mirror panel-off on its own (the person's power
-        // button): tell the Mac at once, as a fresh state.
-        power.onMirrorPanelEnded = {
-            mirrorPanelRequested = false
-            mirrorPanelOff = false
+        // The hold decides `state.panel` on its own (the person's power
+        // button, a paused window, the session ending): tell the Mac at once.
+        power.onPanelChanged = { _ ->
             val state = stateTracker.current ?: device.state()
             if (!stateTracker.update(state)) sendState(state)
         }
@@ -392,9 +378,7 @@ class Session(
         }
         runCatching { power.setActiveStreams(emptyList()) }
         runCatching { power.onSessionEnded() }
-        runCatching { power.onMirrorPanelEnded = null }
-        mirrorPanelRequested = false
-        mirrorPanelOff = false
+        runCatching { power.onPanelChanged = null }
         queue.close()
         runCatching { writerThread?.join(1000) }
         runCatching { socket.close() }
@@ -1342,29 +1326,23 @@ class Session(
             sendError("bad_request", "phone.panel needs off: true|false")
             return
         }
+        val ignorePower = obj["ignorePower"] as? Boolean ?: false
         if (!hasPhoneWindow()) {
             sendError("bad_request", "phone.panel needs an open phone window")
             return
         }
-        if (!power.setMirrorPanelOff(off)) {
+        if (!power.setMirrorPanelOff(off, ignorePower)) {
             sendError("unavailable", "this phone can't control its panel")
             return
         }
-        mirrorPanelRequested = off
-        // A paused phone window holds the request; the panel is not off yet.
-        mirrorPanelOff = off && hasActivePhoneWindow()
         log(if (off) "phone.panel off" else "phone.panel on")
-        val state = stateTracker.current ?: device.state()
-        if (!stateTracker.update(state)) sendState(state)
+        // The hold reports `state.panel` itself, here and whenever it changes
+        // on its own; a request that changes nothing sends nothing.
     }
 
     /** True while a phone window stream is open (paused or not). */
     private fun hasPhoneWindow(): Boolean =
         synchronized(streams) { streams.values.any { it.content == WindowContent.Phone } }
-
-    /** True while a phone window is open and unpaused: the mirror strategy applies. */
-    private fun hasActivePhoneWindow(): Boolean =
-        synchronized(streams) { streams.values.any { it.content == WindowContent.Phone && !it.paused } }
 
     /**
      * An event pushed by the app-process listener after both gates. Everything is
@@ -2178,16 +2156,9 @@ class Session(
             mirroring = open.any { it.content == WindowContent.Phone && !it.paused }
             phoneOpen = open.any { it.content == WindowContent.Phone }
         }
-        power.setActiveStreams(ids, allPaused = allPaused, mirroring = mirroring)
-        if (!phoneOpen) mirrorPanelRequested = false
-        // The request is held while the phone window is paused; report off only
-        // once the window is back and the mirror strategy can apply it.
-        val applied = mirrorPanelRequested && mirroring
-        if (mirrorPanelOff != applied) {
-            mirrorPanelOff = applied
-            val state = stateTracker.current ?: device.state()
-            if (!stateTracker.update(state)) sendState(state)
-        }
+        // The hold owns `state.panel` (paused, resumed, closed) and reports a
+        // change through `onPanelChanged`; the session only says what it sees.
+        power.setActiveStreams(ids, allPaused = allPaused, mirroring = mirroring, phoneWindowOpen = phoneOpen)
     }
 
     private fun streamOf(obj: Map<String, Any?>, frame: Frame): Int =

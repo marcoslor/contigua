@@ -648,7 +648,12 @@ build_cgevent() {
 }
 
 # windows() — the CGWindow list of PocketDeck's own windows without a title:
-windows() { "$CGBIN" list; }
+# Only this run's app: the installed app and other checkouts put PocketDeck
+# windows on the same screen, and a check must never match theirs (a phone
+# window of the person's own app is portrait and never turns).
+windows() {
+    if [ -n "${APP_PID:-}" ]; then "$CGBIN" list --pid "$APP_PID"; else "$CGBIN" list; fi
+}
 
 # window_titles [pid>0] — the Dock/⌘-Tab-style AX title of each window, one per
 # line. A pid pins this run's app: other checkouts run their own PocketDeck.
@@ -3404,9 +3409,12 @@ check_mirror() {
     printf '%s\n' "wait 1" "hoverat 0 200" "wait 0.03" "hoverat 0 150" "wait 0.03" "hoverat 0 120" \
         "wait 0.03" "hoverat 0 90" "wait 0.03" "hoverat 0 70" "wait 0.03" "hoverat 0 58" > "$WORK/mirror.txt"
     mkdir -p "$WORK/control"
+    # The run's own waits (rotation, stale frame, wake, panel) exceed a minute on
+    # a loaded Mac; the app must outlive them or every later control command
+    # lands with no app to read it.
     launch --connect "127.0.0.1:$PORT" --open-phone --float-windows \
         --debug-chrome-state "$WORK/chrome.txt" --debug-input-script "$WORK/mirror.txt" \
-        --debug-control "$WORK/control" --quit-after 60
+        --debug-control "$WORK/control" --quit-after 120
     if wait_until 5 chrome_has "loading=1"; then
         ok "MIRROR opening cover: the window is covered before its first frame"
     else
@@ -3603,6 +3611,49 @@ check_mirror() {
         ok "MIRROR the secure cover cleared when the phone reported the surface gone"
     else
         bad "MIRROR the secure cover stayed up ($(chrome_state))"
+    fi
+    stop_app
+    stop_fakephone
+    # The Mac button tells the truth (fakephone --panel-refuse): a phone that
+    # answers `phone.panel` with error unavailable never turned its screen off,
+    # so the button stays unchecked and a 2 s pill says so.
+    wait_until 5 no_fakephone
+    rm -f "$WORK/control/panel-menu.done" "$WORK/control/panel-menu.cmd"
+    FAKE_ARGS="--panel-refuse --first-frame-delay 1" start_fake || return 1
+    launch --connect "127.0.0.1:$PORT" --open-phone --float-windows \
+        --debug-chrome-state "$WORK/chrome.txt" --debug-control "$WORK/control" --quit-after 30
+    if wait_until 20 chrome_has "loading=0"; then
+        ok "MIRROR refusal: the refused phone's window opened"
+    else
+        bad "MIRROR refusal: the phone window never got its first frame ($(chrome_state))"
+    fi
+    if wait_until 3 chrome_has "panel_off=0"; then
+        ok "MIRROR refusal: the button starts unchecked"
+    else
+        bad "MIRROR refusal: the button did not start unchecked ($(chrome_state))"
+    fi
+    printf 'panel-menu\n' > "$WORK/control/panel-menu.cmd"
+    if wait_until 5 panel_menu_done; then
+        ok "MIRROR refusal: Turn Off Phone Screen ran"
+    else
+        bad "MIRROR refusal: the menu item did not run: $(cat "$WORK/control/panel-menu.done" 2>/dev/null)"
+    fi
+    # The error is answered at once, and the pill lasts 2 s: read it before
+    # anything else could take it down.
+    if wait_until 3 chrome_has "panel_off=0 panel_pill=1 panel_pill_failed=1"; then
+        ok "MIRROR refusal: a 2 s pill says the phone didn't turn its screen off, button unchecked"
+    else
+        bad "MIRROR refusal: no failure pill or the button moved ($(chrome_state))"
+    fi
+    if wait_until 10 events_have '"t":"phone.panel"'; then
+        ok "MIRROR refusal: the phone heard phone.panel"
+    else
+        bad "MIRROR refusal: the phone got no phone.panel"
+    fi
+    if grep -F '"t":"phone.panel"' "$WORK/events.jsonl" | grep -qF '"ignorePower":false'; then
+        ok "MIRROR the request carries ignorePower (off by default)"
+    else
+        bad "MIRROR phone.panel carried no ignorePower field"
     fi
     stop_app
     stop_fakephone

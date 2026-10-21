@@ -2310,6 +2310,9 @@ class Session(object):
         if not isinstance(off, bool):
             self._send_error("bad_request", "phone.panel needs off: true|false")
             return
+        if self.phone.args.panel_refuse:
+            self._send_error("unavailable", "this phone can't control its panel")
+            return
         self.phone.panel_state = "off" if off else "on"
         self.phone.events.panel(self.phone.panel_state)
         self.send_state()
@@ -3767,6 +3770,9 @@ def build_parser():
     p.add_argument("--panel-ends-after", type=float, default=0.0, metavar="SECONDS",
                    help="after phone.panel off, the person's power button ends it this long "
                         "later: send state.panel on and resume the mirror")
+    p.add_argument("--panel-refuse", action="store_true",
+                   help="answer every phone.panel with error unavailable (a build that "
+                        "cannot control its panel): the Mac must say the request failed")
     p.add_argument("--secure-after", type=float, default=0.0, metavar="SECONDS",
                    help="after the phone window opens, a secure surface covers display 0: "
                         "send state.secure true and solid black frames for 5 s, then false "

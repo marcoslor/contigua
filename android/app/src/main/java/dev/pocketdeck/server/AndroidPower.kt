@@ -30,6 +30,9 @@ import java.lang.reflect.Method
  * While the override is live, [Watchdog] holds a marker file so a server crash
  * cannot leave the panel dark.
  *
+ * The person's own "Turn Off Phone Screen" (`phone.panel`, docs/design/phone-mirror.md)
+ * is separate: [PanelHold] decides it, this class only performs its actions.
+ *
  * The code never unlocks and never dismisses the keyguard; it only ever names the
  * streaming display's own group, plus the panel's power mode on builds that
  * cannot separate the two.
@@ -74,14 +77,13 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
     /** True while the panel override is ours; cleared by restore, checked before each apply. */
     @Volatile private var darkEpisode = false
 
-    /** True while a phone window is showing display 0 (the person watches the panel). */
-    @Volatile private var mirrorOpen = false
+    /** The hold's one machine: the phone window's panel-off request (PanelHold.kt). */
+    private val hold = PanelHoldMachine(log)
 
-    /** True while we hold the mirrored panel off for the person's phone window. */
-    @Volatile private var mirrorOff = false
+    /** The session's listener for a `state.panel` the hold decided on its own. */
+    @Volatile override var onPanelChanged: ((Boolean) -> Unit)? = null
 
-    /** The session's listener for a panel-off the phone ended by itself. */
-    @Volatile override var onMirrorPanelEnded: (() -> Unit)? = null
+    override val panelHeldOff: Boolean get() = hold.holdsPanel
 
     /** True when this episode woke the phone's own group: handing back then sleeps it. */
     @Volatile private var episodeWokeGroup = false
@@ -137,6 +139,14 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
         if (displayWakeLockMethod == null) {
             log("power: no display-scoped wake locks; keep-alive timer stays at ${KEEPALIVE_INTERVAL_MS / 1000}s")
         }
+        // A previous server died while holding the panel off: hand it back
+        // before anything else is decided. The watchdog child does this too,
+        // but it may never have started.
+        if (runCatching { java.io.File(Watchdog.MARKER).isFile }.getOrDefault(false)) {
+            log("power: a panel override survived a crash; giving the panel back")
+            performHold(hold.dispatch(PanelHoldEvent.CrashRecovery))
+            performHold(hold.dispatch(PanelHoldEvent.RestoreDone))
+        }
     }
 
     override fun onInput(displayId: Int) {
@@ -162,18 +172,20 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
         }
     }
 
-    override fun setActiveStreams(displayIds: List<Int>, allPaused: Boolean, mirroring: Boolean) {
+    override fun setActiveStreams(
+        displayIds: List<Int>,
+        allPaused: Boolean,
+        mirroring: Boolean,
+        phoneWindowOpen: Boolean,
+    ) {
         var started = false
         var stopped = false
         var paused = false
         var graceHandBack = false
-        mirrorOpen = mirroring
-        if (!mirroring && mirrorOff) {
-            // The phone window closed or went away: a request the person made
-            // for it ends with it, and the panel comes back.
-            synchronized(policyLock) { policy.requestMirrorOff(false) }
-            mirrorOff = false
-        }
+        // The hold follows the phone window before anything else: a close ends
+        // the request and restores the panel even when app streams are still
+        // running, and a pause only suspends it.
+        onMirrorWindow(phoneWindowOpen, mirroring)
         synchronized(lock) {
             val wasActive = activeDisplays.isNotEmpty()
             if (displayIds.isEmpty() && wasActive && allPaused) {
@@ -229,28 +241,58 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
     /**
      * `phone.panel` (docs/PROTOCOL.md "Phone screen"): hold the mirrored panel
      * off while the phone window keeps rendering, or give it back. The person's
-     * power button ends it on the phone (`onMirrorPanelEnded`).
+     * power button ends it on the phone unless the Mac's keep-it-off setting is
+     * on (then the hold stands and the next keep-alive step re-applies it).
      */
-    override fun setMirrorPanelOff(off: Boolean): Boolean {
+    override fun setMirrorPanelOff(off: Boolean, ignorePower: Boolean): Boolean {
         if (!panel.available && !policy.isForced) return false
-        synchronized(policyLock) { policy.requestMirrorOff(off) }
-        mirrorOff = off
-        if (off) log("phone.panel off: holding the mirrored panel off")
-        else log("phone.panel on: the mirrored panel comes back")
-        synchronized(lock) {
-            if (off) {
-                // With only the mirror open nothing else runs the keep-alive:
-                // its panel's own group is what keeps the frames coming.
-                acquireWakeLockLocked()
-                startTimerLocked()
-            }
-            lock.notifyAll()
-        }
+        log(if (off) "phone.panel off: holding the mirrored panel off" else "phone.panel on: the mirrored panel comes back")
+        val event = if (off) PanelHoldEvent.RequestOff(ignorePower) else PanelHoldEvent.RequestOn
+        performHold(hold.dispatch(event))
         return true
     }
 
     override fun onSessionEnded() {
+        performHold(hold.dispatch(PanelHoldEvent.SessionEnded))
         setActiveStreams(emptyList())
+    }
+
+    /** The phone window's visibility changed: open, paused (covered or minimised) or closed. */
+    private fun onMirrorWindow(phoneWindowOpen: Boolean, mirroring: Boolean) {
+        val event = when {
+            !phoneWindowOpen -> if (hold.mirror == PanelMirror.Closed) null else PanelHoldEvent.WindowClosed
+            mirroring -> when (hold.mirror) {
+                PanelMirror.Closed -> PanelHoldEvent.WindowOpened
+                PanelMirror.Paused -> PanelHoldEvent.WindowResumed
+                PanelMirror.Open -> null
+            }
+            else -> if (hold.mirror == PanelMirror.Paused) null else PanelHoldEvent.WindowPaused
+        }
+        if (event != null) performHold(hold.dispatch(event))
+    }
+
+    /** Runs the machine's actions. Never called from [panelHoldTransition] itself. */
+    private fun performHold(actions: List<PanelHoldAction>) {
+        for (action in actions) {
+            when (action) {
+                is PanelHoldAction.PanelOff -> holdPanelOff()
+                is PanelHoldAction.PanelNormal -> handBackPanel(action.wake)
+                PanelHoldAction.StartKeepAlive -> synchronized(lock) {
+                    acquireWakeLockLocked()
+                    startTimerLocked()
+                    lock.notifyAll()
+                }
+                PanelHoldAction.StopKeepAlive -> synchronized(lock) {
+                    // App windows keep their own keep-alive: only a mirror-only
+                    // session loses it with the hold.
+                    if (activeDisplays.isEmpty()) {
+                        releaseWakeLockLocked()
+                        stopTimerLocked()
+                    }
+                }
+                is PanelHoldAction.ReportPanel -> onPanelChanged?.invoke(action.off)
+            }
+        }
     }
 
     /**
@@ -290,6 +332,7 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
 
     /** The service is going away: hand the panel back and stop the crash guard. */
     fun shutdown() {
+        performHold(hold.dispatch(PanelHoldEvent.SessionEnded))
         setActiveStreams(emptyList())
         watchdog.stopCleanly()
     }
@@ -297,9 +340,9 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
     // ------------------------------------------------------------------
 
     /**
-     * One keep-alive step: read the platform state, decide, apply. Reading the
-     * panel state *before* the wake is what tells the policy whether the wake is
-     * what turns the panel on.
+     * One keep-alive step: read the platform state, let the hold decide, apply.
+     * Reading the panel state *before* the wake is what tells the policy whether
+     * the wake is what turns the panel on.
      */
     private fun keepAliveStep() {
         var ids = synchronized(lock) { activeDisplays.toIntArray() }
@@ -309,21 +352,18 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
         val requestOnly = ids.isEmpty()
         if (requestOnly) ids = intArrayOf(PANEL_DISPLAY_ID)
         val panelOn = DisplayProbe.state(PANEL_DISPLAY_ID) == Display.STATE_ON
+        // The hold owns the mirror's panel: its step settles the take-over and
+        // re-asserts the panel off. A paused mirror runs no step at all.
+        if (hold.holdsPanel) performHold(hold.dispatch(PanelHoldEvent.KeepAliveStep(panelOn)))
+        val holding = hold.holdsPanel
+        if (requestOnly && !holding) return
         val decision = synchronized(policyLock) {
-            decidePanelPlan(policy, ids.toList(), requestOnly, mirrorOpen, mirrorOff, panelOn)
+            decidePanelPlan(policy, ids.toList(), requestOnly, hold.mirrorOpen, holding, panelOn)
         } ?: return
         val strategy = decision.strategy
         val plan = decision.plan
         groupOnly = strategy == PanelStrategy.GROUP_ONLY
         lastStrategy = strategy
-        if (mirrorOff && !synchronized(policyLock) { policy.mirrorOffRequested }) {
-            // The request ended while this step decided (the person pressed
-            // power): never re-apply a panel-off the phone just gave back. The
-            // next step sees the old dark episode and restores the panel.
-            mirrorOff = false
-            onMirrorPanelEnded?.invoke()
-            return
-        }
         if (plan != lastPlan || panelOn != lastPanelOn) {
             log("power: panel ${DisplayProbe.stateName(DisplayProbe.state(PANEL_DISPLAY_ID))} -> $plan")
             lastPlan = plan
@@ -353,11 +393,17 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
         // and a poke cannot wake a group the user put to sleep.
         val wake = DarkPanelPolicy.wakesGroup(strategy, plan)
         if (wake) episodeWokeGroup = true
+        // While the panel is held, the platform must keep believing the screen
+        // is on. A step beside an app window names that window's display only,
+        // and on a build that gives it its own group the panel's group would
+        // time out and read as a power press.
+        if (holding) userActivity(PANEL_DISPLAY_ID)
         for (id in ids) {
             userActivity(id)
             if (wake) wakeDisplay(id)
         }
-        if (plan.panelOff) applyPanelOff(plan.transitional)
+        // The hold's own action already wrote the panel off this step.
+        if (plan.panelOff && !holding) applyPanelOff(plan.transitional)
     }
 
     /**
@@ -384,9 +430,20 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
         try {
             // Armed only once the phone is interactive: the episode's own wake.
             var armed = false
-            while (darkEpisode) {
+            while (darkEpisode || hold.holdsPanel) {
                 val interactive = pm.isInteractive
-                if (armed && !interactive && darkEpisode) {
+                if (armed && !interactive) {
+                    armed = false
+                    if (hold.holdsPanel) {
+                        // The hold decides: it ends (the default) or stands and
+                        // the next keep-alive step re-applies the panel off.
+                        performHold(hold.dispatch(PanelHoldEvent.PowerPress))
+                        if (hold.holdsPanel) {
+                            Thread.sleep(POWER_WATCH_MS)
+                            continue
+                        }
+                        break
+                    }
                     if (synchronized(policyLock) { policy.userPressedPower() }) {
                         darkEpisode = false
                         keepLit = false
@@ -404,11 +461,6 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
                         log("power: user pressed power while the panel was dark; panel given back" +
                             if (off) "" else " (display 0 never reported off)")
                         if (overrideLive) standDownOverride()
-                        if (mirrorOff) {
-                            // "Turn Off Phone Screen" is the person's to end.
-                            mirrorOff = false
-                            onMirrorPanelEnded?.invoke()
-                        }
                     }
                     break
                 }
@@ -429,6 +481,58 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
             Thread.sleep(POWER_WATCH_MS)
         }
         return false
+    }
+
+    /**
+     * The hold's first write: the panel is ours now. The take-over's re-apply
+     * is the next keep-alive step (the timer was nudged), so the session thread
+     * never blocks here.
+     */
+    private fun holdPanelOff() {
+        darkEpisode = true
+        startPowerWatch()
+        // Arm the crash guard *before* the override goes live. The start is
+        // asynchronous, so the panel-off is never delayed, and a crash between
+        // these steps still leaves the marker the watchdog acts on.
+        watchdog.ensure()
+        watchdog.markPanelForced()
+        overrideLive = true
+        val applied = panel.panelOff()
+        // The hold may have ended while this write was in flight (the person's
+        // power press): their screen must win.
+        if (!hold.holdsPanel) {
+            panel.panelNormal()
+            return
+        }
+        if (!applied && !loggedNoPanelControl) {
+            loggedNoPanelControl = true
+            log("panel off unavailable: the locked phone will show its lock screen while streaming")
+        }
+    }
+
+    /**
+     * The hold ended: the panel is the platform's again. [wake] is the person's
+     * power press — the platform thinks the screen was on and is putting it to
+     * sleep, so let that finish, hand the panel back and light the screen. The
+     * lock screen stays; nothing is unlocked.
+     */
+    private fun handBackPanel(wake: Boolean) {
+        darkEpisode = false
+        keepLit = false
+        if (wake) {
+            val off = waitForPanelOff()
+            panel.panelNormal()
+            wakeDisplay(PANEL_DISPLAY_ID)
+            log("power: user pressed power while the panel was dark; panel given back" +
+                if (off) "" else " (display 0 never reported off)")
+        } else if (DisplayProbe.state(PANEL_DISPLAY_ID) == Display.STATE_ON) {
+            // Only when the platform believes the panel is on (our override is
+            // masking it); otherwise its own mode is already right and NORMAL
+            // would flash the panel.
+            panel.panelNormal()
+        }
+        // The panel is the platform's again, so the crash guard is done.
+        if (overrideLive) standDownOverride()
     }
 
     /** Forces the panel dark; [PanelPower] logs the mode transitions. */
@@ -478,7 +582,6 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
      */
     private fun restoreAfterStop() {
         val owned = synchronized(policyLock) { policy.streamsStopped() }
-        mirrorOff = false
         if (!owned) {
             episodeWokeGroup = false
             if (overrideLive) standDownOverride()
@@ -572,13 +675,13 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
             runCatching { keepAliveStep() }
             // A "Turn Off Phone Screen" request on a lone phone window is the
             // only reason the timer can run with no stream of ours left.
-            val idle = synchronized(lock) { activeDisplays.isEmpty() } && !(mirrorOff && mirrorOpen)
+            val idle = synchronized(lock) { activeDisplays.isEmpty() } && !hold.holdsPanel
             if (idle) {
                 synchronized(lock) {
                     releaseWakeLockLocked()
                     stopTimerLocked()
                 }
-                log("power: the mirrored panel request ended; keep-alive stopped")
+                log("power: no hold and no stream left; keep-alive stopped")
                 return
             }
         }
@@ -710,16 +813,20 @@ internal fun decidePanelPlan(
     activeDisplayIds: List<Int>,
     requestOnly: Boolean,
     mirrorOpen: Boolean,
-    mirrorOff: Boolean,
+    holdActive: Boolean,
     panelOn: Boolean,
     groupOf: (Int) -> Int = { DisplayProbe.displayGroupId(it) },
 ): PanelDecision? {
-    if (requestOnly && !(mirrorOff && mirrorOpen)) return null
+    if (requestOnly && !(mirrorOpen && holdActive)) return null
     val ids = if (requestOnly) listOf(0) else activeDisplayIds
     val strategy = if (requestOnly) {
         PanelStrategy.PANEL_ALONE
     } else {
         policy.strategy(ids.map(groupOf), mirroring = mirrorOpen)
     }
-    return PanelDecision(strategy, policy.step(panelOn, strategy))
+    val plan = policy.step(panelOn, strategy)
+    // "Turn Off Phone Screen" is the hold's machine; while it holds the panel
+    // and the mirror is open, the step keeps the panel off.
+    val held = if (holdActive && mirrorOpen) plan.copy(panelOff = true) else plan
+    return PanelDecision(strategy, held)
 }

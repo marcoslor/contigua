@@ -1866,6 +1866,9 @@ final class ConnectionController {
                 showTransient("Nothing to continue.")
             } else if code == "launch_failed" || (stream != 0 && code == "no_stream") {
                 showTransient(ConnectionFailure.message(for: code) ?? "Something went wrong.")
+            } else if stream == 0 && (code == "unavailable" || code == "bad_request") {
+                // `phone.panel` refused: the phone never turned its screen off.
+                windows.failPhonePanelRequest()
             }
         default:
             break
