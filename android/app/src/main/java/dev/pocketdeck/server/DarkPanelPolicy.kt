@@ -43,6 +43,9 @@ internal class DarkPanelPolicy(private val forced: Boolean) {
     private var phase = Phase.INIT
     private var sawPanelOn = false
 
+    /** When the streams paused, while the panel state is kept for [PAUSE_GRACE_MS]. */
+    private var pausedAtMs: Long? = null
+
     val isForced: Boolean get() = forced
 
     /** Strategy for the given display groups of the currently streaming displays. */
@@ -123,7 +126,38 @@ internal class DarkPanelPolicy(private val forced: Boolean) {
     }
 
     /**
-     * The last stream paused/closed or the session ended.
+     * Every stream paused: the Mac covered or minimised the windows, or the
+     * person switched to another app. That is not the end of streaming — the
+     * phone has no reason to hand the panel back and take it again a moment
+     * later (the wake and the transitional panel-off are what the person sees
+     * as the panel flashing). The panel state is kept for [PAUSE_GRACE_MS]; only
+     * [pauseGraceExpired] hands it back.
+     *
+     * @return true when nothing of ours is held (the person has the phone), so
+     * the caller can stop at once.
+     */
+    fun streamsPaused(nowMs: Long): Boolean {
+        pausedAtMs = nowMs
+        if (phase == Phase.DARK) return false
+        phase = Phase.INIT
+        sawPanelOn = false
+        return true
+    }
+
+    /** The streams came back inside the grace period: the episode goes on as it was. */
+    fun streamsResumed() {
+        pausedAtMs = null
+    }
+
+    /** True once a pause has lasted [PAUSE_GRACE_MS]: hand the panel back now. */
+    fun pauseGraceExpired(nowMs: Long): Boolean {
+        val since = pausedAtMs ?: return false
+        return nowMs - since >= PAUSE_GRACE_MS
+    }
+
+    /**
+     * The last stream closed or the session ended: the person is done with the
+     * phone, so a pause's grace period does not apply.
      *
      * @return true when we forced the panel dark and must restore it and put the
      * phone back to sleep.
@@ -132,12 +166,23 @@ internal class DarkPanelPolicy(private val forced: Boolean) {
         val owned = phase == Phase.DARK
         phase = Phase.INIT
         sawPanelOn = false
+        pausedAtMs = null
         return owned
     }
 
     companion object {
         /** No display wake lock: shorter than any user screen-off timeout. */
         const val TIMER_INTERVAL_MS = 10_000L
+
+        /**
+         * How long the panel state outlives the last paused stream. A Mac focus
+         * switch covers every window for a few seconds; handing the panel back
+         * and taking it again is a wake plus a transitional panel-off, which is
+         * the flash the person reported (their switches were 5-10 s apart). 30 s
+         * covers a glance at another app and still puts the phone back to sleep
+         * soon after its windows are gone.
+         */
+        const val PAUSE_GRACE_MS = 30_000L
 
         /** Own display group holding a display wake lock: the step is only a safety net. */
         const val GROUP_LOCK_INTERVAL_MS = 60_000L

@@ -150,31 +150,57 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
         }
     }
 
-    override fun setActiveStreams(displayIds: List<Int>) {
+    override fun setActiveStreams(displayIds: List<Int>, allPaused: Boolean, mirroring: Boolean) {
         var started = false
         var stopped = false
+        var paused = false
+        var graceHandBack = false
         synchronized(lock) {
             val wasActive = activeDisplays.isNotEmpty()
-            activeDisplays.clear()
-            activeDisplays.addAll(displayIds)
-            val isActive = activeDisplays.isNotEmpty()
-            if (isActive && !wasActive) {
-                acquireWakeLockLocked()
-                startTimerLocked()
-                started = true
-            } else if (!isActive && wasActive) {
-                releaseWakeLockLocked()
-                stopTimerLocked()
-                stopped = true
+            if (displayIds.isEmpty() && wasActive && allPaused) {
+                // Every window is only paused (covered, minimised): keep the
+                // keep-alive, the locks and the panel state exactly as they
+                // are. The keep-alive loop hands the panel back once the grace
+                // period runs out (DarkPanelPolicy.PAUSE_GRACE_MS); an unpause
+                // in between is then no new episode at all.
+                paused = true
+                started = false
+            } else {
+                activeDisplays.clear()
+                activeDisplays.addAll(displayIds)
+                val isActive = activeDisplays.isNotEmpty()
+                if (isActive && !wasActive) {
+                    acquireWakeLockLocked()
+                    startTimerLocked()
+                    started = true
+                } else if (!isActive && wasActive) {
+                    releaseWakeLockLocked()
+                    stopTimerLocked()
+                    stopped = true
+                }
+                syncDisplayLocksLocked(activeDisplays)
             }
-            syncDisplayLocksLocked(activeDisplays)
         }
-        if (started) {
-            synchronized(policyLock) { policy.streamsStarted() }
+        if (paused) {
+            val now = SystemClock.uptimeMillis()
+            val nothingOfOurs = synchronized(policyLock) { policy.streamsPaused(now) }
+            if (nothingOfOurs) {
+                // The person has the phone: there is nothing to keep.
+                synchronized(lock) {
+                    activeDisplays.clear()
+                    releaseWakeLockLocked()
+                    stopTimerLocked()
+                }
+                graceHandBack = true
+            }
         }
+        if (started) synchronized(policyLock) { policy.streamsStarted() }
+        if (!paused && displayIds.isNotEmpty()) synchronized(policyLock) { policy.streamsResumed() }
         if (stopped) restoreAfterStop()
-        // A window just opened: the keep-alive thread runs a step right away, so
-        // the wake (and the panel-off after it) never blocks the session thread.
+        if (graceHandBack) restoreAfterStop()
+        // A window just opened or paused: the keep-alive thread runs a step right
+        // away, so the wake (and the panel-off after it) never blocks the session
+        // thread.
         synchronized(lock) { lock.notifyAll() }
     }
 
@@ -464,10 +490,29 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
                 nextStepAt = SystemClock.uptimeMillis() + interval
             }
             step++
+            if (synchronized(policyLock) { policy.pauseGraceExpired(SystemClock.uptimeMillis()) }) {
+                handBackAfterPause()
+                return
+            }
             // Shared-group steps run every 2 s: log the first few, then one a minute.
             if (step <= 3 || step % 30 == 0) log("keepalive step $step interval=${interval}ms displayLocks=$locks")
             runCatching { keepAliveStep() }
         }
+    }
+
+    /**
+     * Every window has been paused for the whole grace period: hand the phone
+     * back exactly as the last close does (restore the panel, sleep, stand
+     * down the crash guard), just later.
+     */
+    private fun handBackAfterPause() {
+        synchronized(lock) {
+            activeDisplays.clear()
+            releaseWakeLockLocked()
+            stopTimerLocked()
+        }
+        log("power: all windows paused for ${DarkPanelPolicy.PAUSE_GRACE_MS / 1000}s; handing the phone back")
+        restoreAfterStop()
     }
 
     private fun acquireWakeLockLocked() {
