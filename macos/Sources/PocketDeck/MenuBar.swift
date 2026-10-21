@@ -185,6 +185,16 @@ struct AppCommands: Commands {
             }
             .keyboardShortcut(.upArrow, modifiers: .command)
             .disabled(streamMenu.frozen)
+            Divider()
+            // Phone window only: the phone holds its own panel's power off while
+            // the mirror keeps rendering (docs/design/phone-mirror.md). The
+            // check follows the phone's `state.panel`, never a local guess.
+            Toggle(isOn: Binding(
+                get: { streamMenu.panelOff },
+                set: { _ in send(#selector(PhoneWindowController.togglePanelOffMenuAction(_:))) })) {
+                Label("Turn Off Phone Screen", systemImage: "iphone.slash")
+            }
+            .disabled(!streamMenu.phoneWindow)
         }
     }
 
