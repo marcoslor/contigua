@@ -135,7 +135,10 @@ Material 3, edge-to-edge, dynamic color, light/dark.
    - "Paired Macs" list (name, last connected, Forget via swipe or overflow).
    - FAB or tonal button: **Pair new Mac** (QR scan).
 3. **Pairing prompt**: high-priority notification with the code and Allow/Deny, and,
-   if the app is in the foreground, a Material dialog with the large code ("Check it matches your Mac.").
+   if the app is in the foreground, a floating Material card with the large code
+   ("Check it matches your Mac.") — 16 dp from the sides and 16 dp above the
+   navigation bar, rounded on all corners, not a bottom sheet under the gesture
+   handle.
    It disappears by itself when the Mac cancels or the request expires.
 4. **Phone-mode launcher** (runs on the virtual display, shown on the Mac): Material
    search bar + app grid, nothing else.
