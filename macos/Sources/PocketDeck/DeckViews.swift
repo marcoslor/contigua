@@ -630,6 +630,7 @@ struct AppGrid: View {
                                         iconIsMissing: iconIsMissing(cell.app),
                                         selected: navigator.selection == cell.id) { controller.openApp(cell.app) }
                                     .id(cell.id)
+                                    .deckCellGeometry(cell.id)
                                     .contextMenu { DockMenuItems(app: cell.app) }
                             }
                         }
@@ -645,14 +646,20 @@ struct AppGrid: View {
             }
             // The scroll view's own width (the grid must not size itself, or it would never
             // shrink with the window) minus the space a legacy scroller takes.
-            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { outer in
-                let scroller = NSScroller.scrollerWidth(for: .regular, scrollerStyle: NSScroller.preferredScrollerStyle)
+            .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { outer in
+                // The scroll view's own width is the width the grid is laid out
+                // in (the grid must not size itself, or it would never shrink
+                // with the window). A legacy scroller overlays the trailing
+                // edge; no column is drawn under it because the grid keeps its
+                // inset there.
+                let width = outer.width
+                DeckGridMetrics.noteViewport(outer)
                 // A zoom or a live resize delivers a width on every frame. Writing
                 // it straight into the grid's state rebuilt every cell on every
                 // frame (the Deck's zoom stutter, worst on the way back); the
                 // grid follows the window in a few steps instead, and its final
                 // width is exact because the debounce flushes the last one.
-                widthUpdate.schedule(outer - scroller) { [navigator] width in
+                widthUpdate.schedule(width) { [navigator] width in
                     navigator.columns = GridMetrics.columns(forWidth: width)
                 } apply: { [self] width in
                     DeckGridMetrics.relayouts += 1
@@ -693,6 +700,27 @@ struct AppGrid: View {
         .padding(.horizontal, GridMetrics.inset)
         .padding(.vertical, 16)
     }
+}
+
+/// Reports a drawn cell's frame to the zoom probe (`--debug-deck-zoom`). It is
+/// attached only when a measurement was asked for, so a normal run has no
+/// geometry observer on the cells at all.
+private struct DeckCellGeometry: ViewModifier {
+    let id: String
+
+    func body(content: Content) -> some View {
+        if DeckGridMetrics.recording {
+            content.onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { frame in
+                DeckGridMetrics.noteCell(id, frame)
+            }
+        } else {
+            content
+        }
+    }
+}
+
+private extension View {
+    func deckCellGeometry(_ id: String) -> some View { modifier(DeckCellGeometry(id: id)) }
 }
 
 struct AppCell: View {

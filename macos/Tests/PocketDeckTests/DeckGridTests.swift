@@ -115,6 +115,56 @@ final class DeckGridTests: XCTestCase {
         XCTAssertEqual(applied.last, 900, "the settled width is the last one the window sent")
     }
 
+    // MARK: the drawn frame fits its width (e2e `deck`, the person's clipped edges)
+
+    /// The cell origins a layout at `width` draws, with the design's inset,
+    /// 96 pt tiles and the gap the width asks for.
+    private func cells(atWidth width: CGFloat, count: Int) -> [CGRect] {
+        let columns = GridMetrics.columns(forWidth: width)
+        let gap = GridMetrics.gap(forWidth: width)
+        let pitch = GridMetrics.cellWidth + gap
+        return (0..<count).map { index in
+            CGRect(x: GridMetrics.inset + CGFloat(index % columns) * pitch,
+                   y: 16 + CGFloat(index / columns) * 108,
+                   width: GridMetrics.cellWidth, height: GridMetrics.cellHeight)
+        }
+    }
+
+    /// A frame laid out for the width it is drawn at fits: even insets, no
+    /// cell outside, the right number of columns.
+    func testAFrameDrawnAtItsWidthFits() {
+        let fit = DeckFrameFit.measure(width: 760,
+                                       visible: CGRect(x: 0, y: 0, width: 760, height: 600),
+                                       cells: cells(atWidth: 760, count: 41))
+        XCTAssertTrue(fit.ok, fit.summary)
+        XCTAssertEqual(fit.columns, GridMetrics.columns(forWidth: 760))
+        XCTAssertEqual(fit.leftInset, GridMetrics.inset, accuracy: 0.5)
+        XCTAssertEqual(fit.clipped, 0)
+    }
+
+    /// The reported bug: the window shrank but the grid kept the wider width's
+    /// columns, so the edge tiles hang outside the visible bounds.
+    func testAStaleWiderLayoutIsClippedInAShownNarrowerFrame() {
+        let fit = DeckFrameFit.measure(width: 600,
+                                       visible: CGRect(x: 0, y: 0, width: 600, height: 600),
+                                       cells: cells(atWidth: 760, count: 41))
+        XCTAssertFalse(fit.ok)
+        XCTAssertGreaterThan(fit.clipped, 0, "the cells past the edge are cut in half")
+        XCTAssertNotEqual(fit.columns, fit.expectedColumns)
+        XCTAssertGreaterThan(abs(fit.leftInset - fit.rightInset), 1)
+    }
+
+    /// The other direction: too few columns for the wider window leaves the
+    /// row short of the right edge (the grid "slides" as the count catches up).
+    func testAStaleNarrowerLayoutLeavesTheRightInsetTooWide() {
+        let fit = DeckFrameFit.measure(width: 900,
+                                       visible: CGRect(x: 0, y: 0, width: 900, height: 600),
+                                       cells: cells(atWidth: 760, count: 41))
+        XCTAssertFalse(fit.ok)
+        XCTAssertEqual(fit.clipped, 0)
+        XCTAssertGreaterThan(fit.rightInset - fit.leftInset, 1)
+    }
+
     // MARK: glass tile (docs/DESIGN.md "The app grid")
 
     func testGlassTileGeometry() {

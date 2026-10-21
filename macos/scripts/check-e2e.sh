@@ -8062,16 +8062,17 @@ check_deck() {
     fi
 
     # The Deck's double-click zoom (NSWindow.zoom, the same path the title
-    # bar's double-click takes) must draw its frames at the NFR limit: the grid
-    # re-laying out on every frame of the animation is what made it feel slow,
-    # worst on the way back.
-    if wait_until 40 [ -s "$WORK/deck-zoom.json" ]; then
+    # bar's double-click takes) and a scripted live drag-resize must draw their
+    # frames at the NFR limit, and the grid must fit the width it is drawn at on
+    # every sampled frame: a layout fed by a stored, debounced width clips the
+    # edge columns while the window animates.
+    if wait_until 45 [ -s "$WORK/deck-zoom.json" ]; then
         local zoom_limit
         zoom_limit="$(nfr_limit deck_zoom_frame_p95_ms)"
         if python3 "$MACOS/scripts/deck-zoom.py" "$WORK/deck-zoom.json" "$zoom_limit"; then
-            ok "DECK the zoom and unzoom keep p95 under ${zoom_limit} ms ($(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print("zoom p95=%s ms, unzoom p95=%s ms, relayouts=%s" % (d["zoom"]["p95"], d["unzoom"]["p95"], d.get("relayouts")))' "$WORK/deck-zoom.json"))"
+            ok "DECK zoom, unzoom and drag keep p95 under ${zoom_limit} ms and every drawn frame fits ($(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print("zoom p95=%s ms, unzoom p95=%s ms, drag p95=%s ms, relayouts=%s, bad frames=%s" % (d["zoom"]["p95"], d["unzoom"]["p95"], d["drag"]["p95"], d.get("relayouts"), sum(d[p].get("badFrames", 0) for p in ("zoom","unzoom","drag"))))' "$WORK/deck-zoom.json"))"
         else
-            bad "DECK the zoom is slower than the ${zoom_limit} ms limit ($(cat "$WORK/deck-zoom.json" 2>/dev/null))"
+            bad "DECK the zoom drags a clipped or slow grid ($(python3 "$MACOS/scripts/deck-zoom.py" "$WORK/deck-zoom.json" "$zoom_limit" 2>&1))"
         fi
     else
         bad "DECK no zoom measurement (--debug-deck-zoom)"
