@@ -307,17 +307,15 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
         // "Turn Off Phone Screen" only the mirror's own panel group has to stay
         // up, so the step names display 0 and there is no virtual display.
         val requestOnly = ids.isEmpty()
-        if (requestOnly && !(mirrorOff && mirrorOpen)) return
         if (requestOnly) ids = intArrayOf(PANEL_DISPLAY_ID)
-        val strategy = if (requestOnly) {
-            PanelStrategy.PANEL_ALONE
-        } else {
-            policy.strategy(ids.map { DisplayProbe.displayGroupId(it) }, mirroring = mirrorOpen)
-        }
+        val panelOn = DisplayProbe.state(PANEL_DISPLAY_ID) == Display.STATE_ON
+        val decision = synchronized(policyLock) {
+            decidePanelPlan(policy, ids.toList(), requestOnly, mirrorOpen, mirrorOff, panelOn)
+        } ?: return
+        val strategy = decision.strategy
+        val plan = decision.plan
         groupOnly = strategy == PanelStrategy.GROUP_ONLY
         lastStrategy = strategy
-        val panelOn = DisplayProbe.state(PANEL_DISPLAY_ID) == Display.STATE_ON
-        val plan = synchronized(policyLock) { policy.step(panelOn, strategy) }
         if (mirrorOff && !synchronized(policyLock) { policy.mirrorOffRequested }) {
             // The request ended while this step decided (the person pressed
             // power): never re-apply a panel-off the phone just gave back. The
@@ -692,4 +690,36 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
 
         const val DISPLAY_WAKE_TAG = "pocketdeck:vd"
     }
+}
+
+/** The strategy and the plan for one keep-alive step (the testable half of [AndroidPower.keepAliveStep]). */
+internal data class PanelDecision(val strategy: PanelStrategy, val plan: PanelPlan)
+
+/**
+ * Decide one keep-alive step without touching the platform: which strategy the
+ * active displays get, then the plan. [requestOnly] is the mirror-only case
+ * (no virtual display; "Turn Off Phone Screen" holds display 0). [groupOf] is
+ * the platform's display-group reading, so the JVM tests pass a fake group.
+ *
+ * This is the exact decision [AndroidPower.keepAliveStep] makes: the emulator's
+ * 13:25:44 plan (`wake=true, panelOff=false, transitional=false`) is what
+ * GROUP_ONLY or PANEL_ALONE returns, never what PANEL_DARK returns.
+ */
+internal fun decidePanelPlan(
+    policy: DarkPanelPolicy,
+    activeDisplayIds: List<Int>,
+    requestOnly: Boolean,
+    mirrorOpen: Boolean,
+    mirrorOff: Boolean,
+    panelOn: Boolean,
+    groupOf: (Int) -> Int = { DisplayProbe.displayGroupId(it) },
+): PanelDecision? {
+    if (requestOnly && !(mirrorOff && mirrorOpen)) return null
+    val ids = if (requestOnly) listOf(0) else activeDisplayIds
+    val strategy = if (requestOnly) {
+        PanelStrategy.PANEL_ALONE
+    } else {
+        policy.strategy(ids.map(groupOf), mirroring = mirrorOpen)
+    }
+    return PanelDecision(strategy, policy.step(panelOn, strategy))
 }
