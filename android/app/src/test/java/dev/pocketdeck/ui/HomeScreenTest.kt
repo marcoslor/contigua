@@ -82,6 +82,13 @@ class HomeScreenTest {
     }
 
     @Test
+    fun `the sharing switch says what it shares and why it is off`() {
+        shoot(state(enabled = true))
+        compose.onNodeWithText("Share notifications and Now Playing").fetchSemanticsNode()
+        compose.onNodeWithText("Only while a Mac is connected. Off by default.").fetchSemanticsNode()
+    }
+
+    @Test
     fun `connections off still warns and offers turn on`() {
         shoot(state(enabled = true, allowConnections = false))
         compose.onNodeWithText("Connections are off").fetchSemanticsNode()

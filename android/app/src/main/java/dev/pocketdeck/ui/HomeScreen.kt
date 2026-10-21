@@ -123,64 +123,38 @@ fun HomeScreen(
         ) {
             StatusCard(state = state, onAction = onStatusAction)
             Spacer(Modifier.height(16.dp))
-            ListItem(
-                headlineContent = { Text(stringResource(R.string.home_keep_running)) },
-                trailingContent = {
-                    Switch(checked = state.enabled, onCheckedChange = null)
-                },
-                modifier = Modifier.toggleable(
-                    value = state.enabled,
-                    onValueChange = onToggleEnabled,
-                    role = androidx.compose.ui.semantics.Role.Switch,
-                ),
+            SwitchRow(
+                headline = stringResource(R.string.home_keep_running),
+                checked = state.enabled,
+                onToggle = onToggleEnabled,
             )
-            ListItem(
-                headlineContent = { Text(stringResource(R.string.home_allow_connections)) },
-                trailingContent = {
-                    Switch(checked = state.allowConnections, onCheckedChange = null)
-                },
-                modifier = Modifier.toggleable(
-                    value = state.allowConnections,
-                    onValueChange = onToggleAllowConnections,
-                    role = androidx.compose.ui.semantics.Role.Switch,
-                ),
+            HorizontalDivider(Modifier.padding(vertical = 8.dp))
+            SwitchRow(
+                headline = stringResource(R.string.home_allow_connections),
+                checked = state.allowConnections,
+                onToggle = onToggleAllowConnections,
             )
-            ListItem(
-                headlineContent = { Text(stringResource(R.string.home_allow_pairings)) },
-                supportingContent = {
-                    if (!state.allowConnections) {
-                        Text(stringResource(R.string.home_allow_pairings_hint))
-                    }
+            SwitchRow(
+                headline = stringResource(R.string.home_allow_pairings),
+                checked = state.allowPairings,
+                enabled = state.allowConnections,
+                onToggle = onToggleAllowPairings,
+                supporting = if (!state.allowConnections) {
+                    stringResource(R.string.home_allow_pairings_hint)
+                } else {
+                    null
                 },
-                trailingContent = {
-                    Switch(
-                        checked = state.allowPairings,
-                        onCheckedChange = null,
-                        enabled = state.allowConnections,
-                    )
-                },
-                modifier = Modifier.toggleable(
-                    value = state.allowPairings,
-                    enabled = state.allowConnections,
-                    onValueChange = onToggleAllowPairings,
-                    role = androidx.compose.ui.semantics.Role.Switch,
-                ),
             )
-            ListItem(
-                headlineContent = { Text(stringResource(R.string.home_notify_share)) },
-                supportingContent = {
-                    if (state.notifyShared) {
-                        Text(stringResource(R.string.home_notify_granted_hint))
-                    }
+            HorizontalDivider(Modifier.padding(vertical = 8.dp))
+            SwitchRow(
+                headline = stringResource(R.string.home_notify_share),
+                checked = state.notifyShared,
+                onToggle = onToggleNotify,
+                supporting = if (state.notifyShared) {
+                    stringResource(R.string.home_notify_granted_hint)
+                } else {
+                    stringResource(R.string.home_notify_off_hint)
                 },
-                trailingContent = {
-                    Switch(checked = state.notifyShared, onCheckedChange = null)
-                },
-                modifier = Modifier.toggleable(
-                    value = state.notifyShared,
-                    onValueChange = onToggleNotify,
-                    role = androidx.compose.ui.semantics.Role.Switch,
-                ),
             )
             if (state.notifyGrantFailed) {
                 Text(
@@ -235,6 +209,29 @@ fun HomeScreen(
             Spacer(Modifier.height(24.dp))
         }
     }
+}
+
+@Composable
+private fun SwitchRow(
+    headline: String,
+    checked: Boolean,
+    onToggle: (Boolean) -> Unit,
+    enabled: Boolean = true,
+    supporting: String? = null,
+) {
+    ListItem(
+        headlineContent = { Text(headline) },
+        supportingContent = supporting?.let { text -> { Text(text) } },
+        trailingContent = {
+            Switch(checked = checked, onCheckedChange = null, enabled = enabled)
+        },
+        modifier = Modifier.toggleable(
+            value = checked,
+            enabled = enabled,
+            onValueChange = onToggle,
+            role = androidx.compose.ui.semantics.Role.Switch,
+        ),
+    )
 }
 
 @Composable
