@@ -194,6 +194,12 @@ final class VideoLayerView: NSView {
     /// have no animation and its presentation frame must be the new bounds.
     var displayLayerForTesting: AVSampleBufferDisplayLayer { displayLayer }
 
+    /// Tests: the size a VIDEO_CONFIG would set, without a decoder or a real
+    /// parameter set (the rotation rule only needs the orientation).
+    func setVideoSizeForTesting(_ size: CGSize) {
+        videoSize = size
+    }
+
     /// How far the drawn picture falls short of the view's bounds, in points:
     /// 0 when the picture covers the content (fill/stretch or an exact fit),
     /// more while the display layer trails a resize or a real letterbox shows.

@@ -195,6 +195,27 @@ final class StreamChromeWindowTests: XCTestCase {
             .chrome.actionCount, 0)
     }
 
+    /// The phone turning mid-drag must not move the window under the hand: the
+    /// turn waits for the drag to end.
+    func testAStreamEventDoesNotMoveThePhoneWindowMidDrag() throws {
+        let manager = makeManager()
+        let phone = PhoneWindowController(stream: 1, phone: nil, manager: manager)
+        defer { phone.window?.close() }
+        let window = try XCTUnwrap(phone.window)
+        window.orderFront(nil)
+        let before = window.frame
+
+        phone.windowWillStartLiveResize(Notification(name: NSWindow.willStartLiveResizeNotification))
+        XCTAssertTrue(phone.isLiveResizing)
+        phone.videoView.setVideoSizeForTesting(CGSize(width: 2340, height: 1080))
+        phone.followRotation()
+        XCTAssertEqual(window.frame, before, "the phone turned, but the drag owns the frame")
+
+        phone.windowDidEndLiveResize(Notification(name: NSWindow.didEndLiveResizeNotification))
+        XCTAssertFalse(phone.isLiveResizing)
+        XCTAssertNotEqual(window.frame.size, before.size, "the deferred turn applies when the drag ends")
+    }
+
     func testTheTouchDotsLayerIsOutsideTheMirroredVideo() throws {
         let manager = makeManager()
         let controller = AppWindowController(stream: 1, pkg: "com.example.app", activity: nil,

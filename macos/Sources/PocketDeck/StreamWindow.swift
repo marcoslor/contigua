@@ -437,6 +437,28 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
 
     // MARK: Resize
 
+    /// The person is dragging a corner: only the drag sets the frame until it
+    /// ends. A stream event (a rotation) must not move the window under the
+    /// hand; it waits for `windowDidEndLiveResize`.
+    private(set) var isLiveResizing = false
+
+    func windowWillStartLiveResize(_ notification: Notification) {
+        isLiveResizing = true
+    }
+
+    /// The default: an ordinary window follows the proposed frame exactly.
+    func windowWillResize(_ sender: NSWindow, to frameSize: NSSize) -> NSSize {
+        frameSize
+    }
+
+    /// One step of the e2e's scripted drag: the same delegate call AppKit makes
+    /// for a mouse move, then the frame it returns.
+    func liveResizeStep(to proposed: NSSize) {
+        guard let window else { return }
+        let snapped = windowWillResize(window, to: proposed)
+        window.setFrame(NSRect(origin: window.frame.origin, size: snapped), display: true)
+    }
+
     func windowDidResize(_ notification: Notification) {
         // A stream window changing shape cannot keep a frozen frame: the new
         // picture would be a different size under the same overlay.
@@ -447,6 +469,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     }
 
     func windowDidEndLiveResize(_ notification: Notification) {
+        isLiveResizing = false
         scheduleResize(after: 0)
         rememberFrame()
     }
