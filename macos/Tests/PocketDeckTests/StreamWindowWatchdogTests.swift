@@ -30,6 +30,8 @@ final class StreamWindowWatchdogTests: XCTestCase {
         window.orderFront(nil)
         // The test process has no WindowServer focus of its own: say visible.
         controller.occlusionVisibleOverride = true
+        // The opening cover is down: this is about a window with its picture.
+        controller.noteFirstFrame()
 
         XCTAssertFalse(controller.isWindowOccluded)
         XCTAssertTrue(controller.expectsFrames, "a visible live window expects its frames")
@@ -51,6 +53,7 @@ final class StreamWindowWatchdogTests: XCTestCase {
         let window = try XCTUnwrap(controller.window)
         window.orderFront(nil)
         controller.occlusionVisibleOverride = true
+        controller.noteFirstFrame()
         // Real-based times: the window's own timer also ticks during the test.
         let t0 = ProcessInfo.processInfo.systemUptime
         controller.frameClock.note(at: t0)

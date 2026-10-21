@@ -13,6 +13,9 @@ final class WindowManager {
 
     var appsByPkg: [String: AppInfo] = [:]
     private(set) var icons: [String: NSImage] = [:]
+    /// Streams whose first frame has reached this window (the opening cover's
+    /// end); touched on the session queue under `lock`.
+    private var firstFrameNoted: Set<UInt32> = []
     var phone: PhoneInfo?
     /// The active phone's display name (its nickname, else its own name):
     /// app and link window titles carry it — "WhatsApp (Nicky)".
@@ -389,7 +392,10 @@ final class WindowManager {
     }
 
     func remove(stream: UInt32) {
-        lock.lock(); let removed = streams.removeValue(forKey: stream) != nil; lock.unlock()
+        lock.lock()
+        let removed = streams.removeValue(forKey: stream) != nil
+        firstFrameNoted.remove(stream)
+        lock.unlock()
         if removed { onStreamClosed?(stream) }
         onChange?()
     }
@@ -477,6 +483,14 @@ final class WindowManager {
             let controller = controller(for: stream)
             controller?.videoView.enqueue(frame)
             controller?.frameClock.note()
+            // The opening cover ends at the stream's first frame; the note is
+            // main-thread state, sent once per stream.
+            lock.lock()
+            let first = firstFrameNoted.insert(stream).inserted
+            lock.unlock()
+            if first, let controller {
+                DispatchQueue.main.async { [weak controller] in controller?.noteFirstFrame() }
+            }
         }
     }
 

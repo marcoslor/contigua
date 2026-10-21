@@ -115,6 +115,15 @@ final class PhoneWindowController: StreamWindowController {
     /// applies here and it gets no override of its own.
     override var usesDensity: Bool { false }
 
+    /// The cover before the first frame: the phone, by name.
+    override var showsOpeningCover: Bool { true }
+    override var openingIsPhone: Bool { true }
+    override var openingName: String { manager.phoneName.isEmpty ? "Your phone" : manager.phoneName }
+    override var openingIcon: NSImage? {
+        NSImage(systemSymbolName: "iphone", accessibilityDescription: nil)?
+            .withSymbolConfiguration(.init(pointSize: 46, weight: .regular))
+    }
+
     private static let minVideoWidth: CGFloat = 240
 
     override func headerActions() -> [HeaderAction] {

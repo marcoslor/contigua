@@ -141,6 +141,7 @@ final class PhoneScreenOverlayTests: XCTestCase {
         manager.setPhoneScreen(.off)
         let phone = manager.openPhoneWindow()
         defer { phone.window?.close() }
+        phone.noteFirstFrame()
         XCTAssertTrue(phone.screenModel.isShowing)
         XCTAssertFalse(phone.chrome.phoneOverlay.isHidden)
     }
@@ -154,6 +155,7 @@ final class PhoneScreenOverlayTests: XCTestCase {
         let manager = makeManager()
         let phone = manager.openPhoneWindow()
         defer { phone.window?.close() }
+        phone.noteFirstFrame()
         XCTAssertFalse(phone.frozen)
         manager.setPhoneScreen(.off)
         XCTAssertTrue(phone.frozen)
@@ -187,6 +189,7 @@ final class PhoneScreenOverlayTests: XCTestCase {
         let phone = manager.openPhoneWindow()
         defer { phone.window?.close() }
         var commands: [InputMapper.Command] = []
+        phone.noteFirstFrame()
         phone.videoView.inputMapper?.send = { commands.append($0) }
         guard let back = buttons(in: phone.chrome).first(where: { $0.action.kind == .back }) else {
             return XCTFail("the phone window has no Back button")
@@ -230,6 +233,7 @@ final class PhoneScreenOverlayTests: XCTestCase {
         manager.setPhoneScreen(.off)
 
         var commands: [InputMapper.Command] = []
+        phone.noteFirstFrame()
         phone.videoView.inputMapper?.send = { commands.append($0) }
         // The frozen frame blocks every input path, not just the click.
         phone.videoView.inputMapper?.mouseDown(click())

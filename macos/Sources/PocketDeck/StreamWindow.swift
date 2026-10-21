@@ -39,11 +39,30 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     var density: Double { DensityRules.effective(override: densityOverride, settings: manager.defaultDensity) }
 
     private(set) var isPaused = false
+
+    /// The opening cover (OpeningCover, docs/UX.md): from the window's open
+    /// until the stream's first frame, then for the retry/failure wording.
+    private(set) var opening = OpeningCover(startedAt: 0)
+    private var openingTimer: Timer?
+    /// The phase on screen, so the timer only redraws when it changes.
+    private var openingPhase: OpeningCover.Phase?
+
+    /// The kinds with an opening cover; a link or handoff window has no icon
+    /// or name to show before its first frame.
+    var showsOpeningCover: Bool { false }
+    var openingName: String { "" }
+    var openingIcon: NSImage? { nil }
+    var openingIsPhone: Bool { false }
+
+    /// The cover is over the window: no input to the phone, and no live
+    /// picture for the watchdog to call stale yet.
+    var isOpening: Bool { showsOpeningCover && opening.isUp }
+
     /// What freezes the phone-side actions: Live Text (the frame is frozen),
-    /// a stalled picture, or, in the phone window, a cover over the mirror. One
-    /// predicate for the shortcuts, the bar's buttons, the Navigate menu and
-    /// the input mapper.
-    var frozen: Bool { liveText.isActive || isStalled }
+    /// a stalled picture, the opening cover, or, in the phone window, a cover
+    /// over the mirror. One predicate for the shortcuts, the bar's buttons,
+    /// the Navigate menu and the input mapper.
+    var frozen: Bool { liveText.isActive || isStalled || isOpening }
 
     /// The picture watchdog (FrameWatchdog): frames counted from the session
     /// queue, the decision on the main thread.
@@ -58,7 +77,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     /// the clock is idle and any stall is dropped: a covered or paused picture
     /// has no "live" claim to be wrong about.
     var expectsFrames: Bool {
-        guard !isPaused, !liveText.isActive, !linkIsDown,
+        guard !isPaused, !liveText.isActive, !linkIsDown, !isOpening,
               let window, window.isVisible, !window.isMiniaturized,
               !isWindowOccluded else { return false }
         return true
@@ -134,7 +153,9 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         chrome.setActions(headerActions())
         // The overlay's setting before the first state write: the file reports it.
         videoView.showsTouches = manager.showTouches
+        opening = OpeningCover(startedAt: now())
         stateFile = manager.chromeStateFile
+        startOpeningCover()
         writeChromeState()
         let mapper = InputMapper(stream: stream)
         mapper.videoRectProvider = { [weak self] in self?.videoView.videoRect() ?? .zero }
@@ -189,6 +210,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
 
     deinit {
         stallTimer?.invalidate()
+        openingTimer?.invalidate()
     }
 
     /// The defaults key this window's style is remembered under; nil while the
@@ -199,6 +221,75 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     /// The window kind's actions, at the bar's right end (the phone window's
     /// Back/Home/Recents), also inside the immersive pill.
     func headerActions() -> [HeaderAction] { [] }
+
+    // MARK: Opening cover
+
+    /// The cover is up from the open: the timer moves it through Still
+    /// Opening and Couldn't Open; the first frame ends it.
+    private func startOpeningCover() {
+        guard showsOpeningCover else { return }
+        chrome.openingCover.onRetry = { [weak self] in self?.retryOpening() }
+        chrome.openingCover.onClose = { [weak self] in self?.window?.close() }
+        openingPhase = opening.phase(at: now())
+        showOpeningPhase()
+        let timer = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.tickOpeningCover() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        openingTimer = timer
+    }
+
+    private func tickOpeningCover() {
+        guard isOpening else {
+            openingTimer?.invalidate()
+            openingTimer = nil
+            return
+        }
+        let phase = opening.phase(at: now())
+        guard phase != openingPhase else { return }
+        openingPhase = phase
+        showOpeningPhase()
+        writeChromeState()
+    }
+
+    private func showOpeningPhase() {
+        chrome.openingCover.show(openingPhase, name: openingName, icon: openingIcon, phone: openingIsPhone)
+    }
+
+    /// The stream's first frame arrived (WindowManager); once per window.
+    func noteFirstFrame() {
+        guard showsOpeningCover, opening.firstFrame(at: now()) else { return }
+        openingTimer?.invalidate()
+        openingTimer = nil
+        openingPhase = nil
+        chrome.openingCover.show(nil, name: openingName, icon: openingIcon, phone: openingIsPhone)
+        Log.video.notice("stream \(self.stream, privacy: .public): first frame, opening cover off")
+        updateFrozen()
+        tickFrameWatchdog()
+    }
+
+    /// Try Again on the failed cover: the same open again (the phone dedupes a
+    /// second open of an app that is already opening), and the clock restarts.
+    func retryOpening() {
+        guard isOpening else { return }
+        opening.retry(at: now())
+        openingPhase = .loading
+        showOpeningPhase()
+        sendOpen()
+        updateFrozen()
+        Log.video.notice("stream \(self.stream, privacy: .public): opening retry")
+    }
+
+    /// The chrome state's `loading=`: 1 while the cover is up, failed after
+    /// 20 s, 0 once the frame is in (or for a window with no cover).
+    private var openingState: String {
+        guard showsOpeningCover else { return "0" }
+        switch opening.phase(at: now()) {
+        case .loading?, .stillLoading?: return "1"
+        case .failed?: return "failed"
+        case nil: return "0"
+        }
+    }
 
     // MARK: Style switching
 
@@ -428,6 +519,8 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
 
     func windowWillClose(_ notification: Notification) {
         liveText.exit(.close)
+        openingTimer?.invalidate()
+        openingTimer = nil
         dwellTimer?.invalidate()
         stopDwellFeed()
         resizeWork?.cancel()
@@ -677,6 +770,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
             + " overlay=\(chrome.phoneOverlay.cover == nil ? 0 : 1)"
             + " secure=\(chrome.phoneOverlay.cover == .secure ? 1 : 0)"
             + " stall=\(isStalled ? 1 : 0) stall_pill=\(stallPill ? 1 : 0)"
+            + " loading=\(openingState)"
             + " frame=\(Int((window?.frame.width ?? 0).rounded()))x\(Int((window?.frame.height ?? 0).rounded()))"
             + " video_gap=\(Int(videoView.videoGap().rounded()))\n"
         try? Data(line.utf8).write(to: stateFile, options: .atomic)

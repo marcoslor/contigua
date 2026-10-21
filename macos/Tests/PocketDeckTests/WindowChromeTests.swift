@@ -119,7 +119,7 @@ final class StreamChromeWindowTests: XCTestCase {
         pump(0.4)
         XCTAssertFalse(controller.dwell.shown)
         let frame = "\(Int(window.frame.width.rounded()))x\(Int(window.frame.height.rounded()))"
-        XCTAssertEqual(try String(contentsOf: file, encoding: .utf8), "style=framed lights=shown pill=hidden title_visible=no lights_managed=us fullscreen=no clicks=0 dots=outside touches=\(manager.showTouches ? "on" : "off") dot_count=0 collection=0 collection_none=0 menu_fullscreen=1 screen=on overlay=0 secure=0 stall=0 stall_pill=0 frame=\(frame) video_gap=0\n")
+        XCTAssertEqual(try String(contentsOf: file, encoding: .utf8), "style=framed lights=shown pill=hidden title_visible=no lights_managed=us fullscreen=no clicks=0 dots=outside touches=\(manager.showTouches ? "on" : "off") dot_count=0 collection=0 collection_none=0 menu_fullscreen=1 screen=on overlay=0 secure=0 stall=0 stall_pill=0 loading=1 frame=\(frame) video_gap=0\n")
     }
 
     func testCloseAndMinimiseWorkWithTheBar() throws {
@@ -150,7 +150,7 @@ final class StreamChromeWindowTests: XCTestCase {
         let window = try XCTUnwrap(controller.window)
         window.orderFront(nil)
         let frame = "\(Int(window.frame.width.rounded()))x\(Int(window.frame.height.rounded()))"
-        XCTAssertEqual(try String(contentsOf: file, encoding: .utf8), "style=framed lights=shown pill=hidden title_visible=no lights_managed=us fullscreen=no clicks=0 dots=outside touches=\(manager.showTouches ? "on" : "off") dot_count=0 collection=0 collection_none=0 menu_fullscreen=1 screen=on overlay=0 secure=0 stall=0 stall_pill=0 frame=\(frame) video_gap=0\n")
+        XCTAssertEqual(try String(contentsOf: file, encoding: .utf8), "style=framed lights=shown pill=hidden title_visible=no lights_managed=us fullscreen=no clicks=0 dots=outside touches=\(manager.showTouches ? "on" : "off") dot_count=0 collection=0 collection_none=0 menu_fullscreen=1 screen=on overlay=0 secure=0 stall=0 stall_pill=0 loading=1 frame=\(frame) video_gap=0\n")
     }
 
     func testFullScreenShowsTheTitleAndHandsTheLightsBackOnExit() throws {
@@ -193,6 +193,35 @@ final class StreamChromeWindowTests: XCTestCase {
         XCTAssertEqual(phone.chrome.actionCount, 3, "back, home, recents on the bar")
         XCTAssertEqual(AppWindowController(stream: 2, pkg: "a", activity: nil, label: "A", manager: manager)
             .chrome.actionCount, 0)
+    }
+
+    /// The opening cover is a frozen mode: no input to the phone until the
+    /// stream's first frame, and no stall claim before there is a picture.
+    func testAWindowIsFrozenUntilItsFirstFrame() throws {
+        let manager = makeManager()
+        let app = AppWindowController(stream: 1, pkg: "com.example.app", activity: nil,
+                                      label: "Example", manager: manager)
+        defer { app.window?.close() }
+        let window = try XCTUnwrap(app.window)
+        window.orderFront(nil)
+        app.occlusionVisibleOverride = true
+
+        XCTAssertTrue(app.isOpening)
+        XCTAssertTrue(app.frozen, "the phone sees nothing before its picture")
+        XCTAssertFalse(app.expectsFrames, "no live picture to be stale yet")
+
+        app.noteFirstFrame()
+        XCTAssertFalse(app.isOpening)
+        XCTAssertFalse(app.frozen)
+        XCTAssertTrue(app.expectsFrames)
+
+        let phone = PhoneWindowController(stream: 2, phone: nil, manager: manager)
+        defer { phone.window?.close() }
+        XCTAssertTrue(phone.showsOpeningCover)
+        XCTAssertTrue(phone.isOpening, "the phone window is covered until its first frame too")
+        XCTAssertTrue(phone.frozen)
+        phone.noteFirstFrame()
+        XCTAssertFalse(phone.isOpening)
     }
 
     /// The phone turning mid-drag must not move the window under the hand: the

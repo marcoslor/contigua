@@ -86,6 +86,9 @@ final class LiveTextInteractionTests: XCTestCase {
         defer { controller.window?.close() }
         let window = try XCTUnwrap(controller.window)
         window.orderFront(nil)
+        // The opening cover would swallow the hit test: this test is about the
+        // frozen frame after its first frame.
+        controller.noteFirstFrame()
         let content = try XCTUnwrap(window.contentView)
         content.layoutSubtreeIfNeeded()
 
