@@ -7564,6 +7564,9 @@ nfr_input_unchanged() {
 check_nfr() {
     local connect_ms first_phone app_list first_app before after t0 start
     local pair_limit="$(nfr_limit connect_ms)"
+    # input_at_least <n> — the fake phone's input counter, re-read on every
+    # poll (a $( ) inside a wait_until argument is evaluated once, at the call).
+    input_at_least() { [ "$(fake_counter input)" -ge "$1" ]; }
     clean
     python3 - "$WORK" <<'PY'
 import os, sys
@@ -7652,7 +7655,7 @@ PY
     after="$(fake_counter writes)"
     touch "$WORK/lt-exit"
     wait_until 30 grep -q '"op":"idle"' "$WORK/app.log" || bad "NFR Live Text never left the mode"
-    wait_until 20 [ "$(fake_counter input)" -ge $((before + 1)) ] \
+    wait_until 20 input_at_least $((before + 1)) \
         && ok "NFR frozen Live Text: Back after the exit reached the phone (input $(fake_counter input))" \
         || bad "NFR frozen Live Text: Back after the exit sent nothing (input $(fake_counter input))"
     nfr_writes_unchanged "Live Text enter/exit" "$after"
@@ -7679,7 +7682,7 @@ PY
     after="$(fake_counter writes)"
     touch "$WORK/lt-exit"
     wait_until 30 grep -q '"op":"idle"' "$WORK/app.log" || bad "NFR phone Live Text never left the mode"
-    wait_until 20 [ "$(fake_counter input)" -ge $((before + 1)) ] \
+    wait_until 20 input_at_least $((before + 1)) \
         && ok "NFR frozen phone Live Text: Back after the exit reached the phone (input $(fake_counter input))" \
         || bad "NFR frozen phone Live Text: Back after the exit sent nothing (input $(fake_counter input))"
     nfr_writes_unchanged "phone Live Text enter/exit" "$after"
@@ -7704,7 +7707,7 @@ PY
     control wake-phone >/dev/null 2>&1 || true
     wait_until 20 chrome_has "screen=on overlay=0" || bad "NFR the screen never came back"
     touch "$WORK/off-wake"
-    wait_until 20 [ "$(fake_counter input)" -ge $((before + 1)) ] \
+    wait_until 20 input_at_least $((before + 1)) \
         && ok "NFR frozen screen off: Back after the wake reached the phone (input $(fake_counter input))" \
         || bad "NFR frozen screen off: Back after the wake sent nothing (input $(fake_counter input))"
     stop_app
@@ -7758,7 +7761,7 @@ PY
     # must now move them.
     after="$(fake_counter input)"
     control nav back || bad "NFR the Navigate action did not run after the reconnect: $CONTROL_REPLY"
-    wait_until 40 [ "$(fake_counter input)" -ge $((after + 1)) ] \
+    wait_until 40 input_at_least $((after + 1)) \
         && ok "NFR frozen disconnected: Back after the reconnect reached the phone (input $(fake_counter input))" \
         || bad "NFR frozen disconnected: Back after the reconnect sent nothing (input $(fake_counter input))"
     stop_app
