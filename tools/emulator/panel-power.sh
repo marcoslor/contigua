@@ -98,10 +98,24 @@ print("first_close=%s" % ("none" if first_close is None else first_close))
 PLANS
 }
 
+# The forced shape boot #3 showed: 4 dark plans (the app-window take-over and
+# its re-apply in (a), phone.panel off and its re-apply in (c)); 2 transitional
+# plans (the two take-overs). A resume re-take would make 3, which item 1
+# forbids. The sleep line is present; a pause hand-back would make grace > 0.
+plans_shape_ok() { # <read_plans output>
+  local p="$1" d t g s
+  d="$(printf '%s\n' "$p" | sed -n 's/^dark_plans=//p')"
+  t="$(printf '%s\n' "$p" | sed -n 's/^transitional_plans=//p')"
+  g="$(printf '%s\n' "$p" | sed -n 's/^grace_handbacks=//p')"
+  s="$(printf '%s\n' "$p" | sed -n 's/^first_sleep=//p')"
+  [ "${d:-0}" -eq 4 ] && [ "${t:-0}" -eq 2 ] && [ "${g:-1}" -eq 0 ] && [ "${s:-none}" != "none" ]
+}
+
 # ---- --check: everything that can be wrong before a boot -------------------
 if [ "$MODE" = "check" ]; then
   bash -n "$0" || { echo "CHECK FAIL: syntax"; exit 1; }
-  bash tools/emulator/preflight.sh || { echo "CHECK FAIL: preflight"; exit 1; }
+  PD_PREFLIGHT_DRY_RUN=1 bash tools/emulator/preflight.sh ||
+    { echo "CHECK FAIL: preflight"; exit 1; }
   "$PYTHON" - <<'PY' || { echo "CHECK FAIL: deckctl panel verbs"; exit 1; }
 import sys
 sys.path.insert(0, "tools/fakephone")
@@ -112,29 +126,51 @@ assert args.command == "panel-test" and args.pause_seconds == 4 and args.off_sec
 args = parser.parse_args(["panel", "off"])
 assert args.command == "panel" and args.mode == "off"
 PY
-  # The log parser must read a real plan line and tell "paused" from "closed";
-  # a broken parser that always said "fine" would pass the run blind.
+  # The log parser must read the forced boot-3 shape: 4 dark plans (the
+  # app-window take-over + re-apply, phone.panel off + re-apply) and 2
+  # transitional (the two take-overs), with no grace hand-back and the close
+  # sleep present.
   FIX="$OUT/panel-power-fixture.log"
-  sed -n '1,40p' "$0" >/dev/null 2>&1 || true
   cat > "$FIX" <<'FIXTURE'
-10-21 10:00:00.000 I/PocketDeckSvc: power: panel ON -> PanelPlan(wake=true, panelOff=true, transitional=true)
-10-21 10:00:02.000 I/PocketDeckSvc: closed stream 1 (display 57)
-10-21 10:00:02.100 I/PocketDeckSvc: phone back to sleep after the last stream
-10-21 10:00:05.000 I/PocketDeckSvc: power: panel ON -> PanelPlan(wake=true, panelOff=false, transitional=false)
-10-21 10:00:09.000 I/PocketDeckSvc: power: panel ON -> PanelPlan(wake=true, panelOff=true, transitional=true)
+14:25:08.400 I/PocketDeckSvc: power: panel OFF -> PanelPlan(wake=true, panelOff=true, transitional=true)
+14:25:10.455 I/PocketDeckSvc: power: panel OFF -> PanelPlan(wake=true, panelOff=true, transitional=false)
+14:25:16.694 I/PocketDeckSvc: phone back to sleep after the last stream
+14:25:17.602 I/PocketDeckSvc: closed stream 1 (display 2)
+14:25:20.536 I/PocketDeckSvc: power: panel ON -> PanelPlan(wake=true, panelOff=false, transitional=false)
+14:25:23.500 I/PocketDeckSvc: power: panel ON -> PanelPlan(wake=true, panelOff=true, transitional=true)
+14:25:25.511 I/PocketDeckSvc: power: panel ON -> PanelPlan(wake=true, panelOff=true, transitional=false)
+14:25:29.514 I/PocketDeckSvc: power: panel ON -> PanelPlan(wake=true, panelOff=false, transitional=false)
+14:25:29.630 I/PocketDeckSvc: closed stream 1 (display 4)
 FIXTURE
   GOOD="$(read_plans "$FIX")"
+  plans_shape_ok "$GOOD" ||
+    { echo "CHECK FAIL: the boot-3 logcat does not meet the forced shape ($GOOD)"; exit 1; }
   case "$GOOD" in
-    *dark_plans=2*) ;;
-    *) echo "CHECK FAIL: the parser counts dark plans from a fixture ($GOOD)"; exit 1 ;;
+    *first_sleep=2*first_close=3*) ;;
+    *) echo "CHECK FAIL: the parser orders the boot-3 sleep/close lines ($GOOD)"; exit 1 ;;
   esac
-  case "$GOOD" in
-    *transitional_plans=2*) ;;
-    *) echo "CHECK FAIL: the parser counts transitional plans from a fixture ($GOOD)"; exit 1 ;;
-  esac
-  case "$GOOD" in
-    *first_sleep=2*first_close=1*) ;;
-    *) echo "CHECK FAIL: the parser orders the sleep after the close ($GOOD)"; exit 1 ;;
+  # One extra transitional plan after the pause is a resume re-take (item 1's
+  # bug); the pinned shape must reject it.
+  cat > "$FIX" <<'FIXTURE'
+14:25:08.400 I/PocketDeckSvc: power: panel OFF -> PanelPlan(wake=true, panelOff=true, transitional=true)
+14:25:10.455 I/PocketDeckSvc: power: panel OFF -> PanelPlan(wake=true, panelOff=true, transitional=false)
+14:25:16.694 I/PocketDeckSvc: phone back to sleep after the last stream
+14:25:17.602 I/PocketDeckSvc: closed stream 1 (display 2)
+14:25:20.536 I/PocketDeckSvc: power: panel ON -> PanelPlan(wake=true, panelOff=false, transitional=false)
+14:25:21.000 I/PocketDeckSvc: power: panel ON -> PanelPlan(wake=true, panelOff=true, transitional=true)
+14:25:23.500 I/PocketDeckSvc: power: panel ON -> PanelPlan(wake=true, panelOff=true, transitional=true)
+14:25:25.511 I/PocketDeckSvc: power: panel ON -> PanelPlan(wake=true, panelOff=true, transitional=false)
+14:25:29.514 I/PocketDeckSvc: power: panel ON -> PanelPlan(wake=true, panelOff=false, transitional=false)
+14:25:29.630 I/PocketDeckSvc: closed stream 1 (display 4)
+FIXTURE
+  BAD="$(read_plans "$FIX")"
+  if plans_shape_ok "$BAD"; then
+    echo "CHECK FAIL: the extra-transitional log passed the forced shape ($BAD)"
+    exit 1
+  fi
+  case "$BAD" in
+    *transitional_plans=3*) ;;
+    *) echo "CHECK FAIL: the parser missed the extra transitional plan ($BAD)"; exit 1 ;;
   esac
   # And a log where the pause slept the phone (the bug) must read the other way.
   cat > "$FIX" <<'FIXTURE'
@@ -153,6 +189,7 @@ FIXTURE
     *first_sleep=2*first_close=4*) ;;
     *) echo "CHECK FAIL: the parser did not place the sleep before the close ($BAD)"; exit 1 ;;
   esac
+  echo "CHECK OK: boot-3 fixture passes; the extra-transitional fixture is rejected"
   rm -f "$FIX"
   if "$ADB" devices 2>/dev/null | grep -q "^$SERIAL"; then
     echo "CHECK FAIL: $SERIAL is already running (not ours to touch)"
@@ -277,18 +314,18 @@ GRACE="$(printf '%s\n' "$PLANS" | sed -n 's/^grace_handbacks=//p')"
 SLEEP_AT="$(printf '%s\n' "$PLANS" | sed -n 's/^first_sleep=//p')"
 CLOSE_AT="$(printf '%s\n' "$PLANS" | sed -n 's/^first_close=//p')"
 
-# The forced path logs the take-over and its re-apply as separate dark plans:
-# the app window in (a) and phone.panel off in (c) each produce two. Count
-# presence, not the old exact 2 (that was the unforced path's shape).
-if [ "${DARK:-0}" -gt 0 ]; then
-  pass "the panel went dark ($DARK plan(s): the forced take-over and phone.panel off)"
+# The forced boot-3 shape: 4 dark plans (the app-window take-over + re-apply in
+# (a), phone.panel off + re-apply in (c)); 2 transitional plans (the two
+# take-overs). A resume re-take would make 3, which item 1 forbids.
+if [ "${DARK:-0}" -eq 4 ]; then
+  pass "the panel went dark 4 times: the app window and phone.panel off, each with its re-apply ($DARK)"
 else
-  fail "the panel never went dark (a forced app window or phone.panel off should)"
+  fail "the panel went dark $DARK time(s), expected 4 (forced take-over + re-apply, twice)"
 fi
-if [ "${TRANS:-0}" -gt 0 ]; then
-  pass "a pause and resume took the panel over once ($TRANS transitional plan(s))"
+if [ "${TRANS:-0}" -eq 2 ]; then
+  pass "the two take-overs were transitional; a resume did not re-take ($TRANS)"
 else
-  fail "no transitional take-over (a forced app window should have one)"
+  fail "the panel was taken over $TRANS time(s), expected 2 (a resume re-take would make 3)"
 fi
 if [ "${GRACE:-1}" -eq 0 ]; then
   pass "no grace hand-back inside a 4 s pause"
