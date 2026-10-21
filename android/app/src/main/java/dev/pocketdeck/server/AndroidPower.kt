@@ -74,6 +74,9 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
     /** True while the panel override is ours; cleared by restore, checked before each apply. */
     @Volatile private var darkEpisode = false
 
+    /** True while a phone window is showing display 0 (the person watches the panel). */
+    @Volatile private var mirrorOpen = false
+
     /** True while a panel override we applied is live: the watchdog has work to do if we die. */
     @Volatile private var overrideLive = false
 
@@ -155,6 +158,7 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
         var stopped = false
         var paused = false
         var graceHandBack = false
+        mirrorOpen = mirroring
         synchronized(lock) {
             val wasActive = activeDisplays.isNotEmpty()
             if (displayIds.isEmpty() && wasActive && allPaused) {
@@ -259,7 +263,7 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
     private fun keepAliveStep() {
         val ids = synchronized(lock) { activeDisplays.toIntArray() }
         if (ids.isEmpty()) return
-        val strategy = policy.strategy(ids.map { DisplayProbe.displayGroupId(it) })
+        val strategy = policy.strategy(ids.map { DisplayProbe.displayGroupId(it) }, mirroring = mirrorOpen)
         groupOnly = strategy == PanelStrategy.GROUP_ONLY
         lastStrategy = strategy
         val panelOn = DisplayProbe.state(PANEL_DISPLAY_ID) == Display.STATE_ON
@@ -273,15 +277,18 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
         val wasDark = darkEpisode
         darkEpisode = plan.panelOff
         if (plan.panelOff) startPowerWatch()
-        if (!plan.wake) {
-            // Leaving a dark episode: the platform does not always rewrite the
-            // panel's power mode on its own, so give it back explicitly.
-            if (wasDark && DisplayProbe.state(PANEL_DISPLAY_ID) == Display.STATE_ON) panel.panelNormal()
-            // The user has the phone: the platform owns the panel again, so the
-            // crash guard has nothing left to restore.
+        if (wasDark && !plan.panelOff) {
+            // Leaving a dark episode (the person opened the mirror, or the
+            // strategy changed): the platform does not always rewrite the
+            // panel's power mode on its own, so give it back explicitly. The
+            // panel is only restored when the platform believes it is on (our
+            // override is masking it); otherwise its own mode is already right
+            // and re-writing NORMAL would flash the panel.
+            if (DisplayProbe.state(PANEL_DISPLAY_ID) == Display.STATE_ON) panel.panelNormal()
+            // The panel is the platform's again, so the crash guard is done.
             if (overrideLive) standDownOverride()
-            return
         }
+        if (!plan.wake) return
         // On the panel's group a wake is a full phone wake: it overrides a power
         // press the user just made and starts the keyguard's face unlock, which
         // unlocks the phone if the user is in front of it. So the shared group
