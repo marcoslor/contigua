@@ -92,6 +92,28 @@ final class LiveTextFrameTests: XCTestCase {
         XCTAssertEqual(LiveTextImage.pixelFormat(planar), "420v")
     }
 
+    /// The keyframe route asks the phone to restart its encoder, and the
+    /// answering VIDEO_CONFIG can arrive just after the frame it belongs to: at
+    /// the frozen picture's own size it must not drop the mode (one e2e run
+    /// entered and left 16 ms later). A config at another size is a window
+    /// change and still leaves.
+    @MainActor
+    func testAConfigAtTheFrozenSizeKeepsTheMode() throws {
+        let view = VideoLayerView(frame: NSRect(x: 0, y: 0, width: 480, height: 320))
+        let session = LiveTextSession(host: view)
+        let buffer = try XCTUnwrap(bgraBuffer(luma: 180))
+        let image = try XCTUnwrap(LiveTextImage.cgImage(buffer))
+        session.freeze(buffer, image: image, on: view)
+        XCTAssertEqual(session.state, .analyzing)
+
+        session.noteStreamConfig(size: CGSize(width: 320, height: 200))
+        XCTAssertNotEqual(session.state, .idle,
+                          "the echo of our own keyframe request is not a window change")
+
+        session.noteStreamConfig(size: CGSize(width: 1200, height: 800))
+        XCTAssertEqual(session.state, .idle, "a config at a new size still leaves the mode")
+    }
+
     /// The frozen frame's PNG and the analyser come from the same picture: the
     /// copy's PNG is the stream's pixel size (the e2e check asserts the size).
     func testTheSnapshotEncodesAtTheFramesPixelSize() throws {
