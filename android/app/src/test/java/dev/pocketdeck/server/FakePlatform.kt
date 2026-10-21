@@ -219,7 +219,6 @@ class FakePlatform : DisplayLayer, AppCatalog, Launcher, Injector, Power, Device
         phoneWindows.add(phoneWindowOpen)
         // Model the hold the way AndroidPower's machine does, so a session
         // test sees the same `state.panel` truth the phone reports.
-        mirrorPresent = phoneWindowOpen
         mirrorActive = mirroring
         if (!phoneWindowOpen) {
             heldRequested = false
@@ -242,7 +241,6 @@ class FakePlatform : DisplayLayer, AppCatalog, Launcher, Injector, Power, Device
 
     @Volatile private var panelHeld = false
     @Volatile private var heldRequested = false
-    @Volatile private var mirrorPresent = false
     @Volatile private var mirrorActive = false
     override val panelHeldOff: Boolean get() = panelHeld
 

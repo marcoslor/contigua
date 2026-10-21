@@ -30,6 +30,9 @@ import java.lang.reflect.Method
  * While the override is live, [Watchdog] holds a marker file so a server crash
  * cannot leave the panel dark.
  *
+ * The person's own "Turn Off Phone Screen" (`phone.panel`, docs/design/phone-mirror.md)
+ * is separate: [PanelHold] decides it, this class only performs its actions.
+ *
  * The code never unlocks and never dismisses the keyguard; it only ever names the
  * streaming display's own group, plus the panel's power mode on builds that
  * cannot separate the two.
@@ -390,6 +393,11 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
         // and a poke cannot wake a group the user put to sleep.
         val wake = DarkPanelPolicy.wakesGroup(strategy, plan)
         if (wake) episodeWokeGroup = true
+        // While the panel is held, the platform must keep believing the screen
+        // is on. A step beside an app window names that window's display only,
+        // and on a build that gives it its own group the panel's group would
+        // time out and read as a power press.
+        if (holding) userActivity(PANEL_DISPLAY_ID)
         for (id in ids) {
             userActivity(id)
             if (wake) wakeDisplay(id)
