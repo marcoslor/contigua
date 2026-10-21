@@ -47,6 +47,8 @@ Spec of every state, copy and transitions: [design/mac-redesign.md](design/mac-r
   `.symbolEffect(.pulse)` or pair again). **Connected shows the dot alone** (the title names the phone); every other state adds its text. When connected: `lock.fill` `.secondary` only
   while the phone is locked (unlocked shows nothing), then the battery glyph for the level — `battery.0/25/50/75/100percent` by nearest quarter, `battery.100percent.bolt` while
   charging — and the `%` `.monospacedDigit()`, `.secondary`, `.red` below 13 % when not charging. Tooltip: "Connected, phone locked, battery 24 %".
+  The pill is a button: it opens the phone controls (the menu bar panel's shared `PhonePanelView`) in a `.popover`, so the same
+  volume, Do Not Disturb, Ring/Stop Ringing, Now Playing picker and window actions are one click away in the Deck.
   `ToolbarItem(.primaryAction)` **Phone** (`iphone.gen3`); `.searchable(placement: .toolbar, prompt: "Search apps")`.
 - **Header groups** (at every width): one group packed at the left — traffic lights, then the connection
   chip (`ToolbarItem(.navigation)`; `.status` would float it in the middle of the toolbar on macOS), then the
@@ -166,8 +168,10 @@ using the phone with fingers.
 - Devices: rows `LabeledContent` (name; model + "Last seen *relative*" `.secondary`; state text) with **Use** `.glass` (non-active phones) and **Forget** `.glass` `role: .destructive` → `confirmationDialog`; **Add phone…** `.glass` below the list.
 
 ### Menu bar
-- `MenuBarExtra { … } label: { Image(systemName: icon) }`, `.menuBarExtraStyle(.menu)`. Icon: Connected `apps.iphone` · Reconnecting `apps.iphone` (`.symbolEffect(.pulse)`) · Offline `iphone.slash`.
-- Items: disabled status line "● Connected to *phone*" / "Connecting…" / "Reconnecting…" / "Offline" / "No phone paired" · Divider · "Open PocketDeck" ⌘K · "Phone screen" ⌘P · Divider · "Settings…" ⌘, · Divider · "Quit PocketDeck" ⌘Q.
+- `MenuBarExtra { MenuBarContent() } label: { Image(systemName: icon) }`, `.menuBarExtraStyle(.window)`: a Control Center-style panel, not a menu (a `Slider` inside a menu-style extra became a "Phone volume" stepper submenu that opened and closed under the pointer). Icon: Connected `apps.iphone` · Reconnecting `apps.iphone` (`.symbolEffect(.pulse)`) · Offline `iphone.slash`; a 5 pt dot next to it while an AI agent is connected.
+- `PhonePanelView` (PhonePanel.swift), 300 pt wide, 12 pt padding, fixed 28 pt rows, one component shared with the Deck popover: header (phone symbol, name, status dot + text, battery) · agent row ("AI agent connected" + **Disconnect**) · **PHONE** (volume `Slider`, the one reason line when a control is off, **Do Not Disturb** switch, **Ring Phone**/**Stop Ringing**, **Now Playing follows** picker with ≥ 2 sessions) · **LIVE** (one row per live notification) · **WINDOWS** (**Phone Screen** ⌘P · **Find Apps** ⌘K · **Continue on Mac** · **Install APK…** with its phase) · footer (**Settings…** ⌘, · **Quit PocketDeck** ⌘Q).
+- No track row, artwork or forwarded-audio volume: the Mac's own Now Playing shows the track, and the phone's media volume is the only volume. A control that cannot work is dimmed with one line saying why ("Connect your phone to use these.", "Your phone hasn't sent a volume.", "This phone doesn't report Do Not Disturb."), never hidden.
+- The Deck's status pill opens the same view in a `.popover` (one component, one copy).
 - Nothing is modal: pairing failures are inline in the code sheet.
 
 ## 2. Android (Compose + Material 3, minSdk 30)

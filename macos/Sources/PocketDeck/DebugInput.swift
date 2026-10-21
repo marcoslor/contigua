@@ -63,6 +63,17 @@
 //                            next or prev; seek MS (the position bar); volume LEVEL
 //                            (the media row's slider) — all `media.command`; choose KEY
 //                            (`media.choose`) picks another playing app. Not a stream action
+//   panelopen                the menu bar's window panel in a plain window (the
+//                            status item is the window server's; a quiet run cannot
+//                            open it) — the real SwiftUI content
+//   panelclose               hide that window
+//   deckpanel                open the Deck's phone-controls popover (its status
+//                            pill is a toolbar item; opening it is setup)
+//   paneldump HOST PATH      the panel's rows and the laid-out controls as JSON;
+//                            HOST is panel or deck
+//   panelclick HOST ID       a click at that control's own frame, through the
+//                            window's event dispatch (panel.dnd, panel.ring, …)
+//   paneldrag HOST ID FRACTION  the volume slider, dragged to FRACTION of its track
 //   wait SECONDS             let the app run (timers, animations) before the next action
 //   type TEXT                text typed as key presses (rest of the line)
 //   key [cmd+][shift+][ctrl+][opt+]NAME
@@ -130,6 +141,15 @@ enum DebugInputAction: Equatable {
     case mediaSeek(Int64)
     case mediaVolume(Int)
     case mediaChoose(String)
+    /// The menu bar panel's debug host: open, close, dump, click a control, drag
+    /// the volume slider.
+    case panelOpen
+    case panelClose
+    case panelDump(host: String, path: String)
+    case panelClick(host: String, id: String)
+    case panelDrag(host: String, id: String, fraction: Double)
+    /// Open the Deck's phone-controls popover (setup for its own checks).
+    case deckPanel
     case wait(Double)
     case type(String)
     case key(KeyStroke)
@@ -344,6 +364,31 @@ enum DebugInputScript {
                 return .mediaChoose(args[1])
             }
             throw LineError(message: "mediacmd needs play, pause, next, prev, seek MS, volume LEVEL or choose KEY")
+        case "panelopen":
+            guard args.isEmpty else { throw LineError(message: "panelopen takes no arguments") }
+            return .panelOpen
+        case "panelclose":
+            guard args.isEmpty else { throw LineError(message: "panelclose takes no arguments") }
+            return .panelClose
+        case "deckpanel":
+            guard args.isEmpty else { throw LineError(message: "deckpanel takes no arguments") }
+            return .deckPanel
+        case "paneldump":
+            guard args.count == 2, ["panel", "deck", "real"].contains(args[0]), args[1].hasPrefix("/") else {
+                throw LineError(message: "paneldump needs HOST (panel or deck) and an absolute PATH")
+            }
+            return .panelDump(host: args[0], path: args[1])
+        case "panelclick":
+            guard args.count == 2, ["panel", "deck", "real"].contains(args[0]), !args[1].isEmpty else {
+                throw LineError(message: "panelclick needs HOST (panel or deck) and an item ID")
+            }
+            return .panelClick(host: args[0], id: args[1])
+        case "paneldrag":
+            guard args.count == 3, ["panel", "deck", "real"].contains(args[0]), !args[1].isEmpty,
+                  let fraction = Double(args[2]), (0...1).contains(fraction) else {
+                throw LineError(message: "paneldrag needs HOST (panel or deck), an item ID and FRACTION (0...1)")
+            }
+            return .panelDrag(host: args[0], id: args[1], fraction: fraction)
         case "wait":
             guard args.count == 1, let seconds = Double(args[0]), (0...60).contains(seconds) else {
                 throw LineError(message: "wait needs SECONDS (0...60)")
@@ -477,6 +522,17 @@ final class DebugInputDriver {
     /// `dockapps on|off`: the Settings → General toggle, through the same
     /// write-then-handle path its onChange runs (e2e).
     var dockApps: ((Bool) -> Void)?
+    /// `panelopen` / `panelclose`: the menu bar panel's debug host window.
+    var panelOpen: (() -> Void)?
+    var panelClose: (() -> Void)?
+    /// `paneldump HOST PATH`: the panel's rows and laid-out controls as JSON.
+    var panelDump: ((String, String) -> Bool)?
+    /// `panelclick HOST ID`: a click at the control's own frame.
+    var panelClick: ((String, String) -> Bool)?
+    /// `paneldrag HOST ID FRACTION`: the volume slider's track.
+    var panelDrag: ((String, String, Double) -> Bool)?
+    /// `deckpanel`: open the Deck's phone-controls popover.
+    var deckPanel: (() -> Void)?
 
     init(actions: [DebugInputAction]) {
         self.actions = actions
@@ -655,6 +711,18 @@ final class DebugInputDriver {
             mediaVolume?(level)
         case .mediaChoose(let key):
             mediaChoose?(key)
+        case .panelOpen:
+            panelOpen?()
+        case .panelClose:
+            panelClose?()
+        case .panelDump(let host, let path):
+            _ = panelDump?(host, path)
+        case .panelClick(let host, let id):
+            _ = panelClick?(host, id)
+        case .panelDrag(let host, let id, let fraction):
+            _ = panelDrag?(host, id, fraction)
+        case .deckPanel:
+            deckPanel?()
         case .wait(let seconds):
             let deadline = Date(timeIntervalSinceNow: seconds)
             while !cancelled, Date() < deadline {

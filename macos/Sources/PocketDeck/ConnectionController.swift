@@ -177,7 +177,6 @@ final class ConnectionController {
         return ShareInbox(directory: directory, actions: shareActions)
     }()
     var banner: Banner? { transientBanner ?? link.banner(naming: { displayName(for: $0) }) }
-    private(set) var audioOn = false
 
     // MARK: Nicknames (docs/ROADMAP.md #1)
 
@@ -273,8 +272,25 @@ final class ConnectionController {
     private(set) var pendingSheet: DeckSheet?
 
     /// Bumped to open the Settings window (previews stage the Devices
-    /// screenshot; the gear and ⌘, are the real entry points). Read by DeckRoot.
+    /// screenshot; the gear, ⌘, and the panel's Settings… row are the real
+    /// entry points). Read by DeckRoot.
     private(set) var settingsRequest = 0
+
+    /// The panel's Settings… row: the Deck's own scene opener (the responder
+    /// action alone does nothing while the app is not active).
+    func openSettingsWindow() {
+        settingsRequest += 1
+        NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+    }
+
+    /// The Deck popover's open request: bumped by the e2e's `deckpanel` verb
+    /// (the status pill is a toolbar item, unreachable without a pointer in a
+    /// quiet run). PhoneDeckView reads it and presents the popover.
+    private(set) var deckPanelRequest = 0
+
+    func openDeckPanel() {
+        deckPanelRequest += 1
+    }
     /// The phone being renamed right now: Settings → Devices → Rename… presents
     /// its dialog for this device; a preview stages the whole state.
     private(set) var renamingDeviceId: String?
@@ -462,16 +478,6 @@ final class ConnectionController {
         }
     }
 
-    var audioVolume: Float {
-        get { audio.volume }
-        set { audio.volume = newValue }
-    }
-
-    var audioMuted: Bool {
-        get { audio.muted }
-        set { audio.muted = newValue }
-    }
-
     /// Start device audio when online with ≥1 window; stop otherwise.
     /// Mac-side gain only — the phone is silenced by its submix routing.
     func syncAudio() {
@@ -480,7 +486,6 @@ final class ConnectionController {
                 audioStarted = false
                 session?.stopAudio()
                 audio.stop()
-                audioOn = false
             }
             return
         }
@@ -597,7 +602,6 @@ final class ConnectionController {
             session?.stopAudio()
         }
         audio.stop()
-        audioOn = false
         nowPlaying.clear()
         notifyCenter.clearAll()
         // Quit path only: give the teardown a bounded moment so the process
@@ -1840,8 +1844,8 @@ final class ConnectionController {
             runPendingDebugDnd()
         case .ringState(let playing):
             ringing = playing
-        case .audioState(let on, _):
-            audioOn = on
+        case .audioState:
+            break
         case .windowClosed:
             syncAudio()
         case .pairCodeShown(let deviceId, let code):
@@ -2225,6 +2229,29 @@ final class ConnectionController {
         debugInput?.dockApps = { [weak self] on in
             MainActor.assumeIsolated { self?.setShowAppsInDock(on) }
         }
+        // The panel's debug host and driver: the same SwiftUI content the menu
+        // bar shows, and clicks at the controls' own frames.
+        debugInput?.panelOpen = { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                PanelProbe.open(controller: self)
+            }
+        }
+        debugInput?.panelClose = {
+            MainActor.assumeIsolated { PanelProbe.close() }
+        }
+        debugInput?.panelDump = { host, path in
+            MainActor.assumeIsolated { PanelProbe.dump(host: host, to: path) }
+        }
+        debugInput?.panelClick = { host, id in
+            MainActor.assumeIsolated { PanelProbe.click(host: host, id: id) }
+        }
+        debugInput?.panelDrag = { host, id, fraction in
+            MainActor.assumeIsolated { PanelProbe.drag(host: host, id: id, fraction: fraction) }
+        }
+        debugInput?.deckPanel = { [weak self] in
+            MainActor.assumeIsolated { self?.openDeckPanel() }
+        }
         debugInput?.arm(phoneOnly: phoneOnly)
         return nil
     }
@@ -2291,6 +2318,36 @@ final class ConnectionController {
             }
             DebugInputDriver.clickControl(at: centre, in: window)
             return nil
+        case "panelopen":
+            // The menu bar panel's content in a window of its own: a quiet run
+            // cannot open the status item, and the panel is the content.
+            PanelProbe.open(controller: self)
+            return nil
+        case "panelclose":
+            PanelProbe.close()
+            return nil
+        case "deckpanel":
+            // The Deck's status pill popover (a toolbar item; opening it is
+            // setup for the switch inside).
+            PanelProbe.openDeckPopover(controller: self)
+            return nil
+        case "paneldump":
+            guard arguments.count == 2, ["panel", "deck", "real"].contains(arguments[0]) else {
+                return "paneldump needs HOST (panel, deck or real) and PATH"
+            }
+            return PanelProbe.dump(host: arguments[0], to: arguments[1]) ? nil : "paneldump failed"
+        case "panelwindows":
+            guard let path = arguments.first, path.hasPrefix("/") else { return "panelwindows needs PATH" }
+            return PanelProbe.windowsReport(to: path) ? nil : "panelwindows failed"
+        case "panelclick":
+            guard arguments.count == 2 else { return "panelclick needs HOST and an item ID" }
+            return PanelProbe.click(host: arguments[0], id: arguments[1]) ? nil : "panelclick failed"
+        case "paneldrag":
+            guard arguments.count == 3, let fraction = Double(arguments[2]) else {
+                return "paneldrag needs HOST, an item ID and FRACTION"
+            }
+            return PanelProbe.drag(host: arguments[0], id: arguments[1], fraction: fraction)
+                ? nil : "paneldrag failed"
         case "settings-dump":
             // Settings' real window geometry (SettingsProbe) for the host e2e.
             guard let path = arguments.first, path.hasPrefix("/") else { return "missing path" }

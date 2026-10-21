@@ -36,7 +36,7 @@ machine (§4), which also fixes the root causes of A01–A03.
 | **Phone window** | AppKit `NSWindow` (`PhoneWindowController`) | Deck toolbar **Phone**, ⌘P | Aspect-locked, glass hover header with Back/Home/Recents. |
 | **Settings** | SwiftUI `Settings` scene | ⌘, | Tabs General · Devices. |
 | *Sheets over the Deck* | SwiftUI `.sheet` | | Nearby (Add phone), Code, QR, Manual connect. |
-| **Menu-bar item** | SwiftUI `MenuBarExtra` | always (toggle in Settings) | Status + 5 items (§3.8). |
+| **Menu-bar item** | SwiftUI `MenuBarExtra` (`.window`) | always (toggle in Settings) | A Control Center-style panel: the phone's controls, live notifications, window actions, Settings/Quit (§3.8). |
 
 There is no separate Welcome window and no floating launcher panel in v0 (§9): both are states of the
 Deck. The Deck has three content modes, chosen **only** by what the profile remembers:
@@ -105,7 +105,8 @@ backgrounds), window background default.
 
 - `navigationTitle(phone.name)`; no subtitle. Toolbar: `ToolbarItem(placement: .status)` **chip**;
   `ToolbarItem(.primaryAction)` **Phone** button (`iphone.gen3`, label "Phone"); `.searchable(text:
-  placement: .toolbar, prompt: "Search apps")` + `.searchFocused($searchFocused)`.
+  placement: .toolbar, prompt: "Search apps")` + `.searchFocused($searchFocused)`. The chip is a button that opens the
+  shared phone controls (the menu bar panel's `PhonePanelView`) in a `.popover`.
 - **Chip** (one capsule, `.caption`, system glass via toolbar): dot (6 pt `circle.fill`) + text,
   then secondary details when connected.
 
@@ -243,10 +244,21 @@ toolbar item group:
 
 ### 3.8 Menu bar item and app menu
 
-- `MenuBarExtra(isInserted: showMenuBar) { … } label: { Image(systemName: "apps.iphone") }`,
-  `.menuBarExtraStyle(.menu)`. Icon: online `apps.iphone` · reconnecting `apps.iphone` (pulse) · offline `iphone.slash`.
-- Items: disabled status line ("● Connected to *name*" / "Reconnecting…" / "Offline" / "No phone paired") · Divider ·
-  "Open PocketDeck" ⌘K · "Phone screen" ⌘P · Divider · "Settings…" ⌘, · Divider · "Quit PocketDeck" ⌘Q.
+- `MenuBarExtra(isInserted: showMenuBar) { MenuBarContent() } label: { Image(systemName: "apps.iphone") }`,
+  `.menuBarExtraStyle(.window)`. A Control Center-style panel, not a menu: a menu-style extra turned the volume
+  `Slider` into a "Phone volume" stepper submenu whose hover opened and closed it. Icon: online `apps.iphone` ·
+  reconnecting `apps.iphone` (pulse) · offline `iphone.slash`.
+- The panel is `PhonePanelView` (PhonePanel.swift), 300 pt wide with fixed-height rows: header (phone symbol, name,
+  status dot + text, battery) · the agent row ("AI agent connected" + **Disconnect**) · **PHONE** (the phone's media
+  volume slider, the one reason line when a control is off, **Do Not Disturb**, **Ring Phone**/**Stop Ringing**, the
+  **Now Playing follows** picker when the phone reports ≥ 2 sessions) · **LIVE** (one row per live notification) ·
+  **WINDOWS** (**Phone Screen** ⌘P · **Find Apps** ⌘K · **Continue on Mac** · **Install APK…** with its phase) ·
+  **Settings…** ⌘, · **Quit PocketDeck** ⌘Q.
+- No track title, performer, artwork or forwarded-audio volume: the Mac's own Now Playing shows the track, and the
+  phone's media volume is the only volume control. A control that cannot work is dimmed with one line saying why
+  (offline, no volume sent, no DND reported), never hidden.
+- **One component, two hosts:** the Deck's status pill opens the same view in a `.popover`; both build it from
+  `PhoneControlsState(controller:)` and `PhoneControlsActions(controller:openDeck:)`.
 - **App menu bar** (AppKit `NSMenu`, kept because stream-window key equivalents rely on the responder chain; A07):
   *PocketDeck* (About, Settings… ⌘,, Hide ⌘H, Hide Others ⌥⌘H, Quit ⌘Q) · *File* (Add Phone… ⇧⌘N, Close Window ⌘W) ·
   *Edit* (standard Undo/Redo/Cut/Copy/Paste/Select All, so paste works in the code and search fields) · *View*
