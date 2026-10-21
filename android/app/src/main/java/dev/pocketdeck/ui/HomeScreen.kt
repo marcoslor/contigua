@@ -385,6 +385,7 @@ private fun PairedMacRow(
 ) {
     val undoLabel = stringResource(R.string.undo)
     val forgetLabel = stringResource(R.string.home_forget)
+    val moreOptionsLabel = stringResource(R.string.home_more_options, mac.name)
 
     fun runForget() {
         val message = onForget(mac)
@@ -448,7 +449,7 @@ private fun PairedMacRow(
             trailingContent = {
                 Box {
                     IconButton(onClick = { menuOpen = true }) {
-                        Icon(painterResource(R.drawable.ic_more_vert), contentDescription = forgetLabel)
+                        Icon(painterResource(R.drawable.ic_more_vert), contentDescription = moreOptionsLabel)
                     }
                     DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
                         DropdownMenuItem(

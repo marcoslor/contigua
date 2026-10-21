@@ -102,12 +102,14 @@ Material 3, edge-to-edge, dynamic color, light/dark.
 
 1. **Onboarding** (first run, pager with a progress indicator, each step auto-advances
    when its condition becomes true):
-   1. *Welcome* — illustration/icon, "Use your apps on your Mac", **Get started**.
+   1. *Welcome* — illustration/icon, "Your Android apps, on your Mac", one line on
+      how ("Open PocketDeck on your Mac and pick this phone — it stays locked."),
+      **Get started**.
    2. *Shizuku* — live status row: Not installed (button **Get Shizuku**) → Not running
       (button **Open Shizuku** + 3-line "How to start it" with wireless debugging) →
       Permission needed (button **Allow**) → ✓ Ready. Auto-advance on ready.
    3. *Notifications* — needed for pairing prompts → **Allow** (POST_NOTIFICATIONS);
-      also requests ignoring battery optimizations once, with one line why.
+      also offers **Let PocketDeck run in the background** once, with one line why.
    4. *Pair your Mac* — "Open PocketDeck on your Mac. It will find this phone." +
       **Scan QR code** (outlined) — completes on first successful pairing.
 2. **Home**:
@@ -134,6 +136,9 @@ Material 3, edge-to-edge, dynamic color, light/dark.
      edge; no extra indent on the list rows.
    - "Paired Macs" list (name, last connected, Forget via swipe or overflow).
    - FAB or tonal button: **Pair new Mac** (QR scan).
+   - Ongoing notification (channel **Connection status**): "Ready for your Mac"
+     while listening, "Connected to *Mac name* · *N* windows" when a Mac is
+     connected (singular for one window). No port numbers.
 3. **Pairing prompt**: high-priority notification with the code and Allow/Deny, and,
    if the app is in the foreground, a floating Material card with the large code
    ("Check it matches your Mac.") — 16 dp from the sides and 16 dp above the
