@@ -10,6 +10,8 @@
 //   wait-analysis [TOKEN]        wait for VisionKit; contains is TOKEN's answer
 //   waitfile PATH [SECONDS]      wait for the harness's go-ahead
 //   copy-image OUT               write the frozen frame to OUT (absolute path)
+//   drag-check                   the overlay's real hit test + a synthetic drag
+//                                 at a recognised word (real-control route)
 //   nav back|home|recents        the Navigate menu's action (what the bar's
 //                                 buttons and the shortcuts run)
 //   exit                         leave the mode
@@ -29,6 +31,7 @@ enum LiveTextScriptAction: Equatable {
     case waitAnalysis(token: String?)
     case waitFile(path: String, timeout: Double)
     case copyImage(String)
+    case dragCheck
     case nav(String)
     case exit
     case resize(stream: UInt32, width: Double, height: Double)
@@ -81,6 +84,9 @@ enum LiveTextDebugScript {
                 throw LineError(message: "copy-image needs an absolute OUT path")
             }
             return .copyImage(words[1])
+        case "drag-check":
+            guard words.count == 1 else { throw LineError(message: "drag-check takes no arguments") }
+            return .dragCheck
         case "nav":
             guard words.count == 2, ["back", "home", "recents"].contains(words[1]) else {
                 throw LineError(message: "nav needs back, home or recents")
@@ -201,6 +207,8 @@ final class LiveTextDebugDriver {    private let actions: [LiveTextScriptAction]
             }
             line["state"] = controller?.liveText.state.rawValue ?? "none"
             emit(line)
+        case .dragCheck:
+            dragCheck(controller: windows.controller(for: stream))
         case .nav(let action):
             guard let controller = windows.controller(for: stream) else {
                 emit(["op": "nav", "action": action, "ok": false, "state": "none"])
@@ -239,6 +247,80 @@ final class LiveTextDebugDriver {    private let actions: [LiveTextScriptAction]
             line["state"] = controller?.liveText.state.rawValue ?? "none"
             emit(line)
         }
+    }
+
+    /// The overlay's real-control route: the hit test the window would do at
+    /// a recognised word, then the down/move/up a person's drag delivers.
+    /// Reports the view that took the hit and whether VisionKit selected
+    /// anything (state only: no text, no pixels).
+    private func dragCheck(controller: StreamWindowController?) {
+        guard let controller, let window = controller.window, let content = window.contentView else {
+            emit(["op": "drag", "ok": false, "why": "no window"])
+            return
+        }
+        let session = controller.liveText
+        let overlay = session.overlay
+        var line: [String: Any] = [
+            "op": "drag", "ok": false, "state": session.state.rawValue,
+            "supplementary": !overlay.isSupplementaryInterfaceHidden,
+            "buttonVisible": overlay.liveTextButtonVisible,
+            "interactions": overlay.preferredInteractionTypes.rawValue,
+        ]
+        let frame = overlay.convert(overlay.bounds, to: content)
+        var textPoint: NSPoint?
+        var overlayHits = 0
+        var videoHits = 0
+        stride(from: frame.minX + 4, to: frame.maxX - 4, by: 6).forEach { x in
+            stride(from: frame.minY + 4, to: frame.maxY - 4, by: 6).forEach { y in
+                let point = NSPoint(x: x, y: y)
+                guard let hit = content.hitTest(point) else { return }
+                if hit === overlay || hit.isDescendant(of: overlay) {
+                    overlayHits += 1
+                    if textPoint == nil, overlay.hasText(at: overlay.convert(point, from: content)) {
+                        textPoint = point
+                    }
+                } else if hit === controller.videoView || hit.isDescendant(of: controller.videoView) {
+                    videoHits += 1
+                }
+            }
+        }
+        line["overlayHits"] = overlayHits
+        line["videoHits"] = videoHits
+        guard let point = textPoint, let target = content.hitTest(point) else {
+            line["hit"] = "none"
+            emit(line)
+            return
+        }
+        line["hit"] = "overlay"
+        // The quiet run keeps the app inactive (activating it changes the
+        // desktop's focus), and VisionKit only starts a selection in an active
+        // app; the hit route and the interaction set are what the run pins,
+        // and the person's Mac is active when they drag.
+        line["key"] = window.isKeyWindow
+        line["active"] = NSApp.isActive
+        func event(_ type: NSEvent.EventType, at point: NSPoint) -> NSEvent? {
+            NSEvent.mouseEvent(with: type, location: point, modifierFlags: [],
+                               timestamp: ProcessInfo.processInfo.systemUptime,
+                               windowNumber: window.windowNumber, context: nil,
+                               eventNumber: 0, clickCount: 1, pressure: 1)
+        }
+        let start = point
+        let end = NSPoint(x: min(point.x + 120, frame.maxX - 4), y: point.y)
+        // The overlay's mouseDown enters a tracking loop: queue the drag and
+        // the up first, then let the window dispatch the down as a person's
+        // click would (an XCTest bundle has no application; the app does).
+        if let drag = event(.leftMouseDragged, at: end) { NSApp.postEvent(drag, atStart: false) }
+        if let up = event(.leftMouseUp, at: end) { NSApp.postEvent(up, atStart: false) }
+        if let down = event(.leftMouseDown, at: start) { window.sendEvent(down) }
+        pump(0.4)
+        // Anything the overlay did not consume (the video path) is dropped
+        // here, so it cannot reach a later step.
+        while let extra = NSApp.nextEvent(matching: [.leftMouseDown, .leftMouseDragged, .leftMouseUp],
+                                          until: Date(timeIntervalSinceNow: 0), inMode: .default,
+                                          dequeue: true) { _ = extra }
+        line["selected"] = overlay.hasActiveTextSelection
+        line["ok"] = overlayHits > 0 && overlay.hasActiveTextSelection
+        emit(line)
     }
 
     private func report(_ op: String, controller: StreamWindowController?, ok: Bool = true) {

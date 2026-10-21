@@ -46,6 +46,17 @@ final class LaunchOptionsTests: XCTestCase {
         XCTAssertEqual(options.resizes.first?.size.height, 768)
     }
 
+    func testAScriptedResizeStepCanCarryItsOwnDelay() {
+        let options = LaunchOptions.parse(["PocketDeck",
+                                           "--resize-stream", "1:640x480-pt@0.03",
+                                           "--resize-stream", "1:700x500-pt@0.06"])
+        XCTAssertEqual(options.resizes.count, 2)
+        XCTAssertEqual(options.resizes.first?.size, NSSize(width: 640, height: 480))
+        XCTAssertEqual(options.resizes.first?.after ?? 0, 0.03, accuracy: 0.0001)
+        XCTAssertEqual(options.resizes.last?.size, NSSize(width: 700, height: 500))
+        XCTAssertEqual(options.resizes.last?.after ?? 0, 0.06, accuracy: 0.0001)
+    }
+
     func testDebugInputScriptPath() {
         let options = LaunchOptions.parse(["PocketDeck", "--debug-input-script", "/tmp/pd-input.txt"])
         XCTAssertEqual(options.debugInputScript, "/tmp/pd-input.txt")

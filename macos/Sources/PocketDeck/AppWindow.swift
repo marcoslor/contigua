@@ -17,6 +17,11 @@ final class AppWindowController: StreamWindowController {
     /// So is its density override.
     override var densityPackage: String? { pkg }
 
+    /// The cover before the first frame: the app's cached icon and its label.
+    override var showsOpeningCover: Bool { true }
+    override var openingName: String { subject }
+    override var openingIcon: NSImage? { manager.icons[pkg] }
+
     init(stream: UInt32, pkg: String, activity: String?, label: String, manager: WindowManager) {
         self.pkg = pkg
         self.activity = activity

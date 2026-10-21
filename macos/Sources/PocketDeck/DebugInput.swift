@@ -7,7 +7,8 @@
 //
 // Script grammar (blank lines and lines starting with # are ignored):
 //   click NX NY              left click
-//   rightclick NX NY         right click (nav back)
+//   rightclick NX NY         right click (Settings ▸ Input "Secondary click":
+//                            a long press by default, Back or Nothing)
 //   drag NX1 NY1 NX2 NY2     left-button drag
 //   scroll DY [NX NY]        wheel scroll, default at the centre
 //   trackscroll DY [NX NY]   two-finger trackpad scroll (phased, then momentum events)
@@ -593,9 +594,9 @@ final class DebugInputDriver {
             if let down = mouse(.leftMouseDown, at: point, in: view) { view.mouseDown(with: down) }
             if let up = mouse(.leftMouseUp, at: point, in: view) { view.mouseUp(with: up) }
         case .rightClick(let target):
-            if let down = mouse(.rightMouseDown, at: location(target, in: view), in: view) {
-                view.rightMouseDown(with: down)
-            }
+            let point = location(target, in: view)
+            if let down = mouse(.rightMouseDown, at: point, in: view) { view.rightMouseDown(with: down) }
+            if let up = mouse(.rightMouseUp, at: point, in: view) { view.rightMouseUp(with: up) }
         case .drag(let from, let to):
             let start = location(from, in: view)
             let end = location(to, in: view)

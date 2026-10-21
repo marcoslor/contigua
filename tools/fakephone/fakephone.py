@@ -1461,6 +1461,9 @@ class WindowStream(object):
         # Cumulative across encoder restarts (pause/resume, keyframes), so the
         # e2e can tell that frames flowed again after a resume.
         self._frames_sent = 0
+        # --first-frame-delay holds the first start; a wake or resize that
+        # arrives before the timer must not send the frame early.
+        self._start_held = False
         self._paused = False
         # --secure-after: the encoder sends solid black while a secure surface
         # would be blanked in the mirror.
@@ -1527,8 +1530,23 @@ class WindowStream(object):
                 "-pix_fmt", "yuv420p", "-x264-params", "aud=1", "-an", "-f", "h264", "-"]
         return cmd
 
+    def start_after(self, delay, alive):
+        """The opening cover's fake: hold the first config and frame for a
+        while. A wake, resize or keyframe in the meantime must not start the
+        encoder early; a window closed in the meantime never starts it."""
+        self._start_held = True
+        def go():
+            self._start_held = False
+            if alive():
+                self.start()
+        timer = threading.Timer(delay, go)
+        timer.daemon = True
+        timer.start()
+
     def start(self):
         """(Re)start the encoder: used by open, resize, resume and keyframe."""
+        if self._start_held:
+            return
         with self._lock:
             self._stop_locked()
             self._configured = False
@@ -3213,7 +3231,11 @@ class Session(object):
         self.windows[stream_id] = window
         self._send({"t": "window.opened", "stream": stream_id,
                     "displayId": window.display_id, "w": window.w, "h": window.h})
-        window.start()
+        if self.phone.args.first_frame_delay > 0:
+            window.start_after(self.phone.args.first_frame_delay,
+                               lambda: self.windows.get(stream_id) is window)
+        else:
+            window.start()
         if mode == "phone" and self.phone.args.rotate_after > 0:
             threading.Thread(target=self._rotate_later, args=(window,), daemon=True).start()
         if mode == "phone" and self.phone.args.screen_off_after > 0:
@@ -3699,6 +3721,9 @@ def build_parser():
                    help="pad the app list to N apps (grid screenshots)")
     p.add_argument("--no-icon-every", type=int, default=0, metavar="K",
                    help="with --demo-apps, every K-th app has no icon")
+    p.add_argument("--first-frame-delay", type=float, default=0.0, metavar="SECONDS",
+                   help="hold a window's first config/frame this long after window.open "
+                        "(the Mac's opening cover: loading, then the first frame)")
     p.add_argument("--screen-off-after", type=float, default=0.0, metavar="SECONDS",
                    help="after the phone window opens, the panel times out: send state.screen off and stop frames")
     p.add_argument("--secure-after", type=float, default=0.0, metavar="SECONDS",

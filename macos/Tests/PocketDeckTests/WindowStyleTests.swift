@@ -368,9 +368,15 @@ final class DwellPillTests: XCTestCase {
 }
 
 final class ChromeBarTests: XCTestCase {
-    func testTheBarIsTwentyEightPointsWithTheLightsAtTheStandardInset() {
+    /// The default BarPrototype (Compact; View ▸ Bar Prototype is temporary):
+    /// today's 28 pt bar, the 14 pt lights equally inset 7 pt. BarPrototypeTests
+    /// covers Standard and the real view geometry.
+    func testTheCompactBarIsTwentyEightPointsWithItsEqualInsets() {
+        let saved = BarPrototype.current
+        BarPrototype.current = .compact
+        defer { BarPrototype.current = saved }
         XCTAssertEqual(ChromeBar.height, 28)
-        XCTAssertEqual(ChromeBar.trafficLightInset, 20)
+        XCTAssertEqual(ChromeBar.trafficLightInset, 7)
         XCTAssertEqual(ChromeBar.trafficLightButtonSide, 14)
         XCTAssertEqual(ChromeBar.trafficLightSpacing, 23)
     }
@@ -413,12 +419,34 @@ final class PhoneChromeTests: XCTestCase {
         let phone = CGSize(width: 1080, height: 2400)
         let pad = WindowStyle.framed.windowSize(stream: .zero)
         XCTAssertEqual(PhoneChrome.frame(proposed: CGSize(width: 540 + pad.width, height: 1100),
-                                         current: CGSize(width: 450 + pad.width, height: 1100),
                                          phone: phone, style: .framed),
                        CGSize(width: 540 + pad.width, height: 1200 + pad.height), "the width led")
         XCTAssertEqual(PhoneChrome.frame(proposed: CGSize(width: 450 + pad.width, height: 1200 + pad.height),
-                                         current: CGSize(width: 450 + pad.width, height: 1000 + pad.height),
                                          phone: phone, style: .framed),
                        CGSize(width: 540 + pad.width, height: 1200 + pad.height), "the height led")
+    }
+
+    /// The v104 bug: a monotonic drag must give a monotonic window. The old
+    /// rule measured each proposal against the last snapped frame, so after a
+    /// mostly-down move a mostly-across one snapped back smaller and the window
+    /// fought the hand.
+    func testAMonotonicDragGivesAMonotonicPhoneWindow() {
+        let phone = CGSize(width: 1080, height: 2400)
+        let ratio = phone.width / phone.height
+        var last = CGSize.zero
+        for step in 0..<10 {
+            let proposed = CGSize(width: 500 + Double(step) * 30, height: 900 + Double(step) * 40)
+            let size = PhoneChrome.frame(proposed: proposed, phone: phone, style: .framed)
+            let stream = WindowStyle.framed.streamSize(window: size)
+            XCTAssertEqual(stream.width / stream.height, ratio, accuracy: 0.005,
+                           "step \(step) keeps the phone's aspect")
+            if last != .zero {
+                XCTAssertGreaterThanOrEqual(size.width, last.width - 0.5,
+                                            "step \(step) must not snap the width back")
+                XCTAssertGreaterThanOrEqual(size.height, last.height - 0.5,
+                                            "step \(step) must not snap the height back")
+            }
+            last = size
+        }
     }
 }

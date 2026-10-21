@@ -159,7 +159,7 @@ final class VideoLayerView: NSView {
 
     override func layout() {
         super.layout()
-        displayLayer.frame = bounds
+        placeDisplayLayer()
         updateGravity()
         edgeHint.position = CGPoint(x: edgeHint.position.x, y: bounds.midY)
         liveText.layout(in: videoRect())
@@ -167,9 +167,56 @@ final class VideoLayerView: NSView {
 
     override func setFrameSize(_ newSize: NSSize) {
         super.setFrameSize(newSize)
-        displayLayer.frame = bounds
+        placeDisplayLayer()
         updateGravity()
         liveText.layout(in: videoRect())
+    }
+
+    /// The first drag event, before the first size change: the pending-fill rule
+    /// is up from the start of a live resize, not from the first did-resize.
+    override func viewWillStartLiveResize() {
+        super.viewWillStartLiveResize()
+        noteResizeRequested()
+    }
+
+    /// The display layer follows the view exactly. A plain `frame = bounds` in
+    /// a resize is an implicit ~0.25 s CALayer animation (the layer's delegate
+    /// is nil), so the picture trails the window edge on a fast drag and the
+    /// new area shows the layer's black background: the reported black bands.
+    private func placeDisplayLayer() {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        displayLayer.frame = bounds
+        CATransaction.commit()
+    }
+
+    /// The display layer, for the resize tests: after a size change it must
+    /// have no animation and its presentation frame must be the new bounds.
+    var displayLayerForTesting: AVSampleBufferDisplayLayer { displayLayer }
+
+    /// Tests: the size a VIDEO_CONFIG would set, without a decoder or a real
+    /// parameter set (the rotation rule only needs the orientation).
+    func setVideoSizeForTesting(_ size: CGSize) {
+        videoSize = size
+    }
+
+    /// How far the drawn picture falls short of the view's bounds, in points:
+    /// 0 when the picture covers the content (fill/stretch or an exact fit),
+    /// more while the display layer trails a resize or a real letterbox shows.
+    /// The e2e samples this through the chrome state on every resize step.
+    func videoGap() -> CGFloat {
+        // No picture yet: there is no drawn rect to be short of the content.
+        guard videoSize.width > 0, videoSize.height > 0,
+              bounds.width > 0, bounds.height > 0 else { return 0 }
+        // A layer with an animation in flight is drawn where its presentation
+        // is, not where its model frame says. With no animation the model frame
+        // is the truth (the presentation can lag the last commit by a frame).
+        let animating = !(displayLayer.animationKeys()?.isEmpty ?? true)
+        let frame = animating ? (displayLayer.presentation()?.frame ?? displayLayer.frame) : displayLayer.frame
+        let drawn = Letterbox.videoRect(video: videoSize, in: frame, placement: placement())
+        let gap = max(0, drawn.minX - bounds.minX, bounds.maxX - drawn.maxX,
+                      drawn.minY - bounds.minY, bounds.maxY - drawn.maxY)
+        return gap
     }
 
     /// Stretches over the 16 px quantisation instead of showing thin black bars;
@@ -481,6 +528,8 @@ final class VideoLayerView: NSView {
     override func mouseDragged(with event: NSEvent) { inputMapper?.mouseDragged(event) }
     override func mouseUp(with event: NSEvent) { inputMapper?.mouseUp(event) }
     override func rightMouseDown(with event: NSEvent) { inputMapper?.rightMouseDown(event) }
+    override func rightMouseDragged(with event: NSEvent) { inputMapper?.rightMouseDragged(event) }
+    override func rightMouseUp(with event: NSEvent) { inputMapper?.rightMouseUp(event) }
     override func otherMouseDown(with event: NSEvent) { inputMapper?.otherMouseDown(event) }
     // An extra button held down only drags and releases from here: the nav
     // fired on the down must not repeat and none of it may become a touch.

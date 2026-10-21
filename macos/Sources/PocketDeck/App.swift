@@ -270,6 +270,14 @@ struct LaunchOptions {
 
     /// `N:WxH-pt` — the `-pt` suffix is optional.
     private static func parseResize(_ value: String, defaultDelay: TimeInterval) -> (UInt32, NSSize, TimeInterval) {
+        var value = value
+        var delay = defaultDelay
+        // `@SECONDS` after the size schedules one step of a scripted drag:
+        // `1:640x480-pt@0.03`.
+        if let at = value.lastIndex(of: "@"), let seconds = Double(value[value.index(after: at)...]) {
+            delay = seconds
+            value = String(value[..<at])
+        }
         let parts = value.split(separator: ":", maxSplits: 1).map(String.init)
         let stream = UInt32(parts.first ?? "") ?? 0
         var rest = parts.count > 1 ? parts[1] : ""
@@ -277,7 +285,7 @@ struct LaunchOptions {
         let dims = rest.lowercased().split(separator: "x").map(String.init)
         let width = Double(dims.first ?? "") ?? 0
         let height = dims.count > 1 ? (Double(dims[1]) ?? 0) : 0
-        return (stream, NSSize(width: width, height: height), defaultDelay)
+        return (stream, NSSize(width: width, height: height), delay)
     }
 
     /// `N:SECONDS`.

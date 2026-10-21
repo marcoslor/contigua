@@ -52,6 +52,20 @@ final class FrameWatchdogTests: XCTestCase {
         XCTAssertTrue(watchdog.tick(at: 32.0, expecting: true))
     }
 
+    func testTheClockRestartsAfterCoveredTimeWithoutTicks() {
+        var watchdog = FrameWatchdog()
+        watchdog.frame(at: 0)
+        XCTAssertFalse(watchdog.tick(at: 0.5, expecting: true))
+        // The occlusion notification ticks once (expecting false); AppKit then
+        // throttles the timer, so nothing runs until the window is visible
+        // again 10 s later.
+        XCTAssertFalse(watchdog.tick(at: 1, expecting: false))
+        XCTAssertFalse(watchdog.tick(at: 11, expecting: true),
+                       "the clock restarts when the window returns")
+        XCTAssertFalse(watchdog.stalled)
+        XCTAssertTrue(watchdog.tick(at: 12.5, expecting: true))
+    }
+
     /// The deadline sits under docs/NFR.md's stale_picture_ms (the JSON is the
     /// one source of truth for the shell checks too).
     func testTheDeadlineIsWithinTheNfrLimit() {

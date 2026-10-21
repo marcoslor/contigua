@@ -167,6 +167,17 @@ using the phone with fingers.
 - General: `Toggle` "Launch at login", `Toggle` "Show in menu bar", `Picker` "Default window density" (`.menu`).
 - Devices: rows `LabeledContent` (name; model + "Last seen *relative*" `.secondary`; state text) with **Use** `.glass` (non-active phones) and **Forget** `.glass` `role: .destructive` → `confirmationDialog`; **Add phone…** `.glass` below the list.
 
+- **Bar prototype (temporary, 2026-10-21; View ▸ Bar Prototype).** Two
+  proportions for the person to choose from: **Compact** (iTerm2's compact
+  mode: 14 pt lights, 7 pt in from the left, the top and the bottom, a 28 pt
+  bar; the 28 pt Live Text button 7 pt in from the right, centred on the
+  lights) and **Standard** (Finder's proportions measured on macOS 26 on this
+  Mac: 16 pt lights, 18 pt in from the left, the top and the bottom, a 52 pt
+  bar; the Live Text button 28 pt, 18 pt in from the right, centred on the
+  lights). Both framed and immersive (the pill uses the same numbers), app and
+  phone windows, light and dark. The menu item and the losing variant are
+  removed once the person picks.
+
 ### Menu bar
 - `MenuBarExtra { MenuBarContent() } label: { Image(systemName: icon) }`, `.menuBarExtraStyle(.window)`: a Control Center-style panel, not a menu (a `Slider` inside a menu-style extra became a "Phone volume" stepper submenu that opened and closed under the pointer). Icon: Connected `apps.iphone` · Reconnecting `apps.iphone` (`.symbolEffect(.pulse)`) · Offline `iphone.slash`; a 5 pt dot next to it while an AI agent is connected.
 - `PhonePanelView` (PhonePanel.swift), 300 pt wide, 12 pt padding, fixed 28 pt rows, one component shared with the Deck popover: header (phone symbol, name, status dot + text, battery) · agent row ("AI agent connected" + **Disconnect**) · **PHONE** (volume `Slider`, the one reason line when a control is off, **Do Not Disturb** switch, **Ring Phone**/**Stop Ringing**, **Now Playing follows** picker with ≥ 2 sessions) · **LIVE** (one row per live notification) · **WINDOWS** (**Phone Screen** ⌘P · **Find Apps** ⌘K · **Continue on Mac** · **Install APK…** with its phase) · footer (**Settings…** ⌘, · **Quit PocketDeck** ⌘Q).
@@ -241,7 +252,7 @@ right (**Phone**, the Settings `gearshape` opening Settings, ⌘,, then the sear
 the groups ·
 grid ≤ 56 pt icons (generated initial tile when the phone has none), one-line labels, equal 20 pt side insets, the scroll bar never over a tile · at most one cell highlighted in accent tint · offline/reconnecting: dimmed grid + chip, banner only when action is needed.
 **Mac — Banner:** one line, one trailing button at most, never a reason code.
-**Mac — App window:** two styles (View ▸ Window Style, ⌥⌘F; remembered per app package, no stored choice = Framed): **Framed** (default) = the stream plus a permanent 28 pt bar above it — the stream's own top rows mirrored there under the window material, traffic lights on the bar's line, phone window: Back · Home · Recents at the bar's right; **Immersive** = only the stream, rounded corners and the system shadow, a glass pill with the traffic lights at the stream's top-left after a 350 ms rest (a click in that corner before the dwell is the app's ordinary touch); switching grows or shrinks the window by the bar, the stream keeps its place; full screen has no custom chrome in either style — the stream fills the screen, and the system's bar, revealed at the top edge, shows the window's title and the standard traffic lights · "Reconnecting…" pill over the last frame while the link is down.
+**Mac — App window:** two styles (View ▸ Window Style, ⌥⌘F; remembered per app package, no stored choice = Framed): **Framed** (default) = the stream plus a permanent bar above it (28 pt in Compact, 52 pt in Standard; View ▸ Bar Prototype, temporary) — the stream's own top rows mirrored there under the window material, traffic lights on the bar's line, phone window: Back · Home · Recents at the bar's right; **Immersive** = only the stream, rounded corners and the system shadow, a glass pill with the traffic lights at the stream's top-left after a 350 ms rest (a click in that corner before the dwell is the app's ordinary touch); switching grows or shrinks the window by the bar, the stream keeps its place; full screen has no custom chrome in either style — the stream fills the screen, and the system's bar, revealed at the top edge, shows the window's title and the standard traffic lights · "Reconnecting…" pill over the last frame while the link is down.
 **Mac — Settings:** exactly two tabs (General, Devices) · General has exactly 3 controls · Forget is red.
 **Mac — Menu bar:** status line first · items in the order listed · icon changes with connection state.
 **Android — Onboarding:** progress bar at top advances per step · no swipe between pages · one primary button per page · Shizuku row shows current state text + matching button · Scan QR is outlined.
