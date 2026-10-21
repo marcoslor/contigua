@@ -7465,6 +7465,19 @@ PY
 # now_ms — wall-clock milliseconds, the unit every person-facing limit uses.
 now_ms() { python3 -c 'import time; print(int(time.time() * 1000))'; }
 
+# wait_ms <ms> <command...> — wait_until with the millisecond clock: a limit
+# of 2000 ms must not round down to one second ($SECONDS truncates, so a 2 s
+# wait_until can return after 1 s and fail a step that was within its limit).
+wait_ms() {
+    local end=$(( $(now_ms) + $1 ))
+    shift
+    while :; do
+        "$@" && return 0
+        [ "$(now_ms)" -lt "$end" ] || return 1
+        sleep 0.1
+    done
+}
+
 # first_event_ms KEY [VALUE] — the first event whose KEY (a dotted path) is
 # VALUE (any value when omitted), in milliseconds. Empty when it never came.
 first_event_ms() {
@@ -7786,25 +7799,43 @@ PY
     stop_fakephone
 
     # Frozen picture: the phone stops sending frames with the session still up.
-    # The window must say so within stale_picture_ms; today it has no such
-    # state, so this FAILs on purpose and ask.md carries the smallest change.
-    : > "$WORK/events.jsonl"
-    FAKE_ARGS="--stall-after 3" start_fake || return 1
-    nfr_launch --open-phone --open com.android.settings
-    nfr_wait_ready 30 || bad "NFR the app never paired (stall)"
-    wait_until 30 events_have '"ev":"stall"' || bad "NFR the fake never stalled"
-    local stall_ms stale_ms stale_s
-    stall_ms="$(first_event_ms ev stall)"
+    # The window must say so within stale_picture_ms, and say it visibly: the
+    # "Not responding" pill in the view tree (stall_pill=1), not just the
+    # `stall=` flag. Both window styles, and the pill goes when frames resume.
+    # One window per launch so the chrome state file is that window's.
+    local kind stall_ms stale_ms
     stale_ms="$(nfr_limit stale_picture_ms)"
-    stale_s="$(( (stale_ms + 999) / 1000 ))"
-    if wait_until "$stale_s" chrome_has "stall=1"; then
-        ok "NFR no stale picture: the window said the picture stopped within ${stale_ms} ms"
-    else
-        bad "NFR no stale picture: the window kept the last frame as live for ${stale_ms} ms (state: $(chrome_state))"
-    fi
-    say "NFR stall: frames stopped at ${stall_ms} ms; state $(chrome_state)"
-    stop_app
-    stop_fakephone
+    for kind in immersive framed; do
+        : > "$WORK/events.jsonl"
+        defaults write "$DEFAULTS_SUITE" "chrome.style.com.android.settings" -string "$kind"
+        # --stall-for: the encoder restarts after the stall, so the state must
+        # clear again (a pill that never goes away would fail the last check).
+        FAKE_ARGS="--stall-after 3 --stall-for 6" start_fake || return 1
+        nfr_launch --open com.android.settings
+        nfr_wait_ready 30 || bad "NFR the app never paired (stall, $kind)"
+        wait_until 30 events_have '"ev":"stall"' || bad "NFR the fake never stalled ($kind)"
+        stall_ms="$(first_event_ms ev stall)"
+        if wait_ms "$stale_ms" chrome_has "stall=1"; then
+            local shown_ms=$(( $(now_ms) - stall_ms ))
+            ok "NFR no stale picture ($kind): the window said the picture stopped after ${shown_ms} ms (limit ${stale_ms} ms)"
+        else
+            bad "NFR no stale picture ($kind): the window kept the last frame as live for ${stale_ms} ms (state: $(chrome_state))"
+        fi
+        if wait_until 3 chrome_has "stall_pill=1" && chrome_has "style=$kind"; then
+            ok "NFR stall is visible ($kind): the \"Not responding\" pill is in the window (state: $(chrome_state))"
+        else
+            bad "NFR stall is visible ($kind): the chrome has no \"Not responding\" pill (state: $(chrome_state))"
+        fi
+        say "NFR stall ($kind): frames stopped, state $(chrome_state)"
+        wait_until 20 events_have '"ev":"resume"' || bad "NFR the fake never resumed frames ($kind)"
+        if wait_until 10 chrome_has "stall=0 stall_pill=0"; then
+            ok "NFR stall is visible ($kind): frames resumed and the pill went away (state: $(chrome_state))"
+        else
+            bad "NFR stall is visible ($kind): the pill stayed after frames resumed (state: $(chrome_state))"
+        fi
+        stop_app
+        stop_fakephone
+    done
 }
 
 
