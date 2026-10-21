@@ -653,6 +653,8 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         state.settingsDensity = manager.defaultDensity
         state.liveText = liveText.isActive
         state.frozen = frozen
+        state.phoneWindow = self is PhoneWindowController
+        state.panelOff = (self as? PhoneWindowController)?.panelOffShown ?? false
         state.revealDelay = manager.revealDelay
         ImmersiveMenuInstaller.refresh(style: style)
     }
@@ -665,6 +667,8 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         state.densityOverride = nil
         state.liveText = false
         state.frozen = false
+        state.phoneWindow = false
+        state.panelOff = false
         videoView.windowResignedKey()
     }
 
@@ -790,6 +794,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
             + " screen=\(chrome.phoneOverlay.cover == .screenOff ? "off" : "on")"
             + " overlay=\(chrome.phoneOverlay.cover == nil ? 0 : 1)"
             + " secure=\(chrome.phoneOverlay.cover == .secure ? 1 : 0)"
+            + " panel_off=\(chrome.panelOff ? 1 : 0) panel_pill=\(chrome.showsPanelStatus ? 1 : 0)"
             + " stall=\(isStalled ? 1 : 0) stall_pill=\(stallPill ? 1 : 0)"
             + " loading=\(openingState)"
             + " frame=\(Int((window?.frame.width ?? 0).rounded()))x\(Int((window?.frame.height ?? 0).rounded()))"

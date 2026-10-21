@@ -11,6 +11,31 @@ enum PhoneScreen: String, Equatable {
     case off
 }
 
+/// `state.panel`: whether the phone is holding its own panel's power off for
+/// this window ("Turn Off Phone Screen", docs/design/phone-mirror.md).
+enum PhonePanel: String, Equatable {
+    case on
+    case off
+}
+
+/// "Turn Off Phone Screen" as the person left it, per phone id in the profile's
+/// defaults: it is a choice about their phone, so it survives its window.
+enum PhonePanelOffSetting {
+    static let key = "phonePanelOff"
+
+    static func read(from defaults: UserDefaults, deviceId: String) -> Bool {
+        guard !deviceId.isEmpty else { return false }
+        return (defaults.dictionary(forKey: key) as? [String: Bool])?[deviceId] ?? false
+    }
+
+    static func write(_ on: Bool, for deviceId: String, to defaults: UserDefaults) {
+        guard !deviceId.isEmpty else { return }
+        var all = (defaults.dictionary(forKey: key) as? [String: Bool]) ?? [:]
+        if on { all[deviceId] = true } else { all.removeValue(forKey: deviceId) }
+        if all.isEmpty { defaults.removeObject(forKey: key) } else { defaults.set(all, forKey: key) }
+    }
+}
+
 /// What covers the mirror: a sleeping panel, or a surface Android blanks.
 enum PhoneCover: Equatable {
     case screenOff
@@ -33,6 +58,17 @@ struct PhoneScreenOverlay: Equatable {
     /// Every wake this window asked the phone for: one per open/reconnect and
     /// one per Wake Screen click while the overlay is up.
     private(set) var wakeRequests = 0
+    /// `state.panel`: the phone holds its own panel off for this mirror.
+    private(set) var panelOff = false
+    /// A `state.panel` has arrived; before that the check stays off.
+    private(set) var panelReported = false
+    /// The short sentence the chrome shows for [panelPillSeconds] after panel-off
+    /// starts or the phone ends it: "Phone screen off" / "Phone screen on".
+    private(set) var panelPill: String?
+    private(set) var panelPillUntil: TimeInterval?
+
+    /// Enough to read one short sentence, then the mirror is quiet again.
+    static let panelPillSeconds: TimeInterval = 2
 
     /// Half a second of black frames while the screen is on is a secure
     /// surface Android is hiding, not a dark app.
@@ -96,6 +132,36 @@ struct PhoneScreenOverlay: Equatable {
     /// The window opened, re-opened or reconnected: display 0 is woken once.
     mutating func opened() {
         wakeRequests += 1
+    }
+
+    /// `state.panel` arrived at `time`. True when the panel's state changed
+    /// (the bar glyph and the menu check follow it).
+    @discardableResult
+    mutating func setPanel(_ panel: PhonePanel?, at time: TimeInterval) -> Bool {
+        // A phone that does not report it leaves the option alone.
+        guard let panel else { return false }
+        let off = panel == .off
+        // The default reads as on, so the first report only says something when
+        // it says off; a later one speaks only on a real transition.
+        let changed = off != panelOff
+        // Only a real transition says something: the first report is just the
+        // truth arriving.
+        if panelReported && changed {
+            panelPill = off ? "Phone screen off" : "Phone screen on"
+            panelPillUntil = time + Self.panelPillSeconds
+        }
+        panelReported = true
+        panelOff = off
+        return changed
+    }
+
+    /// Time passed: true when the panel pill has run out and came down.
+    @discardableResult
+    mutating func tick(at time: TimeInterval) -> Bool {
+        guard let until = panelPillUntil, time >= until else { return false }
+        panelPill = nil
+        panelPillUntil = nil
+        return true
     }
 
     /// A click on the frame: the Wake Screen button while the sleeping cover is

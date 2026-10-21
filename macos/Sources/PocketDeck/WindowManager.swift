@@ -380,6 +380,17 @@ final class WindowManager {
         }
     }
 
+    /// `state.panel`: the phone holds its mirrored panel off for this window.
+    func setPhonePanel(_ panel: PhonePanel?) {
+        for controller in allControllers() {
+            (controller as? PhoneWindowController)?.setPhonePanel(panel)
+        }
+    }
+
+    /// The profile's defaults, for what is remembered per phone (nicknames,
+    /// window styles and "Turn Off Phone Screen").
+    var profileDefaults: UserDefaults { frames }
+
     /// `state.secure`: the phone's mirror is a surface Android blanks.
     func setPhoneSecure(_ secure: Bool) {
         for controller in allControllers() {

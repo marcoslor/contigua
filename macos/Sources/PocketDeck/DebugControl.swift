@@ -15,6 +15,8 @@
 //                    --resize-stream, --minimize-stream, --deminimize-stream,
 //                    --close-stream (timers count from the command)
 //   wake-phone       the phone window's Wake Screen button (phone mode)
+//   panel-menu       Navigate ▸ Turn Off Phone Screen's action, sent through
+//                    the responder chain like the menu item does
 //   nav-click back|home|recents  a click on that bar button: synthetic NSEvents
 //                    at the button's window location, to the control the
 //                    content's hit test finds (never the action itself)
