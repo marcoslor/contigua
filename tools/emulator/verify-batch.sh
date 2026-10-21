@@ -438,7 +438,7 @@ fi
 # --- phone-screen -----------------------------------------------------------
 echo "verify-batch: phone-screen"
 if bash tools/emulator/phone-screen.sh --no-boot > "$OUT/verify-batch-phone-screen.log" 2>&1; then
-  section phone-screen PASS "$(grep -c '^PASS phone-screen:' "$OUT/verify-batch-phone-screen.log") checks: $(grep '^screen-off:' "$OUT/phone-screen.log" 2>/dev/null | tail -1 | cut -c1-40) $(grep '^power:' "$OUT/phone-screen.log" 2>/dev/null | tail -1 | cut -c1-60)"
+  section phone-screen PASS "$(grep -c '^PASS phone-screen:' "$OUT/verify-batch-phone-screen.log") checks: $(grep '^display-on:' "$OUT/phone-screen.log" 2>/dev/null | tail -1 | cut -c1-52) $(grep '^power:' "$OUT/phone-screen.log" 2>/dev/null | tail -1 | cut -c1-40)"
 else
   section phone-screen FAIL "$(grep -c '^FAIL phone-screen:' "$OUT/verify-batch-phone-screen.log") checks (see $OUT/verify-batch-phone-screen.log)"
 fi

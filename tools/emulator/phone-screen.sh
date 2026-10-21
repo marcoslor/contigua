@@ -15,10 +15,10 @@
 #
 # What it proves: after the rig boots and pairs, `input keyevent KEYCODE_SLEEP`
 # makes the phone send `state.screen off`; `phone.wake` at shell UID brings
-# display 0 back (`mWakefulness=Awake`, Display Power ON) and `state.screen on`
-# arrives; the keyguard is still locked afterwards. It never unlocks or
-# dismisses the keyguard and never changes lock settings. Results are states
-# only, in .agent/emu/phone-screen.log.
+# display 0 back (`mWakefulness=Awake`, display 0 ON in `dumpsys display`) and
+# `state.screen on` arrives; the keyguard is still locked afterwards. It never
+# unlocks or dismisses the keyguard and never changes lock settings. Results are
+# states only, in .agent/emu/phone-screen.log.
 set -u
 
 MODE=run
@@ -46,6 +46,8 @@ OUT="$POCKETDECK_AGENT_DIR"
 RESULT="$OUT/phone-screen.log"
 WAKE="$OUT/phone-screen-wake.log"
 POWER="$OUT/phone-screen-power.log"
+DISPLAY_ON="$OUT/phone-screen-display-on.log"
+DISPLAY_OFF="$OUT/phone-screen-display-off.log"
 WINDOW="$OUT/phone-screen-window.log"
 DC=("$PYTHON" tools/fakephone/deckctl.py --host 127.0.0.1 --port "$PORT" \
     --state "$CACHE_DIR/deckctl-state.json")
@@ -54,10 +56,18 @@ FAILED=0
 pass() { echo "PASS phone-screen: $*"; }
 fail() { echo "FAIL phone-screen: $*"; FAILED=1; }
 
+# Display 0's power state from a platform dump: "ON<TAB>mState=ON" (see
+# display-state.py; API 36's dumpsys power names a binder, not the state).
+display_state() { # display_state <display-dump>
+  "$PYTHON" tools/emulator/display-state.py "$1" --power "$POWER" 2>/dev/null || true
+}
+
 # ---- --check: everything that can be wrong before a boot -------------------
 if [ "$MODE" = "check" ]; then
   bash -n "$0" || { echo "CHECK FAIL: syntax"; exit 1; }
   bash tools/emulator/preflight.sh || { echo "CHECK FAIL: preflight"; exit 1; }
+  "$PYTHON" tools/emulator/display-state.py --self-test \
+    || { echo "CHECK FAIL: display-state parser"; exit 1; }
   if "$ADB" devices 2>/dev/null | grep -q "^$SERIAL"; then
     echo "CHECK FAIL: $SERIAL is already running (not ours to touch)"
     exit 1
@@ -150,9 +160,17 @@ emu shell dumpsys power > "$POWER" 2>/dev/null || true
 grep -q 'mWakefulness=Awake' "$POWER" \
   && pass "dumpsys power: mWakefulness=Awake" \
   || fail "dumpsys power is not Awake ($(grep -m1 'mWakefulness' "$POWER"))"
-grep -qE 'Display Power: state=ON' "$POWER" \
-  && pass "dumpsys power: Display Power state=ON" \
-  || fail "display 0 is not ON ($(grep -m1 'Display Power' "$POWER"))"
+
+# API 36 prints `Display Power: com.android.server.power.PowerManagerService$1@…`
+# in dumpsys power, so display 0's own dump is the evidence; the parser keeps
+# the old `Display Power: state=` line as the alternative.
+emu shell dumpsys display > "$DISPLAY_ON" 2>/dev/null || true
+DISPLAY_STATE="$(display_state "$DISPLAY_ON")"
+case "$DISPLAY_STATE" in
+  ON*) pass "display 0 is ON ($(printf '%s' "$DISPLAY_STATE" | cut -f2))" ;;
+  OFF*) fail "display 0 is OFF after the wake ($(printf '%s' "$DISPLAY_STATE" | cut -f2))" ;;
+  *) fail "display 0 state unknown ($(printf '%s' "$DISPLAY_STATE" | cut -f2))" ;;
+esac
 
 emu shell dumpsys window > "$WINDOW" 2>/dev/null || true
 if grep -qiE 'isKeyguardShowing=true|mKeyguardShowing=true' "$WINDOW"; then
@@ -164,11 +182,26 @@ grep -qiE 'isKeyguardLocked=true|mKeyguardLocked=true' "$WINDOW" \
   && pass "dumpsys window: isKeyguardLocked=true" \
   || echo "note phone-screen: no isKeyguardLocked line on this build; the showing line is the evidence"
 
+# The parser must read OFF too, or an always-ON parser would pass this section
+# blind. Sleep the panel once more, capture, wake it again: KEYCODE_WAKEUP only
+# lights the display, it never dismisses the keyguard.
+emu shell input keyevent KEYCODE_SLEEP >/dev/null 2>&1 || true
+sleep 3
+emu shell dumpsys display > "$DISPLAY_OFF" 2>/dev/null || true
+emu shell input keyevent KEYCODE_WAKEUP >/dev/null 2>&1 || true
+DISPLAY_OFF_STATE="$(display_state "$DISPLAY_OFF")"
+case "$DISPLAY_OFF_STATE" in
+  OFF*) pass "with the panel asleep display 0 reads OFF ($(printf '%s' "$DISPLAY_OFF_STATE" | cut -f2))" ;;
+  *) fail "with the panel asleep display 0 is not OFF ($(printf '%s' "$DISPLAY_OFF_STATE" | cut -f2))" ;;
+esac
+
 {
   echo "screen-off: $(grep '^state screen=off' "$WAKE" | tail -1)"
   echo "wake: $(grep '^sent phone.wake' "$WAKE" | tail -1)"
   echo "screen-on: $(grep '^state screen=on' "$WAKE" | tail -1)"
-  echo "power: $(grep -m1 'mWakefulness' "$POWER" | tr -s ' ') / $(grep -m1 'Display Power' "$POWER" | tr -s ' ')"
+  echo "power: $(grep -m1 'mWakefulness' "$POWER" | tr -s ' ')"
+  echo "display-on: $(printf '%s' "$DISPLAY_STATE" | tr '\t' ' ')"
+  echo "display-off: $(printf '%s' "$DISPLAY_OFF_STATE" | tr '\t' ' ')"
   echo "keyguard: $(grep -iE 'isKeyguardShowing=true|mKeyguardShowing=true' "$WINDOW" | head -1 | tr -s ' ')"
   echo "failed: $FAILED"
 } > "$RESULT"
