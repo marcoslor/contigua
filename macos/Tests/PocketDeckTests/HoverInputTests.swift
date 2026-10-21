@@ -230,6 +230,7 @@ final class HoverInputTests: XCTestCase {
         defer { controller.window?.close() }
         let window = try XCTUnwrap(controller.window)
         window.orderFront(nil)
+        controller.noteFirstFrame()
         var sent = Sent()
         controller.videoView.inputMapper?.send = { command in
             if case .hover(let event) = command { sent.hovers.append(event) }
@@ -250,6 +251,7 @@ final class HoverInputTests: XCTestCase {
         let window = try XCTUnwrap(controller.window)
         controller.setStyle(.immersive)
         window.orderFront(nil)
+        controller.noteFirstFrame()
         var sent = Sent()
         controller.videoView.inputMapper?.send = { command in
             if case .hover(let event) = command { sent.hovers.append(event) }

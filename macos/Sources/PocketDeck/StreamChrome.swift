@@ -72,6 +72,9 @@ final class StreamChromeView: NSView {
     /// The phone window's sleeping-panel cover (docs/design/phone-mirror.md):
     /// above the stream, below the pill and the kind's actions.
     let phoneOverlay = PhoneScreenOverlayView(frame: .zero)
+    /// The cover an app (or the phone) window shows until its first frame
+    /// (OpeningCover): above the stream and the sleeping cover, below the chrome.
+    let openingCover = OpeningCoverView(frame: .zero)
     /// Live Text (docs/design/livetext.md): its button rides the bar next to
     /// the kind's actions (or inside the pill), and its status pill says the
     /// window is frozen while the mode is on.
@@ -123,6 +126,8 @@ final class StreamChromeView: NSView {
         layer?.addSublayer(touchDots)
         addSubview(phoneOverlay)
         phoneOverlay.layer?.zPosition = 1.5
+        addSubview(openingCover)
+        openingCover.layer?.zPosition = 1.6
         addSubview(pillView)
         addSubview(actions)
         addSubview(liveTextCapsule)
@@ -216,6 +221,7 @@ final class StreamChromeView: NSView {
         CATransaction.setDisableActions(true)
         touchDots.frame = video.frame
         phoneOverlay.frame = video.frame
+        openingCover.frame = video.frame
         CATransaction.commit()
         // The ext is never hidden: it is the video view's parent (its contentView
         // is the stream), and hiding NSBackgroundExtensionView blanks its

@@ -148,6 +148,20 @@ Material 3, edge-to-edge, dynamic color, light/dark.
 4. **Phone-mode launcher** (runs on the virtual display, shown on the Mac): Material
    search bar + app grid, nothing else.
 
+## Mac windows
+
+### Opening a window
+
+- App window, before its first frame: the app's icon and name, a spinner,
+  **Opening on your phone…**.
+- Phone window: the phone's icon and name, a spinner, **Opening your phone…**.
+- After 5 s: **Still opening…**.
+- After 20 s without a frame: **Couldn't open <app>.** (the phone window:
+  **Couldn't open your phone.**) with **Try Again** and **Close**. Try Again
+  sends the same open again; Close closes the window.
+- The cover is a frozen mode: no input reaches the phone. The "Not responding"
+  watchdog runs only after the first frame.
+
 ## Copy rules
 
 Sentence case. No jargon on primary surfaces ("virtual display", "VD", "stream",

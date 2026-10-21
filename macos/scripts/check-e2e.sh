@@ -3223,10 +3223,33 @@ PY
 # check_mirror — the phone window shows display 0 at the screen's aspect; when
 # the phone turns to landscape the stream and the window turn with it.
 check_mirror() {
+    # The opening cover (docs/UX.md): from the open until the first frame the
+    # window is frozen behind the phone's name and a spinner; after 20 s it
+    # says it could not open. The fake holds the first frame so a quiet run
+    # can see both ends.
     clean
-    # Screen off at 14 s (after the rotation at 6 s); the check wakes it again
-    # through the debug route and the phone resumes its frames.
-    FAKE_ARGS="--rotate-after 6 --screen-off-after 14" start_fake || return 1
+    rm -f "$WORK/chrome.txt"
+    FAKE_ARGS="--first-frame-delay 25" start_fake || return 1
+    launch --connect "127.0.0.1:$PORT" --open-phone --float-windows \
+        --debug-chrome-state "$WORK/chrome.txt" --quit-after 40
+    if wait_until 10 chrome_has "loading=1"; then
+        ok "MIRROR opening cover: loading=1 right after the window opened"
+    else
+        bad "MIRROR opening cover: no loading cover (state: $(chrome_state))"
+    fi
+    if wait_until 25 chrome_has "loading=failed"; then
+        ok "MIRROR opening cover: after 20 s without a frame it says it could not open"
+    else
+        bad "MIRROR opening cover: no failure after 20 s (state: $(chrome_state))"
+    fi
+    stop_app
+    stop_fakephone
+
+    clean
+    rm -f "$WORK/chrome.txt"
+    # The first frame 3 s in: long enough for the cover to be seen, short
+    # enough for the aspect and rotation steps below.
+    FAKE_ARGS="--first-frame-delay 3 --rotate-after 6 --screen-off-after 14" start_fake || return 1
     # The pointer comes to the top edge to bring the header in (glass nav buttons).
     printf '%s\n' "wait 1" "hoverat 0 200" "wait 0.03" "hoverat 0 150" "wait 0.03" "hoverat 0 120" \
         "wait 0.03" "hoverat 0 90" "wait 0.03" "hoverat 0 70" "wait 0.03" "hoverat 0 58" > "$WORK/mirror.txt"
@@ -3234,6 +3257,16 @@ check_mirror() {
     launch --connect "127.0.0.1:$PORT" --open-phone --float-windows \
         --debug-chrome-state "$WORK/chrome.txt" --debug-input-script "$WORK/mirror.txt" \
         --debug-control "$WORK/control" --quit-after 60
+    if wait_until 5 chrome_has "loading=1"; then
+        ok "MIRROR opening cover: the window is covered before its first frame"
+    else
+        bad "MIRROR opening cover: the window showed no cover before the first frame (state: $(chrome_state))"
+    fi
+    if wait_until 15 chrome_has "loading=0"; then
+        ok "MIRROR opening cover: the first frame took the cover away"
+    else
+        bad "MIRROR opening cover: the cover stayed after the first frame (state: $(chrome_state))"
+    fi
     # repro wake-on-open: opening the window sends one phone.wake.
     if wait_until 15 events_have '"t":"phone.wake"'; then
         ok "MIRROR repro wake-on-open: opening the phone window sent phone.wake"
