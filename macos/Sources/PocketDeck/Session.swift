@@ -73,6 +73,23 @@ struct AppInfo: Equatable {
         label = json["label"] as? String ?? pkg
         activity = json["activity"] as? String
     }
+
+    /// The identity a list entry is drawn and chosen by. A package can be
+    /// launchable through more than one activity (a dual-messenger clone, a
+    /// second launcher entry), and two entries with the same package gave the
+    /// grid two equal ids: SwiftUI then draws neither of them, which is the
+    /// person's empty slot. Launches already go by the activity, so it is the
+    /// key here too.
+    var id: String { activity ?? pkg }
+
+    /// The words under the tile. A phone can send a blank label, or none at all
+    /// (the decoder then carries the package as the label); the cell must still
+    /// say what it opens, so the package's last part stands in for a dotted id.
+    var displayLabel: String {
+        let trimmed = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.isEmpty || trimmed == pkg else { return trimmed }
+        return pkg.split(separator: ".").last.map(String.init) ?? pkg
+    }
 }
 
 /// Video payloads, delivered off the main thread.

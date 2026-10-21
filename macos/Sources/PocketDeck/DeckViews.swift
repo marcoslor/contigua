@@ -551,7 +551,7 @@ final class GridNavigator {
         let list = apps()
         switch keyCode {
         case 36, 76: // Return
-            guard let target = list.first(where: { $0.pkg == selection }) ?? list.first else { return false }
+            guard let target = list.first(where: { $0.id == selection }) ?? list.first else { return false }
             controller.openApp(target)
             return true
         case 53: // Esc
@@ -563,15 +563,24 @@ final class GridNavigator {
             // Left/right belong to the text caret while there is text.
             guard vertical || !hasQuery() else { return false }
             let direction: GridDirection = [123: .left, 124: .right, 125: .down, 126: .up][keyCode]!
-            let current = list.firstIndex { $0.pkg == selection }
+            let current = list.firstIndex { $0.id == selection }
             if let next = GridNavigation.move(current, count: list.count, columns: columns, direction) {
-                selection = list[next].pkg
+                selection = list[next].id
             }
             return true
         default:
             return false
         }
     }
+}
+
+/// One drawn cell: the app and the identity the grid keys it by. Two cells with
+/// the same id draw as nothing (the reported empty slot), so the identity lives
+/// in `AppInfo.id` and this type is what the grid and its e2e dump share.
+struct DeckCell: Identifiable, Equatable {
+    let app: AppInfo
+    var id: String { app.id }
+    var label: String { app.displayLabel }
 }
 
 /// The grid's geometry. Tiles keep their size; the gaps between columns grow
@@ -614,18 +623,24 @@ struct AppGrid: View {
                             .frame(maxWidth: .infinity, minHeight: 120)
                     } else {
                         grid {
-                            ForEach(apps, id: \.pkg) { app in
-                                AppCell(app: app, icon: controller.icons[app.pkg],
-                                        rendered: controller.deckIcons[app.pkg],
-                                        iconIsMissing: iconIsMissing(app),
-                                        selected: navigator.selection == app.pkg) { controller.openApp(app) }
-                                    .id(app.pkg)
-                                    .contextMenu { DockMenuItems(app: app) }
+                            ForEach(cells) { cell in
+                                AppCell(app: cell.app, icon: controller.icons[cell.app.pkg],
+                                        rendered: controller.deckIcons[cell.app.pkg],
+                                        iconIsMissing: iconIsMissing(cell.app),
+                                        selected: navigator.selection == cell.id) { controller.openApp(cell.app) }
+                                    .id(cell.id)
+                                    .contextMenu { DockMenuItems(app: cell.app) }
                             }
                         }
                     }
                 }
                 .frame(maxWidth: .infinity)
+            }
+            .task(id: cells.map(\.id)) {
+                DeckGridProbe.report(cells, icons: controller.icons,
+                                     rendered: controller.deckIcons,
+                                     missing: controller.missingIcons,
+                                     online: controller.link.isOnline)
             }
             // The scroll view's own width (the grid must not size itself, or it would never
             // shrink with the window) minus the space a legacy scroller takes.
@@ -640,10 +655,22 @@ struct AppGrid: View {
         }
     }
 
+    /// What the grid draws: one cell per launch target, never two cells with
+    /// the same id (a phone can repeat an entry; SwiftUI draws a repeated id as
+    /// an empty slot). The order the phone sent is kept.
+    private var cells: [DeckCell] { AppGrid.entries(apps) }
+
     /// Nothing more is coming for this icon: the phone said it has none, or
     /// the link is down.
     private func iconIsMissing(_ app: AppInfo) -> Bool {
         controller.missingIcons.contains(app.pkg) || !controller.link.isOnline
+    }
+
+    /// The cells the grid draws, one per id. Internal for the tests: a
+    /// duplicate id is the person's empty slot.
+    static func entries(_ apps: [AppInfo]) -> [DeckCell] {
+        var seen = Set<String>()
+        return apps.filter { seen.insert($0.id).inserted }.map(DeckCell.init)
     }
 
     private func grid<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
@@ -674,7 +701,7 @@ struct AppCell: View {
             VStack(spacing: 6) {
                 AppIconView(app: app, image: icon, rendered: rendered, isMissing: iconIsMissing,
                             glassOn: glassIconsOn, hovering: hovering)
-                Text(app.label)
+                Text(app.displayLabel)
                     .font(.caption)
                     .lineLimit(1)
                     .truncationMode(.middle)

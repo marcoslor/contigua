@@ -45,6 +45,8 @@ struct LaunchOptions {
     var debugChromeState: String?
     /// `--debug-banner FILE`: the deck window's banner text, one line per change (e2e).
     var debugBanner: String?
+    /// `--debug-deck-grid FILE`: the app grid's drawn cells (e2e `deck`).
+    var debugDeckGrid: String?
     var audioStatsFile: String?
     var profileName = Profile.defaultName
     /// `--share-dir DIR`: where images shared from the phone are saved (default ~/Downloads/PocketDeck).
@@ -211,6 +213,8 @@ struct LaunchOptions {
                 options.debugChromeState = next()
             case "--debug-banner":
                 options.debugBanner = next()
+            case "--debug-deck-grid":
+                options.debugDeckGrid = next()
             case "--audio-stats":
                 options.audioStatsFile = next()
             case "--profile":
