@@ -309,6 +309,16 @@ final class WindowManager {
 
     @discardableResult
     func openApp(pkg: String, activity: String? = nil) -> AppWindowController {
+        // A dock click (or a second open request) while the app is still
+        // opening raises the window that is already waiting instead of asking
+        // the phone for another stream. The v104 log had seven opens of Chrome
+        // while the first window was black; each was a second launch on the
+        // phone and none of them made the picture come sooner.
+        if let opening = allControllers().compactMap({ $0 as? AppWindowController })
+            .first(where: { $0.pkg == pkg && $0.isOpening }) {
+            opening.window?.makeKeyAndOrderFront(nil)
+            return opening
+        }
         let label = appsByPkg[pkg]?.label ?? pkg
         let controller = open {
             AppWindowController(stream: $0, pkg: pkg, activity: activity, label: label, manager: self)
