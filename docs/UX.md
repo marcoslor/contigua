@@ -120,12 +120,16 @@ Material 3, edge-to-edge, dynamic color, light/dark.
      being swiped away from Recents and starts at boot. Off: it runs only while
      PocketDeck's task is open, then stops (and closes its listening socket)
      when the task is swiped away; no boot start. Default off.
+   - Divider, then the connection switches:
    - Switch: "Allow connections" (master: off refuses every Mac, paired or not,
      drops live sessions and stops advertising). Default on. Independent of the
      background switch: turning it on flips only this one.
    - Switch: "Allow new pairings" (off refuses unknown Macs before any code;
      paired Macs still connect). Greyed out while "Allow connections" is off.
      Default on.
+   - Divider, then the sharing switch: "Share notifications and Now Playing",
+     always with a line under it — "Only while a Mac is connected. Off by
+     default." when off, the granted hint when on. Default off.
    - "Paired Macs" list (name, last connected, Forget via swipe or overflow).
    - FAB or tonal button: **Pair new Mac** (QR scan).
 3. **Pairing prompt**: high-priority notification with the code and Allow/Deny, and,
