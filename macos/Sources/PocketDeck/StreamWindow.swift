@@ -311,7 +311,6 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         style = next
         if let key = styleKey { manager.styleStore.set(style, forKey: key) }
         StreamMenuState.shared.style = style
-        ImmersiveMenuInstaller.refresh(style: style)
         chrome.setStyle(style)
         configureDwell()
         writeChromeState()
@@ -636,7 +635,6 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         state.phoneWindow = self is PhoneWindowController
         state.panelOff = (self as? PhoneWindowController)?.panelOffShown ?? false
         state.revealDelay = manager.revealDelay
-        ImmersiveMenuInstaller.refresh(style: style)
     }
 
     func windowDidResignKey(_ notification: Notification) {

@@ -103,13 +103,41 @@ struct AppCommands: Commands {
                 Label("Live Text", systemImage: "text.viewfinder")
             }
             .keyboardShortcut("t", modifiers: [.command, .shift])
-            Divider()
-            // View ▸ Framed / Immersive / Hide Controls: AppKit's items
-            // (ImmersiveMenuInstaller.swift), inserted here between the two
-            // dividers. Framed and Immersive are one radio pair for the front
-            // window; Hide Controls is the reveal choice's submenu and is only
-            // enabled while the window is immersive, so a choice is never also
-            // a submenu's parent.
+            // View ▸ Framed / Immersive: one radio pair for the key stream
+            // window, built by the commands themselves. A Picker's inline style
+            // renders the pair as checkmarked radio items and re-reads the
+            // selection when the menu updates; a Toggle does not (both radios
+            // stay checked after a pick), and an AppKit item inserted here is
+            // dropped the moment SwiftUI rebuilds the menu — how the person's
+            // v104 and v107 menus lost these.
+            Picker(selection: Binding(
+                get: { streamMenu.style },
+                set: { controller.windows.setKeyWindowStyle($0) })) {
+                ForEach(MenuModel.styles, id: \.self) { style in
+                    Text(style.label).tag(style)
+                }
+            } label: {
+                EmptyView()
+            }
+            .pickerStyle(.inline)
+            .labelsHidden()
+            // The reveal choice: enabled only while the window is immersive, so
+            // a choice is never also a submenu's parent (Framed/Immersive above
+            // own the style).
+            Menu {
+                ForEach(MenuModel.hideControls, id: \.self) { entry in
+                    if entry == .separator {
+                        Divider()
+                    } else {
+                        Toggle(entry.title, isOn: Binding(
+                            get: { ImmersiveMenuModel.isChecked(entry, reveal: streamMenu.revealDelay) },
+                            set: { _ in controller.windows.pickImmersive(entry) }))
+                    }
+                }
+            } label: {
+                Text("Hide Controls")
+            }
+            .disabled(!MenuModel.hideControlsEnabled(style: streamMenu.style))
             Divider()
             // View ▸ Density: the key stream window's app override, remembered
             // per app (WindowDensityStore) and applied to every open window of
