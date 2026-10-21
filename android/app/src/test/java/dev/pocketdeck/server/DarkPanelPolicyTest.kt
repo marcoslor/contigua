@@ -192,46 +192,28 @@ class DarkPanelPolicyTest {
 
     // --- "Turn Off Phone Screen" --------------------------------------
 
+    /// The policy never darkens the panel a person mirrors: the hold's machine
+    /// owns that (PanelHoldTest), and decidePanelPlan ORs its panel-off in.
+    /// With no hold the mirrored panel stays exactly as the person has it.
     @Test
-    fun `turn off phone screen holds the mirrored panel off`() {
+    fun `the policy never darkens the mirrored panel`() {
         val p = policy()
         p.streamsStarted()
-        val on = p.step(panelOn = true, strategy = PanelStrategy.PANEL_ALONE)
-        assertFalse("by default the mirrored panel stays as it is", on.panelOff)
-        assertTrue(p.requestMirrorOff(true))
-        val off = p.step(panelOn = true, strategy = PanelStrategy.PANEL_ALONE)
-        assertTrue("the request powers the mirrored panel off", off.panelOff)
-        assertTrue("the first step re-applies like a take-over", off.transitional)
-        val steady = p.step(panelOn = true, strategy = PanelStrategy.PANEL_ALONE)
-        assertTrue(steady.panelOff)
-        assertFalse(steady.transitional)
-        assertTrue("the mirror's frames keep the group awake", steady.wake)
-
-        // The person's power button on the phone ends it: the phone wins.
-        assertTrue(p.userPressedPower())
-        assertFalse("the request ends with the power press", p.mirrorOffRequested)
+        val plan = p.step(panelOn = true, strategy = PanelStrategy.PANEL_ALONE)
+        assertFalse(plan.panelOff)
+        assertTrue("the mirror's frames keep the group awake", plan.wake)
+        assertFalse(plan.transitional)
+        // A dark app episode ends when the mirror opens.
+        p.step(panelOn = false, strategy = PanelStrategy.PANEL_DARK)
         assertFalse(p.step(panelOn = true, strategy = PanelStrategy.PANEL_ALONE).panelOff)
     }
 
     @Test
-    fun `turning the option off gives the mirror's panel back`() {
+    fun `closing the phone window does not leave the policy owning anything`() {
         val p = policy()
         p.streamsStarted()
-        assertTrue(p.requestMirrorOff(true))
-        assertTrue(p.step(panelOn = true, strategy = PanelStrategy.PANEL_ALONE).panelOff)
-        assertTrue(p.requestMirrorOff(false))
-        assertFalse(p.step(panelOn = true, strategy = PanelStrategy.PANEL_ALONE).panelOff)
-        assertFalse("no change, no state echo", p.requestMirrorOff(false))
-    }
-
-    @Test
-    fun `closing the phone window ends the request`() {
-        val p = policy()
-        p.streamsStarted()
-        p.requestMirrorOff(true)
         p.step(panelOn = true, strategy = PanelStrategy.PANEL_ALONE)
-        assertTrue("we held the panel: the caller restores it", p.streamsStopped())
-        assertFalse(p.mirrorOffRequested)
+        assertFalse("the mirror never took the panel", p.streamsStopped())
     }
 
     // --- stopping ----------------------------------------------------
