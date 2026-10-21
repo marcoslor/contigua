@@ -387,6 +387,14 @@ final class WindowManager {
         }
     }
 
+    /// Navigate ▸ Turn Off Phone Screen for the open phone window. The phone is
+    /// the one that holds the panel, so this only asks; the check follows its
+    /// report.
+    func togglePhonePanelOff() {
+        guard let phone = phoneWindow else { return }
+        NSApp.sendAction(#selector(PhoneWindowController.togglePanelOffMenuAction(_:)), to: phone, from: nil)
+    }
+
     /// The profile's defaults, for what is remembered per phone (nicknames,
     /// window styles and "Turn Off Phone Screen").
     var profileDefaults: UserDefaults { frames }

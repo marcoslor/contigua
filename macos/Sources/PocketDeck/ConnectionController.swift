@@ -2341,14 +2341,11 @@ final class ConnectionController {
             phone.wakeScreen()
             return nil
         case "panel-menu":
-            // Navigate ▸ Turn Off Phone Screen's action, sent the way the menu
-            // sends it (a nil target through the responder chain). The e2e
-            // reads the built menu with `menudump` for the item and its check.
+            // Navigate ▸ Turn Off Phone Screen: the same WindowManager call the
+            // menu item's binding makes, which sends the phone window's own
+            // action (its target, like a menu item's).
             guard windows.phoneWindow != nil else { return "no phone window" }
-            guard NSApp.sendAction(#selector(PhoneWindowController.togglePanelOffMenuAction(_:)),
-                                   to: nil, from: nil) else {
-                return "no phone window in the responder chain"
-            }
+            windows.togglePhonePanelOff()
             return nil
         case "nav-click":
             // A click on the phone window's Back / Home / Recents button,

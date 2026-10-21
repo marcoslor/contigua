@@ -191,7 +191,7 @@ struct AppCommands: Commands {
             // check follows the phone's `state.panel`, never a local guess.
             Toggle(isOn: Binding(
                 get: { streamMenu.panelOff },
-                set: { _ in send(#selector(PhoneWindowController.togglePanelOffMenuAction(_:))) })) {
+                set: { _ in controller.windows.togglePhonePanelOff() })) {
                 Label("Turn Off Phone Screen", systemImage: "iphone.slash")
             }
             .disabled(!streamMenu.phoneWindow)
