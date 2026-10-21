@@ -2622,9 +2622,12 @@ menu_dump_ok() {
 import json, sys
 APP_ITEMS = ["Add Phone…", "Find Apps", "Phone Window", "Continue on Mac", "Show Touches",
              "Live Text", "Framed", "Immersive", "Hide Controls", "Density",
-             "Toggle Window Style", "Back", "Home", "Recents"]
+             "Turn Off Phone Screen", "Do Not Disturb", "Ring Phone", "Install APK…",
+             "Back", "Home", "Recents"]
+# SwiftUI items often have no target at all (nil action target); an item the
+# app installed with AppKit carries one of the app's own classes.
 SYSTEM_OWNERS = {"MenuItemCallback", "SwiftUIMenu", "NSMenu", "NSWindow", "NSApplication",
-                 "AppKitApplication", "NSMenuItem"}
+                 "AppKitApplication", "NSMenuItem", None}
 def walk(items):
     for item in items:
         yield item
@@ -2636,18 +2639,26 @@ for line in root.get("problems") or []:
     menu, _, what = line.partition(": ")
     if "follows another" in what or "leading" in what or menu in ("View", "Phone", "Navigate"):
         problems.append("shape " + line)
-view = next((i for i in root["items"] if i["title"] == "View"), None)
-if view is None:
-    problems.append("no View menu")
-else:
-    seq = ["—" if item["isSeparator"] else item["title"] for item in view["submenu"]]
-    # The pair is an inline Picker, which draws its own section separator
-    # after it; Hide Controls follows, then Show Touches/Live Text and Density.
-    want = ["Find Apps", "Phone Window", "Continue on Mac", "—",
-            "Framed", "Immersive", "—", "Hide Controls", "—",
-            "Show Touches", "Live Text", "—", "Density"]
+titles = [i["title"] for i in root["items"]]
+if titles != ["PocketDeck", "File", "Edit", "View", "Phone", "Navigate", "Window", "Help"]:
+    problems.append("menus: %r" % (titles,))
+WANT = {
+    "View": ["Find Apps", "—", "Framed", "Immersive", "—", "Hide Controls", "—",
+             "Show Touches", "Live Text", "—", "Density"],
+    "Phone": ["Phone Window", "Continue on Mac", "—", "Turn Off Phone Screen",
+              "Do Not Disturb", "Ring Phone", "—", "Install APK…"],
+    "Navigate": ["Back", "Home", "Recents"],
+}
+for title, want in WANT.items():
+    menu = next((i for i in root["items"] if i["title"] == title), None)
+    if menu is None:
+        problems.append("no %s menu" % title)
+        continue
+    seq = ["—" if item["isSeparator"] else item["title"] for item in menu["submenu"]]
     if seq != want:
-        problems.append("View: %r wanted %r" % (seq, want))
+        problems.append("%s: %r wanted %r" % (title, seq, want))
+view = next((i for i in root["items"] if i["title"] == "View"), None)
+if view is not None:
     by_title = {item["title"]: item for item in view["submenu"]}
     states = [by_title.get("Framed", {}).get("state"), by_title.get("Immersive", {}).get("state")]
     if sorted(states) != ["off", "on"]:
@@ -2831,6 +2842,25 @@ for title, key in [("Larger", "+"), ("Smaller", "-"), ("Actual Size", "0")]:
         print(title, "shortcut:", repr(item["keyEquivalent"]), item["modifiers"]); sys.exit(1)
 if by_title["Default (100%)"]["state"] != "on":
     print("Default is not checked with no override:", by_title["Default (100%)"]["state"]); sys.exit(1)
+PY
+
+    python3 - "$WORK/menus-1.json" <<'PY' && ok "MENUS the Phone menu: ⌘P/⇧⌘C, and its controls are disabled with no phone" \
+        || bad "MENUS a Phone control that cannot work is enabled"
+import json, sys
+root = json.load(open(sys.argv[1]))
+phone = next(i for i in root["items"] if i["title"] == "Phone")
+by_title = {i["title"]: i for i in phone["submenu"] if not i["isSeparator"]}
+if by_title["Phone Window"]["keyEquivalent"] != "p" or by_title["Phone Window"]["modifiers"] != ["command"]:
+    print("Phone Window shortcut:", repr(by_title["Phone Window"]["keyEquivalent"]),
+          by_title["Phone Window"]["modifiers"]); sys.exit(1)
+if by_title["Continue on Mac"]["keyEquivalent"] != "c" or \
+        by_title["Continue on Mac"]["modifiers"] != ["command", "shift"]:
+    print("Continue on Mac shortcut:", repr(by_title["Continue on Mac"]["keyEquivalent"]),
+          by_title["Continue on Mac"]["modifiers"]); sys.exit(1)
+enabled = [t for t in ("Phone Window", "Continue on Mac", "Turn Off Phone Screen",
+                       "Do Not Disturb", "Ring Phone", "Install APK…") if by_title[t]["enabled"]]
+if enabled:
+    print("enabled with no phone:", enabled); sys.exit(1)
 PY
 
     # The temporary Bar Prototype picker is gone: the bar has one geometry
@@ -3644,7 +3674,7 @@ check_mirror() {
     else
         bad "MIRROR frames did not resume after the wake"
     fi
-    # "Turn Off Phone Screen" (docs/design/phone-mirror.md): Navigate ▸ the item's
+    # "Turn Off Phone Screen" (docs/design/phone-mirror.md): Phone ▸ the item's
     # own action, the phone hears phone.panel off, the mirror keeps sending
     # frames and the bar says so; the phone's power press ends it and the Mac
     # follows the echoed state.

@@ -2353,7 +2353,7 @@ final class ConnectionController {
             }
             return nil
         case "panel-menu":
-            // Navigate ▸ Turn Off Phone Screen: the same WindowManager call the
+            // Phone ▸ Turn Off Phone Screen: the same WindowManager call the
             // menu item's binding makes, which sends the phone window's own
             // action (its target, like a menu item's).
             guard windows.phoneWindow != nil else { return "no phone window" }
