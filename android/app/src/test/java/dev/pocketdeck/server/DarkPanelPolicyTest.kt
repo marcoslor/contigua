@@ -146,6 +146,50 @@ class DarkPanelPolicyTest {
         assertFalse(next.transitional)
     }
 
+    // --- the phone window and the panel it mirrors --------------------
+
+    @Test
+    fun `the mirror keeps the shared-group panel on`() {
+        val p = policy()
+        assertEquals("a phone window watching the panel is no reason to darken it",
+                     PanelStrategy.PANEL_ALONE, p.strategy(listOf(ownGroup, panelGroup), mirroring = true))
+        p.streamsStarted()
+        val plan = p.step(panelOn = true, strategy = PanelStrategy.PANEL_ALONE)
+        assertTrue("the app window's group stays awake", plan.wake)
+        assertFalse("never power off the panel the person mirrors", plan.panelOff)
+        assertFalse(plan.transitional)
+        assertFalse("a mirror never wakes the phone", DarkPanelPolicy.wakesGroup(PanelStrategy.PANEL_ALONE, plan))
+        assertTrue("the mirror steps at the shared-group cadence",
+                   DarkPanelPolicy.keepAliveIntervalMs(PanelStrategy.PANEL_ALONE, displayLockHeld = false) < 6_000)
+    }
+
+    @Test
+    fun `the forced debug path also spares the mirrored panel`() {
+        assertEquals(PanelStrategy.PANEL_ALONE, policy(forced = true).strategy(listOf(ownGroup), mirroring = true))
+    }
+
+    @Test
+    fun `a mirror opened during a dark episode hands the panel back`() {
+        val p = policy()
+        p.streamsStarted()
+        p.step(panelOn = false, strategy = PanelStrategy.PANEL_DARK)
+        val mirrored = p.step(panelOn = true, strategy = PanelStrategy.PANEL_ALONE)
+        assertFalse("the panel comes back for the mirror", mirrored.panelOff)
+        assertFalse(DarkPanelPolicy.wakesGroup(PanelStrategy.PANEL_ALONE, mirrored))
+        // Closing the mirror returns to the app window's path: the panel is on
+        // and belongs to the person, so it is not darkened under them.
+        val back = p.step(panelOn = true, strategy = PanelStrategy.PANEL_DARK)
+        assertFalse(back.panelOff)
+    }
+
+    @Test
+    fun `without a mirror the shared group still darkens the panel`() {
+        val p = policy()
+        p.streamsStarted()
+        val plan = p.step(panelOn = false, strategy = p.strategy(listOf(panelGroup), mirroring = false))
+        assertTrue(plan.panelOff)
+    }
+
     // --- stopping ----------------------------------------------------
 
     @Test

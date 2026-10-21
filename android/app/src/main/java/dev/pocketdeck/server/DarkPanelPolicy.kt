@@ -9,6 +9,14 @@ internal enum class PanelStrategy {
 
     /** The streaming displays share the panel's group: wake it, then power the panel off. */
     PANEL_DARK,
+
+    /**
+     * A phone window is mirroring display 0, so the panel shows the same thing
+     * the person is looking at: keep the group awake and never power the panel
+     * off. Off means off through the platform's own timeout, and only when the
+     * person asks for it ("Turn Off Phone Screen").
+     */
+    PANEL_ALONE,
 }
 
 /** What [AndroidPower] should do for one keep-alive step. */
@@ -48,10 +56,14 @@ internal class DarkPanelPolicy(private val forced: Boolean) {
 
     val isForced: Boolean get() = forced
 
-    /** Strategy for the given display groups of the currently streaming displays. */
-    fun strategy(activeGroups: List<Int>): PanelStrategy =
+    /**
+     * Strategy for the given display groups of the currently streaming
+     * displays. [mirroring] says a phone window is showing display 0: the panel
+     * then has a person watching it, so it is never forced off.
+     */
+    fun strategy(activeGroups: List<Int>, mirroring: Boolean = false): PanelStrategy =
         if (forced || activeGroups.any { it == DisplayProbe.DEFAULT_GROUP_ID }) {
-            PanelStrategy.PANEL_DARK
+            if (mirroring) PanelStrategy.PANEL_ALONE else PanelStrategy.PANEL_DARK
         } else {
             PanelStrategy.GROUP_ONLY
         }
@@ -69,6 +81,15 @@ internal class DarkPanelPolicy(private val forced: Boolean) {
      */
     fun step(panelOn: Boolean, strategy: PanelStrategy): PanelPlan {
         if (strategy == PanelStrategy.GROUP_ONLY) {
+            return PanelPlan(wake = true, panelOff = false, transitional = false)
+        }
+        if (strategy == PanelStrategy.PANEL_ALONE) {
+            // The mirror is the panel: keep the group awake for its app windows
+            // and otherwise leave the panel exactly as the person has it. A
+            // dark episode ends here (the caller powers the panel back on).
+            pausedAtMs = null
+            phase = Phase.INIT
+            sawPanelOn = false
             return PanelPlan(wake = true, panelOff = false, transitional = false)
         }
         var transitional = false
@@ -202,13 +223,15 @@ internal class DarkPanelPolicy(private val forced: Boolean) {
          * Whether a step may call the platform wake. An own group can always be
          * woken: the panel is not involved. A shared group is a full phone wake,
          * which would undo the user's power press and start face unlock, so it
-         * is only woken when [step] takes the panel over (`transitional`).
+         * is only woken when [step] takes the panel over (`transitional`) — and
+         * never while the person is mirroring the panel.
          */
         fun wakesGroup(strategy: PanelStrategy, plan: PanelPlan): Boolean =
             plan.wake && (strategy == PanelStrategy.GROUP_ONLY || plan.transitional)
 
         fun keepAliveIntervalMs(strategy: PanelStrategy, displayLockHeld: Boolean): Long = when {
-            strategy == PanelStrategy.PANEL_DARK -> SHARED_GROUP_INTERVAL_MS
+            strategy == PanelStrategy.PANEL_DARK || strategy == PanelStrategy.PANEL_ALONE ->
+                SHARED_GROUP_INTERVAL_MS
             displayLockHeld -> GROUP_LOCK_INTERVAL_MS
             else -> TIMER_INTERVAL_MS
         }
