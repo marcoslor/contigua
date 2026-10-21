@@ -65,8 +65,9 @@ class DeckViewModel(app: Application) : AndroidViewModel(app) {
         ShizukuClient.addListener(shizukuClientListener)
         runCatching { Shizuku.addRequestPermissionResultListener(shizukuPermissionListener) }
         refresh()
-        val ctx = getApplication<Application>()
-        if (Prefs.isEnabled(ctx)) DeckForegroundService.start(ctx)
+        // The service runs while the app's task exists; the background switch
+        // only decides whether it also outlives the task and starts at boot.
+        DeckForegroundService.start(getApplication())
     }
 
     override fun onCleared() {
@@ -182,7 +183,10 @@ class DeckViewModel(app: Application) : AndroidViewModel(app) {
         val ctx = getApplication<Application>()
         Prefs.setEnabled(ctx, value)
         DeckState.enabled = value
-        if (value) DeckForegroundService.start(ctx) else DeckForegroundService.stop(ctx)
+        // Off does not stop the service: it keeps serving while the task is
+        // open and stops on its own when the task leaves Recents. On also
+        // makes it start at boot and survive that swipe (BootReceiver).
+        if (value) DeckForegroundService.start(ctx)
         refresh()
     }
 
@@ -251,10 +255,7 @@ class DeckViewModel(app: Application) : AndroidViewModel(app) {
     fun runStatusAction(kind: AttentionKind) {
         val ctx = getApplication<Application>()
         when (kind) {
-            AttentionKind.CONNECTIONS_OFF -> {
-                val ctx = getApplication<Application>()
-                if (Prefs.isEnabled(ctx)) setAllowConnections(true) else setEnabled(true)
-            }
+            AttentionKind.CONNECTIONS_OFF -> setAllowConnections(true)
             AttentionKind.SHIZUKU_NOT_RUNNING -> openShizuku()
             AttentionKind.SHIZUKU_PERMISSION -> allowShizuku()
             AttentionKind.RETRY -> {

@@ -47,6 +47,7 @@
 
     <!-- home -->
     <string name="status_ready">Ready</string>
+    <string name="status_ready_until_closed_body">Stops when you close PocketDeck from recent apps.</string>
     <string name="wifi_default">Wi-Fi</string>
     <string name="status_visible_on">Visible to Macs on %1$s</string>
     <string name="status_connected">Connected to %1$s</string>
@@ -65,7 +66,7 @@
     <string name="action_turn_on">Turn on</string>
     <string name="action_retry">Retry</string>
 
-    <string name="home_keep_running">Keep PocketDeck running</string>
+    <string name="home_keep_running">Keep running in the background</string>
     <string name="home_allow_connections">Allow connections</string>
     <string name="home_allow_pairings">Allow new pairings</string>
     <string name="home_allow_pairings_hint">Turn on Allow connections first.</string>

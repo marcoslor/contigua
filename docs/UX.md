@@ -113,9 +113,16 @@ Material 3, edge-to-edge, dynamic color, light/dark.
 2. **Home**:
    - Big status card: **Ready** · "Visible to Macs on *Wi-Fi name*" / **Connected to
      *Mac name*** · "*N* windows open" / **Shizuku not running** (with fix button).
-   - Switch: "Keep PocketDeck running" (starts/stops the background service).
+     With the background switch off the card still says **Ready**, with
+     "Stops when you close PocketDeck from recent apps." — information, not a
+     warning, and no button.
+   - Switch: "Keep running in the background". On: the service survives the app
+     being swiped away from Recents and starts at boot. Off: it runs only while
+     PocketDeck's task is open, then stops (and closes its listening socket)
+     when the task is swiped away; no boot start. Default off.
    - Switch: "Allow connections" (master: off refuses every Mac, paired or not,
-     drops live sessions and stops advertising). Default on.
+     drops live sessions and stops advertising). Default on. Independent of the
+     background switch: turning it on flips only this one.
    - Switch: "Allow new pairings" (off refuses unknown Macs before any code;
      paired Macs still connect). Greyed out while "Allow connections" is off.
      Default on.

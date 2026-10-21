@@ -302,10 +302,14 @@ private fun statusTitle(state: DeckUiState): String = when (state.status.state) 
 
 @Composable
 private fun statusSubtitle(state: DeckUiState): String = when (state.status.state) {
-    StatusState.READY -> stringResource(
-        R.string.status_visible_on,
-        state.wifiName ?: stringResource(R.string.wifi_default),
-    )
+    StatusState.READY -> if (state.status.untilTaskClosed) {
+        stringResource(R.string.status_ready_until_closed_body)
+    } else {
+        stringResource(
+            R.string.status_visible_on,
+            state.wifiName ?: stringResource(R.string.wifi_default),
+        )
+    }
 
     StatusState.CONNECTED -> if (state.windows == 1) {
         stringResource(R.string.status_windows_one)

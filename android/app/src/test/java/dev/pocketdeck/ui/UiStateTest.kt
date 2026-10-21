@@ -29,8 +29,23 @@ class UiStateTest {
 
     @Test
     fun `connections off needs attention with the turn-on action`() {
-        val status = mapStatus(readyInput.copy(enabled = false))
+        val status = mapStatus(readyInput.copy(allowConnections = false))
         assertEquals(DeckStatus(StatusState.NEEDS_ATTENTION, AttentionKind.CONNECTIONS_OFF), status)
+    }
+
+    @Test
+    fun `background off is ready and informational, not a warning`() {
+        // Off only means "stops when the task is swiped away"; it is not a
+        // connection problem, so the card must not warn or offer a fix.
+        val status = mapStatus(readyInput.copy(enabled = false))
+        assertEquals(StatusState.READY, status.state)
+        assertEquals(AttentionKind.NONE, status.attention)
+    }
+
+    @Test
+    fun `connections off outranks the background switch`() {
+        val status = mapStatus(readyInput.copy(enabled = false, allowConnections = false))
+        assertEquals(AttentionKind.CONNECTIONS_OFF, status.attention)
     }
 
     @Test
@@ -55,7 +70,7 @@ class UiStateTest {
 
     @Test
     fun `connections off outranks a broken shizuku`() {
-        val status = mapStatus(StatusInput(false, false, false, -1, null))
+        val status = mapStatus(StatusInput(false, false, false, -1, null, allowConnections = false))
         assertEquals(AttentionKind.CONNECTIONS_OFF, status.attention)
     }
 
