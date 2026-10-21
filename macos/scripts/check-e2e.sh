@@ -2599,45 +2599,21 @@ PY
     stop_fakephone
 }
 
-# --- MENUS: the View and Window menus (menu-polish) -------------------------
+# --- MENUS: the whole menu bar after every rebuild (menu-ux) ----------------
 
-# check_menus — the View menu has no section titles and no full-screen item;
-# Framed/Immersive are plain radio items; the Window menu owns the only full
-# screen item (🌐F); every item the app draws itself has an SF Symbol. The
-# window's Enter/Exit title needs native full screen (a real Space), so that
-# step is visible-only.
-check_menus() {
-    begin_shared || return 1
-    rm -f "$WORK/menus.json" "$WORK/menus-after.json" "$WORK/menus-long.json" "$WORK/menus-picked" "$WORK/menus-step-full" "$WORK/menus-step-exit" "$WORK/menus-full.json" \
-        "$WORK/menus-step-touch" "$WORK/menus-touch.png" "$WORK/chrome.txt"
-    printf '%s\n' "wait 1.5" "menudump $WORK/menus.json" \
-        "menupick View/Immersive" "wait 1.5" "menudump $WORK/menus-after.json" \
-        "waitfile $WORK/menus-picked 60" \
-        "menupick View/Hide Controls/Long" "wait 0.7" "menudump $WORK/menus-long.json" \
-        "windowstyle framed" "wait 0.5" "showtouches on" "wait 1" "hover 0.5 0.5" "wait 0.3" \
-        "waitfile $WORK/menus-step-touch 60" "fingerpinch 0.5 0.01 1.25 4" "wait 1" \
-        "waitfile $WORK/menus-step-full 60" "fullscreen" "wait 6" \
-        "menudump $WORK/menus-full.json" \
-        "waitfile $WORK/menus-step-exit 60" "fullscreen" "wait 6" > "$WORK/menus.txt"
-    open_shared --open com.android.settings --debug-chrome-state "$WORK/chrome.txt" \
-        --debug-input-script "$WORK/menus.txt" || return 1
-    wait_until 30 [ -s "$WORK/menus-after.json" ] || {
-        bad "MENUS no menu dump after the style change in 30 s ($WORK/menus-after.json)"
-        stop_app; stop_fakephone; return 1
-    }
-    wait_until 20 [ -s "$WORK/menus.json" ] || {
-        bad "MENUS no menu dump in 20 s ($WORK/menus.json)"
-        say "app log: $(tail -3 "$WORK/app.log")"
-        stop_app; stop_fakephone; return 1
-    }
-
-    # The View menu, top to bottom: the design's items, nothing else — no
-    # section title (the old Picker's "Window Style" header) and no full-screen
-    # item. Separators are shown as —.
-    python3 - "$WORK/menus.json" <<'PY' && ok "MENUS View menu is exactly the design's items, no section titles" \
-        || bad "MENUS View menu is not the design"
+# menu_dump_ok PATH — one dump is the design and structurally sound: no leading,
+# trailing or doubled separator anywhere in the bar; the View menu is exactly
+# the design's items in order; exactly one of Framed/Immersive is checked. Every
+# dump below is taken after SwiftUI rebuilt the menu (a toggle, a style switch,
+# a density pick, another window, a relaunch), which is where the old
+# AppKit-injected items vanished and their separators closed the gap.
+menu_dump_ok() {
+    python3 - "$1" <<'PY'
 import json, sys
 root = json.load(open(sys.argv[1]))
+problems = root.get("problems") or []
+if problems:
+    print("shape:", problems); sys.exit(1)
 view = next((i for i in root["items"] if i["title"] == "View"), None)
 if view is None:
     print("no View menu"); sys.exit(1)
@@ -2647,13 +2623,128 @@ want = ["Find Apps", "Phone Window", "Continue on Mac", "—",
         "Hide Controls", "—", "Density", "Toggle Window Style"]
 if seq != want:
     print("View:", seq, "wanted:", want); sys.exit(1)
+by_title = {item["title"]: item for item in view["submenu"]}
+states = [by_title["Framed"]["state"], by_title["Immersive"]["state"]]
+if sorted(states) != ["off", "on"]:
+    print("style radios:", states); sys.exit(1)
 PY
+}
 
-    python3 - "$WORK/menus.json" <<'PY' && ok "MENUS no section title and no full-screen item in View" \
-        || bad "MENUS View still carries a section title or a full-screen item"
+# check_menus — the View menu has no section titles and no full-screen item;
+# Framed/Immersive are plain radio items; the Window menu owns the only full
+# screen item; every item the app draws itself has an SF Symbol. The whole bar
+# is dumped after each kind of rebuild the menu is known to lose items on.
+# The window's Enter/Exit title needs native full screen (a real Space), so that
+# step is visible-only.
+check_menus() {
+    begin_shared || return 1
+    rm -f "$WORK"/menus-*.json "$WORK"/menus-step-* "$WORK/menus.txt" "$WORK/menus-touch.png" "$WORK/chrome.txt"
+
+    # dump_and_assert N — the dump the script wrote after its rebuild, checked.
+    dump_and_assert() {
+        local reason
+        wait_until 30 [ -s "$WORK/menus-$1.json" ] || {
+            bad "MENUS no dump $1 in 30 s ($WORK/menus-$1.json)"
+            say "app log: $(tail -3 "$WORK/app.log")"
+            return 1
+        }
+        if reason="$(menu_dump_ok "$WORK/menus-$1.json")"; then
+            ok "MENUS dump $1: the whole bar is the design after the rebuild"
+        else
+            bad "MENUS dump $1 is not the design: $reason"
+        fi
+    }
+
+    # One script for the whole check: a dump after each rebuild, with a marker
+    # where the shell causes the rebuild (another window, the key window) and
+    # reads the dump before the script moves on.
+    cat > "$WORK/menus.txt" <<EOF
+wait 1.5
+menudump $WORK/menus-1.json
+waitfile $WORK/menus-step-2 60
+menupick View/Show Touches
+wait 1.2
+menudump $WORK/menus-2.json
+waitfile $WORK/menus-step-3 60
+menupick View/Immersive
+wait 1.5
+menudump $WORK/menus-3.json
+menupick View/Framed
+wait 1.5
+menudump $WORK/menus-4.json
+waitfile $WORK/menus-step-5 60
+menudump $WORK/menus-5.json
+waitfile $WORK/menus-step-6 60
+menudump $WORK/menus-6.json
+waitfile $WORK/menus-step-7 60
+menupick View/Density/125%
+wait 1.2
+menudump $WORK/menus-7.json
+waitfile $WORK/menus-step-8 60
+menudump $WORK/menus-8.json
+waitfile $WORK/menus-step-9 60
+menudump $WORK/menus-9.json
+waitfile $WORK/menus-step-touch 60
+showtouches on
+wait 1
+hover 0.5 0.5
+wait 0.3
+waitfile $WORK/menus-step-pinch 60
+fingerpinch 0.5 0.01 1.25 4
+wait 1
+waitfile $WORK/menus-step-full 60
+fullscreen
+wait 6
+menudump $WORK/menus-10.json
+waitfile $WORK/menus-step-exit 60
+fullscreen
+wait 6
+EOF
+    open_shared --open com.android.settings --debug-chrome-state "$WORK/chrome.txt" \
+        --debug-input-script "$WORK/menus.txt" || return 1
+
+    # 1: a fresh launch with one stream window open.
+    dump_and_assert 1 || { stop_app; stop_fakephone; return 1; }
+    # 2: after View ▸ Show Touches was toggled (the commands read its state).
+    touch "$WORK/menus-step-2"
+    dump_and_assert 2
+    # 3 and 4: after switching the style to immersive and back.
+    touch "$WORK/menus-step-3"
+    dump_and_assert 3
+    dump_and_assert 4
+    # 5: after a second stream window opened (a different key window).
+    control open --open com.whatsapp --debug-chrome-state "$WORK/chrome.txt" \
+        || bad "MENUS shared app: opening a second window answered '$CONTROL_REPLY'"
+    touch "$WORK/menus-step-5"
+    dump_and_assert 5
+    # 6: after it closed and the first window is key again.
+    control open --close-stream 2:0 --debug-chrome-state "$WORK/chrome.txt" \
+        || bad "MENUS shared app: closing the second window answered '$CONTROL_REPLY'"
+    touch "$WORK/menus-step-6"
+    dump_and_assert 6
+    # 7: after a Density pick rebuilt the submenu.
+    touch "$WORK/menus-step-7"
+    dump_and_assert 7
+    # 8 and 9: after the key window changed to the phone window and back.
+    control open --open-phone --debug-chrome-state "$WORK/chrome.txt" \
+        || bad "MENUS shared app: opening the phone window answered '$CONTROL_REPLY'"
+    touch "$WORK/menus-step-8"
+    dump_and_assert 8
+    control open --close-stream 3:0 --debug-chrome-state "$WORK/chrome.txt" \
+        || bad "MENUS shared app: closing the phone window answered '$CONTROL_REPLY'"
+    touch "$WORK/menus-step-9"
+    dump_and_assert 9
+
+    # The View menu, top to bottom: the design's items, nothing else — no
+    # section title (the old Picker's "Window Style" header) and no full-screen
+    # item. Separators are shown as —.
+    python3 - "$WORK/menus-1.json" <<'PY' && ok "MENUS View menu is exactly the design's items, no section titles" \
+        || bad "MENUS View menu is not the design"
 import json, sys
 root = json.load(open(sys.argv[1]))
-view = next(i for i in root["items"] if i["title"] == "View")
+view = next((i for i in root["items"] if i["title"] == "View"), None)
+if view is None:
+    print("no View menu"); sys.exit(1)
 titles = [item["title"] for item in view["submenu"]]
 if "Window Style" in titles:
     print("the Window Style section title is still there"); sys.exit(1)
@@ -2661,7 +2752,7 @@ if any("Full Screen" in title for title in titles):
     print("a full-screen item is in View:", titles); sys.exit(1)
 PY
 
-    python3 - "$WORK/menus.json" <<'PY' && ok "MENUS Framed/Immersive are radio items with exactly one checked" \
+    python3 - "$WORK/menus-1.json" <<'PY' && ok "MENUS Framed/Immersive are radio items with exactly one checked" \
         || bad "MENUS the style radios are wrong"
 import json, sys
 root = json.load(open(sys.argv[1]))
@@ -2683,12 +2774,11 @@ PY
 
     # Choosing the item itself (menupick: the item's own target and action)
     # took the window to immersive, and the menu's checks follow the window.
-    # The chrome state is one line the window rewrites on every change, so the
-    # script holds on a marker until it is read here.
+    # The chrome state is one line the window rewrites on every change.
     wait_until 10 grep -q "style=immersive" "$WORK/chrome.txt" \
         && ok "MENUS choosing Immersive took the window to the immersive style" \
         || bad "MENUS choosing Immersive left $(grep -o 'style=[a-z]*' "$WORK/chrome.txt" | tail -1)"
-    python3 - "$WORK/menus-after.json" <<'PY' && ok "MENUS after choosing Immersive: it is checked and Hide Controls is enabled" \
+    python3 - "$WORK/menus-3.json" <<'PY' && ok "MENUS after choosing Immersive: it is checked and Hide Controls is enabled" \
         || bad "MENUS the View menu did not follow the style change"
 import json, sys
 root = json.load(open(sys.argv[1]))
@@ -2700,54 +2790,23 @@ hide = by_title.get("Hide Controls")
 if hide is None or not hide.get("enabled"):
     print("Hide Controls:", hide); sys.exit(1)
 PY
-
-    # Let the script go on to the Hide Controls pick (it held for the read
-    # above).
-    touch "$WORK/menus-picked"
-
-    # A Hide Controls pick stores the reveal choice (the style is the radio
-    # pair's business, pinned above). The script writes this dump a moment
-    # after the pick: wait for it.
-    wait_until 20 [ -s "$WORK/menus-long.json" ] \
-        || bad "MENUS no dump after the Hide Controls pick"
-    python3 - "$WORK/menus-long.json" <<'PY' && ok "MENUS a Hide Controls pick checks Long" \
-        || bad "MENUS the Hide Controls pick did not store the choice"
+    # And back: Framed is checked again and Hide Controls is disabled.
+    python3 - "$WORK/menus-4.json" <<'PY' && ok "MENUS after choosing Framed: it is checked and Hide Controls is disabled" \
+        || bad "MENUS the View menu did not follow the style back"
 import json, sys
 root = json.load(open(sys.argv[1]))
 view = next(i for i in root["items"] if i["title"] == "View")
-hide = next(i for i in view["submenu"] if i["title"] == "Hide Controls")
-checked = [item["title"] for item in hide.get("submenu") or [] if item["state"] == "on"]
-if checked != ["Long"]:
-    print("checked:", checked); sys.exit(1)
-PY
-
-    # SwiftUI rebuilds the View menu when the state the commands read changes
-    # (the style switch above is one): an AppKit item inserted once would be
-    # dropped then. The person's v104 menu lost Immersive exactly this way.
-    python3 - "$WORK/menus-after.json" <<'PY' && ok "MENUS Immersive survives a View menu rebuild (style changed)" \
-        || bad "MENUS Immersive was dropped when the View menu rebuilt"
-import json, sys
-root = json.load(open(sys.argv[1]))
-view = next((i for i in root["items"] if i["title"] == "View"), None)
-if view is None:
-    print("no View menu"); sys.exit(1)
-imm = next((i for i in view["submenu"] if i["title"] == "Immersive"), None)
-if imm is None:
-    print("Immersive missing:", [i["title"] for i in view["submenu"]]); sys.exit(1)
-if imm.get("submenu"):
-    print("Immersive still has a submenu"); sys.exit(1)
-if imm["state"] != "on":
-    print("Immersive is not checked while the window is immersive:", imm["state"]); sys.exit(1)
-hide = next((i for i in view["submenu"] if i["title"] == "Hide Controls"), None)
-if hide is None:
-    print("no Hide Controls item"); sys.exit(1)
-if not hide.get("enabled"):
-    print("Hide Controls is disabled while immersive"); sys.exit(1)
+by_title = {item["title"]: item for item in view["submenu"]}
+if by_title["Framed"]["state"] != "on" or by_title["Immersive"]["state"] != "off":
+    print("states:", by_title["Framed"]["state"], by_title["Immersive"]["state"]); sys.exit(1)
+hide = by_title.get("Hide Controls")
+if hide is None or hide.get("enabled"):
+    print("Hide Controls:", hide); sys.exit(1)
 PY
 
     # The temporary Bar Prototype picker is gone: the bar has one geometry
     # (BarGeometry) and no menu item to choose another.
-    python3 - "$WORK/menus.json" <<'PY' && ok "MENUS no Bar Prototype item (one bar geometry)" \
+    python3 - "$WORK/menus-1.json" <<'PY' && ok "MENUS no Bar Prototype item (one bar geometry)" \
         || bad "MENUS a Bar Prototype item is still in View"
 import json, sys
 root = json.load(open(sys.argv[1]))
@@ -2758,7 +2817,7 @@ PY
 
     # Immersive is a plain radio item (no submenu); the reveal choice lives in
     # Hide Controls, which is disabled while the window is framed.
-    python3 - "$WORK/menus.json" <<'PY' && ok "MENUS Hide Controls holds the delays and is disabled while Framed" \
+    python3 - "$WORK/menus-1.json" <<'PY' && ok "MENUS Hide Controls holds the delays and is disabled while Framed" \
         || bad "MENUS Hide Controls is wrong while framed"
 import json, sys
 root = json.load(open(sys.argv[1]))
@@ -2780,7 +2839,7 @@ if checked != ["Short"]:
 PY
 
     # The Window menu's own full-screen item, and the only one in the tree.
-    python3 - "$WORK/menus.json" <<'PY' && ok "MENUS Window holds the only full-screen item, Enter Full Screen 🌐F" \
+    python3 - "$WORK/menus-1.json" <<'PY' && ok "MENUS Window holds the only full-screen item, Enter Full Screen 🌐F" \
         || bad "MENUS the Window menu's full-screen item is wrong"
 import json, sys
 def walk(items):
@@ -2807,7 +2866,7 @@ PY
 
     # The app's own items carry SF Symbols (the system's items stay as AppKit
     # draws them and are not in this list).
-    python3 - "$WORK/menus.json" <<'PY' && ok "MENUS every item the app draws has an SF Symbol" \
+    python3 - "$WORK/menus-1.json" <<'PY' && ok "MENUS every item the app draws has an SF Symbol" \
         || bad "MENUS an app item is missing its icon"
 import json, sys
 def walk(items):
@@ -2846,6 +2905,7 @@ PY
         && screencapture -x -o -l"$win" "$WORK/menus-touch.png" \
         && ok "MENUS captured the bar with Show Touches on: $WORK/menus-touch.png" \
         || bad "MENUS no window to capture the bar"
+    touch "$WORK/menus-step-pinch"
     grep -q "touches=on" "$WORK/chrome.txt" 2>/dev/null \
         && grep -qE "dot_count=[1-9]" "$WORK/chrome.txt" 2>/dev/null \
         && ok "MENUS the dots are drawn while the fingers are down ($(chrome_state))" \
@@ -2879,11 +2939,11 @@ PY
 
     if [ "$VISIBLE" = "1" ]; then
         touch "$WORK/menus-step-full"
-        wait_until 20 [ -s "$WORK/menus-full.json" ] || {
-            bad "MENUS no second dump after entering full screen"
+        wait_until 20 [ -s "$WORK/menus-10.json" ] || {
+            bad "MENUS no dump after entering full screen"
             stop_app; stop_fakephone; return 1
         }
-        python3 - "$WORK/menus-full.json" <<'PY' && ok "MENUS in full screen the Window item reads Exit Full Screen, still the only one" \
+        python3 - "$WORK/menus-10.json" <<'PY' && ok "MENUS in full screen the Window item reads Exit Full Screen, still the only one" \
             || bad "MENUS the full-screen title did not follow the key window"
 import json, sys
 def walk(items):
@@ -2907,6 +2967,16 @@ PY
     else
         skip_visible "MENUS the Exit Full Screen title (native full screen needs a real Space)"
     fi
+
+    # A relaunch: the same bar, built once from scratch. The shared app is
+    # replaced, so the shell takes the new PID for the bookkeeping.
+    kill "$SHARED_PID" >/dev/null 2>&1
+    wait "$SHARED_PID" 2>/dev/null
+    printf '%s\n' "wait 2" "menudump $WORK/menus-11.json" > "$WORK/menus-relaunch.txt"
+    launch --connect "127.0.0.1:$PORT" --open com.android.settings --debug-control "$WORK-control" \
+        --debug-chrome-state "$WORK/chrome.txt" --debug-input-script "$WORK/menus-relaunch.txt"
+    SHARED_PID="$APP_PID"
+    dump_and_assert 11 || { stop_app; stop_fakephone; return 1; }
     stop_app
     stop_fakephone
 }
