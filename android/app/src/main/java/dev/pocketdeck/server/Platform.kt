@@ -300,7 +300,7 @@ interface Power {
     fun onInput(displayId: Int)
 
     /** The set of displays whose streams are currently unpaused. */
-    fun setActiveStreams(displayIds: List<Int>)
+    fun setActiveStreams(displayIds: List<Int>, allPaused: Boolean = false, mirroring: Boolean = false)
 
     fun onSessionEnded()
 

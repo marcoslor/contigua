@@ -71,6 +71,8 @@ class FakePlatform : DisplayLayer, AppCatalog, Launcher, Injector, Power, Device
     val scrolls = CopyOnWriteArrayList<Int>()
     val texts = CopyOnWriteArrayList<String>()
     val activeStreams = CopyOnWriteArrayList<List<Int>>()
+    /** Every setActiveStreams call with its flags, in order: (displays, allPaused, mirroring). */
+    val streamCalls = CopyOnWriteArrayList<Triple<List<Int>, Boolean, Boolean>>()
     val inputs = CopyOnWriteArrayList<Int>()
     val qualities = CopyOnWriteArrayList<QualityCall>()
     val backpressures = CopyOnWriteArrayList<Int>()
@@ -204,8 +206,9 @@ class FakePlatform : DisplayLayer, AppCatalog, Launcher, Injector, Power, Device
         inputs.add(displayId)
     }
 
-    override fun setActiveStreams(displayIds: List<Int>) {
+    override fun setActiveStreams(displayIds: List<Int>, allPaused: Boolean, mirroring: Boolean) {
         activeStreams.add(displayIds)
+        streamCalls.add(Triple(displayIds, allPaused, mirroring))
     }
 
     override fun onSessionEnded() = Unit

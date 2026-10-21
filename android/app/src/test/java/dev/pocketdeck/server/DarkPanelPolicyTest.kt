@@ -156,6 +156,60 @@ class DarkPanelPolicyTest {
         assertTrue(p.streamsStopped())
     }
 
+    // --- a paused window is not the end of streaming ------------------
+
+    @Test
+    fun `a pause keeps the panel state for the grace period`() {
+        val p = policy()
+        p.streamsStarted()
+        p.step(panelOn = false, strategy = PanelStrategy.PANEL_DARK) // take the panel over
+        p.step(panelOn = true, strategy = PanelStrategy.PANEL_DARK) // steady dark
+        assertFalse("a covered window must not hand the panel back", p.streamsPaused(nowMs = 1_000))
+        assertFalse("5 s into the pause the panel is still ours", p.pauseGraceExpired(nowMs = 6_000))
+        assertFalse("29 s is still inside the grace", p.pauseGraceExpired(nowMs = 29_999))
+    }
+
+    @Test
+    fun `a pause inside the grace period resumes without a new wake`() {
+        val p = policy()
+        p.streamsStarted()
+        p.step(panelOn = false, strategy = PanelStrategy.PANEL_DARK)
+        p.step(panelOn = true, strategy = PanelStrategy.PANEL_DARK)
+        p.streamsPaused(nowMs = 1_000)
+        assertFalse(p.pauseGraceExpired(nowMs = 6_000))
+        p.streamsResumed()
+        val resumed = p.step(panelOn = true, strategy = PanelStrategy.PANEL_DARK)
+        assertFalse("an unpause inside the grace is no new episode", resumed.transitional)
+        assertTrue("the panel is still held dark", resumed.panelOff)
+        assertFalse("a resume ends the pause", p.pauseGraceExpired(nowMs = 60_000))
+    }
+
+    @Test
+    fun `a pause longer than the grace hands the panel back`() {
+        val p = policy()
+        p.streamsStarted()
+        p.step(panelOn = false, strategy = PanelStrategy.PANEL_DARK)
+        p.streamsPaused(nowMs = 1_000)
+        assertTrue("31 s of a covered window hands the phone back", p.pauseGraceExpired(nowMs = 32_000))
+        assertTrue("the episode was ours: restore and sleep", p.streamsStopped())
+    }
+
+    @Test
+    fun `a pause while the person has the phone stops at once`() {
+        val p = policy()
+        p.streamsStarted()
+        p.step(panelOn = true, strategy = PanelStrategy.PANEL_DARK) // the person's own screen
+        assertTrue("nothing of ours to keep", p.streamsPaused(nowMs = 1_000))
+    }
+
+    @Test
+    fun `closing the last stream hands the panel back at once`() {
+        val p = policy()
+        p.streamsStarted()
+        p.step(panelOn = false, strategy = PanelStrategy.PANEL_DARK)
+        assertTrue("a close is not a pause", p.streamsStopped())
+    }
+
     @Test
     fun `stopping while the user has the phone restores nothing`() {
         val p = policy()

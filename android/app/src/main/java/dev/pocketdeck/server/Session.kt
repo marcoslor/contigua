@@ -891,7 +891,7 @@ class Session(
                 "w" to w, "h" to h, "started" to (if (moved) "moved" else "fresh"),
             ),
         )
-        power.setActiveStreams(activeDisplayIds())
+        updatePower()
         runCatching { callback.onSessionChanged(true, clientId, currentMacName ?: clientName, windowCount()) }
         startStreamWatch()
     }
@@ -935,7 +935,7 @@ class Session(
                 WindowContent.Phone -> Unit
             }
         }
-        power.setActiveStreams(activeDisplayIds())
+        updatePower()
         runCatching { callback.onSessionChanged(true, clientId, currentMacName ?: clientName, windowCount()) }
         startStreamWatch()
         notifyAudioWindowsChanged()
@@ -951,7 +951,7 @@ class Session(
         state.size = IntSize(w, h)
         display.resize(stream, w, h, dpi)
         // The new size means a redraw: make sure the group is awake for it.
-        power.setActiveStreams(activeDisplayIds())
+        updatePower()
     }
 
     private fun onWindowClose(obj: Map<String, Any?>, frame: Frame) {
@@ -963,7 +963,7 @@ class Session(
         }
         display.close(stream)
         sendJson(mapOf("t" to "window.closed", "stream" to stream, "reason" to "requested"))
-        power.setActiveStreams(activeDisplayIds())
+        updatePower()
         stopAudioIfIdle()
         notifyAudioWindowsChanged()
         runCatching { callback.onSessionChanged(true, clientId, currentMacName ?: clientName, windowCount()) }
@@ -975,7 +975,7 @@ class Session(
         if (!state.paused) {
             state.paused = true
             display.pause(state.stream)
-            power.setActiveStreams(activeDisplayIds())
+            updatePower(paused = true)
         }
     }
 
@@ -984,7 +984,7 @@ class Session(
         if (state.paused) {
             state.paused = false
             display.resume(state.stream)
-            power.setActiveStreams(activeDisplayIds())
+            updatePower()
         }
     }
 
@@ -2062,7 +2062,7 @@ class Session(
         val state = synchronized(streams) { streams.remove(stream) } ?: return
         display.close(stream)
         sendJson(mapOf("t" to "window.closed", "stream" to stream, "reason" to "app_exited"))
-        power.setActiveStreams(activeDisplayIds())
+        updatePower()
         stopAudioIfIdle()
         notifyAudioWindowsChanged()
         runCatching { callback.onSessionChanged(true, clientId, currentMacName ?: clientName, windowCount()) }
@@ -2096,9 +2096,24 @@ class Session(
 
     private fun windowCount(): Int = synchronized(streams) { streams.size }
 
-    /** Displays the keep-alive owns. Never display 0: the mirror leaves the phone's power alone. */
-    private fun activeDisplayIds(): List<Int> = synchronized(streams) {
-        streams.values.filter { !it.paused && it.content != WindowContent.Phone }.map { it.displayId }
+    /**
+     * Tells the power policy what the session holds now. [paused] marks a
+     * `window.pause` as the cause of an empty set: every stream covered at once
+     * keeps the panel state for a grace period instead of handing the phone
+     * back and taking it again on the next unpause. A close or the session end
+     * passes false and hands back at once.
+     */
+    private fun updatePower(paused: Boolean = false) {
+        val ids: List<Int>
+        val allPaused: Boolean
+        val mirroring: Boolean
+        synchronized(streams) {
+            val open = streams.values.toList()
+            ids = open.filter { !it.paused && it.content != WindowContent.Phone }.map { it.displayId }
+            allPaused = paused && open.isNotEmpty() && open.all { it.paused }
+            mirroring = open.any { it.content == WindowContent.Phone && !it.paused }
+        }
+        power.setActiveStreams(ids, allPaused = allPaused, mirroring = mirroring)
     }
 
     private fun streamOf(obj: Map<String, Any?>, frame: Frame): Int =
