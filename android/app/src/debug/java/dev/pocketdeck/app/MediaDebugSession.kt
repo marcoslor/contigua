@@ -3,7 +3,6 @@ package dev.pocketdeck.app
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
@@ -43,12 +42,11 @@ class MediaDebugTrigger : BroadcastReceiver() {
             Log.i(TAG, "ignored: action=${intent.action}")
             return
         }
-        if (context.checkCallingOrSelfPermission(android.Manifest.permission.DUMP) !=
-            PackageManager.PERMISSION_GRANTED
-        ) {
-            Log.i(TAG, "refused: no DUMP")
-            return
-        }
+        // The sender gate is the receiver's android:permission="DUMP" in the
+        // debug manifest: the system checks the sender (adb shell holds DUMP).
+        // A runtime check cannot work here — onReceive runs outside a binder
+        // call, so checkCallingOrSelfPermission only sees this app, which never
+        // holds DUMP, and every broadcast would be refused.
         val args = MediaDebugArgs.parse(
             intent.getStringExtra("op"),
             if (intent.hasExtra("index")) intent.getIntExtra("index", 0) else null,
