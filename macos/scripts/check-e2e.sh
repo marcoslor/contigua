@@ -2648,6 +2648,31 @@ PY
         || bad "MENUS no touch dots during the pinch: $(chrome_state)"
     sleep 4
 
+    # The menu bar is a window panel now (docs/design/mac-redesign.md §3.8):
+    # the phone card, not the old status line and its "Open PocketDeck"/"Phone
+    # screen" items.
+    control panelopen || bad "MENUS panelopen: $CONTROL_REPLY"
+    control paneldump panel "$WORK/menus-panel.json" || bad "MENUS paneldump: $CONTROL_REPLY"
+    python3 - "$WORK/menus-panel.json" <<'PY' && ok "MENUS the menu bar hosts the phone panel, none of the old menu items" \
+        || bad "MENUS the menu bar is not the panel"
+import json, sys
+root = json.load(open(sys.argv[1]))
+if root["width"] != 300:
+    print("width:", root["width"]); sys.exit(1)
+kinds = [row["kind"] for row in root["items"]]
+for kind in ["volume", "dnd", "ring", "phoneScreen", "findApps", "continueOnMac",
+             "installApk", "settings", "quit"]:
+    if kind not in kinds:
+        print("missing", kind, kinds); sys.exit(1)
+labels = [row["label"] for row in root["items"]]
+for gone in ["Open PocketDeck", "Phone screen"]:
+    if gone in labels:
+        print("the old menu item survived:", gone); sys.exit(1)
+if len(root["controls"]) < 6:
+    print("controls:", len(root["controls"])); sys.exit(1)
+PY
+    control panelclose || bad "MENUS panelclose: $CONTROL_REPLY"
+
     if [ "$VISIBLE" = "1" ]; then
         touch "$WORK/menus-step-full"
         wait_until 20 [ -s "$WORK/menus-full.json" ] || {
@@ -6596,8 +6621,9 @@ EOF
 # check_notify_media — notification pictures and Android 16 Live Updates
 # (docs/design/notify.md, "Part 2b design"). Quiet share-log run: the post line
 # carries the picture's mime/size/dimensions and its temp path, the live lines
-# carry ids, progress buckets and timestamps, and `livedump` reads the menu bar's
-# Live section. Nothing reaches Notification Center; no picture bytes are logged.
+# carry ids, progress buckets and timestamps, and `livedump` reads the panel's
+# LIVE section (one row per live item). Nothing reaches Notification Center; no
+# picture bytes are logged.
 check_notify_media() {
     clean
     local log="$WORK/notify-media.log" script="$WORK/notify-media-input.txt" device path dir mode
@@ -6615,14 +6641,17 @@ check_notify_media() {
 
     cat > "$script" <<EOF
 wait 3
+panelopen
 notifyclick pd-l1
 livedump $WORK/notify-media-live-1.json
 wait 3
 livedump $WORK/notify-media-live-2.json
+paneldump panel $WORK/notify-media-panel.json
 wait 6
 livedump $WORK/notify-media-live-3.json
 wait 3
 livedump $WORK/notify-media-live-4.json
+panelclose
 EOF
     # The picture and Live Update shapes arrive on notify.enable; the fake also
     # ends pd-m1 after 8 s and pd-l1 after its twenty seconds of updates.
@@ -6711,11 +6740,30 @@ print("gaps at least %d ms" % min(gaps))
         && ok "NOTIFY-MEDIA the phone's notify.remove ended the live item" \
         || bad "NOTIFY-MEDIA no notify.remove for pd-l1"
 
-    # (e) the menu bar's Live section: the rows, an advancing item, the end.
+    # (e) the panel's LIVE section: the rows, an advancing item, the end.
     for f in 1 2 3 4; do
         wait_until 30 [ -s "$WORK/notify-media-live-$f.json" ] \
             || { bad "NOTIFY-MEDIA no livedump $f"; break; }
     done
+    wait_until 20 [ -s "$WORK/notify-media-panel.json" ] \
+        || bad "NOTIFY-MEDIA no panel dump"
+    python3 - "$WORK" <<'PY' && ok "NOTIFY-MEDIA the panel's LIVE section has one row per live item, no track text" \
+        || bad "NOTIFY-MEDIA the panel's LIVE rows do not match"
+import json, sys, os
+work = sys.argv[1]
+panel = json.load(open(os.path.join(work, "notify-media-panel.json")))
+live = json.load(open(os.path.join(work, "notify-media-live-2.json")))["live"]
+rows = [row for row in panel["items"] if row["kind"] == "live"]
+if len(rows) != len(live):
+    print("panel live rows:", len(rows), "live items:", len(live)); sys.exit(1)
+if not panel["mapped"] and len(panel["controls"]) < 4:
+    print("controls:", len(panel["controls"])); sys.exit(1)
+# A live row's id is panel.live (one item, one row per notification); every
+# other row is unique.
+ids = [row["id"] for row in panel["items"] if row["kind"] != "live"]
+if len(ids) != len(set(ids)):
+    print("duplicate ids:", ids); sys.exit(1)
+PY
     python3 - "$WORK" <<'PY' && ok "NOTIFY-MEDIA the Live section lists both items and drops the ended one" \
         || bad "NOTIFY-MEDIA the Live section does not match"
 import json, sys, os
@@ -6801,6 +6849,16 @@ for line in open(sys.argv[1]):
 PY
     }
     media_count() { media_events "$1" "${2:-}" | grep -c . ; }
+    # ring_label — the panel's Ring row label right now (the model both the
+    # panel and its dump read).
+    ring_label() {
+        control paneldump panel "$WORK/media-panel-ring.json" >/dev/null 2>&1 || return 0
+        python3 - "$WORK/media-panel-ring.json" <<'PY'
+import json, sys
+root = json.load(open(sys.argv[1]))
+print(next((row["label"] for row in root["items"] if row["kind"] == "ring"), ""))
+PY
+    }
 
     # (a) two playing apps: the list, the state, the artwork.
     FAKE_ARGS="--media" start_fake '' || return 1
@@ -6821,8 +6879,10 @@ wait 3
 mediacmd seek 5000
 wait 2
 EOF
-    launch --connect "127.0.0.1:$PORT" --quit-after 45 --share-log "$log" \
-        --open com.whatsapp --debug-input-script "$script"
+    rm -rf "$WORK-control"
+    mkdir -p "$WORK-control"
+    launch --connect "127.0.0.1:$PORT" --quit-after 75 --share-log "$log" \
+        --open com.whatsapp --debug-input-script "$script" --debug-control "$WORK-control"
 
     wait_until 20 log_has "media sessions n=2 chosen=s1" \
         && ok "MEDIA the phone listed both playing apps, the first chosen" \
@@ -6890,6 +6950,52 @@ EOF
         "$WORK/app.log" "$log" "$WORK/fake.log" "$WORK/fake.err" "$WORK/events.jsonl" 2>/dev/null \
         && ok "MEDIA no track text or artwork bytes reached a log" \
         || bad "MEDIA track text or artwork bytes leaked"
+
+    # (e2) the menu bar panel (docs/design/mac-redesign.md §3.8): a window
+    # panel, not a menu — the volume is an inline slider and every item has its
+    # own laid-out control — and the real controls reach the phone: the slider
+    # drag sends the media volume, the Ring row rings and stops it.
+    control panelopen || bad "MEDIA panelopen: $CONTROL_REPLY"
+    control paneldump panel "$WORK/media-panel.json" || bad "MEDIA paneldump: $CONTROL_REPLY"
+    python3 - "$WORK/media-panel.json" <<'PY' && ok "MEDIA the panel is the phone card: 300 pt, one control per item, the volume an inline slider" \
+        || bad "MEDIA the panel's controls are not the phone card"
+import json, sys
+root = json.load(open(sys.argv[1]))
+if root["width"] != 300:
+    print("width:", root["width"]); sys.exit(1)
+if not root["mapped"]:
+    print("items:", len(root["items"]), "controls:", len(root["controls"])); sys.exit(1)
+kinds = [row["kind"] for row in root["items"]]
+want = ["volume", "dnd", "ring", "sessions", "phoneScreen", "findApps", "continueOnMac",
+        "installApk", "settings", "quit"]
+if kinds != want:
+    print("items:", kinds); sys.exit(1)
+volume = root["controls"][0]
+if volume["height"] > 20 or volume["width"] < 150:
+    print("volume control:", volume); sys.exit(1)
+if any("Open PocketDeck" in row["label"] or "Phone screen" in row["label"] for row in root["items"]):
+    print("a menu item survived in the panel"); sys.exit(1)
+PY
+    # The slider was at 1.0 (15/15); drag it to a fifth of the track: the phone
+    # gets level 3, not the action being called.
+    control paneldrag panel panel.volume 0.2 || bad "MEDIA paneldrag: $CONTROL_REPLY"
+    wait_until 20 media_events rx action=volume | grep -q '"level": 3' \
+        && ok "MEDIA dragging the panel's slider sent the phone volume (3/15)" \
+        || bad "MEDIA the panel drag reached no volume command ($(media_events rx action=volume | tr '\n' '|'))"
+    control panelclick panel panel.ring || bad "MEDIA panelclick ring: $CONTROL_REPLY"
+    wait_until 20 events_have '"ev":"ring"' \
+        && ok "MEDIA clicking the panel's Ring row rang the phone" \
+        || bad "MEDIA the panel's Ring row sent no phone.ring"
+    # The phone answered ring.state, so the row is Stop Ringing now and its own
+    # click sends the stop.
+    wait_until 15 [ "$(ring_label)" = "Stop Ringing" ] \
+        && ok "MEDIA the row flipped to Stop Ringing while the phone rings" \
+        || bad "MEDIA the ring row did not flip ($(ring_label))"
+    control panelclick panel panel.ring || bad "MEDIA panelclick stop: $CONTROL_REPLY"
+    wait_until 10 events_have '"ev":"ring","seconds":0' \
+        && ok "MEDIA clicking Stop Ringing stopped the phone" \
+        || bad "MEDIA no phone.ring.stop from the flipped row"
+    control panelclose || bad "MEDIA panelclose: $CONTROL_REPLY"
 
     # The next fakephone start empties the shared event log; keep this phase's.
     cp "$WORK/events.jsonl" "$WORK/media-events-phase1.jsonl" 2>/dev/null
@@ -7258,6 +7364,43 @@ check_deck() {
     else
         bad "DECK no Deck window to capture"
     fi
+
+    # The status pill opens the same phone controls in a popover (docs/DESIGN.md
+    # "Deck"): one component, the same item ids, and its DND switch is the real
+    # control — the click reaches the phone.
+    control deckpanel || bad "DECK deckpanel: $CONTROL_REPLY"
+    # The popover presents on the next run-loop turns and is its own window.
+    rm -f "$WORK/deck-panel.json"
+    local tries=20
+    while [ "$tries" -gt 0 ]; do
+        control paneldump deck "$WORK/deck-panel.json" >/dev/null 2>&1 && break
+        tries=$((tries - 1)); sleep 0.5
+    done
+    if [ ! -s "$WORK/deck-panel.json" ]; then
+        control panelwindows "$WORK/deck-windows.txt" >/dev/null 2>&1
+        bad "DECK no panel dump from the popover ($(tr '\n' '|' < "$WORK/deck-windows.txt" 2>/dev/null))"
+    fi
+    python3 - "$WORK/deck-panel.json" <<'PY' && ok "DECK the popover hosts the shared panel (300 pt, the same items)" \
+        || bad "DECK the popover is not the shared panel"
+import json, sys
+root = json.load(open(sys.argv[1]))
+if root["width"] != 300:
+    print("width:", root["width"]); sys.exit(1)
+kinds = [row["kind"] for row in root["items"]]
+for kind in ["volume", "dnd", "ring", "phoneScreen", "findApps", "continueOnMac",
+             "installApk", "settings", "quit"]:
+    if kind not in kinds:
+        print("missing", kind, kinds); sys.exit(1)
+if len(root["controls"]) < 6:
+    print("controls:", len(root["controls"])); sys.exit(1)
+PY
+    local dnd_before dnd_after
+    dnd_before="$(grep -c '"ev":"dnd"' "$WORK/events.jsonl" 2>/dev/null || echo 0)"
+    control panelclick deck panel.dnd || bad "DECK the popover's DND click: $CONTROL_REPLY"
+    dnd_after() { grep -c '"ev":"dnd"' "$WORK/events.jsonl" 2>/dev/null || echo 0; }
+    wait_until 20 [ "$(dnd_after)" -gt "$dnd_before" ] \
+        && ok "DECK clicking the popover's DND switch reached the phone ($(grep -o '"ev":"dnd"[^}]*' "$WORK/events.jsonl" 2>/dev/null | tail -1))" \
+        || bad "DECK the popover's DND switch sent no new phone.dnd"
     stop_app
 }
 
