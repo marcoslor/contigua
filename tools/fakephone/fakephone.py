@@ -2314,11 +2314,25 @@ class Session(object):
             self._send_error("unavailable", "this phone can't control its panel")
             return
         self.phone.panel_state = "off" if off else "on"
-        self.phone.events.panel(self.phone.panel_state)
-        self.send_state()
+        state = self.phone.panel_state
+        if self.phone.args.panel_delay_ms > 0:
+            threading.Thread(target=self._report_panel_later,
+                             args=(state, self.phone.args.panel_delay_ms / 1000.0), daemon=True).start()
+        else:
+            self.phone.events.panel(state)
+            self.send_state()
         if off and self.phone.args.panel_ends_after > 0:
             threading.Thread(target=self._end_panel_later,
                              args=(self.phone.args.panel_ends_after,), daemon=True).start()
+
+    def _report_panel_later(self, state, seconds):
+        """--panel-delay-ms: the report arrives after the phone's blocking panel
+        write/restore. A newer request owns the state by then, so it is dropped."""
+        time.sleep(seconds)
+        if self.phone.panel_state != state:
+            return
+        self.phone.events.panel(state)
+        self.send_state()
 
     def _end_panel_later(self, seconds):
         """--panel-ends-after: the person pressed power, so the request ends."""
@@ -3770,6 +3784,9 @@ def build_parser():
     p.add_argument("--panel-ends-after", type=float, default=0.0, metavar="SECONDS",
                    help="after phone.panel off, the person's power button ends it this long "
                         "later: send state.panel on and resume the mirror")
+    p.add_argument("--panel-delay-ms", type=int, default=0, metavar="MS",
+                   help="send the phone.panel reply's state.panel this many ms late: the "
+                        "phone's own report latency (a real phone's blocking panel write)")
     p.add_argument("--panel-refuse", action="store_true",
                    help="answer every phone.panel with error unavailable (a build that "
                         "cannot control its panel): the Mac must say the request failed")

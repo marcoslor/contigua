@@ -2342,6 +2342,17 @@ final class ConnectionController {
             guard windows.phoneWindow != nil else { return "no phone window" }
             windows.togglePhonePanelOff()
             return nil
+        case "panel-click":
+            // A click on the phone window's bar control, posted at the control's
+            // window location and resolved by the window's own hit test (the
+            // action alone would prove the action, not the control). The glyph
+            // follows the phone's next `state.panel`, never this click.
+            guard let phone = windows.phoneWindow else { return "no phone window" }
+            guard let window = phone.window, let centre = phone.chrome.headerButtonCentre(.custom) else {
+                return "the panel button is not showing"
+            }
+            DebugInputDriver.clickControl(at: centre, in: window)
+            return nil
         case "nav-click":
             // A click on the phone window's Back / Home / Recents button,
             // posted at the button's window location and resolved by the
