@@ -3,10 +3,13 @@ package dev.pocketdeck.ui
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.test.getUnclippedBoundsInRoot
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import dev.pocketdeck.ui.theme.PocketDeckTheme
+import org.junit.Assert.assertEquals
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -79,6 +82,17 @@ class HomeScreenTest {
     fun `background off has no turn-on button`() {
         shoot(state(enabled = false))
         compose.onNodeWithText("Turn on").assertDoesNotExist()
+    }
+
+    @Test
+    fun `the card, the first switch label and the paired title share a left edge`() {
+        shoot(state(enabled = true))
+        val card = compose.onNodeWithTag("statusCard").getUnclippedBoundsInRoot().left.value
+        val row = compose.onNodeWithText("Keep running in the background", useUnmergedTree = true)
+            .getUnclippedBoundsInRoot().left.value
+        val paired = compose.onNodeWithText("Paired Macs").getUnclippedBoundsInRoot().left.value
+        assertEquals("switch row must not be indented inside the card's edge", card, row, 1f)
+        assertEquals("Paired Macs title must share the same edge", card, paired, 1f)
     }
 
     @Test
