@@ -5047,6 +5047,15 @@ PY
 # that name; the domain identifier is the profile name.
 FILES_ID="dev.pocketdeck.mac.files-e2e"
 FILES_GROUP="group.dev.pocketdeck.mac.files-e2e"
+# Rig waits for the files-domain check, not product limits: no nfr-limits.json
+# entry. The one-time System Settings switch writes the File Provider's
+# user-enabled flag and the system then launches the extension, and after a
+# relaunch the extension reconnects on its own backoff schedule. verify-r3's VM
+# run ran out of both windows (90 s and 60 s) while a busy VM was still starting
+# them; the product came up fine just after. A generous window here only makes a
+# failing run take longer to say so.
+FILES_SWITCH_WAIT_S=300
+FILES_RELAUNCH_WAIT_S=120
 
 files_appex() { printf '%s\n' "$E2E_BUNDLE/Contents/PlugIns/Files.appex"; }
 
@@ -5302,7 +5311,7 @@ check_files_domain() {
     local root; root="$(files_domain_path)"
     # The person's one-time step: a fresh domain is user-disabled (FP -2011).
     files_enable_provider > "$WORK/enable-files.txt" 2>&1 || true
-    wait_until 90 files_root_lists "$root" \
+    wait_until "$FILES_SWITCH_WAIT_S" files_root_lists "$root" \
         && ok "FILES the System Settings switch is on; the domain enumerates" \
         || bad "FILES still user-disabled after the System Settings switch ($(tail -2 "$WORK/enable-files.txt" | tr '\n' ' '))"
     if [ -z "$root" ] || [ ! -d "$root" ]; then
@@ -5346,7 +5355,7 @@ check_files_domain() {
     launch --connect "127.0.0.1:$PORT"
     wait_until 30 eval 'events_have "\"state\":\"paired\"" || events_have "\"state\":\"auth_ok\""' \
         || bad "FILES the relaunch never authenticated"
-    wait_until 60 files_root_lists "$root" \
+    wait_until "$FILES_RELAUNCH_WAIT_S" files_root_lists "$root" \
         && ok "FILES a relaunch with the domain present lists again (the bridge came up)" \
         || bad "FILES a relaunch with the domain present lists nothing"
 
