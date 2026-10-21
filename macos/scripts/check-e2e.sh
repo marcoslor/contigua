@@ -7554,7 +7554,8 @@ check_menubar_vm() {
     defaults delete "$DEFAULTS_SUITE" "showAppsInDock" >/dev/null 2>&1
 }
 
-# --- DECK: the app grid's icon kinds ---------------------------------------icons_kind() { grep '"ev":"icon"' "$WORK/events.jsonl" 2>/dev/null | grep -c "$1" || true; }
+# --- DECK: the app grid's icon kinds ---------------------------------------
+icons_kind() { grep '"ev":"icon"' "$WORK/events.jsonl" 2>/dev/null | grep -c "$1" || true; }
 
 have_layered_icons() { [ "$(icons_kind '"layers":true')" -ge 4 ]; }
 have_flat_icons() { [ "$(icons_kind '"layers":false')" -ge 5 ]; }
