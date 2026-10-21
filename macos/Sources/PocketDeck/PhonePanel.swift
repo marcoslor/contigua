@@ -36,6 +36,11 @@ struct PhoneControlsState: Equatable {
     var connection: Connection = .idle
     var battery: Int?
     var charging = false
+
+    /// The battery the header draws: none while the phone is away. The last
+    /// reading belongs to a phone that isn't there any more, and a stale level
+    /// claims something nobody measured.
+    var shownBattery: Int? { connection.isOnline ? battery : nil }
     var agentCount = 0
     var media: MediaState?
     var sessions: [MediaSessionRow] = []
@@ -185,45 +190,83 @@ enum PhonePanelItem: String, CaseIterable {
     }
 }
 
+/// One grid for the panel: the fixed width, the 28 pt rows, the icon column
+/// every row's symbol sits in and one section gap. The two hosts, the debug
+/// probe and the geometry tests read these numbers instead of their own.
+enum PhonePanelMetrics {
+    static let width: CGFloat = 300
+    static let inset: CGFloat = 12
+    static let headerHeight: CGFloat = 44
+    static let rowHeight: CGFloat = 28
+    static let rowInset: CGFloat = 8
+    static let iconColumn: CGFloat = 18
+    static let iconTextSpace: CGFloat = 8
+    static let sectionGap: CGFloat = 10
+    static let sectionHeight: CGFloat = 16
+    static let reasonHeight: CGFloat = 14
+
+    /// The text inset every row's title shares, from the panel's left edge.
+    static let textInset = inset + rowInset + iconColumn + iconTextSpace
+    /// One row's width inside the panel's inset.
+    static let rowWidth = width - inset * 2
+}
+
+/// Whether a row's own control can do anything in this state: one mapping for
+/// the view, the debug probe and the tests, so a disabled row looks and
+/// behaves the same wherever it is read.
+extension PhonePanelItem {
+    func isEnabled(in state: PhoneControlsState) -> Bool {
+        switch self {
+        case .volume: return state.volumeFraction != nil
+        case .dnd: return state.connection.isOnline && state.dnd != nil
+        case .ring, .phoneScreen, .continueOnMac: return state.connection.isOnline
+        case .installApk: return state.connection.isOnline && !state.installBusy
+        case .sessions: return true
+        case .live: return true
+        case .findApps, .settings, .quit, .disconnectAgent: return true
+        }
+    }
+}
+
 struct PhonePanelView: View {
     let state: PhoneControlsState
     let actions: PhoneControlsActions
 
-    static let width: CGFloat = 300
-    private let inset: CGFloat = 12
+    static let width: CGFloat = PhonePanelMetrics.width
+    private let inset: CGFloat = PhonePanelMetrics.inset
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
-            agentRow
-            sectionLabel("PHONE").padding(.top, 10)
+            if state.agentCount > 0 { agentRow }
+            sectionLabel("PHONE")
             volumeRow
-            reasonLine
+            if state.reason != nil { reasonLine }
             dndRow
             ringRow
             if state.showsPicker { pickerRow }
             if !state.live.isEmpty {
-                sectionLabel("LIVE").padding(.top, 10)
+                sectionLabel("LIVE")
                 ForEach(state.live) { item in
                     PanelRow(symbol: "bell.badge", title: NotifyLiveText.menuTitle(item, now: state.liveTick),
                              enabled: true) { actions.openLive(item.id) }
                         .accessibilityLabel(NotifyLiveText.menuTitle(item, now: state.liveTick))
                 }
             }
-            sectionLabel("WINDOWS").padding(.top, 10)
+            sectionLabel("WINDOWS")
             PanelRow(symbol: "iphone.gen3", title: "Phone Screen", shortcut: "⌘P",
-                     enabled: state.connection.isOnline) { actions.openPhoneScreen() }
+                     enabled: PhonePanelItem.phoneScreen.isEnabled(in: state)) { actions.openPhoneScreen() }
                 .accessibilityIdentifier(PhonePanelItem.phoneScreen.id)
             PanelRow(symbol: "magnifyingglass", title: "Find Apps", shortcut: "⌘K",
                      enabled: true) { actions.findApps() }
                 .accessibilityIdentifier(PhonePanelItem.findApps.id)
             PanelRow(symbol: "arrow.up.forward.app", title: "Continue on Mac",
-                     enabled: state.connection.isOnline) { actions.continueOnMac() }
+                     enabled: PhonePanelItem.continueOnMac.isEnabled(in: state)) { actions.continueOnMac() }
                 .accessibilityIdentifier(PhonePanelItem.continueOnMac.id)
             PanelRow(symbol: "arrow.down.app", title: state.installTitle,
-                     enabled: state.connection.isOnline && !state.installBusy) { actions.installApk() }
+                     enabled: PhonePanelItem.installApk.isEnabled(in: state)) { actions.installApk() }
                 .accessibilityIdentifier(PhonePanelItem.installApk.id)
-            footer.padding(.top, 10)
+            footer
         }
         .padding(inset)
         .frame(width: Self.width)
@@ -249,7 +292,7 @@ struct PhonePanelView: View {
                 }
             }
             Spacer(minLength: 6)
-            if let battery = state.battery {
+            if let battery = state.shownBattery {
                 let low = BatterySymbol.isLow(level: battery, charging: state.charging)
                 HStack(spacing: 3) {
                     Image(systemName: BatterySymbol.name(level: battery, charging: state.charging))
@@ -259,47 +302,45 @@ struct PhonePanelView: View {
                 .foregroundStyle(low ? AnyShapeStyle(.red) : AnyShapeStyle(.secondary))
             }
         }
-        .frame(height: 44)
+        .frame(height: PhonePanelMetrics.headerHeight)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(state.phoneName), \(state.connection.text)")
     }
 
     private var agentRow: some View {
         HStack(spacing: 8) {
-            if state.agentCount > 0 {
-                Image(systemName: "sparkles").font(.system(size: 12))
-                Text("AI agent connected").font(.system(size: 12))
-                Spacer(minLength: 6)
-                Button("Disconnect") { actions.disconnectAgent() }
-                    .buttonStyle(.glass)
-                    .controlSize(.mini)
-                    .accessibilityLabel("Disconnect the AI agent")
-                    .accessibilityIdentifier(PhonePanelItem.disconnectAgent.id)
-            }
+            Image(systemName: "sparkles").font(.system(size: 12))
+            Text("AI agent connected").font(.system(size: 12))
+            Spacer(minLength: 6)
+            Button("Disconnect") { actions.disconnectAgent() }
+                .buttonStyle(.glass)
+                .controlSize(.mini)
+                .accessibilityLabel("Disconnect the AI agent")
+                .accessibilityIdentifier(PhonePanelItem.disconnectAgent.id)
         }
         .frame(height: 24)
-        .padding(.horizontal, 8)
+        .padding(.horizontal, PhonePanelMetrics.rowInset)
     }
 
     private var volumeRow: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "speaker.fill")
-                .font(.system(size: 10))
-                .foregroundStyle(.secondary)
-            Slider(value: Binding(
-                get: { state.volumeFraction ?? 0 },
-                set: { actions.setVolume($0) },
-            ), in: 0...1)
-            .controlSize(.small)
-            .disabled(state.volumeFraction == nil)
-            .accessibilityLabel(PhonePanelItem.volume.label)
-            .accessibilityIdentifier(PhonePanelItem.volume.id)
-            Image(systemName: "speaker.wave.3.fill")
-                .font(.system(size: 10))
-                .foregroundStyle(.secondary)
+        let enabled = PhonePanelItem.volume.isEnabled(in: state)
+        return PanelRowShell(enabled: enabled,
+                             icon: { Image(systemName: "speaker.fill").font(.system(size: 12)) }) {
+            HStack(spacing: PhonePanelMetrics.iconTextSpace) {
+                Slider(value: Binding(
+                    get: { state.volumeFraction ?? 0 },
+                    set: { actions.setVolume($0) },
+                ), in: 0...1)
+                .controlSize(.small)
+                .accessibilityLabel(PhonePanelItem.volume.label)
+                .accessibilityIdentifier(PhonePanelItem.volume.id)
+                Image(systemName: "speaker.wave.3.fill")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .frame(width: PhonePanelMetrics.iconColumn)
+            }
         }
-        .padding(.horizontal, 8)
-        .frame(height: 28)
+        .disabled(!enabled)
     }
 
     private var reasonLine: some View {
@@ -307,40 +348,37 @@ struct PhonePanelView: View {
             .font(.caption2)
             .foregroundStyle(.secondary)
             .lineLimit(1)
-            .frame(height: 14, alignment: .leading)
-            .padding(.horizontal, 8)
-            .opacity(state.reason == nil ? 0 : 1)
+            .frame(height: PhonePanelMetrics.reasonHeight, alignment: .leading)
+            .padding(.horizontal, PhonePanelMetrics.rowInset)
             .accessibilityHidden(state.reason == nil)
     }
 
     private var dndRow: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "moon.fill")
-                .font(.system(size: 12))
-                .foregroundStyle(.secondary)
-                .frame(width: 18)
-            Text(PhonePanelItem.dnd.label).font(.system(size: 13))
-            Spacer(minLength: 6)
-            Toggle("", isOn: Binding(
-                get: { state.dnd?.isOn ?? false },
-                set: { actions.setDnd($0) },
-            ))
-            .labelsHidden()
-            .toggleStyle(.switch)
-            .controlSize(.mini)
-            .disabled(!state.connection.isOnline || state.dnd == nil)
-            .accessibilityLabel(PhonePanelItem.dnd.label)
-            .accessibilityIdentifier(PhonePanelItem.dnd.id)
+        let enabled = PhonePanelItem.dnd.isEnabled(in: state)
+        return PanelRowShell(enabled: enabled,
+                             icon: { Image(systemName: "moon.fill").font(.system(size: 12)) }) {
+            HStack(spacing: 6) {
+                Text(PhonePanelItem.dnd.label).font(.system(size: 13))
+                Spacer(minLength: 6)
+                Toggle("", isOn: Binding(
+                    get: { state.dnd?.isOn ?? false },
+                    set: { actions.setDnd($0) },
+                ))
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .controlSize(.mini)
+                .accessibilityLabel(PhonePanelItem.dnd.label)
+                .accessibilityIdentifier(PhonePanelItem.dnd.id)
+            }
         }
-        .padding(.horizontal, 8)
-        .frame(height: 28)
+        .disabled(!enabled)
     }
 
     private var ringRow: some View {
         PanelRow(symbol: state.ringing ? "bell.slash"
                                        : "iphone.radiowaves.left.and.right",
                  title: state.ringTitle,
-                 enabled: state.connection.isOnline,
+                 enabled: PhonePanelItem.ring.isEnabled(in: state),
                  action: state.ringing ? actions.stopRing : actions.ring)
             .accessibilityIdentifier(PhonePanelItem.ring.id)
     }
@@ -355,24 +393,21 @@ struct PhonePanelView: View {
                 }
             }
         } label: {
-            HStack(spacing: 8) {
-                Image(systemName: "music.note.list")
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 18)
-                Text(state.pickerTitle)
-                    .font(.system(size: 13))
-                    .lineLimit(1)
-                Spacer(minLength: 6)
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(.tertiary)
+            PanelRowShell(icon: { Image(systemName: "music.note").font(.system(size: 12)) }) {
+                HStack(spacing: 6) {
+                    Text(state.pickerTitle)
+                        .font(.system(size: 13))
+                        .lineLimit(1)
+                    Spacer(minLength: 6)
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(.tertiary)
+                }
             }
-            .padding(.horizontal, 8)
-            .frame(height: 28)
             .contentShape(.rect(cornerRadius: 6))
         }
-        .menuStyle(.borderlessButton)
+        .menuStyle(.button)
+        .buttonStyle(PanelRowButtonStyle())
         .menuIndicator(.hidden)
         .accessibilityLabel(state.pickerTitle)
         .accessibilityIdentifier(PhonePanelItem.sessions.id)
@@ -380,19 +415,31 @@ struct PhonePanelView: View {
 
     private var footer: some View {
         HStack(spacing: 8) {
-            Button("Settings…") { actions.openSettings() }
+            Button { actions.openSettings() } label: { shortcutItem("Settings…", "⌘,") }
                 .keyboardShortcut(",", modifiers: .command)
+                .accessibilityLabel(PhonePanelItem.settings.label)
                 .accessibilityIdentifier(PhonePanelItem.settings.id)
             Text("·").foregroundStyle(.tertiary)
-            Button("Quit PocketDeck") { actions.quit() }
+            Button { actions.quit() } label: { shortcutItem("Quit PocketDeck", "⌘Q") }
                 .keyboardShortcut("q")
+                .accessibilityLabel(PhonePanelItem.quit.label)
                 .accessibilityIdentifier(PhonePanelItem.quit.id)
             Spacer(minLength: 0)
         }
         .buttonStyle(.plain)
         .font(.system(size: 12))
-        .frame(height: 28)
-        .padding(.horizontal, 8)
+        .frame(height: PhonePanelMetrics.rowHeight)
+        .padding(.horizontal, PhonePanelMetrics.rowInset)
+        .padding(.top, PhonePanelMetrics.sectionGap)
+    }
+
+    /// A footer button with its shortcut shown beside it, the way the rows
+    /// above show theirs.
+    private func shortcutItem(_ title: String, _ shortcut: String) -> some View {
+        HStack(spacing: 6) {
+            Text(title)
+            Text(shortcut).foregroundStyle(.tertiary)
+        }
     }
 
     private func sectionLabel(_ text: String) -> some View {
@@ -400,8 +447,9 @@ struct PhonePanelView: View {
             .font(.system(size: 10, weight: .semibold))
             .tracking(0.8)
             .foregroundStyle(.secondary)
-            .frame(height: 16, alignment: .leading)
-            .padding(.horizontal, 8)
+            .frame(height: PhonePanelMetrics.sectionHeight, alignment: .leading)
+            .padding(.horizontal, PhonePanelMetrics.rowInset)
+            .padding(.top, PhonePanelMetrics.sectionGap)
             .accessibilityAddTraits(.isHeader)
     }
 
@@ -411,6 +459,38 @@ struct PhonePanelView: View {
         case .reconnecting, .needsPairing: return .orange
         case .connecting, .offline, .idle: return .secondary
         }
+    }
+}
+
+/// One panel row's content on the shared grid: the 28 pt height, the row inset
+/// and the 18 pt icon column every row's symbol sits in, so icons and titles
+/// line up from row to row. A row that can't act is dimmed here once, the same
+/// way for a button, a switch and a slider.
+struct PanelRowShell<Icon: View, Content: View>: View {
+    var enabled = true
+    @ViewBuilder var icon: Icon
+    @ViewBuilder var content: Content
+
+    var body: some View {
+        HStack(spacing: PhonePanelMetrics.iconTextSpace) {
+            icon
+                .frame(width: PhonePanelMetrics.iconColumn)
+                .foregroundStyle(.secondary)
+            content
+        }
+        .padding(.horizontal, PhonePanelMetrics.rowInset)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(height: PhonePanelMetrics.rowHeight)
+        .contentShape(.rect(cornerRadius: 6))
+        .opacity(enabled ? 1 : 0.6)
+    }
+}
+
+/// A row's press look without the platform's own disabled fade: the shell
+/// dims a disabled row, so the slider and the switch can match the buttons.
+struct PanelRowButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label.opacity(configuration.isPressed ? 0.75 : 1)
     }
 }
 
@@ -426,28 +506,25 @@ struct PanelRow: View {
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 8) {
-                Image(systemName: symbol)
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 18)
-                Text(title)
-                    .font(.system(size: 13))
-                    .lineLimit(1)
-                Spacer(minLength: 6)
-                if let shortcut {
-                    Text(shortcut)
-                        .font(.system(size: 11))
-                        .foregroundStyle(.tertiary)
+            PanelRowShell(enabled: enabled,
+                          icon: { Image(systemName: symbol).font(.system(size: 12)) }) {
+                HStack(spacing: 6) {
+                    Text(title)
+                        .font(.system(size: 13))
+                        .lineLimit(1)
+                    Spacer(minLength: 6)
+                    if let shortcut {
+                        Text(shortcut)
+                            .font(.system(size: 11))
+                            .foregroundStyle(.tertiary)
+                    }
                 }
             }
-            .padding(.horizontal, 8)
-            .frame(height: 28)
             .background(hovering && enabled ? AnyShapeStyle(.quaternary) : AnyShapeStyle(.clear),
                         in: .rect(cornerRadius: 6))
             .contentShape(.rect(cornerRadius: 6))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PanelRowButtonStyle())
         .disabled(!enabled)
         .onHover { hovering = $0 }
         .accessibilityLabel(title)

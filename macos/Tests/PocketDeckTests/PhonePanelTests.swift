@@ -17,6 +17,8 @@ final class PhonePanelTests: XCTestCase {
     private var profile: Profile!
     private var support: URL!
     private var controller: ConnectionController!
+    private var window: NSWindow?
+    private var hosting: NSHostingView<PhonePanelView>?
 
     override func setUp() async throws {
         let suffix = UUID().uuidString.lowercased().prefix(8)
@@ -31,6 +33,9 @@ final class PhonePanelTests: XCTestCase {
     }
 
     override func tearDown() async throws {
+        window?.orderOut(nil)
+        window = nil
+        hosting = nil
         profile?.defaults.removePersistentDomain(forName: profile.defaultsSuiteName!)
         if let support { try? FileManager.default.removeItem(at: support) }
     }
@@ -194,5 +199,263 @@ final class PhonePanelTests: XCTestCase {
             XCTAssertTrue(text.contains("PhoneControlsState(controller: controller)"),
                           "\(name) builds the panel state the same way")
         }
+    }
+
+    // MARK: - The panel's geometry (the review's shots, 2026-10-21)
+
+    /// The panel in a real window at its intended width, laid out: the same
+    /// hosting the app does, so the controls' frames are the ones a pointer
+    /// hits.
+    @discardableResult
+    private func host(_ state: PhoneControlsState) -> NSHostingView<PhonePanelView> {
+        window?.orderOut(nil)
+        let view = NSHostingView(rootView: PhonePanelView(state: state, actions: PhoneControlsActions()))
+        view.frame = NSRect(x: 0, y: 0, width: PhonePanelView.width, height: 640)
+        view.layoutSubtreeIfNeeded()
+        let size = view.fittingSize
+        let window = NSWindow(contentRect: NSRect(origin: .zero, size: size),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        window.contentView = view
+        view.frame = NSRect(origin: .zero, size: size)
+        window.orderFront(nil)
+        view.layoutSubtreeIfNeeded()
+        self.window = window
+        hosting = view
+        return view
+    }
+
+    private func frame(_ control: NSView, in view: NSView) -> CGRect {
+        control.convert(control.bounds, to: view)
+    }
+
+    /// Every focusable control SwiftUI laid out, top to bottom: its key-view
+    /// proxies, the DND switch and the Now Playing popup.
+    private func laidOut(in view: NSView) -> [NSView] {
+        func descendants(_ view: NSView) -> [NSView] { view.subviews.flatMap { [$0] + descendants($0) } }
+        return descendants(view)
+            .filter {
+                let name = String(describing: type(of: $0))
+                return name.contains("KeyViewProxy") || $0 is NSSwitch || name.contains("PopupButton")
+            }
+            .sorted { a, b in
+                let fa = frame(a, in: view), fb = frame(b, in: view)
+                return fa.minY == fb.minY ? fa.minX < fb.minX : fa.minY < fb.minY
+            }
+    }
+
+    /// The panel offscreen, at its own width, one point per pixel.
+    private func render(_ state: PhoneControlsState) -> CGImage? {
+        let renderer = ImageRenderer(content: PhonePanelView(state: state, actions: PhoneControlsActions()))
+        renderer.proposedSize = ProposedViewSize(width: PhonePanelView.width, height: nil)
+        renderer.scale = 1
+        return renderer.cgImage
+    }
+
+    /// The pixels the panel drew: rows top-down as the renderer emits them.
+    private struct Pixels {
+        let width: Int
+        let height: Int
+        private let data: [UInt8]
+
+        init?(_ image: CGImage) {
+            let width = image.width, height = image.height
+            var data = [UInt8](repeating: 0, count: width * height * 4)
+            guard let context = CGContext(data: &data, width: width, height: height,
+                                          bitsPerComponent: 8, bytesPerRow: width * 4,
+                                          space: CGColorSpaceCreateDeviceRGB(),
+                                          bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+            else { return nil }
+            context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+            self.width = width
+            self.height = height
+            self.data = data
+        }
+
+        /// The image rows covering `center ± half`. The hosting view is flipped
+        /// (y grows down from the top), which is also how the renderer's rows
+        /// are ordered.
+        func rows(center: CGFloat, half: CGFloat) -> Range<Int> {
+            let top = Int((center - half).rounded())
+            let bottom = Int((center + half).rounded())
+            return max(0, top)..<max(0, min(height, bottom))
+        }
+
+        func alpha(_ x: Int, _ y: Int) -> Int { Int(data[(y * width + x) * 4 + 3]) }
+
+        /// What was drawn in a band, in the image's own columns: the first and
+        /// last column with ink, or nil for a blank band.
+        func ink(columns: Range<Int>, rows: Range<Int>) -> (minX: Int, maxX: Int)? {
+            var minX: Int?, maxX: Int?
+            for y in rows {
+                for x in columns where alpha(x, y) > 8 {
+                    minX = min(minX ?? x, x)
+                    maxX = max(maxX ?? x, x)
+                }
+            }
+            guard let minX, let maxX else { return nil }
+            return (minX, maxX)
+        }
+
+        func hasInk(columns: Range<Int>, rows: Range<Int>) -> Bool {
+            ink(columns: columns, rows: rows) != nil
+        }
+
+        /// The band's mean ink. The panel's own background is transparent, so
+        /// dimming a row scales its pixels' alpha; the mean is steady where a
+        /// peak depends on which control happens to be opaque.
+        func meanAlpha(columns: Range<Int>, rows: Range<Int>) -> Double {
+            var total = 0, count = 0
+            for y in rows {
+                for x in columns { total += alpha(x, y); count += 1 }
+            }
+            return count == 0 ? 0 : Double(total) / Double(count)
+        }
+    }
+
+    /// The review's first panel shot: the Now Playing picker's icon sat left of
+    /// the other rows' icon column and the row drew no indicator that it is a
+    /// choice; the volume row's speaker was not in the column at all. Every
+    /// row's symbol now sits in the one 18 pt column and the picker ends in a
+    /// popup indicator at the row's trailing edge.
+    func testEveryRowSharesTheOneIconColumn() throws {
+        var state = panelState(sessions: [row("a", "Spotify"), row("b", "Music", playing: true)])
+        state.battery = 87
+        let view = host(state)
+        let pixels = try XCTUnwrap(render(state).flatMap(Pixels.init))
+        XCTAssertEqual(pixels.height, Int(view.fittingSize.height.rounded()),
+                       "the render and the host lay out the same panel")
+        let items = PhonePanelItem.focusOrder(for: state)
+        let controls = laidOut(in: view)
+        XCTAssertEqual(controls.count, items.count, "one laid-out control per panel item")
+
+        let column = PhonePanelMetrics.inset + PhonePanelMetrics.rowInset
+        // The rows with a leading icon; the footer's two shortcuts sit on the
+        // text inset, not on the icon column.
+        let iconRows: [PhonePanelItem] = [.volume, .dnd, .ring, .sessions,
+                                          .phoneScreen, .findApps, .continueOnMac, .installApk]
+        var centres: [(PhonePanelItem, CGFloat)] = []
+        for item in iconRows {
+            let control = controls[try XCTUnwrap(items.firstIndex(of: item))]
+            let centre = frame(control, in: view).midY
+            let icon = try XCTUnwrap(pixels.ink(columns: 8..<45, rows: pixels.rows(center: centre, half: 9)),
+                                     "\(item.rawValue) draws no leading icon")
+            XCTAssertGreaterThanOrEqual(icon.minX, Int(column) - 1,
+                                        "\(item.rawValue)'s icon starts left of the icon column")
+            XCTAssertLessThanOrEqual(icon.maxX, Int(column + PhonePanelMetrics.iconColumn) + 1,
+                                     "\(item.rawValue)'s icon runs past the icon column")
+            centres.append((item, CGFloat(icon.minX + icon.maxX) / 2))
+        }
+        let mean = centres.map(\.1).reduce(0, +) / CGFloat(centres.count)
+        for (item, centre) in centres {
+            XCTAssertEqual(centre, mean, accuracy: 1,
+                           "\(item.rawValue)'s icon is off the column the others share")
+        }
+
+        // The picker row is the full row and ends in the popup indicator.
+        let picker = try XCTUnwrap(items.firstIndex(of: .sessions))
+        let row = frame(controls[picker], in: view)
+        XCTAssertTrue(pixels.hasInk(columns: 240..<290, rows: pixels.rows(center: row.midY, half: 9)),
+                      "the Now Playing row draws no trailing indicator")
+        XCTAssertGreaterThan(row.width, 200, "the Now Playing row is only as wide as its text")
+    }
+
+    /// The review's rhythm complaints: an empty agent row stood between the
+    /// header and PHONE, the reason line kept its height when there was nothing
+    /// to explain (a gap under the slider) and the two section gaps differed.
+    /// The panel is now one grid: 28 pt rows, a 10 pt gap on both sides of a
+    /// 16 pt label, and only content that exists takes height.
+    func testTheRowsAndSectionsShareOneVerticalGrid() throws {
+        let state = panelState(sessions: [row("a", "Spotify"), row("b", "Music", playing: true)])
+        let view = host(state)
+        let items = PhonePanelItem.focusOrder(for: state)
+        let controls = laidOut(in: view)
+        let centres = Dictionary(uniqueKeysWithValues: zip(items, controls.map { frame($0, in: view).midY }))
+
+        // One 28 pt row after another inside a section, whatever the row is
+        // (slider, switch, button, popup).
+        for (above, below) in [(PhonePanelItem.volume, PhonePanelItem.dnd),
+                               (.dnd, .ring), (.ring, .sessions),
+                               (.phoneScreen, .findApps), (.findApps, .continueOnMac),
+                               (.continueOnMac, .installApk)] {
+            XCTAssertEqual(abs(centres[above]! - centres[below]!), PhonePanelMetrics.rowHeight, accuracy: 0.5,
+                           "\(above.rawValue) → \(below.rawValue) is not one row")
+        }
+        // One section gap (10) and one label (16) between PHONE's last row and
+        // WINDOWS' first row: the same gap the header leaves above PHONE.
+        XCTAssertEqual(abs(centres[.sessions]! - centres[.phoneScreen]!),
+                       PhonePanelMetrics.rowHeight + PhonePanelMetrics.sectionHeight
+                           + PhonePanelMetrics.sectionGap,
+                       accuracy: 0.5,
+                       "the WINDOWS section is spaced like the PHONE one")
+
+        let expected = PhonePanelMetrics.inset * 2 + PhonePanelMetrics.headerHeight
+            + (PhonePanelMetrics.sectionGap + PhonePanelMetrics.sectionHeight) * 2
+            + PhonePanelMetrics.rowHeight * 8
+            + PhonePanelMetrics.sectionGap + PhonePanelMetrics.rowHeight
+        XCTAssertEqual(view.fittingSize.height, expected, accuracy: 0.5,
+                       "online the panel is exactly its header, rows, labels and gaps")
+        var away = state
+        away.connection = .offline
+        XCTAssertEqual(host(away).fittingSize.height, expected + PhonePanelMetrics.reasonHeight, accuracy: 0.5,
+                       "offline the panel adds only the one reason line")
+    }
+
+    /// The review's offline shot: Ring Phone dimmed, but Do Not Disturb's label
+    /// and the slider stayed bright, and the header kept the last battery level.
+    /// Offline every phone row is off and drawn like Ring Phone, and the
+    /// battery is gone rather than stale.
+    func testOfflineDimsEveryPhoneRowAndHidesTheBattery() throws {
+        var state = panelState(online: false, sessions: [row("a", "Spotify"), row("b", "Music")])
+        state.battery = 87
+        XCTAssertNil(state.shownBattery, "offline the header draws no battery")
+        XCTAssertNil(state.volumeFraction)
+        for item in [PhonePanelItem.volume, .dnd, .ring, .phoneScreen, .continueOnMac, .installApk] {
+            XCTAssertFalse(item.isEnabled(in: state), "\(item.rawValue) must be off while the phone is away")
+        }
+        XCTAssertTrue(PhonePanelItem.findApps.isEnabled(in: state))
+
+        let view = host(state)
+        let pixels = try XCTUnwrap(render(state).flatMap(Pixels.init))
+        // A disabled row leaves the key loop, so the offline controls are found
+        // by their shapes (the switch) and the grid, not by index.
+        let dnd = try XCTUnwrap(laidOut(in: view).first { $0 is NSSwitch }, "no DND switch")
+        let dndCentre = frame(dnd, in: view).midY
+        // The same panel online: each row's own ink, then and now, gives the
+        // dimming factor without depending on the platform's control colours.
+        let onlineState = panelState(sessions: [row("a", "Spotify"), row("b", "Music")])
+        let onlineView = host(onlineState)
+        let online = try XCTUnwrap(render(onlineState).flatMap(Pixels.init))
+        let onlineDnd = try XCTUnwrap(laidOut(in: onlineView).first { $0 is NSSwitch }, "no online DND switch")
+        let onlineCentre = frame(onlineDnd, in: onlineView).midY
+        func dimRatio(_ columns: Range<Int>, offlineCentre: CGFloat, onlineCentre: CGFloat) -> Double {
+            let away = pixels.meanAlpha(columns: columns, rows: pixels.rows(center: offlineCentre, half: 8))
+            let now = online.meanAlpha(columns: columns, rows: online.rows(center: onlineCentre, half: 8))
+            return now == 0 ? 0 : away / now
+        }
+        // Offline the volume row is above the one reason line, which is above
+        // DND; online there is no line, so each row is one row higher.
+        let volumeAway = dndCentre - PhonePanelMetrics.rowHeight - PhonePanelMetrics.reasonHeight
+        let volumeNow = onlineCentre - PhonePanelMetrics.rowHeight
+        let labels = 46..<150
+        let icons = 20..<44
+        let rows: [(String, Range<Int>, CGFloat, CGFloat)] = [
+            ("Do Not Disturb", labels, dndCentre, onlineCentre),
+            ("Ring Phone", labels, dndCentre + PhonePanelMetrics.rowHeight,
+             onlineCentre + PhonePanelMetrics.rowHeight),
+            ("volume icons", icons, volumeAway, volumeNow),
+            ("slider", labels, volumeAway, volumeNow),
+        ]
+        for (name, columns, away, now) in rows {
+            XCTAssertLessThanOrEqual(dimRatio(columns, offlineCentre: away, onlineCentre: now), 0.75,
+                                     "the \(name) is not dimmed while the phone is away")
+        }
+        // A disabled row's label dims the way Ring Phone's does.
+        XCTAssertEqual(dimRatio(labels, offlineCentre: dndCentre, onlineCentre: onlineCentre), 0.6,
+                       accuracy: 0.15, "the DND label does not dim like the Ring Phone label")
+
+        // Nothing stands in the header's battery corner.
+        let header = PhonePanelMetrics.inset + PhonePanelMetrics.headerHeight / 2
+        XCTAssertFalse(pixels.hasInk(columns: 240..<288, rows: pixels.rows(center: header, half: 20)),
+                       "the offline header still draws a battery level")
     }
 }
