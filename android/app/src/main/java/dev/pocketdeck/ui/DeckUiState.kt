@@ -6,13 +6,18 @@ package dev.pocketdeck.ui
  * so the mappings are JVM-testable.
  */
 
-/** The four status-card states in docs/DESIGN.md §2. */
+/** The status-card states in docs/DESIGN.md §2. */
 enum class StatusState { READY, CONNECTED, NEEDS_ATTENTION, ERROR }
 
 /** Why the card needs an action; drives the fix button. */
 enum class AttentionKind { NONE, CONNECTIONS_OFF, SHIZUKU_NOT_RUNNING, SHIZUKU_PERMISSION, RETRY }
 
-data class DeckStatus(val state: StatusState, val attention: AttentionKind)
+data class DeckStatus(
+    val state: StatusState,
+    val attention: AttentionKind,
+    /** Ready, but only while the app's task lives (background switch off). */
+    val untilTaskClosed: Boolean = false,
+)
 
 /** The inputs the status card depends on. */
 data class StatusInput(
@@ -26,15 +31,17 @@ data class StatusInput(
 )
 
 /**
- * Status card mapping. Connections off and a broken Shizuku are both "needs
- * attention"; only a running server with nothing connected is "ready".
+ * Status card mapping. Allow connections off and a broken Shizuku are both
+ * "needs attention"; the background switch being off is only information. Only
+ * a running server with nothing connected is "ready".
  */
 fun mapStatus(input: StatusInput): DeckStatus = when {
-    !input.enabled || !input.allowConnections ->
+    !input.allowConnections ->
         DeckStatus(StatusState.NEEDS_ATTENTION, AttentionKind.CONNECTIONS_OFF)
     !input.shizukuRunning -> DeckStatus(StatusState.NEEDS_ATTENTION, AttentionKind.SHIZUKU_NOT_RUNNING)
     !input.shizukuGranted -> DeckStatus(StatusState.NEEDS_ATTENTION, AttentionKind.SHIZUKU_PERMISSION)
     input.connectedMac != null -> DeckStatus(StatusState.CONNECTED, AttentionKind.NONE)
+    !input.enabled -> DeckStatus(StatusState.READY, AttentionKind.NONE, untilTaskClosed = true)
     input.port > 0 -> DeckStatus(StatusState.READY, AttentionKind.NONE)
     else -> DeckStatus(StatusState.ERROR, AttentionKind.RETRY)
 }

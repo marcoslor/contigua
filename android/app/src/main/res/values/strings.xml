@@ -4,11 +4,14 @@
     <string name="open_on_mac_label">Open on Mac</string>
 
     <!-- ongoing + pairing notifications -->
-    <string name="channel_ongoing">Service</string>
+    <string name="channel_ongoing">Connection status</string>
     <string name="channel_pairing">Pairing requests</string>
     <string name="notif_starting">Starting…</string>
-    <string name="notif_listening">Listening on port %1$d</string>
-    <string name="notif_connected">Connected to %1$s · %2$d windows</string>
+    <string name="notif_listening">Ready for your Mac</string>
+    <plurals name="notif_connected">
+        <item quantity="one">Connected to %1$s · %2$d window</item>
+        <item quantity="other">Connected to %1$s · %2$d windows</item>
+    </plurals>
     <string name="pairing_title">Pair with %1$s?</string>
     <string name="pairing_text">Code %1$s</string>
     <string name="pairing_hint">Check it matches your Mac.</string>
@@ -16,12 +19,12 @@
     <string name="deny">Deny</string>
 
     <!-- onboarding -->
-    <string name="onboarding_welcome_title">Use your apps on your Mac</string>
-    <string name="onboarding_welcome_body">Your Android apps, on your Mac.</string>
+    <string name="onboarding_welcome_title">Your Android apps, on your Mac</string>
+    <string name="onboarding_welcome_body">Open PocketDeck on your Mac and pick this phone — it stays locked.</string>
     <string name="onboarding_get_started">Get started</string>
 
     <string name="onboarding_shizuku_title">Start Shizuku</string>
-    <string name="onboarding_shizuku_body">Shizuku lets PocketDeck run your apps as the shell.</string>
+    <string name="onboarding_shizuku_body">Shizuku gives PocketDeck the access it needs to show your apps on the Mac. It stays on this phone.</string>
     <string name="shizuku_status_not_installed">Not installed</string>
     <string name="shizuku_status_not_running">Not running</string>
     <string name="shizuku_status_permission">Permission needed</string>
@@ -37,7 +40,7 @@
 
     <string name="onboarding_notifications_title">Allow notifications</string>
     <string name="onboarding_notifications_body">Needed for pairing prompts.</string>
-    <string name="onboarding_notifications_battery">Ignore battery optimizations</string>
+    <string name="onboarding_notifications_battery">Let PocketDeck run in the background</string>
     <string name="onboarding_notifications_battery_body">Keeps PocketDeck reachable while your screen is off.</string>
 
     <string name="onboarding_pair_title">Pair your Mac</string>
@@ -47,6 +50,7 @@
 
     <!-- home -->
     <string name="status_ready">Ready</string>
+    <string name="status_ready_until_closed_body">Stops when you close PocketDeck from recent apps.</string>
     <string name="wifi_default">Wi-Fi</string>
     <string name="status_visible_on">Visible to Macs on %1$s</string>
     <string name="status_connected">Connected to %1$s</string>
@@ -59,24 +63,26 @@
     <string name="status_connections_off">Connections are off</string>
     <string name="status_connections_off_body">Turn on Allow connections.</string>
     <string name="status_error">Couldn\'t start</string>
-    <string name="status_error_body">Tap retry to try again.</string>
+    <string name="status_error_body">Something stopped PocketDeck\'s connection.</string>
     <string name="action_open_shizuku">Open Shizuku</string>
     <string name="action_allow">Allow</string>
     <string name="action_turn_on">Turn on</string>
     <string name="action_retry">Retry</string>
 
-    <string name="home_keep_running">Keep PocketDeck running</string>
+    <string name="home_keep_running">Keep running in the background</string>
     <string name="home_allow_connections">Allow connections</string>
     <string name="home_allow_pairings">Allow new pairings</string>
     <string name="home_allow_pairings_hint">Turn on Allow connections first.</string>
-    <string name="home_notify_share">Show notifications on the Mac</string>
+    <string name="home_notify_share">Share notifications and Now Playing</string>
     <string name="home_notify_granting">Granting notification access…</string>
     <string name="home_notify_grant_failed">Couldn\'t grant notification access. Enable PocketDeck in Settings → Notification access.</string>
     <string name="home_notify_granted_hint">Notifications and the media session on this phone reach your Macs while a Mac is connected.</string>
+    <string name="home_notify_off_hint">Only while a Mac is connected. Off by default.</string>
     <string name="home_paired_title">Paired Macs</string>
     <string name="home_last_connected">Last connected %1$s</string>
     <string name="home_connected_now">Connected now</string>
     <string name="home_forget">Forget</string>
+    <string name="home_more_options">More options for %1$s</string>
     <string name="home_no_paired">No Macs paired yet.</string>
     <string name="home_pair_new">Pair new Mac</string>
     <string name="home_forgotten">Forgot %1$s.</string>

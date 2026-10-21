@@ -85,6 +85,7 @@ class DeckForegroundService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        DeckState.serviceRunning = true
         createChannels()
         DeckState.enabled = Prefs.isEnabled(this)
         DeckState.paired = Prefs.paired(this)
@@ -99,10 +100,6 @@ class DeckForegroundService : Service() {
         when (intent?.action) {
             ACTION_ALLOW -> respondPairing(intent.getStringExtra(EXTRA_REQUEST_ID), true)
             ACTION_DENY -> respondPairing(intent.getStringExtra(EXTRA_REQUEST_ID), false)
-            ACTION_STOP -> {
-                stopSelf()
-                return START_NOT_STICKY
-            }
             ACTION_FORGET -> intent.getStringExtra(EXTRA_CLIENT_ID)?.let { forget(it) }
             ACTION_GATES -> {
                 pushGates()
@@ -113,15 +110,34 @@ class DeckForegroundService : Service() {
                 ShizukuClient.ensureBound(this)
             }
         }
-        return START_STICKY
+        // With the background switch off the service lives with the task, so
+        // the system must not bring it back on its own after a kill.
+        return if (Prefs.isEnabled(this)) START_STICKY else START_NOT_STICKY
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
+    /**
+     * The person swiped PocketDeck away from Recents. With the switch on the
+     * deck keeps serving; with it off this is the stop the switch promises.
+     */
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        if (!Prefs.isEnabled(this)) stopServing()
+        super.onTaskRemoved(rootIntent)
+    }
+
     override fun onDestroy() {
+        DeckState.serviceRunning = false
         ShizukuClient.removeListener(clientListener)
         nsd.stop()
         super.onDestroy()
+    }
+
+    /** Close the listening socket before the service goes away, not just the UI. */
+    private fun stopServing() {
+        runCatching { ShizukuClient.current()?.stopServer() }
+        runCatching { nsd.stop() }
+        stopSelf()
     }
 
     // ------------------------------------------------------------------
@@ -289,8 +305,13 @@ class DeckForegroundService : Service() {
 
     private fun updateOngoing() {
         val text = when {
-            DeckState.connectedMac != null -> getString(R.string.notif_connected, DeckState.connectedMac, DeckState.windows)
-            serviceReady && DeckState.port > 0 -> getString(R.string.notif_listening, DeckState.port)
+            DeckState.connectedMac != null -> resources.getQuantityString(
+                R.plurals.notif_connected,
+                DeckState.windows,
+                DeckState.connectedMac,
+                DeckState.windows,
+            )
+            serviceReady && DeckState.port > 0 -> getString(R.string.notif_listening)
             else -> getString(R.string.notif_starting)
         }
         getSystemService(NotificationManager::class.java).notify(NOTIF_ONGOING, ongoingNotification(text))
@@ -343,7 +364,6 @@ class DeckForegroundService : Service() {
 
         const val ACTION_ALLOW = "dev.pocketdeck.action.ALLOW"
         const val ACTION_DENY = "dev.pocketdeck.action.DENY"
-        const val ACTION_STOP = "dev.pocketdeck.action.STOP"
         const val ACTION_FORGET = "dev.pocketdeck.action.FORGET"
         const val ACTION_GATES = "dev.pocketdeck.action.GATES"
         const val EXTRA_REQUEST_ID = "request_id"
@@ -354,16 +374,12 @@ class DeckForegroundService : Service() {
             context.startForegroundService(intent)
         }
 
-        fun stop(context: android.content.Context) {
-            val intent = Intent(context, DeckForegroundService::class.java).setAction(ACTION_STOP)
-            context.startService(intent)
-        }
-
         /** A gate changed: push it to the server and fix the advertisement. */
         fun gatesChanged(context: android.content.Context) {
             // Never start a stopped service just to re-advertise; the next
-            // start pushes the stored values before it listens.
-            if (!Prefs.isEnabled(context)) return
+            // start pushes the stored values before it listens. The background
+            // switch is not the question here: an open task keeps it running.
+            if (!DeckState.serviceRunning) return
             val intent = Intent(context, DeckForegroundService::class.java).setAction(ACTION_GATES)
             runCatching { context.startService(intent) }
         }

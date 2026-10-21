@@ -60,6 +60,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
@@ -118,76 +119,54 @@ fun HomeScreen(
                 .fillMaxSize()
                 .padding(padding)
                 .verticalScroll(rememberScrollState())
-                .padding(start = horizontal, end = horizontal, top = horizontal)
+                .padding(top = horizontal)
                 .padding(bottom = 88.dp),
         ) {
-            StatusCard(state = state, onAction = onStatusAction)
+            StatusCard(
+                state = state,
+                onAction = onStatusAction,
+                modifier = Modifier.padding(horizontal = horizontal),
+            )
             Spacer(Modifier.height(16.dp))
-            ListItem(
-                headlineContent = { Text(stringResource(R.string.home_keep_running)) },
-                trailingContent = {
-                    Switch(checked = state.enabled, onCheckedChange = null)
-                },
-                modifier = Modifier.toggleable(
-                    value = state.enabled,
-                    onValueChange = onToggleEnabled,
-                    role = androidx.compose.ui.semantics.Role.Switch,
-                ),
+            SwitchRow(
+                headline = stringResource(R.string.home_keep_running),
+                checked = state.enabled,
+                onToggle = onToggleEnabled,
             )
-            ListItem(
-                headlineContent = { Text(stringResource(R.string.home_allow_connections)) },
-                trailingContent = {
-                    Switch(checked = state.allowConnections, onCheckedChange = null)
-                },
-                modifier = Modifier.toggleable(
-                    value = state.allowConnections,
-                    onValueChange = onToggleAllowConnections,
-                    role = androidx.compose.ui.semantics.Role.Switch,
-                ),
+            HorizontalDivider(Modifier.padding(horizontal = horizontal, vertical = 8.dp))
+            SwitchRow(
+                headline = stringResource(R.string.home_allow_connections),
+                checked = state.allowConnections,
+                onToggle = onToggleAllowConnections,
             )
-            ListItem(
-                headlineContent = { Text(stringResource(R.string.home_allow_pairings)) },
-                supportingContent = {
-                    if (!state.allowConnections) {
-                        Text(stringResource(R.string.home_allow_pairings_hint))
-                    }
+            SwitchRow(
+                headline = stringResource(R.string.home_allow_pairings),
+                checked = state.allowPairings,
+                enabled = state.allowConnections,
+                onToggle = onToggleAllowPairings,
+                supporting = if (!state.allowConnections) {
+                    stringResource(R.string.home_allow_pairings_hint)
+                } else {
+                    null
                 },
-                trailingContent = {
-                    Switch(
-                        checked = state.allowPairings,
-                        onCheckedChange = null,
-                        enabled = state.allowConnections,
-                    )
-                },
-                modifier = Modifier.toggleable(
-                    value = state.allowPairings,
-                    enabled = state.allowConnections,
-                    onValueChange = onToggleAllowPairings,
-                    role = androidx.compose.ui.semantics.Role.Switch,
-                ),
             )
-            ListItem(
-                headlineContent = { Text(stringResource(R.string.home_notify_share)) },
-                supportingContent = {
-                    if (state.notifyShared) {
-                        Text(stringResource(R.string.home_notify_granted_hint))
-                    }
+            HorizontalDivider(Modifier.padding(horizontal = horizontal, vertical = 8.dp))
+            SwitchRow(
+                headline = stringResource(R.string.home_notify_share),
+                checked = state.notifyShared,
+                onToggle = onToggleNotify,
+                supporting = if (state.notifyShared) {
+                    stringResource(R.string.home_notify_granted_hint)
+                } else {
+                    stringResource(R.string.home_notify_off_hint)
                 },
-                trailingContent = {
-                    Switch(checked = state.notifyShared, onCheckedChange = null)
-                },
-                modifier = Modifier.toggleable(
-                    value = state.notifyShared,
-                    onValueChange = onToggleNotify,
-                    role = androidx.compose.ui.semantics.Role.Switch,
-                ),
             )
             if (state.notifyGrantFailed) {
                 Text(
                     text = stringResource(R.string.home_notify_grant_failed),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.error,
-                    modifier = Modifier.padding(vertical = 8.dp),
+                    modifier = Modifier.padding(horizontal = horizontal, vertical = 8.dp),
                 )
             }
             Spacer(Modifier.height(24.dp))
@@ -195,6 +174,7 @@ fun HomeScreen(
                 text = stringResource(R.string.home_paired_title),
                 style = MaterialTheme.typography.titleMedium,
                 color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.padding(horizontal = horizontal),
             )
             Spacer(Modifier.height(8.dp))
             if (state.paired.isEmpty()) {
@@ -202,7 +182,7 @@ fun HomeScreen(
                     text = stringResource(R.string.home_no_paired),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(vertical = 8.dp),
+                    modifier = Modifier.padding(horizontal = horizontal, vertical = 8.dp),
                 )
             } else {
                 // Relative times go stale while the screen stays visible: the
@@ -229,7 +209,7 @@ fun HomeScreen(
                     text = "Debug build: auto-approve pairing is on; any Mac on this network can connect",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(vertical = 8.dp),
+                    modifier = Modifier.padding(horizontal = horizontal, vertical = 8.dp),
                 )
             }
             Spacer(Modifier.height(24.dp))
@@ -238,7 +218,34 @@ fun HomeScreen(
 }
 
 @Composable
-private fun StatusCard(state: DeckUiState, onAction: (AttentionKind) -> Unit) {
+private fun SwitchRow(
+    headline: String,
+    checked: Boolean,
+    onToggle: (Boolean) -> Unit,
+    enabled: Boolean = true,
+    supporting: String? = null,
+) {
+    ListItem(
+        headlineContent = { Text(headline) },
+        supportingContent = supporting?.let { text -> { Text(text) } },
+        trailingContent = {
+            Switch(checked = checked, onCheckedChange = null, enabled = enabled)
+        },
+        modifier = Modifier.toggleable(
+            value = checked,
+            enabled = enabled,
+            onValueChange = onToggle,
+            role = androidx.compose.ui.semantics.Role.Switch,
+        ),
+    )
+}
+
+@Composable
+private fun StatusCard(
+    state: DeckUiState,
+    onAction: (AttentionKind) -> Unit,
+    modifier: Modifier = Modifier,
+) {
     val status = state.status
     val (container, content, iconRes) = statusAppearance(status)
     val title = statusTitle(state)
@@ -246,7 +253,9 @@ private fun StatusCard(state: DeckUiState, onAction: (AttentionKind) -> Unit) {
     val actionLabel = statusActionLabel(status.attention)
 
     ElevatedCard(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = modifier
+            .fillMaxWidth()
+            .testTag("statusCard"),
         shape = MaterialTheme.shapes.extraLarge,
         colors = CardDefaults.elevatedCardColors(containerColor = container, contentColor = content),
     ) {
@@ -302,10 +311,14 @@ private fun statusTitle(state: DeckUiState): String = when (state.status.state) 
 
 @Composable
 private fun statusSubtitle(state: DeckUiState): String = when (state.status.state) {
-    StatusState.READY -> stringResource(
-        R.string.status_visible_on,
-        state.wifiName ?: stringResource(R.string.wifi_default),
-    )
+    StatusState.READY -> if (state.status.untilTaskClosed) {
+        stringResource(R.string.status_ready_until_closed_body)
+    } else {
+        stringResource(
+            R.string.status_visible_on,
+            state.wifiName ?: stringResource(R.string.wifi_default),
+        )
+    }
 
     StatusState.CONNECTED -> if (state.windows == 1) {
         stringResource(R.string.status_windows_one)
@@ -372,6 +385,7 @@ private fun PairedMacRow(
 ) {
     val undoLabel = stringResource(R.string.undo)
     val forgetLabel = stringResource(R.string.home_forget)
+    val moreOptionsLabel = stringResource(R.string.home_more_options, mac.name)
 
     fun runForget() {
         val message = onForget(mac)
@@ -435,7 +449,7 @@ private fun PairedMacRow(
             trailingContent = {
                 Box {
                     IconButton(onClick = { menuOpen = true }) {
-                        Icon(painterResource(R.drawable.ic_more_vert), contentDescription = forgetLabel)
+                        Icon(painterResource(R.drawable.ic_more_vert), contentDescription = moreOptionsLabel)
                     }
                     DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
                         DropdownMenuItem(
@@ -450,7 +464,11 @@ private fun PairedMacRow(
             },
         )
     }
-    HorizontalDivider()
+    HorizontalDivider(
+        Modifier.padding(
+            horizontal = if (LocalConfiguration.current.screenWidthDp >= 600) 24.dp else 16.dp,
+        ),
+    )
 }
 
 /**
