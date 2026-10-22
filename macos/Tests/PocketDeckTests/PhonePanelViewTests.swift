@@ -35,10 +35,9 @@ final class PhonePanelViewTests: XCTestCase {
         var state = PhoneControlsState()
         state.phoneName = "Pixel 9"
         state.connection = online ? .online : .offline
-        var media = MediaState()
-        media.volume = volume
-        media.volumeMax = 15
-        state.media = volume == nil ? nil : media
+        state.volume = volume
+        state.volumeMax = 15
+        state.media = MediaState()
         state.sessions = sessions
         state.dnd = dnd
         return state

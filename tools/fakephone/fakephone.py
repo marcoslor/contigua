@@ -82,7 +82,7 @@ WRITE_TYPES = frozenset([
     "clip.image.abort", "fs.write", "fs.move", "fs.delete", "fs.mkdir",
     "fs.setAttrs", "media.command", "media.choose", "notify.action",
     "notify.dismiss", "notify.enable", "notify.open", "phone.dnd",
-    "phone.ringer", "phone.ring", "phone.ring.stop", "window.launch",
+    "phone.ringer", "phone.volume", "phone.ring", "phone.ring.stop", "window.launch",
     "task.continue",
 ])
 
@@ -318,6 +318,24 @@ class FakeRinger(object):
         if dnd != "off":
             return "dnd_on"
         self.mode = name
+        return None
+
+
+class FakeVolume(object):
+    """The fake phone's music stream volume (docs/PROTOCOL.md "Volume")."""
+
+    def __init__(self, level=6, maximum=15, supported=True):
+        self.supported = supported
+        self.maximum = max(1, maximum)
+        self.level = max(0, min(level, self.maximum))
+
+    def apply_from_mac(self, level):
+        """One `phone.volume`; None on success, else the error code."""
+        if not self.supported:
+            return "unsupported"
+        if not isinstance(level, int) or isinstance(level, bool):
+            return "bad_request"
+        self.level = max(0, min(level, self.maximum))
         return None
 
 
@@ -690,6 +708,10 @@ class EventLog(object):
     def ringer(self, mode):
         """The phone's ringer after a Mac command (mode name only)."""
         self._emit({"ev": "ringer", "mode": mode, "ts": time.time()})
+
+    def volume(self, level, maximum):
+        """The phone's music stream after a Mac command (level and maximum)."""
+        self._emit({"ev": "volume", "level": level, "max": maximum, "ts": time.time()})
 
     def ring(self, seconds):
         """phone.ring (seconds) or phone.ring.stop (0); never any phone data."""
@@ -2122,6 +2144,9 @@ class Session(object):
             state["dnd"] = self.phone.zen.name()
         if self.phone.fake_ringer.supported:
             state["ringer"] = self.phone.fake_ringer.mode
+        if self.phone.fake_volume.supported:
+            state["volume"] = self.phone.fake_volume.level
+            state["volumeMax"] = self.phone.fake_volume.maximum
         self._send(state)
 
     def _send_shares(self):
@@ -2246,6 +2271,9 @@ class Session(object):
         # is an unknown message, and the events log stays silent about it.
         if self.phone.fake_ringer.supported:
             handlers["phone.ringer"] = self._on_phone_ringer
+        # And an old build with no volume: no state fields, unknown message.
+        if self.phone.fake_volume.supported:
+            handlers["phone.volume"] = self._on_phone_volume
         handlers["phone.wake"] = self._on_phone_wake
         handlers["phone.panel"] = self._on_phone_panel
         handlers["phone.ring"] = self._on_phone_ring
@@ -2289,6 +2317,20 @@ class Session(object):
             self._send_error("unsupported", "phone.ringer needs the shell service")
             return
         self.phone.events.ringer(self.phone.fake_ringer.mode)
+        self.send_state()
+
+    def _on_phone_volume(self, msg):
+        """phone.volume (docs/PROTOCOL.md "Volume"): clamp to the stream's
+        maximum, keep it, and answer with the state the phone now reports."""
+        error = self.phone.fake_volume.apply_from_mac(msg.get("level"))
+        if error == "bad_request":
+            self._send_error("bad_request", "phone.volume needs level")
+            return
+        if error == "unsupported":
+            self._send_error("unsupported", "phone.volume needs the shell service")
+            return
+        volume = self.phone.fake_volume
+        self.phone.events.volume(volume.level, volume.maximum)
         self.send_state()
 
     def _on_phone_wake(self, _msg):
@@ -3552,6 +3594,11 @@ class FakePhone(object):
         # Now Playing (v0.2 #9): the two fake sessions, their position and volume.
         self.media = FakeMedia()
         self.fake_ringer = FakeRinger(supported=not args.ringer_unsupported)
+        # Music volume (docs/PROTOCOL.md "Volume"): --volume-unsupported acts
+        # like a build that cannot read STREAM_MUSIC (no state fields, unknown
+        # phone.volume).
+        self.fake_volume = FakeVolume(args.volume, args.volume_max,
+                                      supported=not args.volume_unsupported)
         # The fake /sdcard (docs/design/files.md §6): the e2e check builds a
         # tree here and the fs.* handlers serve it with the phone's rules.
         self.fs = FsFake(args.fs_root) if args.fs_root else None
@@ -3819,6 +3866,13 @@ def build_parser():
     p.add_argument("--ringer-unsupported", action="store_true",
                    help="act like a build without ringer support: state carries no "
                         "ringer and phone.ringer is an unknown message")
+    p.add_argument("--volume", type=int, default=6, metavar="LEVEL",
+                   help="the music stream's starting level (default 6)")
+    p.add_argument("--volume-max", type=int, default=15, metavar="LEVEL",
+                   help="the music stream's maximum (default 15)")
+    p.add_argument("--volume-unsupported", action="store_true",
+                   help="act like a build without volume support: state carries no "
+                        "volume/volumeMax and phone.volume is an unknown message")
     p.add_argument("--tls-identity", metavar="DIR", default=None,
                    help="TLS identity dir (cert.pem/key.pem; generated once); "
                         "default is next to --state, so restarts keep the pin. "

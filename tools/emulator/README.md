@@ -56,14 +56,16 @@ bash tools/emulator/verify-batch.sh --check   # the rehearsal of the boot comman
 ~/dev/pocketdeck/.agent/heavy.sh timeout 1800 bash tools/emulator/verify-batch.sh
 ```
 
-`verify-batch.sh` boots once, pairs once, then runs three sections that do not
-depend on each other — media part 2, screen off/wake, and `apps.icon` at 216 and
-1296 px — and kills the emulator at the end, whatever happened. Its result is one
-line per section in `.agent/emu/verify-batch.log`:
+`verify-batch.sh` boots once, pairs once, then runs six sections that do not
+depend on each other — the paired row, media part 2, screen off/wake, secure
+screens, the music volume, and `apps.icon` at 216 and 1296 px — and kills the
+emulator at the end, whatever happened. Its result is one line per section in
+`.agent/emu/verify-batch.log`:
 
 ```
 SECTION media PASS 12 checks: sessions: 2 1 s2 s1,s2 art: ... w=512 h=512 ...
 SECTION phone-screen PASS 8 checks: screen-off: state screen=off locked=True ...
+SECTION volume PASS volume: the first state names 6/15;phone.volume 12 answered with 12/15 ...
 SECTION icons PASS apps=3 px=216,1296 flat=144,864 layers=3/3 max_ms=693
 ```
 

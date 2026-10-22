@@ -7493,7 +7493,7 @@ PY
     }
 
     # (a) two playing apps: the list, the state, the artwork.
-    FAKE_ARGS="--media" start_fake '' || return 1
+    FAKE_ARGS="--media --volume 15" start_fake '' || return 1
     device="$(sed -n 's/^fakephone \([^ ]*\) listening.*/\1/p' "$WORK/fake.log" "$WORK/fake.err" | head -1)"
     [ -n "$device" ] || { bad "MEDIA no device id in the fakephone listening line"; stop_fakephone; return 1; }
     defaults write "$DEFAULTS_SUITE" "notify.$device" -bool YES
@@ -7608,12 +7608,12 @@ if volume["height"] > 20 or volume["width"] < 150:
 if any("Open PocketDeck" in row["label"] or "Phone screen" in row["label"] for row in root["items"]):
     print("a menu item survived in the panel"); sys.exit(1)
 PY
-    # The slider was at 1.0 (15/15); drag it to a fifth of the track: the phone
-    # gets level 3, not the action being called.
+    # The slider was at 1.0 (15/15); drag it to a fifth of the track: the
+    # phone's own music stream gets level 3, not the media session's.
     control paneldrag panel panel.volume 0.2 || bad "MEDIA paneldrag: $CONTROL_REPLY"
-    wait_until 20 media_events rx action=volume | grep -q '"level": 3' \
+    wait_until 20 events_have '"ev":"volume","level":3,"max":15' \
         && ok "MEDIA dragging the panel's slider sent the phone volume (3/15)" \
-        || bad "MEDIA the panel drag reached no volume command ($(media_events rx action=volume | tr '\n' '|'))"
+        || bad "MEDIA the panel drag reached no phone volume ($(grep '"ev":"volume"' "$WORK/events.jsonl" 2>/dev/null | tr '\n' '|'))"
     control panelclick panel panel.ring || bad "MEDIA panelclick ring: $CONTROL_REPLY"
     wait_until 20 events_have '"ev":"ring"' \
         && ok "MEDIA clicking the panel's Ring row rang the phone" \
@@ -7637,15 +7637,17 @@ PY
     sleep 2
 
     # (f) an older phone: today's media.state only; no sessions, no artwork,
-    # no canSeek/volume, and the Mac keeps its single-session behaviour.
-    FAKE_ARGS="--older-phone" start_fake '' || return 1
+    # no canSeek/volume, and the Mac keeps its single-session behaviour. It
+    # also cannot read the music stream, so the panel's slider is off with the
+    # reason line instead of guessing a level.
+    FAKE_ARGS="--older-phone --volume-unsupported" start_fake '' || return 1
     cat > "$oldscript" <<'EOF'
 wait 5
 mediacmd play
 wait 1
 EOF
-    launch --connect "127.0.0.1:$PORT" --quit-after 40 --share-log "$oldlog" \
-        --open com.whatsapp --debug-input-script "$oldscript"
+    launch --connect "127.0.0.1:$PORT" --quit-after 60 --share-log "$oldlog" \
+        --open com.whatsapp --debug-input-script "$oldscript" --debug-control "$WORK-control"
     wait_until 20 old_log_has "media set playing=true" \
         && ok "MEDIA the older phone's state still reaches Now Playing" \
         || bad "MEDIA no state from the older phone: $(tr '\n' '|' < "$oldlog" 2>/dev/null)"
@@ -7661,6 +7663,21 @@ EOF
     wait_until 25 old_log_has "media command play" \
         && ok "MEDIA a transport command still works with the older phone" \
         || bad "MEDIA the older phone got no command"
+    # The panel's slider is the phone stream: an old phone sends no
+    # volume/volumeMax, so it is disabled and the reason line names why.
+    control panelopen || bad "MEDIA old panelopen: $CONTROL_REPLY"
+    control paneldump panel "$WORK/media-panel-old.json" || bad "MEDIA old paneldump: $CONTROL_REPLY"
+    python3 - "$WORK/media-panel-old.json" <<'PY' && ok "MEDIA the older phone's panel disables the slider and says why" \
+        || bad "MEDIA the older phone's panel did not disable the slider"
+import json, sys
+root = json.load(open(sys.argv[1]))
+volume = next((row for row in root["items"] if row["kind"] == "volume"), None)
+if not volume or volume["enabled"]:
+    print("volume:", volume); sys.exit(1)
+if "hasn't sent a volume" not in root["reason"]:
+    print("reason:", root["reason"]); sys.exit(1)
+PY
+    control panelclose >/dev/null 2>&1
 
     stop_app
     stop_fakephone

@@ -45,6 +45,10 @@ struct PhoneControlsState: Equatable {
     var media: MediaState?
     var sessions: [MediaSessionRow] = []
     var dnd: PhoneDndMode?
+    /// The phone's music stream (`state.volume`/`state.volumeMax`); both nil on
+    /// a phone that cannot read it, which is not the same as zero.
+    var volume: Int?
+    var volumeMax: Int?
     var ringing = false
     var live: [NotifyLiveItem] = []
     var liveTick = Date()
@@ -61,8 +65,8 @@ struct PhoneControlsState: Equatable {
     }
 
     var volumeFraction: Double? {
-        guard connection.isOnline else { return nil }
-        return media?.volumeFraction
+        guard connection.isOnline, let volume, let max = volumeMax, max > 0 else { return nil }
+        return min(Swift.max(Double(volume) / Double(max), 0), 1)
     }
 
     var showsPicker: Bool { MediaMenu.showsSessionPicker(sessions) }
@@ -95,7 +99,7 @@ struct PhoneControlsActions {
 
     @MainActor
     init(controller: ConnectionController, openDeck: @escaping () -> Void) {
-        setVolume = { [weak controller] fraction in controller?.setPhoneMediaVolume(fraction) }
+        setVolume = { [weak controller] fraction in controller?.setPhoneVolume(fraction) }
         setDnd = { [weak controller] on in controller?.setPhoneDnd(on: on) }
         ring = { [weak controller] in controller?.ringPhone() }
         stopRing = { [weak controller] in controller?.stopRingingPhone() }
@@ -134,6 +138,8 @@ extension PhoneControlsState {
         media = controller.mediaNow
         sessions = controller.mediaSessions
         dnd = controller.phoneDnd
+        volume = controller.status?.volume
+        volumeMax = controller.status?.volumeMax
         ringing = controller.ringing
         live = controller.liveNotifications
         liveTick = controller.liveTick

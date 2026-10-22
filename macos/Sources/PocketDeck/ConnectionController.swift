@@ -54,6 +54,9 @@ struct PhoneStatus: Equatable {
     var dnd: PhoneDndMode? = nil
     /// nil when the phone's `state` carries no `ringer` (old phone).
     var ringer: PhoneRingerMode? = nil
+    /// STREAM_MUSIC's level and maximum; both nil on a phone that cannot read them.
+    var volume: Int? = nil
+    var volumeMax: Int? = nil
     /// Display 0's power state; nil reads as on (nothing to overlay).
     var screen: PhoneScreen? = nil
 }
@@ -1845,10 +1848,10 @@ final class ConnectionController {
             }
             runDockHooks()
             recheckOpenWindows()
-        case .phoneState(let locked, let battery, let charging, let dnd, let ringer, let screen, let secure,
-                         let panel):
+        case .phoneState(let locked, let battery, let charging, let dnd, let ringer, let volume,
+                         let volumeMax, let screen, let secure, let panel):
             status = PhoneStatus(locked: locked, battery: battery, charging: charging, dnd: dnd, ringer: ringer,
-                                 screen: screen)
+                                 volume: volume, volumeMax: volumeMax, screen: screen)
             windows.setPhoneScreen(screen)
             if let secure { windows.setPhoneSecure(secure) }
             windows.setPhonePanel(panel)
@@ -1988,11 +1991,12 @@ final class ConnectionController {
         nowPlaying.choose(key)
     }
 
-    /// The volume slider: a fraction of the phone session's own maximum.
-    func setPhoneMediaVolume(_ fraction: Double) {
-        guard let max = nowPlaying.current?.volumeMax, max > 0 else { return }
-        let level = Int((fraction * Double(max)).rounded())
-        nowPlaying.perform(.volume(min(Swift.max(level, 0), max)))
+    /// The phone panel's volume slider: a fraction of the phone's own music
+    /// stream maximum (docs/PROTOCOL.md "Volume"), sent as one integer level.
+    func setPhoneVolume(_ fraction: Double) {
+        guard link.isOnline, let max = status?.volumeMax, max > 0, let session else { return }
+        let level = min(Swift.max(Int((fraction * Double(max)).rounded()), 0), max)
+        session.setVolume(level)
     }
 
     /// The recording line's own path: no volume keys are intercepted.
@@ -2068,7 +2072,8 @@ final class ConnectionController {
         // Every window title carries the display name from here on.
         windows.setPhoneName(displayName(for: ref))
         status = PhoneStatus(locked: info.locked, battery: info.battery, charging: info.charging ?? false,
-                             ringer: status?.ringer, screen: status?.screen)
+                             ringer: status?.ringer, volume: status?.volume, volumeMax: status?.volumeMax,
+                             screen: status?.screen)
         // A new connection: its first `state` reconciles the Focus once.
         focusReconciled = false
         if let battery = info.battery {

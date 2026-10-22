@@ -242,6 +242,7 @@ Mac → phone (after `welcome`):
 | `phone.ring.stop` | — | stop a running ring |
 | `phone.dnd` | `mode`: `priority`/`alarms`/`none`/`off` | set the phone's Do Not Disturb (its zen mode) for a Mac Focus or a manual set; see "Focus and Do Not Disturb" |
 | `phone.ringer` | `mode`: `normal`/`vibrate`/`silent` | set the phone's ringer mode (never a volume); see "Ringer" |
+| `phone.volume` | `level`: int | set the phone's music volume (STREAM_MUSIC), clamped to its maximum; see "Volume" |
 | `phone.wake` | — | wake the phone's own screen (display 0) without unlocking it; see "Phone screen" |
 | `phone.panel` | `off`: bool, `ignorePower`?: bool | hold the mirrored panel off while the phone window keeps rendering, or give it back (`off: false`); `ignorePower` says a power press does not end the hold; see "Phone screen" |
 | `fs.list` | `id`, `path`, `page`? | children of `path`; `page` is the phone's opaque cursor, absent = first |
@@ -260,7 +261,7 @@ Phone → Mac:
 | `window.opened` | `stream`, `displayId`, `w`, `h` — `started`: `"moved"` (default; the task the display shows was moved to it, state kept) or `"fresh"` (the phone couldn't move the task and relaunched the same package; the app's state may be lost) |
 | `window.closed` | `stream`, `reason` (`requested`/`app_exited`/`error`) |
 | `window.title` | `stream`, `label`, `pkg` — top app changed on that display (phone mode) |
-| `state` | `locked`: bool, `battery`: int, `charging`: bool, `dnd`: `"off"`/`"priority"`/`"alarms"`/`"none"`, `ringer`: `"normal"`/`"vibrate"`/`"silent"`, `screen`: `"on"`/`"off"`, `secure`: bool, `panel`: `"on"`/`"off"` — sent on change; `dnd`/`ringer` are absent on a phone that does not support them (old builds), `secure` while no phone window is open; see "Phone screen" and "Secure screens" |
+| `state` | `locked`: bool, `battery`: int, `charging`: bool, `dnd`: `"off"`/`"priority"`/`"alarms"`/`"none"`, `ringer`: `"normal"`/`"vibrate"`/`"silent"`, `volume`: int, `volumeMax`: int, `screen`: `"on"`/`"off"`, `secure`: bool, `panel`: `"on"`/`"off"` — sent on change; `dnd`/`ringer` are absent on a phone that does not support them (old builds), `volume`/`volumeMax` are both absent on one that cannot read its music stream, `secure` while no phone window is open; see "Phone screen", "Volume" and "Secure screens" |
 | `audio.state` | `on`: bool, `codec`: int — audio capture on/off (for the UI dot) |
 | `ring.state` | `ringing`: bool — a `phone.ring` started (`true`) or ended (`false`) |
 | `error` | `code`, `message`, optional `stream` |
@@ -680,6 +681,29 @@ ringer modes. It never touches a volume level, the lock settings or any other se
 4. A phone that predates the field omits `ringer` from `state`, and `phone.ringer` is an
    unknown message to it. An older Mac ignores the new field.
 
+## Volume
+
+The phone panel's volume slider (docs/design/controls.md) reads and sets the phone's music
+stream volume, `STREAM_MUSIC`. It never touches the ringer mode, Do Not Disturb or any
+app's own playback volume (`media.state`'s `volume`/`volumeMax` stay per session).
+
+1. Every `state` carries `volume` (the level) and `volumeMax` (the stream's maximum)
+   together. Both are read at shell UID through `AudioManager`, with
+   `cmd media_session volume --stream 3 --get` as the fallback. They are absent — both,
+   never one — on a phone that cannot read the stream; the Mac then disables its slider
+   and names that reason instead of guessing a level.
+2. Mac → `{"t":"phone.volume","level":N}`. The phone clamps `N` into `0…volumeMax`, writes
+   `STREAM_MUSIC` with flag 0 (no volume UI, no vibration), and skips a write that would
+   not change the level. It answers with a fresh `state` carrying the level and maximum it
+   reads back, never the requested number.
+3. A missing `level` answers `error` `bad_request`; a phone with no volume control answers
+   `unsupported`; a write the phone refuses, or cannot read back, answers `unavailable`.
+4. A change the person makes on the phone arrives as the next `state`: while a session is
+   up the shell service re-reads the stream at most once a second, and that read is the
+   source (this platform's public API has no volume callback).
+5. A phone that predates these fields omits them from `state`, and `phone.volume` is an
+   unknown message to it. An older Mac ignores the new fields.
+
 ## Phone screen
 
 The phone window mirrors display 0 (docs/design/phone-mirror.md), so its picture is only
@@ -752,7 +776,7 @@ then close), `pair_timeout` (nobody answered the pairing prompt in 120 s; then c
 `no_stream` (unknown `stream`), `launch_failed`, `bad_url` (a `link.open` URL that is
 not allowed), `bad_size` (`task.continue` without w/h) — plus the device commands'
 own codes: `dnd_on` (a `phone.ringer` while Do Not Disturb is on) and `unavailable`
-(the phone would not write the ringer setting), `connections_off` (the phone's
+(the phone would not write the ringer setting or the music volume), `connections_off` (the phone's
 "Allow connections" switch is off: the Mac shows "Connections are turned off on
 <phone name>."), `pairing_off` (the phone's "Allow new pairings" switch is off and
 this Mac is not paired: "<phone name> isn't accepting new pairings."),
