@@ -26,7 +26,7 @@ A requirement with no proof is marked **untested**, and that is a visible gap, n
    - plain `THE … SHALL …`
 
    Add the states and events, non-goals, and open questions. Answer every line of CONVENTIONS.md.
-2. **Clarify.** Run the spec-review skill (`.claude/skills/spec-review`). It marks every gap `[NEEDS CLARIFICATION]`. Only real product questions go to the person. Visual changes go through two to four real-render prototypes first.
+2. **Clarify.** Run the spec-review skill (`.agents/skills/spec-review/SKILL.md`). It marks every gap `[NEEDS CLARIFICATION]`. Only real product questions go to the person. Visual changes go through two to four real-render prototypes first.
 3. **Plan.** The brief (`.agent/<task>/brief.md`) cites the requirement IDs it implements and the checks that will prove each one.
 4. **Implement, test first.** A requirement is done when its check FAILs before the change and PASSes after.
 5. **Converge.** Review compares the diff with the spec. Behaviour without a requirement, and a requirement without a proof, both block the merge.

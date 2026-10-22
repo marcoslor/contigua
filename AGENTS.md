@@ -4,7 +4,7 @@
 - Stay inside the directories your task names. Other agents work in parallel in sibling directories.
 - Work on your own branch (a git worktree off `main`) and commit one finished step at a time, with a normal English message. **Never push and never merge to `main`**: the reviewer merges after review. Never `git commit -a`; add paths explicitly.
 - No debug/TEMP leftovers, no commented-out code, no "v48q"-style version tags in comments. Comments explain *why*, briefly.
-- **Specs before code.** Behaviour lives in `docs/specs/<surface>.md` as EARS requirements with stable IDs, and every spec answers each line of `docs/specs/CONVENTIONS.md`. A change to behaviour updates its spec in the same commit, and the proving check carries the ID (`ok "[DECK-12] …"`). Behaviour with no requirement, and a requirement with no proof, both block a merge. Don't invent a missing requirement: mark it `[NEEDS CLARIFICATION]` and ask.
+- **Specs before code.** Behaviour lives in `docs/specs/<surface>.md` as EARS requirements with stable IDs, and every spec answers each line of `docs/specs/CONVENTIONS.md`. A change to behaviour updates its spec in the same commit, and the proving check carries the ID (`ok "[DECK-12] …"`). Behaviour with no requirement, and a requirement with no proof, both block a merge. Don't invent a missing requirement: mark it `[NEEDS CLARIFICATION]` and ask. To review a spec, follow `.agents/skills/spec-review/SKILL.md`.
 - **State machines for stateful behaviour.** Whenever a feature has modes, phases, a hold, a retry, a handshake or a lifecycle, model it as one explicit state machine: a closed set of states (enum/sealed type), the events it accepts, and one pure transition function `(state, event) -> (new state, actions)` with an exhaustive `when`/`switch` (no `else`/`default` that swallows new cases). Side effects run from the returned actions, never inside the transition. No parallel booleans that together mean a state, and no state inferred from timing or another flag. Unit-test every transition, including the events that must be ignored in a state, and log each transition (`<machine>: <from> --<event>--> <to>`) so a field log shows the path.
 - Never name competitor or closed-source products in code, comments, docs or commit messages; describe techniques generically.
 - Keep dependencies minimal: Android = Shizuku, androidx core/activity/lifecycle, Jetpack Compose + Material 3 (via the Compose BOM), Google code scanner (`play-services-code-scanner`) for QR; macOS = system frameworks only; tools = Python 3.9 stdlib + ffmpeg/dns-sd CLIs.
@@ -22,6 +22,31 @@
 - **LAN and end to end:** the session is mutual TLS with pinned keys (docs/design/e2ee.md); nothing goes through a third party unencrypted.
 - **No backward compatibility during the alpha:** nothing is released and the phone and Mac apps ship together, so a protocol change may rename, remove or require fields freely — no "older peer" modes, fallbacks or tests. Every change is still documented in docs/PROTOCOL.md (and the protocol version bumped when a change breaks the other side). This rule ends when there are real users and the project leaves alpha.
 - **A feature blocked on something we don't have** (a paid Apple Developer ID, an account, special hardware) does not land on `main`. It lives on its own branch (`feature/<name>`), rebased now and then, and becomes a GitHub issue plus a PR when the repo is published. Today: camera sharing (`feature/camera`, needs a Developer ID for the camera extension).
+
+## Swift and macOS
+
+**Skills (read the matching one before you write or review code; plain files, so any harness can use them):**
+- SwiftUI views, state, layout, performance, Instruments traces: `.agents/skills/swiftui-expert-skill/SKILL.md`. Its `references/macos-scenes.md`, `macos-views.md`, `macos-window-styling.md` and `performance-patterns.md` cover the Mac.
+- async/await, actors, Sendable, isolation: `.agents/skills/swift-concurrency/SKILL.md`.
+- A spec before a brief: `.agents/skills/spec-review/SKILL.md`.
+
+These are vendored at fixed commits (`.agents/skills/VENDORED.md`). Never install skills or packages at run time.
+
+**Swift rules for new and changed code.** Existing code changes only when the task touches it.
+- The package is tools-version 5.10 (Swift 5 language mode) on a 6.x compiler, targeting macOS 26. Write new code so it would compile under Swift 6 strict concurrency, but don't switch the language mode as part of a feature.
+- Use `@Observable` with `@MainActor` for UI state; no new `ObservableObject`, `@Published` or `@StateObject`. Prefer async/await and actors over new `DispatchQueue` or GCD code. Existing GCD stays until a task rewrites that path.
+- Don't force-unwrap or force-`try` unless the failure is truly unrecoverable. Use `FormatStyle`, not legacy `Formatter`s or C-style formatting.
+- No `AnyView`. Avoid `GeometryReader`: compute layout from the proposal in a custom `Layout`.
+- Use `Button` for anything clickable, with a text label even when it shows only an icon (VoiceOver). No hard-coded fonts where a text style fits.
+- Don't add a dependency without asking.
+
+**Mac lessons this repo paid for:**
+- **Menus.** Every menu item is SwiftUI's own (`commands`). Never insert AppKit items into a SwiftUI-built menu: SwiftUI rebuilds it and drops them. Checkmarks and titles that must follow the key window are edited on SwiftUI's own items when a menu begins tracking (`MenuMarks.swift`). System leftovers are removed only by `MenuCleanup.swift`, never added to. A disabled menu item eats its key equivalent, so a key that belongs to the phone in stream windows (⌘F) is scoped to the window, never put in an app-wide menu.
+- **Layout.** Grids and anything sized by the window lay out at layout time from the proposal. Never debounce or store a width in state; that caused stale, clipped frames. Live resize is measured per frame, and a perf change records before and after on the same harness.
+- **The status item** toggles its panel (CONV-MAC-10). `MenuBarExtra(.window)` re-opened on a second click, so the panel is AppKit-owned (`NSStatusItem` + panel) with a state machine.
+- **One window per thing** (CONV-MAC-11): open-or-raise through one function. Never construct a second controller for the same thing.
+- **Stream picture.** The phone's encoder pads and aligns sizes. The Mac shows only the content rect the phone reports, and picture bugs are proved on the emulator with decoded frames, not only with the fake phone.
+- **Instruments.** Record traces only against your own `--profile` app, through `~/dev/pocketdeck/.agent/heavy.sh`, never with `--all-processes` and never against the person's installed app.
 
 ## Testing rules
 

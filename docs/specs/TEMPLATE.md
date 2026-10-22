@@ -17,7 +17,7 @@ One paragraph: who uses this surface, for what, and where it sits among the othe
 | ID | Requirement (EARS) | Proof |
 |---|---|---|
 | <PREFIX>-1 | WHEN the person presses ⌘F WHILE the <surface> is key, THE <surface> SHALL focus its search field and select its text. | e2e `deck` `[PREFIX-1]` |
-| <PREFIX>-2 | IF the phone omits `<field>`, THEN THE <surface> SHALL disable <control> and show "<reason>". | K2 `…Tests.testOldPhone` |
+| <PREFIX>-2 | IF the phone reports that it can't <do X>, THEN THE <surface> SHALL disable <control> and show "<reason>". | K2 `…Tests.testUnsupported` |
 
 ## States and events
 
@@ -25,7 +25,7 @@ The state machine's table: states, events, and the transition for each pair, wit
 
 ## Phone count and connection
 
-The surface with 0, 1 and 2+ phones, and while connecting, connected, offline and with an old phone (CONV-PD-01/02).
+The surface with 0, 1 and 2+ phones, and while connecting, connected and offline, and on a phone that can't do the feature (CONV-PD-01/02).
 
 ## Conventions
 
