@@ -117,9 +117,9 @@ class FakePlatform : DisplayLayer, AppCatalog, Launcher, Injector, Power, Device
         check(!mirrorFails) { "no mirror on this phone" }
         mirrors.add(stream)
         sizes[stream] = screenSize
-        val fit = MirrorFit.fit(IntSize(w, h), screenSize)
-        video?.start(stream, fit.w, fit.h, sink)
-        return fit
+        val frame = MirrorFrame.pick(IntSize(w, h), screenSize, IntSize(16, 16), Int.MAX_VALUE, Int.MAX_VALUE)
+        video?.start(stream, frame.w, frame.h, sink)
+        return frame
     }
 
     override fun size(stream: Int): IntSize = sizes[stream] ?: IntSize(0, 0)
