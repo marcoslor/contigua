@@ -635,11 +635,20 @@ final class GridNavigator {
         // (that menu item is disabled while the Deck is key).
         if flags.contains(.command), flags.intersection([.control, .option]).isEmpty {
             switch keyCode {
-            case 24, 69: setZoom(DeckZoom.step)          // = / + and keypad +
-            case 27, 78: setZoom(-DeckZoom.step)         // - and keypad -
-            case 29, 82: setZoom(nil)                    // 0 and keypad 0
-            default: return false
+            case 24, 69: setZoom(DeckZoom.step); return true       // = / + and keypad +
+            case 27, 78: setZoom(-DeckZoom.step); return true      // - and keypad -
+            case 29, 82: setZoom(nil); return true                 // 0 and keypad 0
+            default: break
             }
+        }
+        // ⌘F is the Deck's Find: focus the search field and select what is
+        // already typed, like ⌘F in any Mac window. It is not a menu item — a
+        // menu item would eat ⌘F in a stream window, where the key belongs to
+        // the phone's app (InputMapper forwards it). This monitor is the Deck's
+        // only, so a stream window never reaches it.
+        if keyCode == 3, flags.intersection([.command, .control, .option, .shift]) == .command {
+            guard let deck = DeckWindow.window else { return false }
+            DeckSearch.focusAndSelect(in: deck) { controller.requestSearchFocus() }
             return true
         }
         guard flags.intersection([.command, .control, .option]).isEmpty else { return false }
