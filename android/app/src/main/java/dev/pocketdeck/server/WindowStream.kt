@@ -79,6 +79,9 @@ internal class WindowStream(
     @Volatile private var width = 0
     @Volatile private var height = 0
 
+    /** Where the picture sits in the frame of the size above (window.content). */
+    @Volatile private var picture = IntRect(0, 0, 0, 0)
+
     /** The density last asked for by the Mac; redraw nudges are offsets from it. */
     @Volatile private var baseDpi = 0
 
@@ -151,7 +154,7 @@ internal class WindowStream(
         val screen = checkNotNull(DisplayProbe.logicalSize(DEFAULT_DISPLAY)) { "display 0 size unknown" }
         mirrorScreen = screen
         mirrorBox = MirrorFit.turnBox(IntSize(w, h), screen)
-        val size = checkNotNull(prepareEncoder(MirrorFit.fit(mirrorBox, screen))) { "no encoder for mirror" }
+        val size = checkNotNull(prepareEncoder(mirrorFrame(mirrorBox, screen))) { "no encoder for mirror" }
         val next = prepared!!
         prepared = null
         vd = createMirror(size.w, size.h, next.surface)
@@ -238,17 +241,15 @@ internal class WindowStream(
     }
 
     private fun resizeLocked(boxW: Int, boxH: Int, dpi: Int) {
-        val screen = mirrorScreen
-        val (w, h) = if (screen == null) IntSize(boxW, boxH) else MirrorFit.fit(IntSize(boxW, boxH), screen)
         // With one surface for life the encoder keeps running while paused, so
         // a resize then is a normal one.
-        val result = sequencer.resize(w, h, dpi, paused && persistent == null, IntSize(width, height))
+        val result = sequencer.resize(boxW, boxH, dpi, paused && persistent == null, IntSize(width, height))
         when (result.outcome) {
             ResizeSequencer.Outcome.RESIZED, ResizeSequencer.Outcome.DISPLAY_ONLY ->
                 log("stream $stream resize ${result.size.w}x${result.size.h} dpi=$dpi" +
-                    if (result.size.w != w || result.size.h != h) " (asked ${w}x$h)" else "")
+                    if (result.size.w != boxW || result.size.h != boxH) " (asked ${boxW}x$boxH)" else "")
             ResizeSequencer.Outcome.KEPT ->
-                log("stream $stream resize ${w}x$h refused by the encoder; staying at ${width}x$height")
+                log("stream $stream resize ${boxW}x$boxH refused by the encoder; staying at ${width}x$height")
         }
     }
 
@@ -270,7 +271,7 @@ internal class WindowStream(
         if (!paused || released) return
         paused = false
         if (persistent != null && encoder != null) {
-            lastCsd?.let { sink.onConfig(stream, Frames.CODEC_H264, width, height, it) }
+            lastCsd?.let { sink.onConfig(stream, Frames.CODEC_H264, width, height, it, picture) }
             requestKeyframe()
             // The app may have nothing new to draw: the redraw guard nudges it.
             guard.onAttached(SystemClock.elapsedRealtime())
@@ -351,13 +352,14 @@ internal class WindowStream(
         }
         try {
             learnLimits(codec)
-            val size = fitToEncoder(w, h)
+            val size = if (mirrorScreen != null) want else fitToEncoder(w, h)
             configure(codec, size.w, size.h)
             val shared = persistent
             if (shared != null) {
                 // Started when attached: one codec at a time on the surface.
                 width = size.w
                 height = size.h
+                picture = pictureOf(size)
                 prepared = Prepared(codec, shared, started = false)
                 return size
             }
@@ -365,6 +367,7 @@ internal class WindowStream(
             codec.start()
             width = size.w
             height = size.h
+            picture = pictureOf(size)
             prepared = Prepared(codec, surface)
             return size
         } catch (e: Throwable) {
@@ -381,13 +384,40 @@ internal class WindowStream(
             maxW = found.supportedWidths.upper,
             maxH = found.supportedHeights.upper,
             align = maxOf(found.widthAlignment, found.heightAlignment),
+            widthAlign = found.widthAlignment,
+            heightAlign = found.heightAlignment,
         )
     }
 
+    /** The codec's limits before any encoder is built: a mirror's frame is picked from them. */
+    private fun ensureLimits() {
+        if (caps != null) return
+        val probe = runCatching { MediaCodec.createEncoderByType(MIME) }.getOrNull() ?: return
+        try {
+            learnLimits(probe)
+        } finally {
+            runCatching { probe.release() }
+        }
+    }
+
     private fun fitToEncoder(w: Int, h: Int): IntSize {
+        val screen = mirrorScreen
+        if (screen != null) return mirrorFrame(IntSize(w, h), screen)
         val known = caps
         return EncoderSizes.fit(w, h, limits) { sw, sh -> known?.isSizeSupported(sw, sh) ?: true }
     }
+
+    /** A mirror's frame for the Mac's box: the nearest one the codec takes at its own alignment. */
+    private fun mirrorFrame(box: IntSize, screen: IntSize): IntSize {
+        ensureLimits()
+        val known = caps
+        return MirrorFrame.pick(box, screen, IntSize(limits.widthAlign, limits.heightAlign),
+            limits.maxW, limits.maxH) { sw, sh -> known?.isSizeSupported(sw, sh) ?: true }
+    }
+
+    /** Where the picture sits in a frame of [size]: the whole frame, or the screen's rect for a mirror. */
+    private fun pictureOf(size: IntSize): IntRect =
+        mirrorScreen?.let { MirrorFrame.contentIn(size, it) } ?: IntRect(0, 0, size.w, size.h)
 
     private fun applyDisplaySize(size: IntSize, dpi: Int) {
         width = size.w
@@ -692,7 +722,7 @@ internal class WindowStream(
             if (idx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
                 readCsd(codec.outputFormat)?.let {
                     lastCsd = it
-                    sink.onConfig(stream, Frames.CODEC_H264, width, height, it)
+                    sink.onConfig(stream, Frames.CODEC_H264, width, height, it, picture)
                 }
                 continue
             }

@@ -1881,7 +1881,11 @@ class Session(
     // video sink
     // ------------------------------------------------------------------
 
-    override fun onConfig(stream: Int, codec: Int, w: Int, h: Int, csd: ByteArray) {
+    override fun onConfig(stream: Int, codec: Int, w: Int, h: Int, csd: ByteArray, content: IntRect) {
+        // The picture's rect goes ahead of the config on the same lane: the Mac
+        // crops each frame of this config to it.
+        queue.enqueueControl(stream, Frames.encodeJson(stream,
+            """{"t":"window.content","stream":$stream,"x":${content.x},"y":${content.y},"w":${content.w},"h":${content.h}}"""))
         val payload = Frames.encodeVideoConfig(VideoConfigPayload(codec, w, h, csd))
         queue.enqueueControl(stream, Frames.encode(Frames.TYPE_VIDEO_CONFIG, stream, payload))
     }
@@ -2230,7 +2234,7 @@ class Session(
     }
 
     companion object {
-        const val PROTOCOL_VERSION = 2
+        const val PROTOCOL_VERSION = 3
         const val OWN_PACKAGE = "dev.pocketdeck"
         const val PHONE_DISPLAY = 0
         const val KEYCODE_BACK = 4
