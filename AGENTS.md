@@ -80,6 +80,7 @@ The most common defect here is a change that works on the path you tested and is
 - Run `macos/scripts/nfr.sh` before asking for review on any UI or protocol change: it runs the NFR K2 tests and the host e2e check `nfr` (time limits, zero writes in read-only flows, zero input in frozen modes, no stale picture, honest settings, layout, contrast, icons, and the real-control family).
 
 **Test tiers, cheapest first:**
+0. Rules: before asking for review, run `scripts/check-rules.sh` (seconds, no build). It fails on the Swift, test, shortcut and privacy rules above in the lines you changed, and prints REVIEW lines (suppressions, weakened checks) that need the reviewer's sign-off. Paste its summary line in your report.
 1. Unit tests: K1 (`cd android && ./gradlew -q :app:assembleDebug :app:testDebugUnitTest`) and K2 (`cd macos && swift build && swift test`). Pure logic goes behind a seam so it is testable here.
 2. Mac e2e against fakephone: `cd macos && PD_E2E_PORT=<port> PD_E2E_PROFILE=<profile> ./scripts/check-e2e.sh <check>`, one check at a time. The full `all` suite is a rare final gate, not a habit.
 3. A macOS VM (`macos/scripts/vm-e2e.sh <check>`) for anything that needs real macOS drawing or system registration: visible runs, Dock and Finder, File Provider, widgets, Control Center, system extensions, the camera. These never run on a developer's own Mac: registrations stick there and visible runs take the person's screen.
