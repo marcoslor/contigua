@@ -188,3 +188,30 @@ Settings ▸ Input ▸ **Secondary click (two-finger click)**:
 Sentence case. No jargon on primary surfaces ("virtual display", "VD", "stream",
 "HMAC", "port" only appear under Connect manually / diagnostics). Max one line of
 helper text per element.
+
+## Keyboard shortcuts
+
+Every keyboard shortcut the app defines (CONV-MAC-06). The first cell of each row is the shortcut, with
+⌃ ⌥ ⇧ ⌘ for modifiers; `scripts/check-rules.sh` (R-KEY-1) reads this table, so a new shortcut outside
+`MenuBar.swift` needs its row here. A bare key with no modifier is not a shortcut and is not listed.
+
+| Shortcut | Action | Where |
+| --- | --- | --- |
+| ⇧⌘N | Add Phone… | File |
+| ⌘K | Find Apps | View |
+| ⌥⌘F | Framed window style (the same key toggles Framed / Immersive) | View |
+| ⇧⌘T | Live Text | View |
+| ⌘+ | Larger: the Deck grid, or the window's density | View, Deck |
+| ⌘− | Smaller: the Deck grid, or the window's density | View, Deck |
+| ⌘0 | Actual Size: the Deck grid, or the window's density | View, Deck |
+| ⌘P | Phone Mirror | Phone |
+| ⇧⌘C | Continue on Mac | Phone |
+| ⌘[ | Back | Navigate |
+| ⇧⌘H | Home (phone mode) | Navigate |
+| ⌘↑ | Recents (phone mode) | Navigate |
+| ⌃⌘F | Enter / Exit Full Screen | Window |
+| ⌘F | Find in the Deck: focus and select the search field | Deck |
+| ⌘, | Settings | Menu-bar panel, Deck |
+| ⌘Q | Quit PocketDeck | Menu-bar panel |
+| ↩ | Default button: Find my phone, Try again | Deck, pairing sheets |
+| ⎋ | Cancel button: Cancel, Done | Pairing sheets |
