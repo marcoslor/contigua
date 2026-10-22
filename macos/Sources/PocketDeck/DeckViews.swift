@@ -477,7 +477,12 @@ struct PhoneDeckView: View {
         .onAppear {
             searchFocused = true
             navigator.install(controller: controller, apps: { filtered }, clearQuery: { query = "" },
-                              hasQuery: { !query.isEmpty })
+                              hasQuery: { !query.isEmpty },
+                              setZoom: { delta in
+                                  let store = Profile.active.defaults
+                                  let next = delta.map { DeckZoom.stepped(from: DeckZoom.stored(in: store), by: $0) } ?? 1
+                                  store.set(Double(next), forKey: DeckZoom.key)
+                              })
         }
         .onDisappear { navigator.uninstall() }
     }
@@ -522,13 +527,17 @@ final class GridNavigator {
     @ObservationIgnored private var apps: () -> [AppInfo] = { [] }
     @ObservationIgnored private var clearQuery: () -> Void = {}
     @ObservationIgnored private var hasQuery: () -> Bool = { false }
+    /// ⌘+/⌘−/⌘0 on the Deck: a step's delta, or nil for 100 %.
+    @ObservationIgnored private var setZoom: (CGFloat?) -> Void = { _ in }
 
     func install(controller: ConnectionController, apps: @escaping () -> [AppInfo],
-                 clearQuery: @escaping () -> Void, hasQuery: @escaping () -> Bool) {
+                 clearQuery: @escaping () -> Void, hasQuery: @escaping () -> Bool,
+                 setZoom: @escaping (CGFloat?) -> Void = { _ in }) {
         self.controller = controller
         self.apps = apps
         self.clearQuery = clearQuery
         self.hasQuery = hasQuery
+        self.setZoom = setZoom
         guard monitor == nil else { return }
         monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             let keyCode = event.keyCode
@@ -546,8 +555,19 @@ final class GridNavigator {
     /// True when the key was used here and must not reach the search field.
     private func handle(keyCode: UInt16, flags: NSEvent.ModifierFlags) -> Bool {
         guard let controller, controller.sheet == nil,
-              NSApp.keyWindow === DeckWindow.window,
-              flags.intersection([.command, .control, .option]).isEmpty else { return false }
+              NSApp.keyWindow === DeckWindow.window else { return false }
+        // ⌘+ / ⌘− / ⌘0 scale the Deck grid, not a stream window's density
+        // (that menu item is disabled while the Deck is key).
+        if flags.contains(.command), flags.intersection([.control, .option]).isEmpty {
+            switch keyCode {
+            case 24, 69: setZoom(DeckZoom.step)          // = / + and keypad +
+            case 27, 78: setZoom(-DeckZoom.step)         // - and keypad -
+            case 29, 82: setZoom(nil)                    // 0 and keypad 0
+            default: return false
+            }
+            return true
+        }
+        guard flags.intersection([.command, .control, .option]).isEmpty else { return false }
         let list = apps()
         switch keyCode {
         case 36, 76: // Return
@@ -583,23 +603,117 @@ struct DeckCell: Identifiable, Equatable {
     var label: String { app.displayLabel }
 }
 
-/// The grid's geometry. Tiles keep their size; the gaps between columns grow
-/// to fill the row, so the first tile starts and the last one ends exactly one
-/// inset from the window's edges (the toolbar's own leading edge) at any width.
-enum GridMetrics {
-    static let cellWidth: CGFloat = 96
-    static let cellHeight: CGFloat = 100
-    static let minGap: CGFloat = 8
-    static let inset: CGFloat = 20
+/// The Deck's zoom: ⌘+ / ⌘− / ⌘0 on the Deck scale the whole grid (cell, icon,
+/// gaps and the 880 pt block) together. One stored fraction, clamped to the
+/// same four steps as the app windows' density.
+enum DeckZoom {
+    static let key = "deckZoom"
+    static let options: [CGFloat] = [0.75, 1.0, 1.25, 1.5]
+    static let step: CGFloat = 0.25
+    static let range: ClosedRange<CGFloat> = 0.75...1.5
 
-    static func columns(forWidth width: CGFloat) -> Int {
-        max(Int((width - 2 * inset + minGap) / (cellWidth + minGap)), 1)
+    static func clamped(_ value: CGFloat) -> CGFloat {
+        min(max(value, range.lowerBound), range.upperBound)
     }
 
-    static func gap(forWidth width: CGFloat) -> CGFloat {
+    /// One ⌘+/⌘− step, rounded to three places so 0.75 + 0.25 is exactly 1.
+    static func stepped(from value: CGFloat, by delta: CGFloat) -> CGFloat {
+        clamped((value + delta).rounded(toPlaces: 3))
+    }
+
+    /// 100% when the profile has no usable value.
+    static func stored(in defaults: UserDefaults) -> CGFloat {
+        let value = defaults.double(forKey: key)
+        return value > 0 ? clamped(value) : 1
+    }
+}
+
+/// The grid's numbers at one zoom step. Pure, so the layout, the cell views and
+/// the unit tests all read the same arithmetic: 64 pt icons in 96×108 pt cells
+/// on a fixed 16 pt pitch, a 24 pt vertical inset, an 8 pt icon-label gap, a
+/// 16 pt hover corner and an 880 pt content block that stops growing.
+struct DeckGridSize: Equatable {
+    let zoom: CGFloat
+
+    init(zoom: CGFloat) {
+        self.zoom = DeckZoom.clamped(zoom)
+    }
+
+    var cellWidth: CGFloat { 96 * zoom }
+    var cellHeight: CGFloat { 108 * zoom }
+    var iconSide: CGFloat { 64 * zoom }
+    var columnGap: CGFloat { 16 * zoom }
+    var rowSpacing: CGFloat { 16 * zoom }
+    var verticalInset: CGFloat { 24 * zoom }
+    var iconLabelGap: CGFloat { 8 * zoom }
+    var cornerRadius: CGFloat { 16 * zoom }
+    /// The grid never runs edge to edge: at 1000 pt this leaves 60 pt a side.
+    var maxContentWidth: CGFloat { 880 * zoom }
+
+    /// Columns are what fits the block, never fewer than one.
+    func columns(forWidth width: CGFloat) -> Int {
+        max(Int((min(max(width, 0), maxContentWidth) + columnGap) / (cellWidth + columnGap)), 1)
+    }
+
+    /// The pitch never grows: a row keeps 16 pt between columns at any width.
+    func gap(forWidth width: CGFloat) -> CGFloat { columnGap }
+
+    /// The drawn width of one full row.
+    func span(forWidth width: CGFloat) -> CGFloat {
         let count = columns(forWidth: width)
-        guard count > 1 else { return minGap }
-        return max((width - 2 * inset - CGFloat(count) * cellWidth) / CGFloat(count - 1), minGap)
+        return CGFloat(count) * cellWidth + CGFloat(max(count - 1, 0)) * columnGap
+    }
+
+    /// The block is centred, so the margins match on both sides.
+    func originX(forWidth width: CGFloat) -> CGFloat {
+        (width - span(forWidth: width)) / 2
+    }
+
+    /// Where cell `index` is drawn in a grid `width` wide.
+    func frame(of index: Int, in width: CGFloat, origin: CGPoint = .zero) -> CGRect {
+        let count = columns(forWidth: width)
+        let column = index % count
+        let row = index / count
+        return CGRect(x: origin.x + originX(forWidth: width) + CGFloat(column) * (cellWidth + columnGap),
+                      y: origin.y + verticalInset + CGFloat(row) * (cellHeight + rowSpacing),
+                      width: cellWidth, height: cellHeight)
+    }
+
+    func height(for count: Int, width: CGFloat) -> CGFloat {
+        let columns = columns(forWidth: width)
+        let rows = (count + columns - 1) / columns
+        return 2 * verticalInset + CGFloat(rows) * cellHeight
+            + CGFloat(max(rows - 1, 0)) * rowSpacing
+    }
+}
+
+/// The grid at 100 %: the D design's numbers, unchanged for callers that do
+/// not carry the run's zoom.
+enum GridMetrics {
+    static let cellWidth: CGFloat = 96
+    static let cellHeight: CGFloat = 108
+    static let iconSide: CGFloat = 64
+    static let columnGap: CGFloat = 16
+    static let rowSpacing: CGFloat = 16
+    static let verticalInset: CGFloat = 24
+    static let iconLabelGap: CGFloat = 8
+    static let cornerRadius: CGFloat = 16
+    static let maxContentWidth: CGFloat = 880
+
+    static func columns(forWidth width: CGFloat, zoom: CGFloat = 1) -> Int {
+        DeckGridSize(zoom: zoom).columns(forWidth: width)
+    }
+
+    static func gap(forWidth width: CGFloat, zoom: CGFloat = 1) -> CGFloat {
+        DeckGridSize(zoom: zoom).gap(forWidth: width)
+    }
+
+    static func span(forWidth width: CGFloat, zoom: CGFloat = 1) -> CGFloat {
+        DeckGridSize(zoom: zoom).span(forWidth: width)
+    }
+
+    static func originX(forWidth width: CGFloat, zoom: CGFloat = 1) -> CGFloat {
+        DeckGridSize(zoom: zoom).originX(forWidth: width)
     }
 }
 
@@ -608,13 +722,16 @@ struct AppGrid: View {
     let apps: [AppInfo]
     let query: String
     let navigator: GridNavigator
+    @AppStorage(DeckZoom.key, store: Profile.active.defaults) private var zoom = 1.0
+
+    private var metrics: DeckGridSize { DeckGridSize(zoom: CGFloat(zoom)) }
 
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
                 Group {
                     if apps.isEmpty && !controller.appsLoaded && query.isEmpty {
-                        grid { ForEach(0..<12, id: \.self) { _ in PlaceholderCell() } }
+                        grid { ForEach(0..<12, id: \.self) { _ in PlaceholderCell(metrics: metrics) } }
                             .redacted(reason: .placeholder)
                     } else if apps.isEmpty {
                         Text("No apps match “\(query)”")
@@ -626,6 +743,7 @@ struct AppGrid: View {
                                 AppCell(app: cell.app, icon: controller.icons[cell.app.pkg],
                                         rendered: controller.deckIcons[cell.app.pkg],
                                         iconIsMissing: iconIsMissing(cell.app),
+                                        metrics: metrics,
                                         selected: navigator.selection == cell.id) { controller.openApp(cell.app) }
                                     .id(cell.id)
                                     .deckCellGeometry(cell.id)
@@ -650,7 +768,9 @@ struct AppGrid: View {
                 // Arrow keys move by the drawn columns. The drawn layout comes
                 // from the layout pass itself (DeckGridLayout); this is only
                 // the keyboard's copy of the same number and no view reads it.
-                navigator.columns = GridMetrics.columns(forWidth: outer.width)
+                let current = metrics
+                navigator.columns = current.columns(forWidth: outer.width)
+                DeckGridProbe.reportGeometry(current, viewport: outer.width)
             }
             .onChange(of: navigator.selection) { _, pkg in
                 if let pkg { withAnimation(.smooth(duration: 0.15)) { proxy.scrollTo(pkg) } }
@@ -677,55 +797,43 @@ struct AppGrid: View {
     }
 
     private func grid<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
-        DeckGridLayout { content() }
+        DeckGridLayout(metrics: metrics) { content() }
             .frame(maxWidth: .infinity)
     }
 }
 
-/// The grid's placement. Columns and gaps come from the width this layout is
-/// given in the same pass that draws it: a stored width is still the old one
-/// while a zoom or a live resize changes the window, and the fixed-width
+/// The grid's placement. Columns and the centred block come from the width this
+/// layout is given in the same pass that draws it: a stored width is still the
+/// old one while a zoom or a live resize changes the window, and the fixed-width
 /// columns past the edge are cut in half (the person's zoom-back frames).
-/// Tiles keep 96 pt; the gaps grow to fill the row.
+/// Tiles keep 96 pt at 100 %; the pitch stays 16 pt.
 struct DeckGridLayout: Layout {
-    /// Between rows, as the LazyVGrid this replaces had it.
-    static let rowSpacing: CGFloat = 8
-    /// Above the first row and below the last, as before.
-    static let verticalInset: CGFloat = 16
+    var metrics = DeckGridSize(zoom: 1)
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
         MainActor.assumeIsolated { DeckGridMetrics.beginLayout() }
         let width = proposal.replacingUnspecifiedDimensions().width
-        return CGSize(width: width, height: Self.height(for: subviews.count, width: width))
+        return CGSize(width: width, height: metrics.height(for: subviews.count, width: width))
     }
 
     func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
         MainActor.assumeIsolated { DeckGridMetrics.relayouts += 1 }
         for (index, subview) in subviews.enumerated() {
-            let frame = Self.frame(of: index, in: bounds.width, origin: bounds.origin)
+            let frame = metrics.frame(of: index, in: bounds.width, origin: bounds.origin)
             subview.place(at: frame.origin, anchor: .topLeading,
                           proposal: ProposedViewSize(width: frame.width, height: frame.height))
         }
         MainActor.assumeIsolated { DeckGridMetrics.endLayout() }
     }
 
-    /// Where cell `index` is drawn in a grid `width` wide. Pure, so the tests
-    /// pin the design's 96 pt tiles and growing gaps at any width.
+    /// Where cell `index` is drawn in a grid `width` wide at 100 %. Pure, so the
+    /// tests pin the design's 96 pt tiles and fixed 16 pt pitch at any width.
     static func frame(of index: Int, in width: CGFloat, origin: CGPoint = .zero) -> CGRect {
-        let columns = GridMetrics.columns(forWidth: width)
-        let gap = GridMetrics.gap(forWidth: width)
-        let column = index % columns
-        let row = index / columns
-        return CGRect(x: origin.x + GridMetrics.inset + CGFloat(column) * (GridMetrics.cellWidth + gap),
-                      y: origin.y + verticalInset + CGFloat(row) * (GridMetrics.cellHeight + rowSpacing),
-                      width: GridMetrics.cellWidth, height: GridMetrics.cellHeight)
+        DeckGridSize(zoom: 1).frame(of: index, in: width, origin: origin)
     }
 
     static func height(for count: Int, width: CGFloat) -> CGFloat {
-        let columns = GridMetrics.columns(forWidth: width)
-        let rows = (count + columns - 1) / columns
-        return 2 * verticalInset + CGFloat(rows) * GridMetrics.cellHeight
-            + CGFloat(max(rows - 1, 0)) * rowSpacing
+        DeckGridSize(zoom: 1).height(for: count, width: width)
     }
 }
 
@@ -756,6 +864,8 @@ struct AppCell: View {
     /// The shared renderer's icon for the tile (docs/design/dock.md §Icons).
     let rendered: NSImage?
     let iconIsMissing: Bool
+    /// The grid's numbers at the run's zoom step.
+    let metrics: DeckGridSize
     let selected: Bool
     let open: () -> Void
     @State private var hovering = false
@@ -763,9 +873,9 @@ struct AppCell: View {
 
     var body: some View {
         Button(action: open) {
-            VStack(spacing: 6) {
+            VStack(spacing: metrics.iconLabelGap) {
                 AppIconView(app: app, image: icon, rendered: rendered, isMissing: iconIsMissing,
-                            glassOn: glassIconsOn, hovering: hovering)
+                            glassOn: glassIconsOn, hovering: hovering, side: metrics.iconSide)
                 Text(app.displayLabel)
                     .font(.caption)
                     .lineLimit(1)
@@ -773,11 +883,11 @@ struct AppCell: View {
                     .padding(.horizontal, 6)
                     .foregroundStyle(selected ? .primary : .secondary)
             }
-            .frame(width: GridMetrics.cellWidth, height: GridMetrics.cellHeight)
+            .frame(width: metrics.cellWidth, height: metrics.cellHeight)
             .background(selected ? AnyShapeStyle(Color.accentColor.opacity(0.22))
                                  : hovering ? AnyShapeStyle(.quaternary) : AnyShapeStyle(.clear),
-                        in: .rect(cornerRadius: 14))
-            .contentShape(.rect(cornerRadius: 14))
+                        in: .rect(cornerRadius: metrics.cornerRadius))
+            .contentShape(.rect(cornerRadius: metrics.cornerRadius))
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
@@ -803,11 +913,14 @@ struct DockMenuItems: View {
 }
 
 struct PlaceholderCell: View {
+    var metrics = DeckGridSize(zoom: 1)
+
     var body: some View {
-        VStack(spacing: 6) {
-            RoundedRectangle(cornerRadius: 13, style: .continuous).fill(.quaternary).frame(width: 56, height: 56)
+        VStack(spacing: metrics.iconLabelGap) {
+            RoundedRectangle(cornerRadius: 13, style: .continuous).fill(.quaternary)
+                .frame(width: metrics.iconSide, height: metrics.iconSide)
             Text("Loading").font(.caption)
         }
-        .frame(width: GridMetrics.cellWidth, height: GridMetrics.cellHeight)
+        .frame(width: metrics.cellWidth, height: metrics.cellHeight)
     }
 }

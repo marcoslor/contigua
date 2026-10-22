@@ -92,6 +92,7 @@ enum FallbackIcon {
 struct FallbackAppIcon: View {
     let label: String
     let pkg: String
+    var side: CGFloat = GlassIcon.tileSide
     @Environment(\.colorScheme) private var scheme
 
     var body: some View {
@@ -105,7 +106,7 @@ struct FallbackAppIcon: View {
                     .font(.system(size: 26, weight: .semibold, design: .rounded))
                     .foregroundStyle(.white)
             }
-            .frame(width: 56, height: 56)
+            .frame(width: side, height: side)
     }
 }
 
@@ -123,30 +124,36 @@ struct AppIconView: View {
     private(set) var glassOn: Bool
     /// The pointer is over the cell: the tile responds to it.
     private(set) var hovering = false
+    /// The tile's side in points (the grid's 64 pt at 100 %, scaled by zoom).
+    private(set) var side = GlassIcon.tileSide
 
     init(app: AppInfo, image: NSImage?, rendered: NSImage? = nil,
-         isMissing: Bool = false, glassOn: Bool = true, hovering: Bool = false) {
+         isMissing: Bool = false, glassOn: Bool = true, hovering: Bool = false,
+         side: CGFloat = GlassIcon.tileSide) {
         self.app = app
         self.image = image
         self.rendered = rendered
         self.isMissing = isMissing
         self.glassOn = glassOn
         self.hovering = hovering
+        self.side = side
     }
 
     var body: some View {
-        switch GlassIcon.variant(rendered: rendered, image: image, isMissing: isMissing, glassOn: glassOn) {
-        case .rendered(let rendered):
-            Image(nsImage: rendered).resizable().interpolation(.high)
-                .frame(width: GlassIcon.tileSide, height: GlassIcon.tileSide)
-                .scaleEffect(hovering ? 1.04 : 1)
-        case .bare(let image):
-            Image(nsImage: image).resizable().interpolation(.high)
-                .clipShape(.rect(cornerRadius: 13, style: .continuous))
-        case .placeholder:
-            RoundedRectangle(cornerRadius: 13, style: .continuous).fill(.quaternary)
-        case .fallback:
-            FallbackAppIcon(label: app.label, pkg: app.pkg)
+        Group {
+            switch GlassIcon.variant(rendered: rendered, image: image, isMissing: isMissing, glassOn: glassOn) {
+            case .rendered(let rendered):
+                Image(nsImage: rendered).resizable().interpolation(.high)
+                    .scaleEffect(hovering ? 1.04 : 1)
+            case .bare(let image):
+                Image(nsImage: image).resizable().interpolation(.high)
+                    .clipShape(.rect(cornerRadius: 13, style: .continuous))
+            case .placeholder:
+                RoundedRectangle(cornerRadius: 13, style: .continuous).fill(.quaternary)
+            case .fallback:
+                FallbackAppIcon(label: app.label, pkg: app.pkg, side: side)
+            }
         }
+        .frame(width: side, height: side)
     }
 }

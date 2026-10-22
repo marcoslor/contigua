@@ -2417,6 +2417,14 @@ final class ConnectionController {
             }
             return PanelProbe.drag(host: arguments[0], id: arguments[1], fraction: fraction)
                 ? nil : "paneldrag failed"
+        case "deck-size":
+            // Resize the Deck for the grid checks: the block is centred and
+            // capped at a wide size and drops columns as the window narrows.
+            guard arguments.count >= 2, let w = Double(arguments[0]), let h = Double(arguments[1]),
+                  w > 0, h > 0 else { return "deck-size needs width height" }
+            guard let window = DeckWindow.window else { return "no Deck window" }
+            window.setContentSize(NSSize(width: w, height: h))
+            return nil
         case "settings-dump":
             // Settings' real window geometry (SettingsProbe) for the host e2e.
             guard let path = arguments.first, path.hasPrefix("/") else { return "missing path" }

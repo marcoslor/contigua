@@ -8226,7 +8226,7 @@ check_deck() {
     # package are there with their own id and words under them, and the entry
     # the phone sent without a label still has words (the package's last part).
     # Equal ids drew neither cell — the person's empty slot.
-    if wait_until 30 test -s "$WORK/deck-grid.jsonl" && grep -q '"count":201' "$WORK/deck-grid.jsonl"; then
+    if wait_until 30 grep -q '"count":201' "$WORK/deck-grid.jsonl" 2>/dev/null; then
         if python3 "$MACOS/scripts/deck-grid.py" "$WORK/deck-grid.jsonl" 201; then
             ok "DECK every cell has words and its own id (2 settings cells, the label-less one falls back)"
         else
@@ -8252,6 +8252,31 @@ check_deck() {
     else
         bad "DECK no zoom measurement (--debug-deck-zoom)"
     fi
+
+    # D's block is 96 pt tiles on a fixed 16 pt pitch, centred and never wider
+    # than 880 pt (--debug-deck-grid's geometry lines). The zoom probe above
+    # owns the window while it runs, so resize only after it has reported.
+    local geometry
+    if control deck-size 640 700 >/dev/null; then
+        if geometry="$(python3 "$MACOS/scripts/deck-geometry.py" "$WORK/deck-grid.jsonl" 640 5)"; then
+            ok "DECK at 640 pt the block is $geometry"
+        else
+            bad "DECK at 640 pt the block is not D's ($geometry)"
+        fi
+    else
+        bad "DECK deck-size 640: $CONTROL_REPLY"
+    fi
+    if control deck-size 1200 700 >/dev/null; then
+        if geometry="$(python3 "$MACOS/scripts/deck-geometry.py" "$WORK/deck-grid.jsonl" 1200 8)"; then
+            ok "DECK at 1200 pt the block is capped and centred ($geometry)"
+        else
+            bad "DECK at 1200 pt the block is not capped/centred ($geometry)"
+        fi
+    else
+        bad "DECK deck-size 1200: $CONTROL_REPLY"
+    fi
+    # Put the Deck back on its default size for the visual record.
+    control deck-size 760 560 || bad "DECK deck-size 760: $CONTROL_REPLY"
 
     # The deckMode transition (welcome -> grid) settles; a capture too early
     # shows both states overlapped, which is useless as the visual record.
