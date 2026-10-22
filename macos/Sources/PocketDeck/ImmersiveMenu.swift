@@ -10,7 +10,7 @@
 
 import Foundation
 
-enum ImmersiveMenuItem: Equatable {
+enum ImmersiveMenuItem: Hashable {
     case delay(RevealDelay)
     case separator
     case alwaysVisible

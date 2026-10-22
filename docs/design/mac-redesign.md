@@ -252,24 +252,53 @@ toolbar item group:
   status dot + text, battery) · the agent row ("AI agent connected" + **Disconnect**) · **PHONE** (the phone's media
   volume slider, the one reason line when a control is off, **Do Not Disturb**, **Ring Phone**/**Stop Ringing**, the
   **Now Playing follows** picker when the phone reports ≥ 2 sessions) · **LIVE** (one row per live notification) ·
-  **WINDOWS** (**Phone Screen** ⌘P · **Find Apps** ⌘K · **Continue on Mac** · **Install APK…** with its phase) ·
+  **WINDOWS** (**Phone Window** ⌘P · **Find Apps** ⌘K · **Continue on Mac** · **Install APK…** with its phase) ·
   **Settings…** ⌘, · **Quit PocketDeck** ⌘Q.
 - No track title, performer, artwork or forwarded-audio volume: the Mac's own Now Playing shows the track, and the
   phone's media volume is the only volume control. A control that cannot work is dimmed with one line saying why
   (offline, no volume sent, no DND reported), never hidden.
 - **One component, two hosts:** the Deck's status pill opens the same view in a `.popover`; both build it from
   `PhoneControlsState(controller:)` and `PhoneControlsActions(controller:openDeck:)`.
-- **App menu bar** (AppKit `NSMenu`, kept because stream-window key equivalents rely on the responder chain; A07):
-  *PocketDeck* (About, Settings… ⌘,, Hide ⌘H, Hide Others ⌥⌘H, Quit ⌘Q) · *File* (Add Phone… ⇧⌘N, Close Window ⌘W) ·
-  *Edit* (standard Undo/Redo/Cut/Copy/Paste/Select All, so paste works in the code and search fields) · *View*
-  (Find Apps ⌘K, Phone Window ⌘P, Enter Full Screen ⌃⌘F; ⌘+ ⌘− ⌘0 are handled by the stream window itself, as before) · *Navigate* (Back ⌘[,
-  Home ⇧⌘H, Recents ⌘↑ — unchanged) · *Window* (Minimize ⌘M, Zoom, Bring All to Front, window list).
-- **View ▸ Immersive** is a submenu: *Instantly* · *Short* · *Long* (the reveal delays, checkmark on the current one) ·
-  separator · *Always Visible*. Picking any item switches the focused window to Immersive and stores the choice as the
-  global setting under `immersive.revealDelay`, the same store Settings ▸ General uses; the Settings picker gains
-  *Always Visible*. The parent item is checked while the key window is immersive; *Framed* stays a plain checkable
-  item. *Always Visible* keeps the traffic lights and the bar capsules over the stream at rest — no hot zone, no dwell
-  pill, no hiding — and the stream still fills the window.
+- **App menu bar** (SwiftUI `commands`, `AppCommands` in MenuBar.swift): every item the app draws is built there, so
+  SwiftUI rebuilding the bar — which it does on activation — cannot drop one. Nothing is inserted into a SwiftUI menu
+  with AppKit: an inserted item is gone on the next rebuild, which is how v104 lost *Immersive* and v107 lost all three
+  View items. `MenuSeparators` only removes a separator that SwiftUI emits twice around a group it places between two of
+  its own (Window's Zoom / Bring All to Front); it never adds or reorders an item.
+  *PocketDeck* (About, Settings… ⌘,, Services, Hide ⌘H, Hide Others ⌥⌘H, Show All, Quit ⌘Q) ·
+  *File* (Add Phone… ⇧⌘N · ── · Close ⌘W · Close All ⌥⌘W — nothing after Close All) ·
+  *Edit* (the standard Undo/Redo/Cut/Copy/Paste/Select All, so paste works in the code and search fields) ·
+  *View* (Find Apps ⌘K · ── · Framed / Immersive · Hide Controls › · ── · Show Touches · Live Text ⇧⌘T · ── · Density ›) ·
+  *Phone* (Phone Window ⌘P · Continue on Mac ⇧⌘C · ── · Turn Off Phone Screen · Do Not Disturb · Ring Phone / Stop
+  Ringing · ── · Install APK…) ·
+  *Navigate* (Back ⌘[ · Home ⇧⌘H · Recents ⌘↑ — no screen item) ·
+  *Window* (Minimize ⌘M · Zoom · Enter Full Screen ⌃⌘F · Bring All to Front · the window list) ·
+  *Help* (empty: there is no help book and no public issue tracker, so no dead item).
+- **The Phone menu is the panel's controls**: it builds from the same `PhoneControlsState` and `PhoneControlsActions`
+  the menu-bar panel and the Deck popover use, so one mapping decides what can work — *Phone Window*, *Continue on Mac*,
+  *Turn Off Phone Screen*, *Ring Phone* and *Install APK…* are disabled while the phone is away, and *Turn Off Phone
+  Screen* until a phone window is open. A control that cannot work is disabled, never hidden. *Turn Off Phone Screen*
+  keeps its checkmark on the phone's own `state.panel` report, never a local guess. *Install APK…* and *Ring
+  Phone* name what they are doing ("Sending foo.apk… 40%", "Stop Ringing").
+- **View ▸ Framed / Immersive** is one radio pair for the key stream window, built by the commands as an inline
+  `Picker`, exactly one checked; ⌥⌘F switches to the other. **Hide Controls ›** holds *Instantly* · *Short* · *Long*
+  (the reveal delays, checkmark on the current one) · separator · *Always Visible*, and is enabled only while the
+  window is immersive. Picking any item stores the choice as the global setting under `immersive.revealDelay`, the
+  same store Settings ▸ General uses; the Settings picker gains *Always Visible*. *Always Visible* keeps the traffic
+  lights and the bar capsules over the stream at rest — no hot zone, no dwell pill, no hiding — and the stream still
+  fills the window.
+- **View ▸ Density** names the Settings default in its first item — *Default (100%)* — then lists only the other
+  percentages, so no value appears twice, then *Larger* ⌘+, *Smaller* ⌘− and *Actual Size* ⌘0: the same step and reset
+  the stream window's own keys perform, now visible, disabled without a key stream window that shows an app.
+- **Enter Full Screen** ⌃⌘F is a plain command item; it is disabled for the phone window, which opts out of native
+  full screen because the mirror would be letterboxed.
+- **Marks SwiftUI cannot keep, and how they are kept:** SwiftUI builds a command item once and never re-reads its
+  state — measured in an activated app, not only in the quiet e2e. Every item stays SwiftUI's, so a rebuild can never
+  drop one; `MenuMarks` (MenuMarks.swift) corrects the few values that follow the running window whenever a menu
+  starts tracking: the Framed/Immersive mark, Hide Controls' enablement and the reveal choice inside it, Show
+  Touches, Live Text, Density's marks and the Default title, and the Window item's "Enter/Exit Full Screen" title and
+  enablement. It only writes values onto items SwiftUI already built — nothing is added, removed or replaced — and
+  its rules are a pure function over a menu snapshot and `StreamMenuState`, unit-tested in K2. A rebuild can reset a
+  mark to its launch value at worst; the next open corrects it.
 
 ### 3.9 Dock / lifecycle
 

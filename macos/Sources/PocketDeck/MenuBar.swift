@@ -60,8 +60,8 @@ struct AppCommands: Commands {
     @Environment(\.openWindow) private var openWindow
 
     var body: some Commands {
-        // ⌘P is "Phone Window" (docs/design/mac-redesign.md §5); the app prints nothing.
-        CommandGroup(replacing: .printItem) {}
+        // ⌘P is "Phone Window" (docs/design/mac-redesign.md §5); the app prints
+        // nothing, so File is Add Phone…, Close and Close All.
         CommandGroup(after: .newItem) {
             Button {
                 show()
@@ -79,18 +79,49 @@ struct AppCommands: Commands {
                 Label("Find Apps", systemImage: "magnifyingglass")
             }
             .keyboardShortcut("k")
-            Button {
-                controller.openPhoneWindow()
+            // View ▸ Framed / Immersive: one radio pair for the key stream
+            // window, built by the commands themselves. An inline Picker renders
+            // it as checkmarked radio items with no section title; an AppKit
+            // item inserted here is dropped the moment SwiftUI rebuilds the
+            // menu — how the person's v104 and v107 menus lost these. ⌥⌘F is
+            // the pair's: it re-picks the checked style, which this binding
+            // reads as "the other one".
+            Picker(selection: Binding(
+                get: { streamMenu.style },
+                set: { picked in
+                    if picked == streamMenu.style {
+                        controller.windows.toggleKeyWindowStyle()
+                    } else {
+                        controller.windows.setKeyWindowStyle(picked)
+                    }
+                })) {
+                Text(WindowStyle.framed.label)
+                    .tag(WindowStyle.framed)
+                    .keyboardShortcut("f", modifiers: [.command, .option])
+                Text(WindowStyle.immersive.label)
+                    .tag(WindowStyle.immersive)
             } label: {
-                Label("Phone Window", systemImage: "iphone")
+                EmptyView()
             }
-            .keyboardShortcut("p")
-            Button {
-                controller.continueOnMac()
+            .pickerStyle(.inline)
+            .labelsHidden()
+            // The reveal choice: enabled only while the window is immersive, so
+            // a choice is never also a submenu's parent (Framed/Immersive above
+            // own the style). A pick stores the choice and leaves the style.
+            Menu {
+                ForEach(MenuModel.hideControls, id: \.self) { entry in
+                    if entry == .separator {
+                        Divider()
+                    } else {
+                        Toggle(entry.title, isOn: Binding(
+                            get: { ImmersiveMenuModel.isChecked(entry, reveal: streamMenu.revealDelay) },
+                            set: { _ in controller.windows.pickImmersive(entry) }))
+                    }
+                }
             } label: {
-                Label("Continue on Mac", systemImage: "arrow.up.forward.app")
+                Text("Hide Controls")
             }
-            .keyboardShortcut("c", modifiers: [.command, .shift])
+            .disabled(!MenuModel.hideControlsEnabled(style: streamMenu.style))
             Divider()
             Toggle(isOn: Binding(
                 get: { streamMenu.showTouches },
@@ -104,42 +135,101 @@ struct AppCommands: Commands {
             }
             .keyboardShortcut("t", modifiers: [.command, .shift])
             Divider()
-            // View ▸ Framed / Immersive / Hide Controls: AppKit's items
-            // (ImmersiveMenuInstaller.swift), inserted here between the two
-            // dividers. Framed and Immersive are one radio pair for the front
-            // window; Hide Controls is the reveal choice's submenu and is only
-            // enabled while the window is immersive, so a choice is never also
-            // a submenu's parent.
-            Divider()
             // View ▸ Density: the key stream window's app override, remembered
             // per app (WindowDensityStore) and applied to every open window of
             // that app. "Default" clears it; the check mark follows the
             // override (none checked when ⌘+/⌘- landed between two options).
             // Disabled without a key stream window that shows an app.
             Menu {
-                Toggle("Default (\(DensityRules.percentLabel(streamMenu.settingsDensity)))",
+                Toggle(MenuModel.densityDefaultTitle(settings: streamMenu.settingsDensity),
                        isOn: Binding(get: { densityCheck == .defaultItem },
                                      set: { _ in pickDensity(nil) }))
                 Divider()
-                ForEach(WindowDensity.options, id: \.value) { option in
+                ForEach(MenuModel.densityOptions(settings: streamMenu.settingsDensity), id: \.value) { option in
                     Toggle(option.label, isOn: Binding(
                         get: { densityCheck == .value(option.value) },
                         set: { _ in pickDensity(option.value) }))
                 }
+                Divider()
+                // The stream window's own ⌘+ ⌘− ⌘0, now visible.
+                Button {
+                    controller.windows.adjustKeyWindowDensity(DensityRules.step)
+                } label: {
+                    Label("Larger", systemImage: "plus.magnifyingglass")
+                }
+                .keyboardShortcut("+", modifiers: .command)
+                Button {
+                    controller.windows.adjustKeyWindowDensity(-DensityRules.step)
+                } label: {
+                    Label("Smaller", systemImage: "minus.magnifyingglass")
+                }
+                .keyboardShortcut("-", modifiers: .command)
+                Button {
+                    controller.windows.resetKeyWindowDensity()
+                } label: {
+                    Label("Actual Size", systemImage: "1.magnifyingglass")
+                }
+                .keyboardShortcut("0", modifiers: .command)
             } label: {
                 Label("Density", systemImage: "textformat.size")
             }
             .disabled(!streamMenu.hasStream || streamMenu.densityPackage == nil)
-            // No disabled gate here: key equivalents do not get re-evaluated
-            // when the state changes, and a disabled item eats its shortcut
-            // silently under NSEvent.performKeyEquivalent. The binding itself
-            // no-ops without a key stream window.
+        }
+        // Phone ▸ the phone's own controls. The state and the actions are the
+        // menu-bar panel's and the Deck popover's (PhonePanel.swift), so one
+        // mapping decides what can work and a control that cannot is disabled,
+        // never hidden (AGENTS "Honest settings").
+        CommandMenu("Phone") {
+            let state = PhoneControlsState(controller: controller)
+            let actions = PhoneControlsActions(controller: controller) { show() }
             Button {
-                controller.windows.toggleKeyWindowStyle()
+                actions.openPhoneScreen()
             } label: {
-                Label("Toggle Window Style", systemImage: "rectangle.topthird.inset.filled")
+                Label("Phone Window", systemImage: "iphone")
             }
-            .keyboardShortcut("f", modifiers: [.command, .option])
+            .keyboardShortcut("p")
+            .disabled(!PhonePanelItem.phoneScreen.isEnabled(in: state))
+            Button {
+                actions.continueOnMac()
+            } label: {
+                Label("Continue on Mac", systemImage: "arrow.up.forward.app")
+            }
+            .keyboardShortcut("c", modifiers: [.command, .shift])
+            .disabled(!PhonePanelItem.continueOnMac.isEnabled(in: state))
+            Divider()
+            // The phone holds its own panel's power off while the mirror keeps
+            // rendering (docs/design/phone-mirror.md). The check follows the
+            // phone's `state.panel`, never a local guess.
+            Toggle(isOn: Binding(
+                get: { streamMenu.panelOff },
+                set: { _ in controller.windows.togglePhonePanelOff() })) {
+                Label("Turn Off Phone Screen", systemImage: "iphone.slash")
+            }
+            .disabled(!streamMenu.phoneWindow)
+            Toggle(isOn: Binding(
+                get: { state.dnd?.isOn ?? false },
+                set: { actions.setDnd($0) })) {
+                Label(PhonePanelItem.dnd.label, systemImage: "moon.fill")
+            }
+            .disabled(!PhonePanelItem.dnd.isEnabled(in: state))
+            Button {
+                if state.ringing {
+                    actions.stopRing()
+                } else {
+                    actions.ring()
+                }
+            } label: {
+                Label(state.ringTitle,
+                      systemImage: state.ringing ? "bell.slash" : "iphone.radiowaves.left.and.right")
+            }
+            .disabled(!PhonePanelItem.ring.isEnabled(in: state))
+            Divider()
+            Button {
+                actions.installApk()
+            } label: {
+                Label(state.installTitle, systemImage: "arrow.down.app")
+            }
+            .disabled(!PhonePanelItem.installApk.isEnabled(in: state))
         }
         // Full screen is AppKit's own item, moved into the Window menu at
         // launch (FullScreenMenu.swift): only a system-provided item can carry
@@ -167,17 +257,30 @@ struct AppCommands: Commands {
             }
             .keyboardShortcut(.upArrow, modifiers: .command)
             .disabled(streamMenu.frozen)
-            Divider()
-            // Phone window only: the phone holds its own panel's power off while
-            // the mirror keeps rendering (docs/design/phone-mirror.md). The
-            // check follows the phone's `state.panel`, never a local guess.
-            Toggle(isOn: Binding(
-                get: { streamMenu.panelOff },
-                set: { _ in controller.windows.togglePhonePanelOff() })) {
-                Label("Turn Off Phone Screen", systemImage: "iphone.slash")
-            }
-            .disabled(!streamMenu.phoneWindow)
         }
+        // Window ▸ Enter/Exit Full Screen: ⌃⌘F, the system's own full-screen
+        // shortcut, and the title follows the key window. The phone window opts
+        // out of full screen (it would letterbox the mirror), so the item is
+        // disabled for it rather than doing nothing.
+        CommandGroup(after: .windowSize) {
+            Button {
+                guard let window = NSApp.keyWindow ?? NSApp.mainWindow,
+                      FullScreenMenu.allowsFullScreen(window) else { return }
+                window.toggleFullScreen(nil)
+            } label: {
+                Label(MenuModel.fullScreenTitle(fullScreen: streamMenu.fullScreen),
+                      systemImage: MenuModel.fullScreenSymbol(fullScreen: streamMenu.fullScreen))
+            }
+            .keyboardShortcut("f", modifiers: [.control, .command])
+            // The phone window opts out of full screen, so the item is disabled
+            // for it; the action asks the key window again before it acts.
+            .disabled(!streamMenu.fullScreenAllowed)
+        }
+        // Help has no help book and the app has no public issue tracker, so the
+        // menu is empty rather than carrying a dead item (AGENTS "Honest
+        // settings"). SwiftUI's own sidebar command lands here too; there is no
+        // sidebar to toggle.
+        CommandGroup(replacing: .help) {}
     }
 
     private func show() {

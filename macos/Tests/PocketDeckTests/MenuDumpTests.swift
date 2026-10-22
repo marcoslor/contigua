@@ -48,6 +48,50 @@ final class MenuDumpTests: XCTestCase {
         XCTAssertTrue(items[1].isSeparator)
     }
 
+    func testShapeProblemsFindLeadingTrailingAndDoubledSeparators() {
+        func items(_ titles: [String]) -> [MenuDump.Item] {
+            titles.map { title in
+                MenuDump.Item(title: title, hasImage: false, keyEquivalent: "", modifiers: [],
+                              state: "off", isSeparator: title == "—", enabled: true,
+                              targetClass: nil, submenu: nil)
+            }
+        }
+        XCTAssertEqual(MenuDump.shapeProblems("View", items(["A", "B"])), [])
+        XCTAssertEqual(MenuDump.shapeProblems("View", items(["—", "A"])), ["View: leading separator"])
+        XCTAssertEqual(MenuDump.shapeProblems("View", items(["A", "—"])), ["View: trailing separator"])
+        XCTAssertEqual(MenuDump.shapeProblems("View", items(["A", "—", "—", "B"])),
+                       ["View: separator 3 follows another"])
+        // A submenu is reported under its parent's title.
+        var parent = MenuDump.Item(title: "Density", hasImage: false, keyEquivalent: "", modifiers: [],
+                                   state: "off", isSeparator: false, enabled: true,
+                                   targetClass: nil, submenu: items(["—", "100%"]))
+        parent.submenu = items(["—", "100%"])
+        XCTAssertEqual(MenuDump.shapeProblems("View", [parent]), ["View/Density: leading separator"])
+    }
+
+    func testTheJSONCarriesTheShapeProblemsOfTheWholeBar() throws {
+        let data = try MenuDump.json(makeMenu())
+        let root = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        // makeMenu's File submenu ends with an item, so the bar is clean.
+        XCTAssertEqual(root["problems"] as? [String], [])
+        let menu = makeMenu()
+        let file = try XCTUnwrap(menu.items.first { $0.title == "File" }?.submenu)
+        file.addItem(.separator())
+        let broken = try XCTUnwrap(JSONSerialization.jsonObject(with: MenuDump.json(menu)) as? [String: Any])
+        XCTAssertEqual(broken["problems"] as? [String], ["File: trailing separator"])
+    }
+
+    func testTheTargetsClassNamesTheItemsOwner() {
+        let menu = NSMenu(title: "Main")
+        let injected = NSMenuItem(title: "Injected", action: nil, keyEquivalent: "")
+        injected.target = menu
+        menu.addItem(injected)
+        menu.addItem(NSMenuItem(title: "Plain", action: nil, keyEquivalent: ""))
+        let items = MenuDump.snapshot(menu)
+        XCTAssertEqual(items[0].targetClass, "NSMenu", "an item the app installed is owned by the app's type")
+        XCTAssertNil(items[1].targetClass)
+    }
+
     func testModifierNamesAreStableAndOrdered() {
         XCTAssertEqual(MenuDump.modifierNames([.option, .command]), ["command", "option"])
         XCTAssertEqual(MenuDump.modifierNames([.function]), ["function"])

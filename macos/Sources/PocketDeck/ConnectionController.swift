@@ -2335,8 +2335,28 @@ final class ConnectionController {
             guard let phone = windows.phoneWindow else { return "no phone window" }
             phone.wakeScreen()
             return nil
+        case "menudump":
+            // The main menu tree at this moment, for the e2e menus check: the
+            // debug-input script is gone once the last window closed, and the
+            // bar must be read then. update() runs the same validation an
+            // opened menu does, which is what makes the enabled flags and the
+            // check marks truthful; nothing in the app puts an AppKit item back
+            // any more, so it cannot hide a dropped item.
+            guard let path = arguments.first, path.hasPrefix("/") else {
+                return "menudump needs an absolute PATH"
+            }
+            NSApp.mainMenu?.update()
+            // The marks that opening the menu writes (MenuMarks): the dump stands
+            // for what a person reads in the open menu.
+            MainActor.assumeIsolated { MenuMarks.apply(to: NSApp.mainMenu) }
+            do {
+                try MenuDump.write(NSApp.mainMenu, to: path)
+            } catch {
+                return "menudump failed: \(error.localizedDescription)"
+            }
+            return nil
         case "panel-menu":
-            // Navigate ▸ Turn Off Phone Screen: the same WindowManager call the
+            // Phone ▸ Turn Off Phone Screen: the same WindowManager call the
             // menu item's binding makes, which sends the phone window's own
             // action (its target, like a menu item's).
             guard windows.phoneWindow != nil else { return "no phone window" }
