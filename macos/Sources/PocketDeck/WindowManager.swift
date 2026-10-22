@@ -548,9 +548,9 @@ final class WindowManager {
         lock.lock(); let current = session; lock.unlock()
         guard source === current else { return }
         switch event {
-        case .config(let stream, let config):
+        case .config(let stream, let config, let picture):
             videoDump?.write(config: config, stream: stream)
-            controller(for: stream)?.videoView.configure(config)
+            controller(for: stream)?.videoView.configure(config, picture: picture)
         case .frame(let stream, let frame):
             videoDump?.write(frame: frame, stream: stream)
             let controller = controller(for: stream)
