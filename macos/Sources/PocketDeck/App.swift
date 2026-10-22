@@ -357,6 +357,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var openRequestInbox: OpenRequestInbox?
     private var debugBanner: DebugBanner?
     private var controlsHost: ControlsHost?
+    private var menuBar: MenuBarController?
 
     /// Started from a shell (the test harness) there is no LaunchServices to
     /// make the process a regular app; do it explicitly so it gets windows and a Dock icon.
@@ -420,6 +421,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // "Show phone files in Finder" is off by default; when the profile's
         // setting says otherwise its domain comes up with the app.
         environment.controller.filesDomain.start()
+        menuBar = MenuBarController(controller: environment.controller,
+                                    defaults: environment.profile.defaults)
         environment.controller.start()
         // The Control Center snapshot and socket (docs/design/controls.md): a
         // release bundle only has one when it carries the extension's group,
@@ -483,9 +486,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 enum DeckWindow {
     static let id = "deck"
 
+    /// SwiftUI's openWindow action, kept from the Deck's content: the AppKit
+    /// menu bar panel is not in a scene, so it cannot ask SwiftUI itself to
+    /// show the Deck again after the window was closed.
+    @MainActor static var openAction: (() -> Void)?
+
     @MainActor
     static var window: NSWindow? {
         NSApp.windows.first { $0.identifier?.rawValue.hasPrefix(id) == true }
+    }
+
+    /// Bring the Deck front, creating it if it was closed.
+    @MainActor
+    static func open() {
+        if window == nil { openAction?() }
+        show()
     }
 
     @MainActor
@@ -522,7 +537,6 @@ enum PocketDeckMain {
 struct PocketDeckApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
     @State private var controller = AppEnvironment.shared.controller
-    @AppStorage("showMenuBar", store: AppEnvironment.shared.profile.defaults) private var showMenuBar = true
 
     var body: some Scene {
         Window("PocketDeck", id: DeckWindow.id) {
@@ -540,14 +554,5 @@ struct PocketDeckApp: App {
             SettingsView()
                 .environment(controller)
         }
-
-        MenuBarExtra(isInserted: $showMenuBar) {
-            MenuBarContent()
-                .environment(controller)
-        } label: {
-            MenuBarIcon()
-                .environment(controller)
-        }
-        .menuBarExtraStyle(.window)
     }
 }

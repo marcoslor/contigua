@@ -5,7 +5,6 @@ import SwiftUI
 
 struct MenuBarIcon: View {
     @Environment(ConnectionController.self) private var controller
-    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         HStack(spacing: 3) {
@@ -20,7 +19,7 @@ struct MenuBarIcon: View {
             // This view exists from launch. Started from a shell (the test
             // harness) SwiftUI sometimes does not present the Deck by itself.
             try? await Task.sleep(for: .seconds(0.5))
-            if DeckWindow.window == nil { openWindow(id: DeckWindow.id) }
+            DeckWindow.open()
         }
     }
 
@@ -41,16 +40,30 @@ struct MenuBarIcon: View {
 /// own way of creating the Deck window (the Deck popover needs none).
 struct MenuBarContent: View {
     @Environment(ConnectionController.self) private var controller
-    @Environment(\.openWindow) private var openWindow
+
+    /// Called when a row opens a window: the AppKit panel closes itself, as a
+    /// menu bar panel does after its command ran.
+    var onOpenWindow: (() -> Void)?
 
     var body: some View {
-        PhonePanelView(
-            state: PhoneControlsState(controller: controller),
-            actions: PhoneControlsActions(controller: controller) {
-                if DeckWindow.window == nil { openWindow(id: DeckWindow.id) }
-                DeckWindow.show()
-            },
-        )
+        PhonePanelView(state: PhoneControlsState(controller: controller),
+                       actions: actions)
+    }
+
+    private var actions: PhoneControlsActions {
+        var actions = PhoneControlsActions(controller: controller) { DeckWindow.open() }
+        let close = onOpenWindow
+        let openPhoneScreen = actions.openPhoneScreen
+        let findApps = actions.findApps
+        let continueOnMac = actions.continueOnMac
+        let installApk = actions.installApk
+        let openSettings = actions.openSettings
+        actions.openPhoneScreen = { openPhoneScreen(); close?() }
+        actions.findApps = { findApps(); close?() }
+        actions.continueOnMac = { continueOnMac(); close?() }
+        actions.installApk = { installApk(); close?() }
+        actions.openSettings = { openSettings(); close?() }
+        return actions
     }
 }
 
