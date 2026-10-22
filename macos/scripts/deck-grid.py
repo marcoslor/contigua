@@ -22,10 +22,12 @@ LABEL_LESS = "com.spotify.music/"
 
 def main(path):
     lines = [json.loads(line) for line in open(path) if line.strip()]
-    if not lines:
+    # Geometry lines share the file; the cell dump is the newest line with items.
+    cells = [line for line in lines if "items" in line]
+    if not cells:
         print("no grid dump yet")
         return 1
-    items = lines[-1].get("items", [])
+    items = cells[-1]["items"]
     problems = []
     if len(items) != EXPECTED_CELLS:
         problems.append("cells=%d, the phone sent %d apps" % (len(items), EXPECTED_CELLS))

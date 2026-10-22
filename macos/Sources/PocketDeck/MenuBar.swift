@@ -47,18 +47,19 @@ struct MenuBarContent: View {
 
     var body: some View {
         PhonePanelView(state: PhoneControlsState(controller: controller),
-                       actions: actions)
+                       actions: actions,
+                       showsFooter: true)
     }
 
     private var actions: PhoneControlsActions {
         var actions = PhoneControlsActions(controller: controller) { DeckWindow.open() }
         let close = onOpenWindow
-        let openPhoneScreen = actions.openPhoneScreen
+        let openPhoneMirror = actions.openPhoneScreen
         let findApps = actions.findApps
         let continueOnMac = actions.continueOnMac
         let installApk = actions.installApk
         let openSettings = actions.openSettings
-        actions.openPhoneScreen = { openPhoneScreen(); close?() }
+        actions.openPhoneScreen = { openPhoneMirror(); close?() }
         actions.findApps = { findApps(); close?() }
         actions.continueOnMac = { continueOnMac(); close?() }
         actions.installApk = { installApk(); close?() }
@@ -73,7 +74,7 @@ struct AppCommands: Commands {
     @Environment(\.openWindow) private var openWindow
 
     var body: some Commands {
-        // ⌘P is "Phone Window" (docs/design/mac-redesign.md §5); the app prints
+        // ⌘P is "Phone Mirror" (docs/design/mac-redesign.md §5); the app prints
         // nothing, so File is Add Phone…, Close and Close All.
         CommandGroup(after: .newItem) {
             Button {
@@ -198,7 +199,7 @@ struct AppCommands: Commands {
             Button {
                 actions.openPhoneScreen()
             } label: {
-                Label("Phone Window", systemImage: "iphone")
+                Label("Phone Mirror", systemImage: "iphone")
             }
             .keyboardShortcut("p")
             .disabled(!PhonePanelItem.phoneScreen.isEnabled(in: state))

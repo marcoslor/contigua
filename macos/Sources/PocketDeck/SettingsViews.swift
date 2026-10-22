@@ -82,7 +82,7 @@ struct AutomationSettings: View {
                     get: { controller.mcp.enabled },
                     set: { controller.mcp.setEnabled($0) },
                 ))
-                Text("A local MCP server lets an AI agent on this Mac see phone windows, tap, type, swipe, open apps and send links or files. It listens only on a private local socket, never on the network. Everything is off while this is off.")
+                Text("A local MCP server lets an AI agent on this Mac see Phone Mirrors, tap, type, swipe, open apps and send links or files. It listens only on a private local socket, never on the network. Everything is off while this is off.")
                     .font(.subheadline).foregroundStyle(.secondary)
             }
             if controller.mcp.enabled {

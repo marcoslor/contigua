@@ -1,6 +1,6 @@
-# Phone window = mirror of the phone's own screen
+# Phone Mirror = mirror of the phone's own screen
 
-The phone window (`window.open` with `mode: phone`) shows display 0 1:1: home
+The Phone Mirror (`window.open` with `mode: phone`) shows display 0 1:1: home
 screen, apps, notification shade, lock screen, whatever the panel shows.
 
 ## How the shell process mirrors display 0
@@ -26,12 +26,12 @@ Why this and not `SurfaceControl.createDisplay` + `setDisplayProjection`
   display 0, input doesn't poke, and a mirrored frame is not a reason to light
   the panel). The panel is woken only by an explicit `phone.wake` (window open,
   Wake Screen); it is never unlocked: a locked phone shows its lock screen.
-  While a phone window is open and unpaused the panel is also never powered off
+  While the Phone Mirror is open and unpaused the panel is also never powered off
   behind the mirror (`PanelStrategy.PANEL_ALONE`): the mirror shows what the
   panel shows, and an app window sharing the panel's group still renders on the
   group the keep-alive holds awake.
 - "Turn Off Phone Screen" (`phone.panel`, off by default) is the one exception,
-  and only when the person asks for it: their phone window's Navigate menu item
+  and only when the person asks for it: their Phone Mirror's Navigate menu item
   or its bar control holds the panel's power mode off while the mirror keeps
   rendering. The bar shows an `iphone.slash` glyph and a "Phone screen off" pill
   for 2 s; the person's power button on the phone ends it (the Mac unchecks it
@@ -43,7 +43,7 @@ Why this and not `SurfaceControl.createDisplay` + `setDisplayProjection`
   not a set of flags. Every way out of `Applying`/`Held` writes the panel back
   to NORMAL — request on, power press, window close, session end, disconnect,
   crash recovery — so the panel can never be left in power mode OFF once the
-  hold has ended. A paused phone window (covered, minimised) suspends the hold
+  hold has ended. A paused Phone Mirror (covered, minimised) suspends the hold
   instead of ending it: the panel comes back, `state.panel` reads `"on"`, and
   the request is applied again on resume. `state.panel` is derived from the
   machine's state, never from a local guess. The transition reports it first,
@@ -72,7 +72,7 @@ Why this and not `SurfaceControl.createDisplay` + `setDisplayProjection`
 - A mirror's projection is fixed at creation, so a size change recreates the
   mirror VD instead of `VirtualDisplay.resize` (which left the picture small).
 - Back / Home / Recents = KEYCODE_BACK / HOME / APP_SWITCH on display 0.
-- No full screen for the phone window. A phone mirror across a whole display is
+- No full screen for the Phone Mirror. A phone mirror across a whole display is
   letterboxed or stretched (the stream keeps the phone's aspect), and the
   person's report is that it looks bad. The window opts out with
   `.fullScreenNone`: no green-button full-screen mode, no Window ▸ Enter Full
@@ -94,7 +94,7 @@ does not pass for a live picture). The phone sends it with every `state`, on
 change, from a display listener on display 0 (event driven, no polling). A Mac
 that gets no `screen` field treats the screen as on: nothing is overlaid.
 
-While `screen` is `"off"` the phone window blurs the frame it is holding,
+While `screen` is `"off"` the Phone Mirror blurs the frame it is holding,
 dims it, and shows "The phone's screen is off" with a **Wake Screen** button.
 The window no longer shows the last frame as if it were live. A click anywhere
 on the blurred frame is the Wake Screen button, never a touch: while the
@@ -107,7 +107,7 @@ no overlay: virtual displays do not sleep with the panel.
 Android does not let a screen capture read a secure surface: the lock screen's
 PIN/password pad, the keyguard bouncer and any app window with `FLAG_SECURE`
 come back black. `state` carries `secure` (`true` while display 0 shows such a
-surface). The phone window shows the same blurred, dimmed cover as screen-off,
+surface). The Phone Mirror shows the same blurred, dimmed cover as screen-off,
 with "Android doesn't let PocketDeck show this screen." and **no button**: there
 is nothing to wake, and a click must never reach the PIN pad. The cover clears
 when the phone reports `secure` false again.
@@ -135,7 +135,7 @@ who does not want to reopen the window.
 ## Results
 
 Host e2e (`check-e2e.sh mirror`, fakephone with `--rotate-after 6
---screen-off-after 14`): opening the phone window sends one `phone.wake`; when
+--screen-off-after 14`): opening the Phone Mirror sends one `phone.wake`; when
 the fake panel times out the window reports `screen=off overlay=1` within 2 s
 and the last frame is under the blurred cover; the Wake Screen route sends a
 second `phone.wake`, the fake comes back on, a new VIDEO_CONFIG follows and the

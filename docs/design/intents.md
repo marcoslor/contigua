@@ -10,7 +10,7 @@ Six intents, all optional-phone (default: the connected phone, else the only pai
 | intent | does |
 |---|---|
 | `OpenPhoneAppIntent` | opens one phone app in a window, connecting first if needed — the Spotlight click path |
-| `OpenPhoneScreenIntent` | opens the whole phone window |
+| `OpenPhoneScreenIntent` | opens the Phone Mirror |
 | `SendLinkToPhoneIntent` | sends a URL through the Mac → phone link path |
 | `SendFileToPhoneIntent` | drops files into `Download/PocketDeck` |
 | `PhoneBatteryIntent` | answers from the last `state`, never wakes the phone |
