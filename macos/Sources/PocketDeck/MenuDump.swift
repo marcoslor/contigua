@@ -1,8 +1,15 @@
 // The menu tree as JSON (DebugInput's `menudump` verb): what the menus really
 // contain, as AppKit built them, so the e2e checks can assert on titles,
 // images, shortcuts and radio state instead of trusting the source.
+//
+// Two trees: `items` is the NSMenu the app owns, and `displayed` is the menu bar
+// Accessibility exposes — what a person sees. AppKit adds its own items to the
+// displayed bar (a full-screen item in any menu titled View, a feedback item in
+// Help, extra separators) that never enter the NSMenu; the checks read the
+// displayed tree for those.
 
 import AppKit
+import ApplicationServices
 
 enum MenuDump {
     /// One item of the tree. Keys are the JSON the checks read.
@@ -25,6 +32,8 @@ enum MenuDump {
         var targetClass: String?
         /// nil when the item has no submenu.
         var submenu: [Item]?
+        /// AppKit's hidden flag: an item the menu keeps but does not show.
+        var hidden: Bool = false
     }
 
     /// The whole menu bar (an NSMenu's items), in AppKit's order.
@@ -43,7 +52,8 @@ enum MenuDump {
                     isSeparator: menuItem.isSeparatorItem,
                     enabled: menuItem.isEnabled,
                     targetClass: menuItem.target.map { String(describing: type(of: $0)) },
-                    submenu: menuItem.submenu.map(snapshot))
+                    submenu: menuItem.submenu.map(snapshot),
+                    hidden: menuItem.isHidden)
     }
 
     /// Stable names, in the order AppKit's own menus show them. An item with no
@@ -111,16 +121,129 @@ enum MenuDump {
     private struct Document: Encodable {
         var items: [Item]
         var problems: [String]
+        /// The menu bar as Accessibility shows it, when the caller asked for it.
+        var displayed: [Item]?
+        var displayedProblems: [String]?
     }
 
     /// The JSON the checks read; a file at PATH replaces any earlier one.
-    static func json(_ menu: NSMenu?) throws -> Data {
+    static func json(_ menu: NSMenu?, displayed: Bool = false) throws -> Data {
+        // The app's own tree first: reading the displayed bar makes AppKit
+        // validate and rebuild the menus (its system items appear, SwiftUI
+        // re-evaluates the commands), so the two trees are read in that order
+        // and `items` is the state the app itself had.
+        let items = snapshot(menu)
+        let shape = problems(menu)
+        var shown: [Item]?
+        if displayed {
+            // The first read is what makes AppKit add its own items. Then the
+            // pass a person's open runs (MenuCleanup, on tracking) runs, and the
+            // second read is what the person sees open.
+            _ = displayedItems()
+            MainActor.assumeIsolated { MenuCleanup.clean(NSApp.mainMenu) }
+            shown = displayedItems()
+        }
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
-        return try encoder.encode(Document(items: snapshot(menu), problems: problems(menu)))
+        return try encoder.encode(Document(
+            items: items,
+            problems: shape,
+            displayed: shown,
+            displayedProblems: shown.map(displayedProblems)))
     }
 
-    static func write(_ menu: NSMenu?, to path: String) throws {
-        try json(menu).write(to: URL(fileURLWithPath: path), options: .atomic)
+    static func write(_ menu: NSMenu?, to path: String, displayed: Bool = false) throws {
+        try json(menu, displayed: displayed).write(to: URL(fileURLWithPath: path), options: .atomic)
+    }
+
+    // MARK: - The displayed bar
+
+    /// The app's own menu bar through Accessibility: every item AppKit shows,
+    /// the system's additions included. Read from the app's own process, so the
+    /// e2e needs no Automation permission and cannot read another app's bar.
+    static func displayedItems() -> [Item] {
+        let app = AXUIElementCreateApplication(getpid())
+        guard let bar = copy(app, kAXMenuBarAttribute as String) else { return [] }
+        return children(bar).compactMap { barItem in
+            let title = string(barItem, kAXTitleAttribute)
+            guard title != "Apple" else { return nil }
+            return Item(title: title,
+                        hasImage: false,
+                        keyEquivalent: "",
+                        modifiers: [],
+                        state: "off",
+                        isSeparator: false,
+                        enabled: true,
+                        targetClass: nil,
+                        submenu: children(barItem).first.map(displayedMenu))
+        }
+    }
+
+    /// One AXMenu's items, in the order the person reads them.
+    static func displayedMenu(_ menu: AXUIElement) -> [Item] {
+        children(menu).map { element in
+            let title = string(element, kAXTitleAttribute)
+            if title.isEmpty {
+                return Item(title: "", hasImage: false, keyEquivalent: "", modifiers: [],
+                            state: "off", isSeparator: true, enabled: false,
+                            targetClass: nil, submenu: nil)
+            }
+            let command = string(element, kAXMenuItemCmdCharAttribute).lowercased()
+            return Item(title: title,
+                        hasImage: false,
+                        keyEquivalent: command,
+                        modifiers: command.isEmpty ? [] : displayedModifiers(element),
+                        state: string(element, kAXMenuItemMarkCharAttribute).isEmpty ? "off" : "on",
+                        isSeparator: false,
+                        enabled: bool(element, kAXEnabledAttribute),
+                        targetClass: nil,
+                        submenu: children(element).first.map(displayedMenu))
+        }
+    }
+
+    static func displayedProblems(_ items: [Item]) -> [String] {
+        items.flatMap { item in
+            shapeProblems(item.title, item.submenu ?? [])
+        }
+    }
+
+    private static func copy(_ element: AXUIElement, _ attribute: String) -> AXUIElement? {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success,
+              let value, CFGetTypeID(value) == AXUIElementGetTypeID() else { return nil }
+        return (value as! AXUIElement)
+    }
+
+    private static func children(_ element: AXUIElement) -> [AXUIElement] {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &value) == .success else { return [] }
+        return value as? [AXUIElement] ?? []
+    }
+
+    private static func string(_ element: AXUIElement, _ attribute: String) -> String {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success else { return "" }
+        return value as? String ?? ""
+    }
+
+    private static func bool(_ element: AXUIElement, _ attribute: String) -> Bool {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success else { return true }
+        return value as? Bool ?? true
+    }
+
+    /// AX's command modifier mask (bit 0 shift, 1 option, 2 control, 3 no
+    /// command, 4 function), named in the order the checks read: command first.
+    private static func displayedModifiers(_ element: AXUIElement) -> [String] {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXMenuItemCmdModifiersAttribute as CFString, &value) == .success,
+              let mask = value as? Int else { return ["command"] }
+        var names: [String] = []
+        if mask & 8 == 0 { names.append("command") }
+        if mask & 1 != 0 { names.append("shift") }
+        if mask & 2 != 0 { names.append("option") }
+        if mask & 4 != 0 { names.append("control") }
+        if mask & 16 != 0 { names.append("function") }
+        return names
     }
 }

@@ -2366,10 +2366,44 @@ final class ConnectionController {
             // for what a person reads in the open menu.
             MainActor.assumeIsolated { MenuMarks.apply(to: NSApp.mainMenu) }
             do {
-                try MenuDump.write(NSApp.mainMenu, to: path)
+                try MenuDump.write(NSApp.mainMenu, to: path, displayed: true)
             } catch {
                 return "menudump failed: \(error.localizedDescription)"
             }
+            return nil
+        case "key":
+            // A real key event through the application's own dispatch: menu key
+            // equivalents, local monitors and the key window's responder chain,
+            // the same route a person's press takes (no pointer involved).
+            guard let spec = arguments.first else { return "key needs SPEC" }
+            guard let stroke = DebugInputScript.keyStroke(for: spec) else { return "unknown key '\(spec)'" }
+            return sendKey(stroke)
+        case "decksearch":
+            // The Deck search field's state: focused, text, selection, and which
+            // window is key (a read; the ⌘F behaviour is a real key event).
+            guard let path = arguments.first, path.hasPrefix("/") else {
+                return "decksearch needs an absolute PATH"
+            }
+            return DeckSearch.dump(to: path) ? nil : "decksearch failed"
+        case "deckfocus":
+            // Setup for the key checks: the Deck key with its search field
+            // focused, or with the content (grid) as first responder.
+            guard let what = arguments.first, ["search", "grid"].contains(what) else {
+                return "deckfocus needs search|grid"
+            }
+            guard let deck = DeckWindow.window else { return "no deck window" }
+            deck.makeKeyAndOrderFront(nil)
+            if what == "search" {
+                DeckSearch.focusAndSelect(in: deck) { requestSearchFocus() }
+            } else {
+                deck.makeFirstResponder(deck.contentView)
+            }
+            return nil
+        case "deckquery":
+            // Setup for the ⌘F check: the text already in the search field.
+            guard let text = arguments.first else { return "deckquery needs TEXT" }
+            guard let deck = DeckWindow.window else { return "no deck window" }
+            DeckSearch.setText(text, in: deck)
             return nil
         case "panel-menu":
             // Phone ▸ Turn Off Phone Screen: the same WindowManager call the
@@ -2469,6 +2503,31 @@ final class ConnectionController {
         default:
             return "unknown command \(command)"
         }
+    }
+
+    /// One key stroke through `NSApplication.sendEvent`, as the key window's
+    /// dispatch would see a person's press (menu equivalents and local monitors
+    /// included). The e2e's key checks use it for both the Deck and a stream
+    /// window; the action under test is still the app's own key handling.
+    private func sendKey(_ stroke: KeyStroke) -> String? {
+        guard let window = NSApp.keyWindow else { return "no key window" }
+        var flags: NSEvent.ModifierFlags = []
+        if stroke.command { flags.insert(.command) }
+        if stroke.shift { flags.insert(.shift) }
+        if stroke.control { flags.insert(.control) }
+        if stroke.option { flags.insert(.option) }
+        for type in [NSEvent.EventType.keyDown, .keyUp] {
+            guard let event = NSEvent.keyEvent(with: type, location: .zero, modifierFlags: flags,
+                                               timestamp: ProcessInfo.processInfo.systemUptime,
+                                               windowNumber: window.windowNumber, context: nil,
+                                               characters: stroke.characters,
+                                               charactersIgnoringModifiers: stroke.characters,
+                                               isARepeat: false, keyCode: stroke.keyCode) else {
+                return "cannot make a \(type) event"
+            }
+            NSApp.sendEvent(event)
+        }
+        return nil
     }
 
     private func applyAutoOpen(_ options: LaunchOptions) {
