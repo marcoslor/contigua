@@ -262,8 +262,14 @@ toolbar item group:
 - **App menu bar** (SwiftUI `commands`, `AppCommands` in MenuBar.swift): every item the app draws is built there, so
   SwiftUI rebuilding the bar — which it does on activation — cannot drop one. Nothing is inserted into a SwiftUI menu
   with AppKit: an inserted item is gone on the next rebuild, which is how v104 lost *Immersive* and v107 lost all three
-  View items. `MenuSeparators` only removes a separator that SwiftUI emits twice around a group it places between two of
-  its own (Window's Zoom / Bring All to Front); it never adds or reorders an item.
+  View items. The two things the app does not draw are handled without injection: AppKit's automatic *Enter Full
+  Screen* in any menu titled View is off through the registered `NSFullScreenMenuItemEverywhere` default, set before
+  the bar is built, so Window's ⌃⌘F item is the only one; and `MenuCleanup` only *removes* what the frameworks add:
+  AppKit's own *Send … Feedback to Apple* item in Help (the design keeps Help empty), every separator in Help, and a
+  separator that directly follows another (SwiftUI emits one on each side of Window's Enter Full Screen group, which
+  sits between two of its own groups). It runs when the bar changes (debounced, so never on a menu SwiftUI is still
+  building) and at once when a menu opens; it never removes a separator at a menu's edge and never adds, moves or
+  retitles an item.
   *PocketDeck* (About, Settings… ⌘,, Services, Hide ⌘H, Hide Others ⌥⌘H, Show All, Quit ⌘Q) ·
   *File* (Add Phone… ⇧⌘N · ── · Close ⌘W · Close All ⌥⌘W — nothing after Close All) ·
   *Edit* (the standard Undo/Redo/Cut/Copy/Paste/Select All, so paste works in the code and search fields) ·
@@ -402,14 +408,14 @@ tries again; that Mac has nothing to try with. Pairing again goes through §4.3 
 | Where | Keys |
 |---|---|
 | Global (any window) | ⌘K Find Apps (shows the Deck, focuses search) · ⌘P Phone window · ⇧⌘N Add phone… · ⌘, Settings · ⌘W close window · ⌘M minimize · ⌘H hide · ⌥⌘H hide others · ⌘Q quit · ⌃⌘F full screen |
-| Deck (Phone mode) | typing goes to search (focused on show) · ←→↑↓ move selection (grid) · ↩ open selected / first match · Esc clears search, then does nothing · ⌘F = ⌘K |
+| Deck (Phone mode) | typing goes to search (focused on show) · ⌘F focuses the search field and selects its text · ←→↑↓ move selection (grid) · ↩ open selected / first match · Esc clears search, then does nothing |
 | Deck (Welcome) | ↩ Find my phone |
 | Nearby | ↑↓ move · ↩ Pair the selected row · ⌘R rescan (restarts Discovery) |
 | Code sheet | Esc Cancel |
 | QR sheet | Esc Cancel/Done |
 | Manual sheet | ⇥ fields · ↩ Connect · Esc Cancel |
 | Settings | ⌘W closes |
-| App window | everything is forwarded to the phone as before (`InputMapper`); menu key equivalents win: ⌘[ Back · ⌘+ ⌘− ⌘0 density · ⌘W close; Esc rules unchanged (`escapeAllowed`) |
+| App window | everything is forwarded to the phone as before (`InputMapper`); menu key equivalents win: ⌘[ Back · ⌘+ ⌘− ⌘0 density · ⌘W close; ⌘F is the phone app's find in page; Esc rules unchanged (`escapeAllowed`) |
 | Phone window | additionally ⇧⌘H Home · ⌘↑ Recents |
 
 Existing menu shortcuts and their tests (`NavShortcutTests`) are kept verbatim.
