@@ -1262,33 +1262,35 @@ check_mirror_band() {
     clean
     rm -f "$WORK/chrome.txt"
     FAKE_ARGS="--first-frame-delay 1 --pad" start_fake || return 1
-    # Portrait sizes in points, odd ones included: each changes the aspect a little.
-    printf '%s\n' "wait 2" "resize 1 430 760" "wait 2" "resize 1 384 571" "wait 2" \
-        "resize 1 333 741" "wait 2" "resize 1 512 611" "wait 2" "resize 1 297 645" "wait 2" \
-        > "$WORK/band.txt"
+    mkdir -p "$WORK/control"
     launch --connect "127.0.0.1:$PORT" --open-phone --float-windows \
-        --debug-chrome-state "$WORK/chrome.txt" --debug-input-script "$WORK/band.txt" --quit-after 60
+        --debug-chrome-state "$WORK/chrome.txt" --debug-control "$WORK/control" --quit-after 90
     if ! wait_until 20 chrome_has "loading=0"; then
         bad "BAND the mirror showed no first frame (state: $(chrome_state))"
         stop_app; stop_fakephone; return 1
     fi
-    local step previous file id edges
-    for step in 1 2 3 4 5 6; do
-        if [ "$step" -gt 1 ]; then
+    local step size previous file id edges
+    # Portrait window sizes in points, odd ones included: each changes the aspect a little.
+    step=0
+    for size in "" 430x760 384x571 333x741 512x611 297x645; do
+        step=$((step + 1))
+        if [ -n "$size" ]; then
+            previous="$(chrome_state | grep -oE 'frame=[0-9]+x[0-9]+')"
+            mirror_control resize-step "${size%x*}" "${size#*x}" \
+                || { bad "BAND step $step: resize-step: $CONTROL_REPLY"; break; }
             wait_until 15 [ "$(chrome_state | grep -oE 'frame=[0-9]+x[0-9]+')" != "$previous" ] \
                 || { bad "BAND step $step: the window did not change size"; break; }
         fi
         # The picture of the new size: a config and its first frame, then the grab.
         sleep 2
-        previous="$(chrome_state | grep -oE 'frame=[0-9]+x[0-9]+')"
         file="$WORK/band-$step.png"
         id="$(await_window '$5 > $4')" || { bad "BAND step $step: no phone window"; break; }
         screencapture -x -o -l"$id" "$file"
         edges="$(band_edges "$file")"
         if [ "$edges" = "top=0 bottom=0 left=0 right=0" ]; then
-            ok "BAND step $step: no black edge ($previous, picture $(chrome_state | grep -oE 'video=[0-9,]+'))"
+            ok "BAND step $step: no black edge ($(chrome_state | grep -oE 'frame=[0-9]+x[0-9]+'), picture $(chrome_state | grep -oE 'video=[0-9,]+'))"
         else
-            bad "BAND step $step: black edges $edges ($previous, picture $(chrome_state | grep -oE 'video=[0-9,]+'))"
+            bad "BAND step $step: black edges $edges ($(chrome_state | grep -oE 'frame=[0-9]+x[0-9]+'), picture $(chrome_state | grep -oE 'video=[0-9,]+'))"
         fi
     done
     stop_app
