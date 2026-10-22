@@ -155,7 +155,7 @@ class SessionTest {
     }
 
     private fun hello(clientId: String, name: String) {
-        send(mapOf("t" to "hello", "v" to 2, "clientId" to clientId, "name" to name))
+        send(mapOf("t" to "hello", "v" to 3, "clientId" to clientId, "name" to name))
     }
 
     private fun authenticate(clientId: String, name: String = "MacBook"): Map<String, Any?> {

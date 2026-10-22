@@ -157,7 +157,7 @@ class Client(object):
         client_id, name = self.state.ensure_identity(self.state.name)
         # The Mac's identity rides the TLS handshake's client certificate; the
         # hello carries only the display identity (§4: no self-reported pin).
-        self.send_json({"t": "hello", "v": 2, "clientId": client_id, "name": name})
+        self.send_json({"t": "hello", "v": 3, "clientId": client_id, "name": name})
         self.client_name = name
 
     def _next_frame(self, timeout=HANDSHAKE_TIMEOUT):

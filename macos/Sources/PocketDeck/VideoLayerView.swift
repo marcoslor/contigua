@@ -13,8 +13,17 @@ final class VideoLayerView: NSView {
     private var formatDescription: CMVideoFormatDescription?
     private var lastPtsUs: UInt64 = 0
 
-    /// Size (px) of the last VIDEO_CONFIG; drives aspect-fit letterboxing.
+    /// Size (px) of the picture the window shows: the frame's picture rect of the last
+    /// VIDEO_CONFIG. Drives aspect-fit letterboxing, the window's aspect and the input map.
     private(set) var videoSize: CGSize = .zero
+
+    /// Size (px) of the whole frame of the last VIDEO_CONFIG, and where the picture is in it
+    /// (window.content). A frame may carry a band outside its picture, which is never drawn.
+    private(set) var frameSize: CGSize = .zero
+    private var picture = PictureRect.full(width: 0, height: 0)
+
+    /// Clips the display layer to the drawn picture (PictureCrop.swift).
+    private let pictureClip = CALayer()
 
     /// The phone window mirrors a fixed screen: its letterbox is never filled
     /// (Letterbox.placement). The app window's is.
@@ -78,7 +87,9 @@ final class VideoLayerView: NSView {
         displayLayer.videoGravity = .resizeAspect
         displayLayer.backgroundColor = NSColor.black.cgColor
         layer?.backgroundColor = NSColor.black.cgColor
-        layer?.addSublayer(displayLayer)
+        pictureClip.masksToBounds = true
+        layer?.addSublayer(pictureClip)
+        pictureClip.addSublayer(displayLayer)
         installEdgeHint()
         // Raw fingers of the trackpad (not the screen: there is none) for the
         // pinch and rotate pointers; resting palms and thumbs are not reported.
@@ -186,7 +197,10 @@ final class VideoLayerView: NSView {
     private func placeDisplayLayer() {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        displayLayer.frame = bounds
+        pictureClip.frame = videoRect()
+        displayLayer.frame = frameSize.width > 0
+            ? PictureCrop.layerFrame(frame: frameSize, content: picture, picture: pictureClip.bounds.size)
+            : pictureClip.bounds
         CATransaction.commit()
     }
 
@@ -212,8 +226,11 @@ final class VideoLayerView: NSView {
         // is, not where its model frame says. With no animation the model frame
         // is the truth (the presentation can lag the last commit by a frame).
         let animating = !(displayLayer.animationKeys()?.isEmpty ?? true)
-        let frame = animating ? (displayLayer.presentation()?.frame ?? displayLayer.frame) : displayLayer.frame
-        let drawn = Letterbox.videoRect(video: videoSize, in: frame, placement: placement())
+        let layerRect = animating ? (displayLayer.presentation()?.frame ?? displayLayer.frame) : displayLayer.frame
+        // The picture is the layer seen through its clip (layer coordinates are the clip's).
+        let drawn = pictureClip.frame.intersection(
+            layerRect.offsetBy(dx: pictureClip.frame.minX, dy: pictureClip.frame.minY))
+        guard !drawn.isNull else { return max(bounds.width, bounds.height) }
         let gap = max(0, drawn.minX - bounds.minX, bounds.maxX - drawn.maxX,
                       drawn.minY - bounds.minY, bounds.maxY - drawn.maxY)
         return gap
@@ -346,7 +363,7 @@ final class VideoLayerView: NSView {
             + " window=\(visible) occluded=\(occluded) paused=\(isPaused)"
     }
 
-    func configure(_ config: VideoConfig) {
+    func configure(_ config: VideoConfig, picture: PictureRect) {
         guard let format = Self.makeFormatDescription(config) else {
             Log.video.error("VIDEO_CONFIG without SPS/PPS")
             onRequestKeyframe?()
@@ -361,7 +378,9 @@ final class VideoLayerView: NSView {
             // drain can never put new-format samples ahead of it.
             self.handOff(.flush)
             DispatchQueue.main.async {
-                self.videoSize = size
+                self.frameSize = size
+                self.picture = picture
+                self.videoSize = picture.size
                 // The phone answered at the size the window asked for: the
                 // fill (if one was up) ends now, before the timeout.
                 if self.resizeFillUntil != nil,
@@ -374,7 +393,7 @@ final class VideoLayerView: NSView {
                 self.needsLayout = true
                 self.needsDisplay = true
                 NotificationCenter.default.post(name: Self.videoSizeDidChange, object: self)
-                self.liveText.noteStreamConfig(size: size)
+                self.liveText.noteStreamConfig(size: picture.size)
             }
         }
     }

@@ -65,8 +65,16 @@ display id on every injected event.
 
 ### Video rules
 
-- Order on open: `window.opened` (JSON), then VIDEO_CONFIG, then VIDEO_FRAMEs, the
-  first a keyframe.
+- Order on open: `window.opened` (JSON), then `window.content` and VIDEO_CONFIG, then
+  VIDEO_FRAMEs, the first a keyframe.
+- **`window.content`** (JSON, phone→mac, sent on the same lane just before every
+  VIDEO_CONFIG): `{"t":"window.content","stream":N,"x":X,"y":Y,"w":W,"h":H}` is where the
+  picture sits in the config's frame, in frame pixels with a top-left origin. It is
+  required: a VIDEO_CONFIG without one is dropped by the Mac. An app window's picture is the
+  whole frame. A phone mirror's frame may carry black outside its picture (the encoder's
+  size and the screen's aspect differ; the picture is centred); the Mac shows only the
+  picture, scaled to fill its window, and its aspect lock follows the picture's, not the
+  frame's. Input maps over the picture, which is the screen.
 - One VIDEO_FRAME = exactly one access unit (one MediaCodec output buffer).
 - On resize the phone sends a **new VIDEO_CONFIG** (new size) followed by a
   keyframe. The Mac must rebuild its format description on every CONFIG. Frames
@@ -114,7 +122,7 @@ display id on every injected event.
    refuses a Mac whose certificate fingerprint is not the pinned one with
    `{"t":"error","code":"bad_pin"}` and closes — "This phone's identity
    changed" on the Mac side is the same rule in the other direction).
-2. Mac → `{"t":"hello","v":2,"clientId":"<uuid>","name":"<Mac name>","id":"<the Mac's identity id>"}`.
+2. Mac → `{"t":"hello","v":3,"clientId":"<uuid>","name":"<Mac name>","id":"<the Mac's identity id>"}`.
    A `v` other than 2 gets `{"t":"error","code":"version"}` and a close.
 3. The phone knows the Mac by `clientId` and applies its two connection
    switches before anything else. "Allow connections" off refuses every Mac,
@@ -216,7 +224,7 @@ Mac → phone (after `welcome`):
 | `ping` | `ts` | phone replies `pong` with same `ts` |
 | `apps.list` | — | phone replies `apps` |
 | `apps.icon` | `pkg`, optional `px` | phone replies `icon` (with `fg`/`bg`/`mono` layers when the icon is adaptive); `px` is the pixel side of the 108 dp layer it should render (default 216, clamped to 216…1296), an older phone ignores it |
-| `window.open` | `stream`, `w`, `h`, `dpi`, and `pkg` (+ optional `activity`) **or** `"mode":"phone"` | create VD + encoder, launch app on it; `mode: phone` mirrors display 0 instead (`window.opened` has `displayId` 0 and the size at the phone screen's aspect inside `w`×`h`; a rotation sends a new VIDEO_CONFIG with the turned size; error `mirror_unavailable` if the phone can't) |
+| `window.open` | `stream`, `w`, `h`, `dpi`, and `pkg` (+ optional `activity`) **or** `"mode":"phone"` | create VD + encoder, launch app on it; `mode: phone` mirrors display 0 instead (`window.opened` has `displayId` 0 and the frame's size, the codec's nearest size to the screen's aspect inside `w`×`h`, with the screen's picture in it as `window.content` says; a rotation sends a new VIDEO_CONFIG with the turned size; error `mirror_unavailable` if the phone can't) |
 | `window.resize` | `stream`, `w`, `h`, `dpi` | resize VD + reconfigure encoder; phone sends new VIDEO_CONFIG |
 | `window.close` | `stream` | tear down that VD/encoder |
 | `window.pause` | `stream` | Mac window hidden/minimized/occluded: stop encoding (keep VD + app alive) |
@@ -792,7 +800,8 @@ Oversized frames close the session without a reply. JSON nesting is capped at
 
 ## Versioning
 
-`v` = **2** in `hello` is the protocol version. The mDNS TXT `v` is the
+`v` = **3** in `hello` is the protocol version (3 added `window.content`, which every
+VIDEO_CONFIG now needs). The mDNS TXT `v` is the
 discovery record's own generation (`1`), a Mac ignores records with another
 value. A phone that can't serve the Mac's protocol version replies
 `{"t":"error","code":"version"}` and closes; there is no v1 negotiation and

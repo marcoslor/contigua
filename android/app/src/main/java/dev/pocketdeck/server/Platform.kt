@@ -188,7 +188,8 @@ sealed class WindowContent {
 
 /** Receives encoded video from a display stream. */
 interface VideoSink {
-    fun onConfig(stream: Int, codec: Int, w: Int, h: Int, csd: ByteArray)
+    /** [content] is where the picture sits in the w×h frame (a mirror's black edges are outside it). */
+    fun onConfig(stream: Int, codec: Int, w: Int, h: Int, csd: ByteArray, content: IntRect)
     fun onFrame(stream: Int, ptsUs: Long, key: Boolean, data: ByteArray)
 }
 

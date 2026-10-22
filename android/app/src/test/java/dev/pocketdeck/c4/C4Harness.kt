@@ -3,6 +3,7 @@ package dev.pocketdeck.c4
 import dev.pocketdeck.proto.Frames
 import dev.pocketdeck.server.AppEntry
 import dev.pocketdeck.server.CannedVideo
+import dev.pocketdeck.server.IntRect
 import dev.pocketdeck.server.FakePlatform
 import dev.pocketdeck.server.GateSettings
 import dev.pocketdeck.server.Server
@@ -43,7 +44,7 @@ object C4Harness {
         )
         platform.video = CannedVideo { stream, w, h, sink ->
             Thread {
-                sink.onConfig(stream, Frames.CODEC_H264, w, h, clip.csd)
+                sink.onConfig(stream, Frames.CODEC_H264, w, h, clip.csd, IntRect(0, 0, w, h))
                 var pts = 0L
                 for (frame in clip.frames) {
                     sink.onFrame(stream, pts, frame.key, frame.data)

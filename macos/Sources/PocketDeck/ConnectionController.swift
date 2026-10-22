@@ -2411,6 +2411,14 @@ final class ConnectionController {
             guard let deck = DeckWindow.window else { return "no deck window" }
             DeckSearch.setText(text, in: deck)
             return nil
+        case "phone-mirror":
+            // Phone ▸ Phone Mirror's action (the same ConnectionController call the
+            // menu, the panel and the Deck make), without a key or a menu: a quiet
+            // launch is not the frontmost app, and SwiftUI's menu action does not
+            // run from a key event there (the menu reports the key taken, and
+            // nothing opens). The check drives it for the one-mirror rule.
+            openPhoneWindow()
+            return nil
         case "panel-menu":
             // Phone ▸ Turn Off Phone Screen: the same WindowManager call the
             // menu item's binding makes, which sends the phone window's own

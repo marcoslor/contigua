@@ -358,9 +358,25 @@ final class WindowManager {
 
     @discardableResult
     func openPhoneWindow() -> PhoneWindowController {
+        // One mirror per phone. Phone ▸ Phone Window (⌘P), the panel's row, the
+        // Deck and the intents all land here: a second mirror of the same
+        // screen is the screen twice, so the open one is raised instead.
+        if let existing = phoneWindow {
+            raise(existing)
+            return existing
+        }
         let controller = open { PhoneWindowController(stream: $0, phone: phone, manager: self) }
         controller.setPhoneScreen(phoneScreen)
         return controller
+    }
+
+    /// Bring an open window front: out of the Dock, and to its Space when it
+    /// lives in one of its own (a full-screen window).
+    private func raise(_ controller: StreamWindowController) {
+        guard let window = controller.window else { return }
+        if window.isMiniaturized { window.deminiaturize(nil) }
+        window.makeKeyAndOrderFront(nil)
+        BackgroundMode.activateApp()
     }
 
     /// The open phone window, if any (the debug route and the screen state).
@@ -532,9 +548,9 @@ final class WindowManager {
         lock.lock(); let current = session; lock.unlock()
         guard source === current else { return }
         switch event {
-        case .config(let stream, let config):
+        case .config(let stream, let config, let picture):
             videoDump?.write(config: config, stream: stream)
-            controller(for: stream)?.videoView.configure(config)
+            controller(for: stream)?.videoView.configure(config, picture: picture)
         case .frame(let stream, let frame):
             videoDump?.write(frame: frame, stream: stream)
             let controller = controller(for: stream)

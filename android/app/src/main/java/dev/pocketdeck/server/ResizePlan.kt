@@ -5,6 +5,9 @@ internal data class EncoderLimits(
     val maxW: Int = Int.MAX_VALUE,
     val maxH: Int = Int.MAX_VALUE,
     val align: Int = EncoderSizes.ALIGN,
+    /** The codec's own steps: a mirror's frame keeps them, not the 16 that app windows use. */
+    val widthAlign: Int = EncoderSizes.ALIGN,
+    val heightAlign: Int = EncoderSizes.ALIGN,
 )
 
 internal object EncoderSizes {

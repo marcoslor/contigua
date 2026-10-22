@@ -25,6 +25,7 @@ extension DeckSheet: Identifiable {
 struct DeckRoot: View {
     @Environment(ConnectionController.self) private var controller
     @Environment(\.openSettings) private var openSettings
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         @Bindable var controller = controller
@@ -55,6 +56,9 @@ struct DeckRoot: View {
             return !links.isEmpty || !apps.isEmpty || !files.isEmpty
         }
         .task {
+            // The menu bar panel is AppKit's and outside this scene; keep the
+            // action that brings the Deck back after the window was closed.
+            DeckWindow.openAction = { openWindow(id: DeckWindow.id) }
             // A launch hook's sheet waits for the window: presented while the
             // window is still being created, SwiftUI sometimes drops it.
             try? await Task.sleep(for: .seconds(0.3))

@@ -5,7 +5,6 @@ import SwiftUI
 
 struct MenuBarIcon: View {
     @Environment(ConnectionController.self) private var controller
-    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         HStack(spacing: 3) {
@@ -20,7 +19,7 @@ struct MenuBarIcon: View {
             // This view exists from launch. Started from a shell (the test
             // harness) SwiftUI sometimes does not present the Deck by itself.
             try? await Task.sleep(for: .seconds(0.5))
-            if DeckWindow.window == nil { openWindow(id: DeckWindow.id) }
+            DeckWindow.open()
         }
     }
 
@@ -41,17 +40,31 @@ struct MenuBarIcon: View {
 /// own way of creating the Deck window (the Deck popover needs none).
 struct MenuBarContent: View {
     @Environment(ConnectionController.self) private var controller
-    @Environment(\.openWindow) private var openWindow
+
+    /// Called when a row opens a window: the AppKit panel closes itself, as a
+    /// menu bar panel does after its command ran.
+    var onOpenWindow: (() -> Void)?
 
     var body: some View {
-        PhonePanelView(
-            state: PhoneControlsState(controller: controller),
-            actions: PhoneControlsActions(controller: controller) {
-                if DeckWindow.window == nil { openWindow(id: DeckWindow.id) }
-                DeckWindow.show()
-            },
-            showsFooter: true,
-        )
+        PhonePanelView(state: PhoneControlsState(controller: controller),
+                       actions: actions,
+                       showsFooter: true)
+    }
+
+    private var actions: PhoneControlsActions {
+        var actions = PhoneControlsActions(controller: controller) { DeckWindow.open() }
+        let close = onOpenWindow
+        let openPhoneMirror = actions.openPhoneScreen
+        let findApps = actions.findApps
+        let continueOnMac = actions.continueOnMac
+        let installApk = actions.installApk
+        let openSettings = actions.openSettings
+        actions.openPhoneScreen = { openPhoneMirror(); close?() }
+        actions.findApps = { findApps(); close?() }
+        actions.continueOnMac = { continueOnMac(); close?() }
+        actions.installApk = { installApk(); close?() }
+        actions.openSettings = { openSettings(); close?() }
+        return actions
     }
 }
 
@@ -61,6 +74,12 @@ struct AppCommands: Commands {
     @Environment(\.openWindow) private var openWindow
 
     var body: some Commands {
+        // The AppKit menu bar item and its panel live outside every scene, so
+        // the panel's rows cannot ask SwiftUI to open a window themselves. The
+        // commands do have the action, and they exist at launch even when the
+        // app was started from a shell and SwiftUI presented no Deck yet.
+        let _ = DeckWindow.openAction = { openWindow(id: DeckWindow.id) }
+
         // ⌘P is "Phone Mirror" (docs/design/mac-redesign.md §5); the app prints
         // nothing, so File is Add Phone…, Close and Close All.
         CommandGroup(after: .newItem) {
