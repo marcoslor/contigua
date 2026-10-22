@@ -400,12 +400,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             openRequestInbox = inbox
         }
         NSApp.servicesProvider = LinkService.shared
-        // AppKit's own Enter Full Screen in the View menu would duplicate the
-        // Window menu's item (MenuBar.swift); it is turned off before the menu
-        // is built. Registered, not set: AppKit reads the key through the
-        // registration domain and the person's defaults stay untouched.
-        UserDefaults.standard.register(defaults: ["NSFullScreenMenuItemEverywhere": false])
-        MenuSeparators.start()
+        MenuCleanup.start()
         MenuMarks.start()
         FullScreenMenu.start()
         // VisionKit's analyser service is slow and unreliable on its first
@@ -504,19 +499,30 @@ enum DeckWindow {
 
 // MARK: - Scenes
 
+/// The app's entry point: the defaults AppKit and SwiftUI read while they build
+/// the first window and the menu bar are registered here, before either runs.
 @main
-struct PocketDeckApp: App {
-    @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
-    @State private var controller = AppEnvironment.shared.controller
-    @AppStorage("showMenuBar", store: AppEnvironment.shared.profile.defaults) private var showMenuBar = true
-
-    init() {
+enum PocketDeckMain {
+    static func main() {
         // Window state saved by an older build (or by a copy started without a
         // window) must never leave the app without its Deck. Registered, not
         // written: nothing lands in the user's defaults.
         UserDefaults.standard.register(defaults: ["ApplePersistenceIgnoreState": true,
                                                   "NSQuitAlwaysKeepsWindows": false])
+        // AppKit's own Enter Full Screen in any menu titled View would duplicate
+        // the Window menu's item (MenuBar.swift). AppKit reads this while the
+        // bar is built, so it is registered before NSApplicationMain, not in
+        // applicationDidFinishLaunching (there the bar is already built and the
+        // item stays). Registered, not set: the person's defaults stay untouched.
+        UserDefaults.standard.register(defaults: ["NSFullScreenMenuItemEverywhere": false])
+        PocketDeckApp.main()
     }
+}
+
+struct PocketDeckApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
+    @State private var controller = AppEnvironment.shared.controller
+    @AppStorage("showMenuBar", store: AppEnvironment.shared.profile.defaults) private var showMenuBar = true
 
     var body: some Scene {
         Window("PocketDeck", id: DeckWindow.id) {

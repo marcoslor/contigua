@@ -45,8 +45,8 @@ Screen · Do Not Disturb · Ring Phone / Stop Ringing · Install APK…. **Navig
 standard items plus Enter Full Screen ⌃⌘F, and **Help** is empty (there is no help book). A control that cannot work is
 disabled, never hidden.
 
-1. **Deck** (the only main window; closing it hides it, the Dock icon and ⌘K bring it back). What it shows is chosen by
-   what this Mac remembers:
+1. **Deck** (the only main window; closing it hides it, the Dock icon and ⌘K bring it back; ⌘F focuses the search
+   field and selects its text). What it shows is chosen by what this Mac remembers:
    - **Welcome** (first run only): glass card over a soft gradient. App icon, "PocketDeck", "Your Android apps, on your
      Mac.", three compact steps (*Install PocketDeck on your phone* · *Start Shizuku* with "How?" · *Be on the same
      Wi-Fi*), primary **Find my phone**.
