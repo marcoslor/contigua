@@ -2270,6 +2270,12 @@ final class ConnectionController {
         debugInput?.panelDrag = { host, id, fraction in
             MainActor.assumeIsolated { PanelProbe.drag(host: host, id: id, fraction: fraction) }
         }
+        debugInput?.panelRinger = { host, mode in
+            MainActor.assumeIsolated {
+                guard let mode = PhoneRingerMode(rawValue: mode) else { return false }
+                return PanelProbe.ringer(host: host, mode: mode)
+            }
+        }
         debugInput?.deckPanel = { [weak self] in
             MainActor.assumeIsolated { self?.openDeckPanel() }
         }
@@ -2467,6 +2473,18 @@ final class ConnectionController {
             }
             return PanelProbe.drag(host: arguments[0], id: arguments[1], fraction: fraction)
                 ? nil : "paneldrag failed"
+        case "panelvolumedrag":
+            guard arguments.count == 3, let fraction = Double(arguments[1]),
+                  arguments[2].hasPrefix("/") else {
+                return "panelvolumedrag needs HOST, FRACTION and PATH"
+            }
+            return PanelProbe.volumeDrag(host: arguments[0], fraction: fraction,
+                                         to: arguments[2]) ? nil : "panelvolumedrag failed"
+        case "panelringer":
+            guard arguments.count == 2, let mode = PhoneRingerMode(rawValue: arguments[1]) else {
+                return "panelringer needs HOST and MODE (normal, vibrate, silent)"
+            }
+            return PanelProbe.ringer(host: arguments[0], mode: mode) ? nil : "panelringer failed"
         case "deck-size":
             // Resize the Deck for the grid checks: the block is centred and
             // capped at a wide size and drops columns as the window narrows.
