@@ -18,7 +18,7 @@ This review tests the written requirements, not the code. A checked item means t
 
 For each item, record pass, or a gap with the exact line and what is missing.
 
-1. **Conventions.** Every line of CONVENTIONS.md has an answer: applies (with an ID), n/a (with a reason), deviates (with an approved reason), or `[NEEDS CLARIFICATION]`. A missing line is a gap. Pay attention to keys (⌘F, ⌘W, Esc, Return, Tab), toggle and single-instance behaviour, live resize, phone count (0/1/2+), connection states, old phones, and accessibility.
+1. **Conventions.** Every line of CONVENTIONS.md has an answer: applies (with an ID), n/a (with a reason), deviates (with an approved reason), or `[NEEDS CLARIFICATION]`. A missing line is a gap. Pay attention to keys (⌘F, ⌘W, Esc, Return, Tab), toggle and single-instance behaviour, live resize, phone count (0/1/2+), connection states, phones that can't do the feature, and accessibility.
 2. **Testable.** Every requirement is EARS-shaped and names an observable result a check could assert. Words like "works", "fast", "nice", "properly", "should handle" and "as expected" are gaps, unless a number or an observable outcome follows them.
 3. **Proof.** Every requirement names its proof (a K1/K2 test, an e2e check with the ID, an emulator or VM proof), or is marked untested.
 4. **Complete.** Every user story has at least one requirement. Every control in the surface has a requirement for each of its states: enabled, disabled with a reason, pending, refused, offline. Error, empty and first-run states are covered.

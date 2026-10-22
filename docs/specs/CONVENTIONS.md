@@ -56,7 +56,7 @@ A line the product claims is proved by a check whose `ok` line names the ID. The
 | ID | Convention |
 |---|---|
 | CONV-PD-01 | **Phone count.** Each surface says what it shows with **0, 1 and 2+** phones, and how to reach the other phones. |
-| CONV-PD-02 | **Connection states.** Each surface says what it shows while connecting, connected, and offline or reconnecting. It also says what it shows for **an old phone** that lacks a field: disabled with a reason, never hidden. |
+| CONV-PD-02 | **Connection states.** Each surface says what it shows while connecting, connected, and offline or reconnecting. It also says what it shows for a phone that **can't** do the feature (an Android version or OEM limit, or a missing permission): disabled with a reason, never hidden. No fallbacks for older PocketDeck builds during the alpha (AGENTS.md). |
 | CONV-PD-03 | **Pending actions.** An action the phone must confirm shows the pending state, then the phone's answer. A refusal shows a pill with the phone's reason. The UI never claims what the phone has not reported. |
 | CONV-PD-04 | **Live controls.** A slider or toggle follows the pointer live while dragged, sends throttled updates, and then follows the phone (the volume pattern). |
 | CONV-PD-05 | **Privacy.** No message text, notification content, file name, app list or phone number in logs or crash reports. Anything sensitive is redacted. |
