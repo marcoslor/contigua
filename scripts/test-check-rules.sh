@@ -283,6 +283,12 @@ printf 'echo "SKIP: no device"\n' >> tools/emulator/flow.sh
 run_check
 expect_at "R-CHECK-1 REVIEW for a new SKIP" "flow\.sh:[0-9]+: R-CHECK-1 REVIEW " 0
 
+new_repo checkskipcomment
+printf '# a quiet launch is not one, so the step prints SKIP here\n' >> macos/scripts/check-e2e.sh
+run_check
+silent "a comment that mentions SKIP is not a new skip" macos/scripts/check-e2e.sh R-CHECK-1
+exit_is "comment-only SKIP mention passes" 0
+
 new_repo checklimit
 printf '{\n  "app_list_ms": 3000,\n  "contrast_min": 3.0\n}\n' > macos/scripts/nfr-limits.json
 run_check
