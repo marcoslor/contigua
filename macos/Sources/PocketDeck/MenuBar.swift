@@ -50,6 +50,7 @@ struct MenuBarContent: View {
                 if DeckWindow.window == nil { openWindow(id: DeckWindow.id) }
                 DeckWindow.show()
             },
+            showsFooter: true,
         )
     }
 }
@@ -60,7 +61,7 @@ struct AppCommands: Commands {
     @Environment(\.openWindow) private var openWindow
 
     var body: some Commands {
-        // ⌘P is "Phone Window" (docs/design/mac-redesign.md §5); the app prints
+        // ⌘P is "Phone Mirror" (docs/design/mac-redesign.md §5); the app prints
         // nothing, so File is Add Phone…, Close and Close All.
         CommandGroup(after: .newItem) {
             Button {
@@ -185,7 +186,7 @@ struct AppCommands: Commands {
             Button {
                 actions.openPhoneScreen()
             } label: {
-                Label("Phone Window", systemImage: "iphone")
+                Label("Phone Mirror", systemImage: "iphone")
             }
             .keyboardShortcut("p")
             .disabled(!PhonePanelItem.phoneScreen.isEnabled(in: state))

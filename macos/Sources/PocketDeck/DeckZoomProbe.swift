@@ -50,6 +50,13 @@ final class DeckZoomProbe {
     private var dragStep = 0
     private var dragFrom: CGFloat = 0
     private var dragTo: CGFloat = 0
+    /// The main-thread cost of each `setFrame` in the drag, in ms: the part the
+    /// app controls, separate from the display link's frame interval.
+    private var dragCosts: [Double] = []
+    private var dragFrame: NSRect = .zero
+    /// The phase whose work the display link is driving (the drag); nil while
+    /// a zoom is running on the window's own animation.
+    private var currentPhase: Phase?
     private weak var window: NSWindow?
 
     init(path: String) {
@@ -106,6 +113,7 @@ final class DeckZoomProbe {
         guard let window else { return }
         samples.removeAll()
         fits.removeAll()
+        currentPhase = phase
         DeckGridMetrics.resetLayoutTimes()
         started = Date()
         noteFrame(on: window)
@@ -143,24 +151,25 @@ final class DeckZoomProbe {
         dragFrom = wide
         dragTo = min(Self.dragEndWidth, wide)
         dragStep = 0
+        dragCosts.removeAll()
+        dragFrame = frame
         window.setFrame(NSRect(x: frame.minX, y: frame.minY, width: wide, height: frame.height),
                         display: true)
-        dragTimer?.invalidate()
-        let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.dragStep(on: frame) }
-        }
-        self.dragTimer = timer
-        RunLoop.main.add(timer, forMode: .common)
     }
 
-    private func dragStep(on frame: NSRect) {
+    /// One resize step, driven by the display link itself (one per frame, as a
+    /// person's live drag is). A separate 1/60 s timer would compete with the
+    /// link for the main thread and report its own collisions as dropped
+    /// frames.
+    private func stepDrag() {
         guard let window else { return }
         dragStep += 1
         let progress = Double(min(dragStep, Self.dragSteps)) / Double(Self.dragSteps)
         let width = dragFrom + (dragTo - dragFrom) * CGFloat(progress)
-        window.setFrame(NSRect(x: frame.minX, y: frame.minY, width: width, height: frame.height),
-                        display: true)
-        if dragStep >= Self.dragSteps { dragTimer?.invalidate() }
+        let started = CACurrentMediaTime()
+        window.setFrame(NSRect(x: dragFrame.minX, y: dragFrame.minY, width: width,
+                               height: dragFrame.height), display: true)
+        dragCosts.append((CACurrentMediaTime() - started) * 1000)
     }
 
     private func noteFrame(on window: NSWindow) {
@@ -175,6 +184,9 @@ final class DeckZoomProbe {
             samples.append((now - lastTick) * 1000)
         }
         lastTick = now
+        if currentPhase == .drag, dragStep < Self.dragSteps {
+            stepDrag()
+        }
         if let fit = frameFit() { fits.append(fit) }
     }
 
@@ -200,6 +212,7 @@ final class DeckZoomProbe {
         displayLink = nil
         dragTimer?.invalidate()
         dragTimer = nil
+        currentPhase = nil
         lastTick = 0
         // The animation is what the eye follows; the last frame or two after
         // the window stops changing size are the settle (one layout pass, not
@@ -223,11 +236,21 @@ final class DeckZoomProbe {
             let index = min(layout.count - 1, Int((Double(layout.count - 1) * p).rounded()))
             return (layout[index] * 100).rounded() / 100
         }
+        let steps = dragCosts.sorted()
+        func stepPercentile(_ p: Double) -> Double {
+            guard !steps.isEmpty else { return 0 }
+            let index = min(steps.count - 1, Int((Double(steps.count - 1) * p).rounded()))
+            return (steps[index] * 100).rounded() / 100
+        }
         var info: [String: Any] = ["frames": samples.count,
                                    "cells": fits.first?.cells ?? 0,
                                    "layoutSamples": layout.count,
                                    "layoutP50": layoutPercentile(0.5),
                                    "layoutP95": layoutPercentile(0.95),
+                                   "stepSamples": steps.count,
+                                   "stepP50": stepPercentile(0.5),
+                                   "stepP95": stepPercentile(0.95),
+                                   "stepMax": stepPercentile(1),
                                    "layoutMax": ((layout.last ?? 0) * 100).rounded() / 100,
                                    "p50": percentile(0.5).rounded(),
                                    "p95": percentile(0.95).rounded(),

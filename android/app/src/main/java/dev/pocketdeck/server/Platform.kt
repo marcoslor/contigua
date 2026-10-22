@@ -38,6 +38,9 @@ data class DeviceState(
      * blank; null while nothing has been read (no phone window is open).
      */
     val secure: Boolean? = null,
+    /** STREAM_MUSIC's level and its maximum; both null on a phone that cannot read them. */
+    val volume: Int? = null,
+    val volumeMax: Int? = null,
 )
 
 /**
@@ -160,6 +163,19 @@ interface RingerSettings {
 /** Runs `cmd audio set-ringer-mode <MODE>` at shell UID; false when the phone refused. */
 fun interface RingerSetter {
     fun set(mode: RingerMode): Boolean
+}
+
+/**
+ * STREAM_MUSIC's level (docs/PROTOCOL.md "Volume"). `read` returns the level
+ * and the stream's maximum; null when this build cannot read them. `listen`
+ * carries a person's change; null when no listener is reachable and the caller
+ * must poll.
+ */
+interface VolumeSettings {
+    fun read(): Pair<Int, Int>?
+    fun listen(onChange: () -> Unit): AutoCloseable?
+    /** Writes STREAM_MUSIC at [level] with no UI flag; false when the phone refused. */
+    fun set(level: Int): Boolean
 }
 
 /** What a window shows: an app on its own virtual display, or a mirror of the phone's screen. */

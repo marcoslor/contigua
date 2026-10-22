@@ -111,6 +111,8 @@ class Session(
     private val zen: ZenControl? = null,
     /** The phone's ringer mode (docs/design/controls.md); null refuses `phone.ringer`. */
     private val ringerMode: RingerControl? = null,
+    /** STREAM_MUSIC's level (docs/PROTOCOL.md "Volume"); null refuses `phone.volume`. */
+    private val volume: VolumeControl? = null,
     /**
      * Display 0's secure-surface state (`state.secure`, docs/PROTOCOL.md "Secure
      * screens"); null never reports it (tests, or a phone that cannot read it).
@@ -233,6 +235,7 @@ class Session(
     private var stateHandle: AutoCloseable? = null
     private var dndHandle: AutoCloseable? = null
     private var ringerHandle: AutoCloseable? = null
+    private var volumeHandle: AutoCloseable? = null
     private var watchThread: Thread? = null
 
     /** The protocol's `state` stream: one emission per real change. */
@@ -250,6 +253,12 @@ class Session(
         state.ringer?.let { message["ringer"] = it.wire }
         state.screen?.let { message["screen"] = it.wire }
         state.secure?.let { message["secure"] = it }
+        // Both or neither: an old phone omits the pair, and the Mac then
+        // disables its slider with a reason instead of guessing a level.
+        if (state.volume != null && state.volumeMax != null) {
+            message["volume"] = state.volume
+            message["volumeMax"] = state.volumeMax
+        }
         // The phone's panel, when the person's Mac holds it off for the mirror.
         message["panel"] = if (power.panelHeldOff) "off" else "on"
         sendJson(message)
@@ -798,6 +807,7 @@ class Session(
                 "phone.ring.stop" -> onPhoneRingStop()
                 "phone.dnd" -> onPhoneDnd(obj)
                 "phone.ringer" -> onPhoneRinger(obj)
+                "phone.volume" -> onPhoneVolume(obj)
                 "phone.wake" -> onPhoneWake()
                 "phone.panel" -> onPhonePanel(obj)
                 else -> logOnce("unknown message '$t'")
@@ -1298,6 +1308,29 @@ class Session(
             RingerControl.Result.UNREADABLE ->
                 sendError("unsupported", "phone.ringer cannot read the ringer mode", 0)
         }
+    }
+
+    /**
+     * `phone.volume` (docs/PROTOCOL.md "Volume"): clamp the level to the
+     * stream's maximum, write STREAM_MUSIC with no UI flag, and answer with the
+     * state the phone reports afterwards.
+     */
+    private fun onPhoneVolume(obj: Map<String, Any?>) {
+        val control = volume ?: run {
+            sendError("unsupported", "phone.volume needs the shell service", 0)
+            return
+        }
+        val level = Json.int(obj["level"]) ?: run {
+            sendError("bad_request", "phone.volume needs level", 0)
+            return
+        }
+        if (!control.apply(level)) {
+            sendError("unavailable", "the phone refused the volume level", 0)
+            return
+        }
+        val state = (stateTracker.current ?: device.state())
+            .copy(volume = control.current(), volumeMax = control.max())
+        if (!stateTracker.update(state)) sendState(state)
     }
 
     /**
@@ -2006,6 +2039,14 @@ class Session(
                 if (current != null) stateTracker.update(current.copy(ringer = mode))
             }
         }.getOrNull()
+        volumeHandle = runCatching {
+            volume?.start { level, max ->
+                val current = stateTracker.current
+                if (current != null) {
+                    stateTracker.update(current.copy(volume = level, volumeMax = max))
+                }
+            }
+        }.getOrNull()
     }
 
     private fun stopStateWatch() {
@@ -2013,6 +2054,8 @@ class Session(
         dndHandle = null
         ringerHandle?.let { runCatching { it.close() } }
         ringerHandle = null
+        volumeHandle?.let { runCatching { it.close() } }
+        volumeHandle = null
         val handle = stateHandle ?: return
         stateHandle = null
         runCatching { handle.close() }
