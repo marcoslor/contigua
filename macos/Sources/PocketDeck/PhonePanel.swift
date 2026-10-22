@@ -387,6 +387,20 @@ enum PhonePanelMetrics {
 extension PhonePanelItem {
     func isEnabled(in state: PhoneControlsState) -> Bool { reason(in: state) == nil }
 
+    /// Whether a tile draws as on (accent): the phone's own state, but only
+    /// while the tile can act. A disabled tile is dimmed neutral, never accent,
+    /// so it cannot read as a control that is on (CONV-MAC-25).
+    func isOn(in state: PhoneControlsState) -> Bool {
+        guard isEnabled(in: state) else { return false }
+        switch self {
+        case .dnd: return state.dndOn
+        case .ringer: return state.ringer != .normal && state.ringer != nil
+        case .ring: return state.ringing
+        case .screen: return state.panelOff
+        default: return false
+        }
+    }
+
     /// Why this control cannot work, in the person's words. Offline comes
     /// first, then the phone's missing capability. A control that cannot work
     /// is disabled with this line, never hidden (AGENTS "Honest settings").
@@ -574,7 +588,7 @@ struct PhonePanelView: View {
             tileLabel(item: .dnd, symbol: state.dndOn ? "moon.fill" : "moon",
                       title: PhonePanelItem.dnd.label,
                       subtitle: state.dndOn ? "On" : "Off",
-                      active: state.dndOn, enabled: enabled)
+                      active: PhonePanelItem.dnd.isOn(in: state), enabled: enabled)
         }
         .buttonStyle(.plain)
         .disabled(!enabled)
@@ -604,7 +618,7 @@ struct PhonePanelView: View {
             tileLabel(item: .ringer, symbol: ringerSymbol,
                       title: PhonePanelItem.ringer.label,
                       subtitle: state.ringerTitle,
-                      active: state.ringer != .normal && state.ringer != nil,
+                      active: PhonePanelItem.ringer.isOn(in: state),
                       enabled: enabled)
         }
         .menuStyle(.button)
@@ -625,7 +639,7 @@ struct PhonePanelView: View {
             tileLabel(item: .ring, symbol: state.ringing ? "bell.slash" : "iphone.radiowaves.left.and.right",
                       title: state.ringTitle,
                       subtitle: state.ringing ? "Ringing" : "30 seconds",
-                      active: state.ringing, enabled: enabled)
+                      active: PhonePanelItem.ring.isOn(in: state), enabled: enabled)
         }
         .buttonStyle(.plain)
         .disabled(!enabled)
@@ -645,7 +659,7 @@ struct PhonePanelView: View {
             tileLabel(item: .screen, symbol: state.panelOff ? "iphone.slash" : "iphone",
                       title: PhonePanelItem.screen.label,
                       subtitle: state.screenTitle,
-                      active: state.panelOff, enabled: enabled)
+                      active: PhonePanelItem.screen.isOn(in: state), enabled: enabled)
         }
         .buttonStyle(.plain)
         .disabled(!enabled)
