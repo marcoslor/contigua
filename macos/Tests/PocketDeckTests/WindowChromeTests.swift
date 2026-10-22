@@ -22,6 +22,12 @@ final class LetterboxTests: XCTestCase {
 }
 
 final class StreamChromeWindowTests: XCTestCase {
+    /// The state line without its `video=` rect, which the picture's band check
+    /// reads on its own (the rest of the line is compared exactly).
+    private func withoutVideo(_ line: String) -> String {
+        line.replacingOccurrences(of: #" video=\d+,\d+,\d+,\d+"#, with: "", options: .regularExpression)
+    }
+
     private func makeManager() -> WindowManager {
         let name = "dev.pocketdeck.tests.chrome.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: name)!
@@ -119,7 +125,10 @@ final class StreamChromeWindowTests: XCTestCase {
         pump(0.4)
         XCTAssertFalse(controller.dwell.shown)
         let frame = "\(Int(window.frame.width.rounded()))x\(Int(window.frame.height.rounded()))"
-        XCTAssertEqual(try String(contentsOf: file, encoding: .utf8), "style=framed lights=shown pill=hidden title_visible=no lights_managed=us fullscreen=no clicks=0 dots=outside touches=\(manager.showTouches ? "on" : "off") dot_count=0 collection=0 collection_none=0 menu_fullscreen=1 screen=on overlay=0 secure=0 panel_off=0 panel_pill=0 panel_pill_failed=0 panel_click_at=0 panel_glyph_at=0 stall=0 stall_pill=0 loading=1 frame=\(frame) video_gap=0\n")
+        let state = try String(contentsOf: file, encoding: .utf8)
+        XCTAssertNotNil(state.range(of: #" video=\d+,\d+,\d+,\d+\n$"#, options: .regularExpression),
+                        "the picture rect is reported")
+        XCTAssertEqual(withoutVideo(state), "style=framed lights=shown pill=hidden title_visible=no lights_managed=us fullscreen=no clicks=0 dots=outside touches=\(manager.showTouches ? "on" : "off") dot_count=0 collection=0 collection_none=0 menu_fullscreen=1 screen=on overlay=0 secure=0 panel_off=0 panel_pill=0 panel_pill_failed=0 panel_click_at=0 panel_glyph_at=0 stall=0 stall_pill=0 loading=1 frame=\(frame) video_gap=0\n")
     }
 
     func testCloseAndMinimiseWorkWithTheBar() throws {
@@ -150,7 +159,10 @@ final class StreamChromeWindowTests: XCTestCase {
         let window = try XCTUnwrap(controller.window)
         window.orderFront(nil)
         let frame = "\(Int(window.frame.width.rounded()))x\(Int(window.frame.height.rounded()))"
-        XCTAssertEqual(try String(contentsOf: file, encoding: .utf8), "style=framed lights=shown pill=hidden title_visible=no lights_managed=us fullscreen=no clicks=0 dots=outside touches=\(manager.showTouches ? "on" : "off") dot_count=0 collection=0 collection_none=0 menu_fullscreen=1 screen=on overlay=0 secure=0 panel_off=0 panel_pill=0 panel_pill_failed=0 panel_click_at=0 panel_glyph_at=0 stall=0 stall_pill=0 loading=1 frame=\(frame) video_gap=0\n")
+        let state = try String(contentsOf: file, encoding: .utf8)
+        XCTAssertNotNil(state.range(of: #" video=\d+,\d+,\d+,\d+\n$"#, options: .regularExpression),
+                        "the picture rect is reported")
+        XCTAssertEqual(withoutVideo(state), "style=framed lights=shown pill=hidden title_visible=no lights_managed=us fullscreen=no clicks=0 dots=outside touches=\(manager.showTouches ? "on" : "off") dot_count=0 collection=0 collection_none=0 menu_fullscreen=1 screen=on overlay=0 secure=0 panel_off=0 panel_pill=0 panel_pill_failed=0 panel_click_at=0 panel_glyph_at=0 stall=0 stall_pill=0 loading=1 frame=\(frame) video_gap=0\n")
     }
 
     func testFullScreenShowsTheTitleAndHandsTheLightsBackOnExit() throws {
