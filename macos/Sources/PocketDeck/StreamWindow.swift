@@ -518,6 +518,13 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     }
 
     func windowWillClose(_ notification: Notification) {
+        // A window that opted out of full screen cannot keep the Window menu's
+        // item disabled once it is gone: nothing may become key after it in a
+        // quiet app, and the answer it published would stay behind.
+        if self is PhoneWindowController || (window?.isKeyWindow ?? false) {
+            StreamMenuState.shared.fullScreenAllowed = true
+            StreamMenuState.shared.fullScreen = false
+        }
         liveText.exit(.close)
         openingTimer?.invalidate()
         openingTimer = nil

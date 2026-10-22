@@ -291,12 +291,14 @@ toolbar item group:
   the stream window's own keys perform, now visible, disabled without a key stream window that shows an app.
 - **Enter Full Screen** ⌃⌘F is a plain command item; it is disabled for the phone window, which opts out of native
   full screen because the mirror would be letterboxed.
-- **What a SwiftUI item cannot do:** SwiftUI builds a command item once and never re-reads its state — measured in an
-  activated app, not only in the quiet e2e. A check mark or a title that depends on the running window
-  (Framed/Immersive, Exit Full Screen, Hide Controls' enablement) therefore shows what it was built with until the bar
-  is rebuilt at launch. The items themselves are never lost, which is what the rebuild-proof work is for. Making those
-  few marks live again means owning the View menu in AppKit; it is recorded, with the measurements, in
-  `.agent/menu-ux/report.md`.
+- **Marks SwiftUI cannot keep, and how they are kept:** SwiftUI builds a command item once and never re-reads its
+  state — measured in an activated app, not only in the quiet e2e. Every item stays SwiftUI's, so a rebuild can never
+  drop one; `MenuMarks` (MenuMarks.swift) corrects the few values that follow the running window whenever a menu
+  starts tracking: the Framed/Immersive mark, Hide Controls' enablement and the reveal choice inside it, Show
+  Touches, Live Text, Density's marks and the Default title, and the Window item's "Enter/Exit Full Screen" title and
+  enablement. It only writes values onto items SwiftUI already built — nothing is added, removed or replaced — and
+  its rules are a pure function over a menu snapshot and `StreamMenuState`, unit-tested in K2. A rebuild can reset a
+  mark to its launch value at worst; the next open corrects it.
 
 ### 3.9 Dock / lifecycle
 

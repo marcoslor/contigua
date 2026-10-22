@@ -1,0 +1,235 @@
+// The marks SwiftUI cannot keep (MenuMarks.swift): the rules as values, and the
+// one side effect that writes them onto the items SwiftUI already built.
+
+import AppKit
+import XCTest
+@testable import PocketDeck
+
+final class MenuMarksTests: XCTestCase {
+    /// The View menu as the commands build it.
+    private var viewItems: [MenuMarks.Item] {
+        [
+            MenuMarks.Item(title: "Find Apps"),
+            MenuMarks.Item(title: "", isSeparator: true),
+            MenuMarks.Item(title: "Framed"),
+            MenuMarks.Item(title: "Immersive"),
+            MenuMarks.Item(title: "Hide Controls", children: [
+                MenuMarks.Item(title: "Instantly"),
+                MenuMarks.Item(title: "Short"),
+                MenuMarks.Item(title: "Long"),
+                MenuMarks.Item(title: "", isSeparator: true),
+                MenuMarks.Item(title: "Always Visible"),
+            ]),
+            MenuMarks.Item(title: "", isSeparator: true),
+            MenuMarks.Item(title: "Show Touches"),
+            MenuMarks.Item(title: "Live Text"),
+            MenuMarks.Item(title: "", isSeparator: true),
+            MenuMarks.Item(title: "Density", children: [
+                MenuMarks.Item(title: "Default (100%)"),
+                MenuMarks.Item(title: "", isSeparator: true),
+                MenuMarks.Item(title: "75%"),
+                MenuMarks.Item(title: "125%"),
+                MenuMarks.Item(title: "150%"),
+                MenuMarks.Item(title: "", isSeparator: true),
+                MenuMarks.Item(title: "Larger"),
+                MenuMarks.Item(title: "Smaller"),
+                MenuMarks.Item(title: "Actual Size"),
+            ]),
+        ]
+    }
+
+    private func state(style: WindowStyle = .framed,
+                       reveal: RevealDelay = .short,
+                       fullScreen: Bool = false,
+                       allowed: Bool = true,
+                       touches: Bool = false,
+                       liveText: Bool = false,
+                       hasStream: Bool = true,
+                       package: String? = "com.android.settings",
+                       density: Double? = nil) -> StreamMenuState {
+        let state = StreamMenuState()
+        state.style = style
+        state.revealDelay = reveal
+        state.fullScreen = fullScreen
+        state.fullScreenAllowed = allowed
+        state.showTouches = touches
+        state.liveText = liveText
+        state.hasStream = hasStream
+        state.densityPackage = package
+        state.densityOverride = density
+        return state
+    }
+
+    private func edits(_ state: StreamMenuState, menu: String = "View") -> [MenuMarks.Edit] {
+        let items = menu == "View" ? viewItems : [MenuMarks.Item(title: "Minimize"),
+                                                  MenuMarks.Item(title: "Zoom"),
+                                                  MenuMarks.Item(title: "Enter Full Screen"),
+                                                  MenuMarks.Item(title: "Bring All to Front")]
+        return MenuMarks.edits(menu: menu, items: items, state: state)
+    }
+
+    // MARK: The style pair
+
+    func testThePairFollowsTheKeyWindowsStyle() {
+        let immersive = edits(state(style: .immersive))
+        XCTAssertTrue(immersive.contains(.mark(["Framed"], false)))
+        XCTAssertTrue(immersive.contains(.mark(["Immersive"], true)))
+        XCTAssertTrue(immersive.contains(.enable(["Hide Controls"], true)))
+
+        let framed = edits(state(style: .framed))
+        XCTAssertTrue(framed.contains(.mark(["Framed"], true)))
+        XCTAssertTrue(framed.contains(.mark(["Immersive"], false)))
+        XCTAssertTrue(framed.contains(.enable(["Hide Controls"], false)))
+    }
+
+    /// Exactly one of the pair is on, whatever the state: no state leaves both
+    /// checked or neither.
+    func testExactlyOneOfThePairIsChecked() {
+        for style in WindowStyle.allCases {
+            let marks = edits(state(style: style)).filter {
+                if case .mark(let path, _) = $0 { return path == ["Framed"] || path == ["Immersive"] }
+                return false
+            }
+            XCTAssertEqual(marks.count, 2)
+            let on = marks.filter { if case .mark(_, let on) = $0 { return on }; return false }
+            XCTAssertEqual(on.count, 1, "\(style) checks exactly one")
+        }
+    }
+
+    // MARK: Hide Controls and its reveal choice
+
+    func testTheRevealChoiceInsideHideControlsFollowsTheStore() {
+        let always = edits(state(reveal: .alwaysVisible))
+        XCTAssertTrue(always.contains(.mark(["Hide Controls", "Always Visible"], true)))
+        for other in ["Instantly", "Short", "Long"] {
+            XCTAssertTrue(always.contains(.mark(["Hide Controls", other], false)), other)
+        }
+
+        let short = edits(state(reveal: .short))
+        XCTAssertTrue(short.contains(.mark(["Hide Controls", "Short"], true)))
+        XCTAssertTrue(short.contains(.mark(["Hide Controls", "Always Visible"], false)))
+    }
+
+    // MARK: The rest of the View menu
+
+    func testTheViewTogglesAndDensityFollowTheKeyWindow() {
+        let key = state(touches: true, liveText: true, density: 1.25)
+        let writes = edits(key)
+        XCTAssertTrue(writes.contains(.mark(["Show Touches"], true)))
+        XCTAssertTrue(writes.contains(.mark(["Live Text"], true)))
+        XCTAssertTrue(writes.contains(.mark(["Density", "125%"], true)))
+        XCTAssertTrue(writes.contains(.mark(["Density", "Default (100%)"], false)))
+        XCTAssertTrue(writes.contains(.mark(["Density", "75%"], false)))
+        XCTAssertTrue(writes.contains(.enable(["Density"], true)))
+
+        let noWindow = edits(state(hasStream: false, package: nil))
+        XCTAssertTrue(noWindow.contains(.enable(["Density"], false)))
+    }
+
+    func testTheDefaultDensityItemNamesTheSettingsDefault() {
+        let key = state()
+        key.settingsDensity = 1.5
+        let writes = edits(key)
+        XCTAssertTrue(writes.contains(.retitle(["Density", "Default (100%)"], "Default (150%)")))
+        XCTAssertTrue(writes.contains(.mark(["Density", "Default (100%)"], true)))
+    }
+
+    // MARK: The Window menu
+
+    func testTheFullScreenItemReadsWhatItWillDo() {
+        let inSpace = edits(state(fullScreen: true), menu: "Window")
+        XCTAssertTrue(inSpace.contains(.retitle(["Enter Full Screen"], "Exit Full Screen")))
+        XCTAssertTrue(inSpace.contains(.enable(["Enter Full Screen"], true)))
+
+        let windowed = edits(state(fullScreen: false), menu: "Window")
+        XCTAssertTrue(windowed.contains(.retitle(["Enter Full Screen"], "Enter Full Screen")))
+
+        let phone = edits(state(fullScreen: false, allowed: false), menu: "Window")
+        XCTAssertTrue(phone.contains(.enable(["Enter Full Screen"], false)))
+    }
+
+    func testAMenuThatIsNotOursGetsNoEdits() {
+        XCTAssertEqual(MenuMarks.edits(menu: "File", items: viewItems, state: state()), [])
+        XCTAssertEqual(MenuMarks.edits(menu: "Phone", items: viewItems, state: state()), [])
+    }
+
+    // MARK: A rebuild cannot make the rules stale
+
+    /// A rebuild can reset a mark to the value the commands were built with.
+    /// The rules read the state, never the items' current marks, so the next
+    /// call writes the same values again.
+    func testTheEditsDoNotDependOnWhatTheItemsShowNow() {
+        let key = state(style: .immersive, reveal: .long)
+        let launch = edits(key)
+        XCTAssertEqual(edits(key), launch)
+        XCTAssertEqual(Set(launch.map { String(describing: $0) }).count, launch.count,
+                       "no item is written twice")
+    }
+
+    // MARK: Applying
+
+    @MainActor
+    func testApplyingWritesTheValuesOntoSwiftUIsOwnItems() {
+        let shared = StreamMenuState.shared
+        let saved = (shared.style, shared.revealDelay, shared.showTouches, shared.liveText,
+                     shared.fullScreen, shared.fullScreenAllowed, shared.hasStream,
+                     shared.densityPackage, shared.densityOverride)
+        defer {
+            shared.style = saved.0; shared.revealDelay = saved.1; shared.showTouches = saved.2
+            shared.liveText = saved.3; shared.fullScreen = saved.4; shared.fullScreenAllowed = saved.5
+            shared.hasStream = saved.6; shared.densityPackage = saved.7; shared.densityOverride = saved.8
+        }
+        shared.style = .immersive
+        shared.revealDelay = .alwaysVisible
+        shared.fullScreen = true
+        shared.fullScreenAllowed = true
+        shared.hasStream = true
+        shared.densityPackage = "com.android.settings"
+        shared.densityOverride = nil
+
+        let main = NSMenu(title: "main")
+        let view = NSMenu(title: "View")
+        view.addItem(withTitle: "Framed", action: nil, keyEquivalent: "")
+        view.addItem(withTitle: "Immersive", action: nil, keyEquivalent: "")
+        let hide = NSMenu(title: "Hide Controls")
+        for title in ["Instantly", "Short", "Long", "Always Visible"] {
+            hide.addItem(withTitle: title, action: nil, keyEquivalent: "")
+        }
+        let hideItem = NSMenuItem(title: "Hide Controls", action: nil, keyEquivalent: "")
+        hideItem.submenu = hide
+        view.addItem(hideItem)
+        let density = NSMenu(title: "Density")
+        for title in ["Default (100%)", "75%", "125%", "150%"] {
+            density.addItem(withTitle: title, action: nil, keyEquivalent: "")
+        }
+        let densityItem = NSMenuItem(title: "Density", action: nil, keyEquivalent: "")
+        densityItem.submenu = density
+        view.addItem(densityItem)
+        let viewItem = NSMenuItem(title: "View", action: nil, keyEquivalent: "")
+        viewItem.submenu = view
+        main.addItem(viewItem)
+
+        let window = NSMenu(title: "Window")
+        window.addItem(withTitle: "Enter Full Screen", action: nil, keyEquivalent: "f")
+        let windowItem = NSMenuItem(title: "Window", action: nil, keyEquivalent: "")
+        windowItem.submenu = window
+        main.addItem(windowItem)
+
+        let before = (view.items.count, hide.items.count, density.items.count, window.items.count)
+        MenuMarks.apply(to: main)
+
+        // Nothing was added or removed: only values changed.
+        XCTAssertEqual(view.items.count, before.0)
+        XCTAssertEqual(hide.items.count, before.1)
+        XCTAssertEqual(density.items.count, before.2)
+        XCTAssertEqual(window.items.count, before.3)
+
+        XCTAssertEqual(view.items.first { $0.title == "Framed" }?.state, .off)
+        XCTAssertEqual(view.items.first { $0.title == "Immersive" }?.state, .on)
+        XCTAssertEqual(hideItem.isEnabled, true)
+        XCTAssertEqual(hide.items.first { $0.title == "Always Visible" }?.state, .on)
+        XCTAssertEqual(hide.items.first { $0.title == "Short" }?.state, .off)
+        XCTAssertEqual(density.items.first { $0.title.hasPrefix("Default (") }?.state, .on)
+        XCTAssertEqual(window.items.first { $0.title.contains("Full Screen") }?.title, "Exit Full Screen")
+    }
+}
