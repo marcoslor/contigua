@@ -25,12 +25,15 @@ enum FullScreenMenu {
     static func start() {
         observer = NotificationCenter.default.addObserver(
             forName: NSWindow.didBecomeKeyNotification, object: nil, queue: .main
-        ) { _ in
+        ) { note in
+            // The window the notification names, not NSApp.keyWindow: at this
+            // moment the app's own idea of the key window may still be the old
+            // one (or nil), which would disable the item for no reason.
+            guard let window = note.object as? NSWindow else { return }
             MainActor.assumeIsolated {
                 let state = StreamMenuState.shared
-                let key = NSApp.keyWindow
-                state.fullScreen = key?.styleMask.contains(.fullScreen) ?? false
-                state.fullScreenAllowed = allowsFullScreen(key)
+                state.fullScreen = window.styleMask.contains(.fullScreen)
+                state.fullScreenAllowed = allowsFullScreen(window)
             }
         }
     }
