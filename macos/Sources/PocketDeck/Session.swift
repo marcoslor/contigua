@@ -94,7 +94,7 @@ struct AppInfo: Equatable {
 
 /// Video payloads, delivered off the main thread.
 enum VideoEvent {
-    case config(stream: UInt32, config: VideoConfig)
+    case config(stream: UInt32, config: VideoConfig, picture: PictureRect)
     case frame(stream: UInt32, frame: VideoFrameData)
 }
 
@@ -228,6 +228,8 @@ final class Session {
     private var ownsGroup: Bool = false
 
     private var decoder = FrameDecoder()
+    /// window.content for each stream, waiting for the VIDEO_CONFIG it precedes (read on the reader).
+    private var pendingPictures: [UInt32: PictureRect] = [:]
     /// The dialed host:port of the current/most recent attempt (§2): welcome
     /// turns it into the cached address the planner falls back on (C10).
     private var dialedAddress: CachedAddress?
@@ -416,7 +418,7 @@ final class Session {
         learnedCertProvider = { learnedCert.get() }
         transition(.handshaking, nil)
         Log.session.info("tls connected (\(self.describeEndpoint(), privacy: .public)); hello v2")
-        sendJSON(["t": "hello", "v": 2, "clientId": clientId, "name": ClientIdentity.name, "id": identity.deviceId])
+        sendJSON(["t": "hello", "v": 3, "clientId": clientId, "name": ClientIdentity.name, "id": identity.deviceId])
         // Unpaired target + a user-driven session: start the code pairing right
         // away. A paired target answers `welcome` instead; policy .never stays
         // silent (it would make the phone prompt for nobody), and a QR probe
@@ -652,7 +654,13 @@ final class Session {
                 Log.session.error("bad VIDEO_CONFIG payload")
                 return
             }
-            onVideoEvent?(.config(stream: frame.stream, config: config))
+            // The phone always sends the picture's rect ahead of a config; a config
+            // without one cannot be cropped, so it is dropped.
+            guard let picture = pendingPictures.removeValue(forKey: frame.stream) else {
+                Log.session.error("VIDEO_CONFIG without window.content, stream \(frame.stream, privacy: .public)")
+                return
+            }
+            onVideoEvent?(.config(stream: frame.stream, config: config, picture: picture))
         case .videoFrame:
             guard let data = try? VideoFrameData(payload: frame.payload) else {
                 Log.session.error("bad VIDEO_FRAME payload")
@@ -683,8 +691,21 @@ final class Session {
         }
     }
 
+    /// window.content: where the picture sits in the frame of the VIDEO_CONFIG that follows.
+    private func handleWindowContent(_ message: JSONMessage) {
+        guard let stream = message.int("stream"), stream >= 0,
+              let x = message.int("x"), let y = message.int("y"),
+              let w = message.int("w"), let h = message.int("h"), x >= 0, y >= 0, w > 0, h > 0 else {
+            Log.session.error("bad window.content")
+            return
+        }
+        pendingPictures[UInt32(stream)] = PictureRect(x: x, y: y, w: w, h: h)
+    }
+
     private func handleJSON(_ message: JSONMessage) {
         switch message.t {
+        case "window.content":
+            handleWindowContent(message)
         case "challenge":
             // A v1 phone sends its challenge right after hello; none of v1
             // survives in v2 (fixed decision), so surface the version mismatch.

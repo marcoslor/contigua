@@ -1504,11 +1504,22 @@ class WindowStream(object):
                 return app["label"]
         return None
 
+    def _picture(self):
+        """window.content for the current size: where the picture sits in the frame
+        (x, y, w, h). --pad gives a mirror a 2% black band at the right and bottom,
+        the way a real encoder's frame does when its size and the screen's aspect
+        differ. Read at each encoder start: a rotation changes the size."""
+        if self.mode == "phone" and self.phone.args.pad:
+            return (0, 0, (self.w - self.w // 50) & ~1, (self.h - self.h // 50) & ~1)
+        return (0, 0, self.w, self.h)
+
     def _source(self):
         if self._black:
             return "color=c=black:size=%dx%d:rate=%d" % (self.w, self.h, FRAME_RATE)
         if self.mode == "phone":
-            return "smptehdbars=size=%dx%d:rate=%d" % (self.w, self.h, FRAME_RATE)
+            _, _, cw, ch = self._picture()
+            source = "smptehdbars=size=%dx%d:rate=%d" % (cw, ch, FRAME_RATE)
+            return source if (cw, ch) == (self.w, self.h) else source + ",pad=%d:%d:0:0:black" % (self.w, self.h)
         return "testsrc2=size=%dx%d:rate=%d" % (self.w, self.h, FRAME_RATE)
 
     def _cmd(self):
@@ -1674,6 +1685,11 @@ class WindowStream(object):
             if sps_pps is None:
                 return
             self._configured = True
+            # Same lane as the config, so the Mac has the picture rect when the config lands.
+            x, y, cw, ch = self._picture()
+            self.phone.sender.send_in_order(proto.pack_json(
+                {"t": "window.content", "stream": self.stream_id, "x": x, "y": y, "w": cw, "h": ch},
+                self.stream_id))
             self.phone.sender.send_config(self.stream_id, proto.CODEC_H264, self.w, self.h, sps_pps)
             self.phone.events.video_config(self.stream_id, self.w, self.h)
             if self.phone.args.stall_after and self._stall_timer is None:
@@ -1927,7 +1943,7 @@ class Session(object):
             return False
         version = msg.get("v")
         if not self.phone.args.legacy_phone:
-            if version != 2:
+            if version != 3:
                 self._send_error("version")
                 return False
         self.client_id = msg.get("clientId")
@@ -3813,6 +3829,9 @@ def build_parser():
     p.add_argument("--text-frame", metavar="WORD", default=None,
                    help="draw WORD large on a white band in every app stream "
                         "(a stable frame for the Live Text check)")
+    p.add_argument("--pad", action="store_true",
+                   help="the phone mirror's frames carry a black band at the right and bottom; "
+                        "window.content says where the picture is (the Mac must crop it)")
     p.add_argument("--frame-events", action="store_true",
                    help="log each stream's cumulative frame count once a second")
     p.add_argument("--demo-apps", type=int, default=0, metavar="N",

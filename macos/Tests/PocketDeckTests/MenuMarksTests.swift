@@ -232,4 +232,18 @@ final class MenuMarksTests: XCTestCase {
         XCTAssertEqual(density.items.first { $0.title.hasPrefix("Default (") }?.state, .on)
         XCTAssertEqual(window.items.first { $0.title.contains("Full Screen") }?.title, "Exit Full Screen")
     }
+
+    /// Phone ▸ Phone Mirror (⌘P) is enabled exactly while the phone is online,
+    /// whatever SwiftUI last wrote on the item.
+    @MainActor
+    func testPhoneMirrorIsEnabledOnlyWhileThePhoneIsOnline() {
+        let items = [MenuMarks.Item(title: "Phone Mirror"), MenuMarks.Item(title: "Continue on Mac")]
+        var phone = PhoneControlsState()
+        phone.connection = .online
+        XCTAssertEqual(MenuMarks.phoneEdits(items: items, phone: phone), [.enable(["Phone Mirror"], true)])
+        phone.connection = .idle
+        XCTAssertEqual(MenuMarks.phoneEdits(items: items, phone: phone), [.enable(["Phone Mirror"], false)])
+        phone.connection = .reconnecting
+        XCTAssertEqual(MenuMarks.phoneEdits(items: items, phone: phone), [.enable(["Phone Mirror"], false)])
+    }
 }

@@ -53,14 +53,25 @@ final class PhonePanelTests: XCTestCase {
     }
 
     /// The repro of the v104 report: the menu bar must be a window panel (a
-    /// menu-style MenuBarExtra turns a Slider into a stepper submenu and its
-    /// hover flickers), with the volume slider inline and no track row.
+    /// menu-style extra turns a Slider into a stepper submenu and its hover
+    /// flickers), with the volume slider inline and no track row — and since
+    /// 2026-10-22 an AppKit status item and panel, so the icon toggles.
     func testTheMenuBarIsAWindowPanelWithAnInlineVolumeSlider() throws {
         let app = try source("App.swift")
-        XCTAssertTrue(app.contains(".menuBarExtraStyle(.window)"),
-                      "the menu bar must be a window panel, not a menu")
         XCTAssertFalse(app.contains(".menuBarExtraStyle(.menu)"),
                        "a menu-style extra turns the volume slider into a stepper submenu")
+        XCTAssertFalse(app.contains("MenuBarExtra("),
+                       "the status item is AppKit's: SwiftUI's window extra closed on mouse-down and reopened on mouse-up")
+        XCTAssertTrue(app.contains("MenuBarController("),
+                      "the app starts the menu bar item's AppKit controller")
+
+        let panel = try source("MenuBarPanel.swift")
+        XCTAssertTrue(panel.contains("NSStatusItem"),
+                      "the menu bar item is an NSStatusItem")
+        XCTAssertTrue(panel.contains("MenuBarContent("),
+                      "the panel hosts the shared phone controls")
+        XCTAssertTrue(panel.contains("MenuBarPanelMachine"),
+                      "the panel's modes are one state machine")
 
         let menu = try source("MenuBar.swift")
         XCTAssertTrue(menu.contains("PhonePanelView("),

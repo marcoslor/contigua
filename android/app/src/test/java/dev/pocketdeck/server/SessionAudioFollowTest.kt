@@ -128,7 +128,7 @@ class SessionAudioFollowTest {
 
     private fun authenticate() {
         platform.clients.add(PairedClient("c1", "MacBook", TlsV2Fixture.MAC_FP_HEX))
-        send(mapOf("t" to "hello", "v" to 2, "clientId" to "c1", "name" to "MacBook"))
+        send(mapOf("t" to "hello", "v" to 3, "clientId" to "c1", "name" to "MacBook"))
         readUntil("welcome")
     }
 

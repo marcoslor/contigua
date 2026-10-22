@@ -64,7 +64,7 @@ class ServerTest {
             client(port, macIdentity, phoneIdentity).use { first ->
                 val firstReader = FrameReader(first.getInputStream())
                 val out = first.getOutputStream()
-                out.write(Frames.encodeJson(0, Json.encode(mapOf("t" to "hello", "v" to 2, "clientId" to "c1", "name" to "MacBook"))))
+                out.write(Frames.encodeJson(0, Json.encode(mapOf("t" to "hello", "v" to 3, "clientId" to "c1", "name" to "MacBook"))))
                 out.flush()
                 val welcome = readJson(firstReader)
                 assertEquals("welcome", welcome["t"])
@@ -72,7 +72,7 @@ class ServerTest {
                 client(port, macIdentity, phoneIdentity).use { second ->
                     val secondReader = FrameReader(second.getInputStream())
                     val secondOut = second.getOutputStream()
-                    secondOut.write(Frames.encodeJson(0, Json.encode(mapOf("t" to "hello", "v" to 2, "clientId" to "c2", "name" to "Other"))))
+                    secondOut.write(Frames.encodeJson(0, Json.encode(mapOf("t" to "hello", "v" to 3, "clientId" to "c2", "name" to "Other"))))
                     secondOut.flush()
                     val error = readJson(secondReader)
                     assertEquals("error", error["t"])
@@ -106,9 +106,9 @@ class ServerTest {
             plain.tcpNoDelay = true
             plain.soTimeout = 3_000
             val out = plain.getOutputStream()
-            out.write(Frames.encodeJson(0, Json.encode(mapOf("t" to "hello", "v" to 2, "clientId" to "c1", "name" to "Plaintext"))))
+            out.write(Frames.encodeJson(0, Json.encode(mapOf("t" to "hello", "v" to 3, "clientId" to "c1", "name" to "Plaintext"))))
             out.flush()
-            out.write(Frames.encodeJson(0, Json.encode(mapOf("t" to "hello", "v" to 2, "clientId" to "c1", "name" to "Plaintext"))))
+            out.write(Frames.encodeJson(0, Json.encode(mapOf("t" to "hello", "v" to 3, "clientId" to "c1", "name" to "Plaintext"))))
             out.flush()
             // The server answers a plaintext client with a TLS alert and a
             // hangup; whatever comes back never contains a framed `welcome`
@@ -229,7 +229,7 @@ class ServerTest {
                 ssl.startHandshake()
                 val out = ssl.getOutputStream()
                 out.write(Frames.encodeJson(0, Json.encode(mapOf(
-                    "t" to "hello", "v" to 2, "clientId" to "c1", "name" to "Mac"))))
+                    "t" to "hello", "v" to 3, "clientId" to "c1", "name" to "Mac"))))
                 out.flush()
                 val error = readJson(FrameReader(ssl.getInputStream()))
                 assertEquals("error", error["t"])
