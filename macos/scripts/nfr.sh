@@ -27,6 +27,11 @@ PROFILE="${PD_E2E_PROFILE:-nfr1}"
 K2_FILTER="NFRTestLimits|BarContrastTests|SettingsLayoutTests|LayoutTests|HangingPeerTests|HonestSettingsTests|IconReferenceTests|ControlsRealPathTests"
 
 fail=0
+echo "== nfr: check-rules (changed lines, no build)"
+if ! bash "$ROOT/scripts/check-rules.sh"; then
+    fail=1
+fi
+
 echo "== nfr: K2 ($K2_FILTER)"
 if ! "$HEAVY" bash -c "cd '$MACOS' && swift test --filter '$K2_FILTER'"; then
     fail=1
