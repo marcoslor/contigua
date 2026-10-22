@@ -4,7 +4,7 @@
 - Stay inside the directories your task names. Other agents work in parallel in sibling directories.
 - Work on your own branch (a git worktree off `main`) and commit one finished step at a time, with a normal English message. **Never push and never merge to `main`**: the reviewer merges after review. Never `git commit -a`; add paths explicitly.
 - No debug/TEMP leftovers, no commented-out code, no "v48q"-style version tags in comments. Comments explain *why*, briefly.
-- **Specs before code.** Behaviour lives in `docs/specs/<surface>.md` as EARS requirements with stable IDs, and every spec answers each line of `docs/specs/CONVENTIONS.md`. A change to behaviour updates its spec in the same commit, and the proving check carries the ID (`ok "[DECK-12] …"`). Behaviour with no requirement, and a requirement with no proof, both block a merge. Don't invent a missing requirement: mark it `[NEEDS CLARIFICATION]` and ask. To review a spec, follow `.agents/skills/spec-review/SKILL.md`.
+- **Specs before code.** Behaviour lives in `docs/specs/<surface>.md` as a short table of EARS requirements with stable IDs (a table, not prose), and every spec answers each line of `docs/specs/CONVENTIONS.md`. A change to behaviour updates its spec in the same commit, and the proving check carries the ID (`ok "[DECK-12] …"`). Behaviour with no requirement, and a requirement with no proof, both block a merge. Don't invent a missing requirement: mark it `[NEEDS CLARIFICATION]` and ask. To review a spec, follow `.agents/skills/spec-review/SKILL.md`.
 - **State machines for stateful behaviour.** Whenever a feature has modes, phases, a hold, a retry, a handshake or a lifecycle, model it as one explicit state machine: a closed set of states (enum/sealed type), the events it accepts, and one pure transition function `(state, event) -> (new state, actions)` with an exhaustive `when`/`switch` (no `else`/`default` that swallows new cases). Side effects run from the returned actions, never inside the transition. No parallel booleans that together mean a state, and no state inferred from timing or another flag. Unit-test every transition, including the events that must be ignored in a state, and log each transition (`<machine>: <from> --<event>--> <to>`) so a field log shows the path.
 - Never name competitor or closed-source products in code, comments, docs or commit messages; describe techniques generically.
 - Keep dependencies minimal: Android = Shizuku, androidx core/activity/lifecycle, Jetpack Compose + Material 3 (via the Compose BOM), Google code scanner (`play-services-code-scanner`) for QR; macOS = system frameworks only; tools = Python 3.9 stdlib + ffmpeg/dns-sd CLIs.
@@ -48,9 +48,24 @@ These are vendored at fixed commits (`.agents/skills/VENDORED.md`). Never instal
 - **Stream picture.** The phone's encoder pads and aligns sizes. The Mac shows only the content rect the phone reports, and picture bugs are proved on the emulator with decoded frames, not only with the fake phone.
 - **Instruments.** Record traces only against your own `--profile` app, through `~/dev/pocketdeck/.agent/heavy.sh`, never with `--all-processes` and never against the person's installed app.
 
+## Done means every surface
+
+The most common defect here is a change that works on the path you tested and is missing everywhere else. ⌘F in the Deck, the menu-bar icon that didn't toggle, and a second Phone Mirror were all this. Before calling work done, walk this list, and say in your report which entries applied and how each was handled ("n/a" is an answer; silence is not):
+- **Entry points:** the menus (and their shortcuts), the menu-bar panel, the Deck and its popover, the stream window's bar, keyboard shortcuts, Shortcuts/App Intents, MCP tools, the debug-input route, and auto-open at launch. A behaviour reachable from one is usually expected from the others, through one shared function.
+- **Apps:** the Mac app, the phone app, the Finder (File Provider) and Share extensions. A wire change is made in PROTOCOL.md, the phone, the Mac and the fake phone together.
+- **Phones:** 0, 1 and 2+ phones paired; the action applies to the right phone, and the others are reachable.
+- **States:** connecting, connected, offline/reconnecting, the phone screen off or locked, and a phone that can't do the feature (disabled with a reason).
+- **Reverse states:** every way in has a way out and a way to see it. Off needs on, open needs close and raise, hold needs release, and the UI shows which state you are in. A one-way door is a bug.
+- **Conventions:** every line of `docs/specs/CONVENTIONS.md` that the change touches.
+- **Docs:** whether the change makes UX.md, PROTOCOL.md, a design doc or a spec inaccurate. Rewrite the affected text; don't append to it.
+
 ## Testing rules
 
 **A reported bug gets a test first.** Before fixing anything a person reported (or a reviewer found), add the check that reproduces it: it must fail on the current code and pass with the fix, and both runs go in your progress log. Put it in the cheapest tier that can see the bug. No fix merges without its check.
+
+**Proof matches the bug.** Logic, state, protocol, timing and input bugs get the failing check first, as above. A purely visual fix (spacing, colour, alignment, hover styling, a layout shift) is proved with **before/after captures** of the real render instead of a new UI test, plus a short frame sequence when motion or timing matters. Captures go in `.agent/<task>/`, named `before-*.png` and `after-*.png`, and your report says what each one shows. Don't add UI tests for visual nitpicks.
+
+**QA is not the worker's.** Workers implement and prove. Acceptance is done by the reviewer, or by an Opus QA agent at medium effort or higher, which reads the diff against this file and CONVENTIONS.md before a merge. The reviewer looks at every visual change before it reaches the person. A change that alters a product default, a limit in NFR.md / nfr-limits.json, or a check's strictness (a skipped, loosened or removed assertion), or that adds a lint or compiler suppression, needs the reviewer's explicit sign-off, named in the report.
 
 **Non-functional requirements are tested like features.** "Works" is not enough; the checks also pin how fast, how it looks and what it must not do:
 - **Time limits** for every step a person waits on (open a file, first video frame, connect, a preview). A protocol loop must return as soon as its terminal reply arrives: test it against a fake peer that keeps the connection open.

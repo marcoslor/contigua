@@ -2,6 +2,8 @@
 
 PocketDeck keeps one living spec per surface. A spec says what the surface must do, so code, checks and reviews can be measured against it. It is updated in the same change as the behaviour it describes.
 
+Keep specs lean: a requirements table, the state/event table and the conventions answers. No prose that narrates the code, no field lists, no plans. Types, tests and code already record the implementation; a spec records intent and its proof. "Done means every surface" in AGENTS.md is the companion checklist for every change.
+
 - `CONVENTIONS.md` is the baseline every spec answers: the platform and product conventions no feature request will mention.
 - `TEMPLATE.md` is the shape of a surface spec.
 - `<surface>.md` holds one surface each: `deck.md`, `phone-mirror.md`, `app-windows.md`, `panel.md`, `menus.md`, `files.md`, `notifications.md`, `media.md`, `share-clipboard.md`, `pairing.md`, `settings.md`, `phone-app.md` and so on.
