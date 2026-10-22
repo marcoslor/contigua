@@ -2621,7 +2621,7 @@ PY
 menu_dump_ok() {
     python3 - "$1" <<'PY'
 import json, sys
-APP_ITEMS = ["Add Phone…", "Find Apps", "Phone Window", "Continue on Mac", "Show Touches",
+APP_ITEMS = ["Add Phone…", "Find Apps", "Phone Mirror", "Continue on Mac", "Show Touches",
              "Live Text", "Framed", "Immersive", "Hide Controls", "Density",
              "Turn Off Phone Screen", "Do Not Disturb", "Ring Phone", "Install APK…",
              "Back", "Home", "Recents", "Enter Full Screen"]
@@ -2644,7 +2644,7 @@ if titles != ["PocketDeck", "File", "Edit", "View", "Phone", "Navigate", "Window
 WANT = {
     "View": ["Find Apps", "—", "Framed", "Immersive", "—", "Hide Controls", "—",
              "Show Touches", "Live Text", "—", "Density"],
-    "Phone": ["Phone Window", "Continue on Mac", "—", "Turn Off Phone Screen",
+    "Phone": ["Phone Mirror", "Continue on Mac", "—", "Turn Off Phone Screen",
               "Do Not Disturb", "Ring Phone", "—", "Install APK…"],
     "Navigate": ["Back", "Home", "Recents"],
     "File": ["Add Phone…", "—", "Close", "Close All"],
@@ -2980,16 +2980,16 @@ import json, sys
 root = json.load(open(sys.argv[1]))
 phone = next(i for i in root["items"] if i["title"] == "Phone")
 by_title = {i["title"]: i for i in phone["submenu"] if not i["isSeparator"]}
-if by_title["Phone Window"]["keyEquivalent"] != "p" or by_title["Phone Window"]["modifiers"] != ["command"]:
-    print("Phone Window shortcut:", repr(by_title["Phone Window"]["keyEquivalent"]),
-          by_title["Phone Window"]["modifiers"]); sys.exit(1)
+if by_title["Phone Mirror"]["keyEquivalent"] != "p" or by_title["Phone Mirror"]["modifiers"] != ["command"]:
+    print("Phone Mirror shortcut:", repr(by_title["Phone Mirror"]["keyEquivalent"]),
+          by_title["Phone Mirror"]["modifiers"]); sys.exit(1)
 if by_title["Continue on Mac"]["keyEquivalent"] != "c" or \
         by_title["Continue on Mac"]["modifiers"] != ["command", "shift"]:
     print("Continue on Mac shortcut:", repr(by_title["Continue on Mac"]["keyEquivalent"]),
           by_title["Continue on Mac"]["modifiers"]); sys.exit(1)
 if by_title["Turn Off Phone Screen"]["enabled"]:
     print("Turn Off Phone Screen is enabled with no phone window"); sys.exit(1)
-for title in ("Phone Window", "Continue on Mac", "Do Not Disturb", "Ring Phone", "Install APK…"):
+for title in ("Phone Mirror", "Continue on Mac", "Do Not Disturb", "Ring Phone", "Install APK…"):
     if not by_title[title]["enabled"]:
         print(title, "is disabled while the phone is online"); sys.exit(1)
 PY
@@ -3069,7 +3069,7 @@ def walk(items):
 root = json.load(open(sys.argv[1]))
 items = list(walk(root["items"]))
 missing = []
-for title in ["Add Phone…", "Find Apps", "Phone Window", "Continue on Mac", "Show Touches",
+for title in ["Add Phone…", "Find Apps", "Phone Mirror", "Continue on Mac", "Show Touches",
               "Live Text", "Density", "Larger", "Smaller", "Actual Size", "Back", "Home",
               "Recents", "Enter Full Screen"]:
     found = next((i for i in items if i["title"] == title), None)

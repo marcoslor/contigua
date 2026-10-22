@@ -323,7 +323,7 @@ enum PhonePanelItem: String, CaseIterable {
         case .volume: return "Phone volume"
         case .sessions: return "Now Playing follows"
         case .live: return "Live notification"
-        case .phoneScreen: return "Phone Window"
+        case .phoneScreen: return "Phone Mirror"
         case .findApps: return "Find Apps"
         case .continueOnMac: return "Continue on Mac"
         case .installApk: return "Install APK…"
@@ -407,7 +407,7 @@ extension PhonePanelItem {
         case .ring, .phoneScreen, .continueOnMac:
             return state.connection.isOnline ? nil : connect
         case .screen:
-            return state.phoneWindow ? nil : "Open Phone Window first."
+            return state.phoneWindow ? nil : "Open Phone Mirror first."
         case .installApk:
             guard state.connection.isOnline else { return connect }
             return state.installBusy ? "An install is already running." : nil
@@ -781,12 +781,12 @@ struct PhonePanelView: View {
     }
 
     /// P3's WINDOWS: one compact row of icon buttons, each with its shortcut in
-    /// the tooltip. The visual label may be short ("Phone"); VoiceOver hears
-    /// the full name ("Phone Window").
+    /// the tooltip. The visual label may be short ("Mirror"); VoiceOver hears
+    /// the full name ("Phone Mirror").
     private var windowsRow: some View {
         HStack(spacing: PhonePanelMetrics.windowGap) {
-            windowButton(.phoneScreen, visual: "Phone", symbol: "iphone.gen3",
-                         help: "Phone Window (⌘P)", action: actions.openPhoneScreen)
+            windowButton(.phoneScreen, visual: "Mirror", symbol: "iphone.gen3",
+                         help: "Phone Mirror (⌘P)", action: actions.openPhoneScreen)
             windowButton(.findApps, visual: "Find Apps", symbol: "magnifyingglass",
                          help: "Find Apps (⌘K)", action: actions.findApps)
             windowButton(.continueOnMac, visual: "Continue", symbol: "arrow.up.forward.app",

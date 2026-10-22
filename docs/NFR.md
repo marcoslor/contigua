@@ -19,7 +19,7 @@ promise in `AGENTS.md`, not from a measurement.
 | --- | --- | --- | --- | --- |
 | Connect to a phone | `connect_ms` = 1500 ms | 418–696 ms (launch → `paired`/`auth_ok`) | A person waiting at a spinner loses trust in the app after a few seconds | e2e `nfr` (time limits) |
 | First frame of an app window | `first_frame_ms` = 1500 ms | 133 ms (`window.open` → `VIDEO_CONFIG`) | The window must show the app, not a blank surface | e2e `nfr` |
-| First frame of the phone window | `first_frame_phone_ms` = 1500 ms | 136 ms (`window.open` → `VIDEO_CONFIG`) | Mirroring is the app's first screen | e2e `nfr` |
+| First frame of the Phone Mirror | `first_frame_phone_ms` = 1500 ms | 136 ms (`window.open` → `VIDEO_CONFIG`) | Mirroring is the app's first screen | e2e `nfr` |
 | Panel control redraw | `panel_glyph_ms` = 300 ms | 3–11 ms (click → `panel_off`; the fake answers at once). With a report 1000 ms late, the glyph arrived 4 ms after it | A click must show the phone's new panel state in a person's reaction time: the 16:44 report had the button 2–3 s behind the screen because the phone sent `state.panel` last, after a 1.1 s blocking restore. The Mac draws as soon as the report arrives | e2e `mirror` (bar-control click → `panel_off` in the chrome state, both ways; a `--panel-delay-ms` run pins "state, never the click"); K1 `PanelHoldTest` (report before the platform action) |
 | App list | `app_list_ms` = 1500 ms | 60 ms (`apps.list` → its reply) | The Deck is what a person sees first | e2e `nfr` |
 | Small Finder fetch | `fetch_small_ms` = 3000 ms | not measured on the host (the files domain is VM-only; pre-fix it was 20 s) | A Quick Look preview is a person's first hour bug: it took 20 s | e2e `files-domain` (VM) |

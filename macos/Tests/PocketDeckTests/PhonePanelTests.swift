@@ -179,7 +179,7 @@ final class PhonePanelTests: XCTestCase {
         XCTAssertEqual(PhonePanelItem.ringer.reason(in: panelState(ringer: nil)),
                        "This phone doesn't report a ringer.")
         XCTAssertEqual(PhonePanelItem.screen.reason(in: panelState(phoneWindow: false)),
-                       "Open Phone Window first.")
+                       "Open Phone Mirror first.")
         // A volume without a maximum is not a fraction.
         var noMax = panelState()
         noMax.volumeMax = nil
