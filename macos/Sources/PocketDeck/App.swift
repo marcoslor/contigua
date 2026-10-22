@@ -401,11 +401,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         NSApp.servicesProvider = LinkService.shared
         // AppKit's own Enter Full Screen in the View menu would duplicate the
-        // Window menu's item (FullScreenMenu.swift); it is turned off before
-        // the menu is built. Registered, not set: AppKit reads the key through
-        // the registration domain and the person's defaults stay untouched.
+        // Window menu's item (MenuBar.swift); it is turned off before the menu
+        // is built. Registered, not set: AppKit reads the key through the
+        // registration domain and the person's defaults stay untouched.
         UserDefaults.standard.register(defaults: ["NSFullScreenMenuItemEverywhere": false])
-        FullScreenMenu.install()
+        MenuSeparators.start()
+        MenuMarks.start()
+        FullScreenMenu.start()
         // VisionKit's analyser service is slow and unreliable on its first
         // call (LiveTextWarmer): pay that while the app starts, not when the
         // person presses Live Text.

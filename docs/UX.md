@@ -38,9 +38,12 @@ on either side removes the key; the other side gets `auth_failed` next time and 
 
 Menu-bar presence + Dock icon. One home window, the **Deck**, plus the app windows.
 Detail, states, copy and the connection state machine: [design/mac-redesign.md](design/mac-redesign.md).
-The app's own menu items carry SF Symbols, as Apple's apps draw theirs, and the menus have no section titles: View holds Find Apps ·
-Phone Window · Continue on Mac · Show Touches · Framed/Immersive · Density · Toggle Window Style, and native full screen is in the
-Window menu.
+The app's own menu items carry SF Symbols, as Apple's apps draw theirs, and the menus have no section titles. **View** holds
+Find Apps · Framed / Immersive (⌥⌘F switches) · Hide Controls › · Show Touches · Live Text · Density › (Default, the other
+percentages, Larger ⌘+, Smaller ⌘−, Actual Size ⌘0). **Phone** holds Phone Window ⌘P · Continue on Mac ⇧⌘C · Turn Off Phone
+Screen · Do Not Disturb · Ring Phone / Stop Ringing · Install APK…. **Navigate** holds Back · Home · Recents, **Window** the
+standard items plus Enter Full Screen ⌃⌘F, and **Help** is empty (there is no help book). A control that cannot work is
+disabled, never hidden.
 
 1. **Deck** (the only main window; closing it hides it, the Dock icon and ⌘K bring it back). What it shows is chosen by
    what this Mac remembers:
@@ -84,7 +87,7 @@ Window menu.
    makes it permanent ("Add to Dock" in the app's context menu does the same by hand; Settings → General switches it off).
 3. **Menu bar panel**: the status item opens a Control Center-style card, not a menu — the phone's name and state,
    its battery, the phone's volume slider, **Do Not Disturb**, **Ring Phone** / **Stop Ringing**, **Now Playing
-   follows** when several apps play, the live notifications, **Phone Screen** ⌘P, **Find Apps** ⌘K, **Continue on
+   follows** when several apps play, the live notifications, **Phone Window** ⌘P, **Find Apps** ⌘K, **Continue on
    Mac**, **Install APK…**, then **Settings…** and **Quit PocketDeck**. A control that cannot work is dimmed with one
    line saying why ("Connect your phone to use these."). The Deck's status pill opens the same card in a popover.
 4. **Settings** (⌘,; also the settings gear at the Deck header's right): tabs **General** (launch at login, show in menu bar,

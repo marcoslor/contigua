@@ -190,7 +190,7 @@ final class PhoneWindowController: StreamWindowController {
 
     func togglePanelOff() { setPanelOff(!panelOffShown) }
 
-    /// Navigate ▸ Turn Off Phone Screen: the menu item's action, through the
+    /// Phone ▸ Turn Off Phone Screen: the menu item's action, through the
     /// responder chain (a nil target), so the e2e drives the same route.
     @objc func togglePanelOffMenuAction(_ sender: Any?) { togglePanelOff() }
 

@@ -311,7 +311,6 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         style = next
         if let key = styleKey { manager.styleStore.set(style, forKey: key) }
         StreamMenuState.shared.style = style
-        ImmersiveMenuInstaller.refresh(style: style)
         chrome.setStyle(style)
         configureDwell()
         writeChromeState()
@@ -519,6 +518,13 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     }
 
     func windowWillClose(_ notification: Notification) {
+        // A window that opted out of full screen cannot keep the Window menu's
+        // item disabled once it is gone: nothing may become key after it in a
+        // quiet app, and the answer it published would stay behind.
+        if self is PhoneWindowController || (window?.isKeyWindow ?? false) {
+            StreamMenuState.shared.fullScreenAllowed = true
+            StreamMenuState.shared.fullScreen = false
+        }
         liveText.exit(.close)
         openingTimer?.invalidate()
         openingTimer = nil
@@ -628,6 +634,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         state.showTouches = manager.showTouches
         state.style = style
         state.fullScreen = window?.styleMask.contains(.fullScreen) ?? false
+        state.fullScreenAllowed = FullScreenMenu.allowsFullScreen(window)
         state.densityPackage = densityPackage
         state.densityOverride = densityOverride
         state.settingsDensity = manager.defaultDensity
@@ -636,13 +643,16 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         state.phoneWindow = self is PhoneWindowController
         state.panelOff = (self as? PhoneWindowController)?.panelOffShown ?? false
         state.revealDelay = manager.revealDelay
-        ImmersiveMenuInstaller.refresh(style: style)
     }
 
     func windowDidResignKey(_ notification: Notification) {
         let state = StreamMenuState.shared
         state.hasStream = false
         state.fullScreen = false
+        // The window that takes over is the Deck or another stream window, and
+        // both may go full screen; a phone window publishes its own refusal
+        // when it becomes key.
+        state.fullScreenAllowed = true
         state.densityPackage = nil
         state.densityOverride = nil
         state.liveText = false
@@ -877,7 +887,6 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     private func updateFullScreenMenuState(_ fullScreen: Bool) {
         guard window?.isKeyWindow ?? false else { return }
         StreamMenuState.shared.fullScreen = fullScreen
-        FullScreenMenu.setState(fullScreen: fullScreen)
     }
 
     /// Full screen drops the bar in either style and leaves the dwell alone:
