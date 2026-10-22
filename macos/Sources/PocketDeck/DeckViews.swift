@@ -513,6 +513,81 @@ enum GridNavigation {
     }
 }
 
+/// The A–Z rail on the Deck's trailing edge (docs/design/mac-redesign.md
+/// §3.3): one letter per app section, `#` for digits and symbols, and the
+/// letter at the top of the grid in the accent colour. Pure, so the tests pin
+/// the first index per letter and the letter a scroll offset lands on.
+enum DeckRail {
+    static let minimumApps = 30
+    static let letters: [String] = (65...90).map { String(UnicodeScalar($0)!) } + ["#"]
+
+    struct Entry: Equatable {
+        let letter: String
+        /// The first app under this letter; nil draws the letter dimmed.
+        let index: Int?
+    }
+
+    /// The letter a label files under: its first letter A–Z (accents fold),
+    /// or `#` for a digit or symbol.
+    static func letter(for label: String) -> String {
+        let trimmed = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let first = trimmed.first else { return "#" }
+        let folded = String(first)
+            .folding(options: [.diacriticInsensitive, .caseInsensitive], locale: nil)
+            .uppercased()
+        return folded.count == 1 && folded >= "A" && folded <= "Z" ? folded : "#"
+    }
+
+    /// One entry per drawn letter, in rail order, with its first app's index.
+    static func entries(for apps: [AppInfo]) -> [Entry] {
+        var first: [String: Int] = [:]
+        for (index, app) in apps.enumerated() {
+            let letter = letter(for: app.displayLabel)
+            if first[letter] == nil { first[letter] = index }
+        }
+        return letters.map { Entry(letter: $0, index: first[$0]) }
+    }
+
+    /// The app a click on `letter` scrolls to: its own first app, or the next
+    /// letter that has apps (dimmed letters skip forward).
+    static func target(for letter: String, in entries: [Entry]) -> Int? {
+        guard let start = entries.firstIndex(where: { $0.letter == letter }) else { return nil }
+        return entries[start...].first { $0.index != nil }?.index
+    }
+
+    /// The first app in the row at the viewport's top. The row above may still
+    /// reach into the viewport across the gutter: that makes it the current one.
+    static func topIndex(offset: CGFloat?, apps: [AppInfo], metrics: DeckGridSize, width: CGFloat) -> Int? {
+        guard !apps.isEmpty else { return nil }
+        let columns = metrics.columns(forWidth: width)
+        let pitch = metrics.cellHeight + metrics.rowSpacing
+        let top = max(offset ?? 0, 0)
+        let row = max(0, Int(floor((top - metrics.verticalInset - metrics.cellHeight) / pitch)) + 1)
+        return min(row * columns, apps.count - 1)
+    }
+
+    /// The letter the scroll position is in.
+    static func currentLetter(offset: CGFloat?, apps: [AppInfo], metrics: DeckGridSize,
+                              width: CGFloat) -> String? {
+        guard let index = topIndex(offset: offset, apps: apps, metrics: metrics, width: width) else {
+            return nil
+        }
+        return letter(for: apps[index].displayLabel)
+    }
+
+    /// The rail is only useful on a full grid, and it gives way to search.
+    static func shows(count: Int, query: String) -> Bool {
+        query.isEmpty && count >= minimumApps
+    }
+
+    /// The letter at `y` in a column `height` tall; the letters share it evenly.
+    static func letter(atY y: CGFloat, height: CGFloat, entries: [Entry]) -> String? {
+        guard height > 0, !entries.isEmpty else { return nil }
+        let fraction = min(max(y / height, 0), 0.999_999)
+        return entries[Int(fraction * CGFloat(entries.count))].letter
+    }
+}
+
 /// Arrow keys, Return and Esc for the grid. The search field owns the keyboard
 /// (it is focused whenever the Deck shows), so these are caught with a local
 /// monitor rather than SwiftUI focus.
@@ -723,6 +798,12 @@ struct AppGrid: View {
     let query: String
     let navigator: GridNavigator
     @AppStorage(DeckZoom.key, store: Profile.active.defaults) private var zoom = 1.0
+    /// The letter at the top of the grid, and the last scroll position that
+    /// produced it (the rail's accent and the e2e's landing proof).
+    @State private var currentLetter: String?
+    @State private var scrollBox = RailScrollBox()
+    /// The rail's pending target index: reported once its row is on screen.
+    @State private var railTarget: Int?
 
     private var metrics: DeckGridSize { DeckGridSize(zoom: CGFloat(zoom)) }
 
@@ -772,8 +853,30 @@ struct AppGrid: View {
                 navigator.columns = current.columns(forWidth: outer.width)
                 DeckGridProbe.reportGeometry(current, viewport: outer.width)
             }
+            // The rail's current letter follows the scroll position. Only a
+            // scroll is read here; the grid's layout never sees this value.
+            .onScrollGeometryChange(for: RailScroll.self) { geometry in
+                RailScroll(offset: geometry.visibleRect.minY + geometry.contentInsets.top,
+                           width: geometry.containerSize.width)
+            } action: { _, scroll in
+                follow(scroll)
+            }
+            .overlay(alignment: .trailing) {
+                if DeckRail.shows(count: cells.count, query: query) {
+                    DeckIndexRail(entries: railEntries,
+                                  current: currentLetter ?? firstRailLetter) { letter in
+                        scroll(to: letter, proxy: proxy)
+                    }
+                    .padding(.trailing, 8)
+                }
+            }
             .onChange(of: navigator.selection) { _, pkg in
                 if let pkg { withAnimation(.smooth(duration: 0.15)) { proxy.scrollTo(pkg) } }
+            }
+            // The e2e cannot point in a quiet run: its `deck-rail` verb asks
+            // for the same scroll the rail's own click runs.
+            .onChange(of: controller.deckRailRequest) { _, request in
+                if let request { scroll(to: request.letter, proxy: proxy) }
             }
         }
     }
@@ -782,6 +885,44 @@ struct AppGrid: View {
     /// the same id (a phone can repeat an entry; SwiftUI draws a repeated id as
     /// an empty slot). The order the phone sent is kept.
     private var cells: [DeckCell] { AppGrid.entries(apps) }
+
+    /// The rail follows the drawn cells, so its indexes are the grid's.
+    private var cellApps: [AppInfo] { cells.map(\.app) }
+    private var railEntries: [DeckRail.Entry] { DeckRail.entries(for: cellApps) }
+    private var firstRailLetter: String? { railEntries.first { $0.index != nil }?.letter }
+
+    /// Scroll to a rail letter: its own first app, or the next letter with apps
+    /// when the letter itself is empty.
+    private func scroll(to letter: String, proxy: ScrollViewProxy) {
+        guard let index = DeckRail.target(for: letter, in: railEntries),
+              cells.indices.contains(index) else { return }
+        railTarget = index
+        DeckGridProbe.reportRailPick(letter: letter, index: index)
+        withAnimation(.smooth(duration: 0.15)) { proxy.scrollTo(cells[index].id, anchor: .top) }
+        // A target already on screen scrolls nowhere, so no geometry change
+        // follows: report the landing from the position we have.
+        if let last = scrollBox.last { follow(last) }
+    }
+
+    /// The letter (and, for a rail click, the target) at a scroll position.
+    private func follow(_ scroll: RailScroll) {
+        scrollBox.last = scroll
+        let apps = cellApps
+        guard let top = DeckRail.topIndex(offset: scroll.offset, apps: apps,
+                                          metrics: metrics, width: scroll.width) else {
+            currentLetter = nil
+            return
+        }
+        let letter = DeckRail.letter(for: apps[top].displayLabel)
+        if letter != currentLetter { currentLetter = letter }
+        if let target = railTarget {
+            let columns = metrics.columns(forWidth: scroll.width)
+            if top <= target, target < top + columns {
+                railTarget = nil
+                DeckGridProbe.reportRailTop(letter: letter, index: top)
+            }
+        }
+    }
 
     /// Nothing more is coming for this icon: the phone said it has none, or
     /// the link is down.
@@ -799,6 +940,69 @@ struct AppGrid: View {
     private func grid<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
         DeckGridLayout(metrics: metrics) { content() }
             .frame(maxWidth: .infinity)
+    }
+}
+
+/// The scroll position the rail reads: the content's visible top (the scroll
+/// view has a toolbar inset above the grid) and the viewport width the letter
+/// mapping needs. A value type so `onScrollGeometryChange` only calls back when
+/// one of them changes.
+private struct RailScroll: Equatable {
+    var offset: CGFloat
+    var width: CGFloat
+}
+
+/// The last scroll position for the rail's already-visible case. A reference
+/// box, not @State: a resize changes the geometry every frame and must not
+/// invalidate the grid's body (the e2e drag p95 is measured on exactly that).
+private final class RailScrollBox {
+    var last: RailScroll?
+}
+
+/// The 9 pt letter column on the Deck's trailing edge (D). Clicking or dragging
+/// a letter jumps the grid; the letter at the top of the grid is the accent
+/// one, and a letter with no apps is drawn dimmed.
+private struct DeckIndexRail: View {
+    /// The D shot's letters sit on a 12 pt pitch.
+    private static let rowHeight: CGFloat = 12
+    private static let width: CGFloat = 16
+
+    let entries: [DeckRail.Entry]
+    let current: String?
+    let pick: (String) -> Void
+
+    @State private var lastPicked: String?
+
+    private var height: CGFloat { CGFloat(entries.count) * Self.rowHeight }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            ForEach(entries, id: \.letter) { entry in
+                Text(entry.letter)
+                    .font(.system(size: 9, weight: entry.letter == current ? .semibold : .regular))
+                    .foregroundStyle(entry.letter == current ? AnyShapeStyle(Color.accentColor)
+                                                            : AnyShapeStyle(.secondary))
+                    .opacity(entry.index == nil ? 0.35 : 1)
+                    .frame(width: Self.width, height: Self.rowHeight)
+            }
+        }
+        .frame(width: Self.width)
+        .contentShape(.rect)
+        .gesture(
+            DragGesture(minimumDistance: 0)
+                .onChanged { value in
+                    guard let letter = DeckRail.letter(atY: value.location.y, height: height,
+                                                       entries: entries),
+                          letter != lastPicked else { return }
+                    lastPicked = letter
+                    pick(letter)
+                }
+                .onEnded { _ in lastPicked = nil }
+        )
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("App index")
+        .accessibilityValue(current ?? "")
+        .accessibilityHint("Click or drag a letter to scroll to it")
     }
 }
 

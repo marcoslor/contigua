@@ -55,6 +55,21 @@ enum DeckGridProbe {
         ])
     }
 
+    /// The rail click's target: the letter and the index it scrolled to. The
+    /// e2e check compares the index with the first app of that letter in the
+    /// cell dump.
+    @MainActor
+    static func reportRailPick(letter: String, index: Int) {
+        append(["rail": ["letter": letter, "index": index]])
+    }
+
+    /// The row at the viewport's top after a scroll, so the check can prove the
+    /// rail's target is on screen, not merely that the click ran.
+    @MainActor
+    static func reportRailTop(letter: String, index: Int) {
+        append(["railTop": ["letter": letter, "index": index]])
+    }
+
     private static func append(_ line: [String: Any]) {
         guard let path = AppEnvironment.shared.options.debugDeckGrid else { return }
         guard let data = try? JSONSerialization.data(withJSONObject: line, options: [.sortedKeys]),

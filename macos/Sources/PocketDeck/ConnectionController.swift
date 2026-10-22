@@ -291,6 +291,17 @@ final class ConnectionController {
     func openDeckPanel() {
         deckPanelRequest += 1
     }
+
+    /// A rail letter the e2e asked to click (`deck-rail`), with a token so the
+    /// same letter can be picked twice. AppGrid reads it and scrolls exactly as
+    /// the rail's own click does.
+    struct DeckRailRequest: Equatable {
+        let letter: String
+        let token: Int
+    }
+    private(set) var deckRailRequest: DeckRailRequest?
+    private var deckRailToken = 0
+
     /// The phone being renamed right now: Settings → Devices → Rename… presents
     /// its dialog for this device; a preview stages the whole state.
     private(set) var renamingDeviceId: String?
@@ -2424,6 +2435,15 @@ final class ConnectionController {
                   w > 0, h > 0 else { return "deck-size needs width height" }
             guard let window = DeckWindow.window else { return "no Deck window" }
             window.setContentSize(NSSize(width: w, height: h))
+            return nil
+        case "deck-rail":
+            // The rail is pointer-only; the e2e clicks it through this verb,
+            // which runs the same scroll the rail's own click runs.
+            guard let letter = arguments.first, DeckRail.letters.contains(letter) else {
+                return "deck-rail needs A-Z or #"
+            }
+            deckRailToken += 1
+            deckRailRequest = DeckRailRequest(letter: letter, token: deckRailToken)
             return nil
         case "settings-dump":
             // Settings' real window geometry (SettingsProbe) for the host e2e.
