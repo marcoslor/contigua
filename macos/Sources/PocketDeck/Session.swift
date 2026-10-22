@@ -109,7 +109,7 @@ enum SessionEvent {
     case windowClosed(stream: UInt32, reason: String)
     case windowTitle(stream: UInt32, label: String, pkg: String)
     case phoneState(locked: Bool, battery: Int, charging: Bool, dnd: PhoneDndMode?, ringer: PhoneRingerMode?,
-                    screen: PhoneScreen?, secure: Bool?, panel: PhonePanel?)
+                    volume: Int?, volumeMax: Int?, screen: PhoneScreen?, secure: Bool?, panel: PhonePanel?)
     /// `ring.state`: a `phone.ring` started or ended.
     case ringState(ringing: Bool)
     case audioState(on: Bool, codec: UInt8)
@@ -842,6 +842,8 @@ final class Session {
                              charging: message.bool("charging") ?? false,
                              dnd: message.string("dnd").flatMap(PhoneDndMode.init(rawValue:)),
                              ringer: message.string("ringer").flatMap(PhoneRingerMode.init(rawValue:)),
+                             volume: message.int("volume"),
+                             volumeMax: message.int("volumeMax"),
                              screen: message.string("screen").flatMap(PhoneScreen.init(rawValue:)),
                              secure: message.bool("secure"),
                              panel: message.string("panel").flatMap(PhonePanel.init(rawValue:))))
@@ -1171,6 +1173,9 @@ final class Session {
 
     /// `phone.ringer` (docs/PROTOCOL.md "Ringer").
     func setRinger(_ mode: PhoneRingerMode) { sendJSON(["t": "phone.ringer", "mode": mode.rawValue]) }
+
+    /// `phone.volume` (docs/PROTOCOL.md "Volume"): the phone's music stream.
+    func setVolume(_ level: Int) { sendJSON(["t": "phone.volume", "level": level]) }
     func sendApkData(id: UInt32, bytes: [UInt8], sent: @escaping @Sendable (Bool) -> Void) { sendData(.apkData, id: id, bytes: bytes, sent: sent) }
     func dropStart(id: UInt32, name: String, mime: String, size: Int, sha256: String, resume: Int = 0) {
         var message: [String: Any] = ["t": "drop.start", "id": Int(id), "name": name, "mime": mime, "size": size, "sha256": sha256]

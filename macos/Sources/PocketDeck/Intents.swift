@@ -120,8 +120,8 @@ struct OpenPhoneAppIntent: AppIntent {
 }
 
 struct OpenPhoneScreenIntent: AppIntent {
-    static var title: LocalizedStringResource = "Open Phone"
-    static var description = IntentDescription("Opens the whole phone screen in a window on this Mac.")
+    static var title: LocalizedStringResource = "Open Phone Mirror"
+    static var description = IntentDescription("Opens the Phone Mirror on this Mac.")
     static var openAppWhenRun: Bool = true
 
     @Parameter(title: "Phone")
@@ -225,7 +225,7 @@ struct PocketDeckShortcuts: AppShortcutsProvider {
                 "Open my phone in \(.applicationName)",
                 "Open \(.applicationName) phone"
             ],
-            shortTitle: "Open Phone",
+            shortTitle: "Phone Mirror",
             systemImageName: "iphone"
         )
         AppShortcut(

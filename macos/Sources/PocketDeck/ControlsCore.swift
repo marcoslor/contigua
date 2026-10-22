@@ -12,6 +12,15 @@ enum PhoneRingerMode: String, CaseIterable, Equatable {
     case vibrate
     case silent
 
+    /// The panel menu's word for the mode (the wire name is `normal`).
+    var displayName: String {
+        switch self {
+        case .normal: return "Ring"
+        case .vibrate: return "Vibrate"
+        case .silent: return "Silent"
+        }
+    }
+
     /// The mode a cycling control moves to next.
     var next: PhoneRingerMode {
         switch self {

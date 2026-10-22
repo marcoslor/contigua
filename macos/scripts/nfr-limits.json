@@ -3,6 +3,7 @@
   "connect_ms": 1500,
   "contrast_min": 3.0,
   "deck_zoom_frame_p95_ms": 40,
+  "deck_drag_frame_p95_ms": 21,
   "fetch_small_ms": 3000,
   "first_frame_ms": 1500,
   "first_frame_phone_ms": 1500,

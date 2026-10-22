@@ -40,7 +40,7 @@ Menu-bar presence + Dock icon. One home window, the **Deck**, plus the app windo
 Detail, states, copy and the connection state machine: [design/mac-redesign.md](design/mac-redesign.md).
 The app's own menu items carry SF Symbols, as Apple's apps draw theirs, and the menus have no section titles. **View** holds
 Find Apps · Framed / Immersive (⌥⌘F switches) · Hide Controls › · Show Touches · Live Text · Density › (Default, the other
-percentages, Larger ⌘+, Smaller ⌘−, Actual Size ⌘0). **Phone** holds Phone Window ⌘P · Continue on Mac ⇧⌘C · Turn Off Phone
+percentages, Larger ⌘+, Smaller ⌘−, Actual Size ⌘0). **Phone** holds Phone Mirror ⌘P · Continue on Mac ⇧⌘C · Turn Off Phone
 Screen · Do Not Disturb · Ring Phone / Stop Ringing · Install APK…. **Navigate** holds Back · Home · Recents, **Window** the
 standard items plus Enter Full Screen ⌃⌘F, and **Help** is empty (there is no help book). A control that cannot work is
 disabled, never hidden.
@@ -86,10 +86,13 @@ disabled, never hidden.
    displays the link; the phone mirror as nothing). It arrives on its own, ends when the window closes, and **Options → Keep in Dock**
    makes it permanent ("Add to Dock" in the app's context menu does the same by hand; Settings → General switches it off).
 3. **Menu bar panel**: the status item opens a Control Center-style card, not a menu — the phone's name and state,
-   its battery, the phone's volume slider, **Do Not Disturb**, **Ring Phone** / **Stop Ringing**, **Now Playing
-   follows** when several apps play, the live notifications, **Phone Window** ⌘P, **Find Apps** ⌘K, **Continue on
-   Mac**, **Install APK…**, then **Settings…** and **Quit PocketDeck**. A control that cannot work is dimmed with one
-   line saying why ("Connect your phone to use these."). The Deck's status pill opens the same card in a popover.
+   its battery, a 2×2 set of tiles for **Do Not Disturb**, **Ringer**, **Ring Phone** / **Stop Ringing** and
+   **Turn Off Screen** (Screen on / Screen off), the volume slider with its %, **Now Playing follows** when several
+   apps play, the live notifications, one **WINDOWS** row (**Mirror** ⌘P · **Find Apps** ⌘K · **Continue on Mac** ·
+   **Install APK…**), then **Settings…** and **Quit PocketDeck**. **Ringer** opens Ring / Vibrate / Silent with the
+   current mode checked; the volume follows the pointer while it is dragged. A control that cannot work is dimmed
+   with one line saying why ("Connect your phone to use these."). The Deck's status pill opens the same card in a
+   popover, without the Settings/Quit footer.
 4. **Settings** (⌘,; also the settings gear at the Deck header's right): tabs **General** (launch at login, show in menu bar,
    share clipboard with your phone, show phone apps in the Dock, **glass app icons**, default window density, **reveal controls after**) · **Input**
    (**hover over Android apps**) · **Devices**
@@ -162,9 +165,9 @@ Material 3, edge-to-edge, dynamic color, light/dark.
 
 - App window, before its first frame: the app's icon and name, a spinner,
   **Opening on your phone…**.
-- Phone window: the phone's icon and name, a spinner, **Opening your phone…**.
+- Phone Mirror: the phone's icon and name, a spinner, **Opening your phone…**.
 - After 5 s: **Still opening…**.
-- After 20 s without a frame: **Couldn't open <app>.** (the phone window:
+- After 20 s without a frame: **Couldn't open <app>.** (the Phone Mirror:
   **Couldn't open your phone.**) with **Try Again** and **Close**. Try Again
   sends the same open again; Close closes the window.
 - The cover is a frozen mode: no input reaches the phone. The "Not responding"
