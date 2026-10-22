@@ -1478,12 +1478,6 @@ class WindowStream(object):
             self.display_id = 0
         else:
             self.display_id = phone.next_display_id()
-        # window.content: where the picture sits in the frame (x, y, w, h). --pad
-        # gives the mirror a 2% black band at the right and bottom, the way a
-        # real encoder's frame does when its size and the screen's aspect differ.
-        self.content = (0, 0, self.w, self.h)
-        if mode == "phone" and phone.args.pad:
-            self.content = (0, 0, (self.w - self.w // 50) & ~1, (self.h - self.h // 50) & ~1)
         self.label = "Home" if mode == "phone" else (self._label_for(pkg) or pkg)
         self._enc = None
         self._reader = None
@@ -1510,11 +1504,20 @@ class WindowStream(object):
                 return app["label"]
         return None
 
+    def _picture(self):
+        """window.content for the current size: where the picture sits in the frame
+        (x, y, w, h). --pad gives a mirror a 2% black band at the right and bottom,
+        the way a real encoder's frame does when its size and the screen's aspect
+        differ. Read at each encoder start: a rotation changes the size."""
+        if self.mode == "phone" and self.phone.args.pad:
+            return (0, 0, (self.w - self.w // 50) & ~1, (self.h - self.h // 50) & ~1)
+        return (0, 0, self.w, self.h)
+
     def _source(self):
         if self._black:
             return "color=c=black:size=%dx%d:rate=%d" % (self.w, self.h, FRAME_RATE)
         if self.mode == "phone":
-            _, _, cw, ch = self.content
+            _, _, cw, ch = self._picture()
             source = "smptehdbars=size=%dx%d:rate=%d" % (cw, ch, FRAME_RATE)
             return source if (cw, ch) == (self.w, self.h) else source + ",pad=%d:%d:0:0:black" % (self.w, self.h)
         return "testsrc2=size=%dx%d:rate=%d" % (self.w, self.h, FRAME_RATE)
@@ -1683,7 +1686,7 @@ class WindowStream(object):
                 return
             self._configured = True
             # Same lane as the config, so the Mac has the picture rect when the config lands.
-            x, y, cw, ch = self.content
+            x, y, cw, ch = self._picture()
             self.phone.sender.send_in_order(proto.pack_json(
                 {"t": "window.content", "stream": self.stream_id, "x": x, "y": y, "w": cw, "h": ch},
                 self.stream_id))
