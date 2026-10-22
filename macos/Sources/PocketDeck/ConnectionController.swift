@@ -2411,13 +2411,6 @@ final class ConnectionController {
             guard let deck = DeckWindow.window else { return "no deck window" }
             DeckSearch.setText(text, in: deck)
             return nil
-        case "phone-mirror":
-            // Phone ▸ Phone Mirror: the same WindowManager call the menu
-            // item's binding makes. A quiet launch is an inactive app, and
-            // menu key equivalents need the app frontmost, so the check asks
-            // for the menu's action rather than pressing ⌘P into nothing.
-            windows.openPhoneWindow()
-            return nil
         case "panel-menu":
             // Phone ▸ Turn Off Phone Screen: the same WindowManager call the
             // menu item's binding makes, which sends the phone window's own
