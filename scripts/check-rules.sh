@@ -496,7 +496,8 @@ def check_weakened(path, info, lines, base, base_text_for):
                 add(path, n, "R-CHECK-1",
                     "removed check line: %s" % text.strip())
         for n, text in sorted(info["added"].items()):
-            if re.search(r"\bSKIP\b", text):
+            # A comment that names SKIP is not a skip.
+            if re.search(r"\bSKIP\b", text) and not text.lstrip().startswith("#"):
                 add(path, n, "R-CHECK-1", "new SKIP: %s" % text.strip())
     if path == LIMITS and base is not None:
         new = load_json("\n".join(lines))
