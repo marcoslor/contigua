@@ -3743,6 +3743,36 @@ check_mirror() {
     fi
     wait_until 10 landscape_config \
         && ok "MIRROR landscape VIDEO_CONFIG sent" || bad "MIRROR no landscape VIDEO_CONFIG"
+    # One mirror per phone (the person's report, 2026-10-22): Phone ▸ Phone
+    # Mirror three more times raises the open one. Before the fix each press
+    # made another window on another stream — four mirrors of one screen.
+    # The check's control host is this check's own (it launches with
+    # --debug-control "$WORK/control", not the shared $WORK-control).
+    # `phone-mirror` is the menu item's binding: a quiet launch is an inactive
+    # app, and a menu key equivalent needs the app frontmost, so pressing ⌘P
+    # would reach nothing.
+    local mirrors press
+    for press in 1 2 3; do
+        printf 'phone-mirror\n' > "$WORK/control/mirror.cmd"
+        if wait_until 5 [ -s "$WORK/control/mirror.done" ]; then
+            [ "$(cat "$WORK/control/mirror.done")" = "ok" ] \
+                || bad "MIRROR Phone Mirror: $(cat "$WORK/control/mirror.done")"
+        else
+            bad "MIRROR Phone Mirror: no answer from the control host"
+        fi
+        rm -f "$WORK/control/mirror.done"
+        sleep 0.4
+    done
+    sleep 1
+    # A mirror is portrait or landscape; the Deck is 760x560 (1.36), so the
+    # two phone aspects pick the mirrors in either orientation — a window that
+    # just opened is portrait until its first frame turns it.
+    mirrors="$(windows | awk '($5 > $4 * 1.5) || ($4 > $5 * 1.5)' | wc -l | tr -d ' ')"
+    if [ "$mirrors" = "1" ]; then
+        ok "MIRROR Phone Mirror three more times still shows one mirror"
+    else
+        bad "MIRROR Phone Mirror three more times made $mirrors mirrors"
+    fi
 
     # repro stale-frame: the panel times out, the fake stops frames, and the
     # window shows "screen off" within the limit docs/NFR.md sets — never the
