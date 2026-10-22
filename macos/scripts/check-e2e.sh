@@ -2752,7 +2752,34 @@ EOF
         && ok "MENUS choosing Immersive took the window to the immersive style" \
         || bad "MENUS choosing Immersive left $(grep -o 'style=[a-z]*' "$WORK/chrome.txt" | tail -1)"
     dump_now 3
+    # The pair's mark and Hide Controls' enablement follow the key window: the
+    # items are SwiftUI's (a rebuild cannot drop them), and MenuMarks writes
+    # their values when the menu opens.
+    python3 - "$WORK/menus-3.json" <<'PY' && ok "MENUS after choosing Immersive: it is checked and Hide Controls is enabled" \
+        || bad "MENUS the View menu did not follow the style change"
+import json, sys
+root = json.load(open(sys.argv[1]))
+view = next(i for i in root["items"] if i["title"] == "View")
+by_title = {item["title"]: item for item in view["submenu"]}
+if by_title["Framed"]["state"] != "off" or by_title["Immersive"]["state"] != "on":
+    print("states:", by_title["Framed"]["state"], by_title["Immersive"]["state"]); sys.exit(1)
+hide = by_title.get("Hide Controls")
+if hide is None or not hide.get("enabled"):
+    print("Hide Controls:", hide); sys.exit(1)
+PY
     touch "$WORK/menus-step-4"; sleep 1.5; dump_now 4
+    python3 - "$WORK/menus-4.json" <<'PY' && ok "MENUS after choosing Framed: it is checked and Hide Controls is disabled" \
+        || bad "MENUS the View menu did not follow the style back"
+import json, sys
+root = json.load(open(sys.argv[1]))
+view = next(i for i in root["items"] if i["title"] == "View")
+by_title = {item["title"]: item for item in view["submenu"]}
+if by_title["Framed"]["state"] != "on" or by_title["Immersive"]["state"] != "off":
+    print("states:", by_title["Framed"]["state"], by_title["Immersive"]["state"]); sys.exit(1)
+hide = by_title.get("Hide Controls")
+if hide is None or hide.get("enabled"):
+    print("Hide Controls:", hide); sys.exit(1)
+PY
     # 5: after a second stream window opened (a different key window).
     control open --open com.whatsapp --debug-chrome-state "$WORK/chrome.txt" \
         || bad "MENUS shared app: opening a second window answered '$CONTROL_REPLY'"
@@ -2997,22 +3024,17 @@ PY
     control panelclose || bad "MENUS panelclose: $CONTROL_REPLY"
 
     if [ "$VISIBLE" = "1" ]; then
-        # The pair's check mark and the Window item's title cannot be asserted
-        # after a pick: SwiftUI builds a menu item once and never re-reads its
-        # state, in a quiet run and in this activated one alike (measured here:
-        # after choosing Immersive the mark still shows the style from launch).
-        # What this run does assert is that the pick reached the window (the
-        # style checks above) and that the bar is still the whole design, which
-        # every dump checks. The stale mark is recorded in the epic's report.
+        # The pair's marks were asserted in the shared block above, which this
+        # run executes too; this block adds what needs a real Space.
         touch "$WORK/menus-step-full"
         sleep 7
+        # The title can only follow the window if the window went to a Space.
+        chrome_has "fullscreen=yes" \
+            && ok "MENUS the shared app entered a Space (fullscreen=yes)" \
+            || bad "MENUS the shared app did not enter full screen: $(chrome_state)"
         dump_now 10
-        # In full screen the item is still the Window menu's one, with ⌃⌘F. Its
-        # title is built with the commands and SwiftUI does not re-read it, so
-        # it still says "Enter Full Screen" here; the report records that, and
-        # the item's action is what the person uses.
-        python3 - "$WORK/menus-10.json" <<'PY' && ok "MENUS in full screen the Window item is still the only full-screen item, with ⌃⌘F" \
-            || bad "MENUS the full-screen item changed in full screen"
+        python3 - "$WORK/menus-10.json" <<'PY' && ok "MENUS in full screen the Window item reads Exit Full Screen, still the only one" \
+            || bad "MENUS the full-screen title did not follow the key window"
 import json, sys
 def walk(items):
     for item in items:
@@ -3024,6 +3046,8 @@ everywhere = [i for i in walk(root["items"]) if "Full Screen" in i["title"]]
 if len(everywhere) != 1:
     print("full-screen items:", [i["title"] for i in everywhere]); sys.exit(1)
 item = everywhere[0]
+if item["title"] != "Exit Full Screen":
+    print("title:", item["title"]); sys.exit(1)
 if item["keyEquivalent"] != "f" or sorted(item["modifiers"]) != ["command", "control"]:
     print("shortcut:", repr(item["keyEquivalent"]), item["modifiers"]); sys.exit(1)
 if not item["hasImage"]:
@@ -3045,7 +3069,7 @@ PY
             || bad "MENUS shared app: reopening a stream window answered '$CONTROL_REPLY'"
         sleep 2; dump_now 13
     else
-        skip_visible "MENUS the full-screen item in a real Space (needs real input; PD_E2E_VISIBLE=1 runs it)"
+        skip_visible "MENUS the Exit Full Screen title (native full screen needs a real Space)"
         skip_visible "MENUS the bar with the last stream window closed (a quiet app stops answering then)"
     fi
 

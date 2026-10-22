@@ -2346,6 +2346,9 @@ final class ConnectionController {
                 return "menudump needs an absolute PATH"
             }
             NSApp.mainMenu?.update()
+            // The marks that opening the menu writes (MenuMarks): the dump stands
+            // for what a person reads in the open menu.
+            MainActor.assumeIsolated { MenuMarks.apply(to: NSApp.mainMenu) }
             do {
                 try MenuDump.write(NSApp.mainMenu, to: path)
             } catch {

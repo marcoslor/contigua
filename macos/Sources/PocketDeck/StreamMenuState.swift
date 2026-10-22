@@ -43,5 +43,6 @@ final class StreamMenuState {
     /// label and for deciding what "Default" restores.
     var settingsDensity = 1.0
 
-    private init() {}
+    /// The app uses `shared`; a test builds its own to drive the menu rules.
+    init() {}
 }

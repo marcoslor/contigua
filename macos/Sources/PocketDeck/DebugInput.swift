@@ -695,13 +695,18 @@ final class DebugInputDriver {
             click(at: Self.windowPoint(dx: dx, top: top, in: window), in: window)
         case .menuDump(let path):
             // The state a person sees: NSMenu.update runs the same validation
-            // an open menu does (titles, checks, AppKit's own items).
+            // an open menu does (titles, checks, AppKit's own items), and the
+            // marks are the ones opening the menu writes (MenuMarks).
             NSApp.mainMenu?.update()
+            // The marks opening the menu writes, so the dump reads what a
+            // person reads (this script runs on the main thread).
+            MainActor.assumeIsolated { MenuMarks.apply(to: NSApp.mainMenu) }
             try? MenuDump.write(NSApp.mainMenu, to: path)
         case .menuPick(let path):
             // Choosing the item is the control: the item's own target and
             // action, after the same validation an open menu runs.
             NSApp.mainMenu?.update()
+            MainActor.assumeIsolated { MenuMarks.apply(to: NSApp.mainMenu) }
             guard let item = Self.menuItem(at: path, in: NSApp.mainMenu),
                   item.isEnabled, let action = item.action else { return }
             NSApp.sendAction(action, to: item.target, from: item)

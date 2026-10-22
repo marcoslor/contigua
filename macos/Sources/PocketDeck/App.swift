@@ -406,6 +406,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // registration domain and the person's defaults stay untouched.
         UserDefaults.standard.register(defaults: ["NSFullScreenMenuItemEverywhere": false])
         MenuSeparators.start()
+        MenuMarks.start()
+        FullScreenMenu.start()
         // VisionKit's analyser service is slow and unreliable on its first
         // call (LiveTextWarmer): pay that while the app starts, not when the
         // person presses Live Text.
