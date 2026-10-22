@@ -465,6 +465,12 @@ enum DebugInputScript {
         return stroke
     }
 
+    /// A key spec ("cmd+f") for the app-level e2e route (`key`), parsed by the
+    /// same table a script's `key` line uses.
+    static func keyStroke(for spec: String) -> KeyStroke? {
+        try? keyStroke(spec.lowercased())
+    }
+
     private static let namedKeys: [String: (keyCode: UInt16, characters: String)] = [
         "esc": (53, "\u{1b}"),
         "return": (36, "\r"),
@@ -701,7 +707,7 @@ final class DebugInputDriver {
             // The marks opening the menu writes, so the dump reads what a
             // person reads (this script runs on the main thread).
             MainActor.assumeIsolated { MenuMarks.apply(to: NSApp.mainMenu) }
-            try? MenuDump.write(NSApp.mainMenu, to: path)
+            try? MenuDump.write(NSApp.mainMenu, to: path, displayed: true)
         case .menuPick(let path):
             // Choosing the item is the control: the item's own target and
             // action, after the same validation an open menu runs.
