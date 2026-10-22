@@ -100,7 +100,7 @@ backgrounds), window background default.
 ┌ ● ● ●   Pixel Walk                         [● Connected · 🔒 87%]  [📱 Phone]  [🔍 Search apps ⌘K] ┐
 │ ┌ banner (only when needed) ───────────────────────────────────────────────────────────────────┐ │
 │ └──────────────────────────────────────────────────────────────────────────────────────────────┘ │
-│   ▢ Camera  ▢ Chrome  ▢ Gallery  …   (adaptive grid, 96 pt cells, 24 pt row gap)                │
+│   ▢ Camera  ▢ Chrome  ▢ Gallery  …   (D grid, 96×108 cells, 64 pt icons, 16 pt pitch)          │
 ```
 
 - `navigationTitle(phone.name)`; no subtitle. Toolbar: `ToolbarItem(placement: .status)` **chip**;
@@ -119,12 +119,20 @@ backgrounds), window background default.
   | needsPairing | orange | Pair again | — |
   | pairing | — | chip hidden (the sheet is up) | |
 
-- **Grid:** `LazyVGrid(columns: [GridItem(.adaptive(minimum: 96, maximum: 96), spacing: 8)], spacing: 8)`,
-  padding 16 (toolbar inset applies). Cell 96×100: icon 56×56, the shared `PhoneAppIcon` render in the macOS shape
-  (docs/design/dock.md §Icons; the setting off keeps the flat image at radius 13), label `.caption` 1 line
-  `.truncationMode(.middle)`, spacing 6. Hover `.fill(.quaternary)`; keyboard/mouse
-  selection `.fill(Color.accentColor.opacity(0.22))`, both `RoundedRectangle(cornerRadius: 14)`. **Single click opens**
-  (↩ opens the selected one, or the first match when none is selected).
+- **Grid (D):** `DeckGridLayout` places every cell from the width of the pass that draws it, so a live resize or a
+  zoom cannot draw a clipped edge column. At 100 % a cell is 96×108, its icon 64×64 (the shared `PhoneAppIcon` in the
+  macOS shape, docs/design/dock.md §Icons), with an 8 pt icon-label gap, a fixed 16 pt column gap and row spacing, a
+  24 pt vertical inset and a 16 pt hover corner. The block is centred and stops growing at 880 pt (60 pt margins at
+  1000; 5 columns at 640, 8 at 1000 and wider). Label `.caption` 1 line `.truncationMode(.middle)`. Hover
+  `.fill(.quaternary)`; keyboard/mouse selection `.fill(Color.accentColor.opacity(0.22))`, both
+  `RoundedRectangle(cornerRadius: 16)`. **Single click opens** (↩ opens the selected one, or the first match when none
+  is selected). **⌘+ / ⌘− / ⌘0** scale the whole grid (cell, icon, gaps, insets and the 880 pt cap) through
+  0.75 / 1 / 1.25 / 1.5 on the Deck, stored as `deckZoom`; the keys do nothing in another window.
+- **A–Z rail (D):** the Deck's trailing edge carries one 16 pt column, 8 pt from the edge: A–Z then `#`, 9 pt letters
+  on a 12 pt pitch, the current letter accent and semibold, empty letters dimmed at 35 %. It appears only when the
+  search field is empty and there are at least 30 apps. Clicking or dragging a letter scrolls to its first app; an
+  empty letter skips forward to the next one with apps. The current letter comes from the first app in the top
+  visible row, read from `visibleRect.minY + contentInsets.top`.
 - **Data:** apps and icons come from `AppsCache` (§6.3) first, then refresh from the phone, so the grid
   is populated at launch before the first connection. Offline/reconnecting: grid `.opacity(0.5)`,
   `.allowsHitTesting(false)`.
@@ -248,15 +256,25 @@ toolbar item group:
   `.menuBarExtraStyle(.window)`. A Control Center-style panel, not a menu: a menu-style extra turned the volume
   `Slider` into a "Phone volume" stepper submenu whose hover opened and closed it. Icon: online `apps.iphone` ·
   reconnecting `apps.iphone` (pulse) · offline `iphone.slash`.
-- The panel is `PhonePanelView` (PhonePanel.swift), 300 pt wide with fixed-height rows: header (phone symbol, name,
-  status dot + text, battery) · the agent row ("AI agent connected" + **Disconnect**) · **PHONE** (the phone's media
-  volume slider, the one reason line when a control is off, **Do Not Disturb**, **Ring Phone**/**Stop Ringing**, the
-  **Now Playing follows** picker when the phone reports ≥ 2 sessions) · **LIVE** (one row per live notification) ·
-  **WINDOWS** (**Phone Mirror** ⌘P · **Find Apps** ⌘K · **Continue on Mac** · **Install APK…** with its phase) ·
-  **Settings…** ⌘, · **Quit PocketDeck** ⌘Q.
+- The panel is `PhonePanelView` (PhonePanel.swift), 300 pt wide, 12 pt inset (P3): header (phone symbol, name,
+  status dot + text, battery) · the agent row ("AI agent connected" + **Disconnect**) · a 2×2 grid of 134 pt tiles,
+  ≥62 pt high, 8 pt apart, 12 pt corners: **Do Not Disturb**, **Ringer**, **Ring Phone**, **Turn Off Screen** ·
+  the phone's media volume slider with its % · the one reason line when a control is off · **Now Playing follows**
+  when the phone reports ≥ 2 sessions · **LIVE** (one row per live notification) · one **WINDOWS** row of four icon
+  buttons: **Mirror** (VoiceOver "Phone Mirror") ⌘P · **Find Apps** ⌘K · **Continue on Mac** ⇧⌘C · **Install APK…**
+  (with its phase). The menu-bar panel keeps **Settings…** ⌘, and **Quit PocketDeck** ⌘Q; the Deck popover does not
+  (`showsFooter`).
+- **Ringer** opens a menu (**Ring** / **Vibrate** / **Silent**) with the phone's current mode checked; it never
+  cycles on click. The tile's subtitle names the current mode. It is disabled, with a reason, when the phone sends
+  no `ringer` or while the phone's DND is on (`dnd_on`). **Turn Off Screen** shows **Screen on** / **Screen off**
+  from the phone's held panel and is disabled until a Phone Mirror is open.
+- **Volume slider:** Idle shows the phone's value. Dragging shows the pointer's value every frame and ignores the
+  phone's echoes; `phone.volume` is sent at most 10 times a second, and the release value is always sent. Settling
+  shows the sent value until the phone echoes it, or one second passes and the phone's value wins. A hardware-key
+  change while Idle moves the slider.
 - No track title, performer, artwork or forwarded-audio volume: the Mac's own Now Playing shows the track, and the
   phone's media volume is the only volume control. A control that cannot work is dimmed with one line saying why
-  (offline, no volume sent, no DND reported), never hidden.
+  (offline, no volume sent, no DND reported, no ringer, DND on), never hidden.
 - **One component, two hosts:** the Deck's status pill opens the same view in a `.popover`; both build it from
   `PhoneControlsState(controller:)` and `PhoneControlsActions(controller:openDeck:)`.
 - **App menu bar** (SwiftUI `commands`, `AppCommands` in MenuBar.swift): every item the app draws is built there, so
@@ -408,7 +426,7 @@ tries again; that Mac has nothing to try with. Pairing again goes through §4.3 
 | Where | Keys |
 |---|---|
 | Global (any window) | ⌘K Find Apps (shows the Deck, focuses search) · ⌘P Phone Mirror · ⇧⌘N Add phone… · ⌘, Settings · ⌘W close window · ⌘M minimize · ⌘H hide · ⌥⌘H hide others · ⌘Q quit · ⌃⌘F full screen |
-| Deck (Phone mode) | typing goes to search (focused on show) · ⌘F focuses the search field and selects its text · ←→↑↓ move selection (grid) · ↩ open selected / first match · Esc clears search, then does nothing |
+| Deck (Phone mode) | typing goes to search (focused on show) · ⌘F focuses the search field and selects its text · ←→↑↓ move selection (grid) · ⌘+/⌘−/⌘0 zoom the grid (75/100/125/150 %) · ↩ open selected / first match · Esc clears search, then does nothing |
 | Deck (Welcome) | ↩ Find my phone |
 | Nearby | ↑↓ move · ↩ Pair the selected row · ⌘R rescan (restarts Discovery) |
 | Code sheet | Esc Cancel |
