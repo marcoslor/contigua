@@ -33,7 +33,7 @@ machine (§4), which also fixes the root causes of A01–A03.
 |---|---|---|---|
 | **Deck** | SwiftUI `Window("PocketDeck", id: "deck")` | launch; Dock click; ⌘K; menu-bar "Open PocketDeck" | The only main window. Default 760×560, min 560×420, single instance. Closing hides it; the app keeps running. |
 | **App window** | AppKit `NSWindow` per stream (`AppWindowController`) | click an app in the Deck / ↩ | Content only (§3.7). |
-| **Phone window** | AppKit `NSWindow` (`PhoneWindowController`) | Deck toolbar **Phone**, ⌘P | Aspect-locked, glass hover header with Back/Home/Recents. |
+| **Phone Mirror** | AppKit `NSWindow` (`PhoneWindowController`) | Deck toolbar **Phone**, ⌘P | Aspect-locked, glass hover header with Back/Home/Recents. |
 | **Settings** | SwiftUI `Settings` scene | ⌘, | Tabs General · Devices. |
 | *Sheets over the Deck* | SwiftUI `.sheet` | | Nearby (Add phone), Code, QR, Manual connect. |
 | **Menu-bar item** | SwiftUI `MenuBarExtra` (`.window`) | always (toggle in Settings) | A Control Center-style panel: the phone's controls, live notifications, window actions, Settings/Quit (§3.8). |
@@ -143,7 +143,7 @@ backgrounds), window background default.
   | Local Network denied | as §3.2 | Open Settings |
   | open failed (`launch_failed`) | "Couldn't open *app* on the phone." (auto-clears 5 s) | — |
 
-- **Phone** button: opens the Phone window (disabled unless online).
+- **Phone** button: opens the Phone Mirror (disabled unless online).
 - **No selection of phones here.** Switching/adding phones is in Settings → Devices (§3.6).
 - Window title bar has no document icon. Frame autosave `deck`.
 
@@ -252,7 +252,7 @@ toolbar item group:
   status dot + text, battery) · the agent row ("AI agent connected" + **Disconnect**) · **PHONE** (the phone's media
   volume slider, the one reason line when a control is off, **Do Not Disturb**, **Ring Phone**/**Stop Ringing**, the
   **Now Playing follows** picker when the phone reports ≥ 2 sessions) · **LIVE** (one row per live notification) ·
-  **WINDOWS** (**Phone Window** ⌘P · **Find Apps** ⌘K · **Continue on Mac** · **Install APK…** with its phase) ·
+  **WINDOWS** (**Phone Mirror** ⌘P · **Find Apps** ⌘K · **Continue on Mac** · **Install APK…** with its phase) ·
   **Settings…** ⌘, · **Quit PocketDeck** ⌘Q.
 - No track title, performer, artwork or forwarded-audio volume: the Mac's own Now Playing shows the track, and the
   phone's media volume is the only volume control. A control that cannot work is dimmed with one line saying why
@@ -274,15 +274,15 @@ toolbar item group:
   *File* (Add Phone… ⇧⌘N · ── · Close ⌘W · Close All ⌥⌘W — nothing after Close All) ·
   *Edit* (the standard Undo/Redo/Cut/Copy/Paste/Select All, so paste works in the code and search fields) ·
   *View* (Find Apps ⌘K · ── · Framed / Immersive · Hide Controls › · ── · Show Touches · Live Text ⇧⌘T · ── · Density ›) ·
-  *Phone* (Phone Window ⌘P · Continue on Mac ⇧⌘C · ── · Turn Off Phone Screen · Do Not Disturb · Ring Phone / Stop
+  *Phone* (Phone Mirror ⌘P · Continue on Mac ⇧⌘C · ── · Turn Off Phone Screen · Do Not Disturb · Ring Phone / Stop
   Ringing · ── · Install APK…) ·
   *Navigate* (Back ⌘[ · Home ⇧⌘H · Recents ⌘↑ — no screen item) ·
   *Window* (Minimize ⌘M · Zoom · Enter Full Screen ⌃⌘F · Bring All to Front · the window list) ·
   *Help* (empty: there is no help book and no public issue tracker, so no dead item).
 - **The Phone menu is the panel's controls**: it builds from the same `PhoneControlsState` and `PhoneControlsActions`
-  the menu-bar panel and the Deck popover use, so one mapping decides what can work — *Phone Window*, *Continue on Mac*,
+  the menu-bar panel and the Deck popover use, so one mapping decides what can work — *Phone Mirror*, *Continue on Mac*,
   *Turn Off Phone Screen*, *Ring Phone* and *Install APK…* are disabled while the phone is away, and *Turn Off Phone
-  Screen* until a phone window is open. A control that cannot work is disabled, never hidden. *Turn Off Phone Screen*
+  Screen* until a Phone Mirror is open. A control that cannot work is disabled, never hidden. *Turn Off Phone Screen*
   keeps its checkmark on the phone's own `state.panel` report, never a local guess. *Install APK…* and *Ring
   Phone* name what they are doing ("Sending foo.apk… 40%", "Stop Ringing").
 - **View ▸ Framed / Immersive** is one radio pair for the key stream window, built by the commands as an inline
@@ -295,7 +295,7 @@ toolbar item group:
 - **View ▸ Density** names the Settings default in its first item — *Default (100%)* — then lists only the other
   percentages, so no value appears twice, then *Larger* ⌘+, *Smaller* ⌘− and *Actual Size* ⌘0: the same step and reset
   the stream window's own keys perform, now visible, disabled without a key stream window that shows an app.
-- **Enter Full Screen** ⌃⌘F is a plain command item; it is disabled for the phone window, which opts out of native
+- **Enter Full Screen** ⌃⌘F is a plain command item; it is disabled for the Phone Mirror, which opts out of native
   full screen because the mirror would be letterboxed.
 - **Marks SwiftUI cannot keep, and how they are kept:** SwiftUI builds a command item once and never re-reads its
   state — measured in an activated app, not only in the quiet e2e. Every item stays SwiftUI's, so a rebuild can never
@@ -407,7 +407,7 @@ tries again; that Mac has nothing to try with. Pairing again goes through §4.3 
 
 | Where | Keys |
 |---|---|
-| Global (any window) | ⌘K Find Apps (shows the Deck, focuses search) · ⌘P Phone window · ⇧⌘N Add phone… · ⌘, Settings · ⌘W close window · ⌘M minimize · ⌘H hide · ⌥⌘H hide others · ⌘Q quit · ⌃⌘F full screen |
+| Global (any window) | ⌘K Find Apps (shows the Deck, focuses search) · ⌘P Phone Mirror · ⇧⌘N Add phone… · ⌘, Settings · ⌘W close window · ⌘M minimize · ⌘H hide · ⌥⌘H hide others · ⌘Q quit · ⌃⌘F full screen |
 | Deck (Phone mode) | typing goes to search (focused on show) · ⌘F focuses the search field and selects its text · ←→↑↓ move selection (grid) · ↩ open selected / first match · Esc clears search, then does nothing |
 | Deck (Welcome) | ↩ Find my phone |
 | Nearby | ↑↓ move · ↩ Pair the selected row · ⌘R rescan (restarts Discovery) |
@@ -416,7 +416,7 @@ tries again; that Mac has nothing to try with. Pairing again goes through §4.3 
 | Manual sheet | ⇥ fields · ↩ Connect · Esc Cancel |
 | Settings | ⌘W closes |
 | App window | everything is forwarded to the phone as before (`InputMapper`); menu key equivalents win: ⌘[ Back · ⌘+ ⌘− ⌘0 density · ⌘W close; ⌘F is the phone app's find in page; Esc rules unchanged (`escapeAllowed`) |
-| Phone window | additionally ⇧⌘H Home · ⌘↑ Recents |
+| Phone Mirror | additionally ⇧⌘H Home · ⌘↑ Recents |
 
 Existing menu shortcuts and their tests (`NavShortcutTests`) are kept verbatim.
 
@@ -479,7 +479,7 @@ Phase B may keep the flat layout if moving files would make the diff hard to rev
 
 1 Welcome · 2 Nearby empty/searching · 3 Nearby with 2 phones (one remembered) · 4 Code sheet (comparing) · 5 verifying · 6 contacting · 7 denied · 8 timedOut · 9 QR sheet · 10 QR success · 11 Manual sheet ·
 12 Deck loading (skeleton) · 13 Deck connected (≥ 14 apps) · 14 search with matches · 15 no matches · 16 selection state · 17 Connecting… (launch, cached grid) · 18 Reconnecting… · 19 Offline banner ·
-20 needsPairing banner · 21 busy banner · 22 Settings General · 23 Settings Devices (2 phones) · 24 Forget confirmation · 25 App window (with link pill visible) · 26 Phone window (hover header visible) · 27 menu-bar menu ·
+20 needsPairing banner · 21 busy banner · 22 Settings General · 23 Settings Devices (2 phones) · 24 Forget confirmation · 25 App window (with link pill visible) · 26 Phone Mirror (hover header visible) · 27 menu-bar menu ·
 28 Reduce Transparency variant of 13.
 
 ## 9. Revisions to existing docs (proposed here; Phase B applies them to UX.md/DESIGN.md after approval)

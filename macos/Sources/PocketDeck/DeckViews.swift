@@ -459,7 +459,7 @@ struct PhoneDeckView: View {
             ToolbarItem(placement: .primaryAction) {
                 Button { controller.openPhoneWindow() } label: { Label("Phone", systemImage: "iphone.gen3") }
                     .disabled(!controller.link.isOnline)
-                    .help("Open the phone screen")
+                    .help("Open Phone Mirror")
             }
             ToolbarItem(placement: .primaryAction) {
                 SettingsLink { Image(systemName: "gearshape") }

@@ -100,7 +100,7 @@ Spec of every state, copy and transitions: [design/mac-redesign.md](design/mac-r
   stretches over it (`videoGravity = .resize`, `Letterbox.fills`) instead of showing thin black bars, and input is mapped against the same rectangle. A real mismatch is cropped:
   while the window has asked for a new size and no frame at that size has arrived, the last frame fills the view (`videoGravity = .resizeAspectFill`, a centred crop) so a live drag
   shows no black bars; a config within one 16 px step ends it, and 2 s after the last ask with no answer it falls back to aspect-fit. Input is mapped against the same rectangle
-  (`Letterbox.placement` and `videoRect`), so a click lands on the pixel under the pointer even mid-resize. The phone window is the exception: it mirrors the phone's fixed screen,
+  (`Letterbox.placement` and `videoRect`), so a click lands on the pixel under the pointer even mid-resize. The Phone Mirror is the exception: it mirrors the phone's fixed screen,
   so its letterbox is never cropped.
 - **Window chrome by style** (`StreamChrome.swift` + `WindowStyle.swift`; View ▸ Window Style, ⌥⌘F toggles). The window is the stream plus a 28 pt bar above it in
   Framed (the default, none in full screen); Immersive is exactly the stream. The other three edges are the stream's own; the corners round once on the window's
@@ -117,7 +117,7 @@ Spec of every state, copy and transitions: [design/mac-redesign.md](design/mac-r
     live. The pill fades back 600 ms after the pointer leaves zone and pill; while shown, a click on its empty area drags the window, a double-click zooms.
   - **Switching.** View ▸ Window Style's Framed/Immersive radio items and Toggle Window Style (⌥⌘F): the window grows or shrinks by the bar above the stream
     (`WindowStyle.frame` moves it down just enough when the bar would poke above the visible frame) and the choice lands per package under
-    `chrome.style.<package>` (`chrome.style.phone` for the phone window); a window with nothing stored opens Framed and re-applies the stored style when it
+    `chrome.style.<package>` (`chrome.style.phone` for the Phone Mirror); a window with nothing stored opens Framed and re-applies the stored style when it
     learns its package (link/handoff).
   - `DebugInput windowstyle framed|immersive|toggle` drives it; `--debug-chrome-state FILE` writes `style=framed|immersive lights=shown|hidden pill=shown|hidden clicks=N`
     (N = clicks the bar's or the pill's background received) there for the e2e check.
@@ -170,12 +170,12 @@ using the phone with fingers.
 - **The bar's geometry (BarGeometry).** 14 pt traffic lights, 7 pt in from
   the left, the top and the bottom, in a 28 pt bar; the 28 pt Live Text button
   mirrors them 7 pt in from the right, centred on the lights' line. The framed
-  bar and the immersive pill use the same numbers, in app and phone windows,
+  bar and the immersive pill use the same numbers, in app windows and the Phone Mirror,
   light and dark.
 
 ### Menu bar
 - `MenuBarExtra { MenuBarContent() } label: { Image(systemName: icon) }`, `.menuBarExtraStyle(.window)`: a Control Center-style panel, not a menu (a `Slider` inside a menu-style extra became a "Phone volume" stepper submenu that opened and closed under the pointer). Icon: Connected `apps.iphone` · Reconnecting `apps.iphone` (`.symbolEffect(.pulse)`) · Offline `iphone.slash`; a 5 pt dot next to it while an AI agent is connected.
-- `PhonePanelView` (PhonePanel.swift), 300 pt wide, 12 pt padding, fixed 28 pt rows, one component shared with the Deck popover: header (phone symbol, name, status dot + text, battery) · agent row ("AI agent connected" + **Disconnect**) · **PHONE** (volume `Slider`, the one reason line when a control is off, **Do Not Disturb** switch, **Ring Phone**/**Stop Ringing**, **Now Playing follows** picker with ≥ 2 sessions) · **LIVE** (one row per live notification) · **WINDOWS** (**Phone Window** ⌘P · **Find Apps** ⌘K · **Continue on Mac** · **Install APK…** with its phase) · footer (**Settings…** ⌘, · **Quit PocketDeck** ⌘Q).
+- `PhonePanelView` (PhonePanel.swift), 300 pt wide, 12 pt padding, fixed 28 pt rows, one component shared with the Deck popover: header (phone symbol, name, status dot + text, battery) · agent row ("AI agent connected" + **Disconnect**) · **PHONE** (volume `Slider`, the one reason line when a control is off, **Do Not Disturb** switch, **Ring Phone**/**Stop Ringing**, **Now Playing follows** picker with ≥ 2 sessions) · **LIVE** (one row per live notification) · **WINDOWS** (**Phone Mirror** ⌘P · **Find Apps** ⌘K · **Continue on Mac** · **Install APK…** with its phase) · footer (**Settings…** ⌘, · **Quit PocketDeck** ⌘Q).
 - No track row, artwork or forwarded-audio volume: the Mac's own Now Playing shows the track, and the phone's media volume is the only volume. A control that cannot work is dimmed with one line saying why ("Connect your phone to use these.", "Your phone hasn't sent a volume.", "This phone doesn't report Do Not Disturb."), never hidden.
 - The Deck's status pill opens the same view in a `.popover` (one component, one copy).
 - Nothing is modal: pairing failures are inline in the code sheet.
@@ -247,7 +247,7 @@ right (**Phone**, the Settings `gearshape` opening Settings, ⌘,, then the sear
 the groups ·
 grid ≤ 56 pt icons (generated initial tile when the phone has none), one-line labels, equal 20 pt side insets, the scroll bar never over a tile · at most one cell highlighted in accent tint · offline/reconnecting: dimmed grid + chip, banner only when action is needed · one cell per launch target: a package with two launcher activities is two cells, each keyed by its activity, and a cell with no label falls back to the package's last part (a repeated key draws nothing).
 **Mac — Banner:** one line, one trailing button at most, never a reason code.
-**Mac — App window:** two styles (View ▸ Window Style, ⌥⌘F; remembered per app package, no stored choice = Framed): **Framed** (default) = the stream plus a permanent bar above it (28 pt) — the stream's own top rows mirrored there under the window material, traffic lights on the bar's line, phone window: Back · Home · Recents at the bar's right; **Immersive** = only the stream, rounded corners and the system shadow, a glass pill with the traffic lights at the stream's top-left after a 350 ms rest (a click in that corner before the dwell is the app's ordinary touch); switching grows or shrinks the window by the bar, the stream keeps its place; full screen has no custom chrome in either style — the stream fills the screen, and the system's bar, revealed at the top edge, shows the window's title and the standard traffic lights · "Reconnecting…" pill over the last frame while the link is down.
+**Mac — App window:** two styles (View ▸ Window Style, ⌥⌘F; remembered per app package, no stored choice = Framed): **Framed** (default) = the stream plus a permanent bar above it (28 pt) — the stream's own top rows mirrored there under the window material, traffic lights on the bar's line, Phone Mirror: Back · Home · Recents at the bar's right; **Immersive** = only the stream, rounded corners and the system shadow, a glass pill with the traffic lights at the stream's top-left after a 350 ms rest (a click in that corner before the dwell is the app's ordinary touch); switching grows or shrinks the window by the bar, the stream keeps its place; full screen has no custom chrome in either style — the stream fills the screen, and the system's bar, revealed at the top edge, shows the window's title and the standard traffic lights · "Reconnecting…" pill over the last frame while the link is down.
 **Mac — Settings:** exactly two tabs (General, Devices) · General has exactly 3 controls · Forget is red.
 **Mac — Menu bar:** status line first · items in the order listed · icon changes with connection state.
 **Android — Onboarding:** progress bar at top advances per step · no swipe between pages · one primary button per page · Shizuku row shows current state text + matching button · Scan QR is outlined.

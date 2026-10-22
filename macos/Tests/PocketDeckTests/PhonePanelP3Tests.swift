@@ -91,7 +91,7 @@ final class PhonePanelP3Tests: XCTestCase {
     func testTheScreenTileFollowsThePanelAndNeedsItsWindow() {
         let closed = state(phoneWindow: false)
         XCTAssertFalse(PhonePanelItem.screen.isEnabled(in: closed))
-        XCTAssertEqual(PhonePanelItem.screen.reason(in: closed), "Open Phone Window first.")
+        XCTAssertEqual(PhonePanelItem.screen.reason(in: closed), "Open Phone Mirror first.")
 
         var on = state()
         on.phoneWindow = true
@@ -104,6 +104,12 @@ final class PhonePanelP3Tests: XCTestCase {
         off.panelOff = true
         XCTAssertTrue(PhonePanelItem.screen.isEnabled(in: off))
         XCTAssertEqual(off.screenTitle, "Screen off")
+    }
+
+    /// The window button is the Phone Mirror, and the tile that opens it says
+    /// so; the compact WINDOWS row may draw "Mirror" but VoiceOver reads this.
+    func testTheWindowButtonIsNamedPhoneMirror() {
+        XCTAssertEqual(PhonePanelItem.phoneScreen.label, "Phone Mirror")
     }
 
     /// Every other tile says its own reason: DND support, the link, the
