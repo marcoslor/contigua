@@ -400,7 +400,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             openRequestInbox = inbox
         }
         NSApp.servicesProvider = LinkService.shared
-        MenuSeparators.start()
+        MenuCleanup.start()
         MenuMarks.start()
         FullScreenMenu.start()
         // VisionKit's analyser service is slow and unreliable on its first

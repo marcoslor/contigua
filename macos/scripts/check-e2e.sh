@@ -3026,32 +3026,34 @@ if checked != ["Short"]:
     print("checked:", checked); sys.exit(1)
 PY
 
-    # The Window menu's own full-screen item, and the only one in the tree.
+    # The Window menu's full-screen item, on the bar a person reads: exactly one
+    # Enter/Exit Full Screen, in Window. The app's own tree also holds AppKit's
+    # Enter Full Screen with no key and no target, which the bar never shows, so
+    # the item is read from the displayed bar and its icon and shortcut from the tree.
     python3 - "$WORK/menus-1.json" <<'PY' && ok "MENUS Window holds the only full-screen item, Enter Full Screen ⌃⌘F" \
         || bad "MENUS the Window menu's full-screen item is wrong"
-import json, sys
+import json, re, sys
 def walk(items):
     for item in items:
         yield item
         if item.get("submenu"):
             yield from walk(item["submenu"])
 root = json.load(open(sys.argv[1]))
+shown = [(m["title"], i["title"]) for m in root.get("displayed") or []
+         for i in walk(m.get("submenu") or []) if re.fullmatch(r"(Enter|Exit) Full Screen", i["title"])]
+if shown != [("Window", "Enter Full Screen")]:
+    print("full-screen items on the bar:", shown); sys.exit(1)
 window = next((i for i in root["items"] if i["title"] == "Window"), None)
 if window is None:
     print("no Window menu"); sys.exit(1)
-in_window = [i for i in window["submenu"] if "Full Screen" in i["title"]]
-if len(in_window) != 1:
-    print("Window full-screen items:", [i["title"] for i in in_window]); sys.exit(1)
-item = in_window[0]
+item = next((i for i in window["submenu"]
+             if i["keyEquivalent"] == "f" and sorted(i["modifiers"]) == ["command", "control"]), None)
+if item is None:
+    print("no ⌃⌘F item in Window"); sys.exit(1)
 if item["title"] != "Enter Full Screen":
     print("title:", item["title"]); sys.exit(1)
-if item["keyEquivalent"] != "f" or sorted(item["modifiers"]) != ["command", "control"]:
-    print("shortcut:", repr(item["keyEquivalent"]), item["modifiers"]); sys.exit(1)
 if not item["hasImage"]:
     print("no icon"); sys.exit(1)
-everywhere = [i for i in walk(root["items"]) if "Full Screen" in i["title"]]
-if len(everywhere) != 1:
-    print("full-screen items in the tree:", [i["title"] for i in everywhere]); sys.exit(1)
 PY
 
     # The app's own items carry SF Symbols (the system's items stay as AppKit

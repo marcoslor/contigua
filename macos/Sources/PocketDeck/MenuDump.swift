@@ -32,6 +32,8 @@ enum MenuDump {
         var targetClass: String?
         /// nil when the item has no submenu.
         var submenu: [Item]?
+        /// AppKit's hidden flag: an item the menu keeps but does not show.
+        var hidden: Bool = false
     }
 
     /// The whole menu bar (an NSMenu's items), in AppKit's order.
@@ -50,7 +52,8 @@ enum MenuDump {
                     isSeparator: menuItem.isSeparatorItem,
                     enabled: menuItem.isEnabled,
                     targetClass: menuItem.target.map { String(describing: type(of: $0)) },
-                    submenu: menuItem.submenu.map(snapshot))
+                    submenu: menuItem.submenu.map(snapshot),
+                    hidden: menuItem.isHidden)
     }
 
     /// Stable names, in the order AppKit's own menus show them. An item with no
@@ -133,10 +136,11 @@ enum MenuDump {
         let shape = problems(menu)
         var shown: [Item]?
         if displayed {
-            // The first read is what makes AppKit add its own items; the second
-            // is what a person would see. Nothing is cleaned here: the dump
-            // observes the bar, and whatever the app removes it removes itself.
+            // The first read is what makes AppKit add its own items. Then the
+            // pass a person's open runs (MenuCleanup, on tracking) runs, and the
+            // second read is what the person sees open.
             _ = displayedItems()
+            MainActor.assumeIsolated { MenuCleanup.clean(NSApp.mainMenu) }
             shown = displayedItems()
         }
         let encoder = JSONEncoder()
