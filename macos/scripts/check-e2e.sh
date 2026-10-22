@@ -3814,36 +3814,52 @@ check_mirror() {
     fi
     wait_until 10 landscape_config \
         && ok "MIRROR landscape VIDEO_CONFIG sent" || bad "MIRROR no landscape VIDEO_CONFIG"
-    # One mirror per phone (the person's report, 2026-10-22): ⌘P three more
-    # times raises the open mirror. Before the fix each press opened another
-    # window on another stream. The press is a real key event through the app's
-    # own dispatch (`key`: NSApp.sendEvent), so the Phone menu's key equivalent
-    # answers it as it would a person's ⌘P. The check's control host is its own
-    # (--debug-control "$WORK/control"), not the shared $WORK-control.
-    local mirrors press opens streams
+    # One mirror per phone (the person's report, 2026-10-22): asking for the
+    # phone's mirror again raises the open one. Before the fix every ask opened
+    # another window on another stream. Phone ▸ Phone Mirror, the panel's row and
+    # the Deck's button all end in ConnectionController.openPhoneWindow, so the
+    # check asks that function three more times (`phone-mirror`). ⌘P itself is
+    # the menu's key equivalent, which SwiftUI runs only for the frontmost app:
+    # a quiet launch is not one, so ⌘P prints SKIP here (see the step below).
+    local mirrors press before opens streams menu_flag
+    before="$(count_events '"t":"window.open"')"
     for press in 1 2 3; do
-        mirror_control key cmd+p || bad "MIRROR ⌘P press $press: $CONTROL_REPLY"
+        mirror_control phone-mirror || bad "MIRROR Phone Mirror ask $press: $CONTROL_REPLY"
         sleep 0.4
     done
     sleep 1
-    # The launch's own window.open is the only one; the presses opened nothing,
-    # so the phone's video configs name one stream.
+    # The asks opened nothing new (window.open), and the phone's video configs
+    # name one stream: one mirror for the phone.
     opens="$(count_events '"t":"window.open"')"
     streams="$(grep '"ev":"video"' "$WORK/events.jsonl" 2>/dev/null | grep -o 'stream":[0-9]*' | sort -u | wc -l | tr -d ' ')"
     if [ "$opens" = "1" ] && [ "$streams" = "1" ]; then
-        ok "MIRROR ⌘P three more times: one window.open, one stream"
+        ok "MIRROR Phone Mirror asked three more times: one window.open, one stream"
     else
-        bad "MIRROR ⌘P three more times: $opens window.open, $streams streams (want 1 and 1)"
+        bad "MIRROR Phone Mirror asked three more times: $opens window.open ($before before the asks), $streams streams (want 1 and 1)"
     fi
     # A mirror is portrait or landscape; the Deck is 760x560 (1.36), so the
     # two phone aspects pick the mirrors in either orientation — a window that
     # just opened is portrait until its first frame turns it.
     mirrors="$(windows | awk '($5 > $4 * 1.5) || ($4 > $5 * 1.5)' | wc -l | tr -d ' ')"
     if [ "$mirrors" = "1" ]; then
-        ok "MIRROR ⌘P three more times: one phone window on screen"
+        ok "MIRROR Phone Mirror asked three more times: one phone window on screen"
     else
-        bad "MIRROR ⌘P three more times: $mirrors phone windows on screen"
+        bad "MIRROR Phone Mirror asked three more times: $mirrors phone windows on screen"
     fi
+    # The menu item must be enabled while the phone is online. Read from a
+    # validated menu (menudump validates it as an opened menu does); read-only.
+    mirror_control menudump "$WORK/menu-mirror.json" || bad "MIRROR menu dump: $CONTROL_REPLY"
+    python3 - "$WORK/menu-mirror.json" <<'PY' && ok "MIRROR Phone ▸ Phone Mirror (⌘P) is enabled while the phone is online" \
+        || bad "MIRROR Phone ▸ Phone Mirror (⌘P) is disabled while the phone is online"
+import json, sys
+root = json.load(open(sys.argv[1]))
+phone = next(i for i in root["items"] if i["title"] == "Phone")
+item = next(i for i in phone["submenu"] if i["title"] == "Phone Mirror")
+raise SystemExit(0 if item["enabled"] else 1)
+PY
+    # ⌘P: the key needs the frontmost app. A quiet run must not activate the app
+    # (focus_changes stays 0), so the key press is the VM run's step.
+    skip "MIRROR ⌘P press" "a quiet launch is not the frontmost app; the key needs a visible run"
 
     # repro stale-frame: the panel times out, the fake stops frames, and the
     # window shows "screen off" within the limit docs/NFR.md sets — never the

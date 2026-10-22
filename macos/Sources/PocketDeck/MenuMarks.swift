@@ -118,6 +118,20 @@ extension MenuMarks {
                 apply(edit, in: menu)
             }
         }
+        if let phone = mainMenu.items.first(where: { $0.title == "Phone" })?.submenu {
+            let state = PhoneControlsState(controller: AppEnvironment.shared.controller)
+            for edit in phoneEdits(items: snapshot(of: phone), phone: state) {
+                apply(edit, in: phone)
+            }
+        }
+    }
+
+    /// Phone ▸ Phone Mirror (⌘P) is enabled while the phone is online, read when
+    /// the menu starts tracking: SwiftUI's own flag for the item can lag a
+    /// connect, and then the item does nothing.
+    static func phoneEdits(items: [Item], phone: PhoneControlsState) -> [Edit] {
+        items.filter { !$0.isSeparator && $0.title == "Phone Mirror" }
+            .map { .enable([$0.title], PhonePanelItem.phoneScreen.isEnabled(in: phone)) }
     }
 
     /// The menu's items as values, for the rules.
