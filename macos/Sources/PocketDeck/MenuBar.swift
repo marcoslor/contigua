@@ -74,6 +74,12 @@ struct AppCommands: Commands {
     @Environment(\.openWindow) private var openWindow
 
     var body: some Commands {
+        // The AppKit menu bar item and its panel live outside every scene, so
+        // the panel's rows cannot ask SwiftUI to open a window themselves. The
+        // commands do have the action, and they exist at launch even when the
+        // app was started from a shell and SwiftUI presented no Deck yet.
+        let _ = DeckWindow.openAction = { openWindow(id: DeckWindow.id) }
+
         // ⌘P is "Phone Mirror" (docs/design/mac-redesign.md §5); the app prints
         // nothing, so File is Add Phone…, Close and Close All.
         CommandGroup(after: .newItem) {
