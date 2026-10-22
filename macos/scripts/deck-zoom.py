@@ -22,22 +22,26 @@ import sys
 PHASES = ("zoom", "unzoom", "drag")
 
 
-def main(path, limit):
+def main(path, limit, drag_limit=None):
     try:
         root = json.load(open(path))
     except (OSError, ValueError) as error:
         print("no readable measurement: %s" % error)
         return 1
     limit = float(limit)
+    # The drag is the person's own live resize, so it has the tighter limit:
+    # before this branch's grid the drag p95 was 19 ms, and +2 ms is the bar.
+    drag_limit = float(drag_limit) if drag_limit is not None else limit
     problems = []
     for phase in PHASES:
         data = root.get(phase) or {}
+        phase_limit = drag_limit if phase == "drag" else limit
         p95 = float(data.get("p95", 0))
         if p95 <= 0:
             problems.append("%s: no frames sampled" % phase)
-        elif p95 > limit:
+        elif p95 > phase_limit:
             problems.append("%s p95 %.0f ms > %.0f ms (p50 %.0f, max %.0f, settle %.0f, %d frames)"
-                            % (phase, p95, limit, float(data.get("p50", 0)),
+                            % (phase, p95, phase_limit, float(data.get("p50", 0)),
                                float(data.get("max", 0)), float(data.get("settleMax", 0)),
                                int(data.get("frames", 0))))
         # A freeze in the settle is still a freeze: one frame may lag, not half a second.
@@ -61,4 +65,4 @@ def main(path, limit):
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1], sys.argv[2]))
+    sys.exit(main(sys.argv[1], sys.argv[2], sys.argv[3] if len(sys.argv) > 3 else None))
