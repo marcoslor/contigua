@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The combined device verification: ONE boot, five independent sections.
+# The combined device verification: ONE boot, six independent sections.
 #
 #   bash tools/emulator/verify-batch.sh            the run (heavy.sh owns the
 #                                                  lock and the boot budget; boot
@@ -11,9 +11,9 @@
 #                                                  --check before the boot.
 #
 # start.sh (hardened) -> pair -> paired-row -> media -> phone-screen -> secure
-# -> icons. A section that fails records its evidence and the next one still
-# runs: one boot answers all five questions. The emulator is killed at the end,
-# whatever happened.
+# -> volume -> icons. A section that fails records its evidence and the next
+# one still runs: one boot answers all six questions. The emulator is killed at
+# the end, whatever happened.
 #
 # Results: one `SECTION <name> PASS|FAIL <key numbers>` line per section, in
 # .agent/emu/verify-batch.log, with one full log per section beside it. Icon
@@ -276,12 +276,117 @@ secure_section() { # secure_section <port> <state> <log>
 }
 
 
+# --- volume -----------------------------------------------------------------
+# The phone's music stream (docs/PROTOCOL.md "Volume"): the first state names
+# it, a change made on the phone arrives as the next state, `phone.volume`
+# moves it for real, and an over-limit level is clamped to the maximum. Only
+# numbers are logged.
+volume_value() { # volume_value <log> -> "level/max" of the last state line
+  grep -o 'volume=[0-9]*/[0-9]*' "$1" 2>/dev/null | tail -1 | sed 's/volume=//'
+}
+
+volume_checks() { # volume_checks <watch> <reply> <get> <clamp>
+  local watch="$1" reply="$2" get="$3" clamp="$4" rc=0 first maxv after got clamped
+  first="$(head -1 "$watch" | grep -o 'volume=[0-9]*/[0-9]*' | sed 's/volume=//')"
+  maxv=""
+  [ -n "$first" ] && maxv="${first#*/}"
+  if [ -n "$first" ] && [ -n "$maxv" ] && [ "$maxv" -gt 0 ]; then
+    echo "volume: the first state names ${first}"
+  else
+    echo "volume: no volume/volumeMax in the first state"
+    rc=1
+    maxv=15
+  fi
+  after="$(volume_value "$watch")"
+  if [ "$after" = "9/$maxv" ]; then
+    echo "volume: a change on the phone (9) arrived as the next state"
+  else
+    echo "volume: the phone's own change did not arrive (last ${after:-none})"
+    rc=1
+  fi
+  got="$(sed -n 's/^state volume=\([0-9]*\)\/\([0-9]*\)$/\1\/\2/p' "$reply" | tail -1)"
+  if [ "$got" = "12/$maxv" ]; then
+    echo "volume: phone.volume 12 answered with 12/$maxv"
+  else
+    echo "volume: phone.volume 12 answered ${got:-nothing}"
+    rc=1
+  fi
+  if grep -q "volume is 12 in range" "$get" 2>/dev/null; then
+    echo "volume: the platform reports 12 after phone.volume"
+  else
+    echo "volume: the platform does not report 12 ($(tail -1 "$get" 2>/dev/null))"
+    rc=1
+  fi
+  clamped="$(sed -n 's/^state volume=\([0-9]*\)\/\([0-9]*\)$/\1\/\2/p' "$clamp" | tail -1)"
+  if [ "$clamped" = "$maxv/$maxv" ]; then
+    echo "volume: 999 clamped to $maxv/$maxv"
+  else
+    echo "volume: 999 answered ${clamped:-nothing}, expected $maxv/$maxv"
+    rc=1
+  fi
+  return "$rc"
+}
+
+volume_self_test() {
+  local work rc=0
+  work="$(mktemp -d "${TMPDIR:-/tmp}/pd-volume-check.XXXXXX")"
+  printf '10:00:00 state #1 locked=True battery=80 charging=False volume=6/15\n' > "$work/watch"
+  printf '10:00:01 state #2 locked=True battery=80 charging=False volume=9/15\n' >> "$work/watch"
+  printf 'sent phone.volume level=12\nstate volume=12/15\n' > "$work/reply"
+  printf 'volume is 12 in range [0..15]\n' > "$work/get"
+  printf 'sent phone.volume level=999\nstate volume=15/15\n' > "$work/clamp"
+  volume_checks "$work/watch" "$work/reply" "$work/get" "$work/clamp" || rc=1
+  rm -rf "$work"
+  return "$rc"
+}
+
+volume_section() { # volume_section <port> <state> <log>
+  local port="$1" state="$2" log="$3"
+  local watch="$log.watch" reply="$log.reply" get="$log.get" clamp="$log.clamp"
+  local dc=("$PYTHON" tools/fakephone/deckctl.py --host 127.0.0.1 --port "$port" --state "$state")
+  local rc=0 pid deadline
+  : > "$log"
+  : > "$watch"; : > "$reply"; : > "$get"; : > "$clamp"
+  ensure_forward >/dev/null || { echo "volume: no server port"; return 1; }
+
+  # One session watches the stream: the initial state, then the phone's own
+  # change (adb writes it at shell UID, the same path the volume keys use).
+  PYTHONUNBUFFERED=1 "${dc[@]}" watch-state --seconds 40 > "$watch" 2>&1 &
+  pid=$!
+  deadline=$(( $(date +%s) + 25 ))
+  while [ "$(date +%s)" -lt "$deadline" ] && ! grep -q ' state #' "$watch"; do sleep 1; done
+  local maxv
+  maxv="$(head -1 "$watch" | grep -o 'volume=[0-9]*/[0-9]*' | sed 's|volume=[0-9]*/||')"
+  # Let the session's own watcher take its first read before the phone's
+  # change: the state above was sent before it started.
+  sleep 2
+  emu shell cmd media_session volume --stream 3 --set 9 > "$log.set" 2>&1 || true
+  deadline=$(( $(date +%s) + 20 ))
+  while [ "$(date +%s)" -lt "$deadline" ] && [ "$(volume_value "$watch")" != "9/${maxv:-15}" ]; do sleep 1; done
+  kill "$pid" >/dev/null 2>&1 || true
+  wait "$pid" 2>/dev/null || true
+
+  # `phone.volume` on its own session, then the platform's own read-back, then
+  # a level past the maximum.
+  "${dc[@]}" volume 12 > "$reply" 2>&1 || rc=1
+  emu shell cmd media_session volume --stream 3 --get > "$get" 2>&1 || true
+  "${dc[@]}" volume 999 > "$clamp" 2>&1 || rc=1
+
+  volume_checks "$watch" "$reply" "$get" "$clamp" >> "$log" || rc=1
+  cat "$log"
+  return "$rc"
+}
+
 # --- --check: the rehearsal of the exact boot command ----------------------
 if [ "$MODE" = "check" ]; then
   bash -n "$0" || { echo "CHECK FAIL: syntax"; exit 1; }
   bash tools/emulator/preflight.sh || { echo "CHECK FAIL: preflight"; exit 1; }
   bash tools/emulator/media.sh --check || { echo "CHECK FAIL: media --check"; exit 1; }
   bash tools/emulator/phone-screen.sh --check || { echo "CHECK FAIL: phone-screen --check"; exit 1; }
+  volume_self_test || { echo "CHECK FAIL: volume assertions"; exit 1; }
+  "$PYTHON" tools/fakephone/deckctl.py volume --help >/dev/null \
+    || { echo "CHECK FAIL: deckctl volume"; exit 1; }
+  echo "CHECK OK: volume assertions (synthetic) + deckctl volume"
   bash tools/emulator/start.sh --help >/dev/null || { echo "CHECK FAIL: start.sh --help"; exit 1; }
   if "$ADB" devices 2>/dev/null | grep -q "^$SERIAL"; then
     echo "CHECK FAIL: $SERIAL is already running (not ours to touch)"
@@ -459,6 +564,21 @@ else
   FAILED=1
 fi
 
+# --- volume -----------------------------------------------------------------
+echo "verify-batch: volume"
+if DETAIL="$(volume_section "$PORT" "$CACHE_DIR/deckctl-state.json" "$OUT/verify-batch-volume.log")"; then
+  {
+    echo "$DETAIL"
+    echo "SECTION volume PASS $(printf '%s' "$DETAIL" | tr '\n' ';' | cut -c1-110)"
+  } | tee -a "$LOG"
+else
+  {
+    echo "$DETAIL"
+    echo "SECTION volume FAIL $(printf '%s' "$DETAIL" | tr '\n' ';' | cut -c1-110)"
+  } | tee -a "$LOG"
+  FAILED=1
+fi
+
 # --- icons ------------------------------------------------------------------
 echo "verify-batch: icons"
 DETAIL="$(icons_section "$PORT" "$CACHE_DIR/deckctl-state.json" "$OUT" "$ICONS" "$OUT/verify-batch-icons.log")"
@@ -467,6 +587,6 @@ section icons "$([ "$ICONS_RC" -eq 0 ] && echo PASS || echo FAIL)" "$DETAIL"
 
 kill_emulator
 echo
-PASSED="$(grep -cE '^SECTION (paired-row|media|phone-screen|secure|icons) PASS' "$LOG")"
-echo "verify-batch: done — $PASSED of 5 sections passed; log $LOG"
+PASSED="$(grep -cE '^SECTION (paired-row|media|phone-screen|secure|volume|icons) PASS' "$LOG")"
+echo "verify-batch: done — $PASSED of 6 sections passed; log $LOG"
 exit "$FAILED"

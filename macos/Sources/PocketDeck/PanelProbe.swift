@@ -74,8 +74,9 @@ enum PanelProbe {
         guard let host = Host(rawValue: host) else { return false }
         guard let state = currentState() else { return false }
         guard let window = window(for: host) else { return false }
-        let items = PhonePanelItem.focusOrder(for: state)
-        settle(window, items: items)
+        let items = PhonePanelItem.focusOrder(for: state, showsFooter: showsFooter(host))
+        let focusable = items.filter { $0.isEnabled(in: state) }
+        settle(window, items: focusable)
         let controls = controlFrames(in: window)
         let rows: [[String: Any]] = items.enumerated().map { index, item in
             [
@@ -96,7 +97,7 @@ enum PanelProbe {
             "status": state.connection.text,
             "battery": state.shownBattery ?? -1,
             "reason": state.reason ?? "",
-            "mapped": items.count == controls.count,
+            "mapped": focusable.count == controls.count,
             "items": rows,
             "controls": frames,
         ]
@@ -111,8 +112,8 @@ enum PanelProbe {
     static func click(host: String, id: String) -> Bool {
         guard let host = Host(rawValue: host), let state = currentState(),
               let window = window(for: host) else { return false }
-        settle(window, items: PhonePanelItem.focusOrder(for: state))
-        guard let target = control(for: id, state: state, in: window) else { return false }
+        settle(window, items: focusableItems(state, host: host))
+        guard let target = control(for: id, state: state, host: host, in: window) else { return false }
         let point = CGPoint(x: target.frame.midX, y: target.frame.midY)
         switch target.kind {
         case .switch:
@@ -137,8 +138,8 @@ enum PanelProbe {
     static func drag(host: String, id: String, fraction: Double) -> Bool {
         guard let host = Host(rawValue: host), let state = currentState(),
               let window = window(for: host) else { return false }
-        settle(window, items: PhonePanelItem.focusOrder(for: state))
-        guard let target = control(for: id, state: state, in: window) else { return false }
+        settle(window, items: focusableItems(state, host: host))
+        guard let target = control(for: id, state: state, host: host, in: window) else { return false }
         let clamped = min(max(fraction, 0), 1)
         let startFraction = min(max(state.volumeFraction ?? 0.2, 0), 1)
         // The track's interactive span, inset by the knob's radius.
@@ -156,6 +157,69 @@ enum PanelProbe {
         }
         send(.leftMouseUp, at: CGPoint(x: endX, y: y), in: window)
         pump(0.4)
+        return true
+    }
+
+    /// `panelvolumedrag HOST FRACTION PATH`: a several-step drag that records
+    /// what the slider showed after each step, before any phone echo can be
+    /// mistaken for the pointer. The trace is the display the person sees, not
+    /// the phone's last report.
+    static func volumeDrag(host: String, fraction: Double, to path: String) -> Bool {
+        guard let host = Host(rawValue: host), let state = currentState(),
+              let window = window(for: host) else { return false }
+        settle(window, items: focusableItems(state, host: host))
+        guard let target = control(for: PhonePanelItem.volume.id, state: state, host: host,
+                                   in: window) else { return false }
+        let clamped = min(max(fraction, 0), 1)
+        let startFraction = min(max(PhoneVolumeDebug.display, 0), 1)
+        let inset: CGFloat = 8
+        let startX = target.frame.minX + inset
+            + (target.frame.width - inset * 2) * startFraction
+        let endX = target.frame.minX + inset
+            + (target.frame.width - inset * 2) * clamped
+        let y = target.frame.midY
+        var steps: [[String: Any]] = [["step": 0, "target": startFraction,
+                                      "display": PhoneVolumeDebug.display,
+                                      "phone": state.volumeFraction ?? -1,
+                                      "phase": PhoneVolumeDebug.phase]]
+        send(.leftMouseDown, at: CGPoint(x: startX, y: y), in: window)
+        for step in 1...10 {
+            let t = Double(step) / 10
+            send(.leftMouseDragged, at: CGPoint(x: startX + (endX - startX) * t, y: y),
+                 in: window)
+            pump(0.02)
+            let current = currentState()
+            steps.append(["step": step,
+                          "target": startFraction + (clamped - startFraction) * t,
+                          "display": PhoneVolumeDebug.display,
+                          "phone": current?.volumeFraction ?? -1,
+                          "phase": PhoneVolumeDebug.phase])
+        }
+        send(.leftMouseUp, at: CGPoint(x: endX, y: y), in: window)
+        pump(0.4)
+        steps.append(["step": 11, "target": clamped,
+                      "display": PhoneVolumeDebug.display,
+                      "phone": currentState()?.volumeFraction ?? -1,
+                      "phase": PhoneVolumeDebug.phase])
+        let data = try? JSONSerialization.data(withJSONObject: steps, options: [.prettyPrinted])
+        guard let data else { return false }
+        return (try? data.write(to: URL(fileURLWithPath: path))) != nil
+    }
+
+    /// `panelringer HOST MODE`: choose one of the Ringer tile's menu rows. The
+    /// tile must be laid out and enabled; the action is the menu item's own
+    /// (the same closure the label's Menu builds), and the phone's next `state`
+    /// moves the checkmark, never an optimistic local guess.
+    static func ringer(host: String, mode: PhoneRingerMode) -> Bool {
+        guard let host = Host(rawValue: host), let state = currentState(),
+              let window = window(for: host), let controller else { return false }
+        settle(window, items: focusableItems(state, host: host))
+        guard PhonePanelItem.ringer.isEnabled(in: state),
+              state.ringerMenu.contains(where: { $0.mode == mode }),
+              control(for: PhonePanelItem.ringer.id, state: state, host: host, in: window) != nil else {
+            return false
+        }
+        PhoneControlsActions(controller: controller, openDeck: {}).setRinger(mode)
         return true
     }
 
@@ -214,6 +278,17 @@ enum PanelProbe {
         return PhoneControlsState(controller: controller)
     }
 
+    /// The Deck's popover has no Settings/Quit footer; the menu bar panel does.
+    private static func showsFooter(_ host: Host) -> Bool { host != .deck }
+
+    /// The controls SwiftUI actually lays out and focuses: a disabled control
+    /// has no key-view proxy, so the focusable order leaves it out. Dumps still
+    /// report every item with its reason; mapping counts only enabled ones.
+    private static func focusableItems(_ state: PhoneControlsState, host: Host) -> [PhonePanelItem] {
+        PhonePanelItem.focusOrder(for: state, showsFooter: showsFooter(host))
+            .filter { $0.isEnabled(in: state) }
+    }
+
     private static func window(for host: Host) -> NSWindow? {
         switch host {
         case .panel:
@@ -233,23 +308,18 @@ enum PanelProbe {
         }
     }
 
-    private static func control(for id: String, state: PhoneControlsState,
+    private static func control(for id: String, state: PhoneControlsState, host: Host,
                                 in window: NSWindow) -> Control? {
         let controls = laidOut(in: window)
-        // The AppKit shapes are unique, so they are found even when a disabled
-        // row has no proxy: the switch is the DND row, the popup is the Now
-        // Playing picker, and the only track-height control is the volume.
-        if let item = PhonePanelItem(rawValue: id.replacingOccurrences(of: "panel.", with: "")) {
-            switch item {
-            case .dnd: return controls.first { $0.kind == .switch }
-            case .volume: return controls.first { $0.kind == .slider }
-            case .sessions: return controls.first { $0.kind == .popup }
-            default: break
-            }
+        // The volume's track is the only track-height control, so it is found
+        // by shape even when a disabled row has no proxy.
+        if id == PhonePanelItem.volume.id {
+            return controls.first { $0.kind == .slider }
         }
-        let items = PhonePanelItem.focusOrder(for: state)
-        // The index mapping is only valid while every item has a control (an
-        // offline panel drops the disabled rows from the key loop).
+        // The index mapping is only valid while every enabled item has a
+        // control: a disabled control has no key-view proxy and is not there
+        // to click anyway.
+        let items = focusableItems(state, host: host)
         guard items.count == controls.count,
               let index = items.firstIndex(where: { $0.id == id }) else { return nil }
         return controls[index]
@@ -258,6 +328,8 @@ enum PanelProbe {
     private static func label(_ item: PhonePanelItem, state: PhoneControlsState) -> String {
         switch item {
         case .ring: return state.ringTitle
+        case .ringer: return state.ringerTitle
+        case .screen: return state.screenTitle
         case .sessions: return state.pickerTitle
         case .installApk: return state.installTitle
         default: return item.label

@@ -62,6 +62,24 @@ the App Intents and the debug hooks. A DND a control turns on therefore counts
 as set by the Mac for the phone's restore rule (docs/design/focus.md), and a
 control's `off` never turns off a DND the person set.
 
+### Panel volume slider (P3)
+
+The shared phone panel's volume `Slider` is a small state machine, not a binding
+onto the phone's last echo. `PhoneVolumeControl` has three states:
+
+- **Idle:** the thumb and `%` show the phone's `state.volume`; a hardware-key
+  change on the phone moves them.
+- **Dragging:** the thumb and `%` follow the pointer every frame; phone values
+  are ignored, including an echo that arrives mid-drag. `phone.volume` is sent
+  at most ten times a second, and the release value is always sent.
+- **Settling:** the sent value stays visible until the phone echoes it, or one
+  second passes. A matching echo returns to Idle; after the timeout a different
+  phone value wins and is shown.
+
+K2 pins every transition (including a mid-drag echo) and the e2e `controls`
+check drags the real slider in ten steps, reading the local display after each
+and counting the sends.
+
 ## The perform route (not proven)
 
 **Unverified.** The extension's intents are hosted by the widget extension and

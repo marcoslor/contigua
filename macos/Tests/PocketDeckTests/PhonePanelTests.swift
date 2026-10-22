@@ -105,16 +105,19 @@ final class PhonePanelTests: XCTestCase {
     // MARK: - The panel's model
 
     private func panelState(online: Bool = true, sessions: [MediaSessionRow] = [],
-                       dnd: PhoneDndMode? = .off, volume: Int? = 8) -> PhoneControlsState {
+                       dnd: PhoneDndMode? = .off, volume: Int? = 8,
+                       ringer: PhoneRingerMode? = .normal,
+                       phoneWindow: Bool = true) -> PhoneControlsState {
         var state = PhoneControlsState()
         state.phoneName = "Pixel 9"
         state.connection = online ? .online : .offline
-        var media = MediaState()
-        media.volume = volume
-        media.volumeMax = 15
-        state.media = volume == nil ? nil : media
+        state.volume = volume
+        state.volumeMax = 15
+        state.media = MediaState()
         state.sessions = sessions
         state.dnd = dnd
+        state.ringer = ringer
+        state.phoneWindow = phoneWindow
         return state
     }
 
@@ -132,7 +135,7 @@ final class PhonePanelTests: XCTestCase {
                                      chip: nil, progress: nil, chrono: nil, countDown: false,
                                      updated: Date())]
         XCTAssertEqual(PhonePanelItem.focusOrder(for: state),
-                       [.volume, .dnd, .ring, .sessions, .live,
+                       [.dnd, .ringer, .ring, .screen, .volume, .sessions, .live,
                         .phoneScreen, .findApps, .continueOnMac, .installApk, .settings, .quit])
 
         // The agent row's Disconnect button is the first focusable control.
@@ -142,7 +145,7 @@ final class PhonePanelTests: XCTestCase {
         // Without live rows and with one session the picker is not there.
         state = panelState(sessions: [row("a", "Spotify")])
         XCTAssertEqual(PhonePanelItem.focusOrder(for: state),
-                       [.volume, .dnd, .ring,
+                       [.dnd, .ringer, .ring, .screen, .volume,
                         .phoneScreen, .findApps, .continueOnMac, .installApk, .settings, .quit])
     }
 
@@ -164,16 +167,25 @@ final class PhonePanelTests: XCTestCase {
         XCTAssertEqual(state.connection.text, "Offline")
     }
 
-    /// Online but the phone sent no volume, or no DND: say which, in that order.
+    /// Every control names its own missing capability; P3 does not fold them
+    /// into one line any more. The volume still has the line next to its slider.
     func testTheReasonNamesTheMissingPhoneCapability() {
-        XCTAssertEqual(panelState(volume: nil).reason, "Your phone hasn't sent a volume.")
-        XCTAssertEqual(panelState(dnd: nil).reason, "This phone doesn't report Do Not Disturb.")
-        XCTAssertNil(panelState().reason)
+        XCTAssertEqual(PhonePanelItem.volume.reason(in: panelState(volume: nil)),
+                       "Your phone hasn't sent a volume.")
+        XCTAssertEqual(PhonePanelItem.dnd.reason(in: panelState(dnd: nil)),
+                       "This phone doesn't report Do Not Disturb.")
+        XCTAssertNil(PhonePanelItem.volume.reason(in: panelState()))
+        XCTAssertNil(PhonePanelItem.dnd.reason(in: panelState()))
+        XCTAssertEqual(PhonePanelItem.ringer.reason(in: panelState(ringer: nil)),
+                       "This phone doesn't report a ringer.")
+        XCTAssertEqual(PhonePanelItem.screen.reason(in: panelState(phoneWindow: false)),
+                       "Open Phone Mirror first.")
         // A volume without a maximum is not a fraction.
         var noMax = panelState()
-        noMax.media?.volumeMax = nil
+        noMax.volumeMax = nil
         XCTAssertNil(noMax.volumeFraction)
-        XCTAssertEqual(noMax.reason, "Your phone hasn't sent a volume.")
+        XCTAssertEqual(PhonePanelItem.volume.reason(in: noMax),
+                       "Your phone hasn't sent a volume.")
     }
 
     /// The picker is a row only with two or more sessions, and its title names
@@ -312,150 +324,86 @@ final class PhonePanelTests: XCTestCase {
         }
     }
 
-    /// The review's first panel shot: the Now Playing picker's icon sat left of
-    /// the other rows' icon column and the row drew no indicator that it is a
-    /// choice; the volume row's speaker was not in the column at all. Every
-    /// row's symbol now sits in the one 18 pt column and the picker ends in a
-    /// popup indicator at the row's trailing edge.
-    func testEveryRowSharesTheOneIconColumn() throws {
+    /// The picker and the volume keep the shared text column: the volume is a
+    /// 14 pt slider between two speakers, the picker a full-width menu row.
+    func testThePickerAndTheVolumeKeepTheirColumns() throws {
         var state = panelState(sessions: [row("a", "Spotify"), row("b", "Music", playing: true)])
         state.battery = 87
         let view = host(state)
-        let pixels = try XCTUnwrap(render(state).flatMap(Pixels.init))
-        XCTAssertEqual(pixels.height, Int(view.fittingSize.height.rounded()),
-                       "the render and the host lay out the same panel")
         let items = PhonePanelItem.focusOrder(for: state)
         let controls = laidOut(in: view)
-        XCTAssertEqual(controls.count, items.count, "one laid-out control per panel item")
+        XCTAssertEqual(controls.count, items.count, "one laid-out control per enabled item")
 
-        let column = PhonePanelMetrics.inset + PhonePanelMetrics.rowInset
-        // The rows with a leading icon; the footer's two shortcuts sit on the
-        // text inset, not on the icon column.
-        let iconRows: [PhonePanelItem] = [.volume, .dnd, .ring, .sessions,
-                                          .phoneScreen, .findApps, .continueOnMac, .installApk]
-        var centres: [(PhonePanelItem, CGFloat)] = []
-        for item in iconRows {
-            let control = controls[try XCTUnwrap(items.firstIndex(of: item))]
-            let centre = frame(control, in: view).midY
-            let icon = try XCTUnwrap(pixels.ink(columns: 8..<45, rows: pixels.rows(center: centre, half: 9)),
-                                     "\(item.rawValue) draws no leading icon")
-            XCTAssertGreaterThanOrEqual(icon.minX, Int(column) - 1,
-                                        "\(item.rawValue)'s icon starts left of the icon column")
-            XCTAssertLessThanOrEqual(icon.maxX, Int(column + PhonePanelMetrics.iconColumn) + 1,
-                                     "\(item.rawValue)'s icon runs past the icon column")
-            centres.append((item, CGFloat(icon.minX + icon.maxX) / 2))
-        }
-        let mean = centres.map(\.1).reduce(0, +) / CGFloat(centres.count)
-        for (item, centre) in centres {
-            XCTAssertEqual(centre, mean, accuracy: 1,
-                           "\(item.rawValue)'s icon is off the column the others share")
-        }
+        let slider = try XCTUnwrap(controls.first { control in
+            let rect = frame(control, in: view)
+            return rect.height < 20 && rect.width > 150
+        })
+        let sliderRect = frame(slider, in: view)
+        XCTAssertEqual(sliderRect.height, 14, accuracy: 0.5)
+        XCTAssertGreaterThan(sliderRect.width, 150)
 
-        // The picker row is the full row and ends in the popup indicator.
-        let picker = try XCTUnwrap(items.firstIndex(of: .sessions))
-        let row = frame(controls[picker], in: view)
-        XCTAssertTrue(pixels.hasInk(columns: 240..<290, rows: pixels.rows(center: row.midY, half: 9)),
-                      "the Now Playing row draws no trailing indicator")
-        XCTAssertGreaterThan(row.width, 200, "the Now Playing row is only as wide as its text")
+        let picker = controls[items.firstIndex(of: .sessions)!]
+        let pickerRect = frame(picker, in: view)
+        XCTAssertGreaterThan(pickerRect.width, 200, "the picker spans the row")
+        XCTAssertEqual(pickerRect.height, PhonePanelMetrics.rowHeight, accuracy: 1)
     }
 
-    /// The review's rhythm complaints: an empty agent row stood between the
-    /// header and PHONE, the reason line kept its height when there was nothing
-    /// to explain (a gap under the slider) and the two section gaps differed.
-    /// The panel is now one grid: 28 pt rows, a 10 pt gap on both sides of a
-    /// 16 pt label, and only content that exists takes height.
-    func testTheRowsAndSectionsShareOneVerticalGrid() throws {
-        let state = panelState(sessions: [row("a", "Spotify"), row("b", "Music", playing: true)])
+    /// P3's rhythm: two tile rows at the review's 134 pt size, the volume, then
+    /// one WINDOWS row, then the menu bar panel's footer.
+    func testThePanelIsP3sTileGridThenVolumeThenOneWindowsRow() throws {
+        let state = panelState()
         let view = host(state)
         let items = PhonePanelItem.focusOrder(for: state)
         let controls = laidOut(in: view)
-        let centres = Dictionary(uniqueKeysWithValues: zip(items, controls.map { frame($0, in: view).midY }))
+        XCTAssertEqual(controls.count, items.count)
 
-        // One 28 pt row after another inside a section, whatever the row is
-        // (slider, switch, button, popup).
-        for (above, below) in [(PhonePanelItem.volume, PhonePanelItem.dnd),
-                               (.dnd, .ring), (.ring, .sessions),
-                               (.phoneScreen, .findApps), (.findApps, .continueOnMac),
-                               (.continueOnMac, .installApk)] {
-            XCTAssertEqual(abs(centres[above]! - centres[below]!), PhonePanelMetrics.rowHeight, accuracy: 0.5,
-                           "\(above.rawValue) → \(below.rawValue) is not one row")
+        let dnd = frame(controls[items.firstIndex(of: .dnd)!], in: view)
+        let ringer = frame(controls[items.firstIndex(of: .ringer)!], in: view)
+        let ring = frame(controls[items.firstIndex(of: .ring)!], in: view)
+        let screen = frame(controls[items.firstIndex(of: .screen)!], in: view)
+        XCTAssertEqual(dnd.width, PhonePanelMetrics.tileWidth, accuracy: 1)
+        XCTAssertEqual(ringer.minX - dnd.maxX, PhonePanelMetrics.tileGap, accuracy: 1)
+        XCTAssertEqual(dnd.minY, ringer.minY, accuracy: 1)
+        XCTAssertEqual(ring.minY, screen.minY, accuracy: 1)
+        XCTAssertGreaterThanOrEqual(dnd.height, PhonePanelMetrics.tileMinHeight - 1)
+        XCTAssertEqual(ring.minY - dnd.minY, dnd.height + PhonePanelMetrics.tileGap, accuracy: 1.5)
+
+        let volume = frame(controls[items.firstIndex(of: .volume)!], in: view)
+        XCTAssertGreaterThan(volume.minY, screen.minY)
+        let phone = frame(controls[items.firstIndex(of: .phoneScreen)!], in: view)
+        let find = frame(controls[items.firstIndex(of: .findApps)!], in: view)
+        let cont = frame(controls[items.firstIndex(of: .continueOnMac)!], in: view)
+        let install = frame(controls[items.firstIndex(of: .installApk)!], in: view)
+        for rect in [phone, find, cont, install] {
+            XCTAssertEqual(rect.minY, phone.minY, accuracy: 1, "WINDOWS is one row")
+            XCTAssertGreaterThan(rect.width, 50)
         }
-        // One section gap (10) and one label (16) between PHONE's last row and
-        // WINDOWS' first row: the same gap the header leaves above PHONE.
-        XCTAssertEqual(abs(centres[.sessions]! - centres[.phoneScreen]!),
-                       PhonePanelMetrics.rowHeight + PhonePanelMetrics.sectionHeight
-                           + PhonePanelMetrics.sectionGap,
-                       accuracy: 0.5,
-                       "the WINDOWS section is spaced like the PHONE one")
+        XCTAssertGreaterThan(phone.minY, volume.minY)
 
-        let expected = PhonePanelMetrics.inset * 2 + PhonePanelMetrics.headerHeight
-            + (PhonePanelMetrics.sectionGap + PhonePanelMetrics.sectionHeight) * 2
-            + PhonePanelMetrics.rowHeight * 8
-            + PhonePanelMetrics.sectionGap + PhonePanelMetrics.rowHeight
-        XCTAssertEqual(view.fittingSize.height, expected, accuracy: 0.5,
-                       "online the panel is exactly its header, rows, labels and gaps")
-        var away = state
-        away.connection = .offline
-        XCTAssertEqual(host(away).fittingSize.height, expected + PhonePanelMetrics.reasonHeight, accuracy: 0.5,
-                       "offline the panel adds only the one reason line")
+        let settings = frame(controls[items.firstIndex(of: .settings)!], in: view)
+        XCTAssertGreaterThan(settings.minY, phone.minY)
+        XCTAssertTrue(items.contains(.quit))
     }
 
-    /// The review's offline shot: Ring Phone dimmed, but Do Not Disturb's label
-    /// and the slider stayed bright, and the header kept the last battery level.
-    /// Offline every phone row is off and drawn like Ring Phone, and the
-    /// battery is gone rather than stale.
-    func testOfflineDimsEveryPhoneRowAndHidesTheBattery() throws {
-        var state = panelState(online: false, sessions: [row("a", "Spotify"), row("b", "Music")])
+    /// Away: every phone control is off and the panel says why; the header
+    /// drops its stale battery. Only the controls that need no phone stay on.
+    func testOfflineDimsThePhoneControlsAndHidesTheBattery() throws {
+        var state = panelState(online: false, phoneWindow: false)
         state.battery = 87
-        XCTAssertNil(state.shownBattery, "offline the header draws no battery")
-        XCTAssertNil(state.volumeFraction)
-        for item in [PhonePanelItem.volume, .dnd, .ring, .phoneScreen, .continueOnMac, .installApk] {
-            XCTAssertFalse(item.isEnabled(in: state), "\(item.rawValue) must be off while the phone is away")
-        }
-        XCTAssertTrue(PhonePanelItem.findApps.isEnabled(in: state))
-
         let view = host(state)
-        let pixels = try XCTUnwrap(render(state).flatMap(Pixels.init))
-        // A disabled row leaves the key loop, so the offline controls are found
-        // by their shapes (the switch) and the grid, not by index.
-        let dnd = try XCTUnwrap(laidOut(in: view).first { $0 is NSSwitch }, "no DND switch")
-        let dndCentre = frame(dnd, in: view).midY
-        // The same panel online: each row's own ink, then and now, gives the
-        // dimming factor without depending on the platform's control colours.
-        let onlineState = panelState(sessions: [row("a", "Spotify"), row("b", "Music")])
-        let onlineView = host(onlineState)
-        let online = try XCTUnwrap(render(onlineState).flatMap(Pixels.init))
-        let onlineDnd = try XCTUnwrap(laidOut(in: onlineView).first { $0 is NSSwitch }, "no online DND switch")
-        let onlineCentre = frame(onlineDnd, in: onlineView).midY
-        func dimRatio(_ columns: Range<Int>, offlineCentre: CGFloat, onlineCentre: CGFloat) -> Double {
-            let away = pixels.meanAlpha(columns: columns, rows: pixels.rows(center: offlineCentre, half: 8))
-            let now = online.meanAlpha(columns: columns, rows: online.rows(center: onlineCentre, half: 8))
-            return now == 0 ? 0 : away / now
-        }
-        // Offline the volume row is above the one reason line, which is above
-        // DND; online there is no line, so each row is one row higher.
-        let volumeAway = dndCentre - PhonePanelMetrics.rowHeight - PhonePanelMetrics.reasonHeight
-        let volumeNow = onlineCentre - PhonePanelMetrics.rowHeight
-        let labels = 46..<150
-        let icons = 20..<44
-        let rows: [(String, Range<Int>, CGFloat, CGFloat)] = [
-            ("Do Not Disturb", labels, dndCentre, onlineCentre),
-            ("Ring Phone", labels, dndCentre + PhonePanelMetrics.rowHeight,
-             onlineCentre + PhonePanelMetrics.rowHeight),
-            ("volume icons", icons, volumeAway, volumeNow),
-            ("slider", labels, volumeAway, volumeNow),
-        ]
-        for (name, columns, away, now) in rows {
-            XCTAssertLessThanOrEqual(dimRatio(columns, offlineCentre: away, onlineCentre: now), 0.75,
-                                     "the \(name) is not dimmed while the phone is away")
-        }
-        // A disabled row's label dims the way Ring Phone's does.
-        XCTAssertEqual(dimRatio(labels, offlineCentre: dndCentre, onlineCentre: onlineCentre), 0.6,
-                       accuracy: 0.15, "the DND label does not dim like the Ring Phone label")
+        let items = PhonePanelItem.focusOrder(for: state)
+        let enabled = items.filter { $0.isEnabled(in: state) }
+        XCTAssertEqual(laidOut(in: view).count, enabled.count,
+                       "the key loop holds exactly the enabled controls")
+        XCTAssertEqual(enabled, [.findApps, .settings, .quit])
+        XCTAssertNil(state.shownBattery, "offline the header does not draw a stale battery")
 
-        // Nothing stands in the header's battery corner.
-        let header = PhonePanelMetrics.inset + PhonePanelMetrics.headerHeight / 2
-        XCTAssertFalse(pixels.hasInk(columns: 240..<288, rows: pixels.rows(center: header, half: 20)),
-                       "the offline header still draws a battery level")
+        let online = host(panelState())
+        XCTAssertLessThan(view.fittingSize.height, online.fittingSize.height + 100)
+        // The one reason line under the tiles makes the offline panel taller
+        // than the online one, never a hidden row.
+        let away = try XCTUnwrap(render(state).flatMap(Pixels.init))
+        let now = try XCTUnwrap(render(panelState()).flatMap(Pixels.init))
+        XCTAssertGreaterThan(away.height, now.height)
     }
 }

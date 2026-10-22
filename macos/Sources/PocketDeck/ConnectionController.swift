@@ -54,6 +54,9 @@ struct PhoneStatus: Equatable {
     var dnd: PhoneDndMode? = nil
     /// nil when the phone's `state` carries no `ringer` (old phone).
     var ringer: PhoneRingerMode? = nil
+    /// STREAM_MUSIC's level and maximum; both nil on a phone that cannot read them.
+    var volume: Int? = nil
+    var volumeMax: Int? = nil
     /// Display 0's power state; nil reads as on (nothing to overlay).
     var screen: PhoneScreen? = nil
 }
@@ -291,6 +294,17 @@ final class ConnectionController {
     func openDeckPanel() {
         deckPanelRequest += 1
     }
+
+    /// A rail letter the e2e asked to click (`deck-rail`), with a token so the
+    /// same letter can be picked twice. AppGrid reads it and scrolls exactly as
+    /// the rail's own click does.
+    struct DeckRailRequest: Equatable {
+        let letter: String
+        let token: Int
+    }
+    private(set) var deckRailRequest: DeckRailRequest?
+    private var deckRailToken = 0
+
     /// The phone being renamed right now: Settings → Devices → Rename… presents
     /// its dialog for this device; a preview stages the whole state.
     private(set) var renamingDeviceId: String?
@@ -1834,10 +1848,10 @@ final class ConnectionController {
             }
             runDockHooks()
             recheckOpenWindows()
-        case .phoneState(let locked, let battery, let charging, let dnd, let ringer, let screen, let secure,
-                         let panel):
+        case .phoneState(let locked, let battery, let charging, let dnd, let ringer, let volume,
+                         let volumeMax, let screen, let secure, let panel):
             status = PhoneStatus(locked: locked, battery: battery, charging: charging, dnd: dnd, ringer: ringer,
-                                 screen: screen)
+                                 volume: volume, volumeMax: volumeMax, screen: screen)
             windows.setPhoneScreen(screen)
             if let secure { windows.setPhoneSecure(secure) }
             windows.setPhonePanel(panel)
@@ -1977,11 +1991,12 @@ final class ConnectionController {
         nowPlaying.choose(key)
     }
 
-    /// The volume slider: a fraction of the phone session's own maximum.
-    func setPhoneMediaVolume(_ fraction: Double) {
-        guard let max = nowPlaying.current?.volumeMax, max > 0 else { return }
-        let level = Int((fraction * Double(max)).rounded())
-        nowPlaying.perform(.volume(min(Swift.max(level, 0), max)))
+    /// The phone panel's volume slider: a fraction of the phone's own music
+    /// stream maximum (docs/PROTOCOL.md "Volume"), sent as one integer level.
+    func setPhoneVolume(_ fraction: Double) {
+        guard link.isOnline, let max = status?.volumeMax, max > 0, let session else { return }
+        let level = min(Swift.max(Int((fraction * Double(max)).rounded()), 0), max)
+        session.setVolume(level)
     }
 
     /// The recording line's own path: no volume keys are intercepted.
@@ -2057,7 +2072,8 @@ final class ConnectionController {
         // Every window title carries the display name from here on.
         windows.setPhoneName(displayName(for: ref))
         status = PhoneStatus(locked: info.locked, battery: info.battery, charging: info.charging ?? false,
-                             ringer: status?.ringer, screen: status?.screen)
+                             ringer: status?.ringer, volume: status?.volume, volumeMax: status?.volumeMax,
+                             screen: status?.screen)
         // A new connection: its first `state` reconciles the Focus once.
         focusReconciled = false
         if let battery = info.battery {
@@ -2253,6 +2269,12 @@ final class ConnectionController {
         }
         debugInput?.panelDrag = { host, id, fraction in
             MainActor.assumeIsolated { PanelProbe.drag(host: host, id: id, fraction: fraction) }
+        }
+        debugInput?.panelRinger = { host, mode in
+            MainActor.assumeIsolated {
+                guard let mode = PhoneRingerMode(rawValue: mode) else { return false }
+                return PanelProbe.ringer(host: host, mode: mode)
+            }
         }
         debugInput?.deckPanel = { [weak self] in
             MainActor.assumeIsolated { self?.openDeckPanel() }
@@ -2451,6 +2473,35 @@ final class ConnectionController {
             }
             return PanelProbe.drag(host: arguments[0], id: arguments[1], fraction: fraction)
                 ? nil : "paneldrag failed"
+        case "panelvolumedrag":
+            guard arguments.count == 3, let fraction = Double(arguments[1]),
+                  arguments[2].hasPrefix("/") else {
+                return "panelvolumedrag needs HOST, FRACTION and PATH"
+            }
+            return PanelProbe.volumeDrag(host: arguments[0], fraction: fraction,
+                                         to: arguments[2]) ? nil : "panelvolumedrag failed"
+        case "panelringer":
+            guard arguments.count == 2, let mode = PhoneRingerMode(rawValue: arguments[1]) else {
+                return "panelringer needs HOST and MODE (normal, vibrate, silent)"
+            }
+            return PanelProbe.ringer(host: arguments[0], mode: mode) ? nil : "panelringer failed"
+        case "deck-size":
+            // Resize the Deck for the grid checks: the block is centred and
+            // capped at a wide size and drops columns as the window narrows.
+            guard arguments.count >= 2, let w = Double(arguments[0]), let h = Double(arguments[1]),
+                  w > 0, h > 0 else { return "deck-size needs width height" }
+            guard let window = DeckWindow.window else { return "no Deck window" }
+            window.setContentSize(NSSize(width: w, height: h))
+            return nil
+        case "deck-rail":
+            // The rail is pointer-only; the e2e clicks it through this verb,
+            // which runs the same scroll the rail's own click runs.
+            guard let letter = arguments.first, DeckRail.letters.contains(letter) else {
+                return "deck-rail needs A-Z or #"
+            }
+            deckRailToken += 1
+            deckRailRequest = DeckRailRequest(letter: letter, token: deckRailToken)
+            return nil
         case "settings-dump":
             // Settings' real window geometry (SettingsProbe) for the host e2e.
             guard let path = arguments.first, path.hasPrefix("/") else { return "missing path" }

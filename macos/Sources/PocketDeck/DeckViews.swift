@@ -395,6 +395,7 @@ struct DeckPhonePopover: View {
         PhonePanelView(
             state: PhoneControlsState(controller: controller),
             actions: PhoneControlsActions(controller: controller) { DeckWindow.show() },
+            showsFooter: false,
         )
     }
 }
@@ -458,7 +459,7 @@ struct PhoneDeckView: View {
             ToolbarItem(placement: .primaryAction) {
                 Button { controller.openPhoneWindow() } label: { Label("Phone", systemImage: "iphone.gen3") }
                     .disabled(!controller.link.isOnline)
-                    .help("Open the phone screen")
+                    .help("Open Phone Mirror")
             }
             ToolbarItem(placement: .primaryAction) {
                 SettingsLink { Image(systemName: "gearshape") }
@@ -477,7 +478,12 @@ struct PhoneDeckView: View {
         .onAppear {
             searchFocused = true
             navigator.install(controller: controller, apps: { filtered }, clearQuery: { query = "" },
-                              hasQuery: { !query.isEmpty })
+                              hasQuery: { !query.isEmpty },
+                              setZoom: { delta in
+                                  let store = Profile.active.defaults
+                                  let next = delta.map { DeckZoom.stepped(from: DeckZoom.stored(in: store), by: $0) } ?? 1
+                                  store.set(Double(next), forKey: DeckZoom.key)
+                              })
         }
         .onDisappear { navigator.uninstall() }
     }
@@ -508,6 +514,81 @@ enum GridNavigation {
     }
 }
 
+/// The A–Z rail on the Deck's trailing edge (docs/design/mac-redesign.md
+/// §3.3): one letter per app section, `#` for digits and symbols, and the
+/// letter at the top of the grid in the accent colour. Pure, so the tests pin
+/// the first index per letter and the letter a scroll offset lands on.
+enum DeckRail {
+    static let minimumApps = 30
+    static let letters: [String] = (65...90).map { String(UnicodeScalar($0)!) } + ["#"]
+
+    struct Entry: Equatable {
+        let letter: String
+        /// The first app under this letter; nil draws the letter dimmed.
+        let index: Int?
+    }
+
+    /// The letter a label files under: its first letter A–Z (accents fold),
+    /// or `#` for a digit or symbol.
+    static func letter(for label: String) -> String {
+        let trimmed = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let first = trimmed.first else { return "#" }
+        let folded = String(first)
+            .folding(options: [.diacriticInsensitive, .caseInsensitive], locale: nil)
+            .uppercased()
+        return folded.count == 1 && folded >= "A" && folded <= "Z" ? folded : "#"
+    }
+
+    /// One entry per drawn letter, in rail order, with its first app's index.
+    static func entries(for apps: [AppInfo]) -> [Entry] {
+        var first: [String: Int] = [:]
+        for (index, app) in apps.enumerated() {
+            let letter = letter(for: app.displayLabel)
+            if first[letter] == nil { first[letter] = index }
+        }
+        return letters.map { Entry(letter: $0, index: first[$0]) }
+    }
+
+    /// The app a click on `letter` scrolls to: its own first app, or the next
+    /// letter that has apps (dimmed letters skip forward).
+    static func target(for letter: String, in entries: [Entry]) -> Int? {
+        guard let start = entries.firstIndex(where: { $0.letter == letter }) else { return nil }
+        return entries[start...].first { $0.index != nil }?.index
+    }
+
+    /// The first app in the row at the viewport's top. The row above may still
+    /// reach into the viewport across the gutter: that makes it the current one.
+    static func topIndex(offset: CGFloat?, apps: [AppInfo], metrics: DeckGridSize, width: CGFloat) -> Int? {
+        guard !apps.isEmpty else { return nil }
+        let columns = metrics.columns(forWidth: width)
+        let pitch = metrics.cellHeight + metrics.rowSpacing
+        let top = max(offset ?? 0, 0)
+        let row = max(0, Int(floor((top - metrics.verticalInset - metrics.cellHeight) / pitch)) + 1)
+        return min(row * columns, apps.count - 1)
+    }
+
+    /// The letter the scroll position is in.
+    static func currentLetter(offset: CGFloat?, apps: [AppInfo], metrics: DeckGridSize,
+                              width: CGFloat) -> String? {
+        guard let index = topIndex(offset: offset, apps: apps, metrics: metrics, width: width) else {
+            return nil
+        }
+        return letter(for: apps[index].displayLabel)
+    }
+
+    /// The rail is only useful on a full grid, and it gives way to search.
+    static func shows(count: Int, query: String) -> Bool {
+        query.isEmpty && count >= minimumApps
+    }
+
+    /// The letter at `y` in a column `height` tall; the letters share it evenly.
+    static func letter(atY y: CGFloat, height: CGFloat, entries: [Entry]) -> String? {
+        guard height > 0, !entries.isEmpty else { return nil }
+        let fraction = min(max(y / height, 0), 0.999_999)
+        return entries[Int(fraction * CGFloat(entries.count))].letter
+    }
+}
+
 /// Arrow keys, Return and Esc for the grid. The search field owns the keyboard
 /// (it is focused whenever the Deck shows), so these are caught with a local
 /// monitor rather than SwiftUI focus.
@@ -522,13 +603,17 @@ final class GridNavigator {
     @ObservationIgnored private var apps: () -> [AppInfo] = { [] }
     @ObservationIgnored private var clearQuery: () -> Void = {}
     @ObservationIgnored private var hasQuery: () -> Bool = { false }
+    /// ⌘+/⌘−/⌘0 on the Deck: a step's delta, or nil for 100 %.
+    @ObservationIgnored private var setZoom: (CGFloat?) -> Void = { _ in }
 
     func install(controller: ConnectionController, apps: @escaping () -> [AppInfo],
-                 clearQuery: @escaping () -> Void, hasQuery: @escaping () -> Bool) {
+                 clearQuery: @escaping () -> Void, hasQuery: @escaping () -> Bool,
+                 setZoom: @escaping (CGFloat?) -> Void = { _ in }) {
         self.controller = controller
         self.apps = apps
         self.clearQuery = clearQuery
         self.hasQuery = hasQuery
+        self.setZoom = setZoom
         guard monitor == nil else { return }
         monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             let keyCode = event.keyCode
@@ -547,6 +632,16 @@ final class GridNavigator {
     private func handle(keyCode: UInt16, flags: NSEvent.ModifierFlags) -> Bool {
         guard let controller, controller.sheet == nil,
               NSApp.keyWindow === DeckWindow.window else { return false }
+        // ⌘+ / ⌘− / ⌘0 scale the Deck grid, not a stream window's density
+        // (that menu item is disabled while the Deck is key).
+        if flags.contains(.command), flags.intersection([.control, .option]).isEmpty {
+            switch keyCode {
+            case 24, 69: setZoom(DeckZoom.step); return true       // = / + and keypad +
+            case 27, 78: setZoom(-DeckZoom.step); return true      // - and keypad -
+            case 29, 82: setZoom(nil); return true                 // 0 and keypad 0
+            default: break
+            }
+        }
         // ⌘F is the Deck's Find: focus the search field and select what is
         // already typed, like ⌘F in any Mac window. It is not a menu item — a
         // menu item would eat ⌘F in a stream window, where the key belongs to
@@ -593,23 +688,117 @@ struct DeckCell: Identifiable, Equatable {
     var label: String { app.displayLabel }
 }
 
-/// The grid's geometry. Tiles keep their size; the gaps between columns grow
-/// to fill the row, so the first tile starts and the last one ends exactly one
-/// inset from the window's edges (the toolbar's own leading edge) at any width.
-enum GridMetrics {
-    static let cellWidth: CGFloat = 96
-    static let cellHeight: CGFloat = 100
-    static let minGap: CGFloat = 8
-    static let inset: CGFloat = 20
+/// The Deck's zoom: ⌘+ / ⌘− / ⌘0 on the Deck scale the whole grid (cell, icon,
+/// gaps and the 880 pt block) together. One stored fraction, clamped to the
+/// same four steps as the app windows' density.
+enum DeckZoom {
+    static let key = "deckZoom"
+    static let options: [CGFloat] = [0.75, 1.0, 1.25, 1.5]
+    static let step: CGFloat = 0.25
+    static let range: ClosedRange<CGFloat> = 0.75...1.5
 
-    static func columns(forWidth width: CGFloat) -> Int {
-        max(Int((width - 2 * inset + minGap) / (cellWidth + minGap)), 1)
+    static func clamped(_ value: CGFloat) -> CGFloat {
+        min(max(value, range.lowerBound), range.upperBound)
     }
 
-    static func gap(forWidth width: CGFloat) -> CGFloat {
+    /// One ⌘+/⌘− step, rounded to three places so 0.75 + 0.25 is exactly 1.
+    static func stepped(from value: CGFloat, by delta: CGFloat) -> CGFloat {
+        clamped((value + delta).rounded(toPlaces: 3))
+    }
+
+    /// 100% when the profile has no usable value.
+    static func stored(in defaults: UserDefaults) -> CGFloat {
+        let value = defaults.double(forKey: key)
+        return value > 0 ? clamped(value) : 1
+    }
+}
+
+/// The grid's numbers at one zoom step. Pure, so the layout, the cell views and
+/// the unit tests all read the same arithmetic: 64 pt icons in 96×108 pt cells
+/// on a fixed 16 pt pitch, a 24 pt vertical inset, an 8 pt icon-label gap, a
+/// 16 pt hover corner and an 880 pt content block that stops growing.
+struct DeckGridSize: Equatable {
+    let zoom: CGFloat
+
+    init(zoom: CGFloat) {
+        self.zoom = DeckZoom.clamped(zoom)
+    }
+
+    var cellWidth: CGFloat { 96 * zoom }
+    var cellHeight: CGFloat { 108 * zoom }
+    var iconSide: CGFloat { 64 * zoom }
+    var columnGap: CGFloat { 16 * zoom }
+    var rowSpacing: CGFloat { 16 * zoom }
+    var verticalInset: CGFloat { 24 * zoom }
+    var iconLabelGap: CGFloat { 8 * zoom }
+    var cornerRadius: CGFloat { 16 * zoom }
+    /// The grid never runs edge to edge: at 1000 pt this leaves 60 pt a side.
+    var maxContentWidth: CGFloat { 880 * zoom }
+
+    /// Columns are what fits the block, never fewer than one.
+    func columns(forWidth width: CGFloat) -> Int {
+        max(Int((min(max(width, 0), maxContentWidth) + columnGap) / (cellWidth + columnGap)), 1)
+    }
+
+    /// The pitch never grows: a row keeps 16 pt between columns at any width.
+    func gap(forWidth width: CGFloat) -> CGFloat { columnGap }
+
+    /// The drawn width of one full row.
+    func span(forWidth width: CGFloat) -> CGFloat {
         let count = columns(forWidth: width)
-        guard count > 1 else { return minGap }
-        return max((width - 2 * inset - CGFloat(count) * cellWidth) / CGFloat(count - 1), minGap)
+        return CGFloat(count) * cellWidth + CGFloat(max(count - 1, 0)) * columnGap
+    }
+
+    /// The block is centred, so the margins match on both sides.
+    func originX(forWidth width: CGFloat) -> CGFloat {
+        (width - span(forWidth: width)) / 2
+    }
+
+    /// Where cell `index` is drawn in a grid `width` wide.
+    func frame(of index: Int, in width: CGFloat, origin: CGPoint = .zero) -> CGRect {
+        let count = columns(forWidth: width)
+        let column = index % count
+        let row = index / count
+        return CGRect(x: origin.x + originX(forWidth: width) + CGFloat(column) * (cellWidth + columnGap),
+                      y: origin.y + verticalInset + CGFloat(row) * (cellHeight + rowSpacing),
+                      width: cellWidth, height: cellHeight)
+    }
+
+    func height(for count: Int, width: CGFloat) -> CGFloat {
+        let columns = columns(forWidth: width)
+        let rows = (count + columns - 1) / columns
+        return 2 * verticalInset + CGFloat(rows) * cellHeight
+            + CGFloat(max(rows - 1, 0)) * rowSpacing
+    }
+}
+
+/// The grid at 100 %: the D design's numbers, unchanged for callers that do
+/// not carry the run's zoom.
+enum GridMetrics {
+    static let cellWidth: CGFloat = 96
+    static let cellHeight: CGFloat = 108
+    static let iconSide: CGFloat = 64
+    static let columnGap: CGFloat = 16
+    static let rowSpacing: CGFloat = 16
+    static let verticalInset: CGFloat = 24
+    static let iconLabelGap: CGFloat = 8
+    static let cornerRadius: CGFloat = 16
+    static let maxContentWidth: CGFloat = 880
+
+    static func columns(forWidth width: CGFloat, zoom: CGFloat = 1) -> Int {
+        DeckGridSize(zoom: zoom).columns(forWidth: width)
+    }
+
+    static func gap(forWidth width: CGFloat, zoom: CGFloat = 1) -> CGFloat {
+        DeckGridSize(zoom: zoom).gap(forWidth: width)
+    }
+
+    static func span(forWidth width: CGFloat, zoom: CGFloat = 1) -> CGFloat {
+        DeckGridSize(zoom: zoom).span(forWidth: width)
+    }
+
+    static func originX(forWidth width: CGFloat, zoom: CGFloat = 1) -> CGFloat {
+        DeckGridSize(zoom: zoom).originX(forWidth: width)
     }
 }
 
@@ -618,13 +807,22 @@ struct AppGrid: View {
     let apps: [AppInfo]
     let query: String
     let navigator: GridNavigator
+    @AppStorage(DeckZoom.key, store: Profile.active.defaults) private var zoom = 1.0
+    /// The letter at the top of the grid, and the last scroll position that
+    /// produced it (the rail's accent and the e2e's landing proof).
+    @State private var currentLetter: String?
+    @State private var scrollBox = RailScrollBox()
+    /// The rail's pending target index: reported once its row is on screen.
+    @State private var railTarget: Int?
+
+    private var metrics: DeckGridSize { DeckGridSize(zoom: CGFloat(zoom)) }
 
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
                 Group {
                     if apps.isEmpty && !controller.appsLoaded && query.isEmpty {
-                        grid { ForEach(0..<12, id: \.self) { _ in PlaceholderCell() } }
+                        grid { ForEach(0..<12, id: \.self) { _ in PlaceholderCell(metrics: metrics) } }
                             .redacted(reason: .placeholder)
                     } else if apps.isEmpty {
                         Text("No apps match “\(query)”")
@@ -636,6 +834,7 @@ struct AppGrid: View {
                                 AppCell(app: cell.app, icon: controller.icons[cell.app.pkg],
                                         rendered: controller.deckIcons[cell.app.pkg],
                                         iconIsMissing: iconIsMissing(cell.app),
+                                        metrics: metrics,
                                         selected: navigator.selection == cell.id) { controller.openApp(cell.app) }
                                     .id(cell.id)
                                     .deckCellGeometry(cell.id)
@@ -660,10 +859,34 @@ struct AppGrid: View {
                 // Arrow keys move by the drawn columns. The drawn layout comes
                 // from the layout pass itself (DeckGridLayout); this is only
                 // the keyboard's copy of the same number and no view reads it.
-                navigator.columns = GridMetrics.columns(forWidth: outer.width)
+                let current = metrics
+                navigator.columns = current.columns(forWidth: outer.width)
+                DeckGridProbe.reportGeometry(current, viewport: outer.width)
+            }
+            // The rail's current letter follows the scroll position. Only a
+            // scroll is read here; the grid's layout never sees this value.
+            .onScrollGeometryChange(for: RailScroll.self) { geometry in
+                RailScroll(offset: geometry.visibleRect.minY + geometry.contentInsets.top,
+                           width: geometry.containerSize.width)
+            } action: { _, scroll in
+                follow(scroll)
+            }
+            .overlay(alignment: .trailing) {
+                if DeckRail.shows(count: cells.count, query: query) {
+                    DeckIndexRail(entries: railEntries,
+                                  current: currentLetter ?? firstRailLetter) { letter in
+                        scroll(to: letter, proxy: proxy)
+                    }
+                    .padding(.trailing, 8)
+                }
             }
             .onChange(of: navigator.selection) { _, pkg in
                 if let pkg { withAnimation(.smooth(duration: 0.15)) { proxy.scrollTo(pkg) } }
+            }
+            // The e2e cannot point in a quiet run: its `deck-rail` verb asks
+            // for the same scroll the rail's own click runs.
+            .onChange(of: controller.deckRailRequest) { _, request in
+                if let request { scroll(to: request.letter, proxy: proxy) }
             }
         }
     }
@@ -672,6 +895,44 @@ struct AppGrid: View {
     /// the same id (a phone can repeat an entry; SwiftUI draws a repeated id as
     /// an empty slot). The order the phone sent is kept.
     private var cells: [DeckCell] { AppGrid.entries(apps) }
+
+    /// The rail follows the drawn cells, so its indexes are the grid's.
+    private var cellApps: [AppInfo] { cells.map(\.app) }
+    private var railEntries: [DeckRail.Entry] { DeckRail.entries(for: cellApps) }
+    private var firstRailLetter: String? { railEntries.first { $0.index != nil }?.letter }
+
+    /// Scroll to a rail letter: its own first app, or the next letter with apps
+    /// when the letter itself is empty.
+    private func scroll(to letter: String, proxy: ScrollViewProxy) {
+        guard let index = DeckRail.target(for: letter, in: railEntries),
+              cells.indices.contains(index) else { return }
+        railTarget = index
+        DeckGridProbe.reportRailPick(letter: letter, index: index)
+        withAnimation(.smooth(duration: 0.15)) { proxy.scrollTo(cells[index].id, anchor: .top) }
+        // A target already on screen scrolls nowhere, so no geometry change
+        // follows: report the landing from the position we have.
+        if let last = scrollBox.last { follow(last) }
+    }
+
+    /// The letter (and, for a rail click, the target) at a scroll position.
+    private func follow(_ scroll: RailScroll) {
+        scrollBox.last = scroll
+        let apps = cellApps
+        guard let top = DeckRail.topIndex(offset: scroll.offset, apps: apps,
+                                          metrics: metrics, width: scroll.width) else {
+            currentLetter = nil
+            return
+        }
+        let letter = DeckRail.letter(for: apps[top].displayLabel)
+        if letter != currentLetter { currentLetter = letter }
+        if let target = railTarget {
+            let columns = metrics.columns(forWidth: scroll.width)
+            if top <= target, target < top + columns {
+                railTarget = nil
+                DeckGridProbe.reportRailTop(letter: letter, index: top)
+            }
+        }
+    }
 
     /// Nothing more is coming for this icon: the phone said it has none, or
     /// the link is down.
@@ -687,55 +948,106 @@ struct AppGrid: View {
     }
 
     private func grid<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
-        DeckGridLayout { content() }
+        DeckGridLayout(metrics: metrics) { content() }
             .frame(maxWidth: .infinity)
     }
 }
 
-/// The grid's placement. Columns and gaps come from the width this layout is
-/// given in the same pass that draws it: a stored width is still the old one
-/// while a zoom or a live resize changes the window, and the fixed-width
+/// The scroll position the rail reads: the content's visible top (the scroll
+/// view has a toolbar inset above the grid) and the viewport width the letter
+/// mapping needs. A value type so `onScrollGeometryChange` only calls back when
+/// one of them changes.
+private struct RailScroll: Equatable {
+    var offset: CGFloat
+    var width: CGFloat
+}
+
+/// The last scroll position for the rail's already-visible case. A reference
+/// box, not @State: a resize changes the geometry every frame and must not
+/// invalidate the grid's body (the e2e drag p95 is measured on exactly that).
+private final class RailScrollBox {
+    var last: RailScroll?
+}
+
+/// The 9 pt letter column on the Deck's trailing edge (D). Clicking or dragging
+/// a letter jumps the grid; the letter at the top of the grid is the accent
+/// one, and a letter with no apps is drawn dimmed.
+private struct DeckIndexRail: View {
+    /// The D shot's letters sit on a 12 pt pitch.
+    private static let rowHeight: CGFloat = 12
+    private static let width: CGFloat = 16
+
+    let entries: [DeckRail.Entry]
+    let current: String?
+    let pick: (String) -> Void
+
+    @State private var lastPicked: String?
+
+    private var height: CGFloat { CGFloat(entries.count) * Self.rowHeight }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            ForEach(entries, id: \.letter) { entry in
+                Text(entry.letter)
+                    .font(.system(size: 9, weight: entry.letter == current ? .semibold : .regular))
+                    .foregroundStyle(entry.letter == current ? AnyShapeStyle(Color.accentColor)
+                                                            : AnyShapeStyle(.secondary))
+                    .opacity(entry.index == nil ? 0.35 : 1)
+                    .frame(width: Self.width, height: Self.rowHeight)
+            }
+        }
+        .frame(width: Self.width)
+        .contentShape(.rect)
+        .gesture(
+            DragGesture(minimumDistance: 0)
+                .onChanged { value in
+                    guard let letter = DeckRail.letter(atY: value.location.y, height: height,
+                                                       entries: entries),
+                          letter != lastPicked else { return }
+                    lastPicked = letter
+                    pick(letter)
+                }
+                .onEnded { _ in lastPicked = nil }
+        )
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("App index")
+        .accessibilityValue(current ?? "")
+        .accessibilityHint("Click or drag a letter to scroll to it")
+    }
+}
+
+/// The grid's placement. Columns and the centred block come from the width this
+/// layout is given in the same pass that draws it: a stored width is still the
+/// old one while a zoom or a live resize changes the window, and the fixed-width
 /// columns past the edge are cut in half (the person's zoom-back frames).
-/// Tiles keep 96 pt; the gaps grow to fill the row.
+/// Tiles keep 96 pt at 100 %; the pitch stays 16 pt.
 struct DeckGridLayout: Layout {
-    /// Between rows, as the LazyVGrid this replaces had it.
-    static let rowSpacing: CGFloat = 8
-    /// Above the first row and below the last, as before.
-    static let verticalInset: CGFloat = 16
+    var metrics = DeckGridSize(zoom: 1)
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
         MainActor.assumeIsolated { DeckGridMetrics.beginLayout() }
         let width = proposal.replacingUnspecifiedDimensions().width
-        return CGSize(width: width, height: Self.height(for: subviews.count, width: width))
+        return CGSize(width: width, height: metrics.height(for: subviews.count, width: width))
     }
 
     func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
         MainActor.assumeIsolated { DeckGridMetrics.relayouts += 1 }
         for (index, subview) in subviews.enumerated() {
-            let frame = Self.frame(of: index, in: bounds.width, origin: bounds.origin)
+            let frame = metrics.frame(of: index, in: bounds.width, origin: bounds.origin)
             subview.place(at: frame.origin, anchor: .topLeading,
                           proposal: ProposedViewSize(width: frame.width, height: frame.height))
         }
         MainActor.assumeIsolated { DeckGridMetrics.endLayout() }
     }
 
-    /// Where cell `index` is drawn in a grid `width` wide. Pure, so the tests
-    /// pin the design's 96 pt tiles and growing gaps at any width.
+    /// Where cell `index` is drawn in a grid `width` wide at 100 %. Pure, so the
+    /// tests pin the design's 96 pt tiles and fixed 16 pt pitch at any width.
     static func frame(of index: Int, in width: CGFloat, origin: CGPoint = .zero) -> CGRect {
-        let columns = GridMetrics.columns(forWidth: width)
-        let gap = GridMetrics.gap(forWidth: width)
-        let column = index % columns
-        let row = index / columns
-        return CGRect(x: origin.x + GridMetrics.inset + CGFloat(column) * (GridMetrics.cellWidth + gap),
-                      y: origin.y + verticalInset + CGFloat(row) * (GridMetrics.cellHeight + rowSpacing),
-                      width: GridMetrics.cellWidth, height: GridMetrics.cellHeight)
+        DeckGridSize(zoom: 1).frame(of: index, in: width, origin: origin)
     }
 
     static func height(for count: Int, width: CGFloat) -> CGFloat {
-        let columns = GridMetrics.columns(forWidth: width)
-        let rows = (count + columns - 1) / columns
-        return 2 * verticalInset + CGFloat(rows) * GridMetrics.cellHeight
-            + CGFloat(max(rows - 1, 0)) * rowSpacing
+        DeckGridSize(zoom: 1).height(for: count, width: width)
     }
 }
 
@@ -766,6 +1078,8 @@ struct AppCell: View {
     /// The shared renderer's icon for the tile (docs/design/dock.md §Icons).
     let rendered: NSImage?
     let iconIsMissing: Bool
+    /// The grid's numbers at the run's zoom step.
+    let metrics: DeckGridSize
     let selected: Bool
     let open: () -> Void
     @State private var hovering = false
@@ -773,9 +1087,9 @@ struct AppCell: View {
 
     var body: some View {
         Button(action: open) {
-            VStack(spacing: 6) {
+            VStack(spacing: metrics.iconLabelGap) {
                 AppIconView(app: app, image: icon, rendered: rendered, isMissing: iconIsMissing,
-                            glassOn: glassIconsOn, hovering: hovering)
+                            glassOn: glassIconsOn, hovering: hovering, side: metrics.iconSide)
                 Text(app.displayLabel)
                     .font(.caption)
                     .lineLimit(1)
@@ -783,11 +1097,11 @@ struct AppCell: View {
                     .padding(.horizontal, 6)
                     .foregroundStyle(selected ? .primary : .secondary)
             }
-            .frame(width: GridMetrics.cellWidth, height: GridMetrics.cellHeight)
+            .frame(width: metrics.cellWidth, height: metrics.cellHeight)
             .background(selected ? AnyShapeStyle(Color.accentColor.opacity(0.22))
                                  : hovering ? AnyShapeStyle(.quaternary) : AnyShapeStyle(.clear),
-                        in: .rect(cornerRadius: 14))
-            .contentShape(.rect(cornerRadius: 14))
+                        in: .rect(cornerRadius: metrics.cornerRadius))
+            .contentShape(.rect(cornerRadius: metrics.cornerRadius))
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
@@ -813,11 +1127,14 @@ struct DockMenuItems: View {
 }
 
 struct PlaceholderCell: View {
+    var metrics = DeckGridSize(zoom: 1)
+
     var body: some View {
-        VStack(spacing: 6) {
-            RoundedRectangle(cornerRadius: 13, style: .continuous).fill(.quaternary).frame(width: 56, height: 56)
+        VStack(spacing: metrics.iconLabelGap) {
+            RoundedRectangle(cornerRadius: 13, style: .continuous).fill(.quaternary)
+                .frame(width: metrics.iconSide, height: metrics.iconSide)
             Text("Loading").font(.caption)
         }
-        .frame(width: GridMetrics.cellWidth, height: GridMetrics.cellHeight)
+        .frame(width: metrics.cellWidth, height: metrics.cellHeight)
     }
 }

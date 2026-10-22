@@ -76,7 +76,7 @@ coordinates the TOUCH frames carry). Window ids are the stream ids
 | `phone_status` | — | connected, phone name, battery level/charging, locked, open window count |
 | `list_apps` | — | every app the phone reports, as `label`, `package` |
 | `open_app` | `app`: package or label | the opened window's id, package and label |
-| `list_windows` | — | `id`, `package` (null for the phone window), width and height (stream pixels) |
+| `list_windows` | — | `id`, `package` (null for the Phone Mirror), width and height (stream pixels) |
 | `screenshot` | `window` | PNG image content of the last displayed frame, longest side ≤ 1280 px |
 | `tap` | `window`, `x`, `y` | down/up at the point |
 | `long_press` | `window`, `x`, `y`, `ms` ≤ 3000 | down, wait, up |

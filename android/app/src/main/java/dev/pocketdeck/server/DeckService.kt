@@ -64,6 +64,12 @@ class DeckService(private val appContext: Context?) :
     /** The phone's DND, shared by every session (docs/design/focus.md). */
     private var zen: ZenControl? = null
 
+    /** The phone's ringer mode, read for the first `state` of every session. */
+    private var ringer: RingerControl? = null
+
+    /** STREAM_MUSIC's level, shared by every session (docs/PROTOCOL.md "Volume"). */
+    private var volume: VolumeControl? = null
+
     /** The live state watcher of the current session, if any. */
     @Volatile private var stateWatcher: AndroidDeviceState? = null
 
@@ -99,6 +105,11 @@ class DeckService(private val appContext: Context?) :
             { zenControl.current() },
             ::log,
         )
+        ringer = ringerControl
+        // One volume reader for the whole service: the Mac's slider and the
+        // state stream must name the same stream (STREAM_MUSIC) at all times.
+        val volumeControl = VolumeControl(AndroidVolumeSettings(base, ::log), ::log)
+        volume = volumeControl
         val titles = AndroidWindowObserver(shell, ::log)
         val uids = AppUids(base, ::log)
         val audio = AudioCapture(shell, ::log, uids::uidOf)
@@ -162,6 +173,7 @@ class DeckService(private val appContext: Context?) :
                 },
                 zen = zenControl,
                 ringerMode = ringerControl,
+                volume = volumeControl,
                 secureProbe = AndroidSecureProbe(base, ::log),
                 tlsView = Session.TlsView.from(socket).also { view ->
                     // K4/e2e evidence, hashes only, debug builds only: the
@@ -343,9 +355,19 @@ class DeckService(private val appContext: Context?) :
         )
     }
 
-    override fun state(): DeviceState =
-        DeviceState(isLocked(), batteryPercent, batteryCharging, zen?.current(),
-            screen = ScreenState.read(appContext))
+    override fun state(): DeviceState {
+        val level = volume?.read()
+        return DeviceState(
+            locked = isLocked(),
+            battery = batteryPercent,
+            charging = batteryCharging,
+            dnd = zen?.current(),
+            ringer = ringer?.current(),
+            screen = ScreenState.read(appContext),
+            volume = level?.first,
+            volumeMax = level?.second,
+        )
+    }
 
     /** Event-driven updates; null when the service has no context to register with. */
     override fun subscribeState(onChange: (DeviceState) -> Unit): AutoCloseable? {
@@ -354,7 +376,17 @@ class DeckService(private val appContext: Context?) :
         stateWatcher = watcher
         // Every state build reads zen_mode: the state the person sees always
         // names the DND as it is at that moment.
-        return runCatching { watcher.start { state -> onChange(state.copy(dnd = zen?.current())) } }
+        return runCatching {
+            watcher.start { state ->
+                val level = volume?.read()
+                onChange(state.copy(
+                    dnd = zen?.current(),
+                    ringer = ringer?.current(),
+                    volume = level?.first,
+                    volumeMax = level?.second,
+                ))
+            }
+        }
             .onFailure { stateWatcher = null }
             .getOrNull()
     }
