@@ -232,20 +232,18 @@ enum MenuDump {
         return value as? Bool ?? true
     }
 
-    /// AX's command modifier mask, in the same names AppKit's flags use.
+    /// AX's command modifier mask (bit 0 shift, 1 option, 2 control, 3 no
+    /// command, 4 function), named in the order the checks read: command first.
     private static func displayedModifiers(_ element: AXUIElement) -> [String] {
         var value: CFTypeRef?
         guard AXUIElementCopyAttributeValue(element, kAXMenuItemCmdModifiersAttribute as CFString, &value) == .success,
               let mask = value as? Int else { return ["command"] }
-        switch mask {
-        case 0: return ["command"]
-        case 1: return ["command", "shift"]
-        case 2: return ["command", "option"]
-        case 3: return ["command", "shift", "option"]
-        case 4: return ["command", "control"]
-        case 8: return []
-        case 12: return ["control"]
-        default: return ["command"]
-        }
+        var names: [String] = []
+        if mask & 8 == 0 { names.append("command") }
+        if mask & 1 != 0 { names.append("shift") }
+        if mask & 2 != 0 { names.append("option") }
+        if mask & 4 != 0 { names.append("control") }
+        if mask & 16 != 0 { names.append("function") }
+        return names
     }
 }
