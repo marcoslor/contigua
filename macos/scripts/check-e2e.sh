@@ -8278,6 +8278,20 @@ check_deck() {
     # Put the Deck back on its default size for the visual record.
     control deck-size 760 560 || bad "DECK deck-size 760: $CONTROL_REPLY"
 
+    # The A–Z rail: a letter click scrolls to that letter's first app. A quiet
+    # run cannot point, so deck-rail runs the rail's own scroll; the cell dump
+    # is the authority for where that app is, and railTop proves its row is on
+    # screen after the scroll.
+    if control deck-rail T >/dev/null; then
+        if rail="$(python3 "$MACOS/scripts/deck-rail.py" "$WORK/deck-grid.jsonl" T)"; then
+            ok "DECK the rail's T click lands on its first app ($rail)"
+        else
+            bad "DECK the rail's T click: $rail"
+        fi
+    else
+        bad "DECK deck-rail T: $CONTROL_REPLY"
+    fi
+
     # The deckMode transition (welcome -> grid) settles; a capture too early
     # shows both states overlapped, which is useless as the visual record.
     sleep 3

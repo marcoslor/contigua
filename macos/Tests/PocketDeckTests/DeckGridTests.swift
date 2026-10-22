@@ -73,6 +73,90 @@ final class DeckGridTests: XCTestCase {
         XCTAssertEqual(DeckZoom.stepped(from: 0.75, by: -DeckZoom.step), 0.75, "clamped")
     }
 
+    // MARK: the A–Z rail
+
+    private func railApps(_ labels: [String]) -> [AppInfo] {
+        labels.enumerated().compactMap { index, label in
+            AppInfo(json: ["pkg": "com.example.app\(index)", "label": label])
+        }
+    }
+
+    func testRailLettersAndTheFirstIndexForEach() {
+        let apps = railApps(["1Password", "99", "Airbnb", "amazon", "Bixby", "Éclair", "£notes"])
+        let entries = DeckRail.entries(for: apps)
+        let letters = (65...90).map { String(UnicodeScalar($0)!) } + ["#"]
+        XCTAssertEqual(entries.map(\.letter), letters)
+        XCTAssertEqual(entries.first { $0.letter == "#" }?.index, 0)
+        XCTAssertEqual(entries.first { $0.letter == "A" }?.index, 2)
+        XCTAssertEqual(entries.first { $0.letter == "B" }?.index, 4)
+        XCTAssertEqual(entries.first { $0.letter == "E" }?.index, 5,
+                       "an accented letter files under its letter")
+        XCTAssertNil(entries.first { $0.letter == "C" }?.index,
+                     "a letter with no apps stays in the rail, dimmed")
+    }
+
+    func testRailSortsDigitsAndSymbolsUnderHash() {
+        XCTAssertEqual(DeckRail.letter(for: "Airbnb"), "A")
+        XCTAssertEqual(DeckRail.letter(for: "amazon"), "A")
+        XCTAssertEqual(DeckRail.letter(for: "Éclair"), "E")
+        XCTAssertEqual(DeckRail.letter(for: "99"), "#")
+        XCTAssertEqual(DeckRail.letter(for: "£notes"), "#")
+        XCTAssertEqual(DeckRail.letter(for: "  spaced"), "S", "leading spaces are trimmed")
+        XCTAssertEqual(DeckRail.letter(for: ""), "#")
+    }
+
+    func testRailClickSkipsForwardToTheNextLetterWithApps() {
+        let entries = DeckRail.entries(for: railApps(["Alpha", "Bixby", "Delta"]))
+        XCTAssertEqual(DeckRail.target(for: "A", in: entries), 0)
+        XCTAssertEqual(DeckRail.target(for: "C", in: entries), 2,
+                       "C has no apps, so the click lands on Delta")
+        XCTAssertNil(DeckRail.target(for: "Z", in: entries),
+                     "nothing after the last app to skip to")
+        let symbols = DeckRail.entries(for: railApps(["Alpha", "1Password"]))
+        XCTAssertEqual(DeckRail.target(for: "#", in: symbols), 1)
+    }
+
+    func testRailCurrentLetterFollowsTheScrollOffset() {
+        let labels = ["1Password"]
+            + (1...4).map { "Alpha \($0)" }
+            + (5...9).map { "Bravo \($0)" }
+            + (10...14).map { "Charlie \($0)" }
+        let apps = railApps(labels)
+        let metrics = DeckGridSize(zoom: 1)
+        func current(_ offset: CGFloat, width: CGFloat = 640) -> String? {
+            DeckRail.currentLetter(offset: offset, apps: apps, metrics: metrics, width: width)
+        }
+        XCTAssertEqual(current(0), "#")
+        XCTAssertEqual(current(24), "#", "the top of the block is still the first row")
+        XCTAssertEqual(current(148), "B", "row 2 starts at index 5")
+        XCTAssertEqual(current(140), "B", "the gap above a row belongs to the row below it")
+        XCTAssertEqual(current(272), "C", "row 3 starts at index 10")
+        XCTAssertEqual(current(10_000), "C", "past the end it stays on the last app")
+        XCTAssertEqual(current(148, width: 1200), "B",
+                       "a wider window fits eight apps in a row, index 8 is still Bravo")
+        XCTAssertNil(DeckRail.currentLetter(offset: 0, apps: [], metrics: metrics, width: 640))
+    }
+
+    func testRailHidesWhileSearchingAndBelowThirtyApps() {
+        XCTAssertFalse(DeckRail.shows(count: 29, query: ""))
+        XCTAssertTrue(DeckRail.shows(count: 30, query: ""))
+        XCTAssertFalse(DeckRail.shows(count: 30, query: "ca"),
+                       "a search query hides the rail")
+        XCTAssertFalse(DeckRail.shows(count: 0, query: ""))
+    }
+
+    func testRailLetterAtAPointOnTheColumn() {
+        let entries = DeckRail.entries(for: railApps(["Alpha", "Bixby"]))
+        XCTAssertEqual(DeckRail.letter(atY: 0, height: 270, entries: entries), "A")
+        XCTAssertEqual(DeckRail.letter(atY: 269, height: 270, entries: entries), "#")
+        XCTAssertEqual(DeckRail.letter(atY: 10.5, height: 270, entries: entries),
+                       entries[1].letter,
+                       "the column's letters are evenly spaced")
+        XCTAssertEqual(DeckRail.letter(atY: 45, height: 270, entries: entries),
+                       entries[4].letter)
+        XCTAssertNil(DeckRail.letter(atY: 0, height: 0, entries: entries))
+    }
+
     func testFallbackInitialSkipsPunctuationAndFallsBackToThePackage() {
         XCTAssertEqual(FallbackIcon.initial(label: "spotify", pkg: "com.spotify.music"), "S")
         XCTAssertEqual(FallbackIcon.initial(label: "  ¡Hola", pkg: "x.y"), "H")
