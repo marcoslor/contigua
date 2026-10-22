@@ -41,6 +41,8 @@ A line the product claims is proved by a check whose `ok` line names the ID. The
 | CONV-MAC-22 | Reduce Motion replaces non-essential animation, and Reduce Transparency replaces glass with a solid fill. |
 | CONV-MAC-23 | Text follows the system's text size where SwiftUI allows. Nothing important is conveyed by colour alone. |
 | CONV-MAC-24 | Notifications, Focus modes and Do Not Disturb are respected. The app asks for a permission only when the person uses the feature that needs it, and says why. |
+| CONV-MAC-25 | Every clickable custom control (tile, card, icon button, row) has a **hover** highlight and a **pressed** state, as native Control Center modules do. A **disabled** control is dimmed neutral: never accent-tinted, so it never reads as "on". |
+| CONV-MAC-26 | **One inset and one vertical rhythm per surface.** Every section of a panel or window shares one side inset, and section gaps come from one small scale (8/12/16 pt). Helper and reason text sits with the control it explains, aligned to it, never wedged between sections. |
 
 ## Android
 
