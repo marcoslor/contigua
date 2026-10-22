@@ -395,6 +395,7 @@ struct DeckPhonePopover: View {
         PhonePanelView(
             state: PhoneControlsState(controller: controller),
             actions: PhoneControlsActions(controller: controller) { DeckWindow.show() },
+            showsFooter: false,
         )
     }
 }

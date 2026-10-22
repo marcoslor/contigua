@@ -50,6 +50,7 @@ struct MenuBarContent: View {
                 if DeckWindow.window == nil { openWindow(id: DeckWindow.id) }
                 DeckWindow.show()
             },
+            showsFooter: true,
         )
     }
 }

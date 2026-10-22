@@ -3115,10 +3115,12 @@ root = json.load(open(sys.argv[1]))
 if root["width"] != 300:
     print("width:", root["width"]); sys.exit(1)
 kinds = [row["kind"] for row in root["items"]]
-for kind in ["volume", "dnd", "ring", "phoneScreen", "findApps", "continueOnMac",
-             "installApk", "settings", "quit"]:
+for kind in ["dnd", "ringer", "ring", "screen", "volume", "phoneScreen", "findApps",
+             "continueOnMac", "installApk", "settings", "quit"]:
     if kind not in kinds:
         print("missing", kind, kinds); sys.exit(1)
+if kinds.index("dnd") > kinds.index("ringer") or kinds.index("ringer") > kinds.index("ring"):
+    print("tiles out of order:", kinds); sys.exit(1)
 labels = [row["label"] for row in root["items"]]
 for gone in ["Open PocketDeck", "Phone screen"]:
     if gone in labels:
@@ -4642,7 +4644,10 @@ check_controls() {
     # (1) the snapshot the extension reads, and DND from a control.
     clean
     start_fake || return 1
-    launch --connect "127.0.0.1:$PORT" --controls-dir "$WORK/controls" --quit-after 120
+    rm -rf "$WORK-control"
+    mkdir -p "$WORK-control"
+    launch --connect "127.0.0.1:$PORT" --controls-dir "$WORK/controls" \
+        --debug-control "$WORK-control" --quit-after 120
     controls_snapshot_is 25 connected=true dnd=off \
         && ok "CONTROLS the snapshot says connected with DND off" \
         || bad "CONTROLS no connected/off snapshot: $(controls_driver snapshot "$WORK/controls" 2>&1 | tail -1)"
@@ -4687,6 +4692,95 @@ check_controls() {
     controls_reply_is ringer loud 2>/dev/null \
         && bad "CONTROLS a bad ringer mode was accepted" \
         || ok "CONTROLS a bad ringer mode is refused"
+
+    # (2b) Panel P3: the Ringer tile's menu chooses Vibrate, the volume slider
+    # sends the phone's music stream, and the Deck popover has no footer.
+    control panelopen || bad "CONTROLS panelopen: $CONTROL_REPLY"
+    control paneldump panel "$WORK/controls-panel.json" || bad "CONTROLS paneldump: $CONTROL_REPLY"
+    python3 - "$WORK/controls-panel.json" <<'PY' && ok "CONTROLS the panel is P3 with the Ringer tile enabled and no popup volume" \
+        || bad "CONTROLS the panel is not P3"
+import json, sys
+root = json.load(open(sys.argv[1]))
+if root["width"] != 300:
+    print("width:", root["width"]); sys.exit(1)
+if not root["mapped"]:
+    print("items:", len(root["items"]), "controls:", len(root["controls"])); sys.exit(1)
+kinds = [row["kind"] for row in root["items"]]
+if kinds[:5] != ["dnd", "ringer", "ring", "screen", "volume"]:
+    print("items:", kinds); sys.exit(1)
+rows = {row["kind"]: row for row in root["items"]}
+if not rows["ringer"]["enabled"]:
+    print("ringer:", rows["ringer"]); sys.exit(1)
+if not rows["volume"]["enabled"]:
+    print("volume:", rows["volume"]); sys.exit(1)
+enabled = [row for row in root["items"] if row["enabled"]]
+volume_index = next(i for i, row in enumerate(enabled) if row["kind"] == "volume")
+volume = root["controls"][volume_index]
+if volume["height"] > 20 or volume["width"] < 150:
+    print("volume control:", volume); sys.exit(1)
+PY
+    control panelringer panel vibrate || bad "CONTROLS panelringer: $CONTROL_REPLY"
+    wait_until 3 ringer_is vibrate \
+        && ok "CONTROLS the Ringer tile's menu sent phone.ringer vibrate" \
+        || bad "CONTROLS the Ringer tile's menu sent no phone.ringer vibrate"
+    local volume_before
+    volume_before="$(grep -c '"ev":"volume"' "$WORK/events.jsonl" 2>/dev/null || true)"
+    control panelvolumedrag panel 0.2 "$WORK/controls-volume.json" \
+        || bad "CONTROLS panelvolumedrag: $CONTROL_REPLY"
+    python3 - "$WORK/controls-volume.json" <<'PY' && ok "CONTROLS the slider follows every drag step and ignores the phone echo mid-drag" \
+        || bad "CONTROLS the slider did not follow the drag"
+import json, sys
+try:
+    trace = json.load(open(sys.argv[1]))
+except (OSError, ValueError) as error:
+    print("no trace:", error); sys.exit(1)
+steps = [row for row in trace if 1 <= row["step"] <= 10]
+if len(steps) != 10:
+    print("steps:", len(steps)); sys.exit(1)
+for row in steps:
+    if abs(row["display"] - row["target"]) > 0.04:
+        print("step", row["step"], "showed", row["display"], "not", row["target"],
+              "phone", row["phone"]); sys.exit(1)
+if not any(abs(row["display"] - row["phone"]) > 0.02 for row in steps):
+    print("no phone echo landed during the drag:", steps); sys.exit(1)
+if abs(trace[-1]["display"] - 0.2) > 0.04:
+    print("release showed", trace[-1]); sys.exit(1)
+PY
+    local volume_after volume_sends
+    volume_after="$(grep -c '"ev":"volume"' "$WORK/events.jsonl" 2>/dev/null || true)"
+    volume_sends=$(( ${volume_after:-0} - ${volume_before:-0} ))
+    [ "$volume_sends" -ge 2 ] && [ "$volume_sends" -le 4 ] \
+        && ok "CONTROLS the drag sent phone.volume $volume_sends times (throttled to 10/s plus the release)" \
+        || bad "CONTROLS the drag sent phone.volume $volume_sends times, not the throttled count"
+    wait_until 20 events_have '"ev":"volume","level":3' \
+        && ok "CONTROLS the panel's volume slider sent phone.volume 3/15" \
+        || bad "CONTROLS the panel's volume slider sent no phone.volume"
+    control panelclose || bad "CONTROLS panelclose: $CONTROL_REPLY"
+
+    # The Deck's popover compiles the same view without the footer.
+    control deckpanel || bad "CONTROLS deckpanel: $CONTROL_REPLY"
+    rm -f "$WORK/controls-deck-panel.json"
+    local tries=20
+    while [ "$tries" -gt 0 ]; do
+        control paneldump deck "$WORK/controls-deck-panel.json" >/dev/null 2>&1 && break
+        tries=$((tries - 1)); sleep 0.5
+    done
+    python3 - "$WORK/controls-deck-panel.json" <<'PY' && ok "CONTROLS the Deck popover has P3's tiles and no Settings/Quit footer" \
+        || bad "CONTROLS the Deck popover kept the menu bar footer"
+import json, sys
+try:
+    root = json.load(open(sys.argv[1]))
+except (OSError, ValueError) as error:
+    print("no dump:", error); sys.exit(1)
+kinds = [row["kind"] for row in root["items"]]
+want = ["dnd", "ringer", "ring", "screen", "volume", "phoneScreen", "findApps",
+        "continueOnMac", "installApk"]
+if kinds != want:
+    print("items:", kinds); sys.exit(1)
+if "settings" in kinds or "quit" in kinds:
+    print("footer in the popover:", kinds); sys.exit(1)
+PY
+    control panelclose >/dev/null 2>&1
     stop_app
 
     # (3) a person's own DND is never touched by the control.
@@ -7703,11 +7797,13 @@ if root["width"] != 300:
 if not root["mapped"]:
     print("items:", len(root["items"]), "controls:", len(root["controls"])); sys.exit(1)
 kinds = [row["kind"] for row in root["items"]]
-want = ["volume", "dnd", "ring", "sessions", "phoneScreen", "findApps", "continueOnMac",
-        "installApk", "settings", "quit"]
+want = ["dnd", "ringer", "ring", "screen", "volume", "sessions", "phoneScreen", "findApps",
+        "continueOnMac", "installApk", "settings", "quit"]
 if kinds != want:
     print("items:", kinds); sys.exit(1)
-volume = root["controls"][0]
+enabled = [row for row in root["items"] if row["enabled"]]
+volume_index = next(i for i, row in enumerate(enabled) if row["kind"] == "volume")
+volume = root["controls"][volume_index]
 if volume["height"] > 20 or volume["width"] < 150:
     print("volume control:", volume); sys.exit(1)
 if any("Open PocketDeck" in row["label"] or "Phone screen" in row["label"] for row in root["items"]):
@@ -8508,7 +8604,8 @@ PY
     control open --close-stream 1:0 --debug-chrome-state "$WORK/chrome.txt" \
         || bad "DECK shared app: closing the stream window answered '$CONTROL_REPLY'"
     # The status pill opens the same phone controls in a popover (docs/DESIGN.md
-    # "Deck"): one component, the same item ids, and its DND switch is the real
+    # "Deck"): one component, P3's tiles, and no Settings/Quit footer (the Deck
+    # has its own gear and the app menu has both). Its DND tile is the real
     # control — the click reaches the phone.
     control deckpanel || bad "DECK deckpanel: $CONTROL_REPLY"
     # The popover presents on the next run-loop turns and is its own window.
@@ -8528,21 +8625,23 @@ import json, sys
 root = json.load(open(sys.argv[1]))
 if root["width"] != 300:
     print("width:", root["width"]); sys.exit(1)
+if not root["mapped"]:
+    print("items:", len(root["items"]), "controls:", len(root["controls"])); sys.exit(1)
 kinds = [row["kind"] for row in root["items"]]
-for kind in ["volume", "dnd", "ring", "phoneScreen", "findApps", "continueOnMac",
-             "installApk", "settings", "quit"]:
-    if kind not in kinds:
-        print("missing", kind, kinds); sys.exit(1)
-if len(root["controls"]) < 6:
-    print("controls:", len(root["controls"])); sys.exit(1)
+want = ["dnd", "ringer", "ring", "screen", "volume", "phoneScreen", "findApps",
+        "continueOnMac", "installApk"]
+if kinds != want:
+    print("the Deck popover items:", kinds); sys.exit(1)
+if "settings" in kinds or "quit" in kinds:
+    print("the Deck popover kept the menu bar footer:", kinds); sys.exit(1)
 PY
     local dnd_before dnd_after
     dnd_before="$(grep -c '"ev":"dnd"' "$WORK/events.jsonl" 2>/dev/null || echo 0)"
     control panelclick deck panel.dnd || bad "DECK the popover's DND click: $CONTROL_REPLY"
     dnd_after() { grep -c '"ev":"dnd"' "$WORK/events.jsonl" 2>/dev/null || echo 0; }
     wait_until 20 [ "$(dnd_after)" -gt "$dnd_before" ] \
-        && ok "DECK clicking the popover's DND switch reached the phone ($(grep -o '"ev":"dnd"[^}]*' "$WORK/events.jsonl" 2>/dev/null | tail -1))" \
-        || bad "DECK the popover's DND switch sent no new phone.dnd"
+        && ok "DECK clicking the popover's DND tile reached the phone ($(grep -o '"ev":"dnd"[^}]*' "$WORK/events.jsonl" 2>/dev/null | tail -1))" \
+        || bad "DECK the popover's DND tile sent no new phone.dnd"
     stop_app
 }
 

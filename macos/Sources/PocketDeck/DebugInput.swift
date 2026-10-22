@@ -78,6 +78,7 @@
 //   panelclick HOST ID       a click at that control's own frame, through the
 //                            window's event dispatch (panel.dnd, panel.ring, …)
 //   paneldrag HOST ID FRACTION  the volume slider, dragged to FRACTION of its track
+//   panelringer HOST MODE    choose Ring/Vibrate/Silent from the Ringer tile's menu
 //   wait SECONDS             let the app run (timers, animations) before the next action
 //   type TEXT                text typed as key presses (rest of the line)
 //   key [cmd+][shift+][ctrl+][opt+]NAME
@@ -155,6 +156,7 @@ enum DebugInputAction: Equatable {
     case panelDump(host: String, path: String)
     case panelClick(host: String, id: String)
     case panelDrag(host: String, id: String, fraction: Double)
+    case panelRinger(host: String, mode: String)
     /// Open the Deck's phone-controls popover (setup for its own checks).
     case deckPanel
     case wait(Double)
@@ -404,6 +406,12 @@ enum DebugInputScript {
                 throw LineError(message: "paneldrag needs HOST (panel or deck), an item ID and FRACTION (0...1)")
             }
             return .panelDrag(host: args[0], id: args[1], fraction: fraction)
+        case "panelringer":
+            guard args.count == 2, ["panel", "deck", "real"].contains(args[0]),
+                  PhoneRingerMode(rawValue: args[1]) != nil else {
+                throw LineError(message: "panelringer needs HOST (panel or deck) and MODE (normal, vibrate, silent)")
+            }
+            return .panelRinger(host: args[0], mode: args[1])
         case "wait":
             guard args.count == 1, let seconds = Double(args[0]), (0...60).contains(seconds) else {
                 throw LineError(message: "wait needs SECONDS (0...60)")
@@ -552,6 +560,8 @@ final class DebugInputDriver {
     var panelClick: ((String, String) -> Bool)?
     /// `paneldrag HOST ID FRACTION`: the volume slider's track.
     var panelDrag: ((String, String, Double) -> Bool)?
+    /// `panelringer HOST MODE`: choose a row of the Ringer tile's menu.
+    var panelRinger: ((String, String) -> Bool)?
     /// `deckpanel`: open the Deck's phone-controls popover.
     var deckPanel: (() -> Void)?
 
@@ -754,6 +764,8 @@ final class DebugInputDriver {
             _ = panelClick?(host, id)
         case .panelDrag(let host, let id, let fraction):
             _ = panelDrag?(host, id, fraction)
+        case .panelRinger(let host, let mode):
+            _ = panelRinger?(host, mode)
         case .deckPanel:
             deckPanel?()
         case .wait(let seconds):

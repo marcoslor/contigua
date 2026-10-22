@@ -31,7 +31,9 @@ final class PhonePanelViewTests: XCTestCase {
     // MARK: - State
 
     private func panelState(online: Bool = true, sessions: [MediaSessionRow] = [],
-                            dnd: PhoneDndMode? = .off, volume: Int? = 8) -> PhoneControlsState {
+                            dnd: PhoneDndMode? = .off, volume: Int? = 8,
+                            ringer: PhoneRingerMode? = .normal,
+                            phoneWindow: Bool = true) -> PhoneControlsState {
         var state = PhoneControlsState()
         state.phoneName = "Pixel 9"
         state.connection = online ? .online : .offline
@@ -40,6 +42,8 @@ final class PhonePanelViewTests: XCTestCase {
         state.media = MediaState()
         state.sessions = sessions
         state.dnd = dnd
+        state.ringer = ringer
+        state.phoneWindow = phoneWindow
         return state
     }
 
@@ -53,10 +57,12 @@ final class PhonePanelViewTests: XCTestCase {
     /// The panel in a real window at its intended width, laid out.
     @discardableResult
     private func host(_ state: PhoneControlsState,
-                      _ actions: PhoneControlsActions = PhoneControlsActions()) -> NSHostingView<PhonePanelView> {
+                      _ actions: PhoneControlsActions = PhoneControlsActions(),
+                      showsFooter: Bool = true) -> NSHostingView<PhonePanelView> {
         // One host at a time: the previous window goes away before the next.
         window?.orderOut(nil)
-        let view = NSHostingView(rootView: PhonePanelView(state: state, actions: actions))
+        let view = NSHostingView(rootView: PhonePanelView(state: state, actions: actions,
+                                                          showsFooter: showsFooter))
         view.frame = NSRect(x: 0, y: 0, width: PhonePanelView.width, height: 640)
         view.layoutSubtreeIfNeeded()
         let size = view.fittingSize
@@ -152,10 +158,19 @@ final class PhonePanelViewTests: XCTestCase {
 
     // MARK: - What the panel is
 
-    /// The v104 repro: the volume is an inline slider in its own row, not a
-    /// "Phone volume" stepper submenu. Nothing in the panel is a popup control
-    /// (the picker is an ordinary row with a menu), and the volume is a 14 pt
-    /// track in its row.
+    /// The e2e reads the slider's local display through the probe mirror after
+    /// each drag step. The host seeds it from the phone on the first render.
+    func testTheVolumeMirrorStartsAtThePhonesValue() {
+        PhoneVolumeDebug.reset()
+        _ = host(panelState(volume: 8))
+        RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        XCTAssertEqual(PhoneVolumeDebug.display, 8.0 / 15.0, accuracy: 0.001)
+        XCTAssertEqual(PhoneVolumeDebug.phase, "idle")
+    }
+
+    /// The v104 repro: the volume is still an inline 14 pt slider in its own
+    /// row, not a "Phone volume" stepper submenu. The Ringer and picker are
+    /// menus, but the volume itself is never a popup.
     func testTheVolumeIsAnInlineSliderNotASubmenu() {
         let state = panelState(sessions: [MediaSessionRow(key: "a", pkg: "p.a", app: "Spotify", playing: false),
                                           MediaSessionRow(key: "b", pkg: "p.b", app: "Music", playing: true)])
@@ -165,24 +180,26 @@ final class PhonePanelViewTests: XCTestCase {
         let laidOut = controls(in: view)
         XCTAssertEqual(laidOut.count, PhonePanelItem.focusOrder(for: state).count,
                        "one laid-out control per panel item")
-        guard let volume = laidOut.first else { return XCTFail("no volume control") }
+        guard let volume = laidOut.first(where: { control in
+            let rect = frame(control, in: view)
+            return rect.height < 20 && rect.width > 150
+        }) else { return XCTFail("no volume slider") }
         let rect = frame(volume, in: view)
         XCTAssertEqual(rect.height, 14, accuracy: 0.5, "the volume is a slider track, not a 28 pt row")
         XCTAssertGreaterThan(rect.width, 150, "the slider spans the row between its two speaker symbols")
         XCTAssertFalse(volume is NSPopUpButton, "the volume must not be a popup (the submenu shape)")
 
-        func descendants(_ view: NSView) -> [NSView] { view.subviews.flatMap { [$0] + descendants($0) } }
-        let popups = descendants(view).filter { String(describing: type(of: $0)).contains("PopupButton") }
-        XCTAssertTrue(popups.isEmpty, "no control in the panel is a popup (the volume is not a submenu)")
-        // With nothing to pick the picker row is gone too.
-        let plain = host(panelState())
-        let rows = controls(in: plain).count
-        XCTAssertEqual(rows, PhonePanelItem.focusOrder(for: panelState()).count)
+        // With nothing to pick the picker row is gone too, but the tiles still
+        // are: the panel keeps one control per item.
+        let plain = panelState()
+        let plainView = host(plain)
+        XCTAssertEqual(controls(in: plainView).count,
+                       PhonePanelItem.focusOrder(for: plain).count)
     }
 
-    /// The rows in the order the view lays them out: the phone controls, the
-    /// live notifications, the window actions, then Settings/Quit. This is the
-    /// order the e2e's panelclick/paneldrag map indices to.
+    /// The rows in the order the view lays them out: P3's four tiles, the
+    /// volume, the live notifications, the WINDOWS row, then Settings/Quit.
+    /// This is the order the e2e's panelclick/paneldrag map indices to.
     func testTheControlsAreLaidOutInThePanelOrder() {
         var state = panelState(sessions: [MediaSessionRow(key: "a", pkg: "p.a", app: "Spotify", playing: false),
                                           MediaSessionRow(key: "b", pkg: "p.b", app: "Music", playing: true)])
@@ -193,10 +210,19 @@ final class PhonePanelViewTests: XCTestCase {
         XCTAssertEqual(laidOut.count, items.count)
         let ys = laidOut.map { frame($0, in: view).minY }
         XCTAssertEqual(ys, ys.sorted(), "the controls are top to bottom in the model's order")
-        // PHONE is above LIVE, and both are above WINDOWS' rows.
-        XCTAssertLessThan(ys[items.firstIndex(of: .ring)!], ys[items.firstIndex(of: .live)!])
+        XCTAssertEqual(Array(items.prefix(5)), [.dnd, .ringer, .ring, .screen, .volume])
+        XCTAssertLessThan(ys[items.firstIndex(of: .screen)!], ys[items.firstIndex(of: .volume)!])
+        XCTAssertLessThan(ys[items.firstIndex(of: .volume)!], ys[items.firstIndex(of: .sessions)!])
+        XCTAssertLessThan(ys[items.firstIndex(of: .sessions)!], ys[items.firstIndex(of: .live)!])
         XCTAssertLessThan(ys[items.firstIndex(of: .live)!], ys[items.firstIndex(of: .phoneScreen)!])
         XCTAssertEqual(Array(items.suffix(2)), [.settings, .quit])
+
+        // The Deck popover compiles the same view with no footer.
+        let deck = host(state, showsFooter: false)
+        let deckItems = PhonePanelItem.focusOrder(for: state, showsFooter: false)
+        XCTAssertEqual(controls(in: deck).count, deckItems.count)
+        XCTAssertFalse(deckItems.contains(.settings))
+        XCTAssertFalse(deckItems.contains(.quit))
     }
 
     /// Ring becomes Stop Ringing while the phone rings: the row's own click
@@ -220,8 +246,9 @@ final class PhonePanelViewTests: XCTestCase {
         XCTAssertEqual(calls, ["ring", "stopRing"])
     }
 
-    /// Away: the phone controls are off and nothing fires, because the panel
-    /// says why in one line instead of hiding them.
+    /// Away: the phone controls are off and nothing fires. P3 keeps every
+    /// control laid out with its reason under the tiles; the volume has its own
+    /// line. The panel grows by the one reason line it shows.
     func testOfflineDimsThePhoneControlsAndSaysWhy() throws {
         var calls: [String] = []
         var actions = PhoneControlsActions()
@@ -232,32 +259,27 @@ final class PhonePanelViewTests: XCTestCase {
 
         let state = panelState(online: false)
         let view = host(state, actions)
-        let laidOut = controls(in: view)
-        // The switch is still drawn, and it is off; a click on it runs nothing.
-        guard let dnd = laidOut.compactMap({ $0 as? NSSwitch }).first else {
-            return XCTFail("the DND control is the AppKit switch")
+        for item in [PhonePanelItem.dnd, .ringer, .ring, .volume,
+                     .phoneScreen, .continueOnMac, .installApk] {
+            XCTAssertFalse(item.isEnabled(in: state), "\(item) must be off offline")
+            XCTAssertNotNil(item.reason(in: state), "\(item) must say why")
         }
-        XCTAssertFalse(dnd.isEnabled, "the DND switch is off while the phone is away")
-        let rect = frame(dnd, in: view)
-        click(at: CGPoint(x: rect.midX, y: rect.midY))
-        XCTAssertTrue(calls.isEmpty, "a disabled control runs nothing")
-
-        // The reason line is drawn in the one row band it takes below the
-        // slider; online there is no line and no gap, so the DND row follows
-        // the volume row directly.
-        let away = try XCTUnwrap(render(state))
-        let dndTop = rect.minY - 14
-        let band = CGRect(x: 12, y: dndTop - 14, width: 276, height: 12)
-        XCTAssertTrue(drawn(away, in: band), "the panel draws the reason line while offline")
-        let onlineView = host(panelState())
-        let onlineSlider = try XCTUnwrap(controls(in: onlineView).first { c in
-            let f = frame(c, in: onlineView)
-            return f.height < 20 && f.width > 150
-        })
-        let onlineDnd = try XCTUnwrap(controls(in: onlineView).compactMap { $0 as? NSSwitch }.first)
-        XCTAssertEqual(frame(onlineDnd, in: onlineView).midY - frame(onlineSlider, in: onlineView).midY,
-                       28, accuracy: 0.5, "online there is no reason line and no gap under the slider")
         XCTAssertEqual(state.reason, "Connect your phone to use these.")
+        XCTAssertEqual(PhonePanelItem.ringer.reason(in: state), "Connect your phone to use these.")
+
+        func descendants(_ view: NSView) -> [NSView] { view.subviews.flatMap { [$0] + descendants($0) } }
+        XCTAssertFalse(descendants(view).contains { $0 is NSSwitch },
+                       "P3's DND control is a tile button, not an AppKit switch")
+        let rect = view.bounds
+        click(at: CGPoint(x: rect.midX, y: rect.midY))
+        XCTAssertTrue(calls.isEmpty, "no disabled control runs anything")
+
+        // The reason line under the tiles is drawn while offline; online the
+        // panel is one line shorter.
+        let away = try XCTUnwrap(render(state))
+        let now = try XCTUnwrap(render(panelState()))
+        XCTAssertGreaterThan(away.height, now.height,
+                             "the offline panel draws its reason line")
     }
 
     /// No track text or artwork: two states that differ only in the media's
