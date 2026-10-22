@@ -40,6 +40,7 @@ final class InputMapper {
     static let metaKeyMap: [UInt16: UInt32] = [
         0: 29, // A
         8: 31, // C
+        3: 34, // F (the phone app's find in page)
         7: 52, // X
         6: 54, // Z
     ]
@@ -591,7 +592,7 @@ final class InputMapper {
                     flushText()
                     send?(.text(text))
                 }
-            case "a", "c", "x", "z":
+            case "a", "c", "f", "x", "z":
                 if let code = Self.metaKeyMap[event.keyCode] {
                     flushText()
                     send?(.key(KeyEvent(action: 0, keycode: code, metaState: Self.metaStateCommand)))

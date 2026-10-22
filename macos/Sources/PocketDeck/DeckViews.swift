@@ -546,8 +546,18 @@ final class GridNavigator {
     /// True when the key was used here and must not reach the search field.
     private func handle(keyCode: UInt16, flags: NSEvent.ModifierFlags) -> Bool {
         guard let controller, controller.sheet == nil,
-              NSApp.keyWindow === DeckWindow.window,
-              flags.intersection([.command, .control, .option]).isEmpty else { return false }
+              NSApp.keyWindow === DeckWindow.window else { return false }
+        // ⌘F is the Deck's Find: focus the search field and select what is
+        // already typed, like ⌘F in any Mac window. It is not a menu item — a
+        // menu item would eat ⌘F in a stream window, where the key belongs to
+        // the phone's app (InputMapper forwards it). This monitor is the Deck's
+        // only, so a stream window never reaches it.
+        if keyCode == 3, flags.intersection([.command, .control, .option, .shift]) == .command {
+            guard let deck = DeckWindow.window else { return false }
+            DeckSearch.focusAndSelect(in: deck) { controller.requestSearchFocus() }
+            return true
+        }
+        guard flags.intersection([.command, .control, .option]).isEmpty else { return false }
         let list = apps()
         switch keyCode {
         case 36, 76: // Return
