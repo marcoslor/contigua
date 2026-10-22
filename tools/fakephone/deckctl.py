@@ -1215,9 +1215,11 @@ def cmd_watch_state(client, args):
             dnd = "" if "dnd" not in msg else " dnd=%s" % json.dumps(msg.get("dnd"))
             screen = "" if "screen" not in msg else " screen=%s" % json.dumps(msg.get("screen"))
             secure = "" if "secure" not in msg else " secure=%s" % json.dumps(msg.get("secure"))
-            print("%s state #%d locked=%s battery=%s charging=%s%s%s%s" % (
+            volume = "" if "volume" not in msg else " volume=%s/%s" % (
+                msg.get("volume"), msg.get("volumeMax"))
+            print("%s state #%d locked=%s battery=%s charging=%s%s%s%s%s" % (
                 time.strftime("%H:%M:%S"), count, msg.get("locked"),
-                msg.get("battery"), msg.get("charging"), dnd, screen, secure))
+                msg.get("battery"), msg.get("charging"), dnd, screen, secure, volume))
     if args.phone:
         client.send_json({"t": "window.close", "stream": 1})
     print("# %d state messages in %ss" % (count, args.seconds))
@@ -1252,6 +1254,36 @@ def cmd_dnd(client, args):
             print("state dnd=%s" % json.dumps(msg.get("dnd")))
             return 0
     raise DeckError("no state with dnd within %ss (an old phone omits it)" % args.wait)
+
+
+def cmd_volume(client, args):
+    """Send `phone.volume` and print the state the phone reports afterwards."""
+    # The post-welcome state is not the answer: drain it, then the next state
+    # is the reply to this command.
+    while True:
+        frame = client.recv(0.25)
+        if frame is TIMEOUT:
+            break
+        if frame is None:
+            raise DeckError("phone closed during volume")
+    client.send_json({"t": "phone.volume", "level": args.level})
+    print("sent phone.volume level=%d" % args.level)
+    deadline = time.time() + args.wait
+    while time.time() < deadline:
+        frame = client.recv(0.25)
+        if frame is TIMEOUT:
+            continue
+        if frame is None:
+            raise DeckError("phone closed during volume")
+        if frame.type != proto.TYPE_JSON:
+            continue
+        msg = proto.unpack_json(frame)
+        if msg.get("t") == "error":
+            raise DeckError("phone error: %s (%s)" % (msg.get("code"), msg.get("message")))
+        if msg.get("t") == "state" and "volume" in msg and "volumeMax" in msg:
+            print("state volume=%s/%s" % (msg.get("volume"), msg.get("volumeMax")))
+            return 0
+    raise DeckError("no state with volume within %ss (an old phone omits it)" % args.wait)
 
 
 def cmd_wake(client, args):
@@ -2568,6 +2600,12 @@ def build_parser():
     sp.add_argument("--wait", type=float, default=15.0,
                     help="seconds to wait for a state carrying panel")
 
+    sp = sub.add_parser("volume", help="phone.volume: set the music stream, print the state",
+                        **spp)
+    sp.add_argument("level", type=int)
+    sp.add_argument("--wait", type=float, default=10.0,
+                    help="seconds to wait for a state carrying volume")
+
     sp = sub.add_parser("dnd", help="phone.dnd: set the phone's DND, print the state",
                         **spp)
     sp.add_argument("mode", choices=["priority", "alarms", "none", "off"])
@@ -2690,6 +2728,7 @@ COMMANDS = {
     "quality-test": cmd_quality_test,
     "watch-state": cmd_watch_state,
     "dnd": cmd_dnd,
+    "volume": cmd_volume,
     "ring": cmd_ring,
     "wake": cmd_wake,
     "wake-test": cmd_wake_test,
