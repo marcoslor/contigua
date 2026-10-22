@@ -1244,6 +1244,57 @@ check_render() {
 
 # --- C6: resize -----------------------------------------------------------
 
+# band_edges PNG — black edges of the drawn picture in a window screenshot,
+# from the chrome state's frame= (window points) and video= (the picture's rect).
+band_edges() {
+    local file="$1" fw fh vx vy vw vh
+    read -r fw fh vx vy vw vh <<<"$(chrome_state | tr ' ' '\n' \
+        | awk -F'[=x,]' '/^frame=/ {printf "%s %s ", $2, $3} /^video=/ {printf "%s %s %s %s", $2, $3, $4, $5}')"
+    python3 "$MACOS/scripts/band-edges.py" "$file" "$fw" "$fh" "$vx" "$vy" "$vw" "$vh"
+}
+
+# check_mirror_band — the phone mirror's black band (the person's report,
+# 2026-10-22). A real phone's frame can carry a band at the right and bottom
+# when its encoder size and the screen's aspect differ; --pad makes one, and
+# window.content says where the picture is. At every window size the picture
+# the Mac draws must have no black edge: the Mac crops to the picture.
+check_mirror_band() {
+    clean
+    rm -f "$WORK/chrome.txt"
+    FAKE_ARGS="--first-frame-delay 1 --pad" start_fake || return 1
+    # Portrait sizes in points, odd ones included: each changes the aspect a little.
+    printf '%s\n' "wait 2" "resize 1 430 760" "wait 2" "resize 1 384 571" "wait 2" \
+        "resize 1 333 741" "wait 2" "resize 1 512 611" "wait 2" "resize 1 297 645" "wait 2" \
+        > "$WORK/band.txt"
+    launch --connect "127.0.0.1:$PORT" --open-phone --float-windows \
+        --debug-chrome-state "$WORK/chrome.txt" --debug-input-script "$WORK/band.txt" --quit-after 60
+    if ! wait_until 20 chrome_has "loading=0"; then
+        bad "BAND the mirror showed no first frame (state: $(chrome_state))"
+        stop_app; stop_fakephone; return 1
+    fi
+    local step previous file id edges
+    for step in 1 2 3 4 5 6; do
+        if [ "$step" -gt 1 ]; then
+            wait_until 15 [ "$(chrome_state | grep -oE 'frame=[0-9]+x[0-9]+')" != "$previous" ] \
+                || { bad "BAND step $step: the window did not change size"; break; }
+        fi
+        # The picture of the new size: a config and its first frame, then the grab.
+        sleep 2
+        previous="$(chrome_state | grep -oE 'frame=[0-9]+x[0-9]+')"
+        file="$WORK/band-$step.png"
+        id="$(await_window '$5 > $4')" || { bad "BAND step $step: no phone window"; break; }
+        screencapture -x -o -l"$id" "$file"
+        edges="$(band_edges "$file")"
+        if [ "$edges" = "top=0 bottom=0 left=0 right=0" ]; then
+            ok "BAND step $step: no black edge ($previous, picture $(chrome_state | grep -oE 'video=[0-9,]+'))"
+        else
+            bad "BAND step $step: black edges $edges ($previous, picture $(chrome_state | grep -oE 'video=[0-9,]+'))"
+        fi
+    done
+    stop_app
+    stop_fakephone
+}
+
 check_resize() {
     begin_shared || return 1
     # The video's pixels are the window's points at the run's backing scale
@@ -1414,6 +1465,7 @@ check_resize() {
         && ok "C6 phone drag: a monotonic drag keeps a monotonic window (height ${prev_h} pt)"
     # The delayed phone must not serve the next check in a shared run.
     end_shared
+    check_mirror_band
 }
 
 # --- C7: input ------------------------------------------------------------
@@ -3655,6 +3707,23 @@ PY
 
 # check_mirror — the phone window shows display 0 at the screen's aspect; when
 # the phone turns to landscape the stream and the window turn with it.
+# mirror_control CMD... — one command to the mirror check's own control host
+# (launched with --debug-control "$WORK/control"); its one-line answer lands in
+# CONTROL_REPLY, "ok" on success.
+mirror_control() {
+    local dir="$WORK/control" name
+    CONTROL_SEQ=$((CONTROL_SEQ + 1))
+    name="m$CONTROL_SEQ"
+    printf '%s\n' "$*" > "$dir/$name.tmp" && mv "$dir/$name.tmp" "$dir/$name.cmd"
+    if ! wait_until 10 [ -s "$dir/$name.done" ]; then
+        CONTROL_REPLY="no answer in 10 s"
+        return 1
+    fi
+    CONTROL_REPLY="$(cat "$dir/$name.done")"
+    rm -f "$dir/$name.done"
+    [ "$CONTROL_REPLY" = "ok" ]
+}
+
 check_mirror() {
     # The opening cover (docs/UX.md): from the open until the first frame the
     # window is frozen behind the phone's name and a spinner; after 20 s it
@@ -3745,35 +3814,35 @@ check_mirror() {
     fi
     wait_until 10 landscape_config \
         && ok "MIRROR landscape VIDEO_CONFIG sent" || bad "MIRROR no landscape VIDEO_CONFIG"
-    # One mirror per phone (the person's report, 2026-10-22): Phone ▸ Phone
-    # Mirror three more times raises the open one. Before the fix each press
-    # made another window on another stream — four mirrors of one screen.
-    # The check's control host is this check's own (it launches with
-    # --debug-control "$WORK/control", not the shared $WORK-control).
-    # `phone-mirror` is the menu item's binding: a quiet launch is an inactive
-    # app, and a menu key equivalent needs the app frontmost, so pressing ⌘P
-    # would reach nothing.
-    local mirrors press
+    # One mirror per phone (the person's report, 2026-10-22): ⌘P three more
+    # times raises the open mirror. Before the fix each press opened another
+    # window on another stream. The press is a real key event through the app's
+    # own dispatch (`key`: NSApp.sendEvent), so the Phone menu's key equivalent
+    # answers it as it would a person's ⌘P. The check's control host is its own
+    # (--debug-control "$WORK/control"), not the shared $WORK-control.
+    local mirrors press opens streams
     for press in 1 2 3; do
-        printf 'phone-mirror\n' > "$WORK/control/mirror.cmd"
-        if wait_until 5 [ -s "$WORK/control/mirror.done" ]; then
-            [ "$(cat "$WORK/control/mirror.done")" = "ok" ] \
-                || bad "MIRROR Phone Mirror: $(cat "$WORK/control/mirror.done")"
-        else
-            bad "MIRROR Phone Mirror: no answer from the control host"
-        fi
-        rm -f "$WORK/control/mirror.done"
+        mirror_control key cmd+p || bad "MIRROR ⌘P press $press: $CONTROL_REPLY"
         sleep 0.4
     done
     sleep 1
+    # The launch's own window.open is the only one; the presses opened nothing,
+    # so the phone's video configs name one stream.
+    opens="$(count_events '"t":"window.open"')"
+    streams="$(grep '"ev":"video"' "$WORK/events.jsonl" 2>/dev/null | grep -o 'stream":[0-9]*' | sort -u | wc -l | tr -d ' ')"
+    if [ "$opens" = "1" ] && [ "$streams" = "1" ]; then
+        ok "MIRROR ⌘P three more times: one window.open, one stream"
+    else
+        bad "MIRROR ⌘P three more times: $opens window.open, $streams streams (want 1 and 1)"
+    fi
     # A mirror is portrait or landscape; the Deck is 760x560 (1.36), so the
     # two phone aspects pick the mirrors in either orientation — a window that
     # just opened is portrait until its first frame turns it.
     mirrors="$(windows | awk '($5 > $4 * 1.5) || ($4 > $5 * 1.5)' | wc -l | tr -d ' ')"
     if [ "$mirrors" = "1" ]; then
-        ok "MIRROR Phone Mirror three more times still shows one mirror"
+        ok "MIRROR ⌘P three more times: one phone window on screen"
     else
-        bad "MIRROR Phone Mirror three more times made $mirrors mirrors"
+        bad "MIRROR ⌘P three more times: $mirrors phone windows on screen"
     fi
 
     # repro stale-frame: the panel times out, the fake stops frames, and the

@@ -773,6 +773,10 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         let stallPill = pill.map {
             $0.superview != nil && $0.text == "Not responding" && $0.fadeTarget == 1
         } ?? false
+        // The picture's drawn rect in window points, top-left origin: the band
+        // check reads the screenshot inside it.
+        let picture = videoView.convert(videoView.videoRect(), to: nil)
+        let pictureTop = (window?.frame.height ?? 0) - picture.maxY
         let line = "style=\(style.rawValue) lights=\(lights ? "shown" : "hidden") pill=\(pillUp ? "shown" : "hidden")"
             + " title_visible=\(titleUp ? "yes" : "no") lights_managed=\(managed)"
             + " fullscreen=\(fullScreen ? "yes" : "no") clicks=\(barPresses)"
@@ -791,7 +795,8 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
             + " stall=\(isStalled ? 1 : 0) stall_pill=\(stallPill ? 1 : 0)"
             + " loading=\(openingState)"
             + " frame=\(Int((window?.frame.width ?? 0).rounded()))x\(Int((window?.frame.height ?? 0).rounded()))"
-            + " video_gap=\(Int(videoView.videoGap().rounded()))\n"
+            + " video_gap=\(Int(videoView.videoGap().rounded()))"
+            + " video=\(Int(picture.minX.rounded())),\(Int(pictureTop.rounded())),\(Int(picture.width.rounded())),\(Int(picture.height.rounded()))\n"
         try? Data(line.utf8).write(to: stateFile, options: .atomic)
     }
 
