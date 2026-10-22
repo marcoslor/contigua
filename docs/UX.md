@@ -86,10 +86,13 @@ disabled, never hidden.
    displays the link; the phone mirror as nothing). It arrives on its own, ends when the window closes, and **Options → Keep in Dock**
    makes it permanent ("Add to Dock" in the app's context menu does the same by hand; Settings → General switches it off).
 3. **Menu bar panel**: the status item opens a Control Center-style card, not a menu — the phone's name and state,
-   its battery, the phone's volume slider, **Do Not Disturb**, **Ring Phone** / **Stop Ringing**, **Now Playing
-   follows** when several apps play, the live notifications, **Phone Mirror** ⌘P, **Find Apps** ⌘K, **Continue on
-   Mac**, **Install APK…**, then **Settings…** and **Quit PocketDeck**. A control that cannot work is dimmed with one
-   line saying why ("Connect your phone to use these."). The Deck's status pill opens the same card in a popover.
+   its battery, a 2×2 set of tiles for **Do Not Disturb**, **Ringer**, **Ring Phone** / **Stop Ringing** and
+   **Turn Off Screen** (Screen on / Screen off), the volume slider with its %, **Now Playing follows** when several
+   apps play, the live notifications, one **WINDOWS** row (**Mirror** ⌘P · **Find Apps** ⌘K · **Continue on Mac** ·
+   **Install APK…**), then **Settings…** and **Quit PocketDeck**. **Ringer** opens Ring / Vibrate / Silent with the
+   current mode checked; the volume follows the pointer while it is dragged. A control that cannot work is dimmed
+   with one line saying why ("Connect your phone to use these."). The Deck's status pill opens the same card in a
+   popover, without the Settings/Quit footer.
 4. **Settings** (⌘,; also the settings gear at the Deck header's right): tabs **General** (launch at login, show in menu bar,
    share clipboard with your phone, show phone apps in the Dock, **glass app icons**, default window density, **reveal controls after**) · **Input**
    (**hover over Android apps**) · **Devices**

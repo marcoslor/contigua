@@ -48,7 +48,7 @@ Spec of every state, copy and transitions: [design/mac-redesign.md](design/mac-r
   while the phone is locked (unlocked shows nothing), then the battery glyph for the level — `battery.0/25/50/75/100percent` by nearest quarter, `battery.100percent.bolt` while
   charging — and the `%` `.monospacedDigit()`, `.secondary`, `.red` below 13 % when not charging. Tooltip: "Connected, phone locked, battery 24 %".
   The pill is a button: it opens the phone controls (the menu bar panel's shared `PhonePanelView`) in a `.popover`, so the same
-  volume, Do Not Disturb, Ring/Stop Ringing, Now Playing picker and window actions are one click away in the Deck.
+  P3 tiles (Do Not Disturb, Ringer, Ring/Stop Ringing, Turn Off Screen), the volume slider, the Now Playing picker and the window actions are one click away in the Deck.
   `ToolbarItem(.primaryAction)` **Phone** (`iphone.gen3`); `.searchable(placement: .toolbar, prompt: "Search apps")`.
 - **Header groups** (at every width): one group packed at the left — traffic lights, then the connection
   chip (`ToolbarItem(.navigation)`; `.status` would float it in the middle of the toolbar on macOS), then the
@@ -59,14 +59,21 @@ Spec of every state, copy and transitions: [design/mac-redesign.md](design/mac-r
   placements pin the groups to the edges.
 - **Banner:** `Label(text, systemImage: "exclamationmark.circle.fill")` `.callout`, padding 12, `.glassEffect(.regular, in: .rect(cornerRadius: 14))`, at most
   one trailing `.glass .controlSize(.small)` button (`.glassProminent` for **Pair again**), below the toolbar; one banner at a time.
-- **Grid:** `LazyVGrid` of `GridItem(.fixed(96))` columns; the column count is `floor((width − 2·20 + 8) / 104)` and the gap between columns grows to fill the row
-  (≥ 8), so the first tile starts and the last one ends exactly 20 pt from the window edges at any width; rows spacing 8, vertical padding 16 (`GridMetrics`).
-  Cell 96×100: icon 56×56 `.clipShape(.rect(cornerRadius: 13, style: .continuous))`, label `.caption` 1 line `.truncationMode(.middle)` with 6 pt side padding, spacing 6.
-  Hover `.fill(.quaternary)`; selected `.fill(Color.accentColor.opacity(0.22))`, both `RoundedRectangle(cornerRadius: 14)`. Loading: 12
-  `.redacted(reason: .placeholder)` cells. **Icons** come from the phone, cached per phone (device id + package). While one is on its way: a 56 pt `.quaternary` rounded square.
-  When the phone has none (or the link is down): a generated tile — rounded square (13, continuous) with a top→bottom gradient of a hue derived from the package name
-  (FNV-1a, so it is stable), the app's initial in `.system(size: 26, weight: .semibold, design: .rounded)` white. Never pixel art.
+- **Grid (D):** `DeckGridLayout` places cells from the width of the pass that draws them. At 100 %: 96×108 cells,
+  64×64 icons `.clipShape(.rect(cornerRadius: 13, style: .continuous))` inside a 16 pt hover corner, 8 pt icon-label
+  gap, fixed 16 pt column gap and row spacing, 24 pt vertical inset; the block is centred and capped at 880 pt
+  (5 columns at 640, 8 at 1000+). Label `.caption` 1 line `.truncationMode(.middle)`. Hover `.fill(.quaternary)`;
+  selected `.fill(Color.accentColor.opacity(0.22))`. ⌘+/⌘−/⌘0 scale cell, icon, gaps, inset and cap together
+  (0.75/1/1.25/1.5, `deckZoom`) on the Deck only. Loading: 12 `.redacted(reason: .placeholder)` cells. **Icons** come
+  from the phone, cached per phone (device id + package). While one is on its way: a 64 pt `.quaternary` rounded square.
+  When the phone has none (or the link is down): a generated tile — rounded square (13, continuous) with a top→bottom
+  gradient of a hue derived from the package name (FNV-1a, so it is stable), the app's initial in
+  `.system(size: 26, weight: .semibold, design: .rounded)` white. Never pixel art.
   Offline/reconnecting: `.opacity(0.5)`, not clickable. No matches: "No apps match “query”" `.callout .secondary`, height 120.
+- **A–Z rail (D):** trailing edge, 16 pt wide, 8 pt from the edge; A–Z + `#` at 9 pt on a 12 pt pitch, current letter
+  accent, empty letters dimmed. Shows when the search field is empty and there are ≥ 30 apps; a click/drag scrolls to
+  that letter's first app, and an empty letter skips forward. The current letter follows the first app in the top
+  visible row.
 
 - **Glass app icons** (Settings → General, `deck.glassIcons`, default on): with it on, each tile is the shared
   `PhoneAppIcon` render (docs/design/dock.md §Icons) at 224 px — the macOS squircle (22.5 % corners), the adaptive
@@ -175,9 +182,9 @@ using the phone with fingers.
 
 ### Menu bar
 - `MenuBarExtra { MenuBarContent() } label: { Image(systemName: icon) }`, `.menuBarExtraStyle(.window)`: a Control Center-style panel, not a menu (a `Slider` inside a menu-style extra became a "Phone volume" stepper submenu that opened and closed under the pointer). Icon: Connected `apps.iphone` · Reconnecting `apps.iphone` (`.symbolEffect(.pulse)`) · Offline `iphone.slash`; a 5 pt dot next to it while an AI agent is connected.
-- `PhonePanelView` (PhonePanel.swift), 300 pt wide, 12 pt padding, fixed 28 pt rows, one component shared with the Deck popover: header (phone symbol, name, status dot + text, battery) · agent row ("AI agent connected" + **Disconnect**) · **PHONE** (volume `Slider`, the one reason line when a control is off, **Do Not Disturb** switch, **Ring Phone**/**Stop Ringing**, **Now Playing follows** picker with ≥ 2 sessions) · **LIVE** (one row per live notification) · **WINDOWS** (**Phone Mirror** ⌘P · **Find Apps** ⌘K · **Continue on Mac** · **Install APK…** with its phase) · footer (**Settings…** ⌘, · **Quit PocketDeck** ⌘Q).
-- No track row, artwork or forwarded-audio volume: the Mac's own Now Playing shows the track, and the phone's media volume is the only volume. A control that cannot work is dimmed with one line saying why ("Connect your phone to use these.", "Your phone hasn't sent a volume.", "This phone doesn't report Do Not Disturb."), never hidden.
-- The Deck's status pill opens the same view in a `.popover` (one component, one copy).
+- `PhonePanelView` (PhonePanel.swift), one component shared with the Deck popover, 300 pt wide, 12 pt inset (P3): header (phone symbol, name, status dot + text, battery) · agent row ("AI agent connected" + **Disconnect**) · 2×2 tiles (134 pt wide, ≥ 62 pt high, 8 pt gap, 12 pt corners): **Do Not Disturb**, **Ringer**, **Ring Phone**, **Turn Off Screen** · volume `Slider` with its % · the one reason line when a control is off · **Now Playing follows** with ≥ 2 sessions · **LIVE** (one row per live notification) · one **WINDOWS** row of four icon buttons (**Mirror** / **Find Apps** / **Continue on Mac** / **Install APK…** with its phase) · footer only in the menu bar panel (`showsFooter`: **Settings…** ⌘, · **Quit PocketDeck** ⌘Q).
+- **Ringer** opens Ring / Vibrate / Silent with the current mode checked (never cycles); its subtitle names the mode. **Turn Off Screen** says Screen on / Screen off and needs a Phone Mirror. **Volume** is a three-state control: Idle follows the phone, Dragging follows the pointer and ignores echoes with sends capped at 10/s plus the release, Settling shows the sent value until the echo or one second, after which the phone wins.
+- The Deck's status pill opens the same view in a `.popover` (one component, one copy, no footer).
 - Nothing is modal: pairing failures are inline in the code sheet.
 
 ## 2. Android (Compose + Material 3, minSdk 30)
