@@ -1943,7 +1943,7 @@ class Session(object):
             return False
         version = msg.get("v")
         if not self.phone.args.legacy_phone:
-            if version != 2:
+            if version != 3:
                 self._send_error("version")
                 return False
         self.client_id = msg.get("clientId")
