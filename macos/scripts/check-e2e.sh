@@ -2697,15 +2697,113 @@ check_menus() {
         else
             bad "MENUS dump $1 is not the design: $reason"
         fi
+        assert_bar "$WORK/menus-$1.json" "dump $1"
+    }
+
+    # assert_bar PATH LABEL — the rules that hold across every menu in the bar
+    # as a person reads it (the dump's `displayed` tree, AppKit's own additions
+    # included): no title twice, no stray separator, no Apple feedback item.
+    # AppKit's window-tiling group headings repeat the name of the item below
+    # them (a disabled heading with no action, then the item), so a heading is
+    # not a second item.
+    assert_bar() {
+        local path="$1" label="$2" rule verdict detail
+        while IFS='|' read -r rule verdict detail; do
+            [ -n "$rule" ] || continue
+            case "$verdict" in
+                ok) ok "MENUS $label: $rule" ;;
+                *) bad "MENUS $label: $rule ($detail)" ;;
+            esac
+        done < <(python3 - "$path" <<'PY'
+import json, re, sys
+
+root = json.load(open(sys.argv[1]))
+bar = root.get("displayed")
+rules = ["no title appears twice across the bar",
+         "no adjacent, leading or trailing separator",
+         "no Send … Feedback item in Help"]
+if not bar:
+    for rule in rules:
+        print("|".join([rule, "fail", "the dump has no displayed menu bar"]))
+    raise SystemExit
+
+occurrences = []
+def walk(menu, items):
+    for item in items:
+        occurrences.append((menu, items, item))
+        if item.get("submenu"):
+            walk(menu + "/" + item["title"], item["submenu"])
+for menu in bar:
+    walk(menu["title"], menu.get("submenu") or [])
+
+def heading(menu, siblings, item):
+    return (not item["enabled"] and not item.get("submenu") and not item["keyEquivalent"]
+            and any(other is not item and other["title"] == item["title"] for other in siblings))
+
+counts = {}
+for menu, siblings, item in occurrences:
+    if item["isSeparator"] or heading(menu, siblings, item):
+        continue
+    counts[item["title"]] = counts.get(item["title"], 0) + 1
+dups = sorted("%s (%d)" % (title, n) for title, n in counts.items() if n > 1)
+print("|".join([rules[0], "fail" if dups else "ok", ", ".join(dups)]))
+
+shape = []
+for menu in bar:
+    stack = [(menu["title"], menu.get("submenu") or [])]
+    while stack:
+        name, items = stack.pop()
+        seq = ["—" if item["isSeparator"] else item["title"] for item in items]
+        if seq and seq[0] == "—":
+            shape.append(name + ": leading separator")
+        if seq and seq[-1] == "—":
+            shape.append(name + ": trailing separator")
+        for index in range(1, len(seq)):
+            if seq[index] == "—" and seq[index - 1] == "—":
+                shape.append("%s: separator %d follows another" % (name, index + 1))
+        for item in items:
+            if item.get("submenu"):
+                stack.append((name + "/" + item["title"], item["submenu"]))
+print("|".join([rules[1], "fail" if shape else "ok", "; ".join(shape)]))
+
+feedback = [menu + "/" + item["title"] for menu, _, item in occurrences
+            if not item["isSeparator"]
+            and (re.match(r"^Send .*Feedback", item["title"]) or "Feedback to Apple" in item["title"])]
+print("|".join([rules[2], "fail" if feedback else "ok", ", ".join(feedback)]))
+PY
+)
+    }
+
+    # dump_stable N — the bar as it is now, after AppKit has added its own
+    # items: re-dump until two dumps a second apart agree (max 10 s). AppKit
+    # adds the View menu's full-screen item and Help's feedback item the first
+    # time the bar is read, which is why one dump can catch it mid-build.
+    dump_stable() {
+        local n="$1" attempt cur prev=""
+        for attempt in $(seq 1 10); do
+            rm -f "$WORK/menus-$n.json"
+            control menudump "$WORK/menus-$n.json" || {
+                bad "MENUS menudump $n: $CONTROL_REPLY"
+                return 1
+            }
+            cur="$(python3 - "$WORK/menus-$n.json" <<'PY'
+import json, sys
+print(json.dumps(json.load(open(sys.argv[1])).get("displayed"), sort_keys=True))
+PY
+)"
+            [ -n "$prev" ] && [ "$cur" = "$prev" ] && return 0
+            prev="$cur"
+            sleep 1
+        done
+        bad "MENUS dump $n: the menu bar did not settle in 10 s"
+        return 1
     }
 
     # dump_now N — the bar as it is now: the dump comes from the control route
     # (the app's own menudump), so it is possible at a moment no debug-input
     # script is running, e.g. after the last stream window closed.
     dump_now() {
-        rm -f "$WORK/menus-$1.json"
-        control menudump "$WORK/menus-$1.json" || { bad "MENUS menudump $1: $CONTROL_REPLY"; return 1; }
-        dump_and_assert "$1"
+        dump_stable "$1" && dump_and_assert "$1"
     }
 
     # One script for the whole check: the picks are the real items (menupick:
@@ -2872,7 +2970,11 @@ if by_title["Default (100%)"]["state"] != "on":
     print("Default is not checked with no override:", by_title["Default (100%)"]["state"]); sys.exit(1)
 PY
 
-    python3 - "$WORK/menus-1.json" <<'PY' && ok "MENUS the Phone menu: ⌘P/⇧⌘C, and its controls are disabled with no phone" \
+    # The menu is read as a person sees it (the dump's displayed tree), which
+    # makes SwiftUI re-evaluate the commands: with the fake phone online, the
+    # controls that can work are enabled, and the one that cannot — Turn Off
+    # Phone Screen, with no phone window — stays disabled.
+    python3 - "$WORK/menus-1.json" <<'PY' && ok "MENUS the Phone menu: ⌘P/⇧⌘C, its controls enabled for the online phone, Turn Off Phone Screen disabled" \
         || bad "MENUS a Phone control that cannot work is enabled"
 import json, sys
 root = json.load(open(sys.argv[1]))
@@ -2885,10 +2987,11 @@ if by_title["Continue on Mac"]["keyEquivalent"] != "c" or \
         by_title["Continue on Mac"]["modifiers"] != ["command", "shift"]:
     print("Continue on Mac shortcut:", repr(by_title["Continue on Mac"]["keyEquivalent"]),
           by_title["Continue on Mac"]["modifiers"]); sys.exit(1)
-enabled = [t for t in ("Phone Window", "Continue on Mac", "Turn Off Phone Screen",
-                       "Do Not Disturb", "Ring Phone", "Install APK…") if by_title[t]["enabled"]]
-if enabled:
-    print("enabled with no phone:", enabled); sys.exit(1)
+if by_title["Turn Off Phone Screen"]["enabled"]:
+    print("Turn Off Phone Screen is enabled with no phone window"); sys.exit(1)
+for title in ("Phone Window", "Continue on Mac", "Do Not Disturb", "Ring Phone", "Install APK…"):
+    if not by_title[title]["enabled"]:
+        print(title, "is disabled while the phone is online"); sys.exit(1)
 PY
 
     # The temporary Bar Prototype picker is gone: the bar has one geometry
@@ -3077,11 +3180,11 @@ PY
     # replaced, so the shell takes the new PID for the bookkeeping.
     kill "$SHARED_PID" >/dev/null 2>&1
     wait "$SHARED_PID" 2>/dev/null
-    printf '%s\n' "wait 2" "menudump $WORK/menus-11.json" > "$WORK/menus-relaunch.txt"
     launch --connect "127.0.0.1:$PORT" --open com.android.settings --debug-control "$WORK-control" \
-        --debug-chrome-state "$WORK/chrome.txt" --debug-input-script "$WORK/menus-relaunch.txt"
+        --debug-chrome-state "$WORK/chrome.txt"
     SHARED_PID="$APP_PID"
-    dump_and_assert 11 || { stop_app; stop_fakephone; return 1; }
+    sleep 2
+    dump_now 11 || { stop_app; stop_fakephone; return 1; }
     stop_app
     stop_fakephone
 }
@@ -8263,6 +8366,88 @@ check_deck() {
         bad "DECK no Deck window to capture"
     fi
 
+    # ⌘F is the Deck's Find (focus the search field, select its text) and the
+    # phone app's find-in-page when a stream window is key: a real key event
+    # through the application's own dispatch (menu equivalents, local monitors,
+    # the key window's responder chain), never a shortcut that calls the action.
+    # ⌘K stays the app-wide Find Apps.
+    local n
+    for n in typed before after stream after-k; do rm -f "$WORK/deck-search-$n.json"; done
+    deck_search() {
+        control decksearch "$WORK/deck-search-$1.json" || bad "DECK decksearch $1: $CONTROL_REPLY"
+    }
+    # Setup: text already in the field, then the field left unfocused. The ⌘F
+    # press below is the real key event under test; this only stages the text.
+    control deckfocus search || bad "DECK deckfocus search: $CONTROL_REPLY"
+    control deckquery set || bad "DECK deckquery: $CONTROL_REPLY"
+    sleep 0.3
+    deck_search typed
+    python3 - "$WORK/deck-search-typed.json" <<'PY' && ok "DECK setup: the search field holds text" \
+        || bad "DECK setup: the search field has no text"
+import json, sys
+root = json.load(open(sys.argv[1]))
+if root["text"] != "set":
+    print(root); sys.exit(1)
+PY
+    control deckfocus grid || bad "DECK deckfocus grid: $CONTROL_REPLY"
+    deck_search before
+    python3 - "$WORK/deck-search-before.json" <<'PY' && ok "DECK setup: the search field is not focused and still holds the text" \
+        || bad "DECK setup: the search field is focused before ⌘F"
+import json, sys
+root = json.load(open(sys.argv[1]))
+if root["focused"] or root["text"] != "set":
+    print(root); sys.exit(1)
+PY
+    control key cmd+f || bad "DECK key cmd+f: $CONTROL_REPLY"
+    sleep 0.5
+    deck_search after
+    python3 - "$WORK/deck-search-after.json" <<'PY' && ok "DECK ⌘F focuses the search field and selects its text" \
+        || bad "DECK ⌘F did not leave the search field focused with its text selected"
+import json, sys
+root = json.load(open(sys.argv[1]))
+if not root["focused"]:
+    print("not focused:", root); sys.exit(1)
+if root["text"] != "set" or root["selection"] != [0, 3]:
+    print("text/selection:", root["text"], root["selection"]); sys.exit(1)
+PY
+    # A stream window is key: the same ⌘F belongs to the phone's app.
+    control open --open com.android.settings --debug-chrome-state "$WORK/chrome.txt" \
+        || bad "DECK shared app: opening a stream window answered '$CONTROL_REPLY'"
+    wait_until 20 grep -q "style=" "$WORK/chrome.txt" || bad "DECK no stream window for the ⌘F check"
+    sleep 1
+    deck_search stream
+    python3 - "$WORK/deck-search-stream.json" <<'PY' && ok "DECK the stream window is key and the Deck search is not focused" \
+        || bad "DECK the Deck search field took focus with a stream window key"
+import json, sys
+root = json.load(open(sys.argv[1]))
+if root["focused"] or root["keyWindow"] != "other":
+    print(root); sys.exit(1)
+PY
+    control key cmd+f || bad "DECK key cmd+f with a stream window: $CONTROL_REPLY"
+    wait_until 10 grep -q '"kind":"key","stream":1,"action":0,"keycode":34,"meta":12288' "$WORK/events.jsonl" \
+        && ok "DECK ⌘F with a stream window key reached the phone as meta+F" \
+        || bad "DECK ⌘F with a stream window key did not reach the phone ($(grep '"kind":"key"' "$WORK/events.jsonl" | tail -1))"
+    deck_search after-k
+    python3 - "$WORK/deck-search-after-k.json" <<'PY' && ok "DECK the Deck search field stayed out of the stream window's ⌘F" \
+        || bad "DECK the Deck search field took the stream window's ⌘F"
+import json, sys
+root = json.load(open(sys.argv[1]))
+if root["focused"] or root["keyWindow"] != "other":
+    print(root); sys.exit(1)
+PY
+    # ⌘K still brings the Deck up and focuses search from anywhere.
+    control key cmd+k || bad "DECK key cmd+k: $CONTROL_REPLY"
+    sleep 0.5
+    deck_search after-k2
+    python3 - "$WORK/deck-search-after-k2.json" <<'PY' && ok "DECK ⌘K still brings the Deck up and focuses search" \
+        || bad "DECK ⌘K did not bring the Deck up with search focused"
+import json, sys
+root = json.load(open(sys.argv[1]))
+if not root["focused"] or root["keyWindow"] != "deck":
+    print(root); sys.exit(1)
+PY
+    control open --close-stream 1:0 --debug-chrome-state "$WORK/chrome.txt" \
+        || bad "DECK shared app: closing the stream window answered '$CONTROL_REPLY'"
     # The status pill opens the same phone controls in a popover (docs/DESIGN.md
     # "Deck"): one component, the same item ids, and its DND switch is the real
     # control — the click reaches the phone.
