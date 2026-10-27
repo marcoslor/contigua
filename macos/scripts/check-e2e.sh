@@ -3952,14 +3952,14 @@ check_mirror() {
     launch --connect "127.0.0.1:$PORT" --open-phone --float-windows \
         --debug-chrome-state "$WORK/chrome.txt" --quit-after 40
     if wait_until 10 chrome_has "loading=1"; then
-        ok "MIRROR opening cover: loading=1 right after the window opened"
+        ok "[MIRROR-2] opening cover: loading=1 right after the window opened"
     else
-        bad "MIRROR opening cover: no loading cover (state: $(chrome_state))"
+        bad "[MIRROR-2] opening cover: no loading cover (state: $(chrome_state))"
     fi
     if wait_until 25 chrome_has "loading=failed"; then
-        ok "MIRROR opening cover: after 20 s without a frame it says it could not open"
+        ok "[MIRROR-2] opening cover: after 20 s without a frame it says it could not open"
     else
-        bad "MIRROR opening cover: no failure after 20 s (state: $(chrome_state))"
+        bad "[MIRROR-2] opening cover: no failure after 20 s (state: $(chrome_state))"
     fi
     stop_app
     stop_fakephone
@@ -3984,53 +3984,53 @@ check_mirror() {
         --debug-chrome-state "$WORK/chrome.txt" --debug-input-script "$WORK/mirror.txt" \
         --debug-control "$WORK/control" --quit-after 120
     if wait_until 5 chrome_has "loading=1"; then
-        ok "MIRROR opening cover: the window is covered before its first frame"
+        ok "[MIRROR-2] opening cover: the window is covered before its first frame"
     else
-        bad "MIRROR opening cover: the window showed no cover before the first frame (state: $(chrome_state))"
+        bad "[MIRROR-2] opening cover: the window showed no cover before the first frame (state: $(chrome_state))"
     fi
     if wait_until 15 chrome_has "loading=0"; then
-        ok "MIRROR opening cover: the first frame took the cover away"
+        ok "[MIRROR-2] opening cover: the first frame took the cover away"
     else
-        bad "MIRROR opening cover: the cover stayed after the first frame (state: $(chrome_state))"
+        bad "[MIRROR-2] opening cover: the cover stayed after the first frame (state: $(chrome_state))"
     fi
     # repro wake-on-open: opening the window sends one phone.wake.
     if wait_until 15 events_have '"t":"phone.wake"'; then
-        ok "MIRROR repro wake-on-open: opening the phone window sent phone.wake"
+        ok "[MIRROR-3] repro wake-on-open: opening the phone window sent phone.wake"
     else
-        bad "MIRROR repro wake-on-open: the phone got no phone.wake on open"
+        bad "[MIRROR-3] repro wake-on-open: the phone got no phone.wake on open"
     fi
     local portrait landscape
     if portrait="$(await_window '$5 > $4 * 1.5')"; then
-        ok "MIRROR phone window is portrait ($(windows | awk -v i="$portrait" '$1 == i {print $4 "x" $5}'))"
+        ok "[MIRROR-4] phone window is portrait ($(windows | awk -v i="$portrait" '$1 == i {print $4 "x" $5}'))"
     else
-        bad "MIRROR no portrait phone window"; stop_app; stop_fakephone; return 1
+        bad "[MIRROR-4] no portrait phone window"; stop_app; stop_fakephone; return 1
     fi
     # No full screen for the phone window (the mirror in native full screen
     # looks bad): it opts out in its collection behavior, so the green button
     # only zooms and the Window menu's Enter Full Screen is disabled for it.
     if wait_until 3 chrome_has "menu_fullscreen=0"; then
-        ok "MIRROR the phone window offers no full screen ($(chrome_state))"
+        ok "[MIRROR-4] the phone window offers no full screen ($(chrome_state))"
     else
-        bad "MIRROR the phone window still offers full screen ($(chrome_state))"
+        bad "[MIRROR-4] the phone window still offers full screen ($(chrome_state))"
     fi
     if chrome_has "collection_none=1"; then
-        ok "MIRROR the phone window's collection behavior is fullScreenNone"
+        ok "[MIRROR-4] the phone window's collection behavior is fullScreenNone"
     else
-        bad "MIRROR the phone window's collection behavior allows full screen ($(chrome_state))"
+        bad "[MIRROR-4] the phone window's collection behavior allows full screen ($(chrome_state))"
     fi
     wait_until 15 events_have '"ev":"video"' || true
     case "$(mirror_aspect)" in
-        *" ok") ok "MIRROR stream has the phone screen's aspect ($(mirror_aspect))" ;;
-        *) bad "MIRROR stream aspect is not the phone's ($(mirror_aspect))" ;;
+        *" ok") ok "[MIRROR-4] stream has the phone screen's aspect ($(mirror_aspect))" ;;
+        *) bad "[MIRROR-4] stream aspect is not the phone's ($(mirror_aspect))" ;;
     esac
     wait_until 3 chrome_is "header=shown" && sleep 0.4
     if landscape="$(await_window "\$1 == $portrait && \$4 > \$5 * 1.5")"; then
-        ok "MIRROR window turned with the phone ($(windows | awk -v i="$landscape" '$1 == i {print $4 "x" $5}'))"
+        ok "[MIRROR-5] window turned with the phone ($(windows | awk -v i="$landscape" '$1 == i {print $4 "x" $5}'))"
     else
-        bad "MIRROR window did not turn to landscape"
+        bad "[MIRROR-5] window did not turn to landscape"
     fi
     wait_until 10 landscape_config \
-        && ok "MIRROR landscape VIDEO_CONFIG sent" || bad "MIRROR no landscape VIDEO_CONFIG"
+        && ok "[MIRROR-5] landscape VIDEO_CONFIG sent" || bad "[MIRROR-5] no landscape VIDEO_CONFIG"
     # One mirror per phone (the person's report, 2026-10-22): asking for the
     # phone's mirror again raises the open one. Before the fix every ask opened
     # another window on another stream. Phone ▸ Phone Mirror, the panel's row and
@@ -4050,24 +4050,24 @@ check_mirror() {
     opens="$(count_events '"t":"window.open"')"
     streams="$(grep '"ev":"video"' "$WORK/events.jsonl" 2>/dev/null | grep -o 'stream":[0-9]*' | sort -u | wc -l | tr -d ' ')"
     if [ "$opens" = "1" ] && [ "$streams" = "1" ]; then
-        ok "MIRROR Phone Mirror asked three more times: one window.open, one stream"
+        ok "[MIRROR-1] Phone Mirror asked three more times: one window.open, one stream"
     else
-        bad "MIRROR Phone Mirror asked three more times: $opens window.open ($before before the asks), $streams streams (want 1 and 1)"
+        bad "[MIRROR-1] Phone Mirror asked three more times: $opens window.open ($before before the asks), $streams streams (want 1 and 1)"
     fi
     # A mirror is portrait or landscape; the Deck is 760x560 (1.36), so the
     # two phone aspects pick the mirrors in either orientation — a window that
     # just opened is portrait until its first frame turns it.
     mirrors="$(windows | awk '($5 > $4 * 1.5) || ($4 > $5 * 1.5)' | wc -l | tr -d ' ')"
     if [ "$mirrors" = "1" ]; then
-        ok "MIRROR Phone Mirror asked three more times: one phone window on screen"
+        ok "[MIRROR-1] Phone Mirror asked three more times: one phone window on screen"
     else
-        bad "MIRROR Phone Mirror asked three more times: $mirrors phone windows on screen"
+        bad "[MIRROR-1] Phone Mirror asked three more times: $mirrors phone windows on screen"
     fi
     # The menu item must be enabled while the phone is online. Read from a
     # validated menu (menudump validates it as an opened menu does); read-only.
     mirror_control menudump "$WORK/menu-mirror.json" || bad "MIRROR menu dump: $CONTROL_REPLY"
-    python3 - "$WORK/menu-mirror.json" <<'PY' && ok "MIRROR Phone ▸ Phone Mirror (⌘P) is enabled while the phone is online" \
-        || bad "MIRROR Phone ▸ Phone Mirror (⌘P) is disabled while the phone is online"
+    python3 - "$WORK/menu-mirror.json" <<'PY' && ok "[MIRROR-1] Phone ▸ Phone Mirror (⌘P) is enabled while the phone is online" \
+        || bad "[MIRROR-1] Phone ▸ Phone Mirror (⌘P) is disabled while the phone is online"
 import json, sys
 root = json.load(open(sys.argv[1]))
 phone = next(i for i in root["items"] if i["title"] == "Phone")
@@ -4087,12 +4087,12 @@ PY
     wait_until 20 events_have '"ev":"screen","state":"off"' \
         || bad "MIRROR the fake never reported the screen off"
     if wait_until "$stale_s" chrome_has "screen=off overlay=1"; then
-        ok "MIRROR repro stale-frame: screen off put the cover up within ${stale_ms} ms ($(chrome_state))"
+        ok "[MIRROR-6] repro stale-frame: screen off put the cover up within ${stale_ms} ms ($(chrome_state))"
     else
-        bad "MIRROR repro stale-frame: the window kept the last frame as live ($(chrome_state))"
+        bad "[MIRROR-6] repro stale-frame: the window kept the last frame as live ($(chrome_state))"
     fi
     if [ "$(phone_screen_log)" -ge 1 ]; then
-        ok "MIRROR the app logged phone window: screen=off overlay=1"
+        ok "[MIRROR-21] the app logged phone window: screen=off overlay=1"
     else
         say "MIRROR the unified log has no screen-off line on this Mac (empty log store); the chrome state is the evidence"
     fi
@@ -4102,70 +4102,70 @@ PY
     # real input): one more phone.wake, the fake sends screen on, frames resume.
     printf 'wake-phone\n' > "$WORK/control/wake.cmd"
     if wait_until 10 wake_done_ok; then
-        ok "MIRROR Wake Screen ran"
+        ok "[MIRROR-7] Wake Screen ran"
     else
-        bad "MIRROR Wake Screen did not run: $(cat "$WORK/control/wake.done" 2>/dev/null)"
+        bad "[MIRROR-7] Wake Screen did not run: $(cat "$WORK/control/wake.done" 2>/dev/null)"
     fi
     if [ "$(grep -c '"t":"phone.wake"' "$WORK/events.jsonl")" -ge 2 ]; then
-        ok "MIRROR Wake Screen sent phone.wake ($(grep -c '"t":"phone.wake"' "$WORK/events.jsonl") total)"
+        ok "[MIRROR-7] Wake Screen sent phone.wake ($(grep -c '"t":"phone.wake"' "$WORK/events.jsonl") total)"
     else
-        bad "MIRROR Wake Screen sent no phone.wake"
+        bad "[MIRROR-7] Wake Screen sent no phone.wake"
     fi
     wait_until 10 events_have '"ev":"screen","state":"on"' \
-        && ok "MIRROR the fake came back on" || bad "MIRROR the fake never reported screen on"
+        && ok "[MIRROR-7] the fake came back on" || bad "[MIRROR-7] the fake never reported screen on"
     if wait_until 10 chrome_has "screen=on overlay=0"; then
-        ok "MIRROR the cover cleared after the wake ($(chrome_state))"
+        ok "[MIRROR-7] the cover cleared after the wake ($(chrome_state))"
     else
-        bad "MIRROR the cover stayed up after the wake ($(chrome_state))"
+        bad "[MIRROR-7] the cover stayed up after the wake ($(chrome_state))"
     fi
     if wait_until 10 more_video_configs "$configs_before"; then
-        ok "MIRROR frames resumed after the wake (new VIDEO_CONFIG)"
+        ok "[MIRROR-7] frames resumed after the wake (new VIDEO_CONFIG)"
     else
-        bad "MIRROR frames did not resume after the wake"
+        bad "[MIRROR-7] frames did not resume after the wake"
     fi
     # "Turn Off Phone Screen" (docs/design/phone-mirror.md): Phone ▸ the item's
     # own action, the phone hears phone.panel off, the mirror keeps sending
     # frames and the bar says so; the phone's power press ends it and the Mac
     # follows the echoed state.
     if wait_until 3 chrome_has "panel_off=0"; then
-        ok "MIRROR Turn Off Phone Screen is off by default (panel_off=0)"
+        ok "[MIRROR-9] Turn Off Phone Screen is off by default (panel_off=0)"
     else
-        bad "MIRROR the phone window does not report panel_off ($(chrome_state))"
+        bad "[MIRROR-9] the phone window does not report panel_off ($(chrome_state))"
     fi
     local frames_before
     frames_before="$(last_frame_event)"
     printf 'panel-menu\n' > "$WORK/control/panel-menu.cmd"
     if wait_until 5 panel_menu_done; then
-        ok "MIRROR the Turn Off Phone Screen menu item ran"
+        ok "[MIRROR-9] the Turn Off Phone Screen menu item ran"
     else
-        bad "MIRROR the menu item did not run: $(cat "$WORK/control/panel-menu.done" 2>/dev/null)"
+        bad "[MIRROR-9] the menu item did not run: $(cat "$WORK/control/panel-menu.done" 2>/dev/null)"
     fi
     # The fake's own event for the request (its rx JSON sorts keys, so the
     # request line itself is not a stable match).
     if wait_until 10 events_have '"ev":"panel","state":"off"'; then
-        ok "MIRROR the menu item sent phone.panel off and the phone applied it"
+        ok "[MIRROR-9] the menu item sent phone.panel off and the phone applied it"
     else
-        bad "MIRROR the phone got no phone.panel off"
+        bad "[MIRROR-9] the phone got no phone.panel off"
     fi
     if wait_until 5 chrome_has "panel_off=1"; then
-        ok "MIRROR the bar and the chrome state follow the phone's panel=off"
+        ok "[MIRROR-10] the bar and the chrome state follow the phone's panel=off"
     else
-        bad "MIRROR the indicator did not follow state.panel ($(chrome_state))"
+        bad "[MIRROR-10] the indicator did not follow state.panel ($(chrome_state))"
     fi
     if wait_until 8 more_frame_events "$frames_before"; then
-        ok "MIRROR the mirror keeps sending frames while the panel is off (frame events to $(last_frame_event))"
+        ok "[MIRROR-9] the mirror keeps sending frames while the panel is off (frame events to $(last_frame_event))"
     else
-        bad "MIRROR the mirror stopped sending frames with the panel off (frame events $(last_frame_event))"
+        bad "[MIRROR-9] the mirror stopped sending frames with the panel off (frame events $(last_frame_event))"
     fi
     if wait_until 15 events_have '"ev":"panel","state":"on"'; then
-        ok "MIRROR the phone ended the panel-off (the person's power button)"
+        ok "[MIRROR-12] the phone ended the panel-off (the person's power button)"
     else
-        bad "MIRROR the phone never ended the panel-off"
+        bad "[MIRROR-12] the phone never ended the panel-off"
     fi
     if wait_until 5 chrome_has "panel_off=0"; then
-        ok "MIRROR the indicator went away when the phone ended it"
+        ok "[MIRROR-12] the indicator went away when the phone ended it"
     else
-        bad "MIRROR the indicator stayed after the phone ended it ($(chrome_state))"
+        bad "[MIRROR-12] the indicator stayed after the phone ended it ($(chrome_state))"
     fi
 
     # The bar's Back / Home / Recents buttons take a real click: the debug
@@ -4178,9 +4178,9 @@ PY
         printf 'nav-click %s\n' "$button" > "$WORK/control/nav-$button.cmd"
         if wait_until 5 nav_click_done "$button"; then
             if wait_until 10 nav_clicked "$button" "$before"; then
-                ok "MIRROR a click on the $button bar button -> nav $button"
+                ok "[MIRROR-13] a click on the $button bar button -> nav $button"
             else
-                bad "MIRROR the $button bar button sent no nav $button"
+                bad "[MIRROR-13] the $button bar button sent no nav $button"
             fi
         else
             bad "MIRROR the $button bar button click did not run: $(cat "$WORK/control/nav-$button.done" 2>/dev/null)"
@@ -4237,24 +4237,24 @@ PY
                 fi
                 glyph_ms="$(panel_glyph_ms)"
                 if python3 -c "import sys; sys.exit(0 if 0 <= $glyph_ms <= $glyph_limit else 1)"; then
-                    ok "MIRROR a bar-control click redrew the glyph in ${glyph_ms} ms (panel_off=$glyph_want, limit ${glyph_limit} ms)"
+                    ok "[MIRROR-10] a bar-control click redrew the glyph in ${glyph_ms} ms (panel_off=$glyph_want, limit ${glyph_limit} ms)"
                 else
-                    bad "MIRROR a bar-control click took ${glyph_ms} ms to redraw the glyph (panel_off=$glyph_want, limit ${glyph_limit} ms)"
+                    bad "[MIRROR-10] a bar-control click took ${glyph_ms} ms to redraw the glyph (panel_off=$glyph_want, limit ${glyph_limit} ms)"
                 fi
             done
         else
             sleep 0.3
             if chrome_has "panel_off=0"; then
-                ok "MIRROR the glyph waits for the phone's report (+${fake_delay} ms), not the click"
+                ok "[MIRROR-10] the glyph waits for the phone's report (+${fake_delay} ms), not the click"
             else
-                bad "MIRROR the glyph changed on the click, before the phone reported (report +${fake_delay} ms)"
+                bad "[MIRROR-10] the glyph changed on the click, before the phone reported (report +${fake_delay} ms)"
             fi
             if wait_until 5 chrome_has "panel_off=1"; then
                 glyph_ms="$(panel_glyph_ms)"
                 if python3 -c "import sys; sys.exit(0 if 900 <= $glyph_ms <= $fake_delay + $glyph_limit else 1)"; then
-                    ok "MIRROR the glyph followed the late report in ${glyph_ms} ms (Mac hop $((glyph_ms - fake_delay)) ms)"
+                    ok "[MIRROR-10] the glyph followed the late report in ${glyph_ms} ms (Mac hop $((glyph_ms - fake_delay)) ms)"
                 else
-                    bad "MIRROR the late report took ${glyph_ms} ms to redraw the glyph (limit $((fake_delay + glyph_limit)) ms)"
+                    bad "[MIRROR-10] the late report took ${glyph_ms} ms to redraw the glyph (limit $((fake_delay + glyph_limit)) ms)"
                 fi
             else
                 bad "MIRROR the glyph never followed the late state.panel"
@@ -4285,9 +4285,9 @@ PY
         if wait_until 5 chrome_has "overlay=1 secure=1"; then
             elapsed="$(python3 -c "import time; print('%.2f' % (time.time() - $secure_at))")"
             if python3 -c "import sys; sys.exit(0 if $elapsed <= 2 else 1)"; then
-                ok "MIRROR a secure surface covers the window within 2 s (${elapsed}s)"
+                ok "[MIRROR-8] a secure surface covers the window within 2 s (${elapsed}s)"
             else
-                bad "MIRROR a secure surface took ${elapsed}s to cover the window"
+                bad "[MIRROR-8] a secure surface took ${elapsed}s to cover the window"
             fi
         else
             bad "MIRROR a secure surface did not cover the window ($(chrome_state))"
@@ -4296,14 +4296,14 @@ PY
         bad "MIRROR the fake never reported a secure surface"
     fi
     if [ "$(secure_log_count)" -ge 1 ]; then
-        ok "MIRROR the app logged phone window: secure=1 overlay=1"
+        ok "[MIRROR-21] the app logged phone window: secure=1 overlay=1"
     else
         say "MIRROR the unified log has no secure line on this Mac (empty log store); the chrome state is the evidence"
     fi
     if wait_until 15 chrome_has "secure=0"; then
-        ok "MIRROR the secure cover cleared when the phone reported the surface gone"
+        ok "[MIRROR-8] the secure cover cleared when the phone reported the surface gone"
     else
-        bad "MIRROR the secure cover stayed up ($(chrome_state))"
+        bad "[MIRROR-8] the secure cover stayed up ($(chrome_state))"
     fi
     stop_app
     stop_fakephone
@@ -4316,37 +4316,37 @@ PY
     launch --connect "127.0.0.1:$PORT" --open-phone --float-windows \
         --debug-chrome-state "$WORK/chrome.txt" --debug-control "$WORK/control" --quit-after 30
     if wait_until 20 chrome_has "loading=0"; then
-        ok "MIRROR refusal: the refused phone's window opened"
+        ok "[MIRROR-11] refusal: the refused phone's window opened"
     else
-        bad "MIRROR refusal: the phone window never got its first frame ($(chrome_state))"
+        bad "[MIRROR-11] refusal: the phone window never got its first frame ($(chrome_state))"
     fi
     if wait_until 3 chrome_has "panel_off=0"; then
-        ok "MIRROR refusal: the button starts unchecked"
+        ok "[MIRROR-11] refusal: the button starts unchecked"
     else
-        bad "MIRROR refusal: the button did not start unchecked ($(chrome_state))"
+        bad "[MIRROR-11] refusal: the button did not start unchecked ($(chrome_state))"
     fi
     printf 'panel-menu\n' > "$WORK/control/panel-menu.cmd"
     if wait_until 5 panel_menu_done; then
-        ok "MIRROR refusal: Turn Off Phone Screen ran"
+        ok "[MIRROR-11] refusal: Turn Off Phone Screen ran"
     else
-        bad "MIRROR refusal: the menu item did not run: $(cat "$WORK/control/panel-menu.done" 2>/dev/null)"
+        bad "[MIRROR-11] refusal: the menu item did not run: $(cat "$WORK/control/panel-menu.done" 2>/dev/null)"
     fi
     # The error is answered at once, and the pill lasts 2 s: read it before
     # anything else could take it down.
     if wait_until 3 chrome_has "panel_off=0 panel_pill=1 panel_pill_failed=1"; then
-        ok "MIRROR refusal: a 2 s pill says the phone didn't turn its screen off, button unchecked"
+        ok "[MIRROR-11] refusal: a 2 s pill says the phone didn't turn its screen off, button unchecked"
     else
-        bad "MIRROR refusal: no failure pill or the button moved ($(chrome_state))"
+        bad "[MIRROR-11] refusal: no failure pill or the button moved ($(chrome_state))"
     fi
     if wait_until 10 events_have '"t":"phone.panel"'; then
-        ok "MIRROR refusal: the phone heard phone.panel"
+        ok "[MIRROR-11] refusal: the phone heard phone.panel"
     else
-        bad "MIRROR refusal: the phone got no phone.panel"
+        bad "[MIRROR-11] refusal: the phone got no phone.panel"
     fi
     if grep -F '"t":"phone.panel"' "$WORK/events.jsonl" | grep -qF '"ignorePower":false'; then
-        ok "MIRROR the request carries ignorePower (off by default)"
+        ok "[MIRROR-9] the request carries ignorePower (off by default)"
     else
-        bad "MIRROR phone.panel carried no ignorePower field"
+        bad "[MIRROR-9] phone.panel carried no ignorePower field"
     fi
     stop_app
     stop_fakephone
