@@ -8862,10 +8862,10 @@ check_deck() {
         local zoom_limit drag_limit
         zoom_limit="$(nfr_limit deck_zoom_frame_p95_ms)"
         drag_limit="$(nfr_limit deck_drag_frame_p95_ms)"
-        if python3 "$MACOS/scripts/deck-zoom.py" "$WORK/deck-zoom.json" "$zoom_limit" "$drag_limit"; then
-            ok "DECK zoom/unzoom keep p95 under ${zoom_limit} ms, drag under ${drag_limit} ms, and every drawn frame fits ($(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print("zoom p95=%s ms, unzoom p95=%s ms, drag p95=%s ms, relayouts=%s, bad frames=%s" % (d["zoom"]["p95"], d["unzoom"]["p95"], d["drag"]["p95"], d.get("relayouts"), sum(d[p].get("badFrames", 0) for p in ("zoom","unzoom","drag"))))' "$WORK/deck-zoom.json"))"
+        if python3 "$MACOS/scripts/deck-zoom.py" "$WORK/deck-zoom.json" "$zoom_limit" "$drag_limit" "$VISIBLE"; then
+            ok "DECK zoom/unzoom keep p95 under ${zoom_limit} ms, drag under the measured limit (${drag_limit} ms quiet, two display intervals visible), and every drawn frame fits ($(python3 "$MACOS/scripts/deck-zoom.py" "$WORK/deck-zoom.json" "$zoom_limit" "$drag_limit" "$VISIBLE" 2>&1); $(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print("zoom p95=%s ms, unzoom p95=%s ms, drag p95=%s ms, relayouts=%s, bad frames=%s" % (d["zoom"]["p95"], d["unzoom"]["p95"], d["drag"]["p95"], d.get("relayouts"), sum(d[p].get("badFrames", 0) for p in ("zoom","unzoom","drag"))))' "$WORK/deck-zoom.json"))"
         else
-            bad "DECK the zoom drags a clipped or slow grid ($(python3 "$MACOS/scripts/deck-zoom.py" "$WORK/deck-zoom.json" "$zoom_limit" "$drag_limit" 2>&1))"
+            bad "DECK the zoom drags a clipped or slow grid ($(python3 "$MACOS/scripts/deck-zoom.py" "$WORK/deck-zoom.json" "$zoom_limit" "$drag_limit" "$VISIBLE" 2>&1))"
         fi
     else
         bad "DECK no zoom measurement (--debug-deck-zoom)"

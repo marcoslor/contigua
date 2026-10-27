@@ -17,12 +17,13 @@ person's clipped edges during the way back) fails here by name.
 Exit 0 when every phase keeps p95 under the limit and every drawn frame fits.
 """
 import json
+import math
 import sys
 
 PHASES = ("zoom", "unzoom", "drag")
 
 
-def main(path, limit, drag_limit=None):
+def main(path, limit, drag_limit=None, visible="0"):
     try:
         root = json.load(open(path))
     except (OSError, ValueError) as error:
@@ -33,6 +34,25 @@ def main(path, limit, drag_limit=None):
     # before this branch's grid the drag p95 was 19 ms, and +2 ms is the bar.
     drag_limit = float(drag_limit) if drag_limit is not None else limit
     problems = []
+    # A visible run draws on the person's own display: the window server
+    # composites the resized window at that display's refresh rate, and for a
+    # live resize it may take every other refresh (measured 2026-10-27 on the
+    # e2e host at 60 Hz: refresh 16.67 ms, the app's own drag step p95 16-17 ms,
+    # and the drag's frame p95 23 ms in one run, 33 ms — every other frame — in
+    # the next, with no code change between them). Two intervals is therefore
+    # the visible floor for this phase; the app's part (the step) is held to one
+    # interval below, and the quiet limit is never changed.
+    refresh = float(root.get("refreshMs") or 0)
+    if visible == "1" and refresh > 0:
+        drag_limit = max(drag_limit, math.ceil(refresh * 2))
+        # The step's own cost: setFrame plus the window server's synchronous
+        # draw. Measured 15.3-17.5 ms at 60 Hz; 4 ms of headroom, so a layout
+        # or drawing regression still fails.
+        step_p95 = float((root.get("drag") or {}).get("stepP95", 0))
+        if step_p95 > refresh + 4:
+            problems.append("drag step p95 %.1f ms > one %.1f ms display interval + 4 ms"
+                            % (step_p95, refresh))
+    summary = ("refresh %.1f ms" % refresh) if refresh > 0 else "refresh unknown"
     for phase in PHASES:
         data = root.get(phase) or {}
         phase_limit = drag_limit if phase == "drag" else limit
@@ -58,11 +78,17 @@ def main(path, limit, drag_limit=None):
             problems.append("%s: %d of %d drawn frames do not fit the width they were drawn at (%s)"
                             % (phase, bad, measured,
                                "; ".join(str(example) for example in (data.get("examples") or []))))
+    drag = root.get("drag") or {}
+    summary += (", drag step p95 %.1f ms, frames %s" % (float(drag.get("stepP95", 0)),
+                                                        drag.get("histogram")))
     if problems:
-        print("; ".join(problems))
+        print("; ".join(problems) + " [" + summary + "]")
         return 1
+    print(summary)
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1], sys.argv[2], sys.argv[3] if len(sys.argv) > 3 else None))
+    sys.exit(main(sys.argv[1], sys.argv[2],
+                  sys.argv[3] if len(sys.argv) > 3 else None,
+                  sys.argv[4] if len(sys.argv) > 4 else "0"))
