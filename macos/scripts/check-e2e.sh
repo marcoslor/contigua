@@ -6882,7 +6882,7 @@ PY
         && ok "FILES screenshot of Finder in Documents: $WORK/finder-documents.png" \
         || bad "FILES screencapture (Documents) failed"
     # -- A rename updates the location in place ("Fixes 10-20") ---------------
-    # The nickname path Settings → Devices → Rename uses (`--set-nickname`),
+    # The nickname path Settings ▸ Phones ▸ Rename uses (`--set-nickname`),
     # on a second launch so the first one's "PocketDeck (FakePhone)" above is a
     # settled state. The domain is re-added with the same identifier and the
     # new display name: macOS updates it, so the CloudStorage folder and its

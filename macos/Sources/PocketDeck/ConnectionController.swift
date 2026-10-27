@@ -202,7 +202,7 @@ final class ConnectionController {
         PhoneNicknames.read(from: profile.defaults, deviceId: deviceId)
     }
 
-    /// Settings → Devices → Rename: store the trimmed nickname (empty clears
+    /// Settings ▸ Phones ▸ Rename: store the trimmed nickname (empty clears
     /// it) and refresh everything that names the phone — the views (via the
     /// revision), open window titles, the Spotlight entries and the Dock shims
     /// (the same rebuild a renamed phone gets from `reconcile`).
@@ -289,6 +289,14 @@ final class ConnectionController {
     /// Bumped by `settings-add` (setup): the sidebar runs its Add Phone…
     /// action, so the check sees the sheet open and the selection stay put.
     private(set) var settingsAddRequest = 0
+    /// `settings-select` (setup): the sidebar runs its choose transition for
+    /// this page, as a click on the row does.
+    private(set) var settingsRevealRequest: SettingsReveal?
+    struct SettingsReveal: Equatable {
+        let selection: SettingsSelection
+        let token: Int
+    }
+    private var settingsRevealToken = 0
 
     /// The panel's Settings… row: the Deck's own scene opener (the responder
     /// action alone does nothing while the app is not active).
@@ -316,7 +324,7 @@ final class ConnectionController {
     private(set) var deckRailRequest: DeckRailRequest?
     private var deckRailToken = 0
 
-    /// The phone being renamed right now: Settings → Devices → Rename… presents
+    /// The phone being renamed right now: Settings ▸ Phones ▸ Rename… presents
     /// its dialog for this device; a preview stages the whole state.
     private(set) var renamingDeviceId: String?
     /// The phone whose Forget confirmation is up (one at a time, like Rename).
@@ -330,7 +338,7 @@ final class ConnectionController {
         sheet = pending
     }
 
-    /// Settings → Devices → Rename…: the dialog for this phone is presented
+    /// Settings ▸ Phones ▸ Rename…: the dialog for this phone is presented
     /// (and dismissed) in DevicesSettings.
     func beginRename(_ phone: RememberedPhone) {
         renamingDeviceId = phone.id
@@ -342,7 +350,7 @@ final class ConnectionController {
         previewRenameText = nil
     }
 
-    /// Settings → Devices → Forget This Phone…: the confirmation names this
+    /// Settings ▸ Phones ▸ Forget This Phone…: the confirmation names this
     /// phone; nothing is removed until the person confirms.
     func beginForget(_ phone: RememberedPhone) { forgettingDeviceId = phone.id }
     func endForget() { forgettingDeviceId = nil }
@@ -724,7 +732,7 @@ final class ConnectionController {
         if let qr, !qr.succeeded { stopQR() }
     }
 
-    /// Settings → Devices → Use.
+    /// Settings ▸ Phones ▸ Use This Phone.
     func use(_ phone: RememberedPhone) {
         guard link.phone?.id != phone.id else { return }
         // The §3 mirror follows the phone in use: it is that phone's record
@@ -883,7 +891,7 @@ final class ConnectionController {
                          launch: false, pinned: true)
         }
         if let pkg = options.dockRemove { dockApps.remove(deviceId: phone.id, pkg: pkg) }
-        // `--set-nickname`: the rename a person does in Settings → Devices →
+        // `--set-nickname`: the rename a person does in Settings ▸ Phones ▸
         // Rename, driven as a hook so the check runs the real code path.
         if let name = options.setNickname { setNickname(name, for: phone.id) }
         dockHooksPending = false
@@ -2055,7 +2063,7 @@ final class ConnectionController {
         }
     }
 
-    /// The per-device opt-in toggle changed (Settings → Devices).
+    /// The per-device opt-in toggle changed (Settings ▸ Phones).
     func notifySettingChanged(deviceId: String, on: Bool) {
         if isPreview, previewNotify[deviceId] != nil {
             previewNotify[deviceId]?.enabled = on
@@ -2133,7 +2141,7 @@ final class ConnectionController {
         return NotifyMute.muted(deviceId: deviceId, defaults: profile.defaults)
     }
 
-    /// Whether this phone's notification sharing is on (Settings ▸ Devices).
+    /// Whether this phone's notification sharing is on (Settings ▸ Phones).
     func notificationsEnabled(deviceId: String) -> Bool {
         if let preview = previewNotify[deviceId] { return preview.enabled }
         return NotifyToggle.isEnabled(deviceId: deviceId, defaults: profile.defaults)
@@ -2681,6 +2689,15 @@ final class ConnectionController {
                   let phone = rememberedPhones.first(where: { $0.id == id }) else { return "unknown phone" }
             beginForget(phone)
             return nil
+        case "settings-select":
+            // Setup for a check or a screenshot: the sidebar's own choose
+            // transition for that page (a row click's path).
+            guard let raw = arguments.first, let page = SettingsSelection(storeValue: raw) else {
+                return "settings-select needs general|input|automation|phone:ID"
+            }
+            settingsRevealToken += 1
+            settingsRevealRequest = SettingsReveal(selection: page, token: settingsRevealToken)
+            return nil
         case "settings-report":
             // What the window renders (the e2e's assertions; a read of the real
             // view, never an action). The view writes the file on the next pass.
@@ -3050,7 +3067,7 @@ final class ConnectionController {
             DevicesPreview.openMutedList = true
             settingsSoon()
         case "devices-rename":
-            // The Settings → Devices → Rename dialog, staged for the screenshot.
+            // The Settings ▸ Phones ▸ Rename dialog, staged for the screenshot.
             deck(.online(ref))
             renamingDeviceId = ref.id
             previewRenameText = "Multipass"

@@ -41,7 +41,7 @@ clipboard images (#8), phone mirroring, window styles (Framed / Immersive, remem
 
 | # | Feature | Approach | Size |
 |---|---|---|---|
-| 1 | [x] Phone nickname | rename a phone in Settings → Devices (Mac-side, per device); used everywhere the phone is named; e2e `nickname` (shim name, window title, rename reorder) | S |
+| 1 | [x] Phone nickname | rename a phone in Settings ▸ Phones (Mac-side, per device); used everywhere the phone is named; e2e `nickname` (shim name, window title, rename reorder) | S |
 | 2 | [x] Titles name the phone | app windows and their Dock/⌘-Tab entries read "WhatsApp (Nickname)"; a rename retitles the open windows | S |
 | 3 | [x] Clipboard text, both ways | shell `IClipboard` listener ⇄ NSPasteboard polling; `clip.set`, no echo, skips concealed items | S‑M |
 | 4 | [x] Audio phone → Mac | REMOTE_SUBMIX at shell UID → Opus/AAC on the session → AVAudioEngine on the Mac, <150 ms added latency, per-device volume/mute (docs/design/audio.md); verified end to end on the API 36 emulator (~80–125 ms tone → Mac, speaker idle), API 34/35 and the real phone still to check | M |

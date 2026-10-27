@@ -38,7 +38,7 @@ struct DeckRoot: View {
         }
         .animation(.smooth(duration: 0.3), value: controller.deckMode)
         .frame(minWidth: 640, minHeight: 420)
-        // Previews stage the Settings → Devices screenshot; nothing else opens
+        // Previews stage the Settings screenshot; nothing else opens
         // the Settings window from here.
         .onChange(of: controller.settingsRequest) { _, _ in openSettings() }
         // A link dropped on the Deck opens on the phone (a .webloc file carries one too);

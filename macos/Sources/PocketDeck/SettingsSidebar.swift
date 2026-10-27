@@ -141,6 +141,12 @@ struct SettingsSidebarView: View {
         .onChange(of: controller.rememberedPhones.map(\.id)) { _, _ in
             apply(.phonesChanged(phones: phoneIds, inUse: inUseId))
         }
+        .onChange(of: controller.settingsRevealRequest) { _, request in
+            // The check's or screenshot's setup: the same choose transition a
+            // click on the row runs.
+            guard let request else { return }
+            apply(.choose(request.selection, phones: phoneIds))
+        }
         .onChange(of: controller.settingsAddRequest) { _, _ in
             // The check's setup for Add Phone…: the same action the row runs.
             apply(.addPhone)
@@ -190,6 +196,7 @@ struct SettingsSidebarView: View {
                         if rows.isEmpty {
                             Text(SettingsSidebarModel.emptyPhonesText)
                                 .foregroundStyle(.secondary)
+                                .listRowBackground(Color.clear)
                                 .accessibilityLabel(SettingsSidebarModel.emptyPhonesText)
                         }
                         addPhoneRow
