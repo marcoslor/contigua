@@ -58,6 +58,9 @@ private struct SettingsWindowTag: NSViewRepresentable {
             guard let window = view.window else { return }
             let screen = window.screen ?? NSScreen.main
             let height = SettingsLayout.maxContentHeight(for: screen?.visibleFrame.height ?? 800)
+            // A sidebar run's header is one compact row: the default style put
+            // the title above an otherwise empty toolbar row.
+            if ProtoSettings.variant != .production { window.toolbarStyle = .unifiedCompact }
             window.setContentSize(NSSize(width: SettingsLayout.currentWidth, height: height))
             if let screen {
                 var frame = window.frame
@@ -77,7 +80,7 @@ private struct SettingsWindowTag: NSViewRepresentable {
 /// Settings' window size rules (docs/design/mac-redesign.md §3.6).
 enum SettingsLayout {
     static let width: CGFloat = 480
-    /// The window width this run draws: the sidebar prototype's 700 pt (a test
+    /// The window width this run draws: the sidebar prototype's 720 pt (a test
     /// hook), else today's 480 pt tab.
     static var currentWidth: CGFloat { ProtoSettings.windowWidth ?? width }
     /// The design's height; tall enough for General's usual rows, short enough
