@@ -403,10 +403,10 @@ final class Session {
             // trust root, so the peer cert failing to verify means the phone's
             // certificate changed. Surface it as pin-mismatch, not generic tls.
             if message.contains("certificate_verify_failed") || message.contains("certificate verify") {
-                Log.session.error("tls verify refused: \(message.prefix(160), privacy: .public)")
+                Log.session.error("tls verify refused: \(message.prefix(160), privacy: .private)")
                 fail("pin-mismatch"); return
             }
-            Log.session.error("tls connect failed: \(message.prefix(160), privacy: .public)")
+            Log.session.error("tls connect failed: \(message.prefix(160), privacy: .private)")
             fail("tls"); return
         }
         guard let res = connectResult else {
@@ -628,7 +628,7 @@ final class Session {
                 Log.session.notice("the phone closed the TLS session")
             }
         } else {
-            Log.session.error("tls transport refused: \(message.lowercased().prefix(240), privacy: .public)")
+            Log.session.error("tls transport refused: \(message.lowercased().prefix(240), privacy: .private)")
         }
         let lowered = message.lowercased()
         if message.contains(TlsV2Error.pinMismatch(got: "", expected: "").description.prefix(18)) {

@@ -54,7 +54,7 @@ final class Discovery {
             guard let self else { return }
             let text = String(describing: state)
             self.browseState = text
-            Log.app.info("mDNS browser \(text, privacy: .public)")
+            Log.app.info("mDNS browser \(text, privacy: .private)")
             switch state {
             case .failed(let error), .waiting(let error):
                 if case .dns(let code) = error, code == Self.policyDenied {

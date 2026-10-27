@@ -50,7 +50,7 @@ final class ControlsHost {
             try server.start()
             self.server = server
         } catch {
-            Log.app.notice("controls socket \(ControlsPaths.socketPath(in: self.directory), privacy: .public) failed: \(String(describing: error), privacy: .public)")
+            Log.app.notice("controls socket \(ControlsPaths.socketPath(in: self.directory), privacy: .private) failed: \(String(describing: error), privacy: .private)")
         }
         refresh(force: true)
         // A one-second read of the controller is the change detector: @Observable
@@ -62,7 +62,7 @@ final class ControlsHost {
         timer.tolerance = 0.2
         RunLoop.main.add(timer, forMode: .common)
         self.timer = timer
-        Log.app.notice("controls host at \(self.directory.path, privacy: .public)")
+        Log.app.notice("controls host at \(self.directory.path, privacy: .private)")
     }
 
     func stop() {
