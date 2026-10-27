@@ -125,6 +125,10 @@ struct AppCommands: Commands {
             }
             .pickerStyle(.inline)
             .labelsHidden()
+            // The pair acts on the key stream window only. SwiftUI builds the
+            // items once, so the live value is written when the menu opens
+            // (MenuMarks); this is the launched state.
+            .disabled(!streamMenu.hasStream)
             // The reveal choice: enabled only while the window is immersive, so
             // a choice is never also a submenu's parent (Framed/Immersive above
             // own the style). A pick stores the choice and leaves the style.
