@@ -247,7 +247,7 @@ toolbar item group:
 - **Live Text freezes the controls.** While a window is in Live Text mode every bar action except Live Text itself is
   disabled (dimmed, no hover, no action, accessibility "dimmed"), and the phone navigation shortcuts (⌘[, ⇧⌘H, ⌘↑) do
   nothing, because they would drive the live phone behind the frozen picture. Leaving the mode re-enables them.
-  "Continue on Mac" is left alone: it opens another window for the phone's current app, it does not act on this
+  "Move Phone App to Mac" is left alone: it opens another window for the phone's current app, it does not act on this
   window's frozen frame. `HeaderActionPolicy` is the one decision, unit tested.
 
 ### 3.8 Menu bar item and app menu
@@ -261,7 +261,7 @@ toolbar item group:
   ≥62 pt high, 8 pt apart, 12 pt corners: **Do Not Disturb**, **Ringer**, **Ring Phone**, **Turn Off Screen** ·
   the phone's media volume slider with its % · the one reason line when a control is off · **Now Playing follows**
   when the phone reports ≥ 2 sessions · **LIVE** (one row per live notification) · one **WINDOWS** row of four icon
-  buttons: **Mirror** (VoiceOver "Phone Mirror") ⌘P · **Find Apps** ⌘K · **Continue on Mac** ⇧⌘C · **Install APK…**
+  buttons: **Mirror** (VoiceOver "Phone Mirror") ⌘P · **Find Apps** ⌘K · **Move to Mac** ⇧⌘C · **Install APK…**
   (with its phase). The menu-bar panel keeps **Settings…** ⌘, and **Quit PocketDeck** ⌘Q; the Deck popover does not
   (`showsFooter`).
 - **Ringer** opens a menu (**Ring** / **Vibrate** / **Silent**) with the phone's current mode checked; it never
@@ -292,13 +292,13 @@ toolbar item group:
   *File* (Add Phone… ⇧⌘N · ── · Close ⌘W · Close All ⌥⌘W — nothing after Close All) ·
   *Edit* (the standard Undo/Redo/Cut/Copy/Paste/Select All, so paste works in the code and search fields) ·
   *View* (Find Apps ⌘K · ── · Framed / Immersive · Hide Controls › · ── · Show Touches · Live Text ⇧⌘T · ── · Density ›) ·
-  *Phone* (Phone Mirror ⌘P · Continue on Mac ⇧⌘C · ── · Turn Off Phone Screen · Do Not Disturb · Ring Phone / Stop
+  *Phone* (Phone Mirror ⌘P · Move Phone App to Mac ⇧⌘C · ── · Turn Off Phone Screen · Do Not Disturb · Ring Phone / Stop
   Ringing · ── · Install APK…) ·
   *Navigate* (Back ⌘[ · Home ⇧⌘H · Recents ⌘↑ — no screen item) ·
   *Window* (Minimize ⌘M · Zoom · Enter Full Screen ⌃⌘F · Bring All to Front · the window list) ·
   *Help* (empty: there is no help book and no public issue tracker, so no dead item).
 - **The Phone menu is the panel's controls**: it builds from the same `PhoneControlsState` and `PhoneControlsActions`
-  the menu-bar panel and the Deck popover use, so one mapping decides what can work — *Phone Mirror*, *Continue on Mac*,
+  the menu-bar panel and the Deck popover use, so one mapping decides what can work — *Phone Mirror*, *Move to Mac*,
   *Turn Off Phone Screen*, *Ring Phone* and *Install APK…* are disabled while the phone is away, and *Turn Off Phone
   Screen* until a Phone Mirror is open. A control that cannot work is disabled, never hidden. *Turn Off Phone Screen*
   keeps its checkmark on the phone's own `state.panel` report, never a local guess. *Install APK…* and *Ring

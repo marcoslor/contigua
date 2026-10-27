@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """handoff-probe — drive `task.continue` against the emulator rig (ROADMAP #9).
 
-Reads the phone's answer to the Mac's "Continue on Mac" request and, with
+Reads the phone's answer to the Mac's "Move Phone App to Mac" request and, with
 --watch, waits so a person can look at the emulator. Pairing is automatic: the
 app is a debug build, so the phone accepts pair.request without a prompt.
 

@@ -63,5 +63,5 @@ A line the product claims is proved by a check whose `ok` line names the ID. The
 | CONV-PD-04 | **Live controls.** A slider or toggle follows the pointer live while dragged, sends throttled updates, and then follows the phone (the volume pattern). |
 | CONV-PD-05 | **Privacy.** No message text, notification content, file name, app list or phone number in logs or crash reports. Anything sensitive is redacted. |
 | CONV-PD-06 | **Performance.** Interactive surfaces meet docs/NFR.md, with frame p95 measured on the e2e rig. A change that moves a metric records before and after. |
-| CONV-PD-07 | **Names.** One name per thing across the menus, panels, Deck, Shortcuts, MCP and docs. Today: Phone Mirror, Deck, Find Apps, Continue on Mac. |
+| CONV-PD-07 | **Names.** One name per thing across the menus, panels, Deck, Shortcuts, MCP and docs. Today: Phone Mirror, Deck, Find Apps, Move Phone App to Mac (panel and Deck button: Move to Mac). |
 | CONV-PD-08 | **Stateful behaviour** is one explicit state machine (AGENTS.md), and its state/event table is in the surface spec. |

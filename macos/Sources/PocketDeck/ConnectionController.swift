@@ -748,7 +748,7 @@ final class ConnectionController {
         windows.openPhoneWindow()
     }
 
-    /// "Continue on Mac" (docs/ROADMAP.md #9): a window for the app in the
+    /// "Move Phone App to Mac" (docs/ROADMAP.md #9): a window for the app in the
     /// foreground on the phone's screen. The phone answers with `window.opened`
     /// (and the video) for the stream, or `nothing_to_continue` — which shows
     /// as the transient banner.
@@ -1877,7 +1877,7 @@ final class ConnectionController {
             if code == "nothing_to_continue" {
                 // The window never opened: it goes away, the notice is what stays.
                 windows.closeFailedHandoff(stream: stream)
-                showTransient("Nothing to continue.")
+                showTransient("Nothing to move. Your phone is showing its home screen or PocketDeck.")
             } else if code == "launch_failed" || (stream != 0 && code == "no_stream") {
                 showTransient(ConnectionFailure.message(for: code) ?? "Something went wrong.")
             } else if stream == 0 && (code == "unavailable" || code == "bad_request") {

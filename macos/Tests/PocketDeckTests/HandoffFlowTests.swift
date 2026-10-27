@@ -1,4 +1,4 @@
-// "Continue on Mac" (docs/ROADMAP.md #9): the command only does anything with
+// "Move Phone App to Mac" (docs/ROADMAP.md #9): the command only does anything with
 // a live connection, the phone's answer puts the window up (started fresh or
 // moved), and `nothing_to_continue` removes the never-opened window and shows
 // the notice. v2 peer = TLS fake phone with a scripted §4 pairing.
@@ -78,7 +78,7 @@ final class HandoffFlowTests: XCTestCase {
     /// and the window closes like any app window.
     func testTheCommandDoesNothingOfflineAndTalksToThePhoneOnline() throws {
         controller.continueOnMac()
-        XCTAssertTrue(handoffStream == nil, "offline Continue opened a window")
+        XCTAssertTrue(handoffStream == nil, "offline Move to Mac opened a window")
 
         goOnline()
         controller.continueOnMac()
@@ -113,7 +113,8 @@ final class HandoffFlowTests: XCTestCase {
         let stream = try XCTUnwrap(waitStream())
         phone(["t": "error", "code": "nothing_to_continue", "stream": Int(stream), "message": "x"])
         XCTAssertTrue(spin { handoffStream == nil }, "the refused window stayed open")
-        XCTAssertEqual(controller.banner?.text, "Nothing to continue.",
+        XCTAssertEqual(controller.banner?.text,
+                       "Nothing to move. Your phone is showing its home screen or PocketDeck.",
                        "no notice: \(String(describing: controller.banner))")
     }
 }
