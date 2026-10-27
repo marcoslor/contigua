@@ -5519,7 +5519,8 @@ PY
     printf '%s\n' "dropfile $WORK/drop-32mb.bin" "wait 20" \
         "dropfile $WORK/drop-3mb.bin" "wait 8" "dropfile $WORK/tripped.bin" "wait 5" \
         > "$WORK/drop.txt"
-    open_shared --open com.android.settings --debug-input-script "$WORK/drop.txt" || return 1
+    open_shared --open com.android.settings --debug-chrome-state "$WORK/chrome.txt" \
+        --debug-input-script "$WORK/drop.txt" || return 1
 
     local event want
     # The 32 MiB drop with the late tail confirmation: every byte exactly once.
@@ -5577,6 +5578,20 @@ PY
     wait_until 15 log_has "drop: failed: The phone refused it: the file is bigger than the phone's cap." \
         && ok "DROP the refusal reads: The phone refused it: the file is bigger than the phone's cap." \
         || bad "DROP no refusal message: $(drop_log | tail -2)"
+
+    # B1: the outcome pill is not a fixture of the window. The sender's own
+    # timeout is the only hide (5 s), so the chrome state must show the outcome
+    # and then nothing about a second later.
+    if chrome_has "drop_pill=shown"; then
+        ok "DROP the outcome pill is on the window after the drop (state: $(chrome_state))"
+    else
+        bad "DROP no drop pill on the window after the drop (state: $(chrome_state))"
+    fi
+    if wait_until 7 chrome_has "drop_pill=hidden"; then
+        ok "DROP the outcome pill hid after the transfer's 5 s timeout (state: $(chrome_state))"
+    else
+        bad "DROP the outcome pill was still on the window 7 s after the outcome (state: $(chrome_state))"
+    fi
 
     [ "$(e2e_app_pids | wc -l | tr -d ' ')" = "1" ] \
         && ok "DROP the app survived the failed drop (one instance)" \

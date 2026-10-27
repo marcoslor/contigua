@@ -793,6 +793,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
             + " panel_click_at=\((self as? PhoneWindowController)?.panelClickedAtMs ?? 0)"
             + " panel_glyph_at=\((self as? PhoneWindowController)?.panelGlyphAtMs ?? 0)"
             + " stall=\(isStalled ? 1 : 0) stall_pill=\(stallPill ? 1 : 0)"
+            + " drop_pill=\(dropPill?.fadeTarget == 1 ? "shown" : "hidden")"
             + " loading=\(openingState)"
             + " frame=\(Int((window?.frame.width ?? 0).rounded()))x\(Int((window?.frame.height ?? 0).rounded()))"
             + " video_gap=\(Int(videoView.videoGap().rounded()))"
@@ -1002,7 +1003,11 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     /// Over the last frame: "Sending report.pdf… 43 %", then the outcome.
     /// nil hides the pill (a finished transfer fades when the state times out).
     func setDropPill(_ state: (text: String, showsProgress: Bool)?) {
-        guard let state else { dropPill?.fade(to: 0); return }
+        guard let state else {
+            dropPill?.fade(to: 0)
+            writeChromeState()
+            return
+        }
         let pill = dropPill ?? GlassPillView(text: state.text, showsProgress: state.showsProgress)
         if dropPill == nil {
             dropPill = pill
@@ -1012,6 +1017,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         pill.setText(state.text, showsProgress: state.showsProgress)
         layoutDropPill()
         pill.fade(to: 1)
+        writeChromeState()
     }
 
     private func layoutDropPill() {

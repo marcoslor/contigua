@@ -450,6 +450,11 @@ final class ConnectionController {
         windows.onDensityOverridesChanged = { [weak self] in
             MainActor.assumeIsolated { self?.refreshDensityOverrides() }
         }
+        // The drop pill has one owner: the sender reports every phase, the
+        // timeout included, and the windows only render what they are told.
+        dropSender.onPhase = { [weak self] _ in
+            MainActor.assumeIsolated { self?.syncDropPill() }
+        }
         densityOverrides = windows.densityOverrides
         // Notification sharing (docs/design/notify.md): the router owns the UN
         // delegate and clicks; share notifications still route to their actions.
@@ -1105,7 +1110,6 @@ final class ConnectionController {
         guard !urls.isEmpty else { return }
         if link.isOnline, link.phone?.id == deviceId, let session {
             dropSender.send(urls, session: session)
-            syncDropPill()
             return
         }
         pendingDrop = (urls, deviceId, Date().addingTimeInterval(Self.pendingLinkLifetime))
@@ -1280,7 +1284,6 @@ final class ConnectionController {
         pendingDrop = nil
         guard pending.until > Date(), let session else { return }
         dropSender.send(pending.urls, session: session)
-        syncDropPill()
     }
 
     /// `--debug-intent` (e2e, docs/design/intents.md): battery needs no session
@@ -1387,10 +1390,12 @@ final class ConnectionController {
             return
         }
         dropSender.send(files, session: session)
-        syncDropPill()
     }
 
-    /// The stream windows' pill mouth: the phase rendered as a line.
+    /// The stream windows' pill mouth: the phase rendered as a line. Every
+    /// phase arrives through `dropSender.onPhase`, `.idle` included, so the
+    /// sender's own timeout is the only hide (a second timer here could never
+    /// see the phase it waited for).
     private func syncDropPill() {
         switch dropSender.phase {
         case .idle:
@@ -1401,12 +1406,6 @@ final class ConnectionController {
                 : ("Sending \(name)… \(Int((fraction * 100).rounded())) %", true))
         case .finished(let text, _):
             windows.setDropPill((text, false))
-            DispatchQueue.main.asyncAfter(deadline: .now() + 6) { [weak self] in
-                MainActor.assumeIsolated {
-                    guard let self, self.dropSender.phase == .finished(text, ok: true) || self.dropSender.phase == .finished(text, ok: false) else { return }
-                    self.windows.setDropPill(nil)
-                }
-            }
         }
     }
 
@@ -1731,10 +1730,8 @@ final class ConnectionController {
             clipboardSync?.receive(text)
         case .dropProgress(let id, let bytes):
             dropSender.progress(id: id, bytes: bytes)
-            syncDropPill()
         case .dropResult(let result):
             dropSender.result(result)
-            syncDropPill()
         case .clipImageBegin(let id, let mime, let size):
             clipImageBuffer.begin(id: id, mime: mime, size: size)
         case .clipImageData(let id, let bytes):
