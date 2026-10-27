@@ -2649,6 +2649,44 @@ PY
         esac
     fi
 
+    # --- CONV-MAC-12: an AX resize stays inside the screen ---
+    # A tiler or a script sets a window's size through Accessibility, far past
+    # the screen. Every window type — stream, phone mirror, Deck, Settings —
+    # must read back no larger than the visible frame: a window a person cannot
+    # reach or shrink is the bug this rule exists for.
+    rm -f "$WORK/visibleframe.txt" "$WORK/ax-size.txt"
+    control open --open-phone --debug-chrome-state "$WORK/chrome.txt" \
+        || bad "C12 open-phone: $CONTROL_REPLY"
+    sleep 2
+    control visibleframe "$WORK/visibleframe.txt" \
+        || bad "C12 visibleframe: $CONTROL_REPLY"
+    local max_w max_h
+    if read -r max_w max_h < "$WORK/visibleframe.txt" 2>/dev/null && [ -n "${max_h:-}" ]; then
+        say "C12 the screen's visible frame is ${max_w}x${max_h} pt"
+        ax_resize_all 4000 4000 "$WORK/ax-size.txt"
+        python3 - "$WORK/ax-size.txt" "$max_w" "$max_h" <<'PY' && ok "C12 an AX resize to 4000 pt leaves every window inside the visible frame (${max_w}x${max_h})" \
+            || bad "C12 an AX resize left a window larger than the screen"
+import sys
+max_w, max_h = int(sys.argv[2]), int(sys.argv[3])
+rows = []
+for line in open(sys.argv[1]):
+    parts = line.rstrip("\n").split("\t")
+    if len(parts) != 2 or "x" not in parts[1]:
+        continue
+    title, size = parts[0], parts[1]
+    w, h = (int(v) for v in size.split("x"))
+    rows.append((title, w, h))
+if len(rows) != 4:
+    print("windows measured:", rows); sys.exit(1)
+print("C12 measured:", ", ".join("%s %dx%d" % row for row in rows))
+for title, w, h in rows:
+    if w > max_w or h > max_h:
+        print("%r is %dx%d, past %dx%d" % (title, w, h, max_w, max_h)); sys.exit(1)
+PY
+    else
+        bad "C12 no visible frame from the app ($(cat "$WORK/visibleframe.txt" 2>/dev/null))"
+    fi
+
     kill "$backdrop" 2>/dev/null; wait "$backdrop" 2>/dev/null
     stop_app
     stop_fakephone
@@ -8267,6 +8305,14 @@ OSA
     h="$(echo "$frame" | cut -d, -f4)"
     screencapture -x -R"$x,$y,$w,$h" "$shots/$1" >/dev/null 2>&1 || return 1
     say "shot: $shots/$1"
+}
+
+# ax_resize_all W H PATH — set every window of this run's app to WxH through
+# Accessibility, the path a tiler or a script uses, then write one
+# "title<TAB>WxH" line per window: the window server's answer, not the app's.
+ax_resize_all() {
+    build_cgevent || { say "no AX helper"; return 1; }
+    "$CGBIN" axresize --pid "$APP_PID" --width "$1" --height "$2" > "$3"
 }
 
 # ax_press NAME [PROCESS] — click the first AX button with that title/

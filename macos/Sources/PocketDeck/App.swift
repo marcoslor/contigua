@@ -405,6 +405,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         MenuMarks.start()
         FullScreenMenu.start()
         WindowListMenu.start()
+        WindowFrameLimit.start()
         // VisionKit's analyser service is slow and unreliable on its first
         // call (LiveTextWarmer): pay that while the app starts, not when the
         // person presses Live Text.
