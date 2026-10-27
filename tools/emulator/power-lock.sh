@@ -214,9 +214,12 @@ sleep 2
   >> "$OPENOUT" 2>&1 &
 OPEN_PID=$!
 STREAMING=0
-for _ in $(seq 1 60); do
+for _ in $(seq 1 80); do
+  # The VD line, not "first frame": that line only prints when the redraw
+  # guard nudged an app, so a healthy stream can run without it (boot 3 of this
+  # rig waited 30 s on it and pressed after the window had closed).
   if emu logcat -d -s PocketDeckSvc:I 2>/dev/null | tr -d '\r' |
-      grep -q 'first frame .*after the encoder attached'; then
+      grep -q 'stream 1 vd='; then
     STREAMING=1
     break
   fi
@@ -226,9 +229,13 @@ done
 if [ "$STREAMING" -ne 1 ]; then
   fail "no streaming window before the press ($(tail -2 "$OPENOUT" | tr '\n' ' '))"
 fi
-# A keyframe and a moment of frames, so the stream is in its steady state.
+# A moment of frames, so the stream is in its steady state before the press.
 sleep 3
-emu shell input keyevent KEYCODE_POWER >/dev/null 2>&1 || true
+if ! kill -0 "$OPEN_PID" 2>/dev/null; then
+  fail "the window closed before the press"
+else
+  emu shell input keyevent KEYCODE_POWER >/dev/null 2>&1 || true
+fi
 sleep 6
 emu shell dumpsys window policy 2>/dev/null | tr -d '\r' > "$DISPLAY" || true
 wait "$OPEN_PID"
