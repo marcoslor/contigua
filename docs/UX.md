@@ -12,7 +12,7 @@ paired-clients list). Pairings are remembered; reconnection is automatic and sil
 
 | Method | Mac | Phone |
 |---|---|---|
-| **Automatic (default)** | Phone appears in "Nearby" via Bonjour → click **Pair** → the sheet shows a 6-digit code | Notification/sheet: "Pair with *Marcos's MacBook*?" shows the same code · **Allow** / Deny |
+| **Automatic (default)** | Phone appears in "Nearby" via Bonjour → click **Pair** → the sheet shows a 6-digit code | Notification/sheet: "Pair with *Studio Mac*?" shows the same code · **Allow** / Deny |
 | **QR code** | "Pair with QR" shows a QR (`pocketdeck://pair?c=<clientId>&n=<mac name>&k=<64-hex one-time key>`) | **Scan QR** → the app registers that client + key with the server → done (scanning is the consent; no code, no Allow) |
 | **Manual** | "Connect manually…" → host + port fields → then the same comparison | same as Automatic |
 

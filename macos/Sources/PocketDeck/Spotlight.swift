@@ -20,7 +20,7 @@ enum SpotlightIndexer {
     /// The phone name for the description line, e.g. "Android app on Pixel".
     static func contentDescription(phoneName: String) -> String { "Android app on \(phoneName)" }
 
-    /// "WhatsApp (Galaxy S25 de Marcos)": the phone says which of the user's phones has the app.
+    /// "WhatsApp (Test Phone)": the phone says which of the user's phones has the app.
     static func title(label: String, phoneName: String) -> String { "\(label) (\(phoneName))" }
 
     /// Lets a search for the app, its package, the phone or "Android" find it.

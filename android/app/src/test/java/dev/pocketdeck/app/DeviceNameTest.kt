@@ -9,7 +9,7 @@ class DeviceNameTest {
 
     @Test
     fun `the user-visible name beats the model`() {
-        assertEquals("Marcos's S25+", DeviceName.resolve(null, model) { "Marcos's S25+" })
+        assertEquals("Test Phone", DeviceName.resolve(null, model) { "Test Phone" })
     }
 
     @Test

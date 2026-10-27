@@ -23,7 +23,7 @@ class UiStateTest {
 
     @Test
     fun `a connected Mac wins over ready`() {
-        val status = mapStatus(readyInput.copy(connectedMac = "Marcos's MacBook"))
+        val status = mapStatus(readyInput.copy(connectedMac = "Studio Mac"))
         assertEquals(DeckStatus(StatusState.CONNECTED, AttentionKind.NONE), status)
     }
 
@@ -72,7 +72,7 @@ class UiStateTest {
     fun `a missing notification grant while the Mac asked needs attention`() {
         // The phone's own switch is gone: the Mac's opt-in plus the listener
         // grant is the whole gate (docs/design/notify.md).
-        val status = mapStatus(readyInput.copy(connectedMac = "Marcos's MacBook", notifyNoAccess = true))
+        val status = mapStatus(readyInput.copy(connectedMac = "Studio Mac", notifyNoAccess = true))
         assertEquals(DeckStatus(StatusState.NEEDS_ATTENTION, AttentionKind.NOTIFY_ACCESS), status)
     }
 

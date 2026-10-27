@@ -59,28 +59,28 @@ final class SpotlightTests: XCTestCase {
     }
 
     func testTitleNamesTheAppThenThePhone() {
-        let items = SpotlightIndexer.items(apps: apps, deviceId: "a1b2c3", phoneName: "Galaxy S25 de Marcos",
+        let items = SpotlightIndexer.items(apps: apps, deviceId: "a1b2c3", phoneName: "Test Phone",
                                            iconData: { _ in nil })
-        XCTAssertEqual(items[1].attributeSet.title, "Spotify (Galaxy S25 de Marcos)")
-        XCTAssertEqual(items[1].attributeSet.displayName, "Spotify (Galaxy S25 de Marcos)")
+        XCTAssertEqual(items[1].attributeSet.title, "Spotify (Test Phone)")
+        XCTAssertEqual(items[1].attributeSet.displayName, "Spotify (Test Phone)")
     }
 
     func testKeywordsHoldLabelPackagePhoneAndAndroid() {
-        let items = SpotlightIndexer.items(apps: apps, deviceId: "a1b2c3", phoneName: "Galaxy S25 de Marcos",
+        let items = SpotlightIndexer.items(apps: apps, deviceId: "a1b2c3", phoneName: "Test Phone",
                                            iconData: { _ in nil })
         XCTAssertEqual(items[1].attributeSet.keywords,
-                       ["Spotify", "com.spotify.music", "Galaxy S25 de Marcos", "Android"])
+                       ["Spotify", "com.spotify.music", "Test Phone", "Android"])
     }
 
     func testRenamingThePhoneReplacesItsItemsWithTheNewTitles() {
         let spy = SpyIndex()
         let index = SpotlightIndex(index: spy)
         index.index(apps: apps, deviceId: "a1b2c3", phoneName: "FakePhone", iconData: { _ in nil })
-        index.index(apps: apps, deviceId: "a1b2c3", phoneName: "Galaxy S25 de Marcos", iconData: { _ in nil })
+        index.index(apps: apps, deviceId: "a1b2c3", phoneName: "Test Phone", iconData: { _ in nil })
         XCTAssertEqual(spy.calls, ["index", "delete", "index"])
         XCTAssertEqual(spy.deletedDomains, [["a1b2c3"]])
         XCTAssertEqual(spy.indexedCalls[1].map { $0.attributeSet.title },
-                       ["Settings (Galaxy S25 de Marcos)", "Spotify (Galaxy S25 de Marcos)"])
+                       ["Settings (Test Phone)", "Spotify (Test Phone)"])
         XCTAssertEqual(spy.indexedCalls[1].map(\.uniqueIdentifier),
                        ["a1b2c3/com.android.settings", "a1b2c3/com.spotify.music"])
     }
