@@ -155,6 +155,10 @@ final class ConnectionController {
     /// Packages each phone's notifications came from this session (Settings ›
     /// Devices "Muted apps"); package names only, never any text.
     private(set) var notifySeen: [String: Set<String>] = [:]
+    /// Phones whose listener access the Mac was told is missing
+    /// (`notify.state {on:false, reason:"no_access"}`): the Devices row says how
+    /// to fix it, and a later grant clears it (docs/design/notify.md).
+    private(set) var notifyNoAccessPhones: Set<String> = []
     /// The menu bar's "Live on <phone>" rows (docs/design/notify.md, 2b).
     private(set) var liveNotifications: [NotifyLiveItem] = []
     /// Ticks once a second while a live row exists, so an open menu bar shows a
@@ -278,6 +282,8 @@ final class ConnectionController {
     /// screenshot; the gear, ⌘, and the panel's Settings… row are the real
     /// entry points). Read by DeckRoot.
     private(set) var settingsRequest = 0
+    /// Which Settings tab is showing; the previews and the e2e open Devices.
+    var settingsTab: SettingsTab = .general
 
     /// The panel's Settings… row: the Deck's own scene opener (the responder
     /// action alone does nothing while the app is not active).
@@ -1795,8 +1801,15 @@ final class ConnectionController {
         case .fsChanges(let paths):
             fsClient?.changes(paths: paths)
             filesBridgeClient?.changes(paths: paths)
-        case .notifyState(let on):
-            Log.app.notice("phone notify \(on ? "on" : "off", privacy: .public)")
+        case .notifyState(let on, let reason):
+            Log.app.notice("phone notify \(on ? "on" : "off", privacy: .public) reason=\(reason ?? "-", privacy: .public)")
+            if let id = link.phone?.id {
+                if reason == "no_access" {
+                    notifyNoAccessPhones.insert(id)
+                } else if on {
+                    notifyNoAccessPhones.remove(id)
+                }
+            }
             if !on {
                 nowPlaying.clear()
                 notifyCenter.clearAll()
@@ -2024,6 +2037,7 @@ final class ConnectionController {
             return
         }
         profile.defaults.set(on, forKey: NotifyToggle.key(deviceId: deviceId))
+        if !on { notifyNoAccessPhones.remove(deviceId) }
         if link.phone?.id == deviceId { session?.enableNotifications(on) }
         if !on, link.phone?.id == deviceId { nowPlaying.clear() }
     }
@@ -2068,6 +2082,24 @@ final class ConnectionController {
         }
         let seen = notifySeen[deviceId] ?? []
         return Array(seen.union(NotifyMute.muted(deviceId: deviceId, defaults: profile.defaults))).sorted()
+    }
+
+    /// The app list this Mac already has for the phone: live for the session's
+    /// phone, the cached copy for any other (devices are peers).
+    func cachedApps(deviceId: String) -> [AppInfo] {
+        if link.phone?.id == deviceId, appsLoaded { return apps }
+        return appsCache.load(deviceId: deviceId)
+    }
+
+    /// Packages that sent a notification this session for this phone.
+    func seenPackages(deviceId: String) -> Set<String> {
+        if let preview = previewNotify[deviceId] { return preview.seen }
+        return notifySeen[deviceId] ?? []
+    }
+
+    /// Whether the Mac was told the phone's listener access is missing.
+    func notifyAccessMissing(deviceId: String) -> Bool {
+        notifyNoAccessPhones.contains(deviceId)
     }
 
     /// The packages muted for this phone (the muted list's switches read it).
@@ -2591,6 +2623,15 @@ final class ConnectionController {
             }
             return DeckRailPoint.point(letter: arguments[0], to: arguments[1])
                 ? nil : "deckrailpoint failed"
+        case "settings-tab":
+            switch arguments.first {
+            case "general": settingsTab = .general
+            case "input": settingsTab = .input
+            case "devices": settingsTab = .devices
+            case "automation": settingsTab = .automation
+            default: return "unknown tab"
+            }
+            return nil
         case "settings-dump":
             // Settings' real window geometry (SettingsProbe) for the host e2e.
             guard let path = arguments.first, path.hasPrefix("/") else { return "missing path" }
@@ -2828,6 +2869,7 @@ final class ConnectionController {
     private func settingsSoon() {
         Task { @MainActor [weak self] in
             try? await Task.sleep(for: .milliseconds(800))
+            self?.settingsTab = .devices
             self?.settingsRequest += 1
         }
     }
@@ -2837,6 +2879,7 @@ final class ConnectionController {
     /// cannot be staged against a fake phone.
     private func applyPreview(_ name: String) {
         isPreview = true
+        DevicesPreview.reset()
         let ref = PhoneRef(id: "preview", name: "Galaxy S25+", model: "SM-S936B")
         let phone = RememberedPhone(id: ref.id, name: ref.name, model: ref.model, lastSeen: Date())
         let other = PhoneRef(id: "preview-2", name: "Pixel 9", model: "Pixel 9")
@@ -2919,8 +2962,7 @@ final class ConnectionController {
         case "devices-three":
             deck(.online(ref))
             rememberedPhones = [phone] + Self.DevicesFixtures.others
-            ProtoDevices.stagedPresence = Self.DevicesFixtures.presence
-            ProtoDevices.scrollCardsToEnd = true
+            DevicesPreview.stagedPresence = Self.DevicesFixtures.presence
             previewNotify[ref.id] = PreviewNotify(enabled: true, muted: Set(Self.DevicesFixtures.muted),
                                                   seen: Set(Self.DevicesFixtures.seen))
             settingsSoon()
@@ -2934,7 +2976,7 @@ final class ConnectionController {
             deck(.online(ref))
             previewNotify[ref.id] = PreviewNotify(enabled: true, muted: Set(Self.DevicesFixtures.muted),
                                                   seen: Set(Self.DevicesFixtures.seen))
-            ProtoDevices.openMutedList = true
+            DevicesPreview.openMutedList = true
             settingsSoon()
         case "devices-rename":
             // The Settings → Devices → Rename dialog, staged for the screenshot.
