@@ -1,6 +1,6 @@
-// The Devices tab's pure half (docs/specs/settings-devices.md): what a phone
-// row says, the section titles that name their phone, and the muted-apps list.
-// No SwiftUI here, so the strings and the ordering are unit-tested (K2).
+// The phone rows' pure half (docs/specs/settings.md): what a sidebar row says
+// and the muted-apps list. No SwiftUI here, so the strings and the ordering are
+// unit-tested (K2).
 
 import Foundation
 

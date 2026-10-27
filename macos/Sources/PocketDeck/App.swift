@@ -67,7 +67,7 @@ struct LaunchOptions {
     var dockAdd: String?
     var dockRemove: String?
     /// `--set-nickname NAME`: rename the active phone once its app list arrives,
-    /// through the same code the Settings → Devices → Rename dialog calls (e2e).
+    /// through the same code the Settings ▸ Phones ▸ Rename dialog calls (e2e).
     var setNickname: String?
     /// `--continue-on-mac`: run the Move Phone App to Mac command once the session is
     /// ready (e2e, docs/design/handoff.md).

@@ -71,7 +71,7 @@ and with Reduce Transparency / Increase Contrast (system fallbacks only).
 ### 3.2 Nearby (pairing entry point)
 
 Shown as the Deck content when nothing is remembered, and as a **sheet** (title "Add a phone",
-size 480×460) from Settings → Devices → **Add phone…** and ⇧⌘N when a phone is already remembered.
+size 480×460) from Settings ▸ Phones ▸ **Add Phone…** and ⇧⌘N when a phone is already remembered.
 
 - Header: "Nearby" `.headline`. Body: list of phones from Discovery, **deduplicated by TXT `id`**
   across interfaces; a result without a TXT `id` is ignored until one arrives (A10). Sorted by name.
@@ -152,7 +152,7 @@ backgrounds), window background default.
   | open failed (`launch_failed`) | "Couldn't open *app* on the phone." (auto-clears 5 s) | — |
 
 - **Phone** button: opens the Phone Mirror (disabled unless online).
-- **No selection of phones here.** Switching/adding phones is in Settings → Devices (§3.6).
+- **No selection of phones here.** Switching/adding phones is in Settings’ sidebar (§3.6).
 - Window title bar has no document icon. Frame autosave `deck`.
 
 ### 3.4 Code sheet
@@ -199,19 +199,26 @@ that address." (no codes). On success it continues into the code sheet (§4.3). 
 
 ### 3.6 Settings (⌘,)
 
-`Settings { TabView }`, width 480, `Form` + `.formStyle(.grouped)`, tabs **General** (`gearshape`) and **Devices**
-(`iphone.gen3`):
+`Settings { SettingsView }` draws a `NavigationSplitView`: a 240 pt source-list sidebar and a 480 pt detail
+column in a 720 × 560 window (the smallest supported screen is 1280 × 800; a taller page scrolls). The sidebar's
+first group is **Phones** — one row per remembered phone (`DeviceGlyph`, name, a dot plus the state's words and,
+while it is not connected, when it was last seen; a checkmark on the in-use phone) then **Add Phone…** — and its
+second group is **This Mac**: **General**, **Input**, **Automation**. The detail shows the chosen page with
+`.formStyle(.grouped)`; the window title is that page's name.
 
-- **General:** `Toggle("Launch at login")` (`SMAppService.mainApp`), `Toggle("Show in menu bar")`,
-  `Picker("Default window density")` (75 % · 100 % · 125 % · 150 %, `.menu`). Nothing else.
-- **Devices:** one row per remembered phone, `LabeledContent`: name + secondary "*model* · Last seen *relative*"
-  and trailing state text ("Connected" green / "Offline" secondary / "Pair again" orange), buttons: **Use**
-  `.glass` (only on a non-active phone: makes it the active phone and connects) and **Forget** `.glass`
-  `role: .destructive` → `confirmationDialog("Forget *name*?", message "You'll need to pair it again.")`
-  with **Forget** (destructive) / Cancel. Footer: **Add phone…** `.glass` (opens the Nearby sheet).
-  Empty: "No phones yet." + **Add phone…**.
-- Forget = delete key (Keychain, profile-scoped), `RememberedPhone`, cached address, Spotlight items, apps cache;
-  if it was active: close its windows (they would be dead), drop to Nearby (or to the next remembered phone).
+- **A phone's page** (`PhoneSettingsPage`): a header with the icon, name, state, In Use or **Use This Phone**
+  (**Pair Again…** for a phone whose key is gone), then the plain sections **Phone** (model, **Rename…**),
+  **Notifications** (**Share notifications and Now Playing**, **When I click a notification**, **Muted apps**),
+  **Screen** (**Keep the phone screen off until I turn it on from the Mac**) and **Forget**
+  (**Forget This Phone…**, alone at the end). No section heading carries the phone's name.
+- **General** and **Input** carry the toggles the app-wide settings bind; **Automation** carries the MCP server's
+  gate and client snippet.
+- **Add Phone…** opens the Deck's one add-phone sheet and leaves the page where it was. **Forget** = delete the
+  pin (profile-scoped), `RememberedPhone`, cached address, Spotlight items and apps cache, after a confirmation
+  naming the phone; if it was the open page the next phone (else General) takes the detail, and if it was the
+  active phone its windows close and the next remembered phone is activated.
+- One selection state (`SettingsSelection`) serves the window: it is stored per profile, so ⌘, reopens the last
+  page. The sidebar takes the keyboard; ↑/↓ walk the rows and Tab leaves for the detail.
 
 ### 3.7 Stream windows (AppKit)
 

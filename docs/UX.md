@@ -29,7 +29,7 @@ discovered phone, tries `auth` with it (challenge `id` tells it which phone answ
 On `welcome` it stores the key under that device id and closes the QR sheet. The QR
 key expires after 5 minutes or on sheet close.
 
-**Pairing manager:** Mac → Settings → Devices (paired phones: name, nickname, model, last seen,
+**Pairing manager:** Mac → Settings → Phones (paired phones: name, nickname, model, last seen,
 **Rename…**, **Use**, **Forget**). Phone → home screen "Paired Macs" (name, last connected, Forget). Forgetting
 on either side removes the key; the other side gets `auth_failed` next time and shows
 "Pair again".
@@ -94,23 +94,27 @@ disabled, never hidden.
    control that cannot work is dimmed as a whole (icon, title and its short second line, e.g. "Open Mirror first"),
    never accent-tinted; the full sentence is its help tag and VoiceOver hint ("Open Phone Mirror first."). The
    Deck's status pill opens the same card in a popover, without the footer.
-4. **Settings** (⌘,; also the settings gear at the Deck header's right): tabs **General** (launch at login, show in menu bar,
-   share clipboard with your phone, show phone apps in the Dock, **glass app icons**, default window density, **reveal controls after**) · **Input**
-   (**hover over Android apps**) · **Devices** · **Automation**. **Devices** is a **Phones** list (a row per
-   phone: icon, name, a dot plus **Connected** / **Connecting…** / **Reconnecting…** / **Offline** / **Pair again**
-   and when it was last seen, **In Use** on the one the rest of the app shows, and an information button) and
-   **Add Phone…** under it, then the selected phone's page: **Model**, **Use This Phone** (phones not in use),
-   **Pair Again…** (a phone whose key is gone), **Rename…**, **Forget This Phone…** alone at the end, the
-   **Notifications** section (**Share notifications and Now Playing**, **When I click a notification** with
-   **Open on this Mac** / **Open on the phone** / **Do nothing**, and **Muted apps** with its count, a search field
-   and a **Muted** checkbox column), and the **Screen** option **Keep the phone screen off until I turn it on
-   from the Mac**. The in-use phone's page opens first; any other phone is one click away and its settings are
-   editable whether or not it is in use (they apply on its next connection). With two or more phones every
-   section header names its phone ("Galaxy S25+ — Notifications"). Muted apps lists the apps this Mac already
-   has for that phone, muted first, with a mark on apps that sent a notification this session, "System UI" for
-   `com.android.systemui` and the package name for an app with no name. When the phone has not been granted
-   notification access, the row says **Allow notification access on the phone.** under the switch. The Dock
-   shims rebuild on a rename. Nothing else.
+4. **Settings** (⌘,; also the settings gear at the Deck header's right): a System Settings–style window,
+   720 × 560, with a sidebar and a detail column. The sidebar opens with **Phones** — a row per phone (icon,
+   name, a dot plus **Connected** / **Connecting…** / **Reconnecting…** / **Offline** / **Pair again** and,
+   while it is not connected, when it was last seen; **In Use** on the one the rest of the app shows) and an
+   **Add Phone…** row — then **This Mac**: **General** (launch at login, show in menu bar, share clipboard with
+   your phone, show phone apps in the Dock, **glass app icons**, default window density, **reveal controls
+   after**), **Input** (**hover over Android apps**) and **Automation**. A phone opens its page in the detail:
+   a header with its icon, name, state and **In Use** or **Use This Phone** (**Pair Again…** when its key is
+   gone), then the plain sections **Phone** (**Model**, **Rename…**), **Notifications** (**Share notifications
+   and Now Playing**, **When I click a notification** with **Open on this Mac** / **Open on the phone** / **Do
+   nothing**, and **Muted apps** with its count, a search field and a **Muted** checkbox column), **Screen**
+   (**Keep the phone screen off until I turn it on from the Mac**) and **Forget** (**Forget This Phone…** alone
+   at the end). The window title is the open page's name, and that is the only other place a phone is named: no
+   section heading carries it. ⌘, reopens the last page (the in-use phone, or **General** with no phones); the
+   sidebar has the keyboard, ↑/↓ move between rows and Tab moves into the page; **Add Phone…** opens the
+   pairing sheet without moving the page. Any phone is one click away and its settings are editable whether or
+   not it is in use (they apply on its next connection); forgetting the open phone's phone opens the phone in
+   use, else **General**. Muted apps lists the apps this Mac already has for that phone, muted first, with a
+   mark on apps that sent a notification this session, "System UI" for `com.android.systemui` and the package
+   name for an app with no name. When the phone has not been granted notification access, the page says
+   **Allow notification access on the phone.** under the switch. The Dock shims rebuild on a rename. Nothing else.
 
     A **nickname** ("Rename…" dialog) is 1–40 characters, trimmed; empty keeps using the phone's own name. It is the one
     name everywhere: the Deck title, the menu bar, the chip's voiceover copy, failure banners, notifications from the phone
@@ -155,7 +159,7 @@ Material 3, edge-to-edge, dynamic color, light/dark.
      paired Macs still connect). Greyed out while "Allow connections" is off.
      Default on.
    - No notification-sharing switch: the switch lives on the Mac, per phone
-     (Settings ▸ Devices). When a Mac turns it on, the phone asks for
+     (Settings ▸ Phones). When a Mac turns it on, the phone asks for
      notification-listener access by itself; if that fails, the status card
      shows **Notification access is off** with **Allow**, which opens the
      system's Notification access screen. A later grant starts forwarding on
