@@ -9758,6 +9758,72 @@ PY
     wait_until 20 [ "$(dnd_after)" -gt "$dnd_before" ] \
         && ok "[DECK-20] clicking the popover's DND tile reached the phone ($(grep -o '"ev":"dnd"[^}]*' "$WORK/events.jsonl" 2>/dev/null | tail -1))" \
         || bad "[DECK-20] the popover's DND tile sent no new phone.dnd"
+
+    # DECK-19/CONV-MAC-12: does the Deck remember its frame across a launch?
+    # Resize it, quit the way ⌘Q does, relaunch and read the frame again.
+    stop_app
+    kill_e2e_app
+    wait_until 5 [ -z "$(e2e_app_pids)" ] || kill_e2e_app
+    local frame_dir="$WORK/frames"
+    rm -rf "$frame_dir"
+    mkdir -p "$frame_dir"
+    frame_control() {
+        local fdir="$frame_dir" fname
+        CONTROL_SEQ=$((CONTROL_SEQ + 1))
+        fname="f$CONTROL_SEQ"
+        printf '%s\n' "$*" > "$fdir/$fname.tmp" && mv "$fdir/$fname.tmp" "$fdir/$fname.cmd"
+        if ! wait_until 10 [ -s "$fdir/$fname.done" ]; then
+            CONTROL_REPLY="no answer in 10 s"
+            return 1
+        fi
+        CONTROL_REPLY="$(cat "$fdir/$fname.done")"
+        rm -f "$fdir/$fname.done"
+        [ "$CONTROL_REPLY" = "ok" ]
+    }
+    frame_app_gone() { ! kill -0 "$APP_PID" 2>/dev/null; }
+    # The Deck window is built with the app: wait for it before resizing.
+    frame_wait_deck() {
+        local tries=40
+        while [ "$tries" -gt 0 ]; do
+            frame_control deck-frame "$1" && return 0
+            tries=$((tries - 1))
+            sleep 0.25
+        done
+        return 1
+    }
+    launch --connect "127.0.0.1:$PORT" --debug-control "$frame_dir" --quit-after 60
+    frame_wait_deck "$WORK/deck-frame-0.txt" || bad "DECK frame: the Deck gave no frame"
+    frame_control deck-size 1000 700 || bad "DECK frame: deck-size 1000 700: $CONTROL_REPLY"
+    frame_control deck-move 1700 300 || bad "DECK frame: deck-move 1700 300: $CONTROL_REPLY"
+    sleep 1
+    frame_control deck-frame "$WORK/deck-frame-1.txt" || bad "DECK frame: the resized Deck gave no frame"
+    frame_control screens "$WORK/deck-screens-1.txt" || bad "DECK frame: no screen report before the quit"
+    printf 'quit\n' > "$frame_dir/quit.cmd"
+    wait_until 10 frame_app_gone || bad "DECK frame: the app did not quit"
+    wait "$APP_PID" 2>/dev/null
+    launch --connect "127.0.0.1:$PORT" --debug-control "$frame_dir" --quit-after 40
+    frame_wait_deck "$WORK/deck-frame-2.txt" || bad "DECK frame: the relaunched Deck gave no frame"
+    # The opening window is placed on its first render: read it once it has
+    # settled rather than in the middle of that.
+    sleep 1
+    frame_control deck-frame "$WORK/deck-frame-2.txt" || bad "DECK frame: the relaunched Deck gave no frame"
+    frame_control screens "$WORK/deck-screens-2.txt" || bad "DECK frame: no screen report after the relaunch"
+    say "DECK frame before quit: $(cat "$WORK/deck-frame-1.txt" 2>/dev/null); $(tr '\n' ' ' < "$WORK/deck-screens-1.txt" 2>/dev/null)"
+    say "DECK frame after relaunch: $(cat "$WORK/deck-frame-2.txt" 2>/dev/null); $(tr '\n' ' ' < "$WORK/deck-screens-2.txt" 2>/dev/null)"
+    if python3 - "$WORK/deck-frame-1.txt" "$WORK/deck-frame-2.txt" <<'PY'
+import sys
+before = [int(v) for v in open(sys.argv[1]).read().split()]
+after = [int(v) for v in open(sys.argv[2]).read().split()]
+if len(before) != 4 or len(after) != 4:
+    print(before, after); sys.exit(1)
+if any(abs(a - b) > 2 for a, b in zip(before, after)):
+    print("before:", before, "after:", after); sys.exit(1)
+PY
+    then
+        ok "[DECK-19] the Deck came back at the frame it had (within 2 pt, $(cat "$WORK/deck-frame-2.txt"))"
+    else
+        bad "[DECK-19] the Deck did not remember its frame (before $(cat "$WORK/deck-frame-1.txt" 2>/dev/null), after $(cat "$WORK/deck-frame-2.txt" 2>/dev/null))"
+    fi
     stop_app
 }
 

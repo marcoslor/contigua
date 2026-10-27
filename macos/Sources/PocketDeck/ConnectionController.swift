@@ -2645,6 +2645,41 @@ final class ConnectionController {
             guard let window = DeckWindow.window else { return "no Deck window" }
             window.setContentSize(NSSize(width: w, height: h))
             return nil
+        case "deck-frame":
+            // The Deck's frame in screen points, "x y w h": the e2e reads it
+            // before and after a relaunch (DECK-19/CONV-MAC-12).
+            guard let path = arguments.first, path.hasPrefix("/") else { return "deck-frame needs PATH" }
+            guard let window = DeckWindow.window else { return "no Deck window" }
+            let frame = window.frame
+            let line = "\(Int(frame.minX.rounded())) \(Int(frame.minY.rounded()))"
+                + " \(Int(frame.width.rounded())) \(Int(frame.height.rounded()))\n"
+            return (try? line.write(toFile: path, atomically: true, encoding: .utf8)) == nil
+                ? "deck-frame failed" : nil
+        case "deck-move":
+            // The Deck's origin in screen points: setup for the frame check
+            // (a quiet run cannot drag the window), DECK-19.
+            guard arguments.count >= 2, let x = Double(arguments[0]), let y = Double(arguments[1])
+            else { return "deck-move needs x y" }
+            guard let window = DeckWindow.window else { return "no Deck window" }
+            window.setFrameOrigin(NSPoint(x: x, y: y))
+            return nil
+        case "screens":
+            // Every screen's frame and visible frame, and the Deck's, whole
+            // points: the e2e's context for a frame that did not come back.
+            guard let path = arguments.first, path.hasPrefix("/") else { return "screens needs PATH" }
+            var lines = ""
+            for (index, screen) in NSScreen.screens.enumerated() {
+                lines += "screen \(index) frame=\(DeckPlacement.summary(screen.frame))"
+                    + " visible=\(DeckPlacement.summary(screen.visibleFrame))\n"
+            }
+            lines += "deck=\(DeckWindow.window.map { DeckPlacement.summary($0.frame) } ?? "none")\n"
+            return (try? lines.write(toFile: path, atomically: true, encoding: .utf8)) == nil
+                ? "screens failed" : nil
+        case "quit":
+            // A real quit (⌘Q's own path), so the app's terminate hooks run:
+            // the frame test needs what a person's quit leaves behind.
+            NSApp.terminate(nil)
+            return nil
         case "deck-rail":
             // The rail is pointer-only; the e2e clicks it through this verb,
             // which runs the same scroll the rail's own click runs.
