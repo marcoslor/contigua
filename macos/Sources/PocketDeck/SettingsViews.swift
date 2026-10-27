@@ -20,22 +20,21 @@ struct SettingsView: View {
     }
 }
 
-/// Sizes the Settings window to the screen: SwiftUI opens it at its own 450 pt
-/// default whatever the form needs, so a long tab was cropped at "Default
-/// window density" while the top of the screen was free. The window takes the
-/// screen's room (SettingsLayout) and never extends past the visible frame; the
-/// tab inside it scrolls for the rest.
+/// Sizes and places the Settings window: SwiftUI opens it at its own 450 pt
+/// default wherever it likes (a long tab was cropped at "Default window density"
+/// while the top of the screen was free), and it remembered nothing, so it
+/// turned up in a corner. The window takes the screen's room (SettingsLayout),
+/// opens at the origin this profile saved, centred on the screen when there is
+/// none, and remembers where the person moves it (SET-WIN-07, SET-WIN-09).
 private struct SettingsWindowTag: NSViewRepresentable {
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
     func makeNSView(context: Context) -> NSView {
         let view = NSView()
+        let coordinator = context.coordinator
         DispatchQueue.main.async {
             guard let window = view.window else { return }
-            let screen = window.screen ?? NSScreen.main
-            let height = SettingsLayout.maxContentHeight(for: screen?.visibleFrame.height ?? 800)
-            // One compact header row: the page's title beside the sidebar
-            // toggle (the default style put the title above an empty row).
-            window.toolbarStyle = .unifiedCompact
-            window.setContentSize(NSSize(width: SettingsLayout.width, height: height))
+            coordinator.attach(to: window)
             // The source list takes the keyboard, so ↑/↓ work the moment the
             // window opens (SET-WIN-08).
             Task { @MainActor in
@@ -45,20 +44,113 @@ private struct SettingsWindowTag: NSViewRepresentable {
                     SettingsSidebarFocus.take(in: window)
                 }
             }
-            if let screen {
-                var frame = window.frame
-                frame.origin.x = min(max(screen.visibleFrame.minX, frame.origin.x),
-                                     screen.visibleFrame.maxX - frame.width)
-                frame.origin.y = min(max(screen.visibleFrame.minY, frame.origin.y),
-                                     screen.visibleFrame.maxY - frame.height)
-                window.setFrame(frame, display: false)
-            }
         }
         return view
     }
 
-    func updateNSView(_ nsView: NSView, context: Context) {}
+    /// A cached window is shown again without a new view: its next render is
+    /// the open, and places it once (a no-op while it is up).
+    func updateNSView(_ nsView: NSView, context: Context) {
+        context.coordinator.placeIfNeeded()
+    }
+
+    static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
+        coordinator.detach()
+    }
+
+    /// The window's placement lifecycle: placed once per open (the first show
+    /// and every open after a close), saved when the person moves it or closes
+    /// it. Nothing is placed while it is up, so a person's drag is never undone;
+    /// a window whose screen went away is re-centred on the open after that.
+    @MainActor
+    final class Coordinator {
+        private weak var window: NSWindow?
+        private var notices: [NSObjectProtocol] = []
+        private var saveTask: Task<Void, Never>?
+        /// The window has been placed since it was last shown or closed.
+        private var placed = false
+
+        func attach(to window: NSWindow) {
+            guard self.window !== window else { return }
+            detach()
+            self.window = window
+            let centre = NotificationCenter.default
+            notices.append(centre.addObserver(forName: NSWindow.didMoveNotification,
+                                             object: window, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.saveSoon() }
+            })
+            notices.append(centre.addObserver(forName: NSWindow.willCloseNotification,
+                                             object: window, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    self?.saveSoon(now: true)
+                    self?.placed = false
+                }
+            })
+            // SwiftUI builds the window's content before it shows the window, so
+            // placing here is placing before the person sees it.
+            placeIfNeeded()
+        }
+
+        func detach() {
+            saveSoon(now: true)
+            for notice in notices { NotificationCenter.default.removeObserver(notice) }
+            notices = []
+            window = nil
+        }
+
+        /// Place the window once per open. A no-op after the first placement
+        /// since the last close, so a person's drag is never undone.
+        func placeIfNeeded() {
+            guard !placed, let window else { return }
+            placed = true
+            let screen = window.screen ?? NSScreen.main
+            // One compact header row: the page's title beside the sidebar
+            // toggle (the default style put the title above an empty row).
+            window.toolbarStyle = .unifiedCompact
+            window.setContentSize(NSSize(width: SettingsLayout.width,
+                                         height: SettingsLayout.maxContentHeight(for: screen?.visibleFrame.height ?? 800)))
+            let size = window.frame.size
+            let saved = SettingsPlacement.saved(in: Profile.active.defaults)
+            let frames = screenFrames(around: window)
+            let origin = SettingsPlacement.origin(saved: saved, screens: frames, size: size)
+            Log.app.notice("settings placement: screens=\(frames.count, privacy: .public) origin=\(Int(origin.x), privacy: .public),\(Int(origin.y), privacy: .public)")
+            // Size and origin in one frame change: the window is drawn once,
+            // where it belongs, instead of jumping after it appears.
+            window.setFrame(NSRect(origin: origin, size: size), display: false)
+        }
+
+        /// The visible frames, the one to centre on first: the screen macOS gave
+        /// this window (the key window's screen, the way a new window is placed),
+        /// else the main screen. Moving a window to another screen this way is
+        /// what SwiftUI undoes, so the window is centred where it opened.
+        private func screenFrames(around window: NSWindow) -> [CGRect] {
+            let screens = NSScreen.screens
+            let home = window.screen ?? NSScreen.main ?? screens.first
+            var frames = screens.map(\.visibleFrame)
+            if let home, let index = screens.firstIndex(where: { $0 === home }), index < frames.count {
+                frames.insert(frames.remove(at: index), at: 0)
+            }
+            return frames
+        }
+
+        private func saveSoon(now: Bool = false) {
+            guard let window else { return }
+            saveTask?.cancel()
+            saveTask = nil
+            if now {
+                SettingsPlacement.save(window.frame.origin, in: Profile.active.defaults)
+                return
+            }
+            // A drag sends a move per frame; one write when it settles is enough.
+            saveTask = Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(300))
+                guard !Task.isCancelled, let window = self.window else { return }
+                SettingsPlacement.save(window.frame.origin, in: Profile.active.defaults)
+            }
+        }
+    }
 }
+
 
 /// Settings' window size rules (docs/specs/settings.md, SET-WIN-07): the
 /// smallest supported screen is 1280×800, and the whole window fits it.
