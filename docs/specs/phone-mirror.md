@@ -70,7 +70,7 @@ The picture is one state machine (`PhoneScreenOverlay`, `macOS/Sources/PocketDec
 | Live, panel off | `state.panel off` | the bar glyph and the check go off; a 2 s "Phone screen off" pill |
 | Live, panel off | `state.panel on` (the phone's own power press, or the hold ended) | the bar glyph and the check go on; a 2 s "Phone screen on" pill |
 | Live, request sent | `2 s without a state.panel change` | "The phone didn't turn its screen off" for 2 s; the check stays off |
-| Live, request sent | `error{unavailable\|bad_request}` | the same failure pill at once; the check stays off |
+| Live, request sent | `error` (`unavailable` or `bad_request`) | the same failure pill at once; the check stays off |
 | Live | `rotation` | the window turns, keeping its top-left and area; the phone sends a new `VIDEO_CONFIG` |
 | any | `rotation reported during a live resize` | applied when the drag ends |
 
