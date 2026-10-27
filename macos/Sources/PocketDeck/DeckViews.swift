@@ -582,7 +582,7 @@ enum DeckRail {
         guard let index = topIndex(offset: offset, apps: apps, metrics: metrics, width: width) else {
             return nil
         }
-        return letter(for: apps[index].displayLabel)
+        return rowLetter(rowStart: index, apps: apps, columns: metrics.columns(forWidth: width))
     }
 
     /// The rail is only useful on a full grid, and it gives way to search. A
@@ -598,6 +598,24 @@ enum DeckRail {
         return max(index, 0) / columns * columns
     }
 
+    /// The letter the rail accents for the row that starts at `rowStart`: the
+    /// last section start inside that row, else the row's first tile. A row
+    /// that flows from Slack into Telegram accents Telegram, so a jump to T
+    /// reads T even though S fills most of the row (round 2).
+    static func rowLetter(rowStart: Int, apps: [AppInfo], columns: Int) -> String? {
+        guard apps.indices.contains(rowStart) else { return nil }
+        let width = max(columns, 1)
+        let end = min(rowStart + width, apps.count)
+        var last: String?
+        for index in rowStart..<end {
+            let current = letter(for: apps[index].displayLabel)
+            if index == rowStart || current != letter(for: apps[index - 1].displayLabel) {
+                last = current
+            }
+        }
+        return last
+    }
+
     /// The letter the rail accents: the top visible row. While a click or drag
     /// jump is settling, the target's row will be the top one, so the accent
     /// moves at once instead of staying on the outgoing row (the prototype's
@@ -605,8 +623,8 @@ enum DeckRail {
     static func accentLetter(target: Int?, top: Int?, apps: [AppInfo], columns: Int) -> String? {
         guard !apps.isEmpty else { return nil }
         let index = target.map { rowStart(containing: $0, columns: columns) } ?? top
-        guard let index, apps.indices.contains(index) else { return nil }
-        return letter(for: apps[index].displayLabel)
+        guard let index else { return nil }
+        return rowLetter(rowStart: index, apps: apps, columns: columns)
     }
 
     /// The letter at `y` in a column `height` tall; the letters share it evenly.
