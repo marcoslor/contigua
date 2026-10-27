@@ -11,17 +11,17 @@ class QrPairingTest {
 
     @Test
     fun `valid pairing uri parses client, name, mac fingerprint and secret`() {
-        val result = QrPairing.parse("pocketdeck://pair?c=1a2b3c4d&n=Marcos%27s%20MacBook&f=$fp&s=$secret")
+        val result = QrPairing.parse("pocketdeck://pair?c=1a2b3c4d&n=Studio%20Mac&f=$fp&s=$secret")
         assertEquals(
-            QrPairing.Result.Pairing("1a2b3c4d", "Marcos's MacBook", fp, secret),
+            QrPairing.Result.Pairing("1a2b3c4d", "Studio Mac", fp, secret),
             result,
         )
     }
 
     @Test
     fun `plus decodes to space in the name`() {
-        val result = QrPairing.parse("pocketdeck://pair?c=1a2b&n=Marcos+MacBook&f=$fp&s=$secret")
-        assertEquals(QrPairing.Result.Pairing("1a2b", "Marcos MacBook", fp, secret), result)
+        val result = QrPairing.parse("pocketdeck://pair?c=1a2b&n=Studio+Mac&f=$fp&s=$secret")
+        assertEquals(QrPairing.Result.Pairing("1a2b", "Studio Mac", fp, secret), result)
     }
 
     @Test

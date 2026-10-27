@@ -35,7 +35,7 @@ class PairingDialogTest {
             screenHeightDp = LocalConfiguration.current.screenHeightDp.toFloat()
             PocketDeckTheme(darkTheme = false, dynamicColor = false) {
                 PairingDialog(
-                    pending = PendingPairingUi("req-1", "Marcos's MacBook", "482913"),
+                    pending = PendingPairingUi("req-1", "Studio Mac", "482913"),
                     onAnswer = {},
                     navigationBars = WindowInsets(0.dp, 0.dp, 0.dp, 48.dp),
                 )

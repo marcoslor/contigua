@@ -27,8 +27,18 @@
 //   swift scripts/cgevent-input.swift moveat  --x N --y N        (absolute Quartz point)
 //   swift scripts/cgevent-input.swift clickat --x N --y N
 //   swift scripts/cgevent-input.swift dragat  --x N --y N --x2 N --y2 N [--steps N]
+//   swift scripts/cgevent-input.swift axmove --pid N --dx N --dy N [--title TITLE]
+//       move the app's windows (or the one titled TITLE) through Accessibility,
+//       the path a tiler takes, and print each window's position read back
 //   swift scripts/cgevent-input.swift type   --text hi
-//   swift scripts/cgevent-input.swift key    --keycode 36 [--cmd] [--shift]
+//   swift scripts/cgevent-input.swift key    --keycode 36 [--cmd] [--shift] [--hold 0.04]
+//   swift scripts/cgevent-input.swift release-all
+//       lifts every key the checks press (and the modifiers) plus every mouse
+//       button, for a run that finds a key or button left down
+//
+// A SIGTERM/SIGINT/SIGHUP lifts whatever this process still holds (a held key
+// from `key --hold`, a button mid-drag or mid-`bpress`), so a killed run can
+// never leave an input down.
 //
 // Window coordinates are Quartz global coordinates (top-left origin). The
 // default `--inset 28` skips the standard title bar so the click lands in the
@@ -111,6 +121,79 @@ func post(_ event: CGEvent?) {
     event?.post(tap: .cghidEventTap)
 }
 
+/// A key or mouse button this process posted down and has not lifted yet.
+/// Every one of them must be liftable by a signal or `release-all`: a run that
+/// dies between a down and its up leaves the whole Mac repeating that input
+/// (a held brightness-down key once ran ControlCenter's hotkey for four hours).
+final class HeldInputs {
+    static let shared = HeldInputs()
+    private let lock = NSLock()
+    private var keys: [CGKeyCode: CGEventFlags] = [:]
+    private var buttons: [Int32: CGPoint] = [:]
+
+    func hold(keyCode: CGKeyCode, flags: CGEventFlags) {
+        lock.lock()
+        defer { lock.unlock() }
+        keys[keyCode] = flags
+    }
+
+    func lift(keyCode: CGKeyCode) {
+        lock.lock()
+        defer { lock.unlock() }
+        keys[keyCode] = nil
+    }
+
+    func hold(button: Int32, at point: CGPoint) {
+        lock.lock()
+        defer { lock.unlock() }
+        buttons[button] = point
+    }
+
+    func lift(button: Int32) {
+        lock.lock()
+        defer { lock.unlock() }
+        buttons[button] = nil
+    }
+
+    /// Everything still held, to release it; the ledger starts empty again so a
+    /// second release (a signal during `release-all`) posts no stale ups.
+    func takeAll() -> (keys: [CGKeyCode: CGEventFlags], buttons: [Int32: CGPoint]) {
+        lock.lock()
+        defer { lock.unlock() }
+        let taken = (keys: keys, buttons: buttons)
+        keys.removeAll()
+        buttons.removeAll()
+        return taken
+    }
+}
+
+/// The CGEvent button number behind a CGMouseButton (0 left, 1 right,
+/// everything else its own number, which `otherButton` sets as a field).
+func buttonNumber(_ button: CGMouseButton) -> Int32 {
+    switch button {
+    case .left: return 0
+    case .right: return 1
+    default: return Int32(button.rawValue)
+    }
+}
+
+func postKeyUp(_ keyCode: CGKeyCode, flags: CGEventFlags = []) {
+    guard let event = CGEvent(keyboardEventSource: nil, virtualKey: keyCode, keyDown: false) else { return }
+    event.flags = flags
+    post(event)
+}
+
+func postMouseUp(_ number: Int32, at point: CGPoint) {
+    switch number {
+    case 0:
+        post(CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: point, mouseButton: .left))
+    case 1:
+        post(CGEvent(mouseEventSource: nil, mouseType: .rightMouseUp, mouseCursorPosition: point, mouseButton: .right))
+    default:
+        post(otherButton(.otherMouseUp, number: number, at: point))
+    }
+}
+
 func move(to point: CGPoint) {
     post(CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: point, mouseButton: .left))
 }
@@ -120,14 +203,17 @@ func click(_ point: CGPoint, button: CGMouseButton) {
     let up: CGEventType = button == .right ? .rightMouseUp : .leftMouseUp
     move(to: point)
     usleep(20_000)
+    HeldInputs.shared.hold(button: buttonNumber(button), at: point)
     post(CGEvent(mouseEventSource: nil, mouseType: down, mouseCursorPosition: point, mouseButton: button))
     usleep(60_000)
     post(CGEvent(mouseEventSource: nil, mouseType: up, mouseCursorPosition: point, mouseButton: button))
+    HeldInputs.shared.lift(button: buttonNumber(button))
 }
 
 func drag(from start: CGPoint, dx: Double, dy: Double, steps: Int) {
     move(to: start)
     usleep(30_000)
+    HeldInputs.shared.hold(button: 0, at: start)
     post(CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: start, mouseButton: .left))
     for step in 1...max(steps, 1) {
         let fraction = Double(step) / Double(max(steps, 1))
@@ -137,6 +223,7 @@ func drag(from start: CGPoint, dx: Double, dy: Double, steps: Int) {
     }
     let end = CGPoint(x: start.x + dx, y: start.y + dy)
     post(CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: end, mouseButton: .left))
+    HeldInputs.shared.lift(button: 0)
 }
 
 func scroll(_ point: CGPoint, dx: Double, dy: Double) {
@@ -162,6 +249,7 @@ func otherButton(_ type: CGEventType, number: Int32, at point: CGPoint) -> CGEve
 func pressOtherButton(_ point: CGPoint, number: Int32, dx: Double, dy: Double, steps: Int, hold: Double) {
     move(to: point)
     usleep(20_000)
+    HeldInputs.shared.hold(button: number, at: point)
     post(otherButton(.otherMouseDown, number: number, at: point))
     usleep(UInt32(hold * 1_000_000))
     if steps > 0 {
@@ -174,6 +262,7 @@ func pressOtherButton(_ point: CGPoint, number: Int32, dx: Double, dy: Double, s
         post(otherButton(.otherMouseDragged, number: number, at: point))
     }
     post(otherButton(.otherMouseUp, number: number, at: point))
+    HeldInputs.shared.lift(button: number)
 }
 
 let keyCodes: [Character: CGKeyCode] = [
@@ -190,21 +279,65 @@ func typeText(_ text: String) {
               let up = CGEvent(keyboardEventSource: nil, virtualKey: keyCode, keyDown: false) else { continue }
         var units = Array(String(character).utf16)
         down.keyboardSetUnicodeString(stringLength: units.count, unicodeString: &units)
+        HeldInputs.shared.hold(keyCode: keyCode, flags: [])
         post(down)
         usleep(30_000)
         post(up)
+        HeldInputs.shared.lift(keyCode: keyCode)
         usleep(30_000)
     }
 }
 
-func pressKey(_ keyCode: CGKeyCode, flags: CGEventFlags = []) {
+func pressKey(_ keyCode: CGKeyCode, flags: CGEventFlags = [], hold: Double = 0.04) {
     guard let down = CGEvent(keyboardEventSource: nil, virtualKey: keyCode, keyDown: true),
           let up = CGEvent(keyboardEventSource: nil, virtualKey: keyCode, keyDown: false) else { return }
     down.flags = flags
     up.flags = flags
+    HeldInputs.shared.hold(keyCode: keyCode, flags: flags)
     post(down)
-    usleep(40_000)
+    usleep(UInt32(max(hold, 0) * 1_000_000))
     post(up)
+    HeldInputs.shared.lift(keyCode: keyCode)
+}
+
+/// Every keycode the checks press through this tool (the letters and digits of
+/// `keyCodes` plus the keys `key` is called with), the modifiers, and F13–F15 —
+/// which no app or system shortcut uses, so a hold test can leave one down
+/// without typing anything — so `release-all` can lift a key left down without
+/// knowing which one it was.
+let rigKeyCodes: [CGKeyCode] = Array(Set(keyCodes.values)).sorted() + [36, 48, 49, 51, 53, 105, 107, 113, 122, 123, 124, 125, 126]
+
+/// Every modifier keycode with the flag its key-down carried.
+let modifierKeyCodes: [(CGKeyCode, CGEventFlags)] = [
+    (54, .maskCommand), (55, .maskCommand), (56, .maskShift), (57, .maskAlphaShift),
+    (58, .maskAlternate), (59, .maskControl), (60, .maskShift), (61, .maskAlternate),
+    (62, .maskControl), (63, .maskSecondaryFn),
+]
+
+/// Lift everything: what this process still holds, then the whole rig set. A
+/// key-up for a key that is not down is harmless, and the sweep covers a hold
+/// that a dead process could not record.
+func releaseAll() {
+    let held = HeldInputs.shared.takeAll()
+    for (keyCode, flags) in held.keys {
+        postKeyUp(keyCode, flags: flags)
+    }
+    for (number, point) in held.buttons {
+        postMouseUp(number, at: point)
+    }
+    let point = CGEvent(source: nil)?.location ?? .zero
+    for keyCode in rigKeyCodes {
+        postKeyUp(keyCode)
+    }
+    for (keyCode, flags) in modifierKeyCodes {
+        postKeyUp(keyCode, flags: flags)
+    }
+    for number in Int32(0)...Int32(4) {
+        postMouseUp(number, at: point)
+    }
+    // The tap delivers asynchronously; a process that exits at once can leave
+    // the last of these queued, and a queued key-up is no key-up.
+    usleep(100_000)
 }
 
 let owner = argument("--owner") ?? "PocketDeck"
@@ -216,7 +349,25 @@ guard AXIsProcessTrusted() else {
     exit(2)
 }
 
+// Lift everything held when the process is asked to stop. sigwait on a thread
+// of its own keeps CGEvent out of a signal handler, where it must not run.
+// The set is never freed: the thread and the process end together.
+let caughtSignals = UnsafeMutablePointer<sigset_t>.allocate(capacity: 1)
+sigemptyset(caughtSignals)
+for signalNumber in [SIGTERM, SIGINT, SIGHUP] {
+    sigaddset(caughtSignals, signalNumber)
+}
+pthread_sigmask(SIG_BLOCK, caughtSignals, nil)
+Thread.detachNewThread {
+    var received: Int32 = 0
+    sigwait(caughtSignals, &received)
+    releaseAll()
+    exit(0)
+}
+
 switch CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : "" {
+case "release-all":
+    releaseAll()
 case "list":
     for target in pocketDeckWindows(owner: owner, pid: pid) {
         print("\(target.id)\t\(Int(target.x)) \(Int(target.y)) \(Int(target.width)) \(Int(target.height))")
@@ -329,6 +480,49 @@ case "axresize":
         }
         print("\(name)\t\(Int(actual.width))x\(Int(actual.height))")
     }
+case "axmove":
+    // axmove --pid N --dx D --dy D [--title TITLE]: move the app's windows (or
+    // just the one whose AX title is TITLE) by that delta through Accessibility
+    // — the path a tiler or a script takes — then print one "title<TAB>x,y" line
+    // per window with the position read back. AX axes are top-left, y down.
+    guard let process = pid.map(pid_t.init) ?? ownerPID(owner: owner) else {
+        print("noproc")
+        exit(2)
+    }
+    let app = AXUIElementCreateApplication(process)
+    var moveWindowsValue: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(app, kAXWindowsAttribute as CFString, &moveWindowsValue) == .success,
+          let moveWindows = moveWindowsValue as? [AXUIElement], !moveWindows.isEmpty else {
+        print("nowindows")
+        exit(2)
+    }
+    let wantTitle = argument("--title")
+    let moveX = doubleArgument("--dx") ?? 0
+    let moveY = doubleArgument("--dy") ?? 0
+    for window in moveWindows {
+        var title: CFTypeRef?
+        AXUIElementCopyAttributeValue(window, kAXTitleAttribute as CFString, &title)
+        let name = (title as? String) ?? "-"
+        if let wantTitle, name != wantTitle { continue }
+        var origin = CGPoint.zero
+        var originValue: CFTypeRef?
+        if AXUIElementCopyAttributeValue(window, kAXPositionAttribute as CFString, &originValue) == .success,
+           let originValue, CFGetTypeID(originValue) == AXValueGetTypeID() {
+            AXValueGetValue(unsafeBitCast(originValue, to: AXValue.self), .cgPoint, &origin)
+        }
+        var target = CGPoint(x: origin.x + moveX, y: origin.y + moveY)
+        if let value = AXValueCreate(.cgPoint, &target) {
+            _ = AXUIElementSetAttributeValue(window, kAXPositionAttribute as CFString, value)
+        }
+        usleep(400_000)
+        var actual = CGPoint.zero
+        var readBack: CFTypeRef?
+        if AXUIElementCopyAttributeValue(window, kAXPositionAttribute as CFString, &readBack) == .success,
+           let readBack, CFGetTypeID(readBack) == AXValueGetTypeID() {
+            AXValueGetValue(unsafeBitCast(readBack, to: AXValue.self), .cgPoint, &actual)
+        }
+        print("\(name)\t\(Int(actual.x)),\(Int(actual.y))")
+    }
 case "backdrop":
     guard let file = argument("--file") else { exit(1) }
     let seconds = doubleArgument("--seconds") ?? 30
@@ -389,8 +583,8 @@ case "key":
     var keyFlags: CGEventFlags = []
     if hasFlag("--cmd") { keyFlags.insert(.maskCommand) }
     if hasFlag("--shift") { keyFlags.insert(.maskShift) }
-    pressKey(CGKeyCode(code), flags: keyFlags)
+    pressKey(CGKeyCode(code), flags: keyFlags, hold: doubleArgument("--hold") ?? 0.04)
 default:
-    FileHandle.standardError.write(Data("usage: cgevent-input.swift list|click|drag|scroll|rclick|type ...\n".utf8))
+    FileHandle.standardError.write(Data("usage: cgevent-input.swift list|release-all|click|drag|scroll|rclick|type|key ...\n".utf8))
     exit(1)
 }
