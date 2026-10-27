@@ -1857,6 +1857,8 @@ final class ConnectionController {
             runPendingDebugDnd()
         case .ringState(let playing):
             ringing = playing
+        case .powerLocked:
+            windows.powerLocked()
         case .audioState:
             break
         case .windowClosed:

@@ -57,7 +57,10 @@ reply) is far outside them.
   says so within `stale_picture_ms` instead of presenting the old frame as
   live. A covered or paused window is not a live picture: AppKit throttles an
   occluded app, so its silence is not a stall, and the clock restarts when the
-  window is visible again.
+  window is visible again. A power press the phone reports (`power.locked`,
+  docs/PROTOCOL.md "Phone screen") is the person's own action: the window holds
+  the last frame for the watchdog's grace and only then says so, and the grace
+  with one timer tick stays under `stale_picture_ms` (K2 `FrameWatchdogTests`).
 - **Drive the real control.** A check that proves a control works goes through
   the event path a person uses (a hit test and mouse events, a menu item, a
   key event), not a debug verb that calls the action directly.

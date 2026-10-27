@@ -244,6 +244,11 @@ docs/                    ARCHITECTURE, PROTOCOL, ROADMAP, TRY-IT, UX, design/
   a ≤ 1/10 s timer while streams are visible) holding a PARTIAL wake lock only
   while ≥ 1 stream is unpaused; the panel is never forced on, the keyguard is
   never dismissed.
+- A power press with app streams up is watched from the first second: on the
+  not-interactive edge the streaming group is woken at once and the panel
+  powered off under it (the same take-over an episode start uses), and the Mac
+  is told (`power.locked`) so its windows hold the last frame for a short grace
+  instead of calling the picture stalled. The press still locks the phone.
 - End of session restores every power state we touched.
 
 ## End-to-end encryption (v2, shipped in this branch)

@@ -744,6 +744,10 @@ class EventLog(object):
         self._emit({"ev": "resume", "stream": stream, "frames": frames,
                     "ts": time.time()})
 
+    def power_locked(self, stream):
+        """--power-locked-after: the phone sent `power.locked` at the press."""
+        self._emit({"ev": "power_locked", "stream": stream, "ts": time.time()})
+
     def rx(self, msg):
         self._emit({"ev": "rx", "msg": redact_event(msg), "ts": time.time()})
         # Every request leaves a fresh counters line, so a check that starts
@@ -1495,6 +1499,7 @@ class WindowStream(object):
         # would be blanked in the mirror.
         self._black = False
         self._stall_timer = None
+        self._power_timer = None
         self._lock = threading.Lock()
 
     @staticmethod
@@ -1623,10 +1628,22 @@ class WindowStream(object):
         """
         self.pause()
         self.phone.events.stall(self.stream_id, self._frames_sent)
+        if self.phone.args.power_locked_after > 0 and self._power_timer is None:
+            # The person's power press lands with the stall: the phone re-lights
+            # its VD group and says so, and the Mac must hold the last frame.
+            self._power_timer = threading.Timer(
+                self.phone.args.power_locked_after, self._power_locked)
+            self._power_timer.daemon = True
+            self._power_timer.start()
         if self.phone.args.stall_for > 0:
             timer = threading.Timer(self.phone.args.stall_for, self._resume_after_stall)
             timer.daemon = True
             timer.start()
+
+    def _power_locked(self):
+        """--power-locked-after: the phone's own power press with streams up."""
+        self.phone.events.power_locked(self.stream_id)
+        self.phone.sender.send_json({"t": "power.locked"})
 
     def _resume_after_stall(self):
         self.phone.events.resume(self.stream_id, self._frames_sent)
@@ -3864,6 +3881,9 @@ def build_parser():
                    help="after a stream's first frame, stop sending frames but keep the session up (a hung phone)")
     p.add_argument("--stall-for", type=float, default=0.0, metavar="SECONDS",
                    help="with --stall-after, send frames again after this long (the picture comes back)")
+    p.add_argument("--power-locked-after", type=float, default=0.0, metavar="SECONDS",
+                   help="with --stall-after, send power.locked when the stream stops: the "
+                        "person's power press took the panel over (the Mac's grace)")
     p.add_argument("--rotate-after", type=float, default=0.0, metavar="SECONDS",
                    help="turn the screen to landscape this long after a phone window opens")
     p.add_argument("--qr-uri", metavar="URI",
