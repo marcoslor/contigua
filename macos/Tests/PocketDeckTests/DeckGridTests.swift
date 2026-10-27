@@ -126,15 +126,36 @@ final class DeckGridTests: XCTestCase {
         func current(_ offset: CGFloat, width: CGFloat = 640) -> String? {
             DeckRail.currentLetter(offset: offset, apps: apps, metrics: metrics, width: width)
         }
-        XCTAssertEqual(current(0), "#")
-        XCTAssertEqual(current(24), "#", "the top of the block is still the first row")
-        XCTAssertEqual(current(148), "B", "row 2 starts at index 5")
+        // Round 2: the current letter is the LAST section start in the top
+        // row; this width fits five apps. Row 1 is #, A, A, A, A, so A starts
+        // inside it; row 2 is all Bravo; row 3 is all Charlie.
+        XCTAssertEqual(current(0), "A")
+        XCTAssertEqual(current(24), "A", "the top of the block is still the first row")
+        XCTAssertEqual(current(148), "B", "row 2 is all Bravo")
         XCTAssertEqual(current(140), "B", "the gap above a row belongs to the row below it")
-        XCTAssertEqual(current(272), "C", "row 3 starts at index 10")
+        XCTAssertEqual(current(272), "C", "row 3 is all Charlie")
         XCTAssertEqual(current(10_000), "C", "past the end it stays on the last app")
-        XCTAssertEqual(current(148, width: 1200), "B",
-                       "a wider window fits eight apps in a row, index 8 is still Bravo")
+        XCTAssertEqual(current(148, width: 1200), "C",
+                       "a wider window's row 2 flows from Bravo into Charlie")
         XCTAssertNil(DeckRail.currentLetter(offset: 0, apps: [], metrics: metrics, width: 640))
+    }
+
+    /// The rail's current letter is the LAST section start in the top visible
+    /// row; with no section start there it is the row's first tile. A jump to
+    /// T must accent T even when S apps share the top row.
+    func testRailCurrentLetterIsTheLastSectionStartInTheTopRow() {
+        let apps = railApps((1...5).map { "Slack \($0)" } + ["Telegram"]
+                            + (1...5).map { "Tuner \($0)" })
+        let metrics = DeckGridSize(zoom: 1)
+        let width: CGFloat = 700
+        XCTAssertEqual(metrics.columns(forWidth: width), 6)
+        XCTAssertEqual(DeckRail.currentLetter(offset: 0, apps: apps, metrics: metrics, width: width),
+                       "T", "T's section starts in the top row, after five Slack tiles")
+        XCTAssertEqual(DeckRail.accentLetter(target: 5, top: 0, apps: apps, columns: 6), "T",
+                       "a jump to T accents T, not the row's first S")
+        let oneSection = railApps((1...6).map { "Slack \($0)" })
+        XCTAssertEqual(DeckRail.currentLetter(offset: 0, apps: oneSection, metrics: metrics, width: width),
+                       "S", "no section starts in the row, so the first tile's letter")
     }
 
     func testRailHidesWhileSearchingAndBelowThirtyApps() {
