@@ -64,11 +64,24 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     /// the Navigate menu and the input mapper.
     var frozen: Bool { liveText.isActive || isStalled || isOpening }
 
+    /// The mirror's bar from the keyboard (MIRROR-13): picture ↔ bar(index).
+    /// One machine decides, one place applies it, and every transition is
+    /// logged so a field log shows the path.
+    private(set) var barFocus = BarFocus()
+
+    /// The bar's focused button for the chrome state (`none` on the picture).
+    var barFocusState: String {
+        barFocus.index.map(String.init) ?? "none"
+    }
+
     /// The picture watchdog (FrameWatchdog): frames counted from the session
     /// queue, the decision on the main thread.
     @ObservationIgnored let frameClock = FrameClock()
     private var watchdog = FrameWatchdog()
     private var stallTimer: Timer?
+    /// The local key monitor that gives the bar its keys before AppKit's own
+    /// Tab handling (see `handleBarKey`).
+    private var barKeyMonitor: Any?
     private(set) var isStalled = false
     private var linkIsDown = false
 
@@ -177,10 +190,16 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         mapper.onLiveTextEscape = { [weak self] in self?.exitLiveText(.escape) }
         mapper.onStyleToggle = { [weak self] in self?.toggleStyle() }
         mapper.send = { [weak self] command in self?.handle(command) }
+        // The bar's own keys, before the phone's: ⌃Tab takes the keyboard to
+        // the bar, and while it is there the bar's keys never reach the phone
+        // (MIRROR-13).
+        mapper.barKey = { [weak self] event in self?.handleBarKey(event) ?? false }
+        mapper.barKeyUp = { [weak self] event in self?.handleBarKey(event) ?? false }
         mapper.touchPointsChanged = { [weak self] points in self?.videoView.showTouchPoints(points) }
         mapper.hoverEnabled = { [weak self] in self?.manager.hoverEnabled ?? false }
         mapper.secondaryClick = { [weak self] in self?.manager.secondaryClick ?? .longPress }
         videoView.onDroppedFiles = { [weak manager] urls in manager?.onFilesDropped?(urls) }
+        videoView.onPointerDown = { [weak self] in self?.resetBarFocus() }
         videoView.onTouchDotsChanged = { [weak self] in self?.writeChromeState() }
         videoView.inputMapper = mapper
         // In immersive the dwell feed already sees every move in the window;
@@ -208,6 +227,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         }
         RunLoop.main.add(stall, forMode: .common)
         stallTimer = stall
+        startBarKeyMonitor()
     }
 
     @available(*, unavailable)
@@ -216,6 +236,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     deinit {
         stallTimer?.invalidate()
         openingTimer?.invalidate()
+        if let barKeyMonitor { NSEvent.removeMonitor(barKeyMonitor) }
     }
 
     /// The defaults key this window's style is remembered under; nil while the
@@ -318,6 +339,77 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         case .failed: return "retry+close"
         case .loading, .stillLoading: return "none"
         }
+    }
+
+    // MARK: Bar keyboard focus
+
+    /// ⌃Tab, ←/→, Tab, Return, Space and Esc while the bar has the keyboard
+    /// (MIRROR-13). True when the bar took the event: it never reaches the
+    /// phone. Keys the machine ignores in that state are still the bar's, so a
+    /// focused bar cannot type on the phone by accident.
+    ///
+    /// Called from a local key monitor, before AppKit's own Tab and key-view
+    /// handling (a Mac with Full Keyboard Access on takes Tab in the window's
+    /// focus machinery, so it never reaches the view's keyDown), and from the
+    /// mapper for an event the monitor let through.
+    func handleBarKey(_ event: NSEvent) -> Bool {
+        guard let barEvent = BarFocus.event(keyCode: event.keyCode,
+                                            control: event.modifierFlags.contains(.control),
+                                            shift: event.modifierFlags.contains(.shift))
+        else { return false }
+        // A release is the bar's only while the bar has the focus: the phone
+        // must never see an up without its down.
+        if event.type == .keyUp { return barFocus.isOnBar }
+        let before = barFocus
+        let routing = barFocus.route(barEvent, focusable: chrome.focusableBarIndices)
+        if barFocus != before {
+            let fromIndex = before.index ?? -1
+            let toIndex = barFocus.index ?? -1
+            Log.video.notice("bar focus: from=\(fromIndex, privacy: .public) to=\(toIndex, privacy: .public)")
+        }
+        applyBarFocus(routing.action)
+        return routing.consumed
+    }
+
+    /// The local monitor that sees the bar's keys first (MIRROR-13).
+    private func startBarKeyMonitor() {
+        guard barKeyMonitor == nil else { return }
+        barKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp]) {
+            [weak self] event in
+            guard let self, let window = self.window, window.isKeyWindow else { return event }
+            return self.handleBarKey(event) ? nil : event
+        }
+    }
+
+    /// The ring follows the machine, and Return/Space run the button it names
+    /// (the action the mouse runs, through the same policy gate).
+    private func applyBarFocus(_ action: BarFocus.Action?) {
+        switch action {
+        case .focus(let index):
+            chrome.setBarFocus(index)
+            writeChromeState()
+        case .picture:
+            chrome.setBarFocus(nil)
+            writeChromeState()
+        case .press(let index):
+            guard let action = chrome.barAction(at: index),
+                  HeaderActionPolicy.isEnabled(action.kind, frozen: frozen) else { return }
+            Log.video.notice("bar focus: press \(index, privacy: .public)")
+            action.perform()
+        case nil:
+            // No transition: the ring is where the machine already put it.
+            chrome.setBarFocus(barFocus.index)
+        }
+    }
+
+    /// A click on the picture, or the window losing the keyboard, gives it back
+    /// to the phone: the bar's ring goes.
+    func resetBarFocus() {
+        guard barFocus.isOnBar else { return }
+        barFocus = BarFocus()
+        chrome.setBarFocus(nil)
+        writeChromeState()
+        Log.video.notice("bar focus: from=\(-1, privacy: .public) to=\(-1, privacy: .public) (reset)")
     }
 
     // MARK: Style switching
@@ -681,6 +773,9 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     }
 
     func windowDidResignKey(_ notification: Notification) {
+        // The keyboard left the window: the bar's ring goes with it, and its
+        // keys are the phone's again when the window comes back.
+        resetBarFocus()
         let state = StreamMenuState.shared
         state.hasStream = false
         state.fullScreen = false
@@ -834,6 +929,9 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
             + " drop_pill=\(dropPill?.fadeTarget == 1 ? "shown" : "hidden")"
             + " loading=\(openingState)"
             + " cover_buttons=\(openingButtons)"
+            + " bar_focus=\(barFocusState)"
+            + " key=\(window?.isKeyWindow == true ? 1 : 0)"
+            + " responder_video=\(window?.firstResponder === videoView ? 1 : 0)"
             + " frame=\(Int((window?.frame.width ?? 0).rounded()))x\(Int((window?.frame.height ?? 0).rounded()))"
             + " video_gap=\(Int(videoView.videoGap().rounded()))"
             + " video=\(Int(picture.minX.rounded())),\(Int(pictureTop.rounded())),\(Int(picture.width.rounded())),\(Int(picture.height.rounded()))\n"

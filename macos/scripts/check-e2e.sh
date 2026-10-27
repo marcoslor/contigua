@@ -4187,6 +4187,79 @@ PY
         fi
     done
 
+    # The bar's keyboard route (MIRROR-13, misses.md M1): Tab is the phone's (a
+    # Mac with Full Keyboard Access on spends it on the window's focus order, so
+    # only the bar's own state is asserted here), ⌃Tab is the Mac's and takes the
+    # focus into the bar, Return presses the focused button, ←/→ and Tab move,
+    # Esc gives the keyboard back without sending Back.
+    local tab_key_before tab_key_after back_before back_after
+    tab_key_before="$(grep -c '"kind":"key"[^}]*"keycode":61' "$WORK/events.jsonl" 2>/dev/null || echo 0)"
+    mirror_control key tab || bad "MIRROR-13 keyboard: key tab: $CONTROL_REPLY"
+    if chrome_has "bar_focus=none"; then
+        ok "[MIRROR-13] Tab did not move the bar's focus"
+    else
+        bad "[MIRROR-13] Tab moved the bar's focus ($(chrome_state))"
+    fi
+    mirror_control key ctrl+tab || bad "MIRROR-13 keyboard: key ctrl+tab: $CONTROL_REPLY"
+    if wait_until 5 chrome_has "bar_focus=0"; then
+        ok "[MIRROR-13] ⌃Tab put the keyboard on the bar's first button (Back)"
+    else
+        bad "[MIRROR-13] ⌃Tab did not focus the bar ($(chrome_state))"
+    fi
+    if [ "$VISIBLE" = 1 ]; then
+        osascript -e 'tell application "System Events" to tell appearance preferences to set dark mode to true' >/dev/null 2>&1 || true
+        sleep 1
+        # The mirror window is the one whose frame the chrome state reports (the
+        # phone turned to landscape earlier, so size alone does not find it).
+        local bar_frame bar_w bar_h bar_id
+        bar_frame="$(sed -n 's/.* frame=\([0-9]*\)x\([0-9]*\).*/\1 \2/p' "$WORK/chrome.txt")"
+        read -r bar_w bar_h <<<"$bar_frame"
+        if bar_id="$(await_window "\$4 == $bar_w && \$5 == $bar_h")" \
+            && screencapture -x -l"$bar_id" "$WORK/bar-focus.png"; then
+            say "shot: $WORK/bar-focus.png"
+        else
+            bad "MIRROR-13 keyboard: no shot of the focus ring"
+        fi
+    fi
+    # Return presses Back: the same nav the click and the menu send.
+    back_before="$(nav_rx_count back)"
+    mirror_control key return || bad "MIRROR-13 keyboard: key return: $CONTROL_REPLY"
+    if wait_until 10 nav_clicked back "$back_before"; then
+        ok "[MIRROR-13] Return on the focused Back sent nav back"
+    else
+        bad "[MIRROR-13] Return on the bar sent no nav back"
+    fi
+    # Tab while the bar has the focus moves to the next button and stays out of
+    # the phone.
+    tab_key_after="$(grep -c '"kind":"key"[^}]*"keycode":61' "$WORK/events.jsonl" 2>/dev/null || echo 0)"
+    mirror_control key right || bad "MIRROR-13 keyboard: key right: $CONTROL_REPLY"
+    if wait_until 5 chrome_has "bar_focus=1"; then
+        ok "[MIRROR-13] → moved the keyboard to the next bar button (Home)"
+    else
+        bad "[MIRROR-13] → did not move the bar's focus ($(chrome_state))"
+    fi
+    # Esc gives the keyboard back to the picture; a focused Esc must not become
+    # the phone's Back, which is what Esc means on the picture.
+    back_before="$(nav_rx_count back)"
+    mirror_control key esc || bad "MIRROR-13 keyboard: key esc: $CONTROL_REPLY"
+    if wait_until 5 chrome_has "bar_focus=none"; then
+        ok "[MIRROR-13] Esc returned the keyboard to the picture"
+    else
+        bad "[MIRROR-13] Esc left the bar's focus on ($(chrome_state))"
+    fi
+    sleep 0.5
+    back_after="$(nav_rx_count back)"
+    if [ "$back_after" = "$back_before" ]; then
+        ok "[MIRROR-13] the Esc that left the bar sent no Back to the phone"
+    else
+        bad "[MIRROR-13] the Esc that left the bar also sent Back"
+    fi
+    if [ "$(grep -c '"kind":"key"[^}]*"keycode":61' "$WORK/events.jsonl" 2>/dev/null || echo 0)" = "$tab_key_after" ]; then
+        ok "[MIRROR-13] the bar's keys never reached the phone while it had the keyboard"
+    else
+        bad "[MIRROR-13] a bar key leaked to the phone"
+    fi
+
     # A person's click on the bar control (the menu route above is a different
     # control): the click goes through the button's own mouse events, and the
     # glyph must follow the phone's `state.panel` within panel_glyph_ms. The
