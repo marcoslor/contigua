@@ -997,6 +997,18 @@ class SessionTest {
         assertEquals("from phone", readUntil("clip.set")["text"])
     }
 
+    /**
+     * A password manager's clip is flagged by Android itself; the phone must not
+     * send it (SHARE share Q3), and the flag never reaches a log.
+     */
+    @Test
+    fun aSensitiveClipIsNeverSent() {
+        addAndAuthenticate()
+        platform.changeClip("hunter2-secret", sensitive = true)
+        platform.changeClip("ordinary")
+        assertEquals("ordinary", readUntil("clip.set")["text"])
+    }
+
     @Test
     fun oversizedReceivedClipIsIgnored() {
         addAndAuthenticate()
