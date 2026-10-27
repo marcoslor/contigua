@@ -255,8 +255,16 @@ extension NSWindow {
     /// other screen keeps AppKit's constraint.
     @objc private func pd_constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect {
         // AppKit constrains a frame to the window's screen (nil) or to a named
-        // one: on the run's display, the asked-for frame wins.
-        if let display = VirtualDisplay.shared, screen == nil || screen?.frame == display.frame { return frameRect }
+        // one: on the run's display, the asked-for frame wins for the windows
+        // the app sizes from the phone's picture (a stream, the mirror). Every
+        // other window — the Deck, Settings — is still fitted to that display:
+        // an Accessibility resize there was left larger than the display, and
+        // an AX resize re-applies its own frame, so the delegate never saw it.
+        if let display = VirtualDisplay.shared, screen == nil || screen?.frame == display.frame {
+            let target = screen ?? NSScreen.screens.first { $0.frame == display.frame }
+            guard WindowFrameLimit.applies(to: self), target?.visibleFrame != nil else { return frameRect }
+            return WindowFrameLimit.fitted(frameRect, for: self, screen: target)
+        }
         return pd_constrainFrameRect(frameRect, to: screen)
     }
 

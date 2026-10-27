@@ -125,6 +125,11 @@ struct AppCommands: Commands {
             }
             .pickerStyle(.inline)
             .labelsHidden()
+            // The pair acts on the key stream window only, and SwiftUI builds
+            // the items once: MenuMarks writes both the mark and the enabled
+            // flag when the menu opens and whenever the key window changes.
+            // The items stay enabled here on purpose — a disabled menu item
+            // eats its key equivalent, and ⌥⌘F is on this pair.
             // The reveal choice: enabled only while the window is immersive, so
             // a choice is never also a submenu's parent (Framed/Immersive above
             // own the style). A pick stores the choice and leaves the style.

@@ -285,6 +285,29 @@ final class NotifyMacTests: XCTestCase {
         XCTAssertEqual(MediaCommand.transport("next").record, "media command next")
     }
 
+    /// A session's volume/volumeMax arrive together ("Media part 2"); a phone
+    /// that sends neither is not told a level. The old fallback sent one
+    /// unclamped, a guess no session could honour.
+    func testAVolumeCommandNeedsTheSessionsMaximum() {
+        let player = NowPlayingController()
+        var commands: [MediaCommand] = []
+        player.onCommand = { commands.append($0) }
+        var noMaximum = MediaState()
+        noMaximum.key = "s1"
+        noMaximum.playing = true
+        player.apply(noMaximum)
+        player.perform(.volume(9))
+        XCTAssertTrue(commands.isEmpty, "no maximum, no volume: \(commands)")
+
+        var bounded = noMaximum
+        bounded.volume = 8
+        bounded.volumeMax = 15
+        player.apply(bounded)
+        player.perform(.volume(99))
+        player.perform(.volume(-4))
+        XCTAssertEqual(commands, [.volume(15), .volume(0)])
+    }
+
     func testTheSessionPickerAppearsOnlyWithTwoSessions() {
         let one = [MediaSessionRow(key: "s1", pkg: "com.one", app: "One", playing: true)]
         let two = one + [MediaSessionRow(key: "s2", pkg: "com.two", app: "Two", playing: false)]

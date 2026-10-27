@@ -265,6 +265,36 @@ printf 'Log.d("PD", "playing $title")\n' > "$KT_MAIN/Log2.kt"
 run_check
 expect "R-PRIV-1 flags a Kotlin Log of title" "$KT_MAIN/Log2.kt" R-PRIV-1 1
 
+new_repo privphone
+printf 'logger.info("connected to \(phone.name, privacy: .public)")\n' > "$SRC/Log2.swift"
+run_check
+expect "R-PRIV-1 flags a public phone name" "$SRC/Log2.swift" R-PRIV-1 1
+
+new_repo privlabel
+printf 'logger.info("opened \(app.label, privacy: .public)")\n' > "$SRC/Log2.swift"
+run_check
+expect "R-PRIV-1 flags a public app label" "$SRC/Log2.swift" R-PRIV-1 1
+
+new_repo privnotify
+printf 'logger.info("added \(notification.body)")\n' > "$SRC/Log2.swift"
+run_check
+expect "R-PRIV-1 flags a notification text with no privacy argument" "$SRC/Log2.swift" R-PRIV-1 1
+
+new_repo privmedia
+printf 'logger.info("now playing \(track.title, privacy: .public)")\n' > "$SRC/Log2.swift"
+run_check
+expect "R-PRIV-1 flags a public media title" "$SRC/Log2.swift" R-PRIV-1 1
+
+new_repo privpath
+printf 'logger.info("saved \(url.lastPathComponent, privacy: .public)")\n' > "$SRC/Log2.swift"
+run_check
+expect "R-PRIV-1 flags a public file name" "$SRC/Log2.swift" R-PRIV-1 1
+
+new_repo privpublicsafe
+printf 'logger.info("volume \(state.volume, privacy: .public) of \(state.volumeMax, privacy: .public), code \(error.code, privacy: .public), package \(row.pkg, privacy: .public), ok \(ok ? "ok" : "failed", privacy: .public), \(count, privacy: .public) items")\n' > "$SRC/Log2.swift"
+run_check
+silent "ids, counts, codes, states and package names may stay public" "$SRC/Log2.swift" R-PRIV-1
+
 # --- R-SUPP-1 and R-CHECK-1 are REVIEW lines: exit 0 -------------------------
 
 new_repo supp

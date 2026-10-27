@@ -2649,6 +2649,44 @@ PY
         esac
     fi
 
+    # --- CONV-MAC-12: an AX resize stays inside the screen ---
+    # A tiler or a script sets a window's size through Accessibility, far past
+    # the screen. Every window type — stream, phone mirror, Deck, Settings —
+    # must read back no larger than the visible frame: a window a person cannot
+    # reach or shrink is the bug this rule exists for.
+    rm -f "$WORK/visibleframe.txt" "$WORK/ax-size.txt"
+    control open --open-phone --debug-chrome-state "$WORK/chrome.txt" \
+        || bad "C12 open-phone: $CONTROL_REPLY"
+    sleep 2
+    control visibleframe "$WORK/visibleframe.txt" \
+        || bad "C12 visibleframe: $CONTROL_REPLY"
+    local max_w max_h
+    if read -r max_w max_h < "$WORK/visibleframe.txt" 2>/dev/null && [ -n "${max_h:-}" ]; then
+        say "C12 the screen's visible frame is ${max_w}x${max_h} pt"
+        ax_resize_all 4000 4000 "$WORK/ax-size.txt"
+        python3 - "$WORK/ax-size.txt" "$max_w" "$max_h" <<'PY' && ok "C12 an AX resize to 4000 pt leaves every window inside the visible frame (${max_w}x${max_h})" \
+            || bad "C12 an AX resize left a window larger than the screen"
+import sys
+max_w, max_h = int(sys.argv[2]), int(sys.argv[3])
+rows = []
+for line in open(sys.argv[1]):
+    parts = line.rstrip("\n").split("\t")
+    if len(parts) != 2 or "x" not in parts[1]:
+        continue
+    title, size = parts[0], parts[1]
+    w, h = (int(v) for v in size.split("x"))
+    rows.append((title, w, h))
+if len(rows) != 4:
+    print("windows measured:", rows); sys.exit(1)
+print("C12 measured:", ", ".join("%s %dx%d" % row for row in rows))
+for title, w, h in rows:
+    if w > max_w or h > max_h:
+        print("%r is %dx%d, past %dx%d" % (title, w, h, max_w, max_h)); sys.exit(1)
+PY
+    else
+        bad "C12 no visible frame from the app ($(cat "$WORK/visibleframe.txt" 2>/dev/null))"
+    fi
+
     kill "$backdrop" 2>/dev/null; wait "$backdrop" 2>/dev/null
     stop_app
     stop_fakephone
@@ -2794,9 +2832,21 @@ def heading(menu, siblings, item):
     return (not item["enabled"] and not item.get("submenu") and not item["keyEquivalent"]
             and any(other is not item and other["title"] == item["title"] for other in siblings))
 
+# AppKit's window list (Window ▸ after "Bring All to Front") is not the app's
+# items: two windows may carry the same title (the Deck names the phone, and so
+# does its mirror), and the window server, not this app, decides what to show.
+def in_window_list(menu, siblings, item):
+    if menu != "Window":
+        return False
+    titles = [other["title"] for other in siblings]
+    if "Bring All to Front" not in titles:
+        return False
+    index = titles.index("Bring All to Front")
+    return siblings.index(item) > index
+
 counts = {}
 for menu, siblings, item in occurrences:
-    if item["isSeparator"] or heading(menu, siblings, item):
+    if item["isSeparator"] or heading(menu, siblings, item) or in_window_list(menu, siblings, item):
         continue
     counts[item["title"]] = counts.get(item["title"], 0) + 1
 dups = sorted("%s (%d)" % (title, n) for title, n in counts.items() if n > 1)
@@ -2891,6 +2941,68 @@ waitfile $WORK/menus-step-exit 60
 fullscreen
 wait 6
 EOF
+    # 0: no stream window is open — only the Deck is there, and it is key.
+    # The View menu's style pair acts on the key stream window, so neither item
+    # may be checked or enabled; the Window menu lists the open window the
+    # standard way, with no empty row under "Bring All to Front".
+    dump_stable 0 || { stop_app; stop_fakephone; return 1; }
+    assert_bar "$WORK/menus-0.json" "dump 0"
+    python3 - "$WORK/menus-0.json" <<'PY' && ok "MENUS with no stream window: Framed/Immersive are disabled and neither is checked" \
+        || bad "MENUS the style pair still acts with no stream window"
+import json, sys
+root = json.load(open(sys.argv[1]))
+view = next(i for i in root["items"] if i["title"] == "View")
+by_title = {item["title"]: item for item in view["submenu"]}
+pair = [by_title.get("Framed"), by_title.get("Immersive")]
+if None in pair:
+    print("the style pair is missing"); sys.exit(1)
+if [item["state"] for item in pair] != ["off", "off"]:
+    print("states:", [item["state"] for item in pair]); sys.exit(1)
+if [item["enabled"] for item in pair] != [False, False]:
+    print("enabled:", [item["enabled"] for item in pair]); sys.exit(1)
+PY
+    local ax_titles
+    ax_titles="$(window_titles "$APP_PID")"
+    python3 - "$WORK/menus-0.json" "$ax_titles" <<'PY' && ok "MENUS the Window menu lists the open windows and has no empty or hidden item" \
+        || bad "MENUS the Window menu has an empty row or no window list"
+import json, sys
+root = json.load(open(sys.argv[1]))
+def window_menu(items):
+    return next((i for i in items if i["title"] == "Window"), None)
+def problems(items, path):
+    out = []
+    for item in items:
+        if item["hidden"]:
+            out.append("%s: hidden %r" % (path, item["title"]))
+        if not item["isSeparator"] and not item["title"].strip():
+            out.append("%s: empty item" % path)
+    return out
+found = []
+for tree in ("items", "displayed"):
+    menu = window_menu(root.get(tree) or [])
+    if menu is None:
+        found.append("%s: no Window menu" % tree)
+        continue
+    found += problems(menu.get("submenu") or [], tree + "/Window")
+window = window_menu(root["items"])
+items = (window.get("submenu") if window else []) or []
+titles = [i["title"] for i in items]
+if "Bring All to Front" not in titles:
+    found.append("no Bring All to Front")
+else:
+    # AppKit's own list: the items after "Bring All to Front" that open a
+    # window (the window list's entries target their NSWindow).
+    listed = sorted(i["title"] for i in items[titles.index("Bring All to Front") + 1:]
+                    if not i["isSeparator"] and (i.get("targetClass") or "").endswith("Window"))
+    # An untitled window (the status item's) is not a window a person reaches
+    # from the menu, and AppKit does not list it.
+    open_titles = sorted(t for t in sys.argv[2].splitlines() if t.strip() and t.strip() != "-")
+    if listed != open_titles:
+        found.append("window list %r, open windows %r" % (listed, open_titles))
+if found:
+    print("; ".join(found)); sys.exit(1)
+PY
+
     open_shared --open com.android.settings --debug-chrome-state "$WORK/chrome.txt" \
         --debug-input-script "$WORK/menus.txt" || return 1
 
@@ -2989,6 +3101,8 @@ if not framed or not immersive:
     print("Framed/Immersive missing"); sys.exit(1)
 if sorted([framed["state"], immersive["state"]]) != ["off", "on"]:
     print("states:", framed["state"], immersive["state"]); sys.exit(1)
+if not (framed["enabled"] and immersive["enabled"]):
+    print("the pair is disabled with a stream window key"); sys.exit(1)
 if framed["hasImage"] or immersive["hasImage"]:
     print("a radio item carries an icon"); sys.exit(1)
 # A choice cannot also be a submenu's parent: both are plain items.
@@ -3241,8 +3355,28 @@ PY
     launch --connect "127.0.0.1:$PORT" --open com.android.settings --debug-control "$WORK-control" \
         --debug-chrome-state "$WORK/chrome.txt"
     SHARED_PID="$APP_PID"
-    sleep 2
-    dump_now 11 || { stop_app; stop_fakephone; return 1; }
+    # The stream window is what the View menu follows: dump once it exists (a
+    # dump taken before it would say, correctly, that nothing is checked).
+    rm -f "$WORK/chrome.txt"
+    wait_until 20 eval 'grep -q "frame=" "$WORK/chrome.txt" 2>/dev/null' \
+        || bad "MENUS the relaunched stream window never appeared"
+    sleep 1
+    # The relaunched app's Deck takes the key window (its own open is a task
+    # after launch), so the style pair is off and disabled: a rebuild cannot
+    # leave a mark on it. The rest of the bar is checked as a person reads it.
+    dump_stable 11 || { stop_app; stop_fakephone; return 1; }
+    assert_bar "$WORK/menus-11.json" "dump 11"
+    python3 - "$WORK/menus-11.json" <<'PY' && ok "MENUS after a relaunch the Deck is key: the style pair is off and disabled" \
+        || bad "MENUS a relaunch left the style pair on or enabled"
+import json, sys
+root = json.load(open(sys.argv[1]))
+view = next(i for i in root["items"] if i["title"] == "View")
+by_title = {item["title"]: item for item in view["submenu"]}
+pair = [by_title.get("Framed"), by_title.get("Immersive")]
+if None in pair or [item["state"] for item in pair] != ["off", "off"] \
+        or [item["enabled"] for item in pair] != [False, False]:
+    print("pair:", pair); sys.exit(1)
+PY
     stop_app
     stop_fakephone
 }
@@ -8384,6 +8518,14 @@ OSA
     say "shot: $shots/$1"
 }
 
+# ax_resize_all W H PATH — set every window of this run's app to WxH through
+# Accessibility, the path a tiler or a script uses, then write one
+# "title<TAB>WxH" line per window: the window server's answer, not the app's.
+ax_resize_all() {
+    build_cgevent || { say "no AX helper"; return 1; }
+    "$CGBIN" axresize --pid "$APP_PID" --width "$1" --height "$2" > "$3"
+}
+
 # ax_press NAME [PROCESS] — click the first AX button with that title/
 # description in Notification Center. Names only, never the notification text.
 ax_press() {
@@ -8931,10 +9073,10 @@ check_deck() {
         local zoom_limit drag_limit
         zoom_limit="$(nfr_limit deck_zoom_frame_p95_ms)"
         drag_limit="$(nfr_limit deck_drag_frame_p95_ms)"
-        if python3 "$MACOS/scripts/deck-zoom.py" "$WORK/deck-zoom.json" "$zoom_limit" "$drag_limit"; then
-            ok "DECK zoom/unzoom keep p95 under ${zoom_limit} ms, drag under ${drag_limit} ms, and every drawn frame fits ($(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print("zoom p95=%s ms, unzoom p95=%s ms, drag p95=%s ms, relayouts=%s, bad frames=%s" % (d["zoom"]["p95"], d["unzoom"]["p95"], d["drag"]["p95"], d.get("relayouts"), sum(d[p].get("badFrames", 0) for p in ("zoom","unzoom","drag"))))' "$WORK/deck-zoom.json"))"
+        if python3 "$MACOS/scripts/deck-zoom.py" "$WORK/deck-zoom.json" "$zoom_limit" "$drag_limit" "$VISIBLE"; then
+            ok "DECK zoom/unzoom keep p95 under ${zoom_limit} ms, drag under the measured limit (${drag_limit} ms quiet, two display intervals visible), and every drawn frame fits ($(python3 "$MACOS/scripts/deck-zoom.py" "$WORK/deck-zoom.json" "$zoom_limit" "$drag_limit" "$VISIBLE" 2>&1); $(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print("zoom p95=%s ms, unzoom p95=%s ms, drag p95=%s ms, relayouts=%s, bad frames=%s" % (d["zoom"]["p95"], d["unzoom"]["p95"], d["drag"]["p95"], d.get("relayouts"), sum(d[p].get("badFrames", 0) for p in ("zoom","unzoom","drag"))))' "$WORK/deck-zoom.json"))"
         else
-            bad "DECK the zoom drags a clipped or slow grid ($(python3 "$MACOS/scripts/deck-zoom.py" "$WORK/deck-zoom.json" "$zoom_limit" "$drag_limit" 2>&1))"
+            bad "DECK the zoom drags a clipped or slow grid ($(python3 "$MACOS/scripts/deck-zoom.py" "$WORK/deck-zoom.json" "$zoom_limit" "$drag_limit" "$VISIBLE" 2>&1))"
         fi
     else
         bad "DECK no zoom measurement (--debug-deck-zoom)"

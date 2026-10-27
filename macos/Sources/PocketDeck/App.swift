@@ -344,7 +344,7 @@ final class AppEnvironment {
         let profile = options.profile!
         BackgroundMode.isOn = options.background
         Profile.active = profile
-        Log.app.notice("profile \(profile.name, privacy: .public): identity \(IdentityFileV2.fileUrl(in: profile).path, privacy: .public), defaults \(profile.defaultsSuiteName ?? "standard", privacy: .public)")
+        Log.app.notice("profile \(profile.name, privacy: .private): identity \(IdentityFileV2.fileUrl(in: profile).path, privacy: .private), defaults \(profile.defaultsSuiteName ?? "standard", privacy: .private)")
         if let value = options.debugProto {
             ProtoSettings.select(value)
             ProtoSettingsRender.installActiveStandIn()
@@ -415,6 +415,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         MenuCleanup.start()
         MenuMarks.start()
         FullScreenMenu.start()
+        WindowListMenu.start()
+        WindowFrameLimit.start()
         // VisionKit's analyser service is slow and unreliable on its first
         // call (LiveTextWarmer): pay that while the app starts, not when the
         // person presses Live Text.

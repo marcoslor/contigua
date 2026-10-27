@@ -295,6 +295,40 @@ case "click", "rclick", "drag", "scroll", "move", "bpress":
         }
     default: break
     }
+case "axresize":
+    // axresize --width W --height H [--pid N]: set every window of the app to
+    // that size through Accessibility (the path a tiler or a script takes),
+    // then print one "title<TAB>WxH" line per window with the size read back.
+    guard let process = pid.map(pid_t.init) ?? ownerPID(owner: owner) else {
+        print("noproc")
+        exit(2)
+    }
+    let app = AXUIElementCreateApplication(process)
+    var windowsValue: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(app, kAXWindowsAttribute as CFString, &windowsValue) == .success,
+          let axWindows = windowsValue as? [AXUIElement], !axWindows.isEmpty else {
+        print("nowindows")
+        exit(2)
+    }
+    let wantSize = CGSize(width: doubleArgument("--width") ?? 4000,
+                          height: doubleArgument("--height") ?? 4000)
+    for window in axWindows {
+        var title: CFTypeRef?
+        AXUIElementCopyAttributeValue(window, kAXTitleAttribute as CFString, &title)
+        let name = (title as? String) ?? "-"
+        var asked = wantSize
+        if let value = AXValueCreate(.cgSize, &asked) {
+            _ = AXUIElementSetAttributeValue(window, kAXSizeAttribute as CFString, value)
+        }
+        usleep(600_000)
+        var actual = CGSize.zero
+        var readBack: CFTypeRef?
+        if AXUIElementCopyAttributeValue(window, kAXSizeAttribute as CFString, &readBack) == .success,
+           let readBack, CFGetTypeID(readBack) == AXValueGetTypeID() {
+            AXValueGetValue(unsafeBitCast(readBack, to: AXValue.self), .cgSize, &actual)
+        }
+        print("\(name)\t\(Int(actual.width))x\(Int(actual.height))")
+    }
 case "backdrop":
     guard let file = argument("--file") else { exit(1) }
     let seconds = doubleArgument("--seconds") ?? 30
