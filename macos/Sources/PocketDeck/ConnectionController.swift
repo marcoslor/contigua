@@ -1827,7 +1827,9 @@ final class ConnectionController {
             fsClient?.changes(paths: paths)
             filesBridgeClient?.changes(paths: paths)
         case .notifyState(let on, let reason):
-            Log.app.notice("phone notify \(on ? "on" : "off", privacy: .public) reason=\(reason ?? "-", privacy: .public)")
+            // The reason is the phone's string: log only the closed set we know.
+            let reasonState = reason == nil ? "-" : (reason == "no_access" ? "no_access" : "other")
+            Log.app.notice("phone notify \(on ? "on" : "off", privacy: .public) reason=\(reasonState, privacy: .public)")
             if let id = link.phone?.id {
                 if reason == "no_access" {
                     notifyNoAccessPhones.insert(id)
