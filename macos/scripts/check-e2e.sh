@@ -9292,16 +9292,16 @@ check_deck() {
     launch_shared --connect "127.0.0.1:$PORT" --debug-deck-grid "$WORK/deck-grid.jsonl" \
         --debug-deck-zoom "$WORK/deck-zoom.json"
     wait_until 30 events_have '"t":"apps.list"' \
-        && ok "DECK the app list was requested" || bad "DECK no apps.list"
+        && ok "[DECK-1] the app list was requested" || bad "[DECK-1] no apps.list"
     wait_until 30 have_layered_icons \
-        && ok "DECK layered icon replies arrived ($(icons_kind '"layers":true'))" \
-        || bad "DECK no layered icon replies"
+        && ok "[DECK-2] layered icon replies arrived ($(icons_kind '"layers":true'))" \
+        || bad "[DECK-2] no layered icon replies"
     wait_until 5 have_flat_icons \
-        && ok "DECK flat icon replies arrived ($(icons_kind '"layers":false'))" \
-        || bad "DECK no flat icon replies"
+        && ok "[DECK-2] flat icon replies arrived ($(icons_kind '"layers":false'))" \
+        || bad "[DECK-2] no flat icon replies"
     local total
     total="$(count_events '"ev":"icon"')"
-    [ "$total" -ge 13 ] && ok "DECK $total icon replies in total" || bad "DECK only $total icon replies"
+    [ "$total" -ge 13 ] && ok "[DECK-2] $total icon replies in total" || bad "[DECK-2] only $total icon replies"
     ! grep -qiE "fatal|protocol error" "$WORK/app.log" 2>/dev/null \
         && ok "DECK the app logged no fatal/protocol error" \
         || bad "DECK the app log has fatal/protocol lines"
@@ -9311,9 +9311,9 @@ check_deck() {
     # Equal ids drew neither cell — the person's empty slot.
     if wait_until 30 grep -q '"count":201' "$WORK/deck-grid.jsonl" 2>/dev/null; then
         if python3 "$MACOS/scripts/deck-grid.py" "$WORK/deck-grid.jsonl" 201; then
-            ok "DECK every cell has words and its own id (2 settings cells, the label-less one falls back)"
+            ok "[DECK-3] every cell has words and its own id (2 settings cells, the label-less one falls back)"
         else
-            bad "DECK the grid has an empty or repeated cell ($(tail -1 "$WORK/deck-grid.jsonl"))"
+            bad "[DECK-3] the grid has an empty or repeated cell ($(tail -1 "$WORK/deck-grid.jsonl"))"
         fi
     else
         bad "DECK no grid dump (--debug-deck-grid)"
@@ -9329,9 +9329,9 @@ check_deck() {
         zoom_limit="$(nfr_limit deck_zoom_frame_p95_ms)"
         drag_limit="$(nfr_limit deck_drag_frame_p95_ms)"
         if python3 "$MACOS/scripts/deck-zoom.py" "$WORK/deck-zoom.json" "$zoom_limit" "$drag_limit" "$VISIBLE"; then
-            ok "DECK zoom/unzoom keep p95 under ${zoom_limit} ms, drag under the measured limit (${drag_limit} ms quiet, two display intervals visible), and every drawn frame fits ($(python3 "$MACOS/scripts/deck-zoom.py" "$WORK/deck-zoom.json" "$zoom_limit" "$drag_limit" "$VISIBLE" 2>&1); $(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print("zoom p95=%s ms, unzoom p95=%s ms, drag p95=%s ms, relayouts=%s, bad frames=%s" % (d["zoom"]["p95"], d["unzoom"]["p95"], d["drag"]["p95"], d.get("relayouts"), sum(d[p].get("badFrames", 0) for p in ("zoom","unzoom","drag"))))' "$WORK/deck-zoom.json"))"
+            ok "[DECK-5] zoom/unzoom keep p95 under ${zoom_limit} ms, drag under the measured limit (${drag_limit} ms quiet, two display intervals visible), and every drawn frame fits ($(python3 "$MACOS/scripts/deck-zoom.py" "$WORK/deck-zoom.json" "$zoom_limit" "$drag_limit" "$VISIBLE" 2>&1); $(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print("zoom p95=%s ms, unzoom p95=%s ms, drag p95=%s ms, relayouts=%s, bad frames=%s" % (d["zoom"]["p95"], d["unzoom"]["p95"], d["drag"]["p95"], d.get("relayouts"), sum(d[p].get("badFrames", 0) for p in ("zoom","unzoom","drag"))))' "$WORK/deck-zoom.json"))"
         else
-            bad "DECK the zoom drags a clipped or slow grid ($(python3 "$MACOS/scripts/deck-zoom.py" "$WORK/deck-zoom.json" "$zoom_limit" "$drag_limit" "$VISIBLE" 2>&1))"
+            bad "[DECK-5] the zoom drags a clipped or slow grid ($(python3 "$MACOS/scripts/deck-zoom.py" "$WORK/deck-zoom.json" "$zoom_limit" "$drag_limit" "$VISIBLE" 2>&1))"
         fi
     else
         bad "DECK no zoom measurement (--debug-deck-zoom)"
@@ -9343,18 +9343,18 @@ check_deck() {
     local geometry
     if control deck-size 640 700 >/dev/null; then
         if geometry="$(python3 "$MACOS/scripts/deck-geometry.py" "$WORK/deck-grid.jsonl" 640 5)"; then
-            ok "DECK at 640 pt the block is $geometry"
+            ok "[DECK-4] at 640 pt the block is $geometry"
         else
-            bad "DECK at 640 pt the block is not D's ($geometry)"
+            bad "[DECK-4] at 640 pt the block is not D's ($geometry)"
         fi
     else
         bad "DECK deck-size 640: $CONTROL_REPLY"
     fi
     if control deck-size 1200 700 >/dev/null; then
         if geometry="$(python3 "$MACOS/scripts/deck-geometry.py" "$WORK/deck-grid.jsonl" 1200 8)"; then
-            ok "DECK at 1200 pt the block is capped and centred ($geometry)"
+            ok "[DECK-4] at 1200 pt the block is capped and centred ($geometry)"
         else
-            bad "DECK at 1200 pt the block is not capped/centred ($geometry)"
+            bad "[DECK-4] at 1200 pt the block is not capped/centred ($geometry)"
         fi
     else
         bad "DECK deck-size 1200: $CONTROL_REPLY"
@@ -9393,8 +9393,8 @@ check_deck() {
             bad "DECK deckrailpoint M: $CONTROL_REPLY"
         fi
     else
-        control deckrailhover M && ok "DECK forced the rail's hover on M for the shot" \
-            || bad "DECK deckrailhover M: $CONTROL_REPLY"
+        control deckrailhover M && ok "[DECK-7] forced the rail's hover on M for the shot" \
+            || bad "[DECK-7] deckrailhover M: $CONTROL_REPLY"
         sleep 1
         shot_rail rail-hover-m.png
         control deckrailhoverout || bad "DECK deckrailhoverout: $CONTROL_REPLY"
@@ -9419,9 +9419,9 @@ check_deck() {
     fi
     if control deck-rail T >/dev/null; then
         if rail="$(python3 "$MACOS/scripts/deck-rail.py" "$WORK/deck-grid.jsonl" T)"; then
-            ok "DECK the rail's T click lands on its first app ($rail)"
+            ok "[DECK-7] the rail's T click lands on its first app ($rail)"
         else
-            bad "DECK the rail's T click: $rail"
+            bad "[DECK-7] the rail's T click: $rail"
         fi
     else
         bad "DECK deck-rail T: $CONTROL_REPLY"
@@ -9477,8 +9477,8 @@ PY
     # the real letter under the pointer and its tag.
     if control deck-size 760 450 >/dev/null; then
         sleep 1
-        control deckrailhover T && ok "DECK the short rail's hover on T is forced" \
-            || bad "DECK deckrailhover T (short): $CONTROL_REPLY"
+        control deckrailhover T && ok "[DECK-7] the short rail's hover on T is forced" \
+            || bad "[DECK-7] deckrailhover T (short): $CONTROL_REPLY"
         sleep 1
         shot_rail rail-short.png
         control deckrailhoverout || bad "DECK deckrailhoverout (short): $CONTROL_REPLY"
@@ -9522,8 +9522,8 @@ PY
     control key cmd+f || bad "DECK key cmd+f: $CONTROL_REPLY"
     sleep 0.5
     deck_search after
-    python3 - "$WORK/deck-search-after.json" <<'PY' && ok "DECK ⌘F focuses the search field and selects its text" \
-        || bad "DECK ⌘F did not leave the search field focused with its text selected"
+    python3 - "$WORK/deck-search-after.json" <<'PY' && ok "[DECK-9] ⌘F focuses the search field and selects its text" \
+        || bad "[DECK-9] ⌘F did not leave the search field focused with its text selected"
 import json, sys
 root = json.load(open(sys.argv[1]))
 if not root["focused"]:
@@ -9537,8 +9537,8 @@ PY
     wait_until 20 grep -q "style=" "$WORK/chrome.txt" || bad "DECK no stream window for the ⌘F check"
     sleep 1
     deck_search stream
-    python3 - "$WORK/deck-search-stream.json" <<'PY' && ok "DECK the stream window is key and the Deck search is not focused" \
-        || bad "DECK the Deck search field took focus with a stream window key"
+    python3 - "$WORK/deck-search-stream.json" <<'PY' && ok "[DECK-9] the stream window is key and the Deck search is not focused" \
+        || bad "[DECK-9] the Deck search field took focus with a stream window key"
 import json, sys
 root = json.load(open(sys.argv[1]))
 if root["focused"] or root["keyWindow"] != "other":
@@ -9546,11 +9546,11 @@ if root["focused"] or root["keyWindow"] != "other":
 PY
     control key cmd+f || bad "DECK key cmd+f with a stream window: $CONTROL_REPLY"
     wait_until 10 grep -q '"kind":"key","stream":1,"action":0,"keycode":34,"meta":12288' "$WORK/events.jsonl" \
-        && ok "DECK ⌘F with a stream window key reached the phone as meta+F" \
-        || bad "DECK ⌘F with a stream window key did not reach the phone ($(grep '"kind":"key"' "$WORK/events.jsonl" | tail -1))"
+        && ok "[DECK-9] ⌘F with a stream window key reached the phone as meta+F" \
+        || bad "[DECK-9] ⌘F with a stream window key did not reach the phone ($(grep '"kind":"key"' "$WORK/events.jsonl" | tail -1))"
     deck_search after-k
-    python3 - "$WORK/deck-search-after-k.json" <<'PY' && ok "DECK the Deck search field stayed out of the stream window's ⌘F" \
-        || bad "DECK the Deck search field took the stream window's ⌘F"
+    python3 - "$WORK/deck-search-after-k.json" <<'PY' && ok "[DECK-9] the Deck search field stayed out of the stream window's ⌘F" \
+        || bad "[DECK-9] the Deck search field took the stream window's ⌘F"
 import json, sys
 root = json.load(open(sys.argv[1]))
 if root["focused"] or root["keyWindow"] != "other":
@@ -9560,8 +9560,8 @@ PY
     control key cmd+k || bad "DECK key cmd+k: $CONTROL_REPLY"
     sleep 0.5
     deck_search after-k2
-    python3 - "$WORK/deck-search-after-k2.json" <<'PY' && ok "DECK ⌘K still brings the Deck up and focuses search" \
-        || bad "DECK ⌘K did not bring the Deck up with search focused"
+    python3 - "$WORK/deck-search-after-k2.json" <<'PY' && ok "[DECK-10] ⌘K still brings the Deck up and focuses search" \
+        || bad "[DECK-10] ⌘K did not bring the Deck up with search focused"
 import json, sys
 root = json.load(open(sys.argv[1]))
 if not root["focused"] or root["keyWindow"] != "deck":
@@ -9585,8 +9585,8 @@ PY
         control panelwindows "$WORK/deck-windows.txt" >/dev/null 2>&1
         bad "DECK no panel dump from the popover ($(tr '\n' '|' < "$WORK/deck-windows.txt" 2>/dev/null))"
     fi
-    python3 - "$WORK/deck-panel.json" <<'PY' && ok "DECK the popover hosts the shared panel (300 pt, the same items)" \
-        || bad "DECK the popover is not the shared panel"
+    python3 - "$WORK/deck-panel.json" <<'PY' && ok "[DECK-20] the popover hosts the shared panel (300 pt, the same items)" \
+        || bad "[DECK-20] the popover is not the shared panel"
 import json, sys
 root = json.load(open(sys.argv[1]))
 if root["width"] != 300:
@@ -9606,8 +9606,8 @@ PY
     control panelclick deck panel.dnd || bad "DECK the popover's DND click: $CONTROL_REPLY"
     dnd_after() { grep -c '"ev":"dnd"' "$WORK/events.jsonl" 2>/dev/null || echo 0; }
     wait_until 20 [ "$(dnd_after)" -gt "$dnd_before" ] \
-        && ok "DECK clicking the popover's DND tile reached the phone ($(grep -o '"ev":"dnd"[^}]*' "$WORK/events.jsonl" 2>/dev/null | tail -1))" \
-        || bad "DECK the popover's DND tile sent no new phone.dnd"
+        && ok "[DECK-20] clicking the popover's DND tile reached the phone ($(grep -o '"ev":"dnd"[^}]*' "$WORK/events.jsonl" 2>/dev/null | tail -1))" \
+        || bad "[DECK-20] the popover's DND tile sent no new phone.dnd"
     stop_app
 }
 
