@@ -132,10 +132,20 @@ kill_e2e_app() {
     return 0
 }
 
+# release_inputs — lift any key or mouse button the rig left down (cgevent-input
+# release-all). Only the run that holds the lock may: cutting another run's
+# drag short is not ours to do.
+release_inputs() {
+    [ -n "${HOLDS_LOCK:-}" ] || return 0
+    [ -x "$CGBIN" ] && "$CGBIN" release-all >/dev/null 2>&1
+    return 0
+}
+
 # Only a run that holds the lock may stop processes: a run that gave up waiting
 # for the lock must leave the running one's app and fakephone alone.
 finish() {
     if [ -n "${HOLDS_LOCK:-}" ]; then
+        release_inputs
         end_shared
         kill_e2e_app
         stop_fakephone
@@ -589,7 +599,10 @@ acquire_lock() {
 }
 
 release_lock() {
-    [ "$(cat "$LOCK_DIR/pid" 2>/dev/null)" = "$$" ] && rm -rf "$LOCK_DIR"
+    if [ "$(cat "$LOCK_DIR/pid" 2>/dev/null)" = "$$" ]; then
+        release_inputs
+        rm -rf "$LOCK_DIR"
+    fi
     return 0
 }
 
@@ -10528,6 +10541,51 @@ check_orphans() {
     [ "$n" = "0" ] && ok "C9 no orphan fakephone processes" || bad "C9 $n orphan fakephone processes"
 }
 
+# hotkey_report — ControlCenter logs one "hotkeys perform:" line per press and
+# per repeat of a held media key. A quiet run presses none at all; a visible run
+# may press keys for real, but six of them in a row within two seconds is a key
+# that is down, not being pressed — the shape of the incident where a stuck
+# brightness-down key ran ControlCenter's hotkey 12 times a second for four
+# hours (qol-1027b item 1).
+hotkey_report() {
+    local times total streak
+    times="$(/usr/bin/log show --start "$RUN_START" --style compact \
+        --predicate 'process == "ControlCenter" AND eventMessage CONTAINS "hotkeys perform:"' 2>/dev/null \
+        | awk '$1 ~ /^[0-9][0-9][0-9][0-9]-/ { print $1 " " $2 }')"
+    total="$(printf '%s' "$times" | grep -c . || true)"
+    if [ "$VISIBLE" != "1" ]; then
+        [ "$total" = 0 ] \
+            && ok "C17 no ControlCenter hotkey in a quiet run" \
+            || bad "C17 $total ControlCenter hotkey lines in a quiet run: $(printf '%s' "$times" | head -3 | tr '\n' ' ')"
+        return 0
+    fi
+    # A held key repeats: consecutive lines are at most 2 s apart and pile up.
+    streak="$(printf '%s\n' "$times" | python3 -c '
+import datetime
+import sys
+
+run = 0
+longest = 0
+last = None
+for line in sys.stdin:
+    fields = line.split()
+    if len(fields) < 2:
+        continue
+    stamp = datetime.datetime.strptime(fields[0] + " " + fields[1].split(".")[0],
+                                       "%Y-%m-%d %H:%M:%S")
+    if last is not None and (stamp - last).total_seconds() <= 2:
+        run += 1
+    else:
+        run = 1
+    last = stamp
+    longest = max(longest, run)
+print(longest)
+')"
+    [ "$streak" -le 5 ] \
+        && ok "C17 no key repeats: longest ControlCenter hotkey run $streak in 2 s ($total presses)" \
+        || bad "C17 $streak ControlCenter hotkey lines in a row within 2 s (a held key)"
+}
+
 # newer_than <file> <path...> — some file under the paths changed after <file>
 # (true when <file> does not exist).
 newer_than() {
@@ -10593,6 +10651,8 @@ acquire_lock
 wait_for_other_runs
 pick_run
 mkdir -p "$WORK"
+# The window the hotkey check (C17) reads back: from here to the end of the run.
+RUN_START="$(date "+%Y-%m-%d %H:%M:%S")"
 say "run: port $PORT, work $WORK, profile $PROFILE, app $E2E_BUNDLE"
 [ "$which_check" = "all" ] && say "checks: ${CHECKS[*]}"
 build_e2e_app || exit 1
@@ -10614,6 +10674,7 @@ for check in "${CHECKS[@]}"; do
 done
 [ "$which_check" = "all" ] && check_orphans
 
+hotkey_report
 quiet_report
 watchdog_report
 load_report
