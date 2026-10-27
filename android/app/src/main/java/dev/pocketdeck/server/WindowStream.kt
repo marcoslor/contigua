@@ -50,11 +50,15 @@ internal class WindowStream(
         /** `debug.pocketdeck.swap_surfaces=1`: the old surface swaps, for A/B on a device. */
         const val SWAP_SURFACES = "debug.pocketdeck.swap_surfaces"
 
-        // @hide DisplayManager flags, verified against AOSP. Deliberately absent:
-        // the system-decorations flag (bit 9) and the device display-group flag
-        // (bit 15). The first adds a SystemUI nav bar and poisons One UI's back
-        // gesture; the second would tie the VD to the panel's power state and
-        // freeze it while the phone is locked.
+        /** `debug.pocketdeck.vd_panel_group=1`: the VD joins display 0's group (the One UI shape). */
+        const val VD_PANEL_GROUP = "debug.pocketdeck.vd_panel_group"
+
+        // @hide DisplayManager flags, verified against AOSP. Deliberately absent
+        // from a real session: the system-decorations flag (bit 9) adds a
+        // SystemUI nav bar and poisons One UI's back gesture, and the device
+        // display-group flag (bit 15) ties the VD to the panel's power state and
+        // freezes it while the phone is locked. Bit 15 exists only behind
+        // VD_PANEL_GROUP, which reproduces that freeze on the emulator.
         const val FLAG_SECURE = 1 shl 2
         const val FLAG_AUTO_MIRROR = 1 shl 4
         const val FLAG_CAN_SHOW_WITH_INSECURE_KEYGUARD = 1 shl 5
@@ -582,8 +586,8 @@ internal class WindowStream(
         return bits.coerceIn(MIN_BITRATE.toLong(), MAX_BITRATE.toLong()).toInt()
     }
 
-    private fun flags(): Int =
-        DisplayManager.VIRTUAL_DISPLAY_FLAG_PUBLIC or
+    private fun flags(): Int {
+        var f = DisplayManager.VIRTUAL_DISPLAY_FLAG_PUBLIC or
             DisplayManager.VIRTUAL_DISPLAY_FLAG_PRESENTATION or
             DisplayManager.VIRTUAL_DISPLAY_FLAG_OWN_CONTENT_ONLY or
             FLAG_SUPPORTS_TOUCH or
@@ -595,6 +599,15 @@ internal class WindowStream(
             FLAG_TOUCH_FEEDBACK_DISABLED or
             FLAG_OWN_FOCUS
 
+        // The emulator's stand-in for One UI: AOSP honours OWN_DISPLAY_GROUP, so
+        // a power press there never touches our VDs and the press gap cannot be
+        // measured. With this property the VD joins display 0's group instead,
+        // which is the shape the field phone has.
+        if (Hidden.systemProperty(VD_PANEL_GROUP) == "1") {
+            f = (f or FLAG_DEVICE_DISPLAY_GROUP) and FLAG_OWN_DISPLAY_GROUP.inv()
+        }
+        return f
+    }
     /** Names for the requested flags, so the server log shows what we asked for. */
     private fun virtualFlagNames(f: Int): String {
         val set = ArrayList<String>()

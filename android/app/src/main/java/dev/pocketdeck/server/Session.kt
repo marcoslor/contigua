@@ -324,6 +324,13 @@ class Session(
             val state = stateTracker.current ?: device.state()
             if (!stateTracker.update(state)) sendState(state)
         }
+        // The person's power press with our streams up: the phone took the
+        // panel over and the VD group is being re-lit, so the Mac holds the
+        // last frame for a short grace instead of calling it a stall.
+        power.onPowerLocked = {
+            log("power.locked: telling the Mac the screen went off")
+            sendJson(mapOf("t" to "power.locked"))
+        }
         writerThread = Thread({ writerLoop() }, "pocketdeck-writer").also { it.start() }
         try {
             socket.tcpNoDelay = true
@@ -392,6 +399,7 @@ class Session(
         runCatching { power.setActiveStreams(emptyList()) }
         runCatching { power.onSessionEnded() }
         runCatching { power.onPanelChanged = null }
+        runCatching { power.onPowerLocked = null }
         queue.close()
         runCatching { writerThread?.join(1000) }
         runCatching { socket.close() }
@@ -1895,6 +1903,11 @@ class Session(
     }
 
     override fun onFrame(stream: Int, ptsUs: Long, key: Boolean, data: ByteArray) {
+        // The power press with streams up: the first frame after the re-light
+        // is the gap the emulator check measures (one read per frame otherwise).
+        if (power.relightPending) {
+            synchronized(streams) { streams[stream]?.displayId }?.let { power.noteFrame(it) }
+        }
         val payload = Frames.encodeVideoFrame(VideoFramePayload(ptsUs, key, data))
         val bytes = Frames.encode(Frames.TYPE_VIDEO_FRAME, stream, payload)
         if (key) queue.enqueueControl(stream, bytes) else queue.enqueueDelta(stream, ptsUs, bytes)
