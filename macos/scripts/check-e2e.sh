@@ -7225,6 +7225,52 @@ check_settings_devices() {
         && ok "DEVTAB [SET-DEV-01] with 3 phones every section header names its phone" \
         || bad "DEVTAB [SET-DEV-01] named headers: $(report_value title.notifications) / $(report_value title.screen)"
 
+    # --- Forget a fixture phone: it names the phone, Esc keeps it, confirm
+    #     removes it and its pin (SET-DEV-07; destructive, never the phone in
+    #     use). The confirmation is opened through the same controller state
+    #     the Forget button sets; Esc and Return are real key events. ---------
+    local support="$HOME/Library/Application Support/PocketDeck-$PROFILE"
+    mkdir -p "$support"
+    printf '[{"deviceId":"preview-2","phoneFingerprintHex":"%s","certPem":"fixture-pin"}]' \
+        "$(printf 'a%.0s' $(seq 1 64))" > "$support/pins.json"
+    devices_state devices-three || return 1
+    control devices-select preview-2 || bad "DEVTAB devices-select: $CONTROL_REPLY"
+    sleep 1
+    control devices-forget preview-2 || bad "DEVTAB devices-forget: $CONTROL_REPLY"
+    sleep 1
+    control devices-dump "$dump" >/dev/null 2>&1; sleep 0.6
+    [ "$(report_value forgetDialog)" = "Pixel 9" ] \
+        && ok "DEVTAB [SET-DEV-07] Forget asks first, naming the phone (Pixel 9)" \
+        || bad "DEVTAB [SET-DEV-07] the confirmation names '$(report_value forgetDialog)'"
+    control key esc >/dev/null 2>&1
+    sleep 0.8
+    control devices-dump "$dump" >/dev/null 2>&1; sleep 0.6
+    [ -z "$(report_value forgetDialog)" ] && dump_has "row|Pixel 9|" \
+        && ok "DEVTAB [SET-DEV-07] Esc cancels: the phone and its pairing stay" \
+        || bad "DEVTAB [SET-DEV-07] Esc left the dialog ('$(report_value forgetDialog)') or removed the phone"
+    grep -q 'preview-2' "$support/pins.json" 2>/dev/null \
+        && ok "DEVTAB [SET-DEV-07] Esc left the pin store untouched" \
+        || bad "DEVTAB [SET-DEV-07] Esc removed the pin"
+    control devices-forget preview-2 >/dev/null 2>&1
+    sleep 0.8
+    control devices-dump "$dump" >/dev/null 2>&1; sleep 0.6
+    [ "$(report_value forgetDialog)" = "Pixel 9" ] \
+        && ok "DEVTAB [SET-DEV-07] the confirmation opens again for the same phone" \
+        || bad "DEVTAB [SET-DEV-07] the second confirmation names '$(report_value forgetDialog)'"
+    # The destructive button is not the default: Tab moves to it, Space presses
+    # it, both as real key events through the dialog's own buttons.
+    control key tab >/dev/null 2>&1
+    control key space >/dev/null 2>&1
+    sleep 1.5
+    control devices-dump "$dump" >/dev/null 2>&1; sleep 0.6
+    [ -z "$(report_value forgetDialog)" ] && ! dump_has "row|Pixel 9|" \
+        && ok "DEVTAB [SET-DEV-07] confirming removes the phone from the list" \
+        || bad "DEVTAB [SET-DEV-07] after confirm: dialog='$(report_value forgetDialog)' row=$(grep '^row|Pixel 9' "$dump" | head -1)"
+    ! grep -q 'preview-2' "$support/pins.json" 2>/dev/null \
+        && ok "DEVTAB [SET-DEV-07] confirming removes its pin" \
+        || bad "DEVTAB [SET-DEV-07] the pin survived the confirmation"
+    rm -f "$support/pins.json"
+
     # --- muted apps: the list, its column, order and search (SET-DEV-11) ---
     devices_state devices-muted || return 1
     [ "$(report_value mutedOpen)" = "1" ] && ok "DEVTAB [SET-DEV-11] the muted list opens" \

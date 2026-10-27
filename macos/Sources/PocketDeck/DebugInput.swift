@@ -483,6 +483,7 @@ enum DebugInputScript {
         "esc": (53, "\u{1b}"),
         "return": (36, "\r"),
         "tab": (48, "\t"),
+        "space": (49, " "),
         "delete": (51, "\u{7f}"),
         "left": (123, "\u{F702}"),
         "right": (124, "\u{F703}"),

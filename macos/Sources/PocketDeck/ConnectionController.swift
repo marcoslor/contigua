@@ -288,6 +288,9 @@ final class ConnectionController {
     /// (`devices-dump`): a debug read of the real view's state.
     private(set) var devicesReportRequest = 0
     var devicesReportPath: String?
+    /// The e2e's setup for a phone's page and for the Forget confirmation.
+    private(set) var devicesSelectRequest = 0
+    var devicesSelectedId: String?
 
     /// The panel's Settings… row: the Deck's own scene opener (the responder
     /// action alone does nothing while the app is not active).
@@ -318,6 +321,8 @@ final class ConnectionController {
     /// The phone being renamed right now: Settings → Devices → Rename… presents
     /// its dialog for this device; a preview stages the whole state.
     private(set) var renamingDeviceId: String?
+    /// The phone whose Forget confirmation is up (one at a time, like Rename).
+    private(set) var forgettingDeviceId: String?
     /// Preview only: the rename field's staged text (screenshots, never stored).
     private(set) var previewRenameText: String?
 
@@ -338,6 +343,11 @@ final class ConnectionController {
         renamingDeviceId = nil
         previewRenameText = nil
     }
+
+    /// Settings → Devices → Forget This Phone…: the confirmation names this
+    /// phone; nothing is removed until the person confirms.
+    func beginForget(_ phone: RememberedPhone) { forgettingDeviceId = phone.id }
+    func endForget() { forgettingDeviceId = nil }
     /// Window and menu actions reach the Deck through this (focus the search field).
     var searchFocusRequest = 0
 
@@ -2627,6 +2637,19 @@ final class ConnectionController {
             }
             return DeckRailPoint.point(letter: arguments[0], to: arguments[1])
                 ? nil : "deckrailpoint failed"
+        case "devices-select":
+            // Setup for the e2e: the phone's page is the one open (the ⓘ click).
+            guard let id = arguments.first else { return "devices-select needs a device id" }
+            guard rememberedPhones.contains(where: { $0.id == id }) else { return "unknown phone" }
+            devicesSelectedId = id
+            devicesSelectRequest += 1
+            return nil
+        case "devices-forget":
+            // Setup for the e2e: the same confirmation the Forget button opens.
+            guard let id = arguments.first,
+                  let phone = rememberedPhones.first(where: { $0.id == id }) else { return "unknown phone" }
+            beginForget(phone)
+            return nil
         case "settings-open":
             // The ⌘, route (a setup step for a check that needs Settings open).
             openSettingsWindow()

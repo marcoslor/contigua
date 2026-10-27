@@ -223,12 +223,11 @@ struct InputSettings: View {
 
 struct DevicesSettings: View {
     @Environment(ConnectionController.self) private var controller
-    @State private var forgetting: RememberedPhone?
     @State private var renameText = ""
 
     var body: some View {
         DevicesSettingsTab(onRename: { controller.beginRename($0) },
-                           onForget: { forgetting = $0 },
+                           onForget: { controller.beginForget($0) },
                            onAdd: addPhone)
             // A rename in progress: which device, and the staged text (previews
             // set both; a row's Rename… button sets the device).
@@ -243,15 +242,19 @@ struct DevicesSettings: View {
             } message: {
                 Text("Up to 40 characters. Leave it empty to keep using the phone's own name.")
             }
-            .confirmationDialog("Forget \(forgetTitle)?", isPresented: Binding(
-                get: { forgetting != nil }, set: { if !$0 { forgetting = nil } }), titleVisibility: .visible) {
-                Button("Forget", role: .destructive) {
-                    if let phone = forgetting { controller.forget(phone) }
-                    forgetting = nil
-                }
-                Button("Cancel", role: .cancel) { forgetting = nil }
-            } message: {
-                Text("You'll need to pair it again.")
+            // A sheet, not an alert: an app-modal alert activated the app from
+            // a quiet (background) run, and a person's confirmation should not
+            // take their focus. Return is not the destructive default.
+            .sheet(isPresented: Binding(
+                get: { controller.forgettingDeviceId != nil },
+                set: { if !$0 { controller.endForget() } })) {
+                ForgetConfirmation(
+                    name: forgetTitle,
+                    onCancel: { controller.endForget() },
+                    onConfirm: {
+                        if let phone = forgettingPhone { controller.forget(phone) }
+                        controller.endForget()
+                    })
             }
     }
 
@@ -267,8 +270,12 @@ struct DevicesSettings: View {
                 set: { if !$0 { controller.endRename() } })
     }
 
+    private var forgettingPhone: RememberedPhone? {
+        controller.rememberedPhones.first { $0.id == controller.forgettingDeviceId }
+    }
+
     private var forgetTitle: String {
-        forgetting.map { controller.displayName(for: $0.ref) } ?? "this phone"
+        forgettingPhone.map { controller.displayName(for: $0.ref) } ?? "this phone"
     }
 
     private var alertPrompt: Text {
@@ -281,6 +288,32 @@ struct DevicesSettings: View {
             controller.setNickname(renameText, for: id)
         }
         controller.endRename()
+    }
+}
+
+/// The Forget confirmation (SET-DEV-07): names the phone, says the pairing
+/// goes, and keeps the destructive button off the Return key.
+private struct ForgetConfirmation: View {
+    let name: String
+    let onCancel: () -> Void
+    let onConfirm: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Forget \(name)?")
+                .font(.headline)
+            Text("Removes this Mac's pairing with \(name). You'll need to pair it again to use it here.")
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack {
+                Spacer()
+                Button("Cancel", action: onCancel)
+                    .keyboardShortcut(.cancelAction)
+                Button("Forget", role: .destructive, action: onConfirm)
+            }
+        }
+        .padding(20)
+        .frame(width: 400)
     }
 }
 
