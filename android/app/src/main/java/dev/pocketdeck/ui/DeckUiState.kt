@@ -10,7 +10,15 @@ package dev.pocketdeck.ui
 enum class StatusState { READY, CONNECTED, NEEDS_ATTENTION, ERROR }
 
 /** Why the card needs an action; drives the fix button. */
-enum class AttentionKind { NONE, CONNECTIONS_OFF, SHIZUKU_NOT_RUNNING, SHIZUKU_PERMISSION, RETRY }
+enum class AttentionKind {
+    NONE,
+    CONNECTIONS_OFF,
+    SHIZUKU_NOT_RUNNING,
+    SHIZUKU_PERMISSION,
+    /** The Mac asked for notifications but this phone's listener grant is missing. */
+    NOTIFY_ACCESS,
+    RETRY,
+}
 
 data class DeckStatus(
     val state: StatusState,
@@ -28,6 +36,8 @@ data class StatusInput(
     val connectedMac: String?,
     /** The master gate; false also means "needs attention" while the service runs. */
     val allowConnections: Boolean = true,
+    /** The Mac asked for notifications and the phone's listener grant is missing. */
+    val notifyNoAccess: Boolean = false,
 )
 
 /**
@@ -40,6 +50,7 @@ fun mapStatus(input: StatusInput): DeckStatus = when {
         DeckStatus(StatusState.NEEDS_ATTENTION, AttentionKind.CONNECTIONS_OFF)
     !input.shizukuRunning -> DeckStatus(StatusState.NEEDS_ATTENTION, AttentionKind.SHIZUKU_NOT_RUNNING)
     !input.shizukuGranted -> DeckStatus(StatusState.NEEDS_ATTENTION, AttentionKind.SHIZUKU_PERMISSION)
+    input.notifyNoAccess -> DeckStatus(StatusState.NEEDS_ATTENTION, AttentionKind.NOTIFY_ACCESS)
     input.connectedMac != null -> DeckStatus(StatusState.CONNECTED, AttentionKind.NONE)
     !input.enabled -> DeckStatus(StatusState.READY, AttentionKind.NONE, untilTaskClosed = true)
     input.port > 0 -> DeckStatus(StatusState.READY, AttentionKind.NONE)
@@ -94,8 +105,8 @@ data class DeckUiState(
     val enabled: Boolean = false,
     val allowConnections: Boolean = true,
     val allowPairings: Boolean = true,
-    val notifyShared: Boolean = false,
-    val notifyGrantFailed: Boolean = false,
+    /** The Mac asked for notifications but this phone's listener grant is missing. */
+    val notifyNoAccess: Boolean = false,
     val shizukuInstalled: Boolean = false,
     val shizukuRunning: Boolean = false,
     val shizukuGranted: Boolean = false,

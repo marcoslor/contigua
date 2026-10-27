@@ -1,6 +1,5 @@
 package dev.pocketdeck.app
 
-import android.content.Context
 import android.util.Log
 import dev.pocketdeck.proto.Json
 import dev.pocketdeck.proto.JsonException
@@ -11,10 +10,10 @@ import dev.pocketdeck.proto.JsonException
  * Text is never logged (privacy: this file must not embed title/text bodies in
  * any message).
  */
-class PdNotificationBridge(private val context: Context) {
+class PdNotificationBridge {
 
-    /** Both gates: the phone's per-phone toggle and the Mac's per-session opt-in. */
-    fun gate(): Boolean = Prefs.isNotifyShared(context) && DeckState.notifyForward
+    /** The Mac's opt-in plus the listener grant, answered by the shell session. */
+    fun gate(): Boolean = DeckState.notifyForward
 
     fun post(event: Map<String, Any?>) {
         push(event, "notify")

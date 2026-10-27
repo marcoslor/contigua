@@ -28,11 +28,14 @@ class NotifySessionTest {
     private lateinit var client: Socket
     private lateinit var reader: FrameReader
 
-    @Volatile private var phoneShared = false
+    @Volatile private var listenerAccess = false
+    @Volatile private var grantAttempts = 0
+    @Volatile private var grantSucceeds = false
     @Volatile private var session: Session? = null
     private val mediaCommands = java.util.concurrent.CopyOnWriteArrayList<String>()
     private val mediaChooses = java.util.concurrent.CopyOnWriteArrayList<String>()
     private val forwards = java.util.concurrent.CopyOnWriteArrayList<Boolean>()
+    private val notifyReasons = java.util.concurrent.CopyOnWriteArrayList<String?>()
     private val notifyOpens = java.util.concurrent.CopyOnWriteArrayList<Pair<String, Int>>()
     private var clock = 1_000L
 
@@ -64,10 +67,15 @@ class NotifySessionTest {
                 autoApprovePairing = true,
                 tlsView = TlsV2Fixture.view,
                 gateProvider = { GateSettings(true, true) },
-                notifyShared = { phoneShared },
+                notifyAccess = { listenerAccess },
+                notifyGrant = {
+                    grantAttempts += 1
+                    listenerAccess = grantSucceeds
+                    grantSucceeds
+                },
                 mediaCommand = { command -> mediaCommands.add(command) },
                 mediaChoose = { key -> mediaChooses.add(key) },
-                notifyForward = { forward -> forwards.add(forward) },
+                notifyState = { forward, reason -> forwards.add(forward); notifyReasons.add(reason) },
                 notifyOpen = { id, displayId -> notifyOpens.add(id to displayId) },
             )
             session = sess
@@ -145,24 +153,110 @@ class NotifySessionTest {
     }
 
     @Test
-    fun `notify enable without the phone toggle stays off and the Mac is told`() {
+    fun `enable without listener access replies no_access and forwards nothing`() {
         connect()
         authenticate()
         send(mapOf("t" to "notify.enable", "on" to true))
         val state = readUntil("notify.state")
         assertEquals(false, state["on"])
+        assertEquals("no_access", state["reason"])
+        assertEquals("the phone tries the shell grant once", 1, grantAttempts)
+        assertEquals(listOf<String?>("no_access"), notifyReasons.toList())
         session!!.onDeviceEvent("notify.post", mapOf("t" to "notify.post", "id" to "k", "pkg" to "com.a", "title" to "hi"))
         assertTrue(expectNoMore("notify.post"))
-        assertTrue("nothing forwarded", forwards.isEmpty())
+        assertTrue("nothing forwarded", forwards.none { it })
     }
 
     @Test
-    fun `enable with the phone toggle forwards validated pushes`() {
+    fun `enable with a listener grant forwards without asking the phone's switch`() {
+        connect()
+        authenticate()
+        listenerAccess = true
+        send(mapOf("t" to "notify.enable", "on" to true))
+        val state = readUntil("notify.state")
+        assertEquals(true, state["on"])
+        assertNull(state["reason"])
+        assertEquals("an existing grant needs no shell round trip", 0, grantAttempts)
+        assertEquals(listOf(true), forwards.toList())
+    }
+
+    @Test
+    fun `a successful shell grant turns forwarding on in the same answer`() {
+        connect()
+        authenticate()
+        grantSucceeds = true
+        send(mapOf("t" to "notify.enable", "on" to true))
+        val state = readUntil("notify.state")
+        assertEquals(true, state["on"])
+        assertEquals(1, grantAttempts)
+    }
+
+    @Test
+    fun `turning sharing off clears no_access on the phone`() {
+        connect()
+        authenticate()
+        send(mapOf("t" to "notify.enable", "on" to true))
+        assertEquals("no_access", readUntil("notify.state")["reason"])
+        send(mapOf("t" to "notify.enable", "on" to false))
+        val state = readUntil("notify.state")
+        assertEquals(false, state["on"])
+        assertNull(state["reason"])
+        // The app's attention item is local state: it must be cleared too.
+        assertEquals(listOf<String?>("no_access", null), notifyReasons.toList())
+    }
+
+    @Test
+    fun `closing the session clears no_access locally`() {
+        connect()
+        authenticate()
+        send(mapOf("t" to "notify.enable", "on" to true))
+        assertEquals("no_access", readUntil("notify.state")["reason"])
+        session!!.close()
+        val deadline = System.currentTimeMillis() + 3_000
+        while (notifyReasons.lastOrNull() != null && System.currentTimeMillis() < deadline) {
+            Thread.sleep(20) // real-time: the close path runs on the session reader thread
+        }
+        assertEquals(listOf<String?>("no_access", null), notifyReasons.toList())
+        assertEquals(false, forwards.last())
+    }
+
+    @Test
+    fun `a later listener grant forwards without another Mac toggle`() {
+        connect()
+        authenticate()
+        send(mapOf("t" to "notify.enable", "on" to true))
+        assertEquals("no_access", readUntil("notify.state")["reason"])
+        // The person granted notification access on the phone; the app announces
+        // it and the phone turns forwarding on by itself.
+        listenerAccess = true
+        session!!.listenerAccessChanged(true)
+        val state = readUntil("notify.state")
+        assertEquals(true, state["on"])
+        assertNull(state["reason"])
+        assertEquals(listOf(false, true), forwards.toList())
+        assertNull("the attention item is cleared by the grant", notifyReasons.last())
+    }
+
+    @Test
+    fun `the Mac turning enable off stays off with no reason`() {
+        connect()
+        authenticate()
+        listenerAccess = true
+        send(mapOf("t" to "notify.enable", "on" to true))
+        readUntil("notify.state")
+        send(mapOf("t" to "notify.enable", "on" to false))
+        val state = readUntil("notify.state")
+        assertEquals(false, state["on"])
+        assertNull(state["reason"])
+    }
+
+    @Test
+    fun `enable with a listener grant forwards validated pushes`() {
         connect()
         authenticate()
         platform.pushState(platform.deviceState) // no; the state watcher is not the gate
         readUntil("state")
-        phoneShared = true
+        listenerAccess = true
         send(mapOf("t" to "notify.enable", "on" to true))
         assertEquals(true, readUntil("notify.state")["on"])
         assertEquals(listOf(true), forwards.toList())
@@ -183,7 +277,7 @@ class NotifySessionTest {
         connect()
         authenticate()
         readUntil("state")
-        phoneShared = true
+        listenerAccess = true
         send(mapOf("t" to "notify.enable", "on" to true))
         readUntil("notify.state")
 
@@ -202,7 +296,7 @@ class NotifySessionTest {
         connect()
         authenticate()
         readUntil("state")
-        phoneShared = true
+        listenerAccess = true
         send(mapOf("t" to "notify.enable", "on" to true))
         readUntil("notify.state")
 
@@ -237,7 +331,7 @@ class NotifySessionTest {
         connect()
         authenticate()
         readUntil("state")
-        phoneShared = true
+        listenerAccess = true
         send(mapOf("t" to "notify.enable", "on" to true))
         readUntil("notify.state")
         send(mapOf("t" to "notify.open", "id" to "key_wa_1", "target" to "phone"))
@@ -250,7 +344,7 @@ class NotifySessionTest {
         connect()
         authenticate()
         readUntil("state")
-        phoneShared = true
+        listenerAccess = true
         send(mapOf("t" to "notify.enable", "on" to true))
         readUntil("notify.state")
         send(mapOf("t" to "window.open", "stream" to 7, "w" to 800, "h" to 600, "dpi" to 160, "pkg" to "com.a"))
@@ -266,7 +360,7 @@ class NotifySessionTest {
         connect()
         authenticate()
         readUntil("state")
-        phoneShared = true
+        listenerAccess = true
         send(mapOf("t" to "notify.enable", "on" to true))
         readUntil("notify.state")
         send(mapOf("t" to "notify.open", "id" to "key_wa_1", "target" to "desk"))
@@ -318,16 +412,17 @@ class NotifySessionTest {
     }
 
     @Test
-    fun `phone toggle turning off stops forwarding and tells the Mac`() {
+    fun `listener access being revoked stops forwarding and tells the Mac`() {
         connect()
         authenticate()
         readUntil("state")
-        phoneShared = true
+        listenerAccess = true
         send(mapOf("t" to "notify.enable", "on" to true))
         assertEquals(true, readUntil("notify.state")["on"])
-        phoneShared = false
-        session!!.reconcileNotify()
-        assertEquals(false, readUntil("notify.state")["on"])
+        session!!.listenerAccessChanged(false)
+        val state = readUntil("notify.state")
+        assertEquals(false, state["on"])
+        assertEquals("no_access", state["reason"])
         assertFalse(forwards.last())
     }
 
@@ -336,7 +431,7 @@ class NotifySessionTest {
         connect()
         authenticate()
         readUntil("state")
-        phoneShared = true
+        listenerAccess = true
         send(mapOf("t" to "notify.enable", "on" to true))
         readUntil("notify.state")
         session!!.close()

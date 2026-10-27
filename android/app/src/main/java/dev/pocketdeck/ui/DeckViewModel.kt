@@ -44,9 +44,6 @@ class DeckViewModel(app: Application) : AndroidViewModel(app) {
     /** Client ids removed from the list but still on disk until Undo expires. */
     private val pendingForgets = LinkedHashMap<String, Runnable>()
 
-    /** The last listener-grant attempt failed; shown until it succeeds. */
-    @Volatile private var notifyGrantFailed = false
-
     private val deckListener: () -> Unit = { refresh() }
 
     private val shizukuClientListener: (IDeckService?) -> Unit = { refresh() }
@@ -105,8 +102,7 @@ class DeckViewModel(app: Application) : AndroidViewModel(app) {
             enabled = enabled,
             allowConnections = allowConnections,
             allowPairings = Prefs.isAllowPairings(ctx),
-            notifyShared = Prefs.isNotifyShared(ctx),
-            notifyGrantFailed = notifyGrantFailed,
+            notifyNoAccess = DeckState.notifyNoAccess,
             shizukuInstalled = installed,
             shizukuRunning = running,
             shizukuGranted = granted,
@@ -222,42 +218,21 @@ class DeckViewModel(app: Application) : AndroidViewModel(app) {
             }
     }
 
-    /**
-     * The per-phone opt-in for notification sharing. Turning it on asks the shell
-     * service for the listener grant (`cmd notification allow_listener`); when
-     * the shell path fails the person grants it in Settings (docs/design/notify.md).
-     */
-    fun setNotifyShared(value: Boolean) {
-        val ctx = getApplication<Application>()
-        Prefs.setNotifyShared(ctx, value)
-        notifyGrantFailed = false
-        if (value) {
-            val svc = ShizukuClient.current()
-            val granted = svc != null && runCatching { svc.grantListenerAccess() }.getOrDefault(false)
-            if (!granted) {
-                notifyGrantFailed = true
-                runCatching {
-                    ctx.startActivity(
-                        Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)
-                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
-                    )
-                }
-            } else {
-                // A fresh grant binds the listener right away; make sure its push
-                // path is wired the same way the foreground service does.
-                ShizukuClient.current()?.setNotifyShared(true)
-            }
-        }
-        ShizukuClient.current()?.let { runCatching { it.setNotifyShared(Prefs.isNotifyShared(ctx)) } }
-        refresh()
-    }
-
     fun runStatusAction(kind: AttentionKind) {
         val ctx = getApplication<Application>()
         when (kind) {
             AttentionKind.CONNECTIONS_OFF -> setAllowConnections(true)
             AttentionKind.SHIZUKU_NOT_RUNNING -> openShizuku()
             AttentionKind.SHIZUKU_PERMISSION -> allowShizuku()
+            // The Mac asked to share notifications but the listener grant is
+            // missing: the one screen that can grant it.
+            AttentionKind.NOTIFY_ACCESS -> runCatching {
+                ctx.startActivity(
+                    Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                )
+            }
+
             AttentionKind.RETRY -> {
                 DeckForegroundService.start(ctx)
                 refresh()

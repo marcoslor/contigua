@@ -37,7 +37,6 @@ class HomeScreenTest {
                         onToggleEnabled = {},
                         onToggleAllowConnections = {},
                         onToggleAllowPairings = {},
-                        onToggleNotify = {},
                         onStatusAction = {},
                         onForget = { "" },
                         onUndoForget = {},
@@ -50,7 +49,8 @@ class HomeScreenTest {
         compose.waitForIdle()
     }
 
-    private fun state(enabled: Boolean, allowConnections: Boolean = true) = DeckUiState(
+    private fun state(enabled: Boolean, allowConnections: Boolean = true,
+                      notifyNoAccess: Boolean = false) = DeckUiState(
         onboardingDone = true,
         enabled = enabled,
         allowConnections = allowConnections,
@@ -68,6 +68,7 @@ class HomeScreenTest {
                 port = 4711,
                 connectedMac = null,
                 allowConnections = allowConnections,
+                notifyNoAccess = notifyNoAccess,
             ),
         ),
     )
@@ -108,10 +109,18 @@ class HomeScreenTest {
     }
 
     @Test
-    fun `the sharing switch says what it shares and why it is off`() {
+    fun `the phone's home has no notification sharing switch`() {
+        // The Mac's per-phone switch is the only one (docs/design/notify.md).
         shoot(state(enabled = true))
-        compose.onNodeWithText("Share notifications and Now Playing").fetchSemanticsNode()
-        compose.onNodeWithText("Only while a Mac is connected. Off by default.").fetchSemanticsNode()
+        compose.onNodeWithText("Share notifications and Now Playing").assertDoesNotExist()
+    }
+
+    @Test
+    fun `a missing listener grant while the Mac asked shows the attention item`() {
+        shoot(state(enabled = true, notifyNoAccess = true))
+        compose.onNodeWithText("Notification access is off").fetchSemanticsNode()
+        compose.onNodeWithText("Allow PocketDeck to read notifications on this phone.").fetchSemanticsNode()
+        compose.onNodeWithText("Allow").fetchSemanticsNode()
     }
 
     @Test

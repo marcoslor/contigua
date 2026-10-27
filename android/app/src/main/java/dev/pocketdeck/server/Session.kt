@@ -93,12 +93,19 @@ class Session(
      * values (docs/design/e2ee.md §4b: the HKDF math is pinned without an engine). */
     private val tlsView: TlsView? = null,
     private val audioCapture: AudioCaptureLayer? = null,
-    private val notifyShared: () -> Boolean = { false },
+    /** The phone's notification-listener grant, as the app last reported it. */
+    private val notifyAccess: () -> Boolean = { false },
+    /**
+     * Try `cmd notification allow_listener` at shell UID (docs/design/notify.md).
+     * Returns whether the listener is granted afterwards.
+     */
+    private val notifyGrant: () -> Boolean = { false },
     /** `media.command`: the validated command as JSON, for the app process. */
     private val mediaCommand: ((String) -> Unit)? = null,
     /** `media.choose`: which phone session Now Playing follows. */
     private val mediaChoose: ((String) -> Unit)? = null,
-    private val notifyForward: ((Boolean) -> Unit)? = null,
+    /** The gate's answer for the app: forwarding, and `no_access` when asked but ungranted. */
+    private val notifyState: ((Boolean, String?) -> Unit)? = null,
     /** Asks the app for the forwarded notification's action; it answers over AIDL. */
     private val notifyOpen: ((String, Int) -> Unit)? = null,
     /** `notify.action`: press an advertised action (id, index, reply text). */
@@ -225,9 +232,11 @@ class Session(
         Thread(r, "pocketdeck-hover").apply { isDaemon = true }
     }
 
-    /** Notification sharing: the Mac asked for it and the phone's toggle is on. */
+    /** The Mac asked for notifications; forwarding also needs the listener grant. */
     @Volatile private var notifyWanted = false
+    @Volatile private var notifyGranted = false
     @Volatile private var notifyForwarding = false
+    @Volatile private var notifyGateState = NotifyGate.OFF
 
     /** `state.panel` is the phone's hold (PanelHold.kt), never a local guess. */
 
@@ -367,9 +376,14 @@ class Session(
         if (!closed.compareAndSet(false, true)) return
         // The Mac's session ended: stop forwarding and tell the app.
         notifyWanted = false
-        if (notifyForwarding) {
+        // The app's attention item is local state and must go even when the
+        // session never forwarded (no access): clear it from the close path,
+        // which runs whatever the phase was.
+        if (notifyGateState != NotifyGate.OFF) {
+            log("notify gate: ${notifyGateState.name.lowercase()} -> off")
+            notifyGateState = NotifyGate.OFF
             notifyForwarding = false
-            runCatching { notifyForward?.invoke(false) }
+            runCatching { notifyState?.invoke(false, null) }
         }
         val abandoned = synchronized(pairLock) {
             val open = if (pairSettled) null else pendingPairId
@@ -1090,27 +1104,55 @@ class Session(
     // notifications + media controls (docs/design/notify.md)
     // ------------------------------------------------------------------
 
-    /** `notify.enable`: the Mac's per-session opt-in; the phone's toggle adds to it. */
+    /**
+     * `notify.enable`: the Mac's per-session opt-in, the only person-facing
+     * switch (docs/design/notify.md). A missing listener grant is tried once at
+     * shell UID; when that fails the phone answers `no_access` and shows the
+     * person where to allow it.
+     */
     private fun onNotifyEnable(obj: Map<String, Any?>) {
         val on = Json.bool(obj["on"]) ?: run {
             sendError("bad_request", "notify.enable needs a boolean on", 0)
             return
         }
         notifyWanted = on
+        if (on && !notifyGranted) {
+            notifyGranted = notifyAccess() || notifyGrant()
+            if (notifyGranted) log("notify: listener access granted")
+        }
         reconcileNotify()
     }
 
-    /** Re-evaluates the forwarding gate (also runs when the phone toggle changes). */
+    /** Re-evaluates the forwarding gate (also runs when the app reports a grant). */
     fun reconcileNotify() {
         // A session that has not authenticated gets nothing but the machine; the
         // Mac's `notify.enable` after welcome asks again.
         if (phase != Phase.READY) return
-        val forward = notifyWanted && notifyShared() && !closed.get()
-        if (forward != notifyForwarding) {
-            notifyForwarding = forward
-            runCatching { notifyForward?.invoke(forward) }
+        val gate = notifyGate(notifyWanted && !closed.get(), notifyGranted)
+        val gateChanged = gate != notifyGateState
+        if (gateChanged) {
+            log("notify gate: ${notifyGateState.name.lowercase()} -> ${gate.name.lowercase()}")
+            notifyGateState = gate
         }
-        sendJson(mapOf("t" to "notify.state", "on" to forward))
+        // A gate change always reaches the app, even when forwarding was false
+        // both before and after (no access -> off): the attention item is the
+        // app's own state. NO_ACCESS repeats, so a late-attached app still learns.
+        val forward = gate == NotifyGate.FORWARDING
+        notifyForwarding = forward
+        if (gateChanged || needsNotificationAccessAttention(gate)) {
+            runCatching { notifyState?.invoke(forward, if (gate == NotifyGate.NO_ACCESS) "no_access" else null) }
+        }
+        sendJson(notifyStateMessage(gate))
+    }
+
+    /**
+     * The app's notification listener connected or went away: a later grant
+     * turns forwarding on without another Mac toggle.
+     */
+    fun listenerAccessChanged(granted: Boolean) {
+        if (notifyGranted == granted) return
+        notifyGranted = granted
+        reconcileNotify()
     }
 
     /**

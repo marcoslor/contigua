@@ -17,8 +17,6 @@ object Prefs {
     private const val KEY_PENDING_QR = "pending_qr"
     private const val KEY_ONBOARDING_DONE = "onboarding_done"
     private const val KEY_BATTERY_REQUESTED = "battery_requested"
-    private const val KEY_NOTIFY_SHARED = "notify_shared"
-
     /**
      * A scanned Mac QR (review R2): the phone pins the Mac by `f` and answers
      * the Mac over TLS with `pair.qr` HMAC of `s`. Kept only until it is served
@@ -81,16 +79,6 @@ object Prefs {
 
     fun setBatteryRequested(ctx: Context, value: Boolean) =
         sp(ctx).edit().putBoolean(KEY_BATTERY_REQUESTED, value).apply()
-
-    /**
-     * The per-phone opt-in for sharing notifications and the media session with a
-     * connected Mac. Default OFF (privacy); the grant and forwarding only start
-     * while this is true.
-     */
-    fun isNotifyShared(ctx: Context): Boolean = sp(ctx).getBoolean(KEY_NOTIFY_SHARED, false)
-
-    fun setNotifyShared(ctx: Context, value: Boolean) =
-        sp(ctx).edit().putBoolean(KEY_NOTIFY_SHARED, value).apply()
 
     /** Stable random 16-hex id advertised over mDNS. */
     fun deviceId(ctx: Context): String {
