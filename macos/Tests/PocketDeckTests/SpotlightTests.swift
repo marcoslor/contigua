@@ -6,6 +6,8 @@ import XCTest
 @testable import PocketDeck
 
 private final class SpyIndex: SearchIndexing {
+    /// Set to make the index call come back as refused.
+    var failure: Error?
     var indexedCalls: [[CSSearchableItem]] = []
     var deletedDomains: [[String]] = []
     /// Every call in order, so a test can tell a delete-then-add from an add alone.
@@ -15,7 +17,7 @@ private final class SpyIndex: SearchIndexing {
                               completionHandler: (@Sendable (Error?) -> Void)?) {
         indexedCalls.append(items)
         calls.append("index")
-        completionHandler?(nil)
+        completionHandler?(failure)
     }
 
     func deleteSearchableItems(withDomainIdentifiers domainIdentifiers: [String],
@@ -26,6 +28,7 @@ private final class SpyIndex: SearchIndexing {
     }
 }
 
+@MainActor
 final class SpotlightTests: XCTestCase {
 
     private func app(_ pkg: String, _ label: String, activity: String? = nil) -> AppInfo {
@@ -180,5 +183,142 @@ final class SpotlightTests: XCTestCase {
         index.index(apps: apps, deviceId: "a1b2c3", phoneName: "FakePhone", iconData: { _ in nil })
         index.remove(deviceId: "a1b2c3")
         XCTAssertEqual(spy.deletedDomains, [["e2e.a1b2c3"]])
+    }
+
+    // MARK: Index health
+
+    private let verification = SpotlightVerification(deviceId: "a1b2c3", phoneName: "FakePhone",
+                                                     expectedCount: 2)
+
+    func testTheQueryBackAsksForThePhonesKeyword() {
+        XCTAssertEqual(SpotlightIndexer.keywordQuery(phoneName: "Test Phone"),
+                       "kMDItemKeywords == \"Test Phone\"")
+        // A phone name is the phone's own string: a quote in it must not break
+        // the query, and the name never reaches a log line.
+        XCTAssertEqual(SpotlightIndexer.keywordQuery(phoneName: "He said \"hi\""),
+                       "kMDItemKeywords == \"He said \\\"hi\\\"\"")
+    }
+
+    func testAVerifiedIndexIsAnnouncedWithTheCounts() async {
+        let spy = SpyIndex()
+        let asked = expectation(description: "the app asked its index back")
+        let index = SpotlightIndex(index: spy, itemCount: { query, prefix, timeout in
+            XCTAssertEqual(query, SpotlightIndexer.keywordQuery(phoneName: "FakePhone"))
+            XCTAssertEqual(prefix, "a1b2c3/")
+            XCTAssertEqual(timeout, 30)
+            asked.fulfill()
+            return 2
+        })
+        index.index(apps: apps, deviceId: "a1b2c3", phoneName: "FakePhone", iconData: { _ in nil })
+        await fulfillment(of: [asked], timeout: 5)
+        await waitFor { index.state == .verified(found: 2) }
+        XCTAssertEqual(index.state, .verified(found: 2))
+    }
+
+    func testAnEmptyIndexIsTheFailureOncePerLaunch() async {
+        let spy = SpyIndex()
+        let asked = expectation(description: "the app asked its index back")
+        let index = SpotlightIndex(index: spy, itemCount: { _, _, _ in
+            asked.fulfill()
+            return 0
+        })
+        index.index(apps: apps, deviceId: "a1b2c3", phoneName: "FakePhone", iconData: { _ in nil })
+        await fulfillment(of: [asked], timeout: 5)
+        await waitFor { index.state == .unavailable(announced: true) }
+        XCTAssertEqual(index.state, .unavailable(announced: true))
+    }
+
+    func testARefusedIndexCallAsksNothingAndIsUnavailable() async {
+        let spy = SpyIndex()
+        spy.failure = NSError(domain: "CSIndexErrorDomain", code: -1003)
+        let asked = expectation(description: "no query back")
+        asked.isInverted = true
+        let index = SpotlightIndex(index: spy, itemCount: { _, _, _ in
+            asked.fulfill()
+            return 1
+        })
+        index.index(apps: apps, deviceId: "a1b2c3", phoneName: "FakePhone", iconData: { _ in nil })
+        await waitFor { index.state == .unavailable(announced: true) }
+        await fulfillment(of: [asked], timeout: 1)
+        XCTAssertEqual(index.state, .unavailable(announced: true))
+    }
+
+    private func waitFor(_ condition: @escaping @MainActor () -> Bool) async {
+        for _ in 0..<2000 {
+            if condition() { return }
+            await Task.yield()
+        }
+    }
+}
+
+/// The index lifecycle as a table: every state takes every event, so a fix here
+/// cannot leave a combination unhandled (the bug this replaced was two flags
+/// that could disagree).
+final class SpotlightIndexStateTests: XCTestCase {
+
+    private let pending = SpotlightVerification(deviceId: "dev", phoneName: "Phone", expectedCount: 2)
+    private var verifying: SpotlightIndexState { .verifying(pending) }
+
+    private var settledStates: [SpotlightIndexState] {
+        [.idle, .verified(found: 2), .unavailable(announced: true)]
+    }
+
+    func testSubmittingAsksTheIndexBackFromEveryState() {
+        for state in [SpotlightIndexState.idle, verifying, .verified(found: 2), .unavailable(announced: true)] {
+            let (next, effects) = state.applying(.submitted(pending))
+            XCTAssertEqual(next, verifying, "submitted from \(state)")
+            XCTAssertEqual(effects, [.verify(pending)], "submitted from \(state)")
+        }
+    }
+
+    func testSubmittingNothingAsksNothing() {
+        var empty = pending
+        empty.expectedCount = 0
+        let (next, effects) = SpotlightIndexState.idle.applying(.submitted(empty))
+        XCTAssertEqual(next, .idle)
+        XCTAssertEqual(effects, [.quiet])
+    }
+
+    func testRefusalSpeaksOncePerLaunch() {
+        let (first, firstEffects) = SpotlightIndexState.idle.applying(.refused)
+        XCTAssertEqual(first, .unavailable(announced: true))
+        XCTAssertEqual(firstEffects, [.announceUnavailable])
+        let (again, againEffects) = first.applying(.refused)
+        XCTAssertEqual(again, .unavailable(announced: true))
+        XCTAssertEqual(againEffects, [.quiet])
+    }
+
+    func testAnswerWithItemsVerifies() {
+        let (next, effects) = verifying.applying(.queried(pending, found: 2))
+        XCTAssertEqual(next, .verified(found: 2))
+        XCTAssertEqual(effects, [.announceVerified(pending, foundCount: 2)])
+    }
+
+    func testAnEmptyAnswerIsTheFailure() {
+        let (next, effects) = verifying.applying(.queried(pending, found: 0))
+        XCTAssertEqual(next, .unavailable(announced: true))
+        XCTAssertEqual(effects, [.announceUnavailable])
+    }
+
+    func testAnAnswerForAnotherListProvesNothing() {
+        var otherPhone = pending
+        otherPhone.phoneName = "Other"
+        let (next, effects) = verifying.applying(.queried(otherPhone, found: 2))
+        XCTAssertEqual(next, verifying)
+        XCTAssertEqual(effects, [.quiet])
+
+        var otherBatch = pending
+        otherBatch.expectedCount = 3
+        let (again, againEffects) = verifying.applying(.queried(otherBatch, found: 2))
+        XCTAssertEqual(again, verifying)
+        XCTAssertEqual(againEffects, [.quiet])
+    }
+
+    func testAnAnswerWithNothingPendingIsIgnored() {
+        for state in settledStates {
+            let (next, effects) = state.applying(.queried(pending, found: 2))
+            XCTAssertEqual(next, state, "queried in \(state)")
+            XCTAssertEqual(effects, [.quiet], "queried in \(state)")
+        }
     }
 }
