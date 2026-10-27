@@ -310,7 +310,7 @@ extension PhoneControlsState {
 /// through and what `PhonePanelProbe` maps the hosting view's key views to.
 enum PhonePanelItem: String, CaseIterable {
     case dnd, ringer, ring, screen, volume, sessions, live, phoneScreen, findApps,
-         continueOnMac, installApk, disconnectAgent, settings, quit
+         continueOnMac, installApk, disconnectAgent, gear, settings, quit
 
     var id: String { "panel.\(rawValue)" }
 
@@ -328,18 +328,23 @@ enum PhonePanelItem: String, CaseIterable {
         case .continueOnMac: return "Move to Mac"
         case .installApk: return "Install APK…"
         case .disconnectAgent: return "Disconnect the AI agent"
+        /// The M2 gear: an icon-only button, named for VoiceOver.
+        case .gear: return "Settings and more"
         case .settings: return "Settings…"
         case .quit: return "Quit PocketDeck"
         }
     }
 
     /// One entry per focusable control the state renders, in the order P3 lays
-    /// them out (top to bottom): the four tiles, the volume, the picker, the
-    /// live rows, then the window buttons. The footer exists only in the menu
-    /// bar panel (`showsFooter`), never in the Deck popover. The agent row's
-    /// Disconnect button is first while an agent is connected.
-    static func focusOrder(for state: PhoneControlsState, showsFooter: Bool = true) -> [PhonePanelItem] {
+    /// them out (top to bottom): the gear (M2) in the header, the four tiles,
+    /// the volume, the picker, the live rows, then the window buttons. The
+    /// footer exists only in the menu bar panel (`showsFooter`), never in the
+    /// Deck popover. The agent row's Disconnect button is first while an agent
+    /// is connected.
+    static func focusOrder(for state: PhoneControlsState, showsFooter: Bool = true,
+                           showsGear: Bool = false) -> [PhonePanelItem] {
         var items: [PhonePanelItem] = []
+        if showsGear { items.append(.gear) }
         if state.agentCount > 0 { items.append(.disconnectAgent) }
         items += [.dnd, .ringer, .ring, .screen, .volume]
         if state.showsPicker { items.append(.sessions) }
@@ -432,7 +437,7 @@ extension PhonePanelItem {
         case .installApk:
             guard state.connection.isOnline else { return .offline }
             return state.installBusy ? .installBusy : nil
-        case .sessions, .live, .findApps, .settings, .quit, .disconnectAgent:
+        case .sessions, .live, .findApps, .settings, .quit, .disconnectAgent, .gear:
             return nil
         }
     }
@@ -487,9 +492,16 @@ enum PanelUnavailable: Equatable {
 struct PhonePanelView: View {
     let state: PhoneControlsState
     let actions: PhoneControlsActions
-    /// The menu bar panel keeps Settings…/Quit in its footer; the Deck's popover
-    /// does not (the Deck has its own gear, and the app menu has both).
+    /// The menu bar panel keeps Settings…/Quit in its footer unless the
+    /// secondary-click prototype moved them to the icon's menu; the Deck's
+    /// popover never shows them (it has its own gear, and the app menu has both).
     let showsFooter: Bool
+    /// The M2 prototype's gear: an icon-only button in the header that opens
+    /// the icon's menu.
+    let showsGear: Bool
+    /// What the gear opens; the menu bar panel passes its own menu, so the
+    /// gear and the right-click share one function.
+    let onGear: (() -> Void)?
 
     static let width: CGFloat = PhonePanelMetrics.width
 
@@ -501,10 +513,13 @@ struct PhonePanelView: View {
     @State private var volume: PhoneVolumeControl
     @State private var settleTimeout: Task<Void, Never>?
 
-    init(state: PhoneControlsState, actions: PhoneControlsActions, showsFooter: Bool = true) {
+    init(state: PhoneControlsState, actions: PhoneControlsActions, showsFooter: Bool = true,
+         showsGear: Bool = false, onGear: (() -> Void)? = nil) {
         self.state = state
         self.actions = actions
         self.showsFooter = showsFooter
+        self.showsGear = showsGear
+        self.onGear = onGear
         _volume = State(initialValue: PhoneVolumeControl(display: state.volumeFraction ?? 0))
     }
 
@@ -557,6 +572,16 @@ struct PhonePanelView: View {
     }
 
     private var header: some View {
+        HStack(spacing: 8) {
+            headerIdentity
+            if showsGear { gearButton }
+        }
+        .frame(height: PhonePanelMetrics.headerHeight)
+    }
+
+    /// The phone and its connection, the battery: one VoiceOver element, so the
+    /// gear beside it stays a control of its own.
+    private var headerIdentity: some View {
         HStack(spacing: 10) {
             Image(systemName: state.connection.isOnline ? "iphone.gen3" : "iphone.slash")
                 .font(.system(size: 22))
@@ -586,9 +611,26 @@ struct PhonePanelView: View {
                 .foregroundStyle(low ? AnyShapeStyle(.red) : AnyShapeStyle(.secondary))
             }
         }
-        .frame(height: PhonePanelMetrics.headerHeight)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(state.phoneName), \(state.connection.text)")
+    }
+
+    /// M2's gear, at the panel's top-right: an icon-only button whose help tag
+    /// names what is behind it (Settings, About, Quit).
+    private var gearButton: some View {
+        Button {
+            onGear?()
+        } label: {
+            Image(systemName: "gearshape")
+                .font(.system(size: 13))
+                .frame(width: 22, height: 22)
+                .contentShape(.rect(cornerRadius: PhonePanelMetrics.rowCorner))
+        }
+        .buttonStyle(PanelControlStyle(kind: .row, corner: PhonePanelMetrics.rowCorner,
+                                       hoverID: PhonePanelItem.gear.id))
+        .accessibilityLabel(PhonePanelItem.gear.label)
+        .accessibilityIdentifier(PhonePanelItem.gear.id)
+        .help("Settings, About and Quit")
     }
 
     private var agentRow: some View {

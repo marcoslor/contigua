@@ -45,10 +45,19 @@ struct MenuBarContent: View {
     /// menu bar panel does after its command ran.
     var onOpenWindow: (() -> Void)?
 
+    /// Opens the status item's own menu (the right-click menu and, in M2, the
+    /// gear). One function for both, so they cannot drift apart.
+    var onSecondaryMenu: (() -> Void)?
+
     var body: some View {
+        // The footer and the gear are the prototype's (PanelMenuPrototype.swift);
+        // without the flag the panel is today's, footer and all.
+        let prototype = PanelMenuPrototype.current
         PhonePanelView(state: PhoneControlsState(controller: controller),
                        actions: actions,
-                       showsFooter: true)
+                       showsFooter: prototype?.showsFooter ?? true,
+                       showsGear: prototype?.showsGear ?? false,
+                       onGear: onSecondaryMenu)
     }
 
     private var actions: PhoneControlsActions {
