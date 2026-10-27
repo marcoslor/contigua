@@ -172,6 +172,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         // trackpad all stop at the mapper (Esc leaves the mode instead).
         mapper.inputSuspended = { [weak self] in self?.frozen ?? false }
         mapper.onLiveTextEscape = { [weak self] in self?.exitLiveText(.escape) }
+        mapper.onStyleToggle = { [weak self] in self?.toggleStyle() }
         mapper.send = { [weak self] command in self?.handle(command) }
         mapper.touchPointsChanged = { [weak self] points in self?.videoView.showTouchPoints(points) }
         mapper.hoverEnabled = { [weak self] in self?.manager.hoverEnabled ?? false }
@@ -643,6 +644,10 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         state.phoneWindow = self is PhoneWindowController
         state.panelOff = (self as? PhoneWindowController)?.panelOffShown ?? false
         state.revealDelay = manager.revealDelay
+        // The View menu's pair is enabled from here on. It is corrected when
+        // the menu opens too, but a disabled menu item eats its key equivalent:
+        // ⌥⌘F is on the pair and must work without the menu being opened.
+        MenuMarks.apply(to: NSApp.mainMenu)
     }
 
     func windowDidResignKey(_ notification: Notification) {
@@ -660,6 +665,8 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         state.phoneWindow = false
         state.panelOff = false
         videoView.windowResignedKey()
+        // The pair acts on the key stream window: disabled again once none is.
+        MenuMarks.apply(to: NSApp.mainMenu)
     }
 
     // MARK: View menu
