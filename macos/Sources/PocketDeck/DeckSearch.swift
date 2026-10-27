@@ -19,11 +19,28 @@ enum DeckSearch {
         return find(in: window.contentView)
     }
 
+    /// The field's help tag and AX help: ⌘F is deliberately not a menu item (a
+    /// menu item would eat the key in every stream window), so the control's
+    /// own help is where a person finds the shortcut (CONV-MAC-06, DECK-9).
+    static let findHelp = "Find (⌘F)"
+
+    /// Puts the Find key on the field SwiftUI built. SwiftUI owns the toolbar
+    /// field and rebuilds it with the toolbar, so the Deck's view applies this
+    /// again after its first layout and on every ⌘F.
+    @discardableResult
+    static func applyFindHelp(in window: NSWindow) -> Bool {
+        guard let field = field(in: window) else { return false }
+        field.toolTip = findHelp
+        field.setAccessibilityHelp(findHelp)
+        return true
+    }
+
     /// Focus the field and select all of its text: the ⌘F behaviour.
     static func selectAll(in window: NSWindow) {
         guard let field = field(in: window) else { return }
         window.makeFirstResponder(field)
         field.selectText(nil)
+        applyFindHelp(in: window)
     }
 
     /// The Deck's Find: the window's own search-focus path (SwiftUI's
@@ -62,7 +79,7 @@ enum DeckSearch {
     }
 
     /// The field's state as JSON (the e2e's read): focused, its text, the
-    /// selection, and which window is key.
+    /// selection, which window is key, and the help tag that names ⌘F.
     private struct Report: Encodable {
         var focused: Bool
         var text: String
@@ -71,6 +88,10 @@ enum DeckSearch {
         /// The window's first responder, by class: whether the field editor
         /// really has the keys (currentEditor alone can outlive the focus).
         var firstResponder: String
+        /// CONV-MAC-06: the shortcut is not a menu item (a menu item would eat
+        /// ⌘F in every stream window), so the field's help has to name it.
+        var tooltip: String
+        var help: String
     }
 
     static func dump(to path: String) -> Bool {
@@ -88,7 +109,9 @@ enum DeckSearch {
                                 [($0).selectedRange.location, ($0).selectedRange.length]
                             } ?? [0, 0],
                             keyWindow: key,
-                            firstResponder: window.firstResponder.map { String(describing: type(of: $0)) } ?? "nil")
+                            firstResponder: window.firstResponder.map { String(describing: type(of: $0)) } ?? "nil",
+                            tooltip: field.toolTip ?? "",
+                            help: field.accessibilityHelp() ?? "")
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         guard let data = try? encoder.encode(report) else { return false }

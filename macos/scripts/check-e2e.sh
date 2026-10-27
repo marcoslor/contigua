@@ -9632,7 +9632,7 @@ PY
     # the key window's responder chain), never a shortcut that calls the action.
     # ⌘K stays the app-wide Find Apps.
     local n
-    for n in typed before after stream after-k; do rm -f "$WORK/deck-search-$n.json"; done
+    for n in typed before after help stream after-k; do rm -f "$WORK/deck-search-$n.json"; done
     deck_search() {
         control decksearch "$WORK/deck-search-$1.json" || bad "DECK decksearch $1: $CONTROL_REPLY"
     }
@@ -9669,6 +9669,17 @@ if not root["focused"]:
     print("not focused:", root); sys.exit(1)
 if root["text"] != "set" or root["selection"] != [0, 3]:
     print("text/selection:", root["text"], root["selection"]); sys.exit(1)
+PY
+    # ⌘F is deliberately not a menu item (a menu item would eat it in every
+    # stream window), so the field's own help tag and AX help have to name it
+    # (CONV-MAC-06, misses.md M4).
+    deck_search help
+    python3 - "$WORK/deck-search-help.json" <<'PY' && ok "[DECK-9] the search field's help tag and AX help name ⌘F (CONV-MAC-06)" \
+        || bad "[DECK-9] the search field's help does not name ⌘F, so nothing tells a person the key"
+import json, sys
+root = json.load(open(sys.argv[1]))
+if root["tooltip"] != "Find (⌘F)" or root["help"] != "Find (⌘F)":
+    print("tooltip:", root["tooltip"], "help:", root["help"]); sys.exit(1)
 PY
     # A stream window is key: the same ⌘F belongs to the phone's app.
     control open --open com.android.settings --debug-chrome-state "$WORK/chrome.txt" \
