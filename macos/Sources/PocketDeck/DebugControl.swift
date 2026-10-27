@@ -38,6 +38,8 @@
 //   settings-dump PATH [LAST ROW]  the Settings window's real geometry: its
 //                    frame against the screen, the tab's scroll view, and
 //                    whether the last row shows once scrolled to the end
+//   visibleframe PATH the visible frame of the key window's screen, "W H":
+//                    the e2e chrome check's limit for an AX resize
 //
 // Arguments are separated by spaces; paths with spaces are not supported.
 

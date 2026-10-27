@@ -571,7 +571,9 @@ message was sent and the Mac advances it with `rate`. `key` names the session
 `media.sessions` listed; `canSeek` says its `PlaybackState` lists
 `ACTION_SEEK_TO`; `volume`/`volumeMax` come from its `playbackInfo` (local
 playback is the music stream). A phone that does not send the new fields keeps
-working: the Mac then enables no seek command and shows no volume slider.
+working: the Mac then enables no seek command and shows no volume slider, and
+it sends no `media.command` volume — without the maximum there is no level to
+clamp to, and the Mac never guesses one.
 
 `media.sessions {list, chosen}` lists the active sessions in the system's order
 as `{key, pkg, app, playing}` — an opaque per-session `key` the phone mints, the

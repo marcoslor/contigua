@@ -84,6 +84,11 @@ final class InputMapper {
     /// instead of reaching Android.
     var inputSuspended: () -> Bool = { false }
     var onLiveTextEscape: (() -> Void)?
+    /// ⌥⌘F, the window's style switch (View ▸ Framed/Immersive). The menu item
+    /// carries the shortcut for display; while that pair is disabled (no stream
+    /// window was key when the commands were built) the item cannot take it, so
+    /// the key window does — it must never reach the phone (⌘F is the phone's).
+    var onStyleToggle: (() -> Void)?
     private var suspended: Bool { inputSuspended() }
     /// A mouse button in use (a click-drag) wins: gestures are ignored then.
     var mouseButtonIsDown: () -> Bool = { NSEvent.pressedMouseButtons != 0 }
@@ -108,6 +113,7 @@ final class InputMapper {
     }
 
     static let keyCodeEscape: UInt16 = 53
+    static let keyCodeF: UInt16 = 3
     static let keyCodeH: UInt16 = 4
     static let keyCodeUpArrow: UInt16 = 126
 
@@ -561,6 +567,13 @@ final class InputMapper {
             return
         }
         let flags = event.modifierFlags
+        // The window's own ⌥⌘F (View ▸ Framed/Immersive), before the phone's
+        // ⌘F: a disabled menu item does not consume its key equivalent, so the
+        // key arrives here when the style pair is disabled.
+        if flags.contains(.command), flags.contains(.option), event.keyCode == Self.keyCodeF {
+            onStyleToggle?()
+            return
+        }
         if flags.contains(.command) {
             // Phone mode: ⇧⌘H = home, ⌘↑ = recents. ⇧⌘H is not ⌘H: no clash
             // with the app menu's Hide.
@@ -629,6 +642,10 @@ final class InputMapper {
 
     func keyUp(_ event: NSEvent) {
         guard !suspended else { return }
+        // The style switch's key never reached the phone on the way down, so
+        // its release must not either.
+        if event.modifierFlags.contains(.command), event.modifierFlags.contains(.option),
+           event.keyCode == Self.keyCodeF { return }
         if let code = Self.keyMap[event.keyCode] {
             send?(.key(KeyEvent(action: 1, keycode: code)))
         } else if event.modifierFlags.contains(.command), let code = Self.metaKeyMap[event.keyCode] {

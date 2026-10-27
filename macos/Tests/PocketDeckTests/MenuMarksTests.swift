@@ -96,6 +96,21 @@ final class MenuMarksTests: XCTestCase {
         }
     }
 
+    /// The pair acts on the key stream window. With the Deck (or nothing) key
+    /// nothing is checked and both are disabled, whatever style was last used.
+    func testThePairIsDisabledAndUncheckedWithNoStreamWindow() {
+        for style in WindowStyle.allCases {
+            let rules = edits(state(style: style, hasStream: false))
+            XCTAssertTrue(rules.contains(.mark(["Framed"], false)), "\(style)")
+            XCTAssertTrue(rules.contains(.mark(["Immersive"], false)), "\(style)")
+            XCTAssertTrue(rules.contains(.enable(["Framed"], false)), "\(style)")
+            XCTAssertTrue(rules.contains(.enable(["Immersive"], false)), "\(style)")
+        }
+        let withStream = edits(state(style: .framed))
+        XCTAssertTrue(withStream.contains(.enable(["Framed"], true)))
+        XCTAssertTrue(withStream.contains(.enable(["Immersive"], true)))
+    }
+
     // MARK: Hide Controls and its reveal choice
 
     func testTheRevealChoiceInsideHideControlsFollowsTheStore() {

@@ -126,6 +126,14 @@ as pairkeys.json is treated now; Keychain returns when Wallet-style code signing
 exists (ROADMAP). Migration: on first v2 run the old pairkeys.json is deleted
 (the forced re-pair) and identity.json is created — no reverse path.
 
+`pin` is a **mirror of the phone in use**, not the pin check: the per-phone
+records in `pins.json` (§6) are the authority, and a connection verifies the
+peer against the dialed phone's own record. The mirror is rewritten from that
+record on a successful connect, on Settings ▸ Devices ▸ Use and after pairing,
+and emptied when no record holds it. Since the mirror can name a different
+phone (pairing A, then B, then using A again), the TLS gate must never compare
+it with another phone's record.
+
 ## 4. The pairing code: commit / nonce / reveal over the TLS exporter (rev 2)
 
 **Why not the rev-1 formula (the R1 blocker).** Deriving the code only from the
@@ -356,7 +364,8 @@ swift test`; e2e = `PD_E2E_PORT=... ./scripts/check-e2e.sh <check>`.
    SwiftUI pin-mismatch surface) — swift unit test for the JSON round trip +
    fingerprint math (reuse of S1's pointFP code).
 3. **NIOSSL transport on the Mac** — connection/controller wiring, pin
-   enforcement (no pin present ⇒ refuse), TLS 1.3-only config, resumption/0-RTT
+   enforcement against the dialed phone's record (no record ⇒ refuse, record
+   without its cert ⇒ refuse), TLS 1.3-only config, resumption/0-RTT
    off, and the `exportSecret(...)` helper (§4b) with unit vectors. Check:
    swift test with a loopback mock (reuse the spike harness) + K2 green.
 4. **App-side identity gen + AIDL push (`setPairedClients` self)** — K1.

@@ -278,7 +278,8 @@ final class ShareInbox {
             Log.app.notice("share: link from phone")
             actions.open(url)
         case .text(let text):
-            Log.app.notice("share: text from phone (\(text.utf8.count) bytes)")
+            let bytes = text.utf8.count
+            Log.app.notice("share: text from phone (\(bytes, privacy: .public) bytes)")
             actions.copy(text: text)
             actions.notify(title: "Copied from \(phoneName)", body: String(text.prefix(120)), file: nil)
         case nil:
@@ -294,7 +295,7 @@ final class ShareInbox {
     func fileEnd(id: UInt32, size: Int, sha256: String) {
         switch receiver.end(id: id, size: size, sha256: sha256) {
         case .saved(let url):
-            Log.app.notice("share: saved \(url.path, privacy: .public)")
+            Log.app.notice("share: saved \(url.path, privacy: .private)")
             actions.copy(imageFile: url)
             actions.notify(title: "Image from \(phoneName)", body: url.lastPathComponent, file: url)
         case .failed(let why):
