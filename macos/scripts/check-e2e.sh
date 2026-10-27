@@ -8675,16 +8675,20 @@ check_deck() {
     }
     shot_rail rail-rest.png
     local px py
-    if [ "$VISIBLE" = 1 ] && control deckrailpoint M "$WORK/deck-rail-shots/m.pt" \
-        && read -r px py < "$WORK/deck-rail-shots/m.pt"; then
-        shot_rail rail-hover-before.png
-        cg_input moveat --x "$px" --y "$py"
-        sleep 1
-        shot_rail rail-hover-m.png
-        if cmp -s "$railshots/rail-hover-before.png" "$railshots/rail-hover-m.png"; then
-            bad "DECK moving the real pointer onto M did not magnify the rail"
+    if [ "$VISIBLE" = 1 ]; then
+        if control deckrailpoint M "$WORK/deck-rail-shots/m.pt" \
+            && read -r px py < "$WORK/deck-rail-shots/m.pt"; then
+            shot_rail rail-hover-before.png
+            cg_input moveat --x "$px" --y "$py"
+            sleep 1
+            shot_rail rail-hover-m.png
+            if cmp -s "$railshots/rail-hover-before.png" "$railshots/rail-hover-m.png"; then
+                bad "DECK moving the real pointer onto M did not magnify the rail"
+            else
+                ok "DECK the real pointer on M magnified the rail"
+            fi
         else
-            ok "DECK the real pointer on M magnified the rail"
+            bad "DECK deckrailpoint M: $CONTROL_REPLY"
         fi
     else
         control deckrailhover M && ok "DECK forced the rail's hover on M for the shot" \
@@ -8698,13 +8702,17 @@ check_deck() {
     # point, so deck-rail runs the rail's own scroll; a visible VM run clicks
     # the rail with the real pointer. The cell dump is the authority for where
     # that app is, and railTop proves its row is on screen after the scroll.
-    if [ "$VISIBLE" = 1 ] && control deckrailpoint T "$WORK/deck-rail-shots/t.pt" \
-        && read -r px py < "$WORK/deck-rail-shots/t.pt"; then
-        cg_input clickat --x "$px" --y "$py"
-        if rail="$(python3 "$MACOS/scripts/deck-rail.py" "$WORK/deck-grid.jsonl" T)"; then
-            ok "DECK the real pointer clicked the rail's T and landed on it ($rail)"
+    if [ "$VISIBLE" = 1 ]; then
+        if control deckrailpoint T "$WORK/deck-rail-shots/t.pt" \
+            && read -r px py < "$WORK/deck-rail-shots/t.pt"; then
+            cg_input clickat --x "$px" --y "$py"
+            if rail="$(python3 "$MACOS/scripts/deck-rail.py" "$WORK/deck-grid.jsonl" T)"; then
+                ok "DECK the real pointer clicked the rail's T and landed on it ($rail)"
+            else
+                bad "DECK the real pointer on the rail's T: $rail"
+            fi
         else
-            bad "DECK the real pointer on the rail's T: $rail"
+            bad "DECK deckrailpoint T: $CONTROL_REPLY"
         fi
     fi
     if control deck-rail T >/dev/null; then
@@ -8731,20 +8739,23 @@ check_deck() {
 
     # A drag from A to Z on the rail picks every letter on the way and lands on
     # Z's first app (a visible VM run only: it is the real pointer).
-    if [ "$VISIBLE" = 1 ] \
-        && control deckrailpoint A "$WORK/deck-rail-shots/a.pt" \
-        && control deckrailpoint Z "$WORK/deck-rail-shots/z.pt"; then
-        local ax ay zx zy
-        read -r ax ay < "$WORK/deck-rail-shots/a.pt"
-        read -r zx zy < "$WORK/deck-rail-shots/z.pt"
-        cg_input dragat --x "$ax" --y "$ay" --x2 "$zx" --y2 "$zy" --steps 40
-        if rail="$(python3 "$MACOS/scripts/deck-rail.py" "$WORK/deck-grid.jsonl" Z 20)"; then
-            ok "DECK dragging the real pointer from A to Z lands on Z ($rail)"
+    if [ "$VISIBLE" = 1 ]; then
+        if control deckrailpoint A "$WORK/deck-rail-shots/a.pt" \
+            && control deckrailpoint Z "$WORK/deck-rail-shots/z.pt"; then
+            local ax ay zx zy
+            read -r ax ay < "$WORK/deck-rail-shots/a.pt"
+            read -r zx zy < "$WORK/deck-rail-shots/z.pt"
+            cg_input dragat --x "$ax" --y "$ay" --x2 "$zx" --y2 "$zy" --steps 40
+            if rail="$(python3 "$MACOS/scripts/deck-rail.py" "$WORK/deck-grid.jsonl" Z 20)"; then
+                ok "DECK dragging the real pointer from A to Z lands on Z ($rail)"
+            else
+                bad "DECK dragging the real pointer A to Z: $rail"
+            fi
+            sleep 1
+            shot_rail rail-drag-z.png
         else
-            bad "DECK dragging the real pointer A to Z: $rail"
+            bad "DECK deckrailpoint A or Z: $CONTROL_REPLY"
         fi
-        sleep 1
-        shot_rail rail-drag-z.png
     else
         skip_visible "DECK a real A-to-Z rail drag"
     fi
