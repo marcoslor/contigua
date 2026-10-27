@@ -201,11 +201,15 @@ final class ClipboardSyncTests: XCTestCase {
         XCTAssertEqual(sent, ["after"])
     }
 
-    func testIsEnabledIsOnUntilTurnedOff() {
+    func testIsEnabledIsOffUntilThePersonTurnsItOn() {
         let defaults = UserDefaults(suiteName: "dev.pocketdeck.mac.clipboard-sync-tests")!
         defaults.removePersistentDomain(forName: "dev.pocketdeck.mac.clipboard-sync-tests")
         defer { defaults.removePersistentDomain(forName: "dev.pocketdeck.mac.clipboard-sync-tests") }
+        // A fresh profile shares no clipboard text or image (AGENTS.md).
+        XCTAssertFalse(ClipboardSync.isEnabled(in: defaults))
+        defaults.set(true, forKey: ClipboardSync.enabledKey)
         XCTAssertTrue(ClipboardSync.isEnabled(in: defaults))
+        // An explicit off survives a later launch; nothing re-defaults it.
         defaults.set(false, forKey: ClipboardSync.enabledKey)
         XCTAssertFalse(ClipboardSync.isEnabled(in: defaults))
     }

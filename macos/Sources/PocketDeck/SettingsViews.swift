@@ -238,7 +238,7 @@ enum GlassIconsSetting {
 struct GeneralSettings: View {
     @Environment(ConnectionController.self) private var controller
     @AppStorage("showMenuBar", store: Profile.active.defaults) private var showMenuBar = true
-    @AppStorage(ClipboardSync.enabledKey, store: Profile.active.defaults) private var shareClipboard = true
+    @AppStorage(ClipboardSync.enabledKey, store: Profile.active.defaults) private var shareClipboard = false
     @AppStorage(WindowDensity.key, store: Profile.active.defaults) private var density = 1.0
     @AppStorage(DockAutoSetting.key, store: Profile.active.defaults) private var showAppsInDock = true
     @AppStorage(GlassIconsSetting.key, store: Profile.active.defaults) private var glassIconsOn = true
@@ -258,6 +258,16 @@ struct GeneralSettings: View {
                 }
             Toggle("Show in menu bar", isOn: $showMenuBar)
             Toggle("Share clipboard with your phone", isOn: $shareClipboard)
+            // The row says what it shares, in either position (AGENTS.md:
+            // personal data is opt-in, so the off state has to be as clear as on).
+            Text(
+                shareClipboard
+                    ? "Text and images you copy here are sent to your phone while it is connected, and what you copy there lands here."
+                    : "Off: nothing you copy leaves this Mac. Turn it on to paste between the two."
+            )
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
             Toggle("Show phone apps in the Dock", isOn: $showAppsInDock)
                 .onChange(of: showAppsInDock) { _, _ in controller.showAppsInDockChanged() }
             Toggle("Glass app icons", isOn: $glassIconsOn)

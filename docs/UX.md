@@ -106,7 +106,9 @@ disabled, never hidden.
    name, a dot plus **Connected** / **Connecting…** / **Reconnecting…** / **Offline** / **Pair again** and,
    while it is not connected, when it was last seen; **In Use** on the one the rest of the app shows) and an
    **Add Phone…** row — then **This Mac**: **General** (launch at login, show in menu bar, share clipboard with
-   your phone, show phone apps in the Dock, **glass app icons**, default window density, **reveal controls
+   your phone — off until it is turned on, and the row says in either position what travels: the text and images
+   you copy here reach the phone while it is connected, and what you copy there lands here — show phone apps in
+   the Dock, **glass app icons**, default window density, **reveal controls
    after**), **Input** (**hover over Android apps**) and **Automation**. A phone opens its page in the detail:
    a header with its icon, name, state and **In Use** or **Use This Phone** (**Pair Again…** when its key is
    gone), then the plain sections **Phone** (**Model**, **Rename…**), **Notifications** (**Share notifications

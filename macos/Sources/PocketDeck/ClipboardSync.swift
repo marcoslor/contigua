@@ -48,9 +48,11 @@ final class ClipboardSync {
         return { timer.invalidate() }
     }
 
-    /// On unless the person turned it off. A profile's defaults have no value for it until then.
+    /// Off until the person turns it on: clipboard text and images are personal
+    /// data, so a fresh profile sends nothing (AGENTS.md "Sharing is opt-in").
+    /// A profile that has chosen keeps its answer.
     static func isEnabled(in defaults: UserDefaults) -> Bool {
-        defaults.object(forKey: enabledKey) as? Bool ?? true
+        defaults.object(forKey: enabledKey) as? Bool ?? false
     }
 
     private let pasteboard: ClipboardPasteboard
