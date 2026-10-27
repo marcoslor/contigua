@@ -50,11 +50,15 @@ internal class WindowStream(
         /** `debug.pocketdeck.swap_surfaces=1`: the old surface swaps, for A/B on a device. */
         const val SWAP_SURFACES = "debug.pocketdeck.swap_surfaces"
 
-        // @hide DisplayManager flags, verified against AOSP. Deliberately absent:
-        // the system-decorations flag (bit 9) and the device display-group flag
-        // (bit 15). The first adds a SystemUI nav bar and poisons One UI's back
-        // gesture; the second would tie the VD to the panel's power state and
-        // freeze it while the phone is locked.
+        /** `debug.pocketdeck.vd_panel_group=1`: the VD joins display 0's group (the One UI shape). */
+        const val VD_PANEL_GROUP = "debug.pocketdeck.vd_panel_group"
+
+        // @hide DisplayManager flags, verified against AOSP. Deliberately absent
+        // from a real session: the system-decorations flag (bit 9) adds a
+        // SystemUI nav bar and poisons One UI's back gesture, and the device
+        // display-group flag (bit 15) ties the VD to the panel's power state and
+        // freezes it while the phone is locked. Bit 15 exists only behind
+        // VD_PANEL_GROUP, which reproduces that freeze on the emulator.
         const val FLAG_SECURE = 1 shl 2
         const val FLAG_AUTO_MIRROR = 1 shl 4
         const val FLAG_CAN_SHOW_WITH_INSECURE_KEYGUARD = 1 shl 5
@@ -582,8 +586,8 @@ internal class WindowStream(
         return bits.coerceIn(MIN_BITRATE.toLong(), MAX_BITRATE.toLong()).toInt()
     }
 
-    private fun flags(): Int =
-        DisplayManager.VIRTUAL_DISPLAY_FLAG_PUBLIC or
+    private fun flags(): Int {
+        var f = DisplayManager.VIRTUAL_DISPLAY_FLAG_PUBLIC or
             DisplayManager.VIRTUAL_DISPLAY_FLAG_PRESENTATION or
             DisplayManager.VIRTUAL_DISPLAY_FLAG_OWN_CONTENT_ONLY or
             FLAG_SUPPORTS_TOUCH or
@@ -595,6 +599,15 @@ internal class WindowStream(
             FLAG_TOUCH_FEEDBACK_DISABLED or
             FLAG_OWN_FOCUS
 
+        // The emulator's stand-in for One UI: AOSP honours OWN_DISPLAY_GROUP, so
+        // a power press there never touches our VDs and the press gap cannot be
+        // measured. With this property the VD joins display 0's group instead,
+        // which is the shape the field phone has.
+        if (Hidden.systemProperty(VD_PANEL_GROUP) == "1") {
+            f = (f or FLAG_DEVICE_DISPLAY_GROUP) and FLAG_OWN_DISPLAY_GROUP.inv()
+        }
+        return f
+    }
     /** Names for the requested flags, so the server log shows what we asked for. */
     private fun virtualFlagNames(f: Int): String {
         val set = ArrayList<String>()
@@ -801,16 +814,42 @@ internal class WindowStream(
     }
 }
 
-/** Owns every [WindowStream] and exposes them to the session as a [DisplayLayer]. */
+/**
+ * The stream table behind [AndroidDisplayLayer]. Every insert hands back the
+ * value it displaced, so the caller closes it outside the lock: a silent
+ * overwrite leaked an encoder, a virtual display and its drain thread. Pure
+ * Kotlin (no Android types), so a JVM test pins the ownership rule.
+ */
+internal class StreamTable<V> {
+    private val map = HashMap<Int, V>()
+
+    fun get(stream: Int): V? = synchronized(map) { map[stream] }
+
+    /** Inserts [value]; returns what the same stream id held before, if anything. */
+    fun put(stream: Int, value: V): V? = synchronized(map) { map.put(stream, value) }
+
+    /** Removes the stream; the caller owns (and closes) what comes back. */
+    fun take(stream: Int): V? = synchronized(map) { map.remove(stream) }
+}
+
+/**
+ * Owns every [WindowStream] and exposes them to the session as a [DisplayLayer].
+ *
+ * The `streams` lock only ever guards the map itself: an open build, an encoder
+ * or VD start/stop and a close take seconds, and holding the map across them
+ * made every other stream's keyframe request and backpressure note wait (the
+ * field log: one window opening stalled all output). Build or detach the stream
+ * first, then swap it into the map in one short step.
+ */
 internal class AndroidDisplayLayer(
     private val ctx: Context,
     private val log: (String) -> Unit,
 ) : DisplayLayer {
 
-    private val streams = HashMap<Int, WindowStream>()
+    private val streams = StreamTable<WindowStream>()
 
-    override fun open(stream: Int, w: Int, h: Int, dpi: Int, sink: VideoSink): Int = synchronized(streams) {
-        streams.remove(stream)?.close()
+    override fun open(stream: Int, w: Int, h: Int, dpi: Int, sink: VideoSink): Int {
+        take(stream)?.close()
         val ws = WindowStream(ctx, stream, sink, log)
         // start() can throw after it created the persistent surface and an
         // encoder; close what it built before the session sees the failure.
@@ -820,12 +859,15 @@ internal class AndroidDisplayLayer(
             ws.close()
             throw e
         }
-        streams[stream] = ws
-        id
+        // The map holds the finished stream from here; a later open for the same
+        // id first takes it out and closes it outside the lock. Nothing is ever
+        // overwritten silently.
+        put(stream, ws)
+        return id
     }
 
-    override fun openMirror(stream: Int, w: Int, h: Int, sink: VideoSink): IntSize = synchronized(streams) {
-        streams.remove(stream)?.close()
+    override fun openMirror(stream: Int, w: Int, h: Int, sink: VideoSink): IntSize {
+        take(stream)?.close()
         val ws = WindowStream(ctx, stream, sink, log)
         val size = try {
             ws.startMirror(w, h)
@@ -833,39 +875,47 @@ internal class AndroidDisplayLayer(
             ws.close()
             throw e
         }
-        streams[stream] = ws
-        size
+        put(stream, ws)
+        return size
     }
 
-    override fun size(stream: Int): IntSize = synchronized(streams) {
-        streams[stream]?.inputSize ?: IntSize(0, 0)
-    }
+    override fun size(stream: Int): IntSize = get(stream)?.inputSize ?: IntSize(0, 0)
 
     override fun resize(stream: Int, w: Int, h: Int, dpi: Int) {
-        synchronized(streams) { streams[stream] }?.resize(w, h, dpi)
+        get(stream)?.resize(w, h, dpi)
     }
 
     override fun pause(stream: Int) {
-        synchronized(streams) { streams[stream] }?.pause()
+        get(stream)?.pause()
     }
 
     override fun resume(stream: Int) {
-        synchronized(streams) { streams[stream] }?.resume()
+        get(stream)?.resume()
     }
 
     override fun requestKeyframe(stream: Int) {
-        synchronized(streams) { streams[stream] }?.requestKeyframe()
+        get(stream)?.requestKeyframe()
     }
 
     override fun setQuality(stream: Int, bitrate: Int?, maxFps: Int?) {
-        synchronized(streams) { streams[stream] }?.setQuality(bitrate, maxFps)
+        get(stream)?.setQuality(bitrate, maxFps)
     }
 
     override fun onBackpressure(stream: Int) {
-        synchronized(streams) { streams[stream] }?.onBackpressure()
+        get(stream)?.onBackpressure()
     }
 
     override fun close(stream: Int) {
-        synchronized(streams) { streams.remove(stream) }?.close()
+        take(stream)?.close()
     }
+
+    private fun get(stream: Int): WindowStream? = streams.get(stream)
+
+    /** Inserts, then closes anything it displaced outside the lock. */
+    private fun put(stream: Int, ws: WindowStream) {
+        streams.put(stream, ws)?.close()
+    }
+
+    /** Removes the stream from the map; the caller closes it outside the lock. */
+    private fun take(stream: Int): WindowStream? = streams.take(stream)
 }

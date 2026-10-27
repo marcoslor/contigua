@@ -272,6 +272,7 @@ Phone → Mac:
 | `state` | `locked`: bool, `battery`: int, `charging`: bool, `dnd`: `"off"`/`"priority"`/`"alarms"`/`"none"`, `ringer`: `"normal"`/`"vibrate"`/`"silent"`, `volume`: int, `volumeMax`: int, `screen`: `"on"`/`"off"`, `secure`: bool, `panel`: `"on"`/`"off"` — sent on change; `dnd`/`ringer` are absent on a phone that does not support them (old builds), `volume`/`volumeMax` are both absent on one that cannot read its music stream, `secure` while no phone window is open; see "Phone screen", "Volume" and "Secure screens" |
 | `audio.state` | `on`: bool, `codec`: int — audio capture on/off (for the UI dot) |
 | `ring.state` | `ringing`: bool — a `phone.ring` started (`true`) or ended (`false`) |
+| `power.locked` | — the person's power press with app streams up: the phone took its panel over and is re-lighting the streaming group. The Mac holds each app window's last frame for a short grace instead of calling the picture stalled; see "Phone screen" |
 | `error` | `code`, `message`, optional `stream` |
 | `apk.progress` | `id`, `bytes` — bytes written into the install so far |
 | `apk.result` | `id`, `ok`; success: `pkg`, `label`, `version`; failure: `code`, `message` |
@@ -742,6 +743,15 @@ live while the panel is on.
    until the next keep-alive step re-applies the panel off, and the hold stands. It never
    outlives the ends in point 4, so the phone cannot stay dark without a Mac holding it. The
    phone stays locked either way.
+6. A power press with app windows open (no phone window) may sleep the panel's whole display
+   group: on a build that ignores `OWN_DISPLAY_GROUP` the streaming virtual displays share
+   display 0's group (docs/ARCHITECTURE.md). The phone then wakes the streaming group at once
+   and powers the panel off under it — the same take-over an episode start uses — so the
+   windows keep rendering. The press still locks the phone: nothing dismisses or unlocks the
+   keyguard. The phone sends one `{"t":"power.locked"}` on that edge, and the Mac holds each
+   app window's last frame for a grace shorter than `stale_picture_ms` before it says "Not
+   responding", so the press does not read as a dead stream. It sends nothing for a press
+   while the panel is already held (point 4): that one hands the phone back instead.
 
 ## Secure screens
 

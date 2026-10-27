@@ -74,4 +74,54 @@ final class FrameWatchdogTests: XCTestCase {
         XCTAssertLessThanOrEqual(FrameWatchdog.staleAfter + FrameWatchdog.tickInterval, limit,
                                  "the stall is shown within the limit even when it lands just after a tick")
     }
+
+    // --- the phone's own power press (L2) ------------------------------
+
+    /// `power.locked`: the VD group re-lights, so the silence right after the
+    /// press is the person's action, not a dead stream. The window holds the
+    /// last frame instead of saying "Not responding".
+    func testAPowerPressGivesThePictureAGrace() {
+        var watchdog = FrameWatchdog()
+        watchdog.frame(at: 10)
+        watchdog.powerLocked(at: 11)
+        XCTAssertFalse(watchdog.tick(at: 12.6, expecting: true),
+                       "2.6 s after the last frame but inside the press's grace")
+        XCTAssertFalse(watchdog.stalled)
+    }
+
+    /// A real stall after the grace still says so: the grace is the phone's
+    /// press and nothing else.
+    func testARealStallAfterThePressGraceStillStalls() {
+        var watchdog = FrameWatchdog()
+        watchdog.frame(at: 10)
+        watchdog.powerLocked(at: 11)
+        XCTAssertFalse(watchdog.tick(at: 12.6, expecting: true))
+        XCTAssertTrue(watchdog.tick(at: 12.8, expecting: true),
+                      "the grace ended and the frames never came")
+        XCTAssertTrue(watchdog.stalled)
+    }
+
+    /// Frames resume inside the grace: the picture is live and nothing is said;
+    /// the normal clock then runs from the newest frame.
+    func testAFrameInsideThePressGraceKeepsItLive() {
+        var watchdog = FrameWatchdog()
+        watchdog.frame(at: 10)
+        watchdog.powerLocked(at: 11)
+        watchdog.frame(at: 11.4)
+        for step in stride(from: 11.6, through: 12.6, by: 0.25) {
+            XCTAssertFalse(watchdog.tick(at: step, expecting: true))
+        }
+        XCTAssertFalse(watchdog.stalled)
+        XCTAssertTrue(watchdog.tick(at: 13.0, expecting: true),
+                      "1.5 s after the newest frame the picture is quiet again")
+    }
+
+    /// The grace itself is shorter than stale_picture_ms: the press never turns
+    /// the limit into a longer silence than the promise allows.
+    func testThePressGraceIsUnderTheStaleLimit() {
+        let limit = Double(NFRTestLimits.shared.int("stale_picture_ms")) / 1000
+        XCTAssertLessThanOrEqual(FrameWatchdog.powerGrace, limit)
+        XCTAssertLessThan(FrameWatchdog.powerGrace + FrameWatchdog.tickInterval, limit,
+                          "the stall after the grace is still shown within the limit")
+    }
 }

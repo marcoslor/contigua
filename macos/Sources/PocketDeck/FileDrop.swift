@@ -130,6 +130,25 @@ final class FileDropSender {
     private(set) var phase: Phase = .idle
     var isBusy: Bool { if case .sending = phase { true } else { false } }
 
+    /// Every phase change, the outcome's timeout included: the pill's owner is
+    /// this sender, so nothing else schedules a hide.
+    @ObservationIgnored var onPhase: ((Phase) -> Void)?
+
+    /// How long an outcome stays up, and the sleep it waits on (a test's own).
+    private let finishedHold: Duration
+    private let sleep: @Sendable (Duration) async -> Void
+
+    init(finishedHold: Duration = .seconds(5),
+         sleep: @escaping @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) }) {
+        self.finishedHold = finishedHold
+        self.sleep = sleep
+    }
+
+    private func setPhase(_ next: Phase) {
+        phase = next
+        onPhase?(next)
+    }
+
     /// Frames are ≤ 1 MiB on the wire; smaller chunks keep input responsive.
     static let chunkSize = 256 * 1024
     private static let inFlightLimit = 4
@@ -159,7 +178,7 @@ final class FileDropSender {
         clearTask?.cancel()
         self.session = session
         cancelled = false
-        phase = .sending("", fraction: 0)
+        setPhase(.sending("", fraction: 0))
         Task.detached(priority: .userInitiated) { [weak self] in
             let prepared = Result { try DropPreparation.prepare(urls) }
             await MainActor.run { self?.begin(prepared) }
@@ -192,7 +211,7 @@ final class FileDropSender {
         cursor = 0
         let resume = self.resume(sha256: next.sha256)
         Log.app.notice("drop: sending \(next.name, privacy: .public) (\(next.size, privacy: .public) bytes\(resume > 0 ? ", resumes at \(resume)" : ""))")
-        phase = .sending(next.name, fraction: resume > 0 ? Double(resume) / Double(next.size) : 0)
+        setPhase(.sending(next.name, fraction: resume > 0 ? Double(resume) / Double(next.size) : 0))
         awaitingOffset = true
         session.dropStart(id: id, name: next.name, mime: next.mime, size: next.size,
                           sha256: next.sha256, resume: resume)
@@ -254,7 +273,7 @@ final class FileDropSender {
         } else {
             offset = max(offset, confirmed)
         }
-        if case .sending = phase { phase = .sending(current.name, fraction: Double(offset) / Double(current.size)) }
+        if case .sending = phase { setPhase(.sending(current.name, fraction: Double(offset) / Double(current.size))) }
         pump()
     }
 
@@ -317,11 +336,12 @@ final class FileDropSender {
         inFlight = 0
         offset = 0
         cursor = 0
-        phase = .finished(text, ok: ok)
+        setPhase(.finished(text, ok: ok))
         clearTask = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(5))
+            guard let self else { return }
+            await self.sleep(self.finishedHold)
             guard !Task.isCancelled else { return }
-            self?.phase = .idle
+            self.setPhase(.idle)
         }
     }
 }

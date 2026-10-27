@@ -117,7 +117,7 @@ class Server(
 
     /** The phone's per-phone notify toggle changed: sessions re-answer the gate. */
     fun recomputeNotify() {
-        active?.takeIf { !it.isClosed }?.reconcileNotify()
+        active?.takeIf { it.isReady }?.reconcileNotify()
     }
 
     /** One listener event push (app process → shell service → session). */

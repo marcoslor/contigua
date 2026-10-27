@@ -69,10 +69,24 @@ final class WindowManager {
         for controller in allControllers() { controller.setLinkDown(false) }
     }
 
-    /// The drop pill's state on every stream window; nil hides them all.
+    /// `power.locked`: the phone's own power press with app streams up. Every
+    /// app and link window holds its last frame for the watchdog's grace; the
+    /// phone mirror is display 0 itself, so its picture is genuinely gone with
+    /// the panel and says so.
+    func powerLocked() {
+        for controller in allControllers() where !(controller is PhoneWindowController) {
+            controller.powerLocked()
+        }
+    }
+
+    /// The drop pill's state on every stream window; nil hides them all. Kept
+    /// here too, so a window opened mid-transfer starts with it.
     func setDropPill(_ state: (text: String, showsProgress: Bool)?) {
+        dropPill = state
         for controller in allControllers() { controller.setDropPill(state) }
     }
+
+    private var dropPill: (text: String, showsProgress: Bool)?
 
     private let frames: UserDefaults
     private var cascadePoint = NSPoint.zero
@@ -297,6 +311,8 @@ final class WindowManager {
         let stream = allocateStream()
         let controller = make(stream)
         store(controller, stream: stream)
+        // A window opened while a drop runs or its outcome is up shows the pill.
+        controller.setDropPill(dropPill)
         controller.present()
         controller.sendOpen()
         onChange?()

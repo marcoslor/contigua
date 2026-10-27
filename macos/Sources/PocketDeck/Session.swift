@@ -112,6 +112,9 @@ enum SessionEvent {
                     volume: Int?, volumeMax: Int?, screen: PhoneScreen?, secure: Bool?, panel: PhonePanel?)
     /// `ring.state`: a `phone.ring` started or ended.
     case ringState(ringing: Bool)
+    /// `power.locked`: the phone's own power press with app streams up (its VD
+    /// group re-lights; the windows hold their last frame for a short grace).
+    case powerLocked
     case audioState(on: Bool, codec: UInt8)
     case phoneError(code: String, message: String?, stream: UInt32)
     /// The phone showed this code for the person to compare with its screen.
@@ -870,6 +873,8 @@ final class Session {
                              panel: message.string("panel").flatMap(PhonePanel.init(rawValue:))))
         case "ring.state":
             emit(.ringState(ringing: message.bool("ringing") ?? false))
+        case "power.locked":
+            emit(.powerLocked)
         case "audio.state":
             emit(.audioState(on: message.bool("on") ?? false,
                              codec: UInt8(message.int("codec") ?? 0)))
