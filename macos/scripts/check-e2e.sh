@@ -2841,9 +2841,9 @@ check_menus() {
             return 1
         }
         if reason="$(menu_dump_ok "$WORK/menus-$1.json")"; then
-            ok "MENUS dump $1: the whole bar is the design after the rebuild"
+            ok "[MENU-10] dump $1: the whole bar is the design after the rebuild"
         else
-            bad "MENUS dump $1 is not the design: $reason"
+            bad "[MENU-10] dump $1 is not the design: $reason"
         fi
         assert_bar "$WORK/menus-$1.json" "dump $1"
     }
@@ -2859,8 +2859,8 @@ check_menus() {
         while IFS='|' read -r rule verdict detail; do
             [ -n "$rule" ] || continue
             case "$verdict" in
-                ok) ok "MENUS $label: $rule" ;;
-                *) bad "MENUS $label: $rule ($detail)" ;;
+                ok) ok "[MENU-11] $label: $rule" ;;
+                *) bad "[MENU-11] $label: $rule ($detail)" ;;
             esac
         done < <(python3 - "$path" <<'PY'
 import json, re, sys
@@ -3003,8 +3003,8 @@ EOF
     # standard way, with no empty row under "Bring All to Front".
     dump_stable 0 || { stop_app; stop_fakephone; return 1; }
     assert_bar "$WORK/menus-0.json" "dump 0"
-    python3 - "$WORK/menus-0.json" <<'PY' && ok "MENUS with no stream window: Framed/Immersive are disabled and neither is checked" \
-        || bad "MENUS the style pair still acts with no stream window"
+    python3 - "$WORK/menus-0.json" <<'PY' && ok "[MENU-9] with no stream window: Framed/Immersive are disabled and neither is checked" \
+        || bad "[MENU-9] the style pair still acts with no stream window"
 import json, sys
 root = json.load(open(sys.argv[1]))
 view = next(i for i in root["items"] if i["title"] == "View")
@@ -3019,8 +3019,8 @@ if [item["enabled"] for item in pair] != [False, False]:
 PY
     local ax_titles
     ax_titles="$(window_titles "$APP_PID")"
-    python3 - "$WORK/menus-0.json" "$ax_titles" <<'PY' && ok "MENUS the Window menu lists the open windows and has no empty or hidden item" \
-        || bad "MENUS the Window menu has an empty row or no window list"
+    python3 - "$WORK/menus-0.json" "$ax_titles" <<'PY' && ok "[MENU-7] the Window menu lists the open windows and has no empty or hidden item" \
+        || bad "[MENU-7] the Window menu has an empty row or no window list"
 import json, sys
 root = json.load(open(sys.argv[1]))
 def window_menu(items):
@@ -3071,8 +3071,8 @@ PY
     rm -f "$WORK/menus-icon.json"
     control iconmenu "$WORK/menus-icon.json" \
         || bad "MENUS iconmenu: $CONTROL_REPLY"
-    python3 - "$WORK/menus-icon.json" <<'PY' && ok "[CONV-MAC-10] the icon's menu is Settings… ⌘, · About PocketDeck · rule · Quit PocketDeck ⌘Q" \
-        || bad "MENUS the icon's menu is not Settings…/About/Quit"
+    python3 - "$WORK/menus-icon.json" <<'PY' && ok "[CONV-MAC-10] [PANEL-3] the icon's menu is Settings… ⌘, · About PocketDeck · rule · Quit PocketDeck ⌘Q" \
+        || bad "[PANEL-3] the icon's menu is not Settings…/About/Quit"
 import json, sys
 rows = json.load(open(sys.argv[1]))
 titles = [row["title"] for row in rows]
@@ -3091,14 +3091,14 @@ PY
     # 3 and 4: after switching the style to immersive and back.
     touch "$WORK/menus-step-3"; sleep 1.5
     wait_until 5 grep -q "style=immersive" "$WORK/chrome.txt" \
-        && ok "MENUS choosing Immersive took the window to the immersive style" \
-        || bad "MENUS choosing Immersive left $(grep -o 'style=[a-z]*' "$WORK/chrome.txt" | tail -1)"
+        && ok "[MENU-4] choosing Immersive took the window to the immersive style" \
+        || bad "[MENU-4] choosing Immersive left $(grep -o 'style=[a-z]*' "$WORK/chrome.txt" | tail -1)"
     dump_now 3
     # The pair's mark and Hide Controls' enablement follow the key window: the
     # items are SwiftUI's (a rebuild cannot drop them), and MenuMarks writes
     # their values when the menu opens.
-    python3 - "$WORK/menus-3.json" <<'PY' && ok "MENUS after choosing Immersive: it is checked and Hide Controls is enabled" \
-        || bad "MENUS the View menu did not follow the style change"
+    python3 - "$WORK/menus-3.json" <<'PY' && ok "[MENU-9] after choosing Immersive: it is checked and Hide Controls is enabled" \
+        || bad "[MENU-9] the View menu did not follow the style change"
 import json, sys
 root = json.load(open(sys.argv[1]))
 view = next(i for i in root["items"] if i["title"] == "View")
@@ -3110,8 +3110,8 @@ if hide is None or not hide.get("enabled"):
     print("Hide Controls:", hide); sys.exit(1)
 PY
     touch "$WORK/menus-step-4"; sleep 1.5; dump_now 4
-    python3 - "$WORK/menus-4.json" <<'PY' && ok "MENUS after choosing Framed: it is checked and Hide Controls is disabled" \
-        || bad "MENUS the View menu did not follow the style back"
+    python3 - "$WORK/menus-4.json" <<'PY' && ok "[MENU-9] after choosing Framed: it is checked and Hide Controls is disabled" \
+        || bad "[MENU-9] the View menu did not follow the style back"
 import json, sys
 root = json.load(open(sys.argv[1]))
 view = next(i for i in root["items"] if i["title"] == "View")
@@ -3154,8 +3154,8 @@ PY
     # The View menu, top to bottom: the design's items, nothing else — no
     # section title (the old Picker's "Window Style" header) and no full-screen
     # item. Separators are shown as —.
-    python3 - "$WORK/menus-1.json" <<'PY' && ok "MENUS View menu is exactly the design's items, no section titles" \
-        || bad "MENUS View menu is not the design"
+    python3 - "$WORK/menus-1.json" <<'PY' && ok "[MENU-4] View menu is exactly the design's items, no section titles" \
+        || bad "[MENU-4] View menu is not the design"
 import json, sys
 root = json.load(open(sys.argv[1]))
 view = next((i for i in root["items"] if i["title"] == "View"), None)
@@ -3168,8 +3168,8 @@ if any("Full Screen" in title for title in titles):
     print("a full-screen item is in View:", titles); sys.exit(1)
 PY
 
-    python3 - "$WORK/menus-1.json" <<'PY' && ok "MENUS Framed/Immersive are radio items with exactly one checked, and ⌥⌘F is on the pair" \
-        || bad "MENUS the style radios are wrong"
+    python3 - "$WORK/menus-1.json" <<'PY' && ok "[MENU-4] Framed/Immersive are radio items with exactly one checked, and ⌥⌘F is on the pair" \
+        || bad "[MENU-4] the style radios are wrong"
 import json, sys
 root = json.load(open(sys.argv[1]))
 view = next(i for i in root["items"] if i["title"] == "View")
@@ -3197,8 +3197,8 @@ if "Toggle Window Style" in by_title:
     print("the separate Toggle Window Style item is still there"); sys.exit(1)
 PY
 
-    python3 - "$WORK/menus-1.json" <<'PY' && ok "MENUS Density is Default (N%), the other percentages, then Larger/Smaller/Actual Size" \
-        || bad "MENUS the Density submenu is wrong"
+    python3 - "$WORK/menus-1.json" <<'PY' && ok "[MENU-4] Density is Default (N%), the other percentages, then Larger/Smaller/Actual Size" \
+        || bad "[MENU-4] the Density submenu is wrong"
 import json, sys
 root = json.load(open(sys.argv[1]))
 view = next(i for i in root["items"] if i["title"] == "View")
@@ -3220,8 +3220,8 @@ PY
     # makes SwiftUI re-evaluate the commands: with the fake phone online, the
     # controls that can work are enabled, and the one that cannot — Turn Off
     # Phone Screen, with no phone window — stays disabled.
-    python3 - "$WORK/menus-1.json" <<'PY' && ok "MENUS the Phone menu: ⌘P/⇧⌘C, its controls enabled for the online phone, Turn Off Phone Screen disabled" \
-        || bad "MENUS a Phone control that cannot work is enabled"
+    python3 - "$WORK/menus-1.json" <<'PY' && ok "[MENU-5] the Phone menu: ⌘P/⇧⌘C, its controls enabled for the online phone, Turn Off Phone Screen disabled" \
+        || bad "[MENU-5] a Phone control that cannot work is enabled"
 import json, sys
 root = json.load(open(sys.argv[1]))
 phone = next(i for i in root["items"] if i["title"] == "Phone")
@@ -3242,8 +3242,8 @@ PY
 
     # The temporary Bar Prototype picker is gone: the bar has one geometry
     # (BarGeometry) and no menu item to choose another.
-    python3 - "$WORK/menus-1.json" <<'PY' && ok "MENUS no Bar Prototype item (one bar geometry)" \
-        || bad "MENUS a Bar Prototype item is still in View"
+    python3 - "$WORK/menus-1.json" <<'PY' && ok "[MENU-4] no Bar Prototype item (one bar geometry)" \
+        || bad "[MENU-4] a Bar Prototype item is still in View"
 import json, sys
 root = json.load(open(sys.argv[1]))
 view = next(i for i in root["items"] if i["title"] == "View")
@@ -3253,8 +3253,8 @@ PY
 
     # Immersive is a plain radio item (no submenu); the reveal choice lives in
     # Hide Controls, which is disabled while the window is framed.
-    python3 - "$WORK/menus-1.json" <<'PY' && ok "MENUS Hide Controls holds the delays and is disabled while Framed" \
-        || bad "MENUS Hide Controls is wrong while framed"
+    python3 - "$WORK/menus-1.json" <<'PY' && ok "[MENU-4] Hide Controls holds the delays and is disabled while Framed" \
+        || bad "[MENU-4] Hide Controls is wrong while framed"
 import json, sys
 root = json.load(open(sys.argv[1]))
 view = next(i for i in root["items"] if i["title"] == "View")
@@ -3276,8 +3276,8 @@ PY
     # Enter/Exit Full Screen, in Window. The app's own tree also holds AppKit's
     # Enter Full Screen with no key and no target, which the bar never shows, so
     # the item is read from the displayed bar and its icon and shortcut from the tree.
-    python3 - "$WORK/menus-1.json" <<'PY' && ok "MENUS Window holds the only full-screen item, Enter Full Screen ⌃⌘F" \
-        || bad "MENUS the Window menu's full-screen item is wrong"
+    python3 - "$WORK/menus-1.json" <<'PY' && ok "[MENU-7] Window holds the only full-screen item, Enter Full Screen ⌃⌘F" \
+        || bad "[MENU-7] the Window menu's full-screen item is wrong"
 import json, re, sys
 def walk(items):
     for item in items:
@@ -3304,8 +3304,8 @@ PY
 
     # The app's own items carry SF Symbols (the system's items stay as AppKit
     # draws them and are not in this list).
-    python3 - "$WORK/menus-1.json" <<'PY' && ok "MENUS every item the app draws has an SF Symbol" \
-        || bad "MENUS an app item is missing its icon"
+    python3 - "$WORK/menus-1.json" <<'PY' && ok "[MENU-1] every item the app draws has an SF Symbol" \
+        || bad "[MENU-1] an app item is missing its icon"
 import json, sys
 def walk(items):
     for item in items:
@@ -3329,8 +3329,8 @@ PY
 
     # The Show Touches dots are drawn outside the view the bar mirrors.
     wait_until 10 eval 'grep -q "dots=outside" "$WORK/chrome.txt" 2>/dev/null' \
-        && ok "MENUS the Show Touches dots are outside the bar's mirror ($(chrome_state))" \
-        || bad "MENUS the dot layer is still inside the mirrored content: $(chrome_state)"
+        && ok "[MENU-4] the Show Touches dots are outside the bar's mirror ($(chrome_state))" \
+        || bad "[MENU-4] the dot layer is still inside the mirrored content: $(chrome_state)"
 
     # Show Touches on, the pointer hovering the video and a trackpad touch at
     # the stream's top edge: the bar above it must stay clean. The driver's
@@ -3345,8 +3345,8 @@ PY
         || bad "MENUS no window to capture the bar"
     grep -q "touches=on" "$WORK/chrome.txt" 2>/dev/null \
         && grep -qE "dot_count=[1-9]" "$WORK/chrome.txt" 2>/dev/null \
-        && ok "MENUS the dots are drawn while the fingers are down ($(chrome_state))" \
-        || bad "MENUS no touch dots during the pinch: $(chrome_state)"
+        && ok "[MENU-4] the dots are drawn while the fingers are down ($(chrome_state))" \
+        || bad "[MENU-4] no touch dots during the pinch: $(chrome_state)"
     sleep 4
 
     # The menu bar is a window panel now (docs/design/mac-redesign.md §3.8):
@@ -3354,8 +3354,8 @@ PY
     # screen" items.
     control panelopen || bad "MENUS panelopen: $CONTROL_REPLY"
     control paneldump panel "$WORK/menus-panel.json" || bad "MENUS paneldump: $CONTROL_REPLY"
-    python3 - "$WORK/menus-panel.json" <<'PY' && ok "MENUS the menu bar hosts the phone panel, none of the old menu items" \
-        || bad "MENUS the menu bar is not the panel"
+    python3 - "$WORK/menus-panel.json" <<'PY' && ok "[PANEL-5] the menu bar hosts the phone panel, none of the old menu items" \
+        || bad "[PANEL-5] the menu bar is not the panel"
 import json, sys
 root = json.load(open(sys.argv[1]))
 if root["width"] != 300:
@@ -3386,11 +3386,11 @@ PY
         sleep 7
         # The title can only follow the window if the window went to a Space.
         chrome_has "fullscreen=yes" \
-            && ok "MENUS the shared app entered a Space (fullscreen=yes)" \
-            || bad "MENUS the shared app did not enter full screen: $(chrome_state)"
+            && ok "[MENU-7] the shared app entered a Space (fullscreen=yes)" \
+            || bad "[MENU-7] the shared app did not enter full screen: $(chrome_state)"
         dump_now 10
-        python3 - "$WORK/menus-10.json" <<'PY' && ok "MENUS in full screen the Window item reads Exit Full Screen, still the only one" \
-            || bad "MENUS the full-screen title did not follow the key window"
+        python3 - "$WORK/menus-10.json" <<'PY' && ok "[MENU-7] in full screen the Window item reads Exit Full Screen, still the only one" \
+            || bad "[MENU-7] the full-screen title did not follow the key window"
 import json, sys
 def walk(items):
     for item in items:
@@ -3447,8 +3447,8 @@ PY
     # leave a mark on it. The rest of the bar is checked as a person reads it.
     dump_stable 11 || { stop_app; stop_fakephone; return 1; }
     assert_bar "$WORK/menus-11.json" "dump 11"
-    python3 - "$WORK/menus-11.json" <<'PY' && ok "MENUS after a relaunch the Deck is key: the style pair is off and disabled" \
-        || bad "MENUS a relaunch left the style pair on or enabled"
+    python3 - "$WORK/menus-11.json" <<'PY' && ok "[MENU-9] after a relaunch the Deck is key: the style pair is off and disabled" \
+        || bad "[MENU-9] a relaunch left the style pair on or enabled"
 import json, sys
 root = json.load(open(sys.argv[1]))
 view = next(i for i in root["items"] if i["title"] == "View")
@@ -3952,14 +3952,14 @@ check_mirror() {
     launch --connect "127.0.0.1:$PORT" --open-phone --float-windows \
         --debug-chrome-state "$WORK/chrome.txt" --quit-after 40
     if wait_until 10 chrome_has "loading=1"; then
-        ok "MIRROR opening cover: loading=1 right after the window opened"
+        ok "[MIRROR-2] opening cover: loading=1 right after the window opened"
     else
-        bad "MIRROR opening cover: no loading cover (state: $(chrome_state))"
+        bad "[MIRROR-2] opening cover: no loading cover (state: $(chrome_state))"
     fi
     if wait_until 25 chrome_has "loading=failed"; then
-        ok "MIRROR opening cover: after 20 s without a frame it says it could not open"
+        ok "[MIRROR-2] opening cover: after 20 s without a frame it says it could not open"
     else
-        bad "MIRROR opening cover: no failure after 20 s (state: $(chrome_state))"
+        bad "[MIRROR-2] opening cover: no failure after 20 s (state: $(chrome_state))"
     fi
     stop_app
     stop_fakephone
@@ -3984,53 +3984,53 @@ check_mirror() {
         --debug-chrome-state "$WORK/chrome.txt" --debug-input-script "$WORK/mirror.txt" \
         --debug-control "$WORK/control" --quit-after 120
     if wait_until 5 chrome_has "loading=1"; then
-        ok "MIRROR opening cover: the window is covered before its first frame"
+        ok "[MIRROR-2] opening cover: the window is covered before its first frame"
     else
-        bad "MIRROR opening cover: the window showed no cover before the first frame (state: $(chrome_state))"
+        bad "[MIRROR-2] opening cover: the window showed no cover before the first frame (state: $(chrome_state))"
     fi
     if wait_until 15 chrome_has "loading=0"; then
-        ok "MIRROR opening cover: the first frame took the cover away"
+        ok "[MIRROR-2] opening cover: the first frame took the cover away"
     else
-        bad "MIRROR opening cover: the cover stayed after the first frame (state: $(chrome_state))"
+        bad "[MIRROR-2] opening cover: the cover stayed after the first frame (state: $(chrome_state))"
     fi
     # repro wake-on-open: opening the window sends one phone.wake.
     if wait_until 15 events_have '"t":"phone.wake"'; then
-        ok "MIRROR repro wake-on-open: opening the phone window sent phone.wake"
+        ok "[MIRROR-3] repro wake-on-open: opening the phone window sent phone.wake"
     else
-        bad "MIRROR repro wake-on-open: the phone got no phone.wake on open"
+        bad "[MIRROR-3] repro wake-on-open: the phone got no phone.wake on open"
     fi
     local portrait landscape
     if portrait="$(await_window '$5 > $4 * 1.5')"; then
-        ok "MIRROR phone window is portrait ($(windows | awk -v i="$portrait" '$1 == i {print $4 "x" $5}'))"
+        ok "[MIRROR-4] phone window is portrait ($(windows | awk -v i="$portrait" '$1 == i {print $4 "x" $5}'))"
     else
-        bad "MIRROR no portrait phone window"; stop_app; stop_fakephone; return 1
+        bad "[MIRROR-4] no portrait phone window"; stop_app; stop_fakephone; return 1
     fi
     # No full screen for the phone window (the mirror in native full screen
     # looks bad): it opts out in its collection behavior, so the green button
     # only zooms and the Window menu's Enter Full Screen is disabled for it.
     if wait_until 3 chrome_has "menu_fullscreen=0"; then
-        ok "MIRROR the phone window offers no full screen ($(chrome_state))"
+        ok "[MIRROR-4] the phone window offers no full screen ($(chrome_state))"
     else
-        bad "MIRROR the phone window still offers full screen ($(chrome_state))"
+        bad "[MIRROR-4] the phone window still offers full screen ($(chrome_state))"
     fi
     if chrome_has "collection_none=1"; then
-        ok "MIRROR the phone window's collection behavior is fullScreenNone"
+        ok "[MIRROR-4] the phone window's collection behavior is fullScreenNone"
     else
-        bad "MIRROR the phone window's collection behavior allows full screen ($(chrome_state))"
+        bad "[MIRROR-4] the phone window's collection behavior allows full screen ($(chrome_state))"
     fi
     wait_until 15 events_have '"ev":"video"' || true
     case "$(mirror_aspect)" in
-        *" ok") ok "MIRROR stream has the phone screen's aspect ($(mirror_aspect))" ;;
-        *) bad "MIRROR stream aspect is not the phone's ($(mirror_aspect))" ;;
+        *" ok") ok "[MIRROR-4] stream has the phone screen's aspect ($(mirror_aspect))" ;;
+        *) bad "[MIRROR-4] stream aspect is not the phone's ($(mirror_aspect))" ;;
     esac
     wait_until 3 chrome_is "header=shown" && sleep 0.4
     if landscape="$(await_window "\$1 == $portrait && \$4 > \$5 * 1.5")"; then
-        ok "MIRROR window turned with the phone ($(windows | awk -v i="$landscape" '$1 == i {print $4 "x" $5}'))"
+        ok "[MIRROR-5] window turned with the phone ($(windows | awk -v i="$landscape" '$1 == i {print $4 "x" $5}'))"
     else
-        bad "MIRROR window did not turn to landscape"
+        bad "[MIRROR-5] window did not turn to landscape"
     fi
     wait_until 10 landscape_config \
-        && ok "MIRROR landscape VIDEO_CONFIG sent" || bad "MIRROR no landscape VIDEO_CONFIG"
+        && ok "[MIRROR-5] landscape VIDEO_CONFIG sent" || bad "[MIRROR-5] no landscape VIDEO_CONFIG"
     # One mirror per phone (the person's report, 2026-10-22): asking for the
     # phone's mirror again raises the open one. Before the fix every ask opened
     # another window on another stream. Phone ▸ Phone Mirror, the panel's row and
@@ -4050,24 +4050,24 @@ check_mirror() {
     opens="$(count_events '"t":"window.open"')"
     streams="$(grep '"ev":"video"' "$WORK/events.jsonl" 2>/dev/null | grep -o 'stream":[0-9]*' | sort -u | wc -l | tr -d ' ')"
     if [ "$opens" = "1" ] && [ "$streams" = "1" ]; then
-        ok "MIRROR Phone Mirror asked three more times: one window.open, one stream"
+        ok "[MIRROR-1] Phone Mirror asked three more times: one window.open, one stream"
     else
-        bad "MIRROR Phone Mirror asked three more times: $opens window.open ($before before the asks), $streams streams (want 1 and 1)"
+        bad "[MIRROR-1] Phone Mirror asked three more times: $opens window.open ($before before the asks), $streams streams (want 1 and 1)"
     fi
     # A mirror is portrait or landscape; the Deck is 760x560 (1.36), so the
     # two phone aspects pick the mirrors in either orientation — a window that
     # just opened is portrait until its first frame turns it.
     mirrors="$(windows | awk '($5 > $4 * 1.5) || ($4 > $5 * 1.5)' | wc -l | tr -d ' ')"
     if [ "$mirrors" = "1" ]; then
-        ok "MIRROR Phone Mirror asked three more times: one phone window on screen"
+        ok "[MIRROR-1] Phone Mirror asked three more times: one phone window on screen"
     else
-        bad "MIRROR Phone Mirror asked three more times: $mirrors phone windows on screen"
+        bad "[MIRROR-1] Phone Mirror asked three more times: $mirrors phone windows on screen"
     fi
     # The menu item must be enabled while the phone is online. Read from a
     # validated menu (menudump validates it as an opened menu does); read-only.
     mirror_control menudump "$WORK/menu-mirror.json" || bad "MIRROR menu dump: $CONTROL_REPLY"
-    python3 - "$WORK/menu-mirror.json" <<'PY' && ok "MIRROR Phone ▸ Phone Mirror (⌘P) is enabled while the phone is online" \
-        || bad "MIRROR Phone ▸ Phone Mirror (⌘P) is disabled while the phone is online"
+    python3 - "$WORK/menu-mirror.json" <<'PY' && ok "[MIRROR-1] Phone ▸ Phone Mirror (⌘P) is enabled while the phone is online" \
+        || bad "[MIRROR-1] Phone ▸ Phone Mirror (⌘P) is disabled while the phone is online"
 import json, sys
 root = json.load(open(sys.argv[1]))
 phone = next(i for i in root["items"] if i["title"] == "Phone")
@@ -4087,12 +4087,12 @@ PY
     wait_until 20 events_have '"ev":"screen","state":"off"' \
         || bad "MIRROR the fake never reported the screen off"
     if wait_until "$stale_s" chrome_has "screen=off overlay=1"; then
-        ok "MIRROR repro stale-frame: screen off put the cover up within ${stale_ms} ms ($(chrome_state))"
+        ok "[MIRROR-6] repro stale-frame: screen off put the cover up within ${stale_ms} ms ($(chrome_state))"
     else
-        bad "MIRROR repro stale-frame: the window kept the last frame as live ($(chrome_state))"
+        bad "[MIRROR-6] repro stale-frame: the window kept the last frame as live ($(chrome_state))"
     fi
     if [ "$(phone_screen_log)" -ge 1 ]; then
-        ok "MIRROR the app logged phone window: screen=off overlay=1"
+        ok "[MIRROR-21] the app logged phone window: screen=off overlay=1"
     else
         say "MIRROR the unified log has no screen-off line on this Mac (empty log store); the chrome state is the evidence"
     fi
@@ -4102,70 +4102,70 @@ PY
     # real input): one more phone.wake, the fake sends screen on, frames resume.
     printf 'wake-phone\n' > "$WORK/control/wake.cmd"
     if wait_until 10 wake_done_ok; then
-        ok "MIRROR Wake Screen ran"
+        ok "[MIRROR-7] Wake Screen ran"
     else
-        bad "MIRROR Wake Screen did not run: $(cat "$WORK/control/wake.done" 2>/dev/null)"
+        bad "[MIRROR-7] Wake Screen did not run: $(cat "$WORK/control/wake.done" 2>/dev/null)"
     fi
     if [ "$(grep -c '"t":"phone.wake"' "$WORK/events.jsonl")" -ge 2 ]; then
-        ok "MIRROR Wake Screen sent phone.wake ($(grep -c '"t":"phone.wake"' "$WORK/events.jsonl") total)"
+        ok "[MIRROR-7] Wake Screen sent phone.wake ($(grep -c '"t":"phone.wake"' "$WORK/events.jsonl") total)"
     else
-        bad "MIRROR Wake Screen sent no phone.wake"
+        bad "[MIRROR-7] Wake Screen sent no phone.wake"
     fi
     wait_until 10 events_have '"ev":"screen","state":"on"' \
-        && ok "MIRROR the fake came back on" || bad "MIRROR the fake never reported screen on"
+        && ok "[MIRROR-7] the fake came back on" || bad "[MIRROR-7] the fake never reported screen on"
     if wait_until 10 chrome_has "screen=on overlay=0"; then
-        ok "MIRROR the cover cleared after the wake ($(chrome_state))"
+        ok "[MIRROR-7] the cover cleared after the wake ($(chrome_state))"
     else
-        bad "MIRROR the cover stayed up after the wake ($(chrome_state))"
+        bad "[MIRROR-7] the cover stayed up after the wake ($(chrome_state))"
     fi
     if wait_until 10 more_video_configs "$configs_before"; then
-        ok "MIRROR frames resumed after the wake (new VIDEO_CONFIG)"
+        ok "[MIRROR-7] frames resumed after the wake (new VIDEO_CONFIG)"
     else
-        bad "MIRROR frames did not resume after the wake"
+        bad "[MIRROR-7] frames did not resume after the wake"
     fi
     # "Turn Off Phone Screen" (docs/design/phone-mirror.md): Phone ▸ the item's
     # own action, the phone hears phone.panel off, the mirror keeps sending
     # frames and the bar says so; the phone's power press ends it and the Mac
     # follows the echoed state.
     if wait_until 3 chrome_has "panel_off=0"; then
-        ok "MIRROR Turn Off Phone Screen is off by default (panel_off=0)"
+        ok "[MIRROR-9] Turn Off Phone Screen is off by default (panel_off=0)"
     else
-        bad "MIRROR the phone window does not report panel_off ($(chrome_state))"
+        bad "[MIRROR-9] the phone window does not report panel_off ($(chrome_state))"
     fi
     local frames_before
     frames_before="$(last_frame_event)"
     printf 'panel-menu\n' > "$WORK/control/panel-menu.cmd"
     if wait_until 5 panel_menu_done; then
-        ok "MIRROR the Turn Off Phone Screen menu item ran"
+        ok "[MIRROR-9] the Turn Off Phone Screen menu item ran"
     else
-        bad "MIRROR the menu item did not run: $(cat "$WORK/control/panel-menu.done" 2>/dev/null)"
+        bad "[MIRROR-9] the menu item did not run: $(cat "$WORK/control/panel-menu.done" 2>/dev/null)"
     fi
     # The fake's own event for the request (its rx JSON sorts keys, so the
     # request line itself is not a stable match).
     if wait_until 10 events_have '"ev":"panel","state":"off"'; then
-        ok "MIRROR the menu item sent phone.panel off and the phone applied it"
+        ok "[MIRROR-9] the menu item sent phone.panel off and the phone applied it"
     else
-        bad "MIRROR the phone got no phone.panel off"
+        bad "[MIRROR-9] the phone got no phone.panel off"
     fi
     if wait_until 5 chrome_has "panel_off=1"; then
-        ok "MIRROR the bar and the chrome state follow the phone's panel=off"
+        ok "[MIRROR-10] the bar and the chrome state follow the phone's panel=off"
     else
-        bad "MIRROR the indicator did not follow state.panel ($(chrome_state))"
+        bad "[MIRROR-10] the indicator did not follow state.panel ($(chrome_state))"
     fi
     if wait_until 8 more_frame_events "$frames_before"; then
-        ok "MIRROR the mirror keeps sending frames while the panel is off (frame events to $(last_frame_event))"
+        ok "[MIRROR-9] the mirror keeps sending frames while the panel is off (frame events to $(last_frame_event))"
     else
-        bad "MIRROR the mirror stopped sending frames with the panel off (frame events $(last_frame_event))"
+        bad "[MIRROR-9] the mirror stopped sending frames with the panel off (frame events $(last_frame_event))"
     fi
     if wait_until 15 events_have '"ev":"panel","state":"on"'; then
-        ok "MIRROR the phone ended the panel-off (the person's power button)"
+        ok "[MIRROR-12] the phone ended the panel-off (the person's power button)"
     else
-        bad "MIRROR the phone never ended the panel-off"
+        bad "[MIRROR-12] the phone never ended the panel-off"
     fi
     if wait_until 5 chrome_has "panel_off=0"; then
-        ok "MIRROR the indicator went away when the phone ended it"
+        ok "[MIRROR-12] the indicator went away when the phone ended it"
     else
-        bad "MIRROR the indicator stayed after the phone ended it ($(chrome_state))"
+        bad "[MIRROR-12] the indicator stayed after the phone ended it ($(chrome_state))"
     fi
 
     # The bar's Back / Home / Recents buttons take a real click: the debug
@@ -4178,9 +4178,9 @@ PY
         printf 'nav-click %s\n' "$button" > "$WORK/control/nav-$button.cmd"
         if wait_until 5 nav_click_done "$button"; then
             if wait_until 10 nav_clicked "$button" "$before"; then
-                ok "MIRROR a click on the $button bar button -> nav $button"
+                ok "[MIRROR-13] a click on the $button bar button -> nav $button"
             else
-                bad "MIRROR the $button bar button sent no nav $button"
+                bad "[MIRROR-13] the $button bar button sent no nav $button"
             fi
         else
             bad "MIRROR the $button bar button click did not run: $(cat "$WORK/control/nav-$button.done" 2>/dev/null)"
@@ -4237,24 +4237,24 @@ PY
                 fi
                 glyph_ms="$(panel_glyph_ms)"
                 if python3 -c "import sys; sys.exit(0 if 0 <= $glyph_ms <= $glyph_limit else 1)"; then
-                    ok "MIRROR a bar-control click redrew the glyph in ${glyph_ms} ms (panel_off=$glyph_want, limit ${glyph_limit} ms)"
+                    ok "[MIRROR-10] a bar-control click redrew the glyph in ${glyph_ms} ms (panel_off=$glyph_want, limit ${glyph_limit} ms)"
                 else
-                    bad "MIRROR a bar-control click took ${glyph_ms} ms to redraw the glyph (panel_off=$glyph_want, limit ${glyph_limit} ms)"
+                    bad "[MIRROR-10] a bar-control click took ${glyph_ms} ms to redraw the glyph (panel_off=$glyph_want, limit ${glyph_limit} ms)"
                 fi
             done
         else
             sleep 0.3
             if chrome_has "panel_off=0"; then
-                ok "MIRROR the glyph waits for the phone's report (+${fake_delay} ms), not the click"
+                ok "[MIRROR-10] the glyph waits for the phone's report (+${fake_delay} ms), not the click"
             else
-                bad "MIRROR the glyph changed on the click, before the phone reported (report +${fake_delay} ms)"
+                bad "[MIRROR-10] the glyph changed on the click, before the phone reported (report +${fake_delay} ms)"
             fi
             if wait_until 5 chrome_has "panel_off=1"; then
                 glyph_ms="$(panel_glyph_ms)"
                 if python3 -c "import sys; sys.exit(0 if 900 <= $glyph_ms <= $fake_delay + $glyph_limit else 1)"; then
-                    ok "MIRROR the glyph followed the late report in ${glyph_ms} ms (Mac hop $((glyph_ms - fake_delay)) ms)"
+                    ok "[MIRROR-10] the glyph followed the late report in ${glyph_ms} ms (Mac hop $((glyph_ms - fake_delay)) ms)"
                 else
-                    bad "MIRROR the late report took ${glyph_ms} ms to redraw the glyph (limit $((fake_delay + glyph_limit)) ms)"
+                    bad "[MIRROR-10] the late report took ${glyph_ms} ms to redraw the glyph (limit $((fake_delay + glyph_limit)) ms)"
                 fi
             else
                 bad "MIRROR the glyph never followed the late state.panel"
@@ -4285,9 +4285,9 @@ PY
         if wait_until 5 chrome_has "overlay=1 secure=1"; then
             elapsed="$(python3 -c "import time; print('%.2f' % (time.time() - $secure_at))")"
             if python3 -c "import sys; sys.exit(0 if $elapsed <= 2 else 1)"; then
-                ok "MIRROR a secure surface covers the window within 2 s (${elapsed}s)"
+                ok "[MIRROR-8] a secure surface covers the window within 2 s (${elapsed}s)"
             else
-                bad "MIRROR a secure surface took ${elapsed}s to cover the window"
+                bad "[MIRROR-8] a secure surface took ${elapsed}s to cover the window"
             fi
         else
             bad "MIRROR a secure surface did not cover the window ($(chrome_state))"
@@ -4296,14 +4296,14 @@ PY
         bad "MIRROR the fake never reported a secure surface"
     fi
     if [ "$(secure_log_count)" -ge 1 ]; then
-        ok "MIRROR the app logged phone window: secure=1 overlay=1"
+        ok "[MIRROR-21] the app logged phone window: secure=1 overlay=1"
     else
         say "MIRROR the unified log has no secure line on this Mac (empty log store); the chrome state is the evidence"
     fi
     if wait_until 15 chrome_has "secure=0"; then
-        ok "MIRROR the secure cover cleared when the phone reported the surface gone"
+        ok "[MIRROR-8] the secure cover cleared when the phone reported the surface gone"
     else
-        bad "MIRROR the secure cover stayed up ($(chrome_state))"
+        bad "[MIRROR-8] the secure cover stayed up ($(chrome_state))"
     fi
     stop_app
     stop_fakephone
@@ -4316,37 +4316,37 @@ PY
     launch --connect "127.0.0.1:$PORT" --open-phone --float-windows \
         --debug-chrome-state "$WORK/chrome.txt" --debug-control "$WORK/control" --quit-after 30
     if wait_until 20 chrome_has "loading=0"; then
-        ok "MIRROR refusal: the refused phone's window opened"
+        ok "[MIRROR-11] refusal: the refused phone's window opened"
     else
-        bad "MIRROR refusal: the phone window never got its first frame ($(chrome_state))"
+        bad "[MIRROR-11] refusal: the phone window never got its first frame ($(chrome_state))"
     fi
     if wait_until 3 chrome_has "panel_off=0"; then
-        ok "MIRROR refusal: the button starts unchecked"
+        ok "[MIRROR-11] refusal: the button starts unchecked"
     else
-        bad "MIRROR refusal: the button did not start unchecked ($(chrome_state))"
+        bad "[MIRROR-11] refusal: the button did not start unchecked ($(chrome_state))"
     fi
     printf 'panel-menu\n' > "$WORK/control/panel-menu.cmd"
     if wait_until 5 panel_menu_done; then
-        ok "MIRROR refusal: Turn Off Phone Screen ran"
+        ok "[MIRROR-11] refusal: Turn Off Phone Screen ran"
     else
-        bad "MIRROR refusal: the menu item did not run: $(cat "$WORK/control/panel-menu.done" 2>/dev/null)"
+        bad "[MIRROR-11] refusal: the menu item did not run: $(cat "$WORK/control/panel-menu.done" 2>/dev/null)"
     fi
     # The error is answered at once, and the pill lasts 2 s: read it before
     # anything else could take it down.
     if wait_until 3 chrome_has "panel_off=0 panel_pill=1 panel_pill_failed=1"; then
-        ok "MIRROR refusal: a 2 s pill says the phone didn't turn its screen off, button unchecked"
+        ok "[MIRROR-11] refusal: a 2 s pill says the phone didn't turn its screen off, button unchecked"
     else
-        bad "MIRROR refusal: no failure pill or the button moved ($(chrome_state))"
+        bad "[MIRROR-11] refusal: no failure pill or the button moved ($(chrome_state))"
     fi
     if wait_until 10 events_have '"t":"phone.panel"'; then
-        ok "MIRROR refusal: the phone heard phone.panel"
+        ok "[MIRROR-11] refusal: the phone heard phone.panel"
     else
-        bad "MIRROR refusal: the phone got no phone.panel"
+        bad "[MIRROR-11] refusal: the phone got no phone.panel"
     fi
     if grep -F '"t":"phone.panel"' "$WORK/events.jsonl" | grep -qF '"ignorePower":false'; then
-        ok "MIRROR the request carries ignorePower (off by default)"
+        ok "[MIRROR-9] the request carries ignorePower (off by default)"
     else
-        bad "MIRROR phone.panel carried no ignorePower field"
+        bad "[MIRROR-9] phone.panel carried no ignorePower field"
     fi
     stop_app
     stop_fakephone
@@ -5031,8 +5031,8 @@ check_controls() {
     # them (CONV-MAC-10).
     control panelopen || bad "CONTROLS panelopen: $CONTROL_REPLY"
     control paneldump panel "$WORK/controls-panel.json" || bad "CONTROLS paneldump: $CONTROL_REPLY"
-    python3 - "$WORK/controls-panel.json" <<'PY' && ok "CONTROLS the panel is P3 with the gear first and the Ringer tile enabled" \
-        || bad "CONTROLS the panel is not P3"
+    python3 - "$WORK/controls-panel.json" <<'PY' && ok "[PANEL-5] the panel is P3 with the gear first and the Ringer tile enabled" \
+        || bad "[PANEL-5] the panel is not P3"
 import json, sys
 root = json.load(open(sys.argv[1]))
 if root["width"] != 300:
@@ -5055,8 +5055,8 @@ volume = root["controls"][volume_index]
 if volume["height"] > 20 or volume["width"] < 150:
     print("volume control:", volume); sys.exit(1)
 PY
-    python3 - "$WORK/controls-panel.json" <<'PY' && ok "[CONV-MAC-10] the panel has no Settings/Quit footer rows: they are the icon's menu" \
-        || bad "CONTROLS the panel still carries footer rows"
+    python3 - "$WORK/controls-panel.json" <<'PY' && ok "[CONV-MAC-10] [PANEL-17] the panel has no Settings/Quit footer rows: they are the icon's menu" \
+        || bad "[PANEL-17] the panel still carries footer rows"
 import json, sys
 root = json.load(open(sys.argv[1]))
 kinds = [row["kind"] for row in root["items"]]
@@ -5070,26 +5070,26 @@ PY
     gear_ax="$(ax_tree)"
     case "$gear_ax" in
         *"desc=[Settings and more] help=[Settings, About and Quit] id=[panel.gear]"*)
-            ok "CONTROLS the gear's VoiceOver name and help tag reach the AX tree: Settings and more · Settings, About and Quit" ;;
+            ok "[PANEL-21] the gear's VoiceOver name and help tag reach the AX tree: Settings and more · Settings, About and Quit" ;;
         NO-WINDOWS|"")
             bad "CONTROLS the AX tree is empty for this run ($gear_ax)" ;;
         *) bad "CONTROLS the gear's AX name and help are missing ($(printf '%s' "$gear_ax" | grep -m1 'panel.gear\|NO-WINDOWS' | cut -c1-200))" ;;
     esac
     case "$(printf '%s\n' "$gear_ax" | grep -v '^AXWindow' | head -1)" in
         *"id=[panel.gear]"*)
-            ok "CONTROLS the gear is the card's first control in the AX order" ;;
-        *) bad "CONTROLS the gear is not first in the AX order ($(printf '%s' "$gear_ax" | head -2 | tr '\n' '|' | cut -c1-200))" ;;
+            ok "[PANEL-7] the gear is the card's first control in the AX order" ;;
+        *) bad "[PANEL-7] the gear is not first in the AX order ($(printf '%s' "$gear_ax" | head -2 | tr '\n' '|' | cut -c1-200))" ;;
     esac
     control panelringer panel vibrate || bad "CONTROLS panelringer: $CONTROL_REPLY"
     wait_until 3 ringer_is vibrate \
-        && ok "CONTROLS the Ringer tile's menu sent phone.ringer vibrate" \
-        || bad "CONTROLS the Ringer tile's menu sent no phone.ringer vibrate"
+        && ok "[PANEL-10] the Ringer tile's menu sent phone.ringer vibrate" \
+        || bad "[PANEL-10] the Ringer tile's menu sent no phone.ringer vibrate"
     local volume_before
     volume_before="$(grep -c '"ev":"volume"' "$WORK/events.jsonl" 2>/dev/null || true)"
     control panelvolumedrag panel 0.2 "$WORK/controls-volume.json" \
         || bad "CONTROLS panelvolumedrag: $CONTROL_REPLY"
-    python3 - "$WORK/controls-volume.json" <<'PY' && ok "CONTROLS the slider follows every drag step and ignores the phone echo mid-drag" \
-        || bad "CONTROLS the slider did not follow the drag"
+    python3 - "$WORK/controls-volume.json" <<'PY' && ok "[PANEL-13] the slider follows every drag step and ignores the phone echo mid-drag" \
+        || bad "[PANEL-13] the slider did not follow the drag"
 import json, sys
 try:
     trace = json.load(open(sys.argv[1]))
@@ -5111,11 +5111,11 @@ PY
     volume_after="$(grep -c '"ev":"volume"' "$WORK/events.jsonl" 2>/dev/null || true)"
     volume_sends=$(( ${volume_after:-0} - ${volume_before:-0} ))
     [ "$volume_sends" -ge 2 ] && [ "$volume_sends" -le 4 ] \
-        && ok "CONTROLS the drag sent phone.volume $volume_sends times (throttled to 10/s plus the release)" \
-        || bad "CONTROLS the drag sent phone.volume $volume_sends times, not the throttled count"
+        && ok "[PANEL-13] the drag sent phone.volume $volume_sends times (throttled to 10/s plus the release)" \
+        || bad "[PANEL-13] the drag sent phone.volume $volume_sends times, not the throttled count"
     wait_until 20 events_have '"ev":"volume","level":3' \
-        && ok "CONTROLS the panel's volume slider sent phone.volume 3/15" \
-        || bad "CONTROLS the panel's volume slider sent no phone.volume"
+        && ok "[PANEL-13] the panel's volume slider sent phone.volume 3/15" \
+        || bad "[PANEL-13] the panel's volume slider sent no phone.volume"
     control panelclose || bad "CONTROLS panelclose: $CONTROL_REPLY"
 
     # The Deck's popover compiles the same view without the footer.
@@ -5126,8 +5126,8 @@ PY
         control paneldump deck "$WORK/controls-deck-panel.json" >/dev/null 2>&1 && break
         tries=$((tries - 1)); sleep 0.5
     done
-    python3 - "$WORK/controls-deck-panel.json" <<'PY' && ok "CONTROLS the Deck popover has P3's tiles and no Settings/Quit footer" \
-        || bad "CONTROLS the Deck popover kept the menu bar footer"
+    python3 - "$WORK/controls-deck-panel.json" <<'PY' && ok "[PANEL-18] the Deck popover has P3's tiles and no Settings/Quit footer" \
+        || bad "[PANEL-18] the Deck popover kept the menu bar footer"
 import json, sys
 try:
     root = json.load(open(sys.argv[1]))
@@ -9292,16 +9292,16 @@ check_deck() {
     launch_shared --connect "127.0.0.1:$PORT" --debug-deck-grid "$WORK/deck-grid.jsonl" \
         --debug-deck-zoom "$WORK/deck-zoom.json"
     wait_until 30 events_have '"t":"apps.list"' \
-        && ok "DECK the app list was requested" || bad "DECK no apps.list"
+        && ok "[DECK-1] the app list was requested" || bad "[DECK-1] no apps.list"
     wait_until 30 have_layered_icons \
-        && ok "DECK layered icon replies arrived ($(icons_kind '"layers":true'))" \
-        || bad "DECK no layered icon replies"
+        && ok "[DECK-2] layered icon replies arrived ($(icons_kind '"layers":true'))" \
+        || bad "[DECK-2] no layered icon replies"
     wait_until 5 have_flat_icons \
-        && ok "DECK flat icon replies arrived ($(icons_kind '"layers":false'))" \
-        || bad "DECK no flat icon replies"
+        && ok "[DECK-2] flat icon replies arrived ($(icons_kind '"layers":false'))" \
+        || bad "[DECK-2] no flat icon replies"
     local total
     total="$(count_events '"ev":"icon"')"
-    [ "$total" -ge 13 ] && ok "DECK $total icon replies in total" || bad "DECK only $total icon replies"
+    [ "$total" -ge 13 ] && ok "[DECK-2] $total icon replies in total" || bad "[DECK-2] only $total icon replies"
     ! grep -qiE "fatal|protocol error" "$WORK/app.log" 2>/dev/null \
         && ok "DECK the app logged no fatal/protocol error" \
         || bad "DECK the app log has fatal/protocol lines"
@@ -9311,9 +9311,9 @@ check_deck() {
     # Equal ids drew neither cell — the person's empty slot.
     if wait_until 30 grep -q '"count":201' "$WORK/deck-grid.jsonl" 2>/dev/null; then
         if python3 "$MACOS/scripts/deck-grid.py" "$WORK/deck-grid.jsonl" 201; then
-            ok "DECK every cell has words and its own id (2 settings cells, the label-less one falls back)"
+            ok "[DECK-3] every cell has words and its own id (2 settings cells, the label-less one falls back)"
         else
-            bad "DECK the grid has an empty or repeated cell ($(tail -1 "$WORK/deck-grid.jsonl"))"
+            bad "[DECK-3] the grid has an empty or repeated cell ($(tail -1 "$WORK/deck-grid.jsonl"))"
         fi
     else
         bad "DECK no grid dump (--debug-deck-grid)"
@@ -9329,9 +9329,9 @@ check_deck() {
         zoom_limit="$(nfr_limit deck_zoom_frame_p95_ms)"
         drag_limit="$(nfr_limit deck_drag_frame_p95_ms)"
         if python3 "$MACOS/scripts/deck-zoom.py" "$WORK/deck-zoom.json" "$zoom_limit" "$drag_limit" "$VISIBLE"; then
-            ok "DECK zoom/unzoom keep p95 under ${zoom_limit} ms, drag under the measured limit (${drag_limit} ms quiet, two display intervals visible), and every drawn frame fits ($(python3 "$MACOS/scripts/deck-zoom.py" "$WORK/deck-zoom.json" "$zoom_limit" "$drag_limit" "$VISIBLE" 2>&1); $(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print("zoom p95=%s ms, unzoom p95=%s ms, drag p95=%s ms, relayouts=%s, bad frames=%s" % (d["zoom"]["p95"], d["unzoom"]["p95"], d["drag"]["p95"], d.get("relayouts"), sum(d[p].get("badFrames", 0) for p in ("zoom","unzoom","drag"))))' "$WORK/deck-zoom.json"))"
+            ok "[DECK-5] zoom/unzoom keep p95 under ${zoom_limit} ms, drag under the measured limit (${drag_limit} ms quiet, two display intervals visible), and every drawn frame fits ($(python3 "$MACOS/scripts/deck-zoom.py" "$WORK/deck-zoom.json" "$zoom_limit" "$drag_limit" "$VISIBLE" 2>&1); $(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print("zoom p95=%s ms, unzoom p95=%s ms, drag p95=%s ms, relayouts=%s, bad frames=%s" % (d["zoom"]["p95"], d["unzoom"]["p95"], d["drag"]["p95"], d.get("relayouts"), sum(d[p].get("badFrames", 0) for p in ("zoom","unzoom","drag"))))' "$WORK/deck-zoom.json"))"
         else
-            bad "DECK the zoom drags a clipped or slow grid ($(python3 "$MACOS/scripts/deck-zoom.py" "$WORK/deck-zoom.json" "$zoom_limit" "$drag_limit" "$VISIBLE" 2>&1))"
+            bad "[DECK-5] the zoom drags a clipped or slow grid ($(python3 "$MACOS/scripts/deck-zoom.py" "$WORK/deck-zoom.json" "$zoom_limit" "$drag_limit" "$VISIBLE" 2>&1))"
         fi
     else
         bad "DECK no zoom measurement (--debug-deck-zoom)"
@@ -9343,18 +9343,18 @@ check_deck() {
     local geometry
     if control deck-size 640 700 >/dev/null; then
         if geometry="$(python3 "$MACOS/scripts/deck-geometry.py" "$WORK/deck-grid.jsonl" 640 5)"; then
-            ok "DECK at 640 pt the block is $geometry"
+            ok "[DECK-4] at 640 pt the block is $geometry"
         else
-            bad "DECK at 640 pt the block is not D's ($geometry)"
+            bad "[DECK-4] at 640 pt the block is not D's ($geometry)"
         fi
     else
         bad "DECK deck-size 640: $CONTROL_REPLY"
     fi
     if control deck-size 1200 700 >/dev/null; then
         if geometry="$(python3 "$MACOS/scripts/deck-geometry.py" "$WORK/deck-grid.jsonl" 1200 8)"; then
-            ok "DECK at 1200 pt the block is capped and centred ($geometry)"
+            ok "[DECK-4] at 1200 pt the block is capped and centred ($geometry)"
         else
-            bad "DECK at 1200 pt the block is not capped/centred ($geometry)"
+            bad "[DECK-4] at 1200 pt the block is not capped/centred ($geometry)"
         fi
     else
         bad "DECK deck-size 1200: $CONTROL_REPLY"
@@ -9393,8 +9393,8 @@ check_deck() {
             bad "DECK deckrailpoint M: $CONTROL_REPLY"
         fi
     else
-        control deckrailhover M && ok "DECK forced the rail's hover on M for the shot" \
-            || bad "DECK deckrailhover M: $CONTROL_REPLY"
+        control deckrailhover M && ok "[DECK-7] forced the rail's hover on M for the shot" \
+            || bad "[DECK-7] deckrailhover M: $CONTROL_REPLY"
         sleep 1
         shot_rail rail-hover-m.png
         control deckrailhoverout || bad "DECK deckrailhoverout: $CONTROL_REPLY"
@@ -9419,9 +9419,9 @@ check_deck() {
     fi
     if control deck-rail T >/dev/null; then
         if rail="$(python3 "$MACOS/scripts/deck-rail.py" "$WORK/deck-grid.jsonl" T)"; then
-            ok "DECK the rail's T click lands on its first app ($rail)"
+            ok "[DECK-7] the rail's T click lands on its first app ($rail)"
         else
-            bad "DECK the rail's T click: $rail"
+            bad "[DECK-7] the rail's T click: $rail"
         fi
     else
         bad "DECK deck-rail T: $CONTROL_REPLY"
@@ -9477,8 +9477,8 @@ PY
     # the real letter under the pointer and its tag.
     if control deck-size 760 450 >/dev/null; then
         sleep 1
-        control deckrailhover T && ok "DECK the short rail's hover on T is forced" \
-            || bad "DECK deckrailhover T (short): $CONTROL_REPLY"
+        control deckrailhover T && ok "[DECK-7] the short rail's hover on T is forced" \
+            || bad "[DECK-7] deckrailhover T (short): $CONTROL_REPLY"
         sleep 1
         shot_rail rail-short.png
         control deckrailhoverout || bad "DECK deckrailhoverout (short): $CONTROL_REPLY"
@@ -9522,8 +9522,8 @@ PY
     control key cmd+f || bad "DECK key cmd+f: $CONTROL_REPLY"
     sleep 0.5
     deck_search after
-    python3 - "$WORK/deck-search-after.json" <<'PY' && ok "DECK ⌘F focuses the search field and selects its text" \
-        || bad "DECK ⌘F did not leave the search field focused with its text selected"
+    python3 - "$WORK/deck-search-after.json" <<'PY' && ok "[DECK-9] ⌘F focuses the search field and selects its text" \
+        || bad "[DECK-9] ⌘F did not leave the search field focused with its text selected"
 import json, sys
 root = json.load(open(sys.argv[1]))
 if not root["focused"]:
@@ -9537,8 +9537,8 @@ PY
     wait_until 20 grep -q "style=" "$WORK/chrome.txt" || bad "DECK no stream window for the ⌘F check"
     sleep 1
     deck_search stream
-    python3 - "$WORK/deck-search-stream.json" <<'PY' && ok "DECK the stream window is key and the Deck search is not focused" \
-        || bad "DECK the Deck search field took focus with a stream window key"
+    python3 - "$WORK/deck-search-stream.json" <<'PY' && ok "[DECK-9] the stream window is key and the Deck search is not focused" \
+        || bad "[DECK-9] the Deck search field took focus with a stream window key"
 import json, sys
 root = json.load(open(sys.argv[1]))
 if root["focused"] or root["keyWindow"] != "other":
@@ -9546,11 +9546,11 @@ if root["focused"] or root["keyWindow"] != "other":
 PY
     control key cmd+f || bad "DECK key cmd+f with a stream window: $CONTROL_REPLY"
     wait_until 10 grep -q '"kind":"key","stream":1,"action":0,"keycode":34,"meta":12288' "$WORK/events.jsonl" \
-        && ok "DECK ⌘F with a stream window key reached the phone as meta+F" \
-        || bad "DECK ⌘F with a stream window key did not reach the phone ($(grep '"kind":"key"' "$WORK/events.jsonl" | tail -1))"
+        && ok "[DECK-9] ⌘F with a stream window key reached the phone as meta+F" \
+        || bad "[DECK-9] ⌘F with a stream window key did not reach the phone ($(grep '"kind":"key"' "$WORK/events.jsonl" | tail -1))"
     deck_search after-k
-    python3 - "$WORK/deck-search-after-k.json" <<'PY' && ok "DECK the Deck search field stayed out of the stream window's ⌘F" \
-        || bad "DECK the Deck search field took the stream window's ⌘F"
+    python3 - "$WORK/deck-search-after-k.json" <<'PY' && ok "[DECK-9] the Deck search field stayed out of the stream window's ⌘F" \
+        || bad "[DECK-9] the Deck search field took the stream window's ⌘F"
 import json, sys
 root = json.load(open(sys.argv[1]))
 if root["focused"] or root["keyWindow"] != "other":
@@ -9560,8 +9560,8 @@ PY
     control key cmd+k || bad "DECK key cmd+k: $CONTROL_REPLY"
     sleep 0.5
     deck_search after-k2
-    python3 - "$WORK/deck-search-after-k2.json" <<'PY' && ok "DECK ⌘K still brings the Deck up and focuses search" \
-        || bad "DECK ⌘K did not bring the Deck up with search focused"
+    python3 - "$WORK/deck-search-after-k2.json" <<'PY' && ok "[DECK-10] ⌘K still brings the Deck up and focuses search" \
+        || bad "[DECK-10] ⌘K did not bring the Deck up with search focused"
 import json, sys
 root = json.load(open(sys.argv[1]))
 if not root["focused"] or root["keyWindow"] != "deck":
@@ -9585,8 +9585,8 @@ PY
         control panelwindows "$WORK/deck-windows.txt" >/dev/null 2>&1
         bad "DECK no panel dump from the popover ($(tr '\n' '|' < "$WORK/deck-windows.txt" 2>/dev/null))"
     fi
-    python3 - "$WORK/deck-panel.json" <<'PY' && ok "DECK the popover hosts the shared panel (300 pt, the same items)" \
-        || bad "DECK the popover is not the shared panel"
+    python3 - "$WORK/deck-panel.json" <<'PY' && ok "[DECK-20] the popover hosts the shared panel (300 pt, the same items)" \
+        || bad "[DECK-20] the popover is not the shared panel"
 import json, sys
 root = json.load(open(sys.argv[1]))
 if root["width"] != 300:
@@ -9606,8 +9606,8 @@ PY
     control panelclick deck panel.dnd || bad "DECK the popover's DND click: $CONTROL_REPLY"
     dnd_after() { grep -c '"ev":"dnd"' "$WORK/events.jsonl" 2>/dev/null || echo 0; }
     wait_until 20 [ "$(dnd_after)" -gt "$dnd_before" ] \
-        && ok "DECK clicking the popover's DND tile reached the phone ($(grep -o '"ev":"dnd"[^}]*' "$WORK/events.jsonl" 2>/dev/null | tail -1))" \
-        || bad "DECK the popover's DND tile sent no new phone.dnd"
+        && ok "[DECK-20] clicking the popover's DND tile reached the phone ($(grep -o '"ev":"dnd"[^}]*' "$WORK/events.jsonl" 2>/dev/null | tail -1))" \
+        || bad "[DECK-20] the popover's DND tile sent no new phone.dnd"
     stop_app
 }
 
@@ -9910,8 +9910,8 @@ check_menubar_shots() {
         --open com.whatsapp
     wait_until 30 events_have '"t":"apps.list"' \
         || { bad "MENUBAR-SHOTS the session never started"; stop_app; stop_fakephone; return 1; }
-    control panelopen && ok "MENUBAR-SHOTS the panel host opened" \
-        || bad "MENUBAR-SHOTS panelopen: $CONTROL_REPLY"
+    control panelopen && ok "[PANEL-4] the panel host opened" \
+        || bad "[PANEL-4] panelopen: $CONTROL_REPLY"
     control paneldump panel "$WORK/menubar-shots/panel.json" \
         || bad "MENUBAR-SHOTS paneldump: $CONTROL_REPLY"
     sleep 1
@@ -10014,8 +10014,8 @@ OSA
     # row reads Stop Ringing in the shot.
     control panelclick panel panel.ring || bad "MENUBAR-SHOTS panelclick ring: $CONTROL_REPLY"
     wait_until 20 events_have '"ev":"ring"' \
-        && ok "MENUBAR-SHOTS the phone is ringing for the shot" \
-        || bad "MENUBAR-SHOTS the phone did not ring"
+        && ok "[PANEL-11] the phone is ringing for the shot" \
+        || bad "[PANEL-11] the phone did not ring"
     sleep 1
     shot_panel "panel-ringing-light.png"
     control panelclick panel panel.ring >/dev/null 2>&1 || true
@@ -10024,8 +10024,8 @@ OSA
 
     # The Deck's popover: the same card above the grid (its own window).
     control panelclose >/dev/null 2>&1 || true
-    control deckpanel && ok "MENUBAR-SHOTS the Deck popover opened" \
-        || bad "MENUBAR-SHOTS deckpanel: $CONTROL_REPLY"
+    control deckpanel && ok "[PANEL-18] the Deck popover opened" \
+        || bad "[PANEL-18] deckpanel: $CONTROL_REPLY"
     sleep 2
     local id
     id="$(await_window '$4 >= 320 && $4 <= 340 && $5 >= 300')" \
@@ -10044,8 +10044,8 @@ OSA
     result="$(control paneldump panel "$WORK/menubar-shots/panel-offline.json" && echo dumped)"
     [ -n "$result" ] \
         && python3 - "$WORK/menubar-shots/panel-offline.json" <<'PY' \
-        && ok "MENUBAR-SHOTS the offline card carries the offline reason" \
-        || bad "MENUBAR-SHOTS no reason in the offline card"
+        && ok "[PANEL-19] the offline card carries the offline reason" \
+        || bad "[PANEL-19] no reason in the offline card"
 import json, sys
 root = json.load(open(sys.argv[1]))
 if root["reason"] != "Connect your phone to use these.":
@@ -10080,8 +10080,8 @@ shoot_panel_states() {
         launch --connect "127.0.0.1:$PORT" --quit-after 120 --debug-control "$WORK-control" --appearance "$app"
         wait_until 30 events_have '"t":"apps.list"' \
             || { bad "PANEL-STATES the session never started"; stop_app; stop_fakephone; return 1; }
-        control panelopen && ok "PANEL-STATES the panel host opened ($app)" \
-            || bad "PANEL-STATES panelopen: $CONTROL_REPLY"
+        control panelopen && ok "[PANEL-4] the panel host opened ($app)" \
+            || bad "[PANEL-4] panelopen: $CONTROL_REPLY"
         sleep 1
         shoot_state "states-$app-rest.png"
         # Turn Off Screen is disabled here (no Phone Mirror); the rest shot is
