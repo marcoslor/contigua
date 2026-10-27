@@ -7,7 +7,7 @@
 
 import Foundation
 
-/// The nickname a phone was given in Settings → Devices: per device id in the
+/// The nickname a phone was given in Settings ▸ Phones: per device id in the
 /// profile's defaults, separate from the phone's own (reported) name. Empty
 /// after normalizing means "no nickname": the phone's own name is used.
 enum PhoneNicknames {
@@ -124,7 +124,7 @@ final class RememberedPhones {
 extension RememberedPhones {
     /// THE name this Mac shows for a phone, everywhere it is named (Deck title,
     /// menu bar, banners, notifications, Spotlight, window and Dock titles):
-    /// the nickname from Settings → Devices when one is set, else the phone's
+    /// the nickname from Settings ▸ Phones when one is set, else the phone's
     /// own name (ref's reported one, or the remembered one), else `fallback`.
     func displayName(for phone: PhoneRef, fallback: String = "Phone") -> String {
         let nickname = PhoneNicknames.read(from: defaults, deviceId: phone.id)

@@ -1,13 +1,22 @@
-// One phone's settings page (docs/specs/settings-devices.md): its name and
-// state, Use This Phone, Rename…, Forget This Phone…, the Notifications section
-// (sharing, click target, Muted apps) and the keep-screen-off option. It reads
-// and writes only that phone's stores (`notify.<deviceId>`, the click target,
-// the muted set, its panel preference) and names its phone in every section
-// header, so the same page can sit in a Settings sidebar unchanged and several
-// phones never share a view state.
+// One phone's settings page (docs/specs/settings.md): a header with the phone's
+// icon, name, state and Use This Phone, then plain sections — Phone (model,
+// Rename…), Notifications (sharing, click target, Muted apps), Screen (the
+// keep-off option) and Forget. It reads and writes only that phone's stores
+// (`notify.<deviceId>`, the click target, the muted set, its panel preference),
+// so the page is the same wherever it is hosted. The phone's name appears in
+// the header and the window title, never in a section heading.
 
 import AppKit
 import SwiftUI
+
+/// The page's section headings, in reading order. Plain on purpose: the page is
+/// already that phone's (K2 asserts none carries the phone's name).
+enum PhonePageSection: String, CaseIterable {
+    case phone = "Phone"
+    case notifications = "Notifications"
+    case screen = "Screen"
+    case forget = "Forget"
+}
 
 struct PhoneSettingsPage: View {
     let deviceId: String
@@ -42,7 +51,7 @@ struct PhoneSettingsPage: View {
         }
         .task(id: deviceId) { syncFromStores() }
         .onChange(of: controller.rememberedPhones.map(\.id)) { _, _ in syncFromStores() }
-        .onChange(of: controller.devicesReportRequest) { _, _ in
+        .onChange(of: controller.settingsReportRequest) { _, _ in
             if let phone { writeReport(phone) }
         }
         .onChange(of: mutedOpen) { _, _ in updateKeyMonitor() }
@@ -56,28 +65,21 @@ struct PhoneSettingsPage: View {
     private func content(_ phone: RememberedPhone) -> some View {
         let presence = DevicesPreview.presence(of: phone, in: controller)
 
+        header(phone, presence: presence)
         Section {
             LabeledContent("Model") {
                 Text(phone.model.isEmpty ? "Unknown" : phone.model)
             }
-            if controller.activePhone?.id != phone.id, presence != .pairAgain {
-                Button("Use This Phone") { controller.use(phone) }
-                    .help("Show this phone's apps, screen and notifications on this Mac.")
-            }
-            if presence == .pairAgain {
-                Button("Pair Again…", action: onAdd)
-                    .help("Pair this phone again from the add sheet.")
-            }
             Button("Rename…") { onRename(phone) }
                 .help("Give this phone a name only this Mac uses.")
         } header: {
-            Text(title("Phone", phone))
+            Text(PhonePageSection.phone.rawValue)
         }
 
         Section {
             notifications(phone)
         } header: {
-            Text(title("Notifications", phone))
+            Text(PhonePageSection.notifications.rawValue)
         } footer: {
             Text("Notifications and Now Playing come from this phone only while it is paired and connected. Nothing is shared until you turn it on here.")
         }
@@ -93,17 +95,62 @@ struct PhoneSettingsPage: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
         } header: {
-            Text(title("Screen", phone))
+            Text(PhonePageSection.screen.rawValue)
         }
 
         Section {
             Button("Forget This Phone…") { onForget(phone) }
                 .foregroundStyle(.red)
         } header: {
-            Text(title("Forget", phone))
+            Text(PhonePageSection.forget.rawValue)
         } footer: {
             Text("Removes this Mac's pairing with \(displayName(phone)). You'll need to pair it again to use it here.")
         }
+    }
+
+    /// The page header: the phone's icon and name, its state in words (and when
+    /// it was last seen), the In Use mark, and the one action the page needs
+    /// (SET-WIN-06).
+    private func header(_ phone: RememberedPhone, presence: DevicePresence) -> some View {
+        let inUse = controller.activePhone?.id == phone.id
+        return HStack(alignment: .center, spacing: 12) {
+            DeviceGlyph(size: 44)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(displayName(phone))
+                    .font(.title3.weight(.semibold))
+                    .lineLimit(1)
+                HStack(spacing: 5) {
+                    DeviceStatusLabel(presence: presence)
+                    if !presence.isLive {
+                        Text("· \(phone.lastSeen.formatted(.relative(presentation: .named)))")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                }
+            }
+            Spacer(minLength: 8)
+            if inUse {
+                HStack(spacing: 4) {
+                    Image(systemName: "checkmark")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(Color.accentColor)
+                    Text("In Use")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel("In use")
+            } else if presence == .pairAgain {
+                Button("Pair Again…", action: onAdd)
+                    .help("Pair this phone again from the add sheet.")
+            } else {
+                Button("Use This Phone") { controller.use(phone) }
+                    .help("Show this phone's apps, screen and notifications on this Mac.")
+            }
+        }
+        .padding(.vertical, 6)
+        .accessibilityElement(children: .contain)
     }
 
     @ViewBuilder
@@ -282,11 +329,6 @@ struct PhoneSettingsPage: View {
 
     // MARK: strings
 
-    private func title(_ base: String, _ phone: RememberedPhone) -> String {
-        DevicesTabModel.sectionTitle(base, phone: displayName(phone),
-                                     phoneCount: controller.rememberedPhones.count)
-    }
-
     private func displayName(_ phone: RememberedPhone) -> String {
         controller.displayName(for: phone.ref)
     }
@@ -305,31 +347,28 @@ struct PhoneSettingsPage: View {
 
     // MARK: the e2e's read
 
-    /// What this page and the tab around it render, from the same values the
-    /// rows above use (the e2e `settings-devices` check reads it; the view
-    /// stays the source).
+    /// What this page renders, from the same values the rows above use (the e2e
+    /// `settings` check reads it; the view stays the source). The sidebar writes
+    /// the report for every page that is not a phone's.
     private func writeReport(_ phone: RememberedPhone) {
-        guard let path = controller.devicesReportPath else { return }
-        let phones = controller.rememberedPhones
-        var lines = ["phones=\(phones.count)"]
-        if phones.isEmpty { lines.append("empty=No phones yet.") }
-        lines.append("selected=\(displayName(phone))")
-        let inUse = phones.first { $0.id == controller.activePhone?.id }
-        lines.append("inuse=\(inUse.map(displayName) ?? "-")")
-        for other in phones {
-            let presence = DevicesPreview.presence(of: other, in: controller)
-            let row = DevicesTabModel.phoneRow(
-                id: other.id, name: displayName(other), model: other.model, presence: presence,
-                lastSeen: other.lastSeen.formatted(.relative(presentation: .named)),
-                inUse: controller.activePhone?.id == other.id)
-            lines.append(["row", row.name, row.model, row.presenceText, row.lastSeenText ?? "",
-                          row.inUse ? "1" : "0", row.pairAgain ? "1" : "0",
-                          row.canUseThisPhone ? "1" : "0"].joined(separator: "|"))
-        }
-        lines.append("title.phone=\(title("Phone", phone))")
-        lines.append("title.notifications=\(title("Notifications", phone))")
-        lines.append("title.screen=\(title("Screen", phone))")
-        lines.append("title.forget=\(title("Forget", phone))")
+        guard let path = controller.settingsReportPath else { return }
+        let rows = SettingsPhoneRows.rows(in: controller)
+        let name = displayName(phone)
+        var lines = SettingsReport.base(selection: .phone(phone.id), title: name, rows: rows)
+        lines.append("page=phone")
+        lines.append("inuse=\(rows.first { $0.inUse }?.name ?? "-")")
+        let presence = DevicesPreview.presence(of: phone, in: controller)
+        let inUse = controller.activePhone?.id == phone.id
+        lines.append("header.name=\(name)")
+        lines.append("header.state=\(presence.text)")
+        lines.append("header.lastSeen=\(row(of: phone, presence: presence)?.lastSeenText ?? "")")
+        lines.append("header.inUse=\(inUse ? 1 : 0)")
+        lines.append("header.action=\(headerAction(presence: presence, inUse: inUse))")
+        lines.append("header.model=\(phone.model)")
+        lines.append("title.phone=\(PhonePageSection.phone.rawValue)")
+        lines.append("title.notifications=\(PhonePageSection.notifications.rawValue)")
+        lines.append("title.screen=\(PhonePageSection.screen.rawValue)")
+        lines.append("title.forget=\(PhonePageSection.forget.rawValue)")
         lines.append("share=\(shareOn ? 1 : 0)")
         let missingAccess = controller.notifyAccessMissing(deviceId: phone.id)
         lines.append("accessHint=\(DevicesTabModel.accessHint(noAccess: missingAccess) ?? "")")
@@ -340,6 +379,7 @@ struct PhoneSettingsPage: View {
         lines.append("focused=\(searchFocused ? "search" : "none")")
         let forgetting = controller.rememberedPhones.first { $0.id == controller.forgettingDeviceId }
         lines.append("forgetDialog=\(forgetting.map(displayName) ?? "")")
+        if let sheet = controller.sheet { lines.append("sheet=\(SettingsReport.sheetName(sheet))") }
         if mutedOpen {
             let seen = controller.seenPackages(deviceId: phone.id)
             for row in DevicesTabModel.mutedRows(apps: apps, seen: seen, muted: muted, query: query) {
@@ -348,5 +388,20 @@ struct PhoneSettingsPage: View {
             }
         }
         try? (lines.joined(separator: "\n") + "\n").write(toFile: path, atomically: true, encoding: .utf8)
+    }
+
+    private func row(of phone: RememberedPhone, presence: DevicePresence) -> DevicePhoneRow? {
+        DevicesTabModel.phoneRow(
+            id: phone.id, name: displayName(phone), model: phone.model, presence: presence,
+            lastSeen: phone.lastSeen.formatted(.relative(presentation: .named)),
+            inUse: controller.activePhone?.id == phone.id)
+    }
+
+    /// The header's one action: nothing for the phone in use, Pair Again… for a
+    /// phone whose key is gone, Use This Phone otherwise.
+    private func headerAction(presence: DevicePresence, inUse: Bool) -> String {
+        if inUse { return "-" }
+        if presence == .pairAgain { return "Pair Again…" }
+        return "Use This Phone"
     }
 }

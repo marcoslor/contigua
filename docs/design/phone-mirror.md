@@ -52,7 +52,7 @@ Why this and not `SurfaceControl.createDisplay` + `setDisplayProjection`
   log those ran before the report and took 1.1 s, and the Mac's button follows
   the report, so a report sent last is a button 1.1 s late.
 
-  Settings ▸ Devices has a per-phone switch, "Keep the phone screen off until I
+  Settings ▸ Phones has a per-phone switch, "Keep the phone screen off until I
   turn it on from the Mac", off by default, sent as `ignorePower` with the
   request. On, a power press lights the screen only until the next keep-alive
   step (2 s) re-applies the panel off, and the hold stands. It changes nothing
