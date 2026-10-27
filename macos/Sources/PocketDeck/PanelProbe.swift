@@ -49,6 +49,9 @@ enum PanelProbe {
             hostWindow.makeKeyAndOrderFront(nil)
             return
         }
+        // The hosted copy has no status item, so its M2 gear has nothing to pop
+        // up: the menu belongs to the real controller (MenuBarPanel.swift). A
+        // dump still maps the gear as the first control, as the real panel has it.
         let view = NSHostingView(rootView: AnyView(MenuBarContent().environment(controller)))
         hostView = view
         let effect = NSVisualEffectView()
@@ -107,7 +110,8 @@ enum PanelProbe {
         guard let host = Host(rawValue: host) else { return false }
         guard let state = currentState() else { return false }
         guard let window = window(for: host) else { return false }
-        let items = PhonePanelItem.focusOrder(for: state, showsFooter: showsFooter(host))
+        let items = PhonePanelItem.focusOrder(for: state, showsFooter: showsFooter(host),
+                                              showsGear: showsGear(host))
         let focusable = items.filter { $0.isEnabled(in: state) }
         settle(window, items: focusable)
         let controls = controlFrames(in: window)
@@ -352,14 +356,28 @@ enum PanelProbe {
         return PhoneControlsState(controller: controller)
     }
 
-    /// The Deck's popover has no Settings/Quit footer; the menu bar panel does.
-    private static func showsFooter(_ host: Host) -> Bool { host != .deck }
+    /// The Deck's popover has no Settings/Quit footer and no gear; the menu bar
+    /// panel's two follow the secondary-click prototype (PanelMenuPrototype.swift).
+    private static func showsFooter(_ host: Host) -> Bool {
+        switch host {
+        case .deck: return false
+        case .panel, .real: return PanelMenuPrototype.current?.showsFooter ?? true
+        }
+    }
+
+    private static func showsGear(_ host: Host) -> Bool {
+        switch host {
+        case .deck: return false
+        case .panel, .real: return PanelMenuPrototype.current?.showsGear ?? false
+        }
+    }
 
     /// The controls SwiftUI actually lays out and focuses: a disabled control
     /// has no key-view proxy, so the focusable order leaves it out. Dumps still
     /// report every item with its reason; mapping counts only enabled ones.
     private static func focusableItems(_ state: PhoneControlsState, host: Host) -> [PhonePanelItem] {
-        PhonePanelItem.focusOrder(for: state, showsFooter: showsFooter(host))
+        PhonePanelItem.focusOrder(for: state, showsFooter: showsFooter(host),
+                                  showsGear: showsGear(host))
             .filter { $0.isEnabled(in: state) }
     }
 

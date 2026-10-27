@@ -182,11 +182,12 @@ final class PhonePanelP3Tests: XCTestCase {
 
     // MARK: - The hosted view
 
-    private func host(_ state: PhoneControlsState,
-                      showsFooter: Bool = true) -> NSHostingView<PhonePanelView> {
+    private func host(_ state: PhoneControlsState, showsFooter: Bool = true,
+                      showsGear: Bool = false) -> NSHostingView<PhonePanelView> {
         window?.orderOut(nil)
         let view = NSHostingView(rootView: PhonePanelView(state: state, actions: PhoneControlsActions(),
-                                                          showsFooter: showsFooter))
+                                                          showsFooter: showsFooter,
+                                                          showsGear: showsGear))
         view.frame = NSRect(x: 0, y: 0, width: PhonePanelView.width, height: 720)
         view.layoutSubtreeIfNeeded()
         let size = view.fittingSize
@@ -273,8 +274,33 @@ final class PhonePanelP3Tests: XCTestCase {
         XCTAssertFalse(bare.contains(.quit))
     }
 
+    /// M2's gear sits in the header at the panel's top-right and is the first
+    /// control the keyboard reaches; M1 and M2 leave the footer out, so the
+    /// two Settings…/Quit paths never both show.
+    func testTheGearIsTheHeadersOwnControlAndComesFirst() {
+        let state = state()
+        let items = PhonePanelItem.focusOrder(for: state, showsFooter: false, showsGear: true)
+        XCTAssertEqual(items.first, .gear)
+        XCTAssertFalse(items.contains(.settings))
+        XCTAssertFalse(items.contains(.quit))
+        XCTAssertFalse(PhonePanelItem.focusOrder(for: state).contains(.gear),
+                       "the gear is M2's only")
+
+        let view = host(state, showsFooter: false, showsGear: true)
+        let laidOut = controls(in: view)
+        XCTAssertEqual(laidOut.count, items.count, "one laid-out control per item")
+        let gear = frame(laidOut[0], in: view)
+        XCTAssertEqual(gear.width, 22, accuracy: 1)
+        XCTAssertEqual(gear.height, 22, accuracy: 1)
+        XCTAssertEqual(gear.maxX, PhonePanelView.width - PhonePanelMetrics.inset, accuracy: 1,
+                       "the gear sits on the panel's right inset")
+        let dnd = frame(laidOut[items.firstIndex(of: .dnd)!], in: view)
+        XCTAssertLessThan(gear.maxY, dnd.minY, "the gear is in the header, above the tiles")
+    }
+
     /// The two hosts: the menu bar asks for the footer, the Deck popover for
-    /// none. One view, one body.
+    /// none. One view, one body. The menu bar's footer is the prototype's, so
+    /// M1/M2 can take it away (PanelMenuPrototypeTests.swift).
     func testTheDeckPopoverDropsTheFooter() throws {
         let sources = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
@@ -282,6 +308,7 @@ final class PhonePanelP3Tests: XCTestCase {
         let deck = try String(contentsOf: sources.appendingPathComponent("DeckViews.swift"), encoding: .utf8)
         let menu = try String(contentsOf: sources.appendingPathComponent("MenuBar.swift"), encoding: .utf8)
         XCTAssertTrue(deck.contains("showsFooter: false"), "the Deck popover has no Settings/Quit footer")
-        XCTAssertTrue(menu.contains("showsFooter: true"), "the menu bar panel keeps its footer")
+        XCTAssertTrue(menu.contains("showsFooter: prototype?.showsFooter ?? true"),
+                      "the menu bar panel's footer follows the secondary-click prototype")
     }
 }
