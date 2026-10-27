@@ -1910,11 +1910,10 @@ class Session(
     }
 
     override fun onFrame(stream: Int, ptsUs: Long, key: Boolean, data: ByteArray) {
-        // The power press with streams up: the first frame after the re-light
-        // is the gap the emulator check measures (one read per frame otherwise).
-        if (power.relightPending) {
-            synchronized(streams) { streams[stream]?.displayId }?.let { power.noteFrame(it) }
-        }
+        // The picture's own clock for the power-press gap: one Long store in a
+        // fixed ring, no allocation and no display lookup. The session's clock
+        // (uptime milliseconds) is the seam the JVM tests replace.
+        power.noteFrame(now())
         val payload = Frames.encodeVideoFrame(VideoFramePayload(ptsUs, key, data))
         val bytes = Frames.encode(Frames.TYPE_VIDEO_FRAME, stream, payload)
         if (key) queue.enqueueControl(stream, bytes) else queue.enqueueDelta(stream, ptsUs, bytes)

@@ -363,13 +363,11 @@ interface Power {
         set(_) {}
 
     /**
-     * A screen-off edge is waiting for its first frame (the gap the emulator
-     * check measures). False in the common case, so a frame costs one read.
+     * A frame reached the wire. The power layer keeps a small ring of frame
+     * times, so a screen-off edge can report the picture's largest silence
+     * around it (the emulator rig's number).
      */
-    val relightPending: Boolean get() = false
-
-    /** A frame reached the wire for [displayId]; logs the edge gap once. */
-    fun noteFrame(displayId: Int) {}
+    fun noteFrame(nowMs: Long) {}
 }
 
 /** One paired Mac in v2: the pin is the Mac cert's point fingerprint (§3/§6);
