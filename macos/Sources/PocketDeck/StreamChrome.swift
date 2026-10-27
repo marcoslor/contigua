@@ -191,6 +191,15 @@ final class StreamChromeView: NSView {
         return button.convert(NSPoint(x: button.bounds.midX, y: button.bounds.midY), to: nil)
     }
 
+    /// The bar's buttons the keyboard may focus, in reading order (MIRROR-13).
+    var focusableBarIndices: [Int] { actions.focusableIndices }
+
+    /// The keyboard's focus ring on one bar button (nil: back to the picture).
+    func setBarFocus(_ index: Int?) { actions.setFocus(index) }
+
+    /// The bar button at an index, for Return/Space while the bar has focus.
+    func barAction(at index: Int) -> HeaderAction? { actions.action(at: index) }
+
     /// Right now: the framed bar above the stream, or nothing in immersive and
     /// in full screen.
     var barHeight: CGFloat {
