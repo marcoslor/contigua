@@ -17,6 +17,7 @@ enum SettingsProbe {
         let visible = (window.screen ?? NSScreen.main)?.visibleFrame.height ?? 0
         var lines = [
             "window=\(Int(frame.width.rounded()))x\(Int(frame.height.rounded()))",
+            "title=\(window.title)",
             "content=\(Int((window.contentView?.frame.height ?? 0).rounded()))",
             "cap=\(Int(SettingsLayout.maxContentHeight(for: visible).rounded()))",
             "visible=\(Int(visible.rounded()))",
@@ -57,10 +58,10 @@ enum SettingsProbe {
         if let row = row(labelled: label, in: content) {
             let inWindow = window.convertFromScreen(row.frame)
             let inClip = clip.convert(clip.bounds, to: nil)
-            let visible = NSRect(origin: .zero, size: frame.size).intersects(inWindow)
-                && inClip.intersects(inWindow)
-            lines.append("last=\(label)")
-            lines.append("last_visible=\(visible ? 1 : 0)")
+                            let visible = NSRect(origin: .zero, size: frame.size).intersects(inWindow)
+                                && inClip.intersects(inWindow)
+                            lines.append("last=\(label)")
+                            lines.append("last_visible=\(visible ? 1 : 0)")
         } else {
             // The row's own AX element may be hidden from the window (SwiftUI
             // keeps the tree in one hosting view): fall back to the end of the
@@ -79,7 +80,7 @@ enum SettingsProbe {
     }
 
     /// The Settings window, if it is open (SettingsView tags it: macOS titles
-    /// it after the open tab, and the stream window that shows the phone's
+    /// it after the open page, and the stream window that shows the phone's
     /// Settings app is titled after that app).
     @MainActor
     static func settingsWindow() -> NSWindow? {
