@@ -5715,18 +5715,21 @@ PY
     wait_until 15 log_has "apk: phone received all" && log_has "apk: sending 1 part(s)" \
         && ok "APK progress shown ($(apk_log | grep -m1 'apk: sending'); $(apk_log | grep -m1 'received all'))" \
         || bad "APK no progress logged: $(apk_log | tail -3)"
-    wait_until 15 log_has "apk: result ok: Installed Tiny Demo 1.0." \
-        && ok "APK result message: Installed Tiny Demo 1.0." \
-        || bad "APK no success message: $(apk_log | tail -2)"
+    # The result's sentence names the app and is private (CONV-PD-05); the log's
+    # closed code says what happened, and ApkInstallMessage's wording is K2's
+    # (ApkBundleTests).
+    wait_until 15 log_has "apk: result ok: installed" \
+        && ok "APK result: the install finished (ok)" \
+        || bad "APK no success result: $(apk_log | tail -2)"
     apps_refreshed() { [ "$(apps_lists)" -gt "$before" ]; }
     wait_until 10 apps_refreshed \
         && ok "APK the app list was refreshed after the install" \
         || bad "APK no apps.list after the install"
 
     open_apk "$WORK/old.apk"
-    wait_until 30 log_has "apk: result failed: A newer version of this app is already on the phone." \
-        && ok "APK downgrade failure reads: A newer version of this app is already on the phone." \
-        || bad "APK no downgrade message: $(apk_log | tail -2)"
+    wait_until 30 log_has "apk: result failed: INSTALL_FAILED_VERSION_DOWNGRADE" \
+        && ok "APK downgrade failure: the phone's INSTALL_FAILED_VERSION_DOWNGRADE code" \
+        || bad "APK no downgrade result: $(apk_log | tail -2)"
 
     open_apk "$WORK/bundle.apks"
     if wait_until 30 apk_found 2 ok; then
@@ -6009,13 +6012,14 @@ PY
     else
         bad "DROP fakephone never received the file"
     fi
-    # The log line's size is public, the (empty) resume tail is not: match up to "bytes".
-    wait_until 15 log_has "drop: sending drop-3mb.bin (3145728 bytes" \
-        && ok "DROP the window's handler announced the file and streamed it" \
+    # The log carries the size and a closed outcome, never the file's name
+    # (CONV-PD-05); the sentence the pill shows is pinned by K2 (FileDropTests).
+    wait_until 15 log_has "drop: sending 3145728 bytes" \
+        && ok "DROP the window's handler announced the file's 3145728 bytes" \
         || bad "DROP no drop: sending line: $(drop_log | tail -3)"
-    wait_until 15 log_has "drop: ok: Saved on the phone: drop-3mb.bin" \
-        && ok "DROP result message: Saved on the phone: drop-3mb.bin" \
-        || bad "DROP no success message: $(drop_log | tail -2)"
+    wait_until 15 log_has "drop: ok: saved" \
+        && ok "DROP result: the phone saved the file" \
+        || bad "DROP no success result: $(drop_log | tail -2)"
     # No chunk leaves before the phone's opening drop.progress (the sender waits for
     # it), so the whole file arriving proves the progress message was parsed; the
     # byte count is the wire's DROP_DATA total.
@@ -6031,9 +6035,9 @@ PY
     else
         bad "DROP the PD_FAKE_DOWNSIZE trip never reached fakephone"
     fi
-    wait_until 15 log_has "drop: failed: The phone refused it: the file is bigger than the phone's cap." \
-        && ok "DROP the refusal reads: The phone refused it: the file is bigger than the phone's cap." \
-        || bad "DROP no refusal message: $(drop_log | tail -2)"
+    wait_until 15 log_has "drop: failed: too_large" \
+        && ok "DROP the refusal is the phone's too_large code" \
+        || bad "DROP no refusal result: $(drop_log | tail -2)"
 
     # B1: the outcome pill is not a fixture of the window. The sender's own
     # timeout is the only hide (5 s), so the chrome state must show the outcome

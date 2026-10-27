@@ -127,6 +127,40 @@ final class FileDropSender {
         case finished(String, ok: Bool)
     }
 
+    /// Why a drop ended, for the log: a closed set of ours, or the phone's own
+    /// error code (a protocol identifier). Never a file name, so the line stays
+    /// public (CONV-PD-05).
+    enum Outcome: Equatable {
+        case saved
+        case busy
+        case checksum
+        case cancelled
+        case tooLarge
+        case overCap
+        case nothing
+        case offline
+        case unreadable
+        case inFlight
+        /// The phone's `drop.result` code, a closed protocol value.
+        case phone(String)
+
+        var kind: String {
+            switch self {
+            case .saved: return "saved"
+            case .busy: return "busy"
+            case .checksum: return "checksum"
+            case .cancelled: return "cancelled"
+            case .tooLarge: return "too_large"
+            case .overCap: return "over_cap"
+            case .nothing: return "nothing"
+            case .offline: return "offline"
+            case .unreadable: return "unreadable"
+            case .inFlight: return "in_flight"
+            case .phone(let code): return code
+            }
+        }
+    }
+
     private(set) var phase: Phase = .idle
     var isBusy: Bool { if case .sending = phase { true } else { false } }
 
@@ -174,7 +208,9 @@ final class FileDropSender {
     private var resumeHints: [String: (bytes: Int, until: Date)] = [:]
 
     func send(_ urls: [URL], session: any DropChannel) {
-        guard !isBusy else { return finish("The phone is still taking a file.", ok: false, keepState: true) }
+        guard !isBusy else {
+            return finish("The phone is still taking a file.", ok: false, outcome: .inFlight, keepState: true)
+        }
         clearTask?.cancel()
         self.session = session
         cancelled = false
@@ -188,12 +224,14 @@ final class FileDropSender {
     private func begin(_ prepared: Result<[PreparedDrop], Error>) {
         switch prepared {
         case .failure(let error):
-            finish("Couldn't read those files: \(error.localizedDescription)", ok: false)
+            finish("Couldn't read those files: \(error.localizedDescription)", ok: false, outcome: .unreadable)
         case .success(let drops):
-            guard !drops.isEmpty, let session else { return finish("Nothing to send.", ok: false) }
+            guard !drops.isEmpty, let session else {
+                return finish("Nothing to send.", ok: false, outcome: .nothing)
+            }
             if let big = drops.first(where: { $0.size <= 0 || $0.size > DropLimits.current }) {
                 let why = big.size <= 0 ? "is empty" : "is bigger than the phone's \(DropLimits.maxMegabytes) MB cap"
-                return finish("\(big.name) \(why), nothing was sent.", ok: false)
+                return finish("\(big.name) \(why), nothing was sent.", ok: false, outcome: .overCap)
             }
             queue = drops
             next()
@@ -210,7 +248,9 @@ final class FileDropSender {
         offset = 0
         cursor = 0
         let resume = self.resume(sha256: next.sha256)
-        Log.app.notice("drop: sending \(next.name, privacy: .private) (\(next.size, privacy: .public) bytes\(resume > 0 ? ", resumes at \(resume)" : ""))")
+        // The size is the fact a person can check; the name is theirs and stays
+        // out of the log (CONV-PD-05, R-PRIV-1).
+        Log.app.notice("drop: sending \(next.size, privacy: .public) bytes\(resume > 0 ? ", resuming" : "")")
         setPhase(.sending(next.name, fraction: resume > 0 ? Double(resume) / Double(next.size) : 0))
         awaitingOffset = true
         session.dropStart(id: id, name: next.name, mime: next.mime, size: next.size,
@@ -255,7 +295,7 @@ final class FileDropSender {
         guard isBusy else { return }
         cancelled = true
         if id != 0 { session?.cancelDrop(id: id) }
-        finish("Transfer cancelled.", ok: false)
+        finish("Transfer cancelled.", ok: false, outcome: .cancelled)
     }
 
     /// The phone's confirmed byte count: the fraction the pill shows. The
@@ -287,17 +327,21 @@ final class FileDropSender {
         if result.ok, let path = result.path {
             let name = path.split(separator: "/").last.map(String.init) ?? ""
             if queue.isEmpty {
-                finish("Saved on the phone: \(name)", ok: true)
+                finish("Saved on the phone: \(name)", ok: true, outcome: .saved)
             } else {
-                finish("Saved \(name), sending the next file…", ok: true, keepState: true)
+                finish("Saved \(name), sending the next file…", ok: true, outcome: .saved, keepState: true)
                 next()
             }
         } else {
             switch result.code {
-            case "busy": finish("The phone is busy with another file.", ok: false)
-            case "checksum": finish("The phone could not verify that file.", ok: false)
-            case "cancelled": finish("Cancelled.", ok: false)
-            default: finish("The phone refused it: \(result.message ?? result.code ?? "failed").", ok: false)
+            case "busy": finish("The phone is busy with another file.", ok: false, outcome: .busy)
+            case "checksum": finish("The phone could not verify that file.", ok: false, outcome: .checksum)
+            case "cancelled": finish("Cancelled.", ok: false, outcome: .cancelled)
+            case "too_large":
+                finish("The phone refused it: \(result.message ?? "too large").", ok: false, outcome: .tooLarge)
+            default:
+                finish("The phone refused it: \(result.message ?? result.code ?? "failed").", ok: false,
+                       outcome: .phone(result.code ?? "refused"))
             }
         }
     }
@@ -313,20 +357,22 @@ final class FileDropSender {
 
     private static let resumeLifetime: TimeInterval = 600
 
-    private func fail(_ text: String, keepTemp: Bool = false) {
+    private func fail(_ text: String, outcome: Outcome = .offline, keepTemp: Bool = false) {
         if id != 0, !cancelled, !keepTemp { session?.cancelDrop(id: id) }
         cancelled = true
-        finish(text, ok: false)
+        finish(text, ok: false, outcome: outcome)
     }
 
     private func failNow(_ text: String) {
         if id != 0 { session?.cancelDrop(id: id) }
         cancelled = true
-        finish(text, ok: false)
+        finish(text, ok: false, outcome: .offline)
     }
 
-    private func finish(_ text: String, ok: Bool, keepState: Bool = false) {
-        Log.app.notice("drop: \(ok ? "ok" : "failed", privacy: .public): \(text, privacy: .private)")
+    private func finish(_ text: String, ok: Bool, outcome: Outcome, keepState: Bool = false) {
+        // The sentence names a file and stays private; the outcome is a closed
+        // token and is what the e2e reads (the privacy pass must not hide it).
+        Log.app.notice("drop: \(ok ? "ok" : "failed", privacy: .public): \(outcome.kind, privacy: .public)")
         if keepState { return }
         queue = []
         current = nil
