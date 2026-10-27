@@ -51,9 +51,9 @@ enum PanelProbe {
         }
         // The gear opens the app's one status-item menu (MenuBarPanel.swift),
         // so the hosted card behaves as the real panel does.
-        let view = NSHostingView(rootView: AnyView(MenuBarContent(onSecondaryMenu: {
+        let view = NSHostingView(rootView: MenuBarContent(onSecondaryMenu: {
             MenuBarController.current?.openSecondaryMenu()
-        }).environment(controller)))
+        }).environment(controller))
         hostView = view
         let effect = NSVisualEffectView()
         effect.material = .popover
