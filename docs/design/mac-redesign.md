@@ -262,8 +262,9 @@ toolbar item group:
   the phone's media volume slider with its % · the one reason line when a control is off · **Now Playing follows**
   when the phone reports ≥ 2 sessions · **LIVE** (one row per live notification) · one **WINDOWS** row of four icon
   buttons: **Mirror** (VoiceOver "Phone Mirror") ⌘P · **Find Apps** ⌘K · **Move to Mac** ⇧⌘C · **Install APK…**
-  (with its phase). The menu-bar panel keeps **Settings…** ⌘, and **Quit PocketDeck** ⌘Q; the Deck popover does not
-  (`showsFooter`).
+  (with its phase) · a **gear** at the card's top-right. The panel's own commands are the icon's: a secondary click
+  (right-click, or ⌃-click) opens **Settings…** ⌘, · **About PocketDeck** · **Quit PocketDeck** ⌘Q under the icon,
+  closing the card first, and the gear opens the same menu. The Deck popover has neither the gear nor a footer.
 - **Ringer** opens a menu (**Ring** / **Vibrate** / **Silent**) with the phone's current mode checked; it never
   cycles on click. The tile's subtitle names the current mode. It is disabled, with a reason, when the phone sends
   no `ringer` or while the phone's DND is on (`dnd_on`). **Turn Off Screen** shows **Screen on** / **Screen off**
