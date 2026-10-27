@@ -1,48 +1,22 @@
-// Settings (⌘,): General and Devices, nothing else (docs/design/mac-redesign.md §3.6).
+// Settings (⌘,): the sidebar window (docs/specs/settings.md) and the Mac-wide
+// pages it hosts: General, Input and Automation. The phones live in the
+// sidebar, so there is no Devices tab any more.
 
 import AppKit
 import ServiceManagement
 import SwiftUI
 
-/// The Settings window's four tabs. The selection lives in the controller so a
-/// preview or a test hook can open the Devices tab (screenshots, the e2e check).
-enum SettingsTab: Hashable {
-    case general, input, devices, automation
-}
-
 struct SettingsView: View {
-    @Environment(ConnectionController.self) private var controller
-
     var body: some View {
-        Group {
-            // A prototype run draws the whole window as a sidebar; production
-            // keeps today's four tabs (a release build never sets the flag).
-            if ProtoSettings.variant == .production {
-                tabs
-            } else {
-                ProtoSettingsShell()
-            }
-        }
-        .frame(width: SettingsLayout.currentWidth)
-        // A grouped Form reports its content's ideal height, and the Settings
-        // window took it: on a short screen the rows below the fold were
-        // clipped and could not scroll. The cap makes the window fit the
-        // screen, so the form inside it scrolls; a shorter tab keeps its own
-        // natural height.
-        .frame(maxHeight: SettingsLayout.maxContentHeight(for: NSScreen.main?.visibleFrame.height ?? 800))
-        .background(SettingsWindowTag())
-    }
-
-    private var tabs: some View {
-        TabView(selection: Binding(
-            get: { controller.settingsTab },
-            set: { controller.settingsTab = $0 },
-        )) {
-            Tab("General", systemImage: "gearshape", value: SettingsTab.general) { GeneralSettings() }
-            Tab("Input", systemImage: "computermouse", value: SettingsTab.input) { InputSettings() }
-            Tab("Devices", systemImage: "iphone.gen3", value: SettingsTab.devices) { DevicesSettings() }
-            Tab("Automation", systemImage: "terminal", value: SettingsTab.automation) { AutomationSettings() }
-        }
+        SettingsSidebarView()
+            .frame(width: SettingsLayout.width)
+            // A grouped Form reports its content's ideal height, and the Settings
+            // window took it: on a short screen the rows below the fold were
+            // clipped and could not scroll. The cap makes the window fit the
+            // screen, so the page inside it scrolls; a shorter page keeps its
+            // own natural height.
+            .frame(maxHeight: SettingsLayout.maxContentHeight(for: NSScreen.main?.visibleFrame.height ?? 800))
+            .background(SettingsWindowTag())
     }
 }
 
@@ -58,10 +32,19 @@ private struct SettingsWindowTag: NSViewRepresentable {
             guard let window = view.window else { return }
             let screen = window.screen ?? NSScreen.main
             let height = SettingsLayout.maxContentHeight(for: screen?.visibleFrame.height ?? 800)
-            // A sidebar run's header is one compact row: the default style put
-            // the title above an otherwise empty toolbar row.
-            if ProtoSettings.variant != .production { window.toolbarStyle = .unifiedCompact }
-            window.setContentSize(NSSize(width: SettingsLayout.currentWidth, height: height))
+            // One compact header row: the page's title beside the sidebar
+            // toggle (the default style put the title above an empty row).
+            window.toolbarStyle = .unifiedCompact
+            window.setContentSize(NSSize(width: SettingsLayout.width, height: height))
+            // The source list takes the keyboard, so ↑/↓ work the moment the
+            // window opens (SET-WIN-08).
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(250))
+                if !SettingsSidebarFocus.take(in: window) {
+                    try? await Task.sleep(for: .milliseconds(250))
+                    SettingsSidebarFocus.take(in: window)
+                }
+            }
             if let screen {
                 var frame = window.frame
                 frame.origin.x = min(max(screen.visibleFrame.minX, frame.origin.x),
@@ -77,12 +60,13 @@ private struct SettingsWindowTag: NSViewRepresentable {
     func updateNSView(_ nsView: NSView, context: Context) {}
 }
 
-/// Settings' window size rules (docs/design/mac-redesign.md §3.6).
+/// Settings' window size rules (docs/specs/settings.md, SET-WIN-07): the
+/// smallest supported screen is 1280×800, and the whole window fits it.
 enum SettingsLayout {
-    static let width: CGFloat = 480
-    /// The window width this run draws: the sidebar prototype's 720 pt (a test
-    /// hook), else today's 480 pt tab.
-    static var currentWidth: CGFloat { ProtoSettings.windowWidth ?? width }
+    /// The window: a 240 pt source list and a 480 pt detail (today's tab width).
+    static let width: CGFloat = 720
+    static let sidebarWidth: CGFloat = 240
+    static var detailWidth: CGFloat { width - sidebarWidth }
     /// The design's height; tall enough for General's usual rows, short enough
     /// for a 1280x800 screen with the menu bar and margins.
     static let designHeight: CGFloat = 560
@@ -236,76 +220,6 @@ struct InputSettings: View {
                 .font(.subheadline).foregroundStyle(.secondary)
         }
         .formStyle(.grouped)
-    }
-}
-
-struct DevicesSettings: View {
-    @Environment(ConnectionController.self) private var controller
-    @State private var renameText = ""
-
-    var body: some View {
-        DevicesSettingsTab(onRename: { controller.beginRename($0) },
-                           onForget: { controller.beginForget($0) },
-                           onAdd: addPhone)
-            // A rename in progress: which device, and the staged text (previews
-            // set both; a row's Rename… button sets the device).
-            .task(id: controller.renamingDeviceId) {
-                guard let id = controller.renamingDeviceId else { return }
-                renameText = controller.previewRenameText ?? controller.nickname(for: id)
-            }
-            .alert("Rename", isPresented: renaming) {
-                TextField("Nickname", text: $renameText, prompt: alertPrompt)
-                Button("Rename") { saveRename() }
-                Button("Cancel", role: .cancel) { controller.endRename() }
-            } message: {
-                Text("Up to 40 characters. Leave it empty to keep using the phone's own name.")
-            }
-            // A sheet, not an alert: an app-modal alert activated the app from
-            // a quiet (background) run, and a person's confirmation should not
-            // take their focus. Return is not the destructive default.
-            .sheet(isPresented: Binding(
-                get: { controller.forgettingDeviceId != nil },
-                set: { if !$0 { controller.endForget() } })) {
-                ForgetConfirmation(
-                    name: forgetTitle,
-                    onCancel: { controller.endForget() },
-                    onConfirm: {
-                        if let phone = forgettingPhone { controller.forget(phone) }
-                        controller.endForget()
-                    })
-            }
-    }
-
-    /// "Add Phone…": the Deck's own add sheet, so pairing has one flow.
-    private func addPhone() {
-        DeckWindow.show()
-        controller.sheet = .addPhone
-    }
-
-    /// The dialog's visibility lives in the controller, so previews can stage it.
-    private var renaming: Binding<Bool> {
-        Binding(get: { controller.renamingDeviceId != nil },
-                set: { if !$0 { controller.endRename() } })
-    }
-
-    private var forgettingPhone: RememberedPhone? {
-        controller.rememberedPhones.first { $0.id == controller.forgettingDeviceId }
-    }
-
-    private var forgetTitle: String {
-        forgettingPhone.map { controller.displayName(for: $0.ref) } ?? "this phone"
-    }
-
-    private var alertPrompt: Text {
-        controller.rememberedPhones.first { $0.id == controller.renamingDeviceId }
-            .map { Text($0.ref.name) } ?? Text("Nickname")
-    }
-
-    private func saveRename() {
-        if let id = controller.renamingDeviceId {
-            controller.setNickname(renameText, for: id)
-        }
-        controller.endRename()
     }
 }
 

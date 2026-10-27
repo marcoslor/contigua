@@ -95,12 +95,6 @@ enum DevicesTabModel {
             pairAgain: presence == .pairAgain)
     }
 
-    /// With two or more phones every settings section names its phone, so a
-    /// section is never read as belonging to "the phone" (reviewer fix a).
-    static func sectionTitle(_ base: String, phone: String, phoneCount: Int) -> String {
-        phoneCount > 1 ? "\(phone) — \(base)" : base
-    }
-
     static func mutedCountText(_ count: Int) -> String {
         count == 0 ? "None" : "\(count)"
     }

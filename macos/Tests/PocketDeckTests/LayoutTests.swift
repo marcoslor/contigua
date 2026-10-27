@@ -1,4 +1,4 @@
-// Every Settings tab and the Deck on the smallest supported screen
+// Every Settings page and the Deck on the smallest supported screen
 // (docs/NFR.md `layout_min_screen`), in light and dark: each control is inside
 // the window or inside something that scrolls. The 10-20 SettingsLayoutTests
 // pinned the height; this walks what the person can actually reach.
@@ -47,19 +47,21 @@ final class LayoutTests: XCTestCase {
         return nil
     }
 
-    /// The tabs by their settings views: the TabView draws one at a time, so
-    /// each is hosted on its own.
-    private func tabs() -> [(name: String, view: AnyView)] {
+    /// The Mac-wide pages, each hosted on its own in the width the sidebar
+    /// leaves for the detail (a phone's page is a set of Sections in the same
+    /// Form, so this is the width it gets too).
+    private func pages() -> [(name: String, view: AnyView)] {
         [("General", AnyView(GeneralSettings())),
          ("Input", AnyView(InputSettings())),
-         ("Devices", AnyView(DevicesSettings())),
          ("Automation", AnyView(AutomationSettings()))]
     }
 
-    func testEverySettingsTabFitsAndScrollsAtTheSmallestScreen() throws {
-        let size = CGSize(width: SettingsLayout.width,
+    func testEverySettingsPageFitsAndScrollsAtTheSmallestScreen() throws {
+        XCTAssertEqual(SettingsLayout.width - SettingsLayout.sidebarWidth,
+                       SettingsLayout.detailWidth)
+        let size = CGSize(width: SettingsLayout.detailWidth,
                           height: SettingsLayout.maxContentHeight(for: visibleHeight))
-        for (name, view) in tabs() {
+        for (name, view) in pages() {
             for dark in [false, true] {
                 let hosting = NSHostingView(rootView: AnyView(view.environment(controller)))
                 hosting.frame = NSRect(origin: .zero, size: size)
