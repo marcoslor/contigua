@@ -101,10 +101,10 @@ class HomeScreenTest {
     fun `the paired row overflow is named for its Mac`() {
         shoot(
             state(enabled = true).copy(
-                paired = listOf(PairedMacUi("client-1", "Marcos's MacBook", 5)),
+                paired = listOf(PairedMacUi("client-1", "Studio Mac", 5)),
             ),
         )
-        compose.onNodeWithContentDescription("More options for Marcos's MacBook")
+        compose.onNodeWithContentDescription("More options for Studio Mac")
             .fetchSemanticsNode()
     }
 
