@@ -96,8 +96,21 @@ disabled, never hidden.
    Deck's status pill opens the same card in a popover, without the footer.
 4. **Settings** (⌘,; also the settings gear at the Deck header's right): tabs **General** (launch at login, show in menu bar,
    share clipboard with your phone, show phone apps in the Dock, **glass app icons**, default window density, **reveal controls after**) · **Input**
-   (**hover over Android apps**) · **Devices**
-   (paired phones: name, model, last seen, **Rename…**, **Use**, **Forget**; **Add phone…**; the Dock shims rebuild on a rename). Nothing else.
+   (**hover over Android apps**) · **Devices** · **Automation**. **Devices** is a **Phones** list (a row per
+   phone: icon, name, a dot plus **Connected** / **Connecting…** / **Reconnecting…** / **Offline** / **Pair again**
+   and when it was last seen, **In Use** on the one the rest of the app shows, and an information button) and
+   **Add Phone…** under it, then the selected phone's page: **Model**, **Use This Phone** (phones not in use),
+   **Pair Again…** (a phone whose key is gone), **Rename…**, **Forget This Phone…** alone at the end, the
+   **Notifications** section (**Share notifications and Now Playing**, **When I click a notification** with
+   **Open on this Mac** / **Open on the phone** / **Do nothing**, and **Muted apps** with its count, a search field
+   and a **Muted** checkbox column), and the **Screen** option **Keep the phone screen off until I turn it on
+   from the Mac**. The in-use phone's page opens first; any other phone is one click away and its settings are
+   editable whether or not it is in use (they apply on its next connection). With two or more phones every
+   section header names its phone ("Galaxy S25+ — Notifications"). Muted apps lists the apps this Mac already
+   has for that phone, muted first, with a mark on apps that sent a notification this session, "System UI" for
+   `com.android.systemui` and the package name for an app with no name. When the phone has not been granted
+   notification access, the row says **Allow notification access on the phone.** under the switch. The Dock
+   shims rebuild on a rename. Nothing else.
 
     A **nickname** ("Rename…" dialog) is 1–40 characters, trimmed; empty keeps using the phone's own name. It is the one
     name everywhere: the Deck title, the menu bar, the chip's voiceover copy, failure banners, notifications from the phone
@@ -141,9 +154,12 @@ Material 3, edge-to-edge, dynamic color, light/dark.
    - Switch: "Allow new pairings" (off refuses unknown Macs before any code;
      paired Macs still connect). Greyed out while "Allow connections" is off.
      Default on.
-   - Divider, then the sharing switch: "Share notifications and Now Playing",
-     always with a line under it — "Only while a Mac is connected. Off by
-     default." when off, the granted hint when on. Default off.
+   - No notification-sharing switch: the switch lives on the Mac, per phone
+     (Settings ▸ Devices). When a Mac turns it on, the phone asks for
+     notification-listener access by itself; if that fails, the status card
+     shows **Notification access is off** with **Allow**, which opens the
+     system's Notification access screen. A later grant starts forwarding on
+     its own.
    - The card, every switch row and the "Paired Macs" title share one left
      edge; no extra indent on the list rows.
    - "Paired Macs" list (name, last connected, Forget via swipe or overflow).

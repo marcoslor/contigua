@@ -24,12 +24,19 @@ MEDIA_CONTENT_CONTROL, seen in `dumpsys package`).
 
 ## Decision: NotificationListenerService in the app, granted by the shell at opt-in
 
-One per-phone opt-in covers both features; default OFF on the Mac and the phone.
+One per-phone switch covers both features, and it lives on the Mac only; off by default. The
+phone has no second switch: its notification-listener grant is the phone-side half of the gate
+(person's decision, 2026-10-27).
 
-- Phone toggle on → the app asks the shell service (new AIDL `grantListenerAccess`) to run
+- `notify.enable on` → if the listener is not granted, the phone asks the shell service to run
   `cmd notification allow_listener dev.pocketdeck/dev.pocketdeck.app.PdNotificationListener`
-  (verified above). If exec fails, open `ACTION_NOTIFICATION_LISTENER_SETTINGS`. Toggle off just
-  stops forwarding (the grant may stay; nothing is read for the wire).
+  (verified above). If that fails the phone answers `notify.state {on:false, reason:"no_access"}`,
+  its home shows a "Notification access is off" attention item that opens
+  `ACTION_NOTIFICATION_LISTENER_SETTINGS`, and the Mac's Devices row says "Allow notification
+  access on the phone" under the switch. A later grant is announced by the listener and turns
+  forwarding on without another Mac toggle. `notify.enable off` just stops forwarding (the grant
+  may stay; nothing is read for the wire). A value stored by an older install's phone switch is
+  ignored, never migrated to on.
 - `PdNotificationListener` (BIND_NOTIFICATION_LISTENER_SERVICE) runs in the app process:
   onNotificationPosted/Removed → `{id, pkg, app?, when, title?, text?, ongoing}` (each string
   capped at 8 KiB; our own package and contentless notifications skipped). Forwarded only while
@@ -60,10 +67,11 @@ One per-phone opt-in covers both features; default OFF on the Mac and the phone.
 
 ## Protocol (docs/PROTOCOL.md, session-level JSON)
 
-- mac→phone: `notify.enable {on}` — when the per-phone toggle changes and again on reconnect;
+- mac→phone: `notify.enable {on}` — the only person-facing switch, sent when it changes and again on reconnect;
   `notify.open {id, target: window|phone, stream?}` — a banner click (the id is one the phone
   issued; the action never crosses the wire); `media.command {action: play|pause|next|prev}`.
-- phone→mac: `notify.state {on}` (true once granted and forwarding); `notify.post {id, pkg, app?,
+- phone→mac: `notify.state {on, reason?}` (true once granted and forwarding; `reason:"no_access"`
+  when the Mac asked but the listener grant is missing); `notify.post {id, pkg, app?,
   when, title?, text?, ongoing?}`; `notify.remove {id}`; `media.state {playing, pkg?, title?,
   artist?, album?, durationMs?, positionMs, rate}` — empty media.state (no list fields) clears
   Now Playing.
@@ -130,11 +138,15 @@ samples. `Copy code` copies on click only, marks the pasteboard item
 
 ### Per-app mute
 
-Settings › Devices › (per phone) › Notifications has "Muted apps": the packages seen in this
-session (package + label, never text; already muted packages stay listed so they can be
-unmuted). Muted means the Mac drops that package's `notify.post` before posting
-(`notify muted pkg=…` in the share log); the message still crossed the encrypted link.
-The set is stored per phone in the profile's defaults as `notify.mute.<deviceId>`.
+Settings › Devices › (per phone) › Notifications has "Muted apps": the app list this Mac already
+caches for the phone, plus packages seen this session and already-muted ones (package + label,
+never text; an app that sent a notification this session carries a mark). The list is
+searchable, muted apps sort first, and a trailing "Muted" checkbox column with a column header
+is the only switch; a system package gets a friendly name ("System UI") with its package name
+underneath, and an unknown app shows its package name. Muted means the Mac drops that package's
+`notify.post` before posting (`notify muted pkg=…` in the share log); the message still crossed
+the encrypted link. The set is stored per phone in the profile's defaults as
+`notify.mute.<deviceId>`.
 
 ### Logs
 
