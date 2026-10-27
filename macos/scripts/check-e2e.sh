@@ -5519,7 +5519,8 @@ PY
     printf '%s\n' "dropfile $WORK/drop-32mb.bin" "wait 20" \
         "dropfile $WORK/drop-3mb.bin" "wait 8" "dropfile $WORK/tripped.bin" "wait 5" \
         > "$WORK/drop.txt"
-    open_shared --open com.android.settings --debug-input-script "$WORK/drop.txt" || return 1
+    open_shared --open com.android.settings --debug-chrome-state "$WORK/chrome.txt" \
+        --debug-input-script "$WORK/drop.txt" || return 1
 
     local event want
     # The 32 MiB drop with the late tail confirmation: every byte exactly once.
@@ -5577,6 +5578,20 @@ PY
     wait_until 15 log_has "drop: failed: The phone refused it: the file is bigger than the phone's cap." \
         && ok "DROP the refusal reads: The phone refused it: the file is bigger than the phone's cap." \
         || bad "DROP no refusal message: $(drop_log | tail -2)"
+
+    # B1: the outcome pill is not a fixture of the window. The sender's own
+    # timeout is the only hide (5 s), so the chrome state must show the outcome
+    # and then nothing about a second later.
+    if chrome_has "drop_pill=shown"; then
+        ok "DROP the outcome pill is on the window after the drop (state: $(chrome_state))"
+    else
+        bad "DROP no drop pill on the window after the drop (state: $(chrome_state))"
+    fi
+    if wait_until 7 chrome_has "drop_pill=hidden"; then
+        ok "DROP the outcome pill hid after the transfer's 5 s timeout (state: $(chrome_state))"
+    else
+        bad "DROP the outcome pill was still on the window 7 s after the outcome (state: $(chrome_state))"
+    fi
 
     [ "$(e2e_app_pids | wc -l | tr -d ' ')" = "1" ] \
         && ok "DROP the app survived the failed drop (one instance)" \
@@ -9852,6 +9867,43 @@ PY
         stop_fakephone
     done
 
+    # A power press with app streams up (docs/PROTOCOL.md "Phone screen",
+    # `power.locked`): the phone re-lights its VD group at the edge, so the
+    # window holds the last frame for a grace under stale_picture_ms — no
+    # "Not responding" pill and no frozen input block — and a real stall after
+    # the grace still says so. The fake stalls and reports the press together.
+    : > "$WORK/events.jsonl"
+    defaults write "$DEFAULTS_SUITE" "chrome.style.com.android.settings" -string framed
+    FAKE_ARGS="--stall-after 3 --power-locked-after 3.1" start_fake || return 1
+    nfr_launch --open com.android.settings
+    nfr_wait_ready 30 || bad "NFR the app never paired (power press)"
+    wait_until 30 events_have '"ev":"stall"' || bad "NFR the fake never stalled (power press)"
+    wait_until 10 events_have '"ev":"power_locked"' || bad "NFR the fake never sent power.locked"
+    local locked_ms
+    locked_ms="$(first_event_ms ev power_locked)"
+    sleep 1
+    if chrome_has "stall=0 stall_pill=0"; then
+        ok "NFR power press: the window held the last frame, no \"Not responding\" pill (state: $(chrome_state))"
+    else
+        bad "NFR power press: the window called the phone's own press a stall (state: $(chrome_state))"
+    fi
+    before="$(fake_counter input)"
+    control nav back || bad "NFR power press: $CONTROL_REPLY"
+    wait_until 5 input_at_least $((before + 1)) \
+        && ok "NFR power press: input still reached the phone inside the grace" \
+        || bad "NFR power press: input was blocked inside the grace (input $before -> $(fake_counter input))"
+    # The grace is 1.7 s from the report: wait from there, not from "now", so
+    # the steps above cannot close the window before the re-stall.
+    while [ "$(now_ms)" -lt $(( locked_ms + 1700 )) ]; do sleep 0.1; done
+    say "NFR power press: $(( $(now_ms) - locked_ms )) ms after the press, waiting for a real stall"
+    if wait_ms 2500 chrome_has "stall=1 stall_pill=1"; then
+        ok "NFR power press: a real stall after the grace still says \"Not responding\" (state: $(chrome_state))"
+    else
+        bad "NFR power press: no stall after the grace with the frames still stopped (state: $(chrome_state))"
+    fi
+    stop_app
+    stop_fakephone
+
     # Occlusion: a covered window is not a live picture. AppKit throttles an
     # occluded app, so the frames stop without the phone being at fault; the
     # watchdog must not call that a stall, and the clock restarts when the
@@ -9860,11 +9912,20 @@ PY
     # WindowServer would have said for the first window.
     : > "$WORK/events.jsonl"
     defaults write "$DEFAULTS_SUITE" "chrome.style.com.android.settings" -string immersive
-    FAKE_ARGS="--stall-after 3 --stall-for 12" start_fake || return 1
+    # --stall-after 8: the caller has to be up and covered before the phone
+    # stops, and under load `nfr_wait_ready` alone can take seconds; at 3 the
+    # stall (and its 12 s resume) could be over before `occlude on`, leaving the
+    # window live and the last two lines here unable to judge anything.
+    FAKE_ARGS="--stall-after 8 --stall-for 12" start_fake || return 1
     nfr_launch --open com.android.settings
     nfr_wait_ready 30 || bad "NFR the app never paired (occlusion)"
     control occlude on || bad "NFR occlude on: $CONTROL_REPLY"
-    wait_until 30 events_have '"ev":"stall"' || bad "NFR the fake never stalled (occlusion)"
+    local occlude_ms
+    occlude_ms="$(now_ms)"
+    # The stall must happen while the window is covered: a stale event from
+    # before the cover would say nothing about the covered time.
+    wait_until 30 eval '[ -n "$(first_event_after_ms ev stall "$occlude_ms")" ]' \
+        || bad "NFR the fake never stalled while the window was covered (occlusion)"
     sleep 3
     if chrome_has "stall=0 stall_pill=0"; then
         ok "NFR occlusion: a covered window did not call the stopped picture a stall"

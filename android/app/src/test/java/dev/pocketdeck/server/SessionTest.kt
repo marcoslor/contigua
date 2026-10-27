@@ -276,8 +276,38 @@ class SessionTest {
     }
 
     @Test
-    fun denyReportsPairDeniedAndCloses() {
-        hello("c3", "Bad")
+    fun aSessionInPairingSendsNothingButThePairingMachine() {
+        // SECURITY (the rig caught it): a session that has not authenticated
+        // must say nothing but the handshake and pairing machine. The app can
+        // push a notify toggle and the person's own panel can change at any
+        // time; both are post-welcome state. Before the fix, `notify.state`
+        // landed where the Mac expected `pair.reveal` (boot 1 of the rig).
+        hello("c9", "NewMac")
+        send(mapOf("t" to "pair.request"))
+        readUntil("pair.commit")
+
+        session!!.reconcileNotify()   // the app's notification toggle changed
+        platform.endPanelHold()       // the person's own panel state changed
+
+        val preReady = setOf("welcome", "pair.commit", "pair.reveal", "pair.ok", "pair.qr", "error")
+        val unexpected = ArrayList<String>()
+        client.soTimeout = 400
+        try {
+            while (true) {
+                val frame = reader.readFrame() ?: break
+                val t = Json.parseObject(String(frame.payload))["t"] as? String ?: ""
+                if (t !in preReady) unexpected.add(t)
+            }
+        } catch (_: java.net.SocketTimeoutException) {
+            // Nothing else arrived: the quiet the test wants.
+        } finally {
+            client.soTimeout = 5_000
+        }
+        assertTrue("a session in pairing sent $unexpected", unexpected.isEmpty())
+    }
+
+    @Test
+    fun denyReportsPairDeniedAndCloses() {        hello("c3", "Bad")
         send(mapOf("t" to "pair.request"))
         readUntil("pair.commit")
         send(mapOf("t" to "pair.nonce", "n" to "0".repeat(32)))

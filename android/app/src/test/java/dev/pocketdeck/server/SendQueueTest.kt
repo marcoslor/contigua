@@ -3,8 +3,11 @@ package dev.pocketdeck.server
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 class SendQueueTest {
 
@@ -140,5 +143,40 @@ class SendQueueTest {
         // Oldest dropped first; newest survives.
         assertEquals(6, q.pollNow()!!.size)
         assertNull(q.pollNow())
+    }
+
+    /**
+     * B2: the drop callback reaches the display (a keyframe request, a
+     * backpressure note), and a display busy with another window's open can
+     * take seconds. It must never run with the queue's lock held: while it is
+     * blocked, the queue must still take work from the writer and the other
+     * producers (JSON first, then frames).
+     */
+    @Test
+    fun theDropCallbackRunsWithoutTheQueueLock() {
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val q = SendQueue(maxDeltaBytesPerStream = 10, onDeltaDrop = {
+            entered.countDown()
+            release.await(10, TimeUnit.SECONDS)
+        })
+        q.enqueueDelta(1, 0L, ByteArray(6))
+        val dropper = Thread { q.enqueueDelta(1, 1_000L, ByteArray(6)) } // over the cap
+        dropper.isDaemon = true
+        dropper.start()
+        assertTrue("the drop callback ran", entered.await(2, TimeUnit.SECONDS))
+
+        var enqueued = false
+        val json = Thread { q.enqueueJson(bytes(0x30, 1)); enqueued = true }
+        json.isDaemon = true
+        json.start()
+        json.join(500)
+        val freeWhileDropping = enqueued
+        release.countDown()
+        runCatching { dropper.join(2_000) }
+        runCatching { json.join(2_000) }
+        assertTrue("enqueueJson waited for the drop callback: the queue lock was held",
+                   freeWhileDropping)
+        assertEquals(0x30, q.pollNow()!![0].toInt() and 0xFF)
     }
 }

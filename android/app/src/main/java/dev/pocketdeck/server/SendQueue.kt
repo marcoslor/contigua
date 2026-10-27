@@ -76,30 +76,37 @@ internal class SendQueue(
         lock.notifyAll()
     }
 
-    fun enqueueDelta(stream: Int, ptsUs: Long, bytes: ByteArray) = synchronized(lock) {
-        if (stream in dropping) return
-        val existing = deltas[stream]
-        val q: ArrayDeque<ByteArray>
-        if (existing == null) {
-            q = ArrayDeque()
-            deltas[stream] = q
-            deltaOrder.addLast(stream)
-        } else {
-            q = existing
+    fun enqueueDelta(stream: Int, ptsUs: Long, bytes: ByteArray) {
+        var dropped = false
+        synchronized(lock) {
+            if (stream in dropping) return
+            val existing = deltas[stream]
+            val q: ArrayDeque<ByteArray>
+            if (existing == null) {
+                q = ArrayDeque()
+                deltas[stream] = q
+                deltaOrder.addLast(stream)
+            } else {
+                q = existing
+            }
+            val used = deltaBytes[stream] ?: 0
+            val firstPts = deltaFirstPtsUs[stream] ?: ptsUs
+            if (used + bytes.size > maxDeltaBytesPerStream || ptsUs - firstPts > maxDeltaDurationUs) {
+                // Stalled consumer: drop the backlog and ask for a fresh keyframe.
+                discardDeltas(stream)
+                dropping.add(stream)
+                dropped = stream != 0
+                return@synchronized
+            }
+            q.addLast(bytes)
+            deltaBytes[stream] = used + bytes.size
+            deltaFirstPtsUs[stream] = firstPts
+            lock.notifyAll()
         }
-        val used = deltaBytes[stream] ?: 0
-        val firstPts = deltaFirstPtsUs[stream] ?: ptsUs
-        if (used + bytes.size > maxDeltaBytesPerStream || ptsUs - firstPts > maxDeltaDurationUs) {
-            // Stalled consumer: drop the backlog and ask for a fresh keyframe.
-            discardDeltas(stream)
-            dropping.add(stream)
-            if (stream != 0) onDeltaDrop(stream)
-            return
-        }
-        q.addLast(bytes)
-        deltaBytes[stream] = used + bytes.size
-        deltaFirstPtsUs[stream] = firstPts
-        lock.notifyAll()
+        // The drop callback reaches the display (keyframe request, backpressure),
+        // and a display busy opening another window can take seconds. Under this
+        // lock it stopped the writer and every other stream with it; run it free.
+        if (dropped) onDeltaDrop(stream)
     }
 
     /**

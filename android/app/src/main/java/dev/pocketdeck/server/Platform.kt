@@ -351,6 +351,23 @@ interface Power {
      * Runs on the power thread.
      */
     var onPanelChanged: ((off: Boolean) -> Unit)?
+
+    /**
+     * The person's screen went off while app streams were up and the phone took
+     * the panel over (the shared-group press). The session sends one
+     * `{"t":"power.locked"}`, so the Mac's windows hold their last frame for a
+     * short grace instead of calling it a stall. Runs on the power thread.
+     */
+    var onPowerLocked: (() -> Unit)?
+        get() = null
+        set(_) {}
+
+    /**
+     * A frame reached the wire. The power layer keeps a small ring of frame
+     * times, so a screen-off edge can report the picture's largest silence
+     * around it (the emulator rig's number).
+     */
+    fun noteFrame(nowMs: Long) {}
 }
 
 /** One paired Mac in v2: the pin is the Mac cert's point fingerprint (§3/§6);

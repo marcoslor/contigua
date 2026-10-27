@@ -317,6 +317,79 @@ class DarkPanelPolicyTest {
         assertFalse(policy().isForced)
     }
 
+    // --- the person's power press with app streams up (L1) -------------
+
+    @Test
+    fun `a press while the person holds the phone re-lights our VDs at once`() {
+        val p = policy()
+        p.streamsStarted()
+        // The person's own screen with one app window streaming: nothing of
+        // ours is dark, so the policy waits for its next 2 s step.
+        val user = p.step(panelOn = true, strategy = PanelStrategy.PANEL_DARK)
+        assertFalse(user.wake || user.panelOff)
+
+        // The press sleeps the panel's group, which our VDs share. The watch
+        // must take the panel over now, not at the next keep-alive step.
+        assertEquals(PowerWatchAction.RELIGHT,
+                     p.interactiveOff(nowMs = 5_000, streamsUp = true))
+        // From here it is the existing PANEL_DARK path: every step wakes the
+        // streaming group and holds the panel off under it. The immediate
+        // take-over itself (wake, then panel off, transitional) is the caller's
+        // action from the RELIGHT result.
+        val dark = p.step(panelOn = false, strategy = PanelStrategy.PANEL_DARK)
+        assertTrue("the VD group is woken", dark.wake)
+        assertTrue("the panel is powered off under it", dark.panelOff)
+    }
+
+    @Test
+    fun `a press while the panel is ours and dark still hands it back`() {
+        val p = policy()
+        p.streamsStarted()
+        p.step(panelOn = false, strategy = PanelStrategy.PANEL_DARK)
+        p.step(panelOn = true, strategy = PanelStrategy.PANEL_DARK) // our forced-dark panel reads on
+        assertEquals(PowerWatchAction.HAND_BACK,
+                     p.interactiveOff(nowMs = 9_000, streamsUp = true))
+        // The person's screen is theirs from here (the existing rule).
+        val after = p.step(panelOn = true, strategy = PanelStrategy.PANEL_DARK)
+        assertFalse(after.wake || after.panelOff)
+    }
+
+    @Test
+    fun `our own wake is not a press`() {
+        val p = policy()
+        p.streamsStarted()
+        p.step(panelOn = false, strategy = PanelStrategy.PANEL_DARK)
+        p.ownWake(nowMs = 1_000)
+        assertEquals("the panel-off we just wrote is not the person",
+                     PowerWatchAction.NONE, p.interactiveOff(nowMs = 1_100, streamsUp = true))
+        // Once the settle is over a real press is handled again.
+        assertEquals(PowerWatchAction.HAND_BACK, p.interactiveOff(nowMs = 3_000, streamsUp = true))
+    }
+
+    @Test
+    fun `a press with no app stream up takes nothing over`() {
+        val p = policy()
+        p.streamsStarted()
+        p.step(panelOn = true, strategy = PanelStrategy.PANEL_DARK)
+        assertEquals(PowerWatchAction.NONE, p.interactiveOff(nowMs = 5_000, streamsUp = false))
+    }
+
+    @Test
+    fun `own-group builds leave the person's screen off alone`() {
+        val p = policy()
+        p.streamsStarted()
+        p.step(panelOn = true, strategy = PanelStrategy.GROUP_ONLY)
+        assertEquals(PowerWatchAction.NONE, p.interactiveOff(nowMs = 5_000, streamsUp = true))
+    }
+
+    @Test
+    fun `a mirrored panel is never taken over by a press`() {
+        val p = policy()
+        p.streamsStarted()
+        p.step(panelOn = true, strategy = PanelStrategy.PANEL_ALONE)
+        assertEquals(PowerWatchAction.NONE, p.interactiveOff(nowMs = 5_000, streamsUp = true))
+    }
+
     @Test
     fun `a shared group is poked faster than the keyguard's 6 s timeout`() {
         for (lock in listOf(true, false)) {
