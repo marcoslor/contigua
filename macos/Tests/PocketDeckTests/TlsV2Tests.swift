@@ -46,44 +46,96 @@ final class TlsV2Tests: XCTestCase {
 
     // MARK: Pin gates (nothing dials when the rules fail)
 
-    /// §3 pin claims a phone but the store has no record: refuse pre-dial.
-    func testPinWithoutStoreRecordRefuses() {
-        let identity = DeviceIdentityV2(deviceId: "mac", certPem: "CERT", keyP8: "KEY",
-                                        pin: String(repeating: "7a", count: 32))
-        let connector = TlsConnectorV2(identity: identity, pinnedPhone: nil, group: group)
+    /// Pairing a second phone leaves identity.json's §3 `pin` on that phone
+    /// (the mirror). Dialing the first one again must verify against its own
+    /// record, not against the mirror: that was "certificate changed (pin
+    /// mismatch)" and the first phone read as "Pair again".
+    func testAnEarlierPairedPhoneConnectsWithTheMirrorOnAnotherPhone() throws {
+        let mac = IdentityGeneratorV2.make(deviceId: "mac-two-phones")
+        let phoneA = IdentityGeneratorV2.make(deviceId: "phone-a", cn: "PocketDeck Phone A")
+        let phoneB = IdentityGeneratorV2.make(deviceId: "phone-b", cn: "PocketDeck Phone B")
+        let aCert = try cert(phoneA.identity)
+        let bCert = try cert(phoneB.identity)
+        let aPin = Data(PinCheckV2.pointFingerprint(cert: aCert)!).hexString
+        let bPin = Data(PinCheckV2.pointFingerprint(cert: bCert)!).hexString
+        let recordA = PinnedPhoneV2(deviceId: phoneA.identity.deviceId,
+                                    phoneFingerprintHex: aPin, certPem: phoneA.identity.certPem)
+        // The mirror names B (the phone in use); A is the one being dialed.
+        let mirrored = DeviceIdentityV2(deviceId: mac.identity.deviceId,
+                                        certPem: mac.identity.certPem,
+                                        keyP8: mac.identity.keyP8, pin: bPin)
+        let connector = TlsConnectorV2(identity: mirrored, pinnedPhone: recordA, group: group)
+        XCTAssertNoThrow(try connector.configuration(),
+                         "the dialed phone's own record is the pin, not the mirror")
+        // The callback still accepts A's leaf only.
+        let handler = try TlsConnectorV2.makeClientHandler(
+            context: try NIOSSLContext(configuration: try connector.configuration()),
+            pinnedPinHex: recordA.phoneFingerprintHex)
+        XCTAssertNotNil(handler)
+    }
+
+    /// A record whose cert does not match its own fingerprint is a corrupt
+    /// store: refuse instead of loosening TLS.
+    func testARecordWhoseFingerprintDisagreesWithItsCertificateRefuses() throws {
+        let mac = IdentityGeneratorV2.make(deviceId: "mac-corrupt-record")
+        let phoneA = IdentityGeneratorV2.make(deviceId: "phone-a", cn: "PocketDeck Phone A")
+        let phoneB = IdentityGeneratorV2.make(deviceId: "phone-b", cn: "PocketDeck Phone B")
+        let bCert = try cert(phoneB.identity)
+        let record = PinnedPhoneV2(deviceId: phoneA.identity.deviceId,
+                                   phoneFingerprintHex: Data(PinCheckV2.pointFingerprint(cert: bCert)!).hexString,
+                                   certPem: phoneA.identity.certPem)
+        let connector = TlsConnectorV2(identity: mac.identity, pinnedPhone: record, group: group)
         do {
             _ = try connector.configuration()
-            XCTFail("a §3 pin without a store record must refuse (§8 step 3)")
-        } catch TlsV2Error.noPin {
+            XCTFail("a record whose cert and fingerprint disagree must refuse")
+        } catch TlsV2Error.pinMismatch {
             // expected
         } catch {
             XCTFail("wrong error: \(error)")
         }
     }
 
-    /// A store record whose cert's fingerprint disagrees with the §3 pin: a
-    /// stale/corrupt pin store refuses instead of silently loosening TLS.
-    func testStoreRecordWithWrongFingerprintRefuses() throws {
-        let mac = IdentityGeneratorV2.make(deviceId: "mac")
-        let otherPhone = IdentityGeneratorV2.make(deviceId: "phone-x", cn: "PocketDeck Phone X")
-        let xCert = try NIOSSLCertificate(bytes: [UInt8](otherPhone.identity.certPem.utf8), format: .pem)
+    /// A record without the phone's certificate refuses pre-dial: there is
+    /// nothing to verify the peer against.
+    func testARecordWithoutItsCertificateRefuses() {
+        let mac = IdentityGeneratorV2.make(deviceId: "mac-no-cert")
         let record = PinnedPhoneV2(deviceId: "phone-a",
-                                   phoneFingerprintHex: Data(PinCheckV2.pointFingerprint(cert: xCert)!).hexString,
-                                   certPem: otherPhone.identity.certPem)
-        // The identity pins a DIFFERENT phone's fingerprint than the record's.
-        let mismatched = DeviceIdentityV2(deviceId: mac.identity.deviceId,
-                                          certPem: mac.identity.certPem,
-                                          keyP8: mac.identity.keyP8,
-                                          pin: String(repeating: "3b", count: 32))
-        let connector = TlsConnectorV2(identity: mismatched, pinnedPhone: record, group: group)
+                                   phoneFingerprintHex: String(repeating: "4c", count: 32),
+                                   certPem: "")
+        let connector = TlsConnectorV2(identity: mac.identity, pinnedPhone: record, group: group)
         do {
             _ = try connector.configuration()
-            XCTFail("store/identity disagreement must refuse")
-        } catch TlsV2Error.pinMismatch {
+            XCTFail("a record without a certificate must refuse")
+        } catch TlsV2Error.incompleteIdentity {
             // expected
         } catch {
             XCTFail("wrong error: \(error)")
         }
+    }
+
+    /// A phone with no record is pairing mode. The §3 mirror names the phone
+    /// last used, so it can hold another phone's fingerprint; it must not
+    /// stop a person from pairing the next phone.
+    func testPairingAnotherPhoneIsNotBlockedByTheMirror() {
+        let mac = IdentityGeneratorV2.make(deviceId: "mac-pair-third")
+        let mirrored = DeviceIdentityV2(deviceId: mac.identity.deviceId,
+                                        certPem: mac.identity.certPem,
+                                        keyP8: mac.identity.keyP8,
+                                        pin: String(repeating: "7a", count: 32))
+        let connector = TlsConnectorV2(identity: mirrored, pinnedPhone: nil, group: group)
+        XCTAssertNoThrow(try connector.configuration(),
+                         "the §3 mirror must not gate pairing: the dialed phone has no record yet")
+    }
+
+    /// Forgetting the phone in use empties the mirror; forgetting another
+    /// phone keeps it (it still names a phone the store has).
+    func testForgettingTheMirroredPhoneEmptiesTheMirror() {
+        let recordA = PinnedPhoneV2(deviceId: "phone-a", phoneFingerprintHex: "aa", certPem: "cert")
+        let recordB = PinnedPhoneV2(deviceId: "phone-b", phoneFingerprintHex: "bb", certPem: "cert")
+        XCTAssertEqual(IdentityPinMirror.pinAfterForget(current: "aa", records: [recordA, recordB],
+                                                        forgotten: "phone-a"), "")
+        XCTAssertEqual(IdentityPinMirror.pinAfterForget(current: "aa", records: [recordA],
+                                                        forgotten: "phone-b"), "aa")
     }
 
     // MARK: Identity generation

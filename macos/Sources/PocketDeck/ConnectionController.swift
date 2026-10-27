@@ -700,6 +700,9 @@ final class ConnectionController {
     /// Settings → Devices → Use.
     func use(_ phone: RememberedPhone) {
         guard link.phone?.id != phone.id else { return }
+        // The §3 mirror follows the phone in use: it is that phone's record
+        // from here on, and the TLS layer checks the record itself.
+        mirrorIdentityPin(deviceId: phone.id)
         remembered.setActive(id: phone.id)
         windows.closeAll()
         closeSession()
@@ -735,11 +738,10 @@ final class ConnectionController {
     /// When no record in the store holds the §3 mirror fingerprint, empty the
     /// mirror (identity.json must never name a phone the store forgot).
     private func syncIdentityPinMirrorAfterForget(deviceId: String) {
-        guard !identity.pin.isEmpty else { return }
-        if let holder = pins.all.first(where: { $0.phoneFingerprintHex == identity.pin }), holder.deviceId != deviceId {
-            return
-        }
-        identity.pin = ""
+        let next = IdentityPinMirror.pinAfterForget(current: identity.pin,
+                                                    records: pins.all, forgotten: deviceId)
+        guard next != identity.pin else { return }
+        identity.pin = next
         identityFile.save(identity)
     }
 
@@ -1583,11 +1585,20 @@ final class ConnectionController {
               policy: .never)
     }
 
-    /// identity.json's §3 `pin` mirrors the fingerprint of the phone this
-    /// session just paired; re-saved after every successful pairing.
+    /// identity.json's §3 `pin` mirrors the fingerprint of the phone in use.
+    /// It follows the dialed phone's own record (on a successful connect, on
+    /// use and after pairing) and is never enforced against another phone's
+    /// record; the record is the pin the TLS layer checks.
     private func mirrorIdentityPin(record: PinnedPhoneV2) {
         guard pins.record(for: record.deviceId)?.phoneFingerprintHex == record.phoneFingerprintHex else { return }
-        identity.pin = record.phoneFingerprintHex
+        mirrorIdentityPin(deviceId: record.deviceId)
+    }
+
+    /// The mirror for `deviceId` (the phone in use), from the store.
+    private func mirrorIdentityPin(deviceId: String) {
+        let next = IdentityPinMirror.pin(for: deviceId, records: pins.all)
+        guard next != identity.pin else { return }
+        identity.pin = next
         identityFile.save(identity)
     }
 
@@ -2057,6 +2068,9 @@ final class ConnectionController {
         let wasPairing = isPairing
         remembered.remember(ref)
         rememberedPhones = remembered.all
+        // A successful connect (a fresh pairing or an enforced reconnect):
+        // the §3 mirror is this phone's record from now on.
+        mirrorIdentityPin(deviceId: info.id)
         markWelcomeSeen()
         if let address {
             cache.store(address, deviceId: info.id)
