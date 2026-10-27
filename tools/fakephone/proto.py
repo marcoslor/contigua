@@ -480,6 +480,7 @@ class TlsServerSession(object):
         self._conn.set_accept_state()
         self._capture = capture
         self.client_der = None
+        self._timeout = None
 
     def handshake(self):
         # Blocking: OpenSSL retries the syscall itself; SO_RCVTIMEO bounds a
@@ -502,8 +503,21 @@ class TlsServerSession(object):
     def setsockopt(self, level, optname, value):
         return self._raw.setsockopt(level, optname, value)
 
+    def settimeout(self, seconds):
+        """A read deadline, like `socket.settimeout`. pyOpenSSL's Connection has
+        no timeout of its own, so the raw socket carries SO_RCVTIMEO; a read
+        that runs out is reported as socket.timeout, which is what a plain
+        socket raises and what FrameReader documents."""
+        self._timeout = seconds
+        self._raw.settimeout(seconds)
+
     def recv(self, size):
-        return self._conn.recv(size)
+        try:
+            return self._conn.recv(size)
+        except self._osl.WantReadError:
+            if self._timeout is None:
+                raise
+            raise socket.timeout("no data within the socket timeout")
 
     def sendall(self, data):
         self._conn.sendall(data)
