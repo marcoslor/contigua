@@ -525,6 +525,11 @@ enum GridNavigation {
 enum DeckRail {
     static let minimumApps = 30
     static let letters: [String] = (65...90).map { String(UnicodeScalar($0)!) } + ["#"]
+    /// R1's one letter's hit target: 20 pt, the AGENTS minimum.
+    static let pitch: CGFloat = 20
+    /// The rail's full height at R1's pitch; shorter windows hide it rather
+    /// than clip letters or shrink the targets.
+    static let minimumHeight = CGFloat(letters.count) * pitch
 
     struct Entry: Equatable {
         let letter: String
@@ -580,9 +585,28 @@ enum DeckRail {
         return letter(for: apps[index].displayLabel)
     }
 
-    /// The rail is only useful on a full grid, and it gives way to search.
+    /// The rail is only useful on a full grid, and it gives way to search. A
+    /// window too short for `minimumHeight` hides it through `ViewThatFits`,
+    /// so a letter's 20 pt target is never shrunk or clipped.
     static func shows(count: Int, query: String) -> Bool {
         query.isEmpty && count >= minimumApps
+    }
+
+    /// The first app in the row that holds `index`.
+    static func rowStart(containing index: Int, columns: Int) -> Int {
+        guard columns > 0 else { return 0 }
+        return max(index, 0) / columns * columns
+    }
+
+    /// The letter the rail accents: the top visible row. While a click or drag
+    /// jump is settling, the target's row will be the top one, so the accent
+    /// moves at once instead of staying on the outgoing row (the prototype's
+    /// lag).
+    static func accentLetter(target: Int?, top: Int?, apps: [AppInfo], columns: Int) -> String? {
+        guard !apps.isEmpty else { return nil }
+        let index = target.map { rowStart(containing: $0, columns: columns) } ?? top
+        guard let index, apps.indices.contains(index) else { return nil }
+        return letter(for: apps[index].displayLabel)
     }
 
     /// The letter at `y` in a column `height` tall; the letters share it evenly.
@@ -877,11 +901,18 @@ struct AppGrid: View {
             }
             .overlay(alignment: .trailing) {
                 if DeckRail.shows(count: cells.count, query: query) {
-                    DeckIndexRail(entries: railEntries,
-                                  current: currentLetter ?? firstRailLetter) { letter in
-                        scroll(to: letter, proxy: proxy)
+                    // R1 sits inside the content inset, left of the scroller.
+                    // A window too short for 20 pt letters shows nothing rather
+                    // than clipping the rail (ViewThatFits compares its 540 pt
+                    // height with the overlay's proposal).
+                    ViewThatFits(in: .vertical) {
+                        DeckIndexRail(entries: railEntries, counts: railCounts,
+                                      current: currentLetter ?? firstRailLetter) { letter in
+                            scroll(to: letter, proxy: proxy)
+                        }
+                        .padding(.trailing, 18)
+                        Color.clear.frame(width: 1, height: 1)
                     }
-                    .padding(.trailing, 8)
                 }
             }
             .onChange(of: navigator.selection) { _, pkg in
@@ -904,6 +935,12 @@ struct AppGrid: View {
     private var cellApps: [AppInfo] { cells.map(\.app) }
     private var railEntries: [DeckRail.Entry] { DeckRail.entries(for: cellApps) }
     private var firstRailLetter: String? { railEntries.first { $0.index != nil }?.letter }
+    /// Apps per letter, for R1's hover tag.
+    private var railCounts: [String: Int] {
+        cellApps.reduce(into: [:]) { counts, app in
+            counts[DeckRail.letter(for: app.displayLabel), default: 0] += 1
+        }
+    }
 
     /// Scroll to a rail letter: its own first app, or the next letter with apps
     /// when the letter itself is empty.
@@ -919,6 +956,8 @@ struct AppGrid: View {
     }
 
     /// The letter (and, for a rail click, the target) at a scroll position.
+    /// While a jump settles the accent is the target's row, so it moves at
+    /// once instead of staying on the outgoing row (the prototype's lag).
     private func follow(_ scroll: RailScroll) {
         scrollBox.last = scroll
         let apps = cellApps
@@ -927,13 +966,18 @@ struct AppGrid: View {
             currentLetter = nil
             return
         }
-        let letter = DeckRail.letter(for: apps[top].displayLabel)
+        let columns = metrics.columns(forWidth: scroll.width)
+        let letter = DeckRail.accentLetter(target: railTarget, top: top, apps: apps,
+                                           columns: columns)
         if letter != currentLetter { currentLetter = letter }
         if let target = railTarget {
-            let columns = metrics.columns(forWidth: scroll.width)
             if top <= target, target < top + columns {
                 railTarget = nil
-                DeckGridProbe.reportRailTop(letter: letter, index: top)
+                DeckGridProbe.reportRailTop(
+                    letter: DeckRail.letter(for: apps[top].displayLabel), index: top)
+            } else if top > target {
+                // The person scrolled past the pending jump; stop holding it.
+                railTarget = nil
             }
         }
     }
@@ -973,50 +1017,213 @@ private final class RailScrollBox {
     var last: RailScroll?
 }
 
-/// The 9 pt letter column on the Deck's trailing edge (D). Clicking or dragging
-/// a letter jumps the grid; the letter at the top of the grid is the accent
-/// one, and a letter with no apps is drawn dimmed.
+/// Dock-style magnification (R1): the letter under the pointer swells to
+/// about 2× and its neighbours taper to 1× over three letters. Reduce Motion
+/// keeps every letter at its rest size (CONV-MAC-22).
+enum RailFisheye {
+    static let maxScale: CGFloat = 2.2
+    static let reach: CGFloat = 3
+
+    /// `distance` is in letters from the pointer.
+    static func scale(distance: CGFloat, reduceMotion: Bool) -> CGFloat {
+        guard !reduceMotion else { return 1 }
+        let t = max(0, 1 - abs(distance) / reach)
+        return 1 + (maxScale - 1) * t * t * (3 - 2 * t)
+    }
+}
+
+/// The pointer over the rail as one state: hovering or dragging. A press
+/// happens over the rail, so no pair of flags can disagree.
+private enum RailPointer: Equatable {
+    case away
+    case hovering(CGFloat)
+    case dragging(CGFloat)
+
+    var position: CGFloat? {
+        switch self {
+        case .away: nil
+        case .hovering(let y), .dragging(let y): y
+        }
+    }
+}
+
+/// R1's forced hover for the e2e (`control deckrailhover LETTER`). A quiet run
+/// cannot move the pointer to the rail, so the shot route names the letter and
+/// the rail draws it as hovered; a real pointer's hover is its own
+/// `onContinuousHover`, proved in the VM.
+@MainActor
+@Observable
+final class DeckRailHover {
+    static let shared = DeckRailHover()
+    var letter: String?
+}
+
+/// Where the rail is on screen, for a visible VM run's real pointer
+/// (`control deckrailpoint LETTER PATH`). The anchor is a zero-size view at the
+/// rail's top-left; its window position plus the 20 pt pitch gives each letter's
+/// centre in Quartz coordinates.
+@MainActor
+enum DeckRailPoint {
+    static weak var anchor: NSView?
+
+    static func point(letter: String, to path: String) -> Bool {
+        guard let anchor, let window = anchor.window,
+              let index = DeckRail.letters.firstIndex(of: letter) else { return false }
+        let local = anchor.convert(anchor.bounds, to: nil)
+        let x = local.minX + 13
+        let y = local.minY - (CGFloat(index) * DeckRail.pitch + DeckRail.pitch / 2)
+        let screen = window.convertPoint(toScreen: NSPoint(x: x, y: y))
+        let top = window.screen?.frame.maxY ?? NSScreen.screens.first?.frame.maxY ?? 0
+        let text = "\(screen.x) \(top - screen.y)"
+        return (try? text.write(toFile: path, atomically: true, encoding: .utf8)) != nil
+    }
+}
+
+/// A zero-size AppKit anchor in the rail, so the debug route can read the
+/// rail's real position (a SwiftUI view has no NSView of its own to ask).
+private struct DeckRailAnchor: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView(frame: .zero)
+        DeckRailPoint.anchor = view
+        return view
+    }
+
+    func updateNSView(_ view: NSView, context: Context) {
+        DeckRailPoint.anchor = view
+    }
+}
+
+/// R1: the A–Z rail on the Deck's trailing edge, inside the content inset and
+/// clear of the scroller. The letter under the pointer magnifies and names its
+/// app count; clicking or dragging a letter jumps the grid; the letter at the
+/// top of the grid is the accent one, and a letter with no apps is dimmed.
 private struct DeckIndexRail: View {
-    /// The D shot's letters sit on a 12 pt pitch.
-    private static let rowHeight: CGFloat = 12
-    private static let width: CGFloat = 16
+    private static let width: CGFloat = 26
+    private static let tagHeight: CGFloat = 22
 
     let entries: [DeckRail.Entry]
+    let counts: [String: Int]
     let current: String?
     let pick: (String) -> Void
 
+    @State private var pointer: RailPointer = .away
     @State private var lastPicked: String?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    private var height: CGFloat { CGFloat(entries.count) * Self.rowHeight }
+    private var height: CGFloat { CGFloat(entries.count) * DeckRail.pitch }
+
+    /// The letter the pointer is over, or the e2e's forced one.
+    private var hoveredIndex: Int? {
+        if let forced = DeckRailHover.shared.letter,
+           let index = entries.firstIndex(where: { $0.letter == forced }) {
+            return index
+        }
+        guard let position = pointer.position else { return nil }
+        return min(max(Int(position / DeckRail.pitch), 0), entries.count - 1)
+    }
+
+    /// The pointer's y for the fisheye, including the forced hover (which has
+    /// no real pointer position).
+    private var activePosition: CGFloat? {
+        if DeckRailHover.shared.letter != nil, let index = hoveredIndex {
+            return CGFloat(index) * DeckRail.pitch + DeckRail.pitch / 2
+        }
+        return pointer.position
+    }
 
     var body: some View {
         VStack(spacing: 0) {
-            ForEach(entries, id: \.letter) { entry in
-                Text(entry.letter)
-                    .font(.system(size: 9, weight: entry.letter == current ? .semibold : .regular))
-                    .foregroundStyle(entry.letter == current ? AnyShapeStyle(Color.accentColor)
-                                                            : AnyShapeStyle(.secondary))
-                    .opacity(entry.index == nil ? 0.35 : 1)
-                    .frame(width: Self.width, height: Self.rowHeight)
+            ForEach(Array(entries.enumerated()), id: \.element.letter) { index, entry in
+                letter(index: index, entry: entry)
             }
         }
-        .frame(width: Self.width)
+        .frame(width: Self.width, height: height)
+        .background(alignment: .topLeading) {
+            DeckRailAnchor().frame(width: 1, height: 1)
+        }
         .contentShape(.rect)
-        .gesture(
-            DragGesture(minimumDistance: 0)
-                .onChanged { value in
-                    guard let letter = DeckRail.letter(atY: value.location.y, height: height,
-                                                       entries: entries),
-                          letter != lastPicked else { return }
-                    lastPicked = letter
-                    pick(letter)
-                }
-                .onEnded { _ in lastPicked = nil }
-        )
-        .accessibilityElement(children: .ignore)
+        .overlay(alignment: .topTrailing) { helpTag }
+        .gesture(drag)
+        .onContinuousHover { phase in
+            guard !isDragging else { return }
+            switch phase {
+            case .active(let point): pointer = .hovering(point.y)
+            case .ended: pointer = .away
+            }
+        }
+        .accessibilityElement(children: .contain)
         .accessibilityLabel("App index")
         .accessibilityValue(current ?? "")
         .accessibilityHint("Click or drag a letter to scroll to it")
+    }
+
+    private var isDragging: Bool {
+        if case .dragging = pointer { return true }
+        return false
+    }
+
+    private func letter(index: Int, entry: DeckRail.Entry) -> some View {
+        let scale = activePosition.map {
+            RailFisheye.scale(distance: $0 / DeckRail.pitch - (CGFloat(index) + 0.5),
+                              reduceMotion: reduceMotion)
+        } ?? 1
+        let highlighted = reduceMotion && hoveredIndex == index
+        let isCurrent = entry.letter == current
+        return Text(entry.letter)
+            .font(.system(size: 9 * scale,
+                          weight: isCurrent || highlighted ? .semibold : .regular))
+            .foregroundStyle(isCurrent ? AnyShapeStyle(Color.accentColor)
+                                       : AnyShapeStyle(.secondary))
+            .opacity(entry.index == nil ? 0.35 : 1)
+            .frame(width: Self.width, height: DeckRail.pitch)
+            .background(RoundedRectangle(cornerRadius: 4)
+                .fill(Color.primary.opacity(highlighted ? 0.12 : 0)))
+            .contentShape(.rect)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(accessibilityLabel(entry))
+            .accessibilityHint("Scrolls to \(entry.letter)")
+            .accessibilityAddTraits(.isButton)
+            .accessibilityAction { pick(entry.letter) }
+    }
+
+    /// The hovered letter's tag, left of the rail and centred on its row.
+    @ViewBuilder
+    private var helpTag: some View {
+        if let index = hoveredIndex {
+            let entry = entries[index]
+            let count = counts[entry.letter] ?? 0
+            Text(count == 0 ? "\(entry.letter) · no apps"
+                            : "\(entry.letter) · \(count) \(count == 1 ? "app" : "apps")")
+                .font(.caption)
+                .padding(.horizontal, 8)
+                .frame(height: Self.tagHeight)
+                .background(.regularMaterial, in: .capsule)
+                .fixedSize()
+                .offset(x: -(Self.width + 6),
+                        y: CGFloat(index) * DeckRail.pitch + (DeckRail.pitch - Self.tagHeight) / 2)
+                .allowsHitTesting(false)
+        }
+    }
+
+    private func accessibilityLabel(_ entry: DeckRail.Entry) -> String {
+        let count = counts[entry.letter] ?? 0
+        return count == 0 ? "\(entry.letter), no apps" : "\(entry.letter), \(count) apps"
+    }
+
+    private var drag: some Gesture {
+        DragGesture(minimumDistance: 0)
+            .onChanged { value in
+                pointer = .dragging(value.location.y)
+                guard let letter = DeckRail.letter(atY: value.location.y, height: height,
+                                                   entries: entries),
+                      letter != lastPicked else { return }
+                lastPicked = letter
+                pick(letter)
+            }
+            .onEnded { value in
+                lastPicked = nil
+                pointer = .hovering(value.location.y)
+            }
     }
 }
 

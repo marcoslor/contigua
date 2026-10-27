@@ -543,7 +543,10 @@ struct PocketDeckApp: App {
             DeckRoot()
                 .environment(controller)
         }
-        .defaultSize(width: 760, height: 560)
+        // R1's 27 letters need 540 pt under the toolbar; 600 gives them room at
+        // launch. A shorter window hides the rail rather than shrink its 20 pt
+        // targets (DeckIndexRail's ViewThatFits).
+        .defaultSize(width: 760, height: 600)
         .windowResizability(.contentMinSize)
         // A saved state from an older build (or none) must never leave the app without its window.
         .defaultLaunchBehavior(.presented)

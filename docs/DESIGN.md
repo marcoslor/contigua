@@ -31,7 +31,7 @@ not invent styling. No hard-coded colors except where a hex is given below.
 
 ### Deck (one window; Welcome, Nearby and Phone are its states)
 Spec of every state, copy and transitions: [design/mac-redesign.md](design/mac-redesign.md) §3. Values:
-- `Window("PocketDeck", id: "deck")`, default 760×560, min 640×420 (below that the toolbar's pill and Phone button fall into the overflow menu), `.windowResizability(.contentMinSize)`; the standard titled
+- `Window("PocketDeck", id: "deck")`, default 760×600, min 640×420 (below that the toolbar's pill and Phone button fall into the overflow menu; below 592 the A–Z rail hides rather than shrink its 20 pt targets), `.windowResizability(.contentMinSize)`; the standard titled
   window with the macOS 26 glass toolbar. No custom window backgrounds except Welcome.
 - **Welcome:** plain system window background (no gradient), toolbar hidden; centered card 440 wide, padding 32,
   `.glassEffect(.regular, in: .rect(cornerRadius: 28))`, VStack spacing 24: app icon 96 · title · tagline · three step rows

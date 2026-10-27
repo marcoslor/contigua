@@ -157,6 +157,48 @@ final class DeckGridTests: XCTestCase {
         XCTAssertNil(DeckRail.letter(atY: 0, height: 0, entries: entries))
     }
 
+    /// R1: every letter owns a 20 pt hit target (AGENTS: at least 20 pt), and
+    /// the rail hides rather than shrink them when the window is too short.
+    func testRailLettersAreTwentyPointTargetsAndHideWhenTooShort() {
+        XCTAssertGreaterThanOrEqual(DeckRail.pitch, 20)
+        XCTAssertEqual(DeckRail.minimumHeight, 27 * DeckRail.pitch)
+        XCTAssertEqual(DeckRail.minimumHeight, 540,
+                       "27 letters at 20 pt; the rail's ViewThatFits hides it below this")
+    }
+
+    /// R1: the letter under the pointer is about 2× and its neighbours taper
+    /// to 1×; Reduce Motion drops the magnification for a plain highlight.
+    func testRailFisheyeMagnifiesTheLetterUnderThePointer() {
+        let peak = RailFisheye.scale(distance: 0, reduceMotion: false)
+        XCTAssertGreaterThanOrEqual(peak, 2)
+        XCTAssertEqual(RailFisheye.scale(distance: 1, reduceMotion: false),
+                       RailFisheye.scale(distance: -1, reduceMotion: false),
+                       "the taper is symmetrical")
+        XCTAssertGreaterThan(peak, RailFisheye.scale(distance: 1, reduceMotion: false))
+        XCTAssertGreaterThan(RailFisheye.scale(distance: 1, reduceMotion: false),
+                             RailFisheye.scale(distance: 2, reduceMotion: false))
+        XCTAssertEqual(RailFisheye.scale(distance: RailFisheye.reach, reduceMotion: false), 1)
+        XCTAssertEqual(RailFisheye.scale(distance: 0, reduceMotion: true), 1,
+                       "Reduce Motion keeps the letters at their rest size")
+    }
+
+    /// The rail's accent is the top visible row. While a click or drag jump is
+    /// settling, that is the target's row, not the row that was on top when the
+    /// pick started (the prototype's lag).
+    func testRailAccentUsesTheJumpTargetsRow() {
+        let apps = railApps((1...20).map { "Alpha \($0)" })
+        let columns = 6
+        XCTAssertEqual(DeckRail.rowStart(containing: 13, columns: columns), 12)
+        XCTAssertEqual(DeckRail.accentLetter(target: 13, top: 6, apps: apps, columns: columns), "A")
+        XCTAssertEqual(DeckRail.accentLetter(target: nil, top: 13, apps: apps, columns: columns), "A")
+        XCTAssertNil(DeckRail.accentLetter(target: 99, top: 0, apps: apps, columns: columns),
+                     "a target past the end has no letter")
+        XCTAssertNil(DeckRail.accentLetter(target: nil, top: nil, apps: apps, columns: columns))
+        let letters = railApps(["Alpha", "Bixby", "Delta", "Echo", "Foxtrot", "Golf", "Hotel"])
+        XCTAssertEqual(DeckRail.accentLetter(target: 6, top: 0, apps: letters, columns: 6), "H",
+                       "a target in the second row accents that row's first app")
+    }
+
     func testFallbackInitialSkipsPunctuationAndFallsBackToThePackage() {
         XCTAssertEqual(FallbackIcon.initial(label: "spotify", pkg: "com.spotify.music"), "S")
         XCTAssertEqual(FallbackIcon.initial(label: "  ¡Hola", pkg: "x.y"), "H")

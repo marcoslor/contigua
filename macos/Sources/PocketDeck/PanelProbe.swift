@@ -154,6 +154,22 @@ enum PanelProbe {
         return true
     }
 
+    /// `panelpoint HOST ID PATH`: the control's centre in Quartz screen
+    /// coordinates, so a visible VM run can move the real pointer onto it.
+    static func point(host: String, id: String, to path: String) -> Bool {
+        guard let host = Host(rawValue: host), let state = currentState(),
+              let window = window(for: host) else { return false }
+        settle(window, items: focusableItems(state, host: host))
+        guard let target = control(for: id, state: state, host: host, in: window) else {
+            return false
+        }
+        let local = window.convertPoint(toScreen: NSPoint(x: target.frame.midX,
+                                                          y: target.frame.midY))
+        let top = window.screen?.frame.maxY ?? NSScreen.screens.first?.frame.maxY ?? 0
+        let point = "\(local.x) \(top - local.y)"
+        return (try? point.write(toFile: path, atomically: true, encoding: .utf8)) != nil
+    }
+
     /// `panelclick HOST ID`: a click at the control's own frame, through the
     /// app's event queue.
     static func click(host: String, id: String) -> Bool {

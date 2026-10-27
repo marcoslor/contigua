@@ -8417,6 +8417,7 @@ check_menubar_vm() {
     # The panel closes on Esc (a window-style extra), so every capture opens it
     # from a known closed state: clicking an open status item would close it.
     close_panel() { osascript -e 'tell application "System Events" to key code 53' >/dev/null 2>&1 || true; sleep 0.5; }
+    settings_open() { window_titles "$APP_PID" | grep -qF "Settings"; }
 
     FAKE_ARGS="--media" start_fake || return 1
     device="$(sed -n 's/^fakephone \([^ ]*\) listening.*/\1/p' "$WORK/fake.log" "$WORK/fake.err" | head -1)"
@@ -8450,6 +8451,40 @@ check_menubar_vm() {
     else
         bad "MENUBAR-VM paneldump real: $CONTROL_REPLY"
     fi
+
+    # (a2) the real pointer (visible runs only): moving onto the DND tile
+    # changes the picture, and the footer's Settings row opens Settings. A
+    # quiet run cannot deliver hover to SwiftUI, so these steps live here.
+    local px py
+    if control panelpoint real panel.dnd "$WORK/menubar/dnd.pt" \
+        && read -r px py < "$WORK/menubar/dnd.pt"; then
+        shot_panel "hover-tile-before.png"
+        cg_input moveat --x "$px" --y "$py"
+        sleep 1
+        shot_panel "hover-tile-after.png"
+        if cmp -s "$shots/hover-tile-before.png" "$shots/hover-tile-after.png"; then
+            bad "MENUBAR-VM moving the real pointer onto the DND tile did not change the picture"
+        else
+            ok "MENUBAR-VM the real pointer on the DND tile changed the picture"
+        fi
+    else
+        bad "MENUBAR-VM panelpoint real panel.dnd: $CONTROL_REPLY"
+    fi
+    if control panelpoint real panel.settings "$WORK/menubar/settings.pt" \
+        && read -r px py < "$WORK/menubar/settings.pt"; then
+        cg_input clickat --x "$px" --y "$py"
+        wait_until 15 settings_open \
+            && ok "MENUBAR-VM clicking the footer's Settings row with the real pointer opened Settings" \
+            || bad "MENUBAR-VM the footer's Settings row did not open Settings"
+        osascript -e 'tell application "System Events" to keystroke "w" using command down' >/dev/null 2>&1 || true
+        sleep 1
+    else
+        bad "MENUBAR-VM panelpoint real panel.settings: $CONTROL_REPLY"
+    fi
+    # Put the pointer away and reopen the panel from a known closed state.
+    cg_input moveat --x 4 --y 4
+    close_panel
+    panel_open >/dev/null
 
     # (b) ringing: the Ring row's own click, the phone answers ring.state, and
     # the one row reads Stop Ringing.
@@ -8617,22 +8652,61 @@ check_deck() {
     else
         bad "DECK deck-size 1200: $CONTROL_REPLY"
     fi
-    # Put the Deck back on its default size for the visual record.
-    control deck-size 760 560 || bad "DECK deck-size 760: $CONTROL_REPLY"
+    # Put the Deck back on its default size for the visual record. R1's rail
+    # needs 540 pt under the toolbar, which the 600 pt default leaves.
+    control deck-size 760 600 || bad "DECK deck-size 760: $CONTROL_REPLY"
 
-    # The A–Z rail: a letter click scrolls to that letter's first app. A quiet
-    # run cannot point, so deck-rail runs the rail's own scroll; the cell dump
-    # is the authority for where that app is, and railTop proves its row is on
-    # screen after the scroll.
-    if control deck-rail T >/dev/null; then
-        if rail="$(python3 "$MACOS/scripts/deck-rail.py" "$WORK/deck-grid.jsonl" T)"; then
-            ok "DECK the rail's T click lands on its first app ($rail)"
+    # The A–Z rail (R1): rest, the letter under the pointer magnified, and the
+    # accent after a jump. A quiet run cannot move the pointer, so deckrailhover
+    # forces the letter the shot needs; the real pointer is proved in the VM.
+    local railshots="$WORK/deck-rail-shots"
+    mkdir -p "$railshots"
+    shot_rail() {
+        local id
+        id="$(await_window '$4 >= 600')" \
+            && screencapture -x -l"$id" "$railshots/$1" >/dev/null 2>&1 \
+            && say "shot: $railshots/$1" \
+            || bad "DECK no Deck window for the rail shot $1"
+    }
+    shot_rail rail-rest.png
+    local px py
+    if [ "$VISIBLE" = 1 ] && control deckrailpoint M "$WORK/deck-rail-shots/m.pt" \
+        && read -r px py < "$WORK/deck-rail-shots/m.pt"; then
+        shot_rail rail-hover-before.png
+        cg_input moveat --x "$px" --y "$py"
+        sleep 1
+        shot_rail rail-hover-m.png
+        if cmp -s "$railshots/rail-hover-before.png" "$railshots/rail-hover-m.png"; then
+            bad "DECK moving the real pointer onto M did not magnify the rail"
         else
-            bad "DECK the rail's T click: $rail"
+            ok "DECK the real pointer on M magnified the rail"
         fi
     else
-        bad "DECK deck-rail T: $CONTROL_REPLY"
+        control deckrailhover M && ok "DECK forced the rail's hover on M for the shot" \
+            || bad "DECK deckrailhover M: $CONTROL_REPLY"
+        sleep 1
+        shot_rail rail-hover-m.png
+        control deckrailhoverout || bad "DECK deckrailhoverout: $CONTROL_REPLY"
     fi
+
+    # A letter click scrolls to that letter's first app. A quiet run cannot
+    # point, so deck-rail runs the rail's own scroll; a visible VM run clicks
+    # the rail with the real pointer. The cell dump is the authority for where
+    # that app is, and railTop proves its row is on screen after the scroll.
+    if [ "$VISIBLE" = 1 ] && control deckrailpoint T "$WORK/deck-rail-shots/t.pt" \
+        && read -r px py < "$WORK/deck-rail-shots/t.pt"; then
+        cg_input clickat --x "$px" --y "$py"
+        ok "DECK clicked the rail's T with the real pointer"
+    else
+        control deck-rail T >/dev/null || bad "DECK deck-rail T: $CONTROL_REPLY"
+    fi
+    if rail="$(python3 "$MACOS/scripts/deck-rail.py" "$WORK/deck-grid.jsonl" T)"; then
+        ok "DECK the rail's T click lands on its first app ($rail)"
+    else
+        bad "DECK the rail's T click: $rail"
+    fi
+    sleep 1
+    shot_rail rail-jump-t.png
 
     # The deckMode transition (welcome -> grid) settles; a capture too early
     # shows both states overlapped, which is useless as the visual record.
@@ -8642,6 +8716,26 @@ check_deck() {
         ok "DECK grid captured: $deck"
     else
         bad "DECK no Deck window to capture"
+    fi
+
+    # A drag from A to Z on the rail picks every letter on the way and lands on
+    # Z's first app (a visible VM run only: it is the real pointer).
+    if [ "$VISIBLE" = 1 ] \
+        && control deckrailpoint A "$WORK/deck-rail-shots/a.pt" \
+        && control deckrailpoint Z "$WORK/deck-rail-shots/z.pt"; then
+        local ax ay zx zy
+        read -r ax ay < "$WORK/deck-rail-shots/a.pt"
+        read -r zx zy < "$WORK/deck-rail-shots/z.pt"
+        cg_input dragat --x "$ax" --y "$ay" --x2 "$zx" --y2 "$zy" --steps 40
+        if rail="$(python3 "$MACOS/scripts/deck-rail.py" "$WORK/deck-grid.jsonl" Z 20)"; then
+            ok "DECK dragging the real pointer from A to Z lands on Z ($rail)"
+        else
+            bad "DECK dragging the real pointer A to Z: $rail"
+        fi
+        sleep 1
+        shot_rail rail-drag-z.png
+    else
+        skip_visible "DECK a real A-to-Z rail drag"
     fi
 
     # ⌘F is the Deck's Find (focus the search field, select its text) and the
