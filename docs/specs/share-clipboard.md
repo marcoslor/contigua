@@ -116,9 +116,9 @@ The handoff window is a third, small machine (`HandoffWindowController`): Openin
 | CONV-MAC-13 | n/a: no menu item or full-screen command is added here |
 | CONV-MAC-14 | applies: the handoff window resizes as a stream window does (app-windows.md); this surface adds no layout |
 | CONV-MAC-15 | n/a: closing a window does not quit the app |
-| CONV-MAC-16 | applies: SHARE-8/11 (drop and Services behave as Finder's: a target highlights, a refusal says why) and the standard copy/paste; one unapproved break — a `.webloc` dropped on a stream window is saved as a file instead of opened (misses.md M4) |
+| CONV-MAC-16 | applies: SHARE-8/11 (drop and Services behave as Finder's: a target highlights, a refusal says why) and the standard copy/paste; one unapproved break — a `.webloc` dropped on a stream window is saved as a file instead of opened (misses.md M1) |
 | CONV-MAC-20 | applies: the picker alert, the system banners and the handoff window render in light and dark with the accent and Increase Contrast |
-| CONV-MAC-21 | applies: the alert's buttons and the handoff window's bar are labelled; the phone picker's popup is the one gap (misses.md M5) |
+| CONV-MAC-21 | applies: the alert's buttons and the handoff window's bar are labelled; the phone picker's popup is the one gap (misses.md M2) |
 | CONV-MAC-22 | applies: nothing of this surface animates beyond the system alert and notification; Reduce Motion is the system's |
 | CONV-MAC-23 | applies: every result is words — "Copied from <phone>", "Image from <phone>", "Nothing to move…"; no state is carried by colour alone |
 | CONV-MAC-24 | applies: the first share banner asks for notification permission in context; a denied permission only removes that banner — the copy or open still happens; links, drops and Move to Mac ask for nothing |
@@ -126,7 +126,7 @@ The handoff window is a third, small machine (`HandoffWindowController`): Openin
 | CONV-MAC-26 | n/a: no custom layout |
 | CONV-AND-01 | n/a: share and clipboard carry no phone navigation |
 | CONV-AND-02 | applies: the phone's share target labels and toasts follow the system theme; the phone posts no notification for a share (the Mac's banner does) |
-| CONV-AND-03 | applies: the feature needs Shizuku; without it the phone says "No Mac connected" — the wrong cause (misses.md M8) — and no other feature is disabled |
+| CONV-AND-03 | applies: the feature needs Shizuku; without it the phone says "No Mac connected" — the wrong cause (misses.md M4) — and no other feature is disabled |
 | CONV-AND-04 | applies: the only phone-side writes are the dropped file under `Download/PocketDeck/` and a clipboard image pasted on the phone, both person-started; no lock, timeout or app state changes, and the phone stays locked |
 | CONV-PD-01 | applies: the table above (0/1/2+ phones; the picker for links) |
 | CONV-PD-02 | applies: the table above (offline, connecting, a phone without a session, clipboard off) |
@@ -136,7 +136,7 @@ The handoff window is a third, small machine (`HandoffWindowController`): Openin
 | CONV-PD-06 | applies: no NFR budget belongs to this surface; the wire caps are the protocol's (1 MiB text, 8 MiB image, 50 MiB share file, 200 MiB drop), and a 50 MiB receive is bounded by those caps |
 | CONV-PD-07 | applies: "Send to Mac" (the phone's share target), "Open on Mac" (the phone's text menu and Open with), "Open on Phone" (the Mac's share extension and Service), "Move to Mac"/"Move Phone App to Mac" (panel and menu, as CONV-PD-07 already lists), "Share clipboard with your phone" |
 | CONV-PD-08 | applies: the tables above (clipboard, share-in receiver, link route, handoff) |
-| CONV-PD-09 | applies: SHARE-4/5 (a banner names what happened), SHARE-7 (a refused link is never half-sent), SHARE-10 ("Nothing to move…", "Opened fresh…") — one gap in a failure body, misses.md M6 |
+| CONV-PD-09 | applies: SHARE-4/5 (a banner names what happened), SHARE-7 (a refused link is never half-sent), SHARE-10 ("Nothing to move…", "Opened fresh…") — one gap in a failure body, misses.md M3 |
 
 ## Assumptions
 
@@ -158,8 +158,8 @@ The handoff window is a third, small machine (`HandoffWindowController`): Openin
 
 ## Open questions
 
-1. **Clipboard sync is on by default** — `ClipboardSync.isEnabled` reads true until the person turns it off, so a fresh profile sends every copied text and image to the phone, while AGENTS.md says "Sharing is opt-in … a new feature that reads or sends personal data follows the same rule". Recommended: default it off (one switch in Settings ▸ General, already there) and say so in UX.md, or record clipboard sync as an approved exception; today's default contradicts the promise.
-2. **Turning the switch off does not stop the phone** — the setting is read only on the Mac: the phone has no clipboard switch and keeps polling its own clipboard while the session is ready, sending `clip.set` that the Mac then ignores. The bytes still leave the phone, which is not what "Share clipboard with your phone: off" promises. Recommended: send the switch to the phone over the session (for example `clip.enable {on}`, like `notify.enable`) or have the phone stop polling when the Mac says off; prove it with a fake-phone phase that sees no `clip.set` after the Mac's toggle.
-3. **The phone's sensitive clips travel** — the Mac skips password-manager secret types, but `ShellClipboard` does not check Android's `ClipDescription.EXTRA_IS_SENSITIVE`, so a password copied on the phone lands on the Mac's pasteboard. Recommended: skip a sensitive phone clip, the mirror of the Mac's rule, and prove it with a K1 case (no new gate).
-4. **A `.webloc` on a window** — the Deck opens a dropped `.webloc` as a link, but a stream window saves it to the phone as a file (misses.md M4). Recommended: route it through the same `OpenLinkRequest.webloc` path on windows, so one gesture means one thing.
-5. **Image-refusal copy** — "Couldn't save the image from <phone>: checksum mismatch" is an internal phrase (and a write failure names the folder path). Recommended: "The image didn't arrive in one piece. Try sharing it again." and "PocketDeck couldn't save the image." (misses.md M6).
+- [NEEDS CLARIFICATION] **Clipboard sync is on by default** — `ClipboardSync.isEnabled` reads true until the person turns it off, so a fresh profile sends every copied text and image to the phone, while AGENTS.md says "Sharing is opt-in … a new feature that reads or sends personal data follows the same rule". Recommended: default it off (one switch in Settings ▸ General, already there) and say so in UX.md, or record clipboard sync as an approved exception; today's default contradicts the promise.
+- [NEEDS CLARIFICATION] **Turning the switch off does not stop the phone** — the setting is read only on the Mac: the phone has no clipboard switch and keeps polling its own clipboard while the session is ready, sending `clip.set` that the Mac then ignores. The bytes still leave the phone, which is not what "Share clipboard with your phone: off" promises. Recommended: send the switch to the phone over the session (for example `clip.enable {on}`, like `notify.enable`) or have the phone stop polling when the Mac says off; prove it with a fake-phone phase that sees no `clip.set` after the Mac's toggle.
+- [NEEDS CLARIFICATION] **The phone's sensitive clips travel** — the Mac skips password-manager secret types, but `ShellClipboard` does not check Android's `ClipDescription.EXTRA_IS_SENSITIVE`, so a password copied on the phone lands on the Mac's pasteboard. Recommended: skip a sensitive phone clip, the mirror of the Mac's rule, and prove it with a K1 case (no new gate).
+- [NEEDS CLARIFICATION] **A `.webloc` on a window** — the Deck opens a dropped `.webloc` as a link, but a stream window saves it to the phone as a file (misses.md M1). Recommended: route it through the same `OpenLinkRequest.webloc` path on windows, so one gesture means one thing.
+- [NEEDS CLARIFICATION] **Image-refusal copy** — "Couldn't save the image from <phone>: checksum mismatch" is an internal phrase (and a write failure names the folder path). Recommended: "The image didn't arrive in one piece. Try sharing it again." and "PocketDeck couldn't save the image." (misses.md M3).
