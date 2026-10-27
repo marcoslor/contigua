@@ -59,6 +59,9 @@ struct LaunchOptions {
     var preview: String?
     /// `--appearance light|dark`: force the appearance (screenshots).
     var appearance: String?
+    /// `--debug-proto devices=D1|D2|D3`: the Settings ▸ Devices prototypes
+    /// (branch proto/devices; a test hook, ignored by a release build).
+    var debugProto: String?
     /// `--dock-dir DIR`: where Dock apps are created (e2e: a temp folder).
     var dockDirectory: String?
     /// `--dock-add PKG` / `--dock-remove PKG`: create or remove that app's Dock app once
@@ -129,6 +132,7 @@ struct LaunchOptions {
         "--share-log": true,
         "--preview": true,
         "--appearance": true,
+        "--debug-proto": true,
         "--dock-dir": true,
         "--dock-add": true,
         "--dock-remove": true,
@@ -231,6 +235,8 @@ struct LaunchOptions {
                 options.preview = next()
             case "--appearance":
                 options.appearance = next()
+            case "--debug-proto":
+                options.debugProto = next()
             case "--dock-dir":
                 options.dockDirectory = next()
             case "--dock-add":
@@ -338,6 +344,10 @@ final class AppEnvironment {
         BackgroundMode.isOn = options.background
         Profile.active = profile
         Log.app.notice("profile \(profile.name, privacy: .public): identity \(IdentityFileV2.fileUrl(in: profile).path, privacy: .public), defaults \(profile.defaultsSuiteName ?? "standard", privacy: .public)")
+        if let value = options.debugProto {
+            ProtoDevices.select(value)
+            ProtoDevicesRender.installActiveStandIn()
+        }
         if options.resetPairing {
             // v2: pairing state = the pins + identity.json's §3 mirror; the
             // identity itself (this Mac's key) stays.
@@ -424,6 +434,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menuBar = MenuBarController(controller: environment.controller,
                                     defaults: environment.profile.defaults)
         environment.controller.start()
+        if environment.options.debugProto != nil {
+            ProtoDevicesScreens.start(controller: environment.controller)
+        }
         // The Control Center snapshot and socket (docs/design/controls.md): a
         // release bundle only has one when it carries the extension's group,
         // so the absence of the group simply leaves the controls at rest.
