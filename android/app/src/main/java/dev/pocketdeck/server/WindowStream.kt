@@ -801,7 +801,15 @@ internal class WindowStream(
     }
 }
 
-/** Owns every [WindowStream] and exposes them to the session as a [DisplayLayer]. */
+/**
+ * Owns every [WindowStream] and exposes them to the session as a [DisplayLayer].
+ *
+ * The `streams` lock only ever guards the map itself: an open build, an encoder
+ * or VD start/stop and a close take seconds, and holding the map across them
+ * made every other stream's keyframe request and backpressure note wait (the
+ * field log: one window opening stalled all output). Build or detach the stream
+ * first, then swap it into the map in one short step.
+ */
 internal class AndroidDisplayLayer(
     private val ctx: Context,
     private val log: (String) -> Unit,
@@ -809,8 +817,8 @@ internal class AndroidDisplayLayer(
 
     private val streams = HashMap<Int, WindowStream>()
 
-    override fun open(stream: Int, w: Int, h: Int, dpi: Int, sink: VideoSink): Int = synchronized(streams) {
-        streams.remove(stream)?.close()
+    override fun open(stream: Int, w: Int, h: Int, dpi: Int, sink: VideoSink): Int {
+        take(stream)?.close()
         val ws = WindowStream(ctx, stream, sink, log)
         // start() can throw after it created the persistent surface and an
         // encoder; close what it built before the session sees the failure.
@@ -820,12 +828,14 @@ internal class AndroidDisplayLayer(
             ws.close()
             throw e
         }
-        streams[stream] = ws
-        id
+        // The map holds the finished stream from here; a later open for the same
+        // id first takes it out and closes it outside the lock.
+        put(stream, ws)
+        return id
     }
 
-    override fun openMirror(stream: Int, w: Int, h: Int, sink: VideoSink): IntSize = synchronized(streams) {
-        streams.remove(stream)?.close()
+    override fun openMirror(stream: Int, w: Int, h: Int, sink: VideoSink): IntSize {
+        take(stream)?.close()
         val ws = WindowStream(ctx, stream, sink, log)
         val size = try {
             ws.startMirror(w, h)
@@ -833,39 +843,46 @@ internal class AndroidDisplayLayer(
             ws.close()
             throw e
         }
-        streams[stream] = ws
-        size
+        // The map holds the finished stream from here; a later open for the same
+        // id first takes it out and closes it outside the lock.
+        put(stream, ws)
+        return size
     }
 
-    override fun size(stream: Int): IntSize = synchronized(streams) {
-        streams[stream]?.inputSize ?: IntSize(0, 0)
-    }
+    override fun size(stream: Int): IntSize = get(stream)?.inputSize ?: IntSize(0, 0)
 
     override fun resize(stream: Int, w: Int, h: Int, dpi: Int) {
-        synchronized(streams) { streams[stream] }?.resize(w, h, dpi)
+        get(stream)?.resize(w, h, dpi)
     }
 
     override fun pause(stream: Int) {
-        synchronized(streams) { streams[stream] }?.pause()
+        get(stream)?.pause()
     }
 
     override fun resume(stream: Int) {
-        synchronized(streams) { streams[stream] }?.resume()
+        get(stream)?.resume()
     }
 
     override fun requestKeyframe(stream: Int) {
-        synchronized(streams) { streams[stream] }?.requestKeyframe()
+        get(stream)?.requestKeyframe()
     }
 
     override fun setQuality(stream: Int, bitrate: Int?, maxFps: Int?) {
-        synchronized(streams) { streams[stream] }?.setQuality(bitrate, maxFps)
+        get(stream)?.setQuality(bitrate, maxFps)
     }
 
     override fun onBackpressure(stream: Int) {
-        synchronized(streams) { streams[stream] }?.onBackpressure()
+        get(stream)?.onBackpressure()
     }
 
     override fun close(stream: Int) {
-        synchronized(streams) { streams.remove(stream) }?.close()
+        take(stream)?.close()
     }
+
+    private fun get(stream: Int): WindowStream? = synchronized(streams) { streams[stream] }
+
+    private fun put(stream: Int, ws: WindowStream) = synchronized(streams) { streams[stream] = ws }
+
+    /** Removes the stream from the map; the caller closes it outside the lock. */
+    private fun take(stream: Int): WindowStream? = synchronized(streams) { streams.remove(stream) }
 }

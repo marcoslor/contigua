@@ -381,10 +381,14 @@ class Session(
         hoverExecutor.shutdownNow()
         runCatching { audioCapture?.stop() }
         queue.clearAudio()
-        synchronized(streams) {
-            for (s in streams.values.toList()) runCatching { display.close(s.stream) }
+        // Close outside the lock: a stream's close stops an encoder and joins
+        // its drain thread, and the watch thread's snapshot needs the lock.
+        val closing = synchronized(streams) {
+            val open = streams.values.toList()
             streams.clear()
+            open
         }
+        for (s in closing) runCatching { display.close(s.stream) }
         runCatching { power.setActiveStreams(emptyList()) }
         runCatching { power.onSessionEnded() }
         runCatching { power.onPanelChanged = null }

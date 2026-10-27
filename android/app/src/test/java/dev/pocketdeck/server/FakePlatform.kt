@@ -98,6 +98,10 @@ class FakePlatform : DisplayLayer, AppCatalog, Launcher, Injector, Power, Device
     var onWake: (() -> Unit)? = null
     var video: CannedVideo? = null
     var onPairingRequestHandler: ((PairingReq) -> Unit)? = null
+    /** Runs inside `open` before it returns: a slow encoder/VD start (stream). */
+    var onOpen: ((Int) -> Unit)? = null
+    /** Runs inside `requestKeyframe`: a display busy with another window's open. */
+    var onKeyframeRequest: ((Int) -> Unit)? = null
 
     private val sizes = HashMap<Int, IntSize>()
     private var nextDisplayId = 100
@@ -110,6 +114,7 @@ class FakePlatform : DisplayLayer, AppCatalog, Launcher, Injector, Power, Device
         opens.add(OpenCall(stream, w, h, dpi, id))
         sizes[stream] = IntSize(w, h)
         video?.start(stream, w, h, sink)
+        onOpen?.invoke(stream)
         return id
     }
 
@@ -139,6 +144,7 @@ class FakePlatform : DisplayLayer, AppCatalog, Launcher, Injector, Power, Device
 
     override fun requestKeyframe(stream: Int) {
         keyframeRequests.add(stream)
+        onKeyframeRequest?.invoke(stream)
     }
 
     override fun close(stream: Int) {
