@@ -84,12 +84,14 @@ enum DevicesTabModel {
     static let labels = Labels()
 
     static func phoneRow(id: String, name: String, model: String, presence: DevicePresence,
-                         lastSeen: String, inUse: Bool, pinnedKey: Bool) -> DevicePhoneRow {
+                         lastSeen: String, inUse: Bool) -> DevicePhoneRow {
         DevicePhoneRow(
             id: id, name: name, model: model, presenceText: presence.text,
             lastSeenText: presence.isLive ? nil : lastSeen,
             inUse: inUse,
-            canUseThisPhone: !inUse && pinnedKey,
+            // A phone whose key is gone reads Pair again, so it is the one case
+            // that can be reached but not used.
+            canUseThisPhone: !inUse && presence != .pairAgain,
             pairAgain: presence == .pairAgain)
     }
 
