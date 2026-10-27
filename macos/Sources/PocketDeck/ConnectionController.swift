@@ -2469,6 +2469,10 @@ final class ConnectionController {
             return PanelProbe.hover(host: arguments[0], id: arguments[1]) ? nil : "panelhover failed"
         case "panelhoverout":
             return PanelProbe.hoverOut() ? nil : "panelhoverout failed"
+        case "panelpoint":
+            guard arguments.count == 3 else { return "panelpoint needs HOST, ID and PATH" }
+            return PanelProbe.point(host: arguments[0], id: arguments[1], to: arguments[2])
+                ? nil : "panelpoint failed"
         case "paneldump":
             guard arguments.count == 2, ["panel", "deck", "real"].contains(arguments[0]) else {
                 return "paneldump needs HOST (panel, deck or real) and PATH"
@@ -2515,6 +2519,29 @@ final class ConnectionController {
             deckRailToken += 1
             deckRailRequest = DeckRailRequest(letter: letter, token: deckRailToken)
             return nil
+        case "deckrailhover":
+            // The rail's magnification for a shot: a quiet run cannot move the
+            // pointer to the rail's letters. A real pointer's hover is the
+            // rail's own onContinuousHover, proved in the VM.
+            guard let letter = arguments.first, DeckRail.letters.contains(letter) else {
+                return "deckrailhover needs A-Z or #"
+            }
+            guard DeckWindow.window != nil else { return "no deck window" }
+            DeckRailHover.shared.letter = letter
+            RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.3))
+            return nil
+        case "deckrailhoverout":
+            DeckRailHover.shared.letter = nil
+            RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.3))
+            return nil
+        case "deckrailpoint":
+            // The letter's centre in Quartz screen coordinates, for a visible
+            // VM run's real pointer.
+            guard arguments.count == 2, DeckRail.letters.contains(arguments[0]) else {
+                return "deckrailpoint needs A-Z or # and PATH"
+            }
+            return DeckRailPoint.point(letter: arguments[0], to: arguments[1])
+                ? nil : "deckrailpoint failed"
         case "settings-dump":
             // Settings' real window geometry (SettingsProbe) for the host e2e.
             guard let path = arguments.first, path.hasPrefix("/") else { return "missing path" }
