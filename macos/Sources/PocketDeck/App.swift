@@ -59,6 +59,9 @@ struct LaunchOptions {
     var preview: String?
     /// `--appearance light|dark`: force the appearance (screenshots).
     var appearance: String?
+    /// `--debug-proto settings=S1|S2|S3`: Settings' sidebar prototypes
+    /// (branch proto/settings-sidebar; a test hook, ignored by a release build).
+    var debugProto: String?
     /// (branch proto/devices; a test hook, ignored by a release build).
     /// `--dock-dir DIR`: where Dock apps are created (e2e: a temp folder).
     var dockDirectory: String?
@@ -130,6 +133,7 @@ struct LaunchOptions {
         "--share-log": true,
         "--preview": true,
         "--appearance": true,
+        "--debug-proto": true,
         "--dock-dir": true,
         "--dock-add": true,
         "--dock-remove": true,
@@ -232,6 +236,8 @@ struct LaunchOptions {
                 options.preview = next()
             case "--appearance":
                 options.appearance = next()
+            case "--debug-proto":
+                options.debugProto = next()
             case "--dock-dir":
                 options.dockDirectory = next()
             case "--dock-add":
@@ -339,6 +345,10 @@ final class AppEnvironment {
         BackgroundMode.isOn = options.background
         Profile.active = profile
         Log.app.notice("profile \(profile.name, privacy: .public): identity \(IdentityFileV2.fileUrl(in: profile).path, privacy: .public), defaults \(profile.defaultsSuiteName ?? "standard", privacy: .public)")
+        if let value = options.debugProto {
+            ProtoSettings.select(value)
+            ProtoSettingsRender.installActiveStandIn()
+        }
         if options.resetPairing {
             // v2: pairing state = the pins + identity.json's §3 mirror; the
             // identity itself (this Mac's key) stays.

@@ -14,6 +14,26 @@ struct SettingsView: View {
     @Environment(ConnectionController.self) private var controller
 
     var body: some View {
+        Group {
+            // A prototype run draws the whole window as a sidebar; production
+            // keeps today's four tabs (a release build never sets the flag).
+            if ProtoSettings.variant == .production {
+                tabs
+            } else {
+                ProtoSettingsShell()
+            }
+        }
+        .frame(width: SettingsLayout.currentWidth)
+        // A grouped Form reports its content's ideal height, and the Settings
+        // window took it: on a short screen the rows below the fold were
+        // clipped and could not scroll. The cap makes the window fit the
+        // screen, so the form inside it scrolls; a shorter tab keeps its own
+        // natural height.
+        .frame(maxHeight: SettingsLayout.maxContentHeight(for: NSScreen.main?.visibleFrame.height ?? 800))
+        .background(SettingsWindowTag())
+    }
+
+    private var tabs: some View {
         TabView(selection: Binding(
             get: { controller.settingsTab },
             set: { controller.settingsTab = $0 },
@@ -23,14 +43,6 @@ struct SettingsView: View {
             Tab("Devices", systemImage: "iphone.gen3", value: SettingsTab.devices) { DevicesSettings() }
             Tab("Automation", systemImage: "terminal", value: SettingsTab.automation) { AutomationSettings() }
         }
-        .frame(width: SettingsLayout.width)
-        // A grouped Form reports its content's ideal height, and the Settings
-        // window took it: on a short screen the rows below the fold were
-        // clipped and could not scroll. The cap makes the TabView fit the
-        // screen, so the form inside it scrolls; a shorter tab keeps its own
-        // natural height.
-        .frame(maxHeight: SettingsLayout.maxContentHeight(for: NSScreen.main?.visibleFrame.height ?? 800))
-        .background(SettingsWindowTag())
     }
 }
 
@@ -46,7 +58,7 @@ private struct SettingsWindowTag: NSViewRepresentable {
             guard let window = view.window else { return }
             let screen = window.screen ?? NSScreen.main
             let height = SettingsLayout.maxContentHeight(for: screen?.visibleFrame.height ?? 800)
-            window.setContentSize(NSSize(width: SettingsLayout.width, height: height))
+            window.setContentSize(NSSize(width: SettingsLayout.currentWidth, height: height))
             if let screen {
                 var frame = window.frame
                 frame.origin.x = min(max(screen.visibleFrame.minX, frame.origin.x),
@@ -65,6 +77,9 @@ private struct SettingsWindowTag: NSViewRepresentable {
 /// Settings' window size rules (docs/design/mac-redesign.md §3.6).
 enum SettingsLayout {
     static let width: CGFloat = 480
+    /// The window width this run draws: the sidebar prototype's 700 pt (a test
+    /// hook), else today's 480 pt tab.
+    static var currentWidth: CGFloat { ProtoSettings.windowWidth ?? width }
     /// The design's height; tall enough for General's usual rows, short enough
     /// for a 1280x800 screen with the menu bar and margins.
     static let designHeight: CGFloat = 560
@@ -293,7 +308,7 @@ struct DevicesSettings: View {
 
 /// The Forget confirmation (SET-DEV-07): names the phone, says the pairing
 /// goes, and keeps the destructive button off the Return key.
-private struct ForgetConfirmation: View {
+struct ForgetConfirmation: View {
     let name: String
     let onCancel: () -> Void
     let onConfirm: () -> Void
