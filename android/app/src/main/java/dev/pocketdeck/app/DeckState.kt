@@ -25,10 +25,17 @@ object DeckState {
     @Volatile var pending: PendingPairing? = null
 
     /**
-     * The Mac's per-session opt-in for notification sharing (`notify.enable`),
-     * relayed from the shell service; the listener reads this side of the gate.
+     * The notification gate is open: the Mac asked (`notify.enable`) and the
+     * phone's listener grant is live. Relayed from the shell service; the
+     * listener's bridge reads it.
      */
     @Volatile var notifyForward: Boolean = false
+
+    /**
+     * The Mac asked for notifications but the listener grant is missing: the
+     * home shows the notification-access attention item.
+     */
+    @Volatile var notifyNoAccess: Boolean = false
 
     private val listeners = CopyOnWriteArrayList<() -> Unit>()
 

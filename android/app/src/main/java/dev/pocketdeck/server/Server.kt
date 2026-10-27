@@ -115,9 +115,9 @@ class Server(
     fun shareFile(name: String, mime: String, input: java.io.InputStream): Int =
         active?.takeIf { it.isReady }?.shareFile(name, mime, input) ?: ShareStatus.NO_SESSION
 
-    /** The phone's per-phone notify toggle changed: sessions re-answer the gate. */
-    fun recomputeNotify() {
-        active?.takeIf { it.isReady }?.reconcileNotify()
+    /** The phone's notification-listener grant changed: sessions re-answer the gate. */
+    fun listenerAccess(granted: Boolean) {
+        active?.takeIf { it.isReady }?.listenerAccessChanged(granted)
     }
 
     /** One listener event push (app process → shell service → session). */

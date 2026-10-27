@@ -69,6 +69,25 @@ class UiStateTest {
     }
 
     @Test
+    fun `a missing notification grant while the Mac asked needs attention`() {
+        // The phone's own switch is gone: the Mac's opt-in plus the listener
+        // grant is the whole gate (docs/design/notify.md).
+        val status = mapStatus(readyInput.copy(connectedMac = "Marcos's MacBook", notifyNoAccess = true))
+        assertEquals(DeckStatus(StatusState.NEEDS_ATTENTION, AttentionKind.NOTIFY_ACCESS), status)
+    }
+
+    @Test
+    fun `no attention for notification access once the Mac is not asking`() {
+        assertEquals(AttentionKind.NONE, mapStatus(readyInput.copy(notifyNoAccess = false)).attention)
+    }
+
+    @Test
+    fun `a broken shizuku outranks a notification grant`() {
+        val status = mapStatus(readyInput.copy(shizukuGranted = false, notifyNoAccess = true))
+        assertEquals(AttentionKind.SHIZUKU_PERMISSION, status.attention)
+    }
+
+    @Test
     fun `connections off outranks a broken shizuku`() {
         val status = mapStatus(StatusInput(false, false, false, -1, null, allowConnections = false))
         assertEquals(AttentionKind.CONNECTIONS_OFF, status.attention)

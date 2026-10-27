@@ -15,8 +15,12 @@ oneway interface IDeckCallback {
     /** The pairing request ended unanswered; the app should dismiss its prompt. */
     void onPairingEnded(String requestId);
 
-    /** The Mac asked to start (or stop) notification sharing for this session. */
-    void onNotifySession(boolean forwarding);
+    /**
+     * The notification gate's answer (docs/design/notify.md): `forwarding` is
+     * live, and `reason` is "no_access" when the Mac asked but the phone's
+     * listener grant is missing (null otherwise).
+     */
+    void onNotifyState(boolean forwarding, String reason);
 
     /**
      * The Mac drove Now Playing (`media.command`): `json` is the validated

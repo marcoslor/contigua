@@ -43,7 +43,6 @@ class MediaSessionScanTest {
 
     @Before
     fun setUp() {
-        Prefs.setNotifyShared(ctx, true)
         DeckState.notifyForward = false
         pushed.clear()
         PdNotificationBridge.recordForTest = { event -> pushed += event }
@@ -59,11 +58,10 @@ class MediaSessionScanTest {
         PdNotificationBridge.recordForTest = null
         DeckState.notifyForward = false
         DeckState.notifyChanged()
-        Prefs.setNotifyShared(ctx, false)
     }
 
     @Test
-    fun `sessions held while sharing was off are sent when the Mac opts in`() {
+    fun `sessions held while the Mac had not opted in are sent when it does`() {
         val listener = start()
         manager.addController(controller("com.example.one"))
         manager.addController(controller("com.example.two"))

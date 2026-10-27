@@ -126,6 +126,14 @@ class ScreenshotTest {
     fun homeShizukuNotRunningDark() =
         shootHome("home_shizuku_not_running_dark", true, homeState(shizukuRunning = false))
 
+    @Test
+    fun homeNotificationAccessDark() =
+        shootHome("home_notify_access_dark", true, homeState(notifyNoAccess = true))
+
+    @Test
+    fun homeNotificationAccessLight() =
+        shootHome("home_notify_access_light", false, homeState(notifyNoAccess = true))
+
     // ---- pairing dialog ------------------------------------------------
 
     @Test
@@ -175,6 +183,7 @@ class ScreenshotTest {
         liveClientId: String? = null,
         windows: Int = 0,
         shizukuRunning: Boolean = true,
+        notifyNoAccess: Boolean = false,
     ): DeckUiState {
         val status = mapStatus(
             StatusInput(
@@ -183,6 +192,7 @@ class ScreenshotTest {
                 shizukuGranted = shizukuRunning,
                 port = if (shizukuRunning) 4711 else -1,
                 connectedMac = connectedMac,
+                notifyNoAccess = notifyNoAccess,
             ),
         )
         return DeckUiState(
@@ -214,7 +224,6 @@ class ScreenshotTest {
                 onToggleEnabled = {},
                 onToggleAllowConnections = {},
                 onToggleAllowPairings = {},
-                onToggleNotify = {},
                 onStatusAction = {},
                 onForget = { "" },
                 onUndoForget = {},

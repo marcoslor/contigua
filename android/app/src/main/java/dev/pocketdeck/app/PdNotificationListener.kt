@@ -22,13 +22,14 @@ import dev.pocketdeck.proto.Json
 /**
  * Reads notifications and the media session for a connected Mac (docs/design/
  * notify.md). Runs in the app process with the notification-listener grant the
- * shell service handed over at the per-phone opt-in (`cmd notification
+ * shell service asks for when the Mac turns sharing on (`cmd notification
  * allow_listener`). Events go through [PdNotificationBridge] (which re-checks
- * both gates) to the shell service over AIDL.
+ * the gate) to the shell service over AIDL. A grant that arrives after a failed
+ * attempt is announced here, so forwarding starts without another Mac toggle.
  */
 class PdNotificationListener : NotificationListenerService() {
 
-    private val bridge = PdNotificationBridge(this)
+    private val bridge = PdNotificationBridge()
 
     /** Off-main surface for session callbacks and command delivery. */
     private val worker = HandlerThread("pd-notify-media").also { it.start() }
@@ -113,9 +114,16 @@ class PdNotificationListener : NotificationListenerService() {
     }
 
     override fun onListenerConnected() {
-        // The grant is live from here: read the stack and watch it.
+        // The grant is live from here: tell the shell session (a later grant
+        // turns forwarding on by itself), then read the stack and watch it.
+        ShizukuClient.current()?.let { runCatching { it.listenerAccess(true) } }
         if (watchSessions() == null) return
         scanSessions("connect")
+    }
+
+    override fun onListenerDisconnected() {
+        ShizukuClient.current()?.let { runCatching { it.listenerAccess(false) } }
+        super.onListenerDisconnected()
     }
 
     /**
