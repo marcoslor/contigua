@@ -182,6 +182,8 @@ class Session(
 
     private val streams = LinkedHashMap<Int, StreamState>()
     private val clipSync = ClipSync()
+    /** How many sensitive clips were kept on the phone this session (a count, never text). */
+    @Volatile private var sensitiveClipsSkipped = 0
     private val apk = packages?.let { ApkInstaller(it, ::sendJson, log) }
     private val share = ShareSender(::sendJson, queue::enqueueBulk, log)
     private val drop = dropLanding?.let { DropReceiver(it, ::sendJson, log) }
@@ -1091,8 +1093,14 @@ class Session(
     /** Local changes after welcome go out as `clip.set`; the text present at welcome does not. */
     private fun startClipboardSync() {
         val port = clipboard ?: return
-        port.listen { text ->
-            if (clipSync.shouldSend(text)) sendJson(mapOf("t" to "clip.set", "text" to text))
+        port.listen { clip ->
+            if (clip.sensitive) {
+                // A password manager's item: the count only, never its text.
+                sensitiveClipsSkipped += 1
+                log("clipboard: skipped a sensitive clip (${sensitiveClipsSkipped} so far)")
+            } else if (clipSync.shouldSend(clip.text)) {
+                sendJson(mapOf("t" to "clip.set", "text" to clip.text))
+            }
         }
     }
 
