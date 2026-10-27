@@ -319,10 +319,14 @@ class Session(
 
     fun run() {
         // The hold decides `state.panel` on its own (the person's power
-        // button, a paused window, the session ending): tell the Mac at once.
+        // button, a paused window, the session ending): tell the Mac at once —
+        // but only once it has authenticated (nothing but the pairing machine
+        // goes out before `welcome`).
         power.onPanelChanged = { _ ->
-            val state = stateTracker.current ?: device.state()
-            if (!stateTracker.update(state)) sendState(state)
+            if (phase == Phase.READY) {
+                val state = stateTracker.current ?: device.state()
+                if (!stateTracker.update(state)) sendState(state)
+            }
         }
         // The person's power press with our streams up: the phone took the
         // panel over and the VD group is being re-lit, so the Mac holds the
@@ -1098,7 +1102,10 @@ class Session(
 
     /** Re-evaluates the forwarding gate (also runs when the phone toggle changes). */
     fun reconcileNotify() {
-        val forward = notifyWanted && notifyShared() && phase == Phase.READY && !closed.get()
+        // A session that has not authenticated gets nothing but the machine; the
+        // Mac's `notify.enable` after welcome asks again.
+        if (phase != Phase.READY) return
+        val forward = notifyWanted && notifyShared() && !closed.get()
         if (forward != notifyForwarding) {
             notifyForwarding = forward
             runCatching { notifyForward?.invoke(forward) }
@@ -2019,6 +2026,17 @@ class Session(
     // ------------------------------------------------------------------
 
     private fun sendJson(obj: Map<String, Any?>) {
+        // One choke point: before `welcome` a session may say only what the
+        // handshake and pairing machine own. Post-welcome state (a notify
+        // toggle, the panel, the device state) reached a half-open session and
+        // the rig read `notify.state` where it expected `pair.reveal`; a peer
+        // that has not authenticated must see nothing else. The type only in
+        // the log, never a payload.
+        val t = obj["t"] as? String ?: ""
+        if (phase != Phase.READY && t !in PRE_READY_TYPES) {
+            logOnce("dropped before ready: $t")
+            return
+        }
         queue.enqueueJson(Frames.encodeJson(0, Json.encode(obj)))
     }
 
@@ -2257,6 +2275,14 @@ class Session(
         const val KEYCODE_BACK = 4
         const val KEYCODE_HOME = 3
         const val KEYCODE_APP_SWITCH = 187
+
+        /**
+         * The only types a session may send before `welcome` (docs/PROTOCOL.md
+         * "Session handshake" and "Pairing"): the handshake, the §4 pairing
+         * machine, and the fail-closed `error`. Everything else is post-welcome
+         * state.
+         */
+        val PRE_READY_TYPES = setOf("welcome", "pair.commit", "pair.reveal", "pair.ok", "pair.qr", "error")
 
         /** The phone's own screen: where "Continue on Mac" looks. */
         const val PHONE_DISPLAY_ID = 0
