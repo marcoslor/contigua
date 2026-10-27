@@ -739,9 +739,15 @@ struct PhonePanelView: View {
     /// from PanelControlStyle.
     private func tileLabel(symbol: String, title: String, subtitle: String,
                            lit: Bool, enabled: Bool) -> some View {
+        // `.secondary` still reads near-primary on the panel material. A
+        // disabled tile draws every line at a fixed low opacity (35 %), so its
+        // title contrast is under half an enabled title's on both appearances
+        // (reviewer round 2, fix 1c). The fill comes from PanelControlStyle.
+        let muted = AnyShapeStyle(Color.primary.opacity(0.35))
         let strong: AnyShapeStyle = lit ? AnyShapeStyle(.white)
-            : enabled ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary)
-        let weak: AnyShapeStyle = lit ? AnyShapeStyle(.white.opacity(0.85)) : AnyShapeStyle(.secondary)
+            : enabled ? AnyShapeStyle(.primary) : muted
+        let weak: AnyShapeStyle = lit ? AnyShapeStyle(.white.opacity(0.85))
+            : enabled ? AnyShapeStyle(.secondary) : muted
         return VStack(alignment: .leading, spacing: 2) {
             Image(systemName: symbol)
                 .font(.system(size: 15, weight: .medium))
