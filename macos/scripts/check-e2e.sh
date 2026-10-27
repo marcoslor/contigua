@@ -7863,37 +7863,37 @@ EOF
 
     # (a) opt-in on: the Mac asks, the posts and the remove are recorded.
     wait_until 20 notify_enable_on \
-        && ok "NOTIFY the Mac asked the phone to share (notify.enable on)" \
-        || bad "NOTIFY the Mac never sent notify.enable on"
+        && ok "[NOTIFY-1] NOTIFY the Mac asked the phone to share (notify.enable on)" \
+        || bad "[NOTIFY-1] NOTIFY the Mac never sent notify.enable on"
     wait_until 20 log_has "notify post id=pd-n1 pkg=com.android.settings" \
-        && ok "NOTIFY pd-n1 (com.android.settings) recorded" \
-        || bad "NOTIFY pd-n1 not recorded: $(cat "$log" 2>/dev/null | tr '\n' '|')"
+        && ok "[NOTIFY-3] NOTIFY pd-n1 (com.android.settings) recorded" \
+        || bad "[NOTIFY-3] NOTIFY pd-n1 not recorded: $(cat "$log" 2>/dev/null | tr '\n' '|')"
     wait_until 20 log_has "notify post id=pd-n2 pkg=com.whatsapp" \
-        && ok "NOTIFY pd-n2 (com.whatsapp) recorded" \
-        || bad "NOTIFY pd-n2 not recorded"
+        && ok "[NOTIFY-3] NOTIFY pd-n2 (com.whatsapp) recorded" \
+        || bad "[NOTIFY-3] NOTIFY pd-n2 not recorded"
     wait_until 20 log_has "notify remove id=pd-n2" \
-        && ok "NOTIFY the removal of pd-n2 was recorded" \
-        || bad "NOTIFY the remove was not recorded"
+        && ok "[NOTIFY-6] NOTIFY the removal of pd-n2 was recorded" \
+        || bad "[NOTIFY-6] NOTIFY the remove was not recorded"
     log_has "thread=$device" \
-        && ok "NOTIFY the posts are grouped under the phone ($device)" \
-        || bad "NOTIFY the records are not grouped per phone"
+        && ok "[NOTIFY-4] NOTIFY the posts are grouped under the phone ($device)" \
+        || bad "[NOTIFY-4] NOTIFY the records are not grouped per phone"
     grep -qE 'titleLen=[0-9]+ bodyLen=[0-9]+' "$log" 2>/dev/null \
-        && ok "NOTIFY the records carry field lengths, not the text" \
-        || bad "NOTIFY the posts were recorded without lengths"
+        && ok "[NOTIFY-14] NOTIFY the records carry field lengths, not the text" \
+        || bad "[NOTIFY-14] NOTIFY the posts were recorded without lengths"
     log_has "media set playing=true" && log_has "durationMs=30000" \
         && ok "NOTIFY media.state drove Now Playing (playing, 30 s)" \
         || bad "NOTIFY no Now Playing set: $(cat "$log" 2>/dev/null | tr '\n' '|')"
 
     # (c) the click opens that app's window, through the phone's window.open.
     wait_until 30 log_has "notify click id=pd-n1 pkg=com.android.settings" \
-        && ok "NOTIFY the click recorded pd-n1 -> com.android.settings" \
-        || bad "NOTIFY no click record: $(cat "$log" 2>/dev/null | tr '\n' '|')"
+        && ok "[NOTIFY-8] NOTIFY the click recorded pd-n1 -> com.android.settings" \
+        || bad "[NOTIFY-8] NOTIFY no click record: $(cat "$log" 2>/dev/null | tr '\n' '|')"
     wait_until 30 window_rx window.open "com.android.settings" \
-        && ok "NOTIFY the click sent window.open for com.android.settings" \
-        || bad "NOTIFY the click never reached the phone"
+        && ok "[NOTIFY-8] NOTIFY the click sent window.open for com.android.settings" \
+        || bad "[NOTIFY-8] NOTIFY the click never reached the phone"
     wait_until 20 events_have '"ev":"video","stream":2,' \
-        && ok "NOTIFY the Mac opened the clicked app's stream window (stream 2)" \
-        || bad "NOTIFY no stream 2 for the clicked app"
+        && ok "[NOTIFY-8] NOTIFY the Mac opened the clicked app's stream window (stream 2)" \
+        || bad "[NOTIFY-8] NOTIFY no stream 2 for the clicked app"
 
     # (d) a Now Playing command reaches the phone as media.command.
     media_played() {
@@ -7918,8 +7918,8 @@ PY
 
     # (e) privacy: no notification text in any log.
     no_notify_text "$WORK/app.log" "$log" "$WORK/fake.log" "$WORK/events.jsonl" \
-        && ok "NOTIFY no notification text in the app log, share log, fake log or event log" \
-        || bad "NOTIFY notification text leaked"
+        && ok "[NOTIFY-14] NOTIFY no notification text in the app log, share log, fake log or event log" \
+        || bad "[NOTIFY-14] NOTIFY notification text leaked"
 
     # (f) "When I click a phone notification" (ROADMAP D2): Open on Mac (the
     # default, used above) opens the window and runs the action there; Open on
@@ -7940,8 +7940,8 @@ sys.exit(1)
 PY
     }
     wait_until 20 notify_open_rx window 2 \
-        && ok "NOTIFY Open on Mac: notify.open target=window stream=2" \
-        || bad "NOTIFY Open on Mac: no notify.open for the clicked window"
+        && ok "[NOTIFY-8] NOTIFY Open on Mac: notify.open target=window stream=2" \
+        || bad "[NOTIFY-8] NOTIFY Open on Mac: no notify.open for the clicked window"
 
     # Open on phone: the same click, with the setting stored for this phone.
     stop_app
@@ -7954,12 +7954,12 @@ EOF
     launch --connect "127.0.0.1:$PORT" --quit-after 45 --share-log "$WORK/notify-phone.log" \
         --open com.whatsapp --debug-input-script "$script"
     wait_until 30 notify_open_rx phone "" \
-        && ok "NOTIFY Open on phone: notify.open target=phone" \
-        || bad "NOTIFY Open on phone: no notify.open target=phone"
+        && ok "[NOTIFY-8] NOTIFY Open on phone: notify.open target=phone" \
+        || bad "[NOTIFY-8] NOTIFY Open on phone: no notify.open target=phone"
     sleep 2
     ! window_rx window.open "com.android.settings" \
-        && ok "NOTIFY Open on phone: no Mac window for the clicked app" \
-        || bad "NOTIFY Open on phone: the clicked app's window opened anyway"
+        && ok "[NOTIFY-8] NOTIFY Open on phone: no Mac window for the clicked app" \
+        || bad "[NOTIFY-8] NOTIFY Open on phone: the clicked app's window opened anyway"
 
     # Do nothing: the click is recorded, but no message and no window.
     stop_app
@@ -7972,15 +7972,15 @@ EOF
     launch --connect "127.0.0.1:$PORT" --quit-after 45 --share-log "$WORK/notify-none.log" \
         --open com.whatsapp --debug-input-script "$script"
     wait_until 20 grep -qF -- "notify click id=pd-n1" "$WORK/notify-none.log" 2>/dev/null \
-        && ok "NOTIFY Do nothing: the click reached the routing" \
-        || bad "NOTIFY Do nothing: the click never reached the routing"
+        && ok "[NOTIFY-8] NOTIFY Do nothing: the click reached the routing" \
+        || bad "[NOTIFY-8] NOTIFY Do nothing: the click never reached the routing"
     sleep 2
     ! notify_open_rx window "" && ! notify_open_rx phone "" \
-        && ok "NOTIFY Do nothing: no notify.open was sent" \
-        || bad "NOTIFY Do nothing: notify.open was sent anyway"
+        && ok "[NOTIFY-8] NOTIFY Do nothing: no notify.open was sent" \
+        || bad "[NOTIFY-8] NOTIFY Do nothing: notify.open was sent anyway"
     ! window_rx window.open "com.android.settings" \
-        && ok "NOTIFY Do nothing: no Mac window opened" \
-        || bad "NOTIFY Do nothing: a window opened anyway"
+        && ok "[NOTIFY-8] NOTIFY Do nothing: no Mac window opened" \
+        || bad "[NOTIFY-8] NOTIFY Do nothing: a window opened anyway"
     defaults delete "$DEFAULTS_SUITE" "notify.click.$device" >/dev/null 2>&1
 
     # (b) opt-in off (the default): nothing is forwarded, nothing is asked.
@@ -7997,14 +7997,14 @@ EOF
         || { bad "NOTIFY off: the app never got online"; stop_app; stop_fakephone; return 1; }
     sleep 8
     ! notify_enable_on \
-        && ok "NOTIFY off: the phone was not sent notify.enable on" \
-        || bad "NOTIFY off: notify.enable on was sent anyway"
+        && ok "[NOTIFY-1] NOTIFY off: the phone was not sent notify.enable on" \
+        || bad "[NOTIFY-1] NOTIFY off: notify.enable on was sent anyway"
     ! off_log_has "notify post" && ! off_log_has "notify remove" && ! off_log_has "notify click" \
-        && ok "NOTIFY off: no post, remove or click reached the share log" \
-        || bad "NOTIFY off: $(cat "$offlog" 2>/dev/null | tr '\n' '|')"
+        && ok "[NOTIFY-1] NOTIFY off: no post, remove or click reached the share log" \
+        || bad "[NOTIFY-1] NOTIFY off: $(cat "$offlog" 2>/dev/null | tr '\n' '|')"
     no_notify_text "$WORK/app.log" "$offlog" "$WORK/fake.log" "$WORK/events.jsonl" \
-        && ok "NOTIFY off: no notification text anywhere" \
-        || bad "NOTIFY off: notification text leaked"
+        && ok "[NOTIFY-14] NOTIFY off: no notification text anywhere" \
+        || bad "[NOTIFY-14] NOTIFY off: notification text leaked"
     stop_app
     stop_fakephone
     wait_until 5 no_fakephone
@@ -8071,85 +8071,85 @@ EOF
 
     # (a) the wire carried the shapes: counts and the category hash, no text.
     wait_until 20 log_has "notify post id=pd-a1 pkg=com.whatsapp" \
-        && ok "NOTIFY-ACTIONS pd-a1 (reply shape) recorded" \
-        || bad "NOTIFY-ACTIONS pd-a1 not recorded: $(cat "$log" 2>/dev/null | tr '\n' '|')"
+        && ok "[NOTIFY-3] NOTIFY-ACTIONS pd-a1 (reply shape) recorded" \
+        || bad "[NOTIFY-3] NOTIFY-ACTIONS pd-a1 not recorded: $(cat "$log" 2>/dev/null | tr '\n' '|')"
     log_has "actions=2 reply=1" \
-        && ok "NOTIFY-ACTIONS the reply shape advertised 2 actions, one reply" \
-        || bad "NOTIFY-ACTIONS the reply shape's action counts are wrong"
+        && ok "[NOTIFY-3] NOTIFY-ACTIONS the reply shape advertised 2 actions, one reply" \
+        || bad "[NOTIFY-3] NOTIFY-ACTIONS the reply shape's action counts are wrong"
     log_has "code=0 ongoing=0 category=pd.n." \
-        && ok "NOTIFY-ACTIONS the category is a shape hash" \
-        || bad "NOTIFY-ACTIONS no category hash for pd-a1"
+        && ok "[NOTIFY-9] NOTIFY-ACTIONS the category is a shape hash" \
+        || bad "[NOTIFY-9] NOTIFY-ACTIONS no category hash for pd-a1"
     wait_until 20 log_has "notify post id=pd-a4 pkg=com.whatsapp" \
-        && ok "NOTIFY-ACTIONS pd-a4 (code shape) recorded" \
-        || bad "NOTIFY-ACTIONS pd-a4 not recorded"
+        && ok "[NOTIFY-10] NOTIFY-ACTIONS pd-a4 (code shape) recorded" \
+        || bad "[NOTIFY-10] NOTIFY-ACTIONS pd-a4 not recorded"
     grep -q "notify post id=pd-a4 .*code=1" "$log" 2>/dev/null \
-        && ok "NOTIFY-ACTIONS the code was found in the notification" \
-        || bad "NOTIFY-ACTIONS the code was not found"
+        && ok "[NOTIFY-10] NOTIFY-ACTIONS the code was found in the notification" \
+        || bad "[NOTIFY-10] NOTIFY-ACTIONS the code was not found"
 
     # (b) muted: com.slack's post is dropped before it is shown.
     wait_until 20 log_has "notify muted pkg=com.slack" \
-        && ok "NOTIFY-ACTIONS the muted package was dropped" \
-        || bad "NOTIFY-ACTIONS no muted line"
+        && ok "[NOTIFY-13] NOTIFY-ACTIONS the muted package was dropped" \
+        || bad "[NOTIFY-13] NOTIFY-ACTIONS no muted line"
     ! log_has "notify post id=pd-a5" \
-        && ok "NOTIFY-ACTIONS the muted package got no banner" \
-        || bad "NOTIFY-ACTIONS the muted package was posted anyway"
+        && ok "[NOTIFY-13] NOTIFY-ACTIONS the muted package got no banner" \
+        || bad "[NOTIFY-13] NOTIFY-ACTIONS the muted package was posted anyway"
 
     # (c) reply and button: the phone logs the right index and text length.
     wait_until 20 log_has "notify action id=pd-a1 i=1 textLen=10" \
-        && ok "NOTIFY-ACTIONS the reply action was sent" \
-        || bad "NOTIFY-ACTIONS no reply action in the share log"
+        && ok "[NOTIFY-9] NOTIFY-ACTIONS the reply action was sent" \
+        || bad "[NOTIFY-9] NOTIFY-ACTIONS no reply action in the share log"
     wait_until 20 notify_rx action pd-a1 1 10 \
-        && ok "NOTIFY-ACTIONS the phone got the reply (i=1, length 10)" \
-        || bad "NOTIFY-ACTIONS the phone logged no reply action"
+        && ok "[NOTIFY-9] NOTIFY-ACTIONS the phone got the reply (i=1, length 10)" \
+        || bad "[NOTIFY-9] NOTIFY-ACTIONS the phone logged no reply action"
     wait_until 20 notify_rx action pd-a1 0 0 \
-        && ok "NOTIFY-ACTIONS the phone got the button (i=0, no text)" \
-        || bad "NOTIFY-ACTIONS the phone logged no button action"
+        && ok "[NOTIFY-9] NOTIFY-ACTIONS the phone got the button (i=0, no text)" \
+        || bad "[NOTIFY-9] NOTIFY-ACTIONS the phone logged no button action"
 
     # (d) dismiss: the clearable one goes out, the ongoing one does not.
     wait_until 20 notify_rx dismiss pd-a2 \
-        && ok "NOTIFY-ACTIONS the phone got notify.dismiss for the banner" \
-        || bad "NOTIFY-ACTIONS the phone logged no dismiss"
+        && ok "[NOTIFY-6] NOTIFY-ACTIONS the phone got notify.dismiss for the banner" \
+        || bad "[NOTIFY-6] NOTIFY-ACTIONS the phone logged no dismiss"
     log_has "notify dismiss id=pd-a3 refused=ongoing" \
-        && ok "NOTIFY-ACTIONS the ongoing notification was refused" \
-        || bad "NOTIFY-ACTIONS the ongoing refusal is not in the share log"
+        && ok "[NOTIFY-6] NOTIFY-ACTIONS the ongoing notification was refused" \
+        || bad "[NOTIFY-6] NOTIFY-ACTIONS the ongoing refusal is not in the share log"
     ! notify_rx dismiss pd-a3 \
-        && ok "NOTIFY-ACTIONS no dismiss was sent for the ongoing notification" \
-        || bad "NOTIFY-ACTIONS the ongoing notification was dismissed anyway"
+        && ok "[NOTIFY-6] NOTIFY-ACTIONS no dismiss was sent for the ongoing notification" \
+        || bad "[NOTIFY-6] NOTIFY-ACTIONS the ongoing notification was dismissed anyway"
 
     # (e) the phone taking a notification away clears the banner (notify.remove).
     wait_until 20 log_has "notify remove id=pd-n2" \
-        && ok "NOTIFY-ACTIONS the phone's notify.remove reached the Mac" \
-        || bad "NOTIFY-ACTIONS notify.remove was not recorded"
+        && ok "[NOTIFY-6] NOTIFY-ACTIONS the phone's notify.remove reached the Mac" \
+        || bad "[NOTIFY-6] NOTIFY-ACTIONS notify.remove was not recorded"
 
     # (f) Copy code: value and length by hash, the concealed/transient types,
     # then the clipboard is cleared again. Nothing here prints the code.
     wait_until 20 log_has "notify copy id=pd-a4 len=6" \
-        && ok "NOTIFY-ACTIONS Copy code copied a 6-char code" \
-        || bad "NOTIFY-ACTIONS no copy line"
+        && ok "[NOTIFY-10] NOTIFY-ACTIONS Copy code copied a 6-char code" \
+        || bad "[NOTIFY-10] NOTIFY-ACTIONS no copy line"
     if [ -n "$(pbpaste 2>/dev/null)" ]; then
         code_hash="$(pbpaste | shasum -a 256 | cut -d' ' -f1)"
         code_types="$(xcrun swift -e 'import AppKit; print((NSPasteboard.general.types ?? []).map { $0.rawValue }.joined(separator: ","))' 2>/dev/null)"
         [ "$(printf '%s' 482913 | shasum -a 256 | cut -d' ' -f1)" = "$code_hash" ] \
-            && ok "NOTIFY-ACTIONS the pasteboard holds the code (hash match)" \
-            || bad "NOTIFY-ACTIONS the pasteboard does not hold the code"
+            && ok "[NOTIFY-10] NOTIFY-ACTIONS the pasteboard holds the code (hash match)" \
+            || bad "[NOTIFY-10] NOTIFY-ACTIONS the pasteboard does not hold the code"
         case "$code_types" in
-            *org.nspasteboard.ConcealedType*) ok "NOTIFY-ACTIONS the pasteboard item is concealed" ;;
-            *) bad "NOTIFY-ACTIONS the pasteboard item is not concealed ($code_types)" ;;
+            *org.nspasteboard.ConcealedType*) ok "[NOTIFY-10] NOTIFY-ACTIONS the pasteboard item is concealed" ;;
+            *) bad "[NOTIFY-10] NOTIFY-ACTIONS the pasteboard item is not concealed ($code_types)" ;;
         esac
         case "$code_types" in
-            *org.nspasteboard.TransientType*) ok "NOTIFY-ACTIONS the pasteboard item is transient" ;;
-            *) bad "NOTIFY-ACTIONS the pasteboard item is not transient" ;;
+            *org.nspasteboard.TransientType*) ok "[NOTIFY-10] NOTIFY-ACTIONS the pasteboard item is transient" ;;
+            *) bad "[NOTIFY-10] NOTIFY-ACTIONS the pasteboard item is not transient" ;;
         esac
         pbcopy < /dev/null
     else
-        bad "NOTIFY-ACTIONS the pasteboard is empty after Copy code"
+        bad "[NOTIFY-10] NOTIFY-ACTIONS the pasteboard is empty after Copy code"
     fi
 
     # (g) privacy: no notification or reply text in any log.
     ! grep -qE 'pd-notify-(title|text)-[0-9]|pd-reply-1|482913' \
         "$WORK/app.log" "$log" "$WORK/fake.log" "$WORK/fake.err" "$WORK/events.jsonl" 2>/dev/null \
-        && ok "NOTIFY-ACTIONS no notification or reply text reached a log" \
-        || bad "NOTIFY-ACTIONS notification text leaked"
+        && ok "[NOTIFY-14] NOTIFY-ACTIONS no notification or reply text reached a log" \
+        || bad "[NOTIFY-14] NOTIFY-ACTIONS notification text leaked"
 
     defaults delete "$DEFAULTS_SUITE" "notify.$device" >/dev/null 2>&1
     defaults delete "$DEFAULTS_SUITE" "notify.mute.$device" >/dev/null 2>&1
