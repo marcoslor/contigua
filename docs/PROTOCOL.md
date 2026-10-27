@@ -540,13 +540,14 @@ Rules:
 ## Notifications + media
 
 Phone notifications and media controls (docs/design/notify.md) travel only
-while both gates are on: the Mac's per-phone opt-in and the phone's own toggle.
+while the Mac's per-phone opt-in is on and the phone's notification listener is
+granted. The Mac's switch is the only person-facing one.
 
 Mac → phone:
 
 | t | fields | meaning |
 |---|---|---|
-| `notify.enable` | `on` | the Mac's per-phone opt-in; the phone answers `notify.state` |
+| `notify.enable` | `on` | the Mac's per-phone opt-in (the only notification switch); the phone answers `notify.state` |
 | `notify.open` | `id`, `target` (`window`/`phone`), `stream` (window only) | a banner click: run that forwarded notification's own action |
 | `notify.action` | `id`, `i`, `text`? | press that forwarded notification's advertised action; `text` only for a reply action |
 | `notify.dismiss` | `id` | clear that forwarded notification on the phone |
@@ -557,7 +558,7 @@ Phone → Mac:
 
 | t | fields |
 |---|---|
-| `notify.state` | `on` — forwarding is live (both gates) |
+| `notify.state` | `on` — forwarding is live; `reason` — `no_access` when the Mac asked but the phone's listener grant is missing |
 | `notify.post` | `id`, `pkg`, `app`?, `when`, `title`?, `text`?, `ongoing`?, `actions`?, `live`? |
 | `notify.image` | `id`, `mime`, `w`, `h`, `data` (base64) |
 | `notify.remove` | `id` |

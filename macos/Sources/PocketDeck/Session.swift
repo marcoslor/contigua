@@ -156,8 +156,9 @@ enum SessionEvent {
     /// A watched folder's contents moved (docs/design/files.md §5).
     case fsChanges(paths: [String])
     case fsError(id: UInt32, code: String, message: String?)
-    /// Notifications + media controls (docs/design/notify.md).
-    case notifyState(on: Bool)
+    /// Notifications + media controls (docs/design/notify.md). `reason` is
+    /// `no_access` when the Mac asked but the phone's listener grant is missing.
+    case notifyState(on: Bool, reason: String?)
     case notifyPosted(id: String, pkg: String, when: Date?, title: String?, text: String?,
                       actions: [NotifyActionInfo], ongoing: Bool, live: NotifyLive? = nil)
     /// The picture that follows a `notify.post` (docs/design/notify.md, 2b).
@@ -931,7 +932,7 @@ final class Session {
         case "clip.image.abort":
             if let id = message.int("id") { emit(.clipImageAbort(id: UInt32(truncatingIfNeeded: id))) }
         case "notify.state":
-            emit(.notifyState(on: message.bool("on") ?? false))
+            emit(.notifyState(on: message.bool("on") ?? false, reason: message.string("reason")))
         case "notify.post":
             let whenMs = message.double("when")
             let live = NotifyLive(json: message.object("live"))

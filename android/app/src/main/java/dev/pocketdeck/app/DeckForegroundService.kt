@@ -38,8 +38,9 @@ class DeckForegroundService : Service() {
         override fun onSessionChanged(connected: Boolean, clientId: String?, macName: String?, windows: Int) =
             handleSessionChanged(connected, clientId, macName, windows)
 
-        override fun onNotifySession(forwarding: Boolean) {
+        override fun onNotifyState(forwarding: Boolean, reason: String?) {
             DeckState.notifyForward = forwarding
+            DeckState.notifyNoAccess = reason == "no_access"
             DeckState.notifyChanged()
         }
 
@@ -171,17 +172,18 @@ class DeckForegroundService : Service() {
             // reading (and the keyguard state) as soon as it is reachable.
             DeviceStateRelay.push(svc)
             DeviceStateRelay.pushLocked(svc)
-            // The notify toggle also lives only in the app: hand it over so the
-            // session can answer `notify.state` without a round trip.
-            syncNotifyShared()
+            // The listener grant lives in the system, not the app: hand the
+            // current value over so the session can answer `notify.state`.
+            syncListenerAccess()
         } catch (e: Throwable) {
             Log.i(TAG, "startServer failed: ${e.message}")
         }
     }
 
-    private fun syncNotifyShared() {
+    private fun syncListenerAccess() {
+        val granted = NotifyAccess.isGranted(this)
         ShizukuClient.current()?.let { svc ->
-            runCatching { svc.setNotifyShared(Prefs.isNotifyShared(this)) }
+            runCatching { svc.listenerAccess(granted) }
         }
     }
 

@@ -59,6 +59,7 @@ struct LaunchOptions {
     var preview: String?
     /// `--appearance light|dark`: force the appearance (screenshots).
     var appearance: String?
+    /// (branch proto/devices; a test hook, ignored by a release build).
     /// `--dock-dir DIR`: where Dock apps are created (e2e: a temp folder).
     var dockDirectory: String?
     /// `--dock-add PKG` / `--dock-remove PKG`: create or remove that app's Dock app once

@@ -80,7 +80,6 @@ fun HomeScreen(
     onToggleEnabled: (Boolean) -> Unit,
     onToggleAllowConnections: (Boolean) -> Unit,
     onToggleAllowPairings: (Boolean) -> Unit,
-    onToggleNotify: (Boolean) -> Unit,
     onStatusAction: (AttentionKind) -> Unit,
     onForget: (PairedMacUi) -> String,
     onUndoForget: (PairedMacUi) -> Unit,
@@ -150,25 +149,6 @@ fun HomeScreen(
                     null
                 },
             )
-            HorizontalDivider(Modifier.padding(horizontal = horizontal, vertical = 8.dp))
-            SwitchRow(
-                headline = stringResource(R.string.home_notify_share),
-                checked = state.notifyShared,
-                onToggle = onToggleNotify,
-                supporting = if (state.notifyShared) {
-                    stringResource(R.string.home_notify_granted_hint)
-                } else {
-                    stringResource(R.string.home_notify_off_hint)
-                },
-            )
-            if (state.notifyGrantFailed) {
-                Text(
-                    text = stringResource(R.string.home_notify_grant_failed),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.error,
-                    modifier = Modifier.padding(horizontal = horizontal, vertical = 8.dp),
-                )
-            }
             Spacer(Modifier.height(24.dp))
             Text(
                 text = stringResource(R.string.home_paired_title),
@@ -303,6 +283,7 @@ private fun statusTitle(state: DeckUiState): String = when (state.status.state) 
         AttentionKind.CONNECTIONS_OFF -> stringResource(R.string.status_connections_off)
         AttentionKind.SHIZUKU_NOT_RUNNING -> stringResource(R.string.status_shizuku_not_running)
         AttentionKind.SHIZUKU_PERMISSION -> stringResource(R.string.status_permission)
+        AttentionKind.NOTIFY_ACCESS -> stringResource(R.string.status_notify_access)
         else -> stringResource(R.string.status_ready)
     }
 
@@ -330,6 +311,7 @@ private fun statusSubtitle(state: DeckUiState): String = when (state.status.stat
         AttentionKind.CONNECTIONS_OFF -> stringResource(R.string.status_connections_off_body)
         AttentionKind.SHIZUKU_NOT_RUNNING -> stringResource(R.string.status_shizuku_not_running_body)
         AttentionKind.SHIZUKU_PERMISSION -> stringResource(R.string.status_permission_body)
+        AttentionKind.NOTIFY_ACCESS -> stringResource(R.string.status_notify_access_body)
         else -> ""
     }
 
@@ -368,6 +350,7 @@ private fun statusActionLabel(attention: AttentionKind): Int = when (attention) 
     AttentionKind.CONNECTIONS_OFF -> R.string.action_turn_on
     AttentionKind.SHIZUKU_NOT_RUNNING -> R.string.action_open_shizuku
     AttentionKind.SHIZUKU_PERMISSION -> R.string.action_allow
+    AttentionKind.NOTIFY_ACCESS -> R.string.action_allow
     AttentionKind.RETRY -> R.string.action_retry
     AttentionKind.NONE -> 0
 }

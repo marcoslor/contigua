@@ -62,6 +62,8 @@
     <string name="status_permission_body">Allow PocketDeck to use Shizuku.</string>
     <string name="status_connections_off">Connections are off</string>
     <string name="status_connections_off_body">Turn on Allow connections.</string>
+    <string name="status_notify_access">Notification access is off</string>
+    <string name="status_notify_access_body">Allow PocketDeck to read notifications on this phone.</string>
     <string name="status_error">Couldn\'t start</string>
     <string name="status_error_body">Something stopped PocketDeck\'s connection.</string>
     <string name="action_open_shizuku">Open Shizuku</string>
@@ -73,11 +75,6 @@
     <string name="home_allow_connections">Allow connections</string>
     <string name="home_allow_pairings">Allow new pairings</string>
     <string name="home_allow_pairings_hint">Turn on Allow connections first.</string>
-    <string name="home_notify_share">Share notifications and Now Playing</string>
-    <string name="home_notify_granting">Granting notification access…</string>
-    <string name="home_notify_grant_failed">Couldn\'t grant notification access. Enable PocketDeck in Settings → Notification access.</string>
-    <string name="home_notify_granted_hint">Notifications and the media session on this phone reach your Macs while a Mac is connected.</string>
-    <string name="home_notify_off_hint">Only while a Mac is connected. Off by default.</string>
     <string name="home_paired_title">Paired Macs</string>
     <string name="home_last_connected">Last connected %1$s</string>
     <string name="home_connected_now">Connected now</string>

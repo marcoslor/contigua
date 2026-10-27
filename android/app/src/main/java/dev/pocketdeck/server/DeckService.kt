@@ -47,8 +47,11 @@ class DeckService(private val appContext: Context?) :
     @Volatile private var server: Server? = null
     @Volatile private var power: AndroidPower? = null
 
-    /** Mirror of the app's per-phone notify toggle (pushed via setNotifyShared). */
-    @Volatile private var notifySharedStore = false
+    /**
+     * The phone's notification-listener grant, as the app last reported it
+     * (via `listenerAccess`, pushed whenever it changes).
+     */
+    @Volatile private var listenerAccessStore = false
 
     /**
      * The app's connection gates (pushed via setGates). Null until the app
@@ -156,10 +159,13 @@ class DeckService(private val appContext: Context?) :
                 pendingQrConsumer = { pendingQr = null },
                 gateProvider = { gates },
                 audioCapture = audio,
-                notifyShared = { notifySharedStore },
-                // The session tells the app when the forwarding gate is open, so
-                // the listener's bridge knows when to push (DeckState relay).
-                notifyForward = { forward -> sendToApp { it.onNotifySession(forward) } },
+                notifyAccess = { listenerAccessStore },
+                notifyGrant = { runListenerGrant() },
+                // The gate's answer for the app: the bridge's push gate and the
+                // home's attention item both read it (DeckState relay).
+                notifyState = { forward, reason ->
+                    sendToApp { it.onNotifyState(forward, reason) }
+                },
                 mediaCommand = { command -> sendToApp { it.onMediaCommand(command) } },
                 mediaChoose = { key -> sendToApp { it.onMediaChoose(key) } },
                 notifyOpen = { id, displayId -> sendToApp { it.onNotifyOpen(id, displayId) } },
@@ -264,10 +270,14 @@ class DeckService(private val appContext: Context?) :
         server?.applyGates()
     }
 
-    /** The app's per-phone opt-in for notification sharing (privacy default OFF). */
-    override fun setNotifyShared(shared: Boolean) {
-        notifySharedStore = shared
-        server?.recomputeNotify()
+    /**
+     * The app's notification-listener grant. It is the phone-side half of the
+     * gate (the Mac's `notify.enable` is the person-facing switch); a grant
+     * that arrives after a failed attempt turns forwarding on by itself.
+     */
+    override fun listenerAccess(granted: Boolean) {
+        listenerAccessStore = granted
+        server?.listenerAccess(granted)
     }
 
     /**
@@ -275,7 +285,7 @@ class DeckService(private val appContext: Context?) :
      * never logged; the session validates and forwards.
      */
     override fun pushDeviceEvent(json: String?) {
-        if (json.isNullOrEmpty() || notifySharedStore.not()) return
+        if (json.isNullOrEmpty()) return
         val obj = runCatching { Json.parseObject(json) }.getOrNull() ?: return
         val t = Json.str(obj["t"]) ?: return
         server?.onDeviceEvent(t, obj)
@@ -304,8 +314,11 @@ class DeckService(private val appContext: Context?) :
         }
     }
 
-    /** `cmd notification allow_listener` at shell UID (docs/design/notify.md). */
-    override fun grantListenerAccess(): Boolean {
+    /**
+     * `cmd notification allow_listener` at shell UID (docs/design/notify.md):
+     * the phone's one attempt to honour the Mac's opt-in by itself.
+     */
+    private fun runListenerGrant(): Boolean {
         val component = "${dev.pocketdeck.BuildConfig.APPLICATION_ID}/dev.pocketdeck.app.PdNotificationListener"
         run("cmd", "notification", "allow_listener", component)
         // The grant command is silent and the settings write can lag a moment

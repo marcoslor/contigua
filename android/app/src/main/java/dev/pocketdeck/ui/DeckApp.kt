@@ -40,7 +40,6 @@ fun DeckApp(deck: DeckViewModel) {
             onToggleEnabled = deck::setEnabled,
             onToggleAllowConnections = deck::setAllowConnections,
             onToggleAllowPairings = deck::setAllowPairings,
-            onToggleNotify = deck::setNotifyShared,
             onStatusAction = deck::runStatusAction,
             onForget = deck::forget,
             onUndoForget = deck::undoForget,

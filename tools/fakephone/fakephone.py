@@ -3004,7 +3004,12 @@ class Session(object):
         on = msg.get("on") is True
         self.phone.events.notify("enable", on=on)
         if not on:
+            self._send({"t": "notify.state", "on": False})
             return
+        if getattr(self.phone.args, "notify_no_access", False):
+            self._send({"t": "notify.state", "on": False, "reason": "no_access"})
+            return
+        self._send({"t": "notify.state", "on": True})
         only = getattr(self.phone.args, "notify_only", None)
         media = bool(getattr(self.phone.args, "notify_media", False))
         if only:
@@ -3955,6 +3960,10 @@ def build_parser():
     p.add_argument("--older-phone", action="store_true",
                    help="pretend a phone that predates 'Media part 2': only today's "
                         "media.state, no media.sessions, no artwork, no canSeek/volume")
+    p.add_argument("--notify-no-access", action="store_true",
+                   help="answer notify.enable with notify.state {on:false, "
+                        "reason:'no_access'} and post nothing (the phone's listener "
+                        "grant was refused; docs/design/notify.md)")
     p.add_argument("--notify-media", action="store_true",
                    help="on notify.enable also post the picture and Live Update shapes "
                         "(pd-m1, pd-m2, pd-l1, pd-l2) and advance pd-l1 every 2 s")

@@ -155,6 +155,10 @@ final class ConnectionController {
     /// Packages each phone's notifications came from this session (Settings ›
     /// Devices "Muted apps"); package names only, never any text.
     private(set) var notifySeen: [String: Set<String>] = [:]
+    /// Phones whose listener access the Mac was told is missing
+    /// (`notify.state {on:false, reason:"no_access"}`): the Devices row says how
+    /// to fix it, and a later grant clears it (docs/design/notify.md).
+    private(set) var notifyNoAccessPhones: Set<String> = []
     /// The menu bar's "Live on <phone>" rows (docs/design/notify.md, 2b).
     private(set) var liveNotifications: [NotifyLiveItem] = []
     /// Ticks once a second while a live row exists, so an open menu bar shows a
@@ -278,6 +282,15 @@ final class ConnectionController {
     /// screenshot; the gear, ⌘, and the panel's Settings… row are the real
     /// entry points). Read by DeckRoot.
     private(set) var settingsRequest = 0
+    /// Which Settings tab is showing; the previews and the e2e open Devices.
+    var settingsTab: SettingsTab = .general
+    /// The Devices tab self-reports what it renders when the e2e asks
+    /// (`devices-dump`): a debug read of the real view's state.
+    private(set) var devicesReportRequest = 0
+    var devicesReportPath: String?
+    /// The e2e's setup for a phone's page and for the Forget confirmation.
+    private(set) var devicesSelectRequest = 0
+    var devicesSelectedId: String?
 
     /// The panel's Settings… row: the Deck's own scene opener (the responder
     /// action alone does nothing while the app is not active).
@@ -308,6 +321,8 @@ final class ConnectionController {
     /// The phone being renamed right now: Settings → Devices → Rename… presents
     /// its dialog for this device; a preview stages the whole state.
     private(set) var renamingDeviceId: String?
+    /// The phone whose Forget confirmation is up (one at a time, like Rename).
+    private(set) var forgettingDeviceId: String?
     /// Preview only: the rename field's staged text (screenshots, never stored).
     private(set) var previewRenameText: String?
 
@@ -328,6 +343,11 @@ final class ConnectionController {
         renamingDeviceId = nil
         previewRenameText = nil
     }
+
+    /// Settings → Devices → Forget This Phone…: the confirmation names this
+    /// phone; nothing is removed until the person confirms.
+    func beginForget(_ phone: RememberedPhone) { forgettingDeviceId = phone.id }
+    func endForget() { forgettingDeviceId = nil }
     /// Window and menu actions reach the Deck through this (focus the search field).
     var searchFocusRequest = 0
 
@@ -398,6 +418,15 @@ final class ConnectionController {
     private var transientTimer: DispatchWorkItem?
     private var searchTimer: DispatchWorkItem?
     private(set) var isPreview = false
+    /// Preview only: what the notification controls draw for a staged phone
+    /// (`--preview devices-…`), which has no session and no stored settings.
+    struct PreviewNotify {
+        var enabled: Bool
+        var muted: Set<String>
+        var seen: Set<String>
+        var click: NotifyClickTarget = .mac
+    }
+    private(set) var previewNotify: [String: PreviewNotify] = [:]
     /// Per-attempt limits for user-driven sessions; tests shorten them.
     var connectTimeout = Session.defaultConnectTimeout
     var pairingTimeout = Session.defaultPairingTimeout
@@ -1786,8 +1815,15 @@ final class ConnectionController {
         case .fsChanges(let paths):
             fsClient?.changes(paths: paths)
             filesBridgeClient?.changes(paths: paths)
-        case .notifyState(let on):
-            Log.app.notice("phone notify \(on ? "on" : "off", privacy: .public)")
+        case .notifyState(let on, let reason):
+            Log.app.notice("phone notify \(on ? "on" : "off", privacy: .public) reason=\(reason ?? "-", privacy: .public)")
+            if let id = link.phone?.id {
+                if reason == "no_access" {
+                    notifyNoAccessPhones.insert(id)
+                } else if on {
+                    notifyNoAccessPhones.remove(id)
+                }
+            }
             if !on {
                 nowPlaying.clear()
                 notifyCenter.clearAll()
@@ -2010,7 +2046,12 @@ final class ConnectionController {
 
     /// The per-device opt-in toggle changed (Settings → Devices).
     func notifySettingChanged(deviceId: String, on: Bool) {
+        if isPreview, previewNotify[deviceId] != nil {
+            previewNotify[deviceId]?.enabled = on
+            return
+        }
         profile.defaults.set(on, forKey: NotifyToggle.key(deviceId: deviceId))
+        if !on { notifyNoAccessPhones.remove(deviceId) }
         if link.phone?.id == deviceId { session?.enableNotifications(on) }
         if !on, link.phone?.id == deviceId { nowPlaying.clear() }
     }
@@ -2018,6 +2059,10 @@ final class ConnectionController {
     /// The click choice changed; it is read on every click, so a live session
     /// needs no message (docs/design/notify.md).
     func notifyClickSettingChanged(deviceId: String, target: NotifyClickTarget) {
+        if isPreview, previewNotify[deviceId] != nil {
+            previewNotify[deviceId]?.click = target
+            return
+        }
         profile.defaults.set(target.rawValue, forKey: NotifyClickTarget.key(deviceId: deviceId))
     }
 
@@ -2036,14 +2081,62 @@ final class ConnectionController {
 
     /// Settings › Devices "Muted apps": one package toggled for this phone.
     func notifyMuteChanged(deviceId: String, pkg: String, muted: Bool) {
+        if isPreview, previewNotify[deviceId] != nil {
+            if muted { previewNotify[deviceId]?.muted.insert(pkg) } else { previewNotify[deviceId]?.muted.remove(pkg) }
+            return
+        }
         NotifyMute.setMuted(muted, pkg: pkg, deviceId: deviceId, defaults: profile.defaults)
     }
 
     /// Packages to offer in "Muted apps": seen this session plus already muted.
     func notifyMutedAppChoices(deviceId: String) -> [String] {
+        if let preview = previewNotify[deviceId] {
+            let stored = NotifyMute.muted(deviceId: deviceId, defaults: profile.defaults)
+            return Array(preview.seen.union(preview.muted).union(stored)).sorted()
+        }
         let seen = notifySeen[deviceId] ?? []
         return Array(seen.union(NotifyMute.muted(deviceId: deviceId, defaults: profile.defaults))).sorted()
     }
+
+    /// The app list this Mac already has for the phone: live for the session's
+    /// phone, the cached copy for any other (devices are peers).
+    func cachedApps(deviceId: String) -> [AppInfo] {
+        if link.phone?.id == deviceId, appsLoaded { return apps }
+        return appsCache.load(deviceId: deviceId)
+    }
+
+    /// Packages that sent a notification this session for this phone.
+    func seenPackages(deviceId: String) -> Set<String> {
+        if let preview = previewNotify[deviceId] { return preview.seen }
+        return notifySeen[deviceId] ?? []
+    }
+
+    /// Whether the Mac was told the phone's listener access is missing.
+    func notifyAccessMissing(deviceId: String) -> Bool {
+        notifyNoAccessPhones.contains(deviceId)
+    }
+
+    /// The packages muted for this phone (the muted list's switches read it).
+    func mutedPackages(deviceId: String) -> Set<String> {
+        if let preview = previewNotify[deviceId] { return preview.muted }
+        return NotifyMute.muted(deviceId: deviceId, defaults: profile.defaults)
+    }
+
+    /// Whether this phone's notification sharing is on (Settings ▸ Devices).
+    func notificationsEnabled(deviceId: String) -> Bool {
+        if let preview = previewNotify[deviceId] { return preview.enabled }
+        return NotifyToggle.isEnabled(deviceId: deviceId, defaults: profile.defaults)
+    }
+
+    /// What a click on this phone's notification does.
+    func notifyClickTarget(deviceId: String) -> NotifyClickTarget {
+        if let preview = previewNotify[deviceId] { return preview.click }
+        return NotifyClickTarget.stored(deviceId: deviceId, defaults: profile.defaults)
+    }
+
+    /// Whether this Mac still holds the phone's pinned key: a remembered phone
+    /// without one reads "Pair again", never "Offline".
+    func hasPinnedKey(deviceId: String) -> Bool { pins.record(for: deviceId) != nil }
 
     /// The app's own name for the package, when the phone's list has it.
     func appLabel(for pkg: String) -> String? { labelFor(pkg) }
@@ -2544,6 +2637,40 @@ final class ConnectionController {
             }
             return DeckRailPoint.point(letter: arguments[0], to: arguments[1])
                 ? nil : "deckrailpoint failed"
+        case "devices-select":
+            // Setup for the e2e: the phone's page is the one open (the ⓘ click).
+            guard let id = arguments.first else { return "devices-select needs a device id" }
+            guard rememberedPhones.contains(where: { $0.id == id }) else { return "unknown phone" }
+            devicesSelectedId = id
+            devicesSelectRequest += 1
+            return nil
+        case "devices-forget":
+            // Setup for the e2e: the same confirmation the Forget button opens.
+            guard let id = arguments.first,
+                  let phone = rememberedPhones.first(where: { $0.id == id }) else { return "unknown phone" }
+            beginForget(phone)
+            return nil
+        case "settings-open":
+            // The ⌘, route (a setup step for a check that needs Settings open).
+            openSettingsWindow()
+            return nil
+        case "settings-tab":
+            switch arguments.first {
+            case "general": settingsTab = .general
+            case "input": settingsTab = .input
+            case "devices": settingsTab = .devices
+            case "automation": settingsTab = .automation
+            default: return "unknown tab"
+            }
+            return nil
+        case "devices-dump":
+            // Settings ▸ Devices reports what it renders (the e2e check's
+            // assertions; a read of the real view, never an action). The tab
+            // writes the file on the next pass.
+            guard let path = arguments.first, path.hasPrefix("/") else { return "devices-dump needs an absolute PATH" }
+            devicesReportPath = path
+            devicesReportRequest += 1
+            return nil
         case "settings-dump":
             // Settings' real window geometry (SettingsProbe) for the host e2e.
             guard let path = arguments.first, path.hasPrefix("/") else { return "missing path" }
@@ -2758,11 +2885,40 @@ final class ConnectionController {
 
     // MARK: Preview states (screenshots only)
 
+    /// The screenshot phones for the Devices prototypes (never the person's
+    /// devices or names): one offline, one whose key is gone, and the packages
+    /// the muted list draws. `--preview` only.
+    private enum DevicesFixtures {
+        static let others: [RememberedPhone] = [
+            RememberedPhone(id: "preview-2", name: "Pixel 9", model: "Pixel 9",
+                            lastSeen: Date().addingTimeInterval(-2 * 3600)),
+            RememberedPhone(id: "preview-3", name: "Pixel 8", model: "Pixel 8",
+                            lastSeen: Date().addingTimeInterval(-3 * 86_400)),
+        ]
+        static var presence: [String: DevicePresence] {
+            ["preview-2": .offline(others[0].lastSeen), "preview-3": .pairAgain]
+        }
+        static let seen = ["preview.messages", "preview.whatsapp", "preview.camera",
+                           "preview.spotify", "com.android.systemui"]
+        static let muted = ["preview.whatsapp", "com.android.systemui"]
+    }
+
+    /// A staged preview's Settings window opens once the state is in place:
+    /// bumping `settingsRequest` is the Deck scene's own route (⌘,).
+    private func settingsSoon() {
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(800))
+            self?.settingsTab = .devices
+            self?.settingsRequest += 1
+        }
+    }
+
     /// `--preview NAME`: drives the UI with a scripted state, without sockets,
     /// the pair keys or the profile. Used for the screenshots of states that
     /// cannot be staged against a fake phone.
     private func applyPreview(_ name: String) {
         isPreview = true
+        DevicesPreview.reset()
         let ref = PhoneRef(id: "preview", name: "Galaxy S25+", model: "SM-S936B")
         let phone = RememberedPhone(id: ref.id, name: ref.name, model: ref.model, lastSeen: Date())
         let other = PhoneRef(id: "preview-2", name: "Pixel 9", model: "Pixel 9")
@@ -2829,6 +2985,38 @@ final class ConnectionController {
             deck(.online(ref))
             rememberedPhones = [phone, RememberedPhone(id: other.id, name: other.name, model: other.model,
                                                        lastSeen: Date().addingTimeInterval(-86_400 * 2))]
+        // The Settings ▸ Devices prototypes' states (`--debug-proto devices=…`).
+        // A staged phone has no session: the switches and the muted list read
+        // the staged values instead of the profile's defaults.
+        case "devices-zero":
+            rememberedPhones = []
+            welcomeSeen = true
+            machine = LinkMachine(link: .idle)
+            settingsSoon()
+        case "devices-one":
+            deck(.online(ref))
+            previewNotify[ref.id] = PreviewNotify(enabled: true, muted: Set(Self.DevicesFixtures.muted),
+                                                  seen: Set(Self.DevicesFixtures.seen))
+            settingsSoon()
+        case "devices-three":
+            deck(.online(ref))
+            rememberedPhones = [phone] + Self.DevicesFixtures.others
+            DevicesPreview.stagedPresence = Self.DevicesFixtures.presence
+            previewNotify[ref.id] = PreviewNotify(enabled: true, muted: Set(Self.DevicesFixtures.muted),
+                                                  seen: Set(Self.DevicesFixtures.seen))
+            settingsSoon()
+        case "devices-offline":
+            deck(.offline(ref, .unreachable))
+            rememberedPhones = [RememberedPhone(id: ref.id, name: ref.name, model: ref.model,
+                                                lastSeen: Date().addingTimeInterval(-240))]
+            previewNotify[ref.id] = PreviewNotify(enabled: false, muted: [], seen: [])
+            settingsSoon()
+        case "devices-muted":
+            deck(.online(ref))
+            previewNotify[ref.id] = PreviewNotify(enabled: true, muted: Set(Self.DevicesFixtures.muted),
+                                                  seen: Set(Self.DevicesFixtures.seen))
+            DevicesPreview.openMutedList = true
+            settingsSoon()
         case "devices-rename":
             // The Settings → Devices → Rename dialog, staged for the screenshot.
             deck(.online(ref))
