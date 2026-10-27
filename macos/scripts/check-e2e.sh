@@ -3071,7 +3071,7 @@ PY
     rm -f "$WORK/menus-icon.json"
     control iconmenu "$WORK/menus-icon.json" \
         || bad "MENUS iconmenu: $CONTROL_REPLY"
-    python3 - "$WORK/menus-icon.json" <<'PY' && ok "[PANEL-3] the icon's menu is Settings… ⌘, · About PocketDeck · rule · Quit PocketDeck ⌘Q" \
+    python3 - "$WORK/menus-icon.json" <<'PY' && ok "[CONV-MAC-10] [PANEL-3] the icon's menu is Settings… ⌘, · About PocketDeck · rule · Quit PocketDeck ⌘Q" \
         || bad "[PANEL-3] the icon's menu is not Settings…/About/Quit"
 import json, sys
 rows = json.load(open(sys.argv[1]))
@@ -5055,7 +5055,7 @@ volume = root["controls"][volume_index]
 if volume["height"] > 20 or volume["width"] < 150:
     print("volume control:", volume); sys.exit(1)
 PY
-    python3 - "$WORK/controls-panel.json" <<'PY' && ok "[PANEL-17] the panel has no Settings/Quit footer rows: they are the icon's menu" \
+    python3 - "$WORK/controls-panel.json" <<'PY' && ok "[CONV-MAC-10] [PANEL-17] the panel has no Settings/Quit footer rows: they are the icon's menu" \
         || bad "[PANEL-17] the panel still carries footer rows"
 import json, sys
 root = json.load(open(sys.argv[1]))
