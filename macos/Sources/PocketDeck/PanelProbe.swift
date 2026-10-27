@@ -33,6 +33,13 @@ enum PanelProbe {
     /// The gap between the wrapper's edge and the hosted content: MenuBarPanel's.
     private static let wrapInset: CGFloat = 10
 
+    /// `panelattach`: give the probe this run's controller without opening the
+    /// debug host window. A visible run opens the real status-item panel; its
+    /// dump/point routes still need the controller.
+    static func attach(controller: ConnectionController) {
+        self.controller = controller
+    }
+
     /// `panelopen`: the menu bar's content in a window of its own, wrapped the
     /// way MenuBarPanel wraps it (the popover material, the corner, the inset),
     /// so a shot of it is the panel a person sees.
@@ -163,10 +170,14 @@ enum PanelProbe {
         guard let target = control(for: id, state: state, host: host, in: window) else {
             return false
         }
+        // A visible run's click needs a key window; the debug host panel is
+        // non-activating, so its first click would otherwise only raise it.
+        window.makeKeyAndOrderFront(nil)
+        pump(0.2)
         let local = window.convertPoint(toScreen: NSPoint(x: target.frame.midX,
                                                           y: target.frame.midY))
         let top = window.screen?.frame.maxY ?? NSScreen.screens.first?.frame.maxY ?? 0
-        let point = "\(local.x) \(top - local.y)"
+        let point = "\(local.x) \(top - local.y)\n"
         return (try? point.write(toFile: path, atomically: true, encoding: .utf8)) != nil
     }
 

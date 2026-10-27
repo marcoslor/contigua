@@ -2451,6 +2451,9 @@ final class ConnectionController {
             }
             DebugInputDriver.clickControl(at: centre, in: window)
             return nil
+        case "panelattach":
+            PanelProbe.attach(controller: self)
+            return nil
         case "panelopen":
             // The menu bar panel's content in a window of its own: a quiet run
             // cannot open the status item, and the panel is the content.

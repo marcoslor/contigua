@@ -1155,7 +1155,7 @@ enum DeckRailPoint {
         let y = local.minY - (CGFloat(index) * DeckRail.pitch + DeckRail.pitch / 2)
         let screen = window.convertPoint(toScreen: NSPoint(x: x, y: y))
         let top = window.screen?.frame.maxY ?? NSScreen.screens.first?.frame.maxY ?? 0
-        let text = "\(screen.x) \(top - screen.y)"
+        let text = "\(screen.x) \(top - screen.y)\n"
         return (try? text.write(toFile: path, atomically: true, encoding: .utf8)) != nil
     }
 }
