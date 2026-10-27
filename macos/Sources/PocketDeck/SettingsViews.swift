@@ -4,15 +4,26 @@ import AppKit
 import ServiceManagement
 import SwiftUI
 
+/// The Settings window's four tabs. The selection lives in the controller so a
+/// preview or a test hook can open the Devices tab (screenshots, the e2e check).
+enum SettingsTab: Hashable {
+    case general, input, devices, automation
+}
+
 struct SettingsView: View {
+    @Environment(ConnectionController.self) private var controller
+
     var body: some View {
-        TabView {
-            Tab("General", systemImage: "gearshape") { GeneralSettings() }
-            Tab("Input", systemImage: "computermouse") { InputSettings() }
-            Tab("Devices", systemImage: "iphone.gen3") { DevicesSettings() }
-            Tab("Automation", systemImage: "terminal") { AutomationSettings() }
+        TabView(selection: Binding(
+            get: { controller.settingsTab },
+            set: { controller.settingsTab = $0 },
+        )) {
+            Tab("General", systemImage: "gearshape", value: SettingsTab.general) { GeneralSettings() }
+            Tab("Input", systemImage: "computermouse", value: SettingsTab.input) { InputSettings() }
+            Tab("Devices", systemImage: "iphone.gen3", value: SettingsTab.devices) { DevicesSettings() }
+            Tab("Automation", systemImage: "terminal", value: SettingsTab.automation) { AutomationSettings() }
         }
-        .frame(width: SettingsLayout.currentWidth)
+        .frame(width: SettingsLayout.width)
         // A grouped Form reports its content's ideal height, and the Settings
         // window took it: on a short screen the rows below the fold were
         // clipped and could not scroll. The cap makes the TabView fit the
@@ -35,7 +46,7 @@ private struct SettingsWindowTag: NSViewRepresentable {
             guard let window = view.window else { return }
             let screen = window.screen ?? NSScreen.main
             let height = SettingsLayout.maxContentHeight(for: screen?.visibleFrame.height ?? 800)
-            window.setContentSize(NSSize(width: SettingsLayout.currentWidth, height: height))
+            window.setContentSize(NSSize(width: SettingsLayout.width, height: height))
             if let screen {
                 var frame = window.frame
                 frame.origin.x = min(max(screen.visibleFrame.minX, frame.origin.x),
@@ -54,9 +65,6 @@ private struct SettingsWindowTag: NSViewRepresentable {
 /// Settings' window size rules (docs/design/mac-redesign.md §3.6).
 enum SettingsLayout {
     static let width: CGFloat = 480
-    /// The window width this run draws: the prototype's wider window (a test
-    /// hook), else today's 480 pt.
-    static var currentWidth: CGFloat { ProtoDevices.windowWidth ?? width }
     /// The design's height; tall enough for General's usual rows, short enough
     /// for a 1280x800 screen with the menu bar and margins.
     static let designHeight: CGFloat = 560
@@ -219,60 +227,32 @@ struct DevicesSettings: View {
     @State private var renameText = ""
 
     var body: some View {
-        Group {
-            if ProtoDevices.variant == .production {
-                productionForm
-            } else {
-                ProtoDevicesSettings(onRename: { controller.beginRename($0) },
-                                     onForget: { forgetting = $0 },
-                                     onAdd: addPhone)
+        DevicesSettingsTab(onRename: { controller.beginRename($0) },
+                           onForget: { forgetting = $0 },
+                           onAdd: addPhone)
+            // A rename in progress: which device, and the staged text (previews
+            // set both; a row's Rename… button sets the device).
+            .task(id: controller.renamingDeviceId) {
+                guard let id = controller.renamingDeviceId else { return }
+                renameText = controller.previewRenameText ?? controller.nickname(for: id)
             }
-        }
-        // A rename in progress: which device, and the staged text (previews set
-        // both; a row's Rename… button sets the device). The task also fires on
-        // appear, so a state staged before the window existed fills the field.
-        .task(id: controller.renamingDeviceId) {
-            guard let id = controller.renamingDeviceId else { return }
-            renameText = controller.previewRenameText ?? controller.nickname(for: id)
-        }
-        .alert("Rename", isPresented: renaming) {
-            TextField("Nickname", text: $renameText, prompt: alertPrompt)
-            Button("Rename") { saveRename() }
-            Button("Cancel", role: .cancel) { controller.endRename() }
-        } message: {
-            Text("Up to 40 characters. Leave it empty to keep using the phone's own name.")
-        }
-        .confirmationDialog("Forget \(forgetTitle)?", isPresented: Binding(
-            get: { forgetting != nil }, set: { if !$0 { forgetting = nil } }), titleVisibility: .visible) {
-            Button("Forget", role: .destructive) {
-                if let phone = forgetting { controller.forget(phone) }
-                forgetting = nil
+            .alert("Rename", isPresented: renaming) {
+                TextField("Nickname", text: $renameText, prompt: alertPrompt)
+                Button("Rename") { saveRename() }
+                Button("Cancel", role: .cancel) { controller.endRename() }
+            } message: {
+                Text("Up to 40 characters. Leave it empty to keep using the phone's own name.")
             }
-            Button("Cancel", role: .cancel) { forgetting = nil }
-        } message: {
-            Text("You'll need to pair it again.")
-        }
-    }
-
-    /// Today's tab, unchanged (the prototype options are a test hook).
-    private var productionForm: some View {
-        Form {
-            Section {
-                if controller.rememberedPhones.isEmpty {
-                    Text("No phones yet.").foregroundStyle(.secondary)
+            .confirmationDialog("Forget \(forgetTitle)?", isPresented: Binding(
+                get: { forgetting != nil }, set: { if !$0 { forgetting = nil } }), titleVisibility: .visible) {
+                Button("Forget", role: .destructive) {
+                    if let phone = forgetting { controller.forget(phone) }
+                    forgetting = nil
                 }
-                ForEach(controller.rememberedPhones) { phone in productionRow(phone) }
+                Button("Cancel", role: .cancel) { forgetting = nil }
+            } message: {
+                Text("You'll need to pair it again.")
             }
-            Section {
-                Text("Notifications and the playing media session per phone stay off until you turn them on; the phone only shares with a paired Mac.")
-                    .font(.subheadline).foregroundStyle(.secondary)
-            }
-            Section {
-                Button("Add phone…", action: addPhone)
-                    .buttonStyle(.glass)
-            }
-        }
-        .formStyle(.grouped)
     }
 
     /// "Add Phone…": the Deck's own add sheet, so pairing has one flow.
@@ -302,50 +282,6 @@ struct DevicesSettings: View {
         }
         controller.endRename()
     }
-
-    private func productionRow(_ phone: RememberedPhone) -> some View {
-        let isActive = controller.activePhone?.id == phone.id
-        return LabeledContent {
-            VStack(alignment: .trailing, spacing: 8) {
-                HStack(spacing: 8) {
-                    stateText(phone, isActive: isActive)
-                    Button("Rename…") { controller.beginRename(phone) }
-                    if !isActive {
-                        Button("Use") { controller.use(phone) }.buttonStyle(.glass)
-                    }
-                    Button("Forget", role: .destructive) { forgetting = phone }.buttonStyle(.glass).foregroundStyle(.red)
-                }
-                VStack(alignment: .trailing, spacing: 6) {
-                    PhoneNotifyToggle(deviceId: phone.id)
-                    PhoneNotifyClickPicker(deviceId: phone.id)
-                    PhoneMutedApps(deviceId: phone.id)
-                    PhonePanelIgnorePowerToggle(deviceId: phone.id)
-                }
-            }
-        } label: {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(controller.displayName(for: phone.ref))
-                Text(detail(phone, isActive: isActive)).font(.subheadline).foregroundStyle(.secondary)
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func stateText(_ phone: RememberedPhone, isActive: Bool) -> some View {
-        if isActive {
-            switch controller.link {
-            case .online: Text("Connected").foregroundStyle(.green)
-            case .needsPairing: Text("Pair again").foregroundStyle(.orange)
-            default: Text("Offline").foregroundStyle(.secondary)
-            }
-        }
-    }
-
-    private func detail(_ phone: RememberedPhone, isActive: Bool) -> String {
-        let seen = isActive && controller.link.isOnline
-            ? "now" : phone.lastSeen.formatted(.relative(presentation: .named))
-        return [phone.model, "Last seen \(seen)"].filter { !$0.isEmpty }.joined(separator: " · ")
-    }
 }
 
 /// Per-phone notify toggle storage (privacy: default OFF, docs/design/notify.md).
@@ -358,136 +294,3 @@ enum NotifyToggle {
     }
 }
 
-/// The per-phone opt-in row (privacy default OFF; docs/design/notify.md). The
-/// change tells the live session right away; a fresh session picks it up from
-/// the stored flag.
-/// "Keep the phone screen off until I turn it on from the Mac": what a press
-/// of the phone's own power button does while the Mac holds the screen off.
-/// Off by default; the phone stays locked either way.
-private struct PhonePanelIgnorePowerToggle: View {
-    let deviceId: String
-
-    private var defaults: UserDefaults { Profile.active.defaults }
-
-    var body: some View {
-        VStack(alignment: .trailing, spacing: 2) {
-            Toggle(isOn: Binding(
-                get: { PhonePanelIgnorePowerSetting.read(from: defaults, deviceId: deviceId) },
-                set: { PhonePanelIgnorePowerSetting.write($0, for: deviceId, to: defaults) },
-            )) {
-                Text("Keep the phone screen off until I turn it on from the Mac")
-            }
-            .toggleStyle(.switch)
-            .controlSize(.small)
-            Text("A press of the phone's power button lights its screen for a moment, then it goes dark again.")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.trailing)
-        }
-    }
-}
-
-private struct PhoneNotifyToggle: View {
-    let deviceId: String
-
-    @Environment(ConnectionController.self) private var controller
-
-    private var defaults: UserDefaults { Profile.active.defaults }
-    private var key: String { NotifyToggle.key(deviceId: deviceId) }
-
-    var body: some View {
-        Toggle(isOn: Binding(
-            get: { defaults.bool(forKey: key) },
-            set: { controller.notifySettingChanged(deviceId: deviceId, on: $0) },
-        )) {
-            Text("Show notifications + Now Playing")
-        }
-        .toggleStyle(.switch)
-        .controlSize(.small)
-    }
-}
-
-/// "When I click a phone notification" (ROADMAP D2): the same per-phone row,
-/// enabled only while the notification toggle above it is on. The choice is
-/// stored beside `notify.<deviceId>` and read on every click.
-private struct PhoneNotifyClickPicker: View {
-    let deviceId: String
-
-    @Environment(ConnectionController.self) private var controller
-    @AppStorage private var notifyEnabled: Bool
-
-    init(deviceId: String) {
-        self.deviceId = deviceId
-        _notifyEnabled = AppStorage(
-            wrappedValue: false,
-            NotifyToggle.key(deviceId: deviceId),
-            store: Profile.active.defaults,
-        )
-    }
-
-    private var defaults: UserDefaults { Profile.active.defaults }
-    private var selection: Binding<NotifyClickTarget> {
-        Binding(
-            get: { NotifyClickTarget.stored(deviceId: deviceId, defaults: defaults) },
-            set: { controller.notifyClickSettingChanged(deviceId: deviceId, target: $0) },
-        )
-    }
-
-    var body: some View {
-        Picker("When I click a phone notification", selection: selection) {
-            ForEach(NotifyClickTarget.allCases) { target in
-                Text(target.label).tag(target)
-            }
-        }
-        .pickerStyle(.menu)
-        .controlSize(.small)
-        .disabled(!notifyEnabled)
-        .help("What a click on this phone's notification does.")
-    }
-}
-
-/// "Muted apps" (ROADMAP v0.2 #8): the packages this phone's notifications came
-/// from this session, plus the already muted ones, toggled per phone. Package
-/// names and labels only — never any notification text.
-private struct PhoneMutedApps: View {
-    let deviceId: String
-
-    @Environment(ConnectionController.self) private var controller
-    @AppStorage private var notifyEnabled: Bool
-    @State private var muted: Set<String> = []
-
-    init(deviceId: String) {
-        self.deviceId = deviceId
-        _notifyEnabled = AppStorage(
-            wrappedValue: false,
-            NotifyToggle.key(deviceId: deviceId),
-            store: Profile.active.defaults,
-        )
-    }
-
-    private var packages: [String] {
-        Array(Set(controller.notifyMutedAppChoices(deviceId: deviceId)).union(muted)).sorted()
-    }
-
-    var body: some View {
-        if notifyEnabled, !packages.isEmpty {
-            DisclosureGroup("Muted apps") {
-                ForEach(packages, id: \.self) { pkg in
-                    Toggle(isOn: Binding(
-                        get: { muted.contains(pkg) },
-                        set: { on in
-                            if on { muted.insert(pkg) } else { muted.remove(pkg) }
-                            controller.notifyMuteChanged(deviceId: deviceId, pkg: pkg, muted: on)
-                        },
-                    )) {
-                        Text(controller.appLabel(for: pkg) ?? pkg)
-                    }
-                    .toggleStyle(.checkbox)
-                    .controlSize(.small)
-                }
-            }
-            .controlSize(.small)
-            .onAppear { muted = NotifyMute.muted(deviceId: deviceId, defaults: Profile.active.defaults) }
-        }
-    }
-}
