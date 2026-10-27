@@ -398,6 +398,15 @@ final class ConnectionController {
     private var transientTimer: DispatchWorkItem?
     private var searchTimer: DispatchWorkItem?
     private(set) var isPreview = false
+    /// Preview only: what the notification controls draw for a staged phone
+    /// (`--preview devices-…`), which has no session and no stored settings.
+    struct PreviewNotify {
+        var enabled: Bool
+        var muted: Set<String>
+        var seen: Set<String>
+        var click: NotifyClickTarget = .mac
+    }
+    private(set) var previewNotify: [String: PreviewNotify] = [:]
     /// Per-attempt limits for user-driven sessions; tests shorten them.
     var connectTimeout = Session.defaultConnectTimeout
     var pairingTimeout = Session.defaultPairingTimeout
@@ -2010,6 +2019,10 @@ final class ConnectionController {
 
     /// The per-device opt-in toggle changed (Settings → Devices).
     func notifySettingChanged(deviceId: String, on: Bool) {
+        if isPreview, previewNotify[deviceId] != nil {
+            previewNotify[deviceId]?.enabled = on
+            return
+        }
         profile.defaults.set(on, forKey: NotifyToggle.key(deviceId: deviceId))
         if link.phone?.id == deviceId { session?.enableNotifications(on) }
         if !on, link.phone?.id == deviceId { nowPlaying.clear() }
@@ -2018,6 +2031,10 @@ final class ConnectionController {
     /// The click choice changed; it is read on every click, so a live session
     /// needs no message (docs/design/notify.md).
     func notifyClickSettingChanged(deviceId: String, target: NotifyClickTarget) {
+        if isPreview, previewNotify[deviceId] != nil {
+            previewNotify[deviceId]?.click = target
+            return
+        }
         profile.defaults.set(target.rawValue, forKey: NotifyClickTarget.key(deviceId: deviceId))
     }
 
@@ -2036,14 +2053,44 @@ final class ConnectionController {
 
     /// Settings › Devices "Muted apps": one package toggled for this phone.
     func notifyMuteChanged(deviceId: String, pkg: String, muted: Bool) {
+        if isPreview, previewNotify[deviceId] != nil {
+            if muted { previewNotify[deviceId]?.muted.insert(pkg) } else { previewNotify[deviceId]?.muted.remove(pkg) }
+            return
+        }
         NotifyMute.setMuted(muted, pkg: pkg, deviceId: deviceId, defaults: profile.defaults)
     }
 
     /// Packages to offer in "Muted apps": seen this session plus already muted.
     func notifyMutedAppChoices(deviceId: String) -> [String] {
+        if let preview = previewNotify[deviceId] {
+            let stored = NotifyMute.muted(deviceId: deviceId, defaults: profile.defaults)
+            return Array(preview.seen.union(preview.muted).union(stored)).sorted()
+        }
         let seen = notifySeen[deviceId] ?? []
         return Array(seen.union(NotifyMute.muted(deviceId: deviceId, defaults: profile.defaults))).sorted()
     }
+
+    /// The packages muted for this phone (the muted list's switches read it).
+    func mutedPackages(deviceId: String) -> Set<String> {
+        if let preview = previewNotify[deviceId] { return preview.muted }
+        return NotifyMute.muted(deviceId: deviceId, defaults: profile.defaults)
+    }
+
+    /// Whether this phone's notification sharing is on (Settings ▸ Devices).
+    func notificationsEnabled(deviceId: String) -> Bool {
+        if let preview = previewNotify[deviceId] { return preview.enabled }
+        return NotifyToggle.isEnabled(deviceId: deviceId, defaults: profile.defaults)
+    }
+
+    /// What a click on this phone's notification does.
+    func notifyClickTarget(deviceId: String) -> NotifyClickTarget {
+        if let preview = previewNotify[deviceId] { return preview.click }
+        return NotifyClickTarget.stored(deviceId: deviceId, defaults: profile.defaults)
+    }
+
+    /// Whether this Mac still holds the phone's pinned key: a remembered phone
+    /// without one reads "Pair again", never "Offline".
+    func hasPinnedKey(deviceId: String) -> Bool { pins.record(for: deviceId) != nil }
 
     /// The app's own name for the package, when the phone's list has it.
     func appLabel(for pkg: String) -> String? { labelFor(pkg) }
@@ -2758,6 +2805,33 @@ final class ConnectionController {
 
     // MARK: Preview states (screenshots only)
 
+    /// The screenshot phones for the Devices prototypes (never the person's
+    /// devices or names): one offline, one whose key is gone, and the packages
+    /// the muted list draws. `--preview` only.
+    private enum DevicesFixtures {
+        static let others: [RememberedPhone] = [
+            RememberedPhone(id: "preview-2", name: "Pixel 9", model: "Pixel 9",
+                            lastSeen: Date().addingTimeInterval(-2 * 3600)),
+            RememberedPhone(id: "preview-3", name: "Pixel 8", model: "Pixel 8",
+                            lastSeen: Date().addingTimeInterval(-3 * 86_400)),
+        ]
+        static var presence: [String: DevicePresence] {
+            ["preview-2": .offline(others[0].lastSeen), "preview-3": .pairAgain]
+        }
+        static let seen = ["preview.messages", "preview.whatsapp", "preview.camera",
+                           "preview.spotify", "com.android.systemui"]
+        static let muted = ["preview.whatsapp", "com.android.systemui"]
+    }
+
+    /// A staged preview's Settings window opens once the state is in place:
+    /// bumping `settingsRequest` is the Deck scene's own route (⌘,).
+    private func settingsSoon() {
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(800))
+            self?.settingsRequest += 1
+        }
+    }
+
     /// `--preview NAME`: drives the UI with a scripted state, without sockets,
     /// the pair keys or the profile. Used for the screenshots of states that
     /// cannot be staged against a fake phone.
@@ -2829,6 +2903,39 @@ final class ConnectionController {
             deck(.online(ref))
             rememberedPhones = [phone, RememberedPhone(id: other.id, name: other.name, model: other.model,
                                                        lastSeen: Date().addingTimeInterval(-86_400 * 2))]
+        // The Settings ▸ Devices prototypes' states (`--debug-proto devices=…`).
+        // A staged phone has no session: the switches and the muted list read
+        // the staged values instead of the profile's defaults.
+        case "devices-zero":
+            rememberedPhones = []
+            welcomeSeen = true
+            machine = LinkMachine(link: .idle)
+            settingsSoon()
+        case "devices-one":
+            deck(.online(ref))
+            previewNotify[ref.id] = PreviewNotify(enabled: true, muted: Set(Self.DevicesFixtures.muted),
+                                                  seen: Set(Self.DevicesFixtures.seen))
+            settingsSoon()
+        case "devices-three":
+            deck(.online(ref))
+            rememberedPhones = [phone] + Self.DevicesFixtures.others
+            ProtoDevices.stagedPresence = Self.DevicesFixtures.presence
+            ProtoDevices.scrollCardsToEnd = true
+            previewNotify[ref.id] = PreviewNotify(enabled: true, muted: Set(Self.DevicesFixtures.muted),
+                                                  seen: Set(Self.DevicesFixtures.seen))
+            settingsSoon()
+        case "devices-offline":
+            deck(.offline(ref, .unreachable))
+            rememberedPhones = [RememberedPhone(id: ref.id, name: ref.name, model: ref.model,
+                                                lastSeen: Date().addingTimeInterval(-240))]
+            previewNotify[ref.id] = PreviewNotify(enabled: false, muted: [], seen: [])
+            settingsSoon()
+        case "devices-muted":
+            deck(.online(ref))
+            previewNotify[ref.id] = PreviewNotify(enabled: true, muted: Set(Self.DevicesFixtures.muted),
+                                                  seen: Set(Self.DevicesFixtures.seen))
+            ProtoDevices.openMutedList = true
+            settingsSoon()
         case "devices-rename":
             // The Settings → Devices → Rename dialog, staged for the screenshot.
             deck(.online(ref))
