@@ -21,7 +21,7 @@ enum ProtoSettings {
     /// The prototype window's width: a sidebar needs more room than today's
     /// 480 pt tab. Production keeps `SettingsLayout.width`.
     nonisolated(unsafe) static var windowWidth: CGFloat?
-    static let sidebarWidth: CGFloat = 200
+    static let sidebarWidth: CGFloat = 240
 
     /// `settings=S2`; an unknown value keeps the production tabs.
     static func select(_ value: String) {
@@ -30,7 +30,7 @@ enum ProtoSettings {
             guard pair.count == 2, pair[0].lowercased() == "settings" else { continue }
             variant = ProtoSettingsVariant(rawValue: pair[1].uppercased()) ?? .production
         }
-        windowWidth = variant == .production ? nil : 700
+        windowWidth = variant == .production ? nil : 720
     }
 }
 
@@ -160,11 +160,11 @@ enum SettingsSidebarModel {
             accessibilityLabel: "Add Phone…")
     }
 
-    /// The row's second line: the state's own words, plus when it was last seen
-    /// while it is not connected.
+    /// The phone's state words live in `presence`; this is the extra detail the
+    /// row carries beside them: when a phone that is not connected was last
+    /// seen. (S3's Phones entry carries its phone count here.)
     static func subtitle(for row: DevicePhoneRow) -> String? {
-        guard let seen = row.lastSeenText else { return row.presenceText }
-        return "\(row.presenceText) · \(seen)"
+        row.lastSeenText
     }
 
     static func help(for row: DevicePhoneRow) -> String {
@@ -310,7 +310,7 @@ struct ProtoSettingsShell: View {
             ForEach(SettingsSidebarModel.groups(variant: variant, phones: rows)) { group in
                 Section {
                     ForEach(group.items) { item in
-                        row(item).tag(item.selection)
+                        row(item, selected: selection == item.selection).tag(item.selection)
                     }
                     if group.showsAddPhone {
                         addPhoneRow
@@ -321,31 +321,36 @@ struct ProtoSettingsShell: View {
             }
         }
         .listStyle(.sidebar)
-        .navigationSplitViewColumnWidth(min: 180, ideal: ProtoSettings.sidebarWidth, max: 260)
+        .navigationSplitViewColumnWidth(min: ProtoSettings.sidebarWidth, ideal: ProtoSettings.sidebarWidth, max: 280)
     }
 
     @ViewBuilder
-    private func row(_ item: SettingsSidebarItem) -> some View {
+    private func row(_ item: SettingsSidebarItem, selected: Bool) -> some View {
         HStack(spacing: 8) {
             if let presence = item.presence {
                 DeviceGlyph(size: 22)
                 VStack(alignment: .leading, spacing: 1) {
                     Text(item.title)
+                        .lineLimit(1)
                     HStack(spacing: 4) {
                         DeviceStatusLabel(presence: presence)
                             .font(.caption)
+                            .layoutPriority(1)
                         if let subtitle = item.subtitle {
-                            Text(subtitle)
+                            Text("· \(subtitle)")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
+                                .lineLimit(1)
                         }
                     }
                     .lineLimit(1)
                 }
                 Spacer(minLength: 4)
                 if item.inUse {
+                    // The accent blue disappears on the selected row's blue.
                     Image(systemName: "checkmark.circle.fill")
-                        .foregroundStyle(Color.accentColor)
+                        .foregroundStyle(selected ? AnyShapeStyle(.white) : AnyShapeStyle(Color.accentColor))
+                        .layoutPriority(1)
                         .accessibilityHidden(true)
                 }
             } else {

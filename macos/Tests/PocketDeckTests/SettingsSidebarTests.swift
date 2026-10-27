@@ -92,14 +92,16 @@ final class SettingsSidebarTests: XCTestCase {
         let rows = phoneRows()
         let items = SettingsSidebarModel.groups(variant: .s1, phones: rows)[0].items
 
-        XCTAssertEqual(items[0].subtitle, "Connected")
+        XCTAssertEqual(items[0].subtitle, nil, "a connected phone has no last-seen line")
         XCTAssertTrue(items[0].inUse)
         XCTAssertNil(rows[0].lastSeenText, "a connected phone needs no last-seen time")
 
-        XCTAssertEqual(items[1].subtitle, "Offline · 2 hours ago")
+        XCTAssertEqual(items[1].subtitle, "2 hours ago")
+        XCTAssertEqual(items[1].presence, DevicePresence.offline(nil))
         XCTAssertFalse(items[1].inUse)
 
-        XCTAssertEqual(items[2].subtitle, "Pair again · 3 days ago")
+        XCTAssertEqual(items[2].subtitle, "3 days ago")
+        XCTAssertEqual(items[2].presence, DevicePresence.pairAgain)
     }
 
     func testVoiceOverLabelsCarryNameStateLastSeenAndTheInUseMark() {
@@ -181,8 +183,8 @@ final class SettingsSidebarTests: XCTestCase {
     func testTheFlagSelectsAnOptionAndWidensTheWindow() {
         ProtoSettings.select("settings=S2")
         XCTAssertEqual(ProtoSettings.variant, .s2)
-        XCTAssertEqual(SettingsLayout.currentWidth, 700)
-        XCTAssertEqual(ProtoSettings.sidebarWidth, 200)
+        XCTAssertEqual(SettingsLayout.currentWidth, 720)
+        XCTAssertEqual(ProtoSettings.sidebarWidth, 240)
     }
 
     func testAnUnknownOrForeignValueKeepsTheProductionTabs() {
