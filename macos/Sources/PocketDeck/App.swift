@@ -94,10 +94,6 @@ struct LaunchOptions {
     /// `--controls-dir DIR`: where the Control Center snapshot and socket live,
     /// instead of the App Group container (e2e `controls` check; no extension).
     var controlsDirectory: String?
-    /// `--debug-proto panelmenu=M1|M2|M3`: one of the menu bar panel's
-    /// secondary-click prototypes (PanelMenuPrototype.swift). Test builds only;
-    /// without it the panel is unchanged.
-    var debugProto: String?
 
     /// nil when `--profile` was missing or not a usable name.
     var profile: Profile? { Profile(name: profileName) }
@@ -145,7 +141,6 @@ struct LaunchOptions {
         "--files-bridge-dir": true,
         "--files-domain-seen": true,
         "--controls-dir": true,
-        "--debug-proto": true,
     ]
 
     /// One line on stderr (the harness captures stderr into app.log); the
@@ -260,8 +255,6 @@ struct LaunchOptions {
                 options.filesDomainSeen = next()
             case "--controls-dir":
                 options.controlsDirectory = next()
-            case "--debug-proto":
-                options.debugProto = next()
             default:
                 break
             }
@@ -344,7 +337,6 @@ final class AppEnvironment {
         let profile = options.profile!
         BackgroundMode.isOn = options.background
         Profile.active = profile
-        PanelMenuPrototype.current = .parse(options.debugProto)
         Log.app.notice("profile \(profile.name, privacy: .public): identity \(IdentityFileV2.fileUrl(in: profile).path, privacy: .public), defaults \(profile.defaultsSuiteName ?? "standard", privacy: .public)")
         if options.resetPairing {
             // v2: pairing state = the pins + identity.json's §3 mirror; the

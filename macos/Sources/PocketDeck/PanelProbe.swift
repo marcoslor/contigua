@@ -49,10 +49,11 @@ enum PanelProbe {
             hostWindow.makeKeyAndOrderFront(nil)
             return
         }
-        // The hosted copy has no status item, so its M2 gear has nothing to pop
-        // up: the menu belongs to the real controller (MenuBarPanel.swift). A
-        // dump still maps the gear as the first control, as the real panel has it.
-        let view = NSHostingView(rootView: AnyView(MenuBarContent().environment(controller)))
+        // The gear opens the app's one status-item menu (MenuBarPanel.swift),
+        // so the hosted card behaves as the real panel does.
+        let view = NSHostingView(rootView: AnyView(MenuBarContent(onSecondaryMenu: {
+            MenuBarController.current?.openSecondaryMenu()
+        }).environment(controller)))
         hostView = view
         let effect = NSVisualEffectView()
         effect.material = .popover
@@ -110,8 +111,7 @@ enum PanelProbe {
         guard let host = Host(rawValue: host) else { return false }
         guard let state = currentState() else { return false }
         guard let window = window(for: host) else { return false }
-        let items = PhonePanelItem.focusOrder(for: state, showsFooter: showsFooter(host),
-                                              showsGear: showsGear(host))
+        let items = PhonePanelItem.focusOrder(for: state, showsGear: showsGear(host))
         let focusable = items.filter { $0.isEnabled(in: state) }
         settle(window, items: focusable)
         let controls = controlFrames(in: window)
@@ -356,19 +356,12 @@ enum PanelProbe {
         return PhoneControlsState(controller: controller)
     }
 
-    /// The Deck's popover has no Settings/Quit footer and no gear; the menu bar
-    /// panel's two follow the secondary-click prototype (PanelMenuPrototype.swift).
-    private static func showsFooter(_ host: Host) -> Bool {
-        switch host {
-        case .deck: return false
-        case .panel, .real: return PanelMenuPrototype.current?.showsFooter ?? true
-        }
-    }
-
+    /// The menu bar panel has the gear; the Deck's popover has neither the gear
+    /// nor a footer.
     private static func showsGear(_ host: Host) -> Bool {
         switch host {
         case .deck: return false
-        case .panel, .real: return PanelMenuPrototype.current?.showsGear ?? false
+        case .panel, .real: return true
         }
     }
 
@@ -376,8 +369,7 @@ enum PanelProbe {
     /// has no key-view proxy, so the focusable order leaves it out. Dumps still
     /// report every item with its reason; mapping counts only enabled ones.
     private static func focusableItems(_ state: PhoneControlsState, host: Host) -> [PhonePanelItem] {
-        PhonePanelItem.focusOrder(for: state, showsFooter: showsFooter(host),
-                                  showsGear: showsGear(host))
+        PhonePanelItem.focusOrder(for: state, showsGear: showsGear(host))
             .filter { $0.isEnabled(in: state) }
     }
 

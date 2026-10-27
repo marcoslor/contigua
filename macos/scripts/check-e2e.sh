@@ -57,6 +57,8 @@ TOOLS="/tmp/pocketdeck-e2e-tools"
 # Named by the source's hash: other checkouts share $TOOLS, and a helper built from
 # their (older or newer) source must not be taken for this one.
 CGBIN="$TOOLS/cgevent-$(shasum "$CGINPUT" | cut -c1-12)"
+MENUBAR_SRC="$MACOS/scripts/menubar-item.swift"
+MENUBARBIN="$TOOLS/menubar-item-$(shasum "$MENUBAR_SRC" | cut -c1-12)"
 WATCH_SRC="$MACOS/scripts/quiet-watch.swift"
 WATCHBIN="$TOOLS/quiet-watch-$(shasum "$WATCH_SRC" | cut -c1-12)"
 LOAD_SRC="$MACOS/scripts/pd-load.swift"
@@ -645,6 +647,48 @@ build_cgevent() {
         mkdir -p "$TOOLS"
         swiftc -O "$CGINPUT" -o "$CGBIN" >/dev/null 2>&1 || { say "could not build $CGINPUT"; return 1; }
     fi
+}
+
+# build_menubar_item — the status item's own frame and its real clicks (a left
+# click toggles the panel, a right click opens its menu), found by process id.
+build_menubar_item() {
+    if [ ! -x "$MENUBARBIN" ]; then
+        mkdir -p "$TOOLS"
+        swiftc -O "$MENUBAR_SRC" -o "$MENUBARBIN" >/dev/null 2>&1 \
+            || { say "could not build $MENUBAR_SRC"; return 1; }
+    fi
+}
+
+# icon_menu_titles — the status item's open menu, one title per line ("-" for a
+# separator); "nomenu" when nothing is open. Real input opens it, so a check
+# reads the menu a person sees instead of a model of it.
+icon_menu_titles() {
+    osascript - "$APP_PID" <<'OSA' 2>/dev/null
+on run argv
+    set pidText to item 1 of argv
+    tell application "System Events"
+        set matches to every process whose unix id is (pidText as integer)
+        if (count of matches) is 0 then return "noproc"
+        tell item 1 of matches
+            if not (exists menu bar item 1 of menu bar 2) then return "nostatus"
+            set theItem to menu bar item 1 of menu bar 2
+            if not (exists menu 1 of theItem) then return "nomenu"
+            set out to {}
+            repeat with m in menu items of menu 1 of theItem
+                try
+                    set title to name of m as string
+                on error
+                    set title to ""
+                end try
+                if title is "" then set title to "-"
+                set end of out to title
+            end repeat
+            set text item delimiters to linefeed
+            return out as string
+        end tell
+    end tell
+end run
+OSA
 }
 
 # windows() — the CGWindow list of PocketDeck's own windows without a title:
@@ -2896,6 +2940,28 @@ EOF
 
     # 1: a fresh launch with one stream window open.
     dump_now 1 || { stop_app; stop_fakephone; return 1; }
+
+    # The status item's own menu (CONV-MAC-10): the three app commands the
+    # panel's footer used to carry. The dump is the builder's own item list, so
+    # a quiet run reads the menu a person gets without popping it on screen.
+    rm -f "$WORK/menus-icon.json"
+    control iconmenu "$WORK/menus-icon.json" \
+        || bad "MENUS iconmenu: $CONTROL_REPLY"
+    python3 - "$WORK/menus-icon.json" <<'PY' && ok "[CONV-MAC-10] the icon's menu is Settings… ⌘, · About PocketDeck · rule · Quit PocketDeck ⌘Q" \
+        || bad "MENUS the icon's menu is not Settings…/About/Quit"
+import json, sys
+rows = json.load(open(sys.argv[1]))
+titles = [row["title"] for row in rows]
+if titles != ["Settings…", "About PocketDeck", "-", "Quit PocketDeck"]:
+    print("titles:", titles); sys.exit(1)
+keys = [row["key"] for row in rows]
+if keys != [",", "", "", "q"]:
+    print("keys:", keys); sys.exit(1)
+if [row["separator"] for row in rows] != [False, False, True, False]:
+    print("separators:", rows); sys.exit(1)
+if not all(row["command"] for row in rows if not row["separator"] and row["key"]):
+    print("keys are not ⌘ shortcuts:", rows); sys.exit(1)
+PY
     # 2: after View ▸ Show Touches was toggled (the commands read its state).
     touch "$WORK/menus-step-2"; sleep 1.5; dump_now 2
     # 3 and 4: after switching the style to immersive and back.
@@ -4811,10 +4877,12 @@ check_controls() {
         || ok "CONTROLS a bad ringer mode is refused"
 
     # (2b) Panel P3: the Ringer tile's menu chooses Vibrate, the volume slider
-    # sends the phone's music stream, and the Deck popover has no footer.
+    # sends the phone's music stream, and the menu bar panel's gear opens the
+    # icon's menu. The Settings…/Quit footer rows are gone: the icon's menu has
+    # them (CONV-MAC-10).
     control panelopen || bad "CONTROLS panelopen: $CONTROL_REPLY"
     control paneldump panel "$WORK/controls-panel.json" || bad "CONTROLS paneldump: $CONTROL_REPLY"
-    python3 - "$WORK/controls-panel.json" <<'PY' && ok "CONTROLS the panel is P3 with the Ringer tile enabled and no popup volume" \
+    python3 - "$WORK/controls-panel.json" <<'PY' && ok "CONTROLS the panel is P3 with the gear first and the Ringer tile enabled" \
         || bad "CONTROLS the panel is not P3"
 import json, sys
 root = json.load(open(sys.argv[1]))
@@ -4823,19 +4891,42 @@ if root["width"] != 300:
 if not root["mapped"]:
     print("items:", len(root["items"]), "controls:", len(root["controls"])); sys.exit(1)
 kinds = [row["kind"] for row in root["items"]]
-if kinds[:5] != ["dnd", "ringer", "ring", "screen", "volume"]:
+if kinds[:6] != ["gear", "dnd", "ringer", "ring", "screen", "volume"]:
     print("items:", kinds); sys.exit(1)
 rows = {row["kind"]: row for row in root["items"]}
 if not rows["ringer"]["enabled"]:
     print("ringer:", rows["ringer"]); sys.exit(1)
 if not rows["volume"]["enabled"]:
     print("volume:", rows["volume"]); sys.exit(1)
+if not rows["gear"]["enabled"] or rows["gear"]["label"] != "Settings and more":
+    print("gear:", rows["gear"]); sys.exit(1)
 enabled = [row for row in root["items"] if row["enabled"]]
 volume_index = next(i for i, row in enumerate(enabled) if row["kind"] == "volume")
 volume = root["controls"][volume_index]
 if volume["height"] > 20 or volume["width"] < 150:
     print("volume control:", volume); sys.exit(1)
 PY
+    python3 - "$WORK/controls-panel.json" <<'PY' && ok "[CONV-MAC-10] the panel has no Settings/Quit footer rows: they are the icon's menu" \
+        || bad "CONTROLS the panel still carries footer rows"
+import json, sys
+root = json.load(open(sys.argv[1]))
+kinds = [row["kind"] for row in root["items"]]
+if "settings" in kinds or "quit" in kinds:
+    print("items:", kinds); sys.exit(1)
+PY
+    # The gear's VoiceOver name and help tag, read from the accessibility tree
+    # as a screen reader would (CONV-MAC-21).
+    local gear_ax
+    gear_ax="$(panel_ax)"
+    case "$gear_ax" in
+        *"Settings and more"*"Settings, About and Quit"*)
+            ok "CONTROLS the gear has a VoiceOver name and a help tag: Settings and more · Settings, About and Quit" ;;
+        *"Settings and more"*)
+            ok "CONTROLS the gear has a VoiceOver name (its help tag is not in the AX tree)" ;;
+        noproc|"")
+            skip "CONTROLS the gear's AX name and help" "System Events cannot read this run's windows" ;;
+        *) bad "CONTROLS the gear's AX name and help are missing ($(printf '%s' "$gear_ax" | tr '\n' '|' | cut -c1-200))" ;;
+    esac
     control panelringer panel vibrate || bad "CONTROLS panelringer: $CONTROL_REPLY"
     wait_until 3 ringer_is vibrate \
         && ok "CONTROLS the Ringer tile's menu sent phone.ringer vibrate" \
@@ -8535,12 +8626,41 @@ check_menubar_vm() {
     else
         bad "MENUBAR-VM panelpoint real panel.dnd: $CONTROL_REPLY"
     fi
-    if control panelpoint real panel.settings "$WORK/menubar/settings.pt" \
-        && read -r px py < "$WORK/menubar/settings.pt"; then
-        cg_input clickat --x "$px" --y "$py"
-        wait_until 15 settings_open \
-            && ok "MENUBAR-VM clicking the footer's Settings row with the real pointer opened Settings" \
-            || bad "MENUBAR-VM the footer's Settings row did not open Settings"
+    # A right-click with the panel open closes it first, then opens the menu.
+    panel_open >/dev/null
+    sleep 0.8
+    if [ "$(panel_visible)" = "yes" ]; then
+        "$MENUBARBIN" rclick "$APP_PID"
+        sleep 1
+        [ "$(panel_visible)" = "no" ] \
+            && ok "MENUBAR-VM a real right-click closed the open panel first" \
+            || bad "MENUBAR-VM the panel stayed open under the menu"
+        osascript -e 'tell application "System Events" to key code 53' >/dev/null 2>&1 || true
+        sleep 0.5
+    else
+        bad "MENUBAR-VM the panel did not open for the right-click check"
+    fi
+    # The icon's menu (CONV-MAC-10): a real right-click opens Settings… ·
+    # About PocketDeck · Quit PocketDeck. Down highlights the first item and
+    # Return runs it, so Settings opens through the menu a person uses. Never
+    # Down-Down-Return: that would quit the app.
+    close_panel
+    "$MENUBARBIN" rclick "$APP_PID"
+    sleep 1
+    result="$(icon_menu_titles)"
+    case "$result" in
+        "Settings…"*"About PocketDeck"*"Quit PocketDeck"*)
+            ok "[CONV-MAC-10] a real right-click opened the icon's menu: Settings… · About PocketDeck · Quit PocketDeck" ;;
+        nomenu|noproc|nostatus)
+            bad "MENUBAR-VM a real right-click opened no menu ($result)" ;;
+        *)
+            bad "MENUBAR-VM the icon's menu is not Settings…/About/Quit ($(printf '%s' "$result" | tr '\n' '|' | cut -c1-200))" ;;
+    esac
+    cg_input key --keycode 125
+    cg_input key --keycode 36
+    wait_until 15 settings_open \
+        && ok "MENUBAR-VM the menu's Settings… opened Settings" \
+        || bad "MENUBAR-VM the menu's Settings… did not open Settings"
         # Close Settings by its own close button, addressed to our PID: never
         # the person's installed app, and never a synthetic ⌘W to whatever is
         # frontmost.
@@ -8571,9 +8691,6 @@ on run argv
 end run
 OSA
         sleep 1
-    else
-        bad "MENUBAR-VM panelpoint real panel.settings: $CONTROL_REPLY"
-    fi
     # Put the pointer away and reopen the panel from a known closed state.
     cg_input moveat --x 4 --y 4
     close_panel
@@ -9340,15 +9457,21 @@ check_menubar_shots() {
         else
             bad "MENUBAR-SHOTS panelpoint panel panel.dnd: $CONTROL_REPLY"
         fi
-        if control panelpoint panel panel.settings "$shots/settings.pt" \
-            && read -r px py < "$shots/settings.pt"; then
+        if control panelpoint panel panel.gear "$shots/gear.pt" \
+            && read -r px py < "$shots/gear.pt"; then
             cg_input clickat --x "$px" --y "$py"
-            if wait_until 15 settings_open; then
-                ok "MENUBAR-SHOTS clicking the footer's Settings row with the real pointer opened Settings"
-            else
-                control panelwindows "$shots/after-settings.txt" >/dev/null 2>&1 || true
-                bad "MENUBAR-SHOTS the footer's Settings row did not open Settings (titles: $(window_titles "$APP_PID" | tr '\n' '|'); windows: $(tr '\n' '|' < "$shots/after-settings.txt" 2>/dev/null))"
-            fi
+            sleep 1
+            result="$(icon_menu_titles)"
+            case "$result" in
+                "Settings…"*"About PocketDeck"*"Quit PocketDeck"*)
+                    ok "[CONV-MAC-10] the panel's gear opened the icon's menu: Settings… · About PocketDeck · Quit PocketDeck" ;;
+                *) bad "MENUBAR-SHOTS the gear opened no menu ($(printf '%s' "$result" | tr '\n' '|' | cut -c1-200))" ;;
+            esac
+            cg_input key --keycode 125
+            cg_input key --keycode 36
+            wait_until 15 settings_open \
+                && ok "MENUBAR-SHOTS the gear's Settings… opened Settings" \
+                || bad "MENUBAR-SHOTS the gear's Settings… did not open Settings"
             osascript - "$APP_PID" <<'OSA' >/dev/null 2>&1 || true
 on run argv
     set pidText to item 1 of argv
@@ -9377,7 +9500,7 @@ end run
 OSA
             sleep 1
         else
-            bad "MENUBAR-SHOTS panelpoint panel panel.settings: $CONTROL_REPLY"
+            bad "MENUBAR-SHOTS panelpoint panel panel.gear: $CONTROL_REPLY"
         fi
         cg_input moveat --x 4 --y 4
     else
@@ -9464,7 +9587,7 @@ shoot_panel_states() {
         # also the disabled-tile record, named for the review.
         cp "$shots/states-$app-rest.png" "$shots/states-$app-screen-disabled.png"
         say "shot: $shots/states-$app-screen-disabled.png"
-        for id in panel.dnd panel.findApps panel.settings; do
+        for id in panel.dnd panel.findApps panel.gear; do
             control panelhover panel "$id" || bad "PANEL-STATES panelhover $id: $CONTROL_REPLY"
             sleep 1
             shoot_state "states-$app-hover-${id#panel.}.png"
@@ -10038,6 +10161,7 @@ say "run: port $PORT, work $WORK, profile $PROFILE, app $E2E_BUNDLE"
 [ "$which_check" = "all" ] && say "checks: ${CHECKS[*]}"
 build_e2e_app || exit 1
 build_cgevent || exit 1
+build_menubar_item || exit 1
 build_share_driver || exit 1
 build_watch || exit 1
 build_vdisplay || exit 1

@@ -4,6 +4,9 @@
 # The person's report (2026-10-22): the first click opens the panel, and a
 # second click never closes it. The bug lives in the click itself, so the check
 # is a real CGEvent click at the item's frame, found by the app's process id.
+# The 2026-10-27 change moved Settings…/Quit to a secondary click, so the same
+# real click is used with the right button: it must open the menu, not toggle
+# the panel (CONV-MAC-10).
 #
 # Real input moves the pointer, so this script never runs inside check-e2e's
 # quiet mode: it takes the e2e lock itself and is run by hand (or from a
@@ -71,16 +74,18 @@ done
 [ -n "$frame" ] || { say "no menu bar item for pid $APP_PID"; exit 1; }
 say "item: $frame (pid $APP_PID, profile $PROFILE)"
 
-# wait_panel <shown|gone> — the panel settles within a click's animation.
-wait_panel() {
-    local want="$1" seen=""
+# wait_for <panel|menu> <shown|gone> — the window settles within a click's
+# animation.
+wait_for() {
+    local what="$1" want="$2" seen=""
     for _ in $(seq 1 40); do
-        seen="$("$HELPER" panel "$APP_PID")"
+        seen="$("$HELPER" "$what" "$APP_PID")"
         [ "$seen" = "$want" ] && return 0
         sleep 0.05
     done
     return 1
 }
+wait_panel() { wait_for panel "$1"; }
 
 "$HELPER" panel "$APP_PID" | grep -qx gone \
     && ok "the panel starts closed" \

@@ -58,11 +58,11 @@ final class PhonePanelViewTests: XCTestCase {
     @discardableResult
     private func host(_ state: PhoneControlsState,
                       _ actions: PhoneControlsActions = PhoneControlsActions(),
-                      showsFooter: Bool = true) -> NSHostingView<PhonePanelView> {
+                      gear: Bool = false) -> NSHostingView<PhonePanelView> {
         // One host at a time: the previous window goes away before the next.
         window?.orderOut(nil)
         let view = NSHostingView(rootView: PhonePanelView(state: state, actions: actions,
-                                                          showsFooter: showsFooter))
+                                                          onGear: gear ? {} : nil))
         view.frame = NSRect(x: 0, y: 0, width: PhonePanelView.width, height: 640)
         view.layoutSubtreeIfNeeded()
         let size = view.fittingSize
@@ -215,14 +215,13 @@ final class PhonePanelViewTests: XCTestCase {
         XCTAssertLessThan(ys[items.firstIndex(of: .volume)!], ys[items.firstIndex(of: .sessions)!])
         XCTAssertLessThan(ys[items.firstIndex(of: .sessions)!], ys[items.firstIndex(of: .live)!])
         XCTAssertLessThan(ys[items.firstIndex(of: .live)!], ys[items.firstIndex(of: .phoneScreen)!])
-        XCTAssertEqual(Array(items.suffix(2)), [.settings, .quit])
+        XCTAssertEqual(items.last, .installApk, "no footer and no gear in the Deck's copy")
 
-        // The Deck popover compiles the same view with no footer.
-        let deck = host(state, showsFooter: false)
-        let deckItems = PhonePanelItem.focusOrder(for: state, showsFooter: false)
-        XCTAssertEqual(controls(in: deck).count, deckItems.count)
-        XCTAssertFalse(deckItems.contains(.settings))
-        XCTAssertFalse(deckItems.contains(.quit))
+        // The menu bar panel heads its order with the gear, in the header.
+        let menu = host(state, gear: true)
+        let menuItems = PhonePanelItem.focusOrder(for: state, showsGear: true)
+        XCTAssertEqual(controls(in: menu).count, menuItems.count)
+        XCTAssertEqual(menuItems.first, .gear)
     }
 
     /// Ring becomes Stop Ringing while the phone rings: the row's own click
