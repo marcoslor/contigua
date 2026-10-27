@@ -276,7 +276,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     /// Try Again on the failed cover: the same open again (the phone dedupes a
     /// second open of an app that is already opening), and the clock restarts.
     func retryOpening() {
-        guard isOpening else { return }
+        guard isOpening, opening.canRetry else { return }
         opening.retry(at: now())
         openingPhase = .loading
         showOpeningPhase()
@@ -285,14 +285,38 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         Log.video.notice("stream \(self.stream, privacy: .public): opening retry")
     }
 
+    /// The phone refused the open (`error{mirror_unavailable}`, MIRROR-2): the
+    /// cover says why for good, offers Close only, and nothing is resent.
+    func refuseOpening(_ code: String) {
+        guard showsOpeningCover, let refusal = OpeningCover.Refusal(errorCode: code),
+              opening.refuse(refusal) else { return }
+        openingPhase = .unavailable
+        showOpeningPhase()
+        writeChromeState()
+        Log.video.notice("stream \(self.stream, privacy: .public): opening refused, the phone cannot mirror")
+    }
+
     /// The chrome state's `loading=`: 1 while the cover is up, failed after
-    /// 20 s, 0 once the frame is in (or for a window with no cover).
+    /// 20 s, unavailable when the phone refused the open, 0 once the frame is
+    /// in (or for a window with no cover).
     private var openingState: String {
         guard showsOpeningCover else { return "0" }
         switch opening.phase(at: now()) {
         case .loading?, .stillLoading?: return "1"
         case .failed?: return "failed"
+        case .unavailable?: return "unavailable"
         case nil: return "0"
+        }
+    }
+
+    /// The cover's buttons, as the view shows them: `none`, `retry+close` or
+    /// `close`. The e2e's proof that a refused open cannot be asked again.
+    private var openingButtons: String {
+        guard showsOpeningCover, let phase = opening.phase(at: now()) else { return "none" }
+        switch phase {
+        case .unavailable: return "close"
+        case .failed: return "retry+close"
+        case .loading, .stillLoading: return "none"
         }
     }
 
@@ -809,6 +833,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
             + " stall=\(isStalled ? 1 : 0) stall_pill=\(stallPill ? 1 : 0)"
             + " drop_pill=\(dropPill?.fadeTarget == 1 ? "shown" : "hidden")"
             + " loading=\(openingState)"
+            + " cover_buttons=\(openingButtons)"
             + " frame=\(Int((window?.frame.width ?? 0).rounded()))x\(Int((window?.frame.height ?? 0).rounded()))"
             + " video_gap=\(Int(videoView.videoGap().rounded()))"
             + " video=\(Int(picture.minX.rounded())),\(Int(pictureTop.rounded())),\(Int(picture.width.rounded())),\(Int(picture.height.rounded()))\n"

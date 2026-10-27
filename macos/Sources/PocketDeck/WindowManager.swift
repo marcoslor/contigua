@@ -605,6 +605,10 @@ final class WindowManager {
             if started == .fresh {
                 (controller(for: stream) as? HandoffWindowController)?.showFreshNotice()
             }
+        case .phoneError(let code, _, let stream):
+            // A phone that cannot mirror answers the open itself; that window
+            // says so and offers Close only (MIRROR-2).
+            (controller(for: stream) as? PhoneWindowController)?.refuseOpening(code)
         case .ready(_, let isReconnect, _):
             if isReconnect { reopenAll() }
         default:

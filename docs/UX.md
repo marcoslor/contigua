@@ -198,6 +198,9 @@ Material 3, edge-to-edge, dynamic color, light/dark.
 - After 20 s without a frame: **Couldn't open <app>.** (the Phone Mirror:
   **Couldn't open your phone.**) with **Try Again** and **Close**. Try Again
   sends the same open again; Close closes the window.
+- A phone that answers the open with `mirror_unavailable` (it cannot capture
+  its screen) gets **This phone can't share its screen with PocketDeck.** at
+  once, with **Close** only: no Try Again, because asking again cannot help.
 - The cover is a frozen mode: no input reaches the phone. The "Not responding"
   watchdog runs only after the first frame.
 
