@@ -247,8 +247,8 @@ final class PhonePanelViewTests: XCTestCase {
     }
 
     /// Away: the phone controls are off and nothing fires. P3 keeps every
-    /// control laid out with its reason under the tiles; the volume has its own
-    /// line. The panel grows by the one reason line it shows.
+    /// control laid out with its reason on the control itself (a tile's
+    /// subtitle, the volume row); the panel keeps its online height.
     func testOfflineDimsThePhoneControlsAndSaysWhy() throws {
         var calls: [String] = []
         var actions = PhoneControlsActions()
@@ -274,12 +274,11 @@ final class PhonePanelViewTests: XCTestCase {
         click(at: CGPoint(x: rect.midX, y: rect.midY))
         XCTAssertTrue(calls.isEmpty, "no disabled control runs anything")
 
-        // The reason line under the tiles is drawn while offline; online the
-        // panel is one line shorter.
+        // No floating reason line: offline the panel is the online panel's height.
         let away = try XCTUnwrap(render(state))
         let now = try XCTUnwrap(render(panelState()))
-        XCTAssertGreaterThan(away.height, now.height,
-                             "the offline panel draws its reason line")
+        XCTAssertEqual(away.height, now.height,
+                       "the reasons sit on their controls, not in a line under the grid")
     }
 
     /// No track text or artwork: two states that differ only in the media's

@@ -409,12 +409,10 @@ final class PhonePanelTests: XCTestCase {
         XCTAssertEqual(enabled, [.findApps, .settings, .quit])
         XCTAssertNil(state.shownBattery, "offline the header does not draw a stale battery")
 
-        let online = host(panelState())
-        XCTAssertLessThan(view.fittingSize.height, online.fittingSize.height + 100)
-        // The one reason line under the tiles makes the offline panel taller
-        // than the online one, never a hidden row.
+        // The reasons sit on the controls they disable (a tile's subtitle, the
+        // volume row), so the offline panel is the online panel's height.
         let away = try XCTUnwrap(render(state).flatMap(Pixels.init))
         let now = try XCTUnwrap(render(panelState()).flatMap(Pixels.init))
-        XCTAssertGreaterThan(away.height, now.height)
+        XCTAssertEqual(away.height, now.height)
     }
 }

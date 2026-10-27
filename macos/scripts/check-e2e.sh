@@ -2675,7 +2675,7 @@ PY
 menu_dump_ok() {
     python3 - "$1" <<'PY'
 import json, sys
-APP_ITEMS = ["Add Phone…", "Find Apps", "Phone Mirror", "Continue on Mac", "Show Touches",
+APP_ITEMS = ["Add Phone…", "Find Apps", "Phone Mirror", "Move Phone App to Mac", "Show Touches",
              "Live Text", "Framed", "Immersive", "Hide Controls", "Density",
              "Turn Off Phone Screen", "Do Not Disturb", "Ring Phone", "Install APK…",
              "Back", "Home", "Recents", "Enter Full Screen"]
@@ -2698,7 +2698,7 @@ if titles != ["PocketDeck", "File", "Edit", "View", "Phone", "Navigate", "Window
 WANT = {
     "View": ["Find Apps", "—", "Framed", "Immersive", "—", "Hide Controls", "—",
              "Show Touches", "Live Text", "—", "Density"],
-    "Phone": ["Phone Mirror", "Continue on Mac", "—", "Turn Off Phone Screen",
+    "Phone": ["Phone Mirror", "Move Phone App to Mac", "—", "Turn Off Phone Screen",
               "Do Not Disturb", "Ring Phone", "—", "Install APK…"],
     "Navigate": ["Back", "Home", "Recents"],
     "File": ["Add Phone…", "—", "Close", "Close All"],
@@ -3037,13 +3037,13 @@ by_title = {i["title"]: i for i in phone["submenu"] if not i["isSeparator"]}
 if by_title["Phone Mirror"]["keyEquivalent"] != "p" or by_title["Phone Mirror"]["modifiers"] != ["command"]:
     print("Phone Mirror shortcut:", repr(by_title["Phone Mirror"]["keyEquivalent"]),
           by_title["Phone Mirror"]["modifiers"]); sys.exit(1)
-if by_title["Continue on Mac"]["keyEquivalent"] != "c" or \
-        by_title["Continue on Mac"]["modifiers"] != ["command", "shift"]:
-    print("Continue on Mac shortcut:", repr(by_title["Continue on Mac"]["keyEquivalent"]),
-          by_title["Continue on Mac"]["modifiers"]); sys.exit(1)
+if by_title["Move Phone App to Mac"]["keyEquivalent"] != "c" or \
+        by_title["Move Phone App to Mac"]["modifiers"] != ["command", "shift"]:
+    print("Move Phone App to Mac shortcut:", repr(by_title["Move Phone App to Mac"]["keyEquivalent"]),
+          by_title["Move Phone App to Mac"]["modifiers"]); sys.exit(1)
 if by_title["Turn Off Phone Screen"]["enabled"]:
     print("Turn Off Phone Screen is enabled with no phone window"); sys.exit(1)
-for title in ("Phone Mirror", "Continue on Mac", "Do Not Disturb", "Ring Phone", "Install APK…"):
+for title in ("Phone Mirror", "Move Phone App to Mac", "Do Not Disturb", "Ring Phone", "Install APK…"):
     if not by_title[title]["enabled"]:
         print(title, "is disabled while the phone is online"); sys.exit(1)
 PY
@@ -3123,7 +3123,7 @@ def walk(items):
 root = json.load(open(sys.argv[1]))
 items = list(walk(root["items"]))
 missing = []
-for title in ["Add Phone…", "Find Apps", "Phone Mirror", "Continue on Mac", "Show Touches",
+for title in ["Add Phone…", "Find Apps", "Phone Mirror", "Move Phone App to Mac", "Show Touches",
               "Live Text", "Density", "Larger", "Smaller", "Actual Size", "Back", "Home",
               "Recents", "Enter Full Screen"]:
     found = next((i for i in items if i["title"] == title), None)
@@ -7127,7 +7127,7 @@ check_nickname() {
     wait_until 5 no_fakephone
 }
 
-# --- Continue on Mac (docs/ROADMAP.md #9, docs/design/handoff.md) -----------
+# --- Move Phone App to Mac (docs/ROADMAP.md #9, docs/design/handoff.md) -----------
 
 # check_handoff — the --continue-on-mac hook runs the menu command (the same
 # ConnectionController.continueOnMac the ⌘⇧C/menu items call) once the session
@@ -8011,19 +8011,51 @@ PY
 # is a `.window` panel now: it opens the card, not a menu (there is no `menu 1`
 # to read).
 panel_open() {
-    osascript <<'OSA' 2>/dev/null
-tell application "System Events" to tell process "PocketDeck"
-    if not (exists menu bar item 1 of menu bar 2) then return "nostatus"
-    click menu bar item 1 of menu bar 2
-    delay 1
-    return "opened"
-end tell
+    # PID-targeted: the person's installed PocketDeck can be running too, and
+    # its status item is not ours to click.
+    osascript - "$APP_PID" <<'OSA' 2>/dev/null
+on run argv
+    set pidText to item 1 of argv
+    tell application "System Events"
+        set matches to every process whose unix id is (pidText as integer)
+        if (count of matches) is 0 then return "noproc"
+        tell item 1 of matches
+            if not (exists menu bar item 1 of menu bar 2) then return "nostatus"
+            click menu bar item 1 of menu bar 2
+            delay 1
+            return "opened"
+        end tell
+    end tell
+end run
 OSA
 }
 
 # panel_ax — the AX labels inside the app's narrow window (the panel), one per
 # line: title, else description, else value. The panel is the window under
 # 420 pt wide; the Deck is the wide one.
+# panel_visible — our own status-item panel is on screen (a narrow window of
+# this run's PID), for a PID-targeted toggle instead of a global Esc.
+panel_visible() {
+    osascript - "$APP_PID" <<'OSA' 2>/dev/null
+on run argv
+    set pidText to item 1 of argv
+    tell application "System Events"
+        set matches to every process whose unix id is (pidText as integer)
+        if (count of matches) is 0 then return "no"
+        tell item 1 of matches
+            repeat with w in windows
+                try
+                    set s to size of w
+                    if (item 1 of s) < 420 and (item 2 of s) >= 250 then return "yes"
+                end try
+            end repeat
+        end tell
+    end tell
+    return "no"
+end run
+OSA
+}
+
 panel_ax() {
     osascript - "$APP_PID" <<'OSA' 2>/dev/null
 on run argv
@@ -8074,6 +8106,9 @@ on labels(w)
                     end try
                 end if
                 if bits is not "" then set end of out to bits
+                try
+                    if (help of e as string) is not "" then set end of out to (help of e as string)
+                end try
             end try
         end repeat
         return out
@@ -8394,13 +8429,16 @@ OSA
 # judged by eye; the checks assert the card is on screen and that the ring row
 # and the reason line are the ones drawn.
 check_menubar_vm() {
+    # The real status item panel's AX windows are not exposed on the host's
+    # session the way the VM's are; the host's panel proof is menubar-shots.
     if [ "${PD_E2E_IN_VM:-0}" != "1" ] || [ "${VISIBLE:-0}" != "1" ]; then
         skip "MENUBAR-VM" "the panel on a real screen, inside the VM's visible run"
         sleep 1
         return 0
     fi
     clean
-    local shots="$WORK/menubar" result device wanted
+    local shots="$WORK/menubar" result device wanted original_style
+    original_style="$(defaults read -g AppleInterfaceStyle 2>/dev/null || true)"
     mkdir -p "$shots"
     shot() { screencapture -x "$shots/$1" >/dev/null 2>&1 || true; }
     # The window's own rectangle when AX can see the panel; a full-screen capture
@@ -8413,7 +8451,19 @@ check_menubar_vm() {
     }
     # The panel closes on Esc (a window-style extra), so every capture opens it
     # from a known closed state: clicking an open status item would close it.
-    close_panel() { osascript -e 'tell application "System Events" to key code 53' >/dev/null 2>&1 || true; sleep 0.5; }
+    close_panel() {
+        if [ "$(panel_visible)" = "yes" ]; then
+            panel_open >/dev/null
+            sleep 0.5
+        fi
+    }
+    # The Settings scene's window title is the selected tab ("Devices",
+    # "General", …); its identifier is stable.
+    settings_open() {
+        local f="$shots/windows-settings.txt"
+        control panelwindows "$f" >/dev/null 2>&1 || return 1
+        grep -q "com_apple_SwiftUI_Settings_window" "$f"
+    }
 
     FAKE_ARGS="--media" start_fake || return 1
     device="$(sed -n 's/^fakephone \([^ ]*\) listening.*/\1/p' "$WORK/fake.log" "$WORK/fake.err" | head -1)"
@@ -8427,6 +8477,10 @@ check_menubar_vm() {
     wait_until 30 events_have '"t":"apps.list"' \
         || { bad "MENUBAR-VM the session never started"; stop_app; stop_fakephone; return 1; }
     sleep 3
+
+    # The probe's dump/point routes need this run's controller; the real
+    # status-item panel is not opened by PanelProbe.
+    control panelattach >/dev/null 2>&1 || true
 
     # (a) online, light, two playing apps: the picker row is there.
     result="$(panel_open)"
@@ -8447,6 +8501,68 @@ check_menubar_vm() {
     else
         bad "MENUBAR-VM paneldump real: $CONTROL_REPLY"
     fi
+
+    # (a2) the real pointer (visible runs only): moving onto the DND tile
+    # changes the picture, and the footer's Settings row opens Settings. A
+    # quiet run cannot deliver hover to SwiftUI, so these steps live here.
+    local px py
+    if control panelpoint real panel.dnd "$WORK/menubar/dnd.pt" \
+        && read -r px py < "$WORK/menubar/dnd.pt"; then
+        shot_panel "hover-tile-before.png"
+        cg_input moveat --x "$px" --y "$py"
+        sleep 1
+        shot_panel "hover-tile-after.png"
+        if cmp -s "$shots/hover-tile-before.png" "$shots/hover-tile-after.png"; then
+            bad "MENUBAR-VM moving the real pointer onto the DND tile did not change the picture"
+        else
+            ok "MENUBAR-VM the real pointer on the DND tile changed the picture"
+        fi
+    else
+        bad "MENUBAR-VM panelpoint real panel.dnd: $CONTROL_REPLY"
+    fi
+    if control panelpoint real panel.settings "$WORK/menubar/settings.pt" \
+        && read -r px py < "$WORK/menubar/settings.pt"; then
+        cg_input clickat --x "$px" --y "$py"
+        wait_until 15 settings_open \
+            && ok "MENUBAR-VM clicking the footer's Settings row with the real pointer opened Settings" \
+            || bad "MENUBAR-VM the footer's Settings row did not open Settings"
+        # Close Settings by its own close button, addressed to our PID: never
+        # the person's installed app, and never a synthetic ⌘W to whatever is
+        # frontmost.
+        osascript - "$APP_PID" <<'OSA' >/dev/null 2>&1 || true
+on run argv
+    set pidText to item 1 of argv
+    tell application "System Events"
+        set matches to every process whose unix id is (pidText as integer)
+        if (count of matches) is 0 then return
+        tell item 1 of matches
+            set closed to false
+            repeat with w in windows
+                try
+                    if (id of w as string) is "com_apple_SwiftUI_Settings_window" then
+                        click button 1 of w
+                        set closed to true
+                        exit repeat
+                    end if
+                end try
+            end repeat
+            if not closed then
+                try
+                    click button 1 of window "Devices"
+                end try
+            end if
+        end tell
+    end tell
+end run
+OSA
+        sleep 1
+    else
+        bad "MENUBAR-VM panelpoint real panel.settings: $CONTROL_REPLY"
+    fi
+    # Put the pointer away and reopen the panel from a known closed state.
+    cg_input moveat --x 4 --y 4
+    close_panel
+    panel_open >/dev/null
 
     # (b) ringing: the Ring row's own click, the phone answers ring.state, and
     # the one row reads Stop Ringing.
@@ -8480,8 +8596,9 @@ check_menubar_vm() {
     close_panel
     sleep 1
 
-    # (d) the Deck's popover: the same card, above the grid.
-    osascript -e 'tell application "PocketDeck" to activate' >/dev/null 2>&1 || true
+    # (d) the Deck's popover: the same card, above the grid. Open our own
+    # bundle, not the person's installed app with the same name.
+    open "$E2E_BUNDLE" >/dev/null 2>&1 || true
     if control deckpanel; then
         ok "MENUBAR-VM the Deck popover opened"
     else
@@ -8507,9 +8624,12 @@ check_menubar_vm() {
     sleep 1
     shot_panel "panel-offline-light.png"
     result="$(panel_ax)"
+    # The reason is no longer a floating line: each disabled control carries
+    # the short line in its subtitle, and the full sentence is its help tag and
+    # VoiceOver hint (CONV-MAC-26, CONV-MAC-21).
     case "$result" in
-        *"Connect your phone to use these."*) ok "MENUBAR-VM the offline reason line is on screen" ;;
-        *) bad "MENUBAR-VM no offline reason line ($(printf '%s' "$result" | head -c 200))" ;;
+        *"Connect your phone to use these."*) ok "MENUBAR-VM the disabled controls' help carries the full reason" ;;
+        *) bad "MENUBAR-VM no offline reason in a control's help ($(printf '%s' "$result" | head -c 200))" ;;
     esac
     case "$result" in
         *"Offline"*) ok "MENUBAR-VM the header says Offline" ;;
@@ -8517,6 +8637,11 @@ check_menubar_vm() {
     esac
 
     stop_app
+    if [ "$original_style" = "Dark" ]; then
+        osascript -e 'tell application "System Events" to tell appearance preferences to set dark mode to true' >/dev/null 2>&1 || true
+    else
+        osascript -e 'tell application "System Events" to tell appearance preferences to set dark mode to false' >/dev/null 2>&1 || true
+    fi
     defaults delete "$DEFAULTS_SUITE" "notify.$device" >/dev/null 2>&1
     defaults delete "$DEFAULTS_SUITE" "showAppsInDock" >/dev/null 2>&1
 }
@@ -8611,13 +8736,64 @@ check_deck() {
     else
         bad "DECK deck-size 1200: $CONTROL_REPLY"
     fi
-    # Put the Deck back on its default size for the visual record.
-    control deck-size 760 560 || bad "DECK deck-size 760: $CONTROL_REPLY"
+    # Put the Deck back on its default size for the visual record. R1's rail
+    # needs 540 pt under the toolbar, which the 600 pt default leaves.
+    control deck-size 760 600 || bad "DECK deck-size 760: $CONTROL_REPLY"
 
-    # The A–Z rail: a letter click scrolls to that letter's first app. A quiet
-    # run cannot point, so deck-rail runs the rail's own scroll; the cell dump
-    # is the authority for where that app is, and railTop proves its row is on
-    # screen after the scroll.
+    # The A–Z rail (R1): rest, the letter under the pointer magnified, and the
+    # accent after a jump. A quiet run cannot move the pointer, so deckrailhover
+    # forces the letter the shot needs; the real pointer is proved in the VM.
+    local railshots="$WORK/deck-rail-shots"
+    mkdir -p "$railshots"
+    shot_rail() {
+        local id
+        id="$(await_window '$4 >= 600')" \
+            && screencapture -x -l"$id" "$railshots/$1" >/dev/null 2>&1 \
+            && say "shot: $railshots/$1" \
+            || bad "DECK no Deck window for the rail shot $1"
+    }
+    shot_rail rail-rest.png
+    local px py
+    if [ "$VISIBLE" = 1 ]; then
+        if control deckrailpoint M "$WORK/deck-rail-shots/m.pt" \
+            && read -r px py < "$WORK/deck-rail-shots/m.pt"; then
+            shot_rail rail-hover-before.png
+            cg_input moveat --x "$px" --y "$py"
+            sleep 1
+            shot_rail rail-hover-m.png
+            if cmp -s "$railshots/rail-hover-before.png" "$railshots/rail-hover-m.png"; then
+                bad "DECK moving the real pointer onto M did not magnify the rail"
+            else
+                ok "DECK the real pointer on M magnified the rail"
+            fi
+        else
+            bad "DECK deckrailpoint M: $CONTROL_REPLY"
+        fi
+    else
+        control deckrailhover M && ok "DECK forced the rail's hover on M for the shot" \
+            || bad "DECK deckrailhover M: $CONTROL_REPLY"
+        sleep 1
+        shot_rail rail-hover-m.png
+        control deckrailhoverout || bad "DECK deckrailhoverout: $CONTROL_REPLY"
+    fi
+
+    # A letter click scrolls to that letter's first app. A quiet run cannot
+    # point, so deck-rail runs the rail's own scroll; a visible VM run clicks
+    # the rail with the real pointer. The cell dump is the authority for where
+    # that app is, and railTop proves its row is on screen after the scroll.
+    if [ "$VISIBLE" = 1 ]; then
+        if control deckrailpoint T "$WORK/deck-rail-shots/t.pt" \
+            && read -r px py < "$WORK/deck-rail-shots/t.pt"; then
+            cg_input clickat --x "$px" --y "$py"
+            if rail="$(python3 "$MACOS/scripts/deck-rail.py" "$WORK/deck-grid.jsonl" T)"; then
+                ok "DECK the real pointer clicked the rail's T and landed on it ($rail)"
+            else
+                bad "DECK the real pointer on the rail's T: $rail"
+            fi
+        else
+            bad "DECK deckrailpoint T: $CONTROL_REPLY"
+        fi
+    fi
     if control deck-rail T >/dev/null; then
         if rail="$(python3 "$MACOS/scripts/deck-rail.py" "$WORK/deck-grid.jsonl" T)"; then
             ok "DECK the rail's T click lands on its first app ($rail)"
@@ -8627,6 +8803,8 @@ check_deck() {
     else
         bad "DECK deck-rail T: $CONTROL_REPLY"
     fi
+    sleep 1
+    shot_rail rail-jump-t.png
 
     # The deckMode transition (welcome -> grid) settles; a capture too early
     # shows both states overlapped, which is useless as the visual record.
@@ -8637,6 +8815,54 @@ check_deck() {
     else
         bad "DECK no Deck window to capture"
     fi
+
+    # A drag from A to Z on the rail picks every letter on the way and lands on
+    # Z's first app (a visible VM run only: it is the real pointer).
+    if [ "$VISIBLE" = 1 ]; then
+        if control deckrailpoint A "$WORK/deck-rail-shots/a.pt" \
+            && control deckrailpoint Z "$WORK/deck-rail-shots/z.pt"; then
+            local ax ay zx zy
+            read -r ax ay < "$WORK/deck-rail-shots/a.pt"
+            read -r zx zy < "$WORK/deck-rail-shots/z.pt"
+            cg_input dragat --x "$ax" --y "$ay" --x2 "$zx" --y2 "$zy" --steps 40
+            # Z's app is in the grid's last row, which cannot reach the top;
+            # the pick is the proof it landed, and the shot shows Z's apps.
+            if python3 - "$WORK/deck-grid.jsonl" <<'PY'
+import json, sys
+lines = [json.loads(line) for line in open(sys.argv[1]) if line.strip()]
+picks = [line["rail"] for line in lines if "rail" in line]
+if not picks or picks[-1].get("letter") != "Z":
+    print("last pick:", picks[-1] if picks else None); sys.exit(1)
+print("last pick Z at index %s" % picks[-1].get("index"))
+PY
+            then
+                ok "DECK dragging the real pointer from A to Z reached Z (the shot shows its apps at the bottom)"
+            else
+                bad "DECK dragging the real pointer A to Z did not reach Z"
+            fi
+            sleep 1
+            shot_rail rail-drag-z.png
+        else
+            bad "DECK deckrailpoint A or Z: $CONTROL_REPLY"
+        fi
+    else
+        skip_visible "DECK a real A-to-Z rail drag"
+    fi
+
+    # A 450 pt window cannot hold 27 letters at 20 pt: the rail condenses to
+    # every other letter (14 slots at 280 pt) instead of hiding. Hover T shows
+    # the real letter under the pointer and its tag.
+    if control deck-size 760 450 >/dev/null; then
+        sleep 1
+        control deckrailhover T && ok "DECK the short rail's hover on T is forced" \
+            || bad "DECK deckrailhover T (short): $CONTROL_REPLY"
+        sleep 1
+        shot_rail rail-short.png
+        control deckrailhoverout || bad "DECK deckrailhoverout (short): $CONTROL_REPLY"
+    else
+        bad "DECK deck-size 760 450: $CONTROL_REPLY"
+    fi
+    control deck-size 760 600 || bad "DECK deck-size 760 600 (restore): $CONTROL_REPLY"
 
     # ⌘F is the Deck's Find (focus the search field, select its text) and the
     # phone app's find-in-page when a stream window is key: a real key event
@@ -9045,7 +9271,7 @@ check_menubar_shots() {
     mkdir -p "$shots"
     shot_panel() {
         local id
-        id="$(await_window '$4 == 300 && $5 >= 300 && $5 <= 800')" \
+        id="$(await_window '$4 >= 300 && $4 <= 340 && $5 >= 300 && $5 <= 800')" \
             || { bad "MENUBAR-SHOTS no panel window for $1"; return 1; }
         screencapture -x -l"$id" "$shots/$1" >/dev/null 2>&1 && say "shot: $shots/$1"
     }
@@ -9067,6 +9293,83 @@ check_menubar_shots() {
         || bad "MENUBAR-SHOTS paneldump: $CONTROL_REPLY"
     sleep 1
     shot_panel "panel-online-light.png"
+
+    # The real pointer (visible runs only): moving onto the DND tile changes
+    # the picture, and the footer's Settings row opens Settings. The panel host
+    # is the shared PhonePanelView in a real window, so these are the control's
+    # own hover and click paths, not a forced state.
+    # The Settings scene's window title is the selected tab ("Devices",
+    # "General", …); its identifier is stable.
+    settings_open() {
+        local f="$shots/windows-settings.txt"
+        control panelwindows "$f" >/dev/null 2>&1 || return 1
+        grep -q "com_apple_SwiftUI_Settings_window" "$f"
+    }
+    if [ "$VISIBLE" = 1 ]; then
+        local px py
+        if control panelpoint panel panel.dnd "$shots/dnd.pt" \
+            && read -r px py < "$shots/dnd.pt"; then
+            # Start from a known pointer-away state, or a leftover hover makes
+            # the before and after shots identical.
+            cg_input moveat --x 4 --y 4
+            sleep 0.5
+            shot_panel "hover-tile-before.png"
+            cg_input moveat --x "$px" --y "$py"
+            sleep 1
+            shot_panel "hover-tile-after.png"
+            if cmp -s "$shots/hover-tile-before.png" "$shots/hover-tile-after.png"; then
+                bad "MENUBAR-SHOTS moving the real pointer onto the DND tile did not change the picture"
+            else
+                ok "MENUBAR-SHOTS the real pointer on the DND tile changed the picture"
+            fi
+        else
+            bad "MENUBAR-SHOTS panelpoint panel panel.dnd: $CONTROL_REPLY"
+        fi
+        if control panelpoint panel panel.settings "$shots/settings.pt" \
+            && read -r px py < "$shots/settings.pt"; then
+            cg_input clickat --x "$px" --y "$py"
+            if wait_until 15 settings_open; then
+                ok "MENUBAR-SHOTS clicking the footer's Settings row with the real pointer opened Settings"
+            else
+                control panelwindows "$shots/after-settings.txt" >/dev/null 2>&1 || true
+                bad "MENUBAR-SHOTS the footer's Settings row did not open Settings (titles: $(window_titles "$APP_PID" | tr '\n' '|'); windows: $(tr '\n' '|' < "$shots/after-settings.txt" 2>/dev/null))"
+            fi
+            osascript - "$APP_PID" <<'OSA' >/dev/null 2>&1 || true
+on run argv
+    set pidText to item 1 of argv
+    tell application "System Events"
+        set matches to every process whose unix id is (pidText as integer)
+        if (count of matches) is 0 then return
+        tell item 1 of matches
+            set closed to false
+            repeat with w in windows
+                try
+                    if (id of w as string) is "com_apple_SwiftUI_Settings_window" then
+                        click button 1 of w
+                        set closed to true
+                        exit repeat
+                    end if
+                end try
+            end repeat
+            if not closed then
+                try
+                    click button 1 of window "Devices"
+                end try
+            end if
+        end tell
+    end tell
+end run
+OSA
+            sleep 1
+        else
+            bad "MENUBAR-SHOTS panelpoint panel panel.settings: $CONTROL_REPLY"
+        fi
+        cg_input moveat --x 4 --y 4
+    else
+        skip_visible "MENUBAR-SHOTS a real pointer on the panel tile and footer row"
+    fi
+    # Make sure the pointer is not left over the panel for the ringing shot.
+    control panelhoverout >/dev/null 2>&1 || true
 
     # Ringing: the row's own click; the phone answers ring.state, so the same
     # row reads Stop Ringing in the shot.
@@ -9091,7 +9394,8 @@ check_menubar_shots() {
         && say "shot: $shots/deck-popover-light.png" \
         || bad "MENUBAR-SHOTS no Deck popover window"
 
-    # Offline: away, the card stays with its one reason line.
+    # Offline: away, the card stays, its disabled controls each carrying their
+    # reason (the tile's short line, the full sentence in its help tag).
     stop_fakephone
     wait_until 10 no_fakephone
     sleep 18
@@ -9101,7 +9405,7 @@ check_menubar_shots() {
     result="$(control paneldump panel "$WORK/menubar-shots/panel-offline.json" && echo dumped)"
     [ -n "$result" ] \
         && python3 - "$WORK/menubar-shots/panel-offline.json" <<'PY' \
-        && ok "MENUBAR-SHOTS the offline card carries the one reason line" \
+        && ok "MENUBAR-SHOTS the offline card carries the offline reason" \
         || bad "MENUBAR-SHOTS no reason in the offline card"
 import json, sys
 root = json.load(open(sys.argv[1]))
@@ -9112,6 +9416,63 @@ PY
     stop_app
     defaults delete "$DEFAULTS_SUITE" "notify.$device" >/dev/null 2>&1
     defaults delete "$DEFAULTS_SUITE" "showAppsInDock" >/dev/null 2>&1
+    shoot_panel_states
+}
+
+# shoot_panel_states — the panel's states in both appearances, for the review:
+# the rest state (Turn Off Screen is disabled: no Phone Mirror is open), the
+# same panel with the pointer forced onto the DND tile, a WINDOWS button, the
+# footer's Settings row and the disabled Turn Off Screen tile (a disabled tile
+# does not light), and with Do Not Disturb on. Each appearance and phone state
+# is its own launch, so no hover or menu state carries over.
+shoot_panel_states() {
+    local shots="$WORK/menubar-shots" app id
+    mkdir -p "$shots"
+    shoot_state() {
+        local id
+        id="$(await_window '$4 >= 300 && $4 <= 340 && $5 >= 300 && $5 <= 800')" \
+            || { bad "PANEL-STATES no panel window for $1"; return 1; }
+        screencapture -x -l"$id" "$shots/$1" >/dev/null 2>&1 && say "shot: $shots/$1"
+    }
+    for app in light dark; do
+        FAKE_ARGS="--media" start_fake || return 1
+        rm -rf "$WORK-control"
+        mkdir -p "$WORK-control"
+        launch --connect "127.0.0.1:$PORT" --quit-after 120 --debug-control "$WORK-control" --appearance "$app"
+        wait_until 30 events_have '"t":"apps.list"' \
+            || { bad "PANEL-STATES the session never started"; stop_app; stop_fakephone; return 1; }
+        control panelopen && ok "PANEL-STATES the panel host opened ($app)" \
+            || bad "PANEL-STATES panelopen: $CONTROL_REPLY"
+        sleep 1
+        shoot_state "states-$app-rest.png"
+        # Turn Off Screen is disabled here (no Phone Mirror); the rest shot is
+        # also the disabled-tile record, named for the review.
+        cp "$shots/states-$app-rest.png" "$shots/states-$app-screen-disabled.png"
+        say "shot: $shots/states-$app-screen-disabled.png"
+        for id in panel.dnd panel.findApps panel.settings; do
+            control panelhover panel "$id" || bad "PANEL-STATES panelhover $id: $CONTROL_REPLY"
+            sleep 1
+            shoot_state "states-$app-hover-${id#panel.}.png"
+            control panelhoverout || bad "PANEL-STATES panelhoverout: $CONTROL_REPLY"
+        done
+        stop_app
+        stop_fakephone
+        wait_until 10 no_fakephone
+    done
+    for app in light dark; do
+        FAKE_ARGS="--media --dnd-person priority" start_fake || return 1
+        rm -rf "$WORK-control"
+        mkdir -p "$WORK-control"
+        launch --connect "127.0.0.1:$PORT" --quit-after 120 --debug-control "$WORK-control" --appearance "$app"
+        wait_until 30 events_have '"t":"apps.list"' \
+            || { bad "PANEL-STATES the DND session never started"; stop_app; stop_fakephone; return 1; }
+        control panelopen || bad "PANEL-STATES panelopen (DND): $CONTROL_REPLY"
+        sleep 1
+        shoot_state "states-$app-dnd-on.png"
+        stop_app
+        stop_fakephone
+        wait_until 10 no_fakephone
+    done
 }
 
 # --- NFR: the limits in docs/NFR.md, end to end -----------------------------
