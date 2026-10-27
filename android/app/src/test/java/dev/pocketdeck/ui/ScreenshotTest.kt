@@ -105,15 +105,15 @@ class ScreenshotTest {
 
     @Test
     fun homeConnectedLight() =
-        shootHome("home_connected_light", false, homeState(connectedMac = "Marcos's MacBook", liveClientId = "1a2b3c4d", windows = 2))
+        shootHome("home_connected_light", false, homeState(connectedMac = "Studio Mac", liveClientId = "1a2b3c4d", windows = 2))
 
     @Test
     fun homeConnectedDark() =
-        shootHome("home_connected_dark", true, homeState(connectedMac = "Marcos's MacBook", liveClientId = "1a2b3c4d", windows = 2))
+        shootHome("home_connected_dark", true, homeState(connectedMac = "Studio Mac", liveClientId = "1a2b3c4d", windows = 2))
 
     @Test
     fun homeConnectedRowSaysConnectedNow() {
-        shootHome("home_connected_row_light", dark = false, state = homeState(connectedMac = "Marcos's MacBook", liveClientId = "1a2b3c4d"))
+        shootHome("home_connected_row_light", dark = false, state = homeState(connectedMac = "Studio Mac", liveClientId = "1a2b3c4d"))
         compose.onNodeWithText("Connected now").fetchSemanticsNode()
         compose.onNodeWithText("Last connected 5 minutes ago").fetchSemanticsNode()
     }
@@ -206,7 +206,7 @@ class ScreenshotTest {
             windows = windows,
             paired = pairedRows(
                 listOf(
-                    PairedMacUi("1a2b3c4d", "Marcos's MacBook", 1_700_000_000_000L),
+                    PairedMacUi("1a2b3c4d", "Studio Mac", 1_700_000_000_000L),
                     PairedMacUi("5e6f7a8b", "Mac Studio", 1_699_000_000_000L),
                 ),
                 liveClientId,
@@ -242,7 +242,7 @@ class ScreenshotTest {
                     PairingDialog(
                         pending = PendingPairingUi(
                             requestId = "req-1",
-                            macName = "Marcos's MacBook",
+                            macName = "Studio Mac",
                             code = "482913",
                         ),
                         onAnswer = {},

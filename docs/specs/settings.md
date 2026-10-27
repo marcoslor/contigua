@@ -60,6 +60,7 @@ Every setting this window binds today, and where it lives. Nothing is dropped.
 | SET-WIN-06 | A phone's page SHALL show a header with its icon, its name, a dot plus the state's words, when it was last seen while it is not connected, the In Use mark, and Use This Phone (Pair Again… when its key is gone); every section heading SHALL be plain — Phone, Notifications, Screen, Forget — and SHALL NOT contain the phone's name, which SHALL appear only in the header and the window title. | K2 `SettingsSidebarTests.testSectionHeadingsArePlainAndNeverCarryThePhoneName` (no heading contains a phone name), `testTheWindowTitleIsTheOpenPagesName`; e2e `settings` `[SET-WIN-06]` (the title, the header's state/action, the four plain headings) |
 | SET-WIN-07 | THE window SHALL be 720×560 pt (a 240 pt sidebar and a 480 pt detail) and SHALL fit a 1280×800 screen with the menu bar; a page taller than the window SHALL scroll and its last control SHALL be reachable. | K2 `LayoutTests.testEverySettingsPageFitsAndScrollsAtTheSmallestScreen`, `SettingsSidebarTests.testTheWindowIs720WideAndFitsTheSmallestScreen`; e2e `settings` (geometry) and `chrome` `C14 Settings` (720 pt, fits, scrolls, last row reachable) |
 | SET-WIN-08 | WHEN the window opens THE sidebar SHALL have the keyboard; ↑/↓ SHALL move the selection between its rows; Tab SHALL move the keyboard into the detail. | e2e `settings` `[SET-WIN-08]` (real ↓/↑/Tab events through the app's key dispatch; the window reports where the keyboard is) |
+| SET-WIN-09 | WHEN the window opens with no saved frame THE window SHALL open centred on the screen holding the key window (the main screen when there is none); WHEN it opens with a saved frame that is still on a screen THE window SHALL open at that origin, pushed inside the screen when it is only partly off; IF the saved frame is on no screen (a display went away) THEN the window SHALL open centred; moving the window SHALL be remembered for the next open and for a relaunch, one origin per profile; the window SHALL keep its size rules (SET-WIN-07) and SHALL NOT be moved again while it is up. | K2 `SettingsPlacementTests` (centred with no saved frame, kept on its screen, kept on a second screen, centred off every screen, pushed inside when partly off, the stored value per profile); e2e `settings` `[SET-WIN-09]` (fresh profile centred within 2 pt, moved through AX, ⌘W then reopen, relaunch) |
 | SET-DEV-01 | THE Phones group SHALL list every phone this Mac remembers, once each, with the name the rest of the app uses (its nickname, else the phone's own name), its model, its connection state and, while it is not connected, when it was last seen. | K2 `DevicesTabTests` (rows, presence, last seen); e2e `settings` `[SET-DEV-01]` (1 and 3 phones); names K2 `PhoneNicknamesTests` |
 | SET-DEV-02 | THE sidebar SHALL mark exactly one listed phone as in use, and that mark SHALL follow `activePhoneId`. | K2 `DevicesTabTests` (the in-use row); e2e `settings` `[SET-DEV-02]` (one mark of three) |
 | SET-DEV-03 | WHEN the person chooses Use This Phone on a phone that is not in use THE Mac SHALL make it the active phone for every surface (Deck, menu-bar panel, windows, notifications, Dock shims) and SHALL move the in-use mark to it. | K2 `LinkMachineTests.testActivateConnectsToTheOtherPhone`; review of the button (`ConnectionController.use`) |
@@ -119,6 +120,16 @@ A phone's page is the shipped `PhoneSettingsPage`: its header (state, last seen,
 | Any | `toggleMute(pkg)` | ignored while sharing is off (row disabled), else stored for that phone and applied to the next notification (SET-DEV-11) |
 | Any | `toggleKeepOff(phone)` | stored for that phone (SET-DEV-13) |
 
+The window's own placement is a second, small machine (`SettingsPlacement` in macOS `SettingsPlacement.swift` and the tag's coordinator): one placement per open, then nothing until the person moves the window or closes it.
+
+| State | Event | Result |
+|---|---|---|
+| Closed | `open()` | placed once: the saved origin when it is on a screen, else centred on the screen holding the key window (SET-WIN-09) |
+| Open, placing | `shown` | the size rules applied and the origin set in one frame change; → Placed |
+| Placed | `moved` | the origin is stored (once the drag settles); the window is not moved |
+| Placed | `closed` | the origin is stored; → Closed |
+| Closed | `screens changed` (a display went away) | the next `open()` finds the saved origin on no screen and centres instead |
+
 ## Phone count and connection
 
 | Situation | The window shows |
@@ -147,7 +158,7 @@ A phone's page is the shipped `PhoneSettingsPage`: its header (state, last seen,
 | CONV-MAC-07 | n/a: no shortcut is reused here (⌘P stays Phone Mirror) |
 | CONV-MAC-10 | n/a: the window is not the status-item panel |
 | CONV-MAC-11 | applies: ⌘, and the gear open the one Settings window; the window adds no window of its own (SET-WIN-03) |
-| CONV-MAC-12 | applies: the Settings window keeps its size rules (SET-WIN-07); it never opens a second window |
+| CONV-MAC-12 | applies: SET-WIN-09 (the window opens centred, remembers where it was moved and never opens off-screen) and SET-WIN-07 (its size rules); it never opens a second window |
 | CONV-MAC-13 | n/a: the window adds no menu item or full-screen command |
 | CONV-MAC-14 | applies: SET-WIN-07 (no clipping at the minimum; the page scrolls) |
 | CONV-MAC-15 | n/a: closing Settings does not quit the app (unchanged); the window changes nothing |

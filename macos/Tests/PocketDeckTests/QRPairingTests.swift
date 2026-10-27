@@ -8,7 +8,7 @@ final class QRPairingTests: XCTestCase {
     private let base = Date(timeIntervalSince1970: 1_000_000)
     private let macFp = String(repeating: "ab", count: 32)
 
-    private func payload(name: String = "Marcos's MacBook Pro", age: TimeInterval = 0) -> PairingQRPayload {
+    private func payload(name: String = "Studio Mac", age: TimeInterval = 0) -> PairingQRPayload {
         PairingQRPayload(clientId: "5f0c1d2e-0000-4000-8000-abcdefabcdef",
                          name: name,
                          macFingerprintHex: macFp,
