@@ -192,6 +192,35 @@ class NotifySessionTest {
     }
 
     @Test
+    fun `turning sharing off clears no_access on the phone`() {
+        connect()
+        authenticate()
+        send(mapOf("t" to "notify.enable", "on" to true))
+        assertEquals("no_access", readUntil("notify.state")["reason"])
+        send(mapOf("t" to "notify.enable", "on" to false))
+        val state = readUntil("notify.state")
+        assertEquals(false, state["on"])
+        assertNull(state["reason"])
+        // The app's attention item is local state: it must be cleared too.
+        assertEquals(listOf<String?>("no_access", null), notifyReasons.toList())
+    }
+
+    @Test
+    fun `closing the session clears no_access locally`() {
+        connect()
+        authenticate()
+        send(mapOf("t" to "notify.enable", "on" to true))
+        assertEquals("no_access", readUntil("notify.state")["reason"])
+        session!!.close()
+        val deadline = System.currentTimeMillis() + 3_000
+        while (notifyReasons.lastOrNull() != null && System.currentTimeMillis() < deadline) {
+            Thread.sleep(20) // real-time: the close path runs on the session reader thread
+        }
+        assertEquals(listOf<String?>("no_access", null), notifyReasons.toList())
+        assertEquals(false, forwards.last())
+    }
+
+    @Test
     fun `a later listener grant forwards without another Mac toggle`() {
         connect()
         authenticate()
@@ -205,6 +234,7 @@ class NotifySessionTest {
         assertEquals(true, state["on"])
         assertNull(state["reason"])
         assertEquals(listOf(false, true), forwards.toList())
+        assertNull("the attention item is cleared by the grant", notifyReasons.last())
     }
 
     @Test
