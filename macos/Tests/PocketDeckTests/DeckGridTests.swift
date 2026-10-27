@@ -126,15 +126,68 @@ final class DeckGridTests: XCTestCase {
         func current(_ offset: CGFloat, width: CGFloat = 640) -> String? {
             DeckRail.currentLetter(offset: offset, apps: apps, metrics: metrics, width: width)
         }
-        XCTAssertEqual(current(0), "#")
-        XCTAssertEqual(current(24), "#", "the top of the block is still the first row")
-        XCTAssertEqual(current(148), "B", "row 2 starts at index 5")
+        // Round 2: the current letter is the LAST section start in the top
+        // row; this width fits five apps. Row 1 is #, A, A, A, A, so A starts
+        // inside it; row 2 is all Bravo; row 3 is all Charlie.
+        XCTAssertEqual(current(0), "A")
+        XCTAssertEqual(current(24), "A", "the top of the block is still the first row")
+        XCTAssertEqual(current(148), "B", "row 2 is all Bravo")
         XCTAssertEqual(current(140), "B", "the gap above a row belongs to the row below it")
-        XCTAssertEqual(current(272), "C", "row 3 starts at index 10")
+        XCTAssertEqual(current(272), "C", "row 3 is all Charlie")
         XCTAssertEqual(current(10_000), "C", "past the end it stays on the last app")
-        XCTAssertEqual(current(148, width: 1200), "B",
-                       "a wider window fits eight apps in a row, index 8 is still Bravo")
+        XCTAssertEqual(current(148, width: 1200), "C",
+                       "a wider window's row 2 flows from Bravo into Charlie")
         XCTAssertNil(DeckRail.currentLetter(offset: 0, apps: [], metrics: metrics, width: 640))
+    }
+
+    /// The rail's current letter is the LAST section start in the top visible
+    /// row; with no section start there it is the row's first tile. A jump to
+    /// T must accent T even when S apps share the top row.
+    func testRailCurrentLetterIsTheLastSectionStartInTheTopRow() {
+        let apps = railApps((1...5).map { "Slack \($0)" } + ["Telegram"]
+                            + (1...5).map { "Tuner \($0)" })
+        let metrics = DeckGridSize(zoom: 1)
+        let width: CGFloat = 700
+        XCTAssertEqual(metrics.columns(forWidth: width), 6)
+        XCTAssertEqual(DeckRail.currentLetter(offset: 0, apps: apps, metrics: metrics, width: width),
+                       "T", "T's section starts in the top row, after five Slack tiles")
+        XCTAssertEqual(DeckRail.accentLetter(target: 5, top: 0, apps: apps, columns: 6), "T",
+                       "a jump to T accents T, not the row's first S")
+        let oneSection = railApps((1...6).map { "Slack \($0)" })
+        XCTAssertEqual(DeckRail.currentLetter(offset: 0, apps: oneSection, metrics: metrics, width: width),
+                       "S", "no section starts in the row, so the first tile's letter")
+    }
+
+    /// A short window condenses the rail rather than losing it: every other
+    /// letter at 280 pt, every third at 180 pt, and nothing below 8 slots.
+    /// Each slot still maps a y to a real letter, so a click lands correctly.
+    func testRailCondensesItsSlotsWhenTheWindowIsShort() {
+        let full = DeckRail.slots(forHeight: 540) ?? []
+        XCTAssertEqual(full.count, 27)
+        XCTAssertEqual(full.first, DeckRail.Slot(first: 0, count: 1))
+        XCTAssertEqual(full.last, DeckRail.Slot(first: 26, count: 1))
+
+        let two = DeckRail.slots(forHeight: DeckRail.compactTwoHeight) ?? []
+        XCTAssertEqual(two.count, 14)
+        XCTAssertEqual(two.first, DeckRail.Slot(first: 0, count: 2), "A covers A and B")
+        XCTAssertEqual(two.last, DeckRail.Slot(first: 26, count: 1), "# stands alone")
+        XCTAssertEqual(DeckRail.letter(atY: 0, slots: two), "A")
+        XCTAssertEqual(DeckRail.letter(atY: 19.9, slots: two), "B",
+                       "the slot's two letters split its 20 pt row")
+        XCTAssertEqual(DeckRail.letter(atY: 20, slots: two), "C")
+        XCTAssertEqual(DeckRail.letter(atY: 13 * 20 + 5, slots: two), "#")
+
+        let three = DeckRail.slots(forHeight: DeckRail.compactThreeHeight) ?? []
+        XCTAssertEqual(three.count, 9)
+        XCTAssertEqual(three.first, DeckRail.Slot(first: 0, count: 3))
+        XCTAssertEqual(three.last, DeckRail.Slot(first: 24, count: 3), "Y, Z and #")
+        XCTAssertEqual(DeckRail.letter(atY: 0, slots: three), "A")
+        XCTAssertEqual(DeckRail.letter(atY: 10, slots: three), "B")
+        XCTAssertEqual(DeckRail.letter(atY: 19.9, slots: three), "C")
+
+        XCTAssertNil(DeckRail.slots(forHeight: 179), "fewer than 8 slots: hide the rail")
+        XCTAssertEqual(DeckRail.slots(forHeight: 180)?.count, 9, "180 still holds 9 slots")
+        XCTAssertNil(DeckRail.letter(atY: 0, slots: []))
     }
 
     func testRailHidesWhileSearchingAndBelowThirtyApps() {
@@ -155,6 +208,48 @@ final class DeckGridTests: XCTestCase {
         XCTAssertEqual(DeckRail.letter(atY: 45, height: 270, entries: entries),
                        entries[4].letter)
         XCTAssertNil(DeckRail.letter(atY: 0, height: 0, entries: entries))
+    }
+
+    /// R1: every letter owns a 20 pt hit target (AGENTS: at least 20 pt), and
+    /// the rail hides rather than shrink them when the window is too short.
+    func testRailLettersAreTwentyPointTargetsAndHideWhenTooShort() {
+        XCTAssertGreaterThanOrEqual(DeckRail.pitch, 20)
+        XCTAssertEqual(DeckRail.minimumHeight, 27 * DeckRail.pitch)
+        XCTAssertEqual(DeckRail.minimumHeight, 540,
+                       "27 letters at 20 pt; the rail's ViewThatFits hides it below this")
+    }
+
+    /// R1: the letter under the pointer is about 2× and its neighbours taper
+    /// to 1×; Reduce Motion drops the magnification for a plain highlight.
+    func testRailFisheyeMagnifiesTheLetterUnderThePointer() {
+        let peak = RailFisheye.scale(distance: 0, reduceMotion: false)
+        XCTAssertGreaterThanOrEqual(peak, 2)
+        XCTAssertEqual(RailFisheye.scale(distance: 1, reduceMotion: false),
+                       RailFisheye.scale(distance: -1, reduceMotion: false),
+                       "the taper is symmetrical")
+        XCTAssertGreaterThan(peak, RailFisheye.scale(distance: 1, reduceMotion: false))
+        XCTAssertGreaterThan(RailFisheye.scale(distance: 1, reduceMotion: false),
+                             RailFisheye.scale(distance: 2, reduceMotion: false))
+        XCTAssertEqual(RailFisheye.scale(distance: RailFisheye.reach, reduceMotion: false), 1)
+        XCTAssertEqual(RailFisheye.scale(distance: 0, reduceMotion: true), 1,
+                       "Reduce Motion keeps the letters at their rest size")
+    }
+
+    /// The rail's accent is the top visible row. While a click or drag jump is
+    /// settling, that is the target's row, not the row that was on top when the
+    /// pick started (the prototype's lag).
+    func testRailAccentUsesTheJumpTargetsRow() {
+        let apps = railApps((1...20).map { "Alpha \($0)" })
+        let columns = 6
+        XCTAssertEqual(DeckRail.rowStart(containing: 13, columns: columns), 12)
+        XCTAssertEqual(DeckRail.accentLetter(target: 13, top: 6, apps: apps, columns: columns), "A")
+        XCTAssertEqual(DeckRail.accentLetter(target: nil, top: 13, apps: apps, columns: columns), "A")
+        XCTAssertNil(DeckRail.accentLetter(target: 99, top: 0, apps: apps, columns: columns),
+                     "a target past the end has no letter")
+        XCTAssertNil(DeckRail.accentLetter(target: nil, top: nil, apps: apps, columns: columns))
+        let letters = railApps(["Alpha", "Bixby", "Delta", "Echo", "Foxtrot", "Golf", "Hotel"])
+        XCTAssertEqual(DeckRail.accentLetter(target: 6, top: 0, apps: letters, columns: 6), "H",
+                       "a target in the second row accents that row's first app")
     }
 
     func testFallbackInitialSkipsPunctuationAndFallsBackToThePackage() {

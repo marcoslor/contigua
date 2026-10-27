@@ -24,6 +24,9 @@
 //       a plain window over the main screen just below the floating level: above every
 //       normal window (the Deck included), behind `--float-windows` stream windows;
 //       every click it receives is appended to F as "x y" (Quartz points)
+//   swift scripts/cgevent-input.swift moveat  --x N --y N        (absolute Quartz point)
+//   swift scripts/cgevent-input.swift clickat --x N --y N
+//   swift scripts/cgevent-input.swift dragat  --x N --y N --x2 N --y2 N [--steps N]
 //   swift scripts/cgevent-input.swift type   --text hi
 //   swift scripts/cgevent-input.swift key    --keycode 36 [--cmd] [--shift]
 //
@@ -228,6 +231,26 @@ case "all":
     // Debug aid: every on-screen window with owner, pid, layer and bounds.
     for entry in (CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]]) ?? [] {
         print("owner=\(entry[kCGWindowOwnerName as String] ?? "?") pid=\(entry[kCGWindowOwnerPID as String] ?? "?") id=\(entry[kCGWindowNumber as String] ?? "?") layer=\(entry[kCGWindowLayer as String] ?? "?") bounds=\(entry[kCGWindowBounds as String] ?? "?")")
+    }
+case "moveat", "clickat", "dragat":
+    // Absolute Quartz points, for a window the CG list cannot see (the
+    // status-item panel) or a SwiftUI control inside a window (the rail).
+    guard let x = doubleArgument("--x"), let y = doubleArgument("--y") else {
+        FileHandle.standardError.write(Data("cgevent-input: moveat/clickat/dragat need --x and --y\n".utf8))
+        exit(1)
+    }
+    switch CommandLine.arguments[1] {
+    case "moveat":
+        move(to: CGPoint(x: x, y: y))
+    case "clickat":
+        click(CGPoint(x: x, y: y), button: .left)
+    default:
+        guard let x2 = doubleArgument("--x2"), let y2 = doubleArgument("--y2") else {
+            FileHandle.standardError.write(Data("cgevent-input: dragat needs --x2 and --y2\n".utf8))
+            exit(1)
+        }
+        drag(from: CGPoint(x: x, y: y), dx: x2 - x, dy: y2 - y,
+             steps: numberArgument("--steps") ?? 20)
     }
 case "click", "rclick", "drag", "scroll", "move", "bpress":
     guard let id = numberArgument("--window"), let target = windowWithID(CGWindowID(id), owner: owner, pid: pid) else {

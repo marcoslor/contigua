@@ -1,4 +1,4 @@
-# handoff — Continue on Mac (docs/ROADMAP.md #9)
+# handoff — Move Phone App to Mac (docs/ROADMAP.md #9)
 
 One command, three surfaces: the menu bar menu, the Deck's app menu and ⌘⇧C
 while PocketDeck is active (`ConnectionController.continueOnMac`). It opens a
@@ -6,7 +6,8 @@ new Mac window for the app in the **foreground on the phone's own screen**
 (display 0) and moves the task there — same screen, same scroll — while the
 phone's screen returns to its home screen. Excluded: our own app, the
 launcher/home, SystemUI (and the keyguard it draws) — those answer
-`nothing_to_continue` and the Mac shows a short "Nothing to continue." notice.
+`nothing_to_continue` and the Mac shows "Nothing to move. Your phone is showing its home
+screen or PocketDeck."
 
 ## The phone side
 

@@ -40,7 +40,7 @@ Menu-bar presence + Dock icon. One home window, the **Deck**, plus the app windo
 Detail, states, copy and the connection state machine: [design/mac-redesign.md](design/mac-redesign.md).
 The app's own menu items carry SF Symbols, as Apple's apps draw theirs, and the menus have no section titles. **View** holds
 Find Apps · Framed / Immersive (⌥⌘F switches) · Hide Controls › · Show Touches · Live Text · Density › (Default, the other
-percentages, Larger ⌘+, Smaller ⌘−, Actual Size ⌘0). **Phone** holds Phone Mirror ⌘P · Continue on Mac ⇧⌘C · Turn Off Phone
+percentages, Larger ⌘+, Smaller ⌘−, Actual Size ⌘0). **Phone** holds Phone Mirror ⌘P · Move Phone App to Mac ⇧⌘C · Turn Off Phone
 Screen · Do Not Disturb · Ring Phone / Stop Ringing · Install APK…. **Navigate** holds Back · Home · Recents, **Window** the
 standard items plus Enter Full Screen ⌃⌘F, and **Help** is empty (there is no help book). A control that cannot work is
 disabled, never hidden.
@@ -88,11 +88,12 @@ disabled, never hidden.
 3. **Menu bar panel**: the status item opens a Control Center-style card, not a menu — the phone's name and state,
    its battery, a 2×2 set of tiles for **Do Not Disturb**, **Ringer**, **Ring Phone** / **Stop Ringing** and
    **Turn Off Screen** (Screen on / Screen off), the volume slider with its %, **Now Playing follows** when several
-   apps play, the live notifications, one **WINDOWS** row (**Mirror** ⌘P · **Find Apps** ⌘K · **Continue on Mac** ·
-   **Install APK…**), then **Settings…** and **Quit PocketDeck**. **Ringer** opens Ring / Vibrate / Silent with the
-   current mode checked; the volume follows the pointer while it is dragged. A control that cannot work is dimmed
-   with one line saying why ("Connect your phone to use these."). The Deck's status pill opens the same card in a
-   popover, without the Settings/Quit footer.
+   apps play, the live notifications, one **WINDOWS** row (**Mirror** ⌘P · **Find Apps** ⌘K · **Move to Mac** ⇧⌘C ·
+   **Install APK…**), then two full-width footer rows: **Settings…** ⌘, and **Quit PocketDeck** ⌘Q. **Ringer** opens
+   Ring / Vibrate / Silent with the current mode checked; the volume follows the pointer while it is dragged. A
+   control that cannot work is dimmed as a whole (icon, title and its short second line, e.g. "Open Mirror first"),
+   never accent-tinted; the full sentence is its help tag and VoiceOver hint ("Open Phone Mirror first."). The
+   Deck's status pill opens the same card in a popover, without the footer.
 4. **Settings** (⌘,; also the settings gear at the Deck header's right): tabs **General** (launch at login, show in menu bar,
    share clipboard with your phone, show phone apps in the Dock, **glass app icons**, default window density, **reveal controls after**) · **Input**
    (**hover over Android apps**) · **Devices**
@@ -205,7 +206,7 @@ Every keyboard shortcut the app defines (CONV-MAC-06). The first cell of each ro
 | ⌘− | Smaller: the Deck grid, or the window's density | View, Deck |
 | ⌘0 | Actual Size: the Deck grid, or the window's density | View, Deck |
 | ⌘P | Phone Mirror | Phone |
-| ⇧⌘C | Continue on Mac | Phone |
+| ⇧⌘C | Move Phone App to Mac | Phone |
 | ⌘[ | Back | Navigate |
 | ⇧⌘H | Home (phone mode) | Navigate |
 | ⌘↑ | Recents (phone mode) | Navigate |

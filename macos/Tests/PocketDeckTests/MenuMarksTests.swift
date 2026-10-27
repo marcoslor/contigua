@@ -237,7 +237,7 @@ final class MenuMarksTests: XCTestCase {
     /// whatever SwiftUI last wrote on the item.
     @MainActor
     func testPhoneMirrorIsEnabledOnlyWhileThePhoneIsOnline() {
-        let items = [MenuMarks.Item(title: "Phone Mirror"), MenuMarks.Item(title: "Continue on Mac")]
+        let items = [MenuMarks.Item(title: "Phone Mirror"), MenuMarks.Item(title: "Move Phone App to Mac")]
         var phone = PhoneControlsState()
         phone.connection = .online
         XCTAssertEqual(MenuMarks.phoneEdits(items: items, phone: phone), [.enable(["Phone Mirror"], true)])

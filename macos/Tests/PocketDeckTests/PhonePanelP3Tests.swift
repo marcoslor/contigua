@@ -85,6 +85,52 @@ final class PhonePanelP3Tests: XCTestCase {
                        "Connect your phone to use these.")
     }
 
+    /// The handoff button says what it does (CONV-PD-09): the short label and
+    /// the full sentence a person hears or reads in its help tag.
+    func testTheHandoffButtonNamesWhatItDoes() {
+        XCTAssertEqual(PhonePanelItem.continueOnMac.label, "Move to Mac")
+        XCTAssertEqual(PhonePanelView.moveToMacHelp,
+                       "Moves the app on your phone's screen into its own Mac window, where you left off (⇧⌘C)")
+    }
+
+    /// A disabled tile says why on its own second line, in a few words; the
+    /// full sentence stays the reason. An enabled tile shows its state instead.
+    func testADisabledTileSaysWhyOnItsSubtitle() {
+        let away = state(online: false)
+        XCTAssertEqual(PhonePanelItem.dnd.shortReason(in: away), "Connect phone first")
+        XCTAssertEqual(PhonePanelItem.ring.shortReason(in: away), "Connect phone first")
+
+        let closed = state(phoneWindow: false)
+        XCTAssertEqual(PhonePanelItem.screen.shortReason(in: closed), "Open Mirror first")
+
+        let dndOn = state(dnd: .priority, ringer: .vibrate)
+        XCTAssertEqual(PhonePanelItem.ringer.shortReason(in: dndOn), "Off while DND is on")
+
+        let noDnd = state(dnd: nil)
+        XCTAssertEqual(PhonePanelItem.dnd.shortReason(in: noDnd), "Not on this phone")
+
+        XCTAssertNil(PhonePanelItem.dnd.shortReason(in: state()))
+        XCTAssertNil(PhonePanelItem.screen.shortReason(in: state()))
+    }
+
+    /// A disabled tile is never drawn as on. With DND on the Ringer reads
+    /// Vibrate, which used to tint its disabled tile accent-blue, so it looked
+    /// like a control that was on (CONV-MAC-25).
+    func testADisabledTileIsNeverOn() {
+        let dndOn = state(dnd: .priority, ringer: .vibrate)
+        XCTAssertFalse(PhonePanelItem.ringer.isEnabled(in: dndOn))
+        XCTAssertFalse(PhonePanelItem.ringer.isOn(in: dndOn))
+        XCTAssertTrue(PhonePanelItem.dnd.isOn(in: dndOn))
+
+        let vibrate = state(ringer: .vibrate)
+        XCTAssertTrue(PhonePanelItem.ringer.isEnabled(in: vibrate))
+        XCTAssertTrue(PhonePanelItem.ringer.isOn(in: vibrate))
+
+        let away = state(online: false, dnd: .priority, ringer: .vibrate)
+        XCTAssertFalse(PhonePanelItem.dnd.isEnabled(in: away))
+        XCTAssertFalse(PhonePanelItem.dnd.isOn(in: away))
+    }
+
     /// Turn Off Screen follows the phone window's held panel: "Screen off"
     /// when the phone holds it off, "Screen on" otherwise, and no phone window
     /// means the tile is disabled with the reason instead of hidden.
