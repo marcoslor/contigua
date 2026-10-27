@@ -4450,61 +4450,55 @@ no_fakephone() { ! pgrep -f -- "--events $WORK/events.jsonl" >/dev/null; }
 
 # --- C12: Spotlight for phone apps ----------------------------------------
 
-# spotlight_log_line — the app's index log line from the last two minutes.
-spotlight_log_line() {
-    log show --last 2m --info \
+# spotlight_line — the app's newest Spotlight line from the last three minutes:
+# "spotlight: indexing N apps" is the attempt, "spotlight: verified N of M ..."
+# the proof that a CSSearchQuery found the items back, "spotlight: unavailable"
+# the door being shut on this build.
+spotlight_line() {
+    log show --last 3m --info \
         --predicate 'subsystem == "dev.pocketdeck.mac" AND process == "PocketDeck"' 2>/dev/null \
-        | grep -o 'spotlight: indexing [0-9]* apps' | tail -1
+        | grep -o 'spotlight: [A-Za-z][^"]*' | tail -1
 }
 
-spotlight_logged() { [ -n "$(spotlight_log_line)" ]; }
+# spotlight_refusal — what corespotlightd said when it refused the client, so a
+# failed check names the gate instead of guessing at our code.
+spotlight_refusal() {
+    log show --last 3m \
+        --predicate 'process == "corespotlightd" AND eventMessage CONTAINS "Rejecting bundle ID"' 2>/dev/null \
+        | grep -o 'Rejecting bundle ID.*' | tail -1
+}
 
-# xctest_available — `swift test` needs the XCTest runner, which comes with
-# Xcode. A guest with Command Line Tools only (the e2e VM) has swiftc but no
-# usr/bin/xctest, so the unit-test fallback below cannot run there.
-xctest_available() { [ -x "$(xcode-select -p 2>/dev/null)/usr/bin/xctest" ]; }
-
-# check_spotlight — after an app list arrives the apps are indexed. mdfind is
-# tried first; an unsigned dev bundle may not be able to write the Spotlight
-# index, in which case the unit tests (item builder + throttle) and the app's
-# own index log line are the evidence.
+# check_spotlight — the fake phone's apps reach the Spotlight index and come
+# back through a CSSearchQuery within 30 s. CoreSpotlight only returns a
+# bundle the items of that bundle, and mdfind cannot see CoreSpotlight items at
+# all (macos/scripts/spotlight-probe.swift shows both), so the app itself asks
+# its index back and logs the count; that line is the proof. The attempt alone
+# is not: an index that silently holds nothing looked green here for months.
 check_spotlight() {
     clean
     start_fake || return 1
-    launch --connect "127.0.0.1:$PORT" --quit-after 18
-    # Read the app's index log line now: the log window is relative to the
-    # time of the query, and the unit tests below can take minutes.
-    # The index follows the app list; the log is only read once it arrived.
-    await_app 18 eval 'events_have "\"t\":\"apps.list\"" && spotlight_logged'
-    local logged hit
-    logged="$(spotlight_log_line)"
-    hit="$(mdfind 'kMDItemContentDescription == "Android app on FakePhone"' 2>/dev/null | head -3 || true)"
-    if [ -n "$hit" ]; then
-        ok "C12 mdfind found indexed phone apps: $(echo "$hit" | tr '\n' ' ')"
-    else
-        say "C12 mdfind lists nothing (an unsigned dev bundle cannot surface in the Spotlight index); falling back to the unit test + the app's log line"
-        if xctest_available; then
-            local out
-            # The debug test build is reused when it is newer than the sources
-            # (K2 leaves one); otherwise swift test builds it as before.
-            local build_args=()
-            newer_than "$MACOS/.build/debug/PocketDeckTests.xctest/Contents/MacOS/PocketDeckTests" "${APP_SOURCES[@]}" "$MACOS/Tests" \
-                || build_args=(--skip-build)
-            out="$(cd "$MACOS" && swift test ${build_args[@]+"${build_args[@]}"} --filter SpotlightTests 2>&1 || true)"
-            if echo "$out" | grep -q "with 0 failures"; then
-                ok "C12 Spotlight unit tests pass (builder + throttled re-index + domain removal)"
+    launch --connect "127.0.0.1:$PORT" --quit-after 60
+    # The index follows the app list, and the query back gets up to 30 s.
+    await_app 45 eval 'grep -qE "spotlight: (verified|unavailable)" <<< "$(spotlight_line)"'
+    local line found total
+    line="$(spotlight_line)"
+    case "$line" in
+        "spotlight: verified "*)
+            found="$(sed -n 's/^spotlight: verified \([0-9]*\) of .*/\1/p' <<< "$line")"
+            total="$(sed -n 's/^spotlight: verified [0-9]* of \([0-9]*\) apps.*/\1/p' <<< "$line")"
+            if [ -n "$found" ] && [ "$found" -ge 1 ]; then
+                ok "[SPOT-1] a CSSearchQuery found $found of $total phone apps in the Spotlight index"
             else
-                bad "C12 Spotlight unit tests failed"
+                bad "[SPOT-1] the app indexed $total apps but found none of them back in the index"
             fi
-        else
-            skip "C12 Spotlight unit tests" "this toolchain has no XCTest runner: $(xcode-select -p 2>/dev/null) has no usr/bin/xctest"
-        fi
-        if [ -n "$logged" ]; then
-            ok "C12 the app logged the index attempt ($logged)"
-        else
-            bad "C12 no spotlight log line from the app (indexing never attempted)"
-        fi
-    fi
+            ;;
+        "spotlight: unavailable"*)
+            bad "[SPOT-2] CoreSpotlight refused this build (${line#spotlight: }); daemon: $(spotlight_refusal)"
+            ;;
+        *)
+            bad "[SPOT-1] the app never confirmed its apps are in the index (last line: ${line:-none}); daemon: $(spotlight_refusal)"
+            ;;
+    esac
     stop_fakephone
 }
 
