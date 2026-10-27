@@ -241,7 +241,7 @@ Every keyboard shortcut the app defines (CONV-MAC-06). The first cell of each ro
 | ⇧⌘H | Home (phone mode) | Navigate |
 | ⌘↑ | Recents (phone mode) | Navigate |
 | ⌃⌘F | Enter / Exit Full Screen | Window |
-| ⌘F | Find in the Deck: focus and select the search field | Deck |
+| ⌘F | Find in the Deck: focus and select the search field (the field's help tag names the key) | Deck |
 | ⌘, | Settings | Icon menu, Deck |
 | ⌘Q | Quit PocketDeck | Icon menu, app menu |
 | ↩ | Default button: Find my phone, Try again | Deck, pairing sheets |
