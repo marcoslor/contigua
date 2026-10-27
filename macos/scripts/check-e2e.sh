@@ -59,6 +59,8 @@ TOOLS="/tmp/pocketdeck-e2e-tools"
 CGBIN="$TOOLS/cgevent-$(shasum "$CGINPUT" | cut -c1-12)"
 MENUBAR_SRC="$MACOS/scripts/menubar-item.swift"
 MENUBARBIN="$TOOLS/menubar-item-$(shasum "$MENUBAR_SRC" | cut -c1-12)"
+AXDUMP_SRC="$MACOS/scripts/ax-dump.swift"
+AXDUMPBIN="$TOOLS/ax-dump-$(shasum "$AXDUMP_SRC" | cut -c1-12)"
 WATCH_SRC="$MACOS/scripts/quiet-watch.swift"
 WATCHBIN="$TOOLS/quiet-watch-$(shasum "$WATCH_SRC" | cut -c1-12)"
 LOAD_SRC="$MACOS/scripts/pd-load.swift"
@@ -659,37 +661,30 @@ build_menubar_item() {
     fi
 }
 
-# icon_menu_titles — the status item's open menu, one title per line ("-" for a
-# separator); "nomenu" when nothing is open. Real input opens it, so a check
-# reads the menu a person sees instead of a model of it.
-icon_menu_titles() {
-    osascript - "$APP_PID" <<'OSA' 2>/dev/null
-on run argv
-    set pidText to item 1 of argv
-    tell application "System Events"
-        set matches to every process whose unix id is (pidText as integer)
-        if (count of matches) is 0 then return "noproc"
-        tell item 1 of matches
-            if not (exists menu bar item 1 of menu bar 2) then return "nostatus"
-            set theItem to menu bar item 1 of menu bar 2
-            if not (exists menu 1 of theItem) then return "nomenu"
-            set out to {}
-            repeat with m in menu items of menu 1 of theItem
-                try
-                    set title to name of m as string
-                on error
-                    set title to ""
-                end try
-                if title is "" then set title to "-"
-                set end of out to title
-            end repeat
-            set text item delimiters to linefeed
-            return out as string
-        end tell
-    end tell
-end run
-OSA
+build_ax_dump() {
+    if [ ! -x "$AXDUMPBIN" ]; then
+        mkdir -p "$TOOLS"
+        swiftc -O "$AXDUMP_SRC" -o "$AXDUMPBIN" >/dev/null 2>&1 \
+            || { say "could not build $AXDUMP_SRC"; return 1; }
+    fi
 }
+
+# wait_for_menu <shown|gone> — the status item's own menu, by the window server
+# (a menu is a window far above the panel's level). Real input opens it, so a
+# visible check reads the menu a person sees, not a model of it.
+wait_for_menu() {
+    local want="$1"
+    for _ in $(seq 1 40); do
+        [ "$("$MENUBARBIN" menu "$APP_PID")" = "$want" ] && return 0
+        sleep 0.1
+    done
+    return 1
+}
+
+# ax_tree — what a screen reader hears inside this run's windows, one element
+# per line ("AXButton title=[…] desc=[…] help=[…] id=[panel.gear]"). SwiftUI
+# keeps that in the accessibility server, not in the views a probe can walk.
+ax_tree() { "$AXDUMPBIN" "$APP_PID" 2>&1; }
 
 # windows() — the CGWindow list of PocketDeck's own windows without a title:
 # Only this run's app: the installed app and other checkouts put PocketDeck
@@ -3235,10 +3230,13 @@ root = json.load(open(sys.argv[1]))
 if root["width"] != 300:
     print("width:", root["width"]); sys.exit(1)
 kinds = [row["kind"] for row in root["items"]]
-for kind in ["dnd", "ringer", "ring", "screen", "volume", "phoneScreen", "findApps",
-             "continueOnMac", "installApk", "settings", "quit"]:
+for kind in ["gear", "dnd", "ringer", "ring", "screen", "volume", "phoneScreen", "findApps",
+             "continueOnMac", "installApk"]:
     if kind not in kinds:
         print("missing", kind, kinds); sys.exit(1)
+for footed in ["settings", "quit"]:
+    if footed in kinds:
+        print(footed, "is a row; it belongs to the icon's menu", kinds); sys.exit(1)
 if kinds.index("dnd") > kinds.index("ringer") or kinds.index("ringer") > kinds.index("ring"):
     print("tiles out of order:", kinds); sys.exit(1)
 labels = [row["label"] for row in root["items"]]
@@ -4914,18 +4912,22 @@ kinds = [row["kind"] for row in root["items"]]
 if "settings" in kinds or "quit" in kinds:
     print("items:", kinds); sys.exit(1)
 PY
-    # The gear's VoiceOver name and help tag, read from the accessibility tree
-    # as a screen reader would (CONV-MAC-21).
+    # What a screen reader hears on the gear (CONV-MAC-21), read from the
+    # accessibility tree: its name, a help tag naming the three commands, and
+    # the gear first in the card's AX order — the key order `focusOrder` names.
     local gear_ax
-    gear_ax="$(panel_ax)"
+    gear_ax="$(ax_tree)"
     case "$gear_ax" in
-        *"Settings and more"*"Settings, About and Quit"*)
-            ok "CONTROLS the gear has a VoiceOver name and a help tag: Settings and more · Settings, About and Quit" ;;
-        *"Settings and more"*)
-            ok "CONTROLS the gear has a VoiceOver name (its help tag is not in the AX tree)" ;;
-        noproc|"")
-            skip "CONTROLS the gear's AX name and help" "System Events cannot read this run's windows" ;;
-        *) bad "CONTROLS the gear's AX name and help are missing ($(printf '%s' "$gear_ax" | tr '\n' '|' | cut -c1-200))" ;;
+        *"desc=[Settings and more] help=[Settings, About and Quit] id=[panel.gear]"*)
+            ok "CONTROLS the gear's VoiceOver name and help tag reach the AX tree: Settings and more · Settings, About and Quit" ;;
+        NO-WINDOWS|"")
+            bad "CONTROLS the AX tree is empty for this run ($gear_ax)" ;;
+        *) bad "CONTROLS the gear's AX name and help are missing ($(printf '%s' "$gear_ax" | grep -m1 'panel.gear\|NO-WINDOWS' | cut -c1-200))" ;;
+    esac
+    case "$(printf '%s\n' "$gear_ax" | grep -v '^AXWindow' | head -1)" in
+        *"id=[panel.gear]"*)
+            ok "CONTROLS the gear is the card's first control in the AX order" ;;
+        *) bad "CONTROLS the gear is not first in the AX order ($(printf '%s' "$gear_ax" | head -2 | tr '\n' '|' | cut -c1-200))" ;;
     esac
     control panelringer panel vibrate || bad "CONTROLS panelringer: $CONTROL_REPLY"
     wait_until 3 ringer_is vibrate \
@@ -8647,15 +8649,11 @@ check_menubar_vm() {
     close_panel
     "$MENUBARBIN" rclick "$APP_PID"
     sleep 1
-    result="$(icon_menu_titles)"
-    case "$result" in
-        "Settings…"*"About PocketDeck"*"Quit PocketDeck"*)
-            ok "[CONV-MAC-10] a real right-click opened the icon's menu: Settings… · About PocketDeck · Quit PocketDeck" ;;
-        nomenu|noproc|nostatus)
-            bad "MENUBAR-VM a real right-click opened no menu ($result)" ;;
-        *)
-            bad "MENUBAR-VM the icon's menu is not Settings…/About/Quit ($(printf '%s' "$result" | tr '\n' '|' | cut -c1-200))" ;;
-    esac
+    if wait_for_menu shown; then
+        ok "[CONV-MAC-10] a real right-click on the icon opened its menu"
+    else
+        bad "MENUBAR-VM a real right-click opened no menu"
+    fi
     cg_input key --keycode 125
     cg_input key --keycode 36
     wait_until 15 settings_open \
@@ -9461,11 +9459,21 @@ check_menubar_shots() {
             && read -r px py < "$shots/gear.pt"; then
             cg_input clickat --x "$px" --y "$py"
             sleep 1
-            result="$(icon_menu_titles)"
+            if wait_for_menu shown; then
+                ok "[CONV-MAC-10] the panel's gear opened the icon's menu"
+            else
+                bad "MENUBAR-SHOTS the gear opened no menu"
+            fi
+            # What a screen reader hears on the gear (CONV-MAC-21): its name,
+            # and a help tag that names the three commands behind it.
+            result="$(ax_tree)"
             case "$result" in
-                "Settings…"*"About PocketDeck"*"Quit PocketDeck"*)
-                    ok "[CONV-MAC-10] the panel's gear opened the icon's menu: Settings… · About PocketDeck · Quit PocketDeck" ;;
-                *) bad "MENUBAR-SHOTS the gear opened no menu ($(printf '%s' "$result" | tr '\n' '|' | cut -c1-200))" ;;
+                *"Settings and more"*) ok "MENUBAR-SHOTS the gear's VoiceOver name is Settings and more" ;;
+                *) bad "MENUBAR-SHOTS the gear has no VoiceOver name ($(printf '%s' "$result" | tr '\n' '|' | cut -c1-200))" ;;
+            esac
+            case "$result" in
+                *"Settings, About and Quit"*) ok "MENUBAR-SHOTS the gear's help tag names Settings, About and Quit" ;;
+                *) bad "MENUBAR-SHOTS the gear has no help tag ($(printf '%s' "$result" | tr '\n' '|' | cut -c1-200))" ;;
             esac
             cg_input key --keycode 125
             cg_input key --keycode 36
@@ -10162,6 +10170,7 @@ say "run: port $PORT, work $WORK, profile $PROFILE, app $E2E_BUNDLE"
 build_e2e_app || exit 1
 build_cgevent || exit 1
 build_menubar_item || exit 1
+build_ax_dump || exit 1
 build_share_driver || exit 1
 build_watch || exit 1
 build_vdisplay || exit 1
