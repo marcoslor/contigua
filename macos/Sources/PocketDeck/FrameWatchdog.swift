@@ -87,7 +87,8 @@ struct FrameWatchdog: Equatable {
         let deadline = max(lastFrame + Self.staleAfter, graceUntil)
         guard now >= deadline else { return false }
         stalled = true
-        return true    }
+        return true
+    }
 }
 
 /// The last frame's time, written from the session queue and read by the
