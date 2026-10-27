@@ -67,12 +67,13 @@ interface IDeckService {
     int shareFile(String name, String mime, in ParcelFileDescriptor data) = 10;
 
     /**
-     * Notification-sharing gate (one toggle per phone; the app owns the phone
-     * toggle, the session owns the Mac toggle; both true means forward):
-     * the app holds the user's per-phone opt-in and pushes it here whenever it
-     * changes so the session can answer `notify.state` synchronously.
+     * The phone's notification-listener grant. The Mac's `notify.enable` is the
+     * only person-facing switch; this is the phone-side ability to honour it.
+     * The app pushes it here whenever the grant changes, so the session answers
+     * `notify.state` at once (a later grant turns forwarding on without another
+     * Mac toggle).
      */
-    void setNotifyShared(boolean shared) = 11;
+    void listenerAccess(boolean granted) = 11;
 
     /**
      * The notification listener, running in the app process, pushes what it
@@ -80,13 +81,6 @@ interface IDeckService {
      * style map as built by NotifyEvents; dropped unless both gates are on.
      */
     void pushDeviceEvent(String json) = 12;
-
-    /**
-     * Grant notification-listener access for the app's listener component by
-     * running `cmd notification allow_listener` (shell UID). Returns whether the
-     * settings now hold the component.
-     */
-    boolean grantListenerAccess() = 13;
 
     /**
      * The app's two connection gates (docs/PROTOCOL.md "Error codes"). The

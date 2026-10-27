@@ -93,12 +93,19 @@ class Session(
      * values (docs/design/e2ee.md §4b: the HKDF math is pinned without an engine). */
     private val tlsView: TlsView? = null,
     private val audioCapture: AudioCaptureLayer? = null,
-    private val notifyShared: () -> Boolean = { false },
+    /** The phone's notification-listener grant, as the app last reported it. */
+    private val notifyAccess: () -> Boolean = { false },
+    /**
+     * Try `cmd notification allow_listener` at shell UID (docs/design/notify.md).
+     * Returns whether the listener is granted afterwards.
+     */
+    private val notifyGrant: () -> Boolean = { false },
     /** `media.command`: the validated command as JSON, for the app process. */
     private val mediaCommand: ((String) -> Unit)? = null,
     /** `media.choose`: which phone session Now Playing follows. */
     private val mediaChoose: ((String) -> Unit)? = null,
-    private val notifyForward: ((Boolean) -> Unit)? = null,
+    /** The gate's answer for the app: forwarding, and `no_access` when asked but ungranted. */
+    private val notifyState: ((Boolean, String?) -> Unit)? = null,
     /** Asks the app for the forwarded notification's action; it answers over AIDL. */
     private val notifyOpen: ((String, Int) -> Unit)? = null,
     /** `notify.action`: press an advertised action (id, index, reply text). */
@@ -225,8 +232,9 @@ class Session(
         Thread(r, "pocketdeck-hover").apply { isDaemon = true }
     }
 
-    /** Notification sharing: the Mac asked for it and the phone's toggle is on. */
+    /** The Mac asked for notifications; forwarding also needs the listener grant. */
     @Volatile private var notifyWanted = false
+    @Volatile private var notifyGranted = false
     @Volatile private var notifyForwarding = false
 
     /** `state.panel` is the phone's hold (PanelHold.kt), never a local guess. */
@@ -369,7 +377,7 @@ class Session(
         notifyWanted = false
         if (notifyForwarding) {
             notifyForwarding = false
-            runCatching { notifyForward?.invoke(false) }
+            runCatching { notifyState?.invoke(false, null) }
         }
         val abandoned = synchronized(pairLock) {
             val open = if (pairSettled) null else pendingPairId
@@ -1090,27 +1098,51 @@ class Session(
     // notifications + media controls (docs/design/notify.md)
     // ------------------------------------------------------------------
 
-    /** `notify.enable`: the Mac's per-session opt-in; the phone's toggle adds to it. */
+    /**
+     * `notify.enable`: the Mac's per-session opt-in, the only person-facing
+     * switch (docs/design/notify.md). A missing listener grant is tried once at
+     * shell UID; when that fails the phone answers `no_access` and shows the
+     * person where to allow it.
+     */
     private fun onNotifyEnable(obj: Map<String, Any?>) {
         val on = Json.bool(obj["on"]) ?: run {
             sendError("bad_request", "notify.enable needs a boolean on", 0)
             return
         }
         notifyWanted = on
+        if (on && !notifyGranted) {
+            notifyGranted = notifyAccess() || notifyGrant()
+            if (notifyGranted) log("notify: listener access granted")
+        }
         reconcileNotify()
     }
 
-    /** Re-evaluates the forwarding gate (also runs when the phone toggle changes). */
+    /** Re-evaluates the forwarding gate (also runs when the app reports a grant). */
     fun reconcileNotify() {
         // A session that has not authenticated gets nothing but the machine; the
         // Mac's `notify.enable` after welcome asks again.
         if (phase != Phase.READY) return
-        val forward = notifyWanted && notifyShared() && !closed.get()
+        val gate = notifyGate(notifyWanted && !closed.get(), notifyGranted)
+        val forward = gate == NotifyGate.FORWARDING
         if (forward != notifyForwarding) {
             notifyForwarding = forward
-            runCatching { notifyForward?.invoke(forward) }
+            runCatching { notifyState?.invoke(forward, if (gate == NotifyGate.NO_ACCESS) "no_access" else null) }
+        } else if (needsNotificationAccessAttention(gate)) {
+            // The phone's home must show the attention item even though the
+            // forwarding state did not change (it was already off).
+            runCatching { notifyState?.invoke(false, "no_access") }
         }
-        sendJson(mapOf("t" to "notify.state", "on" to forward))
+        sendJson(notifyStateMessage(gate))
+    }
+
+    /**
+     * The app's notification listener connected or went away: a later grant
+     * turns forwarding on without another Mac toggle.
+     */
+    fun listenerAccessChanged(granted: Boolean) {
+        if (notifyGranted == granted) return
+        notifyGranted = granted
+        reconcileNotify()
     }
 
     /**
