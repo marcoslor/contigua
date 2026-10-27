@@ -8074,6 +8074,9 @@ on labels(w)
                     end try
                 end if
                 if bits is not "" then set end of out to bits
+                try
+                    if (help of e as string) is not "" then set end of out to (help of e as string)
+                end try
             end try
         end repeat
         return out
@@ -8507,9 +8510,12 @@ check_menubar_vm() {
     sleep 1
     shot_panel "panel-offline-light.png"
     result="$(panel_ax)"
+    # The reason is no longer a floating line: each disabled control carries
+    # the short line in its subtitle, and the full sentence is its help tag and
+    # VoiceOver hint (CONV-MAC-26, CONV-MAC-21).
     case "$result" in
-        *"Connect your phone to use these."*) ok "MENUBAR-VM the offline reason line is on screen" ;;
-        *) bad "MENUBAR-VM no offline reason line ($(printf '%s' "$result" | head -c 200))" ;;
+        *"Connect your phone to use these."*) ok "MENUBAR-VM the disabled controls' help carries the full reason" ;;
+        *) bad "MENUBAR-VM no offline reason in a control's help ($(printf '%s' "$result" | head -c 200))" ;;
     esac
     case "$result" in
         *"Offline"*) ok "MENUBAR-VM the header says Offline" ;;
@@ -9045,7 +9051,7 @@ check_menubar_shots() {
     mkdir -p "$shots"
     shot_panel() {
         local id
-        id="$(await_window '$4 == 300 && $5 >= 300 && $5 <= 800')" \
+        id="$(await_window '$4 >= 300 && $4 <= 340 && $5 >= 300 && $5 <= 800')" \
             || { bad "MENUBAR-SHOTS no panel window for $1"; return 1; }
         screencapture -x -l"$id" "$shots/$1" >/dev/null 2>&1 && say "shot: $shots/$1"
     }
@@ -9091,7 +9097,8 @@ check_menubar_shots() {
         && say "shot: $shots/deck-popover-light.png" \
         || bad "MENUBAR-SHOTS no Deck popover window"
 
-    # Offline: away, the card stays with its one reason line.
+    # Offline: away, the card stays, its disabled controls each carrying their
+    # reason (the tile's short line, the full sentence in its help tag).
     stop_fakephone
     wait_until 10 no_fakephone
     sleep 18
@@ -9101,7 +9108,7 @@ check_menubar_shots() {
     result="$(control paneldump panel "$WORK/menubar-shots/panel-offline.json" && echo dumped)"
     [ -n "$result" ] \
         && python3 - "$WORK/menubar-shots/panel-offline.json" <<'PY' \
-        && ok "MENUBAR-SHOTS the offline card carries the one reason line" \
+        && ok "MENUBAR-SHOTS the offline card carries the offline reason" \
         || bad "MENUBAR-SHOTS no reason in the offline card"
 import json, sys
 root = json.load(open(sys.argv[1]))
@@ -9112,6 +9119,63 @@ PY
     stop_app
     defaults delete "$DEFAULTS_SUITE" "notify.$device" >/dev/null 2>&1
     defaults delete "$DEFAULTS_SUITE" "showAppsInDock" >/dev/null 2>&1
+    shoot_panel_states
+}
+
+# shoot_panel_states — the panel's states in both appearances, for the review:
+# the rest state (Turn Off Screen is disabled: no Phone Mirror is open), the
+# same panel with the pointer forced onto the DND tile, a WINDOWS button, the
+# footer's Settings row and the disabled Turn Off Screen tile (a disabled tile
+# does not light), and with Do Not Disturb on. Each appearance and phone state
+# is its own launch, so no hover or menu state carries over.
+shoot_panel_states() {
+    local shots="$WORK/menubar-shots" app id
+    mkdir -p "$shots"
+    shoot_state() {
+        local id
+        id="$(await_window '$4 >= 300 && $4 <= 340 && $5 >= 300 && $5 <= 800')" \
+            || { bad "PANEL-STATES no panel window for $1"; return 1; }
+        screencapture -x -l"$id" "$shots/$1" >/dev/null 2>&1 && say "shot: $shots/$1"
+    }
+    for app in light dark; do
+        FAKE_ARGS="--media" start_fake || return 1
+        rm -rf "$WORK-control"
+        mkdir -p "$WORK-control"
+        launch --connect "127.0.0.1:$PORT" --quit-after 120 --debug-control "$WORK-control" --appearance "$app"
+        wait_until 30 events_have '"t":"apps.list"' \
+            || { bad "PANEL-STATES the session never started"; stop_app; stop_fakephone; return 1; }
+        control panelopen && ok "PANEL-STATES the panel host opened ($app)" \
+            || bad "PANEL-STATES panelopen: $CONTROL_REPLY"
+        sleep 1
+        shoot_state "states-$app-rest.png"
+        # Turn Off Screen is disabled here (no Phone Mirror); the rest shot is
+        # also the disabled-tile record, named for the review.
+        cp "$shots/states-$app-rest.png" "$shots/states-$app-screen-disabled.png"
+        say "shot: $shots/states-$app-screen-disabled.png"
+        for id in panel.dnd panel.findApps panel.settings; do
+            control panelhover panel "$id" || bad "PANEL-STATES panelhover $id: $CONTROL_REPLY"
+            sleep 1
+            shoot_state "states-$app-hover-${id#panel.}.png"
+            control panelhoverout || bad "PANEL-STATES panelhoverout: $CONTROL_REPLY"
+        done
+        stop_app
+        stop_fakephone
+        wait_until 10 no_fakephone
+    done
+    for app in light dark; do
+        FAKE_ARGS="--media --dnd-person priority" start_fake || return 1
+        rm -rf "$WORK-control"
+        mkdir -p "$WORK-control"
+        launch --connect "127.0.0.1:$PORT" --quit-after 120 --debug-control "$WORK-control" --appearance "$app"
+        wait_until 30 events_have '"t":"apps.list"' \
+            || { bad "PANEL-STATES the DND session never started"; stop_app; stop_fakephone; return 1; }
+        control panelopen || bad "PANEL-STATES panelopen (DND): $CONTROL_REPLY"
+        sleep 1
+        shoot_state "states-$app-dnd-on.png"
+        stop_app
+        stop_fakephone
+        wait_until 10 no_fakephone
+    done
 }
 
 # --- NFR: the limits in docs/NFR.md, end to end -----------------------------
