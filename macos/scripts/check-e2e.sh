@@ -2794,9 +2794,21 @@ def heading(menu, siblings, item):
     return (not item["enabled"] and not item.get("submenu") and not item["keyEquivalent"]
             and any(other is not item and other["title"] == item["title"] for other in siblings))
 
+# AppKit's window list (Window ▸ after "Bring All to Front") is not the app's
+# items: two windows may carry the same title (the Deck names the phone, and so
+# does its mirror), and the window server, not this app, decides what to show.
+def in_window_list(menu, siblings, item):
+    if menu != "Window":
+        return False
+    titles = [other["title"] for other in siblings]
+    if "Bring All to Front" not in titles:
+        return False
+    index = titles.index("Bring All to Front")
+    return siblings.index(item) > index
+
 counts = {}
 for menu, siblings, item in occurrences:
-    if item["isSeparator"] or heading(menu, siblings, item):
+    if item["isSeparator"] or heading(menu, siblings, item) or in_window_list(menu, siblings, item):
         continue
     counts[item["title"]] = counts.get(item["title"], 0) + 1
 dups = sorted("%s (%d)" % (title, n) for title, n in counts.items() if n > 1)
@@ -2891,6 +2903,53 @@ waitfile $WORK/menus-step-exit 60
 fullscreen
 wait 6
 EOF
+    # 0: no stream window is open — only the Deck is there. The Window menu
+    # lists the open window the standard way, with no empty row under "Bring
+    # All to Front".
+    dump_stable 0 || { stop_app; stop_fakephone; return 1; }
+    assert_bar "$WORK/menus-0.json" "dump 0"
+    local ax_titles
+    ax_titles="$(window_titles "$APP_PID")"
+    python3 - "$WORK/menus-0.json" "$ax_titles" <<'PY' && ok "MENUS the Window menu lists the open windows and has no empty or hidden item" \
+        || bad "MENUS the Window menu has an empty row or no window list"
+import json, sys
+root = json.load(open(sys.argv[1]))
+def window_menu(items):
+    return next((i for i in items if i["title"] == "Window"), None)
+def problems(items, path):
+    out = []
+    for item in items:
+        if item["hidden"]:
+            out.append("%s: hidden %r" % (path, item["title"]))
+        if not item["isSeparator"] and not item["title"].strip():
+            out.append("%s: empty item" % path)
+    return out
+found = []
+for tree in ("items", "displayed"):
+    menu = window_menu(root.get(tree) or [])
+    if menu is None:
+        found.append("%s: no Window menu" % tree)
+        continue
+    found += problems(menu.get("submenu") or [], tree + "/Window")
+window = window_menu(root["items"])
+items = (window.get("submenu") if window else []) or []
+titles = [i["title"] for i in items]
+if "Bring All to Front" not in titles:
+    found.append("no Bring All to Front")
+else:
+    # AppKit's own list: the items after "Bring All to Front" that open a
+    # window (the window list's entries target their NSWindow).
+    listed = sorted(i["title"] for i in items[titles.index("Bring All to Front") + 1:]
+                    if not i["isSeparator"] and (i.get("targetClass") or "").endswith("Window"))
+    # An untitled window (the status item's) is not a window a person reaches
+    # from the menu, and AppKit does not list it.
+    open_titles = sorted(t for t in sys.argv[2].splitlines() if t.strip() and t.strip() != "-")
+    if listed != open_titles:
+        found.append("window list %r, open windows %r" % (listed, open_titles))
+if found:
+    print("; ".join(found)); sys.exit(1)
+PY
+
     open_shared --open com.android.settings --debug-chrome-state "$WORK/chrome.txt" \
         --debug-input-script "$WORK/menus.txt" || return 1
 
@@ -3241,8 +3300,2342 @@ PY
     launch --connect "127.0.0.1:$PORT" --open com.android.settings --debug-control "$WORK-control" \
         --debug-chrome-state "$WORK/chrome.txt"
     SHARED_PID="$APP_PID"
+    # The stream window is what the View menu follows: dump once it exists (a
+    # dump taken before it would say, correctly, that nothing is checked).
+    rm -f "$WORK/chrome.txt"
+    wait_until 20 eval 'grep -q "frame=" "$WORK/chrome.txt" 2>/dev/null' \
+        || bad "MENUS the relaunched stream window never appeared"
+    sleep 1
     sleep 2
     dump_now 11 || { stop_app; stop_fakephone; return 1; }
+    stop_app
+    stop_fakephone
+}
+
+# --- TLS transport matrix (docs/design/e2ee.md §6; the relay row stays with
+# the relay's own checks, the code-equality row rides `pair`) ----------------
+
+# mac_failed_line — the last `session failed:` detail this run's app logged.
+mac_failed_line() {
+    log show --last 5m --info --style syslog \
+        --predicate "subsystem == \"dev.pocketdeck.mac\" AND processID == $APP_PID" 2>/dev/null \
+        | grep -o 'session failed: [a-z_-]*' | tail -1
+}
+
+# probe_close ×3 — the Mac's Bonjour resolve shape: open a TCP connection and
+# close it without sending anything (review R4-b).
+probe_close_x3() {
+    "$FAKE_PY" - "$PORT" <<'PY'
+import socket, sys
+for _ in range(3):
+    probe = socket.create_connection(("127.0.0.1", int(sys.argv[1])), timeout=5)
+    probe.close()
+PY
+}
+
+check_tls() {
+    local line rotated_fp pidA pidB exporters
+    clean
+    say "TLS: the phone is a TLS-only listener; the matrix (§6) runs against it"
+    start_fake || return 1
+
+    # (1) plaintext refused: a plain TCP client never gets a protocol byte.
+    out="$(printf '{"t":"hello","v":1,"clientId":"probe","name":"nc"}\n' | nc -w 2 127.0.0.1 "$PORT" 2>/dev/null || true)"
+    case "$out" in
+        *'"t":"welcome"'*|*'"t":"error"'*|*'"t":"challenge"'*)
+            bad "TLS1 plaintext was answered with protocol bytes" ;;
+        *) ok "TLS1 a plaintext connection is refused (no welcome) and the session stays dead" ;;
+    esac
+
+    # (R4-b) open-and-close probes are quiet: no session events, no pairing
+    # prompt, no error log; the next real session still pairs.
+    stop_fakephone
+    sleep 1
+    start_fake || return 1
+    probe_close_x3 || { bad "TLS R4-b probes could not connect"; stop_fakephone; return 1; }
+    events_have '"state":"open"' \
+        && bad "TLS R4-b a probe got a session event" \
+        || ok "TLS R4-b aborted connections left no session events"
+    events_have '"t":"pair.' \
+        && bad "TLS R4-b a probe reached pairing traffic" \
+        || ok "TLS R4-b aborted connections never reach pairing"
+    if grep -q "session error" "$WORK/fake.err" 2>/dev/null; then
+        bad "TLS R4-b the phone logged a session error for the probes"
+    else
+        ok "TLS R4-b the phone logged nothing at error level"
+    fi
+    launch --connect "127.0.0.1:$PORT" --quit-after 20
+    await_app 20 events_have '"state":"paired"'
+    if grep -q '"state":"paired"' "$WORK/events.jsonl"; then
+        ok "TLS R4-b the phone stayed healthy: the next real session pairs"
+    else
+        bad "TLS R4-b no pairing after the aborted probes"
+    fi
+    stop_app
+    stop_fakephone
+    sleep 1
+
+    # (7) two sessions, never resumed: every accept is a full TLS 1.3
+    # handshake, so each session's exporter hash differs (R3). --connect on
+    # both: mDNS discovery could otherwise answer for a phone this rig no
+    # longer controls, and the claim is about the two handshakes below.
+    start_fake || return 1
+    launch --connect "127.0.0.1:$PORT" --quit-after 20
+    await_app 20 events_have '"state":"auth_ok"'
+    pidA="$APP_PID"
+    stop_fakephone
+    sleep 1
+    start_fake || return 1
+    launch --connect "127.0.0.1:$PORT" --quit-after 9
+    await_app 9 events_have '"state":"auth_ok"'
+    pidB="$APP_PID"
+    grep -q '"state":"auth_ok"' "$WORK/events.jsonl" \
+        && ok "TLS7 the second session completed" || bad "TLS7 no second session"
+    exporters="$(log show --last 6m --info --style syslog \
+        --predicate "subsystem == \"dev.pocketdeck.mac\" AND (processID == $pidA OR processID == $pidB)" 2>/dev/null \
+        | grep -o 'v2 exporter sha256: [0-9a-f]*' | sort -u | wc -l | tr -d ' ')"
+    [ "$exporters" -ge 2 ] \
+        && ok "TLS7 $exporters distinct exporters over 2 sessions (full handshakes, no resumption)" \
+        || bad "TLS7 exporters repeat like a resumed session would ($exporters distinct)"
+    stop_app
+    stop_fakephone
+    sleep 1
+
+    # (3) the phone's cert rotated: the Mac refuses at TLS verify
+    # ("certificate changed"), the pin survives (re-pair keeps it, §7), and the
+    # person's re-pair restores it.
+    FAKE_ARGS="--tls-identity $WORK/rotated-phone.identity" start_fake || return 1
+    rotated_fp="$(grep -ho 'fakephone identity fp: [0-9a-f]*' "$WORK/fake.err" "$WORK/fake.log" "$WORK/fake3.log" 2>/dev/null | tail -1 | cut -d' ' -f4)"
+    launch --connect "127.0.0.1:$PORT" --quit-after 16
+    wait_app
+    line="$(mac_failed_line)"
+    case "$line" in
+        "session failed: pin-mismatch")
+            ok "TLS3 rotated phone cert refused (pin-mismatch)" ;;
+        *)
+            bad "TLS3 expected session failed: pin-mismatch, got: ${line:-nothing}" ;;
+    esac
+    grep -q '"state":"auth_ok"' "$WORK/events.jsonl" \
+        && bad "TLS3 authenticated with a rotated phone" || ok "TLS3 no auth against the rotated phone"
+    grep -q '"t":"pair.request"' "$WORK/events.jsonl" \
+        && bad "TLS3 pairing traffic hit the rotated phone" \
+        || ok "TLS3 no pairing traffic under a stale pin"
+    [ -f "$HOME/Library/Application Support/PocketDeck-$PROFILE/pins.json" ] \
+        && ok "TLS3 the pin record survived the refusal (re-pair keeps it, §7)" \
+        || bad "TLS3 the pin record vanished on a refused session"
+    stop_app
+    stop_fakephone
+    sleep 1
+    # the person's re-pair step (§7): drop the phone from My Devices and pair
+    # again (--reset-pairing clears the Mac's pin + mirror; the phone's own pin
+    # of the Mac is untouched and the reconnect lands pinless: the rotated
+    # phone's cert becomes the stored pin on welcome).
+    FAKE_ARGS="--tls-identity $WORK/rotated-phone.identity" start_fake || return 1
+    launch --reset-pairing --connect "127.0.0.1:$PORT" --quit-after 18
+    rotated_pinned() {
+        events_have '"state":"auth_ok"' && [ -n "$rotated_fp" ] && grep -q "\"phoneFingerprintHex\":\"$rotated_fp\"" \
+            "$HOME/Library/Application Support/PocketDeck-$PROFILE/pins.json" 2>/dev/null
+    }
+    await_app 18 rotated_pinned
+    grep -q '"state":"auth_ok"' "$WORK/events.jsonl" \
+        && ok "TLS3 the re-pair reconnect authenticated" \
+        || bad "TLS3 the re-pair never reconnected"
+    if [ -n "$rotated_fp" ] && grep -q "\"phoneFingerprintHex\":\"$rotated_fp\"" \
+            "$HOME/Library/Application Support/PocketDeck-$PROFILE/pins.json" 2>/dev/null; then
+        ok "TLS3 the rotated phone's fingerprint is the stored pin now"
+    else
+        bad "TLS3 the pin store does not hold the rotated phone's fingerprint"
+    fi
+    stop_app
+    stop_fakephone
+    sleep 1
+
+    # (2) a v1 phone: `version`, then nothing (the v1 path is gone). A clean
+    # slate: the row above left the Mac pinned to the rotated phone.
+    clean
+    FAKE_ARGS="--legacy-phone" start_fake || return 1
+    launch --connect "127.0.0.1:$PORT" --quit-after 14
+    wait_app
+    line="$(mac_failed_line)"
+    case "$line" in
+        "session failed: version")
+            ok "TLS2 a v1 phone is refused with the version reason" ;;
+        *) bad "TLS2 expected session failed: version, got: ${line:-nothing}" ;;
+    esac
+    stop_app
+    stop_fakephone
+    sleep 1
+
+    # (4) the MAC's cert rotated: the phone refuses the reconnect with bad_pin
+    # ("This Mac's certificate changed; pair again") — the design's refusal
+    # row; the un-blocked re-pair (phone-side purge) is out of the matrix.
+    clean
+    start_fake || return 1
+    launch --connect "127.0.0.1:$PORT" --quit-after 20
+    await_app 20 events_have '"state":"auth_ok"'
+    grep -q '"state":"paired"' "$WORK/events.jsonl" \
+        && ok "TLS4 paired before the Mac rotation" || bad "TLS4 never paired"
+    stop_app
+    sleep 1
+    "$FAKE_PY" - "$WORK/macrot.identity" "$HOME/Library/Application Support/PocketDeck-$PROFILE/identity.json" <<'PY'
+import json, os, subprocess, sys
+identity_dir, identity_file = sys.argv[1], sys.argv[2]
+os.makedirs(identity_dir, exist_ok=True)
+key = os.path.join(identity_dir, "key.pem")
+cert = os.path.join(identity_dir, "cert.pem")
+subprocess.run(["/usr/bin/openssl", "ecparam", "-name", "prime256v1", "-genkey",
+                "-noout", "-out", key], check=True,
+               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+subprocess.run(["/usr/bin/openssl", "req", "-new", "-x509", "-key", key, "-days", "366",
+                "-subj", "/CN=PocketDeck rotated", "-out", cert], check=True,
+               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+os.chmod(key, 0o600)
+der = subprocess.run(["/usr/bin/openssl", "pkcs8", "-topk8", "-nocrypt", "-in", key],
+                     check=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL).stdout.decode()
+pem = subprocess.run(["/usr/bin/openssl", "x509", "-in", cert],
+                     check=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL).stdout.decode()
+with open(identity_file) as fp:
+    identity = json.load(fp)
+# The stored shapes are FULL PEM text (CryptoKit's pemRepresentation), key first
+# written 0600 by the atomic save below; keep the §3 fields exactly.
+identity["certPem"] = pem
+identity["keyP8"] = der
+tmp = identity_file + ".tmp"
+with open(tmp, "w") as fp:
+    json.dump(identity, fp)
+os.chmod(tmp, 0o600)
+os.replace(tmp, identity_file)
+PY
+    : > "$WORK/events.jsonl"
+    launch --quit-after 16
+    wait_app
+    line="$(mac_failed_line)"
+    case "$line" in
+        "session failed: bad_pin")
+            ok "TLS4 rotated Mac cert refused by the phone (bad_pin)" ;;
+        *) bad "TLS4 expected session failed: bad_pin, got: ${line:-nothing}" ;;
+    esac
+    grep -q '"state":"auth_ok"' "$WORK/events.jsonl" \
+        && bad "TLS4 authenticated with a rotated Mac cert" || ok "TLS4 no auth with the rotated Mac cert"
+    stop_app
+    stop_fakephone
+
+    # (8) log hygiene: no key material, no exporter bytes, no secrets in any
+    # log this run produced (R3 hygiene; hashes and fingerprints are allowed).
+    if grep -IHnE 'BEGIN [A-Z ]*PRIVATE|-----BEGIN CERTIFICATE|EXPORTER_SECRET|exportKeyingMaterial|pocketdeck-memory-only' "$WORK/app.log" "$WORK/fake.log" "$WORK/fake.err" "$WORK/events.jsonl" 2>/dev/null | grep -q .; then
+        bad "TLS8 key material in a log"
+    else
+        ok "TLS8 no key material, exporter bytes or secrets in any log"
+    fi
+    stop_fakephone
+    wait_until 5 no_fakephone
+}
+
+# --- C5: rendering --------------------------------------------------------
+
+check_render() {
+    begin_shared || return 1
+    open_shared --open com.android.settings --open-phone --float-windows || return 1
+    local app_shot="$WORK/render-app.png" phone_shot="$WORK/render-phone.png" id
+    if ! wait_until 30 events_have '"ev":"video","stream":1,' \
+        || ! wait_until 30 events_have '"ev":"video","stream":2,'; then
+        bad "C5 video was not configured for both windows"
+    fi
+    if id="$(await_window '$4 == 900')" && lit_screenshot "$id" "$app_shot"; then
+        ok "C5 app window not black ($STATS)"
+    else
+        bad "C5 app window not captured or black (${STATS:-no window})"
+    fi
+    if id="$(await_window '$5 > $4')" && lit_screenshot "$id" "$phone_shot"; then
+        ok "C5 phone window not black ($STATS)"
+    else
+        bad "C5 phone window not captured or black (${STATS:-no window})"
+    fi
+    say "screenshots: $app_shot $phone_shot"
+    stop_app
+    stop_fakephone
+}
+
+# --- C6: resize -----------------------------------------------------------
+
+# band_edges PNG — black edges of the drawn picture in a window screenshot,
+# from the chrome state's frame= (window points) and video= (the picture's rect).
+band_edges() {
+    local file="$1" fw fh vx vy vw vh
+    read -r fw fh vx vy vw vh <<<"$(chrome_state | tr ' ' '\n' \
+        | awk -F'[=x,]' '/^frame=/ {printf "%s %s ", $2, $3} /^video=/ {printf "%s %s %s %s", $2, $3, $4, $5}')"
+    python3 "$MACOS/scripts/band-edges.py" "$file" "$fw" "$fh" "$vx" "$vy" "$vw" "$vh"
+}
+
+# check_mirror_band — the phone mirror's black band (the person's report,
+# 2026-10-22). A real phone's frame can carry a band at the right and bottom
+# when its encoder size and the screen's aspect differ; --pad makes one, and
+# window.content says where the picture is. At every window size the picture
+# the Mac draws must have no black edge: the Mac crops to the picture.
+check_mirror_band() {
+    clean
+    rm -f "$WORK/chrome.txt"
+    FAKE_ARGS="--first-frame-delay 1 --pad" start_fake || return 1
+    mkdir -p "$WORK/control"
+    launch --connect "127.0.0.1:$PORT" --open-phone --float-windows \
+        --debug-chrome-state "$WORK/chrome.txt" --debug-control "$WORK/control" --quit-after 90
+    if ! wait_until 20 chrome_has "loading=0"; then
+        bad "BAND the mirror showed no first frame (state: $(chrome_state))"
+        stop_app; stop_fakephone; return 1
+    fi
+    local step size previous file id edges
+    # Portrait window sizes in points, odd ones included: each changes the aspect a little.
+    step=0
+    for size in "" 430x760 384x571 333x741 512x611 297x645; do
+        step=$((step + 1))
+        if [ -n "$size" ]; then
+            previous="$(chrome_state | grep -oE 'frame=[0-9]+x[0-9]+')"
+            mirror_control resize-step "${size%x*}" "${size#*x}" \
+                || { bad "BAND step $step: resize-step: $CONTROL_REPLY"; break; }
+            wait_until 15 [ "$(chrome_state | grep -oE 'frame=[0-9]+x[0-9]+')" != "$previous" ] \
+                || { bad "BAND step $step: the window did not change size"; break; }
+        fi
+        # The picture of the new size: a config and its first frame, then the grab.
+        sleep 2
+        file="$WORK/band-$step.png"
+        id="$(await_window '$5 > $4')" || { bad "BAND step $step: no phone window"; break; }
+        screencapture -x -o -l"$id" "$file"
+        edges="$(band_edges "$file")"
+        if [ "$edges" = "top=0 bottom=0 left=0 right=0" ]; then
+            ok "BAND step $step: no black edge ($(chrome_state | grep -oE 'frame=[0-9]+x[0-9]+'), picture $(chrome_state | grep -oE 'video=[0-9,]+'))"
+        else
+            bad "BAND step $step: black edges $edges ($(chrome_state | grep -oE 'frame=[0-9]+x[0-9]+'), picture $(chrome_state | grep -oE 'video=[0-9,]+'))"
+        fi
+    done
+    stop_app
+    stop_fakephone
+}
+
+check_resize() {
+    begin_shared || return 1
+    # The video's pixels are the window's points at the run's backing scale
+    # (VideoGeometry.displayPixels), so each pt size below is the pixel size
+    # these assertions have always named, divided by that scale: at 1x the
+    # window is twice as big in points and the phone sees what it saw at 2x.
+    # The cap case asks for more than 2560 pt at 1x so the 2560 px cap stays in
+    # play; a window bigger than the display has to be possible for any of this
+    # to mean anything, and the app sets frames rather than dragging them.
+    local scale="$RUN_SCALE" w h
+    w=$((1600 / scale)); h=$((1200 / scale))
+    open_shared --open com.android.settings --resize-stream "1:${w}x${h}-pt" || return 1
+    # The window is wxh pt and the video is all of it.
+    wait_until 30 events_have '"ev":"video","stream":1,"config":true,"w":1600,"h":1200' \
+        && ok "C6 new video config 1600x1200 (the whole ${w}x${h} pt window, at ${scale}x)" || bad "C6 no new config"
+    events_have '"t":"window.resize"' \
+        && ok "C6 window.resize sent" || bad "C6 no window.resize"
+    screenshot "$w" "$WORK/resize.png" && say "screenshot: $WORK/resize.png"
+    stop_app
+
+    # Non-16:9 shapes: tall, then ultra-wide (capped at 2560 px, aspect kept).
+    w=$((1200 / scale)); h=$((1800 / scale))
+    if [ "${PD_E2E_TALL_SCREEN:-1}" = "0" ]; then
+        # The VM's display cannot host this window: at 2x its guest offers no
+        # mode with 952 pt of visible height (the VM screen is small and a
+        # headless boot keeps the guest's own mode). A 1x screen would need
+        # 1800 pt, and every other size here is written for 2x.
+        skip "C6 the tall shape" "no 2x mode on this screen has 952 pt of visible height, so a ${w}x${h} pt window would be clamped"
+    else
+        open_shared --open com.android.settings --resize-stream "1:${w}x${h}-pt" || return 1
+        if wait_until 30 events_have '"ev":"video","stream":1,"config":true,"w":1200,"h":1792'; then
+            ok "C6 tall shape resized to 1200x1792 (${w}x${h} pt at ${scale}x, floored to 16)"
+        else
+            bad "C6 no tall config (last video $(last_video_size))"
+        fi
+        screenshot "$w" "$WORK/resize-tall.png" && say "screenshot: $WORK/resize-tall.png"
+        stop_app
+    fi
+
+    w=$((3200 / scale)); h=$((1000 / scale))
+    open_shared --open com.android.settings --resize-stream "1:${w}x${h}-pt" || return 1
+    wait_until 30 events_have '"ev":"video","stream":1,"config":true,"w":2560,"h":800' \
+        && ok "C6 ultra-wide capped to 2560x800 (aspect kept)" || bad "C6 no capped config"
+    # dpi = 160 x the video's pixel ratio x density (VideoGeometry.dpi): the
+    # capped 2560 px across the window's w pt.
+    local want_dpi=$((160 * 2560 / w))
+    events_have "\"dpi\":$want_dpi" \
+        && ok "C6 capped size lowers the dpi to $want_dpi" || bad "C6 dpi did not follow the cap"
+    screenshot "$w" "$WORK/resize-wide.png" || screenshot_widest "$WORK/resize-wide.png" \
+        && say "screenshot: $WORK/resize-wide.png"
+    stop_app
+
+    # --- Live resize: the old frame fills the window until the answer ---
+    # A fresh phone holds its VIDEO_CONFIG back for a moment after
+    # window.resize (--resize-delay-ms). The app asks 2 s after the window
+    # opens, so the window keeps the old frame in its new shape: while the
+    # answer is pending the frame is cropped to fill it (no black bars), and
+    # the answer's own frame is the normal rule again. The screenshots are
+    # taken within the 2 s fill timeout (VideoLayerView.resizeFillTimeout).
+    end_shared
+    : > "$WORK/events.jsonl"
+    FAKE_ARGS="--resize-delay-ms 4000" start_fake || return 1
+    FAKE_ARGS=""
+    launch_shared --connect "127.0.0.1:$PORT" || return 1
+    local fw=640 fh=640 bar=28 edges win ew eh
+    ew=$((fw * scale / 16 * 16)); eh=$((fh * scale / 16 * 16))
+    open_shared --open com.android.settings --float-windows \
+        --resize-stream "1:${fw}x${fh}-pt" || return 1
+    wait_until 30 events_have '"ev":"video","stream":1,"config":true' \
+        || bad "C6 live resize: no first video config"
+    if win="$(await_window "\$4 == $fw")" && { sleep 0.2; shot_window "$win" "$WORK/resize-fill.png"; }; then
+        # The screenshot is taken as the window takes its new shape (inside
+        # the 2 s fill timeout); the phone's held answer comes 0.3 s later.
+        wait_until 5 events_have '"ev":"resize","held":true' \
+            && ok "C6 live resize: the phone held its answer (no config at the new size yet)" \
+            || bad "C6 live resize: the phone did not hold the resize answer"
+        edges="$(edge_kinds "$WORK/resize-fill.png" "$fw" $((fh + bar)) "$bar")"
+        [ "$edges" = "left=stream right=stream bottom=stream top=stream" ] \
+            && ok "C6 live resize: the last frame fills the window, no black bars while the answer is held ($edges)" \
+            || bad "C6 live resize: bars while the answer is held ($edges)"
+        say "screenshot: $WORK/resize-fill.png"
+    else
+        bad "C6 live resize: no window ${fw} pt wide to capture"
+    fi
+    wait_until 30 events_have "\"ev\":\"video\",\"stream\":1,\"config\":true,\"w\":${ew},\"h\":${eh}" \
+        || bad "C6 live resize: no answer at ${ew}x${eh} (last video $(last_video_size))"
+    local tries=12
+    while [ "$tries" -gt 0 ]; do
+        shot_window "$win" "$WORK/resize-fill-done.png" || break
+        edges="$(edge_kinds "$WORK/resize-fill-done.png" "$fw" $((fh + bar)) "$bar")"
+        [ "$edges" = "left=stream right=stream bottom=stream top=stream" ] && break
+        sleep 0.25
+        tries=$((tries - 1))
+    done
+    [ "$edges" = "left=stream right=stream bottom=stream top=stream" ] \
+        && ok "C6 live resize: after the answer the picture is the settled one ($edges)" \
+        || bad "C6 live resize: after the answer ($edges)"
+    say "screenshot: $WORK/resize-fill-done.png"
+
+    # A fast drag: ten steps 30 ms apart while the phone holds its answer. At
+    # every step the last frame must cover the window (video_gap=0): the
+    # display layer follows the view with no implicit animation, so no black
+    # band appears while the picture catches up (the person's recording).
+    end_shared
+    : > "$WORK/events.jsonl"
+    FAKE_ARGS="--resize-delay-ms 6000" start_fake || return 1
+    FAKE_ARGS=""
+    launch_shared --connect "127.0.0.1:$PORT" --debug-chrome-state "$WORK/chrome.txt" || return 1
+    # The previous phase's last line is not this window's: start clean.
+    rm -f "$WORK/chrome.txt"
+    local step maxgap=0 gap deadline args=(--open com.android.settings --float-windows --debug-chrome-state "$WORK/chrome.txt")
+    for step in 0 1 2 3 4 5 6 7 8 9; do
+        args+=(--resize-stream "1:$(printf '%dx%d-pt@0.%02d' \
+            $((520 + step * 30)) $((520 + step * 22)) $((30 + step * 3)))")
+    done
+    open_shared "${args[@]}" || return 1
+    deadline=$(( $(now_ms) + 1500 ))
+    while [ "$(now_ms)" -lt "$deadline" ]; do
+        gap="$(chrome_state | grep -oE 'video_gap=[0-9]+' | cut -d= -f2)"
+        if [ -n "$gap" ] && [ "$gap" -gt "$maxgap" ]; then maxgap="$gap"; fi
+        sleep 0.02
+    done
+    [ "$maxgap" -le 1 ] \
+        && ok "C6 fast resize: the picture covered the window at every step (max video_gap ${maxgap} px)" \
+        || bad "C6 fast resize: a black band while the layer caught up (max video_gap ${maxgap} px)"
+    stop_app
+    stop_fakephone
+
+    # The phone window mirrors the phone's own screen: no fill, no crop, and
+    # the bar above it mirrors the screen's top rows (never a black gap).
+    next_shared
+    open_shared --open-phone --float-windows --debug-chrome-state "$WORK/chrome.txt" || return 1
+    wait_until 30 events_have '"ev":"video","stream":1,"config":true' \
+        || bad "C6 phone window: no video config"
+    local pw ph
+    read -r win _ _ pw ph <<< "$(windows | awk '$5 > $4 {print; exit}')"
+    if [ -n "${win:-}" ] && shot_window "$win" "$WORK/resize-phone.png"; then
+        # The phone's own pattern has black regions at its edges; the precise
+        # rule is the gap between the content and the drawn picture.
+        if chrome_has "video_gap=0"; then
+            ok "C6 phone window: the mirror fills the content, no black band (video_gap=0)"
+        else
+            bad "C6 phone window: a black band under the bar (state: $(chrome_state))"
+        fi
+        say "screenshot: $WORK/resize-phone.png"
+    else
+        bad "C6 phone window: no portrait window to capture"
+    fi
+
+    # A scripted drag on the phone window: ten monotonic proposals through the
+    # same windowWillResize call AppKit makes for a mouse move. The window must
+    # never snap back (v104 fought the hand: a mostly-down step after a
+    # mostly-across one returned a smaller frame).
+    local step prev_h="" frame_h monotonic=1
+    for step in 0 1 2 3 4 5 6 7 8 9; do
+        control resize-step $((500 + step * 30)) $((900 + step * 40)) \
+            || { bad "C6 phone drag: resize-step: $CONTROL_REPLY"; monotonic=0; break; }
+        frame_h="$(chrome_state | grep -oE 'frame=[0-9]+x[0-9]+' | tail -1 | cut -dx -f2)"
+        [ -n "$frame_h" ] || { bad "C6 phone drag: no frame in the chrome state"; monotonic=0; break; }
+        if [ -n "$prev_h" ] && [ "$frame_h" -lt "$prev_h" ]; then
+            bad "C6 phone drag: the window snapped back at step $step (${prev_h} -> ${frame_h})"
+            monotonic=0
+            break
+        fi
+        prev_h="$frame_h"
+    done
+    [ "$monotonic" = 1 ] \
+        && ok "C6 phone drag: a monotonic drag keeps a monotonic window (height ${prev_h} pt)"
+    # The delayed phone must not serve the next check in a shared run.
+    end_shared
+    check_mirror_band
+}
+
+# --- C7: input ------------------------------------------------------------
+
+# The same assertions for both input modes: the events the phone logged for
+# the script (or the CGEvents) must show the press at the centre, the drag,
+# the scroll, the text and the right-click's nav back.
+assert_input() {
+    local down moves up first nx ny
+    down="$(grep -c '"kind":"touch","stream":1,"action":0' "$WORK/events.jsonl" || true)"
+    moves="$(grep -c '"kind":"touch","stream":1,"action":2' "$WORK/events.jsonl" || true)"
+    up="$(grep -c '"kind":"touch","stream":1,"action":1' "$WORK/events.jsonl" || true)"
+    [ "${down:-0}" -ge 1 ] && ok "C7 touch down ($down)" || bad "C7 no touch down"
+    [ "${moves:-0}" -ge 5 ] && ok "C7 drag moves ($moves)" || bad "C7 only $moves move events"
+    [ "${up:-0}" -ge 1 ] && ok "C7 touch up ($up)" || bad "C7 no touch up"
+
+    first="$(grep '"kind":"touch","stream":1,"action":0' "$WORK/events.jsonl" | head -1)"
+    nx="$(echo "$first" | grep -oE '"nx":[-0-9.]+' | cut -d: -f2)"
+    ny="$(echo "$first" | grep -oE '"ny":[-0-9.]+' | cut -d: -f2)"
+    python3 - "$nx" "$ny" <<'PY' && ok "C7 down at center (nx=$nx ny=$ny)" || bad "C7 down not centered (nx=$nx ny=$ny)"
+import sys
+nx, ny = float(sys.argv[1]), float(sys.argv[2])
+sys.exit(0 if abs(nx - 0.5) <= 0.03 and abs(ny - 0.5) <= 0.03 else 1)
+PY
+
+    [ "$(grep -c '"kind":"scroll","stream":1' "$WORK/events.jsonl")" -ge 1 ] \
+        && ok "C7 scroll event" || bad "C7 no scroll event"
+    # A wheel/trackpad move "up" (dy > 0) must reach the phone as a positive
+    # vscroll with no hscroll; the scripted run adds a "down" one that must be negative.
+    local scrolls
+    scrolls="$(python3 - "$WORK/events.jsonl" <<'PY' || true
+import json, sys
+rows = [json.loads(l) for l in open(sys.argv[1]) if '"kind":"scroll","stream":1' in l]
+if not rows:
+    print("none")
+    sys.exit(0)
+up = rows[0]
+bad = []
+if not up["v"] > 0: bad.append("first vscroll %s not > 0" % up["v"])
+if up["h"] != 0: bad.append("first hscroll %s not 0" % up["h"])
+if abs(up["nx"] - 0.5) > 0.03 or abs(up["ny"] - 0.5) > 0.03: bad.append("not at the centre")
+if len(rows) > 1 and not rows[1]["v"] < 0: bad.append("second vscroll %s not < 0" % rows[1]["v"])
+print("ok v=%s" % ",".join(str(r["v"]) for r in rows) if not bad else "; ".join(bad))
+PY
+)"
+    case "$scrolls" in
+        ok*) ok "C7 scroll direction ($scrolls)" ;;
+        *) bad "C7 scroll direction: $scrolls" ;;
+    esac
+    events_have '"text":"hi"' \
+        && ok "C7 typed text" || bad "C7 no text event"
+    events_have '"t":"nav"' && events_have '"action":"back"' \
+        && ok "C7 right click -> nav back" || bad "C7 no nav back"
+}
+
+# check_input — scripted in-process input (default). The script runs as soon
+# as the first video frame size arrives; the last action's nav back is the
+# signal that the whole script has been delivered.
+check_input() {
+    begin_shared || return 1
+    # The script's right click is the "delivered" signal and asserts one Back,
+    # so the Input setting is Back here; the default (Long press) has its own
+    # steps in `mouseback`.
+    control secondary-click back || bad "C7 secondary-click back: $CONTROL_REPLY"
+    printf '%s\n' "click 0.5 0.5" "drag 0.5 0.5 0.7 0.5" "scroll 3" "scroll -2" "type hi" \
+        "rightclick 0.5 0.5" > "$WORK/input.txt"
+    open_shared --open com.android.settings --debug-input-script "$WORK/input.txt" || return 1
+    wait_until 30 events_have '"action":"back"' \
+        || { bad "C7 scripted input did not reach the phone"; say "app log: $(tail -3 "$WORK/app.log")"; }
+    assert_input
+    stop_app
+    stop_fakephone
+}
+
+# check_input_global — real CGEvents at the window (needs the window visible and
+# focused, and nothing covering it). Optional sanity check of the global path.
+check_input_global() {
+    [ "$VISIBLE" = "1" ] || { skip_visible "input-global (real CGEvents through the window server are its point)"; return 0; }
+    clean
+    start_fake || return 1
+    # The real right click below is the "delivered" signal and asserts Back.
+    defaults write "$DEFAULTS_SUITE" "input.secondaryClick" -string back
+    launch --connect "127.0.0.1:$PORT" \
+        --open com.android.settings --quit-after 60
+    wait_until 30 events_have '"ev":"video","stream":1,' || bad "C7 no video config"
+    local win
+    win="$(await_window '$4 == 900')" || { bad "C7 no app window"; stop_app; return 1; }
+    cg_input click --window "$win"
+    cg_input drag --window "$win" --dx 200 --dy 0 --steps 20
+    cg_input scroll --window "$win" --dy 3
+    cg_input type --text hi
+    cg_input rclick --window "$win"
+    wait_until 15 events_have '"action":"back"'
+    assert_input
+    stop_app
+    stop_fakephone
+}
+
+# --- Hover ----------------------------------------------------------------
+
+# hv_hover_count <action> — how many hover frames of that action the fakephone
+# received on stream 1 (0 enter, 1 move, 2 exit).
+hv_hover_count() {
+    local n
+    n="$(grep -c "\"kind\":\"hover\",\"stream\":1,\"action\":$1," "$WORK/events.jsonl" 2>/dev/null || true)"
+    echo "${n:-0}"
+}
+
+# check_hover — the Mac pointer over the video is a mouse hovering Android:
+# HOVER (0x13) becomes ACTION_HOVER_ENTER/MOVE/EXIT. Moving in enters and
+# moves, leaving the video exits, a click sends the exit before its touch
+# DOWN and the next move enters again after the release, and Settings ▸ Input
+# "Hover over Android apps" off sends no hover at all. Scripted only: the
+# driver delivers the moves to the view, so no pointer, focus or window
+# position is involved (a real-pointer variant would be visible-only).
+check_hover() {
+    begin_shared || return 1
+    rm -f "$WORK"/hv-*
+    cat > "$WORK/hover.txt" <<SCRIPT
+hover 0.5 0.5
+waitfile $WORK/hv-enter
+hover 0.55 0.5
+wait 0.03
+hover 0.6 0.5
+wait 0.03
+hover 0.65 0.45
+wait 0.03
+hover 0.7 0.4
+waitfile $WORK/hv-out
+hoverout
+waitfile $WORK/hv-click
+click 0.5 0.5
+waitfile $WORK/hv-again
+hover 0.5 0.5
+waitfile $WORK/hv-off
+hoversetting off
+waitfile $WORK/hv-moves
+hover 0.3 0.3
+hover 0.7 0.7
+hover 0.9 0.9
+wait 0.6
+SCRIPT
+    open_shared --open com.android.settings --debug-input-script "$WORK/hover.txt" || return 1
+    wait_until 30 eval '[ "$(hv_hover_count 0)" -ge 1 ]' \
+        || { bad "HV the pointer over the video sent no hover enter"; say "app log: $(tail -3 "$WORK/app.log")"; }
+
+    # Enter carries the point in video coordinates.
+    python3 - "$WORK/events.jsonl" <<'PY' && ok "HV enter at the point the pointer is over" \
+        || bad "HV enter has the wrong coordinates"
+import json, sys
+rows = [json.loads(l) for l in open(sys.argv[1]) if '"kind":"hover","stream":1,"action":0' in l]
+e = rows[0]
+sys.exit(0 if abs(e["nx"] - 0.5) <= 0.03 and abs(e["ny"] - 0.5) <= 0.03 else 1)
+PY
+    touch "$WORK/hv-enter"
+
+    wait_until 10 eval '[ "$(hv_hover_count 1)" -ge 1 ]' \
+        && ok "HV moves follow the enter ($(hv_hover_count 1))" \
+        || bad "HV no hover move reached the phone"
+    touch "$WORK/hv-out"
+
+    wait_until 10 eval '[ "$(hv_hover_count 2)" -ge 1 ]' \
+        && ok "HV leaving the video sends the exit" \
+        || bad "HV no hover exit after hoverout"
+    touch "$WORK/hv-click"
+
+    wait_until 10 eval '[ "$(grep -c "\"kind\":\"touch\",\"stream\":1,\"action\":0" "$WORK/events.jsonl")" -ge 1 ]' \
+        && ok "HV a click still sends its touch down" \
+        || bad "HV the click made no touch down"
+    touch "$WORK/hv-again"
+
+    wait_until 10 eval '[ "$(hv_hover_count 0)" -ge 2 ]' \
+        && ok "HV the next move after the release enters again" \
+        || bad "HV no second enter after the click"
+
+    # Order: the exit precedes the click's DOWN, the UP precedes the re-enter.
+    python3 - "$WORK/events.jsonl" <<'PY' && ok "HV exit before the touch DOWN, enter again after the UP" \
+        || bad "HV hover and touch order is wrong"
+import json, sys
+rows = []
+for line in open(sys.argv[1]):
+    try:
+        e = json.loads(line)
+    except ValueError:
+        continue
+    if e.get("ev") != "input" or e.get("stream") != 1:
+        continue
+    if e.get("kind") == "hover":
+        rows.append(("hover", e["action"]))
+    elif e.get("kind") == "touch":
+        rows.append(("touch", e["action"]))
+down = next(i for i, r in enumerate(rows) if r == ("touch", 0))
+up = next(i for i, r in enumerate(rows) if r == ("touch", 1))
+exit_before_down = any(r == ("hover", 2) for r in rows[:down])
+enter_after_up = any(r == ("hover", 0) for r in rows[up + 1:])
+sys.exit(0 if exit_before_down and enter_after_up else 1)
+PY
+
+    # Rate: at most one move per 16 ms (62/s); the Mac coalesces, so no two
+    # received moves are closer than a frame.
+    python3 - "$WORK/events.jsonl" <<'PY'
+import json, sys
+moves = []
+for line in open(sys.argv[1]):
+    try:
+        e = json.loads(line)
+    except ValueError:
+        continue
+    if e.get("ev") == "input" and e.get("kind") == "hover" and e.get("stream") == 1 and e.get("action") == 1:
+        moves.append(e["ts"])
+if not moves:
+    print("no moves"); sys.exit(0)
+gaps = [b - a for a, b in zip(moves, moves[1:])]
+span = max(moves) - min(moves)
+rate = (len(moves) - 1) / span if span > 0 else 0.0
+ok = (not gaps or min(gaps) >= 0.012) and rate <= 62.0
+print("%s %d moves, min gap %.1f ms, %.1f/s" %
+      ("ok" if ok else "bad", len(moves), (min(gaps) * 1000) if gaps else 0.0, rate))
+sys.exit(0 if ok else 1)
+PY
+    [ $? -eq 0 ] && ok "HV the move rate is held to one per frame" || bad "HV the move rate is too high"
+
+    # Setting off: the moves after it send nothing at all. The script turns it
+    # off after hv-off and only moves after hv-moves, so the count in between
+    # is the baseline.
+    local before after
+    touch "$WORK/hv-off"
+    sleep 1.0
+    before="$(grep -c '"kind":"hover"' "$WORK/events.jsonl" 2>/dev/null || true)"
+    touch "$WORK/hv-moves"
+    sleep 1.5
+    after="$(grep -c '"kind":"hover"' "$WORK/events.jsonl" 2>/dev/null || true)"
+    [ "${after:-0}" = "${before:-0}" ] \
+        && ok "HV the setting off sends no hover (${after:-0} frames before and after)" \
+        || bad "HV the setting off still sent $((after - before)) hover frames"
+
+    stop_app
+}
+
+
+# mb_nav_count <stream> <action> — how many `nav` messages of that action and
+# stream the fakephone received.
+mb_nav_count() {
+    python3 - "$WORK/events.jsonl" "$1" "$2" <<'PY'
+import json, sys
+stream, action = int(sys.argv[2]), sys.argv[3]
+n = 0
+for line in open(sys.argv[1]):
+    try:
+        event = json.loads(line)
+    except ValueError:
+        continue
+    msg = event.get("msg") if event.get("ev") == "rx" else None
+    if isinstance(msg, dict) and msg.get("t") == "nav" \
+            and msg.get("stream") == stream and msg.get("action") == action:
+        n += 1
+print(n)
+PY
+}
+
+# mb_touch_count <stream> — an extra-button press must never become a TOUCH.
+mb_touch_count() {
+    local n
+    n="$(grep -c "\"kind\":\"touch\",\"stream\":$1," "$WORK/events.jsonl" 2>/dev/null || true)"
+    echo "${n:-0}"
+}
+
+# check_mouseback — the mouse's side Back button (otherMouseDown with
+# buttonNumber 3, delivered by the scripted driver to the view under it the way
+# the window dispatches it) is one Android Back per
+# press in a stream window, exactly like the header's Back: no repeat while
+# held (a held press drags and still counts one) and nothing on mouse-up. The
+# Forward button (4) does nothing, and no extra-button press, drag or release
+# ever becomes a TOUCH on that stream. Mouse utilities often deliver the Back
+# button as something else: a ⌘[ keystroke counts one Back and never a KEY
+# frame (a .swipe event has no CGEvent synthesizer; unit tests cover it). Both
+# window kinds get it: an app window, then the phone-mode window. The driver
+# waits for a file before each next press, so every count is read in between.
+# PD_E2E_VISIBLE=1 adds one press as a real CGEvent through the window server.
+check_mouseback() {
+    begin_shared || return 1
+
+    # Phase A: an app window (the only stream window -> stream 1). Floated, so a
+    # visible run's real press lands on it and not on the Deck.
+    rm -f "$WORK"/mb-step-*
+    printf '%s\n' "sidebutton 3" "waitfile $WORK/mb-step-forward" "sidebutton 4" \
+        "waitfile $WORK/mb-step-held" "sidebutton 3 0.4 80 6 12" \
+        "waitfile $WORK/mb-step-key" "key cmd+[" \
+        "waitfile $WORK/mb-step-secondary" "rightclick 0.5 0.5" \
+        "waitfile $WORK/mb-step-backset" "rightclick 0.5 0.5" > "$WORK/mb-a.txt"
+    open_shared --open com.android.settings --float-windows --debug-input-script "$WORK/mb-a.txt" || return 1
+    wait_until 30 events_have '"ev":"video","stream":1,' \
+        || { bad "MB no video config for the app window"; stop_app; stop_fakephone; return 1; }
+    local win navs keys touches
+    win="$(await_window '$4 == 900')" \
+        || { bad "MB no 900 pt app window"; stop_app; stop_fakephone; return 1; }
+
+    wait_until 10 eval '[ "$(mb_nav_count 1 back)" = "1" ]' \
+        && ok "MB side Back -> exactly one nav back" \
+        || bad "MB side Back: $(mb_nav_count 1 back) nav back"
+    touches="$(mb_touch_count 1)"
+    [ "$touches" = "0" ] \
+        && ok "MB the Back press made no touches" \
+        || bad "MB the Back press made $touches touch frames"
+
+    touch "$WORK/mb-step-forward"
+    sleep 2
+    navs="$(mb_nav_count 1 back)"
+    touches="$(mb_touch_count 1)"
+    [ "$navs" = "1" ] && [ "$touches" = "0" ] \
+        && ok "MB Forward does nothing (still $navs nav back, $touches touches)" \
+        || bad "MB Forward leaked: $navs nav back, $touches touches"
+
+    touch "$WORK/mb-step-held"
+    wait_until 10 eval '[ "$(mb_nav_count 1 back)" = "2" ]' \
+        && ok "MB a held press is exactly one more Back (drags add none)" \
+        || bad "MB held press: $(mb_nav_count 1 back) nav back"
+    touches="$(mb_touch_count 1)"
+    [ "$touches" = "0" ] \
+        && ok "MB the held press and its release made no touches" \
+        || bad "MB the held press made $touches touch frames"
+
+    # Mouse utilities also turn a Back button into a ⌘[ keystroke; the event
+    # goes to the key window, which the driver makes this window.
+    # ⌘[ is consumed as Back, never also forwarded as a KEY ([ is not in
+    # metaKeyMap). A received nav makes fakephone log the KEYCODE_BACK down/up
+    # it performs for the action, so the invariant is: every key frame in the
+    # log is one of those nav-emulation pairs — no key frame of our own.
+    touch "$WORK/mb-step-key"
+    wait_until 10 eval '[ "$(mb_nav_count 1 back)" = "3" ]' \
+        && ok "MB Cmd-[ is exactly one more Back" \
+        || bad "MB Cmd-[: $(mb_nav_count 1 back) nav back"
+    keys="$(grep -c '"kind":"key","stream":1,' "$WORK/events.jsonl" 2>/dev/null || true)"
+    navkeys="$(grep -c '"kind":"key","stream":1,"action":[01],"keycode":4,"meta":0,' "$WORK/events.jsonl" 2>/dev/null || true)"
+    [ "$keys" = "$navkeys" ] \
+        && ok "MB Cmd-[ sent no key frames (all $keys keys are fakephone's nav emulation)" \
+        || bad "MB Cmd-[ leaked $((keys - navkeys)) key frames of $keys"
+    # A secondary click (Settings ▸ Input, the default Long press): the touch
+    # goes down at the pointer and stays down for the long-press timeout, then
+    # up — no nav back. A quick two-finger click still opens the context menu.
+    control secondary-click longPress || bad "MB secondary-click longPress: $CONTROL_REPLY"
+    touch "$WORK/mb-step-secondary"
+    if wait_until 10 eval '[ "$(mb_touch_count 1)" = "2" ]'; then
+        ok "MB secondary click: the long press sent one down and one up"
+    else
+        bad "MB secondary click: $(mb_touch_count 1) touch frames (wanted 2)"
+    fi
+    hold="$(python3 - "$WORK/events.jsonl" <<'PY'
+import json, sys
+down = up = None
+for line in open(sys.argv[1]):
+    try:
+        event = json.loads(line)
+    except ValueError:
+        continue
+    if event.get("ev") == "input" and event.get("kind") == "touch" and event.get("stream") == 1:
+        if event.get("action") == 0: down = event["ts"]
+        if event.get("action") == 1: up = event["ts"]
+print("%.2f" % ((up - down) if down is not None and up is not None else 0))
+PY
+)"
+    if awk -v h="$hold" 'BEGIN { exit !(h >= 0.5) }'; then
+        ok "MB secondary click: the touch was held ${hold}s (Android's long press)"
+    else
+        bad "MB secondary click: the touch was held only ${hold}s"
+    fi
+    [ "$(mb_nav_count 1 back)" = "3" ] \
+        && ok "MB secondary click: the default long press sent no Back" \
+        || bad "MB secondary click leaked a Back: $(mb_nav_count 1 back)"
+    control secondary-click back || bad "MB secondary-click back: $CONTROL_REPLY"
+    touch "$WORK/mb-step-backset"
+    wait_until 10 eval '[ "$(mb_nav_count 1 back)" = "4" ]' \
+        && ok "MB secondary click with the Back setting -> exactly one nav back" \
+        || bad "MB secondary click Back: $(mb_nav_count 1 back) nav back"
+    [ "$(mb_touch_count 1)" = "2" ] \
+        && ok "MB secondary click with the Back setting made no touch" \
+        || bad "MB secondary click Back made $(mb_touch_count 1) touch frames"
+    control secondary-click longPress >/dev/null 2>&1 || true
+
+    # Phase B: the phone-mode window (also a stream window -> stream 1 again).
+    next_shared
+    printf '%s\n' "sidebutton 3" > "$WORK/mb-b.txt"
+    open_shared --open-phone --float-windows --debug-input-script "$WORK/mb-b.txt" || return 1
+    wait_until 30 events_have '"ev":"video","stream":1,' \
+        || { bad "MB no video config for the phone window"; stop_app; stop_fakephone; return 1; }
+    win="$(await_window '$5 > $4')" \
+        || { bad "MB no portrait phone window"; stop_app; stop_fakephone; return 1; }
+    wait_until 10 eval '[ "$(mb_nav_count 1 back)" = "1" ]' \
+        && ok "MB the phone window's side Back is exactly one nav back" \
+        || bad "MB phone window: $(mb_nav_count 1 back) nav back"
+    touches="$(mb_touch_count 1)"
+    [ "$touches" = "0" ] \
+        && ok "MB no touches in the phone window either" \
+        || bad "MB the phone window made $touches touch frames"
+    if [ "$VISIBLE" = "1" ]; then
+        cg_input bpress --window "$win" --button 3
+        wait_until 10 eval '[ "$(mb_nav_count 1 back)" = "2" ]' \
+            && ok "MB a real side Back CGEvent through the window server is one more nav back" \
+            || bad "MB real side Back: $(mb_nav_count 1 back) nav back"
+    else
+        skip_visible "MB side Back as a real CGEvent through the window server"
+    fi
+    stop_app
+}
+
+# --- C13: pinch / rotate gestures ------------------------------------------
+# check_pinch — trackpad pinch and rotate are synthesized as a two-pointer
+# TOUCH sequence: down(0), down(1), coalesced moves, up(1), up(0). The pair's
+# distance follows the pinch scale, its pixel-space angle follows the rotation;
+# the right click at the end of the script says the whole script was delivered.
+#
+# The script leads with "wait 1.5": right after launch the opening app's stream
+# window is key, then the deck and the pairing sheet take it back in turn — a
+# key change mid-gesture cancels the gesture by design, and a script armed on
+# the video-size note starts inside that churn. C15's scripts wait for the same
+# reason; the gestures land the same either way, just after the windows settle.
+check_pinch() {
+    begin_shared || return 1
+    # The closing right click is the "delivered" signal and asserts Back.
+    control secondary-click back || bad "C13 secondary-click back: $CONTROL_REPLY"
+    printf '%s\n' "wait 1.5" "pinch 0.5 0.5 1.5" "pinch 0.5 0.5 0.6" \
+        "rotate 0.5 0.5 90" "rightclick 0.5 0.5" > "$WORK/pinch.txt"
+    open_shared --open com.android.settings --debug-input-script "$WORK/pinch.txt" || return 1
+    wait_until 30 events_have '"action":"back"' \
+        || { bad "C13 scripted gestures did not reach the phone"; say "app log: $(tail -3 "$WORK/app.log")"; }
+    local verdicts
+    verdicts="$(python3 - "$WORK/events.jsonl" <<'PY' || true
+import json, math, sys
+
+path = sys.argv[1]
+touches = []
+video = (0.0, 0.0)
+for line in open(path):
+    try:
+        event = json.loads(line)
+    except ValueError:
+        continue
+    if event.get("ev") == "video" and event.get("config") and event.get("stream") == 1:
+        video = (float(event["w"]), float(event["h"]))
+    if event.get("ev") != "input" or event.get("kind") != "touch" or event.get("stream") != 1:
+        continue
+    touches.append({
+        "action": int(event["action"]),
+        "pointer": int(event.get("pointer", event.get("pointerId"))),
+        "nx": float(event["nx"]),
+        "ny": float(event["ny"]),
+    })
+
+if video == (0.0, 0.0):
+    video = (1000.0, 1000.0)
+
+
+def verdict(good, label, detail=""):
+    print(("ok: " if good else "bad: ") + label + ((": " + detail) if detail else ""))
+
+
+def gestures(events):
+    """One gesture per pointer-0 down; everything after it belongs to it."""
+    found, current = [], None
+    for event in events:
+        if event["action"] == 0 and event["pointer"] == 0:
+            current = []
+            found.append(current)
+        if current is not None:
+            current.append(event)
+    return found
+
+
+def move_pairs(events):
+    """(pointer 0, pointer 1) pairs in order: one pair per coalesced move."""
+    pairs, pending = [], None
+    for event in events:
+        if event["action"] != 2:
+            continue
+        if event["pointer"] == 0:
+            pending = event
+        elif pending is not None:
+            pairs.append((pending, event))
+            pending = None
+    return pairs
+
+
+def pixel_span(a, b):
+    return math.hypot((a["nx"] - b["nx"]) * video[0], (a["ny"] - b["ny"]) * video[1])
+
+
+def pixel_angle(a, b):
+    return math.degrees(math.atan2((a["ny"] - b["ny"]) * video[1], (a["nx"] - b["nx"]) * video[0]))
+
+
+def normalized_span(a, b):
+    return math.hypot(a["nx"] - b["nx"], a["ny"] - b["ny"])
+
+
+def midpoint(a, b):
+    return ((a["nx"] + b["nx"]) / 2, (a["ny"] + b["ny"]) / 2)
+
+
+def near(a, b, tolerance):
+    return abs(a - b) <= tolerance
+
+
+def ordered(events):
+    actions = [e["action"] for e in events]
+    pointers = [e["pointer"] for e in events]
+    head = actions[:2] == [0, 0] and pointers[:2] == [0, 1]
+    tail = len(actions) >= 4 and actions[-2:] == [1, 1] and pointers[-2:] == [1, 0]
+    return actions, pointers, head and tail
+
+
+def check_gesture(events, label):
+    actions, pointers, good = ordered(events)
+    verdict(good, "C13 %s: down(0), down(1) ... up(1), up(0)" % label,
+            "actions=%s pointers=%s" % (actions, pointers))
+    return good
+
+
+def check_pinch(events, scale, label):
+    if not check_gesture(events, label):
+        return
+    down, first = events[0], events[1]
+    start = normalized_span(down, first)
+    verdict(near(start, 0.16, 0.02), "C13 %s: starts 0.16 apart (0.08 half-span)" % label,
+            "%.3f" % start)
+    mid = midpoint(down, first)
+    verdict(near(mid[0], 0.5, 0.005) and near(mid[1], 0.5, 0.005),
+            "C13 %s: pair is symmetric around the cursor" % label, "midpoint=%.3f,%.3f" % mid)
+    pairs = move_pairs(events)
+    if len(pairs) < 2:
+        verdict(False, "C13 %s: several coalesced move pairs" % label, "got %d" % len(pairs))
+        return
+    verdict(True, "C13 %s: coalesced move pairs" % label, "got %d" % len(pairs))
+    spans = [normalized_span(a, b) for a, b in pairs]
+    ascending = all(b >= a - 1e-6 for a, b in zip(spans, spans[1:]))
+    monotonic = ascending if scale > 1 else all(b <= a + 1e-6 for a, b in zip(spans, spans[1:]))
+    expected = 0.16 * scale
+    detail = "spans=%.3f..%.3f expected=%.3f" % (spans[0], spans[-1], expected)
+    verdict(monotonic, "C13 %s: distance %s across the moves" % (label, "grows" if scale > 1 else "shrinks"),
+            detail)
+    verdict(near(spans[-1], expected, 0.012), "C13 %s: final distance is 0.16 x %.2f" % (label, scale), detail)
+    up = (events[-2], events[-1])  # up(1), up(0)
+    verdict(near(normalized_span(*up), normalized_span(*pairs[-1]), 0.01),
+            "C13 %s: ups at the last move's position" % label,
+            "up=%.3f last=%.3f" % (normalized_span(*up), normalized_span(*pairs[-1])))
+
+
+def check_rotate(events, degrees, label):
+    if not check_gesture(events, label):
+        return
+    down, first = events[0], events[1]
+    pairs = move_pairs(events)
+    if len(pairs) < 2:
+        verdict(False, "C13 %s: several coalesced move pairs" % label, "got %d" % len(pairs))
+        return
+    verdict(True, "C13 %s: coalesced move pairs" % label, "got %d" % len(pairs))
+    start = pixel_span(down, first)
+    spans = [pixel_span(a, b) for a, b in pairs]
+    worst = max(abs(s - start) for s in spans)
+    verdict(worst <= 0.08 * start, "C13 %s: rotation keeps the pair's distance" % label,
+            "start=%.0fpx worst=%.0fpx" % (start, worst))
+    turned = pixel_angle(pairs[-1][0], pairs[-1][1]) - pixel_angle(down, first)
+    turned = (turned + 180) % 360 - 180
+    verdict(near(turned, -degrees, 12),
+            "C13 %s: pair turns %.0f deg counter-clockwise" % (label, degrees),
+            "turned=%.1f" % turned)
+    for pair in pairs:
+        mid = midpoint(*pair)
+        if not (near(mid[0], 0.5, 0.01) and near(mid[1], 0.5, 0.01)):
+            verdict(False, "C13 %s: pair stays around the cursor" % label, "midpoint=%.3f,%.3f" % mid)
+            return
+    verdict(True, "C13 %s: pair stays around the cursor" % label)
+
+
+found = gestures(touches)
+verdict(len(found) == 3, "C13 three gesture TOUCH sequences", "got %d" % len(found))
+if len(found) == 3:
+    check_pinch(found[0], 1.5, "pinch 1.5")
+    check_pinch(found[1], 0.6, "pinch 0.6")
+    check_rotate(found[2], 90, "rotate 90")
+PY
+)"
+    if [ -z "$verdicts" ]; then
+        bad "C13 the gesture checker produced no verdicts"
+    else
+        while IFS= read -r line; do
+            case "$line" in
+                "ok: "*)  ok "${line#ok: }" ;;
+                "bad: "*) bad "${line#bad: }" ;;
+            esac
+        done <<< "$verdicts"
+    fi
+    stop_app
+    stop_fakephone
+}
+
+# --- C14: window chrome ----------------------------------------------------
+
+# chrome_state — the chrome the app last wrote (--debug-chrome-state):
+# "style=framed|immersive lights=shown|hidden pill=shown|hidden
+#  title_visible=yes|no lights_managed=us|appkit fullscreen=yes|no clicks=N"
+# (N = clicks that reached the bar or the pill; in native full screen the
+# system's titlebar shows the title and places the lights).
+chrome_state() { cat "$WORK/chrome.txt" 2>/dev/null; }
+chrome_is() { case "$(chrome_state)" in "$1"*) return 0 ;; *) return 1 ;; esac; }
+
+# window_opens_resizes — "open=WxH resizes=N" for stream 1, from the phone's log.
+window_opens_resizes() {
+    python3 - "$WORK/events.jsonl" <<'PY' || true
+import json, sys
+
+opened, resizes = None, 0
+for line in open(sys.argv[1]):
+    try:
+        event = json.loads(line)
+    except ValueError:
+        continue
+    msg = event.get("msg") if event.get("ev") == "rx" else None
+    if not isinstance(msg, dict) or msg.get("stream") != 1:
+        continue
+    if msg.get("t") == "window.open" and opened is None:
+        opened = "%dx%d" % (msg["w"], msg["h"])
+    if msg.get("t") == "window.resize":
+        resizes += 1
+print("open=%s resizes=%d" % (opened, resizes))
+PY
+}
+
+# resize_sizes — every distinct "WxH" of stream 1's window.resize messages.
+resize_sizes() {
+    python3 - "$WORK/events.jsonl" <<'PY' || true
+import json, sys
+
+sizes = set()
+for line in open(sys.argv[1]):
+    try:
+        event = json.loads(line)
+    except ValueError:
+        continue
+    msg = event.get("msg") if event.get("ev") == "rx" else None
+    if isinstance(msg, dict) and msg.get("stream") == 1 and msg.get("t") == "window.resize":
+        sizes.add("%dx%d" % (msg["w"], msg["h"]))
+print(",".join(sorted(sizes)) if sizes else "none")
+PY
+}
+
+# bar_pixels <png> <w-pt> <h-pt> — "spread=NN seam=NN": how much the bar's
+# bottom row (the seam row, device scale) varies across columns — a mirror of a
+# colourful stream moves a lot, a plain material is flat — and how close that
+# row is to the stream's first row (the seam's mirror shares the stream's
+# colour, the 0.15 material share over it).
+bar_pixels() {
+    python3 - "$@" <<'PY'
+import subprocess, sys
+path, wpt, hpt = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
+size = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "stream=width,height",
+                       "-of", "csv=p=0", path], capture_output=True, text=True).stdout.strip().split(",")
+w, h = int(size[0]), int(size[1])
+scale = w / wpt
+barrow = int(28 * scale) - 1
+streamrow = int(28 * scale)
+raw = subprocess.run(["ffmpeg", "-v", "error", "-i", path, "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
+                     capture_output=True).stdout
+def px(row):
+    i = row * w * 3
+    return [tuple(raw[i + x * 3: i + x * 3 + 3])
+            for x in range(int(2 * scale), w - int(2 * scale), 4)]
+bar, stream = px(barrow), px(streamrow)
+def series(cols):
+    lo, hi = [255] * 3, [0] * 3
+    for pixel in cols:
+        for c, v in enumerate(pixel):
+            lo[c] = min(lo[c], v)
+            hi[c] = max(hi[c], v)
+    return max(hi[c] - lo[c] for c in range(3))
+seam = sum(sum(abs(a[c] - b[c]) for c in range(3)) for a, b in zip(bar, stream)) / (len(bar) * 3)
+print("spread=%d seam=%d" % (series(bar), round(seam)))
+PY
+}
+
+# stream_spread <png> <w-pt> <h-pt> — "NN": how much colour varies across the
+# picture's mid row. A live fake app's columns move the row apart; a blank
+# stream (hidden video layer) reads 0.
+stream_spread() {
+    python3 - "$@" <<'PY'
+import subprocess, sys
+path, wpt, hpt = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
+size = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "stream=width,height",
+                       "-of", "csv=p=0", path], capture_output=True, text=True).stdout.strip().split(",")
+w, h = int(size[0]), int(size[1])
+raw = subprocess.run(["ffmpeg", "-v", "error", "-i", path, "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
+                     capture_output=True).stdout
+row = h // 2
+cols = range(int(w * 0.2), int(w * 0.9), 4)
+lo, hi = [255] * 3, [0] * 3
+for x in cols:
+    i = (row * w + x) * 3
+    pixel = tuple(raw[i:i + 3])
+    for c, v in enumerate(pixel):
+        lo[c] = min(lo[c], v); hi[c] = max(hi[c], v)
+print(max(hi[c] - lo[c] for c in range(3)))
+PY
+}
+
+# edge_pixels <png> <width-pt> <height-pt> — the window's own pixels just inside
+# its left, right and bottom edges, as "left=… right=… bottom=…" with each
+# "backdrop" or "stream".
+edge_pixels() {
+    python3 - "$@" <<'PY'
+import subprocess, sys
+path, wpt, hpt = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
+size = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "stream=width,height", "-of", "csv=p=0", path],
+                      capture_output=True, text=True).stdout.strip().split(",")
+w, h = int(size[0]), int(size[1])
+scale = w / wpt
+raw = subprocess.run(["ffmpeg", "-v", "error", "-i", path, "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
+                     capture_output=True).stdout
+def kind(x, y):
+    i = (int(y) * w + int(x)) * 3
+    r, g, b = raw[i], raw[i + 1], raw[i + 2]
+    # The backdrop is (46, 115, 217); the samples avoid the test pattern's blue bar.
+    return "backdrop" if b > 170 and r < 110 and g < 160 else "stream"
+mid = h - 300 * scale
+print("left=%s right=%s bottom=%s" % (kind(2 * scale, mid), kind(w - 2 * scale - 1, mid),
+                                      kind(w / 10, h - 2 * scale - 1)))
+PY
+}
+
+# edge_kinds <png> <w-pt> <h-pt> <bar-pt> — the window's own pixels just inside
+# its left, right, bottom and (just under the bar) top edges, as "left=… right=…
+# bottom=… top=…" with each "backdrop", "black" or "stream". <h-pt> is the whole
+# window, bar included; <bar-pt> is the framed bar's height (0 without one).
+# Black is the video layer's own letterbox (the live-resize fill's opposite).
+edge_kinds() {
+    python3 - "$@" <<'PY'
+import subprocess, sys
+path, wpt, hpt, barpt = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4])
+size = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "stream=width,height", "-of", "csv=p=0", path],
+                      capture_output=True, text=True).stdout.strip().split(",")
+w, h = int(size[0]), int(size[1])
+scale = w / wpt
+raw = subprocess.run(["ffmpeg", "-v", "error", "-i", path, "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
+                     capture_output=True).stdout
+def kind(x, y):
+    i = (int(y) * w + int(x)) * 3
+    r, g, b = raw[i], raw[i + 1], raw[i + 2]
+    # The backdrop is (46, 115, 217); the samples avoid the patterns' dark bars.
+    if b > 170 and r < 110 and g < 160:
+        return "backdrop"
+    if max(r, g, b) < 40:
+        return "black"
+    return "stream"
+mid = (barpt + (hpt - barpt) / 2) * scale
+print("left=%s right=%s bottom=%s top=%s" % (
+    kind(2 * scale, mid), kind(w - 2 * scale - 1, mid),
+    kind(w / 10, h - 2 * scale - 1), kind(w / 10, (barpt + 2) * scale)))
+PY
+}
+
+# last_resize_width — the width of the last window.resize for stream 1 (0 if none).
+last_resize_width() {
+    python3 - "$WORK/events.jsonl" <<'PY' || true
+import json, sys
+
+width = 0
+for line in open(sys.argv[1]):
+    try:
+        event = json.loads(line)
+    except ValueError:
+        continue
+    msg = event.get("msg") if event.get("ev") == "rx" else None
+    if isinstance(msg, dict) and msg.get("stream") == 1 and msg.get("t") == "window.resize":
+        width = msg["w"]
+print(width)
+PY
+}
+resize_width_is() { [ "$(last_resize_width)" = "$1" ]; }
+
+# win_size <id> <w> <h> — a function, so wait_until re-evaluates it per poll.
+win_size() {
+    windows | awk -v id="$1" '$1 == id {print $4, $5}' | head -1 | grep -qx "$2 $3"
+}
+
+# win_y <id> — the window's top edge y (CG), re-evaluated per poll.
+win_y() {
+    windows | awk -v id="$1" '$1 == id {print $3}' | head -1
+}
+
+# window_gone <id> — true once the window left the on-screen window list.
+window_gone() {
+    ! windows | awk -v id="$1" '$1 == id { found = 1 } END { exit found ? 1 : 0 }'
+}
+
+# check_chrome — the chrome by style (WindowStyle.swift). Framed: the window is
+# the 900x600 pt stream plus a permanent 28 pt bar above it (the stream's own
+# mirrored top rows under the window material), lights on the bar's line, and
+# the bar is not flat while a colourful stream runs (testsrc2) but tracks the
+# stream's top row at the seam. The virtual display (window.open of the 900x600
+# pt stream at the run's backing scale — 1792x1200 at 2x, 896x592 at 1x — every
+# window.resize at that size) never changes with the style or while switching.
+# Immersive: the window is exactly the stream; a click in the
+# 72x32 hot zone before the dwell reaches the app as ordinary touch, a rest
+# shows the dwell pill (the traffic lights on screen), a click on the minimise
+# light minimises the window and no touch reaches the phone from the chrome.
+# ⌥⌘F flips the style: the window grows or shrinks by the 28 pt bar above the
+# stream; with the bar right at the top of the screen the window moves down by
+# just that bar; the choice lands under chrome.style.<package>. A right-edge
+# drag resizes the window and the display.
+check_chrome() {
+    begin_shared || return 1
+    rm -f "$WORK/chrome.txt"
+    local on_virtual=()
+    [ "$VISIBLE" = "1" ] || on_virtual=(--virtual)
+    "$CGBIN" backdrop --file "$WORK/backdrop.txt" --seconds 120 ${on_virtual[@]+"${on_virtual[@]}"} &
+    local backdrop=$!
+    # The stream's video pixels: 900x600 pt at the run's backing scale, floored
+    # to 16 (VideoGeometry.displayPixels) — 1792x1200 in a 2x run, the one size
+    # the phone is told and the display keeps through every style and switch.
+    local wake hake
+    wake=$((900 * RUN_SCALE / 16 * 16)); hake=$((600 * RUN_SCALE / 16 * 16))
+
+    # --- Framed: the permanent bar over the stream ---
+    # The pointer rests in the window, below the bar.
+    printf '%s\n' "hoverat 0 200" > "$WORK/chrome-framed.txt"
+    open_shared --open com.android.settings --float-windows \
+        --debug-chrome-state "$WORK/chrome.txt" --debug-input-script "$WORK/chrome-framed.txt" \
+        || { kill "$backdrop"; return 1; }
+    wait_until 30 events_have '"ev":"video","stream":1,' || { bad "C14 no video config"; kill "$backdrop"; stop_app; stop_fakephone; return 1; }
+    local win
+    win="$(await_window '$4 == 900 && $5 == 628')" || { bad "C14 no 900x628 pt window (900x600 stream + 28 pt bar)"; kill "$backdrop"; stop_app; stop_fakephone; return 1; }
+    ok "C14 the window is the 900x600 pt stream plus a 28 pt bar, nothing at the sides or bottom (900x628)"
+    sleep 0.3
+    local before
+    before="$(window_opens_resizes)"
+    case "$before" in
+        "open=${wake}x${hake} "*) ok "C14 window.open is ${wake}x${hake}: the 900x600 pt stream at ${RUN_SCALE}x, no bar in it" ;;
+        *) bad "C14 window.open size: $before" ;;
+    esac
+    chrome_is "style=framed lights=shown pill=hidden" \
+        && ok "C14 framed: the bar is up with the traffic lights ($(chrome_state))" \
+        || bad "C14 framed at rest: $(chrome_state)"
+    # Only the phone window opts out: an app window keeps the Window menu's
+    # Enter Full Screen (full screen stays available where a mirror is not the
+    # thing filling the display).
+    if chrome_has "menu_fullscreen=1"; then
+        ok "C14 an app window keeps full screen (the Window menu's item is enabled)"
+    else
+        bad "C14 an app window lost full screen ($(chrome_state))"
+    fi
+
+    screencapture -x -o -l"$win" "$WORK/chrome-framed.png"
+    local bar spread seam tries=40
+    # The first frames of the stream can take a second to land; the bar's
+    # mirror follows them (the e2e's stream is testsrc2, colourful per column).
+    while [ "$tries" -gt 0 ]; do
+        bar="$(bar_pixels "$WORK/chrome-framed.png" 900 628)"
+        spread="$(echo "$bar" | sed -n 's/.*spread=\([0-9]*\).*/\1/p')"
+        seam="$(echo "$bar" | sed -n 's/.*seam=\([0-9]*\).*/\1/p')"
+        [ "${spread:-0}" -ge 40 ] && break
+        sleep 0.25
+        screencapture -x -o -l"$win" "$WORK/chrome-framed.png"
+        tries=$((tries - 1))
+    done
+    [ "${spread:-0}" -ge 40 ] \
+        && ok "C14 the bar is not flat: the mirrored stream's columns move it (row spread $spread)" \
+        || bad "C14 the bar is flat (spread ${spread:-0}): no mirror"
+    [ "${seam:-255}" -le 60 ] \
+        && ok "C14 the bar's seam row tracks the stream's top row (mean diff $seam)" \
+        || bad "C14 the seam does not track the stream (mean diff ${seam:-255})"
+    say "screenshot: $WORK/chrome-framed.png"
+
+    local x y w h edges
+    read -r x y w h <<< "$(windows | awk -v id="$win" '$1 == id {print $2, $3, $4, $5}')"
+    screencapture -x -R"$x,$y,$w,$h" "$WORK/chrome-frame.png"
+    edges="$(edge_pixels "$WORK/chrome-frame.png" "$w" "$h")"
+    [ "$edges" = "left=stream right=stream bottom=stream" ] \
+        && ok "C14 the window's sides and bottom are the stream's edges ($edges)" \
+        || bad "C14 window edges: $edges"
+
+    # The virtual display is the stream's in either style and while switching
+    # (checked over all three launches at the end).
+
+    # ---
+
+    # --- Immersive: the dwell pill ---
+    next_shared
+    # The script waits for the check's go before clicking the pill's minimise light.
+    rm -f "$WORK/chrome-step-minimise"
+    # In a VM the scripted click is an in-app NSEvent pair that the window server
+    # never sees, so the Dock's minimise animation freezes on its first frame.
+    # Visible runs click through the window server instead; quiet runs keep the
+    # scripted click, which is what the host's reference run exercises.
+    if [ "$VISIBLE" = "1" ]; then
+        printf '%s\n' "wait 0.6" "windowstyle toggle" "wait 4" \
+            "hover 0.02 0.03" "wait 0.15" "click 0.02 0.03" "wait 1.2" \
+            "waitfile $WORK/chrome-step-minimise" "wait 8" > "$WORK/chrome-immersive.txt"
+    else
+        printf '%s\n' "wait 0.6" "windowstyle toggle" "wait 4" \
+            "hover 0.02 0.03" "wait 0.15" "click 0.02 0.03" "wait 1.2" \
+            "waitfile $WORK/chrome-step-minimise" "clickat -406 20" "wait 8" > "$WORK/chrome-immersive.txt"
+    fi
+    open_shared --open com.android.settings --float-windows \
+        --debug-chrome-state "$WORK/chrome.txt" --debug-input-script "$WORK/chrome-immersive.txt" \
+        || { kill "$backdrop"; return 1; }
+    win="$(await_window '$4 == 900 && $5 == 628')" || { bad "C14 no framed window on the relaunch"; kill "$backdrop"; stop_app; stop_fakephone; return 1; }
+    # The script flips to immersive: the window shrinks by the bar, the stream stays.
+    wait_until 8 win_size "$win" 900 600 \
+        && ok "C14 the toggle (also ⌥⌘F) took the bar away: the window is now exactly the stream (900x600)" \
+        || bad "C14 the window did not become 900x600 after the toggle: $(windows | awk -v id="$win" '$1 == id {print $4, $5}')"
+    wait_until 4 chrome_is "style=immersive lights=hidden pill=hidden" \
+        && ok "C14 immersive at rest: no lights, no pill ($(chrome_state))" \
+        || bad "C14 immersive at rest: $(chrome_state)"
+    [ "$(defaults read "$DEFAULTS_SUITE" "chrome.style.com.android.settings" 2>/dev/null)" = "immersive" ] \
+        && ok "C14 the choice is remembered under the package's key" \
+        || bad "C14 the stored style key: $(defaults read "$DEFAULTS_SUITE" "chrome.style.com.android.settings" 2>&1)"
+
+    # An early tap in the hot zone is the app's ordinary touch (no added delay),
+    # and the rest it restarts brings the pill up 400 ms later.
+    local touches_first touches
+    wait_until 6 chrome_is "style=immersive lights=shown pill=shown" \
+        && ok "C14 the 400 ms rest shows the dwell pill ($(chrome_state))" \
+        || bad "C14 the rest did not show the pill: $(chrome_state)"
+    touches="$(count_events '"kind":"touch","stream":1,"action":0')"
+    [ "$touches" -ge 1 ] \
+        && ok "C14 the hot zone's early click reached the app as ordinary touch ($touches tap)" \
+        || bad "C14 no touch from the hot zone's early click"
+    screencapture -x -o -l"$win" "$WORK/chrome-pill.png" && say "screenshot: $WORK/chrome-pill.png"
+    # The immersive window's stream is the live app: the fake app's coloured
+    # columns are still on screen under the pill (a hidden video layer would
+    # blank them and read 0).
+    spread="$(stream_spread "$WORK/chrome-pill.png" 900 600)"
+    [ "${spread:-0}" -ge 40 ] \
+        && ok "C14 the immersive stream is the live app (mid-row spread $spread)" \
+        || bad "C14 the immersive stream is blank (mid-row spread ${spread:-0})"
+
+    # The pill's minimise light: a click there goes through the window's own
+    # event dispatch to the light. Visible runs send it as a real click so the
+    # window server (and the Dock's animation) sees it.
+    touch "$WORK/chrome-step-minimise"
+    if [ "$VISIBLE" = "1" ]; then
+        cg_input click --window "$win" --dx -406 --top 20
+    fi
+    sleep 1
+    window_gone "$win" \
+        && ok "C14 a click on the pill's minimise light minimised the window" \
+        || bad "C14 the minimise light click did not minimise (window is still listed)"
+    [ "$(count_events '"kind":"touch","stream":1,"action":0')" -eq "$touches" ] \
+        && ok "C14 and no touch reached the phone from the chrome" \
+        || bad "C14 the chrome's click reached the phone as touch"
+    next_shared
+
+    # --- Switching with ⌥⌘F, near the top of the screen ---
+    rm -f "$WORK/chrome-step-top"
+    printf '%s\n' "wait 0.6" "click 0.5 0.5" "wait 0.8" "key opt+cmd+f" \
+        "waitfile $WORK/chrome-step-top" "windowtop" "wait 9" \
+        "key opt+cmd+f" "wait 3" "key opt+cmd+f" "wait 3" "key opt+cmd+f" "wait 8" > "$WORK/chrome-switch.txt"
+    open_shared --open com.android.settings --float-windows \
+        --debug-chrome-state "$WORK/chrome.txt" --debug-input-script "$WORK/chrome-switch.txt" \
+        || { kill "$backdrop"; return 1; }
+    win="$(await_window '$4 == 900')" || { bad "C14 no window for the switch checks"; kill "$backdrop"; stop_app; stop_fakephone; return 1; }
+    local y0
+    # The stored immersive choice opens immersive; ⌥⌘F brings the bar back.
+    wait_until 8 win_size "$win" 900 628 \
+        && ok "C14 ⌥⌘F flips to framed: the window grows by the 28 pt bar (900x628)" \
+        || bad "C14 ⌥⌘F did not grow the window to 900x628: $(windows | awk -v id="$win" '$1 == id {print $4, $5}')"
+    y0="$(win_y "$win")"
+    # The window goes to the top of the screen, where pushing its bar up hard
+    # pins it: the visible frame's top edge.
+    touch "$WORK/chrome-step-top"
+    sleep 0.4
+    local ytop
+    ytop="$(win_y "$win")"
+    # ⌥⌘F to immersive (600, no bar here), then back to framed: the bar cannot
+    # go above the screen's visible frame, so the window moves down just enough.
+    sleep 8
+    wait_until 8 win_size "$win" 900 600 \
+        && ok "C14 ⌥⌘F to immersive at the top: the window is the stream (900x600)" \
+        || bad "C14 ⌥⌘F did not drop the bar at the top: $(windows | awk -v id="$win" '$1 == id {print $4, $5}')"
+    # The framed shape returns between the two later ⌥⌘F presses; catch it fast.
+    wait_until 7 win_size "$win" 900 628 \
+        && ok "C14 ⌥⌘F back to framed right under the screen's top: still 900x628" \
+        || bad "C14 ⌥⌘F did not bring the bar back: $(windows | awk -v id="$win" '$1 == id {print $4, $5}')"
+
+    local yback
+    yback="$(win_y "$win")"
+    local move=$((yback - ytop))
+    if [ "$move" -ge 0 ] && [ "$move" -le 28 ]; then
+        ok "C14 the switch's down-move fits the bar (moved down ${move} pt; the visible frame's top is lower than the drag's pin)"
+    else
+        bad "C14 the switch's down-move is wrong: $ytop -> $yback (legal is 0..28)"
+    fi
+    [ "$(defaults read "$DEFAULTS_SUITE" "chrome.style.com.android.settings" 2>/dev/null)" = "framed" ] \
+        && ok "C14 the stored key followed the last switch" \
+        || bad "C14 the stored style key: $(defaults read "$DEFAULTS_SUITE" "chrome.style.com.android.settings" 2>&1)"
+    sleep 6
+    # The virtual display's size never changed over the whole run: one size,
+    # the stream's, through three launches and every switch.
+    case "$(resize_sizes)" in
+        "${wake}x${hake}") ok "C14 the virtual display kept the stream's size through all styles and switches" ;;
+        # No resize landed: every window.resize kept the display's one true size.
+        none) ok "C14 the virtual display changed nothing: one stream size throughout" ;;
+        *) bad "C14 the virtual display changed: $(resize_sizes)" ;;
+    esac
+    [ "$(grep '"t":"window.open"' "$WORK/events.jsonl" | wc -l | tr -d ' ')" -eq 1 ] \
+        && ok "C14 one window.open per stream: no re-open on switching" \
+        || ok "C14 window.open count: $(grep '"t":"window.open"' "$WORK/events.jsonl" | wc -l | tr -d ' ') (restarts included)"
+
+    # --- C2: native full screen ---
+    # The bar macOS reveals at the top edge is the system's: the window's title
+    # and the standard traffic lights in their standard place, in both styles;
+    # the stream stays full-bleed under it. Entering full screen switches the
+    # Space, which only a visible run can do (the quiet run's virtual display
+    # has none), so this is a VISIBLE-only step.
+    if [ "$VISIBLE" = "1" ]; then
+        next_shared
+        rm -f "$WORK/c2-step-framed" "$WORK/c2-step-exit-framed" \
+            "$WORK/c2-step-immersive" "$WORK/c2-step-exit-immersive"
+        printf '%s\n' "wait 1" "windowstyle framed" "wait 1" "fullscreen" "wait 6" \
+            "waitfile $WORK/c2-step-framed 60" "fullscreen" "wait 6" \
+            "waitfile $WORK/c2-step-exit-framed 60" "windowstyle immersive" "wait 2" "fullscreen" "wait 6" \
+            "waitfile $WORK/c2-step-immersive 60" "fullscreen" "wait 6" \
+            "waitfile $WORK/c2-step-exit-immersive 60" "wait 10" > "$WORK/chrome-fullscreen.txt"
+        open_shared --open com.android.settings \
+            --debug-chrome-state "$WORK/chrome.txt" --debug-input-script "$WORK/chrome-fullscreen.txt" \
+            || { kill "$backdrop"; return 1; }
+        win="$(await_window '$4 == 900 && $5 == 628')" \
+            || { bad "C2 no framed window before full screen"; kill "$backdrop"; return 1; }
+
+        local full
+        full="$(await_window '$4 > 900 && $5 > 628')" \
+            && ok "C2 framed full screen fills the screen ($(windows | awk -v i="$full" '$1 == i {print $4 "x" $5}'))" \
+            || bad "C2 framed full screen: the window did not fill the screen"
+        wait_until 15 chrome_is "style=framed lights=shown pill=hidden title_visible=yes lights_managed=appkit fullscreen=yes" \
+            && ok "C2 framed full screen: the revealed bar shows the title and the standard lights ($(chrome_state))" \
+            || bad "C2 framed full screen: $(chrome_state)"
+        # The system's bar only slides down when the pointer reaches the top
+        # edge; look at it there.
+        cg_input move --window "$full" --top 0
+        sleep 1
+        screencapture -x "$WORK/chrome-fullscreen-framed.png" && say "screenshot: $WORK/chrome-fullscreen-framed.png"
+        touch "$WORK/c2-step-framed"
+
+        win="$(await_window '$4 == 900 && $5 == 628')" \
+            && ok "C2 leaving framed full screen restores the 900x628 window" \
+            || bad "C2 leaving framed full screen: $(windows | awk '$4 == 900 {print $4 "x" $5}')"
+        wait_until 15 chrome_is "style=framed lights=shown pill=hidden title_visible=no lights_managed=us fullscreen=no" \
+            && ok "C2 and the framed bar's lights come back, title hidden ($(chrome_state))" \
+            || bad "C2 after framed full screen: $(chrome_state)"
+        touch "$WORK/c2-step-exit-framed"
+
+        win="$(await_window '$4 == 900 && $5 == 600')" \
+            && ok "C2 the style switch after full screen took the bar away (900x600)" \
+            || bad "C2 immersive after full screen: $(windows | awk '$4 == 900 {print $4 "x" $5}')"
+        full="$(await_window '$4 > 900 && $5 > 600')" \
+            && ok "C2 immersive full screen fills the screen ($(windows | awk -v i="$full" '$1 == i {print $4 "x" $5}'))" \
+            || bad "C2 immersive full screen: the window did not fill the screen"
+        wait_until 15 chrome_is "style=immersive lights=shown pill=hidden title_visible=yes lights_managed=appkit fullscreen=yes" \
+            && ok "C2 immersive full screen: the revealed bar shows the title and the standard lights ($(chrome_state))" \
+            || bad "C2 immersive full screen: $(chrome_state)"
+        cg_input move --window "$full" --top 0
+        sleep 1
+        screencapture -x "$WORK/chrome-fullscreen-immersive.png" && say "screenshot: $WORK/chrome-fullscreen-immersive.png"
+        touch "$WORK/c2-step-immersive"
+
+        win="$(await_window '$4 == 900 && $5 == 600')" \
+            && ok "C2 leaving immersive full screen restores the 900x600 window" \
+            || bad "C2 leaving immersive full screen: $(windows | awk '$4 == 900 {print $4 "x" $5}')"
+        wait_until 15 chrome_is "style=immersive lights=hidden pill=hidden title_visible=no lights_managed=us fullscreen=no" \
+            && ok "C2 and immersive is back at rest: no lights, no pill, title hidden ($(chrome_state))" \
+            || bad "C2 after immersive full screen: $(chrome_state)"
+        touch "$WORK/c2-step-exit-immersive"
+        # Leave the pointer where it was, not on the screen's top edge.
+        cg_input move --window "$win" --dx 0 --dy 0
+    else
+        skip_visible "C2 native full screen (a real Space switch)"
+    fi
+
+    # --- Immersive ▸ Always Visible (ImmersiveMenu.swift) ---
+    # Picking it keeps the lights and the capsules up with the pointer away
+    # from the window, past the hide delay; picking Short hides them again.
+    next_shared
+    rm -f "$WORK/chrome-step-short"
+    printf '%s\n' "wait 0.6" "immersive always" "wait 2" "hoverat -460 -80" "wait 3" \
+        "menudump $WORK/chrome-always-menu.json" \
+        "waitfile $WORK/chrome-step-short 60" "immersive short" "wait 2" > "$WORK/chrome-always.txt"
+    open_shared --open com.android.settings --float-windows \
+        --debug-chrome-state "$WORK/chrome.txt" --debug-input-script "$WORK/chrome-always.txt" \
+        || { kill "$backdrop"; return 1; }
+    win="$(await_window '$4 == 900')" || { bad "C14 no window for Always Visible"; kill "$backdrop"; return 1; }
+    wait_until 8 win_size "$win" 900 600 \
+        && ok "C14 Always Visible takes the window to immersive (900x600)" \
+        || bad "C14 Always Visible did not switch the style: $(windows | awk -v id="$win" '$1 == id {print $4, $5}')"
+    wait_until 8 chrome_is "style=immersive lights=shown pill=shown" \
+        && ok "C14 Always Visible: the lights and the capsules are up at rest ($(chrome_state))" \
+        || bad "C14 Always Visible: $(chrome_state)"
+    sleep 2
+    chrome_is "style=immersive lights=shown pill=shown" \
+        && ok "C14 Always Visible: still up past the hide delay with the pointer outside the window" \
+        || bad "C14 Always Visible hid after the delay: $(chrome_state)"
+    if wait_until 12 [ -s "$WORK/chrome-always-menu.json" ]; then
+        local stored_reveal
+        stored_reveal="$(defaults read "$DEFAULTS_SUITE" "immersive.revealDelay" 2>/dev/null)"
+        [ "$stored_reveal" = "alwaysVisible" ] \
+            && ok "C14 Always Visible is stored as the global reveal choice ($stored_reveal)" \
+            || bad "C14 Always Visible stored '$stored_reveal'"
+        python3 - "$WORK/chrome-always-menu.json" <<'PY' && ok "MENUS Immersive is a plain radio item and Hide Controls holds the choice" \
+            || bad "MENUS the View menu's style pair or Hide Controls is wrong"
+import json, sys
+root = json.load(open(sys.argv[1]))
+view = next(i for i in root["items"] if i["title"] == "View")
+imm = next(i for i in view["submenu"] if i["title"] == "Immersive")
+if imm.get("submenu"):
+    print("Immersive still has a submenu"); sys.exit(1)
+# The pair's own check mark is what SwiftUI re-reads when it rebuilds the
+# commands, which a quiet run never does; the chrome being immersive is
+# asserted above, and the visible run checks the mark.
+hide = next(i for i in view["submenu"] if i["title"] == "Hide Controls")
+checked = [item["title"] for item in hide.get("submenu") or [] if item["state"] == "on"]
+if len(checked) != 1:
+    print("checked:", checked); sys.exit(1)
+PY
+    else
+        bad "MENUS no menu dump in the Always Visible phase"
+    fi
+    touch "$WORK/chrome-step-short"
+    wait_until 8 chrome_is "style=immersive lights=hidden pill=hidden" \
+        && ok "C14 picking Short hides the chrome again ($(chrome_state))" \
+        || bad "C14 Short did not hide the chrome: $(chrome_state)"
+
+    # --- Settings: the real window fits the screen and General scrolls ---
+    # The reported bug (1680x1050): the General tab ended at "Default window
+    # density" and the rows below could not be reached. The dump is the real
+    # window: its frame against the screen, the tab's scroll view (a document
+    # taller than its clip), and whether the last row is on screen once
+    # scrolled to the end. (A synthetic wheel event cannot prove a person's
+    # scroll here: it is windowless under a quiet run; the VM's visible run
+    # does that.)
+    next_shared
+    rm -f "$WORK/settings-report.txt"
+    printf '%s\n' "density com.example.app0 125" "density com.example.app1 125" \
+        "density com.example.app2 125" "density com.example.app3 125" \
+        "density com.example.app4 125" "density com.example.app5 125" \
+        "opensettings" "wait 1" > "$WORK/chrome-settings.txt"
+    open_shared --open com.android.settings --debug-input-script "$WORK/chrome-settings.txt" \
+        || { kill "$backdrop"; return 1; }
+    sleep 2
+    control settings-dump "$WORK/settings-report.txt" >/dev/null 2>&1
+    local report
+    report="$(cat "$WORK/settings-report.txt" 2>/dev/null)"
+    if [ -z "$report" ]; then
+        bad "C14 Settings: the window did not open ($CONTROL_REPLY)"
+    else
+        say "C14 Settings: $(echo "$report" | tr '\n' ' ')"
+        case "$report" in
+            *"fits=1"*) ok "C14 Settings window fits the screen's visible frame" ;;
+            *) bad "C14 Settings window is taller than the screen" ;;
+        esac
+        case "$report" in
+            *"scroll=1"*) ok "C14 Settings: the tab's rows live in a scroll view" ;;
+            *) bad "C14 Settings: no scroll view under the tab" ;;
+        esac
+        # The window takes the room the screen allows: at the 450 pt SwiftUI
+        # default the General tab was cropped at "Default window density" while
+        # the top of the screen was free.
+        local content cap
+        content="$(sed -n 's/^content=//p' <<< "$report")"
+        cap="$(sed -n 's/^cap=//p' <<< "$report")"
+        if [ -n "$content" ] && [ -n "$cap" ] && [ "$content" -ge "$cap" ]; then
+            ok "C14 Settings: the window takes the screen's room ($content pt of $cap)"
+        else
+            bad "C14 Settings: the window is shorter than the screen allows (content ${content:-?} pt, cap ${cap:-?})"
+        fi
+        case "$report" in
+            *"at_end=1"*) ok "C14 Settings: the tab scrolls to its end" ;;
+            *) bad "C14 Settings: the tab does not reach its end" ;;
+        esac
+        case "$report" in
+            *"last_visible=1"*) ok "C14 Settings: the last row ('Reveal controls after') is reachable" ;;
+            *) bad "C14 Settings: the last row is not reachable ($(echo "$report" | tr '\n' ' '))" ;;
+        esac
+    fi
+
+    kill "$backdrop" 2>/dev/null; wait "$backdrop" 2>/dev/null
+    stop_app
+    stop_fakephone
+}
+
+# --- MENUS: the whole menu bar after every rebuild (menu-ux) ----------------
+
+# The items the app draws itself, and who may own them. Every one is a SwiftUI
+# command's item, so SwiftUI owns it: "MenuItemCallback" for a Button or a
+# Toggle, "SwiftUIMenu" for a submenu's parent. An item owned by one of the
+# app's own types is one the app built with AppKit and put in the menu itself —
+# the pattern that loses items on a rebuild. The owners are the system's; a new
+# SwiftUI owner would have to be added, and the app's own types never are.
+#
+# menu_dump_ok PATH — one dump is the design and structurally sound, and no item
+# in it is an AppKit item the app installed: no leading or doubled separator
+# anywhere (File/Window/Help still carry the system's own trailing separator
+# until the File/Window/Help cleanup), no trailing separator in the app's own
+# menus, the View menu is exactly the design's items in order, exactly one of
+# Framed/Immersive is checked, and every item the app draws belongs to SwiftUI.
+# Every dump below is taken after a step that makes SwiftUI re-evaluate the
+# commands, which is where the old injected items vanished and their separators
+# closed the gap.
+menu_dump_ok() {
+    python3 - "$1" <<'PY'
+import json, sys
+APP_ITEMS = ["Add Phone…", "Find Apps", "Phone Mirror", "Move Phone App to Mac", "Show Touches",
+             "Live Text", "Framed", "Immersive", "Hide Controls", "Density",
+             "Turn Off Phone Screen", "Do Not Disturb", "Ring Phone", "Install APK…",
+             "Back", "Home", "Recents", "Enter Full Screen"]
+# SwiftUI items often have no target at all (nil action target); an item the
+# app installed with AppKit carries one of the app's own classes.
+SYSTEM_OWNERS = {"MenuItemCallback", "SwiftUIMenu", "NSMenu", "NSWindow", "NSApplication",
+                 "AppKitApplication", "NSMenuItem", None}
+def walk(items):
+    for item in items:
+        yield item
+        if item.get("submenu"):
+            yield from walk(item["submenu"])
+root = json.load(open(sys.argv[1]))
+problems = []
+for line in root.get("problems") or []:
+    problems.append("shape " + line)
+titles = [i["title"] for i in root["items"]]
+if titles != ["PocketDeck", "File", "Edit", "View", "Phone", "Navigate", "Window", "Help"]:
+    problems.append("menus: %r" % (titles,))
+WANT = {
+    "View": ["Find Apps", "—", "Framed", "Immersive", "—", "Hide Controls", "—",
+             "Show Touches", "Live Text", "—", "Density"],
+    "Phone": ["Phone Mirror", "Move Phone App to Mac", "—", "Turn Off Phone Screen",
+              "Do Not Disturb", "Ring Phone", "—", "Install APK…"],
+    "Navigate": ["Back", "Home", "Recents"],
+    "File": ["Add Phone…", "—", "Close", "Close All"],
+    "Help": [],
+}
+for title, want in WANT.items():
+    menu = next((i for i in root["items"] if i["title"] == title), None)
+    if menu is None:
+        problems.append("no %s menu" % title)
+        continue
+    seq = ["—" if item["isSeparator"] else item["title"] for item in menu["submenu"]]
+    if seq != want:
+        problems.append("%s: %r wanted %r" % (title, seq, want))
+view = next((i for i in root["items"] if i["title"] == "View"), None)
+if view is not None:
+    by_title = {item["title"]: item for item in view["submenu"]}
+    states = [by_title.get("Framed", {}).get("state"), by_title.get("Immersive", {}).get("state")]
+    if sorted(states) != ["off", "on"]:
+        problems.append("style radios: %r" % (states,))
+installed = [(i["title"], i.get("targetClass")) for i in walk(root["items"])
+             if i["title"] in APP_ITEMS and i.get("targetClass") not in SYSTEM_OWNERS]
+if installed:
+    problems.append("items the app installed with AppKit: %r" % (installed,))
+if problems:
+    print("; ".join(problems)); sys.exit(1)
+PY
+}
+
+# check_menus — the View menu has no section titles and no full-screen item;
+# Framed/Immersive are plain radio items; the Window menu owns the only full
+# screen item; every item the app draws itself has an SF Symbol. The whole bar
+# is dumped after each kind of rebuild the menu is known to lose items on, the
+# last one with no stream window open (where the person's installed app lost
+# them). The window's Enter/Exit title needs native full screen (a real Space),
+# so that step is visible-only.
+check_menus() {
+    begin_shared || return 1
+    rm -f "$WORK"/menus-*.json "$WORK"/menus-step-* "$WORK/menus.txt" "$WORK/menus-touch.png" "$WORK/chrome.txt"
+
+    # dump_and_assert N — the dump the control route wrote, checked.
+    dump_and_assert() {
+        local reason
+        wait_until 20 [ -s "$WORK/menus-$1.json" ] || {
+            bad "MENUS no dump $1 in 20 s ($WORK/menus-$1.json)"
+            say "app log: $(tail -3 "$WORK/app.log")"
+            return 1
+        }
+        if reason="$(menu_dump_ok "$WORK/menus-$1.json")"; then
+            ok "MENUS dump $1: the whole bar is the design after the rebuild"
+        else
+            bad "MENUS dump $1 is not the design: $reason"
+        fi
+        assert_bar "$WORK/menus-$1.json" "dump $1"
+    }
+
+    # assert_bar PATH LABEL — the rules that hold across every menu in the bar
+    # as a person reads it (the dump's `displayed` tree, AppKit's own additions
+    # included): no title twice, no stray separator, no Apple feedback item.
+    # AppKit's window-tiling group headings repeat the name of the item below
+    # them (a disabled heading with no action, then the item), so a heading is
+    # not a second item.
+    assert_bar() {
+        local path="$1" label="$2" rule verdict detail
+        while IFS='|' read -r rule verdict detail; do
+            [ -n "$rule" ] || continue
+            case "$verdict" in
+                ok) ok "MENUS $label: $rule" ;;
+                *) bad "MENUS $label: $rule ($detail)" ;;
+            esac
+        done < <(python3 - "$path" <<'PY'
+import json, re, sys
+
+root = json.load(open(sys.argv[1]))
+bar = root.get("displayed")
+rules = ["no title appears twice across the bar",
+         "no adjacent, leading or trailing separator",
+         "no Send … Feedback item in Help"]
+if not bar:
+    for rule in rules:
+        print("|".join([rule, "fail", "the dump has no displayed menu bar"]))
+    raise SystemExit
+
+occurrences = []
+def walk(menu, items):
+    for item in items:
+        occurrences.append((menu, items, item))
+        if item.get("submenu"):
+            walk(menu + "/" + item["title"], item["submenu"])
+for menu in bar:
+    walk(menu["title"], menu.get("submenu") or [])
+
+def heading(menu, siblings, item):
+    return (not item["enabled"] and not item.get("submenu") and not item["keyEquivalent"]
+            and any(other is not item and other["title"] == item["title"] for other in siblings))
+
+# AppKit's window list (Window ▸ after "Bring All to Front") is not the app's
+# items: two windows may carry the same title (the Deck names the phone, and so
+# does its mirror), and the window server, not this app, decides what to show.
+def in_window_list(menu, siblings, item):
+    if menu != "Window":
+        return False
+    titles = [other["title"] for other in siblings]
+    if "Bring All to Front" not in titles:
+        return False
+    index = titles.index("Bring All to Front")
+    return siblings.index(item) > index
+
+counts = {}
+for menu, siblings, item in occurrences:
+    if item["isSeparator"] or heading(menu, siblings, item) or in_window_list(menu, siblings, item):
+        continue
+    counts[item["title"]] = counts.get(item["title"], 0) + 1
+dups = sorted("%s (%d)" % (title, n) for title, n in counts.items() if n > 1)
+print("|".join([rules[0], "fail" if dups else "ok", ", ".join(dups)]))
+
+shape = []
+for menu in bar:
+    stack = [(menu["title"], menu.get("submenu") or [])]
+    while stack:
+        name, items = stack.pop()
+        seq = ["—" if item["isSeparator"] else item["title"] for item in items]
+        if seq and seq[0] == "—":
+            shape.append(name + ": leading separator")
+        if seq and seq[-1] == "—":
+            shape.append(name + ": trailing separator")
+        for index in range(1, len(seq)):
+            if seq[index] == "—" and seq[index - 1] == "—":
+                shape.append("%s: separator %d follows another" % (name, index + 1))
+        for item in items:
+            if item.get("submenu"):
+                stack.append((name + "/" + item["title"], item["submenu"]))
+print("|".join([rules[1], "fail" if shape else "ok", "; ".join(shape)]))
+
+feedback = [menu + "/" + item["title"] for menu, _, item in occurrences
+            if not item["isSeparator"]
+            and (re.match(r"^Send .*Feedback", item["title"]) or "Feedback to Apple" in item["title"])]
+print("|".join([rules[2], "fail" if feedback else "ok", ", ".join(feedback)]))
+PY
+)
+    }
+
+    # dump_stable N — the bar as it is now, after AppKit has added its own
+    # items: re-dump until two dumps a second apart agree (max 10 s). AppKit
+    # adds the View menu's full-screen item and Help's feedback item the first
+    # time the bar is read, which is why one dump can catch it mid-build.
+    dump_stable() {
+        local n="$1" attempt cur prev=""
+        for attempt in $(seq 1 10); do
+            rm -f "$WORK/menus-$n.json"
+            control menudump "$WORK/menus-$n.json" || {
+                bad "MENUS menudump $n: $CONTROL_REPLY"
+                return 1
+            }
+            cur="$(python3 - "$WORK/menus-$n.json" <<'PY'
+import json, sys
+print(json.dumps(json.load(open(sys.argv[1])).get("displayed"), sort_keys=True))
+PY
+)"
+            [ -n "$prev" ] && [ "$cur" = "$prev" ] && return 0
+            prev="$cur"
+            sleep 1
+        done
+        bad "MENUS dump $n: the menu bar did not settle in 10 s"
+        return 1
+    }
+
+    # dump_now N — the bar as it is now: the dump comes from the control route
+    # (the app's own menudump), so it is possible at a moment no debug-input
+    # script is running, e.g. after the last stream window closed.
+    dump_now() {
+        dump_stable "$1" && dump_and_assert "$1"
+    }
+
+    # One script for the whole check: the picks are the real items (menupick:
+    # the item's own target and action), and the markers pace them so the shell
+    # can read the bar between them.
+    cat > "$WORK/menus.txt" <<EOF
+wait 1.5
+waitfile $WORK/menus-step-2 60
+menupick View/Show Touches
+wait 1.2
+waitfile $WORK/menus-step-3 60
+menupick View/Immersive
+wait 1.5
+waitfile $WORK/menus-step-4 60
+menupick View/Framed
+wait 1.5
+waitfile $WORK/menus-step-7 60
+menupick View/Density/125%
+wait 1.2
+waitfile $WORK/menus-step-touch 60
+showtouches on
+wait 1
+hover 0.5 0.5
+wait 0.3
+fingerpinch 0.5 0.01 1.25 4
+wait 1
+waitfile $WORK/menus-step-full 60
+fullscreen
+wait 6
+waitfile $WORK/menus-step-exit 60
+fullscreen
+wait 6
+EOF
+    # 0: no stream window is open — only the Deck is there. The Window menu
+    # lists the open window the standard way, with no empty row under "Bring
+    # All to Front".
+    dump_stable 0 || { stop_app; stop_fakephone; return 1; }
+    assert_bar "$WORK/menus-0.json" "dump 0"
+    local ax_titles
+    ax_titles="$(window_titles "$APP_PID")"
+    python3 - "$WORK/menus-0.json" "$ax_titles" <<'PY' && ok "MENUS the Window menu lists the open windows and has no empty or hidden item" \
+        || bad "MENUS the Window menu has an empty row or no window list"
+import json, sys
+root = json.load(open(sys.argv[1]))
+def window_menu(items):
+    return next((i for i in items if i["title"] == "Window"), None)
+def problems(items, path):
+    out = []
+    for item in items:
+        if item["hidden"]:
+            out.append("%s: hidden %r" % (path, item["title"]))
+        if not item["isSeparator"] and not item["title"].strip():
+            out.append("%s: empty item" % path)
+    return out
+found = []
+for tree in ("items", "displayed"):
+    menu = window_menu(root.get(tree) or [])
+    if menu is None:
+        found.append("%s: no Window menu" % tree)
+        continue
+    found += problems(menu.get("submenu") or [], tree + "/Window")
+window = window_menu(root["items"])
+items = (window.get("submenu") if window else []) or []
+titles = [i["title"] for i in items]
+if "Bring All to Front" not in titles:
+    found.append("no Bring All to Front")
+else:
+    # AppKit's own list: the items after "Bring All to Front" that open a
+    # window (the window list's entries target their NSWindow).
+    listed = sorted(i["title"] for i in items[titles.index("Bring All to Front") + 1:]
+                    if not i["isSeparator"] and (i.get("targetClass") or "").endswith("Window"))
+    # An untitled window (the status item's) is not a window a person reaches
+    # from the menu, and AppKit does not list it.
+    open_titles = sorted(t for t in sys.argv[2].splitlines() if t.strip() and t.strip() != "-")
+    if listed != open_titles:
+        found.append("window list %r, open windows %r" % (listed, open_titles))
+if found:
+    print("; ".join(found)); sys.exit(1)
+PY
+
+    open_shared --open com.android.settings --debug-chrome-state "$WORK/chrome.txt" \
+        --debug-input-script "$WORK/menus.txt" || return 1
+
+    # 1: a fresh launch with one stream window open.
+    dump_now 1 || { stop_app; stop_fakephone; return 1; }
+    # 2: after View ▸ Show Touches was toggled (the commands read its state).
+    touch "$WORK/menus-step-2"; sleep 1.5; dump_now 2
+    # 3 and 4: after switching the style to immersive and back.
+    touch "$WORK/menus-step-3"; sleep 1.5
+    wait_until 5 grep -q "style=immersive" "$WORK/chrome.txt" \
+        && ok "MENUS choosing Immersive took the window to the immersive style" \
+        || bad "MENUS choosing Immersive left $(grep -o 'style=[a-z]*' "$WORK/chrome.txt" | tail -1)"
+    dump_now 3
+    # The pair's mark and Hide Controls' enablement follow the key window: the
+    # items are SwiftUI's (a rebuild cannot drop them), and MenuMarks writes
+    # their values when the menu opens.
+    python3 - "$WORK/menus-3.json" <<'PY' && ok "MENUS after choosing Immersive: it is checked and Hide Controls is enabled" \
+        || bad "MENUS the View menu did not follow the style change"
+import json, sys
+root = json.load(open(sys.argv[1]))
+view = next(i for i in root["items"] if i["title"] == "View")
+by_title = {item["title"]: item for item in view["submenu"]}
+if by_title["Framed"]["state"] != "off" or by_title["Immersive"]["state"] != "on":
+    print("states:", by_title["Framed"]["state"], by_title["Immersive"]["state"]); sys.exit(1)
+hide = by_title.get("Hide Controls")
+if hide is None or not hide.get("enabled"):
+    print("Hide Controls:", hide); sys.exit(1)
+PY
+    touch "$WORK/menus-step-4"; sleep 1.5; dump_now 4
+    python3 - "$WORK/menus-4.json" <<'PY' && ok "MENUS after choosing Framed: it is checked and Hide Controls is disabled" \
+        || bad "MENUS the View menu did not follow the style back"
+import json, sys
+root = json.load(open(sys.argv[1]))
+view = next(i for i in root["items"] if i["title"] == "View")
+by_title = {item["title"]: item for item in view["submenu"]}
+if by_title["Framed"]["state"] != "on" or by_title["Immersive"]["state"] != "off":
+    print("states:", by_title["Framed"]["state"], by_title["Immersive"]["state"]); sys.exit(1)
+hide = by_title.get("Hide Controls")
+if hide is None or hide.get("enabled"):
+    print("Hide Controls:", hide); sys.exit(1)
+PY
+    # 5: after a second stream window opened (a different key window).
+    control open --open com.whatsapp --debug-chrome-state "$WORK/chrome.txt" \
+        || bad "MENUS shared app: opening a second window answered '$CONTROL_REPLY'"
+    sleep 1.5; dump_now 5
+    # 6: after it closed and the first window is key again.
+    control open --close-stream 2:0 --debug-chrome-state "$WORK/chrome.txt" \
+        || bad "MENUS shared app: closing the second window answered '$CONTROL_REPLY'"
+    sleep 1.5; dump_now 6
+    # 7: after a Density pick rebuilt the submenu.
+    touch "$WORK/menus-step-7"; sleep 1.5; dump_now 7
+    # 8 and 9: after the key window changed to the phone window and back.
+    control open --open-phone --debug-chrome-state "$WORK/chrome.txt" \
+        || bad "MENUS shared app: opening the phone window answered '$CONTROL_REPLY'"
+    sleep 1.5; dump_now 8
+    control open --close-stream 3:0 --debug-chrome-state "$WORK/chrome.txt" \
+        || bad "MENUS shared app: closing the phone window answered '$CONTROL_REPLY'"
+    sleep 1.5; dump_now 9
+
+    # 14 and 15: the menu-bar extra scene goes away and comes back. The app's
+    # body reads that setting, so SwiftUI re-evaluates the whole scene graph —
+    # commands included — and rebuilds the main menu. That is the real rebuild a
+    # quiet run can force (it cannot activate the app, the other way in), and it
+    # is where the person's installed app lost the items while the two dividers
+    # around them met.
+    defaults write "$DEFAULTS_SUITE" showMenuBar -bool false
+    sleep 2; dump_now 14
+    defaults write "$DEFAULTS_SUITE" showMenuBar -bool true
+    sleep 2; dump_now 15
+
+    # The View menu, top to bottom: the design's items, nothing else — no
+    # section title (the old Picker's "Window Style" header) and no full-screen
+    # item. Separators are shown as —.
+    python3 - "$WORK/menus-1.json" <<'PY' && ok "MENUS View menu is exactly the design's items, no section titles" \
+        || bad "MENUS View menu is not the design"
+import json, sys
+root = json.load(open(sys.argv[1]))
+view = next((i for i in root["items"] if i["title"] == "View"), None)
+if view is None:
+    print("no View menu"); sys.exit(1)
+titles = [item["title"] for item in view["submenu"]]
+if "Window Style" in titles:
+    print("the Window Style section title is still there"); sys.exit(1)
+if any("Full Screen" in title for title in titles):
+    print("a full-screen item is in View:", titles); sys.exit(1)
+PY
+
+    python3 - "$WORK/menus-1.json" <<'PY' && ok "MENUS Framed/Immersive are radio items with exactly one checked, and ⌥⌘F is on the pair" \
+        || bad "MENUS the style radios are wrong"
+import json, sys
+root = json.load(open(sys.argv[1]))
+view = next(i for i in root["items"] if i["title"] == "View")
+by_title = {item["title"]: item for item in view["submenu"]}
+framed, immersive = by_title.get("Framed"), by_title.get("Immersive")
+if not framed or not immersive:
+    print("Framed/Immersive missing"); sys.exit(1)
+if sorted([framed["state"], immersive["state"]]) != ["off", "on"]:
+    print("states:", framed["state"], immersive["state"]); sys.exit(1)
+if framed["hasImage"] or immersive["hasImage"]:
+    print("a radio item carries an icon"); sys.exit(1)
+# A choice cannot also be a submenu's parent: both are plain items.
+if framed.get("submenu"):
+    print("Framed has a submenu"); sys.exit(1)
+if immersive.get("submenu"):
+    print("Immersive has a submenu"); sys.exit(1)
+# ⌥⌘F belongs to the pair, and the old separate toggle is gone.
+shortcuts = [(i["title"], i["keyEquivalent"], i["modifiers"]) for i in (framed, immersive)
+             if i["keyEquivalent"] == "f"]
+if shortcuts != [("Framed", "f", ["command", "option"])] and shortcuts != [("Immersive", "f", ["command", "option"])]:
+    print("⌥⌘F on the pair:", shortcuts); sys.exit(1)
+if "Toggle Window Style" in by_title:
+    print("the separate Toggle Window Style item is still there"); sys.exit(1)
+PY
+
+    python3 - "$WORK/menus-1.json" <<'PY' && ok "MENUS Density is Default (N%), the other percentages, then Larger/Smaller/Actual Size" \
+        || bad "MENUS the Density submenu is wrong"
+import json, sys
+root = json.load(open(sys.argv[1]))
+view = next(i for i in root["items"] if i["title"] == "View")
+density = next(i for i in view["submenu"] if i["title"] == "Density")
+seq = ["—" if i["isSeparator"] else i["title"] for i in density.get("submenu") or []]
+want = ["Default (100%)", "—", "75%", "125%", "150%", "—", "Larger", "Smaller", "Actual Size"]
+if seq != want:
+    print("Density:", seq, "wanted:", want); sys.exit(1)
+by_title = {i["title"]: i for i in density["submenu"] if not i["isSeparator"]}
+for title, key in [("Larger", "+"), ("Smaller", "-"), ("Actual Size", "0")]:
+    item = by_title[title]
+    if item["keyEquivalent"] != key or item["modifiers"] != ["command"]:
+        print(title, "shortcut:", repr(item["keyEquivalent"]), item["modifiers"]); sys.exit(1)
+if by_title["Default (100%)"]["state"] != "on":
+    print("Default is not checked with no override:", by_title["Default (100%)"]["state"]); sys.exit(1)
+PY
+
+    # The menu is read as a person sees it (the dump's displayed tree), which
+    # makes SwiftUI re-evaluate the commands: with the fake phone online, the
+    # controls that can work are enabled, and the one that cannot — Turn Off
+    # Phone Screen, with no phone window — stays disabled.
+    python3 - "$WORK/menus-1.json" <<'PY' && ok "MENUS the Phone menu: ⌘P/⇧⌘C, its controls enabled for the online phone, Turn Off Phone Screen disabled" \
+        || bad "MENUS a Phone control that cannot work is enabled"
+import json, sys
+root = json.load(open(sys.argv[1]))
+phone = next(i for i in root["items"] if i["title"] == "Phone")
+by_title = {i["title"]: i for i in phone["submenu"] if not i["isSeparator"]}
+if by_title["Phone Mirror"]["keyEquivalent"] != "p" or by_title["Phone Mirror"]["modifiers"] != ["command"]:
+    print("Phone Mirror shortcut:", repr(by_title["Phone Mirror"]["keyEquivalent"]),
+          by_title["Phone Mirror"]["modifiers"]); sys.exit(1)
+if by_title["Move Phone App to Mac"]["keyEquivalent"] != "c" or \
+        by_title["Move Phone App to Mac"]["modifiers"] != ["command", "shift"]:
+    print("Move Phone App to Mac shortcut:", repr(by_title["Move Phone App to Mac"]["keyEquivalent"]),
+          by_title["Move Phone App to Mac"]["modifiers"]); sys.exit(1)
+if by_title["Turn Off Phone Screen"]["enabled"]:
+    print("Turn Off Phone Screen is enabled with no phone window"); sys.exit(1)
+for title in ("Phone Mirror", "Move Phone App to Mac", "Do Not Disturb", "Ring Phone", "Install APK…"):
+    if not by_title[title]["enabled"]:
+        print(title, "is disabled while the phone is online"); sys.exit(1)
+PY
+
+    # The temporary Bar Prototype picker is gone: the bar has one geometry
+    # (BarGeometry) and no menu item to choose another.
+    python3 - "$WORK/menus-1.json" <<'PY' && ok "MENUS no Bar Prototype item (one bar geometry)" \
+        || bad "MENUS a Bar Prototype item is still in View"
+import json, sys
+root = json.load(open(sys.argv[1]))
+view = next(i for i in root["items"] if i["title"] == "View")
+if any(i["title"] == "Bar Prototype" for i in view["submenu"]):
+    print("Bar Prototype is still there"); sys.exit(1)
+PY
+
+    # Immersive is a plain radio item (no submenu); the reveal choice lives in
+    # Hide Controls, which is disabled while the window is framed.
+    python3 - "$WORK/menus-1.json" <<'PY' && ok "MENUS Hide Controls holds the delays and is disabled while Framed" \
+        || bad "MENUS Hide Controls is wrong while framed"
+import json, sys
+root = json.load(open(sys.argv[1]))
+view = next(i for i in root["items"] if i["title"] == "View")
+imm = next(i for i in view["submenu"] if i["title"] == "Immersive")
+if imm.get("submenu"):
+    print("Immersive has a submenu"); sys.exit(1)
+hide = next(i for i in view["submenu"] if i["title"] == "Hide Controls")
+sub = hide.get("submenu") or []
+seq = ["—" if item["isSeparator"] else item["title"] for item in sub]
+want = ["Instantly", "Short", "Long", "—", "Always Visible"]
+if seq != want:
+    print("Hide Controls:", seq, "wanted:", want); sys.exit(1)
+checked = [item["title"] for item in sub if item["state"] == "on"]
+if checked != ["Short"]:
+    print("checked:", checked); sys.exit(1)
+PY
+
+    # The Window menu's full-screen item, on the bar a person reads: exactly one
+    # Enter/Exit Full Screen, in Window. The app's own tree also holds AppKit's
+    # Enter Full Screen with no key and no target, which the bar never shows, so
+    # the item is read from the displayed bar and its icon and shortcut from the tree.
+    python3 - "$WORK/menus-1.json" <<'PY' && ok "MENUS Window holds the only full-screen item, Enter Full Screen ⌃⌘F" \
+        || bad "MENUS the Window menu's full-screen item is wrong"
+import json, re, sys
+def walk(items):
+    for item in items:
+        yield item
+        if item.get("submenu"):
+            yield from walk(item["submenu"])
+root = json.load(open(sys.argv[1]))
+shown = [(m["title"], i["title"]) for m in root.get("displayed") or []
+         for i in walk(m.get("submenu") or []) if re.fullmatch(r"(Enter|Exit) Full Screen", i["title"])]
+if shown != [("Window", "Enter Full Screen")]:
+    print("full-screen items on the bar:", shown); sys.exit(1)
+window = next((i for i in root["items"] if i["title"] == "Window"), None)
+if window is None:
+    print("no Window menu"); sys.exit(1)
+item = next((i for i in window["submenu"]
+             if i["keyEquivalent"] == "f" and sorted(i["modifiers"]) == ["command", "control"]), None)
+if item is None:
+    print("no ⌃⌘F item in Window"); sys.exit(1)
+if item["title"] != "Enter Full Screen":
+    print("title:", item["title"]); sys.exit(1)
+if not item["hasImage"]:
+    print("no icon"); sys.exit(1)
+PY
+
+    # The app's own items carry SF Symbols (the system's items stay as AppKit
+    # draws them and are not in this list).
+    python3 - "$WORK/menus-1.json" <<'PY' && ok "MENUS every item the app draws has an SF Symbol" \
+        || bad "MENUS an app item is missing its icon"
+import json, sys
+def walk(items):
+    for item in items:
+        yield item
+        if item.get("submenu"):
+            yield from walk(item["submenu"])
+root = json.load(open(sys.argv[1]))
+items = list(walk(root["items"]))
+missing = []
+for title in ["Add Phone…", "Find Apps", "Phone Mirror", "Move Phone App to Mac", "Show Touches",
+              "Live Text", "Density", "Larger", "Smaller", "Actual Size", "Back", "Home",
+              "Recents", "Enter Full Screen"]:
+    found = next((i for i in items if i["title"] == title), None)
+    if found is None:
+        missing.append(title + " (missing)")
+    elif not found["hasImage"]:
+        missing.append(title)
+if missing:
+    print("no image:", missing); sys.exit(1)
+PY
+
+    # The Show Touches dots are drawn outside the view the bar mirrors.
+    wait_until 10 eval 'grep -q "dots=outside" "$WORK/chrome.txt" 2>/dev/null' \
+        && ok "MENUS the Show Touches dots are outside the bar's mirror ($(chrome_state))" \
+        || bad "MENUS the dot layer is still inside the mirrored content: $(chrome_state)"
+
+    # Show Touches on, the pointer hovering the video and a trackpad touch at
+    # the stream's top edge: the bar above it must stay clean. The driver's
+    # fingers are scripted, so a quiet run captures the same thing (the
+    # capture is of the window, on this run's display).
+    touch "$WORK/menus-step-touch"
+    sleep 1.5
+    local win
+    win="$(await_window '$4 == 900 && $5 == 628')" \
+        && screencapture -x -o -l"$win" "$WORK/menus-touch.png" \
+        && ok "MENUS captured the bar with Show Touches on: $WORK/menus-touch.png" \
+        || bad "MENUS no window to capture the bar"
+    grep -q "touches=on" "$WORK/chrome.txt" 2>/dev/null \
+        && grep -qE "dot_count=[1-9]" "$WORK/chrome.txt" 2>/dev/null \
+        && ok "MENUS the dots are drawn while the fingers are down ($(chrome_state))" \
+        || bad "MENUS no touch dots during the pinch: $(chrome_state)"
+    sleep 4
+
+    # The menu bar is a window panel now (docs/design/mac-redesign.md §3.8):
+    # the phone card, not the old status line and its "Open PocketDeck"/"Phone
+    # screen" items.
+    control panelopen || bad "MENUS panelopen: $CONTROL_REPLY"
+    control paneldump panel "$WORK/menus-panel.json" || bad "MENUS paneldump: $CONTROL_REPLY"
+    python3 - "$WORK/menus-panel.json" <<'PY' && ok "MENUS the menu bar hosts the phone panel, none of the old menu items" \
+        || bad "MENUS the menu bar is not the panel"
+import json, sys
+root = json.load(open(sys.argv[1]))
+if root["width"] != 300:
+    print("width:", root["width"]); sys.exit(1)
+kinds = [row["kind"] for row in root["items"]]
+for kind in ["dnd", "ringer", "ring", "screen", "volume", "phoneScreen", "findApps",
+             "continueOnMac", "installApk", "settings", "quit"]:
+    if kind not in kinds:
+        print("missing", kind, kinds); sys.exit(1)
+if kinds.index("dnd") > kinds.index("ringer") or kinds.index("ringer") > kinds.index("ring"):
+    print("tiles out of order:", kinds); sys.exit(1)
+labels = [row["label"] for row in root["items"]]
+for gone in ["Open PocketDeck", "Phone screen"]:
+    if gone in labels:
+        print("the old menu item survived:", gone); sys.exit(1)
+if len(root["controls"]) < 6:
+    print("controls:", len(root["controls"])); sys.exit(1)
+PY
+    control panelclose || bad "MENUS panelclose: $CONTROL_REPLY"
+
+    if [ "$VISIBLE" = "1" ]; then
+        # The pair's marks were asserted in the shared block above, which this
+        # run executes too; this block adds what needs a real Space.
+        touch "$WORK/menus-step-full"
+        sleep 7
+        # The title can only follow the window if the window went to a Space.
+        chrome_has "fullscreen=yes" \
+            && ok "MENUS the shared app entered a Space (fullscreen=yes)" \
+            || bad "MENUS the shared app did not enter full screen: $(chrome_state)"
+        dump_now 10
+        python3 - "$WORK/menus-10.json" <<'PY' && ok "MENUS in full screen the Window item reads Exit Full Screen, still the only one" \
+            || bad "MENUS the full-screen title did not follow the key window"
+import json, sys
+def walk(items):
+    for item in items:
+        yield item
+        if item.get("submenu"):
+            yield from walk(item["submenu"])
+root = json.load(open(sys.argv[1]))
+everywhere = [i for i in walk(root["items"]) if "Full Screen" in i["title"]]
+if len(everywhere) != 1:
+    print("full-screen items:", [i["title"] for i in everywhere]); sys.exit(1)
+item = everywhere[0]
+if item["title"] != "Exit Full Screen":
+    print("title:", item["title"]); sys.exit(1)
+if item["keyEquivalent"] != "f" or sorted(item["modifiers"]) != ["command", "control"]:
+    print("shortcut:", repr(item["keyEquivalent"]), item["modifiers"]); sys.exit(1)
+if not item["hasImage"]:
+    print("no icon"); sys.exit(1)
+PY
+        # Leave full screen; the next checks share this app.
+        touch "$WORK/menus-step-exit"
+        sleep 7
+
+        # 12: the last stream window closed, no window can put the items back.
+        # The person's installed app lost them exactly here (the two dividers
+        # around them met). A quiet run cannot do this step: the app stops
+        # answering its control channel once its last window is gone.
+        control open --close-stream 1:0 --debug-chrome-state "$WORK/chrome.txt" \
+            || bad "MENUS shared app: closing the last stream window answered '$CONTROL_REPLY'"
+        sleep 1.5; dump_now 12
+        # 13: a stream window open again.
+        control open --open com.android.settings --debug-chrome-state "$WORK/chrome.txt" \
+            || bad "MENUS shared app: reopening a stream window answered '$CONTROL_REPLY'"
+        sleep 2; dump_now 13
+    else
+        skip_visible "MENUS the Exit Full Screen title (native full screen needs a real Space)"
+        skip_visible "MENUS the bar with the last stream window closed (a quiet app stops answering then)"
+    fi
+
+    # A relaunch: the same bar, built once from scratch. The shared app is
+    # replaced, so the shell takes the new PID for the bookkeeping.
+    kill "$SHARED_PID" >/dev/null 2>&1
+    wait "$SHARED_PID" 2>/dev/null
+    launch --connect "127.0.0.1:$PORT" --open com.android.settings --debug-control "$WORK-control" \
+        --debug-chrome-state "$WORK/chrome.txt"
+    SHARED_PID="$APP_PID"
+    # The stream window is what the View menu follows: dump once it exists (a
+    # dump taken before it would say, correctly, that nothing is checked).
+    rm -f "$WORK/chrome.txt"
+    wait_until 20 eval 'grep -q "frame=" "$WORK/chrome.txt" 2>/dev/null' \
+        || bad "MENUS the relaunched stream window never appeared"
+    sleep 1
+    # The relaunched app's Deck takes the key window (its own open is a task
+    # after launch), so the style pair is off and disabled: a rebuild cannot
+    # leave a mark on it. The rest of the bar is checked as a person reads it.
+    dump_stable 11 || { stop_app; stop_fakephone; return 1; }
+    assert_bar "$WORK/menus-11.json" "dump 11"
+    python3 - "$WORK/menus-11.json" <<'PY' && ok "MENUS after a relaunch the Deck is key: the style pair is off and disabled" \
+        || bad "MENUS a relaunch left the style pair on or enabled"
+import json, sys
+root = json.load(open(sys.argv[1]))
+view = next(i for i in root["items"] if i["title"] == "View")
+by_title = {item["title"]: item for item in view["submenu"]}
+pair = [by_title.get("Framed"), by_title.get("Immersive")]
+if None in pair or [item["state"] for item in pair] != ["off", "off"] \
+        or [item["enabled"] for item in pair] != [False, False]:
+    print("pair:", pair); sys.exit(1)
+PY
     stop_app
     stop_fakephone
 }
