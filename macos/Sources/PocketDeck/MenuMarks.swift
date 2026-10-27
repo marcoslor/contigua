@@ -52,9 +52,13 @@ enum MenuMarks {
         for item in items where !item.isSeparator {
             switch (menu, item.title) {
             case ("View", "Framed"):
-                edits.append(.mark([item.title], state.style == .framed))
+                // The pair acts on the key stream window: with the Deck (or
+                // nothing) key, neither may be checked or enabled.
+                edits.append(.mark([item.title], state.hasStream && state.style == .framed))
+                edits.append(.enable([item.title], state.hasStream))
             case ("View", "Immersive"):
-                edits.append(.mark([item.title], state.style == .immersive))
+                edits.append(.mark([item.title], state.hasStream && state.style == .immersive))
+                edits.append(.enable([item.title], state.hasStream))
             case ("View", "Hide Controls"):
                 // The reveal choice is only meaningful while the window is
                 // immersive; the mark inside follows the stored choice.

@@ -210,7 +210,7 @@ final class FileDropSender {
         offset = 0
         cursor = 0
         let resume = self.resume(sha256: next.sha256)
-        Log.app.notice("drop: sending \(next.name, privacy: .public) (\(next.size, privacy: .public) bytes\(resume > 0 ? ", resumes at \(resume)" : ""))")
+        Log.app.notice("drop: sending \(next.name, privacy: .private) (\(next.size, privacy: .public) bytes\(resume > 0 ? ", resumes at \(resume)" : ""))")
         setPhase(.sending(next.name, fraction: resume > 0 ? Double(resume) / Double(next.size) : 0))
         awaitingOffset = true
         session.dropStart(id: id, name: next.name, mime: next.mime, size: next.size,
@@ -326,7 +326,7 @@ final class FileDropSender {
     }
 
     private func finish(_ text: String, ok: Bool, keepState: Bool = false) {
-        Log.app.notice("drop: \(ok ? "ok" : "failed", privacy: .public): \(text, privacy: .public)")
+        Log.app.notice("drop: \(ok ? "ok" : "failed", privacy: .public): \(text, privacy: .private)")
         if keepState { return }
         queue = []
         current = nil

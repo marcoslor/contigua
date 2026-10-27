@@ -93,7 +93,7 @@ final class ApkInstaller {
         clearTask?.cancel()
         displayName = url.deletingPathExtension().lastPathComponent
         phase = .preparing(displayName)
-        Log.app.notice("apk: preparing \(url.lastPathComponent, privacy: .public)")
+        Log.app.notice("apk: preparing \(url.lastPathComponent, privacy: .private)")
         self.session = session
         Task.detached(priority: .userInitiated) {
             let result = Result { try ApkPreparation.prepare(url) }
@@ -192,7 +192,7 @@ final class ApkInstaller {
     }
 
     private func finish(_ text: String, ok: Bool, keepState: Bool = false) {
-        Log.app.notice("apk: result \(ok ? "ok" : "failed", privacy: .public): \(text, privacy: .public)")
+        Log.app.notice("apk: result \(ok ? "ok" : "failed", privacy: .public): \(text, privacy: .private)")
         if keepState { return }
         try? reader?.close()
         reader = nil

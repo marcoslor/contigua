@@ -133,6 +133,9 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
                               styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
                               backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
+        // The app sets this window's frame itself (a stream's size, a phone's
+        // turn): the backstop leaves those frames to the delegate above.
+        WindowFrameLimit.owns(window)
         window.acceptsMouseMovedEvents = true
         window.titlebarAppearsTransparent = true
         // The title still names the window in the Window menu and Mission Control.
@@ -172,6 +175,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         // trackpad all stop at the mapper (Esc leaves the mode instead).
         mapper.inputSuspended = { [weak self] in self?.frozen ?? false }
         mapper.onLiveTextEscape = { [weak self] in self?.exitLiveText(.escape) }
+        mapper.onStyleToggle = { [weak self] in self?.toggleStyle() }
         mapper.send = { [weak self] command in self?.handle(command) }
         mapper.touchPointsChanged = { [weak self] points in self?.videoView.showTouchPoints(points) }
         mapper.hoverEnabled = { [weak self] in self?.manager.hoverEnabled ?? false }
@@ -546,9 +550,12 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         isLiveResizing = true
     }
 
-    /// The default: an ordinary window follows the proposed frame exactly.
+    /// The proposed size a person's drag or an Accessibility resize asks for,
+    /// kept inside the screen the window is on (CONV-MAC-12). The app's own
+    /// `setFrame` — a stream's size, the phone's turn — does not come through
+    /// here and keeps its size on the e2e's virtual display.
     func windowWillResize(_ sender: NSWindow, to frameSize: NSSize) -> NSSize {
-        frameSize
+        WindowFrameLimit.size(frameSize, for: sender)
     }
 
     /// One step of the e2e's scripted drag: the same delegate call AppKit makes
@@ -643,6 +650,10 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         state.phoneWindow = self is PhoneWindowController
         state.panelOff = (self as? PhoneWindowController)?.panelOffShown ?? false
         state.revealDelay = manager.revealDelay
+        // The View menu's pair is enabled from here on. It is corrected when
+        // the menu opens too, but a disabled menu item eats its key equivalent:
+        // ⌥⌘F is on the pair and must work without the menu being opened.
+        MenuMarks.apply(to: NSApp.mainMenu)
     }
 
     func windowDidResignKey(_ notification: Notification) {
@@ -660,6 +671,8 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         state.phoneWindow = false
         state.panelOff = false
         videoView.windowResignedKey()
+        // The pair acts on the key stream window: disabled again once none is.
+        MenuMarks.apply(to: NSApp.mainMenu)
     }
 
     // MARK: View menu
