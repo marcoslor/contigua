@@ -244,7 +244,31 @@ def check_kotlin_tests(path, added, lines):
 
 # Names that carry a person's data (titles, media, files, pasteboard, messages).
 SENSITIVE = {"title", "text", "body", "artist", "album", "filename", "path", "url",
-             "clipboard", "pasteboard", "message"}
+             "clipboard", "pasteboard", "message", "name", "nickname", "label"}
+
+# What a public interpolation may carry (CONV-PD-05, docs/design/notify.md
+# "Logs"): an id, a count, a size, a duration, a state, a code, a message kind
+# or a package name. Anything else is a person's value — a phone or app name, a
+# notification text, a media title, a file name — and must be private. The
+# check is the value's last word, so "error.code" and "png.count" pass and
+# "url.lastPathComponent" or "phone.name" do not.
+SAFE_PUBLIC = {"id", "ids", "count", "counts", "size", "sizes", "bytes", "length", "ms",
+               "seconds", "duration", "dpi", "code", "codes", "index", "kind", "mode",
+               "phase", "state", "states", "stream", "streams", "version", "width",
+               "height", "px", "fps", "rate", "scale", "ok", "enabled", "port", "total",
+               "attempts", "frames", "replies", "level", "package", "packages", "pkg",
+               "pkgs", "t", "type", "tag", "step", "steps", "percent", "fraction",
+               "progress", "milliseconds", "micros", "nanos", "uptime", "timestamp",
+               "elapsed", "remaining", "retries", "failures", "successes", "n", "max",
+               "min", "cap", "limit", "identifier", "volume", "volumemax", "battery",
+               "charging", "locked", "dnd", "ringer", "screen", "secure", "panel",
+               "x", "y", "w", "h", "dx", "dy", "orientation", "fullscreen",
+               "mime", "rawvalue", "pid", "status", "format", "luma", "granted",
+               "paused", "changed", "sp", "on", "off", "command", "source",
+               "resume", "offset", "position"}
+SAFE_PREFIX = ("is", "has", "can", "should", "does", "was")
+SWIFT_PRIVACY = re.compile(r",\s*privacy:\s*\.[a-z]+")
+KT_PRIVACY = re.compile(r"privacy: .(?:private|sensitive)")
 LOG_CALL = re.compile(r"\.(?:debug|info|notice|warning|error|fault|trace)\(|\bprint\(|"
                       r"\bos_log\(|\bNSLog\(|\bLog\.[vdiwe]\(")
 SWIFT_INTERP = re.compile(r"\\\((?:[^()]|\([^()]*\))*\)")
@@ -263,6 +287,24 @@ def sensitive_names(expr):
     return names
 
 
+def public_value(expr):
+    """True when a public interpolation is provably not a person's value."""
+    expr = SWIFT_PRIVACY.sub("", expr).strip()
+    # String literals carry their own words; the value is the expression's.
+    expr = re.sub(r'"[^"]*"', '""', expr)
+    if not expr or re.fullmatch(r'[0-9.+\-*/ ()%]+', expr):
+        return True
+    idents = re.findall(r"[A-Za-z_]\w*", expr)
+    if not idents:
+        return True
+    ident = idents[-1]
+    parts = CAMEL.findall(ident)
+    last = parts[-1].lower() if parts else ident.lower()
+    if last in SAFE_PUBLIC or ident.lower() in SAFE_PUBLIC:
+        return True
+    return ident.lower().startswith(SAFE_PREFIX)
+
+
 def check_privacy(path, added):
     swift = path.endswith(".swift") and (path.startswith("macos/Sources/")
                                         or path.startswith("macos/Tests/"))
@@ -278,13 +320,18 @@ def check_privacy(path, added):
         else:
             exprs = [m.group(1) or m.group(2) for m in KT_INTERP.finditer(code)]
         for expr in exprs:
-            if swift and PRIVATE_ARG.search(expr):
+            if (swift and PRIVATE_ARG.search(expr)) or (not swift and KT_PRIVACY.search(expr)):
                 continue
             names = sensitive_names(expr)
             if names:
                 add(path, n, "R-PRIV-1",
                     "log interpolates %s: log an id, count or state, or mark it "
                     "privacy: .private (or // log-ok: <reason>)" % names[0])
+            elif not public_value(expr):
+                add(path, n, "R-PRIV-1",
+                    "public log value %s: mark it privacy: .private, or log an "
+                    "id, count, size, state or package name (or // log-ok: <reason>)"
+                    % expr.strip())
 
 
 SUPPRESSION = re.compile(r"swiftlint:disable|@Suppress\(|@SuppressWarnings\b|#warning\b|"

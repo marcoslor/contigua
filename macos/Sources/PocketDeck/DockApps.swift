@@ -452,10 +452,10 @@ final class DockApps: NSObject {
             // A rebuilt bundle replaces its icon in place: LaunchServices must
             // re-read it or the Dock keeps showing the old one.
             Self.run(Self.lsregister, ["-f", url.path])
-            Log.app.notice("dock: created \(url.path, privacy: .public)")
+            Log.app.notice("dock: created \(url.path, privacy: .private)")
             return url
         } catch {
-            Log.app.error("dock: could not create \(spec.fileName, privacy: .public): \(String(describing: error), privacy: .public)")
+            Log.app.error("dock: could not create \(spec.fileName, privacy: .private): \(String(describing: error), privacy: .private)")
             return nil
         }
     }
@@ -496,7 +496,7 @@ final class DockApps: NSObject {
         }
         Self.run(Self.lsregister, ["-u", url.path])
         try? FileManager.default.removeItem(at: url)
-        Log.app.notice("dock: removed \(url.path, privacy: .public)")
+        Log.app.notice("dock: removed \(url.path, privacy: .private)")
     }
 
     /// Decisions for a phone's shims. `keep`: packages of open windows — a shim

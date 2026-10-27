@@ -337,7 +337,7 @@ final class AppEnvironment {
         let profile = options.profile!
         BackgroundMode.isOn = options.background
         Profile.active = profile
-        Log.app.notice("profile \(profile.name, privacy: .public): identity \(IdentityFileV2.fileUrl(in: profile).path, privacy: .public), defaults \(profile.defaultsSuiteName ?? "standard", privacy: .public)")
+        Log.app.notice("profile \(profile.name, privacy: .private): identity \(IdentityFileV2.fileUrl(in: profile).path, privacy: .private), defaults \(profile.defaultsSuiteName ?? "standard", privacy: .private)")
         if options.resetPairing {
             // v2: pairing state = the pins + identity.json's §3 mirror; the
             // identity itself (this Mac's key) stays.
