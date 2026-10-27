@@ -62,7 +62,12 @@ if [ ! -x "$HELPER" ] || [ "$MACOS/scripts/menubar-item.swift" -nt "$HELPER" ]; 
         || { say "could not build menubar-item.swift:"; tail -5 "$WORK/helper.log"; exit 2; }
 fi
 
-"$APP" --profile "$PROFILE" --background > "$WORK/app.log" 2>&1 &
+# PD_MENUBAR_VISIBLE=1 runs the app as a normal foreground app, the way the
+# person's own copy runs: a background app's windows live on the run's virtual
+# display, where the panel's window does not leave the list when the menu opens.
+MODE=(--background)
+[ "${PD_MENUBAR_VISIBLE:-0}" = "1" ] && MODE=()
+"$APP" --profile "$PROFILE" ${MODE[@]+"${MODE[@]}"} > "$WORK/app.log" 2>&1 &
 APP_PID=$!
 
 # The item is inserted once the run loop is up; the Deck may still be opening.
@@ -99,6 +104,21 @@ if wait_panel gone; then ok "click 2 closes the panel"; else bad "click 2 left t
 
 "$HELPER" click "$APP_PID" 90
 if wait_panel shown; then ok "click 3 opens it again"; else bad "click 3 did not reopen the panel"; fi
+
+# The secondary click (2026-10-27): the icon's menu opens under it, and the
+# panel does not stay under the menu.
+"$HELPER" rclick "$APP_PID" 90
+if wait_for menu shown; then ok "a right-click opens the icon's menu"; else bad "a right-click opened no menu"; fi
+if wait_panel gone; then
+    ok "the right-click closed the panel first"
+else
+    bad "the panel stayed under the menu ($("$HELPER" layers "$APP_PID" | tr '\n' '|'))"
+fi
+# A left click on the icon dismisses the menu (a click outside it).
+"$HELPER" click "$APP_PID" 90
+if wait_for menu gone; then ok "a click closes the menu"; else bad "the menu stayed open"; fi
+"$HELPER" panel "$APP_PID" | grep -qx shown && "$HELPER" click "$APP_PID" 90
+wait_panel gone
 
 # The panel closes the same way whatever opened it; the last one is left open
 # on purpose so a person watching sees the result, and the app exits with it.
