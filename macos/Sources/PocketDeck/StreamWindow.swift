@@ -133,6 +133,9 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
                               styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
                               backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
+        // The app sets this window's frame itself (a stream's size, a phone's
+        // turn): the backstop leaves those frames to the delegate above.
+        WindowFrameLimit.owns(window)
         window.acceptsMouseMovedEvents = true
         window.titlebarAppearsTransparent = true
         // The title still names the window in the Window menu and Mission Control.
@@ -547,9 +550,12 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         isLiveResizing = true
     }
 
-    /// The default: an ordinary window follows the proposed frame exactly.
+    /// The proposed size a person's drag or an Accessibility resize asks for,
+    /// kept inside the screen the window is on (CONV-MAC-12). The app's own
+    /// `setFrame` — a stream's size, the phone's turn — does not come through
+    /// here and keeps its size on the e2e's virtual display.
     func windowWillResize(_ sender: NSWindow, to frameSize: NSSize) -> NSSize {
-        frameSize
+        WindowFrameLimit.size(frameSize, for: sender)
     }
 
     /// One step of the e2e's scripted drag: the same delegate call AppKit makes

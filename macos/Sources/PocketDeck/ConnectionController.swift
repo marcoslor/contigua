@@ -2497,6 +2497,18 @@ final class ConnectionController {
         case "panelwindows":
             guard let path = arguments.first, path.hasPrefix("/") else { return "panelwindows needs PATH" }
             return PanelProbe.windowsReport(to: path) ? nil : "panelwindows failed"
+        case "visibleframe":
+            // The visible frame of the screen the key window is on, "W H" in
+            // points: the e2e chrome check compares an Accessibility resize
+            // against it (CONV-MAC-12).
+            guard let path = arguments.first, path.hasPrefix("/") else {
+                return "visibleframe needs an absolute PATH"
+            }
+            let screen = NSApp.keyWindow?.screen ?? NSApp.mainWindow?.screen ?? NSScreen.main
+            guard let visible = screen?.visibleFrame else { return "no screen" }
+            let line = "\(Int(visible.width.rounded())) \(Int(visible.height.rounded()))\n"
+            return (try? line.write(toFile: path, atomically: true, encoding: .utf8)) == nil
+                ? "visibleframe failed" : nil
         case "panelclick":
             guard arguments.count == 2 else { return "panelclick needs HOST and an item ID" }
             return PanelProbe.click(host: arguments[0], id: arguments[1]) ? nil : "panelclick failed"
