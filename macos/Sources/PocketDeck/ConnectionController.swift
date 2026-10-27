@@ -2589,6 +2589,12 @@ final class ConnectionController {
                 return "paneldump needs HOST (panel, deck or real) and PATH"
             }
             return PanelProbe.dump(host: arguments[0], to: arguments[1]) ? nil : "paneldump failed"
+        case "iconmenu":
+            // The status item's menu as the builder makes it, without popping
+            // it (a quiet run has no screen to pop it on). e2e `menus`.
+            guard let path = arguments.first, path.hasPrefix("/") else { return "iconmenu needs PATH" }
+            guard let menuBar = MenuBarController.current else { return "no menu bar item" }
+            return menuBar.dumpSecondaryMenu(to: path) ? nil : "iconmenu could not write \(path)"
         case "panelwindows":
             guard let path = arguments.first, path.hasPrefix("/") else { return "panelwindows needs PATH" }
             return PanelProbe.windowsReport(to: path) ? nil : "panelwindows failed"

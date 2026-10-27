@@ -45,10 +45,14 @@ struct MenuBarContent: View {
     /// menu bar panel does after its command ran.
     var onOpenWindow: (() -> Void)?
 
+    /// Opens the icon's menu: the right-click and the panel's gear use this one
+    /// function, so they cannot drift apart.
+    var onSecondaryMenu: (() -> Void)?
+
     var body: some View {
         PhonePanelView(state: PhoneControlsState(controller: controller),
                        actions: actions,
-                       showsFooter: true)
+                       onGear: onSecondaryMenu)
     }
 
     private var actions: PhoneControlsActions {
@@ -58,12 +62,10 @@ struct MenuBarContent: View {
         let findApps = actions.findApps
         let continueOnMac = actions.continueOnMac
         let installApk = actions.installApk
-        let openSettings = actions.openSettings
         actions.openPhoneScreen = { openPhoneMirror(); close?() }
         actions.findApps = { findApps(); close?() }
         actions.continueOnMac = { continueOnMac(); close?() }
         actions.installApk = { installApk(); close?() }
-        actions.openSettings = { openSettings(); close?() }
         return actions
     }
 }

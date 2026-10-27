@@ -24,7 +24,7 @@ A line the product claims is proved by a check whose `ok` line names the ID. The
 
 | ID | Convention |
 |---|---|
-| CONV-MAC-10 | Clicking a menu-bar (status) item **toggles** its panel: click → open, click → close. Clicking outside or pressing Esc closes it, and so does opening a window from it. |
+| CONV-MAC-10 | Clicking a menu-bar (status) item **toggles** its panel: click → open, click → close. Clicking outside or pressing Esc closes it, and so does opening a window from it. A **secondary click** (right-click or ⌃-click) opens the item's own menu instead — Settings… ⌘, · About PocketDeck · Quit PocketDeck ⌘Q — closing the panel first; the panel's gear opens the same menu. |
 | CONV-MAC-11 | A window that represents one thing exists **once per thing**: the Deck, the Phone Mirror per phone, Settings, an app window per app per phone. Opening it again brings the existing one to the front (unminimise; switch Space if it is full screen). |
 | CONV-MAC-12 | Windows remember size and position across launches. A window never opens off-screen, and never larger than the screen it opens on. |
 | CONV-MAC-13 | Window → Enter/Exit Full Screen ⌃⌘F exists exactly once. Menus have no empty menu and no duplicate title, and no leading, trailing or doubled separator. A menu item's checkmark follows the key window. |
