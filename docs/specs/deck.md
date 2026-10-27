@@ -41,7 +41,7 @@ The Deck is the app's one home window and the only place a person starts from: y
 | DECK-16 | THE banner's single button SHALL act: Try now SHALL retry at once; Pair again SHALL open a new user-driven pairing; Open Settings SHALL open System Settings' Local Network pane; a banner with no possible next step SHALL carry no button. | K2 `LinkMachineTests.testReachabilityHintsAndTryNowRetryImmediately`, `testTryAgainIsANewPairing`, `testCancelReturnsToWhereTheUserWas`; review of `Banner.openLocalNetworkSettings` |
 | DECK-17 | WITH no remembered phone THE Deck SHALL show Welcome on the first run and Nearby afterwards; Nearby SHALL list the discovered phones once each (deduplicated by device id, sorted by name), mark a remembered one "Paired" and a keyless one Pair again, offer Pair with QR and Connect manually…, and say "Looking for phones on this network…" while it searches; Esc or Done SHALL close the add-phone sheet. | K2 `DiscoveryAndStoresTests.testOneRowPerDeviceIdAcrossInterfaces`, `testResultsWithoutATextIdAreIgnored`, `testSortedByNameAndOtherVersionsSkipped`; e2e `pair`, `qr` |
 | DECK-18 | THE Deck SHALL be one window: closing it SHALL NOT quit the app (a menu-bar app), and a Dock or Finder reopen SHALL show it again; only ⌘Q SHALL quit. | untested (no check drives the Dock or a reopen; only the code's `applicationShouldTerminateAfterLastWindowClosed`/`applicationShouldHandleReopen` is reviewed) |
-| DECK-19 | THE Deck SHALL open at 760×600 pt with no stored frame, SHALL never be smaller than 640×420 pt, and every control SHALL be reachable at the smallest supported screen (1280×800). | K2 `LayoutTests.testTheDeckFitsAtTheSmallestScreen`; review of `defaultSize` and `DeckRoot`'s minimum frame |
+| DECK-19 | THE Deck SHALL open at 760×600 pt with no stored frame, SHALL restore the frame this profile last had (size and position), SHALL never be smaller than 640×420 pt, and every control SHALL be reachable at the smallest supported screen (1280×800); a stored frame that fits no current screen SHALL open centred instead, and no frame SHALL be larger than the screen it opens on. | K2 `LayoutTests.testTheDeckFitsAtTheSmallestScreen`, `DeckPlacementTests` (the default, an exact restore, a lost screen, a screen that is too small, the minimum, the stored value's round trip); e2e `deck` `[DECK-19]` (resize, quit, relaunch: the frame comes back within 2 pt) |
 | DECK-20 | WHEN the status chip is clicked THE Deck SHALL open the shared phone controls in a popover: the same 300 pt card, without the gear and without Settings/Quit rows, whose controls act on the phone. | K2 `PhonePanelTests.testTheDeckStatusPillOpensTheSamePanel`; e2e `deck` `[DECK-20]` (the popover is the shared panel; its DND click reached the phone) |
 | DECK-21 | WHEN a file is dropped on the Deck THE Deck SHALL install an `.apk`/`.apks`/`.xapk` on the phone, open a link (or a `.webloc` file) on the phone, and transfer any other file; a drop it refuses SHALL be refused with a reason, and a phone that is away SHALL refuse the drop rather than queue it. | K2 `ApkBundleTests` (parts), `OpenLinkTests.testReadsAWeblocFile`, `FileDropTests.testOverTheCapRefusesNothingSent`; e2e `drop`, `apk` |
 | DECK-22 | WHILE the person browses the Deck (search, scroll, icons, opening and closing a window) THE Deck SHALL send no write to the phone. | e2e `nfr` (read-only Deck browsing and icons) |
@@ -74,6 +74,8 @@ Two machines meet here: the Deck's *mode* (what the window shows, from the profi
 | any | `zoom key` WHILE another window key | ignored by the Deck |
 | any | `open(app)` | that app's window (or the one already open) |
 | any | `⌘K` / Dock click / reopen | the one Deck window, key, search field focused |
+| any | `move` / `resize` | the frame is stored for this profile (DECK-19); a launch places it again |
+| any | `launch` WITH a stored frame | the window opens at that frame when it fits a screen, else centred |
 | any | `close` | the window closes; the app and its session keep running |
 
 Ignored events, stated so nobody builds them: Esc with an empty query (no window closes), Return with no apps and no selection, an arrow with a modifier held, a drop while the phone is away, and any zoom key while another window is key.
@@ -104,7 +106,7 @@ Ignored events, stated so nobody builds them: Esc with an empty query (no window
 | CONV-MAC-07 | applies: the app's one re-used key is ⌘P = Phone Mirror (menus.md), not the Deck's |
 | CONV-MAC-10 | n/a: the Deck is not the status item's panel; the chip's popover is the panel's second host (panel.md) |
 | CONV-MAC-11 | applies: DECK-10/DECK-18 (one Deck; ⌘K, the Dock icon and the panel raise it) |
-| CONV-MAC-12 | [NEEDS CLARIFICATION] the stream windows remember their frames, but the Deck is a SwiftUI `Window` with `.restorationBehavior(.disabled)` and no frame autosave of its own, and no check asserts its frame across a relaunch. Likely deviates from "windows remember size and position" (misses.md, unverified) |
+| CONV-MAC-12 | applies: DECK-19 (the profile's frame comes back at launch, centred when it fits no screen, never larger than the screen; `DeckPlacement`, the SET-WIN-09 pattern) |
 | CONV-MAC-13 | n/a: the Deck adds no menu item and no full-screen command; the menus are menus.md's |
 | CONV-MAC-14 | applies: DECK-4 and DECK-5 (laid out per frame, no clipping, no stale width) |
 | CONV-MAC-15 | applies: DECK-18 (closing the Deck does not quit; the Dock reopens it) |
@@ -147,6 +149,5 @@ Ignored events, stated so nobody builds them: Esc with an empty query (no window
 
 ## Open questions
 
-- [NEEDS CLARIFICATION] Should the Deck remember its size and position across launches (CONV-MAC-12)? Recommended: yes, one frame per profile, the way Settings now does (SET-WIN-09); it is a one-window app and people resize it once.
 - [NEEDS CLARIFICATION] The design doc says the Deck's minimum is 560×420 and its rail letters are 9 pt on a 12 pt pitch; the code says 640×420 and 20 pt targets. Recommended: code wins (the 20 pt target is the person's accessibility floor), and the design doc is corrected.
 - [NEEDS CLARIFICATION] With two phones, the Deck gives no hint that another phone exists. Recommended: leave it (Settings marks In Use) unless the person wants a row in the title bar; this is a product question, not a bug.

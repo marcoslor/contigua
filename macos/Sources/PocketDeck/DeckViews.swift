@@ -38,6 +38,9 @@ struct DeckRoot: View {
         }
         .animation(.smooth(duration: 0.3), value: controller.deckMode)
         .frame(minWidth: 640, minHeight: 420)
+        // The frame the profile remembers (DECK-19): placed once per open from
+        // the pure rules in DeckPlacement, saved on every move and resize.
+        .background { DeckWindowFrame() }
         // Previews stage the Settings screenshot; nothing else opens
         // the Settings window from here.
         .onChange(of: controller.settingsRequest) { _, _ in openSettings() }

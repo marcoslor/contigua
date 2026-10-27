@@ -42,6 +42,10 @@
 //                    whether the last row shows once scrolled to the end
 //   visibleframe PATH the visible frame of the key window's screen, "W H":
 //                    the e2e chrome check's limit for an AX resize
+//   deck-frame PATH  the Deck window's frame, "x y w h" in screen points (the
+//                    frame a relaunch has to restore, DECK-19)
+//   quit             a real quit through NSApp.terminate (⌘Q's path), for a
+//                    check that relaunches the app
 //
 // Arguments are separated by spaces; paths with spaces are not supported.
 
