@@ -52,6 +52,9 @@ RESULT="$OUT/power-lock.log"
 PD_INSTALL_LOG="$OUT/install-failure.log"
 export PD_INSTALL_LOG
 LOGCAT="$OUT/power-lock-logcat.log"
+# The run's whole PocketDeckSvc log, saved before the emulator is killed (the
+# next run's evidence, and the field log's shape for whoever reads it).
+LOGCAT_FULL="$OUT/power-lock-logcat.txt"
 DISPLAY="$OUT/power-lock-display.log"
 OPENOUT="$OUT/power-lock-open.log"
 DC=("$PYTHON" tools/fakephone/deckctl.py --host 127.0.0.1 --port "$PORT" \
@@ -62,34 +65,43 @@ pass() { echo "PASS power-lock: $*"; }
 fail() { echo "FAIL power-lock: $*"; FAILED=1; }
 
 # read_press <logcat> — what the phone did at the edge, as values:
-#   edge=1 when the relight line is there, streams=<n>,
-#   taken_ms=<the VD group wake after the edge>, frame_ms=<the first frame's
-#   gap>, locked=1 when it told the Mac, dark=1 for a panel-dark plan.
+#   edge=1 when the relight line is there; issued_ms/returned_ms/off_ms = the
+#   wake and the panel-off after the edge; gap_ms = the largest gap between
+#   consecutive VD frames around it, frames = how many frames the window saw;
+#   display = the stream the line names; locked=1 when it told the Mac;
+#   dark=1 for a panel-dark plan.
 read_press() {
   "$PYTHON" - "$1" <<'PRESS'
 import re, sys
 lines = [l.rstrip() for l in open(sys.argv[1], errors="replace")]
-edge = streams = taken = frame = locked = dark = None
+edge = issued = returned = off = gap = frames = display = locked = dark = None
 for line in lines:
-    m = re.search(r"power: screen off with (\d+) stream\(s\) up; VD group woken (\d+)ms after the edge", line)
+    m = re.search(r"power: relight edge\+(\d+)ms wake issued, \+(\d+)ms wake returned, \+(\d+)ms panel off returned", line)
     if m:
         edge = 1
-        streams = int(m.group(1))
-        taken = int(m.group(2))
-    m = re.search(r"power: display (\d+) frame (\d+)ms after the screen-off edge", line)
+        issued, returned, off = int(m.group(1)), int(m.group(2)), int(m.group(3))
+    m = re.search(r"power: display (\d+) max frame gap (\d+)ms around the screen-off edge \(frames=(\d+)\)", line)
     if m:
-        frame = int(m.group(2))
+        display, gap, frames = int(m.group(1)), int(m.group(2)), int(m.group(3))
     if "power.locked: telling the Mac the screen went off" in line:
         locked = 1
     if "PanelPlan(" in line and "panelOff=true" in line:
         dark = 1
 print("edge=%s" % ("1" if edge else "0"))
-print("streams=%s" % ("none" if streams is None else streams))
-print("taken_ms=%s" % ("none" if taken is None else taken))
-print("frame_ms=%s" % ("none" if frame is None else frame))
+print("issued_ms=%s" % ("none" if issued is None else issued))
+print("returned_ms=%s" % ("none" if returned is None else returned))
+print("off_ms=%s" % ("none" if off is None else off))
+print("gap_ms=%s" % ("none" if gap is None else gap))
+print("frames=%s" % ("none" if frames is None else frames))
+print("display=%s" % ("none" if display is None else display))
 print("locked=%s" % ("1" if locked else "0"))
 print("dark=%s" % ("1" if dark else "0"))
 PRESS
+}
+
+# gap_ok — the press gap's rule: a real gap (two frames at least) under 500 ms.
+gap_ok() {
+  [ "${GAP:-none}" != "none" ] && [ "${GAP:-99999}" -lt 500 ] && [ "${FRAMES:-0}" -ge 2 ]
 }
 
 press_value() { printf '%s\n' "$PRESS" | sed -n "s/^$1=//p"; }
@@ -108,28 +120,48 @@ args = parser.parse_args(["open", "com.android.settings", "--w", "640", "--h", "
                           "--dpi", "160", "--seconds", "25"])
 assert args.command == "open" and args.w == 640 and args.seconds == 25
 PY
-  # The parser must read the shape a good press leaves...
+  # The parser must read the shape a good press leaves: one relight line with
+  # the three step times, and one max-gap line under the goal...
   FIX="$OUT/power-lock-fixture.log"
   cat > "$FIX" <<'FIXTURE'
 10-27 02:10:00.000 I/PocketDeckSvc: keepalive step 1 interval=2000ms displayLocks=0
-10-27 02:10:03.000 I/PocketDeckSvc: power: screen off with 1 stream(s) up; VD group woken 12ms after the edge, panel taken over
+10-27 02:10:03.000 I/PocketDeckSvc: power: relight edge+2ms wake issued, +14ms wake returned, +2044ms panel off returned
 10-27 02:10:03.030 I/PocketDeckSvc: power.locked: telling the Mac the screen went off
 10-27 02:10:03.120 I/PocketDeckSvc: power: panel OFF -> PanelPlan(wake=true, panelOff=true, transitional=true)
-10-27 02:10:03.160 I/PocketDeckSvc: power: display 57 frame 160ms after the screen-off edge
+10-27 02:10:06.500 I/PocketDeckSvc: power: display 57 max frame gap 234ms around the screen-off edge (frames=9)
 FIXTURE
   PRESS="$(read_press "$FIX")"
-  [ "$(press_value edge)" = "1" ] && [ "$(press_value streams)" = "1" ] \
-    && [ "$(press_value taken_ms)" = "12" ] && [ "$(press_value frame_ms)" = "160" ] \
+  GAP="$(press_value gap_ms)"; FRAMES="$(press_value frames)"
+  [ "$(press_value edge)" = "1" ] && [ "$(press_value issued_ms)" = "2" ] \
+    && [ "$(press_value returned_ms)" = "14" ] && [ "$(press_value off_ms)" = "2044" ] \
+    && [ "$(press_value display)" = "57" ] && [ "$GAP" = "234" ] && [ "$FRAMES" = "9" ] \
     && [ "$(press_value locked)" = "1" ] && [ "$(press_value dark)" = "1" ] \
+    && gap_ok \
     || { echo "CHECK FAIL: the parser missed the good press ($PRESS)"; exit 1; }
-  # ...and a press that was only handled at the next keep-alive step (no edge
-  # line, no frame line) must read as no evidence, not as zero.
+  # A gap of 600 ms (or a window with a single frame) must be rejected: the
+  # goal is under 500 ms and a gap needs two frames to mean anything.
+  cat > "$FIX" <<'FIXTURE'
+10-27 02:10:03.000 I/PocketDeckSvc: power: relight edge+2ms wake issued, +14ms wake returned, +2100ms panel off returned
+10-27 02:10:06.500 I/PocketDeckSvc: power: display 57 max frame gap 600ms around the screen-off edge (frames=9)
+FIXTURE
+  PRESS="$(read_press "$FIX")"
+  GAP="$(press_value gap_ms)"; FRAMES="$(press_value frames)"
+  if gap_ok; then echo "CHECK FAIL: a 600 ms gap passed the rule ($PRESS)"; exit 1; fi
+  cat > "$FIX" <<'FIXTURE'
+10-27 02:10:03.000 I/PocketDeckSvc: power: relight edge+2ms wake issued, +14ms wake returned, +2100ms panel off returned
+10-27 02:10:06.500 I/PocketDeckSvc: power: display 57 max frame gap 0ms around the screen-off edge (frames=1)
+FIXTURE
+  PRESS="$(read_press "$FIX")"
+  GAP="$(press_value gap_ms)"; FRAMES="$(press_value frames)"
+  if gap_ok; then echo "CHECK FAIL: a single-frame window passed the rule ($PRESS)"; exit 1; fi
+  # ...and a press that was only handled at the next keep-alive step (no
+  # relight line, no gap line) must read as no evidence, not as zero.
   cat > "$FIX" <<'FIXTURE'
 10-27 02:10:00.000 I/PocketDeckSvc: keepalive step 1 interval=2000ms displayLocks=0
 10-27 02:10:03.000 I/PocketDeckSvc: power: panel ON -> PanelPlan(wake=true, panelOff=true, transitional=true)
 FIXTURE
   PRESS="$(read_press "$FIX")"
-  [ "$(press_value edge)" = "0" ] && [ "$(press_value frame_ms)" = "none" ] \
+  [ "$(press_value edge)" = "0" ] && [ "$(press_value gap_ms)" = "none" ] \
     || { echo "CHECK FAIL: the parser invented an edge ($PRESS)"; exit 1; }
   rm -f "$FIX"
   echo "CHECK OK: preflight, deckctl open, parser fixtures; $( [ "$("$ADB" devices 2>/dev/null | grep -c "^$SERIAL")" = "0" ] && echo "$SERIAL free" || echo "$SERIAL RUNNING")"
@@ -242,27 +274,33 @@ wait "$OPEN_PID"
 OPEN_RC=$?
 
 emu logcat -d -s PocketDeckSvc:I PocketDeckApp:I 2>/dev/null | tr -d '\r' > "$LOGCAT" || true
+# The full service log, kept even when the run fails: the next boot's evidence.
+emu logcat -d -s PocketDeckSvc:I 2>/dev/null | tr -d '\r' > "$LOGCAT_FULL" || true
 PRESS="$(read_press "$LOGCAT")"
 EDGE="$(press_value edge)"
-STREAMS="$(press_value streams)"
-TAKEN="$(press_value taken_ms)"
-FRAME="$(press_value frame_ms)"
+ISSUED="$(press_value issued_ms)"
+RETURNED="$(press_value returned_ms)"
+OFF="$(press_value off_ms)"
+GAP="$(press_value gap_ms)"
+FRAMES="$(press_value frames)"
+DISP="$(press_value display)"
 LOCKED="$(press_value locked)"
 DARK="$(press_value dark)"
 
 if [ "$OPEN_RC" -ne 0 ]; then
   fail "the window did not stream through the press (rc=$OPEN_RC): $(tail -2 "$OPENOUT" | tr '\n' ' ')"
 fi
-if [ "${EDGE:-0}" -eq 1 ] && [ "${STREAMS:-0}" -ge 1 ]; then
-  pass "the press was taken at the edge with $STREAMS stream(s) up (VD group woken ${TAKEN}ms after it)"
+if [ "${EDGE:-0}" -eq 1 ]; then
+  pass "the press was taken at the edge (wake issued +${ISSUED}ms, returned +${RETURNED}ms, panel off returned +${OFF}ms)"
 else
-  fail "the phone never took the panel over at the edge (edge=$EDGE streams=$STREAMS)"
+  fail "the phone never took the panel over at the edge (edge=$EDGE)"
 fi
-# The goal: the VD's next frame within 500 ms of the not-interactive edge.
-if [ "${FRAME:-none}" != "none" ] && [ "${FRAME:-9999}" -lt 500 ]; then
-  pass "the VD's next frame came ${FRAME} ms after the screen-off edge (goal < 500)"
+# The goal: no silence between consecutive VD frames around the edge above
+# 500 ms. A gap needs two frames in the window to mean anything.
+if gap_ok; then
+  pass "the largest frame gap around the press was ${GAP} ms on display ${DISP} (goal < 500; frames=${FRAMES})"
 else
-  fail "the VD's next frame came ${FRAME} ms after the screen-off edge (goal < 500)"
+  fail "the largest frame gap around the press was ${GAP:-none} ms (goal < 500; frames=${FRAMES:-none})"
 fi
 if [ "${DARK:-0}" -eq 1 ]; then
   pass "the take-over used the PANEL_DARK plan (wake, then panel off)"
@@ -283,7 +321,7 @@ else
 fi
 
 {
-  echo "edge: $EDGE streams=$STREAMS taken_ms=$TAKEN frame_ms=$FRAME locked=$LOCKED dark=$DARK"
+  echo "edge: $EDGE issued_ms=$ISSUED returned_ms=$RETURNED off_ms=$OFF gap_ms=$GAP frames=$FRAMES display=$DISP locked=$LOCKED dark=$DARK"
   echo "open: rc=$OPEN_RC $(head -2 "$OPENOUT" | tr '\n' ' ')"
   echo "keyguard: $(grep -m1 -E 'keyguardShowing|showing=' "$DISPLAY" | tr -s ' ')"
   echo "failed: $FAILED"
