@@ -815,6 +815,24 @@ internal class WindowStream(
 }
 
 /**
+ * The stream table behind [AndroidDisplayLayer]. Every insert hands back the
+ * value it displaced, so the caller closes it outside the lock: a silent
+ * overwrite leaked an encoder, a virtual display and its drain thread. Pure
+ * Kotlin (no Android types), so a JVM test pins the ownership rule.
+ */
+internal class StreamTable<V> {
+    private val map = HashMap<Int, V>()
+
+    fun get(stream: Int): V? = synchronized(map) { map[stream] }
+
+    /** Inserts [value]; returns what the same stream id held before, if anything. */
+    fun put(stream: Int, value: V): V? = synchronized(map) { map.put(stream, value) }
+
+    /** Removes the stream; the caller owns (and closes) what comes back. */
+    fun take(stream: Int): V? = synchronized(map) { map.remove(stream) }
+}
+
+/**
  * Owns every [WindowStream] and exposes them to the session as a [DisplayLayer].
  *
  * The `streams` lock only ever guards the map itself: an open build, an encoder
@@ -828,7 +846,7 @@ internal class AndroidDisplayLayer(
     private val log: (String) -> Unit,
 ) : DisplayLayer {
 
-    private val streams = HashMap<Int, WindowStream>()
+    private val streams = StreamTable<WindowStream>()
 
     override fun open(stream: Int, w: Int, h: Int, dpi: Int, sink: VideoSink): Int {
         take(stream)?.close()
@@ -842,7 +860,8 @@ internal class AndroidDisplayLayer(
             throw e
         }
         // The map holds the finished stream from here; a later open for the same
-        // id first takes it out and closes it outside the lock.
+        // id first takes it out and closes it outside the lock. Nothing is ever
+        // overwritten silently.
         put(stream, ws)
         return id
     }
@@ -856,8 +875,6 @@ internal class AndroidDisplayLayer(
             ws.close()
             throw e
         }
-        // The map holds the finished stream from here; a later open for the same
-        // id first takes it out and closes it outside the lock.
         put(stream, ws)
         return size
     }
@@ -892,10 +909,13 @@ internal class AndroidDisplayLayer(
         take(stream)?.close()
     }
 
-    private fun get(stream: Int): WindowStream? = synchronized(streams) { streams[stream] }
+    private fun get(stream: Int): WindowStream? = streams.get(stream)
 
-    private fun put(stream: Int, ws: WindowStream) = synchronized(streams) { streams[stream] = ws }
+    /** Inserts, then closes anything it displaced outside the lock. */
+    private fun put(stream: Int, ws: WindowStream) {
+        streams.put(stream, ws)?.close()
+    }
 
     /** Removes the stream from the map; the caller closes it outside the lock. */
-    private fun take(stream: Int): WindowStream? = synchronized(streams) { streams.remove(stream) }
+    private fun take(stream: Int): WindowStream? = streams.take(stream)
 }
