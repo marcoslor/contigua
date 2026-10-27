@@ -1363,9 +1363,9 @@ check_resize() {
     open_shared --open com.android.settings --resize-stream "1:${w}x${h}-pt" || return 1
     # The window is wxh pt and the video is all of it.
     wait_until 30 events_have '"ev":"video","stream":1,"config":true,"w":1600,"h":1200' \
-        && ok "C6 new video config 1600x1200 (the whole ${w}x${h} pt window, at ${scale}x)" || bad "C6 no new config"
+        && ok "[WIN-5] C6 new video config 1600x1200 (the whole ${w}x${h} pt window, at ${scale}x)" || bad "[WIN-5] C6 no new config"
     events_have '"t":"window.resize"' \
-        && ok "C6 window.resize sent" || bad "C6 no window.resize"
+        && ok "[WIN-6] C6 window.resize sent" || bad "[WIN-6] C6 no window.resize"
     screenshot "$w" "$WORK/resize.png" && say "screenshot: $WORK/resize.png"
     stop_app
 
@@ -1380,9 +1380,9 @@ check_resize() {
     else
         open_shared --open com.android.settings --resize-stream "1:${w}x${h}-pt" || return 1
         if wait_until 30 events_have '"ev":"video","stream":1,"config":true,"w":1200,"h":1792'; then
-            ok "C6 tall shape resized to 1200x1792 (${w}x${h} pt at ${scale}x, floored to 16)"
+            ok "[WIN-5] C6 tall shape resized to 1200x1792 (${w}x${h} pt at ${scale}x, floored to 16)"
         else
-            bad "C6 no tall config (last video $(last_video_size))"
+            bad "[WIN-5] C6 no tall config (last video $(last_video_size))"
         fi
         screenshot "$w" "$WORK/resize-tall.png" && say "screenshot: $WORK/resize-tall.png"
         stop_app
@@ -1391,12 +1391,12 @@ check_resize() {
     w=$((3200 / scale)); h=$((1000 / scale))
     open_shared --open com.android.settings --resize-stream "1:${w}x${h}-pt" || return 1
     wait_until 30 events_have '"ev":"video","stream":1,"config":true,"w":2560,"h":800' \
-        && ok "C6 ultra-wide capped to 2560x800 (aspect kept)" || bad "C6 no capped config"
+        && ok "[WIN-5] C6 ultra-wide capped to 2560x800 (aspect kept)" || bad "[WIN-5] C6 no capped config"
     # dpi = 160 x the video's pixel ratio x density (VideoGeometry.dpi): the
     # capped 2560 px across the window's w pt.
     local want_dpi=$((160 * 2560 / w))
     events_have "\"dpi\":$want_dpi" \
-        && ok "C6 capped size lowers the dpi to $want_dpi" || bad "C6 dpi did not follow the cap"
+        && ok "[WIN-5] C6 capped size lowers the dpi to $want_dpi" || bad "[WIN-5] C6 dpi did not follow the cap"
     screenshot "$w" "$WORK/resize-wide.png" || screenshot_widest "$WORK/resize-wide.png" \
         && say "screenshot: $WORK/resize-wide.png"
     stop_app
@@ -1427,8 +1427,8 @@ check_resize() {
             || bad "C6 live resize: the phone did not hold the resize answer"
         edges="$(edge_kinds "$WORK/resize-fill.png" "$fw" $((fh + bar)) "$bar")"
         [ "$edges" = "left=stream right=stream bottom=stream top=stream" ] \
-            && ok "C6 live resize: the last frame fills the window, no black bars while the answer is held ($edges)" \
-            || bad "C6 live resize: bars while the answer is held ($edges)"
+            && ok "[WIN-6] C6 live resize: the last frame fills the window, no black bars while the answer is held ($edges)" \
+            || bad "[WIN-6] C6 live resize: bars while the answer is held ($edges)"
         say "screenshot: $WORK/resize-fill.png"
     else
         bad "C6 live resize: no window ${fw} pt wide to capture"
@@ -1444,8 +1444,8 @@ check_resize() {
         tries=$((tries - 1))
     done
     [ "$edges" = "left=stream right=stream bottom=stream top=stream" ] \
-        && ok "C6 live resize: after the answer the picture is the settled one ($edges)" \
-        || bad "C6 live resize: after the answer ($edges)"
+        && ok "[WIN-6] C6 live resize: after the answer the picture is the settled one ($edges)" \
+        || bad "[WIN-6] C6 live resize: after the answer ($edges)"
     say "screenshot: $WORK/resize-fill-done.png"
 
     # A fast drag: ten steps 30 ms apart while the phone holds its answer. At
@@ -1472,8 +1472,8 @@ check_resize() {
         sleep 0.02
     done
     [ "$maxgap" -le 1 ] \
-        && ok "C6 fast resize: the picture covered the window at every step (max video_gap ${maxgap} px)" \
-        || bad "C6 fast resize: a black band while the layer caught up (max video_gap ${maxgap} px)"
+        && ok "[WIN-6] C6 fast resize: the picture covered the window at every step (max video_gap ${maxgap} px)" \
+        || bad "[WIN-6] C6 fast resize: a black band while the layer caught up (max video_gap ${maxgap} px)"
     stop_app
     stop_fakephone
 
@@ -2349,24 +2349,24 @@ check_chrome() {
     wait_until 30 events_have '"ev":"video","stream":1,' || { bad "C14 no video config"; kill "$backdrop"; stop_app; stop_fakephone; return 1; }
     local win
     win="$(await_window '$4 == 900 && $5 == 628')" || { bad "C14 no 900x628 pt window (900x600 stream + 28 pt bar)"; kill "$backdrop"; stop_app; stop_fakephone; return 1; }
-    ok "C14 the window is the 900x600 pt stream plus a 28 pt bar, nothing at the sides or bottom (900x628)"
+    ok "[WIN-4] C14 the window is the 900x600 pt stream plus a 28 pt bar, nothing at the sides or bottom (900x628)"
     sleep 0.3
     local before
     before="$(window_opens_resizes)"
     case "$before" in
-        "open=${wake}x${hake} "*) ok "C14 window.open is ${wake}x${hake}: the 900x600 pt stream at ${RUN_SCALE}x, no bar in it" ;;
-        *) bad "C14 window.open size: $before" ;;
+        "open=${wake}x${hake} "*) ok "[WIN-5] C14 window.open is ${wake}x${hake}: the 900x600 pt stream at ${RUN_SCALE}x, no bar in it" ;;
+        *) bad "[WIN-5] C14 window.open size: $before" ;;
     esac
     chrome_is "style=framed lights=shown pill=hidden" \
-        && ok "C14 framed: the bar is up with the traffic lights ($(chrome_state))" \
-        || bad "C14 framed at rest: $(chrome_state)"
+        && ok "[WIN-7] C14 framed: the bar is up with the traffic lights ($(chrome_state))" \
+        || bad "[WIN-7] C14 framed at rest: $(chrome_state)"
     # Only the phone window opts out: an app window keeps the Window menu's
     # Enter Full Screen (full screen stays available where a mirror is not the
     # thing filling the display).
     if chrome_has "menu_fullscreen=1"; then
-        ok "C14 an app window keeps full screen (the Window menu's item is enabled)"
+        ok "[WIN-14] C14 an app window keeps full screen (the Window menu's item is enabled)"
     else
-        bad "C14 an app window lost full screen ($(chrome_state))"
+        bad "[WIN-14] C14 an app window lost full screen ($(chrome_state))"
     fi
 
     screencapture -x -o -l"$win" "$WORK/chrome-framed.png"
@@ -2383,11 +2383,11 @@ check_chrome() {
         tries=$((tries - 1))
     done
     [ "${spread:-0}" -ge 40 ] \
-        && ok "C14 the bar is not flat: the mirrored stream's columns move it (row spread $spread)" \
-        || bad "C14 the bar is flat (spread ${spread:-0}): no mirror"
+        && ok "[WIN-7] C14 the bar is not flat: the mirrored stream's columns move it (row spread $spread)" \
+        || bad "[WIN-7] C14 the bar is flat (spread ${spread:-0}): no mirror"
     [ "${seam:-255}" -le 60 ] \
-        && ok "C14 the bar's seam row tracks the stream's top row (mean diff $seam)" \
-        || bad "C14 the seam does not track the stream (mean diff ${seam:-255})"
+        && ok "[WIN-7] C14 the bar's seam row tracks the stream's top row (mean diff $seam)" \
+        || bad "[WIN-7] C14 the seam does not track the stream (mean diff ${seam:-255})"
     say "screenshot: $WORK/chrome-framed.png"
 
     local x y w h edges
@@ -2395,8 +2395,8 @@ check_chrome() {
     screencapture -x -R"$x,$y,$w,$h" "$WORK/chrome-frame.png"
     edges="$(edge_pixels "$WORK/chrome-frame.png" "$w" "$h")"
     [ "$edges" = "left=stream right=stream bottom=stream" ] \
-        && ok "C14 the window's sides and bottom are the stream's edges ($edges)" \
-        || bad "C14 window edges: $edges"
+        && ok "[WIN-4] C14 the window's sides and bottom are the stream's edges ($edges)" \
+        || bad "[WIN-4] C14 window edges: $edges"
 
     # The virtual display is the stream's in either style and while switching
     # (checked over all three launches at the end).
@@ -2426,33 +2426,33 @@ check_chrome() {
     win="$(await_window '$4 == 900 && $5 == 628')" || { bad "C14 no framed window on the relaunch"; kill "$backdrop"; stop_app; stop_fakephone; return 1; }
     # The script flips to immersive: the window shrinks by the bar, the stream stays.
     wait_until 8 win_size "$win" 900 600 \
-        && ok "C14 the toggle (also ⌥⌘F) took the bar away: the window is now exactly the stream (900x600)" \
-        || bad "C14 the window did not become 900x600 after the toggle: $(windows | awk -v id="$win" '$1 == id {print $4, $5}')"
+        && ok "[WIN-7] C14 the toggle (also ⌥⌘F) took the bar away: the window is now exactly the stream (900x600)" \
+        || bad "[WIN-7] C14 the window did not become 900x600 after the toggle: $(windows | awk -v id="$win" '$1 == id {print $4, $5}')"
     wait_until 4 chrome_is "style=immersive lights=hidden pill=hidden" \
-        && ok "C14 immersive at rest: no lights, no pill ($(chrome_state))" \
-        || bad "C14 immersive at rest: $(chrome_state)"
+        && ok "[WIN-8] C14 immersive at rest: no lights, no pill ($(chrome_state))" \
+        || bad "[WIN-8] C14 immersive at rest: $(chrome_state)"
     [ "$(defaults read "$DEFAULTS_SUITE" "chrome.style.com.android.settings" 2>/dev/null)" = "immersive" ] \
-        && ok "C14 the choice is remembered under the package's key" \
-        || bad "C14 the stored style key: $(defaults read "$DEFAULTS_SUITE" "chrome.style.com.android.settings" 2>&1)"
+        && ok "[WIN-7] C14 the choice is remembered under the package's key" \
+        || bad "[WIN-7] C14 the stored style key: $(defaults read "$DEFAULTS_SUITE" "chrome.style.com.android.settings" 2>&1)"
 
     # An early tap in the hot zone is the app's ordinary touch (no added delay),
     # and the rest it restarts brings the pill up 400 ms later.
     local touches_first touches
     wait_until 6 chrome_is "style=immersive lights=shown pill=shown" \
-        && ok "C14 the 400 ms rest shows the dwell pill ($(chrome_state))" \
-        || bad "C14 the rest did not show the pill: $(chrome_state)"
+        && ok "[WIN-8] C14 the 400 ms rest shows the dwell pill ($(chrome_state))" \
+        || bad "[WIN-8] C14 the rest did not show the pill: $(chrome_state)"
     touches="$(count_events '"kind":"touch","stream":1,"action":0')"
     [ "$touches" -ge 1 ] \
-        && ok "C14 the hot zone's early click reached the app as ordinary touch ($touches tap)" \
-        || bad "C14 no touch from the hot zone's early click"
+        && ok "[WIN-8] C14 the hot zone's early click reached the app as ordinary touch ($touches tap)" \
+        || bad "[WIN-8] C14 no touch from the hot zone's early click"
     screencapture -x -o -l"$win" "$WORK/chrome-pill.png" && say "screenshot: $WORK/chrome-pill.png"
     # The immersive window's stream is the live app: the fake app's coloured
     # columns are still on screen under the pill (a hidden video layer would
     # blank them and read 0).
     spread="$(stream_spread "$WORK/chrome-pill.png" 900 600)"
     [ "${spread:-0}" -ge 40 ] \
-        && ok "C14 the immersive stream is the live app (mid-row spread $spread)" \
-        || bad "C14 the immersive stream is blank (mid-row spread ${spread:-0})"
+        && ok "[WIN-7] C14 the immersive stream is the live app (mid-row spread $spread)" \
+        || bad "[WIN-7] C14 the immersive stream is blank (mid-row spread ${spread:-0})"
 
     # The pill's minimise light: a click there goes through the window's own
     # event dispatch to the light. Visible runs send it as a real click so the
@@ -2463,11 +2463,11 @@ check_chrome() {
     fi
     sleep 1
     window_gone "$win" \
-        && ok "C14 a click on the pill's minimise light minimised the window" \
-        || bad "C14 the minimise light click did not minimise (window is still listed)"
+        && ok "[WIN-8] C14 a click on the pill's minimise light minimised the window" \
+        || bad "[WIN-8] C14 the minimise light click did not minimise (window is still listed)"
     [ "$(count_events '"kind":"touch","stream":1,"action":0')" -eq "$touches" ] \
-        && ok "C14 and no touch reached the phone from the chrome" \
-        || bad "C14 the chrome's click reached the phone as touch"
+        && ok "[WIN-8] C14 and no touch reached the phone from the chrome" \
+        || bad "[WIN-8] C14 the chrome's click reached the phone as touch"
     next_shared
 
     # --- Switching with ⌥⌘F, near the top of the screen ---
@@ -2482,8 +2482,8 @@ check_chrome() {
     local y0
     # The stored immersive choice opens immersive; ⌥⌘F brings the bar back.
     wait_until 8 win_size "$win" 900 628 \
-        && ok "C14 ⌥⌘F flips to framed: the window grows by the 28 pt bar (900x628)" \
-        || bad "C14 ⌥⌘F did not grow the window to 900x628: $(windows | awk -v id="$win" '$1 == id {print $4, $5}')"
+        && ok "[WIN-7] C14 ⌥⌘F flips to framed: the window grows by the 28 pt bar (900x628)" \
+        || bad "[WIN-7] C14 ⌥⌘F did not grow the window to 900x628: $(windows | awk -v id="$win" '$1 == id {print $4, $5}')"
     y0="$(win_y "$win")"
     # The window goes to the top of the screen, where pushing its bar up hard
     # pins it: the visible frame's top edge.
@@ -2495,36 +2495,36 @@ check_chrome() {
     # go above the screen's visible frame, so the window moves down just enough.
     sleep 8
     wait_until 8 win_size "$win" 900 600 \
-        && ok "C14 ⌥⌘F to immersive at the top: the window is the stream (900x600)" \
-        || bad "C14 ⌥⌘F did not drop the bar at the top: $(windows | awk -v id="$win" '$1 == id {print $4, $5}')"
+        && ok "[WIN-7] C14 ⌥⌘F to immersive at the top: the window is the stream (900x600)" \
+        || bad "[WIN-7] C14 ⌥⌘F did not drop the bar at the top: $(windows | awk -v id="$win" '$1 == id {print $4, $5}')"
     # The framed shape returns between the two later ⌥⌘F presses; catch it fast.
     wait_until 7 win_size "$win" 900 628 \
-        && ok "C14 ⌥⌘F back to framed right under the screen's top: still 900x628" \
-        || bad "C14 ⌥⌘F did not bring the bar back: $(windows | awk -v id="$win" '$1 == id {print $4, $5}')"
+        && ok "[WIN-7] C14 ⌥⌘F back to framed right under the screen's top: still 900x628" \
+        || bad "[WIN-7] C14 ⌥⌘F did not bring the bar back: $(windows | awk -v id="$win" '$1 == id {print $4, $5}')"
 
     local yback
     yback="$(win_y "$win")"
     local move=$((yback - ytop))
     if [ "$move" -ge 0 ] && [ "$move" -le 28 ]; then
-        ok "C14 the switch's down-move fits the bar (moved down ${move} pt; the visible frame's top is lower than the drag's pin)"
+        ok "[WIN-7] C14 the switch's down-move fits the bar (moved down ${move} pt; the visible frame's top is lower than the drag's pin)"
     else
-        bad "C14 the switch's down-move is wrong: $ytop -> $yback (legal is 0..28)"
+        bad "[WIN-7] C14 the switch's down-move is wrong: $ytop -> $yback (legal is 0..28)"
     fi
     [ "$(defaults read "$DEFAULTS_SUITE" "chrome.style.com.android.settings" 2>/dev/null)" = "framed" ] \
-        && ok "C14 the stored key followed the last switch" \
-        || bad "C14 the stored style key: $(defaults read "$DEFAULTS_SUITE" "chrome.style.com.android.settings" 2>&1)"
+        && ok "[WIN-7] C14 the stored key followed the last switch" \
+        || bad "[WIN-7] C14 the stored style key: $(defaults read "$DEFAULTS_SUITE" "chrome.style.com.android.settings" 2>&1)"
     sleep 6
     # The virtual display's size never changed over the whole run: one size,
     # the stream's, through three launches and every switch.
     case "$(resize_sizes)" in
-        "${wake}x${hake}") ok "C14 the virtual display kept the stream's size through all styles and switches" ;;
+        "${wake}x${hake}") ok "[WIN-5] C14 the virtual display kept the stream's size through all styles and switches" ;;
         # No resize landed: every window.resize kept the display's one true size.
-        none) ok "C14 the virtual display changed nothing: one stream size throughout" ;;
+        none) ok "[WIN-5] C14 the virtual display changed nothing: one stream size throughout" ;;
         *) bad "C14 the virtual display changed: $(resize_sizes)" ;;
     esac
     [ "$(grep '"t":"window.open"' "$WORK/events.jsonl" | wc -l | tr -d ' ')" -eq 1 ] \
-        && ok "C14 one window.open per stream: no re-open on switching" \
-        || ok "C14 window.open count: $(grep '"t":"window.open"' "$WORK/events.jsonl" | wc -l | tr -d ' ') (restarts included)"
+        && ok "[WIN-1] C14 one window.open per stream: no re-open on switching" \
+        || ok "[WIN-1] C14 window.open count: $(grep '"t":"window.open"' "$WORK/events.jsonl" | wc -l | tr -d ' ') (restarts included)"
 
     # --- C2: native full screen ---
     # The bar macOS reveals at the top edge is the system's: the window's title
@@ -2549,11 +2549,11 @@ check_chrome() {
 
         local full
         full="$(await_window '$4 > 900 && $5 > 628')" \
-            && ok "C2 framed full screen fills the screen ($(windows | awk -v i="$full" '$1 == i {print $4 "x" $5}'))" \
-            || bad "C2 framed full screen: the window did not fill the screen"
+            && ok "[WIN-14] C2 framed full screen fills the screen ($(windows | awk -v i="$full" '$1 == i {print $4 "x" $5}'))" \
+            || bad "[WIN-14] C2 framed full screen: the window did not fill the screen"
         wait_until 15 chrome_is "style=framed lights=shown pill=hidden title_visible=yes lights_managed=appkit fullscreen=yes" \
-            && ok "C2 framed full screen: the revealed bar shows the title and the standard lights ($(chrome_state))" \
-            || bad "C2 framed full screen: $(chrome_state)"
+            && ok "[WIN-14] C2 framed full screen: the revealed bar shows the title and the standard lights ($(chrome_state))" \
+            || bad "[WIN-14] C2 framed full screen: $(chrome_state)"
         # The system's bar only slides down when the pointer reaches the top
         # edge; look at it there.
         cg_input move --window "$full" --top 0
@@ -2562,32 +2562,32 @@ check_chrome() {
         touch "$WORK/c2-step-framed"
 
         win="$(await_window '$4 == 900 && $5 == 628')" \
-            && ok "C2 leaving framed full screen restores the 900x628 window" \
-            || bad "C2 leaving framed full screen: $(windows | awk '$4 == 900 {print $4 "x" $5}')"
+            && ok "[WIN-14] C2 leaving framed full screen restores the 900x628 window" \
+            || bad "[WIN-14] C2 leaving framed full screen: $(windows | awk '$4 == 900 {print $4 "x" $5}')"
         wait_until 15 chrome_is "style=framed lights=shown pill=hidden title_visible=no lights_managed=us fullscreen=no" \
-            && ok "C2 and the framed bar's lights come back, title hidden ($(chrome_state))" \
-            || bad "C2 after framed full screen: $(chrome_state)"
+            && ok "[WIN-14] C2 and the framed bar's lights come back, title hidden ($(chrome_state))" \
+            || bad "[WIN-14] C2 after framed full screen: $(chrome_state)"
         touch "$WORK/c2-step-exit-framed"
 
         win="$(await_window '$4 == 900 && $5 == 600')" \
-            && ok "C2 the style switch after full screen took the bar away (900x600)" \
-            || bad "C2 immersive after full screen: $(windows | awk '$4 == 900 {print $4 "x" $5}')"
+            && ok "[WIN-14] C2 the style switch after full screen took the bar away (900x600)" \
+            || bad "[WIN-14] C2 immersive after full screen: $(windows | awk '$4 == 900 {print $4 "x" $5}')"
         full="$(await_window '$4 > 900 && $5 > 600')" \
-            && ok "C2 immersive full screen fills the screen ($(windows | awk -v i="$full" '$1 == i {print $4 "x" $5}'))" \
-            || bad "C2 immersive full screen: the window did not fill the screen"
+            && ok "[WIN-14] C2 immersive full screen fills the screen ($(windows | awk -v i="$full" '$1 == i {print $4 "x" $5}'))" \
+            || bad "[WIN-14] C2 immersive full screen: the window did not fill the screen"
         wait_until 15 chrome_is "style=immersive lights=shown pill=hidden title_visible=yes lights_managed=appkit fullscreen=yes" \
-            && ok "C2 immersive full screen: the revealed bar shows the title and the standard lights ($(chrome_state))" \
-            || bad "C2 immersive full screen: $(chrome_state)"
+            && ok "[WIN-14] C2 immersive full screen: the revealed bar shows the title and the standard lights ($(chrome_state))" \
+            || bad "[WIN-14] C2 immersive full screen: $(chrome_state)"
         cg_input move --window "$full" --top 0
         sleep 1
         screencapture -x "$WORK/chrome-fullscreen-immersive.png" && say "screenshot: $WORK/chrome-fullscreen-immersive.png"
         touch "$WORK/c2-step-immersive"
 
         win="$(await_window '$4 == 900 && $5 == 600')" \
-            && ok "C2 leaving immersive full screen restores the 900x600 window" \
+            && ok "[WIN-14] C2 leaving immersive full screen restores the 900x600 window" \
             || bad "C2 leaving immersive full screen: $(windows | awk '$4 == 900 {print $4 "x" $5}')"
         wait_until 15 chrome_is "style=immersive lights=hidden pill=hidden title_visible=no lights_managed=us fullscreen=no" \
-            && ok "C2 and immersive is back at rest: no lights, no pill, title hidden ($(chrome_state))" \
+            && ok "[WIN-14] C2 and immersive is back at rest: no lights, no pill, title hidden ($(chrome_state))" \
             || bad "C2 after immersive full screen: $(chrome_state)"
         touch "$WORK/c2-step-exit-immersive"
         # Leave the pointer where it was, not on the screen's top edge.
@@ -2609,21 +2609,21 @@ check_chrome() {
         || { kill "$backdrop"; return 1; }
     win="$(await_window '$4 == 900')" || { bad "C14 no window for Always Visible"; kill "$backdrop"; return 1; }
     wait_until 8 win_size "$win" 900 600 \
-        && ok "C14 Always Visible takes the window to immersive (900x600)" \
-        || bad "C14 Always Visible did not switch the style: $(windows | awk -v id="$win" '$1 == id {print $4, $5}')"
+        && ok "[WIN-9] C14 Always Visible takes the window to immersive (900x600)" \
+        || bad "[WIN-9] C14 Always Visible did not switch the style: $(windows | awk -v id="$win" '$1 == id {print $4, $5}')"
     wait_until 8 chrome_is "style=immersive lights=shown pill=shown" \
-        && ok "C14 Always Visible: the lights and the capsules are up at rest ($(chrome_state))" \
-        || bad "C14 Always Visible: $(chrome_state)"
+        && ok "[WIN-9] C14 Always Visible: the lights and the capsules are up at rest ($(chrome_state))" \
+        || bad "[WIN-9] C14 Always Visible: $(chrome_state)"
     sleep 2
     chrome_is "style=immersive lights=shown pill=shown" \
-        && ok "C14 Always Visible: still up past the hide delay with the pointer outside the window" \
-        || bad "C14 Always Visible hid after the delay: $(chrome_state)"
+        && ok "[WIN-9] C14 Always Visible: still up past the hide delay with the pointer outside the window" \
+        || bad "[WIN-9] C14 Always Visible hid after the delay: $(chrome_state)"
     if wait_until 12 [ -s "$WORK/chrome-always-menu.json" ]; then
         local stored_reveal
         stored_reveal="$(defaults read "$DEFAULTS_SUITE" "immersive.revealDelay" 2>/dev/null)"
         [ "$stored_reveal" = "alwaysVisible" ] \
-            && ok "C14 Always Visible is stored as the global reveal choice ($stored_reveal)" \
-            || bad "C14 Always Visible stored '$stored_reveal'"
+            && ok "[WIN-9] C14 Always Visible is stored as the global reveal choice ($stored_reveal)" \
+            || bad "[WIN-9] C14 Always Visible stored '$stored_reveal'"
         python3 - "$WORK/chrome-always-menu.json" <<'PY' && ok "MENUS Immersive is a plain radio item and Hide Controls holds the choice" \
             || bad "MENUS the View menu's style pair or Hide Controls is wrong"
 import json, sys
@@ -2645,8 +2645,8 @@ PY
     fi
     touch "$WORK/chrome-step-short"
     wait_until 8 chrome_is "style=immersive lights=hidden pill=hidden" \
-        && ok "C14 picking Short hides the chrome again ($(chrome_state))" \
-        || bad "C14 Short did not hide the chrome: $(chrome_state)"
+        && ok "[WIN-9] C14 picking Short hides the chrome again ($(chrome_state))" \
+        || bad "[WIN-9] C14 Short did not hide the chrome: $(chrome_state)"
 
     # --- Settings: the real window fits the screen and General scrolls ---
     # The reported bug (1680x1050): the General tab ended at "Default window
@@ -2720,8 +2720,8 @@ PY
     if read -r max_w max_h < "$WORK/visibleframe.txt" 2>/dev/null && [ -n "${max_h:-}" ]; then
         say "C12 the screen's visible frame is ${max_w}x${max_h} pt"
         ax_resize_all 4000 4000 "$WORK/ax-size.txt"
-        python3 - "$WORK/ax-size.txt" "$max_w" "$max_h" <<'PY' && ok "C12 an AX resize to 4000 pt leaves every window inside the visible frame (${max_w}x${max_h})" \
-            || bad "C12 an AX resize left a window larger than the screen"
+        python3 - "$WORK/ax-size.txt" "$max_w" "$max_h" <<'PY' && ok "[WIN-19] C12 an AX resize to 4000 pt leaves every window inside the visible frame (${max_w}x${max_h})" \
+            || bad "[WIN-19] C12 an AX resize left a window larger than the screen"
 import sys
 max_w, max_h = int(sys.argv[2]), int(sys.argv[3])
 rows = []
@@ -3514,13 +3514,13 @@ check_density() {
         || { bad "C16 no video for the second app's window"; stop_app; stop_fakephone; return 1; }
 
     wait_until 20 stream_dpi_is 1 "$high" \
-        && ok "C16 View ▸ Density 125% took the settings window's dpi to $high" \
-        || bad "C16 settings window dpi: $(stream_dpi 1) (wanted $high)"
+        && ok "[WIN-10] C16 View ▸ Density 125% took the settings window's dpi to $high" \
+        || bad "[WIN-10] C16 settings window dpi: $(stream_dpi 1) (wanted $high)"
     [ "$(stream_dpi 2)" = "$base" ] \
-        && ok "C16 the other app's window kept its dpi ($base)" \
-        || bad "C16 the other app's window followed: $(stream_dpi 2) (wanted $base)"
-    python3 - "$WORK/events.jsonl" "$base" <<'PY' && ok "C16 and was never resized for the override" \
-        || bad "C16 the other app's window saw a density resize"
+        && ok "[WIN-10] C16 the other app's window kept its dpi ($base)" \
+        || bad "[WIN-10] C16 the other app's window followed: $(stream_dpi 2) (wanted $base)"
+    python3 - "$WORK/events.jsonl" "$base" <<'PY' && ok "[WIN-10] C16 and was never resized for the override" \
+        || bad "[WIN-10] C16 the other app's window saw a density resize"
 import json, sys
 
 base, seen = int(sys.argv[2]), False
@@ -3537,25 +3537,25 @@ for line in open(sys.argv[1]):
 sys.exit(0 if seen else 1)
 PY
     [ "$(defaults read "$DEFAULTS_SUITE" "chrome.density.com.android.settings" 2>/dev/null)" = "1.25" ] \
-        && ok "C16 the override is stored under the package's key" \
-        || bad "C16 the stored key: $(defaults read "$DEFAULTS_SUITE" "chrome.density.com.android.settings" 2>&1)"
+        && ok "[WIN-10] C16 the override is stored under the package's key" \
+        || bad "[WIN-10] C16 the stored key: $(defaults read "$DEFAULTS_SUITE" "chrome.density.com.android.settings" 2>&1)"
 
     touch "$WORK/density-step-restore"
     wait_until 20 stream_dpi_is 1 "$base" \
-        && ok "C16 Default cleared the override: the window is back at $base" \
-        || bad "C16 after Default the window's dpi is $(stream_dpi 1) (wanted $base)"
+        && ok "[WIN-10] C16 Default cleared the override: the window is back at $base" \
+        || bad "[WIN-10] C16 after Default the window's dpi is $(stream_dpi 1) (wanted $base)"
     if defaults read "$DEFAULTS_SUITE" "chrome.density.com.android.settings" >/dev/null 2>&1; then
-        bad "C16 Default left the stored override behind"
+        bad "[WIN-10] C16 Default left the stored override behind"
     else
-        ok "C16 Default removed the stored override"
+        ok "[WIN-10] C16 Default removed the stored override"
     fi
 
     # The profile reset (--debug-control reset prefs) forgets overrides too.
     printf '%s\n' "wait 0.6" "density com.android.settings 150" "wait 5" > "$WORK/density-reset.txt"
     open_shared --open com.android.settings --debug-input-script "$WORK/density-reset.txt" || return 1
     wait_until 20 density_stored_is com.android.settings 1.5 \
-        && ok "C16 150% is stored for the app" \
-        || bad "C16 150% was not stored: $(defaults read "$DEFAULTS_SUITE" "chrome.density.com.android.settings" 2>&1)"
+        && ok "[WIN-10] C16 150% is stored for the app" \
+        || bad "[WIN-10] C16 150% was not stored: $(defaults read "$DEFAULTS_SUITE" "chrome.density.com.android.settings" 2>&1)"
     control reset prefs && ok "C16 the profile reset ran" \
         || bad "C16 the profile reset answered '$CONTROL_REPLY'"
     if defaults read "$DEFAULTS_SUITE" "chrome.density.com.android.settings" >/dev/null 2>&1; then
@@ -7353,8 +7353,8 @@ check_nickname() {
 
     # The app window title (and with it the Dock/⌘-Tab entry).
     wait_until 20 titles_have "Settings (Nicky)" \
-        && ok "NICK the app window is titled \"Settings (Nicky)\"" \
-        || bad "NICK no \"Settings (Nicky)\" window: ($(window_titles | tr '\n' '|'))"
+        && ok "[WIN-3] NICK the app window is titled \"Settings (Nicky)\"" \
+        || bad "[WIN-3] NICK no \"Settings (Nicky)\" window: ($(window_titles | tr '\n' '|'))"
     # The phone window names the phone with the nickname alone.
     wait_until 20 titles_line "Nicky" \
         && ok "NICK the phone window is titled with the nickname" \
@@ -7370,8 +7370,8 @@ check_nickname() {
     wait_until 30 events_have '"state":"auth_ok"' \
         && ok "NICK second launch reconnected" || bad "NICK second launch did not authenticate"
     wait_until 30 titles_have "Settings (Nicky 2)" \
-        && ok "NICK the rename retitled the app window" \
-        || bad "NICK the rename did not retitle: ($(window_titles | tr '\n' '|'))"
+        && ok "[WIN-3] NICK the rename retitled the app window" \
+        || bad "[WIN-3] NICK the rename did not retitle: ($(window_titles | tr '\n' '|'))"
     wait_until 30 shim_name_is "WhatsApp (Nicky 2).app" \
         && ok "NICK the rename rebuilt the Dock shim" \
         || bad "NICK no rebuilt shim: $(ls -d "$dir"/*.app 2>/dev/null | tr '\n' ' ')"
