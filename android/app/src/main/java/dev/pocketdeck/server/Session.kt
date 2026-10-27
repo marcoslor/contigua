@@ -376,10 +376,13 @@ class Session(
         if (!closed.compareAndSet(false, true)) return
         // The Mac's session ended: stop forwarding and tell the app.
         notifyWanted = false
-        if (notifyForwarding) {
-            notifyForwarding = false
+        // The app's attention item is local state and must go even when the
+        // session never forwarded (no access): clear it from the close path,
+        // which runs whatever the phase was.
+        if (notifyGateState != NotifyGate.OFF) {
             log("notify gate: ${notifyGateState.name.lowercase()} -> off")
             notifyGateState = NotifyGate.OFF
+            notifyForwarding = false
             runCatching { notifyState?.invoke(false, null) }
         }
         val abandoned = synchronized(pairLock) {
@@ -1126,18 +1129,18 @@ class Session(
         // Mac's `notify.enable` after welcome asks again.
         if (phase != Phase.READY) return
         val gate = notifyGate(notifyWanted && !closed.get(), notifyGranted)
-        if (gate != notifyGateState) {
+        val gateChanged = gate != notifyGateState
+        if (gateChanged) {
             log("notify gate: ${notifyGateState.name.lowercase()} -> ${gate.name.lowercase()}")
             notifyGateState = gate
         }
+        // A gate change always reaches the app, even when forwarding was false
+        // both before and after (no access -> off): the attention item is the
+        // app's own state. NO_ACCESS repeats, so a late-attached app still learns.
         val forward = gate == NotifyGate.FORWARDING
-        if (forward != notifyForwarding) {
-            notifyForwarding = forward
+        notifyForwarding = forward
+        if (gateChanged || needsNotificationAccessAttention(gate)) {
             runCatching { notifyState?.invoke(forward, if (gate == NotifyGate.NO_ACCESS) "no_access" else null) }
-        } else if (needsNotificationAccessAttention(gate)) {
-            // The phone's home must show the attention item even though the
-            // forwarding state did not change (it was already off).
-            runCatching { notifyState?.invoke(false, "no_access") }
         }
         sendJson(notifyStateMessage(gate))
     }
