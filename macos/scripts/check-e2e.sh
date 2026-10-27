@@ -5269,17 +5269,17 @@ check_clip() {
 
     launch --connect "127.0.0.1:$PORT" --quit-after 60
     wait_until 30 clip_is pd-clip-1 \
-        && ok "CLIP phone -> Mac: pbpaste shows pd-clip-1" \
-        || bad "CLIP pbpaste shows '$(pbpaste)', not pd-clip-1"
+        && ok "[SHARE-1] CLIP phone -> Mac: pbpaste shows pd-clip-1" \
+        || bad "[SHARE-1] CLIP pbpaste shows '$(pbpaste)', not pd-clip-1"
     sleep 2
     ! events_have '"dir":"rx","text":"pd-clip-1"' \
-        && ok "CLIP the Mac does not send pd-clip-1 back" \
-        || bad "CLIP the Mac echoed pd-clip-1 to the phone"
+        && ok "[SHARE-1] CLIP the Mac does not send pd-clip-1 back" \
+        || bad "[SHARE-1] CLIP the Mac echoed pd-clip-1 to the phone"
 
     printf '%s' pd-clip-2 | pbcopy
     wait_until 30 events_have '"dir":"rx","text":"pd-clip-2"' \
-        && ok "CLIP Mac -> phone: fakephone logs clip.set pd-clip-2" \
-        || bad "CLIP fakephone did not log clip.set pd-clip-2"
+        && ok "[SHARE-1] CLIP Mac -> phone: fakephone logs clip.set pd-clip-2" \
+        || bad "[SHARE-1] CLIP fakephone did not log clip.set pd-clip-2"
     stop_app
     stop_fakephone
     wait_until 5 no_fakephone
@@ -5322,27 +5322,27 @@ PY2
     saved_image() { [ -f "$dir/pd-share.png" ]; }
 
     wait_until 30 log_has "would open https://example.com/sharein" \
-        && ok "SHAREIN url -> the Mac would open https://example.com/sharein" \
-        || bad "SHAREIN no 'would open https://example.com/sharein' in the share log"
+        && ok "[SHARE-4] SHAREIN url -> the Mac would open https://example.com/sharein" \
+        || bad "[SHARE-4] SHAREIN no 'would open https://example.com/sharein' in the share log"
     wait_until 30 saved_image && [ "$(shasum -a 256 < "$dir/pd-share.png" | cut -d' ' -f1)" = "$(shasum -a 256 < "$image" | cut -d' ' -f1)" ] \
-        && ok "SHAREIN image -> share dir has pd-share.png with the same sha256" \
-        || bad "SHAREIN image missing or different in $dir ($(ls -a "$dir" 2>/dev/null | tr '\n' ' '))"
+        && ok "[SHARE-5] SHAREIN image -> share dir has pd-share.png with the same sha256" \
+        || bad "[SHARE-5] SHAREIN image missing or different in $dir ($(ls -a "$dir" 2>/dev/null | tr '\n' ' '))"
     wait_until 30 clip_is pd-share-text-1 \
-        && ok "SHAREIN text -> pbpaste shows pd-share-text-1" \
-        || bad "SHAREIN pbpaste shows '$(pbpaste)', not pd-share-text-1"
+        && ok "[SHARE-4] SHAREIN text -> pbpaste shows pd-share-text-1" \
+        || bad "[SHARE-4] SHAREIN pbpaste shows '$(pbpaste)', not pd-share-text-1"
     log_has "notify Copied from FakePhone: file:///etc/hosts" && ! log_has "would open file:" \
-        && ok "SHAREIN a file: URL is copied as text, never opened" \
-        || bad "SHAREIN file: URL handling wrong: $(cat "$log" 2>/dev/null | tr '\n' '|')"
+        && ok "[SHARE-4] SHAREIN a file: URL is copied as text, never opened" \
+        || bad "[SHARE-4] SHAREIN file: URL handling wrong: $(cat "$log" 2>/dev/null | tr '\n' '|')"
     log_has "notify Image from FakePhone: pd-share.png" \
-        && ok "SHAREIN notifications recorded (Copied from / Image from FakePhone)" \
-        || bad "SHAREIN no image notification in the share log"
+        && ok "[SHARE-4] SHAREIN notifications recorded (Copied from / Image from FakePhone)" \
+        || bad "[SHARE-4] SHAREIN no image notification in the share log"
     sleep 2
     ! events_have '"dir":"rx","text":"pd-share-text-1"' \
-        && ok "SHAREIN the shared text is not echoed back as clip.set" \
-        || bad "SHAREIN the Mac echoed the shared text to the phone"
+        && ok "[SHARE-1] SHAREIN the shared text is not echoed back as clip.set" \
+        || bad "[SHARE-1] SHAREIN the Mac echoed the shared text to the phone"
     [ -z "$(ls -A "$dir" | grep '^\.')" ] \
-        && ok "SHAREIN no partial files left in the share dir" \
-        || bad "SHAREIN leftovers in $dir: $(ls -A "$dir" | tr '\n' ' ')"
+        && ok "[SHARE-5] SHAREIN no partial files left in the share dir" \
+        || bad "[SHARE-5] SHAREIN leftovers in $dir: $(ls -A "$dir" | tr '\n' ' ')"
     stop_app
     stop_fakephone
     wait_until 5 no_fakephone
@@ -5389,21 +5389,21 @@ PY
 
     open_quiet -a "$E2E_BUNDLE" "pocketdeck://open?url=https%3A%2F%2Fexample.com"
     wait_until 30 link_logged "https://example.com" \
-        && ok "LINKS fakephone logs link.open https://example.com" \
-        || bad "LINKS fakephone did not log link.open https://example.com"
+        && ok "[SHARE-8] LINKS fakephone logs link.open https://example.com" \
+        || bad "[SHARE-8] LINKS fakephone did not log link.open https://example.com"
     wait_until 30 stream_video && wait_until 15 windows_at_least 2 \
-        && ok "LINKS a stream window opened with video ($(windows | wc -l | tr -d ' ') windows)" \
-        || bad "LINKS no stream window/video for the link"
+        && ok "[SHARE-8] LINKS a stream window opened with video ($(windows | wc -l | tr -d ' ') windows)" \
+        || bad "[SHARE-8] LINKS no stream window/video for the link"
 
     open_quiet -a "$E2E_BUNDLE" "pocketdeck://open?url=file%3A%2F%2F%2Fetc%2Fhosts"
     sleep 3
     ! events_have 'file:///etc/hosts' \
-        && ok "LINKS a file: link never reaches the phone" \
-        || bad "LINKS the Mac sent a file: link to the phone"
+        && ok "[SHARE-7] LINKS a file: link never reaches the phone" \
+        || bad "[SHARE-7] LINKS the Mac sent a file: link to the phone"
 
     [ "$(e2e_app_pids | wc -l | tr -d ' ')" = "1" ] && ! pgrep -fx "$APP" >/dev/null \
-        && ok "LINKS the URL went to the running e2e app (one instance)" \
-        || bad "LINKS open started another PocketDeck instance"
+        && ok "[SHARE-9] LINKS the URL went to the running e2e app (one instance)" \
+        || bad "[SHARE-9] LINKS open started another PocketDeck instance"
     pkill -fx "$APP" >/dev/null 2>&1
     stop_app
     stop_fakephone
@@ -5886,18 +5886,18 @@ check_share() {
     local appex="$E2E_BUNDLE/Contents/PlugIns/Share.appex"
     [ "$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPointIdentifier' "$appex/Contents/Info.plist" 2>/dev/null)" = "com.apple.share-services" ] \
         && [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$appex/Contents/Info.plist" 2>/dev/null)" = "$SHARE_ID" ] \
-        && ok "SHARE bundle has Share.appex ($SHARE_ID, com.apple.share-services)" \
-        || bad "SHARE Share.appex missing or wrong Info.plist"
+        && ok "[SHARE-9] SHARE bundle has Share.appex ($SHARE_ID, com.apple.share-services)" \
+        || bad "[SHARE-9] SHARE Share.appex missing or wrong Info.plist"
     codesign --verify --deep --strict "$E2E_BUNDLE" 2>/dev/null \
         && codesign -d --entitlements - "$appex" 2>/dev/null | grep -q app-sandbox \
-        && ok "SHARE codesign --deep --strict passes; the extension is sandboxed" \
-        || bad "SHARE codesign verify failed or the extension is not sandboxed"
+        && ok "[SHARE-9] SHARE codesign --deep --strict passes; the extension is sandboxed" \
+        || bad "[SHARE-9] SHARE codesign verify failed or the extension is not sandboxed"
 
     "$LSREGISTER" -f "$E2E_BUNDLE" >/dev/null 2>&1
     pluginkit -a "$appex" >/dev/null 2>&1
     pluginkit -e use -i "$SHARE_ID" >/dev/null 2>&1
     wait_until 10 share_listed \
-        && ok "SHARE pluginkit lists $SHARE_ID" || bad "SHARE pluginkit does not list $SHARE_ID"
+        && ok "[SHARE-9] SHARE pluginkit lists $SHARE_ID" || bad "[SHARE-9] SHARE pluginkit does not list $SHARE_ID"
 
     start_fake || return 1
     launch --connect "127.0.0.1:$PORT" --quit-after 120
@@ -5910,28 +5910,28 @@ check_share() {
 
     "$SHAREBIN" handoff "$E2E_BUNDLE" "look at https://example.com/handoff please" > "$WORK/share-a.log" 2>&1
     wait_until 20 link_event "https://example.com/handoff" \
-        && ok "SHARE hand-off: text with a link -> fakephone logs link.open" \
-        || bad "SHARE hand-off did not reach the phone ($(cat "$WORK/share-a.log"))"
+        && ok "[SHARE-9] SHARE hand-off: text with a link -> fakephone logs link.open" \
+        || bad "[SHARE-9] SHARE hand-off did not reach the phone ($(cat "$WORK/share-a.log"))"
     ! "$SHAREBIN" handoff "$E2E_BUNDLE" "no link in here" >/dev/null 2>&1 \
         && ! "$SHAREBIN" handoff "$E2E_BUNDLE" "file:///etc/hosts" >/dev/null 2>&1 \
-        && ok "SHARE hand-off refuses text without a link and file: URLs" \
-        || bad "SHARE hand-off accepted non-link text or a file: URL"
+        && ok "[SHARE-7] SHARE hand-off refuses text without a link and file: URLs" \
+        || bad "[SHARE-7] SHARE hand-off accepted non-link text or a file: URL"
 
     "$SHAREBIN" service "$SHARE_TITLE" "https://example.com/extension" > "$WORK/share-b.log" 2>&1
     wait_until 20 link_event "https://example.com/extension" \
-        && ok "SHARE the sandboxed extension -> fakephone logs link.open" \
-        || bad "SHARE the extension did not reach the phone ($(tr '\n' ' ' < "$WORK/share-b.log"))"
+        && ok "[SHARE-9] SHARE the sandboxed extension -> fakephone logs link.open" \
+        || bad "[SHARE-9] SHARE the extension did not reach the phone ($(tr '\n' ' ' < "$WORK/share-b.log"))"
 
     [ "$(e2e_app_pids | wc -l | tr -d ' ')" = "1" ] && ! pgrep -fx "$APP" >/dev/null \
-        && ok "SHARE the links went to the running e2e app (one instance)" \
-        || bad "SHARE the hand-off started another PocketDeck instance"
+        && ok "[SHARE-9] SHARE the links went to the running e2e app (one instance)" \
+        || bad "[SHARE-9] SHARE the hand-off started another PocketDeck instance"
     pkill -fx "$APP" >/dev/null 2>&1
     stop_app
     stop_fakephone
     wait_until 5 no_fakephone
     unregister_share
     wait_until 10 eval '! share_listed' \
-        && ok "SHARE $SHARE_ID unregistered after the check" || bad "SHARE $SHARE_ID still registered"
+        && ok "[SHARE-9] SHARE $SHARE_ID unregistered after the check" || bad "[SHARE-9] SHARE $SHARE_ID still registered"
 }
 
 # --- Finder bridge (docs/design/files.md §3, files-bridge) ------------------
@@ -7729,18 +7729,18 @@ check_handoff() {
     launch --connect "127.0.0.1:$PORT" --continue-on-mac --quit-after 30
 
     wait_until 30 events_have '"t":"task.continue"' \
-        && ok "HO the Mac sent task.continue" || bad "HO no task.continue reached the phone"
+        && ok "[SHARE-10] HO the Mac sent task.continue" || bad "[SHARE-10] HO no task.continue reached the phone"
     wait_until 30 events_have '"ev":"task.continue","stream":1,"mode":"moved"' \
-        && ok "HO the phone moved the foreground app (started=moved)" \
-        || bad "HO no moved answer: $(tail -2 "$WORK/events.jsonl" | tr '\n' ' ')"
+        && ok "[SHARE-10] HO the phone moved the foreground app (started=moved)" \
+        || bad "[SHARE-10] HO no moved answer: $(tail -2 "$WORK/events.jsonl" | tr '\n' ' ')"
     wait_until 30 events_have '"ev":"video","stream":1,' \
-        || bad "HO no video for the continued app"
+        || bad "[SHARE-10] HO no video for the continued app"
     wait_until 15 windows_at_least 2 \
-        && ok "HO a window opened for the continued app ($(windows | wc -l | tr -d ' ') windows)" \
-        || bad "HO no window opened"
+        && ok "[SHARE-10] HO a window opened for the continued app ($(windows | wc -l | tr -d ' ') windows)" \
+        || bad "[SHARE-10] HO no window opened"
     wait_until 15 titles_have "Settings (FakePhone)" \
-        && ok "HO the window is titled \"Settings (FakePhone)\" (the app the phone reports)" \
-        || bad "HO no titled window: $(window_titles "$APP_PID" | tr '\n' '|')"
+        && ok "[SHARE-10] HO the window is titled \"Settings (FakePhone)\" (the app the phone reports)" \
+        || bad "[SHARE-10] HO no titled window: $(window_titles "$APP_PID" | tr '\n' '|')"
     stop_app
     stop_fakephone
     wait_until 5 no_fakephone
@@ -7757,13 +7757,13 @@ check_handoff() {
     launch --connect "127.0.0.1:$PORT" --continue-on-mac --quit-after 30
     wait_until 30 events_have '"t":"task.continue"' || bad "HO fresh: no task.continue"
     wait_until 30 events_have '"ev":"task.continue","stream":1,"mode":"fresh"' \
-        && ok "HO fresh: the phone answered that it relaunched the app" \
-        || bad "HO fresh: no fresh answer"
+        && ok "[SHARE-10] HO fresh: the phone answered that it relaunched the app" \
+        || bad "[SHARE-10] HO fresh: no fresh answer"
     wait_until 30 events_have '"ev":"video","stream":1,' \
-        && ok "HO fresh: the app still streams into its window" || bad "HO fresh: no video"
+        && ok "[SHARE-10] HO fresh: the app still streams into its window" || bad "[SHARE-10] HO fresh: no video"
     wait_until 15 titles_have "Settings (FakePhone)" \
-        && ok "HO fresh: the window is titled after the relaunched app" \
-        || bad "HO fresh: no titled window"
+        && ok "[SHARE-10] HO fresh: the window is titled after the relaunched app" \
+        || bad "[SHARE-10] HO fresh: no titled window"
     stop_app
     stop_fakephone
     wait_until 5 no_fakephone
@@ -7780,13 +7780,13 @@ check_handoff() {
     grep -q "listening" "$WORK/fake.log" || { bad "HO nothing: fakephone did not start"; return 1; }
     launch --connect "127.0.0.1:$PORT" --continue-on-mac --quit-after 30
     wait_until 30 events_have '"t":"task.continue"' \
-        && ok "HO nothing: the command still reaches the phone" || bad "HO nothing: no task.continue"
+        && ok "[SHARE-10] HO nothing: the command still reaches the phone" || bad "[SHARE-10] HO nothing: no task.continue"
     wait_until 30 events_have '"ev":"task.continue","stream":1,"mode":"nothing"' \
-        && ok "HO nothing: the phone refused (nothing continuable in the foreground)" \
-        || bad "HO nothing: the phone did not refuse"
+        && ok "[SHARE-10] HO nothing: the phone refused (nothing continuable in the foreground)" \
+        || bad "[SHARE-10] HO nothing: the phone did not refuse"
     ! events_have '"ev":"video"' \
-        && ok "HO nothing: no video, the phone opened no display" \
-        || bad "HO nothing: video streamed for a refused handoff"
+        && ok "[SHARE-10] HO nothing: no video, the phone opened no display" \
+        || bad "[SHARE-10] HO nothing: video streamed for a refused handoff"
     stop_app
     stop_fakephone
     wait_until 5 no_fakephone
