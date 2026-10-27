@@ -12,6 +12,9 @@ LibreSSL cannot do TLS 1.3), plus `ffmpeg`/`ffprobe` and the macOS `dns-sd` CLI.
 - `deckctl.py` — the fake Mac client, used to conformance-test any phone server
   (this fake today, the Android server later).
 - `test_selfcheck.sh` — end-to-end check of all of the above.
+- `test_busy_reject.py` — unit check of one connection path the selfcheck only
+  reaches at its end: a rejected second connection (TLS-wrapped, stale) must
+  close quietly.
 
 ## Requirements
 
@@ -25,6 +28,13 @@ LibreSSL 2.8, which has no TLS 1.3, so it cannot talk to the v2 server. Also
 
 ```sh
 bash tools/fakephone/test_selfcheck.sh   # prints SELFCHECK PASS, exit 0
+```
+
+The connection paths have a small unit check of their own (a second, rejected
+connection over TLS, with a client that stalls on it):
+
+```sh
+python3.11 tools/fakephone/test_busy_reject.py   # prints OK, exit 0
 ```
 
 It starts `fakephone` on an ephemeral port (`--no-mdns --auto-allow`), pairs with
