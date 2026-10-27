@@ -2841,9 +2841,9 @@ check_menus() {
             return 1
         }
         if reason="$(menu_dump_ok "$WORK/menus-$1.json")"; then
-            ok "MENUS dump $1: the whole bar is the design after the rebuild"
+            ok "[MENU-10] dump $1: the whole bar is the design after the rebuild"
         else
-            bad "MENUS dump $1 is not the design: $reason"
+            bad "[MENU-10] dump $1 is not the design: $reason"
         fi
         assert_bar "$WORK/menus-$1.json" "dump $1"
     }
@@ -2859,8 +2859,8 @@ check_menus() {
         while IFS='|' read -r rule verdict detail; do
             [ -n "$rule" ] || continue
             case "$verdict" in
-                ok) ok "MENUS $label: $rule" ;;
-                *) bad "MENUS $label: $rule ($detail)" ;;
+                ok) ok "[MENU-11] $label: $rule" ;;
+                *) bad "[MENU-11] $label: $rule ($detail)" ;;
             esac
         done < <(python3 - "$path" <<'PY'
 import json, re, sys
@@ -3003,8 +3003,8 @@ EOF
     # standard way, with no empty row under "Bring All to Front".
     dump_stable 0 || { stop_app; stop_fakephone; return 1; }
     assert_bar "$WORK/menus-0.json" "dump 0"
-    python3 - "$WORK/menus-0.json" <<'PY' && ok "MENUS with no stream window: Framed/Immersive are disabled and neither is checked" \
-        || bad "MENUS the style pair still acts with no stream window"
+    python3 - "$WORK/menus-0.json" <<'PY' && ok "[MENU-9] with no stream window: Framed/Immersive are disabled and neither is checked" \
+        || bad "[MENU-9] the style pair still acts with no stream window"
 import json, sys
 root = json.load(open(sys.argv[1]))
 view = next(i for i in root["items"] if i["title"] == "View")
@@ -3019,8 +3019,8 @@ if [item["enabled"] for item in pair] != [False, False]:
 PY
     local ax_titles
     ax_titles="$(window_titles "$APP_PID")"
-    python3 - "$WORK/menus-0.json" "$ax_titles" <<'PY' && ok "MENUS the Window menu lists the open windows and has no empty or hidden item" \
-        || bad "MENUS the Window menu has an empty row or no window list"
+    python3 - "$WORK/menus-0.json" "$ax_titles" <<'PY' && ok "[MENU-7] the Window menu lists the open windows and has no empty or hidden item" \
+        || bad "[MENU-7] the Window menu has an empty row or no window list"
 import json, sys
 root = json.load(open(sys.argv[1]))
 def window_menu(items):
@@ -3091,14 +3091,14 @@ PY
     # 3 and 4: after switching the style to immersive and back.
     touch "$WORK/menus-step-3"; sleep 1.5
     wait_until 5 grep -q "style=immersive" "$WORK/chrome.txt" \
-        && ok "MENUS choosing Immersive took the window to the immersive style" \
-        || bad "MENUS choosing Immersive left $(grep -o 'style=[a-z]*' "$WORK/chrome.txt" | tail -1)"
+        && ok "[MENU-4] choosing Immersive took the window to the immersive style" \
+        || bad "[MENU-4] choosing Immersive left $(grep -o 'style=[a-z]*' "$WORK/chrome.txt" | tail -1)"
     dump_now 3
     # The pair's mark and Hide Controls' enablement follow the key window: the
     # items are SwiftUI's (a rebuild cannot drop them), and MenuMarks writes
     # their values when the menu opens.
-    python3 - "$WORK/menus-3.json" <<'PY' && ok "MENUS after choosing Immersive: it is checked and Hide Controls is enabled" \
-        || bad "MENUS the View menu did not follow the style change"
+    python3 - "$WORK/menus-3.json" <<'PY' && ok "[MENU-9] after choosing Immersive: it is checked and Hide Controls is enabled" \
+        || bad "[MENU-9] the View menu did not follow the style change"
 import json, sys
 root = json.load(open(sys.argv[1]))
 view = next(i for i in root["items"] if i["title"] == "View")
@@ -3110,8 +3110,8 @@ if hide is None or not hide.get("enabled"):
     print("Hide Controls:", hide); sys.exit(1)
 PY
     touch "$WORK/menus-step-4"; sleep 1.5; dump_now 4
-    python3 - "$WORK/menus-4.json" <<'PY' && ok "MENUS after choosing Framed: it is checked and Hide Controls is disabled" \
-        || bad "MENUS the View menu did not follow the style back"
+    python3 - "$WORK/menus-4.json" <<'PY' && ok "[MENU-9] after choosing Framed: it is checked and Hide Controls is disabled" \
+        || bad "[MENU-9] the View menu did not follow the style back"
 import json, sys
 root = json.load(open(sys.argv[1]))
 view = next(i for i in root["items"] if i["title"] == "View")
@@ -3154,8 +3154,8 @@ PY
     # The View menu, top to bottom: the design's items, nothing else — no
     # section title (the old Picker's "Window Style" header) and no full-screen
     # item. Separators are shown as —.
-    python3 - "$WORK/menus-1.json" <<'PY' && ok "MENUS View menu is exactly the design's items, no section titles" \
-        || bad "MENUS View menu is not the design"
+    python3 - "$WORK/menus-1.json" <<'PY' && ok "[MENU-4] View menu is exactly the design's items, no section titles" \
+        || bad "[MENU-4] View menu is not the design"
 import json, sys
 root = json.load(open(sys.argv[1]))
 view = next((i for i in root["items"] if i["title"] == "View"), None)
@@ -3168,8 +3168,8 @@ if any("Full Screen" in title for title in titles):
     print("a full-screen item is in View:", titles); sys.exit(1)
 PY
 
-    python3 - "$WORK/menus-1.json" <<'PY' && ok "MENUS Framed/Immersive are radio items with exactly one checked, and ⌥⌘F is on the pair" \
-        || bad "MENUS the style radios are wrong"
+    python3 - "$WORK/menus-1.json" <<'PY' && ok "[MENU-4] Framed/Immersive are radio items with exactly one checked, and ⌥⌘F is on the pair" \
+        || bad "[MENU-4] the style radios are wrong"
 import json, sys
 root = json.load(open(sys.argv[1]))
 view = next(i for i in root["items"] if i["title"] == "View")
@@ -3197,8 +3197,8 @@ if "Toggle Window Style" in by_title:
     print("the separate Toggle Window Style item is still there"); sys.exit(1)
 PY
 
-    python3 - "$WORK/menus-1.json" <<'PY' && ok "MENUS Density is Default (N%), the other percentages, then Larger/Smaller/Actual Size" \
-        || bad "MENUS the Density submenu is wrong"
+    python3 - "$WORK/menus-1.json" <<'PY' && ok "[MENU-4] Density is Default (N%), the other percentages, then Larger/Smaller/Actual Size" \
+        || bad "[MENU-4] the Density submenu is wrong"
 import json, sys
 root = json.load(open(sys.argv[1]))
 view = next(i for i in root["items"] if i["title"] == "View")
@@ -3220,8 +3220,8 @@ PY
     # makes SwiftUI re-evaluate the commands: with the fake phone online, the
     # controls that can work are enabled, and the one that cannot — Turn Off
     # Phone Screen, with no phone window — stays disabled.
-    python3 - "$WORK/menus-1.json" <<'PY' && ok "MENUS the Phone menu: ⌘P/⇧⌘C, its controls enabled for the online phone, Turn Off Phone Screen disabled" \
-        || bad "MENUS a Phone control that cannot work is enabled"
+    python3 - "$WORK/menus-1.json" <<'PY' && ok "[MENU-5] the Phone menu: ⌘P/⇧⌘C, its controls enabled for the online phone, Turn Off Phone Screen disabled" \
+        || bad "[MENU-5] a Phone control that cannot work is enabled"
 import json, sys
 root = json.load(open(sys.argv[1]))
 phone = next(i for i in root["items"] if i["title"] == "Phone")
@@ -3242,8 +3242,8 @@ PY
 
     # The temporary Bar Prototype picker is gone: the bar has one geometry
     # (BarGeometry) and no menu item to choose another.
-    python3 - "$WORK/menus-1.json" <<'PY' && ok "MENUS no Bar Prototype item (one bar geometry)" \
-        || bad "MENUS a Bar Prototype item is still in View"
+    python3 - "$WORK/menus-1.json" <<'PY' && ok "[MENU-4] no Bar Prototype item (one bar geometry)" \
+        || bad "[MENU-4] a Bar Prototype item is still in View"
 import json, sys
 root = json.load(open(sys.argv[1]))
 view = next(i for i in root["items"] if i["title"] == "View")
@@ -3253,8 +3253,8 @@ PY
 
     # Immersive is a plain radio item (no submenu); the reveal choice lives in
     # Hide Controls, which is disabled while the window is framed.
-    python3 - "$WORK/menus-1.json" <<'PY' && ok "MENUS Hide Controls holds the delays and is disabled while Framed" \
-        || bad "MENUS Hide Controls is wrong while framed"
+    python3 - "$WORK/menus-1.json" <<'PY' && ok "[MENU-4] Hide Controls holds the delays and is disabled while Framed" \
+        || bad "[MENU-4] Hide Controls is wrong while framed"
 import json, sys
 root = json.load(open(sys.argv[1]))
 view = next(i for i in root["items"] if i["title"] == "View")
@@ -3276,8 +3276,8 @@ PY
     # Enter/Exit Full Screen, in Window. The app's own tree also holds AppKit's
     # Enter Full Screen with no key and no target, which the bar never shows, so
     # the item is read from the displayed bar and its icon and shortcut from the tree.
-    python3 - "$WORK/menus-1.json" <<'PY' && ok "MENUS Window holds the only full-screen item, Enter Full Screen ⌃⌘F" \
-        || bad "MENUS the Window menu's full-screen item is wrong"
+    python3 - "$WORK/menus-1.json" <<'PY' && ok "[MENU-7] Window holds the only full-screen item, Enter Full Screen ⌃⌘F" \
+        || bad "[MENU-7] the Window menu's full-screen item is wrong"
 import json, re, sys
 def walk(items):
     for item in items:
@@ -3304,8 +3304,8 @@ PY
 
     # The app's own items carry SF Symbols (the system's items stay as AppKit
     # draws them and are not in this list).
-    python3 - "$WORK/menus-1.json" <<'PY' && ok "MENUS every item the app draws has an SF Symbol" \
-        || bad "MENUS an app item is missing its icon"
+    python3 - "$WORK/menus-1.json" <<'PY' && ok "[MENU-1] every item the app draws has an SF Symbol" \
+        || bad "[MENU-1] an app item is missing its icon"
 import json, sys
 def walk(items):
     for item in items:
@@ -3329,8 +3329,8 @@ PY
 
     # The Show Touches dots are drawn outside the view the bar mirrors.
     wait_until 10 eval 'grep -q "dots=outside" "$WORK/chrome.txt" 2>/dev/null' \
-        && ok "MENUS the Show Touches dots are outside the bar's mirror ($(chrome_state))" \
-        || bad "MENUS the dot layer is still inside the mirrored content: $(chrome_state)"
+        && ok "[MENU-4] the Show Touches dots are outside the bar's mirror ($(chrome_state))" \
+        || bad "[MENU-4] the dot layer is still inside the mirrored content: $(chrome_state)"
 
     # Show Touches on, the pointer hovering the video and a trackpad touch at
     # the stream's top edge: the bar above it must stay clean. The driver's
@@ -3345,8 +3345,8 @@ PY
         || bad "MENUS no window to capture the bar"
     grep -q "touches=on" "$WORK/chrome.txt" 2>/dev/null \
         && grep -qE "dot_count=[1-9]" "$WORK/chrome.txt" 2>/dev/null \
-        && ok "MENUS the dots are drawn while the fingers are down ($(chrome_state))" \
-        || bad "MENUS no touch dots during the pinch: $(chrome_state)"
+        && ok "[MENU-4] the dots are drawn while the fingers are down ($(chrome_state))" \
+        || bad "[MENU-4] no touch dots during the pinch: $(chrome_state)"
     sleep 4
 
     # The menu bar is a window panel now (docs/design/mac-redesign.md §3.8):
@@ -3386,11 +3386,11 @@ PY
         sleep 7
         # The title can only follow the window if the window went to a Space.
         chrome_has "fullscreen=yes" \
-            && ok "MENUS the shared app entered a Space (fullscreen=yes)" \
-            || bad "MENUS the shared app did not enter full screen: $(chrome_state)"
+            && ok "[MENU-7] the shared app entered a Space (fullscreen=yes)" \
+            || bad "[MENU-7] the shared app did not enter full screen: $(chrome_state)"
         dump_now 10
-        python3 - "$WORK/menus-10.json" <<'PY' && ok "MENUS in full screen the Window item reads Exit Full Screen, still the only one" \
-            || bad "MENUS the full-screen title did not follow the key window"
+        python3 - "$WORK/menus-10.json" <<'PY' && ok "[MENU-7] in full screen the Window item reads Exit Full Screen, still the only one" \
+            || bad "[MENU-7] the full-screen title did not follow the key window"
 import json, sys
 def walk(items):
     for item in items:
@@ -3447,8 +3447,8 @@ PY
     # leave a mark on it. The rest of the bar is checked as a person reads it.
     dump_stable 11 || { stop_app; stop_fakephone; return 1; }
     assert_bar "$WORK/menus-11.json" "dump 11"
-    python3 - "$WORK/menus-11.json" <<'PY' && ok "MENUS after a relaunch the Deck is key: the style pair is off and disabled" \
-        || bad "MENUS a relaunch left the style pair on or enabled"
+    python3 - "$WORK/menus-11.json" <<'PY' && ok "[MENU-9] after a relaunch the Deck is key: the style pair is off and disabled" \
+        || bad "[MENU-9] a relaunch left the style pair on or enabled"
 import json, sys
 root = json.load(open(sys.argv[1]))
 view = next(i for i in root["items"] if i["title"] == "View")
