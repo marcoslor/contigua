@@ -27,9 +27,15 @@ enum PanelProbe {
     }
 
     private static var hostWindow: NSWindow?
+    /// The SwiftUI content inside the wrapper; `fit` sizes the window from it.
+    private static var hostView: NSView?
     private static weak var controller: ConnectionController?
+    /// The gap between the wrapper's edge and the hosted content: MenuBarPanel's.
+    private static let wrapInset: CGFloat = 10
 
-    /// `panelopen`: the menu bar's content in a window of its own.
+    /// `panelopen`: the menu bar's content in a window of its own, wrapped the
+    /// way MenuBarPanel wraps it (the popover material, the corner, the inset),
+    /// so a shot of it is the panel a person sees.
     static func open(controller: ConnectionController) {
         self.controller = controller
         if let hostWindow {
@@ -37,16 +43,36 @@ enum PanelProbe {
             return
         }
         let view = NSHostingView(rootView: AnyView(MenuBarContent().environment(controller)))
-        view.frame = NSRect(x: 0, y: 0, width: PhonePanelView.width, height: 640)
-        view.layoutSubtreeIfNeeded()
-        let size = view.fittingSize
-        let window = NSWindow(contentRect: NSRect(origin: .zero, size: size),
-                              styleMask: [.titled, .closable], backing: .buffered, defer: false)
-        window.title = "PocketDeck Panel"
+        hostView = view
+        let effect = NSVisualEffectView()
+        effect.material = .popover
+        effect.blendingMode = .behindWindow
+        effect.state = .active
+        effect.wantsLayer = true
+        effect.layer?.cornerRadius = 12
+        effect.layer?.masksToBounds = true
+        view.translatesAutoresizingMaskIntoConstraints = false
+        effect.addSubview(view)
+        NSLayoutConstraint.activate([
+            view.leadingAnchor.constraint(equalTo: effect.leadingAnchor, constant: wrapInset),
+            view.trailingAnchor.constraint(equalTo: effect.trailingAnchor, constant: -wrapInset),
+            view.topAnchor.constraint(equalTo: effect.topAnchor, constant: wrapInset),
+            view.bottomAnchor.constraint(equalTo: effect.bottomAnchor, constant: -wrapInset),
+        ])
+        // A non-activating panel, as the status item's is; mouse moves reach
+        // the controls so the hover states follow the pointer.
+        let window = MenuBarPanel(contentRect: NSRect(x: 0, y: 0, width: 320, height: 400),
+                                  styleMask: [.borderless, .nonactivatingPanel],
+                                  backing: .buffered, defer: false)
         window.identifier = NSUserInterfaceItemIdentifier("pocketdeck-panel")
+        window.isFloatingPanel = true
+        window.isOpaque = false
+        window.backgroundColor = .clear
+        window.hasShadow = true
+        window.acceptsMouseMovedEvents = true
         window.isReleasedWhenClosed = false
-        window.contentView = view
-        view.frame = NSRect(origin: .zero, size: size)
+        window.contentView = effect
+        fit(window)
         if let screen = NSScreen.main {
             window.setFrameTopLeftPoint(NSPoint(x: screen.visibleFrame.minX + 60,
                                                 y: screen.visibleFrame.maxY - 40))
@@ -105,6 +131,27 @@ enum PanelProbe {
             return false
         }
         return (try? data.write(to: URL(fileURLWithPath: path))) != nil
+    }
+
+    /// `panelhover HOST ID`: the control's hover highlight is forced on (the
+    /// PanelHoverDebug item), so a shot shows the hover state. A quiet run cannot
+    /// move the pointer, and synthetic moves do not reach SwiftUI's hover tracking;
+    /// a real pointer's hover is the control's own onHover, proved in the VM.
+    static func hover(host: String, id: String) -> Bool {
+        guard let host = Host(rawValue: host), let state = currentState(),
+              let window = window(for: host) else { return false }
+        settle(window, items: focusableItems(state, host: host))
+        guard control(for: id, state: state, host: host, in: window) != nil else { return false }
+        PanelHoverDebug.shared.itemID = id
+        pump(0.3)
+        return true
+    }
+
+    /// `panelhoverout`: clears the forced hover.
+    static func hoverOut() -> Bool {
+        PanelHoverDebug.shared.itemID = nil
+        pump(0.3)
+        return true
     }
 
     /// `panelclick HOST ID`: a click at the control's own frame, through the
@@ -250,13 +297,13 @@ enum PanelProbe {
     /// and loses the one reason line and the agent row, and the window is made
     /// once, so it would otherwise keep the height of an earlier state.
     private static func fit(_ window: NSWindow) {
-        guard let view = window.contentView else { return }
+        guard let view = hostView, let content = window.contentView else { return }
         view.layoutSubtreeIfNeeded()
-        let size = CGSize(width: PhonePanelView.width, height: view.fittingSize.height)
-        guard size.height > 0, abs(view.frame.height - size.height) > 0.5 else { return }
+        let height = view.fittingSize.height + wrapInset * 2
+        let size = CGSize(width: PhonePanelView.width + wrapInset * 2, height: height)
+        guard height > wrapInset * 2, abs(content.frame.height - size.height) > 0.5 else { return }
         window.setContentSize(size)
-        view.frame = NSRect(origin: .zero, size: size)
-        view.layoutSubtreeIfNeeded()
+        content.layoutSubtreeIfNeeded()
     }
 
     /// The panel's view tree follows the controller's state: a row that was
@@ -410,4 +457,14 @@ enum PanelProbe {
     private static func pump(_ seconds: TimeInterval) {
         RunLoop.current.run(until: Date(timeIntervalSinceNow: seconds))
     }
+}
+
+/// The item whose hover the e2e forces on (`panelhover`). A real pointer's hover
+/// is the control's own onHover; a quiet run cannot move the pointer, so the
+/// route sets this and the control draws as hovered.
+@MainActor
+@Observable
+final class PanelHoverDebug {
+    static let shared = PanelHoverDebug()
+    var itemID: String?
 }

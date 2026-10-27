@@ -85,6 +85,26 @@ final class PhonePanelP3Tests: XCTestCase {
                        "Connect your phone to use these.")
     }
 
+    /// A disabled tile says why on its own second line, in a few words; the
+    /// full sentence stays the reason. An enabled tile shows its state instead.
+    func testADisabledTileSaysWhyOnItsSubtitle() {
+        let away = state(online: false)
+        XCTAssertEqual(PhonePanelItem.dnd.shortReason(in: away), "Connect phone first")
+        XCTAssertEqual(PhonePanelItem.ring.shortReason(in: away), "Connect phone first")
+
+        let closed = state(phoneWindow: false)
+        XCTAssertEqual(PhonePanelItem.screen.shortReason(in: closed), "Open Mirror first")
+
+        let dndOn = state(dnd: .priority, ringer: .vibrate)
+        XCTAssertEqual(PhonePanelItem.ringer.shortReason(in: dndOn), "Off while DND is on")
+
+        let noDnd = state(dnd: nil)
+        XCTAssertEqual(PhonePanelItem.dnd.shortReason(in: noDnd), "Not on this phone")
+
+        XCTAssertNil(PhonePanelItem.dnd.shortReason(in: state()))
+        XCTAssertNil(PhonePanelItem.screen.shortReason(in: state()))
+    }
+
     /// A disabled tile is never drawn as on. With DND on the Ringer reads
     /// Vibrate, which used to tint its disabled tile accent-blue, so it looked
     /// like a control that was on (CONV-MAC-25).

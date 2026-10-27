@@ -2464,6 +2464,11 @@ final class ConnectionController {
             // setup for the switch inside).
             PanelProbe.openDeckPopover(controller: self)
             return nil
+        case "panelhover":
+            guard arguments.count == 2 else { return "panelhover needs HOST and an item ID" }
+            return PanelProbe.hover(host: arguments[0], id: arguments[1]) ? nil : "panelhover failed"
+        case "panelhoverout":
+            return PanelProbe.hoverOut() ? nil : "panelhoverout failed"
         case "paneldump":
             guard arguments.count == 2, ["panel", "deck", "real"].contains(arguments[0]) else {
                 return "paneldump needs HOST (panel, deck or real) and PATH"
