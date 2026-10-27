@@ -5495,40 +5495,40 @@ PY
         event="$(apk_event 1 ok)"
         want="$(shasum -a 256 "$WORK/tiny.apk" | cut -c1-64)"
         echo "$event" | python3 -c 'import json,sys; f=json.load(sys.stdin)["files"]; sys.exit(0 if len(f)==1 and f[0]["match"] and f[0]["sha256"]==sys.argv[1] else 1)' "$want" \
-            && ok "APK fakephone got tiny.apk with a matching sha256 (${want:0:12}…)" \
-            || bad "APK sha256 mismatch: $event (want $want)"
+            && ok "[FILES-16] APK fakephone got tiny.apk with a matching sha256 (${want:0:12}…)" \
+            || bad "[FILES-16] APK sha256 mismatch: $event (want $want)"
     else
         bad "APK fakephone never received the install"
     fi
     wait_until 15 log_has "apk: phone received all" && log_has "apk: sending 1 part(s)" \
-        && ok "APK progress shown ($(apk_log | grep -m1 'apk: sending'); $(apk_log | grep -m1 'received all'))" \
-        || bad "APK no progress logged: $(apk_log | tail -3)"
+        && ok "[FILES-16] APK progress shown ($(apk_log | grep -m1 'apk: sending'); $(apk_log | grep -m1 'received all'))" \
+        || bad "[FILES-16] APK no progress logged: $(apk_log | tail -3)"
     wait_until 15 log_has "apk: result ok: Installed Tiny Demo 1.0." \
-        && ok "APK result message: Installed Tiny Demo 1.0." \
-        || bad "APK no success message: $(apk_log | tail -2)"
+        && ok "[FILES-18] APK result message: Installed Tiny Demo 1.0." \
+        || bad "[FILES-18] APK no success message: $(apk_log | tail -2)"
     apps_refreshed() { [ "$(apps_lists)" -gt "$before" ]; }
     wait_until 10 apps_refreshed \
-        && ok "APK the app list was refreshed after the install" \
-        || bad "APK no apps.list after the install"
+        && ok "[FILES-18] APK the app list was refreshed after the install" \
+        || bad "[FILES-18] APK no apps.list after the install"
 
     open_apk "$WORK/old.apk"
     wait_until 30 log_has "apk: result failed: A newer version of this app is already on the phone." \
-        && ok "APK downgrade failure reads: A newer version of this app is already on the phone." \
-        || bad "APK no downgrade message: $(apk_log | tail -2)"
+        && ok "[FILES-18] APK downgrade failure reads: A newer version of this app is already on the phone." \
+        || bad "[FILES-18] APK no downgrade message: $(apk_log | tail -2)"
 
     open_apk "$WORK/bundle.apks"
     if wait_until 30 apk_found 2 ok; then
         event="$(apk_event 2 ok)"
         echo "$event" | python3 -c 'import json,sys; e=json.load(sys.stdin); f=e["files"]; sys.exit(0 if [x["name"] for x in f]==["base-master.apk","base-arm64_v8a.apk"] and all(x["match"] for x in f) else 1)' \
-            && ok "APK .apks sent base + split, both sha256 match" \
-            || bad "APK .apks parts wrong: $event"
+            && ok "[FILES-16] APK .apks sent base + split, both sha256 match" \
+            || bad "[FILES-16] APK .apks parts wrong: $event"
     else
         bad "APK the .apks install never arrived"
     fi
 
     [ "$(e2e_app_pids | wc -l | tr -d ' ')" = "1" ] \
-        && ok "APK the files went to the running e2e app (one instance)" \
-        || bad "APK open started another PocketDeck instance"
+        && ok "[FILES-16] APK the files went to the running e2e app (one instance)" \
+        || bad "[FILES-16] APK open started another PocketDeck instance"
     stop_app
     stop_fakephone
     wait_until 5 no_fakephone
@@ -5631,7 +5631,7 @@ for page in pages:
     for item in page.get("items", []):
         got.add((item["n"], item["d"], item["s"]))
 report(len(got) == len(expected) and got == expected,
-       "FILES the root listing has every visible name and size (%d items, hidden/Android "
+       "[FILES-5] FILES the root listing has every visible name and size (%d items, hidden/Android "
        "left out)" % len(got))
 
 # 2. Paging over a 1500-file folder: every name exactly once.
@@ -5639,18 +5639,18 @@ pages = listings("many")
 names = [item["n"] for page in pages for item in page.get("items", [])]
 want = {h("m%04d.txt" % i) for i in range(1500)}
 report(len(pages) >= 2 and len(names) == 1500 and len(set(names)) == 1500 and set(names) == want,
-       "FILES paging read all 1500 names exactly once in %d pages" % len(pages))
+       "[FILES-6] FILES paging read all 1500 names exactly once in %d pages" % len(pages))
 
 # 3. stat.
 stat = next((line for line in lines if line.get("op") == "stat" and line.get("ok")), None)
 report(bool(stat) and stat["s"] == 3 * 1024 * 1024 and stat["d"] == 0
        and stat["p"] == h("big3.bin"),
-       "FILES stat reports big3.bin as a 3 MiB file")
+       "[FILES-6] FILES stat reports big3.bin as a 3 MiB file")
 
 # 4. The refused paths.
 denied = [failure(".."), failure("/sdcard"), failure("Android/data")]
 report(denied == ["fs_denied"] * 3,
-       "FILES '..', an absolute path and Android/data answer fs_denied (%s)" % denied)
+       "[FILES-5] FILES '..', an absolute path and Android/data answer fs_denied (%s)" % denied)
 
 # 5. Whole-file reads: the phone's sha256, the app's sha256 and the file on disk agree.
 def read_ok(name, size):
@@ -5662,7 +5662,7 @@ def read_ok(name, size):
         return
     out = os.path.join(work, "out3.bin" if name == "big3.bin" else "out32.bin")
     report(done[-1]["sha256"] == want and sha_file(out) == want,
-           "FILES %s read back byte-identical (%d bytes, sha %s...)" % (name, size, want[:12]))
+           "[FILES-7] FILES %s read back byte-identical (%d bytes, sha %s...)" % (name, size, want[:12]))
 
 read_ok("big3.bin", 3 * 1024 * 1024)
 read_ok("big32.bin", 32 * 1024 * 1024)
@@ -5670,7 +5670,7 @@ read_ok("big32.bin", 32 * 1024 * 1024)
 # 6. A stale etag is refused and leaves no file.
 report(failure("big32.bin", op="read") == "fs_stale"
        and not os.path.exists(os.path.join(work, "stale.bin")),
-       "FILES a stale etag answers fs_stale and writes nothing")
+       "[FILES-7] FILES a stale etag answers fs_stale and writes nothing")
 
 # 7. A cancelled read stops; the fake logged no chunk after the cancel marker.
 cancelled = any(line.get("op") == "read" and line.get("ok") is False
@@ -5690,7 +5690,7 @@ if at is not None:
     before = sum(1 for kind, ident in order[:at] if kind == "sent" and ident == read_id)
     after = sum(1 for kind, ident in order[at + 1:] if kind == "sent" and ident == read_id)
 report(cancelled and read_id is not None and before > 0 and after <= 1,
-       "FILES the cancelled read stopped on the phone (cancel after %d chunks, %d chunk "
+       "[FILES-7] FILES the cancelled read stopped on the phone (cancel after %d chunks, %d chunk "
        "after it)" % (before, after))
 
 for line in results:
@@ -5772,69 +5772,69 @@ PY
         event="$(drop_event drop-32mb.bin ok)"
         want="$(shasum -a 256 "$WORK/drop-32mb.bin" | cut -c1-64)"
         echo "$event" | python3 -c 'import json,sys; e=json.load(sys.stdin); f=e["files"]; sys.exit(0 if len(f)==1 and f[0]["name"]=="drop-32mb.bin" and f[0]["size"]==32*1024*1024 and f[0]["match"] and f[0]["sha256"]==sys.argv[1] else 1)' "$want" \
-            && ok "DROP fakephone got drop-32mb.bin (32 MiB) with a matching sha256 (${want:0:12}…)" \
-            || bad "DROP 32 MiB sha256/size mismatch: $event (want $want)"
+            && ok "[FILES-13] DROP fakephone got drop-32mb.bin (32 MiB) with a matching sha256 (${want:0:12}…)" \
+            || bad "[FILES-13] DROP 32 MiB sha256/size mismatch: $event (want $want)"
     else
         bad "DROP fakephone never received the 32 MiB file"
     fi
     wait_until 30 fake_log_has "33554432 bytes (drop-32mb.bin) -> sha ok" \
-        && ok "DROP fakephone received all 33554432 bytes over DROP_DATA" \
-        || bad "DROP fakephone did not log the full 32 MiB: $(grep -i drop "$WORK/fake.log" "$WORK/fake.err" | tail -3)"
+        && ok "[FILES-13] DROP fakephone received all 33554432 bytes over DROP_DATA" \
+        || bad "[FILES-13] DROP fakephone did not log the full 32 MiB: $(grep -i drop "$WORK/fake.log" "$WORK/fake.err" | tail -3)"
     # The late confirmation must not have moved the sender back into the file.
     sleep 1
     if fake_log_has "more bytes than announced"; then
-        bad "DROP the sender re-sent bytes after EOF: $(grep -h 'more bytes than announced' "$WORK/fake.log" "$WORK/fake.err" | tail -2)"
+        bad "[FILES-13] DROP the sender re-sent bytes after EOF: $(grep -h 'more bytes than announced' "$WORK/fake.log" "$WORK/fake.err" | tail -2)"
     else
-        ok "DROP no tail re-send: received bytes == announced bytes"
+        ok "[FILES-13] DROP no tail re-send: received bytes == announced bytes"
     fi
 
     if wait_until 60 drop_found drop-3mb.bin ok; then
         event="$(drop_event drop-3mb.bin ok)"
         want="$(shasum -a 256 "$WORK/drop-3mb.bin" | cut -c1-64)"
         echo "$event" | python3 -c 'import json,sys; e=json.load(sys.stdin); f=e["files"]; sys.exit(0 if len(f)==1 and f[0]["name"]=="drop-3mb.bin" and f[0]["size"]==3*1024*1024 and f[0]["match"] and f[0]["sha256"]==sys.argv[1] else 1)' "$want" \
-            && ok "DROP fakephone got drop-3mb.bin (3 MB) with a matching sha256 (${want:0:12}…)" \
-            || bad "DROP sha256/size mismatch: $event (want $want)"
+            && ok "[FILES-13] DROP fakephone got drop-3mb.bin (3 MB) with a matching sha256 (${want:0:12}…)" \
+            || bad "[FILES-13] DROP sha256/size mismatch: $event (want $want)"
     else
         bad "DROP fakephone never received the file"
     fi
     # The log line's size is public, the (empty) resume tail is not: match up to "bytes".
     wait_until 15 log_has "drop: sending drop-3mb.bin (3145728 bytes" \
-        && ok "DROP the window's handler announced the file and streamed it" \
-        || bad "DROP no drop: sending line: $(drop_log | tail -3)"
+        && ok "[FILES-13] DROP the window's handler announced the file and streamed it" \
+        || bad "[FILES-13] DROP no drop: sending line: $(drop_log | tail -3)"
     wait_until 15 log_has "drop: ok: Saved on the phone: drop-3mb.bin" \
-        && ok "DROP result message: Saved on the phone: drop-3mb.bin" \
-        || bad "DROP no success message: $(drop_log | tail -2)"
+        && ok "[FILES-13] DROP result message: Saved on the phone: drop-3mb.bin" \
+        || bad "[FILES-13] DROP no success message: $(drop_log | tail -2)"
     # No chunk leaves before the phone's opening drop.progress (the sender waits for
     # it), so the whole file arriving proves the progress message was parsed; the
     # byte count is the wire's DROP_DATA total.
     wait_until 15 fake_log_has "3145728 bytes (drop-3mb.bin) -> sha ok" \
-        && ok "DROP fakephone received all 3145728 bytes over DROP_DATA" \
-        || bad "DROP fakephone did not log the full 3 MB: $(grep -i drop "$WORK/fake.log" | tail -2)"
+        && ok "[FILES-13] DROP fakephone received all 3145728 bytes over DROP_DATA" \
+        || bad "[FILES-13] DROP fakephone did not log the full 3 MB: $(grep -i drop "$WORK/fake.log" | tail -2)"
 
     if wait_until 60 drop_found tripped.bin bad; then
         event="$(drop_event tripped.bin bad)"
         echo "$event" | python3 -c 'import json,sys; e=json.load(sys.stdin); sys.exit(0 if e["code"]=="too_large" and not e["files"][0].get("match") else 1)' \
-            && ok "DROP the over-cap trip answered ok=false too_large" \
-            || bad "DROP the negative event is wrong: $event"
+            && ok "[FILES-15] DROP the over-cap trip answered ok=false too_large" \
+            || bad "[FILES-15] DROP the negative event is wrong: $event"
     else
         bad "DROP the PD_FAKE_DOWNSIZE trip never reached fakephone"
     fi
     wait_until 15 log_has "drop: failed: The phone refused it: the file is bigger than the phone's cap." \
-        && ok "DROP the refusal reads: The phone refused it: the file is bigger than the phone's cap." \
-        || bad "DROP no refusal message: $(drop_log | tail -2)"
+        && ok "[FILES-15] DROP the refusal reads: The phone refused it: the file is bigger than the phone's cap." \
+        || bad "[FILES-15] DROP no refusal message: $(drop_log | tail -2)"
 
     # B1: the outcome pill is not a fixture of the window. The sender's own
     # timeout is the only hide (5 s), so the chrome state must show the outcome
     # and then nothing about a second later.
     if chrome_has "drop_pill=shown"; then
-        ok "DROP the outcome pill is on the window after the drop (state: $(chrome_state))"
+        ok "[FILES-14] DROP the outcome pill is on the window after the drop (state: $(chrome_state))"
     else
-        bad "DROP no drop pill on the window after the drop (state: $(chrome_state))"
+        bad "[FILES-14] DROP no drop pill on the window after the drop (state: $(chrome_state))"
     fi
     if wait_until 7 chrome_has "drop_pill=hidden"; then
-        ok "DROP the outcome pill hid after the transfer's 5 s timeout (state: $(chrome_state))"
+        ok "[FILES-14] DROP the outcome pill hid after the transfer's 5 s timeout (state: $(chrome_state))"
     else
-        bad "DROP the outcome pill was still on the window 7 s after the outcome (state: $(chrome_state))"
+        bad "[FILES-14] DROP the outcome pill was still on the window 7 s after the outcome (state: $(chrome_state))"
     fi
 
     [ "$(e2e_app_pids | wc -l | tr -d ' ')" = "1" ] \
