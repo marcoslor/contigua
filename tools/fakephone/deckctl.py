@@ -209,24 +209,32 @@ class Client(object):
             raise AuthFailed()
         self.device_id = device_id
 
+    def _pairing_message(self, types, timeout=HANDSHAKE_TIMEOUT):
+        """The next pairing message; phone chatter (state, notify.state, …) is
+        skipped, since the session may say anything while the machine runs."""
+        while True:
+            msg = self._next_frame(timeout)
+            if msg.get("t") in types:
+                return msg
+
     def pair(self, on_code, decision_timeout=130.0):
         """The §4 machine: pair.request → commit → nonce → reveal rehash → code."""
         self.send_hello()
         self.send_json({"t": "pair.request"})
-        msg = self._next_frame()
+        msg = self._pairing_message(("welcome", "pair.commit"))
         if msg.get("t") == "welcome":
             # The phone already knows this Mac (a leftover pin) — done.
             self.device = msg.get("device", {})
             self.device_id = self.device.get("id")
             return
-        if msg.get("t") != "pair.commit" or not msg.get("c"):
-            raise DeckError("expected pair.commit, got %r" % msg.get("t"))
+        if not msg.get("c"):
+            raise DeckError("pair.commit without a commitment")
         remote_commit = msg["c"]
         nm = os.urandom(16)
         self.send_json({"t": "pair.nonce", "n": nm.hex()})
-        msg = self._next_frame()
-        if msg.get("t") != "pair.reveal" or not msg.get("n"):
-            raise DeckError("expected pair.reveal, got %r" % msg.get("t"))
+        msg = self._pairing_message(("pair.reveal",))
+        if not msg.get("n"):
+            raise DeckError("pair.reveal without a nonce")
         np = bytes.fromhex(msg["n"])
         phone_fp = bytes.fromhex(self.sock.phone_fp_hex)  # §1: from the handshake
         mac_fp = bytes.fromhex(self.state.fp_hex)
@@ -241,9 +249,9 @@ class Client(object):
                                   mac_fp + phone_fp + nm + np).digest()
         code = "%06d" % (int.from_bytes(preimage[:8], "big") % 1000000)
         on_code(code)
-        msg = self._next_frame(decision_timeout)
-        if msg.get("t") != "pair.ok" or not msg.get("phoneFP") or not msg.get("macFP"):
-            raise DeckError("expected pair.ok with both pins, got %r" % msg.get("t"))
+        msg = self._pairing_message(("pair.ok",), timeout=decision_timeout)
+        if not msg.get("phoneFP") or not msg.get("macFP"):
+            raise DeckError("pair.ok without both pins")
         if not hmac.compare_digest(msg["phoneFP"].lower(), self.sock.phone_fp_hex):
             raise DeckError("pair.ok phoneFP is not the handshake's certificate")
         self.state.last_phone_fp = msg["phoneFP"]

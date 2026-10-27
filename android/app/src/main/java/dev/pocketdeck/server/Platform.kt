@@ -351,6 +351,25 @@ interface Power {
      * Runs on the power thread.
      */
     var onPanelChanged: ((off: Boolean) -> Unit)?
+
+    /**
+     * The person's screen went off while app streams were up and the phone took
+     * the panel over (the shared-group press). The session sends one
+     * `{"t":"power.locked"}`, so the Mac's windows hold their last frame for a
+     * short grace instead of calling it a stall. Runs on the power thread.
+     */
+    var onPowerLocked: (() -> Unit)?
+        get() = null
+        set(_) {}
+
+    /**
+     * A screen-off edge is waiting for its first frame (the gap the emulator
+     * check measures). False in the common case, so a frame costs one read.
+     */
+    val relightPending: Boolean get() = false
+
+    /** A frame reached the wire for [displayId]; logs the edge gap once. */
+    fun noteFrame(displayId: Int) {}
 }
 
 /** One paired Mac in v2: the pin is the Mac cert's point fingerprint (§3/§6);

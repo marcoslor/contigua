@@ -27,6 +27,18 @@ internal data class PanelPlan(
     val transitional: Boolean,
 )
 
+/** What the power watch must do when the platform's interactive state goes off. */
+internal enum class PowerWatchAction {
+    /** Nothing: our own write, no app stream up, or the streams keep their own group. */
+    NONE,
+
+    /** The panel is ours and dark: give it back and light the phone for the person. */
+    HAND_BACK,
+
+    /** The person's screen went off with our streams up: re-light the VD group at once. */
+    RELIGHT,
+}
+
 /**
  * Decides how a virtual display is kept lit and when the physical panel has to
  * be forced dark, plus when the phone must be handed back to normal Android
@@ -51,6 +63,12 @@ internal class DarkPanelPolicy(private val forced: Boolean) {
     private var phase = Phase.INIT
     private var sawPanelOn = false
 
+    /** The strategy of the last [step]: what the shared group is doing. */
+    private var watchStrategy = PanelStrategy.GROUP_ONLY
+
+    /** Until when an off edge belongs to our own wake, not the person. */
+    private var ownUntilMs = 0L
+
     /** When the streams paused, while the panel state is kept for [PAUSE_GRACE_MS]. */
     private var pausedAtMs: Long? = null
 
@@ -72,6 +90,7 @@ internal class DarkPanelPolicy(private val forced: Boolean) {
     fun streamsStarted() {
         phase = Phase.INIT
         sawPanelOn = false
+        ownUntilMs = 0L
     }
 
     /**
@@ -80,6 +99,7 @@ internal class DarkPanelPolicy(private val forced: Boolean) {
      * display-group reading.
      */
     fun step(panelOn: Boolean, strategy: PanelStrategy): PanelPlan {
+        watchStrategy = strategy
         if (strategy == PanelStrategy.GROUP_ONLY) {
             return PanelPlan(wake = true, panelOff = false, transitional = false)
         }
@@ -144,6 +164,44 @@ internal class DarkPanelPolicy(private val forced: Boolean) {
         // The caller wakes the phone for the user, so the screen is now on.
         sawPanelOn = true
         return true
+    }
+
+    /**
+     * The platform's interactive state just went true -> false: the person's
+     * power press, or the screen timing out.
+     *
+     * With app streams up on the panel's shared group, that press also sleeps
+     * the group our VDs render on, and the next keep-alive step is up to 2 s
+     * away (the Mac calls the picture stalled after 1.5 s). So the take-over
+     * happens at the edge instead: [PowerWatchAction.RELIGHT] means wake the
+     * streaming group now and power the panel off under it — the existing
+     * PANEL_DARK path, not a new one. The keyguard is never touched: the press
+     * still locks the phone, and only our displays keep rendering.
+     *
+     * [streamsUp] is the caller's window count; [nowMs] is the platform clock.
+     */
+    fun interactiveOff(nowMs: Long, streamsUp: Boolean): PowerWatchAction {
+        if (nowMs < ownUntilMs) return PowerWatchAction.NONE
+        if (phase == Phase.DARK) {
+            // Our dark panel's screen went off: the person's press. Hand it
+            // back, exactly the rule the keep-alive step used to apply.
+            return if (userPressedPower()) PowerWatchAction.HAND_BACK else PowerWatchAction.NONE
+        }
+        if (!streamsUp || watchStrategy != PanelStrategy.PANEL_DARK) return PowerWatchAction.NONE
+        // The person's own screen went off while our VDs share its group: take
+        // the panel over now (wake the group, then panel off) instead of at the
+        // next 2 s step. The phone stays locked; only our displays render.
+        phase = Phase.DARK
+        sawPanelOn = false
+        return PowerWatchAction.RELIGHT
+    }
+
+    /**
+     * We just woke the streaming group ourselves: an off edge before the
+     * settle expires is our own panel-off arriving, not the person's press.
+     */
+    fun ownWake(nowMs: Long) {
+        ownUntilMs = nowMs + OWN_WAKE_SETTLE_MS
     }
 
     /**
@@ -218,6 +276,13 @@ internal class DarkPanelPolicy(private val forced: Boolean) {
          * new wake, so the panel is never re-lit.
          */
         const val SHARED_GROUP_INTERVAL_MS = 2_000L
+
+        /**
+         * An off edge this soon after our own wake is our own panel-off write
+         * landing, not a person's press: the transitional take-over wakes the
+         * group, then powers the panel off, and the platform reports both.
+         */
+        const val OWN_WAKE_SETTLE_MS = 1_000L
 
         /**
          * Whether a step may call the platform wake. An own group can always be
