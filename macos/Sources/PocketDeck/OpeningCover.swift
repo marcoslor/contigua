@@ -15,6 +15,29 @@ struct OpeningCover: Equatable {
         case loading
         case stillLoading
         case failed
+        /// The phone said it cannot do this at all: one sentence, Close only.
+        case unavailable
+    }
+
+    /// A refusal the phone stated about the open itself. It is terminal: no
+    /// clock moves it, Try Again cannot restart it and nothing is resent.
+    enum Refusal: Equatable {
+        case mirrorUnavailable
+
+        /// The phone's `error` code for a refused open, or nil when the code
+        /// is something else (a launch failure, a bad request).
+        init?(errorCode: String) {
+            switch errorCode {
+            case "mirror_unavailable": self = .mirrorUnavailable
+            default: return nil
+            }
+        }
+
+        var sentence: String {
+            switch self {
+            case .mirrorUnavailable: return "This phone can't share its screen with PocketDeck."
+            }
+        }
     }
 
     static let stillAfter: TimeInterval = 5
@@ -22,6 +45,7 @@ struct OpeningCover: Equatable {
 
     let startedAt: TimeInterval
     private(set) var firstFrameAt: TimeInterval?
+    private(set) var refusal: Refusal?
 
     init(startedAt: TimeInterval) {
         self.startedAt = startedAt
@@ -30,6 +54,17 @@ struct OpeningCover: Equatable {
     var hasFirstFrame: Bool { firstFrameAt != nil }
     /// The cover is over the window while no frame has arrived.
     var isUp: Bool { firstFrameAt == nil }
+    /// Try Again only exists for the 20 s failure: not before it, and never
+    /// after the phone refused the open (MIRROR-2).
+    var canRetry: Bool { firstFrameAt == nil && refusal == nil }
+
+    /// The phone refused the open: the cover says why for good.
+    @discardableResult
+    mutating func refuse(_ refusal: Refusal) -> Bool {
+        guard firstFrameAt == nil, self.refusal == nil else { return false }
+        self.refusal = refusal
+        return true
+    }
 
     /// The first frame arrived; true when it ended the cover.
     @discardableResult
@@ -42,6 +77,7 @@ struct OpeningCover: Equatable {
     /// What the cover says now, or nil once the first frame is in.
     func phase(at time: TimeInterval) -> Phase? {
         guard firstFrameAt == nil else { return nil }
+        if refusal != nil { return .unavailable }
         let elapsed = time - startedAt
         if elapsed >= Self.failAfter { return .failed }
         if elapsed >= Self.stillAfter { return .stillLoading }
@@ -49,9 +85,10 @@ struct OpeningCover: Equatable {
     }
 
     /// Try Again: the open goes again; the cover starts its clock over. A
-    /// window whose frame is already in has no cover to retry.
+    /// window whose frame is already in has no cover to retry, and a phone
+    /// that refused the open never gets a second request (MIRROR-2).
     mutating func retry(at time: TimeInterval) {
-        guard firstFrameAt == nil else { return }
+        guard canRetry else { return }
         self = OpeningCover(startedAt: time)
     }
 
@@ -65,6 +102,8 @@ struct OpeningCover: Equatable {
             return "Still opening…"
         case .failed:
             return phone ? "Couldn't open your phone." : "Couldn't open \(name)."
+        case .unavailable:
+            return Refusal.mirrorUnavailable.sentence
         }
     }
 }
@@ -153,18 +192,25 @@ final class OpeningCoverView: NSView {
         iconView.image = icon
         iconView.isHidden = icon == nil
         nameLabel.stringValue = name
-        spinner.isHidden = phase == .failed
-        if phase == .failed {
+        let failed = phase == .failed
+        let terminal = failed || phase == .unavailable
+        spinner.isHidden = terminal
+        if terminal {
             spinner.stopAnimation(nil)
         } else {
             spinner.startAnimation(nil)
         }
         message.stringValue = OpeningCover.message(phase, name: name, phone: phone)
-        let failed = phase == .failed
+        // Try Again only for the 20 s failure: a phone that refused the open
+        // gets Close and nothing that would ask it again (MIRROR-2).
         retry.isHidden = !failed
-        close.isHidden = !failed
+        close.isHidden = !terminal
         needsLayout = true
     }
+
+    /// The sentence on screen: the e2e's proof that the refusal is the
+    /// documented one, not a generic failure.
+    var displayedMessage: String { message.stringValue }
 
     override func layout() {
         super.layout()

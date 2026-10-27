@@ -4436,6 +4436,59 @@ PY
     fi
     stop_app
     stop_fakephone
+
+    # MIRROR-2 (misses.md M2): a phone that cannot capture display 0 answers
+    # window.open with error{mirror_unavailable} (fakephone
+    # --mirror-unavailable). The window says one sentence at once and offers
+    # Close only: no Try Again, no 20 s generic failure, and no second
+    # window.open. Before the fix it sat on the cover for 20 s, said "Couldn't
+    # open your phone." and Try Again failed the same way.
+    wait_until 5 no_fakephone
+    clean
+    mkdir -p "$WORK/control"
+    FAKE_ARGS="--mirror-unavailable" start_fake || return 1
+    launch --connect "127.0.0.1:$PORT" --open-phone --float-windows \
+        --debug-chrome-state "$WORK/chrome.txt" --debug-control "$WORK/control" --quit-after 45
+    if wait_until 15 chrome_has "loading=unavailable"; then
+        ok "[MIRROR-2] a phone that can't mirror says so as the window opens"
+    else
+        bad "[MIRROR-2] a phone that can't mirror got no sentence ($(chrome_state))"
+    fi
+    if wait_until 3 chrome_has "cover_buttons=close"; then
+        ok "[MIRROR-2] the sentence offers Close only (no Try Again)"
+    else
+        bad "[MIRROR-2] the refused cover offers Try Again ($(chrome_state))"
+    fi
+    if log show --last 2m --info \
+        --predicate 'subsystem == "dev.pocketdeck.mac" AND category == "video"' 2>/dev/null \
+        | grep -q "opening refused"; then
+        ok "[MIRROR-21] the app logged the refusal as a state, nothing about content"
+    else
+        say "MIRROR the unified log has no refusal line on this Mac; the chrome state is the evidence"
+    fi
+    # Past the 20 s mark the generic failure must not take the sentence over.
+    sleep 21
+    if chrome_has "loading=unavailable cover_buttons=close"; then
+        ok "[MIRROR-2] the refusal stands 20 s later (no generic failure, no retry loop)"
+    else
+        bad "[MIRROR-2] the cover changed after 20 s ($(chrome_state))"
+    fi
+    if [ "$(count_events '"t":"window.open"')" = "1" ]; then
+        ok "[MIRROR-2] one window.open: the refused phone was never asked again"
+    else
+        bad "[MIRROR-2] window.open was sent $(count_events '"t":"window.open"') times"
+    fi
+    if [ "$VISIBLE" = 1 ]; then
+        osascript -e 'tell application "System Events" to tell appearance preferences to set dark mode to true' >/dev/null 2>&1 || true
+        sleep 1
+        if screenshot_portrait "$WORK/mirror-unavailable.png"; then
+            say "shot: $WORK/mirror-unavailable.png"
+        else
+            bad "MIRROR-2 no shot of the refused cover"
+        fi
+    fi
+    stop_app
+    stop_fakephone
 }
 
 # secure_log_count — how many secure-cover lines the app wrote in the last 2 minutes.

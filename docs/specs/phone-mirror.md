@@ -23,7 +23,7 @@ The Phone Mirror shows the phone's own screen — home screen, apps, notificatio
 | ID | Requirement (EARS) | Proof |
 |---|---|---|
 | MIRROR-1 | WHEN the person asks for the Phone Mirror from the Deck's Phone button, ⌘P, Phone ▸ Phone Mirror, the menu-bar panel's Mirror or an MCP tool WHILE that phone's mirror is already open THE Mac SHALL raise that window (unminimising it) and SHALL NOT open a second; asking again after it was closed SHALL open a fresh one; the Phone menu's item SHALL be enabled only while the phone is online. | K2 `PhoneWindowSingleTests.testOpeningTwiceReturnsTheOneMirror`, `testReopeningAfterCloseMakesAFreshMirror`, `testASecondOpenUnminimisesTheMirror`, `MenuMarksTests.testPhoneMirrorIsEnabledOnlyWhileThePhoneIsOnline`; e2e `mirror` `[MIRROR-1]` (three asks, one `window.open` and one stream; one window on screen; the menu item enabled) |
-| MIRROR-2 | WHEN the window opens THE Mirror SHALL cover the picture with the phone's icon and name, a spinner and "Opening your phone…", then "Still opening…" after 5 s and "Couldn't open your phone." with Try Again and Close after 20 s without a frame; the cover SHALL be a frozen mode (no input to the phone) and the first frame SHALL remove it for good. | K2 `OpeningCoverTests.testTheCoverMovesThroughItsPhasesAtFiveAndTwentySeconds`, `testTheFirstFrameEndsTheCoverForGood`, `testTryAgainRestartsTheClock`, `testTheSentencesAreTheDocumentedOnes`; e2e `mirror` `[MIRROR-2]` (both ends of the cover, and the 3 s first frame) |
+| MIRROR-2 | WHEN the window opens THE Mirror SHALL cover the picture with the phone's icon and name, a spinner and "Opening your phone…", then "Still opening…" after 5 s and "Couldn't open your phone." with Try Again and Close after 20 s without a frame; IF the phone answers the open with `error{mirror_unavailable}` THEN the cover SHALL say "This phone can't share its screen with PocketDeck." with Close only, SHALL NOT offer Try Again and SHALL NOT send another `window.open`; the cover SHALL be a frozen mode (no input to the phone) and the first frame SHALL remove it for good. | K2 `OpeningCoverTests.testTheCoverMovesThroughItsPhasesAtFiveAndTwentySeconds`, `testTheFirstFrameEndsTheCoverForGood`, `testTryAgainRestartsTheClock`, `testARefusedOpenIsOneSentenceWithCloseOnly`, `testOnlyTheMirrorRefusalMapsToTheSentence`, `testTheSentencesAreTheDocumentedOnes`; e2e `mirror` `[MIRROR-2]` (both ends of the cover, the 3 s first frame, and the refused phone: one sentence, Close only, one `window.open` past the 20 s mark) |
 | MIRROR-3 | WHEN the window opens, re-opens or its session reconnects THE Mac SHALL send exactly one `phone.wake`, and the phone SHALL wake display 0 without unlocking it or changing a lock or timeout setting. | K2 `PhoneScreenOverlayTests.testOpeningThePhoneWindowWakesOnce`; e2e `mirror` `[MIRROR-3]` |
 | MIRROR-4 | THE window SHALL show the stream at display 0's aspect, portrait or landscape, fitted inside the screen's visible frame (75% of its height when it opens), SHALL refuse a size below its bar's width, SHALL keep the phone's aspect on every resize, and SHALL NOT enter native full screen: the green button zooms to the phone's aspect fit instead and Window ▸ Enter Full Screen is disabled for it. | K2 `FullScreenMenuTests.testOnlyAWindowThatHasNotOptedOutMayGoFullScreen`, `GeometryTests`, `WindowFrameLimitTests`; e2e `mirror` `[MIRROR-4]` (portrait, both full-screen opt-outs, the aspect) |
 | MIRROR-5 | WHEN the phone rotates THE window SHALL turn within one 300 ms poll and keep its top-left corner and picture area, the phone SHALL send a new `VIDEO_CONFIG`, and a rotation reported during a live resize SHALL apply when the drag ends. | review of `PhoneWindow.followRotation` and `PhoneChrome.turnedPhone`; e2e `mirror` `[MIRROR-5]` (the window turns, the landscape config) |
@@ -56,6 +56,8 @@ The picture is one state machine (`PhoneScreenOverlay`, `macOS/Sources/PocketDec
 | Opening (no frame) | `first frame` | Live; the cover is gone for good |
 | Opening | `5 s` / `20 s` | "Still opening…" / "Couldn't open your phone." + Try Again + Close (frozen) |
 | Opening | `Try Again` | the same open again; the clock restarts |
+| Opening | `error{mirror_unavailable}` | Refused: one sentence, Close only; no clock, no Try Again, no new `window.open` |
+| Refused | `20 s`, `Try Again`, any key or click but Close | ignored: the phone said it cannot, so asking again cannot help |
 | Live | `screen: off` | Covered (screen off): blurred, dimmed, Wake Screen; input frozen |
 | Covered (screen off) | `screen: on` | Live; frames resume, new `VIDEO_CONFIG` |
 | Covered (screen off) | `click` / `Wake Screen` | one `phone.wake`; the cover stays until the phone reports the screen on |
@@ -87,7 +89,7 @@ Ignored events, stated so nobody builds them: a `screen`/`secure`/panel report w
 | Connected | The live picture; the bar follows the phone's reports. |
 | Offline / reconnecting | The last frame, "Reconnecting…" then "Phone offline"; input dropped, no queueing; the window closes only when the person closes it. |
 | Key rejected (Pair again) | Same as offline (the link cannot come back until the person pairs again); the Deck's banner carries Pair again. |
-| Phone that can't mirror | Today: nothing honest. The phone's `error{mirror_unavailable}` (pre-14 builds) is not mapped, so the window sits on the opening cover and fails after 20 s with "Couldn't open your phone." and Try Again, which fails again. See CONV-PD-02 and misses.md. |
+| Phone that can't mirror | One sentence, once: "This phone can't share its screen with PocketDeck." with Close only. No Try Again, no 20 s wait and no retry (MIRROR-2). |
 | Screen off / locked | The blurred, dimmed frame with "The phone's screen is off" and Wake Screen; a lock screen itself is shown as the phone draws it (the mirror never unlocks). |
 | Secure surface | The blurred, dimmed frame with "Android doesn't let PocketDeck show this screen." and no button. |
 
@@ -121,7 +123,7 @@ Ignored events, stated so nobody builds them: a `screen`/`secure`/panel report w
 | CONV-AND-03 | n/a: no Android permission is asked from this window |
 | CONV-AND-04 | applies: MIRROR-9 and MIRROR-12 (the hold is the only phone change, asked for, and every way out restores the panel; the phone stays locked) |
 | CONV-PD-01 | applies: MIRROR-1 and the table above (0, 1, 2+; one window per phone) |
-| CONV-PD-02 | [NEEDS CLARIFICATION] connecting, connected, offline and pair-again are MIRROR-15 and MIRROR-2; a phone that **can't** mirror gets no reason at all (the generic 20 s failure) — a break of "disabled with a reason, never hidden" (misses.md) |
+| CONV-PD-02 | applies: MIRROR-15 and MIRROR-2 for connecting, connected, offline and pair again; a phone that **can't** mirror gets one sentence and Close only, never a hidden window and never a retry loop (MIRROR-2) |
 | CONV-PD-03 | applies: MIRROR-10 and MIRROR-11 (the check and glyph follow the phone's report, never the click; a refusal is a pill with the reason) |
 | CONV-PD-04 | n/a: no slider or toggle follows a phone value in this window |
 | CONV-PD-05 | applies: MIRROR-21 |
@@ -149,6 +151,5 @@ Ignored events, stated so nobody builds them: a `screen`/`secure`/panel report w
 
 ## Open questions
 
-- [NEEDS CLARIFICATION] A phone that cannot mirror (pre-14, `mirror_unavailable`) deserves one sentence and no Try Again loop. Recommended: map the error to "This phone can't share its screen with PocketDeck." with Close only, and prove it with a fake-phone flag.
 - [NEEDS CLARIFICATION] Should the mirror's bar be reachable from the keyboard (Tab to Back/Home/Recents/Turn Off Screen) even though Tab otherwise types on the phone? Recommended: yes, with ⌃Tab as the Mac's own key, because a person who cannot use a pointer cannot reach those buttons today (CONV-MAC-03/CONV-MAC-21).
 - [NEEDS CLARIFICATION] "Turn Off Phone Screen" and the phone's own power button fight while `ignorePower` is on (the phone relights for up to 2 s every keep-alive step). Recommended: keep it; the setting's sentence already says it, but the person should confirm it is not spooky in use.

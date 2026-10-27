@@ -52,5 +52,35 @@ final class OpeningCoverTests: XCTestCase {
                        "Opening your phone…")
         XCTAssertEqual(OpeningCover.message(.failed, name: "Pixel", phone: true),
                        "Couldn't open your phone.")
+        XCTAssertEqual(OpeningCover.message(.unavailable, name: "Pixel", phone: true),
+                       "This phone can't share its screen with PocketDeck.")
+    }
+
+    /// The phone's `error{mirror_unavailable}` is one sentence with Close only:
+    /// the cover is terminal, the 20 s failure never takes it over, and Try
+    /// Again cannot ask the phone a second time (MIRROR-2, misses.md M2).
+    func testARefusedOpenIsOneSentenceWithCloseOnly() {
+        var cover = OpeningCover(startedAt: 0)
+        XCTAssertTrue(cover.canRetry)
+        XCTAssertTrue(cover.refuse(.mirrorUnavailable))
+        XCTAssertEqual(cover.phase(at: 1), .unavailable)
+        XCTAssertEqual(cover.phase(at: 60), .unavailable, "no 20 s failure after a refusal")
+        XCTAssertFalse(cover.canRetry, "a refused open has no Try Again")
+        cover.retry(at: 30)
+        XCTAssertEqual(cover.phase(at: 31), .unavailable, "a retry cannot restart a refusal")
+        XCTAssertFalse(cover.refuse(.mirrorUnavailable), "a refusal is noted once")
+    }
+
+    /// The mapping is the wire code and nothing else: a launch failure stays the
+    /// generic failure with Try Again.
+    func testOnlyTheMirrorRefusalMapsToTheSentence() {
+        XCTAssertEqual(OpeningCover.Refusal(errorCode: "mirror_unavailable"), .mirrorUnavailable)
+        XCTAssertNil(OpeningCover.Refusal(errorCode: "launch_failed"))
+        XCTAssertNil(OpeningCover.Refusal(errorCode: "bad_request"))
+        // A code with no mapping leaves the cover on its clock.
+        let cover = OpeningCover(startedAt: 0)
+        XCTAssertNil(cover.refusal)
+        XCTAssertEqual(cover.phase(at: 21), .failed)
+        XCTAssertTrue(cover.canRetry)
     }
 }

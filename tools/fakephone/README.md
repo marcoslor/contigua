@@ -88,7 +88,9 @@ Screens and streams: `welcome` reports a 1080x2340 @450dpi locked phone. Each
 `testsrc2` (phone mode: `smptehdbars`) encoder at 60 fps, H.264 High, and sends
 VIDEO_CONFIG (SPS+PPS) then VIDEO_FRAMEs (bit0 set on IDR). Sizes are rounded
 down to a multiple of 16. Deltas are dropped past ~250 ms of backlog per stream
-(JSON > config/key > delta).
+(JSON > config/key > delta). A phone that cannot capture display 0 answers a
+phone-mode `window.open` with `{"t":"error","code":"mirror_unavailable"}`
+(`--mirror-unavailable`), sending no `window.opened` and no frames.
 
 ### Event log (`--events`)
 
