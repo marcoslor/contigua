@@ -4350,6 +4350,92 @@ PY
     fi
     stop_app
     stop_fakephone
+
+    # PANEL-12/PANEL-19 (misses.md M3): a mirror open does not make Turn Off
+    # Screen possible while the phone is away. With the fake stopped the tile is
+    # disabled with the offline sentence and a click sends nothing; before the
+    # fix the request went into a dead session and the 2 s pill blamed the
+    # phone for not turning its screen off.
+    wait_until 5 no_fakephone
+    clean
+    mkdir -p "$WORK/control"
+    start_fake || return 1
+    launch --connect "127.0.0.1:$PORT" --open-phone --float-windows \
+        --debug-chrome-state "$WORK/chrome.txt" --debug-control "$WORK/control" --quit-after 90
+    if ! wait_until 25 chrome_has "loading=0"; then
+        bad "PANEL offline tile: the mirror never showed a frame"
+        stop_app; stop_fakephone; return 1
+    fi
+    # The same panel a person reads (the menu bar's content), over the mirror.
+    mirror_control panelopen || bad "PANEL offline tile: panelopen: $CONTROL_REPLY"
+    rm -f "$WORK/panel-up.json"
+    mirror_control paneldump panel "$WORK/panel-up.json" \
+        || bad "PANEL offline tile: paneldump (online): $CONTROL_REPLY"
+    python3 - "$WORK/panel-up.json" <<'PY' \
+        && ok "[PANEL-12] a connected phone with a mirror open leaves Turn Off Screen enabled" \
+        || bad "[PANEL-12] Turn Off Screen is disabled while the phone is connected"
+import json, sys
+root = json.load(open(sys.argv[1]))
+tile = next(row for row in root["items"] if row["kind"] == "screen")
+if not tile["enabled"]:
+    print("online tile:", tile); sys.exit(1)
+PY
+    stop_fakephone
+    # "Reconnecting…" then "Offline" after 15 s without a session (panel.md).
+    panel_is_offline() {
+        mirror_control paneldump panel "$WORK/panel-offline.json" >/dev/null 2>&1 || return 1
+        python3 - "$WORK/panel-offline.json" <<'PY'
+import json, sys
+try:
+    root = json.load(open(sys.argv[1]))
+except (OSError, ValueError):
+    sys.exit(1)
+sys.exit(0 if root.get("status") == "Offline" else 1)
+PY
+    }
+    if wait_until 30 panel_is_offline; then
+        ok "[PANEL-12] the panel reads Offline after the phone went away"
+    else
+        bad "[PANEL-12] the panel never read Offline ($(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("status"))' "$WORK/panel-offline.json" 2>/dev/null))"
+    fi
+    python3 - "$WORK/panel-offline.json" <<'PY' \
+        && ok "[PANEL-19] offline: Turn Off Screen is disabled with \"Connect your phone to use these.\"" \
+        || bad "[PANEL-19] offline: Turn Off Screen stayed enabled or lost its reason"
+import json, sys
+root = json.load(open(sys.argv[1]))
+tile = next(row for row in root["items"] if row["kind"] == "screen")
+if tile["enabled"]:
+    print("offline tile:", tile); sys.exit(1)
+if root["reason"] != "Connect your phone to use these.":
+    print("reason:", root["reason"]); sys.exit(1)
+PY
+    # A click on the disabled tile sends nothing: the Mac's own count of
+    # phone.panel messages stays at zero, and the probe refuses the click.
+    if mirror_control panelclick panel panel.screen; then
+        bad "PANEL-19 offline: the disabled tile took a click"
+    else
+        ok "[PANEL-19] offline: a click on the disabled tile is refused ($CONTROL_REPLY)"
+    fi
+    if wait_until 5 chrome_has "panel_requests=0"; then
+        ok "[PANEL-12] offline: the click sent zero phone.panel"
+    else
+        bad "[PANEL-12] offline: a click sent phone.panel ($(chrome_state))"
+    fi
+    # The shot the brief asks for: the disabled tile and its reason (visible
+    # runs only: a quiet run may not touch the person's appearance).
+    if [ "$VISIBLE" = 1 ]; then
+        osascript -e 'tell application "System Events" to tell appearance preferences to set dark mode to true' >/dev/null 2>&1 || true
+        sleep 1
+        local panel_id
+        if panel_id="$(await_window '$4 == 320')" \
+            && screencapture -x -l"$panel_id" "$WORK/panel-offline.png"; then
+            say "shot: $WORK/panel-offline.png"
+        else
+            bad "PANEL offline tile: no shot of the panel"
+        fi
+    fi
+    stop_app
+    stop_fakephone
 }
 
 # secure_log_count — how many secure-cover lines the app wrote in the last 2 minutes.

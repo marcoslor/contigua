@@ -434,6 +434,10 @@ extension PhonePanelItem {
         case .ring, .phoneScreen, .continueOnMac:
             return state.connection.isOnline ? nil : .offline
         case .screen:
+            // The same offline gate as every other control: a request sent
+            // into a dead session is a click that silently does nothing
+            // (PANEL-12/PANEL-19, misses.md M3).
+            guard state.connection.isOnline else { return .offline }
             return state.phoneWindow ? nil : .mirrorClosed
         case .installApk:
             guard state.connection.isOnline else { return .offline }
