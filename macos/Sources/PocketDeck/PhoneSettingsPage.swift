@@ -338,6 +338,8 @@ struct PhoneSettingsPage: View {
         lines.append("mutedOpen=\(mutedOpen ? 1 : 0)")
         lines.append("query=\(query)")
         lines.append("focused=\(searchFocused ? "search" : "none")")
+        let forgetting = controller.rememberedPhones.first { $0.id == controller.forgettingDeviceId }
+        lines.append("forgetDialog=\(forgetting.map(displayName) ?? "")")
         if mutedOpen {
             let seen = controller.seenPackages(deviceId: phone.id)
             for row in DevicesTabModel.mutedRows(apps: apps, seen: seen, muted: muted, query: query) {

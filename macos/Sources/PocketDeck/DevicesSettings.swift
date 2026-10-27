@@ -132,6 +132,9 @@ struct DevicesSettingsTab: View {
         .onChange(of: controller.devicesReportRequest) { _, _ in
             if pageId == nil { writeEmptyReport() }
         }
+        .onChange(of: controller.devicesSelectRequest) { _, _ in
+            if let id = controller.devicesSelectedId { selected = id }
+        }
     }
 
     private var phoneList: some View {
