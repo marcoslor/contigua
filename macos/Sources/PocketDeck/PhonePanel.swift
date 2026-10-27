@@ -1,8 +1,9 @@
 // The phone controls the menu bar panel and the Deck popover share
 // (docs/design/mac-redesign.md §3.8, docs/DESIGN.md "Deck"): one view, one
 // item model, one copy. The panel is a fixed-width Control Center-style card:
-// a header, the PHONE section (volume, Do Not Disturb, Ring/Stop Ringing, the
-// Now Playing picker), LIVE, WINDOWS and a footer. It never reads the track
+// a header with the gear that opens the icon's menu, the PHONE section (volume,
+// Do Not Disturb, Ring/Stop Ringing, the Now Playing picker), LIVE and WINDOWS.
+// It never reads the track
 // title, performer or artwork: the Mac's own Now Playing already shows those.
 //
 // The layout is fixed (300 pt wide, 28 pt rows) so the e2e can drive the real
@@ -235,8 +236,6 @@ struct PhoneControlsActions {
     var continueOnMac: () -> Void = {}
     var installApk: () -> Void = {}
     var turnOffScreen: () -> Void = {}
-    var openSettings: () -> Void = {}
-    var quit: () -> Void = {}
     var disconnectAgent: () -> Void = {}
 
     init() {}
@@ -258,8 +257,6 @@ struct PhoneControlsActions {
         continueOnMac = { [weak controller] in controller?.continueOnMac() }
         installApk = { [weak controller] in controller?.chooseApk() }
         turnOffScreen = { [weak controller] in controller?.windows.togglePhonePanelOff() }
-        openSettings = { [weak controller] in controller?.openSettingsWindow() }
-        quit = { NSApp.terminate(nil) }
         disconnectAgent = { [weak controller] in controller?.mcp.disconnectAgents() }
     }
 }
@@ -310,7 +307,7 @@ extension PhoneControlsState {
 /// through and what `PhonePanelProbe` maps the hosting view's key views to.
 enum PhonePanelItem: String, CaseIterable {
     case dnd, ringer, ring, screen, volume, sessions, live, phoneScreen, findApps,
-         continueOnMac, installApk, disconnectAgent, settings, quit
+         continueOnMac, installApk, disconnectAgent, gear
 
     var id: String { "panel.\(rawValue)" }
 
@@ -328,25 +325,35 @@ enum PhonePanelItem: String, CaseIterable {
         case .continueOnMac: return "Move to Mac"
         case .installApk: return "Install APK…"
         case .disconnectAgent: return "Disconnect the AI agent"
-        case .settings: return "Settings…"
-        case .quit: return "Quit PocketDeck"
+        /// The gear: an icon-only button that opens the icon's menu, named for
+        /// VoiceOver after what is behind it.
+        case .gear: return "Settings and more"
         }
     }
 
-    /// One entry per focusable control the state renders, in the order P3 lays
-    /// them out (top to bottom): the four tiles, the volume, the picker, the
-    /// live rows, then the window buttons. The footer exists only in the menu
-    /// bar panel (`showsFooter`), never in the Deck popover. The agent row's
-    /// Disconnect button is first while an agent is connected.
-    static func focusOrder(for state: PhoneControlsState, showsFooter: Bool = true) -> [PhonePanelItem] {
+    /// One entry per focusable control the state renders, in Tab order: the
+    /// header's gear first (it is the card's first control, top-right), then
+    /// the agent row's Disconnect button while an agent is connected, the four
+    /// tiles, the volume, the picker, the live rows and the window buttons.
+    /// The panel opens one step past the gear — see `openingFocus` — so the
+    /// ring lands on the first tile and not on a secondary command.
+    static func focusOrder(for state: PhoneControlsState, showsGear: Bool = false) -> [PhonePanelItem] {
         var items: [PhonePanelItem] = []
+        if showsGear { items.append(.gear) }
         if state.agentCount > 0 { items.append(.disconnectAgent) }
         items += [.dnd, .ringer, .ring, .screen, .volume]
         if state.showsPicker { items.append(.sessions) }
         items += Array(repeating: .live, count: state.live.count)
         items += [.phoneScreen, .findApps, .continueOnMac, .installApk]
-        if showsFooter { items += [.settings, .quit] }
         return items
+    }
+
+    /// Where the opening focus lands: the first phone control below the header,
+    /// never the gear above it (the person's ask, 2026-10-27). The panel steps
+    /// past its first key view for this, so the two must agree; the hosted
+    /// focus test holds them together.
+    static func openingFocus(for state: PhoneControlsState) -> PhonePanelItem {
+        state.agentCount > 0 ? .disconnectAgent : .dnd
     }
 }
 
@@ -356,7 +363,7 @@ enum PhonePanelItem: String, CaseIterable {
 enum PhonePanelMetrics {
     static let width: CGFloat = 300
     /// The one side inset every section shares: header, tiles, rows, buttons
-    /// and footer. Nothing is indented past it (CONV-MAC-26).
+    /// and the gear. Nothing is indented past it (CONV-MAC-26).
     static let inset: CGFloat = 12
     /// How far a row's hover highlight reaches past the inset, so its content
     /// stays on the grid while the highlight sits just outside it.
@@ -367,10 +374,9 @@ enum PhonePanelMetrics {
     static let iconColumn: CGFloat = 18
     static let iconTextSpace: CGFloat = 8
     /// The rhythm, one scale for the panel: 8 inside a group (one tile row to
-    /// the next), 12 between sections, 16 before the footer.
+    /// the next), 12 between sections.
     static let groupGap: CGFloat = 8
     static let sectionGap: CGFloat = 12
-    static let footerGap: CGFloat = 16
     static let sectionHeight: CGFloat = 16
     /// P3's 2×2 control tiles: two 134 pt tiles with 8 pt between them.
     static let tileGap: CGFloat = 8
@@ -432,7 +438,7 @@ extension PhonePanelItem {
         case .installApk:
             guard state.connection.isOnline else { return .offline }
             return state.installBusy ? .installBusy : nil
-        case .sessions, .live, .findApps, .settings, .quit, .disconnectAgent:
+        case .sessions, .live, .findApps, .disconnectAgent, .gear:
             return nil
         }
     }
@@ -487,9 +493,10 @@ enum PanelUnavailable: Equatable {
 struct PhonePanelView: View {
     let state: PhoneControlsState
     let actions: PhoneControlsActions
-    /// The menu bar panel keeps Settings…/Quit in its footer; the Deck's popover
-    /// does not (the Deck has its own gear, and the app menu has both).
-    let showsFooter: Bool
+    /// The menu bar panel's gear: an icon-only button that opens the icon's
+    /// menu. The Deck's popover passes none — the Deck has its own gear and the
+    /// app menu has the same commands.
+    let onGear: (() -> Void)?
 
     static let width: CGFloat = PhonePanelMetrics.width
 
@@ -501,16 +508,30 @@ struct PhonePanelView: View {
     @State private var volume: PhoneVolumeControl
     @State private var settleTimeout: Task<Void, Never>?
 
-    init(state: PhoneControlsState, actions: PhoneControlsActions, showsFooter: Bool = true) {
+    init(state: PhoneControlsState, actions: PhoneControlsActions,
+         onGear: (() -> Void)? = nil) {
         self.state = state
         self.actions = actions
-        self.showsFooter = showsFooter
+        self.onGear = onGear
         _volume = State(initialValue: PhoneVolumeControl(display: state.volumeFraction ?? 0))
     }
 
     var body: some View {
-        // Every section starts a sectionGap below the one above, on the one
-        // inset; nothing floats between sections.
+        // The gear is the ZStack's second child, so SwiftUI adds it after the
+        // card and the key view loop reaches it last: it must not take the
+        // opening focus (focusOrder ends with it too).
+        ZStack(alignment: .topTrailing) {
+            if let onGear { gearButton(onGear).offset(x: -inset, y: 21).zIndex(1) }
+            card
+        }
+        .onAppear { syncVolume() }
+        .onChange(of: state.volumeFraction) { _, _ in syncVolume() }
+        .onDisappear { settleTimeout?.cancel() }
+    }
+
+    /// The card itself: every section starts a sectionGap below the one above,
+    /// on the one inset; nothing floats between sections.
+    private var card: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
             if state.agentCount > 0 { agentRow.padding(.top, PhonePanelMetrics.sectionGap) }
@@ -526,13 +547,9 @@ struct PhonePanelView: View {
                 }
             }
             windowsRow
-            if showsFooter { footer }
         }
         .padding(inset)
         .frame(width: Self.width)
-        .onAppear { syncVolume() }
-        .onChange(of: state.volumeFraction) { _, _ in syncVolume() }
-        .onDisappear { settleTimeout?.cancel() }
     }
 
     /// The phone's value is the slider's value while idle; a drag or a settle
@@ -557,6 +574,18 @@ struct PhonePanelView: View {
     }
 
     private var header: some View {
+        HStack(spacing: 8) {
+            headerIdentity
+            // Room for the overlaid gear, so the battery keeps its distance
+            // from it without a second focusable control in the header.
+            if onGear != nil { Color.clear.frame(width: 22, height: 22) }
+        }
+        .frame(height: PhonePanelMetrics.headerHeight)
+    }
+
+    /// The phone and its connection, the battery: one VoiceOver element, so the
+    /// gear beside it stays a control of its own.
+    private var headerIdentity: some View {
         HStack(spacing: 10) {
             Image(systemName: state.connection.isOnline ? "iphone.gen3" : "iphone.slash")
                 .font(.system(size: 22))
@@ -586,9 +615,25 @@ struct PhonePanelView: View {
                 .foregroundStyle(low ? AnyShapeStyle(.red) : AnyShapeStyle(.secondary))
             }
         }
-        .frame(height: PhonePanelMetrics.headerHeight)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(state.phoneName), \(state.connection.text)")
+    }
+
+    /// The gear, at the panel's top-right: an icon-only button whose help tag
+    /// names what is behind it (Settings, About, Quit). The top and trailing
+    /// padding put its centre on the header row, on the panel's one inset.
+    private func gearButton(_ action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: "gearshape")
+                .font(.system(size: 13))
+                .frame(width: 22, height: 22)
+                .contentShape(.rect(cornerRadius: PhonePanelMetrics.rowCorner))
+        }
+        .buttonStyle(PanelControlStyle(kind: .row, corner: PhonePanelMetrics.rowCorner,
+                                       hoverID: PhonePanelItem.gear.id))
+        .accessibilityLabel(PhonePanelItem.gear.label)
+        .accessibilityIdentifier(PhonePanelItem.gear.id)
+        .help("Settings, About and Quit")
     }
 
     private var agentRow: some View {
@@ -899,44 +944,6 @@ struct PhonePanelView: View {
         .accessibilityHint(item.reason(in: state) ?? "")
         .accessibilityIdentifier(item.id)
         .help(helpTag(help, for: item))
-    }
-
-    // MARK: - Footer
-
-    /// F1: two full-width menu rows at the foot of the menu bar panel, the way
-    /// the Wi-Fi and Bluetooth menus end. Each row is a full-width hover target,
-    /// and each shortcut shows without a hover (CONV-MAC-06).
-    private var footer: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            footerRow(PhonePanelItem.settings, symbol: "gearshape", shortcut: "⌘,",
-                      keyboard: KeyboardShortcut(",", modifiers: .command), action: actions.openSettings)
-            footerRow(PhonePanelItem.quit, symbol: "power", shortcut: "⌘Q",
-                      keyboard: KeyboardShortcut("q", modifiers: .command), action: actions.quit)
-        }
-        .padding(.top, PhonePanelMetrics.footerGap)
-    }
-
-    private func footerRow(_ item: PhonePanelItem, symbol: String, shortcut: String,
-                           keyboard: KeyboardShortcut, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            PanelRowShell(icon: { Image(systemName: symbol).font(.system(size: 12)) }) {
-                HStack(spacing: 6) {
-                    Text(item.label)
-                        .font(.system(size: 13))
-                        .lineLimit(1)
-                    Spacer(minLength: 6)
-                    Text(shortcut)
-                        .font(.system(size: 11))
-                        .foregroundStyle(.tertiary)
-                }
-            }
-        }
-        .buttonStyle(PanelControlStyle(kind: .row, corner: PhonePanelMetrics.rowCorner,
-                                       bleed: PhonePanelMetrics.hoverBleed, hoverID: item.id))
-        .keyboardShortcut(keyboard)
-        .accessibilityLabel(item.label)
-        .accessibilityIdentifier(item.id)
-        .help("\(item.label) (\(shortcut))")
     }
 
     private func sectionLabel(_ text: String) -> some View {

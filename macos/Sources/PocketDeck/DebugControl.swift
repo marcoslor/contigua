@@ -18,6 +18,8 @@
 //   menudump PATH    the main menu tree as JSON (MenuDump.swift), for a dump at
 //                    a moment no debug-input script is running (the e2e menus
 //                    check reads the bar after the last window closed)
+//   iconmenu PATH    the status item's own menu as JSON, without popping it (the
+//                    e2e menus check reads Settings…/About/Quit from it)
 //   panel-menu       Phone ▸ Turn Off Phone Screen: the same call the menu
 //                    item's binding makes (the phone window's own action)
 //   nav-click back|home|recents  a click on that bar button: synthetic NSEvents

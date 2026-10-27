@@ -85,15 +85,22 @@ disabled, never hidden.
    While an app window is open, its app appears in the Dock and ⌘-Tab as "App (Nickname)" (a link window as the app that
    displays the link; the phone mirror as nothing). It arrives on its own, ends when the window closes, and **Options → Keep in Dock**
    makes it permanent ("Add to Dock" in the app's context menu does the same by hand; Settings → General switches it off).
-3. **Menu bar panel**: the status item opens a Control Center-style card, not a menu — the phone's name and state,
+3. **Menu bar panel**: a click on the status item opens a Control Center-style card — the phone's name and state,
    its battery, a 2×2 set of tiles for **Do Not Disturb**, **Ringer**, **Ring Phone** / **Stop Ringing** and
    **Turn Off Screen** (Screen on / Screen off), the volume slider with its %, **Now Playing follows** when several
    apps play, the live notifications, one **WINDOWS** row (**Mirror** ⌘P · **Find Apps** ⌘K · **Move to Mac** ⇧⌘C ·
-   **Install APK…**), then two full-width footer rows: **Settings…** ⌘, and **Quit PocketDeck** ⌘Q. **Ringer** opens
+   **Install APK…**), and a **gear** at the card's top-right. **Ringer** opens
    Ring / Vibrate / Silent with the current mode checked; the volume follows the pointer while it is dragged. A
    control that cannot work is dimmed as a whole (icon, title and its short second line, e.g. "Open Mirror first"),
    never accent-tinted; the full sentence is its help tag and VoiceOver hint ("Open Phone Mirror first."). The
-   Deck's status pill opens the same card in a popover, without the footer.
+   card opens with its focus ring on the first tile (or on **Disconnect** while an AI agent is connected), never on
+   the gear. The Deck's status pill opens the same card in a popover, without the gear.
+
+   The status item's **secondary click** (a right-click, or ⌃-click) opens the app's command menu under the icon:
+   **Settings…** ⌘, · **About PocketDeck** · **Quit PocketDeck** ⌘Q, with a separator before Quit. The card closes
+   first if it is open. The card's **gear** opens that same menu, so both are one path; its help tag is
+   "Settings, About and Quit" and VoiceOver calls it "Settings and more". The panel has no Settings…/Quit rows of
+   its own.
 4. **Settings** (⌘,; also the settings gear at the Deck header's right): tabs **General** (launch at login, show in menu bar,
    share clipboard with your phone, show phone apps in the Dock, **glass app icons**, default window density, **reveal controls after**) · **Input**
    (**hover over Android apps**) · **Devices** · **Automation**. **Devices** is a **Phones** list (a row per
@@ -228,7 +235,7 @@ Every keyboard shortcut the app defines (CONV-MAC-06). The first cell of each ro
 | ⌘↑ | Recents (phone mode) | Navigate |
 | ⌃⌘F | Enter / Exit Full Screen | Window |
 | ⌘F | Find in the Deck: focus and select the search field | Deck |
-| ⌘, | Settings | Menu-bar panel, Deck |
-| ⌘Q | Quit PocketDeck | Menu-bar panel |
+| ⌘, | Settings | Icon menu, Deck |
+| ⌘Q | Quit PocketDeck | Icon menu, app menu |
 | ↩ | Default button: Find my phone, Try again | Deck, pairing sheets |
 | ⎋ | Cancel button: Cancel, Done | Pairing sheets |

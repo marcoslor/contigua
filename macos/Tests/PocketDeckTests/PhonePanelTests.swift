@@ -138,8 +138,9 @@ final class PhonePanelTests: XCTestCase {
 
     /// The rows in the order the view lays them out, because the e2e maps the
     /// hosting view's key views (top to bottom) to this list by index: the
-    /// phone controls, the live notifications, then the window actions and the
-    /// footer.
+    /// phone controls, the live notifications, then the window actions. The
+    /// gear is the menu bar panel's (PhonePanelP3Tests); Settings… and Quit are
+    /// the icon's menu now, not rows.
     func testTheRowsAreInTheOrderTheViewLaysThemOut() {
         var state = panelState(sessions: [row("a", "Spotify"), row("b", "Music")])
         state.live = [NotifyLiveItem(id: "n1", pkg: "com.example.clock", label: "Timer",
@@ -147,7 +148,7 @@ final class PhonePanelTests: XCTestCase {
                                      updated: Date())]
         XCTAssertEqual(PhonePanelItem.focusOrder(for: state),
                        [.dnd, .ringer, .ring, .screen, .volume, .sessions, .live,
-                        .phoneScreen, .findApps, .continueOnMac, .installApk, .settings, .quit])
+                        .phoneScreen, .findApps, .continueOnMac, .installApk])
 
         // The agent row's Disconnect button is the first focusable control.
         state.agentCount = 1
@@ -157,7 +158,7 @@ final class PhonePanelTests: XCTestCase {
         state = panelState(sessions: [row("a", "Spotify")])
         XCTAssertEqual(PhonePanelItem.focusOrder(for: state),
                        [.dnd, .ringer, .ring, .screen, .volume,
-                        .phoneScreen, .findApps, .continueOnMac, .installApk, .settings, .quit])
+                        .phoneScreen, .findApps, .continueOnMac, .installApk])
     }
 
     /// Ring becomes Stop Ringing while the phone rings, and back.
@@ -390,10 +391,7 @@ final class PhonePanelTests: XCTestCase {
             XCTAssertGreaterThan(rect.width, 50)
         }
         XCTAssertGreaterThan(phone.minY, volume.minY)
-
-        let settings = frame(controls[items.firstIndex(of: .settings)!], in: view)
-        XCTAssertGreaterThan(settings.minY, phone.minY)
-        XCTAssertTrue(items.contains(.quit))
+        XCTAssertEqual(items.last, .installApk, "the card ends at the window row")
     }
 
     /// Away: every phone control is off and the panel says why; the header
@@ -406,7 +404,7 @@ final class PhonePanelTests: XCTestCase {
         let enabled = items.filter { $0.isEnabled(in: state) }
         XCTAssertEqual(laidOut(in: view).count, enabled.count,
                        "the key loop holds exactly the enabled controls")
-        XCTAssertEqual(enabled, [.findApps, .settings, .quit])
+        XCTAssertEqual(enabled, [.findApps])
         XCTAssertNil(state.shownBattery, "offline the header does not draw a stale battery")
 
         // The reasons sit on the controls they disable (a tile's subtitle, the

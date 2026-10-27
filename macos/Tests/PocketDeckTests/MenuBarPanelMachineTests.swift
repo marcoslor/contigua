@@ -1,5 +1,6 @@
-// The menu bar panel's modes (MenuBarPanel.swift): every transition, including
-// the events that must be ignored, and the reported bug as one test.
+// The menu bar panel (MenuBarPanel.swift): every mode transition, including the
+// events that must be ignored, the reported bug as one test, which click is the
+// secondary one, and the icon's menu.
 
 import XCTest
 @testable import PocketDeck
@@ -45,25 +46,45 @@ final class MenuBarPanelMachineTests: XCTestCase {
     func testEveryTransition() {
         // Closed: only the icon opens it.
         assert(.closed, .iconClick, becomes: .open, actions: [.show])
+        assert(.closed, .iconSecondaryClick, becomes: .closed, actions: [.showMenu])
         assert(.closed, .clickOutside, becomes: .closed, actions: [])
         assert(.closed, .escape, becomes: .closed, actions: [])
         assert(.closed, .openWindow, becomes: .closed, actions: [])
         assert(.closed, .hideFinished, becomes: .closed, actions: [])
 
-        // Open: the icon and every dismissal close it.
+        // Open: the icon and every dismissal close it; the secondary click
+        // closes it at once and still shows the menu.
         assert(.open, .iconClick, becomes: .closing, actions: [.hide])
+        assert(.open, .iconSecondaryClick, becomes: .closed,
+               actions: [.hideImmediately, .showMenu])
         assert(.open, .clickOutside, becomes: .closing, actions: [.hide])
         assert(.open, .escape, becomes: .closing, actions: [.hide])
         assert(.open, .openWindow, becomes: .closing, actions: [.hide])
         assert(.open, .hideFinished, becomes: .open, actions: [])
 
         // Closing: only the animation's end finishes it; a second icon click
-        // must not reopen the panel it is closing.
+        // must not reopen the panel it is closing, and a second secondary
+        // click must not stack a menu under the first.
         assert(.closing, .iconClick, becomes: .closing, actions: [])
+        assert(.closing, .iconSecondaryClick, becomes: .closing, actions: [])
         assert(.closing, .clickOutside, becomes: .closing, actions: [])
         assert(.closing, .escape, becomes: .closing, actions: [])
         assert(.closing, .openWindow, becomes: .closing, actions: [])
         assert(.closing, .hideFinished, becomes: .closed, actions: [])
+    }
+
+    /// The person's right-click: with the panel open it closes first, at once,
+    /// and the menu the person asked for still opens; with no panel it just
+    /// opens. The panel is never left closing behind a menu.
+    func testASecondaryClickClosesThePanelFirstThenShowsTheMenu() {
+        var machine = MenuBarPanelMachine()
+        XCTAssertEqual(machine.handle(.iconClick), [.show])
+        XCTAssertEqual(machine.handle(.iconSecondaryClick), [.hideImmediately, .showMenu])
+        XCTAssertEqual(machine.state, .closed)
+        XCTAssertEqual(machine.handle(.iconSecondaryClick), [.showMenu])
+        XCTAssertEqual(machine.state, .closed, "the menu is not the panel's open state")
+        XCTAssertEqual(machine.handle(.iconClick), [.show])
+        XCTAssertEqual(machine.state, .open)
     }
 
     /// A click while Closing leaves the panel on its way out: after the hide
@@ -73,5 +94,44 @@ final class MenuBarPanelMachineTests: XCTestCase {
         XCTAssertEqual(machine.handle(.iconClick), [])
         XCTAssertEqual(machine.handle(.hideFinished), [])
         XCTAssertEqual(machine.state, .closed)
+    }
+
+    // MARK: - Which click
+
+    /// A right-click opens the menu; a Control-click (a left click carrying ⌃)
+    /// is the same request; every other left click still toggles the panel.
+    func testTheSecondaryClickIsARightClickOrAControlClick() {
+        XCTAssertEqual(MenuBarPanelClick.of(type: .rightMouseUp, modifiers: []), .secondary)
+        XCTAssertEqual(MenuBarPanelClick.of(type: .rightMouseDown, modifiers: []), .primary)
+        XCTAssertEqual(MenuBarPanelClick.of(type: .leftMouseUp, modifiers: [.control]), .secondary)
+        XCTAssertEqual(MenuBarPanelClick.of(type: .leftMouseUp, modifiers: [.shift]), .primary)
+        XCTAssertEqual(MenuBarPanelClick.of(type: .leftMouseUp, modifiers: []), .primary)
+        XCTAssertEqual(MenuBarPanelClick.of(type: nil, modifiers: []), .primary)
+        XCTAssertEqual(MenuBarPanelClick.of(type: nil, modifiers: [.control]), .secondary,
+                       "the status item's action can arrive without an event; ⌃ still counts")
+    }
+
+    // MARK: - The menu
+
+    /// The icon's menu is Settings… ⌘, · About PocketDeck · rule · Quit
+    /// PocketDeck ⌘Q, in that order, with nothing enabled by the responder
+    /// chain (the status item is outside the app's windows).
+    func testTheIconMenuIsSettingsAboutQuit() throws {
+        let target = NSObject()
+        let menu = MenuBarMenu.make(target: target)
+        XCTAssertEqual(menu.items.map(\.title),
+                       [MenuBarMenu.settingsTitle, MenuBarMenu.aboutTitle, "",
+                        MenuBarMenu.quitTitle])
+        XCTAssertEqual(menu.items.map(\.keyEquivalent), [",", "", "", "q"])
+        XCTAssertTrue(menu.items.allSatisfy { $0.keyEquivalentModifierMask.contains(.command) },
+                      "both keys are ⌘ shortcuts (CONV-MAC-06)")
+        XCTAssertEqual(menu.items[2].isSeparatorItem, true)
+        XCTAssertEqual(menu.items.filter(\.isSeparatorItem).count, 1)
+        XCTAssertFalse(menu.autoenablesItems, "the item's targets answer for themselves")
+        for item in menu.items where !item.isSeparatorItem {
+            XCTAssertTrue(item.target === target)
+            XCTAssertNotNil(item.action)
+        }
+        XCTAssertEqual(Set(menu.items.compactMap(\.action)).count, 3, "one action per command")
     }
 }
