@@ -202,7 +202,7 @@ final class ConnectionController {
         PhoneNicknames.read(from: profile.defaults, deviceId: deviceId)
     }
 
-    /// Settings → Devices → Rename: store the trimmed nickname (empty clears
+    /// Settings ▸ Phones ▸ Rename: store the trimmed nickname (empty clears
     /// it) and refresh everything that names the phone — the views (via the
     /// revision), open window titles, the Spotlight entries and the Dock shims
     /// (the same rebuild a renamed phone gets from `reconcile`).
@@ -278,19 +278,25 @@ final class ConnectionController {
     /// A sheet requested before the Deck window exists (launch hooks, previews).
     private(set) var pendingSheet: DeckSheet?
 
-    /// Bumped to open the Settings window (previews stage the Devices
-    /// screenshot; the gear, ⌘, and the panel's Settings… row are the real
-    /// entry points). Read by DeckRoot.
+    /// Bumped to open the Settings window (previews stage the phone screenshots;
+    /// the gear, ⌘, and the panel's Settings… row are the real entry points).
+    /// Read by DeckRoot.
     private(set) var settingsRequest = 0
-    /// Which Settings tab is showing; the previews and the e2e open Devices.
-    var settingsTab: SettingsTab = .general
-    /// The Devices tab self-reports what it renders when the e2e asks
-    /// (`devices-dump`): a debug read of the real view's state.
-    private(set) var devicesReportRequest = 0
-    var devicesReportPath: String?
-    /// The e2e's setup for a phone's page and for the Forget confirmation.
-    private(set) var devicesSelectRequest = 0
-    var devicesSelectedId: String?
+    /// The Settings window self-reports what it renders when the e2e asks
+    /// (`settings-report`): a debug read of the real view's state.
+    private(set) var settingsReportRequest = 0
+    var settingsReportPath: String?
+    /// Bumped by `settings-add` (setup): the sidebar runs its Add Phone…
+    /// action, so the check sees the sheet open and the selection stay put.
+    private(set) var settingsAddRequest = 0
+    /// `settings-select` (setup): the sidebar runs its choose transition for
+    /// this page, as a click on the row does.
+    private(set) var settingsRevealRequest: SettingsReveal?
+    struct SettingsReveal: Equatable {
+        let selection: SettingsSelection
+        let token: Int
+    }
+    private var settingsRevealToken = 0
 
     /// The panel's Settings… row: the Deck's own scene opener (the responder
     /// action alone does nothing while the app is not active).
@@ -318,7 +324,7 @@ final class ConnectionController {
     private(set) var deckRailRequest: DeckRailRequest?
     private var deckRailToken = 0
 
-    /// The phone being renamed right now: Settings → Devices → Rename… presents
+    /// The phone being renamed right now: Settings ▸ Phones ▸ Rename… presents
     /// its dialog for this device; a preview stages the whole state.
     private(set) var renamingDeviceId: String?
     /// The phone whose Forget confirmation is up (one at a time, like Rename).
@@ -332,7 +338,7 @@ final class ConnectionController {
         sheet = pending
     }
 
-    /// Settings → Devices → Rename…: the dialog for this phone is presented
+    /// Settings ▸ Phones ▸ Rename…: the dialog for this phone is presented
     /// (and dismissed) in DevicesSettings.
     func beginRename(_ phone: RememberedPhone) {
         renamingDeviceId = phone.id
@@ -344,7 +350,7 @@ final class ConnectionController {
         previewRenameText = nil
     }
 
-    /// Settings → Devices → Forget This Phone…: the confirmation names this
+    /// Settings ▸ Phones ▸ Forget This Phone…: the confirmation names this
     /// phone; nothing is removed until the person confirms.
     func beginForget(_ phone: RememberedPhone) { forgettingDeviceId = phone.id }
     func endForget() { forgettingDeviceId = nil }
@@ -726,7 +732,7 @@ final class ConnectionController {
         if let qr, !qr.succeeded { stopQR() }
     }
 
-    /// Settings → Devices → Use.
+    /// Settings ▸ Phones ▸ Use This Phone.
     func use(_ phone: RememberedPhone) {
         guard link.phone?.id != phone.id else { return }
         // The §3 mirror follows the phone in use: it is that phone's record
@@ -885,7 +891,7 @@ final class ConnectionController {
                          launch: false, pinned: true)
         }
         if let pkg = options.dockRemove { dockApps.remove(deviceId: phone.id, pkg: pkg) }
-        // `--set-nickname`: the rename a person does in Settings → Devices →
+        // `--set-nickname`: the rename a person does in Settings ▸ Phones ▸
         // Rename, driven as a hook so the check runs the real code path.
         if let name = options.setNickname { setNickname(name, for: phone.id) }
         dockHooksPending = false
@@ -2057,7 +2063,7 @@ final class ConnectionController {
         }
     }
 
-    /// The per-device opt-in toggle changed (Settings → Devices).
+    /// The per-device opt-in toggle changed (Settings ▸ Phones).
     func notifySettingChanged(deviceId: String, on: Bool) {
         if isPreview, previewNotify[deviceId] != nil {
             previewNotify[deviceId]?.enabled = on
@@ -2135,7 +2141,7 @@ final class ConnectionController {
         return NotifyMute.muted(deviceId: deviceId, defaults: profile.defaults)
     }
 
-    /// Whether this phone's notification sharing is on (Settings ▸ Devices).
+    /// Whether this phone's notification sharing is on (Settings ▸ Phones).
     func notificationsEnabled(deviceId: String) -> Bool {
         if let preview = previewNotify[deviceId] { return preview.enabled }
         return NotifyToggle.isEnabled(deviceId: deviceId, defaults: profile.defaults)
@@ -2671,39 +2677,41 @@ final class ConnectionController {
             }
             return DeckRailPoint.point(letter: arguments[0], to: arguments[1])
                 ? nil : "deckrailpoint failed"
-        case "devices-select":
-            // Setup for the e2e: the phone's page is the one open (the ⓘ click).
-            guard let id = arguments.first else { return "devices-select needs a device id" }
-            guard rememberedPhones.contains(where: { $0.id == id }) else { return "unknown phone" }
-            devicesSelectedId = id
-            devicesSelectRequest += 1
-            return nil
-        case "devices-forget":
-            // Setup for the e2e: the same confirmation the Forget button opens.
-            guard let id = arguments.first,
-                  let phone = rememberedPhones.first(where: { $0.id == id }) else { return "unknown phone" }
-            beginForget(phone)
-            return nil
         case "settings-open":
             // The ⌘, route (a setup step for a check that needs Settings open).
             openSettingsWindow()
             return nil
-        case "settings-tab":
-            switch arguments.first {
-            case "general": settingsTab = .general
-            case "input": settingsTab = .input
-            case "devices": settingsTab = .devices
-            case "automation": settingsTab = .automation
-            default: return "unknown tab"
-            }
+        case "settings-add":
+            // Setup for the check: the Add Phone… row's action (the add sheet),
+            // so the selection rule around it can be asserted. The row itself is
+            // a Button whose action this is; a click cannot be synthesised on a
+            // SwiftUI row in a quiet run.
+            settingsAddRequest += 1
             return nil
-        case "devices-dump":
-            // Settings ▸ Devices reports what it renders (the e2e check's
-            // assertions; a read of the real view, never an action). The tab
-            // writes the file on the next pass.
-            guard let path = arguments.first, path.hasPrefix("/") else { return "devices-dump needs an absolute PATH" }
-            devicesReportPath = path
-            devicesReportRequest += 1
+        case "settings-forget":
+            // Setup for the check: the same confirmation the page's Forget
+            // button opens, for a phone the rows have already selected.
+            guard let id = arguments.first,
+                  let phone = rememberedPhones.first(where: { $0.id == id }) else { return "unknown phone" }
+            beginForget(phone)
+            return nil
+        case "settings-select":
+            // Setup for a check or a screenshot: the sidebar's own choose
+            // transition for that page (a row click's path).
+            guard let raw = arguments.first, let page = SettingsSelection(storeValue: raw) else {
+                return "settings-select needs general|input|automation|phone:ID"
+            }
+            settingsRevealToken += 1
+            settingsRevealRequest = SettingsReveal(selection: page, token: settingsRevealToken)
+            return nil
+        case "settings-report":
+            // What the window renders (the e2e's assertions; a read of the real
+            // view, never an action). The view writes the file on the next pass.
+            guard let path = arguments.first, path.hasPrefix("/") else {
+                return "settings-report needs an absolute PATH"
+            }
+            settingsReportPath = path
+            settingsReportRequest += 1
             return nil
         case "settings-dump":
             // Settings' real window geometry (SettingsProbe) for the host e2e.
@@ -2937,12 +2945,21 @@ final class ConnectionController {
         static let muted = ["preview.whatsapp", "com.android.systemui"]
     }
 
+    /// A preview state's remembered phones, written to this profile so the
+    /// window behaves as it does for a paired Mac (pairing, forgetting, a
+    /// relaunch). `--preview` only: the profile is the check's own.
+    private func stage(_ phones: [RememberedPhone], active: String?) {
+        remembered.removeAll()
+        for phone in phones { remembered.remember(phone.ref, at: phone.lastSeen, makeActive: false) }
+        if let active { remembered.setActive(id: active) }
+        rememberedPhones = remembered.all
+    }
+
     /// A staged preview's Settings window opens once the state is in place:
     /// bumping `settingsRequest` is the Deck scene's own route (⌘,).
     private func settingsSoon() {
         Task { @MainActor [weak self] in
             try? await Task.sleep(for: .milliseconds(800))
-            self?.settingsTab = .devices
             self?.settingsRequest += 1
         }
     }
@@ -3017,42 +3034,46 @@ final class ConnectionController {
             pendingSheet = .addPhone
         case "devices":
             deck(.online(ref))
-            rememberedPhones = [phone, RememberedPhone(id: other.id, name: other.name, model: other.model,
-                                                       lastSeen: Date().addingTimeInterval(-86_400 * 2))]
-        // The Settings ▸ Devices prototypes' states (`--debug-proto devices=…`).
-        // A staged phone has no session: the switches and the muted list read
-        // the staged values instead of the profile's defaults.
+            stage([phone, RememberedPhone(id: other.id, name: other.name, model: other.model,
+                                          lastSeen: Date().addingTimeInterval(-86_400 * 2))],
+                  active: ref.id)
+        // The Settings window's staged phones. They are written to this
+        // profile's remembered list too, so forgetting one in a staging run
+        // leaves the same state a paired Mac would (the sidebar's next phone)
+        // and a relaunch reopens the same list.
         case "devices-zero":
-            rememberedPhones = []
+            stage([], active: nil)
             welcomeSeen = true
             machine = LinkMachine(link: .idle)
             settingsSoon()
         case "devices-one":
             deck(.online(ref))
+            stage([phone], active: ref.id)
             previewNotify[ref.id] = PreviewNotify(enabled: true, muted: Set(Self.DevicesFixtures.muted),
                                                   seen: Set(Self.DevicesFixtures.seen))
             settingsSoon()
         case "devices-three":
             deck(.online(ref))
-            rememberedPhones = [phone] + Self.DevicesFixtures.others
+            stage([phone] + Self.DevicesFixtures.others, active: ref.id)
             DevicesPreview.stagedPresence = Self.DevicesFixtures.presence
             previewNotify[ref.id] = PreviewNotify(enabled: true, muted: Set(Self.DevicesFixtures.muted),
                                                   seen: Set(Self.DevicesFixtures.seen))
             settingsSoon()
         case "devices-offline":
             deck(.offline(ref, .unreachable))
-            rememberedPhones = [RememberedPhone(id: ref.id, name: ref.name, model: ref.model,
-                                                lastSeen: Date().addingTimeInterval(-240))]
+            stage([RememberedPhone(id: ref.id, name: ref.name, model: ref.model,
+                                   lastSeen: Date().addingTimeInterval(-240))], active: ref.id)
             previewNotify[ref.id] = PreviewNotify(enabled: false, muted: [], seen: [])
             settingsSoon()
         case "devices-muted":
             deck(.online(ref))
+            stage([phone], active: ref.id)
             previewNotify[ref.id] = PreviewNotify(enabled: true, muted: Set(Self.DevicesFixtures.muted),
                                                   seen: Set(Self.DevicesFixtures.seen))
             DevicesPreview.openMutedList = true
             settingsSoon()
         case "devices-rename":
-            // The Settings → Devices → Rename dialog, staged for the screenshot.
+            // The Settings ▸ Phones ▸ Rename dialog, staged for the screenshot.
             deck(.online(ref))
             renamingDeviceId = ref.id
             previewRenameText = "Multipass"

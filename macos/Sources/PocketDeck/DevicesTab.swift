@@ -1,6 +1,6 @@
-// The Devices tab's pure half (docs/specs/settings-devices.md): what a phone
-// row says, the section titles that name their phone, and the muted-apps list.
-// No SwiftUI here, so the strings and the ordering are unit-tested (K2).
+// The phone rows' pure half (docs/specs/settings.md): what a sidebar row says
+// and the muted-apps list. No SwiftUI here, so the strings and the ordering are
+// unit-tested (K2).
 
 import Foundation
 
@@ -93,12 +93,6 @@ enum DevicesTabModel {
             // that can be reached but not used.
             canUseThisPhone: !inUse && presence != .pairAgain,
             pairAgain: presence == .pairAgain)
-    }
-
-    /// With two or more phones every settings section names its phone, so a
-    /// section is never read as belonging to "the phone" (reviewer fix a).
-    static func sectionTitle(_ base: String, phone: String, phoneCount: Int) -> String {
-        phoneCount > 1 ? "\(phone) — \(base)" : base
     }
 
     static func mutedCountText(_ count: Int) -> String {

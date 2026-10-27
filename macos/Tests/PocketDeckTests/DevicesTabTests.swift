@@ -1,8 +1,8 @@
 import XCTest
 @testable import PocketDeck
 
-/// The Devices tab's pure half (docs/specs/settings-devices.md): the phone
-/// rows, the section titles that name their phone, and the muted-apps list.
+/// The phone rows' pure half (docs/specs/settings.md): presence, the row a
+/// sidebar entry draws, and the muted-apps list.
 final class DevicesTabTests: XCTestCase {
 
     // MARK: phone rows and presence
@@ -47,17 +47,6 @@ final class DevicesTabTests: XCTestCase {
             id: "p1", name: "Galaxy S25+", model: "SM-S936B",
             presence: .connected, lastSeen: "now", inUse: true)
         XCTAssertNil(row.lastSeenText)
-    }
-
-    // MARK: section titles
-
-    func testSectionHeadersNameTheirPhoneWithTwoOrMore() {
-        XCTAssertEqual(DevicesTabModel.sectionTitle("Notifications", phone: "Galaxy S25+", phoneCount: 2),
-                       "Galaxy S25+ — Notifications")
-        XCTAssertEqual(DevicesTabModel.sectionTitle("Screen", phone: "Pixel 9", phoneCount: 3),
-                       "Pixel 9 — Screen")
-        XCTAssertEqual(DevicesTabModel.sectionTitle("Notifications", phone: "Galaxy S25+", phoneCount: 1),
-                       "Notifications", "one phone needs no disambiguation")
     }
 
     // MARK: muted apps

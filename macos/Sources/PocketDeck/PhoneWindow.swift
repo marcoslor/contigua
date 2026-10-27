@@ -181,7 +181,7 @@ final class PhoneWindowController: StreamWindowController {
         applyPanelState()
     }
 
-    /// Settings ▸ Devices, per phone: a power press on the phone does not end
+    /// Settings ▸ Phones, per phone: a power press on the phone does not end
     /// the hold; the screen lights until the next keep-alive step re-applies it.
     private var panelIgnorePower: Bool {
         guard let id = manager.phone?.id else { return false }

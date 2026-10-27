@@ -36,7 +36,7 @@ enum PhonePanelOffSetting {
     }
 }
 
-/// Settings ▸ Devices ▸ "Keep the phone screen off until I turn it on from the
+/// Settings ▸ Phones ▸ "Keep the phone screen off until I turn it on from the
 /// Mac", per phone, off by default. It only changes what the phone's power
 /// button does while the Mac holds the panel off; the phone stays locked either
 /// way, and the hold still ends on request on, window close, session end and

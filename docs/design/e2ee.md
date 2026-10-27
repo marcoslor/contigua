@@ -129,7 +129,7 @@ exists (ROADMAP). Migration: on first v2 run the old pairkeys.json is deleted
 `pin` is a **mirror of the phone in use**, not the pin check: the per-phone
 records in `pins.json` (§6) are the authority, and a connection verifies the
 peer against the dialed phone's own record. The mirror is rewritten from that
-record on a successful connect, on Settings ▸ Devices ▸ Use and after pairing,
+record on a successful connect, on Settings ▸ Phones ▸ Use This Phone and after pairing,
 and emptied when no record holds it. Since the mirror can name a different
 phone (pairing A, then B, then using A again), the TLS gate must never compare
 it with another phone's record.
