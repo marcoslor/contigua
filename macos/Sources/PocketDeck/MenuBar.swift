@@ -212,7 +212,7 @@ struct AppCommands: Commands {
             Button {
                 actions.continueOnMac()
             } label: {
-                Label("Continue on Mac", systemImage: "arrow.up.forward.app")
+                Label("Move Phone App to Mac", systemImage: "arrow.up.forward.app")
             }
             .keyboardShortcut("c", modifiers: [.command, .shift])
             .disabled(!PhonePanelItem.continueOnMac.isEnabled(in: state))

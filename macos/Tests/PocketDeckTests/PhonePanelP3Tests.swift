@@ -85,6 +85,14 @@ final class PhonePanelP3Tests: XCTestCase {
                        "Connect your phone to use these.")
     }
 
+    /// The handoff button says what it does (CONV-PD-09): the short label and
+    /// the full sentence a person hears or reads in its help tag.
+    func testTheHandoffButtonNamesWhatItDoes() {
+        XCTAssertEqual(PhonePanelItem.continueOnMac.label, "Move to Mac")
+        XCTAssertEqual(PhonePanelView.moveToMacHelp,
+                       "Moves the app on your phone's screen into its own Mac window, where you left off (⇧⌘C)")
+    }
+
     /// A disabled tile says why on its own second line, in a few words; the
     /// full sentence stays the reason. An enabled tile shows its state instead.
     func testADisabledTileSaysWhyOnItsSubtitle() {

@@ -1,4 +1,4 @@
-// The window "Continue on Mac" opens (docs/ROADMAP.md #9): the phone moved the
+// The window "Move Phone App to Mac" opens (docs/ROADMAP.md #9): the phone moved the
 // app that was in the foreground on its own screen onto this window's virtual
 // display. Never dockable — it stands for "whatever was in front on the
 // phone", not for one app.
@@ -6,7 +6,7 @@
 import AppKit
 
 final class HandoffWindowController: StreamWindowController {
-    /// The window's subject until the phone reports the top app ("Continue on Mac").
+    /// The window's subject until the phone reports the top app ("Move Phone App to Mac").
     private(set) var subject: String
 
     /// The app the phone reports on this display (`window.title`). A later
@@ -15,7 +15,7 @@ final class HandoffWindowController: StreamWindowController {
     private(set) var pkg: String?
 
     init(stream: UInt32, manager: WindowManager) {
-        subject = "Continue on Mac"
+        subject = "Move Phone App to Mac"
         super.init(stream: stream, contentSize: AppWindowController.defaultContentSize, manager: manager, styleKey: nil)
         window?.title = manager.titled(subject)
         window?.minSize = style.windowSize(stream: NSSize(width: 320, height: 240))

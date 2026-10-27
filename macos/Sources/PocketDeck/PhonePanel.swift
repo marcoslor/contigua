@@ -325,7 +325,7 @@ enum PhonePanelItem: String, CaseIterable {
         case .live: return "Live notification"
         case .phoneScreen: return "Phone Mirror"
         case .findApps: return "Find Apps"
-        case .continueOnMac: return "Continue on Mac"
+        case .continueOnMac: return "Move to Mac"
         case .installApk: return "Install APK…"
         case .disconnectAgent: return "Disconnect the AI agent"
         case .settings: return "Settings…"
@@ -492,6 +492,11 @@ struct PhonePanelView: View {
     let showsFooter: Bool
 
     static let width: CGFloat = PhonePanelMetrics.width
+
+    /// The long sentence for the handoff button's help tag and VoiceOver label:
+    /// what it does, not "continue" (CONV-PD-09).
+    static let moveToMacHelp = "Moves the app on your phone's screen into its own Mac window, where you left off (⇧⌘C)"
+
     private let inset: CGFloat = PhonePanelMetrics.inset
     @State private var volume: PhoneVolumeControl
     @State private var settleTimeout: Task<Void, Never>?
@@ -858,8 +863,8 @@ struct PhonePanelView: View {
                          help: "Phone Mirror (⌘P)", action: actions.openPhoneScreen)
             windowButton(.findApps, visual: "Find Apps", symbol: "magnifyingglass",
                          help: "Find Apps (⌘K)", action: actions.findApps)
-            windowButton(.continueOnMac, visual: "Continue", symbol: "arrow.up.forward.app",
-                         help: "Continue on Mac (⇧⌘C)", action: actions.continueOnMac)
+            windowButton(.continueOnMac, visual: "Move to Mac", symbol: "arrow.up.forward.app",
+                         help: Self.moveToMacHelp, action: actions.continueOnMac)
             windowButton(.installApk, visual: "Install APK", symbol: "arrow.down.app",
                          help: state.installTitle, action: actions.installApk)
         }
@@ -884,7 +889,7 @@ struct PhonePanelView: View {
         .buttonStyle(PanelControlStyle(enabled: enabled, corner: PhonePanelMetrics.windowCorner,
                                        hoverID: item.id))
         .disabled(!enabled)
-        .accessibilityLabel(item.label)
+        .accessibilityLabel(item == .continueOnMac ? Self.moveToMacHelp : item.label)
         .accessibilityHint(item.reason(in: state) ?? "")
         .accessibilityIdentifier(item.id)
         .help(helpTag(help, for: item))
