@@ -9879,6 +9879,8 @@ PY
     nfr_wait_ready 30 || bad "NFR the app never paired (power press)"
     wait_until 30 events_have '"ev":"stall"' || bad "NFR the fake never stalled (power press)"
     wait_until 10 events_have '"ev":"power_locked"' || bad "NFR the fake never sent power.locked"
+    local locked_ms
+    locked_ms="$(first_event_ms ev power_locked)"
     sleep 1
     if chrome_has "stall=0 stall_pill=0"; then
         ok "NFR power press: the window held the last frame, no \"Not responding\" pill (state: $(chrome_state))"
@@ -9890,7 +9892,11 @@ PY
     wait_until 5 input_at_least $((before + 1)) \
         && ok "NFR power press: input still reached the phone inside the grace" \
         || bad "NFR power press: input was blocked inside the grace (input $before -> $(fake_counter input))"
-    if wait_ms 2000 chrome_has "stall=1 stall_pill=1"; then
+    # The grace is 1.7 s from the report: wait from there, not from "now", so
+    # the steps above cannot close the window before the re-stall.
+    while [ "$(now_ms)" -lt $(( locked_ms + 1700 )) ]; do sleep 0.1; done
+    say "NFR power press: $(( $(now_ms) - locked_ms )) ms after the press, waiting for a real stall"
+    if wait_ms 2500 chrome_has "stall=1 stall_pill=1"; then
         ok "NFR power press: a real stall after the grace still says \"Not responding\" (state: $(chrome_state))"
     else
         bad "NFR power press: no stall after the grace with the frames still stopped (state: $(chrome_state))"
