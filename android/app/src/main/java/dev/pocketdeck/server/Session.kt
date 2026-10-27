@@ -236,6 +236,7 @@ class Session(
     @Volatile private var notifyWanted = false
     @Volatile private var notifyGranted = false
     @Volatile private var notifyForwarding = false
+    @Volatile private var notifyGateState = NotifyGate.OFF
 
     /** `state.panel` is the phone's hold (PanelHold.kt), never a local guess. */
 
@@ -377,6 +378,8 @@ class Session(
         notifyWanted = false
         if (notifyForwarding) {
             notifyForwarding = false
+            log("notify gate: ${notifyGateState.name.lowercase()} -> off")
+            notifyGateState = NotifyGate.OFF
             runCatching { notifyState?.invoke(false, null) }
         }
         val abandoned = synchronized(pairLock) {
@@ -1123,6 +1126,10 @@ class Session(
         // Mac's `notify.enable` after welcome asks again.
         if (phase != Phase.READY) return
         val gate = notifyGate(notifyWanted && !closed.get(), notifyGranted)
+        if (gate != notifyGateState) {
+            log("notify gate: ${notifyGateState.name.lowercase()} -> ${gate.name.lowercase()}")
+            notifyGateState = gate
+        }
         val forward = gate == NotifyGate.FORWARDING
         if (forward != notifyForwarding) {
             notifyForwarding = forward
