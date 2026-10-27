@@ -866,20 +866,20 @@ check_qr() {
         return 1
     fi
     wait_until 15 windows_at_least 2 \
-        && ok "C3 QR sheet is on screen (launcher + sheet)" \
-        || bad "C3 no sheet window: $(windows | tr '\n' ' ')"
+        && ok "[PAIR-9] C3 QR sheet is on screen (launcher + sheet)" \
+        || bad "[PAIR-9] C3 no sheet window: $(windows | tr '\n' ' ')"
     case "$(cat "$WORK/qr.txt")" in
-        pocketdeck://pair?c=*"&n="*"&f="*"&s="*) ok "C3 payload is a pocketdeck://pair c/n/f/s URI" ;;
-        *) bad "C3 payload shape: $(cat "$WORK/qr.txt")" ;;
+        pocketdeck://pair?c=*"&n="*"&f="*"&s="*) ok "[PAIR-9] C3 payload is a pocketdeck://pair c/n/f/s URI" ;;
+        *) bad "[PAIR-9] C3 payload shape: $(cat "$WORK/qr.txt")" ;;
     esac
     [ "$(grep -o 'f=[0-9a-f]*' "$WORK/qr.txt" | cut -c3- | tr -d '\n' | wc -c | tr -d ' ')" = "64" ] \
-        && ok "C3 the Mac fingerprint f is 64 hex" || bad "C3 f is not 64 hex"
+        && ok "[PAIR-9] C3 the Mac fingerprint f is 64 hex" || bad "[PAIR-9] C3 f is not 64 hex"
     [ "$(grep -o 's=[0-9a-f]*' "$WORK/qr.txt" | cut -c3- | tr -d '\n' | wc -c | tr -d ' ')" = "32" ] \
         && ok "C3 the one-time secret s is 32 hex (never a v1 k= key)" \
-        || bad "C3 s is not 32 hex"
+        || bad "[PAIR-9] C3 s is not 32 hex"
     grep -q '"t":"pair.request"' "$WORK/events.jsonl" \
-        && bad "C3 live session tried pair.request while a QR was pending" \
-        || ok "C3 no pair.request before the scan"
+        && bad "[PAIR-10] C3 live session tried pair.request while a QR was pending" \
+        || ok "[PAIR-10] C3 no pair.request before the scan"
 
     # The phone now "scans": the same phone second start with the staged
     # pending QR; a Mac whose handshake fingerprint matches f gets pair.qr.
@@ -892,11 +892,11 @@ check_qr() {
     qr_done() { events_have '"state":"auth_ok"' && events_have '"pkg":"com.android.settings"'; }
     await_app 30 qr_done
     grep -q '"t":"pair.qr"' "$WORK/events.jsonl" \
-        && ok "C3 phone proved the scan with pair.qr" || bad "C3 no pair.qr"
+        && ok "[PAIR-10] C3 phone proved the scan with pair.qr" || bad "[PAIR-10] C3 no pair.qr"
     grep -q '"t":"pair.ok"' "$WORK/events.jsonl" \
-        && ok "C3 pair.ok completed the QR pairing" || bad "C3 no pair.ok"
+        && ok "[PAIR-10] C3 pair.ok completed the QR pairing" || bad "[PAIR-10] C3 no pair.ok"
     grep -q '"t":"pair.request"' "$WORK/events.jsonl" \
-        && bad "C3 pair.request after the scan" || ok "C3 no pair.request at all"
+        && bad "[PAIR-10] C3 pair.request after the scan" || ok "[PAIR-10] C3 no pair.request at all"
     grep -q '"t":"apps.list"' "$WORK/events.jsonl" \
         && ok "C3 app list requested after pairing" || bad "C3 no apps.list"
     grep -q '"t":"window.open"' "$WORK/events.jsonl" && grep -q '"pkg":"com.android.settings"' "$WORK/events.jsonl" \
@@ -905,8 +905,8 @@ check_qr() {
     # from the stored pins alone (auth_ok, the phone's pin of this Mac).
     grep -q '"state":"paired"' "$WORK/events.jsonl" \
         && [ "$(grep -c '"state":"auth_ok"' "$WORK/events.jsonl")" -ge 1 ] \
-        && ok "C3 pins stored, reconnect authenticated" \
-        || bad "C3 no reconnect auth_ok ($(grep -c '"state":"auth_ok"' "$WORK/events.jsonl" 2>/dev/null))"
+        && ok "[PAIR-11] C3 pins stored, reconnect authenticated" \
+        || bad "[PAIR-11] C3 no reconnect auth_ok ($(grep -c '"state":"auth_ok"' "$WORK/events.jsonl" 2>/dev/null))"
     stop_fakephone
 }
 
@@ -925,18 +925,18 @@ check_pair() {
     }
     await_app 30 three_streams
     grep -q '"state":"paired"' "$WORK/events.jsonl" \
-        && ok "C4 first launch paired after an 8 s wait for Allow" || bad "C4 first launch did not pair"
+        && ok "[PAIR-5] C4 first launch paired after an 8 s wait for Allow" || bad "[PAIR-5] C4 first launch did not pair"
     grep -q '"t":"pair.request"' "$WORK/events.jsonl" \
-        && ok "C4 pair.request sent" || bad "C4 no pair.request"
+        && ok "[PAIR-3] C4 pair.request sent" || bad "[PAIR-3] C4 no pair.request"
     grep -q '"t":"pair.commit"' "$WORK/events.jsonl" \
-        && ok "C4 phone committed before the Mac could release anything (pair.commit)" \
-        || bad "C4 no pair.commit"
+        && ok "[PAIR-3] C4 phone committed before the Mac could release anything (pair.commit)" \
+        || bad "[PAIR-3] C4 no pair.commit"
     grep -q '"t":"pair.nonce"' "$WORK/events.jsonl" \
-        && ok "C4 Mac released its nonce (pair.nonce)" || bad "C4 no pair.nonce"
+        && ok "[PAIR-3] C4 Mac released its nonce (pair.nonce)" || bad "[PAIR-3] C4 no pair.nonce"
     grep -q '"t":"pair.reveal"' "$WORK/events.jsonl" \
-        && ok "C4 phone revealed its nonce (pair.reveal)" || bad "C4 no pair.reveal"
+        && ok "[PAIR-3] C4 phone revealed its nonce (pair.reveal)" || bad "[PAIR-3] C4 no pair.reveal"
     grep -q '"t":"pair.confirm"' "$WORK/events.jsonl" \
-        && bad "C4 sent pair.confirm (the code is never typed)" || ok "C4 no pair.confirm"
+        && bad "[PAIR-3] C4 sent pair.confirm (the code is never typed)" || ok "[PAIR-3] C4 no pair.confirm"
     mac_code() {
         log show --last 4m --info --style syslog \
             --predicate "subsystem == \"dev.pocketdeck.mac\" AND processID == $APP_PID" 2>/dev/null \
@@ -952,8 +952,8 @@ check_pair() {
         esac
     done
     [ -n "$mac" ] && [ "$mac" = "$phone_code" ] \
-        && ok "C4 the code is the same on both screens ($mac; one §4 exporter)" \
-        || bad "C4 the screens' codes disagree (mac='${mac:-none}' phone='${phone_code:-none}')"
+        && ok "[PAIR-4] C4 the code is the same on both screens ($mac; one §4 exporter)" \
+        || bad "[PAIR-4] C4 the screens' codes disagree (mac='${mac:-none}' phone='${phone_code:-none}')"
     [ "$(count_events '"t":"window.open"')" = "3" ] \
         && ok "C4 three window.open" || bad "C4 expected 3 window.open, got $(count_events '"t":"window.open"')"
     grep -q '"pkg":"com.android.settings"' "$WORK/events.jsonl" && grep -q '"pkg":"com.whatsapp"' "$WORK/events.jsonl" \
@@ -969,9 +969,9 @@ check_pair() {
     launch --connect "127.0.0.1:$PORT" --open-phone --quit-after 8
     await_app 8 events_have '"state":"auth_ok"'
     grep -q '"state":"auth_ok"' "$WORK/events.jsonl" \
-        && ok "C4 second launch auth_ok" || bad "C4 second launch did not auth"
+        && ok "[PAIR-8] C4 second launch auth_ok" || bad "[PAIR-8] C4 second launch did not auth"
     grep -q '"t":"pair.request"' "$WORK/events.jsonl" \
-        && bad "C4 second launch tried to pair again" || ok "C4 second launch skipped pairing"
+        && bad "[PAIR-8] C4 second launch tried to pair again" || ok "[PAIR-8] C4 second launch skipped pairing"
     stop_fakephone
 }
 
@@ -990,17 +990,17 @@ check_gates() {
     FAKE_ARGS="--refuse-pairings" start_fake || return 1
     launch --connect "127.0.0.1:$PORT" --debug-banner "$banner" --quit-after 20
     wait_until 20 events_have '"state":"refused_pairing"' \
-        && ok "B3 pairings off: unknown Mac refused at the handshake" \
-        || bad "B3 pairings off: no refusal event"
+        && ok "[PAIR-12] B3 pairings off: unknown Mac refused at the handshake" \
+        || bad "[PAIR-12] B3 pairings off: no refusal event"
     wait_until 10 eval '[ "$(mac_failed_line)" = "session failed: pairing_off" ]' \
-        && ok "B3 pairings off: Mac read pairing_off" \
-        || bad "B3 pairings off: Mac reason '$(mac_failed_line)'"
+        && ok "[PAIR-13] B3 pairings off: Mac read pairing_off" \
+        || bad "[PAIR-13] B3 pairings off: Mac reason '$(mac_failed_line)'"
     wait_until 10 grep -qF "isn't accepting new pairings." "$banner" \
-        && ok "B3 pairings off: Mac shows \"$(cat "$banner")\"" \
-        || bad "B3 pairings off: banner '$(cat "$banner" 2>/dev/null)'"
+        && ok "[PAIR-13] B3 pairings off: Mac shows \"$(cat "$banner")\"" \
+        || bad "[PAIR-13] B3 pairings off: banner '$(cat "$banner" 2>/dev/null)'"
     events_have '"t":"pair.request"' \
-        && bad "B3 pairings off: Mac still sent pair.request" \
-        || ok "B3 pairings off: no pairing request left the Mac"
+        && bad "[PAIR-12] B3 pairings off: Mac still sent pair.request" \
+        || ok "[PAIR-12] B3 pairings off: no pairing request left the Mac"
     stop_app
     stop_fakephone
     sleep 1
@@ -1011,7 +1011,7 @@ check_gates() {
     launch --connect "127.0.0.1:$PORT" --quit-after 16
     await_app 16 events_have '"state":"paired"'
     events_have '"state":"paired"' \
-        && ok "B3 paired a Mac for the gate checks" || bad "B3 could not pair"
+        && ok "[PAIR-12] B3 paired a Mac for the gate checks" || bad "[PAIR-12] B3 could not pair"
     stop_fakephone
     sleep 1
 
@@ -1021,8 +1021,8 @@ check_gates() {
     launch --connect "127.0.0.1:$PORT" --quit-after 16
     await_app 16 events_have '"state":"auth_ok"'
     events_have '"state":"auth_ok"' \
-        && ok "B3 pairings off: the paired Mac still authenticated" \
-        || bad "B3 pairings off: the paired Mac was refused"
+        && ok "[PAIR-12] B3 pairings off: the paired Mac still authenticated" \
+        || bad "[PAIR-12] B3 pairings off: the paired Mac was refused"
     stop_fakephone
     sleep 1
 
@@ -1032,20 +1032,20 @@ check_gates() {
     FAKE_ARGS="--refuse-connections" start_fake || return 1
     launch --connect "127.0.0.1:$PORT" --debug-banner "$banner" --quit-after 30
     wait_until 20 events_have '"state":"refused_connections"' \
-        && ok "B3 connections off: paired Mac refused at the handshake" \
-        || bad "B3 connections off: no refusal event"
+        && ok "[PAIR-12] B3 connections off: paired Mac refused at the handshake" \
+        || bad "[PAIR-12] B3 connections off: no refusal event"
     wait_until 10 eval '[ "$(mac_failed_line)" = "session failed: connections_off" ]' \
-        && ok "B3 connections off: Mac read connections_off" \
-        || bad "B3 connections off: Mac reason '$(mac_failed_line)'"
+        && ok "[PAIR-13] B3 connections off: Mac read connections_off" \
+        || bad "[PAIR-13] B3 connections off: Mac reason '$(mac_failed_line)'"
     wait_until 10 grep -qF "Connections are turned off on FakePhone." "$banner" \
-        && ok "B3 connections off: Mac shows \"$(cat "$banner")\"" \
-        || bad "B3 connections off: banner '$(cat "$banner" 2>/dev/null)'"
+        && ok "[PAIR-13] B3 connections off: Mac shows \"$(cat "$banner")\"" \
+        || bad "[PAIR-13] B3 connections off: banner '$(cat "$banner" 2>/dev/null)'"
     # Six seconds is several backoff slots (1, 2, 4 s), never a storm.
     sleep 6
     attempts="$(count_events '"state":"refused_connections"')"
     [ "$attempts" -ge 2 ] && [ "$attempts" -le 6 ] \
-        && ok "B3 connections off: $attempts attempts in the backoff window" \
-        || bad "B3 connections off: $attempts attempts in the backoff window (tight loop or gave up)"
+        && ok "[PAIR-13] B3 connections off: $attempts attempts in the backoff window" \
+        || bad "[PAIR-13] B3 connections off: $attempts attempts in the backoff window (tight loop or gave up)"
     stop_app
     stop_fakephone
 }
