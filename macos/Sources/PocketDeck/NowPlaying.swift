@@ -304,11 +304,11 @@ final class NowPlayingController {
         case .seek(let ms):
             bounded = .seek(MediaMapping.seekTarget(seconds: Double(ms) / 1000, durationMs: current?.durationMs))
         case .volume(let level):
-            if let max = current?.volumeMax, max > 0 {
-                bounded = .volume(Swift.min(Swift.max(level, 0), max))
-            } else {
-                bounded = command
-            }
+            // A session's volume and maximum arrive together ("Media part 2").
+            // Without the maximum there is no level to send: an unclamped one
+            // would be a guess the phone cannot honour.
+            guard let max = current?.volumeMax, max > 0 else { return }
+            bounded = .volume(Swift.min(Swift.max(level, 0), max))
         case .transport:
             bounded = command
         }
