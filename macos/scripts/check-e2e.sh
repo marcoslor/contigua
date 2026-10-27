@@ -7142,6 +7142,171 @@ check_nickname() {
     wait_until 5 no_fakephone
 }
 
+
+# check_settings_devices — Settings ▸ Devices (docs/specs/settings-devices.md).
+# The tab reports what it renders (`devices-dump`, a read of the real view), so
+# this check asserts the shipped rows rather than a model: the 0/1/3 fixture
+# phones, the offline and pair-again words, the in-use mark, section titles
+# that name their phone, the muted list (count, mute column, friendly system
+# name, seen mark, order), ⌘F with select-all, Esc, and the Mac's row when the
+# phone's notification access is missing (a real fake phone refusing the grant).
+check_settings_devices() {
+    clean
+    local ctl="$WORK-control" dump="$WORK/devices.txt" script="$WORK/devices-input.txt"
+    rm -rf "$ctl"; mkdir -p "$ctl"
+    dump_has() { grep -qF -- "$1" "$dump" 2>/dev/null; }
+    dump_line() { grep -qF -- "$1" "$dump" 2>/dev/null; }
+    dump_rows() { grep -c '^row|' "$dump" 2>/dev/null || true; }
+    dump_in_use() { awk -F'|' '$1=="row" && $6=="1"' "$dump" 2>/dev/null | wc -l | tr -d ' '; }
+    devices_state() {
+        # STATE — a preview run with Settings open on Devices, then its report.
+        [ -n "${APP_PID:-}" ] && stop_app
+        rm -f "$dump"
+        printf 'wait 2\nopensettings\nwait 2\n' > "$script"
+        launch --preview "$1" --debug-control "$ctl" --debug-input-script "$script" --quit-after 120
+        wait_until 25 windows_at_least 2 || { bad "DEVTAB Settings: the window never opened"; return 1; }
+        control settings-tab devices || { bad "DEVTAB Settings: $CONTROL_REPLY"; return 1; }
+        sleep 1
+        control devices-dump "$dump" || { bad "DEVTAB dump: $CONTROL_REPLY"; return 1; }
+        wait_until 10 [ -s "$dump" ] || { bad "DEVTAB the tab never wrote $dump"; return 1; }
+    }
+    # First field of a named report line.
+    report_value() { sed -n "s/^$1=//p" "$dump" | head -1; }
+
+    # --- 0 phones: the empty state and Add Phone… only (SET-DEV-02) ---------
+    devices_state devices-zero || return 1
+    [ "$(report_value phones)" = "0" ] && ok "DEVTAB [SET-DEV-02] no phones: the tab reports an empty list" \
+        || bad "DEVTAB [SET-DEV-02] phones=$(report_value phones), wanted 0"
+    dump_line "empty=No phones yet." && ok "DEVTAB [SET-DEV-02] the empty state says \"No phones yet.\"" \
+        || bad "DEVTAB [SET-DEV-02] no empty-state sentence: $(cat "$dump" 2>/dev/null | tr '\n' '|')"
+    [ "$(report_value selected)" = "-" ] \
+        && ok "DEVTAB [SET-DEV-02] with no phones there is no settings block" \
+        || bad "DEVTAB [SET-DEV-02] a phone's settings block was staged without a phone"
+
+    # --- 1 phone: its row, state and sections (SET-DEV-01, 14, 15) ---------
+    devices_state devices-one || return 1
+    [ "$(report_value phones)" = "1" ] && ok "DEVTAB [SET-DEV-15] one phone is listed" \
+        || bad "DEVTAB [SET-DEV-15] phones=$(report_value phones), wanted 1"
+    dump_has "row|Galaxy S25+|SM-S936B|Connected||1|0|0" \
+        && ok "DEVTAB [SET-DEV-01] the row names the phone, its model and Connected, marked In Use" \
+        || bad "DEVTAB [SET-DEV-01] row: $(grep '^row|' "$dump" 2>/dev/null | tr '\n' '|')"
+    [ "$(dump_in_use)" = "1" ] && ok "DEVTAB [SET-DEV-02] exactly one phone carries the in-use mark" \
+        || bad "DEVTAB [SET-DEV-02] $(dump_in_use) rows carry the in-use mark"
+    [ "$(report_value title.notifications)" = "Notifications" ] \
+        && ok "DEVTAB [SET-DEV-01] one phone needs no name in its section titles" \
+        || bad "DEVTAB [SET-DEV-01] one-phone title: $(report_value title.notifications)"
+    [ "$(report_value share)" = "1" ] && ok "DEVTAB [SET-DEV-09] sharing reads on from the stored opt-in" \
+        || bad "DEVTAB [SET-DEV-09] share=$(report_value share)"
+    [ "$(report_value click)" = "Open on this Mac" ] && ok "DEVTAB [SET-DEV-10] the click target reads Open on this Mac" \
+        || bad "DEVTAB [SET-DEV-10] click=$(report_value click)"
+    [ "$(report_value mutedCount)" = "2" ] && ok "DEVTAB [SET-DEV-11] the muted row counts two apps" \
+        || bad "DEVTAB [SET-DEV-11] mutedCount=$(report_value mutedCount)"
+
+    # --- 3 phones: peer rows, names on every section, pair again -----------
+    devices_state devices-three || return 1
+    [ "$(report_value phones)" = "3" ] && ok "DEVTAB [SET-DEV-15] three phones are listed" \
+        || bad "DEVTAB [SET-DEV-15] phones=$(report_value phones), wanted 3"
+    [ "$(dump_rows)" = "3" ] && ok "DEVTAB [SET-DEV-01] each phone has one row" \
+        || bad "DEVTAB [SET-DEV-01] $(dump_rows) rows for 3 phones"
+    dump_has "row|Pixel 9|Pixel 9|Offline|" && ok "DEVTAB [SET-DEV-14] an offline phone says Offline with when it was last seen" \
+        || bad "DEVTAB [SET-DEV-14] Pixel 9: $(grep '^row|Pixel 9' "$dump" | tr '\n' '|')"
+    dump_has "row|Pixel 8|Pixel 8|Pair again|" && ok "DEVTAB [SET-DEV-14] a keyless phone says Pair again" \
+        || bad "DEVTAB [SET-DEV-14] Pixel 8: $(grep '^row|Pixel 8' "$dump" | tr '\n' '|')"
+    awk -F'|' '$1=="row" && $2=="Pixel 8" && $7=="1" {ok=1} END {exit !ok}' "$dump" \
+        && ok "DEVTAB [SET-DEV-17] the keyless phone is offered Pair Again, not Use" \
+        || bad "DEVTAB [SET-DEV-17] Pixel 8 does not read Pair again"
+    awk -F'|' '$1=="row" && $2=="Pixel 9" && $8=="1" {ok=1} END {exit !ok}' "$dump" \
+        && ok "DEVTAB [SET-DEV-15] another phone offers Use This Phone in its row" \
+        || bad "DEVTAB [SET-DEV-15] Pixel 9 offers no Use This Phone"
+    [ "$(dump_in_use)" = "1" ] && ok "DEVTAB [SET-DEV-02] the in-use mark is on exactly one of three phones" \
+        || bad "DEVTAB [SET-DEV-02] $(dump_in_use) in-use marks for three phones"
+    [ "$(report_value title.notifications)" = "Galaxy S25+ — Notifications" ] \
+        && [ "$(report_value title.screen)" = "Galaxy S25+ — Screen" ] \
+        && ok "DEVTAB [SET-DEV-01] with 3 phones every section header names its phone" \
+        || bad "DEVTAB [SET-DEV-01] named headers: $(report_value title.notifications) / $(report_value title.screen)"
+
+    # --- muted apps: the list, its column, order and search (SET-DEV-11) ---
+    devices_state devices-muted || return 1
+    [ "$(report_value mutedOpen)" = "1" ] && ok "DEVTAB [SET-DEV-11] the muted list opens" \
+        || bad "DEVTAB [SET-DEV-11] the muted list stayed closed"
+    dump_has "muted|System UI|com.android.systemui|1|1" \
+        && ok "DEVTAB [SET-DEV-11] a system package reads System UI with its package underneath, muted and seen" \
+        || bad "DEVTAB [SET-DEV-11] system row: $(grep '^muted|System UI' "$dump" | tr '\n' '|')"
+    dump_has "muted|WhatsApp||1|1" && ok "DEVTAB [SET-DEV-11] a named app shows its name only, muted and seen" \
+        || bad "DEVTAB [SET-DEV-11] WhatsApp row missing"
+    grep -q '^muted|.*|1|1$' "$dump" && first_muted="$(grep -n '^muted|' "$dump" | head -1 | cut -d: -f1)" || first_muted=""
+    first_plain="$(grep -n '^muted|.*|0$' "$dump" | head -1 | cut -d: -f1)"
+    [ -n "$first_muted" ] && [ -n "$first_plain" ] && [ "$first_muted" -lt "$first_plain" ] \
+        && ok "DEVTAB [SET-DEV-11] muted apps sort first" \
+        || bad "DEVTAB [SET-DEV-11] mute order: first muted=$first_muted first unmuted=$first_plain"
+    # ⌘F focuses the field; typing, then ⌘F again, must replace the typed text.
+    control key cmd+f >/dev/null 2>&1
+    control key s >/dev/null 2>&1
+    control key y >/dev/null 2>&1
+    control key s >/dev/null 2>&1
+    sleep 0.3
+    control devices-dump "$dump" >/dev/null 2>&1; sleep 0.4
+    [ "$(report_value query)" = "sys" ] && [ "$(report_value focused)" = "search" ] \
+        && ok "DEVTAB [SET-DEV-20] ⌘F leaves the search field focused ($(report_value query))" \
+        || bad "DEVTAB [SET-DEV-20] query=$(report_value query) focus=$(report_value focused)"
+    control key cmd+f >/dev/null 2>&1
+    sleep 0.3
+    control key c >/dev/null 2>&1
+    sleep 0.4
+    control devices-dump "$dump" >/dev/null 2>&1; sleep 0.4
+    [ "$(report_value query)" = "c" ] \
+        && ok "DEVTAB [SET-DEV-20] ⌘F selects the typed text (typing replaces it)" \
+        || bad "DEVTAB [SET-DEV-20] the text was not selected (query $(report_value query))"
+    control key esc >/dev/null 2>&1
+    sleep 0.4
+    control devices-dump "$dump" >/dev/null 2>&1; sleep 0.4
+    [ "$(report_value mutedOpen)" = "0" ] && ok "DEVTAB [SET-DEV-21] Esc closes the muted list" \
+        || bad "DEVTAB [SET-DEV-21] Esc left the list open"
+
+    # --- offline: settings stay editable, nothing claims they applied ------
+    devices_state devices-offline || return 1
+    dump_has "row|Galaxy S25+|SM-S936B|Offline|" && ok "DEVTAB [SET-DEV-16] the in-use phone reads Offline with last seen" \
+        || bad "DEVTAB [SET-DEV-16] offline row: $(grep '^row|' "$dump" | tr '\n' '|')"
+    [ "$(report_value share)" = "0" ] && ok "DEVTAB [SET-DEV-16] its sharing switch still shows the stored off" \
+        || bad "DEVTAB [SET-DEV-16] share=$(report_value share)"
+    [ "$(report_value mutedCount)" = "None" ] && ok "DEVTAB [SET-DEV-12] no muted apps reads None" \
+        || bad "DEVTAB [SET-DEV-12] mutedCount=$(report_value mutedCount)"
+    [ "$(report_value title.notifications)" = "Notifications" ] && ok "DEVTAB [SET-DEV-16] the offline phone's settings are still there" \
+        || bad "DEVTAB [SET-DEV-16] no settings block for the offline phone"
+
+    # --- missing listener access: the Mac's row says how to fix it ---------
+    stop_app
+    local device
+    FAKE_ARGS="--notify-no-access" start_fake || return 1
+    device="$(sed -n 's/^fakephone \([^ ]*\) listening.*/\1/p' "$WORK/fake.log" "$WORK/fake.err" | head -1)"
+    [ -n "$device" ] || { bad "DEVTAB no device id in the fakephone listening line"; stop_fakephone; return 1; }
+    defaults write "$DEFAULTS_SUITE" "notify.$device" -bool YES
+    rm -f "$dump"
+    launch --connect "127.0.0.1:$PORT" --debug-control "$ctl" --quit-after 90
+    wait_until 30 events_have '"state":"auth_ok"' || wait_until 30 events_have '"state":"paired"' \
+        || { bad "DEVTAB the app never authenticated"; stop_app; stop_fakephone; return 1; }
+    control settings-open || bad "DEVTAB settings-open: $CONTROL_REPLY"
+    wait_until 25 windows_at_least 2 || bad "DEVTAB Settings: the window never opened"
+    control settings-tab devices || bad "DEVTAB settings-tab: $CONTROL_REPLY"
+    sleep 1
+    hint_shown() {
+        control devices-dump "$dump" >/dev/null 2>&1
+        sleep 0.5
+        grep -qF 'accessHint=Allow notification access on the phone.' "$dump" 2>/dev/null
+    }
+    wait_until 25 hint_shown || bad "DEVTAB the no-access hint never appeared"
+    [ "$(report_value share)" = "1" ] && ok "DEVTAB [SET-DEV-09] the Mac asked the phone to share" \
+        || bad "DEVTAB [SET-DEV-09] share=$(report_value share)"
+    [ "$(report_value accessHint)" = "Allow notification access on the phone." ] \
+        && ok "DEVTAB [SET-DEV-09] the row says \"Allow notification access on the phone.\" under the switch" \
+        || bad "DEVTAB [SET-DEV-09] accessHint=$(report_value accessHint)"
+    defaults delete "$DEFAULTS_SUITE" "notify.$device" >/dev/null 2>&1
+    FAKE_ARGS=""
+    stop_app
+    stop_fakephone
+    wait_until 5 no_fakephone
+}
+
 # --- Move Phone App to Mac (docs/ROADMAP.md #9, docs/design/handoff.md) -----------
 
 # check_handoff — the --continue-on-mac hook runs the menu command (the same

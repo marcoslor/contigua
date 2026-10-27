@@ -284,6 +284,10 @@ final class ConnectionController {
     private(set) var settingsRequest = 0
     /// Which Settings tab is showing; the previews and the e2e open Devices.
     var settingsTab: SettingsTab = .general
+    /// The Devices tab self-reports what it renders when the e2e asks
+    /// (`devices-dump`): a debug read of the real view's state.
+    private(set) var devicesReportRequest = 0
+    var devicesReportPath: String?
 
     /// The panel's Settings… row: the Deck's own scene opener (the responder
     /// action alone does nothing while the app is not active).
@@ -2623,6 +2627,10 @@ final class ConnectionController {
             }
             return DeckRailPoint.point(letter: arguments[0], to: arguments[1])
                 ? nil : "deckrailpoint failed"
+        case "settings-open":
+            // The ⌘, route (a setup step for a check that needs Settings open).
+            openSettingsWindow()
+            return nil
         case "settings-tab":
             switch arguments.first {
             case "general": settingsTab = .general
@@ -2631,6 +2639,14 @@ final class ConnectionController {
             case "automation": settingsTab = .automation
             default: return "unknown tab"
             }
+            return nil
+        case "devices-dump":
+            // Settings ▸ Devices reports what it renders (the e2e check's
+            // assertions; a read of the real view, never an action). The tab
+            // writes the file on the next pass.
+            guard let path = arguments.first, path.hasPrefix("/") else { return "devices-dump needs an absolute PATH" }
+            devicesReportPath = path
+            devicesReportRequest += 1
             return nil
         case "settings-dump":
             // Settings' real window geometry (SettingsProbe) for the host e2e.

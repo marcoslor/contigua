@@ -24,7 +24,7 @@ final class DevicesTabTests: XCTestCase {
     func testPhoneRowCarriesNameModelStateAndLastSeen() {
         let row = DevicesTabModel.phoneRow(
             id: "p1", name: "Galaxy S25+", model: "SM-S936B",
-            presence: .offline(nil), lastSeen: "2 hours ago", inUse: true, pinnedKey: true)
+            presence: .offline(nil), lastSeen: "2 hours ago", inUse: true)
         XCTAssertEqual(row.name, "Galaxy S25+")
         XCTAssertEqual(row.model, "SM-S936B")
         XCTAssertEqual(row.presenceText, "Offline")
@@ -37,7 +37,7 @@ final class DevicesTabTests: XCTestCase {
     func testAPhoneWithoutItsKeyOffersPairAgainOnly() {
         let row = DevicesTabModel.phoneRow(
             id: "p2", name: "Pixel 8", model: "G9S9B", presence: .pairAgain,
-            lastSeen: "3 days ago", inUse: false, pinnedKey: false)
+            lastSeen: "3 days ago", inUse: false)
         XCTAssertTrue(row.pairAgain)
         XCTAssertFalse(row.canUseThisPhone, "nothing pretends a keyless phone can be reached")
     }
@@ -45,7 +45,7 @@ final class DevicesTabTests: XCTestCase {
     func testALivePhoneShowsNoLastSeen() {
         let row = DevicesTabModel.phoneRow(
             id: "p1", name: "Galaxy S25+", model: "SM-S936B",
-            presence: .connected, lastSeen: "now", inUse: true, pinnedKey: true)
+            presence: .connected, lastSeen: "now", inUse: true)
         XCTAssertNil(row.lastSeenText)
     }
 
