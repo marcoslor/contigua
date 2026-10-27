@@ -3071,8 +3071,8 @@ PY
     rm -f "$WORK/menus-icon.json"
     control iconmenu "$WORK/menus-icon.json" \
         || bad "MENUS iconmenu: $CONTROL_REPLY"
-    python3 - "$WORK/menus-icon.json" <<'PY' && ok "[CONV-MAC-10] the icon's menu is Settings… ⌘, · About PocketDeck · rule · Quit PocketDeck ⌘Q" \
-        || bad "MENUS the icon's menu is not Settings…/About/Quit"
+    python3 - "$WORK/menus-icon.json" <<'PY' && ok "[PANEL-3] the icon's menu is Settings… ⌘, · About PocketDeck · rule · Quit PocketDeck ⌘Q" \
+        || bad "[PANEL-3] the icon's menu is not Settings…/About/Quit"
 import json, sys
 rows = json.load(open(sys.argv[1]))
 titles = [row["title"] for row in rows]
@@ -3354,8 +3354,8 @@ PY
     # screen" items.
     control panelopen || bad "MENUS panelopen: $CONTROL_REPLY"
     control paneldump panel "$WORK/menus-panel.json" || bad "MENUS paneldump: $CONTROL_REPLY"
-    python3 - "$WORK/menus-panel.json" <<'PY' && ok "MENUS the menu bar hosts the phone panel, none of the old menu items" \
-        || bad "MENUS the menu bar is not the panel"
+    python3 - "$WORK/menus-panel.json" <<'PY' && ok "[PANEL-5] the menu bar hosts the phone panel, none of the old menu items" \
+        || bad "[PANEL-5] the menu bar is not the panel"
 import json, sys
 root = json.load(open(sys.argv[1]))
 if root["width"] != 300:
@@ -5031,8 +5031,8 @@ check_controls() {
     # them (CONV-MAC-10).
     control panelopen || bad "CONTROLS panelopen: $CONTROL_REPLY"
     control paneldump panel "$WORK/controls-panel.json" || bad "CONTROLS paneldump: $CONTROL_REPLY"
-    python3 - "$WORK/controls-panel.json" <<'PY' && ok "CONTROLS the panel is P3 with the gear first and the Ringer tile enabled" \
-        || bad "CONTROLS the panel is not P3"
+    python3 - "$WORK/controls-panel.json" <<'PY' && ok "[PANEL-5] the panel is P3 with the gear first and the Ringer tile enabled" \
+        || bad "[PANEL-5] the panel is not P3"
 import json, sys
 root = json.load(open(sys.argv[1]))
 if root["width"] != 300:
@@ -5055,8 +5055,8 @@ volume = root["controls"][volume_index]
 if volume["height"] > 20 or volume["width"] < 150:
     print("volume control:", volume); sys.exit(1)
 PY
-    python3 - "$WORK/controls-panel.json" <<'PY' && ok "[CONV-MAC-10] the panel has no Settings/Quit footer rows: they are the icon's menu" \
-        || bad "CONTROLS the panel still carries footer rows"
+    python3 - "$WORK/controls-panel.json" <<'PY' && ok "[PANEL-17] the panel has no Settings/Quit footer rows: they are the icon's menu" \
+        || bad "[PANEL-17] the panel still carries footer rows"
 import json, sys
 root = json.load(open(sys.argv[1]))
 kinds = [row["kind"] for row in root["items"]]
@@ -5070,26 +5070,26 @@ PY
     gear_ax="$(ax_tree)"
     case "$gear_ax" in
         *"desc=[Settings and more] help=[Settings, About and Quit] id=[panel.gear]"*)
-            ok "CONTROLS the gear's VoiceOver name and help tag reach the AX tree: Settings and more · Settings, About and Quit" ;;
+            ok "[PANEL-21] the gear's VoiceOver name and help tag reach the AX tree: Settings and more · Settings, About and Quit" ;;
         NO-WINDOWS|"")
             bad "CONTROLS the AX tree is empty for this run ($gear_ax)" ;;
         *) bad "CONTROLS the gear's AX name and help are missing ($(printf '%s' "$gear_ax" | grep -m1 'panel.gear\|NO-WINDOWS' | cut -c1-200))" ;;
     esac
     case "$(printf '%s\n' "$gear_ax" | grep -v '^AXWindow' | head -1)" in
         *"id=[panel.gear]"*)
-            ok "CONTROLS the gear is the card's first control in the AX order" ;;
-        *) bad "CONTROLS the gear is not first in the AX order ($(printf '%s' "$gear_ax" | head -2 | tr '\n' '|' | cut -c1-200))" ;;
+            ok "[PANEL-7] the gear is the card's first control in the AX order" ;;
+        *) bad "[PANEL-7] the gear is not first in the AX order ($(printf '%s' "$gear_ax" | head -2 | tr '\n' '|' | cut -c1-200))" ;;
     esac
     control panelringer panel vibrate || bad "CONTROLS panelringer: $CONTROL_REPLY"
     wait_until 3 ringer_is vibrate \
-        && ok "CONTROLS the Ringer tile's menu sent phone.ringer vibrate" \
-        || bad "CONTROLS the Ringer tile's menu sent no phone.ringer vibrate"
+        && ok "[PANEL-10] the Ringer tile's menu sent phone.ringer vibrate" \
+        || bad "[PANEL-10] the Ringer tile's menu sent no phone.ringer vibrate"
     local volume_before
     volume_before="$(grep -c '"ev":"volume"' "$WORK/events.jsonl" 2>/dev/null || true)"
     control panelvolumedrag panel 0.2 "$WORK/controls-volume.json" \
         || bad "CONTROLS panelvolumedrag: $CONTROL_REPLY"
-    python3 - "$WORK/controls-volume.json" <<'PY' && ok "CONTROLS the slider follows every drag step and ignores the phone echo mid-drag" \
-        || bad "CONTROLS the slider did not follow the drag"
+    python3 - "$WORK/controls-volume.json" <<'PY' && ok "[PANEL-13] the slider follows every drag step and ignores the phone echo mid-drag" \
+        || bad "[PANEL-13] the slider did not follow the drag"
 import json, sys
 try:
     trace = json.load(open(sys.argv[1]))
@@ -5111,11 +5111,11 @@ PY
     volume_after="$(grep -c '"ev":"volume"' "$WORK/events.jsonl" 2>/dev/null || true)"
     volume_sends=$(( ${volume_after:-0} - ${volume_before:-0} ))
     [ "$volume_sends" -ge 2 ] && [ "$volume_sends" -le 4 ] \
-        && ok "CONTROLS the drag sent phone.volume $volume_sends times (throttled to 10/s plus the release)" \
-        || bad "CONTROLS the drag sent phone.volume $volume_sends times, not the throttled count"
+        && ok "[PANEL-13] the drag sent phone.volume $volume_sends times (throttled to 10/s plus the release)" \
+        || bad "[PANEL-13] the drag sent phone.volume $volume_sends times, not the throttled count"
     wait_until 20 events_have '"ev":"volume","level":3' \
-        && ok "CONTROLS the panel's volume slider sent phone.volume 3/15" \
-        || bad "CONTROLS the panel's volume slider sent no phone.volume"
+        && ok "[PANEL-13] the panel's volume slider sent phone.volume 3/15" \
+        || bad "[PANEL-13] the panel's volume slider sent no phone.volume"
     control panelclose || bad "CONTROLS panelclose: $CONTROL_REPLY"
 
     # The Deck's popover compiles the same view without the footer.
@@ -5126,8 +5126,8 @@ PY
         control paneldump deck "$WORK/controls-deck-panel.json" >/dev/null 2>&1 && break
         tries=$((tries - 1)); sleep 0.5
     done
-    python3 - "$WORK/controls-deck-panel.json" <<'PY' && ok "CONTROLS the Deck popover has P3's tiles and no Settings/Quit footer" \
-        || bad "CONTROLS the Deck popover kept the menu bar footer"
+    python3 - "$WORK/controls-deck-panel.json" <<'PY' && ok "[PANEL-18] the Deck popover has P3's tiles and no Settings/Quit footer" \
+        || bad "[PANEL-18] the Deck popover kept the menu bar footer"
 import json, sys
 try:
     root = json.load(open(sys.argv[1]))
@@ -9910,8 +9910,8 @@ check_menubar_shots() {
         --open com.whatsapp
     wait_until 30 events_have '"t":"apps.list"' \
         || { bad "MENUBAR-SHOTS the session never started"; stop_app; stop_fakephone; return 1; }
-    control panelopen && ok "MENUBAR-SHOTS the panel host opened" \
-        || bad "MENUBAR-SHOTS panelopen: $CONTROL_REPLY"
+    control panelopen && ok "[PANEL-4] the panel host opened" \
+        || bad "[PANEL-4] panelopen: $CONTROL_REPLY"
     control paneldump panel "$WORK/menubar-shots/panel.json" \
         || bad "MENUBAR-SHOTS paneldump: $CONTROL_REPLY"
     sleep 1
@@ -10014,8 +10014,8 @@ OSA
     # row reads Stop Ringing in the shot.
     control panelclick panel panel.ring || bad "MENUBAR-SHOTS panelclick ring: $CONTROL_REPLY"
     wait_until 20 events_have '"ev":"ring"' \
-        && ok "MENUBAR-SHOTS the phone is ringing for the shot" \
-        || bad "MENUBAR-SHOTS the phone did not ring"
+        && ok "[PANEL-11] the phone is ringing for the shot" \
+        || bad "[PANEL-11] the phone did not ring"
     sleep 1
     shot_panel "panel-ringing-light.png"
     control panelclick panel panel.ring >/dev/null 2>&1 || true
@@ -10024,8 +10024,8 @@ OSA
 
     # The Deck's popover: the same card above the grid (its own window).
     control panelclose >/dev/null 2>&1 || true
-    control deckpanel && ok "MENUBAR-SHOTS the Deck popover opened" \
-        || bad "MENUBAR-SHOTS deckpanel: $CONTROL_REPLY"
+    control deckpanel && ok "[PANEL-18] the Deck popover opened" \
+        || bad "[PANEL-18] deckpanel: $CONTROL_REPLY"
     sleep 2
     local id
     id="$(await_window '$4 >= 320 && $4 <= 340 && $5 >= 300')" \
@@ -10044,8 +10044,8 @@ OSA
     result="$(control paneldump panel "$WORK/menubar-shots/panel-offline.json" && echo dumped)"
     [ -n "$result" ] \
         && python3 - "$WORK/menubar-shots/panel-offline.json" <<'PY' \
-        && ok "MENUBAR-SHOTS the offline card carries the offline reason" \
-        || bad "MENUBAR-SHOTS no reason in the offline card"
+        && ok "[PANEL-19] the offline card carries the offline reason" \
+        || bad "[PANEL-19] no reason in the offline card"
 import json, sys
 root = json.load(open(sys.argv[1]))
 if root["reason"] != "Connect your phone to use these.":
@@ -10080,8 +10080,8 @@ shoot_panel_states() {
         launch --connect "127.0.0.1:$PORT" --quit-after 120 --debug-control "$WORK-control" --appearance "$app"
         wait_until 30 events_have '"t":"apps.list"' \
             || { bad "PANEL-STATES the session never started"; stop_app; stop_fakephone; return 1; }
-        control panelopen && ok "PANEL-STATES the panel host opened ($app)" \
-            || bad "PANEL-STATES panelopen: $CONTROL_REPLY"
+        control panelopen && ok "[PANEL-4] the panel host opened ($app)" \
+            || bad "[PANEL-4] panelopen: $CONTROL_REPLY"
         sleep 1
         shoot_state "states-$app-rest.png"
         # Turn Off Screen is disabled here (no Phone Mirror); the rest shot is
