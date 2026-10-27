@@ -9867,6 +9867,37 @@ PY
         stop_fakephone
     done
 
+    # A power press with app streams up (docs/PROTOCOL.md "Phone screen",
+    # `power.locked`): the phone re-lights its VD group at the edge, so the
+    # window holds the last frame for a grace under stale_picture_ms — no
+    # "Not responding" pill and no frozen input block — and a real stall after
+    # the grace still says so. The fake stalls and reports the press together.
+    : > "$WORK/events.jsonl"
+    defaults write "$DEFAULTS_SUITE" "chrome.style.com.android.settings" -string framed
+    FAKE_ARGS="--stall-after 3 --power-locked-after 3.1" start_fake || return 1
+    nfr_launch --open com.android.settings
+    nfr_wait_ready 30 || bad "NFR the app never paired (power press)"
+    wait_until 30 events_have '"ev":"stall"' || bad "NFR the fake never stalled (power press)"
+    wait_until 10 events_have '"ev":"power_locked"' || bad "NFR the fake never sent power.locked"
+    sleep 1
+    if chrome_has "stall=0 stall_pill=0"; then
+        ok "NFR power press: the window held the last frame, no \"Not responding\" pill (state: $(chrome_state))"
+    else
+        bad "NFR power press: the window called the phone's own press a stall (state: $(chrome_state))"
+    fi
+    before="$(fake_counter input)"
+    control nav back || bad "NFR power press: $CONTROL_REPLY"
+    wait_until 5 input_at_least $((before + 1)) \
+        && ok "NFR power press: input still reached the phone inside the grace" \
+        || bad "NFR power press: input was blocked inside the grace (input $before -> $(fake_counter input))"
+    if wait_ms 2000 chrome_has "stall=1 stall_pill=1"; then
+        ok "NFR power press: a real stall after the grace still says \"Not responding\" (state: $(chrome_state))"
+    else
+        bad "NFR power press: no stall after the grace with the frames still stopped (state: $(chrome_state))"
+    fi
+    stop_app
+    stop_fakephone
+
     # Occlusion: a covered window is not a live picture. AppKit throttles an
     # occluded app, so the frames stop without the phone being at fault; the
     # watchdog must not call that a stall, and the clock restarts when the

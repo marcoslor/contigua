@@ -930,6 +930,21 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         if watchdog.tick(at: now, expecting: expecting) { setStalled(true) }
     }
 
+    /// The phone reported `power.locked` (its own power press with our streams
+    /// up): the VD group re-lights and the picture can be quiet for a moment.
+    /// Hold the last frame — no "Not responding" pill, no input block — for
+    /// the watchdog's grace; a real stall after it still says so.
+    func powerLocked() {
+        powerLocked(at: ProcessInfo.processInfo.systemUptime)
+    }
+
+    /// The clock-explicit half, so a test drives the rule without waiting.
+    func powerLocked(at now: TimeInterval) {
+        setStalled(false)
+        watchdog.powerLocked(at: now)
+        writeChromeState()
+    }
+
     /// The picture stopped (or came back): the same kind of pill as the
     /// reconnecting one, "Not responding", and `stall=1` in the chrome state.
     /// A stall is a frozen mode: input and the phone-side actions stop too.

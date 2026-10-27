@@ -22,6 +22,12 @@ struct FrameWatchdog: Equatable {
     /// How often the window asks; finer than the deadline and cheap.
     static let tickInterval: TimeInterval = 0.25
 
+    /// The phone's own power press with app streams up re-lights its VD group;
+    /// the picture can be quiet for that moment. Under stale_picture_ms (a test
+    /// pins that), so a press never makes the window hold a dead picture longer
+    /// than the promise allows.
+    static let powerGrace: TimeInterval = 1.7
+
     /// The last accepted frame; while the window is not expecting frames this
     /// is reset to the current time so paused/covered time is not evidence.
     private(set) var lastFrame: TimeInterval?
@@ -30,6 +36,9 @@ struct FrameWatchdog: Equatable {
     /// them again starts the clock, so covered/paused time never counts. A
     /// fresh watchdog has heard no "stop", so the first tick keeps the clock.
     private var wasExpecting = true
+
+    /// Until when a press's grace allows silence (`powerLocked`).
+    private var graceUntil: TimeInterval = -.greatestFiniteMagnitude
 
     /// A frame arrived (from the session queue, through the window's clock).
     /// True when it ended a stall.
@@ -41,6 +50,16 @@ struct FrameWatchdog: Equatable {
         guard stalled else { return false }
         stalled = false
         return true
+    }
+
+    /// `power.locked`: the phone's own power press with our streams up. The VD
+    /// group is being re-lit, so the clock restarts here and a stall from
+    /// before the press ends: the silence is the person's action, not a dead
+    /// stream.
+    mutating func powerLocked(at now: TimeInterval) {
+        lastFrame = now
+        graceUntil = now + Self.powerGrace
+        stalled = false
     }
 
     /// The timer's question. `expecting` is the window's rule (session up,
@@ -62,10 +81,13 @@ struct FrameWatchdog: Equatable {
             stalled = false
             return false
         }
-        guard !stalled, let lastFrame, now - lastFrame >= Self.staleAfter else { return false }
+        guard !stalled, let lastFrame else { return false }
+        // The press's grace can be longer than the normal deadline: silence
+        // inside it is the person's own action.
+        let deadline = max(lastFrame + Self.staleAfter, graceUntil)
+        guard now >= deadline else { return false }
         stalled = true
-        return true
-    }
+        return true    }
 }
 
 /// The last frame's time, written from the session queue and read by the

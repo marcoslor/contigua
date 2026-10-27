@@ -45,8 +45,7 @@ final class StreamWindowWatchdogTests: XCTestCase {
         XCTAssertTrue(controller.expectsFrames)
     }
 
-    func testCoveredTimeNeverStallsAndTheClockRestartsOnReturn() throws {
-        let manager = makeManager()
+    func testCoveredTimeNeverStallsAndTheClockRestartsOnReturn() throws {        let manager = makeManager()
         let controller = AppWindowController(stream: 1, pkg: "com.example.app", activity: nil,
                                              label: "Example", manager: manager)
         defer { controller.window?.close() }
@@ -82,5 +81,36 @@ final class StreamWindowWatchdogTests: XCTestCase {
         controller.frameClock.note(at: t0 + 14)
         controller.tickFrameWatchdog(at: t0 + 14)
         XCTAssertFalse(controller.isStalled)
+    }
+
+    /// L2: the phone's own power press with our streams up (`power.locked`).
+    /// The window holds the last frame — no "Not responding" pill, no input
+    /// block — through the grace, and a real stall after it still says so.
+    func testAPowerPressHoldsTheLastFrameAndARealStallStillShows() throws {
+        let manager = makeManager()
+        let controller = AppWindowController(stream: 1, pkg: "com.example.app", activity: nil,
+                                             label: "Example", manager: manager)
+        defer { controller.window?.close() }
+        let window = try XCTUnwrap(controller.window)
+        window.orderFront(nil)
+        controller.occlusionVisibleOverride = true
+        controller.noteFirstFrame()
+        let t0 = ProcessInfo.processInfo.systemUptime
+        controller.frameClock.note(at: t0)
+        controller.tickFrameWatchdog(at: t0)
+        controller.tickFrameWatchdog(at: t0 + 2)
+        XCTAssertTrue(controller.isStalled, "the baseline: 2 s of silence stalls")
+
+        // The press: the picture is the person's own action, so the window holds
+        // the last frame and the frozen input block goes with the pill.
+        controller.powerLocked(at: t0 + 2.1)
+        XCTAssertFalse(controller.isStalled)
+        XCTAssertTrue(controller.expectsFrames, "the window still expects the stream to come back")
+        controller.tickFrameWatchdog(at: t0 + 3.5)
+        XCTAssertFalse(controller.isStalled, "inside the grace the picture is not called stale")
+
+        // Past the grace with no frame: a real stall, said visibly.
+        controller.tickFrameWatchdog(at: t0 + 4.2)
+        XCTAssertTrue(controller.isStalled)
     }
 }
