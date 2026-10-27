@@ -179,6 +179,7 @@ final class DeckZoomProbe {
     }
 
     @objc private func tick(_ link: CADisplayLink) {
+        if refreshMs == 0, link.duration > 0 { refreshMs = link.duration * 1000 }
         let now = CACurrentMediaTime()
         if lastTick > 0, now > lastTick {
             samples.append((now - lastTick) * 1000)
@@ -206,6 +207,9 @@ final class DeckZoomProbe {
     }
 
     private var lastTick: Double = 0
+    /// The display link's own frame interval, in ms: what the screen under the
+    /// window can show, which a visible run's limit has to respect.
+    private var refreshMs: Double = 0
 
     private func finish(_ phase: Phase) {
         displayLink?.invalidate()
@@ -257,6 +261,8 @@ final class DeckZoomProbe {
                                    "max": (sorted.last ?? 0).rounded(),
                                    "settleMax": (settle.max() ?? 0).rounded(),
                                    "measured": fits.count,
+                                   "refreshMs": (refreshMs * 100).rounded() / 100,
+                                   "histogram": histogram(of: samples),
                                    "badFrames": bad.count,
                                    "clippedCells": fits.map(\.clipped).reduce(0, +)]
         // The widest frame's evidence: what the check prints when it fails.
@@ -267,8 +273,17 @@ final class DeckZoomProbe {
 
     private func write() {
         report["relayouts"] = DeckGridMetrics.relayouts
+        report["refreshMs"] = (refreshMs * 100).rounded() / 100
         guard let data = try? JSONSerialization.data(withJSONObject: report, options: [.sortedKeys]) else { return }
         try? data.write(to: URL(fileURLWithPath: path))
+    }
+
+    /// Frame times counted per whole millisecond, smallest first: the shape a
+    /// p95 hides (one slow frame or a step at twice the refresh).
+    private func histogram(of samples: [Double]) -> [[Int]] {
+        var counts: [Int: Int] = [:]
+        for sample in samples { counts[Int(sample.rounded()), default: 0] += 1 }
+        return counts.sorted { $0.key < $1.key }.map { [$0.key, $0.value] }
     }
 }
 

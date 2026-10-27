@@ -220,7 +220,11 @@ final class PhoneWindowController: StreamWindowController {
     }
 
     override func windowWillResize(_ sender: NSWindow, to frameSize: NSSize) -> NSSize {
-        PhoneChrome.frame(proposed: frameSize, phone: phoneScreen, style: style)
+        // The phone's aspect first, then the screen: a person's drag, an
+        // Accessibility resize or a tiler can only make it as large as the
+        // screen allows (CONV-MAC-12).
+        WindowFrameLimit.aspectFitted(
+            PhoneChrome.frame(proposed: frameSize, phone: phoneScreen, style: style), for: sender)
     }
 
     override func windowDidEndLiveResize(_ notification: Notification) {

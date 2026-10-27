@@ -6,9 +6,11 @@
 //   SSL context and no session is ever cached, so the client cannot offer a PSK.
 // - The pin (§1): SHA-256 over the 65-byte uncompressed EC point of the peer
 //   cert, checked inside the handshake through NIOSSL's custom verification
-//   callback. A configured empty pin refuses to connect at all (§8 step 3).
-//   Pairing mode (nil pin) accepts the peer's self-signed cert and reports its
-//   fingerprint so the state machine can store it after commit/reveal.
+//   callback. The dialed phone's own record (pins.json) is the pin; a record
+//   that is missing, or has no cert, refuses to connect at all (§8 step 3).
+//   identity.json's `pin` is only the §3 mirror of the phone in use.
+//   Pairing mode (no record) accepts the peer's self-signed cert and reports
+//   its fingerprint so the state machine can store it after commit/reveal.
 // - The exporter (§4b): the vendored BoringSSL publishes TLS 1.3 secrets on the
 //   keylog callback, including `EXPORTER_SECRET`; ExporterV2 runs the RFC 8446
 //   §7.5 math on it. Keylog lines are secrets: memory-only, pairing sessions
@@ -306,6 +308,29 @@ enum PhonePinsFileV2 {
     }
 }
 
+// MARK: - The §3 mirror of the phone in use
+
+/// identity.json's `pin` names the phone the Mac is using; it is never a
+/// second authority over another phone's record (the record is). These rules
+/// keep it in step with the store, as values so K2 tests them without a file.
+enum IdentityPinMirror {
+    /// The fingerprint to mirror for `deviceId`: its record's, or "" when the
+    /// store has none (the file must never name a phone the store forgot).
+    static func pin(for deviceId: String, records: [PinnedPhoneV2]) -> String {
+        records.first { $0.deviceId == deviceId }?.phoneFingerprintHex ?? ""
+    }
+
+    /// The mirror after `forgotten` left the store: empty when no remaining
+    /// record holds it; otherwise unchanged (it still names a stored phone).
+    static func pinAfterForget(current: String, records: [PinnedPhoneV2], forgotten: String) -> String {
+        guard !current.isEmpty else { return "" }
+        if records.contains(where: { $0.phoneFingerprintHex == current && $0.deviceId != forgotten }) {
+            return current
+        }
+        return ""
+    }
+}
+
 /// deviceId → pin record, write-through to `pins.json` (0600) when the owner
 /// supplies the file URL. In-memory only otherwise (tests).
 final class PhonePinStoreV2 {
@@ -396,18 +421,22 @@ final class TlsConnectorV2: @unchecked Sendable {
         }
         var tls = TLSConfiguration.makeClientConfiguration()
         if let phone = pinnedPhone {
-            // ENFORCED: the identity.json pin (§3) and the pin store record
-            // must say the same fingerprint, and the record must carry the
-            // phone cert. Missing either ⇒ refuse (nothing interpretable).
-            guard !identity.pin.isEmpty else { throw TlsV2Error.noPin }
+            // ENFORCED: the dialed phone's own record is the pin. identity.json's
+            // §3 `pin` only mirrors the phone in use (rewritten on a successful
+            // connect and on use), so it is never compared with another phone's
+            // record: pairing A then B and switching back to A must not read as
+            // a changed certificate. The record must carry its cert and its
+            // fingerprint; missing either ⇒ refuse (nothing interpretable).
             guard let cert = try? NIOSSLCertificate(bytes: [UInt8](phone.certPem.utf8), format: .pem) else {
                 throw TlsV2Error.incompleteIdentity
             }
             guard let peerFingerprint = PinCheckV2.pointFingerprint(cert: cert) else {
                 throw TlsV2Error.notP256
             }
-            guard PinCheckV2.matches(peerFingerprint, pinHex: identity.pin) else {
-                throw TlsV2Error.pinMismatch(got: Data(peerFingerprint).hexString, expected: identity.pin)
+            guard !phone.phoneFingerprintHex.isEmpty else { throw TlsV2Error.noPin }
+            guard PinCheckV2.matches(peerFingerprint, pinHex: phone.phoneFingerprintHex) else {
+                throw TlsV2Error.pinMismatch(got: Data(peerFingerprint).hexString,
+                                             expected: phone.phoneFingerprintHex)
             }
             // The pin IS the check (sec L-5): `connect()` installs a custom
             // verification callback that accepts the peer only when its leaf
@@ -418,9 +447,8 @@ final class TlsConnectorV2: @unchecked Sendable {
             // (Resumed handshakes are impossible: R3.)
             tls.certificateVerification = .noHostnameVerification
         } else {
-            // PAIRING: no pin record yet. A §3 pin without a record is a
-            // corrupt store — refuse rather than degrade to open TLS.
-            if !identity.pin.isEmpty { throw TlsV2Error.noPin }
+            // PAIRING: no record for the dialed phone yet. The §3 mirror names
+            // the phone last used and must not gate it.
             tls.certificateVerification = .none
         }
         guard let ownCert = try? NIOSSLCertificate(bytes: [UInt8](identity.certPem.utf8), format: .pem),
@@ -478,11 +506,12 @@ final class TlsConnectorV2: @unchecked Sendable {
         let context = try NIOSSLContext(configuration: tlsConfig)
         let capture = keyLog
         // Pinned peers: the standard trust-roots path is replaced by a callback
-        // that compares the presented leaf against the pin and ignores the
-        // certificate's validity dates (sec L-5). Pairing mode (no pin) keeps
-        // the plain handler: any cert completes, the pin is learned from it.
+        // that compares the presented leaf against the dialed record's pin and
+        // ignores the certificate's validity dates (sec L-5). Pairing mode (no
+        // record) keeps the plain handler: any cert completes, the pin is
+        // learned from it.
         let sslHandler = try Self.makeClientHandler(context: context,
-                                                    pinnedPinHex: pinnedPhone == nil ? nil : identity.pin)
+                                                    pinnedPinHex: pinnedPhone?.phoneFingerprintHex)
         let learn = onPeerPin
         let learnCert = onPeerCert
         do {
