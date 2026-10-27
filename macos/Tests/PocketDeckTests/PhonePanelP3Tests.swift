@@ -1,7 +1,7 @@
 // Panel P3 (docs/design/mac-redesign.md §3.8, the 2026-10-22 deck-panel
 // review): a 2×2 tile grid, a menu on the Ringer tile, the volume slider with
-// its value, one compact WINDOWS row, and a footer only in the menu bar
-// panel. The pure model is what the e2e's paneldump reads and what the view
+// its value, one compact WINDOWS row, and the menu bar panel's gear last in
+// Tab order. The pure model is what the e2e's paneldump reads and what the view
 // draws; the hosted view checks pin the frames a pointer hits.
 
 import AppKit
@@ -20,7 +20,8 @@ final class PhonePanelP3Tests: XCTestCase {
 
     private func state(online: Bool = true, dnd: PhoneDndMode? = .off,
                        ringer: PhoneRingerMode? = .normal, volume: Int? = 8,
-                       sessions: [MediaSessionRow] = [], phoneWindow: Bool = true) -> PhoneControlsState {
+                       sessions: [MediaSessionRow] = [], phoneWindow: Bool = true,
+                       agentCount: Int = 0) -> PhoneControlsState {
         var state = PhoneControlsState()
         state.phoneName = "Pixel 9"
         state.connection = online ? .online : .offline
@@ -30,29 +31,31 @@ final class PhonePanelP3Tests: XCTestCase {
         state.volumeMax = 15
         state.sessions = sessions
         state.phoneWindow = phoneWindow
+        state.agentCount = agentCount
         return state
     }
 
     // MARK: - The model
 
-    /// P3's order: the four tiles, the volume, the picker when there is one,
-    /// the window buttons, then the menu bar panel's footer. The Deck popover
-    /// asks for no footer, so its focus order ends at Install APK.
-    func testTheFocusOrderIsP3AndTheFooterIsOptional() {
+    /// P3's order: the menu bar panel's gear first (the header's control), then
+    /// the four tiles, the volume, the picker when there is one and the window
+    /// buttons. The Deck popover has no gear, so its order starts at DND.
+    /// Settings… and Quit are the icon's menu, never rows.
+    func testTheFocusOrderIsP3WithTheGearFirst() {
         let plain = state()
-        XCTAssertEqual(PhonePanelItem.focusOrder(for: plain),
-                       [.dnd, .ringer, .ring, .screen, .volume,
-                        .phoneScreen, .findApps, .continueOnMac, .installApk,
-                        .settings, .quit])
-        XCTAssertEqual(PhonePanelItem.focusOrder(for: plain, showsFooter: false),
-                       [.dnd, .ringer, .ring, .screen, .volume,
-                        .phoneScreen, .findApps, .continueOnMac, .installApk])
+        let tiles = [PhonePanelItem.dnd, .ringer, .ring, .screen, .volume,
+                     .phoneScreen, .findApps, .continueOnMac, .installApk]
+        XCTAssertEqual(PhonePanelItem.focusOrder(for: plain), tiles)
+        XCTAssertEqual(PhonePanelItem.focusOrder(for: plain, showsGear: true), [.gear] + tiles)
 
         let two = state(sessions: [MediaSessionRow(key: "a", pkg: "p.a", app: "Spotify", playing: false),
                                    MediaSessionRow(key: "b", pkg: "p.b", app: "Music", playing: true)])
-        XCTAssertEqual(PhonePanelItem.focusOrder(for: two, showsFooter: false),
-                       [.dnd, .ringer, .ring, .screen, .volume, .sessions,
+        XCTAssertEqual(PhonePanelItem.focusOrder(for: two, showsGear: true),
+                       [.gear, .dnd, .ringer, .ring, .screen, .volume, .sessions,
                         .phoneScreen, .findApps, .continueOnMac, .installApk])
+
+        XCTAssertFalse(PhonePanelItem.allCases.contains { $0.rawValue == "settings" || $0.rawValue == "quit" },
+                       "the footer rows are gone from the item model")
     }
 
     /// The Ringer tile: the subtitle names the phone's mode, the menu lists
@@ -182,12 +185,11 @@ final class PhonePanelP3Tests: XCTestCase {
 
     // MARK: - The hosted view
 
-    private func host(_ state: PhoneControlsState, showsFooter: Bool = true,
-                      showsGear: Bool = false) -> NSHostingView<PhonePanelView> {
+    private func host(_ state: PhoneControlsState, showsGear: Bool = false) -> NSHostingView<PhonePanelView> {
         window?.orderOut(nil)
+        let gear: (() -> Void)? = showsGear ? {} : nil
         let view = NSHostingView(rootView: PhonePanelView(state: state, actions: PhoneControlsActions(),
-                                                          showsFooter: showsFooter,
-                                                          showsGear: showsGear))
+                                                          onGear: gear))
         view.frame = NSRect(x: 0, y: 0, width: PhonePanelView.width, height: 720)
         view.layoutSubtreeIfNeeded()
         let size = view.fittingSize
@@ -201,17 +203,60 @@ final class PhonePanelP3Tests: XCTestCase {
         return view
     }
 
+    /// The card in a real menu-bar panel, key and laid out the way the status
+    /// item's panel is when it opens — without the focus step, which the test
+    /// runs itself.
+    private func panelHost(_ state: PhoneControlsState) -> (MenuBarPanel, NSHostingView<PhonePanelView>) {
+        window?.orderOut(nil)
+        let view = NSHostingView(rootView: PhonePanelView(state: state, actions: PhoneControlsActions(),
+                                                          onGear: {}))
+        view.layoutSubtreeIfNeeded()
+        let size = view.fittingSize
+        let panel = MenuBarPanel(contentRect: NSRect(origin: .zero, size: size),
+                                 styleMask: [.borderless, .nonactivatingPanel],
+                                 backing: .buffered, defer: false)
+        view.frame = NSRect(origin: .zero, size: size)
+        panel.contentView = view
+        panel.orderFrontRegardless()
+        panel.makeKey()
+        view.layoutSubtreeIfNeeded()
+        window = panel
+        return (panel, view)
+    }
+
+    private func isControl(_ view: NSView) -> Bool {
+        let name = String(describing: type(of: view))
+        return name.contains("KeyViewProxy") || view is NSSwitch || name.contains("PopupButton")
+    }
+
+    /// The controls in the order SwiftUI laid them out — the key-view order the
+    /// debug probe maps `PhonePanelItem.focusOrder` to.
+    private func hierarchyControls(in view: NSView) -> [NSView] {
+        func walk(_ view: NSView) -> [NSView] {
+            let own: [NSView] = isControl(view) ? [view] : []
+            return own + view.subviews.flatMap(walk)
+        }
+        return walk(view)
+    }
+
     private func controls(in view: NSView) -> [NSView] {
-        func descendants(_ view: NSView) -> [NSView] { view.subviews.flatMap { [$0] + descendants($0) } }
-        return descendants(view)
-            .filter {
-                let name = String(describing: type(of: $0))
-                return name.contains("KeyViewProxy") || $0 is NSSwitch || name.contains("PopupButton")
-            }
-            .sorted { a, b in
-                let fa = a.convert(a.bounds, to: view), fb = b.convert(b.bounds, to: view)
-                return fa.minY == fb.minY ? fa.minX < fb.minX : fa.minY < fb.minY
-            }
+        hierarchyControls(in: view).sorted { a, b in
+            let fa = a.convert(a.bounds, to: view), fb = b.convert(b.bounds, to: view)
+            return fa.minY == fb.minY ? fa.minX < fb.minX : fa.minY < fb.minY
+        }
+    }
+
+    /// The help tag and accessibility names a control's subtree carries.
+    private func helpAndLabel(of view: NSView) -> String {
+        var found: [String] = []
+        func walk(_ view: NSView) {
+            if let tip = view.toolTip, !tip.isEmpty { found.append(tip) }
+            if let label = view.accessibilityLabel(), !label.isEmpty { found.append(label) }
+            if let help = view.accessibilityHelp(), !help.isEmpty { found.append(help) }
+            view.subviews.forEach(walk)
+        }
+        walk(view)
+        return found.joined(separator: " | ")
     }
 
     private func frame(_ control: NSView, in view: NSView) -> CGRect {
@@ -222,8 +267,8 @@ final class PhonePanelP3Tests: XCTestCase {
     /// 62 pt tall, and they come before the volume in the focus order.
     func testTheTilesAreTwoRowsOfTwoAtTheirReviewSize() throws {
         let state = state()
-        let view = host(state, showsFooter: false)
-        let items = PhonePanelItem.focusOrder(for: state, showsFooter: false)
+        let view = host(state)
+        let items = PhonePanelItem.focusOrder(for: state)
         let laidOut = controls(in: view)
         XCTAssertEqual(laidOut.count, items.count, "one laid-out control per item")
         guard let dndIndex = items.firstIndex(of: .dnd) else { return XCTFail("no DND tile") }
@@ -243,51 +288,41 @@ final class PhonePanelP3Tests: XCTestCase {
         XCTAssertEqual(ring.minX, dnd.minX, accuracy: 1)
     }
 
-    /// The volume is still the inline slider with its percentage; the WINDOWS
-    /// row is one row of four buttons, and the footer appears only when asked.
-    func testTheVolumeRowAndWindowsRowAndFooter() {
+    /// The volume is still the inline slider with its percentage, and the
+    /// WINDOWS row is one row of four buttons.
+    func testTheVolumeRowAndWindowsRow() {
         let state = state()
-        let withFooter = host(state, showsFooter: true)
-        let footerItems = PhonePanelItem.focusOrder(for: state, showsFooter: true)
-        let footerControls = controls(in: withFooter)
-        XCTAssertEqual(footerControls.count, footerItems.count)
-        let volume = footerControls[footerItems.firstIndex(of: .volume)!]
-        let volumeRect = frame(volume, in: withFooter)
-        XCTAssertEqual(volumeRect.height, 14, accuracy: 0.5)
-        XCTAssertGreaterThan(volumeRect.width, 150)
+        let view = host(state)
+        let items = PhonePanelItem.focusOrder(for: state)
+        let laidOut = controls(in: view)
+        XCTAssertEqual(laidOut.count, items.count)
+        let volume = frame(laidOut[items.firstIndex(of: .volume)!], in: view)
+        XCTAssertEqual(volume.height, 14, accuracy: 0.5)
+        XCTAssertGreaterThan(volume.width, 150)
 
-        let phone = frame(footerControls[footerItems.firstIndex(of: .phoneScreen)!], in: withFooter)
-        let find = frame(footerControls[footerItems.firstIndex(of: .findApps)!], in: withFooter)
-        let cont = frame(footerControls[footerItems.firstIndex(of: .continueOnMac)!], in: withFooter)
-        let install = frame(footerControls[footerItems.firstIndex(of: .installApk)!], in: withFooter)
+        let phone = frame(laidOut[items.firstIndex(of: .phoneScreen)!], in: view)
+        let find = frame(laidOut[items.firstIndex(of: .findApps)!], in: view)
+        let cont = frame(laidOut[items.firstIndex(of: .continueOnMac)!], in: view)
+        let install = frame(laidOut[items.firstIndex(of: .installApk)!], in: view)
         for rect in [phone, find, cont, install] {
             XCTAssertEqual(rect.minY, phone.minY, accuracy: 1, "WINDOWS is one row")
             XCTAssertGreaterThan(rect.width, 50)
         }
         XCTAssertLessThan(phone.maxX, find.minX)
         XCTAssertLessThan(cont.maxX, install.minX)
-
-        let without = host(state, showsFooter: false)
-        let bare = PhonePanelItem.focusOrder(for: state, showsFooter: false)
-        XCTAssertEqual(controls(in: without).count, bare.count)
-        XCTAssertFalse(bare.contains(.settings))
-        XCTAssertFalse(bare.contains(.quit))
     }
 
-    /// M2's gear sits in the header at the panel's top-right and is the first
-    /// control the keyboard reaches; M1 and M2 leave the footer out, so the
-    /// two Settings…/Quit paths never both show.
-    func testTheGearIsTheHeadersOwnControlAndComesFirst() {
+    /// The gear sits on the header's right edge and is the card's first control
+    /// in key order; the panel steps past it when it opens (next test).
+    func testTheGearIsOnTheHeaderAndHeadsTheKeyOrder() {
         let state = state()
-        let items = PhonePanelItem.focusOrder(for: state, showsFooter: false, showsGear: true)
+        let items = PhonePanelItem.focusOrder(for: state, showsGear: true)
         XCTAssertEqual(items.first, .gear)
-        XCTAssertFalse(items.contains(.settings))
-        XCTAssertFalse(items.contains(.quit))
-        XCTAssertFalse(PhonePanelItem.focusOrder(for: state).contains(.gear),
-                       "the gear is M2's only")
+        XCTAssertEqual(PhonePanelItem.focusOrder(for: state).first, .dnd,
+                       "the Deck popover has no gear")
 
-        let view = host(state, showsFooter: false, showsGear: true)
-        let laidOut = controls(in: view)
+        let view = host(state, showsGear: true)
+        let laidOut = hierarchyControls(in: view)
         XCTAssertEqual(laidOut.count, items.count, "one laid-out control per item")
         let gear = frame(laidOut[0], in: view)
         XCTAssertEqual(gear.width, 22, accuracy: 1)
@@ -298,17 +333,47 @@ final class PhonePanelP3Tests: XCTestCase {
         XCTAssertLessThan(gear.maxY, dnd.minY, "the gear is in the header, above the tiles")
     }
 
-    /// The two hosts: the menu bar asks for the footer, the Deck popover for
-    /// none. One view, one body. The menu bar's footer is the prototype's, so
-    /// M1/M2 can take it away (PanelMenuPrototypeTests.swift).
-    func testTheDeckPopoverDropsTheFooter() throws {
+    /// The panel opens on its first phone control, not on the gear: the ring
+    /// lands on DND, or on Disconnect while an agent is connected. The panel
+    /// steps past its first key view for this, and `openingFocus` names where
+    /// that step goes.
+    func testThePanelOpensOnTheFirstTileNotTheGear() {
+        let plain = state()
+        let items = PhonePanelItem.focusOrder(for: plain, showsGear: true)
+        XCTAssertEqual(items.first, .gear, "the gear heads the card")
+        XCTAssertEqual(PhonePanelItem.openingFocus(for: plain), .dnd)
+        XCTAssertEqual(PhonePanelItem.openingFocus(for: state(agentCount: 1)), .disconnectAgent)
+
+        let (panel, view) = panelHost(plain)
+        let laidOut = hierarchyControls(in: view)
+        XCTAssertEqual(laidOut.count, items.count, "one laid-out control per item")
+        XCTAssertTrue(panel.firstResponder === laidOut[items.firstIndex(of: .gear)!],
+                      "the key order starts on the gear")
+        panel.focusFirstPhoneControl()
+        XCTAssertTrue(panel.firstResponder === laidOut[items.firstIndex(of: .dnd)!],
+                      "the opening focus is the DND tile")
+
+        let agent = state(agentCount: 1)
+        let agentItems = PhonePanelItem.focusOrder(for: agent, showsGear: true)
+        let (agentPanel, agentView) = panelHost(agent)
+        let agentControls = hierarchyControls(in: agentView)
+        XCTAssertEqual(agentControls.count, agentItems.count)
+        agentPanel.focusFirstPhoneControl()
+        XCTAssertTrue(agentPanel.firstResponder
+                      === agentControls[agentItems.firstIndex(of: .disconnectAgent)!],
+                      "Disconnect takes the opening focus while an agent is connected")
+    }
+
+    /// One view, one body, two hosts: the menu bar panel passes the gear's
+    /// action, the Deck popover passes none, and no host has a footer row.
+    func testOnlyTheMenuBarPanelHasTheGear() throws {
         let sources = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent("Sources/PocketDeck", isDirectory: true)
         let deck = try String(contentsOf: sources.appendingPathComponent("DeckViews.swift"), encoding: .utf8)
         let menu = try String(contentsOf: sources.appendingPathComponent("MenuBar.swift"), encoding: .utf8)
-        XCTAssertTrue(deck.contains("showsFooter: false"), "the Deck popover has no Settings/Quit footer")
-        XCTAssertTrue(menu.contains("showsFooter: prototype?.showsFooter ?? true"),
-                      "the menu bar panel's footer follows the secondary-click prototype")
+        XCTAssertFalse(deck.contains("onGear:"), "the Deck popover has no gear")
+        XCTAssertTrue(menu.contains("onGear: onSecondaryMenu"), "the menu bar panel has the gear")
+        XCTAssertFalse(menu.contains("showsFooter"), "the panel has no footer rows")
     }
 }

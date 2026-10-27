@@ -10,10 +10,10 @@
 // Open and Closing, with the icon click, a click outside, Esc and an action
 // that opens a window. Only the returned actions touch windows.
 //
-// The person's second ask (2026-10-27): Settings… and Quit move to a
-// right-click menu on the icon. That is a prototype behind `--debug-proto
-// panelmenu=M1|M2|M3` (PanelMenuPrototype.swift), and its own event,
-// `iconSecondaryClick`; without the flag a right-click still toggles the panel.
+// Settings… and Quit live in the icon's own secondary-click menu (the person
+// picked this on 2026-10-27): a right-click or Control-click opens it, and so
+// does the panel's gear. The panel's footer rows are gone, so the card is the
+// phone's controls only.
 
 import AppKit
 import SwiftUI
@@ -29,8 +29,7 @@ enum MenuBarPanelState: String, Equatable {
 enum MenuBarPanelEvent: String, Equatable {
     /// The status item's own click (mouse-up).
     case iconClick
-    /// A right-click or Control-click on the status item: the prototype's
-    /// menu under the icon (PanelMenuPrototype.swift).
+    /// A right-click or Control-click on the status item: the icon's menu.
     case iconSecondaryClick
     /// A click anywhere that is not the panel or the status item.
     case clickOutside
@@ -39,6 +38,18 @@ enum MenuBarPanelEvent: String, Equatable {
     case openWindow
     /// The hide animation ended: the panel is off screen.
     case hideFinished
+}
+
+/// Which click the status item received. Control-click arrives as a left click
+/// carrying ⌃, so it is the same request as a right-click; a plain left click
+/// is the panel's toggle.
+enum MenuBarPanelClick: Equatable {
+    case primary
+    case secondary
+
+    static func of(type: NSEvent.EventType?, modifiers: NSEvent.ModifierFlags) -> MenuBarPanelClick {
+        type == .rightMouseUp || modifiers.contains(.control) ? .secondary : .primary
+    }
 }
 
 enum MenuBarPanelAction: Equatable {
@@ -96,6 +107,35 @@ struct MenuBarPanelMachine {
     }
 }
 
+/// The icon's own menu (CONV-MAC-10): the commands the panel's footer used to
+/// carry. Settings… ⌘, and Quit PocketDeck ⌘Q are the app menu's keys too, so
+/// they are recognisable here; About sits between them, as Apple's extras do.
+enum MenuBarMenu {
+    static let settingsTitle = "Settings…"
+    static let aboutTitle = "About PocketDeck"
+    static let quitTitle = "Quit PocketDeck"
+
+    static func make(target: AnyObject) -> NSMenu {
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        menu.addItem(item(settingsTitle, action: #selector(MenuBarController.openSettingsFromMenu(_:)),
+                          key: ",", target: target))
+        menu.addItem(item(aboutTitle, action: #selector(MenuBarController.showAboutFromMenu(_:)),
+                          key: "", target: target))
+        menu.addItem(.separator())
+        menu.addItem(item(quitTitle, action: #selector(MenuBarController.quitFromMenu(_:)),
+                          key: "q", target: target))
+        return menu
+    }
+
+    private static func item(_ title: String, action: Selector, key: String,
+                             target: AnyObject) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: action, keyEquivalent: key)
+        item.target = target
+        return item
+    }
+}
+
 // MARK: - The panel
 
 /// The panel window: a borderless, non-activating card that still takes the
@@ -103,6 +143,13 @@ struct MenuBarPanelMachine {
 /// app — the person is usually in another app when they use it).
 final class MenuBarPanel: NSPanel {
     var onEscape: (() -> Void)?
+
+    /// The card opens with its ring on the first phone control. The gear heads
+    /// the card's key order (it is the header's top-right control), so the
+    /// panel steps past it once: DND, or the agent row's Disconnect.
+    func focusFirstPhoneControl() {
+        selectNextKeyView(nil)
+    }
 
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
@@ -143,6 +190,7 @@ final class MenuBarController: NSObject {
         self.defaults = defaults
         statusItem = NSStatusBar.system.statusItem(withLength: 30)
         super.init()
+        Self.current = self
         installButton()
         installMonitors()
         applyVisibility()
@@ -191,17 +239,10 @@ final class MenuBarController: NSObject {
     }
 
     @objc private func iconClicked(_ sender: Any?) {
-        // The prototype gives the secondary click its own event (a right-click,
-        // or Control-click, which arrives as a left click carrying ⌃). Without
-        // the flag both clicks stay the panel's toggle, as they are today.
         let event = NSApp.currentEvent
-        let secondary = event?.type == .rightMouseUp
-            || event?.modifierFlags.contains(.control) == true
-        if secondary, PanelMenuPrototype.current != nil {
-            handle(.iconSecondaryClick)
-        } else {
-            handle(.iconClick)
-        }
+        let click = MenuBarPanelClick.of(type: event?.type,
+                                         modifiers: event?.modifierFlags ?? [])
+        handle(click == .secondary ? .iconSecondaryClick : .iconClick)
     }
 
     // MARK: Events
@@ -218,49 +259,63 @@ final class MenuBarController: NSObject {
             case .show: showPanel()
             case .hide: hidePanel()
             case .hideImmediately: hidePanelNow()
-            case .showMenu: showSecondaryMenu()
+            case .showMenu: openSecondaryMenu()
             }
         }
     }
 
     // MARK: The secondary-click menu
 
-    /// The status item's own menu: Settings…, About, Quit. The item's `menu` is
-    /// set only for the pop-up, so the button's action stays the panel's
-    /// toggle the rest of the time. The icon's secondary click and the M2 gear
-    /// both reach it through the machine's `.showMenu` action.
-    private func showSecondaryMenu() {
+    /// The app's one status item: the probe's hosted panel opens the same menu
+    /// through it (one item per thing, CONV-MAC-11).
+    static weak var current: MenuBarController?
+
+    /// The icon's menu: the three app commands the panel's footer used to
+    /// carry. One builder serves the pop-up and the e2e's dump, so the menu a
+    /// check reads is the menu a person gets.
+    func secondaryMenu() -> NSMenu { MenuBarMenu.make(target: self) }
+
+    /// Pop the icon's menu up under the status item. The item's `menu` is set
+    /// only for the pop-up, so the button's action stays the panel's toggle the
+    /// rest of the time. The icon's secondary click and the panel's gear both
+    /// come through the machine's `.showMenu` action and land here.
+    func openSecondaryMenu() {
         guard let button = statusItem.button else { return }
-        let menu = NSMenu()
-        menu.autoenablesItems = false
-        menu.addItem(item("Settings…", #selector(openSettingsFromMenu(_:)), key: ","))
-        menu.addItem(item("About PocketDeck", #selector(showAboutFromMenu(_:)), key: ""))
-        menu.addItem(.separator())
-        menu.addItem(item("Quit PocketDeck", #selector(quitFromMenu(_:)), key: "q"))
-        statusItem.menu = menu
+        statusItem.menu = secondaryMenu()
         button.performClick(nil)
         statusItem.menu = nil
     }
 
-    private func item(_ title: String, _ action: Selector, key: String) -> NSMenuItem {
-        let item = NSMenuItem(title: title, action: action, keyEquivalent: key)
-        item.target = self
-        return item
+    /// `iconmenu PATH` (e2e `menus`): what the builder would pop, as JSON,
+    /// without showing it — a quiet run has no screen to pop it on.
+    func dumpSecondaryMenu(to path: String) -> Bool {
+        let rows: [[String: Any]] = secondaryMenu().items.map { item in
+            [
+                "title": item.isSeparatorItem ? "-" : item.title,
+                "key": item.keyEquivalent,
+                "command": item.keyEquivalentModifierMask.contains(.command),
+                "separator": item.isSeparatorItem,
+            ]
+        }
+        guard let data = try? JSONSerialization.data(withJSONObject: rows, options: [.sortedKeys]) else {
+            return false
+        }
+        return (try? data.write(to: URL(fileURLWithPath: path))) != nil
     }
 
-    @objc private func openSettingsFromMenu(_ sender: Any?) {
+    @objc fileprivate func openSettingsFromMenu(_ sender: Any?) {
         // The panel closes as it does after a footer row: the window is what
         // the person asked for, and a panel left behind it would be stale.
         handle(.openWindow)
         controller.openSettingsWindow()
     }
 
-    @objc private func showAboutFromMenu(_ sender: Any?) {
+    @objc fileprivate func showAboutFromMenu(_ sender: Any?) {
         handle(.openWindow)
         NSApp.orderFrontStandardAboutPanel(nil)
     }
 
-    @objc private func quitFromMenu(_ sender: Any?) {
+    @objc fileprivate func quitFromMenu(_ sender: Any?) {
         NSApp.terminate(nil)
     }
 
@@ -353,7 +408,7 @@ final class MenuBarController: NSObject {
             self?.handle(.openWindow)
         }, onSecondaryMenu: { [weak self] in
             // The gear is the same request as the right-click: the machine
-            // closes the panel first, then the one menu opens under the icon.
+            // closes the panel first, then the menu opens under the icon.
             self?.handle(.iconSecondaryClick)
         }).environment(controller))
         host.layoutSubtreeIfNeeded()
@@ -388,6 +443,7 @@ final class MenuBarController: NSObject {
         panel.alphaValue = 0
         panel.orderFrontRegardless()
         panel.makeKey()
+        panel.focusFirstPhoneControl()
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.12
             panel.animator().alphaValue = 1
