@@ -1,0 +1,154 @@
+# Notifications
+
+Prefix: `NOTIFY`. Owner docs: [design/notify.md](../design/notify.md) (all parts), [PROTOCOL.md](../PROTOCOL.md) § "Notifications + media", [UX.md](../UX.md) §4 (the per-phone switches), [settings.md](settings.md) (`SET-DEV-09`–`11`). Last reviewed: 2026-10-27, against main `6073e3c`.
+
+## Purpose
+
+The phone's notifications, on the Mac, without unlocking it. One per-phone switch forwards them (off until the person turns it on), each becomes one banner in Notification Center with the phone's own buttons, a reply field, Copy code and a clear, and a click does what the person chose: open the app on the Mac, open it on the phone, or nothing. A per-app mute drops a noisy app before it is shown, and an Android 16 Live Update is a row in the menu-bar panel that updates in place. Everything sensitive stays on the two devices: the Mac logs ids, packages, lengths and states — never text — and the only file it writes is a banner's temporary picture, deleted with the banner.
+
+This surface owns the gate, the banners and their content, the click target, actions, codes, images, live rows and the mute list. The per-phone switches' *storage* and their place in Settings are settings.md's (`SET-DEV-09`–`11`); Now Playing and media control are the media surface's; the panel's layout is panel.md's (`PANEL-15` is its LIVE row).
+
+## User stories
+
+| ID | Priority | Story |
+|---|---|---|
+| NOTIFY-S1 | P1 | As a person, I want my phone's notifications on the Mac only when I say so, so that nothing personal is forwarded by accident. |
+| NOTIFY-S2 | P1 | As a person, I want a banner to say which phone and which app it came from, and to carry the phone's own buttons, so that I can answer it without picking the phone up. |
+| NOTIFY-S3 | P1 | As a person, I want a click to open the app where I expect — on the Mac or on the phone — so that I am never sent to the wrong screen. |
+| NOTIFY-S4 | P1 | As a person, I want clearing a banner to clear the phone's notification too, so that the two do not disagree. |
+| NOTIFY-S5 | P2 | As a person, I want a verification code copied in one click, so that I do not retype six digits from a banner. |
+| NOTIFY-S6 | P2 | As a person, I want the picture a notification carries, so that a message is as readable on the Mac as on the phone. |
+| NOTIFY-S7 | P2 | As a person watching a ride or a timer, I want its Live Update as a row I can check, so that progress is glanceable. |
+| NOTIFY-S8 | P2 | As a person with one noisy app, I want to mute that app per phone, so that the rest still arrives. |
+| NOTIFY-S9 | P1 | As a person without notification access on the phone, I want both ends to say so and to offer the one fix, so that "no notifications" is never a mystery. |
+| NOTIFY-S10 | P1 | As a person, I want nothing forwarded while the switch is off, and no text in any log, so that the promise holds even when something breaks. |
+
+## Requirements
+
+| ID | Requirement (EARS) | Proof |
+|---|---|---|
+| NOTIFY-1 | THE forwarding switch SHALL be per phone, Mac-side, off by default and the only person-facing switch; WHEN it is on THE Mac SHALL send one `notify.enable {on:true}` when the session becomes ready (and again after every reconnect) and SHALL store the choice; WHILE it is off THE Mac SHALL send nothing, SHALL ask the phone for nothing and SHALL show no banner from that phone; turning it off WHILE the session is live SHALL stop forwarding at once and clear that phone's forwarded state. | e2e `notify` `[NOTIFY-1]` (the Mac asked; off: no `notify.enable`, no post, no click); K2 `NotifyMacTests`; K1 `NotifyGateTest` (the truth table) |
+| NOTIFY-2 | WHEN the Mac's switch is on and the phone's notification-listener grant is missing THE phone SHALL make one shell-UID grant attempt, then answer `notify.state {on:false, reason:"no_access"}`; its home SHALL show a "Notification access is off" attention item whose button opens the system's notification-access screen, the Mac's phone page SHALL say "Allow notification access on the phone." under the switch, and a later grant SHALL start forwarding with no further Mac toggle; turning sharing off SHALL clear the reason on both sides. | K1 `NotifySessionTest` (the attempt, `no_access`, the later grant, the revoked grant), `UiStateTest` (the attention item), `NotifyGateTest` (the reply); K2 `DevicesTabTests.testTheNotificationAccessHint`; e2e `settings` `[SET-DEV-09]` |
+| NOTIFY-3 | THE phone SHALL forward only a notification a person sees: it SHALL skip its own package (the debug poster excepted in a debug build), an ongoing notification the system did not promote, one with no title and no text, a malformed id, and a text over the wire's cap (dropped whole, never truncated); it SHALL advertise at most three actions, each with a title ≤ 64 characters, an index into the notification's own actions and a PendingIntent, marking a reply action; it SHALL skip unusable and system-generated smart actions. | e2e `notify` `[NOTIFY-3]` (a post per package recorded), `notify-actions` `[NOTIFY-3]` (the reply shape's action counts); K1 `NotifyEventsTest` (the fields, the caps, the skips, the actions), `NotifyLiveTest` (`only a promoted ongoing notification is live`); design/notify.md § "Actions on the wire" |
+| NOTIFY-4 | THE banner's title SHALL be "‹the notification's title, else the app's label› (‹phone name›)" — just the phone name when the title is empty — its body the notification's own text (or the package when the app has no label), its thread the phone's id, and it SHALL be silent on the Mac; the Mac SHALL ask for notification permission the first time it posts one, in context. | e2e `notify` `[NOTIFY-4]` (the posts grouped under the phone's id); K2 `NotifyMacTests.testTitleBuilderSuffixesThePhoneName`, `testTitleFallsBackToTheAppLabel`, `testTitleOnlyFromAnUnlabeledPackageKeepsTheNameAsBody`, `testATitlelessUnlabeledNotificationIsJustThePhoneName`, `testEmptyContentBecomesTheAppLabelWithThePhoneName`; review of `NotifyCenter.deliver` (`sound = nil`, `requestAuthorization`) |
+| NOTIFY-5 | WHEN a post arrives with an id already posted THE Mac SHALL replace that banner (not add a second), and an update that carries a picture SHALL carry it again so the replaced banner keeps it. | K2 `NotifyLiveMacTests.testFirstLivePostBannersAndLaterOnesUpdateInPlace`; review of `NotifyCenter.post` |
+| NOTIFY-6 | WHEN the phone takes a notification away (`notify.remove`) THE Mac SHALL remove that banner and its attachment; WHEN the person clears a banner THE Mac SHALL send `notify.dismiss {id}` for it, EXCEPT for a notification the wire marked ongoing, which the Mac SHALL refuse to dismiss and record as refused; a disconnect SHALL clear every banner and every attachment of that phone. | e2e `notify-actions` `[NOTIFY-6]` (the dismiss sent, the ongoing refused and not sent, the phone's remove reaching the Mac), `notify` `[NOTIFY-6]` (a removal recorded); K2 `NotifyMacTests` (the dismiss rule); K1 `NotifyEventsTest` (ongoing and no-clear are not dismissed) |
+| NOTIFY-7 | THE click target SHALL be per phone, SHALL default to Open on this Mac, and SHALL be disabled with a sentence while sharing is off; the choices SHALL be Open on this Mac, Open on the phone and Do nothing. | K2 `NotifyMacTests.testClickSettingDefaultsToOpenOnMacAndIsStoredPerPhone`, `testClickSettingMapsToItsAction`; e2e `settings` `[SET-DEV-10]` |
+| NOTIFY-8 | WHEN a banner is clicked THE Mac SHALL do exactly one plan: Open on this Mac SHALL open or raise the app's window and then send `notify.open {id, target:"window", stream}` (the window first, so a phone that does not know the message still opens the app); Open on the phone SHALL send `notify.open {id, target:"phone"}` and open no window; Do nothing SHALL send nothing and open nothing; the notification's own action SHALL never cross the wire. | e2e `notify` `[NOTIFY-8]` (the click's window and `window.open`, all three targets); K2 `NotifyMacTests.testDoNothingOpensNothingAndSendsNothing`, `testOpenOnMacOpensTheWindowBeforeSendingSoAnOldPhoneStillOpensIt`, `testNotifyOpenMessageCarriesOnlyTheIdTargetAndWindowStream`; K1 `NotifyOpenTest`, `NotifySessionTest` (`notify open` target validation) |
+| NOTIFY-9 | WHEN a banner's button or its reply is used THE Mac SHALL send `notify.action {id, i, text?}`; the phone SHALL validate `i` against the actions it advertised, SHALL fill the RemoteInput with `text` (≤ 4 KiB, reply actions only), SHALL refuse a text on a non-reply action or over the cap, SHALL log an unknown id or index and send nothing, and SHALL NOT answer — its own update or removal flows back as `notify.post`/`notify.remove`; the banner's category SHALL be a hash of its shape (button titles, a reply, a code) with at most 64 registered, never a hash of any text. | e2e `notify-actions` `[NOTIFY-9]` (the category is a shape hash, the reply's index and length, the button's index); K1 `NotifyEventsTest` (`an index that was never advertised is unknown`, `reply text is refused on a non-reply action and over the cap`), `NotifySessionTest` (a malformed id dropped); K2 `NotifyMacTests.testCategoryRegistryReusesShapesAndStaysBounded`, `testCategoryIdIsStablePerShapeAndCarriesNoText` |
+| NOTIFY-10 | WHEN a banner's Copy code is used THE Mac SHALL copy the code the notification carries (4–8 digits, or 6–8 alphanumerics with at least two digits, within 32 characters of a code keyword in English, Portuguese or Spanish, rejecting a date, time, amount or phone number), SHALL mark the pasteboard item concealed and transient, and SHALL clear it after 90 s if the pasteboard still holds it; Copy code SHALL exist only while a code was found. | K2 `NotifyCodeTests` (every rule, the 90 s clear, the concealed/transient types); e2e `notify-actions` `[NOTIFY-10]` (a 6-character code copied, the pasteboard's types, then cleared) |
+| NOTIFY-11 | WHEN a notification carries a picture THE phone SHALL send at most one, its long side at most 512 px (never upscaled), JPEG or PNG, at most 200 KiB after halving to 512/256/128/64/32, and no picture at all if it cannot fit; the Mac SHALL refuse one that breaks its own caps or names an id it never posted, SHALL keep the banner without a picture, SHALL hold a post at most 300 ms for its picture, SHALL drop a picture that arrives after the hold as late, and SHALL delete the temporary file when the banner goes, on disconnect and on quit. | K2 `NotifyLiveMacTests.testImageCapsAcceptOnlyThePhonePromisedShape`, `testPostLineSaysItIsLiveAndCarriesTheImageFacts`; K1 `NotifyImageTest` (the caps, the halving, the skip); VM e2e `notify-vm` (a picture on a real banner) |
+| NOTIFY-12 | WHEN the phone reports a promoted ongoing notification THE Mac SHALL add it as a live row: the first post banners, later posts update that row in place at most once a second per id (the newest wins), showing the progress as a bar, the chip and the chronometer; the row SHALL appear in the menu-bar panel's LIVE section with the app and its progress or clock; when the phone ends it the row SHALL leave. | K2 `NotifyLiveMacTests` (`testUpdatesInsideOneSecondAreCoalescedAndTheNewestWins`, `testEndRemovesTheRowAndAPendingUpdate`, `testLiveRowCarriesTheChipAndATextProgressBar`, `testAChronometerRunsInItsOwnDirection`); K1 `NotifyLiveTest` (the fields, the one-per-second rule); VM e2e `notify-vm` (the LIVE section and its row) |
+| NOTIFY-13 | THE muted-apps list SHALL be per phone: it SHALL offer every app this Mac has cached for that phone plus every package seen this session or already muted, each with its icon and name, searchable by name or package, muted apps first and then by name, one trailing "Muted" checkbox column under a "Muted" header, a system package under a friendly name with its package name beneath, an unknown app by its package name, and a mark on an app that has sent a notification this session; the row SHALL show the count ("2", "None"); a muted package's post SHALL be dropped before it is shown, SHALL stay listed, and SHALL apply to the next notification. | e2e `notify-actions` `[NOTIFY-13]` (the muted package dropped, no banner); K2 `DevicesTabTests` (the count, the rows, the order, the search, the labels, the seen mark), `NotifyMacTests.testMutedSetIsPerPhoneAndSorted`; e2e `settings` `[SET-DEV-11]` |
+| NOTIFY-14 | THE phone's and the Mac's logs, the e2e share log and any crash report SHALL carry ids, package names, action indexes, field lengths, counts and closed states only — never a notification's title, text, code, reply or a media title; the only copy of a banner's picture on disk SHALL be its attachment under the profile's caches, `0600` in a `0700` folder, deleted with the banner. | e2e `notify` `[NOTIFY-14]` (no notification text in any log), `notify-actions` `[NOTIFY-14]` (no notification or reply text in any log); K2 `NotifyMacTests.testRecordsCarrySizesAndPackagesNotText`, `NotifyLiveMacTests.testImageAndLiveLinesCarryOnlyFacts`; review of `NotifyCenter.writeAttachment` |
+| NOTIFY-15 | A banner's click, dismiss, button, reply and Copy code SHALL run the same handlers the panel's LIVE row and the e2e's debug actions run, so that one notification behaves the same whichever way it is answered. | review of `NotificationRouter`/`NotifyCenter.install` (one router for real and debug responses); e2e `notify` and `notify-actions` (the debug actions reach the same routing) |
+| NOTIFY-16 | WHILE sharing is off THE app SHALL send no notification message to the phone and SHALL show no banner from it; reading the Deck, the panel or a phone's settings page SHALL send no notification write; only the person's own control SHALL change the gate. | e2e `notify` `[NOTIFY-1]` (off: nothing in the share log); e2e `nfr` (the read-only Deck and window flows send zero writes; the panel has no read-only phase — PANEL-24); review |
+| NOTIFY-17 | A phone that cannot forward SHALL NOT be hidden: the missing listener grant SHALL be a sentence on both ends with the one fix (NOTIFY-2); a phone that reports nothing simply sends nothing and the panel's LIVE section stays absent rather than empty. | K1 `UiStateTest` (`no attention for notification access once the Mac is not asking`); K2 `DevicesTabTests.testTheNotificationAccessHint`; review of `PhonePanel`'s `live.isEmpty` section |
+| NOTIFY-18 | Banners SHALL be the system's: the person's Focus and Do Not Disturb SHALL silence them as they silence any notification, and the app SHALL NOT override that; a phone's own Do Not Disturb is the phone's business and SHALL NOT be changed by forwarding. | review of `NotifyCenter` (nothing sets `interruptionLevel`/`sound`); AGENTS.md product promises |
+
+Priority note: NOTIFY-1, 2, 3, 4, 6, 7, 8, 9 and 14 are P1 — the gate, an honest banner, a click that goes where it says, and no text in a log. Codes, pictures, live rows and the mute list are P2.
+
+## States and events
+
+The gate is one machine on each side (`NotifyGate` on the phone: `OFF`, `FORWARDING`, `NO_ACCESS`; the Mac's stored switch is the input). A banner's life is the system's, with the Mac's own additions (the 300 ms hold, the live store, the copy's 90 s clock). Nothing here is inferred from timing except those two clocks.
+
+| State (phone gate) | Event | Result |
+|---|---|---|
+| OFF | `notify.enable on` with the listener granted | FORWARDING; `notify.state {on:true}` |
+| OFF | `notify.enable on` without the grant | one shell-UID grant attempt; granted → FORWARDING; else NO_ACCESS with `reason:"no_access"` |
+| NO_ACCESS | the person grants in the system screen | FORWARDING; `notify.state {on:true}`; posts resume |
+| FORWARDING | `notify.enable off` | OFF; no reason; nothing forwarded |
+| FORWARDING | the person revokes the grant | NO_ACCESS on the next gate read; nothing forwarded |
+| any | `the session closes` | OFF locally (the Mac's stored switch is unchanged) |
+
+| State (banner) | Event | Result |
+|---|---|---|
+| Held (≤ 300 ms) | `notify.image` for the id | the picture rides on the same banner |
+| Held | the hold ends | delivered to Notification Center |
+| Delivered | `notify.image` for the id | dropped as late; the banner stays |
+| Delivered | `notify.post` with the same id | the banner is replaced |
+| Delivered | `notify.remove` / a disconnect | the banner and its attachment go |
+| Delivered | the person clears it | `notify.dismiss` (refused for an ongoing one) |
+| Delivered | a click | the click target's one plan (NOTIFY-8) |
+| Delivered | a button, a reply or Copy code | `notify.action`, or the code on the pasteboard |
+| Delivered | a live update for its id | the in-place update (≤ 1 a second) |
+
+Ignored events, stated so nobody builds them: a post while sharing is off, a muted package's post, an action on an unknown id, a reply text on a non-reply action, a dismiss for an ongoing notification, a picture for an id the Mac never posted, a live end for an id it does not hold, and a second `notify.enable` with the same value.
+
+## Phone count and connection
+
+| Situation | Notifications shows |
+|---|---|
+| 0 phones | No switch to turn on and no banner: the phone page does not exist. Forwarding is a per-phone store, so it starts off when the first phone is paired. |
+| 1 phone | That phone's banners, titled with its name (its nickname first), its mute list and its click target. |
+| 2+ phones | Each phone has its own switch, click target and mute set; only the phone **in use** has a live session, so only its notifications arrive. Banners are grouped by the phone's id and titled with its name, and a phone's state is cleared when its session ends. |
+| Connecting / offline | Nothing is forwarded (there is no session); the panel keeps no stale rows and no banner claims to be live. |
+| Connected | Forwarding as the switch says; every state shown comes from the phone's own `notify.state`, `notify.post` and `notify.remove`. |
+| Key rejected (Pair again) | No session: nothing is forwarded; the Deck's banner carries Pair again. |
+| Missing listener grant | "Allow notification access on the phone." under the Mac's switch; "Notification access is off" with Allow on the phone; a later grant starts forwarding (NOTIFY-2). |
+| Phone that can't do the feature | A phone that never reports notifications simply sends none; the LIVE section is absent, and nothing is disabled that could work. |
+| macOS notifications denied | Today: nothing is shown and nothing says so (misses.md, CONV-MAC-24) — the log's `notify authorization granted=0` is the only trace. |
+
+## Conventions
+
+| Convention | Answer |
+|---|---|
+| CONV-MAC-01 | n/a: no search field of its own (the muted-apps list's search is SET-DEV-20's) |
+| CONV-MAC-02 | applies: the banners are the system's; no key of ⌘W/⌘M/⌘Q/⌘,/⌘H is taken for forwarding |
+| CONV-MAC-03 | applies: a banner is dismissed by the system's own gesture and Esc; Return runs the default response; the muted list's Esc is SET-DEV-21's |
+| CONV-MAC-04 | applies: the reply field a banner carries is the system's own text input; the mute search is a standard field |
+| CONV-MAC-05 | n/a: nothing zoomable |
+| CONV-MAC-06 | applies: no shortcut is added; the switches are in Settings' page and the only other entry is the app's own banner response |
+| CONV-MAC-07 | n/a: no shortcut is reused |
+| CONV-MAC-10 | n/a: not the status item's panel (the LIVE row is drawn inside it — panel.md) |
+| CONV-MAC-11 | applies: one banner per notification id and one live row per id (NOTIFY-5, NOTIFY-12); a replaced post never doubles |
+| CONV-MAC-12 | n/a: banners are the system's windows and are placed by it |
+| CONV-MAC-13 | n/a: no menu item and no full-screen command |
+| CONV-MAC-14 | n/a: no app-drawn content to resize |
+| CONV-MAC-15 | n/a: a banner is not a window a person closes to quit |
+| CONV-MAC-16 | applies: the reply field's copy and paste are the system's own; no drop target is added by this surface |
+| CONV-MAC-20 | applies: the phone page's rows and the panel's LIVE row render in light and dark with the accent and Increase Contrast; the banner is the system's |
+| CONV-MAC-21 | applies: every switch, the click target's picker and the mute rows carry labels (SET-DEV-19); a LIVE row reads its app, progress and clock as one element |
+| CONV-MAC-22 | applies: the LIVE row's bar and clock are the only motion and are information, not decoration; Reduce Motion does not stop a countdown |
+| CONV-MAC-23 | applies: NOTIFY-17 (a missing grant is a sentence on both ends), NOTIFY-12 (the progress is a bar *and* text) |
+| CONV-MAC-24 | applies: the Mac asks for notification permission the first time it posts (NOTIFY-4) and the phone's listener is asked for when the Mac's switch turns on (NOTIFY-2); the person's Focus silences banners (NOTIFY-18). **Deviates**: a denied macOS permission shows nothing and says nothing (misses.md) |
+| CONV-MAC-25 | applies: the settings rows use the native hover/pressed states and a disabled picker is dimmed neutral (SET-DEV-10) |
+| CONV-MAC-26 | applies: the page's one inset and rhythm are settings.md's; a helper sentence ("Allow notification access on the phone.") sits under its switch |
+| CONV-AND-01 | n/a: forwarding carries no phone navigation |
+| CONV-AND-02 | applies: the phone's attention item and its own connection notification follow the system theme; the connection notification is dismissable and names what it does (the phone app's surface) |
+| CONV-AND-03 | applies: NOTIFY-2 — the listener grant is asked for in context (the Mac's switch), one attempt, and its denial disables only forwarding with the sentence on both ends |
+| CONV-AND-04 | applies: forwarding reads notifications and changes no phone setting; the phone's Do Not Disturb is never altered by this surface (NOTIFY-18), and the phone stays locked |
+| CONV-PD-01 | applies: the phone-count table above (0, 1, 2+; per phone switch, target and mute set) |
+| CONV-PD-02 | applies: the table above (connecting, connected, offline, key rejected, the missing grant, the denied macOS permission) |
+| CONV-PD-03 | applies: NOTIFY-6 and NOTIFY-12 (a banner's state follows `notify.post`/`notify.remove`/the live update, never a local guess), NOTIFY-9 (no answer is invented) |
+| CONV-PD-04 | n/a: no slider or toggle follows a phone value |
+| CONV-PD-05 | applies: NOTIFY-14 |
+| CONV-PD-06 | applies: a banner is posted within the hold (≤ 300 ms) and a live row updates at most once a second; forwarding does no polling of its own |
+| CONV-PD-07 | applies: "Share notifications and Now Playing", "When I click a notification", "Open on this Mac"/"Open on the phone"/"Do nothing", "Muted apps", "Copy code", "LIVE" are one name each across the page, the panel and the docs (SET-DEV-09–11, PANEL-15) |
+| CONV-PD-08 | applies: the gate's truth table, the banner's life and the live store are the tables above |
+| CONV-PD-09 | applies: NOTIFY-2 ("Allow notification access on the phone."), NOTIFY-7 (the picker's values are its labels), NOTIFY-13 (the count in the row) |
+
+## Assumptions
+
+- The phone runs API 34+ and Android 16's promotion rules apply only there; a `NotificationListenerService` in PocketDeck is granted at shell UID when the Mac's switch turns on (design/notify.md).
+- The Mac's banners are `UNUserNotificationCenter` notifications: the system draws them, owns their Focus behaviour, and puts the action titles in a category keyed by the notification's shape.
+- A notification's buttons are the phone's own; an advertised action always has a PendingIntent, and the phone can run it after the Mac asks.
+- The phone's ids are the listener's own and are not reused across sessions; the Mac's request id is derived from the phone id and the notification id.
+- The phone's Do Not Disturb and ringer are the phone's; forwarding neither reads nor changes them.
+
+## Non-goals
+
+- Now Playing, media control, artwork and the media volume: the media surface and panel.md (`PANEL-14`).
+- A notification history, a notification centre of the app's own, or a banner that stays after the phone's notification is gone.
+- Replying with anything but the system's own text field, or attaching something to a reply.
+- Forwarding a notification while the phone's screen is off/locked *as a condition*: the listener reports what the system posts, whatever the screen is doing.
+- A per-app sound, importance or channel setting on the Mac (only the mute).
+- Any third-party service: nothing leaves the two devices.
+
+## Open questions
+
+- [NEEDS CLARIFICATION] A denied macOS notification permission makes every banner silently disappear; nothing on the Mac says so (CONV-MAC-24, honest settings). Recommended: one line in the phone page next to the switch ("Allow PocketDeck notifications in System Settings → Notifications.") with a Check again, shown only when the system's authorization is denied; prove it with a fake authorization seam.
+- [NEEDS CLARIFICATION] The phone's `notify.state {on:false, reason:"no_access"}` is also what a phone answers while its own master switch is off; the Mac shows the same sentence for both. Recommended: leave one sentence ("Allow notification access on the phone.") — the phone's own home names the real cause, and the Mac must not guess.
+- [NEEDS CLARIFICATION] A banner for an ongoing notification the system did not promote is never forwarded (service chrome is skipped). Recommended: keep it, and name it in the doc: a phone that has not promoted a notification cannot be represented in a banner that the person can clear.
+- [NEEDS CLARIFICATION] The Mac's banner is silent (`sound = nil`) while the phone's notification probably made a sound. Recommended: keep it silent (a second sound for one message is worse), and say so in UX.md's copy rules if the person agrees.
+- [NEEDS CLARIFICATION] With two phones, two banners of the same id cannot collide in practice (the id map is per phone) but the Mac's `requestIds` is keyed by the phone's id and the notification's id together. Recommended: keep the composed key and add a K2 test for two phones posting the same notification id.
