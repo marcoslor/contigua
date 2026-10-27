@@ -80,10 +80,11 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
     /** The session's `power.locked`: the person's press with our streams up. */
     @Volatile override var onPowerLocked: (() -> Unit)? = null
 
-    /** A screen-off edge waiting for its first frame: the gap the rig measures. */
-    @Volatile override var relightPending = false
-    @Volatile private var relightAtMs = 0L
-    @Volatile private var relightDisplays: List<Int> = emptyList()
+    /** The picture's frame clock around a screen-off edge: the rig's gap number. */
+    private val gaps = FrameGapTracker()
+
+    /** The display the edge's gap line names (the first stream it re-lit). */
+    @Volatile private var gapDisplay = -1
 
     /** The hold's one machine: the phone window's panel-off request (PanelHold.kt). */
     private val hold = PanelHoldMachine(log)
@@ -450,6 +451,10 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
                 val interactive = pm.isInteractive
                 if (wasInteractive && !interactive) onPowerEdge()
                 wasInteractive = interactive
+                gaps.closeIfDue(SystemClock.uptimeMillis())?.let { gap ->
+                    log("power: display ${gapDisplay.coerceAtLeast(0)} max frame gap ${gap}ms " +
+                        "around the screen-off edge (frames=${gaps.framesSeen})")
+                }
                 Thread.sleep(POWER_WATCH_MS)
             }
         } catch (_: InterruptedException) {
@@ -487,29 +492,31 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
     private fun relightStreams(edgeMs: Long) {
         val ids = synchronized(lock) { activeDisplays.toIntArray() }
         if (ids.isEmpty()) return
-        relightDisplays = ids.toList()
-        relightAtMs = edgeMs
-        relightPending = true
+        gapDisplay = ids.first()
+        gaps.markEdge(edgeMs)
         episodeWokeGroup = true
         darkEpisode = true
         keepLit = true
         // Our wake's own off edge (the panel-off below) is not a press.
         synchronized(policyLock) { policy.ownWake(SystemClock.uptimeMillis()) }
+        val issued = SystemClock.uptimeMillis()
         for (id in ids) {
             userActivity(id)
             wakeDisplay(id)
         }
+        val returned = SystemClock.uptimeMillis()
         onPowerLocked?.invoke()
         applyPanelOff(transitional = true)
-        log("power: screen off with ${ids.size} stream(s) up; VD group woken " +
-            "${SystemClock.uptimeMillis() - edgeMs}ms after the edge, panel taken over")
+        val offReturned = SystemClock.uptimeMillis()
+        // One line per step: the gap that matters is what the VD drew, not when
+        // this thread got back from a call.
+        log("power: relight edge+${issued - edgeMs}ms wake issued, " +
+            "+${returned - edgeMs}ms wake returned, +${offReturned - edgeMs}ms panel off returned")
     }
 
-    /** A frame reached the wire: the press gap's one measurement per edge. */
-    override fun noteFrame(displayId: Int) {
-        if (!relightPending || displayId !in relightDisplays) return
-        relightPending = false
-        log("power: display $displayId frame ${SystemClock.uptimeMillis() - relightAtMs}ms after the screen-off edge")
+    /** A frame reached the wire: the gap ring's one store per frame. */
+    override fun noteFrame(nowMs: Long) {
+        gaps.onFrame(nowMs)
     }
 
     /** Waits (bounded) until display 0 has left STATE_ON; true when it did. */
@@ -558,7 +565,6 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
     private fun handBackPanel(wake: Boolean) {
         darkEpisode = false
         keepLit = false
-        relightPending = false
         if (wake) {
             val off = waitForPanelOff()
             panel.panelNormal()
@@ -629,7 +635,6 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
         }
         // Stop any in-flight apply before handing the panel back.
         darkEpisode = false
-        relightPending = false
         if (DisplayProbe.state(PANEL_DISPLAY_ID) == Display.STATE_ON) {
             panel.panelNormal()
         }
