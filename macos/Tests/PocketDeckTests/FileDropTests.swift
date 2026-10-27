@@ -214,6 +214,70 @@ final class FileDropSenderTests: XCTestCase {
         XCTAssertEqual([start.id], channel.cancels)
         guard case .finished("Transfer cancelled.", false) = sender.phase else { return XCTFail("phase \(sender.phase)") }
     }
+
+    /// B1: the outcome pill's timeout has one owner. The sender holds the
+    /// outcome for its own 5 s and then reports `.idle` like any other phase,
+    /// so a renderer that follows the phase cannot miss the hide (the field
+    /// bug: a second timer in the controller only hid a still-`.finished`
+    /// phase, and nothing re-rendered on `.idle`).
+    func testTheOutcomeTimesOutIntoIdleAndReportsIt() async throws {
+        let gate = SleepGate()
+        let sender = FileDropSender(sleep: { duration in await gate.wait(duration) })
+        var phases: [FileDropSender.Phase] = []
+        sender.onPhase = { phases.append($0) }
+        DropLimits.testCap = 4 // tiny.pdf is "over the cap": an instant outcome
+        defer { DropLimits.testCap = nil }
+
+        sender.send([dir.appendingPathComponent("tiny.pdf")], session: channel)
+        await settle()
+        guard case .finished(_, false) = sender.phase else { return XCTFail("phase \(sender.phase)") }
+        XCTAssertEqual([Duration.seconds(5)], gate.durations,
+                       "the sender's own 5 s is the only hold")
+        XCTAssertEqual(2, phases.count, "sending then the outcome")
+        guard case .finished = phases.last else { return XCTFail("phases \(phases)") }
+
+        gate.open()
+        await settle()
+        XCTAssertEqual(.idle, sender.phase)
+        XCTAssertEqual(3, phases.count)
+        guard case .idle = phases.last else { return XCTFail("phases \(phases)") }
+    }
+}
+
+/// Holds the sender's outcome timeout until the test lets it go, so no test
+/// waits 5 s of wall time.
+private final class SleepGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var opened = false
+    private(set) var durations: [Duration] = []
+
+    func wait(_ duration: Duration) async {
+        lock.lock()
+        durations.append(duration)
+        let alreadyOpen = opened
+        lock.unlock()
+        if alreadyOpen { return }
+        await withCheckedContinuation { continuation in
+            lock.lock()
+            if opened {
+                lock.unlock()
+                continuation.resume()
+                return
+            }
+            self.continuation = continuation
+            lock.unlock()
+        }
+    }
+
+    func open() {
+        lock.lock()
+        opened = true
+        let waiting = continuation
+        continuation = nil
+        lock.unlock()
+        waiting?.resume()
+    }
 }
 
 final class ClipImageBufferTests: XCTestCase {
