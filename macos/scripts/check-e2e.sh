@@ -9912,11 +9912,20 @@ PY
     # WindowServer would have said for the first window.
     : > "$WORK/events.jsonl"
     defaults write "$DEFAULTS_SUITE" "chrome.style.com.android.settings" -string immersive
-    FAKE_ARGS="--stall-after 3 --stall-for 12" start_fake || return 1
+    # --stall-after 8: the caller has to be up and covered before the phone
+    # stops, and under load `nfr_wait_ready` alone can take seconds; at 3 the
+    # stall (and its 12 s resume) could be over before `occlude on`, leaving the
+    # window live and the last two lines here unable to judge anything.
+    FAKE_ARGS="--stall-after 8 --stall-for 12" start_fake || return 1
     nfr_launch --open com.android.settings
     nfr_wait_ready 30 || bad "NFR the app never paired (occlusion)"
     control occlude on || bad "NFR occlude on: $CONTROL_REPLY"
-    wait_until 30 events_have '"ev":"stall"' || bad "NFR the fake never stalled (occlusion)"
+    local occlude_ms
+    occlude_ms="$(now_ms)"
+    # The stall must happen while the window is covered: a stale event from
+    # before the cover would say nothing about the covered time.
+    wait_until 30 eval '[ -n "$(first_event_after_ms ev stall "$occlude_ms")" ]' \
+        || bad "NFR the fake never stalled while the window was covered (occlusion)"
     sleep 3
     if chrome_has "stall=0 stall_pill=0"; then
         ok "NFR occlusion: a covered window did not call the stopped picture a stall"
