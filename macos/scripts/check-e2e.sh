@@ -8476,7 +8476,12 @@ check_menubar_vm() {
         wait_until 15 settings_open \
             && ok "MENUBAR-VM clicking the footer's Settings row with the real pointer opened Settings" \
             || bad "MENUBAR-VM the footer's Settings row did not open Settings"
-        osascript -e 'tell application "System Events" to keystroke "w" using command down' >/dev/null 2>&1 || true
+        # Close Settings from a known state so the later shots have one window.
+        osascript -e 'tell application "System Events" to tell process "PocketDeck" to click button 1 of window "Settings"' >/dev/null 2>&1 || true
+        if settings_open; then
+            osascript -e 'tell application "PocketDeck" to activate' >/dev/null 2>&1 || true
+            osascript -e 'tell application "System Events" to keystroke "w" using command down' >/dev/null 2>&1 || true
+        fi
         sleep 1
     else
         bad "MENUBAR-VM panelpoint real panel.settings: $CONTROL_REPLY"
@@ -8696,14 +8701,20 @@ check_deck() {
     if [ "$VISIBLE" = 1 ] && control deckrailpoint T "$WORK/deck-rail-shots/t.pt" \
         && read -r px py < "$WORK/deck-rail-shots/t.pt"; then
         cg_input clickat --x "$px" --y "$py"
-        ok "DECK clicked the rail's T with the real pointer"
-    else
-        control deck-rail T >/dev/null || bad "DECK deck-rail T: $CONTROL_REPLY"
+        if rail="$(python3 "$MACOS/scripts/deck-rail.py" "$WORK/deck-grid.jsonl" T)"; then
+            ok "DECK the real pointer clicked the rail's T and landed on it ($rail)"
+        else
+            bad "DECK the real pointer on the rail's T: $rail"
+        fi
     fi
-    if rail="$(python3 "$MACOS/scripts/deck-rail.py" "$WORK/deck-grid.jsonl" T)"; then
-        ok "DECK the rail's T click lands on its first app ($rail)"
+    if control deck-rail T >/dev/null; then
+        if rail="$(python3 "$MACOS/scripts/deck-rail.py" "$WORK/deck-grid.jsonl" T)"; then
+            ok "DECK the rail's T click lands on its first app ($rail)"
+        else
+            bad "DECK the rail's T click: $rail"
+        fi
     else
-        bad "DECK the rail's T click: $rail"
+        bad "DECK deck-rail T: $CONTROL_REPLY"
     fi
     sleep 1
     shot_rail rail-jump-t.png
