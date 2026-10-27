@@ -118,7 +118,19 @@ class DeckViewModel(app: Application) : AndroidViewModel(app) {
             batteryRequested = Prefs.isBatteryRequested(ctx),
             wifiName = wifiName(ctx),
             shizuku = shizukuUiState(installed, running, granted),
-            status = mapStatus(StatusInput(enabled, running, granted, port, connected, allowConnections)),
+            // Every fact the card reads comes from here, the flag included:
+            // a state set beside the mapping is a card that cannot be reached.
+            status = mapStatus(
+                StatusInput(
+                    enabled = enabled,
+                    shizukuRunning = running,
+                    shizukuGranted = granted,
+                    port = port,
+                    connectedMac = connected,
+                    allowConnections = allowConnections,
+                    notifyNoAccess = DeckState.notifyNoAccess,
+                ),
+            ),
         )
     }
 
