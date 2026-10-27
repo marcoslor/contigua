@@ -5221,11 +5221,11 @@ check_audio() {
     begin_shared || return 1
     open_shared --open com.android.settings --audio-stats "$WORK/audio.json" || return 1
     if wait_until 20 audio_stats_ok; then
-        ok "C14 Mac received audio (config + >=10 frames)"
+        ok "[MEDIA-8] C14 Mac received audio (config + >=10 frames)"
     else
         bad "C14 no audio at the Mac: $(cat "$WORK/audio.json" 2>/dev/null || echo 'no stats file')"
     fi
-    python3 - "$WORK/audio.json" <<'PY' && ok "C14 AAC 48k stereo tone" || bad "C14 unexpected audio format: $(cat "$WORK/audio.json" 2>/dev/null)"
+    python3 - "$WORK/audio.json" <<'PY' && ok "[MEDIA-9] C14 AAC 48k stereo tone" || bad "C14 unexpected audio format: $(cat "$WORK/audio.json" 2>/dev/null)"
 import json, sys
 stats = json.load(open(sys.argv[1]))
 assert stats.get("codec") == 3, stats
@@ -5233,9 +5233,9 @@ assert stats.get("sampleRate") == 48000, stats
 assert stats.get("channels", 2) == 2, stats
 PY
     grep -q '"t":"audio.start"' "$WORK/events.jsonl" \
-        && ok "C14 audio.start sent" || bad "C14 no audio.start in phone log"
+        && ok "[MEDIA-8] C14 audio.start sent" || bad "C14 no audio.start in phone log"
     grep -q '"ev":"audio"' "$WORK/events.jsonl" \
-        && ok "C14 phone streamed audio" || bad "C14 no audio event in phone log"
+        && ok "[MEDIA-8] C14 phone streamed audio" || bad "C14 no audio event in phone log"
     stop_app
     stop_fakephone
 }
@@ -7875,7 +7875,7 @@ EOF
         && ok "[NOTIFY-14] NOTIFY the records carry field lengths, not the text" \
         || bad "[NOTIFY-14] NOTIFY the posts were recorded without lengths"
     log_has "media set playing=true" && log_has "durationMs=30000" \
-        && ok "NOTIFY media.state drove Now Playing (playing, 30 s)" \
+        && ok "[MEDIA-1] NOTIFY media.state drove Now Playing (playing, 30 s)" \
         || bad "NOTIFY no Now Playing set: $(cat "$log" 2>/dev/null | tr '\n' '|')"
 
     # (c) the click opens that app's window, through the phone's window.open.
@@ -7904,7 +7904,7 @@ sys.exit(1)
 PY
     }
     wait_until 20 media_played \
-        && ok "NOTIFY the Now Playing control reached the phone (media.command play)" \
+        && ok "[MEDIA-2] NOTIFY the Now Playing control reached the phone (media.command play)" \
         || bad "NOTIFY no media.command play at the phone"
     log_has "media command play" \
         && ok "NOTIFY the command went through the Now Playing handler" \
@@ -8420,71 +8420,71 @@ EOF
         --open com.whatsapp --debug-input-script "$script" --debug-control "$WORK-control"
 
     wait_until 20 log_has "media sessions n=2 chosen=s1" \
-        && ok "MEDIA the phone listed both playing apps, the first chosen" \
-        || bad "MEDIA no media.sessions line: $(tr '\n' '|' < "$log" 2>/dev/null)"
+        && ok "[MEDIA-5] MEDIA the phone listed both playing apps, the first chosen" \
+        || bad "[MEDIA-5] MEDIA no media.sessions line: $(tr '\n' '|' < "$log" 2>/dev/null)"
     wait_until 20 log_has "media set playing=true" \
-        && ok "MEDIA media.state drove Now Playing" \
-        || bad "MEDIA no media.state record"
+        && ok "[MEDIA-1] MEDIA media.state drove Now Playing" \
+        || bad "[MEDIA-1] MEDIA no media.state record"
     grep -qE "media set .*canSeek=1 volume=8 volumeMax=15" "$log" 2>/dev/null \
-        && ok "MEDIA the state carries canSeek and the session volume (8/15)" \
-        || bad "MEDIA no canSeek/volume in the state record: $(grep 'media set' "$log" 2>/dev/null | head -1)"
+        && ok "[MEDIA-3] MEDIA the state carries canSeek and the session volume (8/15)" \
+        || bad "[MEDIA-3] MEDIA no canSeek/volume in the state record: $(grep 'media set' "$log" 2>/dev/null | head -1)"
     wait_until 20 grep -q "media art w=160 h=120 bytes=" "$log" 2>/dev/null \
-        && ok "MEDIA the artwork arrived (jpeg 160x120)" \
-        || bad "MEDIA no media art record"
+        && ok "[MEDIA-4] MEDIA the artwork arrived (jpeg 160x120)" \
+        || bad "[MEDIA-4] MEDIA no media art record"
     # Artwork once per change: one send for the first session so far.
     [ "$(grep -c "media art w=" "$log" 2>/dev/null)" = "1" ] \
         && [ "$(media_count art)" = "1" ] \
-        && ok "MEDIA the artwork was sent once, not once per state" \
-        || bad "MEDIA artwork sent $(grep -c 'media art w=' "$log" 2>/dev/null) times ($(media_count art) from the phone)"
+        && ok "[MEDIA-4] MEDIA the artwork was sent once, not once per state" \
+        || bad "[MEDIA-4] MEDIA artwork sent $(grep -c 'media art w=' "$log" 2>/dev/null) times ($(media_count art) from the phone)"
 
     # (b) the position bar: 45 s asked, the track is 30 s, so 30 s goes out.
     wait_until 20 grep -q "media command seek positionMs=30000" "$log" 2>/dev/null \
-        && ok "MEDIA a seek past the end was clamped to the track (30000 ms)" \
-        || bad "MEDIA no clamped seek record: $(grep 'media command' "$log" 2>/dev/null | tr '\n' '|')"
+        && ok "[MEDIA-3] MEDIA a seek past the end was clamped to the track (30000 ms)" \
+        || bad "[MEDIA-3] MEDIA no clamped seek record: $(grep 'media command' "$log" 2>/dev/null | tr '\n' '|')"
     wait_until 20 [ "$(media_count rx action=seek)" -ge 1 ] \
-        && ok "MEDIA the phone received the seek" \
-        || bad "MEDIA the phone received no seek"
+        && ok "[MEDIA-3] MEDIA the phone received the seek" \
+        || bad "[MEDIA-3] MEDIA the phone received no seek"
     media_events rx action=seek | grep -q '"positionMs": 30000' \
-        && ok "MEDIA the seek reached the phone with the clamped value" \
-        || bad "MEDIA the seek value at the phone: $(media_events rx action=seek | tr '\n' '|')"
+        && ok "[MEDIA-3] MEDIA the seek reached the phone with the clamped value" \
+        || bad "[MEDIA-3] MEDIA the seek value at the phone: $(media_events rx action=seek | tr '\n' '|')"
     # The next state confirms where the session now is (the fake answers).
     wait_until 20 grep -qE "media set .*elapsedMs=30000" "$log" 2>/dev/null \
-        && ok "MEDIA the next media.state confirmed the new position" \
-        || bad "MEDIA no state after the seek: $(grep 'media set' "$log" 2>/dev/null | tail -1)"
+        && ok "[MEDIA-3] MEDIA the next media.state confirmed the new position" \
+        || bad "[MEDIA-3] MEDIA no state after the seek: $(grep 'media set' "$log" 2>/dev/null | tail -1)"
 
     # (c) volume: 99 asked, the session tops at 15.
     wait_until 20 grep -q "media command volume level=15" "$log" 2>/dev/null \
-        && ok "MEDIA the volume was clamped to the session maximum (15)" \
-        || bad "MEDIA no clamped volume record: $(grep 'media command' "$log" 2>/dev/null | tr '\n' '|')"
+        && ok "[MEDIA-11] MEDIA the volume was clamped to the session maximum (15)" \
+        || bad "[MEDIA-11] MEDIA no clamped volume record: $(grep 'media command' "$log" 2>/dev/null | tr '\n' '|')"
     media_events rx action=volume | grep -q '"level": 15' \
-        && ok "MEDIA the volume reached the phone as 15" \
-        || bad "MEDIA the volume at the phone: $(media_events rx action=volume | tr '\n' '|')"
+        && ok "[MEDIA-11] MEDIA the volume reached the phone as 15" \
+        || bad "[MEDIA-11] MEDIA the volume at the phone: $(media_events rx action=volume | tr '\n' '|')"
     wait_until 20 grep -qE "media set .*volume=15 volumeMax=15" "$log" 2>/dev/null \
-        && ok "MEDIA the next media.state reflects the new volume" \
-        || bad "MEDIA the volume did not come back in a state"
+        && ok "[MEDIA-11] MEDIA the next media.state reflects the new volume" \
+        || bad "[MEDIA-11] MEDIA the volume did not come back in a state"
 
     # (d) choosing: the second app takes over, its state and art follow.
     wait_until 20 seen_choose \
-        && ok "MEDIA media.choose reached the phone" \
-        || bad "MEDIA the phone saw no media.choose ($(media_events choose | tr '\n' '|'))"
+        && ok "[MEDIA-5] MEDIA media.choose reached the phone" \
+        || bad "[MEDIA-5] MEDIA the phone saw no media.choose ($(media_events choose | tr '\n' '|'))"
     wait_until 20 log_has "media sessions n=2 chosen=s2" \
-        && ok "MEDIA the next sessions list shows the picked app" \
-        || bad "MEDIA the chosen key never moved: $(grep 'media sessions' "$log" 2>/dev/null | tr '\n' '|')"
+        && ok "[MEDIA-5] MEDIA the next sessions list shows the picked app" \
+        || bad "[MEDIA-5] MEDIA the chosen key never moved: $(grep 'media sessions' "$log" 2>/dev/null | tr '\n' '|')"
     wait_until 20 grep -qE "media set .*key=s2" "$log" 2>/dev/null \
-        && ok "MEDIA the next media.state carries the picked session's key" \
-        || bad "MEDIA no state for the picked session"
+        && ok "[MEDIA-5] MEDIA the next media.state carries the picked session's key" \
+        || bad "[MEDIA-5] MEDIA no state for the picked session"
     wait_until 20 [ "$(grep -c 'media art w=' "$log" 2>/dev/null)" = "2" ] \
-        && ok "MEDIA the picked app's artwork arrived once more" \
-        || bad "MEDIA the picked app's artwork did not arrive"
+        && ok "[MEDIA-4] MEDIA the picked app's artwork arrived once more" \
+        || bad "[MEDIA-4] MEDIA the picked app's artwork did not arrive"
     wait_until 20 seen_second_seek \
-        && ok "MEDIA a seek on the picked session reached the phone (5000 ms)" \
-        || bad "MEDIA no second seek at the phone ($(media_events rx | tr '\n' '|'))"
+        && ok "[MEDIA-3] MEDIA a seek on the picked session reached the phone (5000 ms)" \
+        || bad "[MEDIA-3] MEDIA no second seek at the phone ($(media_events rx | tr '\n' '|'))"
 
     # (e) no track text or picture bytes in any log.
     ! grep -qE 'pd-media-(title|artist|album)-9|/9j/4AAQ' \
         "$WORK/app.log" "$log" "$WORK/fake.log" "$WORK/fake.err" "$WORK/events.jsonl" 2>/dev/null \
-        && ok "MEDIA no track text or artwork bytes reached a log" \
-        || bad "MEDIA track text or artwork bytes leaked"
+        && ok "[MEDIA-13] MEDIA no track text or artwork bytes reached a log" \
+        || bad "[MEDIA-13] MEDIA track text or artwork bytes leaked"
 
     # (e2) the menu bar panel (docs/design/mac-redesign.md §3.8): a window
     # panel, not a menu — the volume is an inline slider and every item has its
@@ -8554,20 +8554,20 @@ EOF
     launch --connect "127.0.0.1:$PORT" --quit-after 60 --share-log "$oldlog" \
         --open com.whatsapp --debug-input-script "$oldscript" --debug-control "$WORK-control"
     wait_until 20 old_log_has "media set playing=true" \
-        && ok "MEDIA the older phone's state still reaches Now Playing" \
-        || bad "MEDIA no state from the older phone: $(tr '\n' '|' < "$oldlog" 2>/dev/null)"
+        && ok "[MEDIA-7] MEDIA the older phone's state still reaches Now Playing" \
+        || bad "[MEDIA-7] MEDIA no state from the older phone: $(tr '\n' '|' < "$oldlog" 2>/dev/null)"
     grep -qE "media set .*canSeek=0 volume=-1 volumeMax=-1 key=-" "$oldlog" 2>/dev/null \
-        && ok "MEDIA the older phone's state carries none of the new fields" \
-        || bad "MEDIA unexpected older-phone record: $(grep 'media set' "$oldlog" 2>/dev/null | head -1)"
+        && ok "[MEDIA-7] MEDIA the older phone's state carries none of the new fields" \
+        || bad "[MEDIA-7] MEDIA unexpected older-phone record: $(grep 'media set' "$oldlog" 2>/dev/null | head -1)"
     ! grep -q "media sessions" "$oldlog" 2>/dev/null \
-        && ok "MEDIA no session list from the older phone" \
-        || bad "MEDIA the older phone produced a media.sessions line"
+        && ok "[MEDIA-7] MEDIA no session list from the older phone" \
+        || bad "[MEDIA-7] MEDIA the older phone produced a media.sessions line"
     ! grep -q "media art" "$oldlog" 2>/dev/null \
-        && ok "MEDIA no artwork from the older phone" \
-        || bad "MEDIA the older phone produced a media art line"
+        && ok "[MEDIA-7] MEDIA no artwork from the older phone" \
+        || bad "[MEDIA-7] MEDIA the older phone produced a media art line"
     wait_until 25 old_log_has "media command play" \
-        && ok "MEDIA a transport command still works with the older phone" \
-        || bad "MEDIA the older phone got no command"
+        && ok "[MEDIA-7] MEDIA a transport command still works with the older phone" \
+        || bad "[MEDIA-7] MEDIA the older phone got no command"
     # The panel's slider is the phone stream: an old phone sends no
     # volume/volumeMax, so it is disabled and the reason line names why.
     control panelopen || bad "MEDIA old panelopen: $CONTROL_REPLY"
