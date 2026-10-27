@@ -527,9 +527,19 @@ enum DeckRail {
     static let letters: [String] = (65...90).map { String(UnicodeScalar($0)!) } + ["#"]
     /// R1's one letter's hit target: 20 pt, the AGENTS minimum.
     static let pitch: CGFloat = 20
-    /// The rail's full height at R1's pitch; shorter windows hide it rather
-    /// than clip letters or shrink the targets.
+    /// The rail's full height at R1's pitch; shorter windows condense it
+    /// (every other or every third letter) rather than shrink the targets.
     static let minimumHeight = CGFloat(letters.count) * pitch
+    /// The condensed heights: 14 slots (every other letter) and 9 (every
+    /// third). Both keep 20 pt targets.
+    static let compactTwoHeight = CGFloat((letters.count + 1) / 2) * pitch
+    static let compactThreeHeight = CGFloat((letters.count + 2) / 3) * pitch
+
+    /// One rail slot: the first letter's index and how many letters it covers.
+    struct Slot: Equatable {
+        let first: Int
+        let count: Int
+    }
 
     struct Entry: Equatable {
         let letter: String
@@ -632,6 +642,38 @@ enum DeckRail {
         guard height > 0, !entries.isEmpty else { return nil }
         let fraction = min(max(y / height, 0), 0.999_999)
         return entries[Int(fraction * CGFloat(entries.count))].letter
+    }
+
+    /// The rail's slots at `height`: all 27 at 540 pt, every other letter at
+    /// 280 pt, every third at 180 pt, and nothing below 8 slots. A slot's
+    /// letters split its 20 pt row evenly, so a click at any y still lands on
+    /// a real letter.
+    static func slots(forHeight height: CGFloat) -> [Slot]? {
+        guard height > 0 else { return nil }
+        let capacity = Int((height / pitch).rounded(.down))
+        guard capacity >= 8 else { return nil }
+        let stride = max(1, (letters.count + capacity - 1) / capacity)
+        guard (letters.count + stride - 1) / stride >= 8 else { return nil }
+        var slots: [Slot] = []
+        var first = 0
+        while first < letters.count {
+            let count = min(stride, letters.count - first)
+            slots.append(Slot(first: first, count: count))
+            first += count
+        }
+        return slots
+    }
+
+    /// The real letter under `y` in the condensed column.
+    static func letter(atY y: CGFloat, slots: [Slot]) -> String? {
+        guard !slots.isEmpty else { return nil }
+        let top = CGFloat(slots.count) * pitch
+        let clamped = min(max(y, 0), top - 0.0001)
+        let slotIndex = min(Int(clamped / pitch), slots.count - 1)
+        let slot = slots[slotIndex]
+        let within = clamped - CGFloat(slotIndex) * pitch
+        let band = min(slot.count - 1, max(0, Int(within / pitch * CGFloat(slot.count))))
+        return letters[slot.first + band]
     }
 }
 
@@ -920,17 +962,28 @@ struct AppGrid: View {
             .overlay(alignment: .trailing) {
                 if DeckRail.shows(count: cells.count, query: query) {
                     // R1 sits inside the content inset, left of the scroller.
-                    // A window too short for 20 pt letters shows nothing rather
-                    // than clipping the rail (ViewThatFits compares its 540 pt
-                    // height with the overlay's proposal).
+                    // ViewThatFits keeps 20 pt targets: the full 27-letter rail
+                    // at 540 pt, every other letter at 280 pt, every third at
+                    // 180 pt, and nothing below 8 slots.
                     ViewThatFits(in: .vertical) {
                         DeckIndexRail(entries: railEntries, counts: railCounts,
-                                      current: currentLetter ?? firstRailLetter) { letter in
+                                      current: currentLetter ?? firstRailLetter,
+                                      slots: fullRailSlots) { letter in
                             scroll(to: letter, proxy: proxy)
                         }
-                        .padding(.trailing, 18)
+                        DeckIndexRail(entries: railEntries, counts: railCounts,
+                                      current: currentLetter ?? firstRailLetter,
+                                      slots: compactTwoRailSlots) { letter in
+                            scroll(to: letter, proxy: proxy)
+                        }
+                        DeckIndexRail(entries: railEntries, counts: railCounts,
+                                      current: currentLetter ?? firstRailLetter,
+                                      slots: compactThreeRailSlots) { letter in
+                            scroll(to: letter, proxy: proxy)
+                        }
                         Color.clear.frame(width: 1, height: 1)
                     }
+                    .padding(.trailing, 18)
                 }
             }
             .onChange(of: navigator.selection) { _, pkg in
@@ -953,6 +1006,16 @@ struct AppGrid: View {
     private var cellApps: [AppInfo] { cells.map(\.app) }
     private var railEntries: [DeckRail.Entry] { DeckRail.entries(for: cellApps) }
     private var firstRailLetter: String? { railEntries.first { $0.index != nil }?.letter }
+    private var fullRailSlots: [DeckRail.Slot] {
+        DeckRail.slots(forHeight: DeckRail.minimumHeight) ?? []
+    }
+    private var compactTwoRailSlots: [DeckRail.Slot] {
+        DeckRail.slots(forHeight: DeckRail.compactTwoHeight) ?? []
+    }
+    private var compactThreeRailSlots: [DeckRail.Slot] {
+        DeckRail.slots(forHeight: DeckRail.compactThreeHeight) ?? []
+    }
+
     /// Apps per letter, for R1's hover tag.
     private var railCounts: [String: Int] {
         cellApps.reduce(into: [:]) { counts, app in
@@ -1122,37 +1185,49 @@ private struct DeckIndexRail: View {
     let entries: [DeckRail.Entry]
     let counts: [String: Int]
     let current: String?
+    /// The rail's slots: 27 at full height, 14 or 9 when the window is short.
+    let slots: [DeckRail.Slot]
     let pick: (String) -> Void
 
     @State private var pointer: RailPointer = .away
     @State private var lastPicked: String?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    private var height: CGFloat { CGFloat(entries.count) * DeckRail.pitch }
+    private var height: CGFloat { CGFloat(slots.count) * DeckRail.pitch }
+    private var currentIndex: Int? { current.flatMap(DeckRail.letters.firstIndex(of:)) }
+    private var currentLetter: String? { currentIndex.map { DeckRail.letters[$0] } }
 
-    /// The letter the pointer is over, or the e2e's forced one.
-    private var hoveredIndex: Int? {
+    /// The slot and real letter under the pointer (or the e2e's forced one).
+    private var hovered: (slot: Int, letter: String)? {
         if let forced = DeckRailHover.shared.letter,
-           let index = entries.firstIndex(where: { $0.letter == forced }) {
-            return index
+           let letterIndex = DeckRail.letters.firstIndex(of: forced),
+           let slot = slotIndex(containing: letterIndex) {
+            return (slot, forced)
         }
-        guard let position = pointer.position else { return nil }
-        return min(max(Int(position / DeckRail.pitch), 0), entries.count - 1)
+        guard let y = pointer.position,
+              let letter = DeckRail.letter(atY: y, slots: slots),
+              let letterIndex = DeckRail.letters.firstIndex(of: letter),
+              let slot = slotIndex(containing: letterIndex) else { return nil }
+        return (slot, letter)
     }
 
-    /// The pointer's y for the fisheye, including the forced hover (which has
-    /// no real pointer position).
+    /// The pointer's y for the fisheye. A forced hover has no real pointer, so
+    /// it sits in the middle of the real letter's band inside its slot.
     private var activePosition: CGFloat? {
-        if DeckRailHover.shared.letter != nil, let index = hoveredIndex {
-            return CGFloat(index) * DeckRail.pitch + DeckRail.pitch / 2
+        if let forced = DeckRailHover.shared.letter,
+           let letterIndex = DeckRail.letters.firstIndex(of: forced),
+           let slot = slotIndex(containing: letterIndex) {
+            let band = letterIndex - slots[slot].first
+            return CGFloat(slot) * DeckRail.pitch
+                + (CGFloat(band) + 0.5) / CGFloat(slots[slot].count) * DeckRail.pitch
         }
         return pointer.position
     }
 
     var body: some View {
         VStack(spacing: 0) {
-            ForEach(Array(entries.enumerated()), id: \.element.letter) { index, entry in
-                letter(index: index, entry: entry)
+            ForEach(Array(slots.enumerated()), id: \.offset) { index, slot in
+                slotView(index: index, slot: slot)
             }
         }
         .frame(width: Self.width, height: height)
@@ -1171,7 +1246,7 @@ private struct DeckIndexRail: View {
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("App index")
-        .accessibilityValue(current ?? "")
+        .accessibilityValue(currentLetter ?? "")
         .accessibilityHint("Click or drag a letter to scroll to it")
     }
 
@@ -1180,60 +1255,82 @@ private struct DeckIndexRail: View {
         return false
     }
 
-    private func letter(index: Int, entry: DeckRail.Entry) -> some View {
+    private func slotIndex(containing letterIndex: Int) -> Int? {
+        slots.firstIndex { letterIndex >= $0.first && letterIndex < $0.first + $0.count }
+    }
+
+    private func slotView(index: Int, slot: DeckRail.Slot) -> some View {
+        let hoveredHere = hovered?.slot == index
+        let range = slot.first..<(slot.first + slot.count)
+        let containsCurrent = currentIndex.map(range.contains) ?? false
+        let shown = hoveredHere ? (hovered?.letter ?? DeckRail.letters[slot.first])
+            : containsCurrent ? (currentLetter ?? DeckRail.letters[slot.first])
+            : DeckRail.letters[slot.first]
         let scale = activePosition.map {
             RailFisheye.scale(distance: $0 / DeckRail.pitch - (CGFloat(index) + 0.5),
                               reduceMotion: reduceMotion)
         } ?? 1
-        let highlighted = reduceMotion && hoveredIndex == index
-        let isCurrent = entry.letter == current
-        return Text(entry.letter)
-            .font(.system(size: 9 * scale,
-                          weight: isCurrent || highlighted ? .semibold : .regular))
-            .foregroundStyle(isCurrent ? AnyShapeStyle(Color.accentColor)
-                                       : AnyShapeStyle(.secondary))
-            .opacity(entry.index == nil ? 0.35 : 1)
-            .frame(width: Self.width, height: DeckRail.pitch)
-            .background(RoundedRectangle(cornerRadius: 4)
-                .fill(Color.primary.opacity(highlighted ? 0.12 : 0)))
-            .contentShape(.rect)
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel(accessibilityLabel(entry))
-            .accessibilityHint("Scrolls to \(entry.letter)")
-            .accessibilityAddTraits(.isButton)
-            .accessibilityAction { pick(entry.letter) }
+        let highlighted = reduceMotion && hoveredHere
+        let isCurrent = shown == currentLetter
+        let hasApps = range.contains { entries[$0].index != nil }
+        return HStack(spacing: 0) {
+            Text(shown)
+                .font(.system(size: 9 * scale,
+                              weight: isCurrent || highlighted ? .semibold : .regular))
+            if !hoveredHere && slot.count > 1 {
+                // A bullet for each skipped letter in this slot, so the
+                // condensed rail still reads as the whole alphabet.
+                Text(String(repeating: "•", count: slot.count - 1))
+                    .font(.system(size: 8, weight: .semibold))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .foregroundStyle(isCurrent ? AnyShapeStyle(Color.accentColor)
+                                   : AnyShapeStyle(.secondary))
+        .opacity(hasApps ? 1 : 0.35)
+        .frame(width: Self.width, height: DeckRail.pitch)
+        .background(RoundedRectangle(cornerRadius: 4)
+            .fill(Color.primary.opacity(highlighted ? 0.12 : 0)))
+        .contentShape(.rect)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(accessibilityLabel(slot))
+        .accessibilityHint("Scrolls to \(DeckRail.letters[slot.first])")
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAction { pick(DeckRail.letters[slot.first]) }
     }
 
-    /// The hovered letter's tag, left of the rail and centred on its row.
+    /// The hovered real letter's tag, left of the rail and centred on its slot.
     @ViewBuilder
     private var helpTag: some View {
-        if let index = hoveredIndex {
-            let entry = entries[index]
-            let count = counts[entry.letter] ?? 0
-            Text(count == 0 ? "\(entry.letter) · no apps"
-                            : "\(entry.letter) · \(count) \(count == 1 ? "app" : "apps")")
+        if let hovered {
+            let count = counts[hovered.letter] ?? 0
+            Text(count == 0 ? "\(hovered.letter) · no apps"
+                            : "\(hovered.letter) · \(count) \(count == 1 ? "app" : "apps")")
                 .font(.caption)
                 .padding(.horizontal, 8)
                 .frame(height: Self.tagHeight)
                 .background(.regularMaterial, in: .capsule)
                 .fixedSize()
                 .offset(x: -(Self.width + 6),
-                        y: CGFloat(index) * DeckRail.pitch + (DeckRail.pitch - Self.tagHeight) / 2)
+                        y: CGFloat(hovered.slot) * DeckRail.pitch
+                            + (DeckRail.pitch - Self.tagHeight) / 2)
                 .allowsHitTesting(false)
         }
     }
 
-    private func accessibilityLabel(_ entry: DeckRail.Entry) -> String {
-        let count = counts[entry.letter] ?? 0
-        return count == 0 ? "\(entry.letter), no apps" : "\(entry.letter), \(count) apps"
+    /// "M, 3 apps" for one letter; "A to B, 12 apps" for a condensed slot.
+    private func accessibilityLabel(_ slot: DeckRail.Slot) -> String {
+        let letters = Array(DeckRail.letters[slot.first..<(slot.first + slot.count)])
+        let count = letters.reduce(0) { $0 + (counts[$1] ?? 0) }
+        let name = letters.count == 1 ? letters[0] : "\(letters[0]) to \(letters[letters.count - 1])"
+        return count == 0 ? "\(name), no apps" : "\(name), \(count) apps"
     }
 
     private var drag: some Gesture {
         DragGesture(minimumDistance: 0)
             .onChanged { value in
                 pointer = .dragging(value.location.y)
-                guard let letter = DeckRail.letter(atY: value.location.y, height: height,
-                                                   entries: entries),
+                guard let letter = DeckRail.letter(atY: value.location.y, slots: slots),
                       letter != lastPicked else { return }
                 lastPicked = letter
                 pick(letter)

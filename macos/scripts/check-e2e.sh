@@ -8727,6 +8727,21 @@ check_deck() {
     sleep 1
     shot_rail rail-jump-t.png
 
+    # A 450 pt window cannot hold 27 letters at 20 pt: the rail condenses to
+    # every other letter (14 slots at 280 pt) instead of hiding. Hover T shows
+    # the real letter under the pointer and its tag.
+    if control deck-size 760 450 >/dev/null; then
+        sleep 1
+        control deckrailhover T && ok "DECK the short rail's hover on T is forced" \
+            || bad "DECK deckrailhover T (short): $CONTROL_REPLY"
+        sleep 1
+        shot_rail rail-short.png
+        control deckrailhoverout || bad "DECK deckrailhoverout (short): $CONTROL_REPLY"
+    else
+        bad "DECK deck-size 760 450: $CONTROL_REPLY"
+    fi
+    control deck-size 760 600 || bad "DECK deck-size 760 600 (restore): $CONTROL_REPLY"
+
     # The deckMode transition (welcome -> grid) settles; a capture too early
     # shows both states overlapped, which is useless as the visual record.
     sleep 3

@@ -158,6 +158,38 @@ final class DeckGridTests: XCTestCase {
                        "S", "no section starts in the row, so the first tile's letter")
     }
 
+    /// A short window condenses the rail rather than losing it: every other
+    /// letter at 280 pt, every third at 180 pt, and nothing below 8 slots.
+    /// Each slot still maps a y to a real letter, so a click lands correctly.
+    func testRailCondensesItsSlotsWhenTheWindowIsShort() {
+        let full = DeckRail.slots(forHeight: 540) ?? []
+        XCTAssertEqual(full.count, 27)
+        XCTAssertEqual(full.first, DeckRail.Slot(first: 0, count: 1))
+        XCTAssertEqual(full.last, DeckRail.Slot(first: 26, count: 1))
+
+        let two = DeckRail.slots(forHeight: DeckRail.compactTwoHeight) ?? []
+        XCTAssertEqual(two.count, 14)
+        XCTAssertEqual(two.first, DeckRail.Slot(first: 0, count: 2), "A covers A and B")
+        XCTAssertEqual(two.last, DeckRail.Slot(first: 26, count: 1), "# stands alone")
+        XCTAssertEqual(DeckRail.letter(atY: 0, slots: two), "A")
+        XCTAssertEqual(DeckRail.letter(atY: 19.9, slots: two), "B",
+                       "the slot's two letters split its 20 pt row")
+        XCTAssertEqual(DeckRail.letter(atY: 20, slots: two), "C")
+        XCTAssertEqual(DeckRail.letter(atY: 13 * 20 + 5, slots: two), "#")
+
+        let three = DeckRail.slots(forHeight: DeckRail.compactThreeHeight) ?? []
+        XCTAssertEqual(three.count, 9)
+        XCTAssertEqual(three.first, DeckRail.Slot(first: 0, count: 3))
+        XCTAssertEqual(three.last, DeckRail.Slot(first: 24, count: 3), "Y, Z and #")
+        XCTAssertEqual(DeckRail.letter(atY: 0, slots: three), "A")
+        XCTAssertEqual(DeckRail.letter(atY: 10, slots: three), "B")
+        XCTAssertEqual(DeckRail.letter(atY: 19.9, slots: three), "C")
+
+        XCTAssertNil(DeckRail.slots(forHeight: 179), "fewer than 8 slots: hide the rail")
+        XCTAssertEqual(DeckRail.slots(forHeight: 180)?.count, 9, "180 still holds 9 slots")
+        XCTAssertNil(DeckRail.letter(atY: 0, slots: []))
+    }
+
     func testRailHidesWhileSearchingAndBelowThirtyApps() {
         XCTAssertFalse(DeckRail.shows(count: 29, query: ""))
         XCTAssertTrue(DeckRail.shows(count: 30, query: ""))
