@@ -27,6 +27,9 @@
 //   swift scripts/cgevent-input.swift moveat  --x N --y N        (absolute Quartz point)
 //   swift scripts/cgevent-input.swift clickat --x N --y N
 //   swift scripts/cgevent-input.swift dragat  --x N --y N --x2 N --y2 N [--steps N]
+//   swift scripts/cgevent-input.swift axmove --pid N --dx N --dy N [--title TITLE]
+//       move the app's windows (or the one titled TITLE) through Accessibility,
+//       the path a tiler takes, and print each window's position read back
 //   swift scripts/cgevent-input.swift type   --text hi
 //   swift scripts/cgevent-input.swift key    --keycode 36 [--cmd] [--shift] [--hold 0.04]
 //   swift scripts/cgevent-input.swift release-all
@@ -476,6 +479,49 @@ case "axresize":
             AXValueGetValue(unsafeBitCast(readBack, to: AXValue.self), .cgSize, &actual)
         }
         print("\(name)\t\(Int(actual.width))x\(Int(actual.height))")
+    }
+case "axmove":
+    // axmove --pid N --dx D --dy D [--title TITLE]: move the app's windows (or
+    // just the one whose AX title is TITLE) by that delta through Accessibility
+    // — the path a tiler or a script takes — then print one "title<TAB>x,y" line
+    // per window with the position read back. AX axes are top-left, y down.
+    guard let process = pid.map(pid_t.init) ?? ownerPID(owner: owner) else {
+        print("noproc")
+        exit(2)
+    }
+    let app = AXUIElementCreateApplication(process)
+    var moveWindowsValue: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(app, kAXWindowsAttribute as CFString, &moveWindowsValue) == .success,
+          let moveWindows = moveWindowsValue as? [AXUIElement], !moveWindows.isEmpty else {
+        print("nowindows")
+        exit(2)
+    }
+    let wantTitle = argument("--title")
+    let moveX = doubleArgument("--dx") ?? 0
+    let moveY = doubleArgument("--dy") ?? 0
+    for window in moveWindows {
+        var title: CFTypeRef?
+        AXUIElementCopyAttributeValue(window, kAXTitleAttribute as CFString, &title)
+        let name = (title as? String) ?? "-"
+        if let wantTitle, name != wantTitle { continue }
+        var origin = CGPoint.zero
+        var originValue: CFTypeRef?
+        if AXUIElementCopyAttributeValue(window, kAXPositionAttribute as CFString, &originValue) == .success,
+           let originValue, CFGetTypeID(originValue) == AXValueGetTypeID() {
+            AXValueGetValue(unsafeBitCast(originValue, to: AXValue.self), .cgPoint, &origin)
+        }
+        var target = CGPoint(x: origin.x + moveX, y: origin.y + moveY)
+        if let value = AXValueCreate(.cgPoint, &target) {
+            _ = AXUIElementSetAttributeValue(window, kAXPositionAttribute as CFString, value)
+        }
+        usleep(400_000)
+        var actual = CGPoint.zero
+        var readBack: CFTypeRef?
+        if AXUIElementCopyAttributeValue(window, kAXPositionAttribute as CFString, &readBack) == .success,
+           let readBack, CFGetTypeID(readBack) == AXValueGetTypeID() {
+            AXValueGetValue(unsafeBitCast(readBack, to: AXValue.self), .cgPoint, &actual)
+        }
+        print("\(name)\t\(Int(actual.x)),\(Int(actual.y))")
     }
 case "backdrop":
     guard let file = argument("--file") else { exit(1) }

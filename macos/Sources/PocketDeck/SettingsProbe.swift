@@ -14,9 +14,12 @@ enum SettingsProbe {
     @MainActor
     static func report(window: NSWindow, lastRow label: String) -> String {
         let frame = window.frame
-        let visible = (window.screen ?? NSScreen.main)?.visibleFrame.height ?? 0
+        let visibleFrame = (window.screen ?? NSScreen.main)?.visibleFrame ?? .zero
+        let visible = visibleFrame.height
         var lines = [
             "window=\(Int(frame.width.rounded()))x\(Int(frame.height.rounded()))",
+            "origin=\(Int(frame.origin.x.rounded())),\(Int(frame.origin.y.rounded()))",
+            "visible_frame=\(Int(visibleFrame.origin.x.rounded())),\(Int(visibleFrame.origin.y.rounded())),\(Int(visibleFrame.width.rounded())),\(Int(visibleFrame.height.rounded()))",
             "title=\(window.title)",
             "content=\(Int((window.contentView?.frame.height ?? 0).rounded()))",
             "cap=\(Int(SettingsLayout.maxContentHeight(for: visible).rounded()))",

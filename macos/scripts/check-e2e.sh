@@ -7422,8 +7422,28 @@ check_settings() {
         control settings-dump "$WORK/settings-geom.txt" >/dev/null 2>&1
         sed -n 's/^title=//p' "$WORK/settings-geom.txt" | head -1
     }
+    # The Settings window's real frame (SettingsProbe): origin, size, and the
+    # visible frame of its screen.
+    geom() { control settings-dump "$WORK/settings-geom.txt" >/dev/null 2>&1; cat "$WORK/settings-geom.txt" 2>/dev/null; }
+    geom_value() { geom | sed -n "s/^$1=//p" | head -1; }
+    # centre_gap — |window centre − visible frame centre| per axis, in points.
+    centre_gap() {
+        geom | awk -F'[=,x]' '
+            $1 == "origin" { x = $2; y = $3 }
+            $1 == "window" { w = $2; h = $3 }
+            $1 == "visible_frame" { vx = $2; vy = $3; vw = $4; vh = $5 }
+            END {
+                dx = (x + w / 2) - (vx + vw / 2); if (dx < 0) dx = -dx
+                dy = (y + h / 2) - (vy + vh / 2); if (dy < 0) dy = -dy
+                printf "%d %d\n", dx, dy
+            }'
+    }
+    settings_open() { control settings-dump "$WORK/settings-geom.txt" >/dev/null 2>&1; }
+    settings_closed() { ! settings_open; }
 
     # --- 0 phones: General opens, the Phones group is empty (SET-WIN-02) ----
+    # SET-WIN-09 opens from a frame this profile has never placed.
+    defaults delete "$DEFAULTS_SUITE" settings.windowOrigin >/dev/null 2>&1 || true
     state devices-zero || return 1
     [ "$(report_value phones)" = "0" ] && ok "SET [SET-WIN-02] no phones: the sidebar lists none" \
         || bad "SET [SET-WIN-02] phones=$(report_value phones), wanted 0"
@@ -7434,6 +7454,38 @@ check_settings() {
         || bad "SET [SET-WIN-01] title='$(window_title)'"
     dump_line "empty=No phones yet." && ok "SET [SET-WIN-02] the Phones group says No phones yet." \
         || bad "SET [SET-WIN-02] no empty sentence: $(tr '\n' '|' < "$dump" 2>/dev/null)"
+
+    # --- where the window opens, and where it comes back to (SET-WIN-09) ----
+    gap="$(centre_gap)"
+    gap_x="${gap%% *}"; gap_y="${gap##* }"
+    [ "${gap_x:-99}" -le 2 ] && [ "${gap_y:-99}" -le 2 ] \
+        && ok "SET [SET-WIN-09] a fresh profile opens the window centred on the screen's visible frame (gap $gap_x,$gap_y pt)" \
+        || bad "SET [SET-WIN-09] the window opened at $(geom_value origin) on $(geom_value visible_frame), centre gap $gap_x,$gap_y pt"
+    # Moved 200 pt left and 150 pt down through Accessibility (AX axes: top-left,
+    # y down), the path a tiler takes. A real ⌘W closes the window; it reopens
+    # through the menu item's own action (control settings-open), because a
+    # quiet run's app has no key window to send ⌘, to.
+    fresh="$(geom_value origin)"
+    "$CGBIN" axmove --pid "$APP_PID" --dx -200 --dy 150 --title General || true
+    sleep 1
+    moved="$(geom_value origin)"
+    [ -n "$moved" ] && [ "$moved" != "$fresh" ] \
+        && ok "SET [SET-WIN-09] the window moved (AX) from $fresh to $moved" \
+        || bad "SET [SET-WIN-09] the window did not move (origin='$moved')"
+    control key "cmd+w" >/dev/null 2>&1
+    wait_until 10 settings_closed || bad "SET [SET-WIN-09] ⌘W did not close the Settings window"
+    control settings-open >/dev/null 2>&1
+    wait_until 12 settings_open || { bad "SET [SET-WIN-09] Settings did not reopen: $CONTROL_REPLY"; return 1; }
+    sleep 1
+    [ "$(geom_value origin)" = "$moved" ] \
+        && ok "SET [SET-WIN-09] closing and reopening (⌘,) brings the window back to $moved" \
+        || bad "SET [SET-WIN-09] reopened at $(geom_value origin), wanted $moved"
+    KEEP=1 state devices-zero || return 1
+    sleep 1
+    [ "$(geom_value origin)" = "$moved" ] \
+        && ok "SET [SET-WIN-09] a relaunch opens the window where it was left ($moved)" \
+        || bad "SET [SET-WIN-09] relaunched at $(geom_value origin), wanted $moved"
+
     # Add Phone… opens the Deck's one sheet and leaves the page where it was.
     control settings-add >/dev/null 2>&1
     sleep 1
