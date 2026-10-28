@@ -33,6 +33,19 @@ class UiStateTest {
         assertEquals(DeckStatus(StatusState.NEEDS_ATTENTION, AttentionKind.CONNECTIONS_OFF), status)
     }
 
+    /// PAIR-6/M8: a prompt waiting while POST_NOTIFICATIONS is denied cannot
+    /// show its notification; the home names the permission as the fix.
+    @Test
+    fun `a pairing prompt with notifications denied needs attention with allow`() {
+        val status = mapStatus(readyInput.copy(pairNotifyMissing = true))
+        assertEquals(DeckStatus(StatusState.NEEDS_ATTENTION, AttentionKind.PAIR_NOTIFY), status)
+    }
+
+    @Test
+    fun `a granted notification permission leaves the pairing prompt alone`() {
+        assertEquals(DeckStatus(StatusState.READY, AttentionKind.NONE), mapStatus(readyInput))
+    }
+
     @Test
     fun `background off is ready and informational, not a warning`() {
         // Off only means "stops when the task is swiped away"; it is not a

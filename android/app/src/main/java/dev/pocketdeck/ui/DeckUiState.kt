@@ -17,6 +17,8 @@ enum class AttentionKind {
     SHIZUKU_PERMISSION,
     /** The Mac asked for notifications but this phone's listener grant is missing. */
     NOTIFY_ACCESS,
+    /** A pairing prompt is waiting and this phone's notification permission is denied. */
+    PAIR_NOTIFY,
     RETRY,
 }
 
@@ -38,6 +40,8 @@ data class StatusInput(
     val allowConnections: Boolean = true,
     /** The Mac asked for notifications and the phone's listener grant is missing. */
     val notifyNoAccess: Boolean = false,
+    /** A pairing prompt is pending and POST_NOTIFICATIONS is denied: its notification cannot show. */
+    val pairNotifyMissing: Boolean = false,
 )
 
 /**
@@ -51,6 +55,9 @@ fun mapStatus(input: StatusInput): DeckStatus = when {
     !input.shizukuRunning -> DeckStatus(StatusState.NEEDS_ATTENTION, AttentionKind.SHIZUKU_NOT_RUNNING)
     !input.shizukuGranted -> DeckStatus(StatusState.NEEDS_ATTENTION, AttentionKind.SHIZUKU_PERMISSION)
     input.notifyNoAccess -> DeckStatus(StatusState.NEEDS_ATTENTION, AttentionKind.NOTIFY_ACCESS)
+    // A prompt the person cannot see anywhere but the foreground: the home
+    // names the permission that would show it (PAIR-6, M8).
+    input.pairNotifyMissing -> DeckStatus(StatusState.NEEDS_ATTENTION, AttentionKind.PAIR_NOTIFY)
     input.connectedMac != null -> DeckStatus(StatusState.CONNECTED, AttentionKind.NONE)
     !input.enabled -> DeckStatus(StatusState.READY, AttentionKind.NONE, untilTaskClosed = true)
     input.port > 0 -> DeckStatus(StatusState.READY, AttentionKind.NONE)

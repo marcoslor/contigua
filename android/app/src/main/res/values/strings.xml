@@ -65,6 +65,8 @@
     <string name="status_connections_off_body">Turn on Allow connections.</string>
     <string name="status_notify_access">Notification access is off</string>
     <string name="status_notify_access_body">Allow PocketDeck to read notifications on this phone.</string>
+    <string name="status_pair_notify">Notifications are off</string>
+    <string name="status_pair_notify_body">Allow notifications so your Mac can ask to pair.</string>
     <string name="status_error">Couldn\'t start</string>
     <string name="status_error_body">Something stopped PocketDeck\'s connection.</string>
     <string name="action_open_shizuku">Open Shizuku</string>

@@ -229,6 +229,10 @@ final class LinkMachineTests: XCTestCase {
         machine.handle(.attemptFailed(reason: "pair_cooldown"), at: at(2))
         XCTAssertEqual(machine.link, .pairing(phone, .coolingDown))
         XCTAssertEqual(PairingCopy.coolingDown, "Wait a moment, then try again.")
+        // PAIR-6: the 20 s hint appears exactly at the mark, not before.
+        XCTAssertNil(PairingCopy.slowHint(after: 19.9))
+        XCTAssertEqual(PairingCopy.slowHint(after: 20),
+                       "Check your phone: PocketDeck's notifications may be turned off.")
 
         // A launch (no code on screen yet) that meets the same cooldown shows
         // the sheet too, instead of a silent offline link.

@@ -47,6 +47,23 @@ struct CodeSheet: View {
         .frame(width: 400)
     }
 
+    /// After 20 s of waiting the prompt may be invisible on the phone because
+    /// its notifications are off: say so, once the wait is long enough.
+    @ViewBuilder
+    private var slowHint: some View {
+        if let started = controller.pairingStartedAt {
+            TimelineView(.periodic(from: .now, by: 1)) { context in
+                if let hint = PairingCopy.slowHint(after: context.date.timeIntervalSince(started)) {
+                    Text(hint)
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .multilineTextAlignment(.center)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+    }
+
     private func codeView(_ code: String) -> some View {
         Text(groupedPairingCode(code))
             .font(.system(size: 52, weight: .semibold, design: .monospaced))
@@ -60,13 +77,19 @@ struct CodeSheet: View {
     private var line: some View {
         switch state {
         case .contacting:
-            HStack(spacing: 8) {
-                ProgressView().controlSize(.small)
-                Text("Contacting \(displayName)…").font(.callout).foregroundStyle(.secondary)
+            VStack(spacing: 6) {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("Contacting \(displayName)…").font(.callout).foregroundStyle(.secondary)
+                }
+                slowHint
             }
         case .comparing:
-            Text("Tap Allow on your phone if it shows the same code.")
-                .font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
+            VStack(spacing: 6) {
+                Text("Tap Allow on your phone if it shows the same code.")
+                    .font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                slowHint
+            }
         case .verifying:
             HStack(spacing: 8) {
                 ProgressView().controlSize(.small)
