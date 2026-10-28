@@ -58,6 +58,8 @@
     <string name="status_windows">%1$d windows open</string>
     <string name="status_shizuku_not_running">Shizuku not running</string>
     <string name="status_shizuku_not_running_body">Start it in the Shizuku app.</string>
+    <string name="status_shizuku_not_installed">Shizuku isn\'t installed</string>
+    <string name="status_shizuku_not_installed_body">Install Shizuku to use PocketDeck.</string>
     <string name="status_permission">Shizuku permission needed</string>
     <string name="status_permission_body">Allow PocketDeck to use Shizuku.</string>
     <string name="status_connections_off">Connections are off</string>

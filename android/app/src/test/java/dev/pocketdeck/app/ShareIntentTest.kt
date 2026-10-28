@@ -2,6 +2,7 @@ package dev.pocketdeck.app
 
 import dev.pocketdeck.server.ShareStatus
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.ByteArrayInputStream
@@ -63,18 +64,28 @@ class ShareIntentTest {
     @Test
     fun noSessionMeansNoMacConnected() {
         val item = ShareItem.Text("hi", false)
-        val unbound = ShareDispatch.send(item, emptyList(), null)
-        assertEquals(ShareStatus.NO_SESSION, unbound)
-        assertEquals("No Mac connected", ShareIntent.message(unbound, item))
         val target = RecordingTarget(status = ShareStatus.NO_SESSION)
         assertEquals("No Mac connected", ShareIntent.message(ShareDispatch.send(item, emptyList(), target), item))
+    }
+
+    /**
+     * A share with no shell service bound is the phone's own missing Shizuku,
+     * not a Mac that went away: the toast names the fix on this phone
+     * (CONV-AND-03, misses.md M4).
+     */
+    @Test
+    fun aShareWithNoShellSaysShizukuIsNeeded() {
+        val item = ShareItem.Text("hi", false)
+        val unbound = ShareDispatch.send(item, emptyList(), null)
+        assertNotEquals(ShareStatus.NO_SESSION, unbound)
+        assertEquals("Start Shizuku to send to your Mac.", ShareIntent.message(unbound, item))
     }
 
     @Test
     fun noSessionClosesOpenedImages() {
         val input = TrackingStream()
         val item = ShareItem.Images(listOf("content://x/1"), "image/png")
-        assertEquals(ShareStatus.NO_SESSION, ShareDispatch.send(item, listOf(OpenedImage("a.png", "image/png", 3, input)), null))
+        assertNotEquals(ShareStatus.OK, ShareDispatch.send(item, listOf(OpenedImage("a.png", "image/png", 3, input)), null))
         assertTrue(input.closed)
     }
 

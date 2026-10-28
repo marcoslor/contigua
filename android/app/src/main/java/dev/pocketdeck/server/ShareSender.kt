@@ -12,6 +12,8 @@ object ShareStatus {
     const val NO_SESSION = 1
     const val TOO_LARGE = 2
     const val FAILED = 3
+    /** No shell service bound: the phone's own Shizuku is missing or stopped (CONV-AND-03). */
+    const val NO_SHELL = 4
 }
 
 /**
