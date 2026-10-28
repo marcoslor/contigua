@@ -40,7 +40,6 @@
 
     <string name="onboarding_notifications_title">Allow notifications</string>
     <string name="onboarding_notifications_body">Needed for pairing prompts.</string>
-    <string name="onboarding_notifications_battery">Let PocketDeck run in the background</string>
     <string name="onboarding_notifications_battery_body">Keeps PocketDeck reachable while your screen is off.</string>
 
     <string name="onboarding_pair_title">Pair your Mac</string>
