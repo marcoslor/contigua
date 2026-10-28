@@ -5226,6 +5226,21 @@ dnd_rx_count() { grep -c '"t":"phone.dnd"' "$WORK/events.jsonl" 2>/dev/null || t
 # dnd_more_than <n> — the fake phone applied more than n DND changes.
 dnd_more_than() { [ "$(dnd_count)" -gt "$1" ]; }
 
+# dnd_rx_at_least <n> — the fake phone has received at least n phone.dnd messages.
+dnd_rx_at_least() { [ "$(dnd_rx_count)" -ge "$1" ]; }
+
+# auth_count_at_least <n> — the fake phone has accepted at least n sessions
+# (a drop and the Mac's reconnect is the second one; the fake's own memory, the
+# DND mode and the panel hold, lives across them as the phone's service does).
+auth_count_at_least() {
+    local count
+    count="$(grep -cF '"ev":"session","state":"open"' "$WORK/events.jsonl" 2>/dev/null || true)"
+    [ "${count:-0}" -ge "$1" ]
+}
+
+# dnd_by_mac_count — how many DND changes the fake applied from a Mac command.
+dnd_by_mac_count() { grep -cF '"byMac":true' "$WORK/events.jsonl" 2>/dev/null || true; }
+
 check_focus() {
     # What the system reads, before anything starts.
     intents_metadata_ok \
@@ -5298,6 +5313,79 @@ check_focus() {
     [ "$(dnd_rx_count)" = "0" ] \
         && ok "FOCUS nothing is sent to a phone that cannot take it (no error spam)" \
         || bad "FOCUS a phone.dnd was sent to an old phone"
+    stop_app
+    stop_fakephone
+}
+
+# --- the person's own change on the phone wins (docs/specs/controls.md) ---
+
+# check_dnd_edge — the person's report of 10-28: "PocketDeck keeps turning DND
+# on after I turned it off on the phone". A Focus applies DND; the person turns
+# it off on the phone; the session drops and comes back. The reconnect must send
+# no phone.dnd (the Mac's memory already holds that value for this phone), and a
+# change of the Mac-side intent still sends: the Focus ending, then a new Focus.
+check_dnd_edge() {
+    clean
+    FAKE_ARGS="--dnd-person-after 2 --drop-after 8" start_fake || return 1
+    launch --connect "127.0.0.1:$PORT" --debug-focus "on priority" --quit-after 150
+    if wait_until 25 dnd_is priority; then
+        ok "[CTRL-2] the Focus started and the phone's DND came on (priority)"
+    else
+        bad "[CTRL-2] the Focus did not turn the phone's DND on"
+    fi
+    if wait_until 15 dnd_is off; then
+        ok "[CTRL-4] the person turned DND off on the phone"
+    else
+        bad "[CTRL-4] the fake phone never reported the person's DND change"
+    fi
+    local sent
+    sent="$(dnd_rx_count)"
+    if wait_until 45 auth_count_at_least 2; then
+        ok "[CTRL-3] the session dropped and the same phone reconnected"
+    else
+        bad "[CTRL-3] the fake phone never saw a second session (no reconnect)"
+    fi
+    sleep 4
+    if [ "$(dnd_rx_count)" = "$sent" ]; then
+        ok "[CTRL-3] the reconnect sent no phone.dnd (the stored intent was already applied)"
+    else
+        bad "[CTRL-3] the reconnect re-sent phone.dnd ($sent before, $(dnd_rx_count) after)"
+    fi
+    if dnd_is off; then
+        ok "[CTRL-4] the phone stayed off across the reconnect"
+    else
+        bad "[CTRL-4] the reconnect turned the person's DND back on"
+    fi
+    stop_app
+
+    # The Mac-side intent still applies on its edge: the Focus ends, then a new
+    # Focus starts. Both are launches, which is also the Focus ending while the
+    # phone and the app were apart.
+    sent="$(dnd_rx_count)"
+    launch --connect "127.0.0.1:$PORT" --debug-focus "off" --quit-after 60
+    if wait_until 25 dnd_rx_at_least "$((sent + 1))"; then
+        ok "[CTRL-2] the Focus ended and the Mac sent phone.dnd off"
+    else
+        bad "[CTRL-2] the Focus ended and no phone.dnd was sent"
+    fi
+    if wait_until 10 dnd_is off; then
+        ok "[CTRL-4] the Focus end left the person's off in place (the restore rule)"
+    else
+        bad "[CTRL-4] the Focus end did not leave the phone off"
+    fi
+    stop_app
+    sent="$(dnd_rx_count)"
+    launch --connect "127.0.0.1:$PORT" --debug-focus "on priority" --quit-after 60
+    if wait_until 25 dnd_rx_at_least "$((sent + 1))"; then
+        ok "[CTRL-2] a new Focus start sent phone.dnd priority again"
+    else
+        bad "[CTRL-2] a new Focus start sent nothing"
+    fi
+    if wait_until 15 dnd_is priority; then
+        ok "[CTRL-2] the phone took the new Focus (priority)"
+    else
+        bad "[CTRL-2] the new Focus did not reach the phone"
+    fi
     stop_app
     stop_fakephone
 }
