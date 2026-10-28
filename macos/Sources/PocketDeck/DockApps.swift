@@ -87,6 +87,10 @@ struct DockShimSpec: Equatable {
     /// the phone's adaptive layers (docs/design/dock.md §Icons).
     var iconVersion = PhoneAppIcon.version
     var iconLayers = false
+    /// e2e only: a directory this shim writes its built Dock menu to and reads
+    /// a press from (`--debug-control`'s, so a quiet run can read the menu the
+    /// Dock would show and press one of its items).
+    var menuDebugDir: String?
 
     /// "WhatsApp (Pixel)", like the Spotlight titles.
     var displayName: String { SpotlightIndexer.title(label: label, phoneName: phoneName) }
@@ -140,6 +144,7 @@ struct DockShimSpec: Equatable {
             DockMessage.plistIconVersion: iconVersion,
             DockMessage.plistIconLayers: iconLayers,
         ].merging(agent ? ["LSUIElement": true] : [:]) { current, _ in current }
+            .merging(menuDebugDir.map { [DockMessage.plistMenuDebugDir: $0] } ?? [:]) { current, _ in current }
     }
 }
 
@@ -285,11 +290,21 @@ final class DockApps: NSObject {
     var onOpen: ((String, String, Int) -> Void)?
     /// Close the window bound to a shim that quit.
     var onShimQuit: ((UInt32) -> Void)?
+    /// The app's window menu for a shim (WIN-26): the host builds one list and
+    /// every shim of that app renders it.
+    var windowMenu: ((String, String) -> [AppWindowMenuRow])?
+    /// A row of that menu was picked: deviceId, pkg, the row.
+    var onPick: ((String, String, AppWindowMenuRow) -> Void)?
+    /// e2e only (`--debug-control`): the directory a new shim is told to dump
+    /// its built menu into and read a press from.
+    var menuDebugDir: String?
 
-    /// The window a running shim stands for: stream + the package that named it.
+    /// The window a running shim stands for: stream, the phone, and the package
+    /// that named it.
     struct Binding: Equatable {
         var stream: UInt32
         var pkg: String
+        var deviceId: String = ""
     }
 
     /// Shim pid → the window (stream, pkg) it stands for.
@@ -338,9 +353,41 @@ final class DockApps: NSObject {
                            object: profile.name, suspensionBehavior: .deliverImmediately)
         center.addObserver(self, selector: #selector(quitRequested(_:)), name: DockMessage.quit,
                            object: profile.name, suspensionBehavior: .deliverImmediately)
+        center.addObserver(self, selector: #selector(pickRequested(_:)), name: DockMessage.pick,
+                           object: profile.name, suspensionBehavior: .deliverImmediately)
         NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(appTerminated(_:)),
                                                           name: NSWorkspace.didTerminateApplicationNotification,
                                                           object: nil)
+    }
+
+    // MARK: Window menus (WIN-26)
+
+    /// Pushes every running shim its app's window menu. The rows are the same
+    /// value the Deck cell renders, so the two menus cannot disagree.
+    func refreshWindowMenus() {
+        guard let windowMenu else { return }
+        for record in records() {
+            guard let app = runningApp(of: record.url) else { continue }
+            send(rows: windowMenu(record.deviceId, record.pkg),
+                 pid: Int(app.processIdentifier), record: record)
+        }
+    }
+
+    /// One shim's menu, when its window opened (it may not have been running
+    /// for the last refresh).
+    func sendWindowMenu(pid: Int) {
+        guard let windowMenu, let bound = bindings[pid],
+              let record = records().first(where: { $0.deviceId == bound.deviceId && $0.pkg == bound.pkg })
+        else { return }
+        send(rows: windowMenu(record.deviceId, record.pkg), pid: pid, record: record)
+    }
+
+    private func send(rows: [AppWindowMenuRow], pid: Int, record: DockShimRecord) {
+        let messages = rows.map(\.message)
+        center.postNotificationName(DockMessage.menu, object: profile.name,
+                                    userInfo: [DockMessage.pidKey: pid,
+                                               DockMessage.rowsKey: messages],
+                                    deliverImmediately: true)
     }
 
     func records() -> [DockShimRecord] { DockShimBuilder.records(in: folder, profile: profile) }
@@ -436,6 +483,8 @@ final class DockApps: NSObject {
     /// path and the automatic one. Runs on the caller's thread.
     private func make(_ spec: DockShimSpec, shellBinary: URL) -> URL? {
         do {
+            var spec = spec
+            spec.menuDebugDir = menuDebugDir
             // The icon: the Dock's own 1296 px layers when the phone answered
             // that request, else the Deck's layers upscaled, else the flat icon
             // on the plate. One 1024 px render feeds every .icns size.
@@ -530,10 +579,11 @@ final class DockApps: NSObject {
     // MARK: Shim messages
 
     /// The shim is up and its pid now stands for the window of `stream`.
-    func bind(pid: Int, stream: UInt32, pkg: String) {
-        bindings[pid] = Binding(stream: stream, pkg: pkg)
+    func bind(pid: Int, stream: UInt32, pkg: String, deviceId: String = "") {
+        bindings[pid] = Binding(stream: stream, pkg: pkg, deviceId: deviceId)
         watchExit(of: pid)
         post(DockMessage.opened, pid: pid)
+        sendWindowMenu(pid: pid)
     }
 
     private func watchExit(of pid: Int) {
@@ -619,6 +669,22 @@ final class DockApps: NSObject {
     @objc private func appTerminated(_ notification: Notification) {
         guard let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else { return }
         shimExited(Int(app.processIdentifier))
+    }
+
+    /// A shim's window menu was picked (WIN-26): the New row opens another
+    /// window, a window row raises that one. A message without the shim's token
+    /// is ignored, like every other shim message (sec L-8).
+    @objc private func pickRequested(_ notification: Notification) {
+        guard let info = notification.userInfo,
+              let deviceId = info[DockMessage.deviceIdKey] as? String,
+              let pkg = info[DockMessage.pkgKey] as? String,
+              let pid = info[DockMessage.pidKey] as? Int,
+              let messages = info[DockMessage.rowsKey] as? [[String: Any]],
+              let row = messages.compactMap(AppWindowMenuRow.init(message:)).first,
+              DockToken.matches(message: info[DockMessage.tokenKey] as? String,
+                                stored: shimToken(deviceId: deviceId, pkg: pkg)) else { return }
+        Log.app.notice("dock: menu pick for \(pkg, privacy: .public) pid \(pid, privacy: .public) — \(row.action == .newWindow ? "new" : "window", privacy: .public)")
+        MainActor.assumeIsolated { onPick?(deviceId, pkg, row) }
     }
 
     /// The shim quit (its message, NSWorkspace or the exit watch): its window

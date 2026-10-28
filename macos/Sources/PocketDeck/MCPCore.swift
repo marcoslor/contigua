@@ -79,7 +79,7 @@ enum MCPKey: String, CaseIterable {
 enum MCPCall: Equatable {
     case phoneStatus
     case listApps
-    case openApp(String)
+    case openApp(String, newWindow: Bool)
     case listWindows
     case screenshot(window: Int)
     case tap(window: Int, x: Double, y: Double)
@@ -151,10 +151,12 @@ enum MCPTools {
                 description: "Every app the phone reports, with its label and package name.",
                 schema: object([:], required: [])),
         MCPTool(name: .openApp,
-                description: "Open a phone app in a PocketDeck window; returns that window's id.",
+                description: "Open a phone app in a PocketDeck window; returns that window's id. Without newWindow it raises the app's window when it has one.",
                 schema: object([
                     "app": ["type": "string", "minLength": 1, "maxLength": 200,
                             "description": "Package name or app label (or a unique prefix)."],
+                    "newWindow": ["type": "boolean",
+                                  "description": "Open another window of an app that opens several at a time, instead of raising its window."],
                 ], required: ["app"])),
         MCPTool(name: .listWindows,
                 description: "The open Phone Mirrors: id, package, and stream size in pixels.",
@@ -259,6 +261,14 @@ enum MCPArguments {
         return Int(value)
     }
 
+    private static func boolean(_ args: [String: Any], _ key: String, default fallback: Bool) throws -> Bool {
+        guard let raw = args[key] else { return fallback }
+        guard MCPValue.isBool(raw), let value = raw as? NSNumber else {
+            throw MCPArgumentError(message: "“\(key)” must be true or false")
+        }
+        return value.boolValue
+    }
+
     private static func coordinate(_ args: [String: Any], _ key: String) throws -> Double {
         let value = try number(args, key)
         guard (0...1).contains(value) else {
@@ -280,7 +290,8 @@ enum MCPArguments {
         case .listApps:
             return .listApps
         case .openApp:
-            return .openApp(try string(args, "app", maximum: 200))
+            return .openApp(try string(args, "app", maximum: 200),
+                            newWindow: try boolean(args, "newWindow", default: false))
         case .listWindows:
             return .listWindows
         case .screenshot:

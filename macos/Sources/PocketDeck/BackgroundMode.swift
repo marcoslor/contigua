@@ -47,6 +47,21 @@ enum BackgroundKeyWindow {
         swap(NSWindow.self, #selector(NSWindow.makeKeyAndOrderFront(_:)), #selector(NSWindow.pd_makeKeyAndOrderFront(_:)))
         swap(NSWindow.self, #selector(getter: NSWindow.isKeyWindow), #selector(getter: NSWindow.pd_isKeyWindow))
         swap(NSApplication.self, #selector(getter: NSApplication.keyWindow), #selector(getter: NSApplication.pd_keyWindow))
+        // A real AppKit app hands the keyboard to another window when the key
+        // one closes; the emulation must too, or the app behaves as if nothing
+        // were key after ⌘W.
+        NotificationCenter.default.addObserver(
+            forName: NSWindow.willCloseNotification, object: nil, queue: .main
+        ) { note in
+            MainActor.assumeIsolated {
+                guard let closing = note.object as? NSWindow, closing === window else { return }
+                window = nil
+                let next = NSApp.windows.first {
+                    $0 !== closing && $0.isVisible && !$0.isMiniaturized && $0.canBecomeKey
+                }
+                if let next { becomeKey(next) }
+            }
+        }
     }
 
     private static func swap(_ cls: AnyClass, _ original: Selector, _ replacement: Selector) {

@@ -402,8 +402,11 @@ if [ "$WITH_CONTROLS" = 1 ]; then
 fi
 
 # Dock app executable (docs/design/dock.md): copied into each per-app shim bundle.
+# AppWindows.swift is the window-menu rule the shim renders (WIN-26), shared with
+# the host so the two cannot disagree.
 swiftc -O -module-name PocketDeckShim -target "$(uname -m)-apple-macos26.0" -swift-version 5 \
-    Shim/main.swift Sources/PocketDeck/DockMessages.swift -o "$APP/Contents/MacOS/PocketDeckShim"
+    Shim/main.swift Sources/PocketDeck/DockMessages.swift Sources/PocketDeck/AppWindows.swift \
+    -o "$APP/Contents/MacOS/PocketDeckShim"
 
 # MCP stdio shim (docs/design/mcp.md): MCP clients launch this, and it relays to
 # the app's private socket. It is signed before the bundle so signing the app

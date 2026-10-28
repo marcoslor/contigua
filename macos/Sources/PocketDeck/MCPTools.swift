@@ -17,8 +17,8 @@ struct MCPToolHost {
                 return .text(try json(phoneStatus()))
             case .listApps:
                 return .text(try json(listApps()))
-            case .openApp(let query):
-                return .text(try json(openApp(query)))
+            case .openApp(let query, let newWindow):
+                return .text(try json(openApp(query, newWindow: newWindow)))
             case .listWindows:
                 return .text(try json(listWindows()))
             case .screenshot(let window):
@@ -74,14 +74,14 @@ struct MCPToolHost {
         return ["apps": apps.map { ["label": $0.label, "package": $0.pkg] }]
     }
 
-    private func openApp(_ query: String) throws -> [String: Any] {
+    private func openApp(_ query: String, newWindow: Bool) throws -> [String: Any] {
         let phone = try IntentsBridge.resolve(nil)
         guard controller.link.isOnline, controller.link.phone?.id == phone.id else {
             throw IntentFailure.phoneNotConnected
         }
         switch IntentAppCatalog.app(named: query, in: IntentsBridge.apps(for: phone)) {
         case .app(let app):
-            controller.intentsOpenApp(app.pkg, on: phone.id)
+            controller.intentsOpenApp(app.pkg, on: phone.id, newWindow: newWindow)
             // The window is created synchronously above; the newest stream for
             // that package is the one this call opened.
             let stream = controller.windows.openStreams
