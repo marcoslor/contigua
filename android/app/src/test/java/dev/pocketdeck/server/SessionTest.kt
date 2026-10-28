@@ -904,7 +904,7 @@ class SessionTest {
             session!!.onFrame(1, pts, false, ByteArray(30_000))
             pts += 16_667
             fed++
-            Thread.sleep(16)
+            Thread.sleep(16) // real-time: the slow reader is wall-clock, like the Mac's socket
         }
         val elapsedMs = (System.nanoTime() - started) / 1_000_000
         val keys = platform.keyframeRequests.size
