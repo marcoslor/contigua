@@ -27,13 +27,31 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import rikka.shizuku.Shizuku
+import java.util.concurrent.Executor
+import java.util.concurrent.Executors
+
+/**
+ * The one shell push (`setPairedClients`): a binder call whose reply can be as
+ * slow as the shell service is, so it never runs on the main thread (PAIR-20).
+ */
+private fun pushToShell(json: String) {
+    runCatching { ShizukuClient.current()?.setPairedClients(json) }
+}
 
 /**
  * The single UI state holder. It observes the foreground service, the Shizuku
  * client and [Prefs], and exposes one [StateFlow]; composables only render and
  * call back into here, never touch Android services directly.
  */
-class DeckViewModel(app: Application) : AndroidViewModel(app) {
+class DeckViewModel(
+    app: Application,
+    /** Runs the identity rotation and the shell push off the main thread. */
+    private val background: Executor = Executors.newSingleThreadExecutor { r ->
+        Thread(r, "pocketdeck-pairing-push").apply { isDaemon = true }
+    },
+    /** The shell push; a test hands in a recorder instead of the binder. */
+    private val push: (String) -> Unit = ::pushToShell,
+) : AndroidViewModel(app) {
 
     private val _state = MutableStateFlow(DeckUiState())
     val state: StateFlow<DeckUiState> = _state.asStateFlow()
@@ -45,6 +63,9 @@ class DeckViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Client ids removed from the list but still on disk until Undo expires. */
     private val pendingForgets = LinkedHashMap<String, Runnable>()
+
+    /** Forget All is rotating the identity off the main thread: list empty now. */
+    private var forgettingAll = false
 
     private val deckListener: () -> Unit = { refresh() }
 
@@ -115,7 +136,13 @@ class DeckViewModel(app: Application) : AndroidViewModel(app) {
         }
         val port = DeckState.port
         val connected = DeckState.connectedMac
-        val paired = Prefs.paired(ctx).filterNot { pendingForgets.containsKey(it.clientId) }
+        // Forget All empties the list before the background rotation lands, so
+        // the row goes the moment the person confirms (PAIR-20).
+        val paired = if (forgettingAll) {
+            emptyList()
+        } else {
+            Prefs.paired(ctx).filterNot { pendingForgets.containsKey(it.clientId) }
+        }
 
         val allowConnections = Prefs.isAllowConnections(ctx)
         _state.value = DeckUiState(
@@ -315,16 +342,28 @@ class DeckViewModel(app: Application) : AndroidViewModel(app) {
      * pairing. The shell service sees a different fingerprint on the next push,
      * so it closes the live session and forgets what it cached; every Mac's pin
      * then reads Pair again (docs/specs/pairing.md PAIR-20).
+     *
+     * The list empties at once. The identity rotation is key generation and the
+     * push is a binder call the shell may take time to answer: both run on
+     * [background], the push after the rotation, or the main thread would be
+     * waiting on them (the ANR this fixes).
      */
     fun forgetAllMacs() {
         val ctx = getApplication<Application>()
         pendingForgets.values.forEach { handler.removeCallbacks(it) }
         pendingForgets.clear()
-        Prefs.forgetAll(ctx)
+        forgettingAll = true
         DeckState.paired = emptyList()
-        pushPaired()
         refresh()
         DeckState.notifyChanged()
+        background.execute {
+            Prefs.forgetAll(ctx)
+            pushNow(ctx)
+            handler.post {
+                forgettingAll = false
+                refresh()
+            }
+        }
     }
 
     fun answerPairing(allow: Boolean) {
@@ -364,7 +403,7 @@ class DeckViewModel(app: Application) : AndroidViewModel(app) {
                     Prefs.PendingQr(result.clientId, result.name, result.macFpHex,
                                     result.secretHex, now),
                 )
-                runCatching { ShizukuClient.current()?.setPairedClients(Prefs.serviceStateJson(ctx)) }
+                pushPaired()
                 postSnackbar(ctx.getString(R.string.qr_waiting, result.name))
             }
             QrPairing.Result.BadKey -> postSnackbar(ctx.getString(R.string.qr_bad_key))
@@ -385,7 +424,12 @@ class DeckViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun pushPaired() {
         val ctx = getApplication<Application>()
-        runCatching { ShizukuClient.current()?.setPairedClients(Prefs.serviceStateJson(ctx)) }
+        background.execute { pushNow(ctx) }
+    }
+
+    /** The push itself: `serviceStateJson` may generate the identity (keygen). */
+    private fun pushNow(ctx: Application) {
+        push(Prefs.serviceStateJson(ctx))
     }
 
     private fun postSnackbar(message: String) {

@@ -13,7 +13,8 @@
 # C  with the app dead, a reconnect is refused (no stale identity served)
 # D  the relaunched app lists no Macs
 # E  pair again, then Paired Macs > Forget All Macs... with its confirmation:
-#    the session closes, and the Mac must pair again (PAIR-18/PAIR-20)
+#    the session closes, the app does not ANR, and the Mac must pair again
+#    (PAIR-18/PAIR-20)
 set -euo pipefail
 
 CHECK=0
@@ -273,6 +274,8 @@ for tag in re.findall(r"<node\b[^>]*>", sys.stdin.read()):
         break
 ' "Forget All")"
 [ -n "$TAP" ] || die "could not find the confirm button's bounds"
+# Only the tap's own consequences from here: an ANR line must be this run's.
+emu logcat -c >/dev/null 2>&1 || true
 T_FORGET="$(now)"
 emu shell input tap $TAP >/dev/null
 CLOSED=0
@@ -288,6 +291,18 @@ if [ "$CLOSED" = 1 ] && grep -q 'closed during watch-state' "$WATCH" &&
   pass "forget all: the live session closed in ${N}s (<= ${MAX_CLOSE_S}s)"
 else
   fail "forget all: the live session did not close in time (closed=$CLOSED N=${N}s)"
+fi
+# The app's UI thread must not be waiting on the shell: a push that does binder
+# or keygen work there ANRs 5 s after this tap (the reviewer's run did).
+ANR=0
+for _ in $(seq 1 8); do
+  emu logcat -d 2>/dev/null | grep -q 'ANR in dev.pocketdeck' && { ANR=1; break; }
+  sleep 1
+done
+if [ "$ANR" = 1 ]; then
+  fail "forget all: the app ANR'd while the session was dropped"
+else
+  pass "forget all: no ANR in dev.pocketdeck in the 8s after the tap"
 fi
 if wait_for_text /data/local/tmp/pd-reset.xml 'No Macs paired yet.' 10; then
   pass "forget all: the list is empty"
