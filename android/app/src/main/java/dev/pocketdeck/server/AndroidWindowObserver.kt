@@ -19,11 +19,22 @@ internal class AndroidWindowObserver(private val ctx: Context, private val log: 
 
     private var loggedFailure = false
 
-    override fun topApp(displayId: Int): TopApp? {
+    override fun topTask(displayId: Int): TopTask? {
         val info = firstTask(displayId) ?: return null
         val pkg = packageOf(info) ?: return null
-        return TopApp(pkg, label(pkg))
+        val taskId = runCatching { info.javaClass.getField("taskId").get(info) as? Int }.getOrNull() ?: 0
+        return TopTask(pkg, label(pkg), taskId, taskLabel(info))
     }
+
+    /**
+     * `taskDescription.label`: the task's own title, which a browser or a chat
+     * app updates as the person moves around. Never logged as text (R-PRIV-1).
+     */
+    private fun taskLabel(info: Any): String? = runCatching {
+        val description = info.javaClass.getField("taskDescription").get(info) ?: return null
+        val text = description.javaClass.getMethod("getLabel").invoke(description) as? CharSequence
+        text?.toString()?.takeIf { it.isNotBlank() }
+    }.getOrNull()
 
     /** null when the query could not be made (as opposed to an empty task list). */
     /** The display's top task id for `window.opened`; null when the query fails. */

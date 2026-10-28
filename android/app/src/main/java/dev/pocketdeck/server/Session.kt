@@ -174,7 +174,10 @@ class Session(
         var content: WindowContent? = null
 
         /** Written by pocketdeck-watch, read by the audio thread's capture plan. */
-        @Volatile var lastTitle: TopApp? = null
+        @Volatile var lastTitle: TopTask? = null
+
+        /** pocketdeck-watch only: an app stream's `window.title` throttle (WIN-28). */
+        var title = TaskLabelThrottle.State()
 
         /** pocketdeck-watch only. */
         var hadTask = false
@@ -2361,16 +2364,20 @@ class Session(
     }
 
     /**
-     * Polls the top app on each display (phone-mode `window.title`) and, at most
-     * every [exitPollIntervalMs], whether an app window's display still has a
-     * task. It performs no query at all while there are no streams (the task list
-     * is only polled while ≥1 stream is open and unpaused).
+     * Polls the top task on each display (phone-mode `window.title`, an app
+     * stream's task label) and, at most every [exitPollIntervalMs], whether an
+     * app window's display still has a task. It performs no query at all while
+     * there are no streams (the task list is only polled while ≥1 stream is open
+     * and unpaused).
      */
     private fun streamWatchLoop() {
         var lastExitCheck = 0L
         var lastSecureCheck = 0L
         while (!isClosed) {
             val snapshot = synchronized(streams) { streams.values.toList() }
+            // A held label's due time: the loop comes back for it instead of
+            // waiting its whole second (WIN-28's "the last value always goes out").
+            var wakeAtMs = 0L
             // The mirror's secure surface is only worth reading while a phone
             // window can show it, and at most once a second (the protocol says
             // state is sent on change, not on a poll tick).
@@ -2389,12 +2396,24 @@ class Session(
 
                 titleObserver?.let { observer ->
                     var titlesChanged = false
+                    val nowMs = System.currentTimeMillis()
                     for (s in unpaused) {
-                        val top = runCatching { observer.topApp(s.displayId) }.getOrNull() ?: continue
-                        if (top != s.lastTitle) {
+                        val top = runCatching { observer.topTask(s.displayId) }.getOrNull() ?: continue
+                        val changed = top != s.lastTitle
+                        if (changed) {
                             s.lastTitle = top
                             titlesChanged = true
-                            sendJson(mapOf("t" to "window.title", "stream" to s.stream, "label" to top.label, "pkg" to top.pkg))
+                        }
+                        if (top.taskId > 0) s.taskId = top.taskId
+                        when (s.content) {
+                            is WindowContent.App, is WindowContent.Link -> {
+                                val due = tickAppTitle(s, top.taskLabel ?: top.label, nowMs)
+                                if (due > 0 && (wakeAtMs == 0L || due < wakeAtMs)) wakeAtMs = due
+                            }
+                            else -> if (changed) {
+                                // The phone's own screen: today's message, at once.
+                                sendJson(mapOf("t" to "window.title", "stream" to s.stream, "label" to top.label, "pkg" to top.pkg))
+                            }
                         }
                     }
                     // A window's top app changed: the audio follow plan does
@@ -2412,8 +2431,40 @@ class Session(
                 }
             }
 
-            synchronized(pairLock) { if (!isClosed) runCatching { pairLock.wait(1_000) } }
+            val wakeMs = if (wakeAtMs == 0L) 1_000L else (wakeAtMs - System.currentTimeMillis()).coerceIn(20L, 1_000L)
+            synchronized(pairLock) { if (!isClosed) runCatching { pairLock.wait(wakeMs) } }
         }
+    }
+
+    /**
+     * One tick of an app stream's `window.title` (WIN-28): the current label and
+     * a wake for whatever waits, then the sends the machine asked for. Returns
+     * the time a held label is due, or 0 when nothing waits.
+     */
+    private fun tickAppTitle(s: StreamState, label: String, nowMs: Long): Long {
+        var state = s.title
+        val actions = ArrayList<TaskLabelThrottle.Action>(2)
+        for (event in listOf(
+            TaskLabelThrottle.Event.Label(label, nowMs),
+            TaskLabelThrottle.Event.Wake(nowMs),
+        )) {
+            val step = TaskLabelThrottle.transition(state, event)
+            state = step.state
+            actions.addAll(step.actions)
+        }
+        s.title = state
+        var due = 0L
+        for (action in actions) {
+            when (action) {
+                is TaskLabelThrottle.Action.Send -> {
+                    sendJson(mapOf("t" to "window.title", "stream" to s.stream, "title" to action.label))
+                    // R-PRIV-1: a label is phone content — its length, never it.
+                    log("window.title stream=${s.stream} task=${s.taskId} len=${action.label.length}")
+                }
+                is TaskLabelThrottle.Action.Wake -> due = action.atMs
+            }
+        }
+        return due
     }
 
     private fun checkAppExit(candidates: List<StreamState>) {
