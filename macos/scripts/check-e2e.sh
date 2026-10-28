@@ -996,6 +996,25 @@ check_pair() {
         || bad "[PAIR-5] C4 the cooldown sheet lost Try again"
     stop_app
     stop_fakephone
+
+    # PAIR-6/M8: a phone that never answers. Its prompt may be invisible when
+    # its notifications are off, so at 20 s the Mac says so.
+    wait_until 5 no_fakephone
+    clean
+    FAKE_ALLOW_DELAY=200 start_fake || return 1
+    launch --connect "127.0.0.1:$PORT" --quit-after 50
+    wait_until 20 eval 'pair_ax | grep -qF "Tap Allow on your phone if it shows the same code."' \
+        && ok "[PAIR-6] C4 the code sheet is up while the phone decides" \
+        || bad "[PAIR-6] C4 no code sheet while the phone never answered"
+    ! pair_ax | grep -qF "notifications may be turned off" \
+        && ok "[PAIR-6] C4 the notifications hint waits for the 20 s mark" \
+        || bad "[PAIR-6] C4 the notifications hint appeared too early"
+    sleep 21
+    pair_ax | grep -qF "Check your phone: PocketDeck's notifications may be turned off." \
+        && ok "[PAIR-6] C4 at 20 s the Mac names the phone's notifications as the possible cause" \
+        || bad "[PAIR-6] C4 the 20 s notifications hint is missing ($(ax_tree | tr '\n' '|' | cut -c1-260))"
+    stop_app
+    stop_fakephone
 }
 
 # --- B3: the phone's connection gates --------------------------------------

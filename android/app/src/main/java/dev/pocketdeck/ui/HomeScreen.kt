@@ -293,6 +293,7 @@ private fun statusTitle(state: DeckUiState): String = when (state.status.state) 
 
         AttentionKind.SHIZUKU_PERMISSION -> stringResource(R.string.status_permission)
         AttentionKind.NOTIFY_ACCESS -> stringResource(R.string.status_notify_access)
+        AttentionKind.PAIR_NOTIFY -> stringResource(R.string.status_pair_notify)
         else -> stringResource(R.string.status_ready)
     }
 
@@ -328,6 +329,7 @@ private fun statusSubtitle(state: DeckUiState): String = when (state.status.stat
 
         AttentionKind.SHIZUKU_PERMISSION -> stringResource(R.string.status_permission_body)
         AttentionKind.NOTIFY_ACCESS -> stringResource(R.string.status_notify_access_body)
+        AttentionKind.PAIR_NOTIFY -> stringResource(R.string.status_pair_notify_body)
         else -> ""
     }
 
@@ -369,6 +371,7 @@ private fun statusActionLabel(attention: AttentionKind, shizuku: ShizukuUiState)
 
     AttentionKind.SHIZUKU_PERMISSION -> R.string.action_allow
     AttentionKind.NOTIFY_ACCESS -> R.string.action_allow
+    AttentionKind.PAIR_NOTIFY -> R.string.action_allow
     AttentionKind.RETRY -> R.string.action_retry
     AttentionKind.NONE -> 0
 }

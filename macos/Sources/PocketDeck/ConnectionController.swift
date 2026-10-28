@@ -269,6 +269,8 @@ final class ConnectionController {
     /// `--debug-dnd on|off`, run when the first state shows the phone's support.
     private var pendingDebugDnd: Bool?
     private(set) var pairingSucceeded = false
+    /// When the pairing sheet went up: the 20 s hint counts from here (PAIR-6).
+    private(set) var pairingStartedAt: Date?
     private(set) var qr: QRPairingState?
     private(set) var welcomeSeen: Bool
     private(set) var searchedLong = false
@@ -1543,6 +1545,11 @@ final class ConnectionController {
             }
         }
         if case .pairing = link, qr == nil { sheet = .code }
+        if isPairing {
+            if pairingStartedAt == nil { pairingStartedAt = Date() }
+        } else {
+            pairingStartedAt = nil
+        }
         if before.isOnline, !link.isOnline {
             windows.linkLost()
             dropSender.connectionLost()

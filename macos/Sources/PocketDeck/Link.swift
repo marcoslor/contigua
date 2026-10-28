@@ -48,6 +48,14 @@ enum Pairing: Equatable {
 /// others name the phone and are built there).
 enum PairingCopy {
     static let coolingDown = "Wait a moment, then try again."
+    /// PAIR-6: a prompt that has waited 20 s may be invisible because the
+    /// phone's notifications are off; the Mac names that possibility.
+    static let slowHint = "Check your phone: PocketDeck's notifications may be turned off."
+    static let slowHintAfter: TimeInterval = 20
+
+    static func slowHint(after elapsed: TimeInterval) -> String? {
+        elapsed >= slowHintAfter ? slowHint : nil
+    }
 }
 
 enum Link: Equatable {

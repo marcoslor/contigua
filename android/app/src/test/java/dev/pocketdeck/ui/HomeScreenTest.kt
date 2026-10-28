@@ -53,6 +53,7 @@ class HomeScreenTest {
         enabled: Boolean,
         allowConnections: Boolean = true,
         notifyNoAccess: Boolean = false,
+        pairNotifyMissing: Boolean = false,
         shizukuInstalled: Boolean = true,
         shizukuRunning: Boolean = true,
     ) = DeckUiState(
@@ -74,6 +75,7 @@ class HomeScreenTest {
                 connectedMac = null,
                 allowConnections = allowConnections,
                 notifyNoAccess = notifyNoAccess,
+                pairNotifyMissing = pairNotifyMissing,
             ),
         ),
     )
@@ -125,6 +127,14 @@ class HomeScreenTest {
         shoot(state(enabled = true, notifyNoAccess = true))
         compose.onNodeWithText("Notification access is off").fetchSemanticsNode()
         compose.onNodeWithText("Allow PocketDeck to read notifications on this phone.").fetchSemanticsNode()
+        compose.onNodeWithText("Allow").fetchSemanticsNode()
+    }
+
+    @Test
+    fun `a pairing prompt with notifications denied shows the attention item`() {
+        shoot(state(enabled = true, pairNotifyMissing = true))
+        compose.onNodeWithText("Notifications are off").fetchSemanticsNode()
+        compose.onNodeWithText("Allow notifications so your Mac can ask to pair.").fetchSemanticsNode()
         compose.onNodeWithText("Allow").fetchSemanticsNode()
     }
 
