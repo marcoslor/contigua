@@ -115,6 +115,10 @@ internal class WindowStream(
     @Volatile private var lastCsd: ByteArray? = null
 
     private val guard = RedrawGuard()
+
+    /** What the display already shows, so a repeat asks for nothing. */
+    private val ledger = ResizeLedger()
+
     private val sequencer = ResizeSequencer(object : ResizeSteps {
         override fun fit(w: Int, h: Int): IntSize = fitToEncoder(w, h)
         override fun prepare(size: IntSize): IntSize? = prepareEncoder(size)
@@ -167,6 +171,7 @@ internal class WindowStream(
         startDrain(next.codec)
         rotationThread = Thread({ watchRotation() }, "pocketdeck-mirror-$stream").also { it.start() }
         log("stream $stream mirror of display 0 (${screen.w}x${screen.h}) at ${size.w}x${size.h}")
+        ledger.remember(ResizeRequest(mirrorBox.w, mirrorBox.h, baseDpi))
         return size
     }
 
@@ -202,6 +207,7 @@ internal class WindowStream(
                 mirrorScreen = now
                 mirrorBox = MirrorFit.turnBox(mirrorBox, now)
                 resizeLocked(mirrorBox.w, mirrorBox.h, baseDpi)
+                ledger.remember(ResizeRequest(mirrorBox.w, mirrorBox.h, baseDpi))
             }
         }
     }
@@ -229,22 +235,49 @@ internal class WindowStream(
         log("stream $stream vd=$displayIdValue ${size.w}x${size.h} dpi=$dpi path=${created.path}")
         log("stream $stream vd=$displayIdValue requested flags=0x${requested.toString(16)} (${virtualFlagNames(requested)})")
         log("stream $stream vd=$displayIdValue ${DisplayProbe.describe(displayIdValue)}")
+        // What a repeat is measured against is the request as it was asked, not
+        // the size the encoder fitted it to.
+        ledger.remember(ResizeRequest(w, h, baseDpi))
         return displayIdValue
     }
 
     @Synchronized
-    fun resize(w: Int, h: Int, dpi: Int) {
-        if (released) return
+    fun resize(w: Int, h: Int, dpi: Int): ResizeOutcome {
+        if (released) return ResizeOutcome.KEPT
         val screen = mirrorScreen
+        val box: IntSize
+        val effectiveDpi: Int
         if (screen == null) {
-            resizeLocked(w, h, dpi)
+            box = IntSize(w, h)
+            effectiveDpi = dpi
         } else {
-            mirrorBox = MirrorFit.turnBox(IntSize(w, h), screen)
-            resizeLocked(mirrorBox.w, mirrorBox.h, baseDpi)
+            box = MirrorFit.turnBox(IntSize(w, h), screen)
+            effectiveDpi = baseDpi
         }
+        val request = ResizeRequest(box.w, box.h, effectiveDpi)
+        when (ledger.need(request)) {
+            ResizeNeed.SAME -> {
+                log("stream $stream resize ${box.w}x${box.h} dpi=$effectiveDpi is already shown")
+                return ResizeOutcome.SAME
+            }
+            ResizeNeed.DENSITY -> {
+                // Same pixels, new density: no encoder rebuild, so no re-attach
+                // and no lost frame (the 10-27 burst).
+                sequencer.densityOnly(IntSize(width, height), effectiveDpi)
+                ledger.settle(request, ResizeOutcome.DENSITY)
+                log("stream $stream density ${width}x$height dpi=$effectiveDpi (encoder kept)")
+                return ResizeOutcome.DENSITY
+            }
+            ResizeNeed.FULL -> Unit
+        }
+        val outcome = resizeLocked(box.w, box.h, effectiveDpi)
+        // The asked box, not the fitted one: a repeat of the same request is a
+        // no-op even when the encoder shrank it (docs/PROTOCOL.md `window.resize`).
+        ledger.settle(request, outcome)
+        return outcome
     }
 
-    private fun resizeLocked(boxW: Int, boxH: Int, dpi: Int) {
+    private fun resizeLocked(boxW: Int, boxH: Int, dpi: Int): ResizeOutcome {
         // With one surface for life the encoder keeps running while paused, so
         // a resize then is a normal one.
         val result = sequencer.resize(boxW, boxH, dpi, paused && persistent == null, IntSize(width, height))
@@ -254,6 +287,12 @@ internal class WindowStream(
                     if (result.size.w != boxW || result.size.h != boxH) " (asked ${boxW}x$boxH)" else "")
             ResizeSequencer.Outcome.KEPT ->
                 log("stream $stream resize ${boxW}x$boxH refused by the encoder; staying at ${width}x$height")
+            ResizeSequencer.Outcome.DENSITY_ONLY -> Unit
+        }
+        return when (result.outcome) {
+            ResizeSequencer.Outcome.RESIZED, ResizeSequencer.Outcome.DISPLAY_ONLY -> ResizeOutcome.RESIZED
+            ResizeSequencer.Outcome.KEPT -> ResizeOutcome.KEPT
+            ResizeSequencer.Outcome.DENSITY_ONLY -> ResizeOutcome.DENSITY
         }
     }
 
@@ -881,9 +920,8 @@ internal class AndroidDisplayLayer(
 
     override fun size(stream: Int): IntSize = get(stream)?.inputSize ?: IntSize(0, 0)
 
-    override fun resize(stream: Int, w: Int, h: Int, dpi: Int) {
-        get(stream)?.resize(w, h, dpi)
-    }
+    override fun resize(stream: Int, w: Int, h: Int, dpi: Int): ResizeOutcome =
+        get(stream)?.resize(w, h, dpi) ?: ResizeOutcome.KEPT
 
     override fun pause(stream: Int) {
         get(stream)?.pause()

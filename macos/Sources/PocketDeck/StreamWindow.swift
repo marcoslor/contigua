@@ -248,6 +248,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     deinit {
         stallTimer?.invalidate()
         openingTimer?.invalidate()
+        settleTimer?.invalidate()
         if let barKeyMonitor { NSEvent.removeMonitor(barKeyMonitor) }
     }
 
@@ -629,9 +630,86 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     func sendClose() { session.closeWindow(stream: stream) }
     /// Reapply the window's title after the phone's display name changed.
     func retitle() {}
-    func sendResize() {
+
+    /// The window's resize requests, coalesced: one in flight, at most one
+    /// waiting (ResizeCoalescer). A person's burst of ⌘+/⌘- presses used to
+    /// send every value, and every request re-attaches the phone's encoder.
+    private var resizes = ResizeCoalescer()
+
+    /// How long the Mac waits for the phone to answer one resize before it
+    /// counts it settled (ResizeCoalescer `.settleTimeout`). The NFR stall limit
+    /// (`density_burst_stall_ms`), the same 1.5 s the window's own "Not
+    /// responding" rule uses. A bound on a protocol wait, not a debounce of
+    /// layout input: a request still goes out the moment the machine allows.
+    static let resizeSettleTimeout: TimeInterval = FrameWatchdog.staleAfter
+
+    /// Posts `.settleTimeout` while a request is in flight; restarted by every
+    /// send and dropped when nothing is in flight.
+    private var settleTimer: Timer?
+    /// The stall was said once for this window: a phone that never answers must
+    /// not fill the log with the same line.
+    private var resizeStallLogged = false
+
+    private func resizeRequest() -> ResizeRequest {
         let pixels = displayPixels()
-        session.resizeWindow(stream: stream, width: Int(pixels.width), height: Int(pixels.height), dpi: dpi())
+        return ResizeRequest(w: Int(pixels.width), h: Int(pixels.height),
+                             dpi: Int(dpi().rounded()))
+    }
+
+    func sendResize() {
+        #if PD_TEST_HOOKS
+        // Every coalescer event is applied on main (WindowManager.handleVideo
+        // hops): the window's view state is main-thread state.
+        dispatchPrecondition(condition: .onQueue(.main))
+        #endif
+        send(resizes.apply(.request(resizeRequest())))
+    }
+
+    /// The phone answered a resize: its `window.resize.ack`, or the
+    /// VIDEO_CONFIG that follows one. The value that waited goes out now.
+    func resizeSettled(_ request: ResizeRequest? = nil) {
+        #if PD_TEST_HOOKS
+        dispatchPrecondition(condition: .onQueue(.main))
+        #endif
+        guard let settled = request ?? resizes.inFlight else { return }
+        send(resizes.apply(.settled(settled)))
+    }
+
+    private func send(_ actions: [ResizeCoalescer.Action]) {
+        for action in actions {
+            switch action {
+            case .send(let request):
+                session.resizeWindow(stream: stream, width: request.w, height: request.h,
+                                     dpi: Double(request.dpi))
+                armSettleTimer()
+            }
+        }
+        if resizes.inFlight == nil {
+            settleTimer?.invalidate()
+            settleTimer = nil
+        }
+    }
+
+    private func armSettleTimer() {
+        settleTimer?.invalidate()
+        let timer = Timer(timeInterval: Self.resizeSettleTimeout, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated { self?.settleTimedOut() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        settleTimer = timer
+    }
+
+    /// The phone did not answer in time: the machine counts the request as
+    /// settled and sends what waited (a phone that predates the ack sends none,
+    /// and a paused or refused resize carries no new CONFIG either).
+    private func settleTimedOut() {
+        settleTimer = nil
+        guard resizes.inFlight != nil else { return }
+        if !resizeStallLogged {
+            resizeStallLogged = true
+            Log.video.notice("stream \(self.stream, privacy: .public): resize unanswered, moving on")
+        }
+        send(resizes.apply(.settleTimeout))
     }
 
     /// Programmatic stream size change (test hook); the top-left stays put.
@@ -701,6 +779,8 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         dwellTimer?.invalidate()
         stopDwellFeed()
         resizeWork?.cancel()
+        settleTimer?.invalidate()
+        settleTimer = nil
         if !closingFromRemote { sendClose() }
         manager.remove(stream: stream)
     }
@@ -785,9 +865,11 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     /// which would detach its encoder; the key/main window never pauses.
     private var shouldPause: Bool {
         guard let window else { return false }
-        if window.isMiniaturized { return true }
-        if window.isKeyWindow || window.isMainWindow { return false }
-        return !window.occlusionState.contains(.visible)
+        return StreamPause.shouldPause(miniaturized: window.isMiniaturized,
+                                       key: window.isKeyWindow,
+                                       main: window.isMainWindow,
+                                       occludedVisible: window.occlusionState.contains(.visible),
+                                       menuTracking: MenuTracking.isTracking)
     }
 
     func setPaused(_ paused: Bool) {
@@ -797,6 +879,12 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         guard changed else { return }
         self.isPaused = paused
         if paused { session.pauseWindow(stream: stream) } else { session.resumeWindow(stream: stream) }
+    }
+
+    /// Re-decides pause (a menu stopped tracking, or the app came back): the
+    /// caller has no new state of its own.
+    func reevaluatePause() {
+        setPaused(shouldPause)
     }
 
     // MARK: Focus
@@ -1255,7 +1343,15 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     /// for an exact option).
     func adjustDensity(_ delta: Double) {
         guard usesDensity, let pkg = densityPackage else { return }
-        manager.setDensity(DensityRules.stepped(from: density, by: delta), forPackage: pkg)
+        let next = DensityRules.stepped(from: density, by: delta)
+        guard next != density else {
+            // At the clamp the press cannot change anything, and a request
+            // equal to the last one re-attached the phone's encoder for nothing
+            // (the 10-27 burst). The press is a no-op: nothing is sent.
+            Log.video.info("density press: the window is at the clamp, nothing to send")
+            return
+        }
+        manager.setDensity(next, forPackage: pkg)
     }
 
     /// ⌘0: back to the Settings default (the app's override is cleared).

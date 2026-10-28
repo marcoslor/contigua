@@ -132,10 +132,18 @@ extension MenuMarks {
 
     /// Phone ▸ Phone Mirror (⌘P) is enabled while the phone is online, read when
     /// the menu starts tracking: SwiftUI's own flag for the item can lag a
-    /// connect, and then the item does nothing.
+    /// connect, and then the item does nothing. Turn Off Phone Screen's check
+    /// follows the phone's own `state.panel`, so an open menu never shows a
+    /// value from before the report.
     static func phoneEdits(items: [Item], phone: PhoneControlsState) -> [Edit] {
-        items.filter { !$0.isSeparator && $0.title == "Phone Mirror" }
-            .map { .enable([$0.title], PhonePanelItem.phoneScreen.isEnabled(in: phone)) }
+        var edits: [Edit] = []
+        for item in items where !item.isSeparator && item.title == "Phone Mirror" {
+            edits.append(.enable([item.title], PhonePanelItem.phoneScreen.isEnabled(in: phone)))
+        }
+        if items.contains(where: { !$0.isSeparator && $0.title == "Turn Off Phone Screen" }) {
+            edits.append(.mark(["Turn Off Phone Screen"], phone.panelOff))
+        }
+        return edits
     }
 
     /// The menu's items as values, for the rules.

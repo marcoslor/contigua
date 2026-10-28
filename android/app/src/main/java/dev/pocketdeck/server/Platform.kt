@@ -250,7 +250,13 @@ interface DisplayLayer {
     /** Size normalized input maps over: the video size, or display 0's real size for a mirror. */
     fun size(stream: Int): IntSize
 
-    fun resize(stream: Int, w: Int, h: Int, dpi: Int)
+    /**
+     * A `window.resize`: [ResizeOutcome.SAME] when the display already shows
+     * that size and density, [ResizeOutcome.DENSITY] when only the density
+     * changed (no encoder rebuild), else the encoder's answer. The session
+     * sends it back as `window.resize.ack`; an unknown stream answers KEPT.
+     */
+    fun resize(stream: Int, w: Int, h: Int, dpi: Int): ResizeOutcome
     fun pause(stream: Int)
     fun resume(stream: Int)
     fun requestKeyframe(stream: Int)

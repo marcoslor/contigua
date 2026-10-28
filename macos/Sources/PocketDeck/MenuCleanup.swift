@@ -21,16 +21,21 @@ import AppKit
 
 enum MenuCleanup {
     /// A menu's items as far as the rules care: title, whether it is a
-    /// separator, and a submenu.
+    /// separator, its key equivalent, and a submenu.
     struct Item: Equatable {
         var title: String
         var isSeparator: Bool
         var children: [Item] = []
+        /// The item's own shortcut, empty for none: AppKit's duplicate
+        /// full-screen item carries none, the app's carries ⌃⌘F (MENU-7).
+        var keyEquivalent: String = ""
 
-        init(title: String, isSeparator: Bool = false, children: [Item] = []) {
+        init(title: String, isSeparator: Bool = false, children: [Item] = [],
+             keyEquivalent: String = "") {
             self.title = title
             self.isSeparator = isSeparator
             self.children = children
+            self.keyEquivalent = keyEquivalent
         }
     }
 
@@ -53,6 +58,20 @@ enum MenuCleanup {
                     path: path + [index], into: &out)
         }
         var removed = Set<Int>()
+        // AppKit adds its own Enter Full Screen to the Window menu; after a
+        // SwiftUI rebuild the bar can show it beside the app's ⌃⌘F item, so the
+        // person reads the command twice. The keyed item is the app's and stays;
+        // the key-less one is a leftover (MENU-7, MENU-11).
+        if menu == "Window" {
+            let fullScreen = items.enumerated().filter {
+                !$0.element.isSeparator && isFullScreen($0.element.title)
+            }
+            if fullScreen.contains(where: { !$0.element.keyEquivalent.isEmpty }) {
+                for case let (index, item) in fullScreen where item.keyEquivalent.isEmpty {
+                    removed.insert(index)
+                }
+            }
+        }
         if menu == "Help" {
             for (index, item) in items.enumerated() where !item.isSeparator && isSystemFeedback(item.title) {
                 removed.insert(index)
@@ -76,6 +95,11 @@ enum MenuCleanup {
     /// Feedback to Apple" (the wording follows the bundle).
     static func isSystemFeedback(_ title: String) -> Bool {
         (title.hasPrefix("Send ") && title.contains("Feedback")) || title.contains("Feedback to Apple")
+    }
+
+    /// AppKit's full-screen item and the app's: the same two titles.
+    static func isFullScreen(_ title: String) -> Bool {
+        title == "Enter Full Screen" || title == "Exit Full Screen"
     }
 }
 
@@ -152,7 +176,8 @@ extension MenuCleanup {
         menu.items.map { item in
             Item(title: item.title,
                  isSeparator: item.isSeparatorItem,
-                 children: item.submenu.map { snapshot(of: $0) } ?? [])
+                 children: item.submenu.map { snapshot(of: $0) } ?? [],
+                 keyEquivalent: item.keyEquivalent)
         }
     }
 
