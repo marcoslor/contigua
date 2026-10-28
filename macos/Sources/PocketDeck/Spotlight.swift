@@ -15,6 +15,9 @@ import UniformTypeIdentifiers
 struct SpotlightOpenRequest: Equatable {
     var deviceId: String
     var pkg: String
+    /// Only an explicit new-window entry point asks for another window
+    /// (WIN-36); everything else raises.
+    var newWindow = false
 }
 
 enum SpotlightIndexer {

@@ -7,7 +7,22 @@ import AVFoundation
 import AppKit
 
 final class VideoLayerView: NSView {
-    private let displayLayer = AVSampleBufferDisplayLayer()
+    /// Created on the first VIDEO_CONFIG, not at open: a window that never
+    /// shows a picture holds no decoder surface (WIN-33), and a closed window
+    /// drops its layer again.
+    private var display: AVSampleBufferDisplayLayer?
+
+    /// The layer, created now if this window has a picture to draw.
+    private func displayLayer() -> AVSampleBufferDisplayLayer {
+        if let display { return display }
+        let layer = AVSampleBufferDisplayLayer()
+        layer.videoGravity = .resizeAspect
+        layer.backgroundColor = NSColor.black.cgColor
+        pictureClip.addSublayer(layer)
+        display = layer
+        placeDisplayLayer()
+        return layer
+    }
     private let videoQueue = DispatchQueue(label: "dev.pocketdeck.video")
     /// Touched only on `videoQueue`.
     private var formatDescription: CMVideoFormatDescription?
@@ -87,12 +102,9 @@ final class VideoLayerView: NSView {
         super.init(frame: frameRect)
         liveText = LiveTextSession(host: self)
         wantsLayer = true
-        displayLayer.videoGravity = .resizeAspect
-        displayLayer.backgroundColor = NSColor.black.cgColor
         layer?.backgroundColor = NSColor.black.cgColor
         pictureClip.masksToBounds = true
         layer?.addSublayer(pictureClip)
-        pictureClip.addSublayer(displayLayer)
         installEdgeHint()
         // Raw fingers of the trackpad (not the screen: there is none) for the
         // pinch and rotate pointers; resting palms and thumbs are not reported.
@@ -104,6 +116,19 @@ final class VideoLayerView: NSView {
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+    /// The window closed: it keeps no picture. AppKit holds a closed window in
+    /// `NSApp.windows`, so the layer tree and the decoded frame are dropped
+    /// here rather than when the window object finally goes (WIN-33).
+    func releasePicture() {
+        display?.flushAndRemoveImage()
+        display?.removeFromSuperlayer()
+        display = nil
+        pictureClip.removeFromSuperlayer()
+        liveText.release()
+        layer?.sublayers?.forEach { $0.removeFromSuperlayer() }
+        layer?.contents = nil
+    }
 
     override var isFlipped: Bool { false }
     override var acceptsFirstResponder: Bool { true }
@@ -201,7 +226,7 @@ final class VideoLayerView: NSView {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         pictureClip.frame = videoRect()
-        displayLayer.frame = frameSize.width > 0
+        display?.frame = frameSize.width > 0
             ? PictureCrop.layerFrame(frame: frameSize, content: picture, picture: pictureClip.bounds.size)
             : pictureClip.bounds
         CATransaction.commit()
@@ -209,7 +234,11 @@ final class VideoLayerView: NSView {
 
     /// The display layer, for the resize tests: after a size change it must
     /// have no animation and its presentation frame must be the new bounds.
-    var displayLayerForTesting: AVSampleBufferDisplayLayer { displayLayer }
+    var displayLayerForTesting: AVSampleBufferDisplayLayer { displayLayer() }
+
+    /// Whether this window holds a display layer at all: the picture's home
+    /// (WIN-33), nil before the first VIDEO_CONFIG and after a close.
+    var hasPictureLayer: Bool { display != nil }
 
     /// Tests: the size a VIDEO_CONFIG would set, without a decoder or a real
     /// parameter set (the rotation rule only needs the orientation).
@@ -228,8 +257,9 @@ final class VideoLayerView: NSView {
         // A layer with an animation in flight is drawn where its presentation
         // is, not where its model frame says. With no animation the model frame
         // is the truth (the presentation can lag the last commit by a frame).
-        let animating = !(displayLayer.animationKeys()?.isEmpty ?? true)
-        let layerRect = animating ? (displayLayer.presentation()?.frame ?? displayLayer.frame) : displayLayer.frame
+        guard let display else { return 0 }
+        let animating = !(display.animationKeys()?.isEmpty ?? true)
+        let layerRect = animating ? (display.presentation()?.frame ?? display.frame) : display.frame
         // The picture is the layer seen through its clip (layer coordinates are the clip's).
         let drawn = pictureClip.frame.intersection(
             layerRect.offsetBy(dx: pictureClip.frame.minX, dy: pictureClip.frame.minY))
@@ -243,7 +273,8 @@ final class VideoLayerView: NSView {
     /// `videoRect()` follows the same rule, so input maps to what is drawn.
     private func updateGravity() {
         let gravity = Self.gravity(for: placement())
-        if displayLayer.videoGravity != gravity { displayLayer.videoGravity = gravity }
+        let layer = displayLayer()
+        if layer.videoGravity != gravity { layer.videoGravity = gravity }
     }
 
     private func placement() -> Letterbox.Placement {
@@ -310,7 +341,8 @@ final class VideoLayerView: NSView {
     /// the copy and put back at once: the layer keeps showing what it showed,
     /// and the next enqueued frame paints as before.
     func copyDisplayedFrame() -> CVPixelBuffer? {
-        let renderer = displayLayer.sampleBufferRenderer
+        guard let display else { return nil }
+        let renderer = display.sampleBufferRenderer
         let timebase = renderer.timebase
         let rate = CMTimebaseGetRate(timebase)
         if rate != 0 { CMTimebaseSetRate(timebase, rate: 0) }
@@ -357,7 +389,10 @@ final class VideoLayerView: NSView {
     /// pixels). "renderer=…" is the API's own status; the rest is the layer and
     /// its window.
     func frameDiagnostics() -> String {
-        let renderer = displayLayer.sampleBufferRenderer
+        guard let display else {
+            return "renderer=none (no picture yet) bounds=\(Int(bounds.width))x\(Int(bounds.height))"
+        }
+        let renderer = display.sampleBufferRenderer
         let rate = CMTimebaseGetRate(renderer.timebase)
         let visible = window?.isVisible ?? false
         let occluded = !(window?.occlusionState.contains(.visible) ?? false)
@@ -453,7 +488,7 @@ final class VideoLayerView: NSView {
         pendingVideo.removeAll(keepingCapacity: true)
         drainScheduled = false
         pendingLock.unlock()
-        let renderer = displayLayer.sampleBufferRenderer
+        let renderer = displayLayer().sampleBufferRenderer
         for item in items {
             switch item {
             case .flush:

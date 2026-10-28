@@ -17,7 +17,7 @@ import Foundation
 
 enum DebugIntent: Equatable {
     case battery(phone: String?)
-    case openApp(String, phone: String?)
+    case openApp(String, phone: String?, newWindow: Bool = false)
     case openPhone(phone: String?)
     case sendLink(String, phone: String?)
     case sendFile([String], phone: String?)
@@ -41,7 +41,7 @@ enum DebugIntent: Equatable {
     /// What a log line carries besides the outcome; names that are not secrets.
     var context: [String: Any] {
         switch self {
-        case .openApp(let app, _): return ["args": app]
+        case .openApp(let app, _, let newWindow): return ["args": app, "newWindow": newWindow]
         case .sendFile(let paths, _): return ["files": paths.count]
         default: return [:]
         }
@@ -49,7 +49,7 @@ enum DebugIntent: Equatable {
 
     var phone: String? {
         switch self {
-        case .battery(let phone), .openApp(_, let phone), .openPhone(let phone),
+        case .battery(let phone), .openApp(_, let phone, _), .openPhone(let phone),
              .sendLink(_, let phone), .sendFile(_, let phone):
             return phone
         }
@@ -74,8 +74,14 @@ enum DebugIntent: Equatable {
             guard words.isEmpty else { throw DebugIntentError.usage("open-phone takes only --phone") }
             return .openPhone(phone: phone)
         case "open-app":
-            guard words.count == 1 else { throw DebugIntentError.usage("open-app needs one APP") }
-            return .openApp(words[0], phone: phone)
+            // `open-app APP [new]`: the explicit New Window argument (WIN-36).
+            var newWindow = false
+            if words.count == 2, words[1] == "new" {
+                newWindow = true
+                words.removeLast()
+            }
+            guard words.count == 1 else { throw DebugIntentError.usage("open-app needs one APP and an optional new") }
+            return .openApp(words[0], phone: phone, newWindow: newWindow)
         case "send-link":
             guard words.count == 1 else { throw DebugIntentError.usage("send-link needs one URL") }
             return .sendLink(words[0], phone: phone)
@@ -128,9 +134,9 @@ enum IntentDebugRunner {
                                               "level": answer.level ?? -1,
                                               "live": answer.live,
                                               "text": answer.text])
-            case .openApp(let app, let requested):
+            case .openApp(let app, let requested, let newWindow):
                 let phone = try IntentsBridge.resolve(requested)
-                let dialog = try IntentsBridge.openApp(app, on: phone)
+                let dialog = try IntentsBridge.openApp(app, on: phone, newWindow: newWindow)
                 IntentDebugLog.write(intent: intent.name, ok: true,
                                      fields: intent.context.merging(["dialog": dialog]) { first, _ in first })
             case .openPhone(let requested):

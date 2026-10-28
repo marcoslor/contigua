@@ -60,11 +60,11 @@ enum IntentsBridge {
                                     now: Date())
     }
 
-    static func openApp(_ pkg: String, on phone: IntentPhone) throws -> String {
+    static func openApp(_ pkg: String, on phone: IntentPhone, newWindow: Bool = false) throws -> String {
         guard case .app(let app) = IntentAppCatalog.app(named: pkg, in: apps(for: phone)) else {
             throw IntentFailure.appNotFound(label(for: pkg, on: phone))
         }
-        controller.intentsOpenApp(app.pkg, on: phone.id)
+        controller.intentsOpenApp(app.pkg, on: phone.id, newWindow: newWindow)
         if controller.link.isOnline, controller.link.phone?.id == phone.id {
             return "Opened \(app.label) on \(phone.name)."
         }

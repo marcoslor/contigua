@@ -12,6 +12,17 @@ enum DockMessage {
     static let closed = Notification.Name("dev.pocketdeck.dock.closed")
     /// Shim → host: the shim is quitting; close its window. userInfo: pid.
     static let quit = Notification.Name("dev.pocketdeck.dock.quit")
+    /// Host → shim: the app's window menu, front to back (WIN-26). userInfo:
+    /// pid and `rows` (an array of dictionaries: title, enabled, checked, help,
+    /// key, action, stream).
+    static let menu = Notification.Name("dev.pocketdeck.dock.menu")
+    /// Shim → host: a row of that menu was picked. userInfo: deviceId, pkg,
+    /// pid, token, action ("new" or "raise") and stream (0 for "new").
+    static let pick = Notification.Name("dev.pocketdeck.dock.pick")
+
+    static let rowsKey = "rows"
+    static let actionKey = "action"
+    static let streamKey = "stream"
 
     static let deviceIdKey = "deviceId"
     static let pkgKey = "pkg"
@@ -38,6 +49,9 @@ enum DockMessage {
     /// from a flat icon on the plate (false). Layers arriving later make a
     /// plate-built shim stale, so it is rebuilt the next time it is followed.
     static let plistIconLayers = "PDIconLayers"
+    /// e2e only: where the shim dumps its built window menu and reads a press
+    /// (a `--debug-control` directory; never written by a normal run).
+    static let plistMenuDebugDir = "PDMenuDebugDir"
 
     /// The shim executable inside PocketDeck.app/Contents/MacOS and every shim bundle.
     static let shimExecutable = "PocketDeckShim"

@@ -225,7 +225,24 @@ final class LiveTextSession {
 
     private weak var host: VideoLayerView?
     private let imageView = NSImageView()
-    let overlay = ImageAnalysisOverlayView(frame: .zero)
+    /// The VisionKit overlay, made on the first Live Text entry: an idle
+    /// window has no analyser surface behind it, and a closed one drops it
+    /// again (WIN-33).
+    private var overlayStore: ImageAnalysisOverlayView?
+
+    /// Every interaction the mode promises: the overlay, created now if this
+    /// window has not entered the mode yet.
+    var overlay: ImageAnalysisOverlayView {
+        if let overlayStore { return overlayStore }
+        let view = ImageAnalysisOverlayView(frame: .zero)
+        view.preferredInteractionTypes = Self.interactions
+        view.trackingImageView = imageView
+        view.isHidden = true
+        view.layer?.zPosition = 6
+        host?.addSubview(view)
+        overlayStore = view
+        return view
+    }
     /// A late analysis result from an earlier entry is dropped: the mode may
     /// have been left and entered again while it ran.
     private var generation = 0
@@ -248,18 +265,9 @@ final class LiveTextSession {
         imageView.imageFrameStyle = .none
         imageView.layer?.zPosition = 5
         imageView.isHidden = true
-        // Every interaction the mode promises (docs/design/livetext.md): text
-        // selection and drag, data detectors, Copy Subject and Look Up. v104's
-        // first analysis turned the highlights on and left `.automatic` to
-        // resolve a set without text selection, so the person's drags selected
-        // nothing; the set is explicit so the highlight flag cannot take text
-        // selection away.
-        overlay.preferredInteractionTypes = Self.interactions
-        overlay.trackingImageView = imageView
-        overlay.isHidden = true
-        overlay.layer?.zPosition = 6
+        // Every interaction the mode promises (docs/design/livetext.md) is set
+        // on the overlay when it is made; the image alone waits here, hidden.
         host.addSubview(imageView)
-        host.addSubview(overlay)
     }
 
     /// Enter from the shortcut, the menu or the bar button. A second enter is
@@ -362,6 +370,22 @@ final class LiveTextSession {
         exit(.captureFailed)
     }
 
+    /// The window closed: drop the frozen frame, the analysis and the overlay's
+    /// views, so a closed window keeps no picture (WIN-33).
+    func release() {
+        generation += 1
+        removeKeyMonitor()
+        snapshotTimeout?.cancel()
+        snapshotTimeout = nil
+        frame = nil
+        frameStats = nil
+        overlayStore?.analysis = nil
+        overlayStore?.removeFromSuperview()
+        overlayStore = nil
+        imageView.image = nil
+        imageView.removeFromSuperview()
+    }
+
     /// Leave for any reason; a no-op while idle. The frame and the overlay go
     /// away at once, so the live video is visible again.
     @discardableResult
@@ -382,13 +406,14 @@ final class LiveTextSession {
         overlay.isHidden = true
         imageView.image = nil
         imageView.isHidden = true
-        if let host {
-            overlay.removeFromSuperview()
-            imageView.removeFromSuperview()
-            host.addSubview(imageView)
-            host.addSubview(overlay)
-            if host.window?.firstResponder === overlay { host.window?.makeFirstResponder(host) }
+        // The analyser surface goes with the mode: an idle window keeps none.
+        if let overlayStore {
+            overlayStore.analysis = nil
+            if host?.window?.firstResponder === overlayStore { host?.window?.makeFirstResponder(host) }
+            overlayStore.removeFromSuperview()
+            self.overlayStore = nil
         }
+        imageView.removeFromSuperview()
         onStateChange?(.idle, reason)
         Log.video.notice("livetext: left (\(reason.rawValue, privacy: .public))")
         return true

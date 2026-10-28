@@ -484,7 +484,10 @@ final class ConnectionController {
         rememberedPhones = remembered.all
         audio.statsFile = options.audioStatsFile
         windows.onChange = { [weak self] in
-            MainActor.assumeIsolated { self?.syncAudio() }
+            MainActor.assumeIsolated {
+                self?.syncAudio()
+                self?.windowSetChanged()
+            }
         }
         windows.onDensityOverridesChanged = { [weak self] in
             MainActor.assumeIsolated { self?.refreshDensityOverrides() }
@@ -618,8 +621,24 @@ final class ConnectionController {
         windows.onAppWindowOpened = { [weak self] pkg, stream in
             MainActor.assumeIsolated { self?.establishDockFollow(pkg: pkg, stream: stream) }
         }
+        // The phone refused an extra window at its cap (WIN-32): the Deck says
+        // so in the same words the menu item would have.
+        windows.onTooManyWindows = { [weak self] sentence in
+            MainActor.assumeIsolated { self?.showTransient(sentence) }
+        }
+        // Every window change re-reads the shim menus and the marks that follow
+        // the key app (WIN-26, WIN-29) — see `windowSetChanged`.
         dockApps.onOpen = { [weak self] deviceId, pkg, pid in self?.openFromDock(deviceId: deviceId, pkg: pkg, pid: pid) }
         dockApps.onShimQuit = { [weak self] stream in self?.windows.controller(for: stream)?.window?.close() }
+        // The Dock shim's secondary-click menu is the host's rows, rendered by
+        // the shim (WIN-26); a pick comes back here.
+        dockApps.windowMenu = { [weak self] deviceId, pkg in
+            self?.windows.windowMenuRows(pkg: pkg, deviceId: deviceId) ?? []
+        }
+        dockApps.onPick = { [weak self] _, pkg, row in
+            MainActor.assumeIsolated { self?.pickWindowMenuRow(row, pkg: pkg) }
+        }
+        dockApps.menuDebugDir = options.debugControl
         dockApps.start()
         discovery.onChange = { [weak self] phones in self?.discoveryChanged(phones) }
         discovery.onDenied = { [weak self] denied in self?.discoveryDenied(denied) }
@@ -797,6 +816,43 @@ final class ConnectionController {
     func openApp(_ app: AppInfo) {
         guard link.isOnline else { return }
         windows.openOrRaise(pkg: app.pkg, activity: app.activity)
+    }
+
+    /// File ▸ New <App> Window (⌘N, the Dock shim's menu, the Deck cell's
+    /// menu): one more window of the key app on the phone in use (WIN-25).
+    /// Every other entry point raises (WIN-36).
+    func newWindow() {
+        guard link.isOnline, let pkg = windows.keyApp else { return }
+        windows.openAdditional(pkg: pkg)
+    }
+
+    /// ⌘N pressed with one of the app's windows key: the same item's action.
+    func newWindowActivity() { newWindow() }
+
+    /// Window ▸ Next Window (⌘`): the key app's next window, wrapping
+    /// (WIN-29, WIN-30). Nothing reaches the phone.
+    func cycleWindow() {
+        windows.cycleKeyWindow()
+    }
+
+    /// A Dock shim's or the Deck cell's menu row was picked (WIN-26).
+    func pickWindowMenuRow(_ row: AppWindowMenuRow, pkg: String) {
+        guard link.isOnline else { return }
+        windows.pickWindowMenuRow(row, pkg: pkg)
+    }
+
+    /// The Deck cell's secondary-click menu for an app (WIN-26): the same rows
+    /// the Dock shim shows, in the same order.
+    func windowMenuRows(for pkg: String) -> [AppWindowMenuRow] {
+        windows.windowMenuRows(pkg: pkg)
+    }
+
+    /// The set of open app windows changed (opened, closed, retitled, raised):
+    /// every shim of those apps gets its new menu, and the Window menu's ⌘`
+    /// item follows the key app's count at once (WIN-26, WIN-29).
+    private func windowSetChanged() {
+        MenuMarks.apply(to: NSApp.mainMenu)
+        dockApps.refreshWindowMenus()
     }
 
     func openPhoneWindow() {
@@ -1135,12 +1191,17 @@ final class ConnectionController {
     /// and reuse the Deck's paths: an open window, the pending-open queue that
     /// Spotlight clicks use, the link route and the drop sender.
 
-    func intentsOpenApp(_ pkg: String, on deviceId: String) {
+    func intentsOpenApp(_ pkg: String, on deviceId: String, newWindow: Bool = false) {
         if link.isOnline, link.phone?.id == deviceId {
-            windows.openOrRaise(pkg: pkg)
+            // Only an explicit new-window argument adds one (WIN-36).
+            if newWindow {
+                windows.openAdditional(pkg: pkg)
+            } else {
+                windows.openOrRaise(pkg: pkg)
+            }
             return
         }
-        pendingOpen = SpotlightOpenRequest(deviceId: deviceId, pkg: pkg)
+        pendingOpen = SpotlightOpenRequest(deviceId: deviceId, pkg: pkg, newWindow: newWindow)
         if link.phone?.id != deviceId, let phone = remembered.phone(id: deviceId) { use(phone) }
     }
 
@@ -2367,7 +2428,11 @@ final class ConnectionController {
         }
         if let request = pendingOpen, request.deviceId == info.id {
             pendingOpen = nil
-            windows.openOrRaise(pkg: request.pkg)
+            if request.newWindow {
+                windows.openAdditional(pkg: request.pkg)
+            } else {
+                windows.openOrRaise(pkg: request.pkg)
+            }
         }
         openPendingLink(readyPhone: info.id)
         openPendingDock(readyPhone: info.id)
@@ -2783,6 +2848,37 @@ final class ConnectionController {
         case "panelwindows":
             guard let path = arguments.first, path.hasPrefix("/") else { return "panelwindows needs PATH" }
             return PanelProbe.windowsReport(to: path) ? nil : "panelwindows failed"
+        case "menupick":
+            // One of the app's own menu items, by title path: the item's
+            // target and action after the same validation an open menu runs
+            // (`DebugInput`'s script verb; here for a check that reads the bar
+            // between two steps). Titles carry spaces, so the path is the rest
+            // of the line.
+            let path = arguments.joined(separator: " ")
+            guard !path.isEmpty, path.contains("/") else { return "menupick needs a title path" }
+            NSApp.mainMenu?.update()
+            MainActor.assumeIsolated { MenuMarks.apply(to: NSApp.mainMenu) }
+            guard let item = DebugInputDriver.menuItem(at: path, in: NSApp.mainMenu) else {
+                return "no item at \(path)"
+            }
+            guard item.isEnabled else { return "item disabled at \(path)" }
+            guard let action = item.action else { return "item has no action at \(path)" }
+            NSApp.sendAction(action, to: item.target, from: item)
+            return nil
+        case "windowmenu":
+            // The Deck cell's (and the Dock shim's) rows for an app, as the one
+            // menu rule builds them (WIN-26). A quiet run cannot right-click a
+            // Deck cell, so the check reads the rows here and drives the raise
+            // through the shim's own menu item.
+            guard arguments.count == 2, arguments[0].hasPrefix("/") else {
+                return "windowmenu needs PATH and PKG"
+            }
+            let rows = windows.windowMenuRows(pkg: arguments[1]).map(\.message)
+            guard let data = try? JSONSerialization.data(withJSONObject: rows, options: [.sortedKeys]) else {
+                return "windowmenu failed"
+            }
+            return (try? data.write(to: URL(fileURLWithPath: arguments[0]), options: .atomic)) == nil
+                ? "windowmenu failed" : nil
         case "visibleframe":
             // The visible frame of the screen the key window is on, "W H" in
             // points: the e2e chrome check compares an Accessibility resize
