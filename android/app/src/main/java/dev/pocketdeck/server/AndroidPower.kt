@@ -25,8 +25,9 @@ import java.lang.reflect.Method
  * lock screen, which is what [DarkPanelPolicy] handles: the group is woken as
  * before and the physical panel is then powered off through SurfaceFlinger, so
  * the VD renders while the phone shows nothing. The override is lifted when the
- * last stream goes away (`POWER_MODE_NORMAL` + `goToSleep`), when the user
- * presses the power button, and by the platform itself on its next state change.
+ * last stream goes away (`POWER_MODE_NORMAL`, plus `goToSleep` only while the
+ * wake is still ours — [WakeOwnershipMachine]), when the user presses the power
+ * button, and by the platform itself on its next state change.
  * While the override is live, [Watchdog] holds a marker file so a server crash
  * cannot leave the panel dark.
  *
@@ -94,8 +95,8 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
 
     override val panelHeldOff: Boolean get() = hold.holdsPanel
 
-    /** True when this episode woke the phone's own group: handing back then sleeps it. */
-    @Volatile private var episodeWokeGroup = false
+    /** Who woke the panel's group for this episode, and whether it is still ours (docs/specs/controls.md CTRL-7). */
+    private val wakeOwner = WakeOwnershipMachine(log)
 
     /** True while a panel override we applied is live: the watchdog has work to do if we die. */
     @Volatile private var overrideLive = false
@@ -236,7 +237,8 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
         }
         if (started) {
             synchronized(policyLock) { policy.streamsStarted() }
-            episodeWokeGroup = false
+            // The wake machine's baseline belongs to the episode and is reset by
+            // the close (WakeEvent.StreamsStopped), not by a new stream.
             // Watch the person's power press from the episode's first second:
             // one UI puts our VDs in the panel's group, so the press sleeps
             // them until we take the panel over.
@@ -326,6 +328,20 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
         return if (awaitInteractive(pm)) WakeResult.FALLBACK else WakeResult.FAILED
     }
 
+    /**
+     * The person unlocked the phone (`state.locked` false): the phone is theirs
+     * for this episode (CTRL-7). Nothing is dismissed, unlocked or woken here;
+     * the wake machine only remembers who owns the screen.
+     */
+    override fun onPersonUnlocked() {
+        wakeOwner.dispatch(WakeEvent.PersonUnlocked)
+    }
+
+    /** `state.screen`: a screen-on edge outside our own wake is the person's. */
+    override fun onPersonScreen(on: Boolean) {
+        wakeOwner.dispatch(WakeEvent.ScreenReported(on, SystemClock.uptimeMillis()))
+    }
+
     private fun awaitInteractive(pm: PowerManager): Boolean {
         val deadline = SystemClock.uptimeMillis() + WAKE_WAIT_MS
         while (SystemClock.uptimeMillis() < deadline) {
@@ -406,10 +422,14 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
         // and a poke cannot wake a group the user put to sleep.
         val wake = DarkPanelPolicy.wakesGroup(strategy, plan)
         if (wake) {
-            episodeWokeGroup = true
             // Our own wake lands with an off edge of its own (the panel-off
             // right after it): the watch must not read that as a press.
             synchronized(policyLock) { policy.ownWake(SystemClock.uptimeMillis()) }
+            // Only a wake of the panel's own group can make a later sleep ours.
+            // A virtual display with its own group never wakes the phone.
+            if (strategy == PanelStrategy.PANEL_DARK) {
+                wakeOwner.dispatch(WakeEvent.OurWake(SystemClock.uptimeMillis()))
+            }
         }
         // While the panel is held, the platform must keep believing the screen
         // is on. A step beside an app window names that window's display only,
@@ -494,7 +514,7 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
         if (ids.isEmpty()) return
         gapDisplay = ids.first()
         gaps.markEdge(edgeMs)
-        episodeWokeGroup = true
+        wakeOwner.dispatch(WakeEvent.OurWake(SystemClock.uptimeMillis()))
         darkEpisode = true
         keepLit = true
         // Our wake's own off edge (the panel-off below) is not a press.
@@ -625,11 +645,18 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
      * platform believes the panel is on (our override is masking it); otherwise
      * the platform's own mode is already the right one and re-writing NORMAL
      * would flash the panel.
+     *
+     * The phone is only put back to sleep while PocketDeck's own wake still owns
+     * it (CTRL-7): a person who unlocked, used or woke the phone since keeps
+     * their screen, and the close logs the closed reason instead.
      */
     private fun restoreAfterStop() {
         val owned = synchronized(policyLock) { policy.streamsStopped() }
+        // The wake machine hears every close, whatever the panel policy owned:
+        // a stale "ours" must never survive into the next episode.
+        val wake = wakeOwner.dispatch(WakeEvent.StreamsStopped)
         if (!owned) {
-            episodeWokeGroup = false
+            logWakeClose(wake)
             if (overrideLive) standDownOverride()
             return
         }
@@ -639,13 +666,20 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
             panel.panelNormal()
         }
         // goToSleep lets the platform re-apply its own power mode for the
-        // transition and leaves the phone asleep and locked. Only ever called
-        // when we were the ones who woke the group: a mirror-only episode never
-        // woke it (its panel was on already), so the phone keeps its own state.
-        if (episodeWokeGroup && SystemSleep.goToSleep()) log("phone back to sleep after the last stream")
-        episodeWokeGroup = false
+        // transition. Only ever called while the wake is ours: a mirror-only
+        // episode never woke the panel's group, and a person who used the phone
+        // since our wake owns it.
+        if (wake.actions.contains(WakeAction.SLEEP_PHONE) && SystemSleep.goToSleep()) {
+            log("phone back to sleep after the last stream")
+        }
+        logWakeClose(wake)
         // The panel is the platform's again, so the crash guard's job is done.
         standDownOverride()
+    }
+
+    /** A close that left the phone awake says why, with a closed reason. */
+    private fun logWakeClose(wake: WakeStep) {
+        wake.closeReason?.let { log("power: left the phone awake after the last stream (${it.wire})") }
     }
 
     /** The platform owns the panel again: no override for the watchdog to restore. */
