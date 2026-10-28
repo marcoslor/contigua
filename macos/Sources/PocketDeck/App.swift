@@ -404,6 +404,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.servicesProvider = LinkService.shared
         MenuCleanup.start()
         MenuMarks.start()
+        // The commands are built from MenuBarModel's snapshot, and a menu that
+        // is tracking is not rebuilt under the pointer (docs/specs/menus.md
+        // MENU-17): both follow AppKit's own tracking notifications.
+        MenuTracking.start()
+        MenuBarModel.shared.start(controller: environment.controller)
         FullScreenMenu.start()
         WindowListMenu.start()
         WindowFrameLimit.start()

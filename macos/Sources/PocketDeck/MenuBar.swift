@@ -72,10 +72,18 @@ struct MenuBarContent: View {
 
 struct AppCommands: Commands {
     let controller: ConnectionController
-    private let streamMenu = StreamMenuState.shared
     @Environment(\.openWindow) private var openWindow
 
     var body: some Commands {
+        // The e2e `menus` check counts these: each one is a build of the
+        // commands' NSMenu items, and one of them under an open menu is the
+        // person's flickering submenu (MenuTrack.swift).
+        let _ = Menus.noteBuild()
+        // Every value the items show comes from this one snapshot (MenuBarModel):
+        // the body reads nothing else that changes with the phone's state, so a
+        // battery report, a stall or a Now Playing change does not rebuild the
+        // bar under an open menu.
+        let menu = MenuBarModel.shared.snapshot
         // The AppKit menu bar item and its panel live outside every scene, so
         // the panel's rows cannot ask SwiftUI to open a window themselves. The
         // commands do have the action, and they exist at launch even when the
@@ -109,9 +117,9 @@ struct AppCommands: Commands {
             // the pair's: it re-picks the checked style, which this binding
             // reads as "the other one".
             Picker(selection: Binding(
-                get: { streamMenu.style },
+                get: { MenuBarModel.shared.snapshot.style },
                 set: { picked in
-                    if picked == streamMenu.style {
+                    if picked == MenuBarModel.shared.snapshot.style {
                         controller.windows.toggleKeyWindowStyle()
                     } else {
                         controller.windows.setKeyWindowStyle(picked)
@@ -141,22 +149,22 @@ struct AppCommands: Commands {
                         Divider()
                     } else {
                         Toggle(entry.title, isOn: Binding(
-                            get: { ImmersiveMenuModel.isChecked(entry, reveal: streamMenu.revealDelay) },
+                            get: { ImmersiveMenuModel.isChecked(entry, reveal: MenuBarModel.shared.snapshot.revealDelay) },
                             set: { _ in controller.windows.pickImmersive(entry) }))
                     }
                 }
             } label: {
                 Text("Hide Controls")
             }
-            .disabled(!MenuModel.hideControlsEnabled(style: streamMenu.style))
+            .disabled(!MenuModel.hideControlsEnabled(style: menu.style))
             Divider()
             Toggle(isOn: Binding(
-                get: { streamMenu.showTouches },
+                get: { menu.showTouches },
                 set: { controller.windows.showTouches = $0 })) {
                 Label("Show Touches", systemImage: "hand.tap")
             }
             Toggle(isOn: Binding(
-                get: { streamMenu.liveText },
+                get: { menu.liveText },
                 set: { controller.windows.setKeyWindowLiveText($0) })) {
                 Label("Live Text", systemImage: "text.viewfinder")
             }
@@ -168,11 +176,11 @@ struct AppCommands: Commands {
             // override (none checked when ⌘+/⌘- landed between two options).
             // Disabled without a key stream window that shows an app.
             Menu {
-                Toggle(MenuModel.densityDefaultTitle(settings: streamMenu.settingsDensity),
+                Toggle(MenuModel.densityDefaultTitle(settings: menu.settingsDensity),
                        isOn: Binding(get: { densityCheck == .defaultItem },
                                      set: { _ in pickDensity(nil) }))
                 Divider()
-                ForEach(MenuModel.densityOptions(settings: streamMenu.settingsDensity), id: \.value) { option in
+                ForEach(MenuModel.densityOptions(settings: menu.settingsDensity), id: \.value) { option in
                     Toggle(option.label, isOn: Binding(
                         get: { densityCheck == .value(option.value) },
                         set: { _ in pickDensity(option.value) }))
@@ -200,14 +208,18 @@ struct AppCommands: Commands {
             } label: {
                 Label("Density", systemImage: "textformat.size")
             }
-            .disabled(!streamMenu.hasStream || streamMenu.densityPackage == nil)
+            .disabled(!menu.hasStream || menu.densityPackage == nil)
         }
         // Phone ▸ the phone's own controls. The state and the actions are the
         // menu-bar panel's and the Deck popover's (PhonePanel.swift), so one
         // mapping decides what can work and a control that cannot is disabled,
         // never hidden (AGENTS "Honest settings").
         CommandMenu("Phone") {
-            let state = PhoneControlsState(controller: controller)
+            // The items read the snapshot's phone block, which is the same
+            // PhoneControlsState mapping the panel uses but only its menu
+            // values (MenuBarModel.Phone), so a battery or media report cannot
+            // rebuild this menu.
+            let phone = menu.phone
             let actions = PhoneControlsActions(controller: controller) { show() }
             Button {
                 actions.openPhoneScreen()
@@ -215,48 +227,49 @@ struct AppCommands: Commands {
                 Label("Phone Mirror", systemImage: "iphone")
             }
             .keyboardShortcut("p")
-            .disabled(!PhonePanelItem.phoneScreen.isEnabled(in: state))
+            .disabled(!phone.mirrorEnabled)
             Button {
                 actions.continueOnMac()
             } label: {
                 Label("Move Phone App to Mac", systemImage: "arrow.up.forward.app")
             }
             .keyboardShortcut("c", modifiers: [.command, .shift])
-            .disabled(!PhonePanelItem.continueOnMac.isEnabled(in: state))
+            .disabled(!phone.continueEnabled)
             Divider()
             // The phone holds its own panel's power off while the mirror keeps
             // rendering (docs/design/phone-mirror.md). The check follows the
-            // phone's `state.panel`, never a local guess.
+            // phone's `state.panel`, never a local guess; MenuMarks writes it
+            // onto the item when the menu opens too.
             Toggle(isOn: Binding(
-                get: { streamMenu.panelOff },
+                get: { MenuBarModel.shared.snapshot.panelOff },
                 set: { _ in controller.windows.togglePhonePanelOff() })) {
                 Label("Turn Off Phone Screen", systemImage: "iphone.slash")
             }
-            .disabled(!streamMenu.phoneWindow)
+            .disabled(!menu.phoneWindow)
             Toggle(isOn: Binding(
-                get: { state.dnd?.isOn ?? false },
+                get: { MenuBarModel.shared.snapshot.phone.dndOn },
                 set: { actions.setDnd($0) })) {
                 Label(PhonePanelItem.dnd.label, systemImage: "moon.fill")
             }
-            .disabled(!PhonePanelItem.dnd.isEnabled(in: state))
+            .disabled(!phone.dndEnabled)
             Button {
-                if state.ringing {
+                if phone.ringing {
                     actions.stopRing()
                 } else {
                     actions.ring()
                 }
             } label: {
-                Label(state.ringTitle,
-                      systemImage: state.ringing ? "bell.slash" : "iphone.radiowaves.left.and.right")
+                Label(phone.ringTitle,
+                      systemImage: phone.ringing ? "bell.slash" : "iphone.radiowaves.left.and.right")
             }
-            .disabled(!PhonePanelItem.ring.isEnabled(in: state))
+            .disabled(!phone.ringEnabled)
             Divider()
             Button {
                 actions.installApk()
             } label: {
-                Label(state.installTitle, systemImage: "arrow.down.app")
+                Label(phone.installTitle, systemImage: "arrow.down.app")
             }
-            .disabled(!PhonePanelItem.installApk.isEnabled(in: state))
+            .disabled(!phone.installEnabled)
         }
         // Full screen is AppKit's own item, moved into the Window menu at
         // launch (FullScreenMenu.swift): only a system-provided item can carry
@@ -269,21 +282,21 @@ struct AppCommands: Commands {
                 Label("Back", systemImage: "chevron.backward")
             }
             .keyboardShortcut("[")
-            .disabled(streamMenu.frozen)
+            .disabled(menu.frozen)
             Button {
                 send(#selector(PhoneWindowController.navigateHome(_:)))
             } label: {
                 Label("Home", systemImage: "house")
             }
             .keyboardShortcut("h", modifiers: [.command, .shift])
-            .disabled(streamMenu.frozen)
+            .disabled(menu.frozen)
             Button {
                 send(#selector(PhoneWindowController.navigateRecents(_:)))
             } label: {
                 Label("Recents", systemImage: "square.stack")
             }
             .keyboardShortcut(.upArrow, modifiers: .command)
-            .disabled(streamMenu.frozen)
+            .disabled(menu.frozen)
         }
         // Window ▸ Enter/Exit Full Screen: ⌃⌘F, the system's own full-screen
         // shortcut, and the title follows the key window. The phone window opts
@@ -295,13 +308,13 @@ struct AppCommands: Commands {
                       FullScreenMenu.allowsFullScreen(window) else { return }
                 window.toggleFullScreen(nil)
             } label: {
-                Label(MenuModel.fullScreenTitle(fullScreen: streamMenu.fullScreen),
-                      systemImage: MenuModel.fullScreenSymbol(fullScreen: streamMenu.fullScreen))
+                Label(MenuModel.fullScreenTitle(fullScreen: menu.fullScreen),
+                      systemImage: MenuModel.fullScreenSymbol(fullScreen: menu.fullScreen))
             }
             .keyboardShortcut("f", modifiers: [.control, .command])
             // The phone window opts out of full screen, so the item is disabled
             // for it; the action asks the key window again before it acts.
-            .disabled(!streamMenu.fullScreenAllowed)
+            .disabled(!menu.fullScreenAllowed)
         }
         // Help has no help book and the app has no public issue tracker, so the
         // menu is empty rather than carrying a dead item (AGENTS "Honest
@@ -317,7 +330,7 @@ struct AppCommands: Commands {
 
     /// Which View ▸ Density item is checked for the key stream window.
     private var densityCheck: DensityCheck {
-        DensityCheck.forOverride(streamMenu.densityOverride)
+        DensityCheck.forOverride(MenuBarModel.shared.snapshot.densityOverride)
     }
 
     private func pickDensity(_ value: Double?) {
