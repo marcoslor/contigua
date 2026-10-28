@@ -66,7 +66,9 @@ display id on every injected event.
 ### Video rules
 
 - Order on open: `window.opened` (JSON), then `window.content` and VIDEO_CONFIG, then
-  VIDEO_FRAMEs, the first a keyframe.
+  VIDEO_FRAMEs, the first a keyframe. `window.opened` names the display's task id,
+  so a phone sends it once the launch has made that task; video that arrives
+  meanwhile waits (the reply, then the CONFIG and its keyframe).
 - **`window.content`** (JSON, phone→mac, sent on the same lane just before every
   VIDEO_CONFIG): `{"t":"window.content","stream":N,"x":X,"y":Y,"w":W,"h":H}` is where the
   picture sits in the config's frame, in frame pixels with a top-left origin. It is
@@ -236,9 +238,9 @@ Mac → phone (after `welcome`):
 | `ping` | `ts` | phone replies `pong` with same `ts` |
 | `apps.list` | — | phone replies `apps` |
 | `apps.icon` | `pkg`, optional `px` | phone replies `icon` (with `fg`/`bg`/`mono` layers when the icon is adaptive); `px` is the pixel side of the 108 dp layer it should render (default 216, clamped to 216…1296), an older phone ignores it |
-| `window.open` | `stream`, `w`, `h`, `dpi`, and `pkg` (+ optional `activity`) **or** `"mode":"phone"`, and `newInstance` (optional bool, planned, epic multiwin) | create VD + encoder, launch app on it; `mode: phone` mirrors display 0 instead (`window.opened` has `displayId` 0 and the frame's size, the codec's nearest size to the screen's aspect inside `w`×`h`, with the screen's picture in it as `window.content` says; a rotation sends a new VIDEO_CONFIG with the turned size; error `mirror_unavailable` if the phone can't). `newInstance: true` (planned) asks for another task of the app on this display: the phone adds `FLAG_ACTIVITY_NEW_DOCUMENT \| FLAG_ACTIVITY_MULTIPLE_TASK` to the launch Intent, so the activity's own `launchMode`/`documentLaunchMode` still decides whether a second task appears; past the phone's cap it answers error `too_many_windows` |
+| `window.open` | `stream`, `w`, `h`, `dpi`, and `pkg` (+ optional `activity`) **or** `"mode":"phone"`, and `newInstance` (optional bool) | create VD + encoder, launch app on it; `mode: phone` mirrors display 0 instead (`window.opened` has `displayId` 0 and the frame's size, the codec's nearest size to the screen's aspect inside `w`×`h`, with the screen's picture in it as `window.content` says; a rotation sends a new VIDEO_CONFIG with the turned size; error `mirror_unavailable` if the phone can't). `newInstance: true` asks for another task of the app on this display: the phone adds `FLAG_ACTIVITY_NEW_DOCUMENT \| FLAG_ACTIVITY_MULTIPLE_TASK` to the launch Intent, so the activity's own `launchMode`/`documentLaunchMode` still decides whether a second task appears; past the phone's cap it answers error `too_many_windows` before a display exists (see "Several windows of one app") |
 | `window.resize` | `stream`, `w`, `h`, `dpi` | resize VD + reconfigure encoder; phone sends new VIDEO_CONFIG, then `window.resize.ack`. A request equal to what the display already shows is a no-op; the same size at a new dpi changes the display's density and rebuilds no encoder (so no new VIDEO_CONFIG); one the phone cannot apply answers `refused` |
-| `window.close` | `stream` | tear down that VD/encoder |
+| `window.close` | `stream` | tear down that VD/encoder, and with it that display's task: a task that still exists after the display went — running, or only a card in the phone's Recents — is removed by id, so a closed window leaves no card behind; its app's other tasks and the session stay up |
 | `window.pause` | `stream` | Mac window hidden/minimized/occluded: stop encoding (keep VD + app alive) |
 | `window.resume` | `stream` | resume; phone sends CONFIG + keyframe |
 | `window.keyframe` | `stream` | request IDR (decoder error recovery) |
@@ -277,13 +279,13 @@ Phone → Mac:
 |---|---|
 | `pong` | `ts` |
 | `clip.set` | `text` | plain-text clipboard, either direction; see "Clipboard sync" |
-| `apps` | `apps`: `[{"pkg","label","activity"}]` — launchable activities, sorted by label; `multi` (planned, epic multiwin) says whether a second instance can run: false only when the launcher activity's `launchMode` is `singleTask`/`singleInstance` or its `documentLaunchMode` is `never` |
+| `apps` | `apps`: `[{"pkg","label","activity","multi"}]` — launchable activities, sorted by label; `multi` says whether a second instance can run (WIN-24): the launcher activity declares `android.window.PROPERTY_SUPPORTS_MULTI_INSTANCE_SYSTEM_UI` (read per component with `PackageManager.getProperty`, API 35+, false on older phones) **and** its `launchMode` is not `singleTask`/`singleInstance` **and** its `documentLaunchMode` is not `never`; an allow-list covers apps found to work without the property (empty today) |
 | `icon` | `pkg`, `png` (base64, 96×96 px, or 2/3 of `px` when the request had one); for an adaptive icon also the whole 108 dp layers as base64 PNGs at the requested `px` (216×216 px by default): `fg`, `bg` and, when present (API 33+), `mono` — optional, so an old Mac ignores them. Mac ▸ docs/design/dock.md §Icons for how the icons are drawn |
-| `window.opened` | `stream`, `displayId`, `w`, `h`, `taskId` (planned: the task the display shows) — `started`: `"moved"` (default; the task the display shows was moved to it, state kept) or `"fresh"` (the phone couldn't move the task and relaunched the same package; the app's state may be lost) |
+| `window.opened` | `stream`, `displayId`, `w`, `h`, `taskId` — the task the display shows (0 for the Phone Mirror, which has none, or when the phone could not read its task list); `started`: `"moved"` (default; the task the display shows was moved to it, state kept) or `"fresh"` (the phone couldn't move the task and relaunched the same package; the app's state may be lost) |
 | `window.closed` | `stream`, `reason` (`requested`/`app_exited`/`error`) |
 | `window.resize.ack` | `stream`, `w`, `h`, `dpi` (the request echoed), `outcome`: `"resized"` (new size, new encoder), `"density"` (same size, new dpi, no encoder rebuild), `"same"` (the display already showed it) or `"kept"` (the encoder refused; the stream keeps its old size) or `"refused"` (the phone cannot apply it: no such stream, or a size of zero). Every `window.resize` is answered with one, the early returns included; the Mac keeps one resize in flight and sends the newest waiting value when this arrives, or when the stall limit passes without one |
-| `window.title` | `stream`, `label`, `pkg` — the top app changed on that display (phone mode); on an app stream (planned) the task's own description (`RecentTaskInfo.taskDescription`), sent when it changes; the Mac titles the window with it while the app has several windows |
-| `state` | `locked`: bool, `battery`: int, `charging`: bool, `dnd`: `"off"`/`"priority"`/`"alarms"`/`"none"`, `ringer`: `"normal"`/`"vibrate"`/`"silent"`, `volume`: int, `volumeMax`: int, `screen`: `"on"`/`"off"`, `secure`: bool, `panel`: `"on"`/`"off"`, `maxWindows` (planned: the most app windows this phone allows at once) — sent on change; `dnd`/`ringer` are absent on a phone that does not support them (old builds), `volume`/`volumeMax` are both absent on one that cannot read its music stream, `secure` while no phone window is open; see "Phone screen", "Volume" and "Secure screens" |
+| `window.title` | `stream`, `label`, `pkg` — the display's top app; every stream sends it at once when that app changes (`label` is the app's label, `pkg` its package). An app or link stream also carries `title`: the task's own description (`RecentTaskInfo.taskDescription.label`), or the app's label while the phone describes none. A change to `title` alone goes out at most once a second (the newest label always goes out); a message whose `label`/`pkg` changed carries the current `title` and counts as that send. The Mac titles a window with `title` while the app has several windows, and takes a link or handoff window's Dock identity from `pkg` |
+| `state` | `locked`: bool, `battery`: int, `charging`: bool, `dnd`: `"off"`/`"priority"`/`"alarms"`/`"none"`, `ringer`: `"normal"`/`"vibrate"`/`"silent"`, `volume`: int, `volumeMax`: int, `screen`: `"on"`/`"off"`, `secure`: bool, `panel`: `"on"`/`"off"`, `maxWindows`: int (the most app windows this phone allows at once; 4 today) — sent on change; `dnd`/`ringer` are absent on a phone that does not support them (old builds), `volume`/`volumeMax` are both absent on one that cannot read its music stream, `secure` while no phone window is open; see "Phone screen", "Volume" and "Secure screens" |
 | `audio.state` | `on`: bool, `codec`: int — audio capture on/off (for the UI dot) |
 | `ring.state` | `ringing`: bool — a `phone.ring` started (`true`) or ended (`false`) |
 | `power.locked` | — the person's power press with app streams up: the phone took its panel over and is re-lighting the streaming group. The Mac holds each app window's last frame for a short grace instead of calling the picture stalled; see "Phone screen" |
@@ -305,25 +307,38 @@ Unknown `t` values and unknown binary frame types are ignored (log once). Unknow
 fields are ignored. `activity` is a component string `pkg/fully.qualified.Class`.
 The phone sends one `state` right after `welcome`, then on change.
 
-### Several windows of one app (planned, epic multiwin)
+### Several windows of one app
 
-`newInstance`, `taskId`, `multi`, `maxWindows` and the app-stream `window.title`
-above are planned: written here so the phone and the Mac can be built against one
-contract, landed together in phase 2 (`.agent/multiwin/phase2.md`). They are
-additive — every one has a default a phone or Mac without it still answers — so
-the protocol version stays 3. The evidence for what the platform allows and what
-a window costs is `.agent/multiwin/spike.md`.
+One app on one phone can run in several windows, one per task, when the Mac asks
+for another (`window.open` with `newInstance`, or a click on the New Window
+command). The Mac's only evidence that an app can do it is `apps.multi`, and the
+phone counts the windows it will run. The evidence for what the platform allows
+and what a window costs is `.agent/multiwin/spike.md`.
 
 - One stream is one virtual display and one task. `newInstance` never reuses an
-  existing task; without it the phone launches with `FLAG_ACTIVITY_NEW_TASK` as
-  today and the platform may move the app's one task to the new display.
-- `taskId` is the phone's own task id for the display; it is not stable across a
-  reconnect, and the Mac keeps it only to name and close the right window.
-- `window.title` on an app stream carries the task's label, not the app's; the
-  phone sends it when the label changes, at most once a second.
+  existing task; without it the phone launches with `FLAG_ACTIVITY_NEW_TASK` and
+  the platform may move the app's one task to the new display.
+- `window.opened.taskId` is the phone's own task id for the display; it is not
+  stable across a reconnect, and the Mac keeps it only to name and close the right
+  window. It is read after the launch (which is what makes the task), so video
+  that arrives before `window.opened` is held: its CONFIG and its keyframe go out
+  after the reply, and delta frames that would precede them are dropped.
+- `window.title` always says which app the display shows (`label`, `pkg`), the
+  moment it changes: a link window's Dock identity and a handoff window's re-open
+  come from `pkg`. On an app or link stream the same message carries `title`, the
+  task's label, falling back to the app's label while the phone describes none. A
+  change to `title` alone waits out the second (at most once a second; the newest
+  label always goes out, a label that settles just after a send is not dropped),
+  while a new app on top goes at once and its `title` counts as that send.
 - `maxWindows` is per phone and counts app streams only; the Phone Mirror is a
-  separate encoder and is not counted. Past it, `window.open` (with or without
-  `newInstance`) answers `too_many_windows`.
+  separate encoder and is not counted, and neither is a stream that has not named
+  its content yet. Past it, `window.open` (with or without `newInstance`) answers
+  `too_many_windows` before creating a display.
+- Closing a window ends only that display's task. The display's
+  `FLAG_DESTROY_CONTENT_ON_REMOVAL` usually takes the task with it; a task that
+  outlives its display is removed by id, and a task another window of the session
+  still shows is never removed. The app is never stopped, so its other windows
+  and the session keep running.
 
 ## Clipboard sync
 
@@ -847,8 +862,8 @@ report its foreground app, e.g. no task manager access), `nothing_to_continue` (
 foreground is our app, the launcher/home or SystemUI), `fs_not_found`,
 `fs_denied` (a path outside the readable rules, or a range outside the file),
 `fs_not_a_dir`, `fs_stale` (the `fs.read` etag no longer matches the file) and
-`fs_busy` (more than 8 reads in flight), `too_many_windows` (planned: a
-`window.open` past the phone's `maxWindows`).
+`fs_busy` (more than 8 reads in flight), `too_many_windows` (a `window.open` past
+the phone's `maxWindows`; no display is created).
 Oversized frames close the session without a reply. JSON nesting is capped at
 64 arrays/objects; deeper input is rejected like any malformed JSON (before
 `welcome` it simply gets no answer).
