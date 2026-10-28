@@ -44,6 +44,20 @@ internal sealed interface WakeEvent {
         override val wire: String get() = "unlocked"
     }
 
+    /** The person touched the panel or pressed a key on it (CTRL-11). */
+    data object PersonUsed : WakeEvent {
+        override val wire: String get() = "used"
+    }
+
+    /**
+     * The phone went idle by itself while we had its panel: its own screen
+     * timeout or lock, with no press of ours in flight. The person is done with
+     * it, so PocketDeck takes the phone back for the streams.
+     */
+    data object PersonIdle : WakeEvent {
+        override val wire: String get() = "idle"
+    }
+
     /** The last stream closed, or the session ended. */
     data object StreamsStopped : WakeEvent {
         override val wire: String get() = "stopped"
@@ -83,24 +97,43 @@ internal const val WAKE_OWN_SETTLE_MS = 2_000L
  * The one pure rule. Every state accepts every event, including the ones it
  * ignores, and nothing here touches the platform.
  *
- * A person's takeover stands until PocketDeck wakes the panel's group again
- * (a new episode, or a relight, is a new wake and so a new baseline) and the
- * close resets to [WakeOwner.NOT_OURS].
+ * The person's takeover is never undone by our own wake or a keep-alive poke
+ * (that is what left the phone in `person` and then moved it back to
+ * `ourswoke` on the next relight). It ends only when the phone goes idle by
+ * itself ([WakeEvent.PersonIdle]) or when the streams stop.
  */
 internal fun wakeTransition(state: WakeState, event: WakeEvent): WakeStep = when (event) {
-    is WakeEvent.OurWake -> WakeStep(
-        state.copy(
-            owner = WakeOwner.OURS_WOKE,
-            ownUntilMs = event.nowMs + WAKE_OWN_SETTLE_MS,
-            reason = null,
-        ),
-    )
+    is WakeEvent.OurWake -> when (state.owner) {
+        WakeOwner.PERSON_TOOK_OVER ->
+            WakeStep(state.copy(ownUntilMs = event.nowMs + WAKE_OWN_SETTLE_MS))
+        WakeOwner.NOT_OURS, WakeOwner.OURS_WOKE -> WakeStep(
+            state.copy(
+                owner = WakeOwner.OURS_WOKE,
+                ownUntilMs = event.nowMs + WAKE_OWN_SETTLE_MS,
+                reason = null,
+            ),
+        )
+    }
 
     WakeEvent.PersonUnlocked -> when (state.owner) {
         WakeOwner.NOT_OURS, WakeOwner.PERSON_TOOK_OVER -> WakeStep(state.copy(screenOn = true))
         WakeOwner.OURS_WOKE -> WakeStep(
             state.copy(owner = WakeOwner.PERSON_TOOK_OVER, screenOn = true, reason = WakeCloseReason.PERSON_UNLOCKED),
         )
+    }
+
+    WakeEvent.PersonUsed -> when (state.owner) {
+        // Nothing of ours to lose: the wake machine only decides a close.
+        WakeOwner.NOT_OURS -> WakeStep(state)
+        WakeOwner.OURS_WOKE -> WakeStep(
+            state.copy(owner = WakeOwner.PERSON_TOOK_OVER, screenOn = true, reason = WakeCloseReason.PERSON_ACTIVE),
+        )
+        WakeOwner.PERSON_TOOK_OVER -> WakeStep(state.copy(screenOn = true))
+    }
+
+    WakeEvent.PersonIdle -> when (state.owner) {
+        WakeOwner.PERSON_TOOK_OVER -> WakeStep(WakeState())
+        WakeOwner.NOT_OURS, WakeOwner.OURS_WOKE -> WakeStep(state)
     }
 
     is WakeEvent.ScreenReported -> {

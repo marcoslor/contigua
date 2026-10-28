@@ -41,6 +41,8 @@ PocketDeck left it.
 | CTRL-8 | WHEN no Mac-side intent changes, THE Mac SHALL NOT re-send a control's value on a timer, on every `state`, or on a connect beyond CTRL-3. | audit table in `docs/design/controls.md`; e2e `dnd-edge`, `panel-edge` |
 | CTRL-9 | WHEN the phone reports a control's value that differs from the last one the Mac sent, THE Mac SHALL treat it as the person's own change and SHALL NOT correct it. | K2 `ControlIntentTests.testReportOfAnotherValueIsThePersonsChange` |
 | CTRL-10 | WHEN the person's phone cannot do a control (no `dnd`, no `ringer`, no volume maximum, no panel control), THE Mac SHALL disable it with a reason and send nothing. | K2 `FocusCoreTests`; e2e `focus`, `controls`, `panel-edge` |
+| CTRL-11 | WHILE PocketDeck holds the phone's panel dark, WHEN the person unlocks it, touches display 0, presses a panel key or presses the power key, THE phone SHALL give the panel back at once (power mode NORMAL, display 0 lit, the keyguard untouched) and SHALL log `panel_yield reason=unlock\|touch\|key\|power`; after that it SHALL NOT darken the panel again while the person uses the phone, and only the phone going idle by itself (its own screen timeout or a lock) or the streams stopping SHALL end the dark episode. | K1 `DarkPanelPolicyTest`, `PersonInputTest`, `WakeOwnershipTest`; emulator `panel-yield` |
+| CTRL-12 | WHILE PocketDeck holds the phone's panel dark, WHEN the person presses the power key, THE phone SHALL treat it as one hand back and nothing else: no relight of the streaming group and no panel-off after it, so one press gives the screen back. | K1 `DarkPanelPolicyTest` (`a press while dark is not also a relight`) |
 
 ## States and events
 
@@ -69,21 +71,48 @@ One machine for the whole phone, not per stream: PocketDeck wakes the panel's
 power group once per streaming episode, and the last stream's close may sleep it
 again only while that wake is still ours.
 
-| From \ Event | our wake | the person unlocked | the screen went on (not our wake) | last stream closed |
-|---|---|---|---|---|
-| `NotOurs` | `OursWoke` | ignored | ignored (only tracked) | nothing |
-| `OursWoke` | `OursWoke` (new baseline) | `PersonTookOver(person_unlocked)` | `PersonTookOver(person_active)`; ignored inside the own-wake settle | `NotOurs`, sleep the phone |
-| `PersonTookOver` | `OursWoke` (our next wake: a new episode, or a relight) | stays | stays | `NotOurs`, nothing, log the reason |
+| From \ Event | our wake | the person unlocked | the person touched the panel | the phone went idle itself | the screen went on (not our wake) | last stream closed |
+|---|---|---|---|---|---|---|
+| `NotOurs` | `OursWoke` | ignored | ignored | ignored | ignored (only tracked) | nothing |
+| `OursWoke` | `OursWoke` (new baseline) | `PersonTookOver(person_unlocked)` | `PersonTookOver(person_active)` | stays | `PersonTookOver(person_active)`; ignored inside the own-wake settle | `NotOurs`, sleep the phone |
+| `PersonTookOver` | stays (our own wake never takes the phone back) | stays | stays | `NotOurs` (PocketDeck takes the phone back for the streams) | stays | `NotOurs`, nothing, log the reason |
 
 Only a wake that named the panel's own power group arms the machine: a wake of a
 virtual display that has its own group never makes the phone's sleep ours.
-Transitions are logged as `wake: <from> --<event>--> <to>`.
+Transitions are logged as `wake: <from> --<event>--> <to>`. `PersonTookOver` ends
+only on the phone going idle by itself (its own timeout or lock, the relight
+edge) or on the close: an own wake or a keep-alive poke never moves it back to
+`OursWoke`, which is what used to let a relight make the next close sleep the
+person's screen.
 
-The person's use comes from the session's `state` stream as edges: `locked`
-going false (the unlock; the face-unlock case the wake pokes cannot show as a
-screen edge) and display 0 changing power. A repeated state is not a use, and a
-session's first screen reading is not one: a reconnect must not read the phone's
-current picture as a new wake.
+The person's use comes from two places. The session's `state` stream gives the
+edges `locked` going false (the unlock; the face-unlock case the wake pokes
+cannot show as a screen edge) and display 0 changing power; a repeated state is
+not a use, and a session's first reading is not one. A touch or a key on an
+unlocked phone changes no `state` value at all, so while the panel is dark the
+phone also reads the panel's own input devices (`/proc/bus/input/devices` and
+their `/dev/input/eventN` nodes): a finger down there is `reason=touch` and any
+key but the power key is `reason=key`. PocketDeck's keep-alive pokes
+(`IPowerManager.userActivity`) and its injected session input
+(`InputManager.injectInputEvent`) never reach those nodes, so its own activity
+can never read as the person's.
+
+### The dark panel (`server/DarkPanelPolicy.kt`)
+
+Where the streaming displays share the panel's group (One UI), the panel is
+powered off under the streams. One keep-alive tick applies the decided phase;
+every off edge is the power watch's single decision, so one press is never
+decided twice.
+
+| From \ Event | tick, panel off at the episode's start | tick, panel on | the person used display 0 | interactive off, panel dark | interactive off, person's own screen | streams stopped |
+|---|---|---|---|---|---|---|
+| `Init` | `Dark`, wake + panel off (transitional) | `User`, nothing | ignored (not ours) | nothing | nothing | nothing |
+| `Dark` | stays `Dark`, wake + panel off | stays `Dark`, wake + panel off | `User`, give it back (`unlock`/`touch`/`key`) | `User`, hand back (`power`), no relight | — | `Init`, restore and sleep |
+| `User` | — | stays `User`, nothing | stays `User` | — | `Dark`, relight the streams at once | `Init`, nothing |
+
+A pause keeps the phase for `PAUSE_GRACE_MS`, the mirror (`PANEL_ALONE`) never
+takes the panel, and a stale panel-off write is refused once the person has it
+back. A dark episode logs one `panel_yield reason=<token>` line.
 
 ## Phone count and connection
 
@@ -123,7 +152,7 @@ current picture as a new wake.
 | CONV-AND-01 | n/a: no navigation change. |
 | CONV-AND-02 | n/a: no phone-side UI. |
 | CONV-AND-03 | n/a: no new permission. |
-| CONV-AND-04 | applies: CTRL-4 (a restore clears only what PocketDeck set) and CTRL-7 (no sleep under the person). |
+| CONV-AND-04 | applies: CTRL-4 (a restore clears only what PocketDeck set), CTRL-7 (no sleep under the person) and CTRL-11 (a dark panel is given back the moment the person uses the phone). |
 | CONV-PD-01 | applies: CTRL-3 and the per-phone memory above. |
 | CONV-PD-02 | applies: CTRL-10 and the connection paragraph above. |
 | CONV-PD-03 | applies: CTRL-3 and CTRL-9: the Mac never claims a value the phone has not reported. |
@@ -131,7 +160,7 @@ current picture as a new wake.
 | CONV-PD-05 | applies: transitions log closed tokens (states, events, reasons), never a value a person typed. |
 | CONV-PD-06 | n/a: no interactive surface's frame budget changes. |
 | CONV-PD-07 | applies: the touched labels keep their names (Phone Do Not Disturb, Turn Off Phone Screen, Phone Mirror). |
-| CONV-PD-08 | applies: the two state machines above (`Applied`/`Overridden`; `NotOurs`/`OursWoke`/`PersonTookOver`). |
+| CONV-PD-08 | applies: the three state machines above (`Applied`/`Overridden`; `NotOurs`/`OursWoke`/`PersonTookOver`; `Init`/`Dark`/`User`). |
 | CONV-PD-09 | n/a: no new control or error copy. |
 
 ## Non-goals

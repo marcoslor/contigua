@@ -123,11 +123,55 @@ class WakeOwnershipTest {
     // MARK: PersonTookOver
 
     @Test
-    fun `a new episode's own wake starts a new baseline`() {
+    fun `our own wake during a relight keeps the phone the person's`() {
+        // 16:33:16: PocketDeck re-lit the group while the person owned the
+        // phone, and the log said `person --ourWake--> ourswoke`; a later close
+        // would then have slept their screen.
         val person = step(woke(), WakeEvent.PersonUnlocked).state
-        val next = step(person, WakeEvent.OurWake(20_000L))
-        assertEquals(WakeOwner.OURS_WOKE, next.state.owner)
-        assertNull(next.state.reason)
+        val relit = step(person, WakeEvent.OurWake(20_000L))
+        assertEquals(WakeOwner.PERSON_TOOK_OVER, relit.state.owner)
+        assertEquals(WakeCloseReason.PERSON_UNLOCKED, relit.state.reason)
+        assertEquals(20_000L + WAKE_OWN_SETTLE_MS, relit.state.ownUntilMs)
+    }
+
+    @Test
+    fun `a touch on the panel owns the phone without an unlock`() {
+        val used = step(woke(), WakeEvent.PersonUsed)
+        assertEquals(WakeOwner.PERSON_TOOK_OVER, used.state.owner)
+        assertEquals(WakeCloseReason.PERSON_ACTIVE, used.state.reason)
+        assertTrue(used.state.screenOn)
+        assertTrue(used.actions.isEmpty())
+
+        val close = step(used.state, WakeEvent.StreamsStopped)
+        assertTrue("the close must not sleep a phone the person touched", close.actions.isEmpty())
+        assertEquals(WakeCloseReason.PERSON_ACTIVE, close.closeReason)
+    }
+
+    @Test
+    fun `the phone going idle by itself ends the person's ownership`() {
+        val person = step(woke(), WakeEvent.PersonUnlocked).state
+        val idle = step(person, WakeEvent.PersonIdle)
+        assertEquals(WakeOwner.NOT_OURS, idle.state.owner)
+        assertNull(idle.state.reason)
+        // The relight that follows names the panel's group again, and the close
+        // after it may sleep the phone: the person left.
+        val ours = step(idle.state, WakeEvent.OurWake(30_000L)).state
+        assertEquals(WakeOwner.OURS_WOKE, ours.owner)
+        assertEquals(listOf(WakeAction.SLEEP_PHONE), step(ours, WakeEvent.StreamsStopped).actions)
+    }
+
+    @Test
+    fun `an idle edge without the person's ownership changes nothing`() {
+        val ours = step(woke(), WakeEvent.PersonIdle).state
+        assertEquals(WakeOwner.OURS_WOKE, ours.owner)
+        assertEquals(WakeOwner.NOT_OURS, step(WakeState(), WakeEvent.PersonIdle).state.owner)
+    }
+
+    @Test
+    fun `a person's use before our wake changes nothing in the machine`() {
+        val idle = step(WakeState(), WakeEvent.PersonUsed)
+        assertEquals(WakeOwner.NOT_OURS, idle.state.owner)
+        assertTrue(idle.actions.isEmpty())
     }
 
     @Test
