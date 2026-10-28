@@ -37,8 +37,12 @@ CHROME = "com.android.chrome"
 CHROME_MAIN = "com.android.chrome/com.google.android.apps.chrome.Main"
 SETTINGS = "com.android.settings"
 LABEL_PAGE_TITLE = "PocketDeck multiwin"
+LABEL_PAGE_TITLE_2 = "PocketDeck second page"
 UI_DUMP = "/data/local/tmp/pd-mw-ui.xml"
 MEASURE_S = 8.0
+# An 8 s phase with a keyframe and a scroll every 150 ms: a live window draws far
+# more than this, a dead one (or one whose phase missed its keyframe) draws fewer.
+MIN_PHASE_FRAMES = 3
 RESULTS = []
 
 
@@ -101,6 +105,13 @@ class Dev(object):
         text = self.out_of("dumpsys", "meminfo", pkg)
         m = re.search(r"TOTAL PSS:\s+(\d+)", text) or re.search(r"^\s*TOTAL\s+(\d+)", text, re.M)
         return int(m.group(1)) if m else None
+
+    def avc_encoders(self):
+        """Live H.264 encoder instances the device lists (one per window is the
+        phone's design); an empty list when the dump names none."""
+        text = self.out_of("dumpsys", "media.codec")
+        return [line.strip() for line in text.splitlines()
+                if re.search(r"\b(c2|OMX)\.[\w.]*avc[\w.]*enc", line)]
 
     def pid(self, pkg):
         return self.out_of("pidof", pkg).strip()
@@ -235,13 +246,17 @@ class Phone(object):
             time.sleep(0.02)
         return None
 
-    def wait_title(self, stream, want, timeout=6.0):
-        """(title, elapsed_s) once this stream's title carries [want], else (None, elapsed)."""
+    def wait_title(self, stream, want, timeout=6.0, since=0):
+        """(title, elapsed_s) once this stream's title carries [want], else (None, elapsed).
+
+        [since] skips the messages already read, so a retry cannot match a title
+        from an earlier attempt.
+        """
         started = time.time()
         deadline = started + timeout
         while time.time() < deadline:
             with self.rec.lock:
-                for msg in reversed(self.rec.messages):
+                for msg in reversed(self.rec.messages[since:]):
                     if msg.get("t") != "window.title" or msg.get("stream") != stream:
                         continue
                     title = msg.get("title")
@@ -249,6 +264,11 @@ class Phone(object):
                         return title, time.time() - started
             time.sleep(0.02)
         return None, time.time() - started
+
+    def mark(self):
+        """How many messages have arrived: wait_title(since=…) counts from here."""
+        with self.rec.lock:
+            return len(self.rec.messages)
 
     def frames(self, stream):
         with self.rec.lock:
@@ -279,6 +299,22 @@ def close_window(phone, stream, timeout=15.0):
     return None
 
 
+def await_key(rec, stream, timeout=5.0):
+    """True once [stream] has delivered the keyframe its phase file waits for.
+
+    A phase file starts at a keyframe: `begin_phase` drops deltas until one
+    arrives, so the keyframe must be asked for *after* the phase begins (one
+    that arrives before it is missed and the phase records nothing).
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        with rec.lock:
+            if not rec.wait_key.get(stream, True):
+                return True
+        time.sleep(0.02)
+    return False
+
+
 def grab(phone, dev, stream, tag, out, seconds=1.5):
     """One PNG of what the window shows, decoded from its own stream.
 
@@ -286,10 +322,18 @@ def grab(phone, dev, stream, tag, out, seconds=1.5):
     '2' is not valid"), and the product's picture is the better evidence
     anyway: a window that renders has frames.
     """
-    phone.client.send_json({"t": "window.keyframe", "stream": stream})
-    time.sleep(0.4)
     path = os.path.join(out, "cap-%s.h264" % tag)
+    # The phase file is seeded with the stream's SPS/PPS, and an encoder sends
+    # them in VIDEO_CONFIG: without it the file does not decode on its own.
+    try:
+        phone.rec.wait_for_size(stream, 10.0)
+    except deckctl.DeckError:
+        return None
     phone.rec.begin_phase(stream, path)
+    phone.client.send_json({"t": "window.keyframe", "stream": stream})
+    if not await_key(phone.rec, stream):
+        phone.rec.end_phase(stream)
+        return None
     time.sleep(seconds)
     frames = phone.rec.end_phase(stream)
     if frames == 0:
@@ -327,7 +371,12 @@ def tap(phone, dev, out, stream, tag):
 
 
 class LocalPage(object):
-    """A page with a known <title>, served to the emulator through `adb reverse`."""
+    """Two pages with known titles, served to the emulator through `adb reverse`.
+
+    The first page is one whole-viewport link to the second: a tap on it is the
+    label change the check times, so no typing and no cold render sit inside the
+    two seconds.
+    """
 
     def __init__(self, dev, out):
         self.dev = dev
@@ -335,8 +384,14 @@ class LocalPage(object):
         os.makedirs(self.dir, exist_ok=True)
         with open(os.path.join(self.dir, "label.html"), "w") as fp:
             fp.write("<!doctype html><html><head><title>%s</title></head>"
-                     "<body style='font-size:48px;padding:40px'>multiwin</body></html>\n"
+                     "<body style='margin:0'><a href='label2.html' style='display:block;"
+                     "width:100vw;height:100vh;font-size:48px;padding:40px;"
+                     "box-sizing:border-box'>multiwin, tap for the second page</a></body></html>\n"
                      % LABEL_PAGE_TITLE)
+        with open(os.path.join(self.dir, "label2.html"), "w") as fp:
+            fp.write("<!doctype html><html><head><title>%s</title></head>"
+                     "<body style='font-size:48px;padding:40px'>multiwin, second</body></html>\n"
+                     % LABEL_PAGE_TITLE_2)
         sock = socket.socket()
         sock.bind(("127.0.0.1", 0))
         self.port = sock.getsockname()[1]
@@ -435,15 +490,34 @@ def check_label(phone, dev, page, out):
         close_window(phone, 3)
         return check(False, "WIN-28", "adb reverse failed; no local page to navigate to")
     log("window 3 on display %s; the page is %s" % (third.get("displayId"), page.url()))
-    started = time.time()
     # The window's own input, the way a person navigates one tab: focus the
     # address bar, type the local page, Return. No intent, so no task moves.
-    send_tap(phone.client, 3, 0.5, 0.06)
-    time.sleep(0.8)
-    phone.client.send_json({"t": "text", "stream": 3, "text": page.url()})
-    time.sleep(0.3)
-    send_key(phone.client, 3, 66)
-    title, _ = phone.wait_title(3, LABEL_PAGE_TITLE, timeout=4.0)
+    # Chrome's bar height depends on the tab strip it drew, so a couple of
+    # heights are tried; each waits only for a message that arrives after it.
+    first = None
+    for ny in (0.06, 0.11, 0.16):
+        mark = phone.mark()
+        send_tap(phone.client, 3, 0.5, ny)
+        time.sleep(0.8)
+        phone.client.send_json({"t": "text", "stream": 3, "text": page.url()})
+        time.sleep(0.3)
+        send_key(phone.client, 3, 66)
+        first, _ = phone.wait_title(3, LABEL_PAGE_TITLE, timeout=6.0, since=mark)
+        if first:
+            log("the local page loaded after a tap at y=%.2f" % ny)
+            break
+    if first is None:
+        log("window 3's picture: %s" % (grab(phone, dev, 3, "c-label", out) or "no frame"))
+        close_window(phone, 3)
+        return check(False, "WIN-28",
+                     "the local page never became window.title (could not load %s)" % page.url())
+    # The timed label change is the next one, and its clock starts at the tap
+    # that asks for it: typing a URL and a cold first render are the harness's
+    # work, not the phone's.
+    mark = phone.mark()
+    started = time.time()
+    send_tap(phone.client, 3, 0.5, 0.5)
+    title, _ = phone.wait_title(3, LABEL_PAGE_TITLE_2, timeout=4.0, since=mark)
     elapsed = time.time() - started
     ok = check(title is not None and elapsed <= 2.0, "WIN-28",
                "a label change reached window.title in %.2fs (%s)"
@@ -495,15 +569,20 @@ def check_cap(phone, dev, others, base):
 
 
 def cost_phase(phone, dev, streams, name, out):
+    # A phase file starts at a keyframe; without one it records nothing. The
+    # keyframe is asked for after `begin_phase`, which is what waits for it.
+    for s in streams:
+        try:
+            phone.rec.wait_for_size(s, 10.0)
+        except deckctl.DeckError:
+            log("stream %d sent no VIDEO_CONFIG; its phase cannot decode" % s)
+        phone.rec.begin_phase(s, os.path.join(out, "cost-%s-s%d.h264" % (name, s)))
+    for s in streams:
+        phone.client.send_json({"t": "window.keyframe", "stream": s})
+    keys = {s: await_key(phone.rec, s) for s in streams}
     t0 = time.time()
     cpu0 = dev.cpu()
     pss0 = dev.pss_kb(PACKAGE)
-    # A phase file starts at a keyframe; without one it records nothing.
-    for s in streams:
-        phone.client.send_json({"t": "window.keyframe", "stream": s})
-    time.sleep(0.4)
-    for s in streams:
-        phone.rec.begin_phase(s, os.path.join(out, "cost-%s-s%d.h264" % (name, s)))
     down = True
     while time.time() - t0 < MEASURE_S:
         for s in streams:
@@ -515,21 +594,30 @@ def cost_phase(phone, dev, streams, name, out):
     time.sleep(1.0)
     cpu1 = dev.cpu()
     pss1 = dev.pss_kb(PACKAGE)
+    codecs = dev.avc_encoders()
     fps = {s: (frames[s] / elapsed) for s in streams}
     row = {
         "windows": len(streams), "seconds": round(elapsed, 1), "streams": streams,
         "frames": frames, "fps": {s: round(v, 2) for s, v in fps.items()},
+        "keyframes": keys,
         "interval_ms": {s: (round(1000.0 / fps[s], 1) if fps[s] else None) for s in streams},
         "cpu_swcodec": round(cpu1["procs"].get("media.swcodec", 0.0), 1),
         "cpu_pocketdeck": round(cpu1["procs"].get(PACKAGE, 0.0), 1),
         "pss_kb": pss1, "pss_delta_kb": (pss1 - pss0) if (pss1 and pss0) else None,
-        "encoders": len(streams),
+        "encoders": len(streams), "codec_instances": len(codecs),
     }
-    print("[cost] windows=%d encoders=%d fps=%s interval_ms=%s swcodec=%s%% pd=%s%% pss=%sKB"
-          % (row["windows"], row["encoders"],
+    print("[cost] windows=%d encoders=%d codec_instances=%d fps=%s interval_ms=%s swcodec=%s%% pd=%s%% pss=%sKB"
+          % (row["windows"], row["encoders"], row["codec_instances"],
              " ".join("s%d %.2f" % (s, fps[s]) for s in streams),
              " ".join("s%d %s" % (s, row["interval_ms"][s]) for s in streams),
              row["cpu_swcodec"], row["cpu_pocketdeck"], row["pss_kb"]), flush=True)
+    # The cost table is only worth reading if every window it counts was drawing
+    # (round 1's zero rows came from a phase that never saw its keyframe, and
+    # from a window whose app had already exited). A live window under 8 s of
+    # scrolls produces far more than MIN_PHASE_FRAMES.
+    check(all(keys[s] and frames[s] >= MIN_PHASE_FRAMES for s in streams), "WIN-25",
+          "%d window(s) all drawing (%s)" % (len(streams), " ".join(
+              "s%d %d frames %.2f/s" % (s, frames[s], fps[s]) for s in streams)))
     return row
 
 
@@ -584,11 +672,14 @@ def main(argv=None):
         others = {"clock": "com.google.android.deskclock" if "com.google.android.deskclock" in listed
                   else "com.android.deskclock" if "com.android.deskclock" in listed else None}
         streams = check_cap(phone, dev, others, base_displays)
+        # At N live windows: the phase is measured with exactly N open, so the
+        # table is the cost of that many encoders (the one below was still up
+        # while round 1 measured "3").
         for name in (4, 3, 2, 1):
             row = cost_phase(phone, dev, list(streams[:name]), "%dw" % name, args.out)
             summary["cost"].append(row)
-            if len(streams) > name:
-                close_window(phone, streams[name])
+            if name > 1:
+                close_window(phone, streams[name - 1])
                 time.sleep(1.0)
         close_window(phone, 2)
     finally:
