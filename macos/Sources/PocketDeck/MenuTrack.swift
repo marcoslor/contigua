@@ -172,7 +172,6 @@ enum MenuTrack {
                                                   options: [.prettyPrinted, .sortedKeys]) {
             try? data.write(to: URL(fileURLWithPath: path), options: .atomic)
         }
-        Log.app.info("menutrack: opened=\(opened, privacy: .public) builds=\(Menus.builds - buildsBefore, privacy: .public) tracking=\(trackingPaths.count, privacy: .public)")
         running = false
         for timer in timers { timer.invalidate() }
         timers = []

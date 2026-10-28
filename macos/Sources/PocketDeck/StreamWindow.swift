@@ -1245,7 +1245,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
             // At the clamp the press cannot change anything, and a request
             // equal to the last one re-attached the phone's encoder for nothing
             // (the 10-27 burst). The press is a no-op: nothing is sent.
-            Log.video.info("density \(self.density, privacy: .public): the press is a no-op at the clamp")
+            Log.video.info("density press: the window is at the clamp, nothing to send")
             return
         }
         manager.setDensity(next, forPackage: pkg)
