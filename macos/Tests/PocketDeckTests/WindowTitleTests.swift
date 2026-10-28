@@ -77,6 +77,18 @@ final class WindowTitleTests: XCTestCase {
         XCTAssertEqual(a.window?.title, "Chrome Beta — Docs (Pixel 9)")
     }
 
+    /// A link window names the app that shows the page, not the page (WIN-3,
+    /// WIN-28): the phone sends `label` and `title` in one message, and only
+    /// an app window takes the task's label.
+    func testALinkWindowKeepsTheAppsNameWhileThePageTitleChanges() {
+        let link = fixture.manager.openLink("https://example.com")
+        fixture.session.onEvent = { [manager = fixture.manager] event in manager.handle(event) }
+        fixture.session.receive(JSONMessage(raw: [
+            "t": "window.title", "stream": Int(link.stream),
+            "label": "Chrome", "pkg": "com.android.chrome", "title": "Some Page"]))
+        XCTAssertEqual(link.window?.title, "Chrome (Pixel 9)")
+    }
+
     /// The phone's display name is part of the title, and a rename reaches
     /// every window (WIN-3).
     func testARenamedPhoneNamesEveryWindow() {
