@@ -58,6 +58,7 @@ The Android app as a person sees it on the phone: one home screen that says whet
 | PHONE-18 | THE home's Paired Macs section SHALL offer Forget All Macs… while at least one Mac is paired; choosing it SHALL ask "Forget all Macs?" with the consequence ("PocketDeck will create a new identity for this phone. Every Mac must pair again.") and Cancel, and confirming SHALL rotate the phone's identity, empty the list, drop the live session through the shell service's reconcile (PAIR-20) and show "No Macs paired yet."; the action SHALL be absent while the list is empty. | K1 `PrefsIdentityTest` (`forget all Macs rotates the identity and drops every pairing`, `keeps the device id`), `HomeScreenTest` (the action's presence/absence); screenshots `home_forget_all_light`/`_dark`; emulator `phone-reset` (the confirmation, then the live session ending and the refused reconnect) |
 | PHONE-19 | THE onboarding step and the home switch SHALL share one keep-running action: ON SHALL store the pref, start the service and ask for the battery exemption only WHILE it is missing (the exemption dialog, then the app's battery page, then the system's exemption list; each failure logged and reported with "Couldn't open battery settings…"), OFF SHALL store the pref and leave the service running with the task; and the row SHALL say what the pref plus the exemption mean — "Keeps running after you swipe it away and starts when the phone restarts." with the exemption, "Battery restriction still on — Android may stop it." with a button that opens the settings without it, and "Runs only while PocketDeck is open." when off; onboarding SHALL show "On — PocketDeck keeps running in the background" with a check, or "Battery restriction still on" with the same button, and SHALL NOT advance that step while the exemption is still missing. | K1 `KeepRunningActionTest` (pref, service, exemption only when missing, the reported failure), `BatteryExemptionTest` (the fallback chain), `keepRunningState` in `UiStateTest`, `StatusActionTest` (`the onboarding keep-running button does what the home switch does`), `HomeScreenTest` (both lines), `UiStateTest` (`notifications step waits for the grant and a real exemption`); screenshots `onboarding_keep_running_on_*`, `onboarding_keep_running_restricted_*`, `home_keep_running_restricted_*`; emulator `background-switch` (the tap before/after, the swipe with on and with off) |
 | PHONE-17 | THE app SHALL write no notification text, notification title, media title/artist/album, file name, pasteboard content, Mac pairing secret, QR secret or key material to logcat or a crash report: ids, counts, states, sizes and hash prefixes only, and the pairing code is displayed, never logged. | review of every `Log` call in the app and the shell service; K1 `NotifyEventsTest`/`MediaArtTest` (their records carry no text); pairing.md PAIR-18, notifications.md NOTIFY-3 |
+| PHONE-20 | WHEN Shizuku's binder arrives, or arrives again after its server died, THE app SHALL bind the shell user service by itself — binder received, permission check, bind, service ready — with no tap and no relaunch; it SHALL treat a Shizuku permission it cannot read (no binder, or not attached yet) as the last known answer and never as a denial, so a grant that survived the server restart asks for nothing; and the binding SHALL follow one state machine — NoBinder, NeedsPermission, Binding, WaitingRetry, Ready, Failed(reason) — where a bind failure or timeout retries at most 3 times with a 1 s then 2 s backoff and a 5 s timeout per try, then ends in Failed with the card's Retry, and where a binder death returns to NoBinder so the next binder recovers without a tap. Every transition SHALL be logged as `shell binding: <from> --<event>--> <to>`, and a failure SHALL carry one of `bind_timeout`, `binder_dead`, `permission_denied`, `service_died`, `bind_failed` plus, for a thrown bind, only its exception class name. | K1 `ShellBindingTest` (every state/event pair, the bound, the backoff, the recovery paths, the log tokens); emulator `shizuku-restart` (3 rounds on one boot: the server and the shell service die, the server starts again, the shell service serves again within 10 s with no tap and no permission prompt); review of `ShizukuClient`, `DeckForegroundService` and `DeckViewModel` |
 
 Priority note: PHONE-1, 2, 3, 5, 6, 7, 8, 9, 11, 12, 13 and 17 are P1; the list's detail, the undo, the ring face and the visual rules are P2.
 
@@ -77,6 +78,30 @@ The home is one status machine (`mapStatus`, `android/app/src/main/java/dev/pock
 | Ready (background on) | reboot with Shizuku running | the service starts; Ready |
 | any | no port while enabled and healthy | Couldn't start, Retry |
 | Needs attention (any) | Retry | the service starts again; the card follows the new state |
+
+### The shell service binding (PHONE-20)
+
+`android/app/src/main/java/dev/pocketdeck/app/ShellBinding.kt` is the one state
+machine for the app's binding to the shell user service; `ShizukuClient` performs
+its actions and keeps no binding flags of its own. A round is at most 3 binds
+(5 s timeout each, 1 s then 2 s backoff); a fresh binder or the person's Retry
+starts a new round.
+
+| State | Event | Result |
+|---|---|---|
+| NoBinder | binder received | NeedsPermission, check the permission |
+| NoBinder | Retry (no binder to bind with) | Failed (binder_dead) |
+| NeedsPermission | permission granted | Binding (1): bind, arm the 5 s timeout |
+| NeedsPermission | permission denied | NeedsPermission: the card keeps Allow |
+| NeedsPermission | Retry | check the permission again |
+| Binding (n) | bound | Ready: the foreground service starts the server |
+| Binding (n) | bind failed / timed out / service died | n < 3: WaitingRetry (n) with backoff, then Binding (n+1); else Failed (bind_failed / bind_timeout / service_died) |
+| Binding / WaitingRetry | binder dead | NoBinder: wait for the next binder |
+| WaitingRetry | Retry | Binding (1): a new round with the full budget |
+| Ready | service died | WaitingRetry (0, service_died), then a new round |
+| Ready | binder dead | NoBinder |
+| Failed (any) | binder received | NeedsPermission: recovery with no tap |
+| Failed (bind_timeout) | Retry | Binding (1) |
 
 Ignored events, stated so nobody builds them: a second Retry while the service is starting, a listener grant while the Mac's sharing switch is off, a pairing answer with no pending prompt, and a notification-access item while the master switch is off (Connections are off wins).
 

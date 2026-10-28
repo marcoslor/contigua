@@ -123,10 +123,12 @@ class DeckViewModel(
     fun refresh() {
         val ctx = getApplication<Application>()
         val enabled = Prefs.isEnabled(ctx)
-        val running = runCatching { Shizuku.pingBinder() }.getOrDefault(false)
-        val granted = runCatching {
-            Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED
-        }.getOrDefault(false)
+        val running = ShizukuClient.hasBinder()
+        // Shizuku keeps a grant across a restart of its server: a check it
+        // cannot answer yet is the last known answer, never "denied" — that is
+        // what asked the person to allow PocketDeck again after their server
+        // came back (PHONE-20).
+        val granted = ShizukuClient.permission() ?: DeckState.shizukuGranted
         val installed = isInstalled(ctx, SHIZUKU_PACKAGE)
         val notificationsGranted = if (Build.VERSION.SDK_INT >= 33) {
             ContextCompat.checkSelfPermission(ctx, Manifest.permission.POST_NOTIFICATIONS) ==
@@ -216,7 +218,9 @@ class DeckViewModel(
     }
 
     fun allowShizuku() {
-        if (runCatching { Shizuku.pingBinder() }.getOrDefault(false)) {
+        // Only a binder can be asked, and only a real "denied" answer is worth a
+        // prompt: with no binder the card says Shizuku is not running instead.
+        if (ShizukuClient.permission() == false) {
             runCatching { Shizuku.requestPermission(REQUEST_SHIZUKU) }
         }
         refresh()
