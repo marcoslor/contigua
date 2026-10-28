@@ -121,7 +121,11 @@ enum SessionEvent {
     /// `window.resize.ack`: the phone answered a `window.resize` with what it
     /// did (resized, density only, same, or refused).
     case windowResizeAck(stream: UInt32, width: Int, height: Int, dpi: Int, outcome: String)
-    case windowTitle(stream: UInt32, label: String, pkg: String)
+    /// `window.title`: the app the display shows (`label`, `pkg`) and, on an
+    /// app or link stream, the task's own label (`title`, WIN-28). The two
+    /// stay apart: a link or handoff window names its app, an app window names
+    /// its task.
+    case windowTitle(stream: UInt32, label: String, pkg: String, title: String?)
     case phoneState(locked: Bool, battery: Int, charging: Bool, dnd: PhoneDndMode?, ringer: PhoneRingerMode?,
                     volume: Int?, volumeMax: Int?, screen: PhoneScreen?, secure: Bool?, panel: PhonePanel?)
     /// `ring.state`: a `phone.ring` started or ended.
@@ -886,11 +890,13 @@ final class Session {
             emit(.windowClosed(stream: UInt32(message.int("stream") ?? 0),
                                reason: message.string("reason") ?? ""))
         case "window.title":
-            // An app stream carries the task's label as `title` (WIN-28); the
-            // phone window and the older field name use `label`.
+            // `label` names the app the display shows; `title`, on an app or
+            // link stream, its task (WIN-28). They are never folded together:
+            // a link window's subject is the app, not the page.
             emit(.windowTitle(stream: UInt32(message.int("stream") ?? 0),
-                              label: message.string("title") ?? message.string("label") ?? "",
-                              pkg: message.string("pkg") ?? ""))
+                              label: message.string("label") ?? "",
+                              pkg: message.string("pkg") ?? "",
+                              title: message.string("title")))
         case "state":
             if let cap = message.int("maxWindows") {
                 emit(.maxWindows(cap))
