@@ -52,6 +52,9 @@ enum ApkPreparation {
 final class ApkInstaller {
     enum Phase: Equatable {
         case idle
+        /// The phone is paired but away: the install waits for the link (up to
+        /// 120 s), with Cancel available (FILES-16).
+        case waiting(String)
         case preparing(String)
         /// Sending: `fraction` is what the phone has written into its install session.
         case sending(String, fraction: Double)
@@ -62,7 +65,7 @@ final class ApkInstaller {
     private(set) var phase: Phase = .idle
     var isBusy: Bool {
         switch phase {
-        case .preparing, .sending, .installing: true
+        case .waiting, .preparing, .sending, .installing: true
         case .idle, .finished: false
         }
     }
@@ -84,9 +87,33 @@ final class ApkInstaller {
     private var clearTask: Task<Void, Never>?
     /// Called after a successful install (the app list is refreshed so the icon shows).
     var onInstalled: (() -> Void)?
+    /// The person cancelled while the install was waiting for the phone: the
+    /// controller drops the pending file.
+    var onWaitingCancelled: (() -> Void)?
+
+    /// The phone is paired but away: show the waiting phase instead of a
+    /// silent wait (FILES-16). `install` replaces it when the link returns.
+    func wait(for url: URL) {
+        clearTask?.cancel()
+        displayName = url.deletingPathExtension().lastPathComponent
+        phase = .waiting(displayName)
+        cancelled = false
+        self.session = nil
+        Log.app.notice("apk: waiting for the phone")
+    }
+
+    /// The 120 s wait ran out with no phone.
+    func waitingExpired() {
+        guard case .waiting = phase else { return }
+        finish("Your phone didn't connect.", ok: false, code: "wait_timeout")
+    }
 
     func install(_ url: URL, session: Session) {
-        guard !isBusy else {
+        // A waiting install is this file: the phone returning starts it. Any
+        // other busy phase is a real second install.
+        if isBusy, case .waiting = phase {
+            // fall through
+        } else if isBusy {
             finish("Wait for the current install to finish.", ok: false, keepState: true)
             return
         }
@@ -155,6 +182,10 @@ final class ApkInstaller {
         guard isBusy else { return }
         cancelled = true
         if id != 0 { session?.cancelApk(id: id) }
+        if case .waiting = phase {
+            onWaitingCancelled?()
+            finish("Install cancelled.", ok: false)
+        }
         if case .preparing = phase { finish("Install cancelled.", ok: false) }
     }
 
@@ -181,8 +212,10 @@ final class ApkInstaller {
         }
     }
 
-    /// The session went away mid-install.
+    /// The session went away mid-install. A waiting install stays waiting:
+    /// the phone leaving is the reason it waits, and its file is queued.
     func connectionLost() {
+        if case .waiting = phase { return }
         if isBusy { fail("Lost the connection to the phone.") }
     }
 

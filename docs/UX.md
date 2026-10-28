@@ -154,8 +154,11 @@ Material 3, edge-to-edge, dynamic color, light/dark.
 2. **Home**:
    - Big status card: **Ready** · "Visible to Macs on *Wi-Fi name*" / **Connected to
      *Mac name*** · "*N* windows open" / **Shizuku not running** (with fix button), or
-     **Shizuku isn't installed** with **Get Shizuku** when the app is absent.
-     With the background switch off the card still says **Ready**, with
+     **Shizuku isn't installed** with **Get Shizuku** when the app is absent. While
+     a pairing prompt waits and this phone's notifications are off the card says
+     **Notifications are off** · "Allow notifications so your Mac can ask to pair."
+     with **Allow** (the runtime permission). With the background switch off the
+     card still says **Ready**, with
      "Stops when you close PocketDeck from recent apps." — information, not a
      warning, and no button.
    - Switch: "Keep running in the background". On: the service survives the app
@@ -213,6 +216,16 @@ never a made-up percentage) and the title **<App> — opening on <phone>**.
 - The cover is a frozen mode: no input reaches the phone, and the bar's
   phone-side controls are dimmed. The "Not responding" watchdog runs only after
   the first frame.
+
+### Installing an app
+
+- Phone ▸ **Install APK…** (or Open With / the "Install on Phone" Service) shows
+  the install in the Deck's pill: **Sending x.apk… 40 %**, then
+  **Installing x.apk…**, then the phone's own result.
+- A phone that is paired but away: **Waiting for your phone…** with **Cancel**,
+  and the sentence **Connect your phone to install apps on it.** (only with no
+  phone paired at all: **Pair a phone to install apps on it.**) The install runs
+  by itself when the link returns; Cancel drops the file.
 
 ### The Phone Mirror's bar from the keyboard
 

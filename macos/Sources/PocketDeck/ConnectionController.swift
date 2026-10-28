@@ -398,6 +398,8 @@ final class ConnectionController {
     private var pendingLink: (request: OpenLinkRequest, until: Date)?
     /// An app file waiting for its phone to become ready (nil phone = whichever comes first).
     private var pendingApk: (file: URL, deviceId: String?, until: Date)?
+    /// The 120 s wait's clock (FILES-16).
+    private var pendingApkTask: Task<Void, Never>?
     /// An intent's whole-phone window waiting for its phone (docs/design/intents.md).
     private var pendingPhoneWindow: (deviceId: String, until: Date)?
     /// An intent's files waiting for their phone.
@@ -491,6 +493,10 @@ final class ConnectionController {
         // timeout included, and the windows only render what they are told.
         dropSender.onPhase = { [weak self] _ in
             MainActor.assumeIsolated { self?.syncDropPill() }
+        }
+        // The waiting install's Cancel drops the queued file too (FILES-16).
+        apkInstaller.onWaitingCancelled = { [weak self] in
+            MainActor.assumeIsolated { self?.cancelPendingApk() }
         }
         densityOverrides = windows.densityOverrides
         // Notification sharing (docs/design/notify.md): the router owns the UN
@@ -1376,8 +1382,8 @@ final class ConnectionController {
                                               confirm: "Install") else { return }
             installApk(file, on: id)
         case .wait:
-            pendingApk = (file, nil, Date().addingTimeInterval(Self.pendingLinkLifetime))
-            if !link.isOnline { showTransient("Pair a phone to install apps on it.") }
+            queuePendingApk(file, deviceId: nil)
+            if !link.isOnline { showTransient(Self.installWaitingLine(paired: !rememberedPhones.isEmpty)) }
         }
     }
 
@@ -1399,15 +1405,60 @@ final class ConnectionController {
             apkInstaller.install(file, session: session)
             return
         }
-        pendingApk = (file, deviceId, Date().addingTimeInterval(Self.pendingLinkLifetime))
+        queuePendingApk(file, deviceId: deviceId)
+        if !link.isOnline { showTransient(Self.installWaitingLine(paired: !rememberedPhones.isEmpty)) }
         if let phone = remembered.phone(id: deviceId), link.phone?.id != deviceId { use(phone) }
+    }
+
+    /// The sentence names the step that can fix it: pairing for no phone,
+    /// the connection for a paired phone that is away (FILES-16).
+    static func installWaitingLine(paired: Bool) -> String {
+        paired ? "Connect your phone to install apps on it."
+               : "Pair a phone to install apps on it."
+    }
+
+    /// A ROM file waits for its phone (up to 120 s) with the waiting phase on
+    /// screen and Cancel available.
+    private func queuePendingApk(_ file: URL, deviceId: String?) {
+        pendingApk = (file, deviceId, Date().addingTimeInterval(Self.pendingLinkLifetime))
+        apkInstaller.wait(for: file)
+        pendingApkTask?.cancel()
+        pendingApkTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(Self.pendingLinkLifetime))
+            guard !Task.isCancelled else { return }
+            self?.expirePendingApk()
+        }
+    }
+
+    private func expirePendingApk() {
+        guard pendingApk != nil else { return }
+        pendingApk = nil
+        apkInstaller.waitingExpired()
+    }
+
+    /// The waiting phase's Cancel (the pill's own button).
+    private func cancelPendingApk() {
+        pendingApkTask?.cancel()
+        pendingApkTask = nil
+        pendingApk = nil
     }
 
     private func installPendingApk(readyPhone id: String) {
         guard let pending = pendingApk else { return }
-        guard pending.until > Date() else { pendingApk = nil; return }
-        guard pending.deviceId == nil || pending.deviceId == id else { return }
+        guard pending.until > Date() else {
+            Log.app.notice("apk: waiting install expired before the phone returned")
+            pendingApk = nil
+            apkInstaller.waitingExpired()
+            return
+        }
+        guard pending.deviceId == nil || pending.deviceId == id else {
+            Log.app.notice("apk: waiting install is for another phone")
+            return
+        }
+        Log.app.notice("apk: resuming the waiting install on the phone that returned")
         pendingApk = nil
+        pendingApkTask?.cancel()
+        pendingApkTask = nil
         installApk(pending.file, on: id)
     }
 
