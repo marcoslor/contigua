@@ -683,7 +683,9 @@ final class DockApps: NSObject {
               let row = messages.compactMap(AppWindowMenuRow.init(message:)).first,
               DockToken.matches(message: info[DockMessage.tokenKey] as? String,
                                 stored: shimToken(deviceId: deviceId, pkg: pkg)) else { return }
-        Log.app.notice("dock: menu pick for \(pkg, privacy: .public) pid \(pid, privacy: .public) — \(row.action == .newWindow ? "new" : "window", privacy: .public)")
+        // log-ok: a closed set, which of the two kinds of row was picked.
+        let kind = row.action == .newWindow ? "new" : "window"
+        Log.app.notice("dock: menu pick for \(pkg, privacy: .public) pid \(pid, privacy: .public) — \(kind, privacy: .public)")
         MainActor.assumeIsolated { onPick?(deviceId, pkg, row) }
     }
 
