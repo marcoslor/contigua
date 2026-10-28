@@ -123,7 +123,9 @@ disabled, never hidden.
    use, else **General**. Muted apps lists the apps this Mac already has for that phone, muted first, with a
    mark on apps that sent a notification this session, "System UI" for `com.android.systemui` and the package
    name for an app with no name. When the phone has not been granted notification access, the page says
-   **Allow notification access on the phone.** under the switch. The Dock shims rebuild on a rename. Nothing else.
+   **Allow notification access on the phone.** under the switch. When this Mac's own notifications are off for
+   PocketDeck, it says **Notifications are turned off for PocketDeck in System Settings.** with **Open System
+   Settings** and **Check Again**. The Dock shims rebuild on a rename. Nothing else.
 
     A **nickname** ("Rename…" dialog) is 1–40 characters, trimmed; empty keeps using the phone's own name. It is the one
     name everywhere: the Deck title, the menu bar, the chip's voiceover copy, failure banners, notifications from the phone
@@ -154,8 +156,11 @@ Material 3, edge-to-edge, dynamic color, light/dark.
 2. **Home**:
    - Big status card: **Ready** · "Visible to Macs on *Wi-Fi name*" / **Connected to
      *Mac name*** · "*N* windows open" / **Shizuku not running** (with fix button), or
-     **Shizuku isn't installed** with **Get Shizuku** when the app is absent.
-     With the background switch off the card still says **Ready**, with
+     **Shizuku isn't installed** with **Get Shizuku** when the app is absent. While
+     a pairing prompt waits and this phone's notifications are off the card says
+     **Notifications are off** · "Allow notifications so your Mac can ask to pair."
+     with **Allow** (the runtime permission). With the background switch off the
+     card still says **Ready**, with
      "Stops when you close PocketDeck from recent apps." — information, not a
      warning, and no button.
    - Switch: "Keep running in the background". On: the service survives the app
@@ -195,18 +200,34 @@ Material 3, edge-to-edge, dynamic color, light/dark.
 
 ### Opening a window
 
-- App window, before its first frame: the app's icon and name, a spinner,
-  **Opening on your phone…**.
-- Phone Mirror: the phone's icon and name, a spinner, **Opening your phone…**.
-- After 5 s: **Still opening…**.
-- After 20 s without a frame: **Couldn't open <app>.** (the Phone Mirror:
-  **Couldn't open your phone.**) with **Try Again** and **Close**. Try Again
-  sends the same open again; Close closes the window.
-- A phone that answers the open with `mirror_unavailable` (it cannot capture
-  its screen) gets **This phone can't share its screen with PocketDeck.** at
-  once, with **Close** only: no Try Again, because asking again cannot help.
-- The cover is a frozen mode: no input reaches the phone. The "Not responding"
-  watchdog runs only after the first frame.
+The loading state (L1 "Splash"): the app's large icon centred on the window's
+dark background, a 2 pt accent line sweeping under the title bar (indeterminate,
+never a made-up percentage) and the title **<App> — opening on <phone>**.
+
+- 0–5 s: the icon, the line and the title.
+- 5–20 s: the same, plus **Taking longer than usual** and **Cancel**. Cancel
+  closes the window and cancels the open on the phone.
+- The phone's refusal, or 20 s without a frame: the icon greys out; one sentence
+  **<phone> can't open <App>.** and, when the phone's error code has one, a
+  reason line (**The app is disabled on the phone.**, **The app isn't installed
+  any more.**); **Close** only. No **Try Again**: asking again cannot work.
+- The Phone Mirror wears the same cover: **Phone — opening on <phone>** and
+  **<phone> can't open the phone screen.** A phone that cannot capture its
+  screen (`mirror_unavailable`) puts its sentence on the reason line:
+  **This phone can't share its screen with PocketDeck.**
+- The cover is a frozen mode: no input reaches the phone, and the bar's
+  phone-side controls are dimmed. The "Not responding" watchdog runs only after
+  the first frame.
+
+### Installing an app
+
+- Phone ▸ **Install APK…** (or Open With / the "Install on Phone" Service) shows
+  the install in the Deck's pill: **Sending x.apk… 40 %**, then
+  **Installing x.apk…**, then the phone's own result.
+- A phone that is paired but away: **Waiting for your phone…** with **Cancel**,
+  and the sentence **Connect your phone to install apps on it.** (only with no
+  phone paired at all: **Pair a phone to install apps on it.**) The install runs
+  by itself when the link returns; Cancel drops the file.
 
 ### The Phone Mirror's bar from the keyboard
 

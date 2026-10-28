@@ -136,6 +136,12 @@ class ScreenshotTest {
 
     /** A phone without Shizuku: its own words and its own control (misses.md M6). */
     @Test
+    fun homePairNotifyLight() = shootHome("home_pair_notify_light", false, homeState(pairNotifyMissing = true))
+
+    @Test
+    fun homePairNotifyDark() = shootHome("home_pair_notify_dark", true, homeState(pairNotifyMissing = true))
+
+    @Test
     fun homeShizukuNotInstalledLight() = shootHome(
         "home_shizuku_not_installed_light", false,
         homeState(shizukuRunning = false).copy(shizukuInstalled = false, shizuku = ShizukuUiState.NOT_INSTALLED),
@@ -197,6 +203,7 @@ class ScreenshotTest {
         windows: Int = 0,
         shizukuRunning: Boolean = true,
         notifyNoAccess: Boolean = false,
+        pairNotifyMissing: Boolean = false,
     ): DeckUiState {
         val status = mapStatus(
             StatusInput(
@@ -206,6 +213,7 @@ class ScreenshotTest {
                 port = if (shizukuRunning) 4711 else -1,
                 connectedMac = connectedMac,
                 notifyNoAccess = notifyNoAccess,
+                pairNotifyMissing = pairNotifyMissing,
             ),
         )
         return DeckUiState(

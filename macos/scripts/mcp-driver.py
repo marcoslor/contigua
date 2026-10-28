@@ -282,6 +282,30 @@ def main():
         report(bool(match) and match[0].get("package") == "com.android.settings",
                "MCP list_windows shows that window and its package")
 
+        # [WIN-2] The same app asked for again is raised, not reopened: one
+        # window, one window.open on the wire.
+        again = client.text("open_app", {"app": "com.android.settings"})
+        report(again.get("window") == window,
+               "MCP open_app again raises the same window")
+        time.sleep(1)
+        opens = 0
+        try:
+            for raw in open(args.events, errors="replace"):
+                try:
+                    event = json.loads(raw)
+                except ValueError:
+                    continue
+                msg = event.get("msg") or {}
+                if (event.get("ev") == "rx" and msg.get("t") == "window.open"
+                        and msg.get("pkg") == "com.android.settings"):
+                    opens += 1
+        except OSError:
+            opens = -1
+        report(opens == 1, "MCP the second open_app sent no window.open (one on the wire)")
+        settings_windows = [w for w in (client.text("list_windows").get("windows") or [])
+                            if w.get("package") == "com.android.settings"]
+        report(len(settings_windows) == 1, "MCP the app still has one window")
+
         # Wait for the stream's VIDEO_CONFIG: it gives the pixel size that makes
         # the coordinate and screenshot assertions meaningful.
         config = wait_event(args.events,

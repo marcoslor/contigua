@@ -121,7 +121,7 @@ final class DensityWindowTests: XCTestCase {
     func testAWindowShowsTheOverrideElseTheSetting() {
         let defaults = makeDefaults()
         let manager = makeManager(defaults)
-        let controller = manager.openApp(pkg: "com.example.app")
+        let controller = manager.openOrRaise(pkg: "com.example.app")
         defer { controller.window?.close() }
         XCTAssertEqual(controller.density, 1.0)
 
@@ -136,9 +136,9 @@ final class DensityWindowTests: XCTestCase {
 
     func testAnOverrideAppliesToEveryWindowOfThatAppAndNoOther() {
         let manager = makeManager(makeDefaults())
-        let first = manager.openApp(pkg: "com.example.app")
-        let second = manager.openApp(pkg: "com.example.app")
-        let other = manager.openApp(pkg: "com.example.other")
+        let first = manager.openOrRaise(pkg: "com.example.app")
+        let second = manager.openOrRaise(pkg: "com.example.app")
+        let other = manager.openOrRaise(pkg: "com.example.other")
         defer {
             first.window?.close()
             second.window?.close()
@@ -153,8 +153,8 @@ final class DensityWindowTests: XCTestCase {
     func testTheSettingReachesAppsWithoutAnOverride() {
         let defaults = makeDefaults()
         let manager = makeManager(defaults)
-        let plain = manager.openApp(pkg: "com.example.plain")
-        let pinned = manager.openApp(pkg: "com.example.pinned")
+        let plain = manager.openOrRaise(pkg: "com.example.plain")
+        let pinned = manager.openOrRaise(pkg: "com.example.pinned")
         defer {
             plain.window?.close()
             pinned.window?.close()
@@ -174,7 +174,7 @@ final class DensityWindowTests: XCTestCase {
             StreamMenuState.shared.densityPackage = nil
             StreamMenuState.shared.densityOverride = nil
         }
-        let controller = manager.openApp(pkg: "com.example.app")
+        let controller = manager.openOrRaise(pkg: "com.example.app")
         defer { controller.window?.close() }
         manager.setDensity(1.25, forPackage: "com.example.app")
         controller.windowDidBecomeKey(Notification(name: NSWindow.didBecomeKeyNotification))

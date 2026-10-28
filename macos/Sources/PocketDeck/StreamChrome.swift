@@ -323,6 +323,14 @@ final class StreamChromeView: NSView {
         actions.setFrozen(frozen)
     }
 
+    /// The link is down: the phone-side kinds dim with the offline reason.
+    func setOffline(_ offline: Bool) {
+        actions.setOffline(offline)
+    }
+
+    /// The kinds the bar has live (the chrome state reports them).
+    var enabledHeaderKinds: [String] { actions.enabledKinds }
+
     func setLiveText(active: Bool) {
         liveTextActive = active
         liveTextButton.isOn = active

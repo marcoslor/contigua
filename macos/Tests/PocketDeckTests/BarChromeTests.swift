@@ -77,6 +77,43 @@ final class HeaderActionPolicyTests: XCTestCase {
         XCTAssertTrue(HeaderActionPolicy.allowsPhoneShortcut(frozen: false))
         XCTAssertFalse(HeaderActionPolicy.allowsPhoneShortcut(frozen: true))
     }
+
+    /// A link that is down disables every phone-side control, Live Text
+    /// included in nothing: its own button stays live (M3, item 8).
+    func testADownLinkDisablesEveryPhoneControlButLiveText() {
+        for kind in HeaderActionKind.allCases where kind != .liveText {
+            XCTAssertFalse(HeaderActionPolicy.isEnabled(kind, frozen: false, offline: true),
+                           "\(kind) must be dimmed while the link is down")
+            XCTAssertFalse(HeaderActionPolicy.isEnabled(kind, frozen: true, offline: true), "\(kind)")
+        }
+        XCTAssertTrue(HeaderActionPolicy.isEnabled(.liveText, frozen: false, offline: true))
+        XCTAssertFalse(HeaderActionPolicy.allowsPhoneShortcut(frozen: false, offline: true))
+    }
+
+    /// The reason names the next step, and the bar really dims: a frozen or
+    /// offline button is not clickable (item 8/item 9).
+    @MainActor
+    func testTheBarDimsAndCarriesTheOfflineReason() {
+        let bar = HeaderBarView(frame: NSRect(x: 0, y: 0, width: 200, height: 28))
+        let back = HeaderAction.back {}
+        let panel = HeaderAction(kind: .custom, customSymbol: "iphone",
+                                 help: "Turn Off Phone Screen") {}
+        bar.setActions([back, panel], liveTextActive: false)
+        XCTAssertEqual(bar.enabledKinds, ["back", "custom"])
+        XCTAssertEqual(panel.offlineReason, "Connect your phone to turn off its screen.")
+        XCTAssertEqual(back.offlineReason, "Connect your phone to use these.")
+
+        bar.setOffline(true)
+        XCTAssertEqual(bar.enabledKinds, [], "no phone-side control is live offline")
+        XCTAssertFalse(bar.button(for: .custom)?.isEnabled ?? true)
+        XCTAssertEqual(bar.button(for: .custom)?.disabledReason,
+                       "Connect your phone to turn off its screen.")
+        XCTAssertEqual(bar.button(for: .back)?.disabledReason, "Connect your phone to use these.")
+
+        bar.setOffline(false)
+        XCTAssertEqual(bar.enabledKinds, ["back", "custom"])
+        XCTAssertNil(bar.button(for: .custom)?.disabledReason)
+    }
 }
 
 /// Off-screen render of the real bar over the frames the person sees through

@@ -561,6 +561,14 @@ final class NotificationRouter: NSObject, UNUserNotificationCenterDelegate {
 
 /// The phone notifications half. The router must be installed before either
 /// side posts (ShareIn also used to set the delegate; the router owns it now).
+/// What macOS says about this app's notification permission, in the three
+/// states the page can act on.
+enum NotificationAuthorization: String, Equatable {
+    case notDetermined
+    case denied
+    case authorized
+}
+
 @MainActor
 final class NotifyCenter {
     /// `--share-log`: record posts/clicks/removals (sizes and ids only) instead
@@ -622,6 +630,8 @@ final class NotifyCenter {
     private var liveFlush: DispatchWorkItem?
     private var authorized = false
     private var registering = false
+    /// The e2e's stand-in for the system's answer (`--debug-notify-denied`).
+    var debugAuthorization: NotificationAuthorization?
 
     private static let maxKnown = 200
 
@@ -931,6 +941,22 @@ final class NotifyCenter {
             if let url = attachments.removeValue(forKey: oldest) {
                 try? FileManager.default.removeItem(at: url)
             }
+        }
+    }
+
+    /// The system's permission, read without posting anything: the phone
+    /// page's line and its Check Again (NOTIFY-4/17, CONV-MAC-24).
+    func authorizationStatus() async -> NotificationAuthorization {
+        if let debugAuthorization { return debugAuthorization }
+        // A unit-test process (or a bare binary) has no app bundle for
+        // UserNotifications to answer for; the permission is not known there.
+        guard Bundle.main.bundleURL.pathExtension == "app" else { return .notDetermined }
+        let settings = await UNUserNotificationCenter.current().notificationSettings()
+        switch settings.authorizationStatus {
+        case .authorized, .provisional, .ephemeral: return .authorized
+        case .denied: return .denied
+        case .notDetermined: return .notDetermined
+        @unknown default: return .notDetermined
         }
     }
 

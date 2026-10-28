@@ -296,6 +296,7 @@ extension PhoneControlsState {
     private static func installTitle(_ phase: ApkInstaller.Phase) -> String {
         switch phase {
         case .idle, .finished: return "Install APK…"
+        case .waiting: return "Waiting for your phone…"
         case .preparing(let name): return "Preparing \(name)…"
         case .sending(let name, let fraction): return "Sending \(name)… \(Int(fraction * 100))%"
         case .installing(let name): return "Installing \(name)…"

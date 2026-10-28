@@ -192,7 +192,11 @@ final class PhoneWindowController: StreamWindowController {
         return PhonePanelIgnorePowerSetting.read(from: manager.profileDefaults, deviceId: id)
     }
 
-    func togglePanelOff() { setPanelOff(!panelOffShown) }
+    func togglePanelOff() {
+        // A request into a dead session, or into a frozen cover, does nothing.
+        guard !phoneControlsOffline, !frozen else { return }
+        setPanelOff(!panelOffShown)
+    }
 
     /// Phone ▸ Turn Off Phone Screen: the menu item's action, through the
     /// responder chain (a nil target), so the e2e drives the same route.
@@ -255,12 +259,14 @@ final class PhoneWindowController: StreamWindowController {
     /// ⇧⌘H / ⌘↑ only make sense here (home/recents are phone-mode actions).
     /// Live Text freezes them with the bar's buttons.
     @objc func navigateHome(_ sender: Any?) {
-        guard HeaderActionPolicy.allowsPhoneShortcut(frozen: frozen) else { return }
+        guard HeaderActionPolicy.allowsPhoneShortcut(frozen: frozen,
+                                                     offline: phoneControlsOffline) else { return }
         session.nav(stream: stream, action: "home")
     }
 
     @objc func navigateRecents(_ sender: Any?) {
-        guard HeaderActionPolicy.allowsPhoneShortcut(frozen: frozen) else { return }
+        guard HeaderActionPolicy.allowsPhoneShortcut(frozen: frozen,
+                                                     offline: phoneControlsOffline) else { return }
         session.nav(stream: stream, action: "recents")
     }
 

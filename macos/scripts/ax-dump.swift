@@ -7,9 +7,12 @@
 // a description, a help text or an identifier.
 //
 // Usage:
-//   swift scripts/ax-dump.swift PID
+//   swift scripts/ax-dump.swift PID [--press TITLE]
 //       AXWindow/AXButton/… title=[…] desc=[…] help=[…] id=[…], one per line.
 //       Exits 1 with NO-WINDOWS when the process exposes none.
+//   --press TITLE additionally activates (AXPress) the first button whose
+//       title, description or accessibility label is TITLE: a screen reader's
+//       own press of that control, for a check whose button is a SwiftUI one.
 //
 // The app's elements carry their SwiftUI identifiers (`panel.gear`,
 // `panel.dnd`, …), so a check can name the control it means instead of its
@@ -32,8 +35,11 @@ func walk(_ element: AXUIElement, _ depth: Int) {
     let description = text(element, kAXDescriptionAttribute)
     let help = text(element, kAXHelpAttribute)
     let identifier = text(element, "AXIdentifier")
-    if !title.isEmpty || !description.isEmpty || !help.isEmpty || !identifier.isEmpty {
-        print("\(String(repeating: "  ", count: depth))\(role) title=[\(title)] desc=[\(description)] help=[\(help)] id=[\(identifier)]")
+    // A label's words ride AXValue (a static text has no title); including it
+    // lets a check read what the cover says, not only what a button is called.
+    let value = text(element, kAXValueAttribute)
+    if !title.isEmpty || !description.isEmpty || !help.isEmpty || !identifier.isEmpty || !value.isEmpty {
+        print("\(String(repeating: "  ", count: depth))\(role) title=[\(title)] desc=[\(description)] help=[\(help)] id=[\(identifier)] value=[\(value)]")
     }
     var children: CFTypeRef?
     guard AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &children) == .success,
@@ -43,8 +49,28 @@ func walk(_ element: AXUIElement, _ depth: Int) {
 
 let arguments = CommandLine.arguments
 guard arguments.count > 1, let pid = pid_t(arguments[1]) else {
-    FileHandle.standardError.write(Data("usage: ax-dump.swift PID\n".utf8))
+    FileHandle.standardError.write(Data("usage: ax-dump.swift PID [--press TITLE]\n".utf8))
     exit(2)
+}
+var pressTarget: String?
+if let flag = arguments.firstIndex(of: "--press"), arguments.count > flag + 1 {
+    pressTarget = arguments[flag + 1]
+}
+
+/// The first button under `element` whose name is `title`.
+func button(_ element: AXUIElement, named title: String, depth: Int = 0) -> AXUIElement? {
+    guard depth < 20 else { return nil }
+    let role = text(element, kAXRoleAttribute)
+    let names = [text(element, kAXTitleAttribute), text(element, kAXDescriptionAttribute),
+                 text(element, "AXIdentifier")]
+    if role == (kAXButtonRole as String), names.contains(title) { return element }
+    var children: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &children) == .success,
+          let kids = children as? [AXUIElement] else { return nil }
+    for child in kids {
+        if let hit = button(child, named: title, depth: depth + 1) { return hit }
+    }
+    return nil
 }
 let app = AXUIElementCreateApplication(pid)
 var windows: CFTypeRef?
@@ -54,3 +80,14 @@ guard AXUIElementCopyAttributeValue(app, kAXWindowsAttribute as CFString, &windo
     exit(1)
 }
 for window in list { walk(window, 0) }
+if let pressTarget {
+    guard let target = button(app, named: pressTarget) else {
+        print("NO-BUTTON \(pressTarget)")
+        exit(1)
+    }
+    guard AXUIElementPerformAction(target, kAXPressAction as CFString) == .success else {
+        print("PRESS-FAILED \(pressTarget)")
+        exit(1)
+    }
+    print("PRESSED \(pressTarget)")
+}

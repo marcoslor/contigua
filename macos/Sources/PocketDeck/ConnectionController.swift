@@ -269,6 +269,8 @@ final class ConnectionController {
     /// `--debug-dnd on|off`, run when the first state shows the phone's support.
     private var pendingDebugDnd: Bool?
     private(set) var pairingSucceeded = false
+    /// When the pairing sheet went up: the 20 s hint counts from here (PAIR-6).
+    private(set) var pairingStartedAt: Date?
     private(set) var qr: QRPairingState?
     private(set) var welcomeSeen: Bool
     private(set) var searchedLong = false
@@ -396,6 +398,8 @@ final class ConnectionController {
     private var pendingLink: (request: OpenLinkRequest, until: Date)?
     /// An app file waiting for its phone to become ready (nil phone = whichever comes first).
     private var pendingApk: (file: URL, deviceId: String?, until: Date)?
+    /// The 120 s wait's clock (FILES-16).
+    private var pendingApkTask: Task<Void, Never>?
     /// An intent's whole-phone window waiting for its phone (docs/design/intents.md).
     private var pendingPhoneWindow: (deviceId: String, until: Date)?
     /// An intent's files waiting for their phone.
@@ -490,7 +494,17 @@ final class ConnectionController {
         dropSender.onPhase = { [weak self] _ in
             MainActor.assumeIsolated { self?.syncDropPill() }
         }
+        // The waiting install's Cancel drops the queued file too (FILES-16).
+        apkInstaller.onWaitingCancelled = { [weak self] in
+            MainActor.assumeIsolated { self?.cancelPendingApk() }
+        }
         densityOverrides = windows.densityOverrides
+        if options.debugNotifyDenied {
+            notifyCenter.debugAuthorization = .denied
+            notifyAuthorization = .denied
+        } else {
+            checkNotificationAuthorization()
+        }
         // Notification sharing (docs/design/notify.md): the router owns the UN
         // delegate and clicks; share notifications still route to their actions.
         // The same `--share-log` file records what both halves would have shown.
@@ -782,7 +796,7 @@ final class ConnectionController {
 
     func openApp(_ app: AppInfo) {
         guard link.isOnline else { return }
-        windows.openApp(pkg: app.pkg, activity: app.activity)
+        windows.openOrRaise(pkg: app.pkg, activity: app.activity)
     }
 
     func openPhoneWindow() {
@@ -801,7 +815,7 @@ final class ConnectionController {
 
     func openFromSpotlight(_ request: SpotlightOpenRequest) {
         if link.isOnline, link.phone?.id == request.deviceId {
-            windows.openApp(pkg: request.pkg)
+            windows.openOrRaise(pkg: request.pkg)
             return
         }
         guard let phone = remembered.phone(id: request.deviceId) else {
@@ -855,7 +869,7 @@ final class ConnectionController {
                 focusWindow(stream: stream)
                 return
             }
-            dockApps.bind(pid: pid, stream: windows.openApp(pkg: pkg).stream, pkg: pkg)
+            dockApps.bind(pid: pid, stream: windows.openOrRaise(pkg: pkg).stream, pkg: pkg)
             return
         }
         guard let phone = remembered.phone(id: deviceId) else {
@@ -878,7 +892,7 @@ final class ConnectionController {
     private func openPendingDock(readyPhone id: String) {
         guard let pending = pendingDockOpen, pending.deviceId == id else { return }
         pendingDockOpen = nil
-        dockApps.bind(pid: pending.pid, stream: windows.openApp(pkg: pending.pkg).stream, pkg: pending.pkg)
+        dockApps.bind(pid: pending.pid, stream: windows.openOrRaise(pkg: pending.pkg).stream, pkg: pending.pkg)
     }
 
     /// Test hooks: once the app list (and the app's icon) is in.
@@ -1123,7 +1137,7 @@ final class ConnectionController {
 
     func intentsOpenApp(_ pkg: String, on deviceId: String) {
         if link.isOnline, link.phone?.id == deviceId {
-            windows.openApp(pkg: pkg)
+            windows.openOrRaise(pkg: pkg)
             return
         }
         pendingOpen = SpotlightOpenRequest(deviceId: deviceId, pkg: pkg)
@@ -1374,8 +1388,8 @@ final class ConnectionController {
                                               confirm: "Install") else { return }
             installApk(file, on: id)
         case .wait:
-            pendingApk = (file, nil, Date().addingTimeInterval(Self.pendingLinkLifetime))
-            if !link.isOnline { showTransient("Pair a phone to install apps on it.") }
+            queuePendingApk(file, deviceId: nil)
+            if !link.isOnline { showTransient(Self.installWaitingLine(paired: !rememberedPhones.isEmpty)) }
         }
     }
 
@@ -1397,15 +1411,60 @@ final class ConnectionController {
             apkInstaller.install(file, session: session)
             return
         }
-        pendingApk = (file, deviceId, Date().addingTimeInterval(Self.pendingLinkLifetime))
+        queuePendingApk(file, deviceId: deviceId)
+        if !link.isOnline { showTransient(Self.installWaitingLine(paired: !rememberedPhones.isEmpty)) }
         if let phone = remembered.phone(id: deviceId), link.phone?.id != deviceId { use(phone) }
+    }
+
+    /// The sentence names the step that can fix it: pairing for no phone,
+    /// the connection for a paired phone that is away (FILES-16).
+    static func installWaitingLine(paired: Bool) -> String {
+        paired ? "Connect your phone to install apps on it."
+               : "Pair a phone to install apps on it."
+    }
+
+    /// A ROM file waits for its phone (up to 120 s) with the waiting phase on
+    /// screen and Cancel available.
+    private func queuePendingApk(_ file: URL, deviceId: String?) {
+        pendingApk = (file, deviceId, Date().addingTimeInterval(Self.pendingLinkLifetime))
+        apkInstaller.wait(for: file)
+        pendingApkTask?.cancel()
+        pendingApkTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(Self.pendingLinkLifetime))
+            guard !Task.isCancelled else { return }
+            self?.expirePendingApk()
+        }
+    }
+
+    private func expirePendingApk() {
+        guard pendingApk != nil else { return }
+        pendingApk = nil
+        apkInstaller.waitingExpired()
+    }
+
+    /// The waiting phase's Cancel (the pill's own button).
+    private func cancelPendingApk() {
+        pendingApkTask?.cancel()
+        pendingApkTask = nil
+        pendingApk = nil
     }
 
     private func installPendingApk(readyPhone id: String) {
         guard let pending = pendingApk else { return }
-        guard pending.until > Date() else { pendingApk = nil; return }
-        guard pending.deviceId == nil || pending.deviceId == id else { return }
+        guard pending.until > Date() else {
+            Log.app.notice("apk: waiting install expired before the phone returned")
+            pendingApk = nil
+            apkInstaller.waitingExpired()
+            return
+        }
+        guard pending.deviceId == nil || pending.deviceId == id else {
+            Log.app.notice("apk: waiting install is for another phone")
+            return
+        }
+        Log.app.notice("apk: resuming the waiting install on the phone that returned")
         pendingApk = nil
+        pendingApkTask?.cancel()
+        pendingApkTask = nil
         installApk(pending.file, on: id)
     }
 
@@ -1543,6 +1602,11 @@ final class ConnectionController {
             }
         }
         if case .pairing = link, qr == nil { sheet = .code }
+        if isPairing {
+            if pairingStartedAt == nil { pairingStartedAt = Date() }
+        } else {
+            pairingStartedAt = nil
+        }
         if before.isOnline, !link.isOnline {
             windows.linkLost()
             dropSender.connectionLost()
@@ -1994,7 +2058,7 @@ final class ConnectionController {
                     showTransient("That app isn't openable from the Mac.")
                     return
                 }
-                stream = windows.openOrRaiseApp(pkg: app.pkg, activity: app.activity)
+                stream = windows.openOrRaise(pkg: app.pkg, activity: app.activity).stream
             case .send(let destination):
                 // The window is already open: an older phone that ignores
                 // notify.open keeps today's behaviour there.
@@ -2139,6 +2203,16 @@ final class ConnectionController {
         return notifySeen[deviceId] ?? []
     }
 
+    /// The macOS notification permission, for the phone page's line.
+    private(set) var notifyAuthorization: NotificationAuthorization = .notDetermined
+
+    /// Read the system's answer again (the page's Check Again, and at launch).
+    func checkNotificationAuthorization() {
+        Task { @MainActor in
+            notifyAuthorization = await notifyCenter.authorizationStatus()
+        }
+    }
+
     /// Whether the Mac was told the phone's listener access is missing.
     func notifyAccessMissing(deviceId: String) -> Bool {
         notifyNoAccessPhones.contains(deviceId)
@@ -2249,7 +2323,7 @@ final class ConnectionController {
         }
         if let request = pendingOpen, request.deviceId == info.id {
             pendingOpen = nil
-            windows.openApp(pkg: request.pkg)
+            windows.openOrRaise(pkg: request.pkg)
         }
         openPendingLink(readyPhone: info.id)
         openPendingDock(readyPhone: info.id)
@@ -2534,11 +2608,42 @@ final class ConnectionController {
             }
             return nil
         case "deckquery":
-            // Setup for the ⌘F check: the text already in the search field.
-            guard let text = arguments.first else { return "deckquery needs TEXT" }
+            // Setup for the ⌘F check: the text already in the search field;
+            // no argument clears it.
             guard let deck = DeckWindow.window else { return "no deck window" }
-            DeckSearch.setText(text, in: deck)
+            DeckSearch.setText(arguments.first ?? "", in: deck)
             return nil
+        case "deckclick":
+            // A Deck cell's click: its own drawn place, through the window's
+            // event handling (the Deck has no debug route that calls openOrRaise).
+            guard let label = arguments.first else { return "deckclick needs an app label" }
+            guard let deck = DeckWindow.window else { return "no deck window" }
+            return DeckCellClick.click(label: label, in: deck)
+        case "coverclick":
+            // A click on the opening cover's own button (Cancel or Close), at
+            // its place in the window, through the window's event handling.
+            guard let title = arguments.first else { return "coverclick needs a button title" }
+            let controllers = NSApp.windows.compactMap { $0.windowController as? StreamWindowController }
+            guard let target = controllers.first(where: { $0.opening.isUp }) else {
+                return "no cover is up"
+            }
+            guard target.chrome.openingCover.buttonCentre(title) != nil else {
+                return "no cover button \(title)"
+            }
+            // The press lands after this command answers: closing the window
+            // from inside the poll would hold the reply the check waits for.
+            Task { @MainActor in target.chrome.openingCover.press(title) }
+            return nil
+        case "keywindow":
+            // Which window a raise actually put in front: a read, for a check
+            // that must not infer it from the CG window list's order.
+            guard let path = arguments.first, path.hasPrefix("/") else {
+                return "keywindow needs an absolute PATH"
+            }
+            let window = NSApp.keyWindow
+            let line = "\(window?.identifier?.rawValue ?? "-")\n\(window?.title ?? "-")\n"
+            return (try? line.write(toFile: path, atomically: true, encoding: .utf8)) == nil
+                ? "keywindow failed" : nil
         case "phone-mirror":
             // Phone ▸ Phone Mirror's action (the same ConnectionController call the
             // menu, the panel and the Deck make), without a key or a menu: a quiet
@@ -2822,7 +2927,7 @@ final class ConnectionController {
     }
 
     private func applyAutoOpen(_ options: LaunchOptions) {
-        for pkg in options.openPackages { windows.openApp(pkg: pkg) }
+        for pkg in options.openPackages { windows.openOrRaise(pkg: pkg) }
         if options.openPhone { windows.openPhoneWindow() }
         if options.continueOnMac { windows.openHandoffWindow() }
         for resize in options.resizes {

@@ -148,4 +148,12 @@ enum DevicesTabModel {
     static func accessHint(noAccess: Bool) -> String? {
         noAccess ? "Allow notification access on the phone." : nil
     }
+
+    /// macOS has PocketDeck's notifications turned off: the one line under the
+    /// switch, with the two controls that can fix or recheck it (NOTIFY-4/17).
+    static let notificationsDeniedHint = "Notifications are turned off for PocketDeck in System Settings."
+
+    static func notificationsDeniedHint(denied: Bool) -> String? {
+        denied ? notificationsDeniedHint : nil
+    }
 }
