@@ -1,5 +1,6 @@
 {
   "app_list_ms": 1500,
+  "backpressure_recovery_ms": 1000,
   "connect_ms": 1500,
   "contrast_min": 3.0,
   "deck_zoom_frame_p95_ms": 40,

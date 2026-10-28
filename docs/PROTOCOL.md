@@ -99,8 +99,15 @@ display id on every injected event.
   what lets the Mac tell a static picture from a stalled encoder (it says "Not
   responding" after 1.5 s without frames).
 - Backpressure: the phone never queues more than ~250 ms of video per stream.
-  If the socket can't keep up it drops non-key frames for that stream until the
-  next keyframe, and requests one from the encoder (`PARAMETER_KEY_REQUEST_SYNC_FRAME`).
+  If the socket can't keep up it drops that stream's non-key frames until the
+  next keyframe, waits for the queue to drain (or 1 s), then takes one bitrate
+  step and requests one keyframe from the encoder
+  (`PARAMETER_KEY_REQUEST_SYNC_FRAME`). That is one keyframe and one bitrate
+  step per repair cycle, never one per drop: a keyframe is many times a delta's
+  size, so asking for one on every drop refilled the queue at once and locked a
+  slow reader into a keyframe loop at the bitrate floor. While the reader stays
+  behind, a repair may repeat at most every 750 ms; a queue that stays drained
+  for 750 ms ends the episode and the bitrate grows back (see `window.quality`).
   JSON and frames for other streams are never blocked behind a stalled stream's
   backlog (send-queue priority: JSON > keyframes/config > delta frames).
 - `window.quality` is optional and best-effort: `bitrate` is a target in bps,
