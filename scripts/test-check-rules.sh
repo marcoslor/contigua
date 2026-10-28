@@ -308,6 +308,34 @@ printf 'ok "[DECK-2] kept check"\n' > macos/scripts/check-e2e.sh
 run_check
 expect_at "R-CHECK-1 REVIEW for a removed bad/ok line" "check-e2e\.sh:[0-9]+: R-CHECK-1 REVIEW .*DECK-1" 0
 
+# A line that only gained an [ID] (or swapped a surface word for one) is the
+# same check retagged, not a removal: 86 REVIEW lines in one merge were that.
+new_repo checkretag
+printf 'bad "the bar works"\nok "[DECK-2] kept check"\n' > macos/scripts/check-e2e.sh
+git add -A
+git commit -qm base2
+printf 'bad "[MIRROR-13] the bar works"\nok "[DECK-2] kept check"\n' > macos/scripts/check-e2e.sh
+run_check
+silent "an [ID] added to a check line is a retag" macos/scripts/check-e2e.sh R-CHECK-1
+exit_is "retag-only change passes" 0
+
+new_repo checksurface
+printf 'ok "MIRROR the opening cover cleared"\n' > macos/scripts/check-e2e.sh
+git add -A
+git commit -qm base2
+printf 'ok "[MIRROR-2] the opening cover cleared"\n' > macos/scripts/check-e2e.sh
+run_check
+silent "a surface word replaced by an [ID] is a retag" macos/scripts/check-e2e.sh R-CHECK-1
+exit_is "surface-word retag passes" 0
+
+new_repo checkrealremoval
+printf 'ok "the first check"\n' > macos/scripts/check-e2e.sh
+git add -A
+git commit -qm base2
+printf 'ok "[DECK-3] a different check entirely"\n' > macos/scripts/check-e2e.sh
+run_check
+expect_at "a real removal with a rewritten message still REVIEWs" "check-e2e\.sh:[0-9]+: R-CHECK-1 REVIEW .*the first check" 0
+
 new_repo checkskip
 printf 'echo "SKIP: no device"\n' >> tools/emulator/flow.sh
 run_check

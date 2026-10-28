@@ -522,6 +522,19 @@ def check_shortcuts(path, added, lines):
 LIMITS = "macos/scripts/nfr-limits.json"
 E2E = "macos/scripts/check-e2e.sh"
 NUMBER = re.compile(r"\d+(?:\.\d+)?")
+CHECK_LINE = re.compile(r'^\s*(?:ok|bad)\s+"(.*)"\s*;?\s*$')
+CHECK_TAG = re.compile(r"\[[A-Z][A-Z0-9]*-\d+(?:\s*,\s*[A-Z][A-Z0-9]*-\d+)*\]")
+SURFACE_WORD = re.compile(r"\b[A-Z][A-Z0-9]{2,}\b")
+
+
+def check_message(text):
+    """The words a check line reports: its `ok`/`bad` message after the
+    [ID] tags and a surface word (MIRROR, DECK, CHROME) are removed."""
+    m = CHECK_LINE.match(text)
+    if not m:
+        return None
+    body = SURFACE_WORD.sub(" ", CHECK_TAG.sub(" ", m.group(1)))
+    return " ".join(body.split())
 
 
 def is_emulator_script(path):
@@ -538,8 +551,19 @@ def load_json(text):
 
 def check_weakened(path, info, lines, base, base_text_for):
     if path == E2E or is_emulator_script(path):
+        # A removed line whose message comes back in an added line is the same
+        # check with its [ID] (or a surface word) put on: a retag, not a
+        # removal. 86 REVIEW lines in one merge were only that.
+        retagged = set()
+        for _, text in info["added"].items():
+            message = check_message(text)
+            if message:
+                retagged.add(message)
         for n, text in info["removed"]:
             if re.match(r'\s*(bad|ok) "', text):
+                message = check_message(text)
+                if message and message in retagged:
+                    continue
                 add(path, n, "R-CHECK-1",
                     "removed check line: %s" % text.strip())
         for n, text in sorted(info["added"].items()):

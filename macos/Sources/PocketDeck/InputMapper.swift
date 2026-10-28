@@ -117,6 +117,13 @@ final class InputMapper {
     static let keyCodeH: UInt16 = 4
     static let keyCodeUpArrow: UInt16 = 126
 
+    /// The mirror's bar has the keyboard (MIRROR-13): these keys are its own and
+    /// never the phone's. Returns true when the bar took the event.
+    var barKey: ((NSEvent) -> Bool)?
+    /// The release of a key `barKey` took: consumed so the phone never sees an
+    /// up without its down.
+    var barKeyUp: ((NSEvent) -> Bool)?
+
     private var scrollMapping = ScrollMapping()
     private var gestures = TrackpadGestures()
 
@@ -566,6 +573,9 @@ final class InputMapper {
             if event.keyCode == Self.keyCodeEscape { onLiveTextEscape?() }
             return
         }
+        // The bar's own keys first (MIRROR-13): ⌃Tab takes the keyboard to the
+        // bar, and while it has it the bar's keys never reach the phone.
+        if barKey?(event) == true { return }
         let flags = event.modifierFlags
         // The window's own ⌥⌘F (View ▸ Framed/Immersive), before the phone's
         // ⌘F: a disabled menu item does not consume its key equivalent, so the
@@ -642,6 +652,7 @@ final class InputMapper {
 
     func keyUp(_ event: NSEvent) {
         guard !suspended else { return }
+        if barKeyUp?(event) == true { return }
         // The style switch's key never reached the phone on the way down, so
         // its release must not either.
         if event.modifierFlags.contains(.command), event.modifierFlags.contains(.option),

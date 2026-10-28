@@ -155,6 +155,18 @@ final class PhonePanelP3Tests: XCTestCase {
         XCTAssertEqual(off.screenTitle, "Screen off")
     }
 
+    /// PANEL-12/19: with a mirror open but the link down, the tile cannot work:
+    /// a click would send `phone.panel` into a dead session. The offline reason
+    /// comes first, so the tile says why it is off instead of opening a request
+    /// the phone will never answer (CONV-PD-02/CONV-PD-03, misses.md M3).
+    func testTheScreenTileIsOffWhileTheLinkIsDown() {
+        let offline = state(online: false, phoneWindow: true)
+        XCTAssertFalse(PhonePanelItem.screen.isEnabled(in: offline),
+                       "Turn Off Screen was enabled with no link, even with a mirror open")
+        XCTAssertEqual(PhonePanelItem.screen.reason(in: offline), "Connect your phone to use these.")
+        XCTAssertEqual(PhonePanelItem.screen.shortReason(in: offline), "Connect phone first")
+    }
+
     /// The window button is the Phone Mirror, and the tile that opens it says
     /// so; the compact WINDOWS row may draw "Mirror" but VoiceOver reads this.
     func testTheWindowButtonIsNamedPhoneMirror() {

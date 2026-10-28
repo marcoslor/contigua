@@ -66,6 +66,9 @@ final class VideoLayerView: NSView {
     /// end on the same call; e2e drives it either way). Files only: links have
     /// their own paths (OpenLink, the Deck's drop destination).
     var onDroppedFiles: (([URL]) -> Void)?
+    /// A press on the picture (the phone's touch): the keyboard goes back to
+    /// the phone, away from the bar (MIRROR-13).
+    var onPointerDown: (() -> Void)?
 
     var isPaused = false
 
@@ -541,6 +544,9 @@ final class VideoLayerView: NSView {
 
     override func mouseDown(with event: NSEvent) {
         window?.makeFirstResponder(self)
+        // A press on the picture is a touch on the phone: the keyboard belongs
+        // to the phone again, not to the bar (MIRROR-13).
+        onPointerDown?()
         inputMapper?.mouseDown(event)
     }
 

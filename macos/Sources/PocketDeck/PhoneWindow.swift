@@ -166,6 +166,9 @@ final class PhoneWindowController: StreamWindowController {
     /// chrome state reports both so the mirror check measures click -> glyph.
     private(set) var panelClickedAtMs = 0
     private(set) var panelGlyphAtMs = 0
+    /// How many `phone.panel` requests this window has sent: the e2e's proof
+    /// that a click on a disabled tile sends nothing.
+    private(set) var panelRequestCount = 0
 
     /// "Turn Off Phone Screen": the phone holds its own panel's power off while
     /// this mirror keeps rendering. Remembered per phone, because it is a
@@ -175,6 +178,7 @@ final class PhoneWindowController: StreamWindowController {
         panelClickedAtMs = Self.uptimeMs()
         if let id = manager.phone?.id { PhonePanelOffSetting.write(off, for: id, to: manager.profileDefaults) }
         session.setPhonePanel(off: off, ignorePower: panelIgnorePower)
+        panelRequestCount += 1
         // The phone answers with a `state.panel`; if it does not within 2 s the
         // window says the request failed instead of pretending it worked.
         if off { screenModel.requestPanelOff(at: ProcessInfo.processInfo.systemUptime) }
@@ -273,6 +277,7 @@ final class PhoneWindowController: StreamWindowController {
         if let id = manager.phone?.id,
            PhonePanelOffSetting.read(from: manager.profileDefaults, deviceId: id) {
             session.setPhonePanel(off: true, ignorePower: panelIgnorePower)
+            panelRequestCount += 1
             screenModel.requestPanelOff(at: ProcessInfo.processInfo.systemUptime)
             applyPanelState()
         }

@@ -187,7 +187,7 @@ clean() {
     remove_dock_apps
     sleep 1
     rm -rf "$WORK"
-    mkdir -p "$WORK"
+    mkdir -p "$WORK" "$SHOTS"
     clear_profile_state
 }
 
@@ -645,6 +645,10 @@ for port in range(47000, 47200):
 PY
 )}"
     WORK="/tmp/pocketdeck-e2e-$PORT"
+    # A check's screenshots outlive its phases: clean() empties WORK, and the
+    # shots a check takes in an early phase are still the record of it.
+    SHOTS="$WORK-shots"
+    mkdir -p "$SHOTS"
 }
 
 # Only this run's fakephones (every one is started with this run's --events).
@@ -3977,12 +3981,16 @@ check_mirror() {
     printf '%s\n' "wait 1" "hoverat 0 200" "wait 0.03" "hoverat 0 150" "wait 0.03" "hoverat 0 120" \
         "wait 0.03" "hoverat 0 90" "wait 0.03" "hoverat 0 70" "wait 0.03" "hoverat 0 58" > "$WORK/mirror.txt"
     mkdir -p "$WORK/control"
+    # The shot this phase records is dark (docs/UX.md): the app's own
+    # --appearance flag, so the person's system setting is never touched.
+    dark_args=()
+    [ "$VISIBLE" = 1 ] && dark_args=(--appearance dark)
     # The run's own waits (rotation, stale frame, wake, panel) exceed a minute on
     # a loaded Mac; the app must outlive them or every later control command
     # lands with no app to read it.
     launch --connect "127.0.0.1:$PORT" --open-phone --float-windows \
         --debug-chrome-state "$WORK/chrome.txt" --debug-input-script "$WORK/mirror.txt" \
-        --debug-control "$WORK/control" --quit-after 120
+        --debug-control "$WORK/control" --quit-after 120 ${dark_args[@]+"${dark_args[@]}"}
     if wait_until 5 chrome_has "loading=1"; then
         ok "[MIRROR-2] opening cover: the window is covered before its first frame"
     else
@@ -4187,6 +4195,80 @@ PY
         fi
     done
 
+    # The bar's keyboard route (MIRROR-13, misses.md M1): Tab is the phone's (a
+    # Mac with Full Keyboard Access on spends it on the window's focus order, so
+    # only the bar's own state is asserted here), ⌃Tab is the Mac's and takes the
+    # focus into the bar, Return presses the focused button, ←/→ and Tab move,
+    # Esc gives the keyboard back without sending Back.
+    local tab_key_before tab_key_after back_before back_after
+    tab_key_before="$(grep -c '"kind":"key"[^}]*"keycode":61' "$WORK/events.jsonl" 2>/dev/null || echo 0)"
+    mirror_control key tab || bad "MIRROR-13 keyboard: key tab: $CONTROL_REPLY"
+    if chrome_has "bar_focus=none"; then
+        ok "[MIRROR-13] Tab did not move the bar's focus"
+    else
+        bad "[MIRROR-13] Tab moved the bar's focus ($(chrome_state))"
+    fi
+    mirror_control key ctrl+tab || bad "MIRROR-13 keyboard: key ctrl+tab: $CONTROL_REPLY"
+    if wait_until 5 chrome_has "bar_focus=0"; then
+        ok "[MIRROR-13] ⌃Tab put the keyboard on the bar's first button (Back)"
+    else
+        bad "[MIRROR-13] ⌃Tab did not focus the bar ($(chrome_state))"
+    fi
+    if [ "$VISIBLE" = 1 ]; then
+        sleep 1
+        # The mirror window is the one whose frame the chrome state reports (the
+        # phone turned to landscape earlier, so size alone does not find it).
+        local bar_frame bar_w bar_h bar_id
+        bar_frame="$(sed -n 's/.* frame=\([0-9]*\)x\([0-9]*\).*/\1 \2/p' "$WORK/chrome.txt")"
+        read -r bar_w bar_h <<<"$bar_frame"
+        mirror_control bar-appearance "$WORK/bar-appearance.txt" \
+            && say "shot appearance: $(cat "$WORK/bar-appearance.txt")"
+        if bar_id="$(await_window "\$4 == $bar_w && \$5 == $bar_h")" \
+            && screencapture -x -l"$bar_id" "$SHOTS/bar-focus.png"; then
+            say "shot: $SHOTS/bar-focus.png"
+        else
+            bad "MIRROR-13 keyboard: no shot of the focus ring"
+        fi
+    fi
+    # Return presses Back: the same nav the click and the menu send.
+    back_before="$(nav_rx_count back)"
+    mirror_control key return || bad "MIRROR-13 keyboard: key return: $CONTROL_REPLY"
+    if wait_until 10 nav_clicked back "$back_before"; then
+        ok "[MIRROR-13] Return on the focused Back sent nav back"
+    else
+        bad "[MIRROR-13] Return on the bar sent no nav back"
+    fi
+    # Tab while the bar has the focus moves to the next button and stays out of
+    # the phone.
+    tab_key_after="$(grep -c '"kind":"key"[^}]*"keycode":61' "$WORK/events.jsonl" 2>/dev/null || echo 0)"
+    mirror_control key right || bad "MIRROR-13 keyboard: key right: $CONTROL_REPLY"
+    if wait_until 5 chrome_has "bar_focus=1"; then
+        ok "[MIRROR-13] → moved the keyboard to the next bar button (Home)"
+    else
+        bad "[MIRROR-13] → did not move the bar's focus ($(chrome_state))"
+    fi
+    # Esc gives the keyboard back to the picture; a focused Esc must not become
+    # the phone's Back, which is what Esc means on the picture.
+    back_before="$(nav_rx_count back)"
+    mirror_control key esc || bad "MIRROR-13 keyboard: key esc: $CONTROL_REPLY"
+    if wait_until 5 chrome_has "bar_focus=none"; then
+        ok "[MIRROR-13] Esc returned the keyboard to the picture"
+    else
+        bad "[MIRROR-13] Esc left the bar's focus on ($(chrome_state))"
+    fi
+    sleep 0.5
+    back_after="$(nav_rx_count back)"
+    if [ "$back_after" = "$back_before" ]; then
+        ok "[MIRROR-13] the Esc that left the bar sent no Back to the phone"
+    else
+        bad "[MIRROR-13] the Esc that left the bar also sent Back"
+    fi
+    if [ "$(grep -c '"kind":"key"[^}]*"keycode":61' "$WORK/events.jsonl" 2>/dev/null || echo 0)" = "$tab_key_after" ]; then
+        ok "[MIRROR-13] the bar's keys never reached the phone while it had the keyboard"
+    else
+        bad "[MIRROR-13] a bar key leaked to the phone"
+    fi
+
     # A person's click on the bar control (the menu route above is a different
     # control): the click goes through the button's own mouse events, and the
     # glyph must follow the phone's `state.panel` within panel_glyph_ms. The
@@ -4347,6 +4429,149 @@ PY
         ok "[MIRROR-9] the request carries ignorePower (off by default)"
     else
         bad "[MIRROR-9] phone.panel carried no ignorePower field"
+    fi
+    stop_app
+    stop_fakephone
+
+    # PANEL-12/PANEL-19 (misses.md M3): a mirror open does not make Turn Off
+    # Screen possible while the phone is away. With the fake stopped the tile is
+    # disabled with the offline sentence and a click sends nothing; before the
+    # fix the request went into a dead session and the 2 s pill blamed the
+    # phone for not turning its screen off.
+    wait_until 5 no_fakephone
+    clean
+    mkdir -p "$WORK/control"
+    start_fake || return 1
+    dark_args=()
+    [ "$VISIBLE" = 1 ] && dark_args=(--appearance dark)
+    launch --connect "127.0.0.1:$PORT" --open-phone --float-windows \
+        --debug-chrome-state "$WORK/chrome.txt" --debug-control "$WORK/control" --quit-after 90 \
+        ${dark_args[@]+"${dark_args[@]}"}
+    if ! wait_until 25 chrome_has "loading=0"; then
+        bad "PANEL offline tile: the mirror never showed a frame"
+        stop_app; stop_fakephone; return 1
+    fi
+    # The same panel a person reads (the menu bar's content), over the mirror.
+    mirror_control panelopen || bad "PANEL offline tile: panelopen: $CONTROL_REPLY"
+    rm -f "$WORK/panel-up.json"
+    mirror_control paneldump panel "$WORK/panel-up.json" \
+        || bad "PANEL offline tile: paneldump (online): $CONTROL_REPLY"
+    python3 - "$WORK/panel-up.json" <<'PY' \
+        && ok "[PANEL-12] a connected phone with a mirror open leaves Turn Off Screen enabled" \
+        || bad "[PANEL-12] Turn Off Screen is disabled while the phone is connected"
+import json, sys
+root = json.load(open(sys.argv[1]))
+tile = next(row for row in root["items"] if row["kind"] == "screen")
+if not tile["enabled"]:
+    print("online tile:", tile); sys.exit(1)
+PY
+    stop_fakephone
+    # "Reconnecting…" then "Offline" after 15 s without a session (panel.md).
+    panel_is_offline() {
+        mirror_control paneldump panel "$WORK/panel-offline.json" >/dev/null 2>&1 || return 1
+        python3 - "$WORK/panel-offline.json" <<'PY'
+import json, sys
+try:
+    root = json.load(open(sys.argv[1]))
+except (OSError, ValueError):
+    sys.exit(1)
+sys.exit(0 if root.get("status") == "Offline" else 1)
+PY
+    }
+    if wait_until 30 panel_is_offline; then
+        ok "[PANEL-12] the panel reads Offline after the phone went away"
+    else
+        bad "[PANEL-12] the panel never read Offline ($(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("status"))' "$WORK/panel-offline.json" 2>/dev/null))"
+    fi
+    python3 - "$WORK/panel-offline.json" <<'PY' \
+        && ok "[PANEL-19] offline: Turn Off Screen is disabled with \"Connect your phone to use these.\"" \
+        || bad "[PANEL-19] offline: Turn Off Screen stayed enabled or lost its reason"
+import json, sys
+root = json.load(open(sys.argv[1]))
+tile = next(row for row in root["items"] if row["kind"] == "screen")
+if tile["enabled"]:
+    print("offline tile:", tile); sys.exit(1)
+if root["reason"] != "Connect your phone to use these.":
+    print("reason:", root["reason"]); sys.exit(1)
+PY
+    # A click on the disabled tile sends nothing: the Mac's own count of
+    # phone.panel messages stays at zero, and the probe refuses the click.
+    if mirror_control panelclick panel panel.screen; then
+        bad "PANEL-19 offline: the disabled tile took a click"
+    else
+        ok "[PANEL-19] offline: a click on the disabled tile is refused ($CONTROL_REPLY)"
+    fi
+    if wait_until 5 chrome_has "panel_requests=0"; then
+        ok "[PANEL-12] offline: the click sent zero phone.panel"
+    else
+        bad "[PANEL-12] offline: a click sent phone.panel ($(chrome_state))"
+    fi
+    # The shot the brief asks for: the disabled tile and its reason (visible
+    # runs only: a quiet run may not touch the person's appearance).
+    if [ "$VISIBLE" = 1 ]; then
+        sleep 1
+        local panel_id
+        if panel_id="$(await_window '$4 == 320')" \
+            && screencapture -x -l"$panel_id" "$SHOTS/panel-offline.png"; then
+            say "shot: $SHOTS/panel-offline.png"
+        else
+            bad "PANEL offline tile: no shot of the panel"
+        fi
+    fi
+    stop_app
+    stop_fakephone
+
+    # MIRROR-2 (misses.md M2): a phone that cannot capture display 0 answers
+    # window.open with error{mirror_unavailable} (fakephone
+    # --mirror-unavailable). The window says one sentence at once and offers
+    # Close only: no Try Again, no 20 s generic failure, and no second
+    # window.open. Before the fix it sat on the cover for 20 s, said "Couldn't
+    # open your phone." and Try Again failed the same way.
+    wait_until 5 no_fakephone
+    clean
+    mkdir -p "$WORK/control"
+    FAKE_ARGS="--mirror-unavailable" start_fake || return 1
+    dark_args=()
+    [ "$VISIBLE" = 1 ] && dark_args=(--appearance dark)
+    launch --connect "127.0.0.1:$PORT" --open-phone --float-windows \
+        --debug-chrome-state "$WORK/chrome.txt" --debug-control "$WORK/control" --quit-after 45 \
+        ${dark_args[@]+"${dark_args[@]}"}
+    if wait_until 15 chrome_has "loading=unavailable"; then
+        ok "[MIRROR-2] a phone that can't mirror says so as the window opens"
+    else
+        bad "[MIRROR-2] a phone that can't mirror got no sentence ($(chrome_state))"
+    fi
+    if wait_until 3 chrome_has "cover_buttons=close"; then
+        ok "[MIRROR-2] the sentence offers Close only (no Try Again)"
+    else
+        bad "[MIRROR-2] the refused cover offers Try Again ($(chrome_state))"
+    fi
+    if log show --last 2m --info \
+        --predicate 'subsystem == "dev.pocketdeck.mac" AND category == "video"' 2>/dev/null \
+        | grep -q "opening refused"; then
+        ok "[MIRROR-21] the app logged the refusal as a state, nothing about content"
+    else
+        say "MIRROR the unified log has no refusal line on this Mac; the chrome state is the evidence"
+    fi
+    # Past the 20 s mark the generic failure must not take the sentence over.
+    sleep 21
+    if chrome_has "loading=unavailable cover_buttons=close"; then
+        ok "[MIRROR-2] the refusal stands 20 s later (no generic failure, no retry loop)"
+    else
+        bad "[MIRROR-2] the cover changed after 20 s ($(chrome_state))"
+    fi
+    if [ "$(count_events '"t":"window.open"')" = "1" ]; then
+        ok "[MIRROR-2] one window.open: the refused phone was never asked again"
+    else
+        bad "[MIRROR-2] window.open was sent $(count_events '"t":"window.open"') times"
+    fi
+    if [ "$VISIBLE" = 1 ]; then
+        sleep 1
+        if screenshot_portrait "$SHOTS/mirror-unavailable.png"; then
+            say "shot: $SHOTS/mirror-unavailable.png"
+        else
+            bad "MIRROR-2 no shot of the refused cover"
+        fi
     fi
     stop_app
     stop_fakephone
@@ -5547,18 +5772,21 @@ PY
     wait_until 15 log_has "apk: phone received all" && log_has "apk: sending 1 part(s)" \
         && ok "[FILES-16] APK progress shown ($(apk_log | grep -m1 'apk: sending'); $(apk_log | grep -m1 'received all'))" \
         || bad "[FILES-16] APK no progress logged: $(apk_log | tail -3)"
-    wait_until 15 log_has "apk: result ok: Installed Tiny Demo 1.0." \
-        && ok "[FILES-18] APK result message: Installed Tiny Demo 1.0." \
-        || bad "[FILES-18] APK no success message: $(apk_log | tail -2)"
+    # The result's sentence names the app and is private (CONV-PD-05); the log's
+    # closed code says what happened, and ApkInstallMessage's wording is K2's
+    # (ApkBundleTests).
+    wait_until 15 log_has "apk: result ok: installed" \
+        && ok "[FILES-18] APK result: the install finished (ok)" \
+        || bad "[FILES-18] APK no success result: $(apk_log | tail -2)"
     apps_refreshed() { [ "$(apps_lists)" -gt "$before" ]; }
     wait_until 10 apps_refreshed \
         && ok "[FILES-18] APK the app list was refreshed after the install" \
         || bad "[FILES-18] APK no apps.list after the install"
 
     open_apk "$WORK/old.apk"
-    wait_until 30 log_has "apk: result failed: A newer version of this app is already on the phone." \
-        && ok "[FILES-18] APK downgrade failure reads: A newer version of this app is already on the phone." \
-        || bad "[FILES-18] APK no downgrade message: $(apk_log | tail -2)"
+    wait_until 30 log_has "apk: result failed: INSTALL_FAILED_VERSION_DOWNGRADE" \
+        && ok "[FILES-18] APK downgrade failure: the phone's INSTALL_FAILED_VERSION_DOWNGRADE code" \
+        || bad "[FILES-18] APK no downgrade result: $(apk_log | tail -2)"
 
     open_apk "$WORK/bundle.apks"
     if wait_until 30 apk_found 2 ok; then
@@ -5841,13 +6069,14 @@ PY
     else
         bad "DROP fakephone never received the file"
     fi
-    # The log line's size is public, the (empty) resume tail is not: match up to "bytes".
-    wait_until 15 log_has "drop: sending drop-3mb.bin (3145728 bytes" \
-        && ok "[FILES-13] DROP the window's handler announced the file and streamed it" \
+    # The log carries the size and a closed outcome, never the file's name
+    # (CONV-PD-05); the sentence the pill shows is pinned by K2 (FileDropTests).
+    wait_until 15 log_has "drop: sending 3145728 bytes" \
+        && ok "[FILES-13] DROP the window's handler announced the file's 3145728 bytes" \
         || bad "[FILES-13] DROP no drop: sending line: $(drop_log | tail -3)"
-    wait_until 15 log_has "drop: ok: Saved on the phone: drop-3mb.bin" \
-        && ok "[FILES-13] DROP result message: Saved on the phone: drop-3mb.bin" \
-        || bad "[FILES-13] DROP no success message: $(drop_log | tail -2)"
+    wait_until 15 log_has "drop: ok: saved" \
+        && ok "[FILES-13] DROP result: the phone saved the file" \
+        || bad "[FILES-13] DROP no success result: $(drop_log | tail -2)"
     # No chunk leaves before the phone's opening drop.progress (the sender waits for
     # it), so the whole file arriving proves the progress message was parsed; the
     # byte count is the wire's DROP_DATA total.
@@ -5863,9 +6092,9 @@ PY
     else
         bad "DROP the PD_FAKE_DOWNSIZE trip never reached fakephone"
     fi
-    wait_until 15 log_has "drop: failed: The phone refused it: the file is bigger than the phone's cap." \
-        && ok "[FILES-15] DROP the refusal reads: The phone refused it: the file is bigger than the phone's cap." \
-        || bad "[FILES-15] DROP no refusal message: $(drop_log | tail -2)"
+    wait_until 15 log_has "drop: failed: too_large" \
+        && ok "[FILES-15] DROP the refusal is the phone's too_large code" \
+        || bad "[FILES-15] DROP no refusal result: $(drop_log | tail -2)"
 
     # B1: the outcome pill is not a fixture of the window. The sender's own
     # timeout is the only hide (5 s), so the chrome state must show the outcome
@@ -9539,7 +9768,7 @@ PY
     # the key window's responder chain), never a shortcut that calls the action.
     # ⌘K stays the app-wide Find Apps.
     local n
-    for n in typed before after stream after-k; do rm -f "$WORK/deck-search-$n.json"; done
+    for n in typed before after help stream after-k; do rm -f "$WORK/deck-search-$n.json"; done
     deck_search() {
         control decksearch "$WORK/deck-search-$1.json" || bad "DECK decksearch $1: $CONTROL_REPLY"
     }
@@ -9576,6 +9805,17 @@ if not root["focused"]:
     print("not focused:", root); sys.exit(1)
 if root["text"] != "set" or root["selection"] != [0, 3]:
     print("text/selection:", root["text"], root["selection"]); sys.exit(1)
+PY
+    # ⌘F is deliberately not a menu item (a menu item would eat it in every
+    # stream window), so the field's own help tag and AX help have to name it
+    # (CONV-MAC-06, misses.md M4).
+    deck_search help
+    python3 - "$WORK/deck-search-help.json" <<'PY' && ok "[DECK-9] the search field's help tag and AX help name ⌘F (CONV-MAC-06)" \
+        || bad "[DECK-9] the search field's help does not name ⌘F, so nothing tells a person the key"
+import json, sys
+root = json.load(open(sys.argv[1]))
+if root["tooltip"] != "Find (⌘F)" or root["help"] != "Find (⌘F)":
+    print("tooltip:", root["tooltip"], "help:", root["help"]); sys.exit(1)
 PY
     # A stream window is key: the same ⌘F belongs to the phone's app.
     control open --open com.android.settings --debug-chrome-state "$WORK/chrome.txt" \
@@ -9654,6 +9894,72 @@ PY
     wait_until 20 [ "$(dnd_after)" -gt "$dnd_before" ] \
         && ok "[DECK-20] clicking the popover's DND tile reached the phone ($(grep -o '"ev":"dnd"[^}]*' "$WORK/events.jsonl" 2>/dev/null | tail -1))" \
         || bad "[DECK-20] the popover's DND tile sent no new phone.dnd"
+
+    # DECK-19/CONV-MAC-12: does the Deck remember its frame across a launch?
+    # Resize it, quit the way ⌘Q does, relaunch and read the frame again.
+    stop_app
+    kill_e2e_app
+    wait_until 5 [ -z "$(e2e_app_pids)" ] || kill_e2e_app
+    local frame_dir="$WORK/frames"
+    rm -rf "$frame_dir"
+    mkdir -p "$frame_dir"
+    frame_control() {
+        local fdir="$frame_dir" fname
+        CONTROL_SEQ=$((CONTROL_SEQ + 1))
+        fname="f$CONTROL_SEQ"
+        printf '%s\n' "$*" > "$fdir/$fname.tmp" && mv "$fdir/$fname.tmp" "$fdir/$fname.cmd"
+        if ! wait_until 10 [ -s "$fdir/$fname.done" ]; then
+            CONTROL_REPLY="no answer in 10 s"
+            return 1
+        fi
+        CONTROL_REPLY="$(cat "$fdir/$fname.done")"
+        rm -f "$fdir/$fname.done"
+        [ "$CONTROL_REPLY" = "ok" ]
+    }
+    frame_app_gone() { ! kill -0 "$APP_PID" 2>/dev/null; }
+    # The Deck window is built with the app: wait for it before resizing.
+    frame_wait_deck() {
+        local tries=40
+        while [ "$tries" -gt 0 ]; do
+            frame_control deck-frame "$1" && return 0
+            tries=$((tries - 1))
+            sleep 0.25
+        done
+        return 1
+    }
+    launch --connect "127.0.0.1:$PORT" --debug-control "$frame_dir" --quit-after 60
+    frame_wait_deck "$WORK/deck-frame-0.txt" || bad "DECK frame: the Deck gave no frame"
+    frame_control deck-size 1000 700 || bad "DECK frame: deck-size 1000 700: $CONTROL_REPLY"
+    frame_control deck-move 1700 300 || bad "DECK frame: deck-move 1700 300: $CONTROL_REPLY"
+    sleep 1
+    frame_control deck-frame "$WORK/deck-frame-1.txt" || bad "DECK frame: the resized Deck gave no frame"
+    frame_control screens "$WORK/deck-screens-1.txt" || bad "DECK frame: no screen report before the quit"
+    printf 'quit\n' > "$frame_dir/quit.cmd"
+    wait_until 10 frame_app_gone || bad "DECK frame: the app did not quit"
+    wait "$APP_PID" 2>/dev/null
+    launch --connect "127.0.0.1:$PORT" --debug-control "$frame_dir" --quit-after 40
+    frame_wait_deck "$WORK/deck-frame-2.txt" || bad "DECK frame: the relaunched Deck gave no frame"
+    # The opening window is placed on its first render: read it once it has
+    # settled rather than in the middle of that.
+    sleep 1
+    frame_control deck-frame "$WORK/deck-frame-2.txt" || bad "DECK frame: the relaunched Deck gave no frame"
+    frame_control screens "$WORK/deck-screens-2.txt" || bad "DECK frame: no screen report after the relaunch"
+    say "DECK frame before quit: $(cat "$WORK/deck-frame-1.txt" 2>/dev/null); $(tr '\n' ' ' < "$WORK/deck-screens-1.txt" 2>/dev/null)"
+    say "DECK frame after relaunch: $(cat "$WORK/deck-frame-2.txt" 2>/dev/null); $(tr '\n' ' ' < "$WORK/deck-screens-2.txt" 2>/dev/null)"
+    if python3 - "$WORK/deck-frame-1.txt" "$WORK/deck-frame-2.txt" <<'PY'
+import sys
+before = [int(v) for v in open(sys.argv[1]).read().split()]
+after = [int(v) for v in open(sys.argv[2]).read().split()]
+if len(before) != 4 or len(after) != 4:
+    print(before, after); sys.exit(1)
+if any(abs(a - b) > 2 for a, b in zip(before, after)):
+    print("before:", before, "after:", after); sys.exit(1)
+PY
+    then
+        ok "[DECK-19] the Deck came back at the frame it had (within 2 pt, $(cat "$WORK/deck-frame-2.txt"))"
+    else
+        bad "[DECK-19] the Deck did not remember its frame (before $(cat "$WORK/deck-frame-1.txt" 2>/dev/null), after $(cat "$WORK/deck-frame-2.txt" 2>/dev/null))"
+    fi
     stop_app
 }
 
@@ -10749,6 +11055,10 @@ acquire_lock
 wait_for_other_runs
 pick_run
 mkdir -p "$WORK"
+# The run's screenshots: one directory for the whole run, so a check's shots
+# outlive the phases (and the checks) that follow it.
+rm -rf "$SHOTS"
+mkdir -p "$SHOTS"
 # The window the hotkey check (C17) reads back: from here to the end of the run.
 RUN_START="$(date "+%Y-%m-%d %H:%M:%S")"
 say "run: port $PORT, work $WORK, profile $PROFILE, app $E2E_BUNDLE"

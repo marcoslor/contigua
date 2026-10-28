@@ -172,10 +172,12 @@ final class ApkInstaller {
     func result(_ result: ApkResult) {
         guard result.id == id else { return }
         if result.ok {
-            finish(ApkInstallMessage.success(label: result.label, version: result.version), ok: true)
+            finish(ApkInstallMessage.success(label: result.label, version: result.version), ok: true,
+                   code: "installed")
             onInstalled?()
         } else {
-            finish(ApkInstallMessage.failure(code: result.code ?? "failed", detail: result.message), ok: false)
+            finish(ApkInstallMessage.failure(code: result.code ?? "failed", detail: result.message),
+                   ok: false, code: result.code ?? "failed")
         }
     }
 
@@ -191,8 +193,11 @@ final class ApkInstaller {
         finish(text, ok: false)
     }
 
-    private func finish(_ text: String, ok: Bool, keepState: Bool = false) {
-        Log.app.notice("apk: result \(ok ? "ok" : "failed", privacy: .public): \(text, privacy: .private)")
+    /// `code` is a closed token — our own step or the phone's install error code
+    /// — and is what the log carries; the sentence names the app and stays
+    /// private (CONV-PD-05).
+    private func finish(_ text: String, ok: Bool, code: String = "local", keepState: Bool = false) {
+        Log.app.notice("apk: result \(ok ? "ok" : "failed", privacy: .public): \(code, privacy: .public)")
         if keepState { return }
         try? reader?.close()
         reader = nil
