@@ -100,14 +100,20 @@ display id on every injected event.
   responding" after 1.5 s without frames).
 - Backpressure: the phone never queues more than ~250 ms of video per stream.
   If the socket can't keep up it drops that stream's non-key frames until the
-  next keyframe, waits for the queue to drain (or 1 s), then takes one bitrate
-  step and requests one keyframe from the encoder
-  (`PARAMETER_KEY_REQUEST_SYNC_FRAME`). That is one keyframe and one bitrate
-  step per repair cycle, never one per drop: a keyframe is many times a delta's
-  size, so asking for one on every drop refilled the queue at once and locked a
-  slow reader into a keyframe loop at the bitrate floor. While the reader stays
-  behind, a repair may repeat at most every 750 ms; a queue that stays drained
-  for 750 ms ends the episode and the bitrate grows back (see `window.quality`).
+  next keyframe, waits for the queue to drain (or 1 s for the first repair of
+  an episode), then takes one step and requests one keyframe from the encoder
+  (`PARAMETER_KEY_REQUEST_SYNC_FRAME`). That is one step and one keyframe per
+  repair cycle, never one per drop: a keyframe is many times a delta's size, so
+  asking for one on every drop refilled the queue at once and locked a slow
+  reader into a keyframe loop at the bitrate floor. The step is 25% off the
+  bitrate down to its 1 Mbps floor; past the floor the stream's frame rate
+  halves per cycle down to 5 fps, so a reader that is slower than the floor
+  gets fewer deltas instead of a keyframe per queue budget. Every repair after
+  the first one of an episode waits for the queue to drain below the low
+  mark — never for a timer while the last repair's own backlog is still going
+  out — and at most one starts per 750 ms. A queue that stays drained for
+  750 ms ends the episode: the frame rate comes back and the bitrate grows
+  back (see `window.quality`).
   JSON and frames for other streams are never blocked behind a stalled stream's
   backlog (send-queue priority: JSON > keyframes/config > delta frames).
 - `window.quality` is optional and best-effort: `bitrate` is a target in bps,

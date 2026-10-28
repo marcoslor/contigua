@@ -20,21 +20,29 @@ import java.util.concurrent.TimeUnit
  * Three states and one repair cycle:
  * - `FLOWING`: the stream keeps up.
  * - `DRAINING`: the queue dropped deltas and is emptying. Once it is below the
- *   low mark (or [drainWaitMs] has passed) the machine takes one bitrate step
- *   and asks for one keyframe.
- * - `RECOVERING`: the repair keyframe is out. While it works its way through a
- *   still-slow reader the stream may overflow again; that is the same episode,
- *   so no second keyframe and no second step until [repairIntervalMs] has
- *   passed. A drained queue that stays drained for [healthyMs] means the reader
- *   caught up: `FLOWING` again, and the bitrate recovers as it always did.
+ *   low mark (or [drainWaitMs] has passed) the machine takes one step and asks
+ *   for one keyframe.
+ * - `RECOVERING`: the repair keyframe is out. A drop now is that keyframe's own
+ *   backlog, so the next repair waits for the queue to actually drain below the
+ *   low mark (a [Event.Drained] with `stalled = true`: the deltas are still
+ *   held, so the reader is still behind) — never for a timer, which is what
+ *   made the round-2 machine repair straight into its own backlog every
+ *   [repairIntervalMs]. A queue that drains with nothing held for [healthyMs]
+ *   means the reader caught up: `FLOWING` again, and the bitrate recovers as it
+ *   always did.
  *
- * The gates are what bound the repair rate: at most one keyframe and one
- * bitrate step per [repairIntervalMs] of congestion, never one per drop, and
- * the loop stops as soon as the reader keeps up. The interval also bounds how
- * long a recovering stream waits before its next repair, which is what keeps
- * the first frame after the reader recovers inside ~1 s (NFR
- * `backpressure_recovery_ms`). Pure: the caller passes the clock and performs
- * the returned actions.
+ * One step per repair, and the step is what the stream has left: a bitrate step
+ * while the encoder is above its floor, then frame-rate steps down to 5 fps, so
+ * a reader slower than the floor gets fewer deltas instead of one repair
+ * keyframe after another. The steps stop at nothing; the keyframe still goes,
+ * because the held deltas cannot resume without it.
+ *
+ * The gates bound the repair rate: one step and one keyframe per real drain and
+ * per [repairIntervalMs] of congestion, never one per drop, and the loop stops
+ * as soon as the reader keeps up. The drain gate bounds how long a recovering
+ * stream waits before its next repair, which keeps the first frame after the
+ * reader recovers inside ~1 s (NFR `backpressure_recovery_ms`). Pure: the
+ * caller passes the clock and performs the returned actions.
  */
 internal class StreamCongestion(
     private val drainWaitMs: Long = DRAIN_WAIT_MS,
@@ -69,8 +77,14 @@ internal class StreamCongestion(
     /** When the current congestion started: the bounded wait for a drain is measured from here. */
     private var episodeStartMs = 0L
 
-    private var repairedMs = 0L
-    private var repaired = false
+    /** The last repair, for the one-per-interval gate; null until an episode repaired. */
+    private var lastRepairMs: Long? = null
+
+    /** Since when the queue has been drained with nothing held back; -1 while it is not. */
+    private var healthySinceMs = -1L
+
+    /** Whether this episode gave up frame rate, so ending it gives the rate back. */
+    private var loweredFrameRate = false
 
     /** Drops the current episode has seen (logged when it ends). */
     var dropsInEpisode = 0
@@ -85,10 +99,12 @@ internal class StreamCongestion(
     private fun onDrop(nowMs: Long): List<Action> = when (state) {
         State.FLOWING -> {
             // A new episode: the queue is at its budget. The repair (and with
-            // it the bitrate step) waits until the queue has emptied, so the
-            // keyframe is encoded at the lower bitrate and into an empty queue.
+            // it the step) waits until the queue has emptied, so the keyframe
+            // is encoded at the lower rate and into an empty queue.
             episodeStartMs = nowMs
             dropsInEpisode = 1
+            healthySinceMs = -1
+            loweredFrameRate = false
             state = State.DRAINING
             emptyList()
         }
@@ -98,54 +114,58 @@ internal class StreamCongestion(
             emptyList()
         }
         State.RECOVERING -> {
-            // The repair's own backlog overflowed: the reader is still behind,
-            // so the episode continues and the next cycle may repair again.
+            // The repair's own backlog overflowed: the reader is still behind.
+            // The next repair waits for this backlog to drain (onDrained), not
+            // for the drop that just showed it is still there.
             dropsInEpisode++
-            if (canRepair(nowMs)) state = State.DRAINING
+            healthySinceMs = -1
             emptyList()
         }
     }
 
     private fun onDrained(nowMs: Long, stalled: Boolean): List<Action> = when (state) {
         State.FLOWING -> emptyList()
+        // The first repair of the episode: the queue is empty (or too small to
+        // hold the deltas it dropped), so the keyframe can go out now.
         State.DRAINING -> if (canRepair(nowMs)) repair(nowMs) else emptyList()
         State.RECOVERING -> when {
-            // A repair that has not settled because the reader is still behind
-            // and the queue is holding deltas back: the next cycle may repair.
-            stalled && nowMs - repairedMs >= repairIntervalMs -> {
-                state = State.DRAINING
-                emptyList()
+            // The deltas are held for a keyframe and the queue is empty: the
+            // reader took the last repair's backlog and is still behind it.
+            // Only now does the next step and the next repair go out.
+            stalled -> {
+                healthySinceMs = -1
+                if (canRepair(nowMs)) repair(nowMs) else emptyList()
             }
-            !stalled && nowMs - repairedMs >= healthyMs -> {
-                state = State.FLOWING
-                emptyList()
+            // Nothing is held: the stream is sending deltas again. A queue that
+            // stays drained for healthyMs means the reader caught up.
+            else -> {
+                if (healthySinceMs < 0) healthySinceMs = nowMs
+                if (nowMs - healthySinceMs >= healthyMs) flow() else emptyList()
             }
-            else -> emptyList()
         }
     }
 
     private fun onTick(nowMs: Long): List<Action> = when (state) {
         State.FLOWING -> emptyList()
-        State.DRAINING ->
-            if (nowMs - episodeStartMs >= drainWaitMs && canRepair(nowMs)) repair(nowMs) else emptyList()
         // The queue never emptied (a keyframe stuck behind a stalled socket):
         // the interval is a bound on the wait, not a reason to stop repairing.
-        State.RECOVERING ->
-            if (nowMs - repairedMs >= repairIntervalMs) {
-                state = State.DRAINING
-                emptyList()
-            } else {
-                emptyList()
-            }
+        State.DRAINING ->
+            if (nowMs - episodeStartMs >= drainWaitMs && canRepair(nowMs)) repair(nowMs) else emptyList()
+        // After a repair only the drain may take the next step: a tick that
+        // still sees a full queue is looking at the repair's own backlog.
+        State.RECOVERING -> emptyList()
     }
 
     private fun repair(nowMs: Long): List<Action> {
         state = State.RECOVERING
-        repaired = true
-        repairedMs = nowMs
+        lastRepairMs = nowMs
+        healthySinceMs = -1
         val step = when (available()) {
             CongestionStep.BITRATE -> Action.LOWER_BITRATE
-            CongestionStep.FRAME_RATE -> Action.LOWER_FRAME_RATE
+            CongestionStep.FRAME_RATE -> {
+                loweredFrameRate = true
+                Action.LOWER_FRAME_RATE
+            }
             // Nothing left to give up: the picture still needs the keyframe,
             // or the held deltas never resume.
             CongestionStep.NONE -> return listOf(Action.REQUEST_KEYFRAME)
@@ -153,7 +173,17 @@ internal class StreamCongestion(
         return listOf(step, Action.REQUEST_KEYFRAME)
     }
 
-    private fun canRepair(nowMs: Long): Boolean = !repaired || nowMs - repairedMs >= repairIntervalMs
+    /** The reader caught up: the episode ends, and the frame rate comes back if it was cut. */
+    private fun flow(): List<Action> {
+        state = State.FLOWING
+        healthySinceMs = -1
+        return if (loweredFrameRate) listOf(Action.RESTORE_FRAME_RATE) else emptyList()
+    }
+
+    private fun canRepair(nowMs: Long): Boolean {
+        val last = lastRepairMs ?: return true
+        return nowMs - last >= repairIntervalMs
+    }
 
     companion object {
         /** PROTOCOL "Video rules": a stream never queues more than ~250 ms of video. */

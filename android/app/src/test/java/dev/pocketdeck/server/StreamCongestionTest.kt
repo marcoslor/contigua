@@ -84,9 +84,14 @@ class StreamCongestionTest {
         val m = machine()
         m.onEvent(Event.Drop(1_000))
         m.onEvent(Event.Drained(1_050, stalled = false))
+        // The healthy clock starts at the first drain after the repair, not at
+        // the repair itself: an empty queue right after a keyframe proves
+        // nothing about the reader yet.
         assertEquals(emptyList<Action>(), m.onEvent(Event.Drained(1_500, stalled = false)))
         assertEquals(State.RECOVERING, m.state)
         assertEquals(emptyList<Action>(), m.onEvent(Event.Drained(2_100, stalled = false)))
+        assertEquals(State.RECOVERING, m.state)
+        assertEquals(emptyList<Action>(), m.onEvent(Event.Drained(2_260, stalled = false)))
         assertEquals(State.FLOWING, m.state)
     }
 
