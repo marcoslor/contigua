@@ -354,9 +354,11 @@ internal class WindowStream(
     }
 
     /**
-     * The session dropped delta frames for this stream: take 25% off the bitrate
-     * (floor 1 Mbps). Recovery happens in the drain loop, 10% every 5 s without
-     * a drop, back up to the target.
+     * A congestion repair stepped this stream down: take 25% off the bitrate
+     * (floor 1 Mbps). The stream's congestion machine calls this once per
+     * repair cycle, not once per dropped frame (StreamCongestion.kt). Recovery
+     * happens in the drain loop, 10% every 5 s without a drop, back up to the
+     * target.
      */
     fun onBackpressure() {
         val bps = quality.onDrop(SystemClock.elapsedRealtime()) ?: return

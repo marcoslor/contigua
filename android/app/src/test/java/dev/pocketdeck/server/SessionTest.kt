@@ -909,9 +909,10 @@ class SessionTest {
         val elapsedMs = (System.nanoTime() - started) / 1_000_000
         val keys = platform.keyframeRequests.size
         val steps = platform.backpressures.size
-        assertTrue("fed $fed frames; ${keys} keyframe requests in ${elapsedMs}ms",
-                   keys <= 1 + elapsedMs / 1000)
-        assertTrue("${steps} bitrate steps in ${elapsedMs}ms", steps <= 1 + elapsedMs / 1000)
+        val maxRepairs = 1 + (elapsedMs / StreamCongestion.REPAIR_INTERVAL_MS).toInt()
+        assertTrue("fed $fed frames; ${keys} keyframe requests in ${elapsedMs}ms (at most $maxRepairs)",
+                   keys <= maxRepairs)
+        assertEquals("one bitrate step per repair, not one per drop", keys, steps)
 
         // The reader is back: a frame produced after the recovery must arrive
         // within a second, and the stream must be live again.

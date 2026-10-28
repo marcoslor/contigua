@@ -29,7 +29,12 @@ internal class SendQueue(
     private val lock = Object()
 
     private val json = ArrayDeque<ByteArray>()
-    private val control = ArrayDeque<ByteArray>()
+
+    /** Control bytes carry their stream: the congestion machine adds them to a stream's own backlog. */
+    private class Control(val stream: Int, val bytes: ByteArray)
+
+    private val control = ArrayDeque<Control>()
+    private val controlBytes = HashMap<Int, Int>()
     private val audio = ArrayDeque<ByteArray>()
     private var audioBytes = 0
     private val deltas = HashMap<Int, ArrayDeque<ByteArray>>()
@@ -72,9 +77,18 @@ internal class SendQueue(
             dropping.remove(stream)
             discardDeltas(stream)
         }
-        control.addLast(bytes)
+        control.addLast(Control(stream, bytes))
+        controlBytes[stream] = (controlBytes[stream] ?: 0) + bytes.size
         lock.notifyAll()
     }
+
+    /** Video bytes still queued for [stream]: its deltas plus its keyframes and configs. */
+    fun queuedBytes(stream: Int): Int = synchronized(lock) {
+        (deltaBytes[stream] ?: 0) + (controlBytes[stream] ?: 0)
+    }
+
+    /** Whether the stream's deltas are being held back, waiting for a keyframe to repair the picture. */
+    fun isDropping(stream: Int): Boolean = synchronized(lock) { stream in dropping }
 
     fun enqueueDelta(stream: Int, ptsUs: Long, bytes: ByteArray) {
         var dropped = false
@@ -150,7 +164,11 @@ internal class SendQueue(
 
     private fun takeLocked(): ByteArray? {
         json.removeFirstOrNull()?.let { return it }
-        control.removeFirstOrNull()?.let { return it }
+        control.removeFirstOrNull()?.let {
+            val left = (controlBytes[it.stream] ?: it.bytes.size) - it.bytes.size
+            if (left > 0) controlBytes[it.stream] = left else controlBytes.remove(it.stream)
+            return it.bytes
+        }
         audio.removeFirstOrNull()?.let {
             audioBytes -= it.size
             return it

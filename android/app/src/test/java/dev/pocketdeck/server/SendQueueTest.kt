@@ -145,6 +145,37 @@ class SendQueueTest {
         assertNull(q.pollNow())
     }
 
+    @Test
+    fun queuedBytesCountDeltasAndTheStreamsControlFrames() {
+        val q = SendQueue()
+        // Control first: a keyframe discards the deltas queued before it.
+        q.enqueueControl(1, ByteArray(5))
+        q.enqueueControl(2, ByteArray(7))
+        q.enqueueJson(bytes(0x30)) // stream 0: not a stream's video
+        q.enqueueDelta(1, 0L, ByteArray(10))
+        assertEquals(15, q.queuedBytes(1))
+        assertEquals(7, q.queuedBytes(2))
+        assertEquals(0, q.queuedBytes(3))
+        q.pollNow() // the JSON
+        q.pollNow() // stream 1's control
+        assertEquals(10, q.queuedBytes(1))
+        q.pollNow() // stream 2's control
+        assertEquals(10, q.queuedBytes(1))
+        q.pollNow() // the delta
+        assertEquals(0, q.queuedBytes(1))
+    }
+
+    @Test
+    fun aLatchedStreamSaysSoUntilAKeyframe() {
+        val q = SendQueue(maxDeltaBytesPerStream = 10)
+        q.enqueueDelta(1, 0L, ByteArray(6))
+        q.enqueueDelta(1, 1_000L, ByteArray(6)) // over the cap: the stream is held back
+        assertTrue(q.isDropping(1))
+        assertTrue(!q.isDropping(2))
+        q.enqueueControl(1, bytes(0xC1))
+        assertTrue(!q.isDropping(1))
+    }
+
     /**
      * B2: the drop callback reaches the display (a keyframe request, a
      * backpressure note), and a display busy with another window's open can

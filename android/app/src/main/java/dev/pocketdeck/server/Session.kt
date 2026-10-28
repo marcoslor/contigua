@@ -187,6 +187,18 @@ class Session(
     }
 
     private val queue = SendQueue(maxDeltaBytesPerStream) { stream -> onDeltaDrop(stream) }
+
+    /**
+     * The stream congestion machines (StreamCongestion.kt): one per stream, fed
+     * by the send queue's drops and a tick that runs only while a stream is
+     * congested. Its actions reach the display outside the queue's lock.
+     */
+    private val congestion = CongestionDriver(
+        queuedBytes = { stream -> queue.queuedBytes(stream) },
+        stalled = { stream -> queue.isDropping(stream) },
+        perform = { stream, action -> congestionAction(stream, action) },
+        log = { line -> log(line) },
+    )
     private val pairLock = Object()
 
     @Volatile private var phase = Phase.HELLO
@@ -510,6 +522,7 @@ class Session(
         runCatching { fsWriter?.close() }
         runCatching { fsWatcher?.close() }
         stopStreamWatch()
+        congestion.close()
         hoverExecutor.shutdownNow()
         // A removal already running finishes; no close can arrive now.
         closeTasks.shutdown()
@@ -2336,9 +2349,18 @@ class Session(
     }
 
     private fun onDeltaDrop(stream: Int) {
-        log("stream $stream backpressure: dropping deltas, requesting keyframe")
-        runCatching { display.requestKeyframe(stream) }
-        runCatching { display.onBackpressure(stream) }
+        congestion.onDrop(stream)
+    }
+
+    /** One action of a stream's congestion machine (StreamCongestion.kt). */
+    private fun congestionAction(stream: Int, action: StreamCongestion.Action) {
+        when (action) {
+            StreamCongestion.Action.LOWER_BITRATE -> runCatching { display.onBackpressure(stream) }
+            StreamCongestion.Action.REQUEST_KEYFRAME -> {
+                log("stream $stream congestion: keyframe requested")
+                runCatching { display.requestKeyframe(stream) }
+            }
+        }
     }
 
     // ------------------------------------------------------------------
