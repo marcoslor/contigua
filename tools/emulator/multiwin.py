@@ -41,8 +41,11 @@ LABEL_PAGE_TITLE_2 = "PocketDeck second page"
 SCROLL_PAGE_TITLE = "PocketDeck scroll"
 # The pages paint this colour over the whole viewport, so a frame that shows it
 # is the page and not a browser surface (the omnibox, a dialog, a blank tab).
+# Chrome's own toolbar is light and fills the top of the window, so the mean of
+# a real page frame is pulled towards white by ~15%; the tolerance leaves room
+# for that and for the page's white text, and is still far from a white tab.
 PAGE_BG = (18, 52, 86)
-PAGE_BG_TOLERANCE = 45
+PAGE_BG_TOLERANCE = 60
 UI_DUMP = "/data/local/tmp/pd-mw-ui.xml"
 # Key events go through the session, so they land on that window's display.
 KEYCODE_ENTER = 66
