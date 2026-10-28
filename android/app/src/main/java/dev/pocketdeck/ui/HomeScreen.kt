@@ -230,7 +230,7 @@ private fun StatusCard(
     val (container, content, iconRes) = statusAppearance(status)
     val title = statusTitle(state)
     val subtitle = statusSubtitle(state)
-    val actionLabel = statusActionLabel(status.attention)
+    val actionLabel = statusActionLabel(status.attention, state.shizuku)
 
     ElevatedCard(
         modifier = modifier
@@ -281,7 +281,16 @@ private fun statusTitle(state: DeckUiState): String = when (state.status.state) 
     StatusState.CONNECTED -> stringResource(R.string.status_connected, state.connectedMac.orEmpty())
     StatusState.NEEDS_ATTENTION -> when (state.status.attention) {
         AttentionKind.CONNECTIONS_OFF -> stringResource(R.string.status_connections_off)
-        AttentionKind.SHIZUKU_NOT_RUNNING -> stringResource(R.string.status_shizuku_not_running)
+        // A phone without the app is a different fix from one that has it
+        // stopped, and it is the same state until the install page opens.
+        AttentionKind.SHIZUKU_NOT_RUNNING -> stringResource(
+            if (state.shizuku == ShizukuUiState.NOT_INSTALLED) {
+                R.string.status_shizuku_not_installed
+            } else {
+                R.string.status_shizuku_not_running
+            },
+        )
+
         AttentionKind.SHIZUKU_PERMISSION -> stringResource(R.string.status_permission)
         AttentionKind.NOTIFY_ACCESS -> stringResource(R.string.status_notify_access)
         else -> stringResource(R.string.status_ready)
@@ -309,7 +318,14 @@ private fun statusSubtitle(state: DeckUiState): String = when (state.status.stat
 
     StatusState.NEEDS_ATTENTION -> when (state.status.attention) {
         AttentionKind.CONNECTIONS_OFF -> stringResource(R.string.status_connections_off_body)
-        AttentionKind.SHIZUKU_NOT_RUNNING -> stringResource(R.string.status_shizuku_not_running_body)
+        AttentionKind.SHIZUKU_NOT_RUNNING -> stringResource(
+            if (state.shizuku == ShizukuUiState.NOT_INSTALLED) {
+                R.string.status_shizuku_not_installed_body
+            } else {
+                R.string.status_shizuku_not_running_body
+            },
+        )
+
         AttentionKind.SHIZUKU_PERMISSION -> stringResource(R.string.status_permission_body)
         AttentionKind.NOTIFY_ACCESS -> stringResource(R.string.status_notify_access_body)
         else -> ""
@@ -346,9 +362,11 @@ private fun statusAppearance(status: DeckStatus): Triple<Color, Color, Int> =
         )
     }
 
-private fun statusActionLabel(attention: AttentionKind): Int = when (attention) {
+private fun statusActionLabel(attention: AttentionKind, shizuku: ShizukuUiState): Int = when (attention) {
     AttentionKind.CONNECTIONS_OFF -> R.string.action_turn_on
-    AttentionKind.SHIZUKU_NOT_RUNNING -> R.string.action_open_shizuku
+    AttentionKind.SHIZUKU_NOT_RUNNING ->
+        if (shizuku == ShizukuUiState.NOT_INSTALLED) R.string.shizuku_get else R.string.action_open_shizuku
+
     AttentionKind.SHIZUKU_PERMISSION -> R.string.action_allow
     AttentionKind.NOTIFY_ACCESS -> R.string.action_allow
     AttentionKind.RETRY -> R.string.action_retry

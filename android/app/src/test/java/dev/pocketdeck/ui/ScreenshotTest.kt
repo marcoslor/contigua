@@ -134,6 +134,19 @@ class ScreenshotTest {
     fun homeNotificationAccessLight() =
         shootHome("home_notify_access_light", false, homeState(notifyNoAccess = true))
 
+    /** A phone without Shizuku: its own words and its own control (misses.md M6). */
+    @Test
+    fun homeShizukuNotInstalledLight() = shootHome(
+        "home_shizuku_not_installed_light", false,
+        homeState(shizukuRunning = false).copy(shizukuInstalled = false, shizuku = ShizukuUiState.NOT_INSTALLED),
+    )
+
+    @Test
+    fun homeShizukuNotInstalledDark() = shootHome(
+        "home_shizuku_not_installed_dark", true,
+        homeState(shizukuRunning = false).copy(shizukuInstalled = false, shizuku = ShizukuUiState.NOT_INSTALLED),
+    )
+
     // ---- pairing dialog ------------------------------------------------
 
     @Test
