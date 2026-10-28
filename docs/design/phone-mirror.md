@@ -132,6 +132,14 @@ is touched, and the panel turns off again on the phone's own screen timeout.
 There is no keep-awake for display 0 beyond the platform's normal input
 activity.
 
+**The panel the streams forced dark comes back the moment the person uses the
+phone.** Where the streaming displays share the panel's group (One UI), the
+panel is powered off under them; the person's unlock, a touch or a key on
+display 0, or the power key then powers it back to NORMAL at once, with the
+lock screen untouched and one `panel_yield reason=unlock|touch|key|power` line,
+and it is not darkened again while they use the phone. See
+docs/specs/controls.md CTRL-11/12.
+
 The Wake Screen button sends the same `phone.wake`; it is there for a person
 who does not want to reopen the window.
 
