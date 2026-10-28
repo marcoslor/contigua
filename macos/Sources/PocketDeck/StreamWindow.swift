@@ -601,12 +601,20 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     }
 
     func sendResize() {
+        #if PD_TEST_HOOKS
+        // Every coalescer event is applied on main (WindowManager.handleVideo
+        // hops): the window's view state is main-thread state.
+        dispatchPrecondition(condition: .onQueue(.main))
+        #endif
         send(resizes.apply(.request(resizeRequest())))
     }
 
     /// The phone answered a resize: its `window.resize.ack`, or the
     /// VIDEO_CONFIG that follows one. The value that waited goes out now.
     func resizeSettled(_ request: ResizeRequest? = nil) {
+        #if PD_TEST_HOOKS
+        dispatchPrecondition(condition: .onQueue(.main))
+        #endif
         guard let settled = request ?? resizes.inFlight else { return }
         send(resizes.apply(.settled(settled)))
     }
