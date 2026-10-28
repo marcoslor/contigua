@@ -4,6 +4,14 @@ import XCTest
 /// The phone rows' pure half (docs/specs/settings.md): presence, the row a
 /// sidebar entry draws, and the muted-apps list.
 final class DevicesTabTests: XCTestCase {
+    /// NOTIFY-4/17: a denied macOS permission is one line naming System
+    /// Settings, and nothing while it is granted or not yet asked.
+    func testTheDeniedNotificationPermissionHasOneLine() {
+        XCTAssertEqual(DevicesTabModel.notificationsDeniedHint(denied: true),
+                       "Notifications are turned off for PocketDeck in System Settings.")
+        XCTAssertNil(DevicesTabModel.notificationsDeniedHint(denied: false))
+    }
+
 
     // MARK: phone rows and presence
 

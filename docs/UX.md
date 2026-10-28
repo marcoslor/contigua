@@ -123,7 +123,9 @@ disabled, never hidden.
    use, else **General**. Muted apps lists the apps this Mac already has for that phone, muted first, with a
    mark on apps that sent a notification this session, "System UI" for `com.android.systemui` and the package
    name for an app with no name. When the phone has not been granted notification access, the page says
-   **Allow notification access on the phone.** under the switch. The Dock shims rebuild on a rename. Nothing else.
+   **Allow notification access on the phone.** under the switch. When this Mac's own notifications are off for
+   PocketDeck, it says **Notifications are turned off for PocketDeck in System Settings.** with **Open System
+   Settings** and **Check Again**. The Dock shims rebuild on a rename. Nothing else.
 
     A **nickname** ("Rename…" dialog) is 1–40 characters, trimmed; empty keeps using the phone's own name. It is the one
     name everywhere: the Deck title, the menu bar, the chip's voiceover copy, failure banners, notifications from the phone

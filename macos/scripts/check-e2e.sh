@@ -8640,6 +8640,26 @@ EOF
         && ok "[NOTIFY-14] NOTIFY off: no notification text anywhere" \
         || bad "[NOTIFY-14] NOTIFY off: notification text leaked"
     stop_app
+
+    # (c) macOS notifications denied: one line under the switch, with the two
+    # controls that fix or recheck it (NOTIFY-4/17). The fake permission keeps
+    # the person's own System Settings untouched.
+    clean
+    mkdir -p "$WORK-control"
+    # The page's own state with a paired phone (`devices-one`), not a live
+    # session: the line is about this Mac's permission, not the phone's.
+    launch --preview devices-one --debug-notify-denied \
+        --debug-control "$WORK-control" --quit-after 60
+    wait_until 25 windows_at_least 2 || bad "NOTIFY denied: the Settings window never opened"
+    sleep 1
+    control settings-report "$WORK/denied.txt" >/dev/null 2>&1 || bad "NOTIFY denied: settings-report: $CONTROL_REPLY"
+    grep -qF "Notifications are turned off for PocketDeck in System Settings." "$WORK/denied.txt" 2>/dev/null \
+        && ok "[NOTIFY-4] NOTIFY a denied macOS permission shows the one line under the phone's Notifications" \
+        || bad "[NOTIFY-4] NOTIFY the denied line is missing: $(grep -E 'notifications|accessHint' "$WORK/denied.txt" 2>/dev/null | tr '\n' '|')"
+    grep -qF "notificationsDenied=1" "$WORK/denied.txt" 2>/dev/null \
+        && ok "[NOTIFY-17] NOTIFY the page reports the denied permission" \
+        || bad "[NOTIFY-17] NOTIFY the denied state is not in the report"
+    stop_app
     stop_fakephone
     wait_until 5 no_fakephone
 }
