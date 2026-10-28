@@ -573,8 +573,12 @@ final class WindowManager {
         case .config(let stream, let config, let picture):
             videoDump?.write(config: config, stream: stream)
             // A new CONFIG is the phone's answer to a resize too: the value
-            // that waited behind it may go out now.
-            controller(for: stream)?.resizeSettled()
+            // that waited behind it may go out now. This runs on the session's
+            // video queue, and the coalescer is the window's (main-thread)
+            // state: hop with the stream id, the picture itself stays hop-free.
+            DispatchQueue.main.async { [weak self] in  // gcd: one hop from the video queue
+                self?.controller(for: stream)?.resizeSettled()
+            }
             controller(for: stream)?.videoView.configure(config, picture: picture)
         case .frame(let stream, let frame):
             videoDump?.write(frame: frame, stream: stream)
