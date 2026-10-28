@@ -23,6 +23,7 @@ internal class AndroidTaskMove(private val ctx: android.content.Context, private
     private val taskManagerClass: Class<*>? = Hidden.iface("android.app.IActivityTaskManager")
 
     private var loggedTasksPath = false
+    private var loggedReadFailure = false
 
 
     /**
@@ -32,13 +33,22 @@ internal class AndroidTaskMove(private val ctx: android.content.Context, private
      */
     @Volatile private var homePackages: Set<String> = emptySet()
 
-    override fun tasks(): List<SystemTask>? {
+    override fun tasks(): List<SystemTask>? = read(verbose = true)
+
+    /**
+     * The same read without the per-call log lines: `remove` re-reads the list
+     * every 50 ms while the system settles, and a full task list per poll would
+     * bury the one line that matters.
+     */
+    private fun quietTasks(): List<SystemTask>? = read(verbose = false)
+
+    private fun read(verbose: Boolean): List<SystemTask>? {
         if (homePackages.isEmpty()) {
             homePackages = resolveHomePackages()
             log("home packages: $homePackages")
         }
         val raw = viaGetTasks() ?: viaAllRootTaskInfos() ?: run {
-            log("task list: no source answered (getTasks / getAllRootTaskInfos)")
+            if (verbose) log("task list: no source answered (getTasks / getAllRootTaskInfos)")
             return null
         }
         val out = ArrayList<SystemTask>(raw.size)
@@ -51,7 +61,9 @@ internal class AndroidTaskMove(private val ctx: android.content.Context, private
             loggedTasksPath = true
             log("task list (first): ${raw.size} entries, ${out.size} with a package")
         }
-        log("picked pool: ${out.joinToString { "${it.pkg}#" + it.taskId + "@d" + it.displayId + (if (it.isHome) "(home)" else "") + (if (it.isSystemUi) "(sysui)" else "") }}")
+        if (verbose) {
+            log("picked pool: ${out.joinToString { "${it.pkg}#" + it.taskId + "@d" + it.displayId + (if (it.isHome) "(home)" else "") + (if (it.isSystemUi) "(sysui)" else "") }}")
+        }
         return out
     }
 
@@ -96,15 +108,30 @@ internal class AndroidTaskMove(private val ctx: android.content.Context, private
             return false
         }
         val deadline = System.currentTimeMillis() + REMOVE_VERIFY_MS
+        var polls = 0
         while (true) {
-            val listed = runCatching { tasks() }.getOrNull()
-            if (listed != null && listed.none { it.taskId == taskId }) return true
-            if (System.currentTimeMillis() >= deadline) return false
+            polls++
+            val listed = runCatching { quietTasks() }.getOrNull()
+            if (listed != null && listed.none { it.taskId == taskId }) {
+                log("removeTask($taskId): gone after $polls read(s)")
+                return true
+            }
+            if (System.currentTimeMillis() >= deadline) {
+                log("removeTask($taskId): still listed after $polls read(s)")
+                return false
+            }
             Thread.sleep(50)
         }
     }
 
     // ------------------------------------------------------------------
+
+    /** One line per removal: a verify loop that failed every 50 ms must not repeat itself. */
+    private fun logReadFailure(what: String, e: Throwable) {
+        if (loggedReadFailure) return
+        loggedReadFailure = true
+        log("$what failed: ${e.message ?: e}")
+    }
 
     /** `IActivityTaskManager.getTasks(maxNum, filterOnlyVisible, keepIntentExtra, displayId)`; -1 = every display. */
     private fun viaGetTasks(): List<*>? {
@@ -115,7 +142,7 @@ internal class AndroidTaskMove(private val ctx: android.content.Context, private
         }
         if (method == null) return null
         return runCatching { @Suppress("UNCHECKED_CAST") method.invoke(tm, MAX_TASKS, false, false, -1) as? List<*> }
-            .onFailure { log("getTasks failed: ${it.message ?: it}") }
+            .onFailure { logReadFailure("getTasks", it) }
             .getOrNull()
             ?.takeIf { it.isNotEmpty() }
     }
@@ -127,7 +154,7 @@ internal class AndroidTaskMove(private val ctx: android.content.Context, private
         val method = cls.methods.firstOrNull { it.name == "getAllRootTaskInfos" && it.parameterTypes.isEmpty() }
             ?: return null
         return runCatching { method.invoke(tm) as? List<*> }
-            .onFailure { log("getAllRootTaskInfos failed: ${it.message ?: it}") }
+            .onFailure { logReadFailure("getAllRootTaskInfos", it) }
             .getOrNull()
             ?.takeIf { it.isNotEmpty() }
     }
