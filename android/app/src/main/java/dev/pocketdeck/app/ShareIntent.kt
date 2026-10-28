@@ -60,6 +60,9 @@ object ShareIntent {
             is ShareItem.Unsupported -> UNSUPPORTED
         }
         ShareStatus.NO_SESSION -> "No Mac connected"
+        // No shell bound is this phone's own missing Shizuku, not a Mac that
+        // went away: the toast names the one fix on this phone (misses.md M4).
+        ShareStatus.NO_SHELL -> "Start Shizuku to send to your Mac."
         ShareStatus.TOO_LARGE -> "Too large to send (max 50 MB)"
         else -> "Couldn't send to your Mac"
     }
@@ -101,7 +104,7 @@ object ShareDispatch {
             if (item is ShareItem.Unsupported) {
                 return if (item.why == ShareIntent.TOO_LARGE) ShareStatus.TOO_LARGE else ShareStatus.FAILED
             }
-            if (target == null) return ShareStatus.NO_SESSION
+            if (target == null) return ShareStatus.NO_SHELL
             return when (item) {
                 is ShareItem.Text -> target.text(item.text)
                 else -> {

@@ -49,23 +49,28 @@ class HomeScreenTest {
         compose.waitForIdle()
     }
 
-    private fun state(enabled: Boolean, allowConnections: Boolean = true,
-                      notifyNoAccess: Boolean = false) = DeckUiState(
+    private fun state(
+        enabled: Boolean,
+        allowConnections: Boolean = true,
+        notifyNoAccess: Boolean = false,
+        shizukuInstalled: Boolean = true,
+        shizukuRunning: Boolean = true,
+    ) = DeckUiState(
         onboardingDone = true,
         enabled = enabled,
         allowConnections = allowConnections,
-        shizukuInstalled = true,
-        shizukuRunning = true,
-        shizukuGranted = true,
-        port = 4711,
+        shizukuInstalled = shizukuInstalled,
+        shizukuRunning = shizukuRunning,
+        shizukuGranted = shizukuRunning,
+        port = if (shizukuRunning) 4711 else -1,
         wifiName = "Home Wi-Fi",
-        shizuku = ShizukuUiState.READY,
+        shizuku = shizukuUiState(shizukuInstalled, shizukuRunning, shizukuRunning),
         status = mapStatus(
             StatusInput(
                 enabled = enabled,
-                shizukuRunning = true,
-                shizukuGranted = true,
-                port = 4711,
+                shizukuRunning = shizukuRunning,
+                shizukuGranted = shizukuRunning,
+                port = if (shizukuRunning) 4711 else -1,
                 connectedMac = null,
                 allowConnections = allowConnections,
                 notifyNoAccess = notifyNoAccess,
@@ -128,5 +133,18 @@ class HomeScreenTest {
         shoot(state(enabled = true, allowConnections = false))
         compose.onNodeWithText("Connections are off").fetchSemanticsNode()
         compose.onNodeWithText("Turn on").fetchSemanticsNode()
+    }
+
+    /**
+     * A phone without Shizuku is a different state from a Shizuku that is not
+     * running: the one control has to be the one that can fix it (misses.md M6).
+     */
+    @Test
+    fun `a phone without Shizuku offers to get it`() {
+        shoot(state(enabled = true, shizukuInstalled = false, shizukuRunning = false))
+        compose.onNodeWithText("Shizuku isn't installed").fetchSemanticsNode()
+        compose.onNodeWithText("Install Shizuku to use PocketDeck.").fetchSemanticsNode()
+        compose.onNodeWithText("Get Shizuku").fetchSemanticsNode()
+        compose.onNodeWithText("Open Shizuku").assertDoesNotExist()
     }
 }

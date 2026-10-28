@@ -234,7 +234,10 @@ class DeckViewModel(app: Application) : AndroidViewModel(app) {
         val ctx = getApplication<Application>()
         when (kind) {
             AttentionKind.CONNECTIONS_OFF -> setAllowConnections(true)
-            AttentionKind.SHIZUKU_NOT_RUNNING -> openShizuku()
+            // Not running is only openable when the app is there; a phone
+            // without it gets the store, or the one control cannot fix it.
+            AttentionKind.SHIZUKU_NOT_RUNNING ->
+                if (_state.value.shizuku == ShizukuUiState.NOT_INSTALLED) getShizuku() else openShizuku()
             AttentionKind.SHIZUKU_PERMISSION -> allowShizuku()
             // The Mac asked to share notifications but the listener grant is
             // missing: the one screen that can grant it.

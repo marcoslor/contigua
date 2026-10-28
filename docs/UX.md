@@ -152,7 +152,8 @@ Material 3, edge-to-edge, dynamic color, light/dark.
       **Scan QR code** (outlined) — completes on first successful pairing.
 2. **Home**:
    - Big status card: **Ready** · "Visible to Macs on *Wi-Fi name*" / **Connected to
-     *Mac name*** · "*N* windows open" / **Shizuku not running** (with fix button).
+     *Mac name*** · "*N* windows open" / **Shizuku not running** (with fix button), or
+     **Shizuku isn't installed** with **Get Shizuku** when the app is absent.
      With the background switch off the card still says **Ready**, with
      "Stops when you close PocketDeck from recent apps." — information, not a
      warning, and no button.
