@@ -499,6 +499,12 @@ final class ConnectionController {
             MainActor.assumeIsolated { self?.cancelPendingApk() }
         }
         densityOverrides = windows.densityOverrides
+        if options.debugNotifyDenied {
+            notifyCenter.debugAuthorization = .denied
+            notifyAuthorization = .denied
+        } else {
+            checkNotificationAuthorization()
+        }
         // Notification sharing (docs/design/notify.md): the router owns the UN
         // delegate and clicks; share notifications still route to their actions.
         // The same `--share-log` file records what both halves would have shown.
@@ -2195,6 +2201,16 @@ final class ConnectionController {
     func seenPackages(deviceId: String) -> Set<String> {
         if let preview = previewNotify[deviceId] { return preview.seen }
         return notifySeen[deviceId] ?? []
+    }
+
+    /// The macOS notification permission, for the phone page's line.
+    private(set) var notifyAuthorization: NotificationAuthorization = .notDetermined
+
+    /// Read the system's answer again (the page's Check Again, and at launch).
+    func checkNotificationAuthorization() {
+        Task { @MainActor in
+            notifyAuthorization = await notifyCenter.authorizationStatus()
+        }
     }
 
     /// Whether the Mac was told the phone's listener access is missing.
