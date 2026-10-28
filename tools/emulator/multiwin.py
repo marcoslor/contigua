@@ -38,7 +38,17 @@ CHROME_MAIN = "com.android.chrome/com.google.android.apps.chrome.Main"
 SETTINGS = "com.android.settings"
 LABEL_PAGE_TITLE = "PocketDeck multiwin"
 LABEL_PAGE_TITLE_2 = "PocketDeck second page"
+# The pages paint this colour over the whole viewport, so a frame that shows it
+# is the page and not a browser surface (the omnibox, a dialog, a blank tab).
+PAGE_BG = (18, 52, 86)
+PAGE_BG_TOLERANCE = 45
 UI_DUMP = "/data/local/tmp/pd-mw-ui.xml"
+# Key events go through the session, so they land on that window's display.
+KEYCODE_ENTER = 66
+KEYCODE_ESCAPE = 111
+KEYCODE_CTRL_LEFT = 113
+KEYCODE_L = 40
+META_CTRL_ON = 0x1000 | 0x2000  # META_CTRL_ON | META_CTRL_LEFT_ON
 MEASURE_S = 8.0
 # An 8 s phase with a keyframe and a scroll every 150 ms: a live window draws far
 # more than this, a dead one (or one whose phase missed its keyframe) draws fewer.
@@ -157,6 +167,26 @@ def _ffmpeg_gray(path_a, path_b):
                "-f", "rawvideo", "-pix_fmt", "gray", "-"]
     res = subprocess.run(cmd, capture_output=True, timeout=120)
     return res.stdout[0] if res.stdout else None
+
+
+def mean_rgb(path):
+    """(r, g, b) mean of one PNG; None when it does not exist."""
+    if path is None or not os.path.exists(path):
+        return None
+    res = subprocess.run(["ffmpeg", "-v", "error", "-i", path, "-vf", "scale=1:1",
+                          "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
+                         capture_output=True, timeout=120)
+    if len(res.stdout) < 3:
+        return None
+    return tuple(res.stdout[:3])
+
+
+def shows_colour(path, want=PAGE_BG, tolerance=PAGE_BG_TOLERANCE):
+    """True when the picture is mostly [want]: the page drew, not a browser surface."""
+    got = mean_rgb(path)
+    if got is None:
+        return False
+    return all(abs(a - b) <= tolerance for a, b in zip(got, want))
 
 
 # --- dumpsys parsing --------------------------------------------------------
@@ -349,10 +379,61 @@ def send_tap(client, stream, nx, ny):
     client.send_raw(proto.pack_touch(stream, proto.TOUCH_UP, 0, nx, ny))
 
 
-def send_key(client, stream, keycode):
-    client.send_raw(proto.pack_key(stream, proto.KEY_DOWN, keycode, 0))
+def send_key(client, stream, keycode, meta=0):
+    client.send_raw(proto.pack_key(stream, proto.KEY_DOWN, keycode, meta))
     time.sleep(0.03)
-    client.send_raw(proto.pack_key(stream, proto.KEY_UP, keycode, 0))
+    client.send_raw(proto.pack_key(stream, proto.KEY_UP, keycode, meta))
+
+
+def send_ctrl_key(client, stream, keycode):
+    """Ctrl+<key> on that window's display: the modifier's own down/up frames it."""
+    client.send_raw(proto.pack_key(stream, proto.KEY_DOWN, KEYCODE_CTRL_LEFT, 0))
+    time.sleep(0.03)
+    send_key(client, stream, keycode, META_CTRL_ON)
+    client.send_raw(proto.pack_key(stream, proto.KEY_UP, KEYCODE_CTRL_LEFT, 0))
+
+
+def navigate(phone, stream, url):
+    """Load [url] through the window's own key and text input.
+
+    Boot 5 tapped a guessed omnibox height and hit Chrome's voice-search mic
+    instead (a dialog over a fresh tab), so the coordinates are gone: Ctrl+L
+    focuses the omnibox wherever the tab strip put it, the text replaces the
+    selected address, Return loads it. Escape first: a bubble or tooltip over
+    the tab strip would eat the next keys.
+    """
+    send_key(phone.client, stream, KEYCODE_ESCAPE)
+    time.sleep(0.2)
+    send_ctrl_key(phone.client, stream, KEYCODE_L)
+    time.sleep(0.4)
+    phone.client.send_json({"t": "text", "stream": stream, "text": url})
+    time.sleep(0.4)
+    send_key(phone.client, stream, KEYCODE_ENTER)
+
+
+def navigate_until(phone, dev, stream, url, want_title, out, tag, tries=2):
+    """navigate() until the page's title arrived and its colour is in the frame.
+
+    Returns (title, png, elapsed) or (None, last_png, elapsed). Both proofs are
+    needed: a title can arrive for a page that never painted, and the colour
+    alone cannot say the tab is this page.
+    """
+    started = time.time()
+    png = None
+    for attempt in range(1, tries + 1):
+        mark = phone.mark()
+        navigate(phone, stream, url)
+        title, _waited = phone.wait_title(stream, want_title, timeout=6.0, since=mark)
+        time.sleep(0.4)  # a first paint after the title: the frame must show it
+        png = grab(phone, dev, stream, "%s-a%d" % (tag, attempt), out, seconds=1.0)
+        drawn = shows_colour(png)
+        log("stream %d try %d: title %s, page colour %s (rgb=%s)"
+            % (stream, attempt,
+               ("len=%d" % len(title)) if title else "missing",
+               "in frame" if drawn else "not in frame", mean_rgb(png)))
+        if title and drawn:
+            return title, png, time.time() - started
+    return None, png, time.time() - started
 
 
 def tap(phone, dev, out, stream, tag):
@@ -371,7 +452,7 @@ def tap(phone, dev, out, stream, tag):
 
 
 class LocalPage(object):
-    """Two pages with known titles, served to the emulator through `adb reverse`.
+    """Two pages with known titles and one known background colour, via `adb reverse`.
 
     The first page is one whole-viewport link to the second: a tap on it is the
     label change the check times, so no typing and no cold render sit inside the
@@ -382,16 +463,18 @@ class LocalPage(object):
         self.dev = dev
         self.dir = os.path.join(out, "page")
         os.makedirs(self.dir, exist_ok=True)
+        bg = "rgb(%d,%d,%d)" % PAGE_BG
         with open(os.path.join(self.dir, "label.html"), "w") as fp:
             fp.write("<!doctype html><html><head><title>%s</title></head>"
-                     "<body style='margin:0'><a href='label2.html' style='display:block;"
+                     "<body style='margin:0;background:%s;color:#fff'>"
+                     "<a href='label2.html' style='display:block;"
                      "width:100vw;height:100vh;font-size:48px;padding:40px;"
-                     "box-sizing:border-box'>multiwin, tap for the second page</a></body></html>\n"
-                     % LABEL_PAGE_TITLE)
+                     "box-sizing:border-box;color:#fff'>multiwin, tap for the second page</a>"
+                     "</body></html>\n" % (LABEL_PAGE_TITLE, bg))
         with open(os.path.join(self.dir, "label2.html"), "w") as fp:
             fp.write("<!doctype html><html><head><title>%s</title></head>"
-                     "<body style='font-size:48px;padding:40px'>multiwin, second</body></html>\n"
-                     % LABEL_PAGE_TITLE_2)
+                     "<body style='margin:0;background:%s;color:#fff;font-size:48px;padding:40px'>"
+                     "multiwin, second</body></html>\n" % (LABEL_PAGE_TITLE_2, bg))
         sock = socket.socket()
         sock.bind(("127.0.0.1", 0))
         self.port = sock.getsockname()[1]
@@ -490,27 +573,19 @@ def check_label(phone, dev, page, out):
         close_window(phone, 3)
         return check(False, "WIN-28", "adb reverse failed; no local page to navigate to")
     log("window 3 on display %s; the page is %s" % (third.get("displayId"), page.url()))
-    # The window's own input, the way a person navigates one tab: focus the
-    # address bar, type the local page, Return. No intent, so no task moves.
-    # Chrome's bar height depends on the tab strip it drew, so a couple of
-    # heights are tried; each waits only for a message that arrives after it.
-    first = None
-    for ny in (0.06, 0.11, 0.16):
-        mark = phone.mark()
-        send_tap(phone.client, 3, 0.5, ny)
-        time.sleep(0.8)
-        phone.client.send_json({"t": "text", "stream": 3, "text": page.url()})
-        time.sleep(0.3)
-        send_key(phone.client, 3, 66)
-        first, _ = phone.wait_title(3, LABEL_PAGE_TITLE, timeout=6.0, since=mark)
-        if first:
-            log("the local page loaded after a tap at y=%.2f" % ny)
-            break
-    if first is None:
-        log("window 3's picture: %s" % (grab(phone, dev, 3, "c-label", out) or "no frame"))
+    # The window's own input, the way a person navigates one tab: Ctrl+L, type
+    # the local page, Return. No intent, so no task moves and no coordinate is
+    # guessed (boot 5's tapped height landed on the voice-search mic).
+    title, png, took = navigate_until(phone, dev, 3, page.url(), LABEL_PAGE_TITLE,
+                                      out, "c-label")
+    if title is None:
+        log("window 3's picture: %s" % (png or "no frame"))
         close_window(phone, 3)
         return check(False, "WIN-28",
                      "the local page never became window.title (could not load %s)" % page.url())
+    check(True, "WIN-28",
+          "the local page loaded through Ctrl+L in %.1fs and painted it (title len=%d)"
+          % (took, len(title)))
     # The timed label change is the next one, and its clock starts at the tap
     # that asks for it: typing a URL and a cold first render are the harness's
     # work, not the phone's.
