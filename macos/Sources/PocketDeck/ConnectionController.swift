@@ -782,7 +782,7 @@ final class ConnectionController {
 
     func openApp(_ app: AppInfo) {
         guard link.isOnline else { return }
-        windows.openApp(pkg: app.pkg, activity: app.activity)
+        windows.openOrRaise(pkg: app.pkg, activity: app.activity)
     }
 
     func openPhoneWindow() {
@@ -801,7 +801,7 @@ final class ConnectionController {
 
     func openFromSpotlight(_ request: SpotlightOpenRequest) {
         if link.isOnline, link.phone?.id == request.deviceId {
-            windows.openApp(pkg: request.pkg)
+            windows.openOrRaise(pkg: request.pkg)
             return
         }
         guard let phone = remembered.phone(id: request.deviceId) else {
@@ -855,7 +855,7 @@ final class ConnectionController {
                 focusWindow(stream: stream)
                 return
             }
-            dockApps.bind(pid: pid, stream: windows.openApp(pkg: pkg).stream, pkg: pkg)
+            dockApps.bind(pid: pid, stream: windows.openOrRaise(pkg: pkg).stream, pkg: pkg)
             return
         }
         guard let phone = remembered.phone(id: deviceId) else {
@@ -878,7 +878,7 @@ final class ConnectionController {
     private func openPendingDock(readyPhone id: String) {
         guard let pending = pendingDockOpen, pending.deviceId == id else { return }
         pendingDockOpen = nil
-        dockApps.bind(pid: pending.pid, stream: windows.openApp(pkg: pending.pkg).stream, pkg: pending.pkg)
+        dockApps.bind(pid: pending.pid, stream: windows.openOrRaise(pkg: pending.pkg).stream, pkg: pending.pkg)
     }
 
     /// Test hooks: once the app list (and the app's icon) is in.
@@ -1123,7 +1123,7 @@ final class ConnectionController {
 
     func intentsOpenApp(_ pkg: String, on deviceId: String) {
         if link.isOnline, link.phone?.id == deviceId {
-            windows.openApp(pkg: pkg)
+            windows.openOrRaise(pkg: pkg)
             return
         }
         pendingOpen = SpotlightOpenRequest(deviceId: deviceId, pkg: pkg)
@@ -1994,7 +1994,7 @@ final class ConnectionController {
                     showTransient("That app isn't openable from the Mac.")
                     return
                 }
-                stream = windows.openOrRaiseApp(pkg: app.pkg, activity: app.activity)
+                stream = windows.openOrRaise(pkg: app.pkg, activity: app.activity).stream
             case .send(let destination):
                 // The window is already open: an older phone that ignores
                 // notify.open keeps today's behaviour there.
@@ -2249,7 +2249,7 @@ final class ConnectionController {
         }
         if let request = pendingOpen, request.deviceId == info.id {
             pendingOpen = nil
-            windows.openApp(pkg: request.pkg)
+            windows.openOrRaise(pkg: request.pkg)
         }
         openPendingLink(readyPhone: info.id)
         openPendingDock(readyPhone: info.id)
@@ -2541,10 +2541,25 @@ final class ConnectionController {
             return nil
         case "deckclick":
             // A Deck cell's click: its own drawn place, through the window's
-            // event handling (the Deck has no debug route that calls openApp).
+            // event handling (the Deck has no debug route that calls openOrRaise).
             guard let label = arguments.first else { return "deckclick needs an app label" }
             guard let deck = DeckWindow.window else { return "no deck window" }
             return DeckCellClick.click(label: label, in: deck)
+        case "coverclick":
+            // A click on the opening cover's own button (Cancel or Close), at
+            // its place in the window, through the window's event handling.
+            guard let title = arguments.first else { return "coverclick needs a button title" }
+            let controllers = NSApp.windows.compactMap { $0.windowController as? StreamWindowController }
+            guard let target = controllers.first(where: { $0.opening.isUp }) else {
+                return "no cover is up"
+            }
+            guard target.chrome.openingCover.buttonCentre(title) != nil else {
+                return "no cover button \(title)"
+            }
+            // The press lands after this command answers: closing the window
+            // from inside the poll would hold the reply the check waits for.
+            Task { @MainActor in target.chrome.openingCover.press(title) }
+            return nil
         case "keywindow":
             // Which window a raise actually put in front: a read, for a check
             // that must not infer it from the CG window list's order.
@@ -2838,7 +2853,7 @@ final class ConnectionController {
     }
 
     private func applyAutoOpen(_ options: LaunchOptions) {
-        for pkg in options.openPackages { windows.openApp(pkg: pkg) }
+        for pkg in options.openPackages { windows.openOrRaise(pkg: pkg) }
         if options.openPhone { windows.openPhoneWindow() }
         if options.continueOnMac { windows.openHandoffWindow() }
         for resize in options.resizes {

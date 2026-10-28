@@ -49,6 +49,8 @@
 //                    Deck window's event handling
 //   keywindow PATH   the key window's identifier and title, one per line
 //                    (which window a raise actually put in front)
+//   coverclick TITLE a click on the opening cover's Cancel or Close, at the
+//                    button's place in the window
 //   quit             a real quit through NSApp.terminate (⌘Q's path), for a
 //                    check that relaunches the app
 //

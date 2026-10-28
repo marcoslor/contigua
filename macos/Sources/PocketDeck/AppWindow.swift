@@ -47,6 +47,7 @@ final class AppWindowController: StreamWindowController {
     func setSubject(_ label: String) {
         subject = label
         window?.title = manager.titled(label)
+        refreshOpeningCover()
     }
 
     override func retitle() {

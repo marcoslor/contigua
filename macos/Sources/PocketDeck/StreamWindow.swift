@@ -92,6 +92,9 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     /// Tab handling (see `handleBarKey`).
     private var barKeyMonitor: Any?
     private(set) var isStalled = false
+    /// The link is down: the bar's phone-side controls are dimmed, with the
+    /// reason, so a click cannot vanish into a dead session (M3, item 8).
+    private(set) var phoneControlsOffline = false
     private var linkIsDown = false
 
     /// The watchdog's rule: a live session, the window on screen, and a picture
@@ -259,11 +262,12 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
 
     // MARK: Opening cover
 
-    /// The cover is up from the open: the timer moves it through Still
-    /// Opening and Couldn't Open; the first frame ends it.
+    /// The cover is up from the open: its clock moves it from the opening
+    /// state to the slow one at 5 s and to the failure at 20 s; the first
+    /// frame, the phone's refusal and Cancel are the other events.
     private func startOpeningCover() {
         guard showsOpeningCover else { return }
-        chrome.openingCover.onRetry = { [weak self] in self?.retryOpening() }
+        chrome.openingCover.onCancel = { [weak self] in self?.cancelOpening() }
         chrome.openingCover.onClose = { [weak self] in self?.window?.close() }
         openingPhase = opening.phase(at: now())
         showOpeningPhase()
@@ -280,73 +284,109 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
             openingTimer = nil
             return
         }
-        let phase = opening.phase(at: now())
-        guard phase != openingPhase else { return }
-        openingPhase = phase
+        guard let actions = opening.handle(.tick(now()), at: now()) else { return }
+        openingPhase = opening.phase(at: now())
         showOpeningPhase()
         writeChromeState()
+        run(actions)
+    }
+
+    /// The title and the failure's wording use the phone's display name.
+    private var openingPhone: String { manager.phoneName }
+
+    /// The app's label or the phone's name arrived while the cover is up: the
+    /// title says it now instead of at the next phase change.
+    func refreshOpeningCover() {
+        guard showsOpeningCover, opening.isUp else { return }
+        openingPhase = opening.phase(at: now())
+        showOpeningPhase()
     }
 
     private func showOpeningPhase() {
-        chrome.openingCover.show(openingPhase, name: openingName, icon: openingIcon, phone: openingIsPhone)
+        let display = OpeningCover.display(openingPhase, name: openingName,
+                                           phone: openingPhone, phoneMode: openingIsPhone)
+        chrome.openingCover.show(display, icon: openingIcon)
+        // The cover is a frozen mode: the bar's phone-side controls dim with
+        // it, from the first moment to a refusal (WIN-22, item M9).
+        updateFrozen()
     }
 
     /// The stream's first frame arrived (WindowManager); once per window.
     func noteFirstFrame() {
-        guard showsOpeningCover, opening.firstFrame(at: now()) else { return }
+        guard showsOpeningCover, let actions = opening.handle(.firstFrame, at: now()) else { return }
         openingTimer?.invalidate()
         openingTimer = nil
         openingPhase = nil
-        chrome.openingCover.show(nil, name: openingName, icon: openingIcon, phone: openingIsPhone)
+        showOpeningPhase()
         Log.video.notice("stream \(self.stream, privacy: .public): first frame, opening cover off")
         updateFrozen()
         tickFrameWatchdog()
+        run(actions)
     }
 
-    /// Try Again on the failed cover: the same open again (the phone dedupes a
-    /// second open of an app that is already opening), and the clock restarts.
-    func retryOpening() {
-        guard isOpening, opening.canRetry else { return }
-        opening.retry(at: now())
-        openingPhase = .loading
-        showOpeningPhase()
-        sendOpen()
-        updateFrozen()
-        Log.video.notice("stream \(self.stream, privacy: .public): opening retry")
+    /// Cancel on the slow cover: closing the window cancels the open on the
+    /// phone too (its `window.close`), so the phone does not keep launching.
+    func cancelOpening() {
+        guard showsOpeningCover, let actions = opening.handle(.cancel, at: now()) else { return }
+        Log.video.notice("stream \(self.stream, privacy: .public): opening cancelled by the person")
+        run(actions)
     }
 
-    /// The phone refused the open (`error{mirror_unavailable}`, MIRROR-2): the
-    /// cover says why for good, offers Close only, and nothing is resent.
+    /// The phone refused the open (an `error` code): the cover greys out, says
+    /// why once and offers Close alone. A code the cover cannot explain has no
+    /// reason line; nothing is resent.
     func refuseOpening(_ code: String) {
-        guard showsOpeningCover, let refusal = OpeningCover.Refusal(errorCode: code),
-              opening.refuse(refusal) else { return }
-        openingPhase = .unavailable
+        guard showsOpeningCover, let actions = opening.handle(.refused(code), at: now()) else { return }
+        openingTimer?.invalidate()
+        openingTimer = nil
+        openingPhase = opening.phase(at: now())
         showOpeningPhase()
         writeChromeState()
-        Log.video.notice("stream \(self.stream, privacy: .public): opening refused, the phone cannot mirror")
+        updateFrozen()
+        Log.video.notice("stream \(self.stream, privacy: .public): opening refused")
+        run(actions)
     }
 
-    /// The chrome state's `loading=`: 1 while the cover is up, failed after
-    /// 20 s, unavailable when the phone refused the open, 0 once the frame is
-    /// in (or for a window with no cover).
+    /// Runs the machine's actions: the transition never touches a window.
+    private func run(_ actions: [OpeningCover.Action]) {
+        for action in actions {
+            switch action {
+            case .closeWindow:
+                window?.close()
+            }
+        }
+    }
+
+    /// The chrome state's `loading=`: 1 while the cover is up, failed when it
+    /// gave up or the phone refused, 0 once the frame is in (or for a window
+    /// with no cover).
     private var openingState: String {
         guard showsOpeningCover else { return "0" }
         switch opening.phase(at: now()) {
-        case .loading?, .stillLoading?: return "1"
+        case .opening?, .slow?: return "1"
         case .failed?: return "failed"
-        case .unavailable?: return "unavailable"
         case nil: return "0"
         }
     }
 
-    /// The cover's buttons, as the view shows them: `none`, `retry+close` or
-    /// `close`. The e2e's proof that a refused open cannot be asked again.
+    /// The cover's buttons, as the view shows them: `none`, `cancel` or
+    /// `close`. The e2e's proof that a failure cannot be asked again.
     private var openingButtons: String {
         guard showsOpeningCover, let phase = opening.phase(at: now()) else { return "none" }
         switch phase {
-        case .unavailable: return "close"
-        case .failed: return "retry+close"
-        case .loading, .stillLoading: return "none"
+        case .opening: return "none"
+        case .slow: return "cancel"
+        case .failed: return "close"
+        }
+    }
+
+    /// The cover's phase on screen: opening, slow, failed, 0 for no cover.
+    private var openingCoverPhase: String {
+        guard showsOpeningCover, let phase = opening.phase(at: now()) else { return "0" }
+        switch phase {
+        case .opening: return "opening"
+        case .slow: return "slow"
+        case .failed: return "failed"
         }
     }
 
@@ -402,7 +442,8 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
             writeChromeState()
         case .press(let index):
             guard let action = chrome.barAction(at: index),
-                  HeaderActionPolicy.isEnabled(action.kind, frozen: frozen) else { return }
+                  HeaderActionPolicy.isEnabled(action.kind, frozen: frozen,
+                                               offline: phoneControlsOffline) else { return }
             Log.video.notice("bar focus: press \(index, privacy: .public)")
             action.perform()
         case nil:
@@ -772,6 +813,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         state.settingsDensity = manager.defaultDensity
         state.liveText = liveText.isActive
         state.frozen = frozen
+        state.phoneOffline = phoneControlsOffline
         state.phoneWindow = self is PhoneWindowController
         state.panelOff = (self as? PhoneWindowController)?.panelOffShown ?? false
         state.revealDelay = manager.revealDelay
@@ -863,7 +905,10 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     /// Live Text both call it.
     func updateFrozen() {
         chrome.setFrozen(frozen)
-        if window?.isKeyWindow ?? false { StreamMenuState.shared.frozen = frozen }
+        if window?.isKeyWindow ?? false {
+            StreamMenuState.shared.frozen = frozen
+            StreamMenuState.shared.phoneOffline = phoneControlsOffline
+        }
         writeChromeState()
     }
 
@@ -937,7 +982,10 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
             + " stall=\(isStalled ? 1 : 0) stall_pill=\(stallPill ? 1 : 0)"
             + " drop_pill=\(dropPill?.fadeTarget == 1 ? "shown" : "hidden")"
             + " loading=\(openingState)"
+            + " cover_phase=\(openingCoverPhase)"
             + " cover_buttons=\(openingButtons)"
+            + " bar_offline=\(phoneControlsOffline ? 1 : 0)"
+            + " bar_enabled=\(chrome.enabledHeaderKinds.isEmpty ? "none" : chrome.enabledHeaderKinds.joined(separator: ","))"
             + " bar_focus=\(barFocusState)"
             + " key=\(window?.isKeyWindow == true ? 1 : 0)"
             + " responder_video=\(window?.firstResponder === videoView ? 1 : 0)"
@@ -1125,10 +1173,13 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     /// 1 s (a blip shows nothing), and "Phone offline" after 15 s.
     func setLinkDown(_ down: Bool) {
         linkIsDown = down
+        phoneControlsOffline = down
+        chrome.setOffline(down)
         if down {
             liveText.exit(.disconnect)
             setStalled(false)
         }
+        writeChromeState()
         pillShowWork?.cancel()
         pillOfflineWork?.cancel()
         guard down else {
@@ -1244,7 +1295,8 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     /// Menu action (target nil, responder chain). Enabled in every stream window.
     /// Live Text freezes it: the phone behind the frozen frame is paused.
     @objc func navigateBack(_ sender: Any?) {
-        guard HeaderActionPolicy.allowsPhoneShortcut(frozen: frozen) else { return }
+        guard HeaderActionPolicy.allowsPhoneShortcut(frozen: frozen,
+                                                     offline: phoneControlsOffline) else { return }
         session.nav(stream: stream, action: "back")
     }
 

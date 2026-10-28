@@ -32,8 +32,11 @@ func walk(_ element: AXUIElement, _ depth: Int) {
     let description = text(element, kAXDescriptionAttribute)
     let help = text(element, kAXHelpAttribute)
     let identifier = text(element, "AXIdentifier")
-    if !title.isEmpty || !description.isEmpty || !help.isEmpty || !identifier.isEmpty {
-        print("\(String(repeating: "  ", count: depth))\(role) title=[\(title)] desc=[\(description)] help=[\(help)] id=[\(identifier)]")
+    // A label's words ride AXValue (a static text has no title); including it
+    // lets a check read what the cover says, not only what a button is called.
+    let value = text(element, kAXValueAttribute)
+    if !title.isEmpty || !description.isEmpty || !help.isEmpty || !identifier.isEmpty || !value.isEmpty {
+        print("\(String(repeating: "  ", count: depth))\(role) title=[\(title)] desc=[\(description)] help=[\(help)] id=[\(identifier)] value=[\(value)]")
     }
     var children: CFTypeRef?
     guard AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &children) == .success,

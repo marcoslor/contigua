@@ -23,6 +23,9 @@ final class StreamMenuState {
     /// The key stream window's phone-side actions are frozen: Live Text or a
     /// cover over the mirror. One rule for the buttons, shortcuts and menu.
     var frozen = false
+    /// The key window's link is down: the phone-side menu items are disabled
+    /// with their reason (the same rule as the bar's controls).
+    var phoneOffline = false
     /// The key window is the phone window (the whole Navigate menu acts on it).
     var phoneWindow = false
     /// The key phone window's mirrored panel is held off ("Turn Off Phone

@@ -78,6 +78,17 @@ struct HeaderAction {
         case .custom: return .custom(help)
         }
     }
+
+    /// Why this control cannot work while the phone is away, in the person's
+    /// words: a disabled control says what would fix it (CONV-PD-09).
+    var offlineReason: String {
+        switch kind {
+        case .back, .home, .recents: return "Connect your phone to use these."
+        case .custom: return "Connect your phone to turn off its screen."
+        case .liveText: return ""
+        case .cameraSwitch: return "Connect your phone to switch cameras."
+        }
+    }
 }
 
 /// Whether a control may act. One decision for the bar's buttons and for the
@@ -85,16 +96,19 @@ struct HeaderAction {
 /// button, because the picture is frozen and the phone behind it is paused.
 enum HeaderActionPolicy {
     /// What is over the picture freezes the phone-side controls: Live Text
-    /// (the frame is frozen) or a cover (the panel sleeps, or a secure surface
-    /// is hidden). The Live Text button itself stays live.
-    static func isEnabled(_ kind: HeaderActionKind, frozen: Bool) -> Bool {
-        frozen ? kind == .liveText : true
+    /// (the frame is frozen) or a cover (the panel sleeps, a secure surface is
+    /// hidden, or the opening cover refuses). A link that is down disables them
+    /// too: a request into a dead session is a click that silently does
+    /// nothing (M3). The Live Text button itself stays live.
+    static func isEnabled(_ kind: HeaderActionKind, frozen: Bool, offline: Bool = false) -> Bool {
+        if kind == .liveText { return true }
+        return !frozen && !offline
     }
 
     /// The phone navigation shortcuts (⌘[, ⇧⌘H, ⌘↑) act on the phone: they are
     /// frozen with the buttons.
-    static func allowsPhoneShortcut(frozen: Bool) -> Bool {
-        !frozen
+    static func allowsPhoneShortcut(frozen: Bool, offline: Bool = false) -> Bool {
+        !frozen && !offline
     }
 }
 
@@ -251,7 +265,27 @@ final class HeaderActionButton: NSView {
             window?.invalidateCursorRects(for: self)
             if !isEnabled { hovered = false }
             needsDisplay = true
+            applyHelp()
         }
+    }
+
+    /// Why the control is dimmed (nil when it is live): the tooltip and the
+    /// help tag say what would fix it, in the person's words.
+    var disabledReason: String? {
+        didSet {
+            guard disabledReason != oldValue else { return }
+            applyHelp()
+        }
+    }
+
+    private var standardHelp: String {
+        "\(action.help): ⌃Tab moves the keyboard to the bar, Return presses"
+    }
+
+    private func applyHelp() {
+        let help = disabledReason ?? standardHelp
+        toolTip = disabledReason ?? action.help
+        setAccessibilityHelp(help)
     }
 
     init(action: HeaderAction, material: HeaderBar.Material) {
@@ -269,13 +303,12 @@ final class HeaderActionButton: NSView {
                             width: HeaderBar.symbolPointSize, height: HeaderBar.symbolPointSize)
         icon.autoresizingMask = [.minXMargin, .maxXMargin, .minYMargin, .maxYMargin]
         addSubview(icon)
-        toolTip = action.help
         setAccessibilityLabel(action.help)
         setAccessibilityRole(.button)
         setAccessibilityEnabled(true)
         // CONV-PD-09/MIRROR-13: the label names the action, the help says how
-        // to reach it without a pointer.
-        setAccessibilityHelp("\(action.help): ⌃Tab moves the keyboard to the bar, Return presses")
+        // to reach it without a pointer (or why it is dimmed).
+        applyHelp()
     }
 
     @available(*, unavailable)
@@ -377,6 +410,8 @@ final class HeaderBarView: NSView {
     private var buttons: [HeaderActionButton] = []
     private var liveTextActive = false
     private var frozen = false
+    /// The link is down: every phone-side control is dimmed with its reason.
+    private var offline = false
     /// The button the keyboard is on (MIRROR-13), kept across a rebuild: the
     /// bar is rebuilt when the panel report changes its glyph.
     private var focusedIndex: Int?
@@ -436,7 +471,9 @@ final class HeaderBarView: NSView {
     private func applyEnabled() {
         for button in buttons {
             button.isEnabled = HeaderActionPolicy.isEnabled(button.action.kind,
-                                                            frozen: frozen || liveTextActive)
+                                                            frozen: frozen || liveTextActive,
+                                                            offline: offline)
+            button.disabledReason = !button.isEnabled && offline ? button.action.offlineReason : nil
         }
         applyFocus()
     }
@@ -448,6 +485,20 @@ final class HeaderBarView: NSView {
         guard frozen != self.frozen else { return }
         self.frozen = frozen
         applyEnabled()
+    }
+
+    /// The link went down or came back: the phone-side controls dim with the
+    /// reason (Turn Off Phone Screen included).
+    func setOffline(_ offline: Bool) {
+        guard offline != self.offline else { return }
+        self.offline = offline
+        applyEnabled()
+    }
+
+    /// The kinds the bar has live right now, in reading order: the chrome
+    /// state's proof that a frozen or offline control is really disabled.
+    var enabledKinds: [String] {
+        buttons.filter { $0.isEnabled }.map { $0.action.kind.rawValue }
     }
 
     /// The button that runs one kind (the e2e clicks its real control).

@@ -3,7 +3,7 @@
 // SwiftUI controls, so there is no NSView to hand an event to: the cell's frame
 // comes from the accessibility tree (what a screen reader reads), and the
 // mouse events go to the window, the same route a pointer's click takes.
-// A route that called `openApp` would prove the action, not the cell.
+// A route that called `openOrRaise` would prove the action, not the cell.
 
 import AppKit
 import ApplicationServices

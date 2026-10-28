@@ -3389,6 +3389,13 @@ class Session(object):
         h = msg.get("h", SCREEN_H)
         dpi = msg.get("dpi", SCREEN_DPI)
         mode = "phone" if msg.get("mode") == "phone" else "app"
+        if mode == "app" and self.phone.args.window_refuse:
+            # A phone that refuses an app's window: the same `error` an
+            # unavailable app sends, with no window and no frames, so the
+            # Mac's cover must explain it and offer no retry (WIN-11).
+            self._send_error(self.phone.args.window_refuse,
+                             "the phone refused this app's window", stream_id)
+            return
         if mode == "phone" and self.phone.args.mirror_unavailable:
             # A phone that cannot capture display 0 (docs/PROTOCOL.md
             # "window.open"): the same refusal a pre-14 build sends, with no
@@ -3934,6 +3941,9 @@ def build_parser():
     p.add_argument("--mirror-unavailable", action="store_true", dest="mirror_unavailable",
                    help="answer a phone-mode window.open with error mirror_unavailable "
                         "(a phone that cannot capture display 0, docs/PROTOCOL.md)")
+    p.add_argument("--window-refuse", metavar="CODE", default=None,
+                   help="answer an app window.open with error CODE (app_disabled, "
+                        "app_missing, or a code with no mapped sentence); no window opens")
     p.add_argument("--qr-uri", metavar="URI",
                    help="simulate the v2 QR scan (R2): stage a pocketdeck://pair "
                         "c/n/f/s URI; a Mac whose TLS fingerprint matches f gets "

@@ -1,74 +1,141 @@
-// The opening cover's clock (docs/UX.md "Opening a window"): loading, Still
-// opening at 5 s, Couldn't open at 20 s, and the first frame ending it. The
-// state is pure, so the test pins the edges with a fake clock.
+// The opening cover's machine (docs/UX.md "Opening a window", the L1 design):
+// opening -> slow at 5 s -> failed at 20 s, the first frame ending it, the
+// phone's refusal failing it at once, and Cancel closing the window. The
+// transition is pure, so every edge is pinned with a fake clock.
 
 import AppKit
 import XCTest
 @testable import PocketDeck
 
 final class OpeningCoverTests: XCTestCase {
+    private func transition(_ state: OpeningCover.State, _ event: OpeningCover.Event,
+                            startedAt: TimeInterval = 100, now: TimeInterval = 100)
+        -> (OpeningCover.State, [OpeningCover.Action]) {
+        OpeningCover.transition(state, event, startedAt: startedAt, now: now)
+    }
+
     func testTheCoverMovesThroughItsPhasesAtFiveAndTwentySeconds() {
         let cover = OpeningCover(startedAt: 100)
-        XCTAssertEqual(cover.phase(at: 100), .loading)
-        XCTAssertEqual(cover.phase(at: 104.9), .loading)
-        XCTAssertEqual(cover.phase(at: 105), .stillLoading)
-        XCTAssertEqual(cover.phase(at: 119.9), .stillLoading)
-        XCTAssertEqual(cover.phase(at: 120), .failed)
-        XCTAssertEqual(cover.phase(at: 400), .failed)
+        XCTAssertEqual(cover.phase(at: 100), .opening)
+        XCTAssertEqual(cover.phase(at: 104.9), .opening)
+        XCTAssertEqual(cover.phase(at: 105), .slow)
+        XCTAssertEqual(cover.phase(at: 119.9), .slow)
+        XCTAssertEqual(cover.phase(at: 120), .failed(reason: nil))
+        XCTAssertEqual(cover.phase(at: 400), .failed(reason: nil))
         XCTAssertTrue(cover.isUp)
-        XCTAssertFalse(cover.hasFirstFrame)
     }
 
-    func testTheFirstFrameEndsTheCoverForGood() {
+    func testTheFirstFrameEndsTheCoverForGoodAndIsNotedOnce() {
         var cover = OpeningCover(startedAt: 0)
-        XCTAssertTrue(cover.firstFrame(at: 3))
-        XCTAssertTrue(cover.hasFirstFrame)
-        XCTAssertFalse(cover.isUp)
-        XCTAssertNil(cover.phase(at: 3))
+        XCTAssertEqual(cover.handle(.firstFrame, at: 3), [])
+        XCTAssertEqual(cover.phase(at: 3), nil)
+        XCTAssertNil(cover.handle(.firstFrame, at: 4), "the first frame is noted once")
         XCTAssertNil(cover.phase(at: 30), "no failure once the picture is in")
-        XCTAssertFalse(cover.firstFrame(at: 4), "the first frame is noted once")
-        cover.retry(at: 5)
-        XCTAssertNil(cover.phase(at: 6), "a retry after a frame does not bring a cover back")
+        XCTAssertNil(cover.handle(.refused("app_disabled"), at: 5), "a refusal cannot reopen a live cover")
+        XCTAssertNil(cover.handle(.cancel, at: 6), "Cancel does nothing once the picture is in")
     }
 
-    func testTryAgainRestartsTheClock() {
+    func testALateFirstFrameEndsTheFailure() {
         var cover = OpeningCover(startedAt: 0)
-        XCTAssertEqual(cover.phase(at: 21), .failed)
-        cover.retry(at: 21)
-        XCTAssertEqual(cover.phase(at: 21), .loading)
-        XCTAssertEqual(cover.phase(at: 26), .stillLoading)
-        XCTAssertEqual(cover.phase(at: 41), .failed)
-        XCTAssertTrue(cover.isUp)
+        XCTAssertEqual(cover.phase(at: 21), .failed(reason: nil))
+        XCTAssertEqual(cover.handle(.firstFrame, at: 22), [])
+        XCTAssertNil(cover.phase(at: 22), "the phone can still produce the picture after the 20 s mark")
     }
 
-    func testTheSentencesAreTheDocumentedOnes() {
-        XCTAssertEqual(OpeningCover.message(.loading, name: "Chrome", phone: false),
-                       "Opening on your phone…")
-        XCTAssertEqual(OpeningCover.message(.stillLoading, name: "Chrome", phone: false),
-                       "Still opening…")
-        XCTAssertEqual(OpeningCover.message(.failed, name: "Chrome", phone: false),
-                       "Couldn't open Chrome.")
-        XCTAssertEqual(OpeningCover.message(.loading, name: "Pixel", phone: true),
-                       "Opening your phone…")
-        XCTAssertEqual(OpeningCover.message(.failed, name: "Pixel", phone: true),
-                       "Couldn't open your phone.")
-        XCTAssertEqual(OpeningCover.message(.unavailable, name: "Pixel", phone: true),
+    func testARefusalFailsTheCoverAtOnceWithItsReason() {
+        var cover = OpeningCover(startedAt: 0)
+        XCTAssertEqual(cover.handle(.refused("app_disabled"), at: 2), [])
+        XCTAssertEqual(cover.phase(at: 2), .failed(reason: "The app is disabled on the phone."))
+        XCTAssertEqual(cover.phase(at: 60), cover.phase(at: 2),
+                       "the refusal stands; the 20 s clock never takes it over")
+        XCTAssertNil(cover.handle(.refused("app_missing"), at: 3), "the first refusal is the one shown")
+        XCTAssertEqual(cover.phase(at: 3), .failed(reason: "The app is disabled on the phone."))
+    }
+
+    func testRefusedCodesMapToTheirReasonLine() {
+        XCTAssertEqual(OpeningCover.reason(for: "app_disabled"), "The app is disabled on the phone.")
+        XCTAssertEqual(OpeningCover.reason(for: "app_missing"), "The app isn't installed any more.")
+        XCTAssertEqual(OpeningCover.reason(for: "not_installed"), "The app isn't installed any more.")
+        XCTAssertEqual(OpeningCover.reason(for: "mirror_unavailable"),
                        "This phone can't share its screen with PocketDeck.")
+        XCTAssertNil(OpeningCover.reason(for: "launch_failed"))
+        XCTAssertNil(OpeningCover.reason(for: "bad_request"))
+        XCTAssertNil(OpeningCover.reason(for: "something_new"))
     }
 
-    /// The phone's `error{mirror_unavailable}` is one sentence with Close only:
-    /// the cover is terminal, the 20 s failure never takes it over, and Try
-    /// Again cannot ask the phone a second time (MIRROR-2, misses.md M2).
-    /// The refusal's sentence is whole at the phone window's width, and Close
-    /// alone is centred: the first capture cut it at "PocketDec" and put the
-    /// button in the window's corner.
+    func testAnUnknownCodeFailsWithoutAReasonLine() {
+        var cover = OpeningCover(startedAt: 0)
+        cover.handle(.refused("something_new"), at: 1)
+        XCTAssertEqual(cover.phase(at: 1), .failed(reason: nil))
+    }
+
+    func testCancelClosesTheWindowFromOpeningOrSlowOnly() {
+        for state in [OpeningCover.State.opening, .slow] {
+            let (next, actions) = transition(state, .cancel)
+            XCTAssertEqual(next, .closed)
+            XCTAssertEqual(actions, [.closeWindow])
+        }
+        XCTAssertEqual(transition(.failed(reason: nil), .cancel).1, [], "a failed cover offers Close only")
+        XCTAssertEqual(transition(.live, .cancel).1, [], "a live window has no cover to cancel")
+    }
+
+    func testIgnoredEventsLeaveTheStateAlone() {
+        // A tick after the failure, and a tick in the opening state under 5 s.
+        XCTAssertEqual(transition(.failed(reason: nil), .tick(30)).0, .failed(reason: nil))
+        XCTAssertEqual(transition(.opening, .tick(1)).0, .opening)
+        XCTAssertEqual(transition(.slow, .tick(6)).1, [])
+        // A refusal with no state to move.
+        XCTAssertEqual(transition(.live, .refused("app_missing")).0, .live)
+        XCTAssertEqual(transition(.closed, .tick(1)).0, .closed)
+        XCTAssertEqual(transition(.closed, .firstFrame).0, .closed)
+        // handle() reports an ignored event as nil, so nothing is logged.
+        var cover = OpeningCover(startedAt: 0)
+        XCTAssertEqual(cover.handle(.cancel, at: 1), [.closeWindow])
+        XCTAssertNil(cover.handle(.cancel, at: 2), "the second Cancel is ignored in .closed")
+    }
+
+    func testTheTitlesAndSentencesAreTheDocumentedOnes() {
+        XCTAssertEqual(OpeningCover.title(name: "Chrome", phone: "Pixel 9", phoneMode: false),
+                       "Chrome — opening on Pixel 9")
+        XCTAssertEqual(OpeningCover.title(name: "Pixel 9", phone: "Pixel 9", phoneMode: true),
+                       "Phone — opening on Pixel 9")
+        XCTAssertEqual(OpeningCover.title(name: "Chrome", phone: "", phoneMode: false),
+                       "Chrome — opening on your phone")
+        XCTAssertEqual(OpeningCover.lead(name: "Chrome", phone: "Pixel 9", phoneMode: false),
+                       "Pixel 9 can't open Chrome.")
+        XCTAssertEqual(OpeningCover.lead(name: "Pixel 9", phone: "Pixel 9", phoneMode: true),
+                       "Pixel 9 can't open the phone screen.")
+    }
+
+    func testTheDisplayFollowsThePhase() {
+        let opening = OpeningCover.display(.opening, name: "Chrome", phone: "Pixel 9", phoneMode: false)
+        XCTAssertEqual(opening?.secondary, nil)
+        XCTAssertEqual(opening?.showsCancel, false)
+        XCTAssertEqual(opening?.showsClose, false)
+        let slow = OpeningCover.display(.slow, name: "Chrome", phone: "Pixel 9", phoneMode: false)
+        XCTAssertEqual(slow?.secondary, "Taking longer than usual")
+        XCTAssertEqual(slow?.showsCancel, true)
+        let failed = OpeningCover.display(.failed(reason: "The app is disabled on the phone."),
+                                          name: "Chrome", phone: "Pixel 9", phoneMode: false)
+        XCTAssertEqual(failed?.lead, "Pixel 9 can't open Chrome.")
+        XCTAssertEqual(failed?.reason, "The app is disabled on the phone.")
+        XCTAssertEqual(failed?.showsClose, true)
+        XCTAssertEqual(failed?.showsCancel, false)
+        XCTAssertNil(OpeningCover.display(nil, name: "Chrome", phone: "Pixel 9", phoneMode: false))
+    }
+
+    /// The failure's sentence is whole at the phone window's width, and Close
+    /// alone is centred; the slow phase shows one Cancel and no Close.
     @MainActor
-    func testTheRefusalSentenceWrapsAndCloseIsCentred() {
+    func testTheFailureAndSlowLayoutsPutTheirButtonsWhereTheDesignDoes() {
         let view = OpeningCoverView(frame: NSRect(x: 0, y: 0, width: 353, height: 793))
-        view.show(.unavailable, name: "Pixel 9", icon: nil, phone: true)
+        let failed = OpeningCover.display(.failed(reason: "This phone can't share its screen with PocketDeck."),
+                                          name: "Pixel 9", phone: "Pixel 9", phoneMode: true)
+        view.show(failed, icon: nil)
         view.layout()
-        XCTAssertEqual(view.messageText, "This phone can't share its screen with PocketDeck.")
-        XCTAssertGreaterThan(view.messageFrame.height, 20,
+        XCTAssertEqual(view.messageText, "Pixel 9 can't open the phone screen.")
+        XCTAssertEqual(view.displayedReason, "This phone can't share its screen with PocketDeck.")
+        XCTAssertGreaterThan(view.messageFrame.height, 15,
                              "the sentence wraps instead of being clipped at the window's edge")
         XCTAssertLessThanOrEqual(view.messageFrame.maxX, view.bounds.width - 20,
                                  "the sentence stays inside the window")
@@ -77,37 +144,27 @@ final class OpeningCoverTests: XCTestCase {
                        "Close is centred")
         XCTAssertGreaterThan(view.visibleButtonFrames[0].minY, 0, "the button sits inside the cover")
         XCTAssertLessThan(view.visibleButtonFrames[0].maxY, view.bounds.height)
-        // The 20 s failure keeps both buttons and lays them out together.
-        view.show(.failed, name: "Pixel 9", icon: nil, phone: true)
+
+        let slow = OpeningCover.display(.slow, name: "Pixel 9", phone: "Pixel 9", phoneMode: true)
+        view.show(slow, icon: nil)
         view.layout()
-        XCTAssertEqual(view.visibleButtonFrames.count, 2)
-        let frames = view.visibleButtonFrames
-        XCTAssertEqual((frames[0].minX + frames[1].maxX) / 2, view.bounds.width / 2, accuracy: 1,
-                       "Try Again and Close are centred as one row")
+        XCTAssertEqual(view.displayedSecondary, "Taking longer than usual")
+        XCTAssertEqual(view.visibleButtonFrames.count, 1, "Cancel alone")
+        XCTAssertEqual(view.visibleButtonFrames[0].midX, view.bounds.width / 2, accuracy: 1)
+        XCTAssertEqual(view.sweepFrame.height, 2, "the accent line is 2 pt")
+        XCTAssertEqual(view.sweepFrame.maxY, view.bounds.height, "the line sits under the title bar")
     }
 
-    func testARefusedOpenIsOneSentenceWithCloseOnly() {
-        var cover = OpeningCover(startedAt: 0)
-        XCTAssertTrue(cover.canRetry)
-        XCTAssertTrue(cover.refuse(.mirrorUnavailable))
-        XCTAssertEqual(cover.phase(at: 1), .unavailable)
-        XCTAssertEqual(cover.phase(at: 60), .unavailable, "no 20 s failure after a refusal")
-        XCTAssertFalse(cover.canRetry, "a refused open has no Try Again")
-        cover.retry(at: 30)
-        XCTAssertEqual(cover.phase(at: 31), .unavailable, "a retry cannot restart a refusal")
-        XCTAssertFalse(cover.refuse(.mirrorUnavailable), "a refusal is noted once")
-    }
-
-    /// The mapping is the wire code and nothing else: a launch failure stays the
-    /// generic failure with Try Again.
-    func testOnlyTheMirrorRefusalMapsToTheSentence() {
-        XCTAssertEqual(OpeningCover.Refusal(errorCode: "mirror_unavailable"), .mirrorUnavailable)
-        XCTAssertNil(OpeningCover.Refusal(errorCode: "launch_failed"))
-        XCTAssertNil(OpeningCover.Refusal(errorCode: "bad_request"))
-        // A code with no mapping leaves the cover on its clock.
-        let cover = OpeningCover(startedAt: 0)
-        XCTAssertNil(cover.refusal)
-        XCTAssertEqual(cover.phase(at: 21), .failed)
-        XCTAssertTrue(cover.canRetry)
+    /// The opening phase has no buttons at all: the person waits, or the phone
+    /// answers.
+    @MainActor
+    func testTheOpeningPhaseHasNoButtons() {
+        let view = OpeningCoverView(frame: NSRect(x: 0, y: 0, width: 400, height: 600))
+        view.show(OpeningCover.display(.opening, name: "Chrome", phone: "Pixel 9", phoneMode: false), icon: nil)
+        view.layout()
+        XCTAssertEqual(view.displayedTitle, "Chrome — opening on Pixel 9")
+        XCTAssertTrue(view.visibleButtonFrames.isEmpty)
+        XCTAssertTrue(view.displayedSecondary.isEmpty)
+        XCTAssertTrue(view.displayedReason.isEmpty)
     }
 }
