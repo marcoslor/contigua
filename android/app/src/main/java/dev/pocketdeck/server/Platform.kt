@@ -237,6 +237,12 @@ fun interface WindowObserver {
  */
 fun interface TaskPresence {
     fun hasTask(displayId: Int): Boolean?
+
+    /**
+     * The display's top task id, for `window.opened` (WIN-32); null when this
+     * phone cannot read it or the display has no task yet.
+     */
+    fun taskId(displayId: Int): Int? = null
 }
 
 /** Owns the VirtualDisplay + encoder for one window stream. */
@@ -301,8 +307,12 @@ interface AppCatalog {
 data class IconLayers(val fg: String, val bg: String, val mono: String?)
 
 interface Launcher {
-    /** @return true when the launch was accepted; false means report `launch_failed`. */
-    fun launch(displayId: Int, pkg: String, activity: String?): Boolean
+    /**
+     * @param newInstance `window.open`'s `newInstance`: another task of the same
+     *   activity ([LaunchFlags]).
+     * @return true when the launch was accepted; false means report `launch_failed`.
+     */
+    fun launch(displayId: Int, pkg: String, activity: String?, newInstance: Boolean): Boolean
 
     /** Starts `ACTION_VIEW` for an already validated URL; false means `launch_failed`. */
     fun view(displayId: Int, url: String): Boolean

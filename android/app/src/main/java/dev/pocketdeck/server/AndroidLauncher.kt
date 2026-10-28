@@ -37,18 +37,19 @@ internal class AndroidLauncher(private val ctx: Context, private val log: (Strin
 
     private val pm get() = ctx.packageManager
 
-    override fun launch(displayId: Int, pkg: String, activity: String?): Boolean {
+    override fun launch(displayId: Int, pkg: String, activity: String?, newInstance: Boolean): Boolean {
         if (displayId < 0) return false
         val component = resolveComponent(pkg, activity) ?: run {
             log("no launcher activity for $pkg")
             return false
         }
+        val flags = LaunchFlags.of(newInstance)
         val intent = Intent(Intent.ACTION_MAIN).apply {
             setComponent(component)
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            addFlags(flags)
         }
         if (startViaBinder(intent, displayId)) return true
-        return startViaAm(displayId, component)
+        return startViaAm(displayId, component, flags)
     }
 
     override fun view(displayId: Int, url: String): Boolean {
@@ -243,8 +244,16 @@ internal class AndroidLauncher(private val ctx: Context, private val log: (Strin
         else -> null
     }
 
-    private fun startViaAm(displayId: Int, component: ComponentName): Boolean =
-        runAm(arrayOf("am", "start", "--display", displayId.toString(), "-n", component.flattenToShortString()), displayId)
+    /** The fallback launch: the same flags, through `am start` (`-f`). */
+    private fun startViaAm(displayId: Int, component: ComponentName, flags: Int): Boolean =
+        runAm(
+            arrayOf(
+                "am", "start", "--display", displayId.toString(),
+                "-f", "0x%08x".format(flags),
+                "-n", component.flattenToShortString(),
+            ),
+            displayId,
+        )
 
     private fun runAm(argv: Array<String>, displayId: Int): Boolean {
         return try {

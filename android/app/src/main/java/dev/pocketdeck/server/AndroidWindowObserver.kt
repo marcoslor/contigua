@@ -26,6 +26,12 @@ internal class AndroidWindowObserver(private val ctx: Context, private val log: 
     }
 
     /** null when the query could not be made (as opposed to an empty task list). */
+    /** The display's top task id for `window.opened`; null when the query fails. */
+    override fun taskId(displayId: Int): Int? {
+        val info = firstTask(displayId) ?: return null
+        return runCatching { info.javaClass.getField("taskId").get(info) as? Int }.getOrNull()
+    }
+
     override fun hasTask(displayId: Int): Boolean? {
         val manager = atm ?: return null
         for (method in methods) {
