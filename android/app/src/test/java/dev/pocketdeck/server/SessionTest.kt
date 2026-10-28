@@ -877,6 +877,65 @@ class SessionTest {
         assertTrue(platform.keyframeRequests.contains(1))
     }
 
+    /**
+     * The 10-28 field report ("stream is SUPER slow"): a reader that stalls for
+     * a moment must cost one keyframe request and one bitrate step per
+     * congestion episode, not one per drop. The fake encoder answers a keyframe
+     * request with a keyframe, as the phone's encoder does, and that is what
+     * made the old code loop: the keyframe refilled the queue, so the next drop
+     * followed ~250 ms later, for as long as the reader was behind.
+     */
+    @Test
+    fun aSlowReaderCostsOneKeyframePerEpisodeNotOnePerDrop() {
+        addAndAuthenticate()
+        var keyPts = 0L
+        platform.onKeyframeRequest = { stream ->
+            session!!.onFrame(stream, keyPts, true, ByteArray(40_000))
+        }
+        send(mapOf("t" to "window.open", "stream" to 1, "w" to 640, "h" to 480, "dpi" to 160, "mode" to "phone"))
+        readUntil("window.opened")
+        // The reader stalls: nothing is read while frames keep coming at 60 fps
+        // and 30 KB each, so the socket buffer then the send queue fill up.
+        val started = System.nanoTime()
+        var pts = 0L
+        var fed = 0
+        while (System.nanoTime() - started < 3_000_000_000L) {
+            keyPts = pts
+            session!!.onFrame(1, pts, false, ByteArray(30_000))
+            pts += 16_667
+            fed++
+            Thread.sleep(16)
+        }
+        val elapsedMs = (System.nanoTime() - started) / 1_000_000
+        val keys = platform.keyframeRequests.size
+        val steps = platform.backpressures.size
+        assertTrue("fed $fed frames; ${keys} keyframe requests in ${elapsedMs}ms",
+                   keys <= 1 + elapsedMs / 1000)
+        assertTrue("${steps} bitrate steps in ${elapsedMs}ms", steps <= 1 + elapsedMs / 1000)
+
+        // The reader is back: a frame produced after the recovery must arrive
+        // within a second, and the stream must be live again.
+        val recoveredPts = pts
+        client.soTimeout = 1_000
+        val t0 = System.nanoTime()
+        var freshMs = -1L
+        while (freshMs < 0 && System.nanoTime() - t0 < 3_000_000_000L) {
+            session!!.onFrame(1, pts, false, ByteArray(4_000))
+            pts += 16_667
+            val frame = try {
+                reader.readFrame()
+            } catch (_: java.net.SocketTimeoutException) {
+                null
+            }
+            if (frame == null || frame.type != Frames.TYPE_VIDEO_FRAME) continue
+            if (Frames.decodeVideoFrame(frame.payload).ptsUs >= recoveredPts) {
+                freshMs = (System.nanoTime() - t0) / 1_000_000
+            }
+        }
+        assertTrue("no frame arrived after the reader recovered", freshMs >= 0)
+        assertTrue("first fresh frame ${freshMs}ms after the reader recovered", freshMs <= 1_000)
+    }
+
     @Test
     fun handlerFailureAnswersInternalErrorAndTheSessionLives() {
         addAndAuthenticate()
