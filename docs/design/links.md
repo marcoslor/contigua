@@ -12,7 +12,9 @@ in a new PocketDeck window (its own virtual display).
 - **Services** "Open on Phone" and **dragging** a URL / `.webloc` onto the Deck.
 - **Hand-off (internal pipe)**: the extension opens `pocketdeck://open?url=…[&phone=id]` with
   `NSWorkspace.open(_:withApplicationAt:)` naming its *containing* app, so LaunchServices can
-  never route it to another PocketDeck copy. The sandbox allows this (verified), and it needs no
+  never route it to another PocketDeck copy. The open does not activate the app: the person
+  stays in the app they shared from and the link opens on the phone (the app's own link path
+  decides what to show). The sandbox allows this (verified), and it needs no
   app group, XPC service or shared container. The scheme is plumbing, not a user feature.
 - Only `bundle.sh --variant release` (install.sh) uses the id `dev.pocketdeck.mac.share`; other
   bundles get `dev.pocketdeck.mac.share-<variant>` titled "Open on Phone (<variant>)", and
