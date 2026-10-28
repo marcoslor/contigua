@@ -77,6 +77,33 @@ internal class AndroidTaskMove(private val ctx: android.content.Context, private
         return verified
     }
 
+    /**
+     * WIN-31: ends one task and proves it went. The service returns void, so the
+     * task list is re-read; a task the system still lists after a second is
+     * reported as not removed.
+     */
+    override fun remove(taskId: Int): Boolean {
+        val tm = taskManager ?: return false
+        val cls = taskManagerClass ?: return false
+        val method = Hidden.method(cls, "removeTask", Hidden.T_INT) ?: run {
+            log("no IActivityTaskManager.removeTask")
+            return false
+        }
+        try {
+            method.invoke(tm, taskId)
+        } catch (e: Throwable) {
+            log("removeTask($taskId) refused: ${e.message ?: e}")
+            return false
+        }
+        val deadline = System.currentTimeMillis() + REMOVE_VERIFY_MS
+        while (true) {
+            val listed = runCatching { tasks() }.getOrNull()
+            if (listed != null && listed.none { it.taskId == taskId }) return true
+            if (System.currentTimeMillis() >= deadline) return false
+            Thread.sleep(50)
+        }
+    }
+
     // ------------------------------------------------------------------
 
     /** `IActivityTaskManager.getTasks(maxNum, filterOnlyVisible, keepIntentExtra, displayId)`; -1 = every display. */
@@ -159,5 +186,8 @@ internal class AndroidTaskMove(private val ctx: android.content.Context, private
     private companion object {
         /** The list is read newest-first; plenty for "what is on top of the screen". */
         const val MAX_TASKS = 20
+
+        /** How long a removed task may still be listed while the system settles. */
+        const val REMOVE_VERIFY_MS = 1_000L
     }
 }

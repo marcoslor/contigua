@@ -1197,12 +1197,46 @@ class Session(
         }
         display.close(stream)
         gate.forget(stream)
+        // WIN-31: the display is gone; if its task outlived it, end that task
+        // only (never the app: the other windows and the session keep running).
+        endClosedTask(state)
         sendJson(mapOf("t" to "window.closed", "stream" to stream, "reason" to "requested"))
         updatePower()
         stopAudioIfIdle()
         notifyAudioWindowsChanged()
         runCatching { callback.onSessionChanged(true, clientId, currentMacName ?: clientName, windowCount()) }
         log("closed stream $stream (display ${state.displayId})")
+    }
+
+    /**
+     * WIN-31: the closed display's task, when the platform left it behind.
+     * `FLAG_DESTROY_CONTENT_ON_REMOVAL` usually takes it with the display; the
+     * task list is read after the close so the phone removes only a survivor,
+     * and only one that no other window shows.
+     */
+    private fun endClosedTask(state: StreamState) {
+        if (!WindowCap.counted(state.content)) return
+        val mover = taskMove ?: return
+        val otherTasks = synchronized(streams) {
+            streams.values.mapNotNull { it.taskId.takeIf { id -> id > 0 } }.toSet()
+        }
+        val tasksNow = runCatching { mover.tasks() }.getOrNull()?.map { it.taskId }?.toSet()
+        val action = CloseTask.decide(
+            CloseTask.Facts(
+                counted = WindowCap.counted(state.content),
+                taskId = state.taskId,
+                otherTasks = otherTasks,
+                tasksNow = tasksNow,
+            ),
+        )
+        when (action) {
+            CloseTask.Action.NONE -> Unit
+            CloseTask.Action.REMOVE_TASK -> {
+                val gone = runCatching { mover.remove(state.taskId) }.getOrDefault(false)
+                // An id, never a label: R-PRIV-1.
+                log("close: task ${state.taskId} outlived its display; removed=$gone")
+            }
+        }
     }
 
     private fun onWindowPause(obj: Map<String, Any?>, frame: Frame) {
