@@ -37,6 +37,7 @@ CHROME = "com.android.chrome"
 CHROME_MAIN = "com.android.chrome/com.google.android.apps.chrome.Main"
 SETTINGS = "com.android.settings"
 LABEL_PAGE_TITLE = "PocketDeck multiwin"
+UI_DUMP = "/data/local/tmp/pd-mw-ui.xml"
 MEASURE_S = 8.0
 RESULTS = []
 
@@ -52,7 +53,7 @@ def log(message):
 
 
 class Dev(object):
-    """The emulator side: dumps, screencaps, process ids, am."""
+    """The emulator side: dumps, uiautomator, process ids, shell."""
 
     def __init__(self, adb, serial, out):
         self.adb = adb
@@ -74,28 +75,6 @@ class Dev(object):
         """An adb command that is not a shell command (reverse, forward)."""
         return subprocess.run([self.adb, "-s", self.serial] + [str(a) for a in args],
                               capture_output=True, text=True, timeout=60)
-
-    def am_start(self, display, *args, **kw):
-        cmd = ["am", "start", "--display", str(display)] + [str(a) for a in args]
-        res = self.sh(*cmd, timeout=kw.get("timeout", 45))
-        return (res.stdout + res.stderr).strip().replace("\n", " | ")
-
-    def screencap(self, display, tag):
-        remote = "/data/local/tmp/pd-mw-%s.png" % tag
-        local = os.path.join(self.out, "shot-%s.png" % tag)
-        for _attempt in (1, 2):
-            res = self.sh("screencap", "-d", str(display), "-p", remote, timeout=60)
-            if res.returncode == 0:
-                pull = subprocess.run([self.adb, "-s", self.serial, "pull", remote, local],
-                                      capture_output=True, timeout=120)
-                if pull.returncode == 0:
-                    return local
-                log("screencap %s pull failed: %s" % (tag, pull.stderr[:120]))
-            else:
-                log("screencap %s display %s failed: %s"
-                    % (tag, display, (res.stderr or res.stdout).strip()[:120]))
-            time.sleep(0.8)
-        return None
 
     def luma(self, png):
         return _ffmpeg_gray(png, None)
@@ -131,6 +110,27 @@ class Dev(object):
         with open(path, "w") as fp:
             fp.write(self.out_of(*args))
         return path
+
+
+    def ui_xml(self):
+        """The focused display's UI hierarchy (first-run dialogs live there)."""
+        self.sh("uiautomator", "dump", "--compressed", UI_DUMP, timeout=60)
+        return self.out_of("cat", UI_DUMP)
+
+    def tap_text(self, want):
+        """Tap the view whose text contains [want]; false when it is not there."""
+        xml = self.ui_xml()
+        for tag in re.findall(r"<node\b[^>]*>", xml):
+            text = re.search(r'\btext="([^"]*)"', tag)
+            if not text or want not in text.group(1):
+                continue
+            bounds = re.search(r'\bbounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"', tag)
+            if not bounds:
+                continue
+            a, b, c, d = map(int, bounds.groups())
+            self.sh("input", "tap", (a + c) // 2, (b + d) // 2)
+            return True
+        return False
 
 
 def _ffmpeg_gray(path_a, path_b):
@@ -175,9 +175,10 @@ def activity_tasks(text):
     return tasks
 
 
-def pocketdeck_displays(text):
-    """The rig's virtual displays, by their names in `dumpsys display`."""
-    return sorted(set(re.findall(r"pocketdeck-\d+", text)))
+def logical_displays(text):
+    """How many displays the phone tells `dumpsys display` it has (0 is the panel)."""
+    m = re.search(r"Logical Displays: size=(\d+)", text)
+    return int(m.group(1)) if m else -1
 
 
 def tasks_on_display(display):
@@ -189,7 +190,7 @@ def recents(dev):
 
 
 def displays(dev):
-    return pocketdeck_displays(dev.out_of("dumpsys", "display"))
+    return logical_displays(dev.out_of("dumpsys", "display"))
 
 
 # --- the fake Mac's view ----------------------------------------------------
@@ -278,20 +279,46 @@ def close_window(phone, stream, timeout=15.0):
     return None
 
 
+def grab(phone, dev, stream, tag, out, seconds=1.5):
+    """One PNG of what the window shows, decoded from its own stream.
+
+    `screencap -d <id>` refuses a virtual display's id on API 36 ("Display Id
+    '2' is not valid"), and the product's picture is the better evidence
+    anyway: a window that renders has frames.
+    """
+    phone.client.send_json({"t": "window.keyframe", "stream": stream})
+    time.sleep(0.4)
+    path = os.path.join(out, "cap-%s.h264" % tag)
+    phone.rec.begin_phase(stream, path)
+    time.sleep(seconds)
+    frames = phone.rec.end_phase(stream)
+    if frames == 0:
+        return None
+    png = os.path.join(out, "shot-%s.png" % tag)
+    deckctl.dump_last_frame(path, png)
+    return png
+
+
 def send_tap(client, stream, nx, ny):
     client.send_raw(proto.pack_touch(stream, proto.TOUCH_DOWN, 0, nx, ny))
     time.sleep(0.05)
     client.send_raw(proto.pack_touch(stream, proto.TOUCH_UP, 0, nx, ny))
 
 
-def tap(phone, dev, stream, display, tag):
+def send_key(client, stream, keycode):
+    client.send_raw(proto.pack_key(stream, proto.KEY_DOWN, keycode, 0))
+    time.sleep(0.03)
+    client.send_raw(proto.pack_key(stream, proto.KEY_UP, keycode, 0))
+
+
+def tap(phone, dev, out, stream, tag):
     """A tap through the product's own input path, proved by the picture."""
-    before = dev.screencap(display, "%s-before" % tag)
+    before = grab(phone, dev, stream, "%s-before" % tag, out)
     luma = dev.luma(before)
     for nx, ny in ((0.5, 0.06), (0.5, 0.5)):
         send_tap(phone.client, stream, nx, ny)
         time.sleep(1.2)
-        after = dev.screencap(display, "%s-after" % tag)
+        after = grab(phone, dev, stream, "%s-after" % tag, out)
         changed = dev.diff(before, after)
         if changed:
             return {"luma": luma, "diff": changed, "at": "%.2f,%.2f" % (nx, ny),
@@ -331,6 +358,35 @@ class LocalPage(object):
 
 # --- the checks -------------------------------------------------------------
 
+FIRST_RUN_BUTTONS = ("Accept & continue", "Use without an account", "No thanks", "Got it", "Next")
+
+
+def warm_chrome(dev):
+    """Launch Chrome once on the phone's own screen and get past its first run.
+
+    Chrome's first-run screen is not a window's page: its tabs, its task
+    description and its second instance all behave differently while it is up
+    (the label stayed the app's, and the second task came up empty). One warm
+    launch on display 0 settles it for every window after.
+    """
+    if not dev.pid(CHROME):
+        dev.sh("am", "start", "-n", CHROME_MAIN, timeout=45)
+        time.sleep(8)
+    for _ in range(6):
+        tapped = False
+        for label in FIRST_RUN_BUTTONS:
+            if dev.tap_text(label):
+                log("dismissed Chrome's first run: %s" % label)
+                tapped = True
+                time.sleep(3)
+                break
+        if not tapped:
+            break
+    dev.sh("am", "force-stop", CHROME)
+    time.sleep(2)
+    return not dev.pid(CHROME)
+
+
 def check_apps(apps):
     listed = {a.get("pkg"): a for a in apps}
     every = all("multi" in a for a in apps)
@@ -342,7 +398,7 @@ def check_apps(apps):
     return listed
 
 
-def check_two_windows(phone, dev):
+def check_two_windows(phone, dev, base, out):
     first = open_window(phone, dev, 1, CHROME)
     second = open_window(phone, dev, 2, CHROME, new_instance=True)
     t1, t2 = first.get("taskId"), second.get("taskId")
@@ -355,41 +411,45 @@ def check_two_windows(phone, dev):
     check(len(chrome_tasks) == 2 and set(chrome_tasks) == {t1, t2}, "WIN-25",
           "dumpsys activity recents lists exactly Chrome tasks %s" % chrome_tasks)
 
-    shots = {}
-    for stream, msg in ((1, first), (2, second)):
-        display = msg.get("displayId")
-        shots[stream] = dev.screencap(display, "b-s%d" % stream)
+    displays_now = displays(dev)
+    # The positive control: if this metric did not move, the refusal check below
+    # would pass for the wrong reason.
+    check(base > 0 and displays_now == base + 2, "WIN-25",
+          "two windows are two displays (dumpsys display: %s -> %s)" % (base, displays_now))
+
+    shots = {s: grab(phone, dev, s, "b-s%d" % s, out) for s in (1, 2)}
     lumas = {s: dev.luma(p) for s, p in shots.items()}
     check(all(v is not None and v > 8 for v in lumas.values()), "WIN-25",
           "both displays render (%s)" % ", ".join("s%d luma=%s" % kv for kv in sorted(lumas.items())))
 
-    taps = {}
-    for stream, msg in ((1, first), (2, second)):
-        taps[stream] = tap(phone, dev, stream, msg.get("displayId"), "b-s%d" % stream)
+    taps = {s: tap(phone, dev, out, s, "b-s%d" % s) for s in (1, 2)}
     check(all(t["diff"] for t in taps.values()), "WIN-25",
           "both displays take a tap (%s)"
           % ", ".join("s%d at %s diff=%s" % (s, t["at"], t["diff"]) for s, t in sorted(taps.items())))
     return first, second
 
 
-def check_label(phone, dev, page):
+def check_label(phone, dev, page, out):
     third = open_window(phone, dev, 3, CHROME, new_instance=True)
-    display = third.get("displayId")
-    # The window starts on Chrome's own page; the navigation below gives it a
-    # title of ours, and the label has to follow within the protocol's second.
-    phone.client.send_json({"t": "window.keyframe", "stream": 3})
-    time.sleep(1.0)
     if not page.reversed:
-        phone.client.send_json({"t": "window.close", "stream": 3})
+        close_window(phone, 3)
         return check(False, "WIN-28", "adb reverse failed; no local page to navigate to")
+    log("window 3 on display %s; the page is %s" % (third.get("displayId"), page.url()))
     started = time.time()
-    dev.am_start(display, "-a", "android.intent.action.VIEW", "-d", page.url(), "-n", CHROME_MAIN)
+    # The window's own input, the way a person navigates one tab: focus the
+    # address bar, type the local page, Return. No intent, so no task moves.
+    send_tap(phone.client, 3, 0.5, 0.06)
+    time.sleep(0.8)
+    phone.client.send_json({"t": "text", "stream": 3, "text": page.url()})
+    time.sleep(0.3)
+    send_key(phone.client, 3, 66)
     title, _ = phone.wait_title(3, LABEL_PAGE_TITLE, timeout=4.0)
     elapsed = time.time() - started
-    check(title is not None and elapsed <= 2.0, "WIN-28",
-          "a label change reached window.title in %.2fs (%s)"
-          % (elapsed, ("title len=%d" % len(title)) if title else "no title"))
-    dev.screencap(display, "c-label")
+    ok = check(title is not None and elapsed <= 2.0, "WIN-28",
+               "a label change reached window.title in %.2fs (%s)"
+               % (elapsed, ("title len=%d" % len(title)) if title else "no title"))
+    shot = grab(phone, dev, 3, "c-label", out)
+    log("window 3's picture: %s" % (shot or "no frame"))
     close_window(phone, 3)
     return ok
 
@@ -416,7 +476,7 @@ def check_close(phone, dev, first, second):
     return task_a
 
 
-def check_cap(phone, dev, others):
+def check_cap(phone, dev, others, base):
     opened = []
     for stream, pkg in ((4, SETTINGS), (5, others.get("clock") or SETTINGS), (6, CHROME)):
         opened.append(open_window(phone, dev, stream, pkg, new_instance=(pkg == CHROME)))
@@ -428,8 +488,9 @@ def check_cap(phone, dev, others):
     after_displays = displays(dev)
     check(error is not None and error.get("code") == "too_many_windows", "WIN-32",
           "the fifth app window answered %s" % (error.get("code") if error else "nothing"))
-    check(before_displays == after_displays and len(after_displays) == 4, "WIN-32",
-          "no fifth display was created (%d live: %s)" % (len(after_displays), ", ".join(after_displays)))
+    check(before_displays == after_displays and after_displays == base + 4, "WIN-32",
+          "no fifth display was created (%s displays before, %s after; %s windows' worth)"
+          % (before_displays, after_displays, after_displays - base))
     return [2, 4, 5, 6]
 
 
@@ -507,18 +568,22 @@ def main(argv=None):
     summary["apps"] = {pkg: {"multi": app.get("multi")} for pkg, app in listed.items()}
     save()
 
+    if not warm_chrome(dev):
+        log("warning: Chrome is still running after the warm-up")
+    base_displays = displays(dev)
+    log("displays before any window: %s" % base_displays)
     phone = Phone(client, deckctl.StreamRecorder(client).start())
     try:
-        first, second = check_two_windows(phone, dev)
+        first, second = check_two_windows(phone, dev, base_displays, args.out)
         page = LocalPage(dev, args.out)
         try:
-            check_label(phone, dev, page)
+            check_label(phone, dev, page, args.out)
         finally:
             page.stop()
         check_close(phone, dev, first, second)
         others = {"clock": "com.google.android.deskclock" if "com.google.android.deskclock" in listed
                   else "com.android.deskclock" if "com.android.deskclock" in listed else None}
-        streams = check_cap(phone, dev, others)
+        streams = check_cap(phone, dev, others, base_displays)
         for name in (4, 3, 2, 1):
             row = cost_phase(phone, dev, list(streams[:name]), "%dw" % name, args.out)
             summary["cost"].append(row)
