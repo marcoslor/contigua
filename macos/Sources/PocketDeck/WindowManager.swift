@@ -321,15 +321,17 @@ final class WindowManager {
 
     @discardableResult
     func openApp(pkg: String, activity: String? = nil) -> AppWindowController {
-        // A dock click (or a second open request) while the app is still
-        // opening raises the window that is already waiting instead of asking
-        // the phone for another stream. The v104 log had seven opens of Chrome
-        // while the first window was black; each was a second launch on the
-        // phone and none of them made the picture come sooner.
-        if let opening = allControllers().compactMap({ $0 as? AppWindowController })
-            .first(where: { $0.pkg == pkg && $0.isOpening }) {
-            opening.window?.makeKeyAndOrderFront(nil)
-            return opening
+        // One window per app (CONV-MAC-11, WIN-2): a second Deck click, Dock
+        // shim click or notification click raises the window the app already
+        // has instead of asking the phone for a second stream. While it is
+        // still opening this also stops the v104 thrash (seven opens of Chrome
+        // in 77 s, each a launch on the phone, none making the picture come
+        // sooner); once its picture is in, a second window waits for the
+        // explicit "New Window" that is not built.
+        if let existing = allControllers().compactMap({ $0 as? AppWindowController })
+            .first(where: { $0.pkg == pkg }) {
+            raise(existing)
+            return existing
         }
         let label = appsByPkg[pkg]?.label ?? pkg
         let controller = open {
@@ -344,12 +346,8 @@ final class WindowManager {
     /// runs the notification's action.
     @discardableResult
     func openOrRaiseApp(pkg: String, activity: String? = nil) -> UInt32 {
-        if let existing = allControllers().compactMap({ $0 as? AppWindowController })
-            .first(where: { $0.pkg == pkg }) {
-            existing.window?.makeKeyAndOrderFront(nil)
-            return existing.stream
-        }
-        return openApp(pkg: pkg, activity: activity).stream
+        // openApp is already open-or-raise, so every entry point shares it.
+        openApp(pkg: pkg, activity: activity).stream
     }
 
     @discardableResult
