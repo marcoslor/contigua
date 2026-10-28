@@ -78,6 +78,9 @@ struct LaunchOptions {
     /// `--open-requests DIR` (background mode only): each `*.path` file put in DIR
     /// names files to open, as LaunchServices' Open With would (e2e, apk).
     var openRequests: String?
+    /// `--debug-notify-denied` (e2e): report macOS notifications as denied, as
+    /// System Settings would, without touching the person's real permission.
+    var debugNotifyDenied = false
     /// `--mcp-enable` (test builds only): turn the automation server's setting
     /// on for this profile at launch (e2e `mcp`).
     var mcpEnable = false
@@ -137,6 +140,7 @@ struct LaunchOptions {
         "--continue-on-mac": false,
         "--background": false,
         "--open-requests": true,
+        "--debug-notify-denied": false,
         "--mcp-enable": false,
         "--files-domain": true,
         "--files-bridge-dir": true,
@@ -246,6 +250,8 @@ struct LaunchOptions {
                 options.background = true
             case "--open-requests":
                 options.openRequests = next()
+            case "--debug-notify-denied":
+                options.debugNotifyDenied = true
             case "--mcp-enable":
                 options.mcpEnable = true
             case "--files-domain":

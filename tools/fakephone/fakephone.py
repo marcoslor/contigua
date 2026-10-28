@@ -2040,6 +2040,13 @@ class Session(object):
         if msg.get("t") != "pair.request":
             self._send_error("protocol", "expected pair.request")
             return False
+        if self.phone.args.pair_cooldown:
+            # A phone inside the 30 s cooldown after a Deny/timeout: its own
+            # code, so the Mac's sheet can say to wait (PAIR-5). The pause lets
+            # the Mac read the error before the close races it.
+            self._send_error("pair_cooldown", "pairing is cooling down")
+            time.sleep(0.2)
+            return False
         self.np = os.urandom(16)
         phone_fp = bytes.fromhex(self.phone.fp_hex)
         mac_fp = bytes.fromhex(self.mac_fp_hex)
@@ -3389,6 +3396,13 @@ class Session(object):
         h = msg.get("h", SCREEN_H)
         dpi = msg.get("dpi", SCREEN_DPI)
         mode = "phone" if msg.get("mode") == "phone" else "app"
+        if mode == "app" and self.phone.args.window_refuse:
+            # A phone that refuses an app's window: the same `error` an
+            # unavailable app sends, with no window and no frames, so the
+            # Mac's cover must explain it and offer no retry (WIN-11).
+            self._send_error(self.phone.args.window_refuse,
+                             "the phone refused this app's window", stream_id)
+            return
         if mode == "phone" and self.phone.args.mirror_unavailable:
             # A phone that cannot capture display 0 (docs/PROTOCOL.md
             # "window.open"): the same refusal a pre-14 build sends, with no
@@ -3934,6 +3948,12 @@ def build_parser():
     p.add_argument("--mirror-unavailable", action="store_true", dest="mirror_unavailable",
                    help="answer a phone-mode window.open with error mirror_unavailable "
                         "(a phone that cannot capture display 0, docs/PROTOCOL.md)")
+    p.add_argument("--window-refuse", metavar="CODE", default=None,
+                   help="answer an app window.open with error CODE (app_disabled, "
+                        "app_missing, or a code with no mapped sentence); no window opens")
+    p.add_argument("--pair-cooldown", action="store_true", dest="pair_cooldown",
+                   help="refuse any pair.request with error pair_cooldown (the phone's "
+                        "30 s window after a Deny or timeout; PAIR-5)")
     p.add_argument("--qr-uri", metavar="URI",
                    help="simulate the v2 QR scan (R2): stage a pocketdeck://pair "
                         "c/n/f/s URI; a Mac whose TLS fingerprint matches f gets "

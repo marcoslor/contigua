@@ -129,6 +129,7 @@ class DeckViewModel(app: Application) : AndroidViewModel(app) {
                     connectedMac = connected,
                     allowConnections = allowConnections,
                     notifyNoAccess = DeckState.notifyNoAccess,
+                    pairNotifyMissing = DeckState.pending != null && !notificationsGranted,
                 ),
             ),
         )
@@ -247,6 +248,10 @@ class DeckViewModel(app: Application) : AndroidViewModel(app) {
                         .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
                 )
             }
+
+            // The runtime permission is requested by the screen (an Activity
+            // owns the launcher); this branch is the screen's fallback.
+            AttentionKind.PAIR_NOTIFY -> refresh()
 
             AttentionKind.RETRY -> {
                 DeckForegroundService.start(ctx)

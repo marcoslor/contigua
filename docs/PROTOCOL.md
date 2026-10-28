@@ -191,8 +191,9 @@ code     = uint64_be(SHA-256("pd-code-v2" || exporter || macFP || phoneFP
    request and dismisses its prompt. One pairing request per session; a second
    `pair.request` is ignored. After a **Deny** or a **120 s timeout** the phone
    refuses a new `pair.request` from an unpaired Mac for **30 s** with
-   `{"t":"error","code":"pair_denied"}` and a close, so a LAN peer cannot make
-   the phone prompt again in a loop. A scanned QR is still honoured: it needs
+   `{"t":"error","code":"pair_cooldown"}` and a close, so a LAN peer cannot make
+   the phone prompt again in a loop; the Mac's sheet says "Wait a moment, then
+   try again." for it, distinct from a fresh denial (`pair_denied`). A scanned QR is still honoured: it needs
    the person to scan the Mac's screen.
 
 ### QR flow (Mac shows, phone scans)
@@ -819,7 +820,7 @@ mode (docs/design/focus.md):
 
 `{"t":"error","code":...}` codes: `busy` (another session is active), `bad_pin` (the
 peer's certificate fingerprint is not the pinned one — the Mac shows "This phone's
-identity changed. Pair again."), `pair_denied`, `pair_commit` (the revealed nonce does
+identity changed. Pair again."), `pair_denied`, `pair_cooldown`, `pair_commit` (the revealed nonce does
 not match the commit), `version`, `protocol` (message not allowed in the current state;
 then close), `pair_timeout` (nobody answered the pairing prompt in 120 s; then close),
 `no_stream` (unknown `stream`), `launch_failed`, `bad_url` (a `link.open` URL that is

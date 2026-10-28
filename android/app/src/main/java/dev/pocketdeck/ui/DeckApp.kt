@@ -40,7 +40,15 @@ fun DeckApp(deck: DeckViewModel) {
             onToggleEnabled = deck::setEnabled,
             onToggleAllowConnections = deck::setAllowConnections,
             onToggleAllowPairings = deck::setAllowPairings,
-            onStatusAction = deck::runStatusAction,
+            onStatusAction = { kind ->
+                // The pairing prompt's notification needs the runtime
+                // permission; an Activity owns the launcher (PAIR-6).
+                if (kind == AttentionKind.PAIR_NOTIFY) {
+                    notificationsLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                } else {
+                    deck.runStatusAction(kind)
+                }
+            },
             onForget = deck::forget,
             onUndoForget = deck::undoForget,
             onPairNew = scanQr,

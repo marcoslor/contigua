@@ -167,6 +167,21 @@ struct PhoneSettingsPage: View {
                 .font(.caption)
                 .foregroundStyle(.orange)
         }
+        if let denied = DevicesTabModel.notificationsDeniedHint(
+            denied: controller.notifyAuthorization == .denied) {
+            Text(denied)
+                .font(.caption)
+                .foregroundStyle(.orange)
+            HStack(spacing: 8) {
+                Button("Open System Settings") {
+                    if let url = URL(string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension") {
+                        NSWorkspace.shared.open(url)
+                    }
+                }
+                Button("Check Again") { controller.checkNotificationAuthorization() }
+            }
+            .controlSize(.small)
+        }
         LabeledContent("When I click a notification") {
             Picker("", selection: Binding(
                 get: { controller.notifyClickTarget(deviceId: phone.id) },
@@ -372,6 +387,9 @@ struct PhoneSettingsPage: View {
         lines.append("share=\(shareOn ? 1 : 0)")
         let missingAccess = controller.notifyAccessMissing(deviceId: phone.id)
         lines.append("accessHint=\(DevicesTabModel.accessHint(noAccess: missingAccess) ?? "")")
+        let denied = DevicesTabModel.notificationsDeniedHint(denied: controller.notifyAuthorization == .denied)
+        lines.append("notificationsDenied=\(denied == nil ? 0 : 1)")
+        lines.append("notificationsHint=\(denied ?? "")")
         lines.append("click=\(clickLabel(controller.notifyClickTarget(deviceId: phone.id)))")
         lines.append("mutedCount=\(DevicesTabModel.mutedCountText(muted.count))")
         lines.append("mutedOpen=\(mutedOpen ? 1 : 0)")

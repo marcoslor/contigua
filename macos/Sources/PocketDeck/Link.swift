@@ -33,12 +33,29 @@ enum Pairing: Equatable {
     /// The person tapped Allow; the key and `welcome` are on their way.
     case verifying
     case denied
+    /// The phone is inside its 30 s window after a Deny or a timeout: the next
+    /// attempt must wait, and the sheet says so (PAIR-5).
+    case coolingDown
     /// The phone refused the pairing itself (its master or pairing switch is off).
     case refused(String)
     /// Nobody answered on the phone within its 120 s.
     case timedOut
     /// The phone could not be reached, or the connection dropped while pairing.
     case unreachable
+}
+
+/// The pairing sheet's failure lines that are worth pinning in a test (the
+/// others name the phone and are built there).
+enum PairingCopy {
+    static let coolingDown = "Wait a moment, then try again."
+    /// PAIR-6: a prompt that has waited 20 s may be invisible because the
+    /// phone's notifications are off; the Mac names that possibility.
+    static let slowHint = "Check your phone: PocketDeck's notifications may be turned off."
+    static let slowHintAfter: TimeInterval = 20
+
+    static func slowHint(after elapsed: TimeInterval) -> String? {
+        elapsed >= slowHintAfter ? slowHint : nil
+    }
 }
 
 enum Link: Equatable {
@@ -303,6 +320,7 @@ struct LinkMachine {
         if case .pairing(let phone, _) = link {
             switch reason {
             case "pair_denied": link = .pairing(phone, .denied)
+            case "pair_cooldown": link = .pairing(phone, .coolingDown)
             case "pair_timeout": link = .pairing(phone, .timedOut)
             case "connections_off", "pairing_off": link = .pairing(phone, .refused(reason))
             default: link = .pairing(phone, .unreachable)
@@ -311,6 +329,12 @@ struct LinkMachine {
         }
         guard let phone = link.phone else { return [] }
         switch reason {
+        case "pair_cooldown":
+            // A launch that meets a phone inside its 30 s window: the person
+            // is pairing (or just tried to), so the sheet says to wait rather
+            // than leaving a silent offline link (PAIR-5).
+            link = .pairing(phone, .coolingDown)
+            return [.stopAttempts]
         case "pin-mismatch", "bad_pin", "no-pin":
             // v2: the TLS-level pairing state died; retries never fix it, the
             // re-pair hint handles the person's next step.
