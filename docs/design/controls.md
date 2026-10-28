@@ -209,7 +209,7 @@ CTRL-1/3/8). Every value the Mac sets on the phone, audited on 2026-10-28:
 | Phone screen (`phone.wake`) | a phone window opening, reopening or reconnecting, and the Wake Screen button | Yes, on every open/reconnect by design (it only ever wakes). It never holds the screen on; the phone's own timeout applies. | `PhoneWindow.sendOpen` (docs/PROTOCOL.md "Phone screen" 3) |
 | Panel hold (`phone.panel off`) | "Turn Off Phone Screen" clicked, and a window opening with the setting remembered | Connect: only when this phone has not received that value since the person ended the hold. Never on a timer, never per `state`. | `PhoneWindow.setPanelOff`, `sendOpen`, `ControlIntent.swift` |
 | Panel restore (`phone.panel off:false`) | the same click off, the phone's power press, the window closing, the session ending | The restore is a Mac-side or phone-side edge; nothing re-sends it. | `PhoneWindow`, `PanelHold.kt` |
-| Keep-awake (display wake locks, keep-alive pokes) | while at least one stream is unpaused | n/a: not a value, a hold that ends with the last stream. It pokes only the streaming display's group, never the panel while the mirror is open. | `AndroidPower.kt`, `DarkPanelPolicy.kt` |
+| Keep-awake (display wake locks, keep-alive pokes) | while at least one stream is unpaused | n/a: not a value, a hold that ends with the last stream. It pokes the streaming display's group; where the panel shares that group (the S25+ virtual display is group 0) the pokes keep it interactive too, which is why CTRL-7 watches the person's unlock, not only a screen edge. | `AndroidPower.kt`, `DarkPanelPolicy.kt` |
 | Phone sleep after the last stream | the last stream closes, and only while PocketDeck's own wake still owns the phone | n/a: never on a timer. Left alone when the person unlocked, used or woke the phone (docs/specs/controls.md CTRL-7). | `AndroidPower.restoreAfterStop`, `WakeOwnership.kt` |
 | Clipboard gate (`clip.enable`) | the Settings toggle, and every ready session | Yes, on every connect: the phone's gate starts off and holds no memory. The person's choice is the Mac's; there is no phone-side override to lose. | `ConnectionController.clipboardSettingChanged`, `sessionReady` |
 | Notification gate (`notify.enable`) | the per-phone Settings toggle, and every ready session | Yes, on every connect, for the same reason as the clipboard gate. | `ConnectionController.notifySettingChanged`, `sessionReady` |
@@ -223,8 +223,9 @@ not persisted by design.
 ## Checks
 
 - Unit: `macos` `ControlsCoreTests` (snapshot round trip, 0600 atomic write,
-  request validation, reply codes, ringer cycle) and Android
-  `RingerControlTest` / `RingerSessionTest` (wire modes, DND refusal, old phone).
+  request validation, reply codes, ringer cycle), Android
+  `RingerControlTest` / `RingerSessionTest` (wire modes, DND refusal, old phone)
+  and `WakeOwnershipTest` (wake ownership and the person's-use edges, CTRL-7).
 - e2e host `controls` (`macos/scripts/check-e2e.sh controls`, no extension):
   a Python driver stands in for the extension, reads the snapshot and sends
   requests over `--controls-dir`'s socket. Covers DND on/off, Ring, Ringer, the

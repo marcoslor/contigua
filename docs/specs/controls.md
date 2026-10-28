@@ -73,11 +73,17 @@ again only while that wake is still ours.
 |---|---|---|---|---|
 | `NotOurs` | `OursWoke` | ignored | ignored (only tracked) | nothing |
 | `OursWoke` | `OursWoke` (new baseline) | `PersonTookOver(person_unlocked)` | `PersonTookOver(person_active)`; ignored inside the own-wake settle | `NotOurs`, sleep the phone |
-| `PersonTookOver` | `OursWoke` (a new episode's own wake) | stays | stays | `NotOurs`, nothing, log the reason |
+| `PersonTookOver` | `OursWoke` (our next wake: a new episode, or a relight) | stays | stays | `NotOurs`, nothing, log the reason |
 
 Only a wake that named the panel's own power group arms the machine: a wake of a
 virtual display that has its own group never makes the phone's sleep ours.
 Transitions are logged as `wake: <from> --<event>--> <to>`.
+
+The person's use comes from the session's `state` stream as edges: `locked`
+going false (the unlock; the face-unlock case the wake pokes cannot show as a
+screen edge) and display 0 changing power. A repeated state is not a use, and a
+session's first screen reading is not one: a reconnect must not read the phone's
+current picture as a new wake.
 
 ## Phone count and connection
 

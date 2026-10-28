@@ -362,6 +362,18 @@ interface Power {
     fun wakeScreen(): WakeResult = WakeResult.FAILED
 
     /**
+     * The person's own use of the phone, for the wake-ownership machine
+     * (docs/specs/controls.md CTRL-7): the keyguard went unlocked.
+     */
+    fun onPersonUnlocked() {}
+
+    /**
+     * Display 0's power state changed (`state.screen`): the person's own wake,
+     * or our own wake landing, which the machine tells apart by timing.
+     */
+    fun onPersonScreen(on: Boolean) {}
+
+    /**
      * `phone.panel` (docs/PROTOCOL.md "Phone screen"): hold the mirrored panel
      * off while the mirror keeps rendering, or give it back. [ignorePower] is
      * the Mac's "Keep the phone screen off until I turn it on from the Mac"
