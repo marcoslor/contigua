@@ -13,7 +13,6 @@ import androidx.core.app.NotificationCompat
 import dev.pocketdeck.IDeckCallback
 import dev.pocketdeck.IDeckService
 import dev.pocketdeck.R
-import rikka.shizuku.Shizuku
 
 /**
  * Keeps the deck reachable: binds the shell user service, starts the TCP server,
@@ -93,7 +92,9 @@ class DeckForegroundService : Service() {
         updateShizukuState()
         DeviceStateRelay.start(this)
         ShizukuClient.addListener(clientListener)
-        ShizukuClient.ensureBound(this)
+        // Bind now and keep listening: Shizuku's server can die and come back
+        // while this service runs (PHONE-20), and the machine rebinds by itself.
+        ShizukuClient.attach(this)
         startForeground(NOTIF_ONGOING, ongoingNotification("Starting…"))
     }
 
@@ -130,6 +131,9 @@ class DeckForegroundService : Service() {
     override fun onDestroy() {
         DeckState.serviceRunning = false
         ShizukuClient.removeListener(clientListener)
+        // Stop listening before the process keeps a binder nobody serves: with
+        // the deck off, nothing may be bound (PHONE-7).
+        ShizukuClient.detach()
         nsd.stop()
         super.onDestroy()
     }
@@ -192,6 +196,7 @@ class DeckForegroundService : Service() {
         DeckState.port = -1
         DeckState.connectedMac = null
         DeckState.connectedClientId = null
+        updateShizukuState()
         nsd.stop()
         updateOngoing()
         DeckState.notifyChanged()
@@ -237,10 +242,11 @@ class DeckForegroundService : Service() {
     }
 
     private fun updateShizukuState() {
-        DeckState.shizukuRunning = Shizuku.pingBinder()
-        DeckState.shizukuGranted = runCatching {
-            Shizuku.checkSelfPermission() == android.content.pm.PackageManager.PERMISSION_GRANTED
-        }.getOrDefault(false)
+        DeckState.shizukuRunning = ShizukuClient.hasBinder()
+        // Shizuku keeps the grant across a restart of its server, so a check it
+        // cannot answer (no binder, not attached yet) is not a denial: keep the
+        // last answer instead of asking the person to allow PocketDeck again.
+        DeckState.shizukuGranted = ShizukuClient.permission() ?: DeckState.shizukuGranted
     }
 
     // ---- IDeckCallback ------------------------------------------------
