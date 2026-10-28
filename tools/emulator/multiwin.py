@@ -646,7 +646,9 @@ def main(argv=None):
             json.dump(summary, fp, indent=2)
 
     state = deckctl.ClientState(args.state)
-    client = deckctl.open_session(args.host, args.port, state, None)
+    # The app answers `busy` for a moment after the pairing probe's session ends
+    # (its teardown closes the transport last): wait it out, up to 20 s.
+    client = deckctl.open_session(args.host, args.port, state, None, busy_retries=40)
     log("session up on %s:%d" % (args.host, args.port))
 
     # apps.list before the recorder starts: only one reader at a time.
