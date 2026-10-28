@@ -187,7 +187,7 @@ clean() {
     remove_dock_apps
     sleep 1
     rm -rf "$WORK"
-    mkdir -p "$WORK"
+    mkdir -p "$WORK" "$SHOTS"
     clear_profile_state
 }
 
@@ -645,6 +645,10 @@ for port in range(47000, 47200):
 PY
 )}"
     WORK="/tmp/pocketdeck-e2e-$PORT"
+    # A check's screenshots outlive its phases: clean() empties WORK, and the
+    # shots a check takes in an early phase are still the record of it.
+    SHOTS="$WORK-shots"
+    mkdir -p "$SHOTS"
 }
 
 # Only this run's fakephones (every one is started with this run's --events).
@@ -3977,12 +3981,16 @@ check_mirror() {
     printf '%s\n' "wait 1" "hoverat 0 200" "wait 0.03" "hoverat 0 150" "wait 0.03" "hoverat 0 120" \
         "wait 0.03" "hoverat 0 90" "wait 0.03" "hoverat 0 70" "wait 0.03" "hoverat 0 58" > "$WORK/mirror.txt"
     mkdir -p "$WORK/control"
+    # The shot this phase records is dark (docs/UX.md): the app's own
+    # --appearance flag, so the person's system setting is never touched.
+    dark_args=()
+    [ "$VISIBLE" = 1 ] && dark_args=(--appearance dark)
     # The run's own waits (rotation, stale frame, wake, panel) exceed a minute on
     # a loaded Mac; the app must outlive them or every later control command
     # lands with no app to read it.
     launch --connect "127.0.0.1:$PORT" --open-phone --float-windows \
         --debug-chrome-state "$WORK/chrome.txt" --debug-input-script "$WORK/mirror.txt" \
-        --debug-control "$WORK/control" --quit-after 120
+        --debug-control "$WORK/control" --quit-after 120 ${dark_args[@]+"${dark_args[@]}"}
     if wait_until 5 chrome_has "loading=1"; then
         ok "[MIRROR-2] opening cover: the window is covered before its first frame"
     else
@@ -4207,16 +4215,17 @@ PY
         bad "[MIRROR-13] ⌃Tab did not focus the bar ($(chrome_state))"
     fi
     if [ "$VISIBLE" = 1 ]; then
-        osascript -e 'tell application "System Events" to tell appearance preferences to set dark mode to true' >/dev/null 2>&1 || true
         sleep 1
         # The mirror window is the one whose frame the chrome state reports (the
         # phone turned to landscape earlier, so size alone does not find it).
         local bar_frame bar_w bar_h bar_id
         bar_frame="$(sed -n 's/.* frame=\([0-9]*\)x\([0-9]*\).*/\1 \2/p' "$WORK/chrome.txt")"
         read -r bar_w bar_h <<<"$bar_frame"
+        mirror_control bar-appearance "$WORK/bar-appearance.txt" \
+            && say "shot appearance: $(cat "$WORK/bar-appearance.txt")"
         if bar_id="$(await_window "\$4 == $bar_w && \$5 == $bar_h")" \
-            && screencapture -x -l"$bar_id" "$WORK/bar-focus.png"; then
-            say "shot: $WORK/bar-focus.png"
+            && screencapture -x -l"$bar_id" "$SHOTS/bar-focus.png"; then
+            say "shot: $SHOTS/bar-focus.png"
         else
             bad "MIRROR-13 keyboard: no shot of the focus ring"
         fi
@@ -4433,8 +4442,11 @@ PY
     clean
     mkdir -p "$WORK/control"
     start_fake || return 1
+    dark_args=()
+    [ "$VISIBLE" = 1 ] && dark_args=(--appearance dark)
     launch --connect "127.0.0.1:$PORT" --open-phone --float-windows \
-        --debug-chrome-state "$WORK/chrome.txt" --debug-control "$WORK/control" --quit-after 90
+        --debug-chrome-state "$WORK/chrome.txt" --debug-control "$WORK/control" --quit-after 90 \
+        ${dark_args[@]+"${dark_args[@]}"}
     if ! wait_until 25 chrome_has "loading=0"; then
         bad "PANEL offline tile: the mirror never showed a frame"
         stop_app; stop_fakephone; return 1
@@ -4497,12 +4509,11 @@ PY
     # The shot the brief asks for: the disabled tile and its reason (visible
     # runs only: a quiet run may not touch the person's appearance).
     if [ "$VISIBLE" = 1 ]; then
-        osascript -e 'tell application "System Events" to tell appearance preferences to set dark mode to true' >/dev/null 2>&1 || true
         sleep 1
         local panel_id
         if panel_id="$(await_window '$4 == 320')" \
-            && screencapture -x -l"$panel_id" "$WORK/panel-offline.png"; then
-            say "shot: $WORK/panel-offline.png"
+            && screencapture -x -l"$panel_id" "$SHOTS/panel-offline.png"; then
+            say "shot: $SHOTS/panel-offline.png"
         else
             bad "PANEL offline tile: no shot of the panel"
         fi
@@ -4520,8 +4531,11 @@ PY
     clean
     mkdir -p "$WORK/control"
     FAKE_ARGS="--mirror-unavailable" start_fake || return 1
+    dark_args=()
+    [ "$VISIBLE" = 1 ] && dark_args=(--appearance dark)
     launch --connect "127.0.0.1:$PORT" --open-phone --float-windows \
-        --debug-chrome-state "$WORK/chrome.txt" --debug-control "$WORK/control" --quit-after 45
+        --debug-chrome-state "$WORK/chrome.txt" --debug-control "$WORK/control" --quit-after 45 \
+        ${dark_args[@]+"${dark_args[@]}"}
     if wait_until 15 chrome_has "loading=unavailable"; then
         ok "[MIRROR-2] a phone that can't mirror says so as the window opens"
     else
@@ -4552,10 +4566,9 @@ PY
         bad "[MIRROR-2] window.open was sent $(count_events '"t":"window.open"') times"
     fi
     if [ "$VISIBLE" = 1 ]; then
-        osascript -e 'tell application "System Events" to tell appearance preferences to set dark mode to true' >/dev/null 2>&1 || true
         sleep 1
-        if screenshot_portrait "$WORK/mirror-unavailable.png"; then
-            say "shot: $WORK/mirror-unavailable.png"
+        if screenshot_portrait "$SHOTS/mirror-unavailable.png"; then
+            say "shot: $SHOTS/mirror-unavailable.png"
         else
             bad "MIRROR-2 no shot of the refused cover"
         fi
@@ -10996,6 +11009,10 @@ acquire_lock
 wait_for_other_runs
 pick_run
 mkdir -p "$WORK"
+# The run's screenshots: one directory for the whole run, so a check's shots
+# outlive the phases (and the checks) that follow it.
+rm -rf "$SHOTS"
+mkdir -p "$SHOTS"
 # The window the hotkey check (C17) reads back: from here to the end of the run.
 RUN_START="$(date "+%Y-%m-%d %H:%M:%S")"
 say "run: port $PORT, work $WORK, profile $PROFILE, app $E2E_BUNDLE"

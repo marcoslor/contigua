@@ -69,6 +69,15 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     /// logged so a field log shows the path.
     private(set) var barFocus = BarFocus()
 
+    /// The window's appearance, by name, for the chrome state: the shot check
+    /// and the review read whether a capture really was dark.
+    var barAppearanceName: String {
+        guard let match = window?.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) else {
+            return "aqua"
+        }
+        return match == .darkAqua ? "darkAqua" : "aqua"
+    }
+
     /// The bar's focused button for the chrome state (`none` on the picture).
     var barFocusState: String {
         barFocus.index.map(String.init) ?? "none"

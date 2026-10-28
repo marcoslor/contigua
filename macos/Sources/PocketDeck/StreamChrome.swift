@@ -191,6 +191,9 @@ final class StreamChromeView: NSView {
         return button.convert(NSPoint(x: button.bounds.midX, y: button.bounds.midY), to: nil)
     }
 
+    /// The bar's capsule material right now (the appearance test reads it).
+    var barMaterial: HeaderBar.Material { actions.material }
+
     /// The bar's buttons the keyboard may focus, in reading order (MIRROR-13).
     var focusableBarIndices: [Int] { actions.focusableIndices }
 
@@ -379,8 +382,21 @@ final class StreamChromeView: NSView {
     override var isOpaque: Bool { false }
 
     /// The capsule material follows the window's appearance (light or dark).
+    /// A chrome built into a window that is already dark never hears a change,
+    /// so the material is also taken when it lands in its window; without that
+    /// the bar stayed light in a Dark window (the capture in
+    /// `.agent/conv-fixes-1/` showed it).
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
+        applyMaterial()
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        applyMaterial()
+    }
+
+    private func applyMaterial() {
         let material = HeaderBar.material(for: effectiveAppearance)
         actions.material = material
         liveTextCapsule.material = material

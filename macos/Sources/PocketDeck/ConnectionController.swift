@@ -2663,6 +2663,19 @@ final class ConnectionController {
             guard let window = DeckWindow.window else { return "no Deck window" }
             window.setFrameOrigin(NSPoint(x: x, y: y))
             return nil
+        case "bar-appearance":
+            // The first stream window's appearance and the bar's material, for
+            // the visible shot run: a capture that should be dark says whether
+            // the window and its bar really were (MIRROR-22).
+            guard let path = arguments.first, path.hasPrefix("/") else {
+                return "bar-appearance needs PATH"
+            }
+            guard let window = windows.controller(for: 1) else { return "no first window" }
+            let darkBar = window.chrome.barMaterial.fill == HeaderBar.material(dark: true).fill
+            let darkWindow = window.barAppearanceName == "darkAqua"
+            let line = "window=\(darkWindow ? "dark" : "light") bar=\(darkBar ? "dark" : "light")\n"
+            return (try? line.write(toFile: path, atomically: true, encoding: .utf8)) == nil
+                ? "bar-appearance failed" : nil
         case "screens":
             // Every screen's frame and visible frame, and the Deck's, whole
             // points: the e2e's context for a frame that did not come back.
