@@ -21,8 +21,8 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ElevatedCard
@@ -80,6 +80,7 @@ import kotlinx.coroutines.launch
 fun HomeScreen(
     state: DeckUiState,
     onToggleEnabled: (Boolean) -> Unit,
+    onOpenBatterySettings: () -> Unit,
     onToggleAllowConnections: (Boolean) -> Unit,
     onToggleAllowPairings: (Boolean) -> Unit,
     onStatusAction: (AttentionKind) -> Unit,
@@ -131,10 +132,10 @@ fun HomeScreen(
                 modifier = Modifier.padding(horizontal = horizontal),
             )
             Spacer(Modifier.height(16.dp))
-            SwitchRow(
-                headline = stringResource(R.string.home_keep_running),
-                checked = state.enabled,
+            KeepRunningRow(
+                state = state.keepRunning,
                 onToggle = onToggleEnabled,
+                onOpenBattery = onOpenBatterySettings,
             )
             HorizontalDivider(Modifier.padding(horizontal = horizontal, vertical = 8.dp))
             SwitchRow(
@@ -233,6 +234,51 @@ fun HomeScreen(
             Spacer(Modifier.height(24.dp))
         }
     }
+}
+
+/**
+ * "Keep running in the background": the switch is the pref, and the supporting
+ * line says what the pref plus the battery exemption actually mean
+ * (docs/specs/phone-app.md PHONE-19). A missing exemption is one tap away.
+ */
+@Composable
+private fun KeepRunningRow(
+    state: KeepRunningState,
+    onToggle: (Boolean) -> Unit,
+    onOpenBattery: () -> Unit,
+) {
+    val supporting = when (state) {
+        KeepRunningState.OFF -> stringResource(R.string.home_keep_running_off)
+        KeepRunningState.ON_EXEMPT -> stringResource(R.string.home_keep_running_on)
+        KeepRunningState.ON_RESTRICTED -> stringResource(R.string.home_keep_running_restricted)
+    }
+    ListItem(
+        headlineContent = { Text(stringResource(R.string.home_keep_running)) },
+        supportingContent = {
+            Column {
+                Text(supporting)
+                if (state == KeepRunningState.ON_RESTRICTED) {
+                    TextButton(
+                        onClick = onOpenBattery,
+                        contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp),
+                    ) {
+                        Text(stringResource(R.string.action_open_battery_settings))
+                    }
+                }
+            }
+        },
+        trailingContent = {
+            Switch(
+                checked = state != KeepRunningState.OFF,
+                onCheckedChange = null,
+            )
+        },
+        modifier = Modifier.toggleable(
+            value = state != KeepRunningState.OFF,
+            onValueChange = onToggle,
+            role = androidx.compose.ui.semantics.Role.Switch,
+        ),
+    )
 }
 
 @Composable

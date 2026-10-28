@@ -28,6 +28,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -56,7 +57,8 @@ fun OnboardingScreen(
     onOpenShizuku: () -> Unit,
     onAllowShizuku: () -> Unit,
     onAllowNotifications: () -> Unit,
-    onIgnoreBattery: () -> Unit,
+    onKeepRunning: () -> Unit,
+    onOpenBatterySettings: () -> Unit,
     onScanQr: () -> Unit,
     onFinished: () -> Unit,
     initialPage: Int = 0,
@@ -124,8 +126,10 @@ fun OnboardingScreen(
 
                     OnboardingStep.NOTIFICATIONS -> NotificationsPage(
                         notificationsGranted = state.notificationsGranted,
+                        keepRunning = state.keepRunning,
                         onAllow = onAllowNotifications,
-                        onIgnoreBattery = onIgnoreBattery,
+                        onKeepRunning = onKeepRunning,
+                        onOpenBatterySettings = onOpenBatterySettings,
                     )
 
                     OnboardingStep.PAIR -> PairPage(onScanQr = onScanQr)
@@ -270,8 +274,10 @@ private fun HowToLine(number: Int, text: String) {
 @Composable
 private fun NotificationsPage(
     notificationsGranted: Boolean,
+    keepRunning: KeepRunningState,
     onAllow: () -> Unit,
-    onIgnoreBattery: () -> Unit,
+    onKeepRunning: () -> Unit,
+    onOpenBatterySettings: () -> Unit,
 ) {
     PageColumn(
         iconRes = R.drawable.ic_notifications,
@@ -286,9 +292,36 @@ private fun NotificationsPage(
             textAlign = TextAlign.Center,
         )
         Spacer(Modifier.height(8.dp))
-        OutlinedButton(onClick = onIgnoreBattery, modifier = Modifier.fillMaxWidth()) {
-            // One name with the home's switch (CONV-PD-07, misses.md M7).
-            Text(stringResource(R.string.home_keep_running))
+        // One action and one name with the home's switch (CONV-PD-07,
+        // PHONE-19): the button turns the pref on and asks for the exemption,
+        // and afterwards the row says what state that left the phone in.
+        when (keepRunning) {
+            KeepRunningState.OFF -> OutlinedButton(
+                onClick = onKeepRunning,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(stringResource(R.string.home_keep_running))
+            }
+
+            KeepRunningState.ON_EXEMPT -> KeepRunningRow(
+                iconRes = R.drawable.ic_check_circle,
+                tint = MaterialTheme.colorScheme.primary,
+                text = stringResource(R.string.onboarding_keep_running_on),
+            )
+
+            KeepRunningState.ON_RESTRICTED -> {
+                KeepRunningRow(
+                    iconRes = R.drawable.ic_warning,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    text = stringResource(R.string.onboarding_keep_running_restricted),
+                )
+                TextButton(
+                    onClick = onOpenBatterySettings,
+                    modifier = Modifier.align(Alignment.Start),
+                ) {
+                    Text(stringResource(R.string.action_open_battery_settings))
+                }
+            }
         }
         Spacer(Modifier.height(8.dp))
         Button(
@@ -298,6 +331,23 @@ private fun NotificationsPage(
         ) {
             Text(stringResource(R.string.allow))
         }
+    }
+}
+
+/** The onboarding row's state line: an icon and the sentence the brief names. */
+@Composable
+private fun KeepRunningRow(iconRes: Int, tint: Color, text: String) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Icon(painter = painterResource(iconRes), contentDescription = null, tint = tint)
+        Text(
+            text = text,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }
 

@@ -82,8 +82,12 @@ seed_prefs() { # seed_prefs <enabled> <onboarding_done> [paired-json]
   emu shell "run-as $PKG sh -c 'cat > shared_prefs/pocketdeck.xml'" < "$file"
 }
 
-restart_app() {
+stop_app() {
   emu shell am force-stop "$PKG" >/dev/null 2>&1 || true
+}
+
+restart_app() {
+  stop_app
   for _ in $(seq 1 10); do
     emu shell am start -n "$PKG/.app.MainActivity" >/dev/null 2>&1 || true
     sleep 2
@@ -118,7 +122,10 @@ pass() { echo "PASS $*"; }
 fail() { echo "FAIL $*"; FAILS=$((FAILS + 1)); }
 
 # --- A: pair, then hold one live session ------------------------------------
-restart_app
+stop_app
+emu logcat -c >/dev/null 2>&1 || true
+start_app
+wait_app_push 45 || die "the app never pushed its identity to the shell service"
 wait_server_port 60 >/dev/null || die "no listening port after relaunch"
 ensure_forward >/dev/null || die "adb forward failed"
 
@@ -173,13 +180,15 @@ else
 fi
 
 # --- D: the relaunched app lists no Macs ------------------------------------
-restart_app
+# The prefs are written while the app is stopped: a running process would write
+# its in-memory copy back over them.
+stop_app
+seed_prefs true true
+emu logcat -c >/dev/null 2>&1 || true
+start_app
+wait_app_push 45 || die "the app never pushed after the relaunch"
 wait_server_port 60 >/dev/null || die "no listening port after the relaunch"
 ensure_forward >/dev/null || die "adb forward failed after the relaunch"
-seed_prefs true true
-restart_app
-wait_server_port 60 >/dev/null || die "no listening port after seeding the prefs"
-ensure_forward >/dev/null || die "adb forward failed"
 if wait_for_text /data/local/tmp/pd-reset.xml 'No Macs paired yet.' 20; then
   if ui_text /data/local/tmp/pd-reset.xml | grep -q 'Studio Mac'; then
     fail "relaunch: the home still lists the Mac after Clear data"
