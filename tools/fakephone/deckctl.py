@@ -42,6 +42,9 @@ HANDSHAKE_TIMEOUT = 20.0
 # A second session must fail with `busy` immediately (test_selfcheck.sh asserts
 # that); --wait-for-free retries instead, for a phone another client is holding.
 BUSY_RETRY_SLEEP = 0.5
+# backpressure: a frame counts as live again when its arrival-to-pts lag is this
+# close to the warm phase's baseline (a decoder's own buffering is ~50 ms).
+LIVE_LAG_MS = 150.0
 TIMEOUT = object()   # sentinel: read timed out
 
 
@@ -253,7 +256,32 @@ class Client(object):
         self.device_id = device_id
 
 
-def _connect_host(host, port, state, timeout=DEFAULT_TIMEOUT):
+def _tcp_connect(host, port, timeout, rcvbuf=0):
+    """A connected TCP socket whose receive buffer was asked for before connect.
+
+    The receive buffer has to be set before the handshake to mean anything: a
+    buffer set afterwards cannot shrink what the peer was already told it may
+    send. It is still a request — measured on macOS, auto-tuning raises it again
+    at connect (16384 asked, ~3e5 given) — so a slow reader must not depend on
+    it; the run's own `live_again_ms` measures what the path really held.
+    """
+    last = None
+    for family, kind, proto_no, _name, addr in socket.getaddrinfo(
+            host, port, 0, socket.SOCK_STREAM):
+        sock = socket.socket(family, kind, proto_no)
+        try:
+            if rcvbuf > 0:
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, rcvbuf)
+            sock.settimeout(timeout)
+            sock.connect(addr)
+            return sock
+        except OSError as exc:
+            last = exc
+            sock.close()
+    raise OSError(last or "no address for %s" % host)
+
+
+def _connect_host(host, port, state, timeout=DEFAULT_TIMEOUT, rcvbuf=0):
     """A TLS 1.3 session to the phone: deckctl presents ITS identity as the
     client cert (the phone pins the Mac from the handshake, like the real Mac),
     then takes the phone's fingerprint from the presented server cert (§1:
@@ -261,7 +289,7 @@ def _connect_host(host, port, state, timeout=DEFAULT_TIMEOUT):
     state.ensure_identity(state.name)
     cert_path, key_path = proto.identity_paths(state.identity_dir)
     try:
-        raw = socket.create_connection((host, port), timeout=timeout)
+        raw = _tcp_connect(host, port, timeout, rcvbuf)
     except OSError as exc:
         raise DeckError("cannot connect to %s:%s (%s)" % (host, port, exc))
     try:
@@ -288,12 +316,12 @@ def _connect_host(host, port, state, timeout=DEFAULT_TIMEOUT):
     return sock
 
 
-def open_session(host, port, state, on_code, device_hint=None, busy_retries=1):
+def open_session(host, port, state, on_code, device_hint=None, busy_retries=1, rcvbuf=0):
     """Return an authenticated Client (paired pin) — else pair when --pair was given."""
     last_error = None
     if state.pins:
         for attempt in range(busy_retries):
-            sock = _connect_host(host, port, state)
+            sock = _connect_host(host, port, state, rcvbuf=rcvbuf)
             client = Client(sock, state)
             try:
                 client.connect()
@@ -316,7 +344,7 @@ def open_session(host, port, state, on_code, device_hint=None, busy_retries=1):
             raise last_error
         raise DeckError("not paired with this phone; pass --pair")
     for attempt in range(busy_retries):
-        sock = _connect_host(host, port, state)
+        sock = _connect_host(host, port, state, rcvbuf=rcvbuf)
         client = Client(sock, state)
         try:
             client.pair(on_code)
@@ -1020,20 +1048,24 @@ def cmd_pause_test(client, args):
     return 0
 
 
-def _motion_step(client, stream, mode, magnitude):
+def _motion_step(client, stream, mode, magnitude, direction=1):
     """One motion event: a scroll burst, or a synthetic fling (down/moves/up).
 
     The fling keeps a list animating afterwards, which is what a nearly static
-    app needs to produce frames the encoder can measure.
+    app needs to produce frames the encoder can measure. `direction` flips the
+    swipe so a long phase scrolls back up instead of pinning the list at one
+    end, where nothing new is drawn and the encoder has nothing to send.
     """
     if mode == "drag":
-        client.send_raw(proto.pack_touch(stream, proto.TOUCH_DOWN, 0, 0.5, 0.85))
+        down_y, up_y = (0.85, 0.15) if direction > 0 else (0.15, 0.85)
+        client.send_raw(proto.pack_touch(stream, proto.TOUCH_DOWN, 0, 0.5, down_y))
         for i in range(14):
-            client.send_raw(proto.pack_touch(stream, proto.TOUCH_MOVE, 0, 0.5, 0.85 - 0.05 * (i + 1)))
+            step = (up_y - down_y) * (i + 1) / 14.0
+            client.send_raw(proto.pack_touch(stream, proto.TOUCH_MOVE, 0, 0.5, down_y + step))
             time.sleep(0.012)
-        client.send_raw(proto.pack_touch(stream, proto.TOUCH_UP, 0, 0.5, 0.15))
+        client.send_raw(proto.pack_touch(stream, proto.TOUCH_UP, 0, 0.5, up_y))
     else:
-        client.send_raw(proto.pack_scroll(stream, 0.5, 0.5, 0.0, magnitude))
+        client.send_raw(proto.pack_scroll(stream, 0.5, 0.5, 0.0, direction * magnitude))
 
 
 def _read_frames(client, seconds, stats, output, stream, motion, scroll_every,
@@ -1046,7 +1078,9 @@ def _read_frames(client, seconds, stats, output, stream, motion, scroll_every,
     (sleeping after each frame), which is a *slow* reader rather than a stopped
     one: the socket drains, but behind the encoder, so the phone's queue fills
     the same way while frames still arrive. `motion` injects a scroll/fling
-    every `scroll_every` seconds so a static app keeps producing frames.
+    every `scroll_every` seconds so a static app keeps producing frames, on the
+    wall clock even while the reader is throttled (a reader that also stopped
+    the input would stop the encoder and never fill the queue).
 
     Each video frame's arrival time and pts land in `stats["marks"]`, so a
     caller can time the frames (a gap, the first one after a phase switch).
@@ -1063,16 +1097,36 @@ def _read_frames(client, seconds, stats, output, stream, motion, scroll_every,
     credit = 0.0
     credit_at = window_start
     burst = max(read_bps * 0.25, 8192.0) if read_bps else 0.0
-    while time.time() < deadline:
-        if motion:
+
+    def pump_motion():
+        """Inject the next scroll/fling if it is due, alternating direction."""
+        nonlocal next_motion, direction
+        if not motion:
+            return
+        now = time.time()
+        if now < next_motion:
+            return
+        _motion_step(client, stream, motion_mode, motion, direction)
+        direction = -direction
+        next_motion = now + scroll_every
+
+    def wait_until(when):
+        """Sleep to `when` in slices, keeping the motion input on time.
+
+        A throttled reader must not stop driving the app: with the input on the
+        reader's slow clock the screen settles, the encoder has nothing to send,
+        and the phone's queue never fills — the 3 s phase of 10-28 read one
+        frame for exactly that reason.
+        """
+        while True:
             now = time.time()
-            if now >= next_motion:
-                if motion_mode == "drag":
-                    _motion_step(client, stream, "drag", motion)
-                else:
-                    _motion_step(client, stream, "scroll", direction * motion)
-                    direction = -direction
-                next_motion = now + scroll_every
+            if now >= when:
+                return
+            pump_motion()
+            time.sleep(min(0.02, when - now))
+
+    while time.time() < deadline:
+        pump_motion()
         if read:
             if read_bps:
                 now = time.time()
@@ -1108,7 +1162,9 @@ def _read_frames(client, seconds, stats, output, stream, motion, scroll_every,
                 if read_bps:
                     credit -= len(au) + 16
                     if credit < 0:
-                        time.sleep(-credit / read_bps)
+                        # Stop at the phase boundary: a large frame's payback
+                        # must not run the slow phase long.
+                        wait_until(min(deadline, time.time() - credit / read_bps))
                         credit = 0.0
                         credit_at = time.time()
         else:
@@ -1216,6 +1272,29 @@ def nfr_limit_ms(key, fallback):
         return fallback
 
 
+def _median(values):
+    ordered = sorted(values)
+    if not ordered:
+        return None
+    mid = len(ordered) // 2
+    return ordered[mid] if len(ordered) % 2 else (ordered[mid - 1] + ordered[mid]) / 2.0
+
+
+def _lag_baseline(marks):
+    """`arrival - pts` (seconds) for the newest run of increasing pts, or None.
+
+    A peer can restart its encoder mid-phase (the fake phone remakes ffmpeg on
+    every keyframe request), which resets pts to zero; only the last run of
+    increasing pts describes the clock offset the next phase continues from.
+    """
+    segment = []
+    for arrived, pts in reversed(marks):
+        if segment and pts >= segment[-1][1]:
+            break
+        segment.append((arrived, pts))
+    return _median([arrived - pts / 1e6 for arrived, pts in segment])
+
+
 def cmd_backpressure(client, args):
     """Read slowly for a while, then free: the phone repairs once, not per drop.
 
@@ -1225,15 +1304,25 @@ def cmd_backpressure(client, args):
     reader consumes at `--read-kbps` during the slow phase (the socket still
     drains, so this is a slow reader, not `quality-test`'s stopped one), then
     reads at full speed. The phone's own logcat holds the keyframe and bitrate
-    evidence; this side measures when frames flow again: the first frame after
-    the reader is free (checked against `--recovery-ms`) and the largest gap
-    between frames after that.
+    evidence; this side measures when frames flow again.
+
+    Three numbers, because a deep buffer hides behind the first:
+    - `recovery_ms`: the first frame that arrives after the reader is free;
+    - `live_again_ms`: the first frame whose arrival-to-pts lag is back at the
+      warm phase's (median) baseline plus `LIVE_LAG_MS` — data that sat in a
+      socket buffer after the reader was already free does not count as live;
+    - `max_gap_after_recovery_ms`: the largest hole between frames once free,
+      which is what a person sees as a freeze.
+    `--recovery-ms` and `backpressure_max_gap_ms` (docs/NFR.md) are the limits.
     """
     stream = 1
+    # Where a socket buffer, not the phone, holds the backlog, the first frame
+    # after the reader is free is stale data: the picture counts as live again
+    # when its lag is back near the warm baseline.
     try:
-        client.sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, args.rcvbuf)
+        effective_rcvbuf = client.sock.getsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF)
     except OSError:
-        pass
+        effective_rcvbuf = 0
     output = open(args.out, "wb") if args.out else None
     request = {"t": "window.open", "stream": stream, "w": args.w, "h": args.h, "dpi": args.dpi}
     if args.phone:
@@ -1241,9 +1330,11 @@ def cmd_backpressure(client, args):
     else:
         request["pkg"] = args.target
     client.send_json(request)
-    print("backpressure stream=%d %dx%d slow=%ss at %d kbps, then %ss free%s" % (
-        stream, args.w, args.h, args.slow_seconds, args.read_kbps, args.free_seconds,
-        " motion=%s" % args.motion if args.motion else ""))
+    print("backpressure stream=%d %dx%d slow=%ss at %d kbps, then %ss free, "
+          "rcvbuf=%d..%d%s" % (
+              stream, args.w, args.h, args.slow_seconds, args.read_kbps, args.free_seconds,
+              args.rcvbuf, effective_rcvbuf,
+              " motion=%s/%s" % (args.motion_mode, args.motion) if args.motion else ""))
     try:
         def phase(name, seconds, read_bps):
             stats = {"configs": 0, "frames": 0, "bytes": 0, "sizes": [], "keys": 0, "marks": []}
@@ -1253,23 +1344,37 @@ def cmd_backpressure(client, args):
             elapsed = max(1e-3, time.time() - started)
             avg = (sum(stats["sizes"]) / len(stats["sizes"])) if stats["sizes"] else 0.0
             kbps = sum(stats["sizes"]) * 8.0 / elapsed / 1000.0
-            print("phase %-5s frames=%4d kbps=%8.1f avg_frame=%6.0f B keys=%d" % (
-                name, len(stats["sizes"]), kbps, avg, stats["keys"]))
+            print("phase %-5s seconds=%6.2f frames=%4d kbps=%8.1f avg_frame=%6.0f B keys=%d" % (
+                name, elapsed, len(stats["sizes"]), kbps, avg, stats["keys"]))
             return started, stats
 
-        phase("warm", args.warmup_seconds, 0.0)
+        _warm_start, warm = phase("warm", args.warmup_seconds, 0.0)
         phase("slow", args.slow_seconds, args.read_kbps * 1000.0 / 8.0)
 
         free_start, free = phase("free", args.free_seconds, 0.0)
+        baseline = _lag_baseline(warm["marks"])
         arrivals = [arrived for arrived, _pts in free["marks"]]
         first_ms = int(round((arrivals[0] - free_start) * 1000)) if arrivals else -1
+        live_ms = -1
+        if baseline is not None:
+            prev_pts = None
+            for arrived, _pts in free["marks"]:
+                if prev_pts is not None and _pts < prev_pts - 1_000_000:
+                    # A new encoder segment: its first frame was encoded now.
+                    baseline = arrived - _pts / 1e6
+                prev_pts = _pts
+                if (arrived - _pts / 1e6 - baseline) * 1000.0 <= LIVE_LAG_MS:
+                    live_ms = int(round((arrived - free_start) * 1000))
+                    break
         gaps = [arrivals[i] - arrivals[i - 1] for i in range(1, len(arrivals))]
         max_gap_ms = int(round(max(gaps) * 1000)) if gaps else -1
-        ok = first_ms >= 0 and first_ms <= args.recovery_ms
-        print("backpressure: recovery_ms=%d limit_ms=%d max_gap_after_recovery_ms=%d "
-              "frames_free=%d verdict=%s" % (
-                  first_ms, args.recovery_ms, max_gap_ms, len(arrivals),
-                  "PASS" if ok else "FAIL"))
+        gap_limit = nfr_limit_ms("backpressure_max_gap_ms", 1500)
+        ok = first_ms >= 0 and first_ms <= args.recovery_ms \
+            and (max_gap_ms < 0 or max_gap_ms <= gap_limit)
+        print("backpressure: recovery_ms=%d limit_ms=%d live_again_ms=%d "
+              "max_gap_after_recovery_ms=%d gap_limit_ms=%d frames_free=%d verdict=%s" % (
+                  first_ms, args.recovery_ms, live_ms, max_gap_ms, gap_limit,
+                  len(arrivals), "PASS" if ok else "FAIL"))
         return 0 if ok else 1
     finally:
         client.send_json({"t": "window.close", "stream": stream})
@@ -2657,6 +2762,10 @@ def build_parser():
     p.add_argument("--wait-for-free", type=float, default=0.0, metavar="SECONDS",
                    help="retry while another session is active, up to this long "
                         "(default: fail immediately with 'busy')")
+    p.add_argument("--rcvbuf", type=int, default=0, metavar="BYTES",
+                   help="set SO_RCVBUF before connect (0 = the OS default): a slow "
+                        "reader's small buffer stops the host side absorbing the "
+                        "phone's backlog")
 
     spp = {"allow_abbrev": False}
     sub = p.add_subparsers(dest="command", required=True)
@@ -2753,7 +2862,6 @@ def build_parser():
     sp.add_argument("--motion-mode", choices=("scroll", "drag"), default="scroll",
                     help="scroll: wheel bursts; drag: synthetic fling (animates a static list)")
     sp.add_argument("--scroll-every", type=float, default=0.5)
-    sp.add_argument("--rcvbuf", type=int, default=32768, help="client receive buffer during the test")
     sp.add_argument("--out", help="write the whole run's raw Annex-B H.264 here")
 
     sp = sub.add_parser("watch-state", help="print every state message; lock/unlock while it runs", **spp)
@@ -3022,7 +3130,8 @@ def main(argv=None):
             host, port = args.host, args.port
         client = open_session(host, port, state,
                               on_code=make_code_sink(args), device_hint=device_hint,
-                              busy_retries=max(1, int(args.wait_for_free / BUSY_RETRY_SLEEP) + 1))
+                              busy_retries=max(1, int(args.wait_for_free / BUSY_RETRY_SLEEP) + 1),
+                              rcvbuf=max(0, int(args.rcvbuf)))
     except (DeckError, proto.ProtocolError) as exc:
         sys.stderr.write("deckctl: error: %s\n" % exc)
         return 2
