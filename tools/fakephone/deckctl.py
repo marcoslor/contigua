@@ -1153,6 +1153,8 @@ def _read_frames(client, seconds, stats, output, stream, motion, scroll_every,
                 stats["bytes"] += len(au)
                 stats["sizes"].append(len(au))
                 stats.setdefault("marks", []).append((arrived, _pts))
+                if flags & proto.FRAME_FLAG_KEY:
+                    stats["key_bytes"] = stats.get("key_bytes", 0) + len(au)
                 window_frames += 1
                 window_bytes += len(au)
                 if flags & proto.FRAME_FLAG_KEY:
@@ -1317,6 +1319,14 @@ def cmd_backpressure(client, args):
     - `max_gap_after_recovery_ms`: the largest hole between frames once free,
       which is what a person sees as a freeze.
     `--recovery-ms` and `backpressure_max_gap_ms` (docs/NFR.md) are the limits.
+
+    `--read-fraction` makes the slow reader a *somewhat* slow one: it reads at
+    that fraction of the warm phase's own measured rate (the field Mac read
+    slower than the stream for minutes, not at 30 kbps). Each phase line also
+    carries what the person sees during it — frames per second over the reading
+    part, the longest gap between arrivals there, and the share of the
+    delivered bytes that were keyframes — so the moderate case can be compared
+    before and after a fix.
     """
     stream = 1
     # Where a socket buffer, not the phone, holds the backlog, the first frame
@@ -1333,14 +1343,17 @@ def cmd_backpressure(client, args):
     else:
         request["pkg"] = args.target
     client.send_json(request)
-    print("backpressure stream=%d %dx%d slow=%ss (stall %ss) at %d kbps, then %ss free, "
+    rate = ("%.2f x the warm rate" % args.read_fraction if args.read_fraction > 0
+            else "%d kbps" % args.read_kbps)
+    print("backpressure stream=%d %dx%d slow=%ss (stall %ss) at %s, then %ss free, "
           "rcvbuf=%d..%d%s" % (
-              stream, args.w, args.h, args.slow_seconds, args.stall_seconds, args.read_kbps,
+              stream, args.w, args.h, args.slow_seconds, args.stall_seconds, rate,
               args.free_seconds, args.rcvbuf, effective_rcvbuf,
               " motion=%s/%s" % (args.motion_mode, args.motion) if args.motion else ""))
     try:
         def phase(name, seconds, read_bps, stall=0.0):
-            stats = {"configs": 0, "frames": 0, "bytes": 0, "sizes": [], "keys": 0, "marks": []}
+            stats = {"configs": 0, "frames": 0, "bytes": 0, "sizes": [], "keys": 0,
+                     "key_bytes": 0, "marks": []}
             started = time.time()
             if stall > 0:
                 # Unread on purpose: this is what fills the buffers in the path.
@@ -1353,12 +1366,30 @@ def cmd_backpressure(client, args):
             elapsed = max(1e-3, time.time() - started)
             avg = (sum(stats["sizes"]) / len(stats["sizes"])) if stats["sizes"] else 0.0
             kbps = sum(stats["sizes"]) * 8.0 / elapsed / 1000.0
-            print("phase %-5s seconds=%6.2f frames=%4d kbps=%8.1f avg_frame=%6.0f B keys=%d" % (
-                name, elapsed, len(stats["sizes"]), kbps, avg, stats["keys"]))
+            # What the person sees is the part the reader was reading: a stall
+            # at the start of the phase is not a hole in the measurement.
+            read_from = started + stall
+            arrivals = [arrived for arrived, _pts in stats["marks"] if arrived >= read_from]
+            gaps = [arrivals[0] - read_from] if arrivals else []
+            gaps += [arrivals[i] - arrivals[i - 1] for i in range(1, len(arrivals))]
+            gap_ms = int(round(max(gaps) * 1000)) if gaps else -1
+            read_seconds = max(1e-3, elapsed - stall)
+            fps = len(arrivals) / read_seconds
+            share = 100.0 * stats["key_bytes"] / stats["bytes"] if stats["bytes"] else 0.0
+            print("phase %-5s seconds=%6.2f frames=%4d fps=%5.1f kbps=%8.1f avg_frame=%6.0f B "
+                  "keys=%d key_share=%5.1f%% max_gap=%6dms" % (
+                      name, elapsed, len(stats["sizes"]), fps, kbps, avg, stats["keys"],
+                      share, gap_ms))
             return started, stats
 
-        _warm_start, warm = phase("warm", args.warmup_seconds, 0.0)
-        phase("slow", args.slow_seconds, args.read_kbps * 1000.0 / 8.0, args.stall_seconds)
+        warm_start, warm = phase("warm", args.warmup_seconds, 0.0)
+        slow_bps = args.read_kbps * 1000.0 / 8.0
+        if args.read_fraction > 0:
+            warm_kbps = sum(warm["sizes"]) * 8.0 / max(1e-3, time.time() - warm_start) / 1000.0
+            slow_bps = warm_kbps * 1000.0 / 8.0 * args.read_fraction
+            print("slow reader: %.1f kbps, %.2f x the warm phase's %.1f kbps" % (
+                slow_bps * 8.0 / 1000.0, args.read_fraction, warm_kbps))
+        phase("slow", args.slow_seconds, slow_bps, args.stall_seconds)
 
         free_start, free = phase("free", args.free_seconds, 0.0)
         baseline = _lag_baseline(warm["marks"])
@@ -2865,6 +2896,10 @@ def build_parser():
                          "path fill at once (0 = read slowly from the start)")
     sp.add_argument("--read-kbps", type=int, default=250,
                     help="the slow reader's rate; far below what the encoder produces")
+    sp.add_argument("--read-fraction", type=float, default=0.0,
+                    help="instead of --read-kbps: read at this fraction of the warm "
+                         "phase's measured rate (e.g. 0.5), a reader somewhat slower "
+                         "than the stream")
     sp.add_argument("--free-seconds", type=float, default=4.0,
                     help="seconds read at full speed after the slow phase")
     sp.add_argument("--recovery-ms", type=int, default=None,
@@ -3116,6 +3151,9 @@ def main(argv=None):
             return 2
         if args.recovery_ms is None:
             args.recovery_ms = nfr_limit_ms("backpressure_recovery_ms", 1000)
+        if args.read_fraction < 0.0 or args.read_fraction >= 1.0:
+            sys.stderr.write("deckctl: error: --read-fraction must be in [0, 1)\n")
+            return 2
     if args.command == "frame-png":
         try:
             return cmd_frame_png(None, args)
