@@ -26,7 +26,11 @@ cd "$REPO_ROOT"
 
 WT="$REPO_ROOT"
 OUT="${POCKETDECK_MW_OUT:-$HOME/dev/pocketdeck/.agent/mw-phone}"
-STATE="$CACHE_DIR/deckctl-state.json"
+# A fresh pairing state per run: boot 4 was lost because a reused state file made
+# every attempt die on the phone's "handshake timeout" (a key it had revoked).
+# A new file pairs like a new Mac, so no earlier pairing can poison the run.
+STATE="$CACHE_DIR/deckctl-state-$(date +%s).json"
+find "$CACHE_DIR" -maxdepth 1 -name 'deckctl-state-*.json' -mtime +1 -delete 2>/dev/null || true
 CLIENT="$WT/tools/emulator/multiwin.py"
 mkdir -p "$OUT"
 export POCKETDECK_AGENT_DIR="${POCKETDECK_AGENT_DIR:-$OUT/emu}"
@@ -99,6 +103,7 @@ restart_server || { echo "[multiwin] error: the shell service did not come back"
 DEVPORT="$(ensure_forward)" || { echo "[multiwin] error: no server port after restart" >&2; exit 1; }
 step "restarted: pid $(server_pid) port $DEVPORT"
 
+step "pairing state: $(basename "$STATE") (new this run)"
 pair_phone || { echo "[multiwin] error: could not pair with the rig" >&2; exit 1; }
 
 # The pairing above belongs to the restarted build; the reply proves which server
