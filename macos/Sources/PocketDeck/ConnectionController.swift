@@ -1289,6 +1289,50 @@ final class ConnectionController {
         setPhoneDnd(on: on)
     }
 
+    // MARK: - The menus check's state changes
+
+    @ObservationIgnored private var menuBurstTimer: Timer?
+    @ObservationIgnored private var menuBurstStep = 0
+
+    /// `menu-burst on|off` (e2e `menus`): three kinds of state change a person's
+    /// log had while menus were open — a battery report, a Now Playing change
+    /// and an occlusion flip — fed through the same handler the phone's own
+    /// messages take. None of them is a menu value, so a menu that is open must
+    /// not be rebuilt because of them (docs/specs/menus.md MENU-17).
+    func debugMenuBurst(_ on: Bool) {
+        menuBurstTimer?.invalidate()
+        menuBurstTimer = nil
+        guard on else { return }
+        menuBurstStep = 0
+        let timer = Timer(timeInterval: 0.4, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.menuBurstStepNow() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        menuBurstTimer = timer
+    }
+
+    private func menuBurstStepNow() {
+        menuBurstStep += 1
+        let charging = menuBurstStep % 2 == 1
+        let status = self.status
+        handle(.phoneState(locked: status?.locked ?? true,
+                           battery: charging ? 42 : 87,
+                           charging: charging,
+                           dnd: status?.dnd,
+                           ringer: status?.ringer,
+                           volume: status?.volume,
+                           volumeMax: status?.volumeMax,
+                           screen: status?.screen,
+                           secure: nil,
+                           panel: nil))
+        handle(.mediaState(MediaState(playing: charging,
+                                      pkg: "com.example.player",
+                                      positionMs: Int64(menuBurstStep) * 1000,
+                                      receivedAt: Date().timeIntervalSince1970)))
+        windows.controller(for: 1)?.setOcclusionVisible(charging)
+        MenuTrack.noteStateChange()
+    }
+
     /// `--debug-focus` and `--debug-dnd` (PD_TEST_HOOKS only): the filter's
     /// perform() and the menu item's path, without System Settings or a click.
     private func armFocusDebug() {
@@ -2512,6 +2556,22 @@ final class ConnectionController {
             guard let spec = arguments.first else { return "key needs SPEC" }
             guard let stroke = DebugInputScript.keyStroke(for: spec) else { return "unknown key '\(spec)'" }
             return sendKey(stroke)
+        case "menutrack":
+            // The e2e menus check: hold one of the app's real menus open and
+            // report what happened while it was up (MenuTrack.swift).
+            guard arguments.count == 3, arguments[0].hasPrefix("/"),
+                  let seconds = Double(arguments[2]) else {
+                return "menutrack needs PATH View/Density SECONDS"
+            }
+            return MenuTrack.start(path: arguments[0], itemPath: arguments[1], seconds: seconds)
+        case "menu-burst":
+            // The state changes the check makes while the menu is open: a
+            // battery report, a Now Playing change and an occlusion flip.
+            guard let on = arguments.first, ["on", "off"].contains(on) else {
+                return "menu-burst needs on|off"
+            }
+            debugMenuBurst(on == "on")
+            return nil
         case "decksearch":
             // The Deck search field's state: focused, text, selection, and which
             // window is key (a read; the ⌘F behaviour is a real key event).

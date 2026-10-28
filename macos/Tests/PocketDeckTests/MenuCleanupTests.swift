@@ -48,4 +48,20 @@ final class MenuCleanupTests: XCTestCase {
         XCTAssertTrue(MenuCleanup.isSystemFeedback("Send PocketDeck Feedback"))
         XCTAssertFalse(MenuCleanup.isSystemFeedback("PocketDeck on GitHub"))
     }
+
+    func testAppKitsKeylessFullScreenItemGoesAndTheAppsStays() {
+        // AppKit's own item (no ⌃⌘F) beside the app's, after a rebuild: the
+        // person must not read the command twice (MENU-7).
+        let menu = [MenuCleanup.Item(title: "Enter Full Screen"),
+                    MenuCleanup.Item(title: "Enter Full Screen", keyEquivalent: "f"),
+                    MenuCleanup.Item(title: "Bring All to Front")]
+        XCTAssertEqual(MenuCleanup.removals(menu: "Window", items: menu),
+                       [MenuCleanup.Removal(path: [0])])
+        // The app's item alone is the design, marked or not.
+        let only = [MenuCleanup.Item(title: "Exit Full Screen", keyEquivalent: "f")]
+        XCTAssertEqual(MenuCleanup.removals(menu: "Window", items: only), [])
+        // A key-less item with no keyed one is left alone: it may be all there is.
+        let lone = [MenuCleanup.Item(title: "Enter Full Screen")]
+        XCTAssertEqual(MenuCleanup.removals(menu: "Window", items: lone), [])
+    }
 }
