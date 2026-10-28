@@ -3433,6 +3433,43 @@ PY
         skip_visible "MENUS the bar with the last stream window closed (a quiet app stops answering then)"
     fi
 
+    # A menu held open for 5 s while the state under it changes (MENU-17): the
+    # person's 10-27 report was a submenu that kept appearing and disappearing
+    # while they hovered it. A battery report, a Now Playing change and an
+    # occlusion flip are not values the menu shows, so nothing may rebuild its
+    # items — a rebuild closes the menu under the pointer.
+    rm -f "$WORK/menus-track.json"
+    control menutrack "$WORK/menus-track.json" "View/Density" 5 \
+        || bad "MENUS menutrack: $CONTROL_REPLY"
+    control menu-burst on || bad "MENUS menu-burst on: $CONTROL_REPLY"
+    wait_until 25 [ -s "$WORK/menus-track.json" ] \
+        || bad "MENUS no tracked-menu report in 25 s (the menu never closed)"
+    control menu-burst off >/dev/null 2>&1
+    python3 - "$WORK/menus-track.json" <<'PY' && ok "[MENU-17] a menu open for 5 s: 12 state changes, no rebuild, its items and submenu are the same objects, it stayed open" \
+        || bad "[MENU-17] the open menu was rebuilt or closed under the pointer"
+import json, sys
+
+report = json.load(open(sys.argv[1]))
+problems = []
+if not report.get("opened"):
+    problems.append("the menu never opened")
+if report.get("state_changes", 0) < 10:
+    problems.append("%d state changes while it was open" % report.get("state_changes", 0))
+if report.get("builds_during", 0) != 0:
+    problems.append("%d rebuilds while it tracked" % report["builds_during"])
+if report.get("items_changed"):
+    problems.append("its items were replaced (%d -> %d)" % (report["item_count_before"], report["item_count_after"]))
+if not report.get("submenu_same_object"):
+    problems.append("the submenu object changed")
+if not report.get("submenu_opened"):
+    problems.append("the submenu never opened")
+if not any(path.startswith("View/Density") for path in report.get("tracking_at_end") or []):
+    problems.append("it was not still open at the end: %r" % (report.get("tracking_at_end"),))
+print("; ".join(problems))
+sys.exit(1 if problems else 0)
+PY
+
+
     # A relaunch: the same bar, built once from scratch. The shared app is
     # replaced, so the shell takes the new PID for the bookkeeping.
     kill "$SHARED_PID" >/dev/null 2>&1
@@ -3552,6 +3589,51 @@ PY
         bad "[WIN-10] C16 Default left the stored override behind"
     else
         ok "[WIN-10] C16 Default removed the stored override"
+    fi
+
+    # The burst (the 10-27 report): ten ⌘+ presses as fast as the control route
+    # can post them, from 100 % to the 150 % clamp and past it. The Mac sends one
+    # request per new value and nothing at the clamp — every repeated request
+    # re-attached the phone's encoder and cost frames — so the phone sees two
+    # distinct resizes, never the same one twice (docs/NFR.md `density_burst_*`).
+    # `key` is a real key event through the application's own dispatch: the menu
+    # equivalent first, then the window's responder chain, the person's path.
+    next_shared
+    open_shared --open com.android.settings --debug-chrome-state "$WORK/chrome.txt" || return 1
+    wait_until 20 events_have '"ev":"video","stream":1,' \
+        || { bad "C16 no video for the burst window"; stop_app; stop_fakephone; return 1; }
+    sleep 1
+    local press top
+    for press in 1 2 3 4 5 6 7 8 9 10; do
+        control key "cmd+=" || bad "C16 burst press $press: $CONTROL_REPLY"
+    done
+    sleep 2
+    top=$(python3 -c "print(int(160 * $pw / 900 * 1.5 + 0.5))")
+    wait_until 20 density_stored_is com.android.settings 1.5 \
+        && ok "[WIN-10] C16 ten ⌘+ presses reach the 150% clamp and stop there" \
+        || bad "[WIN-10] C16 the burst left the override: $(defaults read "$DEFAULTS_SUITE" "chrome.density.com.android.settings" 2>&1), dpi now $(stream_dpi 1)"
+    if python3 - "$WORK/events.jsonl" "$high" "$top" <<'PY'
+import json, sys
+
+high, top = int(sys.argv[2]), int(sys.argv[3])
+sent = []
+for line in open(sys.argv[1]):
+    try:
+        event = json.loads(line)
+    except ValueError:
+        continue
+    msg = event.get("msg") or {}
+    if msg.get("t") == "window.resize" and msg.get("stream") == 1:
+        sent.append((msg.get("w"), msg.get("h"), msg.get("dpi")))
+if len(sent) != 2:
+    print("%d resizes, wanted 2: %r" % (len(sent), sent)); sys.exit(1)
+if [dpi for _, _, dpi in sent] != [high, top]:
+    print("resizes %r, wanted dpi %d then %d" % (sent, high, top)); sys.exit(1)
+PY
+    then
+        ok "[MENU-4] the burst sent one resize per new density and nothing at the clamp"
+    else
+        bad "[MENU-4] the burst sent a request the Mac already had"
     fi
 
     # The profile reset (--debug-control reset prefs) forgets overrides too.

@@ -107,6 +107,9 @@ enum SessionEvent {
     case windowOpened(stream: UInt32, displayId: Int, width: Int, height: Int,
                       started: HandoffStart)
     case windowClosed(stream: UInt32, reason: String)
+    /// `window.resize.ack`: the phone answered a `window.resize` with what it
+    /// did (resized, density only, same, or refused).
+    case windowResizeAck(stream: UInt32, width: Int, height: Int, dpi: Int, outcome: String)
     case windowTitle(stream: UInt32, label: String, pkg: String)
     case phoneState(locked: Bool, battery: Int, charging: Bool, dnd: PhoneDndMode?, ringer: PhoneRingerMode?,
                     volume: Int?, volumeMax: Int?, screen: PhoneScreen?, secure: Bool?, panel: PhonePanel?)
@@ -854,6 +857,14 @@ final class Session {
                                width: message.int("w") ?? 0,
                                height: message.int("h") ?? 0,
                                started: message.string("started") == "fresh" ? .fresh : .moved))
+        case "window.resize.ack":
+            // The phone applied (or refused) a `window.resize`: the coalescer
+            // may send the value that waited behind it (PROTOCOL.md).
+            emit(.windowResizeAck(stream: UInt32(message.int("stream") ?? 0),
+                                  width: message.int("w") ?? 0,
+                                  height: message.int("h") ?? 0,
+                                  dpi: message.int("dpi") ?? 0,
+                                  outcome: message.string("outcome") ?? ""))
         case "window.closed":
             emit(.windowClosed(stream: UInt32(message.int("stream") ?? 0),
                                reason: message.string("reason") ?? ""))

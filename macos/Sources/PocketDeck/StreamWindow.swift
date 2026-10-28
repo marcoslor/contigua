@@ -588,9 +588,37 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     func sendClose() { session.closeWindow(stream: stream) }
     /// Reapply the window's title after the phone's display name changed.
     func retitle() {}
-    func sendResize() {
+
+    /// The window's resize requests, coalesced: one in flight, at most one
+    /// waiting (ResizeCoalescer). A person's burst of ⌘+/⌘- presses used to
+    /// send every value, and every request re-attaches the phone's encoder.
+    private var resizes = ResizeCoalescer()
+
+    private func resizeRequest() -> ResizeRequest {
         let pixels = displayPixels()
-        session.resizeWindow(stream: stream, width: Int(pixels.width), height: Int(pixels.height), dpi: dpi())
+        return ResizeRequest(w: Int(pixels.width), h: Int(pixels.height),
+                             dpi: Int(dpi().rounded()))
+    }
+
+    func sendResize() {
+        send(resizes.apply(.request(resizeRequest())))
+    }
+
+    /// The phone answered a resize: its `window.resize.ack`, or the
+    /// VIDEO_CONFIG that follows one. The value that waited goes out now.
+    func resizeSettled(_ request: ResizeRequest? = nil) {
+        guard let settled = request ?? resizes.inFlight else { return }
+        send(resizes.apply(.settled(settled)))
+    }
+
+    private func send(_ actions: [ResizeCoalescer.Action]) {
+        for action in actions {
+            switch action {
+            case .send(let request):
+                session.resizeWindow(stream: stream, width: request.w, height: request.h,
+                                     dpi: Double(request.dpi))
+            }
+        }
     }
 
     /// Programmatic stream size change (test hook); the top-left stays put.
@@ -744,9 +772,11 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     /// which would detach its encoder; the key/main window never pauses.
     private var shouldPause: Bool {
         guard let window else { return false }
-        if window.isMiniaturized { return true }
-        if window.isKeyWindow || window.isMainWindow { return false }
-        return !window.occlusionState.contains(.visible)
+        return StreamPause.shouldPause(miniaturized: window.isMiniaturized,
+                                       key: window.isKeyWindow,
+                                       main: window.isMainWindow,
+                                       occludedVisible: window.occlusionState.contains(.visible),
+                                       menuTracking: MenuTracking.isTracking)
     }
 
     func setPaused(_ paused: Bool) {
@@ -756,6 +786,12 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         guard changed else { return }
         self.isPaused = paused
         if paused { session.pauseWindow(stream: stream) } else { session.resumeWindow(stream: stream) }
+    }
+
+    /// Re-decides pause (a menu stopped tracking, or the app came back): the
+    /// caller has no new state of its own.
+    func reevaluatePause() {
+        setPaused(shouldPause)
     }
 
     // MARK: Focus
@@ -1204,7 +1240,15 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     /// for an exact option).
     func adjustDensity(_ delta: Double) {
         guard usesDensity, let pkg = densityPackage else { return }
-        manager.setDensity(DensityRules.stepped(from: density, by: delta), forPackage: pkg)
+        let next = DensityRules.stepped(from: density, by: delta)
+        guard next != density else {
+            // At the clamp the press cannot change anything, and a request
+            // equal to the last one re-attached the phone's encoder for nothing
+            // (the 10-27 burst). The press is a no-op: nothing is sent.
+            Log.video.info("density \(self.density, privacy: .public): the press is a no-op at the clamp")
+            return
+        }
+        manager.setDensity(next, forPackage: pkg)
     }
 
     /// ⌘0: back to the Settings default (the app's override is cleared).
