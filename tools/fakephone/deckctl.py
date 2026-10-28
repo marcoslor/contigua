@@ -2203,9 +2203,10 @@ def cmd_density_burst(client, args):
             seen_messages = len(rec.messages)
 
         started = time.time()
+        burst_dpi = args.burst_dpi if args.burst_dpi is not None else args.dpi
         for _ in range(args.presses):
             client.send_json({"t": "window.resize", "stream": stream,
-                              "w": args.burst_w, "h": args.burst_h, "dpi": args.dpi})
+                              "w": args.burst_w, "h": args.burst_h, "dpi": burst_dpi})
             time.sleep(args.interval_ms / 1000.0)
         last = time.time()
         # Let the last answer and the frames that follow it arrive.
@@ -2774,6 +2775,8 @@ def build_parser():
     sp.add_argument("--dpi", type=int, default=480)
     sp.add_argument("--burst-w", type=int, default=1920, help="the size every press asks for")
     sp.add_argument("--burst-h", type=int, default=1200)
+    sp.add_argument("--burst-dpi", type=int, default=None,
+                    help="the dpi every press asks for (default --dpi: a size-only burst)")
     sp.add_argument("--presses", type=int, default=10)
     sp.add_argument("--interval-ms", type=int, default=100, help="between presses (ten in one second)")
     sp.add_argument("--settle", type=float, default=2.0, help="seconds recorded after the last press")
