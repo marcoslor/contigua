@@ -38,6 +38,7 @@ CHROME_MAIN = "com.android.chrome/com.google.android.apps.chrome.Main"
 SETTINGS = "com.android.settings"
 LABEL_PAGE_TITLE = "PocketDeck multiwin"
 LABEL_PAGE_TITLE_2 = "PocketDeck second page"
+SCROLL_PAGE_TITLE = "PocketDeck scroll"
 # The pages paint this colour over the whole viewport, so a frame that shows it
 # is the page and not a browser surface (the omnibox, a dialog, a blank tab).
 PAGE_BG = (18, 52, 86)
@@ -452,11 +453,12 @@ def tap(phone, dev, out, stream, tag):
 
 
 class LocalPage(object):
-    """Two pages with known titles and one known background colour, via `adb reverse`.
+    """Pages with known titles and one known background colour, via `adb reverse`.
 
     The first page is one whole-viewport link to the second: a tap on it is the
     label change the check times, so no typing and no cold render sit inside the
-    two seconds.
+    two seconds. The third is a long list: a window showing it draws while the
+    cost phase scrolls, which a static screen (the clock in boot 5) never does.
     """
 
     def __init__(self, dev, out):
@@ -475,6 +477,12 @@ class LocalPage(object):
             fp.write("<!doctype html><html><head><title>%s</title></head>"
                      "<body style='margin:0;background:%s;color:#fff;font-size:48px;padding:40px'>"
                      "multiwin, second</body></html>\n" % (LABEL_PAGE_TITLE_2, bg))
+        rows = "".join("<div style='height:120px;font-size:44px;padding:24px'>row %d</div>" % i
+                       for i in range(120))
+        with open(os.path.join(self.dir, "scroll.html"), "w") as fp:
+            fp.write("<!doctype html><html><head><title>%s</title></head>"
+                     "<body style='margin:0;background:%s;color:#fff'>%s</body></html>\n"
+                     % (SCROLL_PAGE_TITLE, bg, rows))
         sock = socket.socket()
         sock.bind(("127.0.0.1", 0))
         self.port = sock.getsockname()[1]
@@ -488,6 +496,9 @@ class LocalPage(object):
 
     def url(self):
         return "http://127.0.0.1:%d/label.html" % self.port
+
+    def scroll_url(self):
+        return "http://127.0.0.1:%d/scroll.html" % self.port
 
     def stop(self):
         self.dev.adb_run("reverse", "--remove", "tcp:%d" % self.port)
@@ -625,9 +636,13 @@ def check_close(phone, dev, first, second):
     return task_a
 
 
-def check_cap(phone, dev, others, base):
+def check_cap(phone, dev, base):
+    """Four live app windows: Settings (which scrolls its own list) and three
+    Chrome windows (WINDOW_APPS). The clock that stood here in boot 5 is gone:
+    its screen does not move, so it drew 0 frames/s and made the table
+    incomparable rather than proving anything."""
     opened = []
-    for stream, pkg in ((4, SETTINGS), (5, others.get("clock") or SETTINGS), (6, CHROME)):
+    for stream, pkg in ((4, SETTINGS), (5, CHROME), (6, CHROME)):
         opened.append(open_window(phone, dev, stream, pkg, new_instance=(pkg == CHROME)))
     before_displays = displays(dev)
     phone.clear_errors()
@@ -641,6 +656,34 @@ def check_cap(phone, dev, others, base):
           "no fifth display was created (%s displays before, %s after; %s windows' worth)"
           % (before_displays, after_displays, after_displays - base))
     return [2, 4, 5, 6]
+
+
+# Which app each cost-phase window shows; Settings' home list scrolls by itself,
+# a Chrome window is first sent to the long local list.
+WINDOW_APPS = {2: CHROME, 4: SETTINGS, 5: CHROME, 6: CHROME}
+
+
+def prepare_scrolling(phone, dev, page, streams, out):
+    """Every cost window shows a list the 150 ms scroll actually moves.
+
+    A window that draws 0 frames because its app is a static screen (boot 5's
+    clock: 0 frames/s at three windows) proves nothing about the encoder. The
+    Chrome windows are loaded with the same Ctrl+L path WIN-28 uses, and each
+    is proved by its page's colour before the phase starts.
+    """
+    for stream in streams:
+        if WINDOW_APPS.get(stream) != CHROME:
+            continue
+        title, png, took = navigate_until(phone, dev, stream, page.scroll_url(),
+                                          SCROLL_PAGE_TITLE, out, "scroll-s%d" % stream)
+        if title is None:
+            log("warning: stream %d never showed the scroll page; its row is not comparable"
+                % stream)
+        else:
+            log("stream %d shows the scroll page in %.1fs (%s)" % (stream, took, png))
+    log("cost windows: %s" % " ".join("s%d %s" % (s, WINDOW_APPS.get(s, "?"))
+                                      for s in sorted(streams)))
+    return streams
 
 
 def cost_phase(phone, dev, streams, name, out):
@@ -743,22 +786,21 @@ def main(argv=None):
         page = LocalPage(dev, args.out)
         try:
             check_label(phone, dev, page, args.out)
+            check_close(phone, dev, first, second)
+            streams = check_cap(phone, dev, base_displays)
+            prepare_scrolling(phone, dev, page, streams, args.out)
+            # At N live windows: the phase is measured with exactly N open, so the
+            # table is the cost of that many encoders (the one below was still up
+            # while round 1 measured "3").
+            for name in (4, 3, 2, 1):
+                row = cost_phase(phone, dev, list(streams[:name]), "%dw" % name, args.out)
+                summary["cost"].append(row)
+                if name > 1:
+                    close_window(phone, streams[name - 1])
+                    time.sleep(1.0)
+            close_window(phone, 2)
         finally:
             page.stop()
-        check_close(phone, dev, first, second)
-        others = {"clock": "com.google.android.deskclock" if "com.google.android.deskclock" in listed
-                  else "com.android.deskclock" if "com.android.deskclock" in listed else None}
-        streams = check_cap(phone, dev, others, base_displays)
-        # At N live windows: the phase is measured with exactly N open, so the
-        # table is the cost of that many encoders (the one below was still up
-        # while round 1 measured "3").
-        for name in (4, 3, 2, 1):
-            row = cost_phase(phone, dev, list(streams[:name]), "%dw" % name, args.out)
-            summary["cost"].append(row)
-            if name > 1:
-                close_window(phone, streams[name - 1])
-                time.sleep(1.0)
-        close_window(phone, 2)
     finally:
         summary["checks"] = [{"ok": ok, "tag": tag, "line": line} for ok, tag, line in RESULTS]
         save()
