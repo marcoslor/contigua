@@ -159,6 +159,11 @@ final class OpeningCoverView: NSView {
         message.font = .systemFont(ofSize: 13, weight: .regular)
         message.textColor = NSColor.white.withAlphaComponent(0.78)
         message.alignment = .center
+        // The refusal is a whole sentence: it wraps instead of being cut at the
+        // narrow phone window's edge.
+        message.maximumNumberOfLines = 0
+        message.lineBreakMode = .byWordWrapping
+        message.cell?.wraps = true
         addSubview(message)
 
         retry.bezelStyle = .rounded
@@ -216,34 +221,47 @@ final class OpeningCoverView: NSView {
         super.layout()
         blur.frame = bounds
         dim.frame = bounds
+        let sideInset: CGFloat = 24
+        let textWidth = max(bounds.width - sideInset * 2, 80)
         let iconSide: CGFloat = 64
-        let nameHeight = nameLabel.intrinsicContentSize.height
-        let messageHeight = message.intrinsicContentSize.height
-        let spinnerSide: CGFloat = 16
-        let buttons = retry.isHidden ? 0 : retry.intrinsicContentSize.height
         let gap: CGFloat = 10
+        let spinnerSide: CGFloat = 16
+        let nameHeight = nameLabel.intrinsicContentSize.height
+        let messageHeight = message.sizeThatFits(NSSize(width: textWidth,
+                                                        height: .greatestFiniteMagnitude)).height
+        // The buttons that are up: Close alone for a refusal, Try Again and
+        // Close for the 20 s failure, none before it.
+        let buttons = [retry, close].filter { !$0.isHidden }
+        let buttonHeight = buttons.map { $0.intrinsicContentSize.height }.max() ?? 0
         let total = iconSide + gap + nameHeight + gap + spinnerSide + gap + messageHeight
-            + (buttons > 0 ? gap + buttons : 0)
+            + (buttons.isEmpty ? 0 : gap + buttonHeight)
         var y = (bounds.height + total) / 2
         y -= iconSide
         iconView.frame = NSRect(x: (bounds.width - iconSide) / 2, y: y, width: iconSide, height: iconSide)
         y -= gap + nameHeight
-        nameLabel.frame = NSRect(x: 24, y: y, width: bounds.width - 48, height: nameHeight)
+        nameLabel.frame = NSRect(x: sideInset, y: y, width: textWidth, height: nameHeight)
         y -= gap + spinnerSide
         spinner.frame = NSRect(x: (bounds.width - spinnerSide) / 2, y: y + 2,
                                width: spinnerSide, height: spinnerSide)
         y -= gap + messageHeight
-        message.frame = NSRect(x: 24, y: y, width: bounds.width - 48, height: messageHeight)
-        if buttons > 0 {
-            y -= gap + buttons
-            let retryWidth = retry.intrinsicContentSize.width
-            let closeWidth = close.intrinsicContentSize.width
-            let spacing: CGFloat = 12
-            let x = (bounds.width - retryWidth - closeWidth - spacing) / 2
-            retry.frame = NSRect(x: x, y: y, width: retryWidth, height: buttons)
-            close.frame = NSRect(x: x + retryWidth + spacing, y: y, width: closeWidth, height: buttons)
+        message.frame = NSRect(x: sideInset, y: y, width: textWidth, height: messageHeight)
+        guard !buttons.isEmpty else { return }
+        y -= gap + buttonHeight
+        let widths = buttons.map { $0.intrinsicContentSize.width }
+        let spacing: CGFloat = 12
+        let rowWidth = widths.reduce(0, +) + CGFloat(buttons.count - 1) * spacing
+        var x = (bounds.width - rowWidth) / 2
+        for (button, width) in zip(buttons, widths) {
+            button.frame = NSRect(x: x, y: y, width: width, height: buttonHeight)
+            x += width + spacing
         }
     }
+
+    /// The sentence's drawn frame and the buttons that are up: the layout tests
+    /// read them (MIRROR-2's sentence wraps, and a refusal shows Close alone).
+    var messageFrame: NSRect { message.frame }
+    var messageText: String { message.stringValue }
+    var visibleButtonFrames: [NSRect] { [retry, close].filter { !$0.isHidden }.map(\.frame) }
 
     /// The buttons keep their clicks; every other point is swallowed: the
     /// window must not send anything to the phone while the cover is up.
