@@ -1037,13 +1037,19 @@ def _motion_step(client, stream, mode, magnitude):
 
 
 def _read_frames(client, seconds, stats, output, stream, motion, scroll_every,
-                 report_every=0.0, read=True, motion_mode="scroll"):
+                 report_every=0.0, read=True, motion_mode="scroll", read_bps=0.0):
     """Read (or deliberately skip reading) frames for `seconds`.
 
     With `read=False` the socket is left unread, which is how a backlog is
     simulated: the phone keeps encoding, its send queue fills and its
-    backpressure path takes over. `motion` injects a scroll/fling every
-    `scroll_every` seconds so a static app keeps producing frames.
+    backpressure path takes over. `read_bps` instead reads at that byte rate
+    (sleeping after each frame), which is a *slow* reader rather than a stopped
+    one: the socket drains, but behind the encoder, so the phone's queue fills
+    the same way while frames still arrive. `motion` injects a scroll/fling
+    every `scroll_every` seconds so a static app keeps producing frames.
+
+    Each video frame's arrival time and pts land in `stats["marks"]`, so a
+    caller can time the frames (a gap, the first one after a phase switch).
     """
     deadline = time.time() + seconds
     next_motion = time.time()
@@ -1053,6 +1059,10 @@ def _read_frames(client, seconds, stats, output, stream, motion, scroll_every,
     window_start = time.time()
     next_report = window_start + report_every if report_every else None
     phase_start = window_start
+    # Token bucket for the slow reader: a quarter second of bytes may burst.
+    credit = 0.0
+    credit_at = window_start
+    burst = max(read_bps * 0.25, 8192.0) if read_bps else 0.0
     while time.time() < deadline:
         if motion:
             now = time.time()
@@ -1064,6 +1074,10 @@ def _read_frames(client, seconds, stats, output, stream, motion, scroll_every,
                     direction = -direction
                 next_motion = now + scroll_every
         if read:
+            if read_bps:
+                now = time.time()
+                credit = min(burst, credit + (now - credit_at) * read_bps)
+                credit_at = now
             frame = client.recv(0.1)
             if frame is TIMEOUT:
                 pass
@@ -1079,16 +1093,24 @@ def _read_frames(client, seconds, stats, output, stream, motion, scroll_every,
                 if output is not None:
                     output.write(csd)
             elif frame.type == proto.TYPE_VIDEO_FRAME:
+                arrived = time.time()
                 _pts, flags, au = proto.unpack_video_frame(frame)
                 stats["frames"] += 1
                 stats["bytes"] += len(au)
                 stats["sizes"].append(len(au))
+                stats.setdefault("marks", []).append((arrived, _pts))
                 window_frames += 1
                 window_bytes += len(au)
                 if flags & proto.FRAME_FLAG_KEY:
                     stats["keys"] += 1
                 if output is not None:
                     output.write(au)
+                if read_bps:
+                    credit -= len(au) + 16
+                    if credit < 0:
+                        time.sleep(-credit / read_bps)
+                        credit = 0.0
+                        credit_at = time.time()
         else:
             time.sleep(0.02)
         if next_report is not None and time.time() >= next_report:
@@ -1181,6 +1203,78 @@ def cmd_quality_test(client, args):
     print("quality-test totals frames=%d keys=%d configs=%d" %
           (stats["frames"], stats["keys"], stats["configs"]))
     return 0
+
+
+def nfr_limit_ms(key, fallback):
+    """One limit from macos/scripts/nfr-limits.json (the single source), or the fallback."""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        "..", "..", "macos", "scripts", "nfr-limits.json")
+    try:
+        with open(path) as handle:
+            return int(json.load(handle)[key])
+    except (OSError, ValueError, KeyError, TypeError):
+        return fallback
+
+
+def cmd_backpressure(client, args):
+    """Read slowly for a while, then free: the phone repairs once, not per drop.
+
+    The 10-28 field bug: a slow Mac reader made `onDeltaDrop` ask for a keyframe
+    on every drop; a keyframe refills the queue, the next drop follows, and the
+    stream ends up frozen between keyframes at the bitrate floor. Here the
+    reader consumes at `--read-kbps` during the slow phase (the socket still
+    drains, so this is a slow reader, not `quality-test`'s stopped one), then
+    reads at full speed. The phone's own logcat holds the keyframe and bitrate
+    evidence; this side measures when frames flow again: the first frame after
+    the reader is free (checked against `--recovery-ms`) and the largest gap
+    between frames after that.
+    """
+    stream = 1
+    try:
+        client.sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, args.rcvbuf)
+    except OSError:
+        pass
+    output = open(args.out, "wb") if args.out else None
+    request = {"t": "window.open", "stream": stream, "w": args.w, "h": args.h, "dpi": args.dpi}
+    if args.phone:
+        request["mode"] = "phone"
+    else:
+        request["pkg"] = args.target
+    client.send_json(request)
+    print("backpressure stream=%d %dx%d slow=%ss at %d kbps, then %ss free%s" % (
+        stream, args.w, args.h, args.slow_seconds, args.read_kbps, args.free_seconds,
+        " motion=%s" % args.motion if args.motion else ""))
+    try:
+        def phase(name, seconds, read_bps):
+            stats = {"configs": 0, "frames": 0, "bytes": 0, "sizes": [], "keys": 0, "marks": []}
+            started = time.time()
+            _read_frames(client, seconds, stats, output, stream, args.motion, args.scroll_every,
+                         0, read=True, motion_mode=args.motion_mode, read_bps=read_bps)
+            elapsed = max(1e-3, time.time() - started)
+            avg = (sum(stats["sizes"]) / len(stats["sizes"])) if stats["sizes"] else 0.0
+            kbps = sum(stats["sizes"]) * 8.0 / elapsed / 1000.0
+            print("phase %-5s frames=%4d kbps=%8.1f avg_frame=%6.0f B keys=%d" % (
+                name, len(stats["sizes"]), kbps, avg, stats["keys"]))
+            return started, stats
+
+        phase("warm", args.warmup_seconds, 0.0)
+        phase("slow", args.slow_seconds, args.read_kbps * 1000.0 / 8.0)
+
+        free_start, free = phase("free", args.free_seconds, 0.0)
+        arrivals = [arrived for arrived, _pts in free["marks"]]
+        first_ms = int(round((arrivals[0] - free_start) * 1000)) if arrivals else -1
+        gaps = [arrivals[i] - arrivals[i - 1] for i in range(1, len(arrivals))]
+        max_gap_ms = int(round(max(gaps) * 1000)) if gaps else -1
+        ok = first_ms >= 0 and first_ms <= args.recovery_ms
+        print("backpressure: recovery_ms=%d limit_ms=%d max_gap_after_recovery_ms=%d "
+              "frames_free=%d verdict=%s" % (
+                  first_ms, args.recovery_ms, max_gap_ms, len(arrivals),
+                  "PASS" if ok else "FAIL"))
+        return 0 if ok else 1
+    finally:
+        client.send_json({"t": "window.close", "stream": stream})
+        if output is not None:
+            output.close()
 
 
 def cmd_watch_state(client, args):
@@ -2637,6 +2731,31 @@ def build_parser():
     sp.add_argument("--rcvbuf", type=int, default=32768, help="client receive buffer during the test")
     sp.add_argument("--out", help="write the whole run's raw Annex-B H.264 here")
 
+    sp = sub.add_parser("backpressure",
+                        help="slow reader then free: when the picture is live again, per phase", **spp)
+    sp.add_argument("target", nargs="?", help="package to launch")
+    sp.add_argument("--phone", action="store_true", help="phone mode instead of an app")
+    sp.add_argument("--w", type=int, required=True)
+    sp.add_argument("--h", type=int, required=True)
+    sp.add_argument("--dpi", type=int, default=450)
+    sp.add_argument("--warmup-seconds", type=float, default=6.0,
+                    help="full-speed read before the slow phase (sets the lag baseline)")
+    sp.add_argument("--slow-seconds", type=float, default=3.0,
+                    help="seconds the reader is throttled to --read-kbps")
+    sp.add_argument("--read-kbps", type=int, default=250,
+                    help="the slow reader's rate; far below what the encoder produces")
+    sp.add_argument("--free-seconds", type=float, default=4.0,
+                    help="seconds read at full speed after the slow phase")
+    sp.add_argument("--recovery-ms", type=int, default=None,
+                    help="limit for the first live frame (default: backpressure_recovery_ms)")
+    sp.add_argument("--motion", type=float, default=0.0,
+                    help="scroll magnitude / fling switch injected to keep frames flowing (0 = off)")
+    sp.add_argument("--motion-mode", choices=("scroll", "drag"), default="scroll",
+                    help="scroll: wheel bursts; drag: synthetic fling (animates a static list)")
+    sp.add_argument("--scroll-every", type=float, default=0.5)
+    sp.add_argument("--rcvbuf", type=int, default=32768, help="client receive buffer during the test")
+    sp.add_argument("--out", help="write the whole run's raw Annex-B H.264 here")
+
     sp = sub.add_parser("watch-state", help="print every state message; lock/unlock while it runs", **spp)
     sp.add_argument("--seconds", type=float, default=30.0)
     sp.add_argument("--phone", action="store_true",
@@ -2835,6 +2954,7 @@ COMMANDS = {
     "pause-test": cmd_pause_test,
     "latency": cmd_latency,
     "quality-test": cmd_quality_test,
+    "backpressure": cmd_backpressure,
     "watch-state": cmd_watch_state,
     "dnd": cmd_dnd,
     "volume": cmd_volume,
@@ -2870,6 +2990,12 @@ def main(argv=None):
     if args.command == "quality-test" and not args.phone and not args.target:
         sys.stderr.write("deckctl: error: quality-test needs a package or --phone\n")
         return 2
+    if args.command == "backpressure":
+        if not args.phone and not args.target:
+            sys.stderr.write("deckctl: error: backpressure needs a package or --phone\n")
+            return 2
+        if args.recovery_ms is None:
+            args.recovery_ms = nfr_limit_ms("backpressure_recovery_ms", 1000)
     if args.command == "frame-png":
         try:
             return cmd_frame_png(None, args)

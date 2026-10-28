@@ -150,6 +150,13 @@ Subcommands:
   `recover`. `--motion V` injects motion to keep a static app drawing:
   `--motion-mode scroll` sends wheel bursts, `drag` a synthetic fling.
   `--cap-seconds`/`--cap-fps` end with an fps-cap phase.
+- `backpressure (PKG|--phone) --w --h [--slow-seconds S] [--read-kbps N]
+  [--free-seconds S] [--recovery-ms N]` — a *slow* reader (unlike
+  `quality-test`'s stopped socket): full speed for `--warmup-seconds`, then
+  `--read-kbps` for `--slow-seconds`, then free again. Prints per-phase frames,
+  kbps and keyframes, then the first frame after the reader is free
+  (`recovery_ms`) and the largest gap between frames after it; exits non-zero past the limit (default
+  `backpressure_recovery_ms` from `macos/scripts/nfr-limits.json`).
 - `watch-state --seconds N` — print every `state` message with its timestamp
   (and `dnd` when the phone reports it); lock/unlock the phone while it runs and
   count the lines (one per change).
