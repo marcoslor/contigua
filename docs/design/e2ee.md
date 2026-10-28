@@ -426,6 +426,46 @@ Spike modes added (kept in .agent/e2ee/spikes/, uncommitted):
   RFC-equal; the destination for production code is steps 3/6, and K4 re-proves
   the phone on-device.
 
+## 10. The reset rule (Clear data, uninstall, Forget All Macs)
+
+The phone's identity and its pinned Macs belong to the **app process**; the
+shell-UID server (Shizuku user service) only borrows them, and it outlives the
+app. Settings ▸ Apps ▸ Clear data kills the app and deletes `filesDir`, but the
+shell process kept serving the old identity and paired list from memory — the Mac
+stayed connected after the reset, and a reconnect kept working. The rule that
+closes it:
+
+- The app pushes `identityFp` (SHA-256 of the identity certificate's 65-byte
+  point) with the paired set on every bind and every change (`setPairedClients`).
+  The shell recomputes the fingerprint from the pushed certificate and trusts the
+  declared value only when the two agree; a push without a usable identity is
+  treated as the app being gone.
+- `AppLink` (server package) is the shell's state machine: `Unlinked` (serves
+  nothing) or `Linked(identityFp, certPem, keyP8, pairs)`. One pure transition
+  function `(state, event) -> (state, actions)` over `AppPushed`, `AppGone` and
+  `PhonePaired`; a push that keeps the same fingerprint and the same set of pins
+  changes nothing, any other push or a death drops the live session and forgets
+  the cached TLS material, then adopts the new state.
+- **Detection**: the app's `IDeckCallback` binder is watched with
+  `Binder.linkToDeath`, so the shell learns of Clear data, uninstall or a kill
+  immediately. That works on API 30–36 with no broadcast permission, no package
+  query and no polling; `ACTION_PACKAGE_DATA_CLEARED` is not delivered to a
+  process without a real app context (the user service has none), and a `pm`
+  probe would be a poll. The binder dying and the data being cleared are the same
+  event for the app (its process ends), so the shell does not need to tell them
+  apart: it stops serving either way, which is the fail-closed rule.
+- While unlinked the listener stays bound but every connection is closed before
+  TLS (there is no identity to present). A relaunch pushes again: the same
+  fingerprint and pins resume serving; a new identity (Clear data) starts from
+  an empty paired set, so the Mac must pair again.
+- **Forget All Macs…** rotates the identity in the app (`PhoneIdentity.rotate`)
+  and empties the paired list; the next push therefore differs and the same
+  transition drops the session. The advertised device id is unchanged, so the
+  Mac's pin (the pinned phone certificate) fails to verify → `pin-mismatch` →
+  Pair again (PAIR-14). Clear data also regenerates the advertised id, so the Mac
+  sees a new phone and pairs afresh; either way nothing on the phone accepts the
+  Mac without the person's Allow.
+
 ## Spike artifacts + record of what failed (phase 1)
 
 - .agent/e2ee/spikes/s1-mac/ — Swift spike v2 (NIOSSL): matrix 3/3 PASS, bench

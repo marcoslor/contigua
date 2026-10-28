@@ -161,6 +161,88 @@ class ServerTest {
         }
     }
 
+    /**
+     * AppLink's DROP_SESSIONS action (docs/design/e2ee.md §10): the shell closes
+     * the live session at once, not at the Mac's next reconnect, and serves the
+     * next Mac again once the app has vouched for its state.
+     */
+    @Test
+    fun droppingSessionsClosesTheLiveSessionAtOnce() {
+        val platform = FakePlatform()
+        platform.clients.add(PairedClient("c1", "MacBook", TlsV2Fixture.MAC_FP_HEX))
+        val phoneIdentity = TestTls.generate("PocketDeck Phone (drop test)")
+        val macIdentity = TestTls.generate("PocketDeck Mac (drop test)")
+        val server = Server({ socket -> sessionFor(platform, socket) }, log = {},
+            { phoneIdentity.certPem }, { phoneIdentity.keyP8 }, { GateSettings(true, true) })
+        val port = server.start()
+        try {
+            client(port, macIdentity, phoneIdentity).use { first ->
+                val reader = FrameReader(first.getInputStream())
+                val out = first.getOutputStream()
+                out.write(Frames.encodeJson(0, Json.encode(mapOf("t" to "hello", "v" to 3, "clientId" to "c1", "name" to "MacBook"))))
+                out.flush()
+                assertEquals("welcome", readJson(reader)["t"])
+
+                server.dropSessions()
+                first.soTimeout = 3_000
+                var closed = false
+                repeat(6) { if (!closed) closed = runCatching { reader.readFrame() }.getOrNull() == null }
+                assertTrue("the live session survived dropSessions", closed)
+            }
+            // The listener stays useful: the same app state serves again.
+            client(port, macIdentity, phoneIdentity).use { again ->
+                val reader = FrameReader(again.getInputStream())
+                val out = again.getOutputStream()
+                out.write(Frames.encodeJson(0, Json.encode(mapOf("t" to "hello", "v" to 3, "clientId" to "c1", "name" to "MacBook"))))
+                out.flush()
+                assertEquals("welcome", readJson(reader)["t"])
+            }
+        } finally {
+            server.stop()
+        }
+    }
+
+    /**
+     * AppLink's FORGET_CACHE action: the TLS material of an identity the app no
+     * longer holds is never presented again — the next handshake is refused
+     * before TLS completes (PAIR-20).
+     */
+    @Test
+    fun aForgottenIdentityRefusesTheNextHandshake() {
+        val platform = FakePlatform()
+        platform.clients.add(PairedClient("c1", "MacBook", TlsV2Fixture.MAC_FP_HEX))
+        val phoneIdentity = TestTls.generate("PocketDeck Phone (forget test)")
+        val macIdentity = TestTls.generate("PocketDeck Mac (forget test)")
+        var cert = phoneIdentity.certPem
+        var key = phoneIdentity.keyP8
+        val server = Server({ socket -> sessionFor(platform, socket) }, log = {},
+            { cert }, { key }, { GateSettings(true, true) })
+        val port = server.start()
+        try {
+            client(port, macIdentity, phoneIdentity).use { first ->
+                val reader = FrameReader(first.getInputStream())
+                first.getOutputStream().write(
+                    Frames.encodeJson(0, Json.encode(mapOf("t" to "hello", "v" to 3, "clientId" to "c1", "name" to "MacBook"))),
+                )
+                first.getOutputStream().flush()
+                assertEquals("welcome", readJson(reader)["t"])
+            }
+            cert = ""
+            key = ""
+            server.forgetCachedIdentity()
+            server.dropSessions()
+            val refused = runCatching {
+                client(port, macIdentity, phoneIdentity).use { socket ->
+                    (socket as javax.net.ssl.SSLSocket).soTimeout = 3_000
+                    socket.startHandshake()
+                }
+            }.isFailure
+            assertTrue("a forgotten identity still completed a TLS handshake", refused)
+        } finally {
+            server.stop()
+        }
+    }
+
     @Test
     fun emptyConnectionClassifier() {
         assertEquals(true, Server.isEmptyConnection(javax.net.ssl.SSLHandshakeException("x").apply { initCause(java.io.EOFException()) }))

@@ -41,6 +41,8 @@ Pairing is how a Mac and a phone come to trust each other once, so every later c
 | PAIR-16 | THE phone's home SHALL list its paired Macs — one row each with the Mac's name and "Connected now" or when it last connected — with the live Mac first and then the most recently connected, and SHALL offer "Pair new Mac" (QR scan); the list SHALL refresh its relative times on the minute. | K1 `DeckPairedRowsTest` (`the live Mac is the first paired row`, `never connected Macs come last`), `UiStateTest` (`a session start or end stamps only that Mac`, `the relative-time ticker wakes on the next whole minute`) |
 | PAIR-17 | WHEN the phone scans a QR THE phone SHALL accept only `pocketdeck://pair` with a client id, a Mac name, a 64-hex fingerprint and a 32-hex secret, SHALL decode `+` as a space in the name and normalise uppercase hex, and SHALL refuse a v1-shaped payload, a short fingerprint or secret and any non-hex secret; a fresh QR from another Mac SHALL replace its pending one and the same Mac MAY refresh it. | K1 `QrPairingTest` (every parse rule), `PairingCodeTest` (the grouping) |
 | PAIR-18 | THE pairing SHALL write no key material, nonce, exporter output, pairing code or QR secret to a log, a crash report or the e2e share log; the code SHALL only be displayed (never typed, stored or sent), and the phone's prompt SHALL carry the Mac's name, the code and the one hint line "Check it matches your Mac.". | e2e `pair` (the code read from the screens' own lines only); review of `PairingCodeV2`, `QRPairing` and `TlsV2` logging; e2e `tls` (no key material in any log) |
+| PAIR-19 | THE shell-UID server SHALL serve only with the identity and paired Macs the app process currently vouches for: on every bind and every change the app SHALL push its identity fingerprint and paired set, and WHEN a push differs from what the shell holds THE shell SHALL drop every live session, forget its cached identity and pairing state and adopt the push; an identical push SHALL keep the session, and a push with no usable identity SHALL be handled as the app being gone. | K1 `AppLinkTest` (every state/event pair, the ignored events, order/rename are not a change), `IdentityPinTest` (the declared fingerprint must match the certificate); emulator `phone-reset` (a re-push with the same state keeps the session) |
+| PAIR-20 | WHEN the app's data is cleared, the app is uninstalled, or the person chooses Paired Macs ▸ Forget All Macs… and confirms THE shell-UID server SHALL end every live session at once (measured: ≤ 5 s from Clear data), forget the identity and every pairing it cached, and accept no Mac until the app pushes its current state again; the phone SHALL then list no paired Macs, and a Mac that knew the phone SHALL NOT authenticate without a fresh pairing (clear data rotates the phone's identity and its advertised id, so the Mac's stale pin cannot match; Forget All rotates the identity under the same id, so the Mac reads its pin as changed). | K1 `AppLinkTest` (`the app dying drops the session…`, `a different identity drops the session…`), `PrefsIdentityTest` (`forget all Macs rotates the identity…`); emulator `phone-reset` (the measured close, the refused reconnect, the empty list, Forget All's confirmation) |
 
 Priority note: PAIR-1, 2, 3, 4, 5, 6, 7, 8, 9, 12, 13 and 14 are P1 — without them a person cannot pair, cannot trust the pairing and cannot recover from a lost key. The QR probe detail, the phone's list and the parse rules are P2.
 
@@ -75,6 +77,10 @@ Pairing is one machine on the Mac (`LinkMachine`, `macOS/Sources/PocketDeck/Link
 | cooling | a scanned QR | honoured (it needs the person at the Mac's screen) |
 | paired | `hello` with "Allow connections" off | `error connections_off` and close |
 | paired | `hello` with a pinned fingerprint mismatch | `error bad_pin` and close |
+| any (shell) | the app pushes the same identity fingerprint and paired set | no change; the live session keeps running |
+| any (shell) | the app pushes a different identity fingerprint or paired set | the live session drops; the cached identity and pairings are forgotten; the push is adopted |
+| any (shell) | the app's binder dies (Clear data, uninstall, a kill) | the live session drops; nothing is served until the app pushes again |
+| unlinked (shell) | a Mac connects | refused before TLS completes; no identity is presented |
 
 Ignored events, stated so nobody builds them: a second `pair.request` in one session, a `pair.ok` without a pairing in progress, a `cancelPairing` when no pairing is running, a `forget` for a phone that is not the one in use, a probe while the QR sheet is closed, and a QR secret after its fifth minute.
 
@@ -134,7 +140,8 @@ Ignored events, stated so nobody builds them: a second `pair.request` in one ses
 ## Assumptions
 
 - The phone runs PocketDeck's v2 wire (TLS 1.3 with the exporter) and is on the same LAN, or reachable at an address the person types; nothing goes through a relay during pairing (design/e2ee.md).
-- The phone's certificate is self-signed and its identity never changes; the Mac's is one P-256 identity per profile (IdentityV2).
+- The phone's certificate is self-signed and its identity stays the same for the life of the app's data; only Paired Macs ▸ Forget All Macs… rotates it, and Clear data starts it again. The Mac's is one P-256 identity per profile (IdentityV2).
+- The shell-UID service outlives the app process (it runs under the shell UID), so the app pushes its identity and paired set on every bind and the shell serves only while that app binder is alive (PAIR-19/PAIR-20).
 - Bonjour discovery gives a device id from the service's TXT record; a phone with no id is ignored, and the service name is never the id.
 - Both sides' clocks are irrelevant to the code: it is derived from the exporter and the two nonces, not from time.
 - A paired phone accepts exactly one session at a time; "Another Mac is connected" is the phone's own answer, not a Mac-side guess.

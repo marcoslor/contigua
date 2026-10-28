@@ -71,6 +71,7 @@ class BackgroundSwitchNameTest {
                             onStatusAction = {},
                             onForget = { "" },
                             onUndoForget = {},
+                            onForgetAll = {},
                             onPairNew = {},
                             relativeTime = { "5 minutes ago" },
                         )
