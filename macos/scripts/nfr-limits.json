@@ -18,5 +18,6 @@
   ],
   "panel_glyph_ms": 300,
   "settings_design_height_pt": 560,
-  "stale_picture_ms": 2000
+  "stale_picture_ms": 2000,
+  "window_frame_bytes_max": 16777216
 }
