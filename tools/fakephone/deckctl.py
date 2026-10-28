@@ -530,6 +530,10 @@ class StreamRecorder(object):
         # Per stream: when the latest VIDEO_CONFIG arrived and when the first
         # VIDEO_FRAME after it did, as (time, is_keyframe).
         self.config_at = {}
+        # Per stream, every CONFIG's time (the burst counts encoder attaches) and
+        # when each VIDEO_FRAME arrived (the burst's gap).
+        self.config_times = {}
+        self.frame_times = {}
         self.first_frame_at = {}
         self.error = None
         self.reader_closed = False
@@ -637,6 +641,7 @@ class StreamRecorder(object):
                 self.sizes[frame.stream] = (w, h)
                 self.csd[frame.stream] = csd
                 self.config_at[frame.stream] = time.time()
+                self.config_times.setdefault(frame.stream, []).append(self.config_at[frame.stream])
                 self.first_frame_at.pop(frame.stream, None)
                 fp = self.files.get(frame.stream)
                 if fp is not None:
@@ -645,6 +650,7 @@ class StreamRecorder(object):
                 return
             if frame.type == proto.TYPE_VIDEO_FRAME:
                 _pts, flags, au = proto.unpack_video_frame(frame)
+                self.frame_times.setdefault(frame.stream, []).append(time.time())
                 self.total_frames[frame.stream] = self.total_frames.get(frame.stream, 0) + 1
                 if flags & proto.FRAME_FLAG_KEY:
                     self.keys_seen[frame.stream] = self.keys_seen.get(frame.stream, 0) + 1
@@ -2169,6 +2175,86 @@ def cmd_resize_stress(client, args):
     return 1 if failed else 0
 
 
+def cmd_density_burst(client, args):
+    """Ten identical resizes in about a second — the 10-27 ⌘+/⌘- burst.
+
+    On an idle app every one of them built a new encoder on the phone and
+    re-attached the display, so frames stopped for seconds (the person's log:
+    seven seconds with no frame). The phone must answer the first with a resize
+    and the rest with `window.resize.ack` "same", and the picture must keep
+    coming: one encoder attach, no gap over `density_burst_stall_ms`, and the
+    frame after the last request within `density_burst_first_frame_ms`.
+    """
+    stream = 1
+    rec = StreamRecorder(client).start()
+    try:
+        client.send_json({"t": "window.open", "stream": stream, "w": args.w, "h": args.h,
+                          "dpi": args.dpi, "pkg": args.apps[0]})
+        rec.wait_for_size(stream, 25.0)
+        deadline = time.time() + 25.0
+        while stream not in rec.first_frame_at and time.time() < deadline:
+            rec.raise_if_broken("waiting for the first frame")
+            time.sleep(0.05)
+        if stream not in rec.first_frame_at:
+            raise DeckError("no frame after window.open")
+        time.sleep(args.launch_settle)
+
+        with rec.lock:
+            seen_messages = len(rec.messages)
+
+        started = time.time()
+        burst_dpi = args.burst_dpi if args.burst_dpi is not None else args.dpi
+        for _ in range(args.presses):
+            client.send_json({"t": "window.resize", "stream": stream,
+                              "w": args.burst_w, "h": args.burst_h, "dpi": burst_dpi})
+            time.sleep(args.interval_ms / 1000.0)
+        last = time.time()
+        # Let the last answer and the frames that follow it arrive.
+        time.sleep(args.settle)
+
+        with rec.lock:
+            acks = [m for m in rec.messages[seen_messages:]
+                    if m.get("t") == "window.resize.ack" and m.get("stream") == stream]
+            outcomes = {}
+            for ack in acks:
+                outcomes[ack.get("outcome")] = outcomes.get(ack.get("outcome"), 0) + 1
+            configs = sum(1 for t in rec.config_times.get(stream, []) if t >= started)
+            frames = [t for t in rec.frame_times.get(stream, []) if started <= t <= last + args.settle]
+            after = [t for t in frames if t >= last]
+
+        gap_ms = 0.0
+        previous = started
+        for when in frames + [last + args.settle]:
+            gap_ms = max(gap_ms, (when - previous) * 1000.0)
+            previous = when
+        first_after_ms = (after[0] - last) * 1000.0 if after else None
+        print("density-burst: presses=%d acks=%d outcomes=%s configs=%d frames=%d max_gap_ms=%.0f "
+              "first_frame_after_last_ms=%s" % (
+                  args.presses, len(acks), outcomes, configs, len(frames), gap_ms,
+                  ("%.0f" % first_after_ms) if first_after_ms is not None else "none"))
+        problems = []
+        if len(acks) != args.presses:
+            problems.append("%d of %d resizes answered" % (len(acks), args.presses))
+        if configs > 1:
+            problems.append("%d encoder rebuilds for one new size" % configs)
+        if outcomes.get("same", 0) < args.presses - 1:
+            problems.append("%d of the repeats were not no-ops" % (args.presses - 1 - outcomes.get("same", 0)))
+        if gap_ms > args.stall_ms:
+            problems.append("no frame for %.0f ms" % gap_ms)
+        if first_after_ms is None or first_after_ms > args.frame_ms:
+            problems.append("the frame after the last press took %s" % (
+                ("%.0f ms" % first_after_ms) if first_after_ms is not None else "forever"))
+        for problem in problems:
+            print("FAIL " + problem)
+        if not problems:
+            print("PASS density-burst: one attach, %d no-ops, gap %.0f ms, frame after the last press %.0f ms"
+                  % (outcomes.get("same", 0), gap_ms, first_after_ms or 0))
+        return 1 if problems else 0
+    finally:
+        rec.stop()
+        client.send_json({"t": "window.close", "stream": stream})
+
+
 def cmd_exit_test(client, args):
     """Back out of the app until it leaves its display; require app_exited."""
     stream = 1
@@ -2682,6 +2768,22 @@ def build_parser():
     sp.add_argument("--launch-settle", type=float, default=2.0)
     sp.add_argument("--out-prefix", default="/tmp/deckctl-stress")
 
+    sp = sub.add_parser("density-burst", help="ten identical resizes in a second: one attach, no no-op lost, no frame gap", **spp)
+    sp.add_argument("--apps", nargs="+", default=["com.android.settings"], metavar="PKG")
+    sp.add_argument("--w", type=int, default=1600)
+    sp.add_argument("--h", type=int, default=1200)
+    sp.add_argument("--dpi", type=int, default=480)
+    sp.add_argument("--burst-w", type=int, default=1920, help="the size every press asks for")
+    sp.add_argument("--burst-h", type=int, default=1200)
+    sp.add_argument("--burst-dpi", type=int, default=None,
+                    help="the dpi every press asks for (default --dpi: a size-only burst)")
+    sp.add_argument("--presses", type=int, default=10)
+    sp.add_argument("--interval-ms", type=int, default=100, help="between presses (ten in one second)")
+    sp.add_argument("--settle", type=float, default=2.0, help="seconds recorded after the last press")
+    sp.add_argument("--launch-settle", type=float, default=1.5)
+    sp.add_argument("--frame-ms", type=float, default=600, help="density_burst_first_frame_ms (docs/NFR.md)")
+    sp.add_argument("--stall-ms", type=float, default=1500, help="density_burst_stall_ms (docs/NFR.md)")
+
     sp = sub.add_parser("exit-test", help="back out of the app; require app_exited", **spp)
     sp.add_argument("target")
     sp.add_argument("--w", type=int, default=1080)
@@ -2743,6 +2845,7 @@ COMMANDS = {
     "probe": cmd_probe,
     "multi": cmd_multi,
     "resize-stress": cmd_resize_stress,
+    "density-burst": cmd_density_burst,
     "exit-test": cmd_exit_test,
     "fs": cmd_fs,
     "frame-png": cmd_frame_png,

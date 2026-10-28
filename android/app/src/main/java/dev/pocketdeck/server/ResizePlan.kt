@@ -47,11 +47,91 @@ internal object EncoderSizes {
 }
 
 /**
+ * One `window.resize` request, in the terms the display is actually in: the
+ * size the encoder shows and the density the apps lay out at.
+ */
+internal data class ResizeRequest(val w: Int, val h: Int, val dpi: Int)
+
+/** What a request asks for, given what the display already shows. */
+internal enum class ResizeNeed {
+    /** The same pixels at the same dpi: nothing to do. */
+    SAME,
+
+    /**
+     * The same pixels at a new dpi: `VirtualDisplay.resize` changes the display
+     * density, every app relayouts and draws, and the encoder keeps its surface
+     * and its stream — no rebuild, so no frames are lost.
+     */
+    DENSITY,
+
+    /** A new size: the display and the encoder are rebuilt (the sequencer). */
+    FULL,
+}
+
+/** How a `window.resize` was answered; `window.resize.ack` carries [wire]. */
+enum class ResizeOutcome(val wire: String) {
+    /** Display resized and fed by a new encoder. */
+    RESIZED("resized"),
+
+    /** Same size, new dpi: the display density changed, the encoder did not. */
+    DENSITY("density"),
+
+    /** The request asked for what the display already shows. */
+    SAME("same"),
+
+    /** No encoder could be built for the size; the stream keeps its old one. */
+    KEPT("kept"),
+
+    /**
+     * The phone read the request but could not apply it (no such stream, or a
+     * size the request cannot carry). It still answers: the Mac keeps one
+     * resize in flight and waits for every one it sent.
+     */
+    REFUSED("refused"),
+}
+
+/**
+ * What the display already shows, so a repeat asks for nothing and a dpi-only
+ * change is not a rebuild. A size the encoder refused is never remembered as
+ * applied: the phone still shows the old frame, and the next request for it
+ * must try again.
+ */
+internal class ResizeLedger {
+    private var applied: ResizeRequest? = null
+
+    fun need(request: ResizeRequest): ResizeNeed {
+        val current = applied ?: return ResizeNeed.FULL
+        if (current == request) return ResizeNeed.SAME
+        if (current.w == request.w && current.h == request.h) return ResizeNeed.DENSITY
+        return ResizeNeed.FULL
+    }
+
+    /** The display now shows [request] (also after a density-only change). */
+    fun remember(request: ResizeRequest): ResizeLedger {
+        applied = request
+        return this
+    }
+
+    /**
+     * Records what an answered request means, in the terms it was asked: the box
+     * after floor16/turnBox and the effective dpi, never the size the encoder
+     * fitted it to. A repeat of the same request then reads as [ResizeNeed.SAME]
+     * instead of rebuilding the encoder for the fitted size.
+     */
+    fun settle(request: ResizeRequest, outcome: ResizeOutcome): ResizeLedger {
+        if (outcome == ResizeOutcome.KEPT || outcome == ResizeOutcome.REFUSED) return this
+        return remember(request)
+    }
+
+}
+
+/**
  * The calls a resize is made of, in the order [ResizeSequencer] issues them.
  * [WindowStream] backs them with a MediaCodec and a VirtualDisplay; tests with a
  * recorder.
  */
 internal interface ResizeSteps {
+
     /** The stream size for a requested size under the encoder's limits. */
     fun fit(w: Int, h: Int): IntSize
 
@@ -88,11 +168,24 @@ internal class ResizeSequencer(private val steps: ResizeSteps) {
         /** Paused: only the display was resized; [resume] builds the encoder. */
         DISPLAY_ONLY,
 
+        /** Same size, new dpi: only the display's density changed. */
+        DENSITY_ONLY,
+
         /** No encoder could be built for the size; the stream keeps its old size. */
         KEPT,
     }
 
     class Result(val outcome: Outcome, val size: IntSize)
+
+    /**
+     * Same size, new dpi: the display's density changes and the apps relayout
+     * onto the surface the running encoder already reads, so nothing is
+     * detached and no frame is lost.
+     */
+    fun densityOnly(size: IntSize, dpi: Int): Result {
+        steps.resizeDisplay(size, dpi)
+        return Result(Outcome.DENSITY_ONLY, size)
+    }
 
     fun resize(w: Int, h: Int, dpi: Int, paused: Boolean, current: IntSize): Result {
         val size = steps.fit(w, h)

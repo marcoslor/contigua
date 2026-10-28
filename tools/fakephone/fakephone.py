@@ -3524,6 +3524,7 @@ class Session(object):
     def _apply_window_resize(self, window, msg):
         if window.stream_id not in self.windows:
             return
+        before = (window.w, window.h)
         if window.mode == "phone":
             box = turn_box(msg.get("w", window.w), msg.get("h", window.h), *self.phone.screen)
             window.w, window.h = mirror_fit(*box + self.phone.screen)
@@ -3531,7 +3532,21 @@ class Session(object):
             window.w = round16(msg.get("w", window.w))
             window.h = round16(msg.get("h", window.h))
         window.dpi = msg.get("dpi", window.dpi)
+        quiet = getattr(self.phone.args, "no_resize_ack", False)
+        if quiet and (window.w, window.h) == before:
+            # A phone that answers a resize with nothing: the old build sends no
+            # `window.resize.ack`, and a same-size dpi change only relayouts the
+            # display, so no new VIDEO_CONFIG follows either.
+            return
         window.start()
+        if quiet:
+            return
+        # Every resize is answered (PROTOCOL.md `window.resize.ack`): the echo is
+        # the request, so the Mac matches it to the one it has in flight and can
+        # send the value that waited behind it.
+        self._send({"t": "window.resize.ack", "stream": window.stream_id,
+                    "w": msg.get("w"), "h": msg.get("h"), "dpi": msg.get("dpi"),
+                    "outcome": "resized"})
 
     def _on_window_close(self, msg):
         window = self._stream_or_error(msg)
@@ -3838,6 +3853,8 @@ class FakePhone(object):
         self._srv = srv
         print("fakephone %s listening on 0.0.0.0:%d" % (self.store.device_id, port),
               file=sys.stderr)
+        if self.args.no_resize_ack:
+            print("fakephone: window.resize acks off (an old build)", file=sys.stderr)
         if not self.args.no_mdns:
             self._mdns = MDNS(self.name, port, self.store.device_id)
             try:
@@ -4040,6 +4057,10 @@ def build_parser():
     p.add_argument("--resize-delay-ms", type=int, default=0, metavar="MS",
                    help="hold back a window's new VIDEO_CONFIG this long after "
                         "window.resize (the Mac's live-resize fill); 0 answers at once")
+    p.add_argument("--no-resize-ack", action="store_true",
+                   help="answer window.resize like the old build: no "
+                        "window.resize.ack, and a same-size dpi change sends no "
+                        "new VIDEO_CONFIG (the phone says nothing back)")
     return p
 
 

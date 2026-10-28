@@ -553,6 +553,49 @@ class SessionTest {
     }
 
     @Test
+    fun aResizeIsAnsweredWithTheRequestedValues() {
+        addAndAuthenticate()
+        send(mapOf("t" to "window.open", "stream" to 7, "w" to 1000, "h" to 700, "dpi" to 160, "pkg" to "com.android.settings"))
+        readUntil("window.opened")
+        send(mapOf("t" to "window.resize", "stream" to 7, "w" to 641, "h" to 479, "dpi" to 200))
+        val ack = readUntil("window.resize.ack")
+        // The echo is the request as the Mac sent it, not the display's floored
+        // size: the Mac matches it against the resize it has in flight.
+        assertEquals(7L, ack["stream"])
+        assertEquals(641L, ack["w"])
+        assertEquals(479L, ack["h"])
+        assertEquals(200L, ack["dpi"])
+        assertEquals("resized", ack["outcome"])
+    }
+
+    @Test
+    fun aResizeWithNoSizeIsRefusedButStillAnswered() {
+        addAndAuthenticate()
+        send(mapOf("t" to "window.open", "stream" to 7, "w" to 1000, "h" to 700, "dpi" to 160, "pkg" to "com.android.settings"))
+        readUntil("window.opened")
+        // An early return with no answer used to leave the Mac's request in
+        // flight for good (docs/PROTOCOL.md `window.resize.ack`).
+        send(mapOf("t" to "window.resize", "stream" to 7, "w" to 0, "h" to 479, "dpi" to 200))
+        val ack = readUntil("window.resize.ack")
+        assertEquals(7L, ack["stream"])
+        assertEquals(0L, ack["w"])
+        assertEquals("refused", ack["outcome"])
+        assertTrue(platform.resizes.isEmpty())
+    }
+
+    @Test
+    fun aResizeForAnUnknownStreamIsRefusedAndStillAnswered() {
+        addAndAuthenticate()
+        send(mapOf("t" to "window.resize", "stream" to 42, "w" to 640, "h" to 480, "dpi" to 160))
+        assertEquals("no_stream", readUntil("error")["code"])
+        val ack = readUntil("window.resize.ack")
+        assertEquals(42L, ack["stream"])
+        assertEquals(640L, ack["w"])
+        assertEquals(160L, ack["dpi"])
+        assertEquals("refused", ack["outcome"])
+    }
+
+    @Test
     fun windowLifecycleUsesFlooredSizes() {
         addAndAuthenticate()
         send(mapOf("t" to "window.open", "stream" to 7, "w" to 1000, "h" to 700, "dpi" to 160, "pkg" to "com.android.settings"))

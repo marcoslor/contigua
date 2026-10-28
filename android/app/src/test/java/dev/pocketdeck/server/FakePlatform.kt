@@ -129,9 +129,10 @@ class FakePlatform : DisplayLayer, AppCatalog, Launcher, Injector, Power, Device
 
     override fun size(stream: Int): IntSize = sizes[stream] ?: IntSize(0, 0)
 
-    override fun resize(stream: Int, w: Int, h: Int, dpi: Int) {
+    override fun resize(stream: Int, w: Int, h: Int, dpi: Int): ResizeOutcome {
         resizes.add(ResizeCall(stream, w, h, dpi))
         sizes[stream] = IntSize(w, h)
+        return ResizeOutcome.RESIZED
     }
 
     override fun pause(stream: Int) {
