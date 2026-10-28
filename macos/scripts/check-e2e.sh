@@ -5772,7 +5772,7 @@ check_apk() {
         }
         skip_visible "APK the files arrive through LaunchServices (open -a, Finder's Open With)"
     fi
-    launch --connect "127.0.0.1:$PORT" ${requests[@]+"${requests[@]}"} --quit-after 120
+    launch --connect "127.0.0.1:$PORT" ${requests[@]+"${requests[@]}"} --quit-after 300
 
     authenticated() { events_have '"state":"auth_ok"' || events_have '"state":"paired"'; }
     wait_until 30 authenticated \
@@ -5861,6 +5861,47 @@ PY
     [ "$(e2e_app_pids | wc -l | tr -d ' ')" = "1" ] \
         && ok "[FILES-16] APK the files went to the running e2e app (one instance)" \
         || bad "[FILES-16] APK open started another PocketDeck instance"
+
+    # FILES-16: the phone is paired but away. The install waits, on screen,
+    # with Cancel, and lands when the link returns.
+    apk_ax() { ax_tree; }
+    stop_fakephone
+    wait_until 5 no_fakephone
+    sleep 2
+    open_apk "$WORK/tiny.apk"
+    wait_until 20 eval 'apk_ax | grep -qF "Waiting for your phone…"' \
+        && ok "[FILES-16] APK a paired phone that is away shows the Waiting phase" \
+        || bad "[FILES-16] APK no Waiting phase while the phone is away"
+    apk_ax | grep -qF "Connect your phone to install apps on it." \
+        && ok "[FILES-16] APK the sentence names the connection, not pairing again" \
+        || bad "[FILES-16] APK the offline sentence: $(apk_ax | grep -i 'install apps' | head -1)"
+    start_fake || return 1
+    wait_until 60 eval 'events_have "\"state\":\"auth_ok\"" || events_have "\"state\":\"paired\""' \
+        && ok "[FILES-16] APK the Mac reconnected when the phone came back" \
+        || bad "[FILES-16] APK the Mac never reconnected after the phone returned"
+    wait_until 90 apk_found 1 ok \
+        && ok "[FILES-16] APK the waiting install proceeded when the phone came back" \
+        || bad "[FILES-16] APK the waiting install never landed ($(grep -c '"ev":"apk"' "$WORK/events.jsonl" 2>/dev/null || echo 0) apk events; pill: $(apk_ax | grep -iE 'install|waiting|phone' | head -3 | tr '\n' '|'))"
+
+    # Cancel in the waiting phase drops the file: nothing is sent later.
+    stop_fakephone
+    wait_until 5 no_fakephone
+    sleep 2
+    open_apk "$WORK/tiny.apk"
+    wait_until 20 eval 'apk_ax | grep -qF "Waiting for your phone…"' \
+        && ok "[FILES-16] APK Cancel is available while waiting" \
+        || bad "[FILES-16] APK no Waiting phase for the Cancel case"
+    "$AXDUMPBIN" "$APP_PID" --press Cancel > "$WORK/apk-cancel.txt" 2>&1 \
+        && ok "[FILES-16] APK the waiting pill's Cancel was pressed" \
+        || bad "[FILES-16] APK the Cancel press: $(head -2 "$WORK/apk-cancel.txt" | tr '\n' ' ')"
+    wait_until 10 eval 'apk_ax | grep -qF "Install cancelled."' \
+        && ok "[FILES-16] APK Cancel says the install was cancelled" \
+        || bad "[FILES-16] APK Cancel left the waiting phase up"
+    start_fake || return 1
+    sleep 8
+    ! apk_found 1 ok \
+        && ok "[FILES-16] APK a cancelled waiting install never reaches the phone" \
+        || bad "[FILES-16] APK the cancelled install landed on the phone"
     stop_app
     stop_fakephone
     wait_until 5 no_fakephone

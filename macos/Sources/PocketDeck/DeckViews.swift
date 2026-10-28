@@ -258,6 +258,9 @@ struct ApkInstallView: View {
             switch installer.phase {
             case .idle:
                 EmptyView()
+            case .waiting:
+                ProgressView().controlSize(.small)
+                Text("Waiting for your phone…").font(.callout)
             case .preparing(let name):
                 ProgressView().controlSize(.small)
                 Text("Preparing \(name)…").font(.callout)
