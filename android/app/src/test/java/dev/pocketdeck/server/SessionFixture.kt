@@ -89,6 +89,23 @@ abstract class SessionFixture {
     /** The next frame, JSON or video; null when the peer closed. */
     protected fun readFrame(): dev.pocketdeck.proto.Frame? = reader.readFrame()
 
+    /**
+     * True when the phone sent nothing for [ms]. The receive timeout ends the
+     * wait, and [FrameReader] keeps what a timed-out read already took, so the
+     * next [readJson] still reads a whole frame.
+     */
+    protected fun expectNoJsonWithin(ms: Long): Boolean {
+        val previous = client.soTimeout
+        client.soTimeout = ms.toInt()
+        return try {
+            readFrame() == null
+        } catch (e: java.net.SocketTimeoutException) {
+            true
+        } finally {
+            client.soTimeout = previous
+        }
+    }
+
     protected fun readUntil(t: String): Map<String, Any?> {
         repeat(40) {
             val m = readJson()

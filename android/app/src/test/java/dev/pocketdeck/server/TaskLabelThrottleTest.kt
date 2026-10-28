@@ -104,6 +104,30 @@ class TaskLabelThrottleTest : SessionFixture() {
         assertEquals(listOf(TaskLabelThrottle.Action.Wake(2_000)), held.actions)
     }
 
+    @Test
+    fun `an identity change sends at once and counts as the send`() {
+        val sent = send("Alpha", 1_000).state
+        // Inside the second, a different app is on top: its title may not wait.
+        val now = TaskLabelThrottle.transition(sent, TaskLabelThrottle.Event.Immediate("Beta", 1_200))
+        assertEquals(listOf(TaskLabelThrottle.Action.Send("Beta")), now.actions)
+        assertEquals(TaskLabelThrottle.Phase.SENT, now.state.phase)
+        assertEquals("Beta", now.state.sent)
+        assertEquals(1_200L, now.state.sentAtMs)
+        // ...and that send is the second's: a title that follows is held.
+        val held = TaskLabelThrottle.transition(now.state, TaskLabelThrottle.Event.Label("Gamma", 1_300))
+        assertEquals(listOf(TaskLabelThrottle.Action.Wake(2_200)), held.actions)
+    }
+
+    @Test
+    fun `an identity change supersedes a held label`() {
+        val holding = TaskLabelThrottle.transition(send("Alpha", 1_000).state, TaskLabelThrottle.Event.Label("Beta", 1_100)).state
+        assertEquals(TaskLabelThrottle.Phase.HOLDING, holding.phase)
+        val now = TaskLabelThrottle.transition(holding, TaskLabelThrottle.Event.Immediate("Gamma", 1_200))
+        assertEquals(listOf(TaskLabelThrottle.Action.Send("Gamma")), now.actions)
+        assertEquals("Gamma", now.state.latest)
+        assertEquals(emptyList<TaskLabelThrottle.Action>(), TaskLabelThrottle.transition(now.state, TaskLabelThrottle.Event.Wake(9_000)).actions)
+    }
+
     // ------------------------------------------------------------------
     // the session's use of it
     // ------------------------------------------------------------------
@@ -119,7 +143,8 @@ class TaskLabelThrottleTest : SessionFixture() {
         val first = readUntil("window.title")
         assertEquals(1L, first["stream"])
         assertEquals("First", first["title"])
-        assertEquals("an app stream carries the task label, not both fields", false, first.containsKey("label"))
+        assertEquals("every window.title names its app too", "Alpha", first["label"])
+        assertEquals("com.a", first["pkg"])
 
         // Two labels inside one second: the Mac sees the last one, once.
         task = TopTask("com.a", "Alpha", taskId = 11, taskLabel = "Second")

@@ -2433,7 +2433,11 @@ class Session(
                     val nowMs = System.currentTimeMillis()
                     for (s in unpaused) {
                         val top = runCatching { observer.topTask(s.displayId) }.getOrNull() ?: continue
-                        val changed = top != s.lastTitle
+                        val previous = s.lastTitle
+                        val changed = top != previous
+                        // The app on top, not its label: a browser's tab title is
+                        // the throttled case, its package is not (WIN-3, WIN-28).
+                        val appChanged = previous == null || previous.pkg != top.pkg || previous.label != top.label
                         if (changed) {
                             s.lastTitle = top
                             titlesChanged = true
@@ -2441,7 +2445,7 @@ class Session(
                         if (top.taskId > 0) s.taskId = top.taskId
                         when (s.content) {
                             is WindowContent.App, is WindowContent.Link -> {
-                                val due = tickAppTitle(s, top.taskLabel ?: top.label, nowMs)
+                                val due = tickAppTitle(s, top, appChanged, nowMs)
                                 if (due > 0 && (wakeAtMs == 0L || due < wakeAtMs)) wakeAtMs = due
                             }
                             else -> if (changed) {
@@ -2471,17 +2475,25 @@ class Session(
     }
 
     /**
-     * One tick of an app stream's `window.title` (WIN-28): the current label and
-     * a wake for whatever waits, then the sends the machine asked for. Returns
-     * the time a held label is due, or 0 when nothing waits.
+     * One tick of an app or link stream's `window.title` (WIN-3, WIN-28). Every
+     * message carries the display's `label` and `pkg`; `title` is the task's own
+     * label, the app's while the phone describes none.
+     *
+     * A new app on top goes out at once (the Mac's link and handoff windows take
+     * their package from it) and its title counts as the second's send; a change
+     * to the title alone waits the machine's second. Returns the time a held
+     * label is due, or 0 when nothing waits.
      */
-    private fun tickAppTitle(s: StreamState, label: String, nowMs: Long): Long {
+    private fun tickAppTitle(s: StreamState, top: TopTask, appChanged: Boolean, nowMs: Long): Long {
+        val title = top.taskLabel ?: top.label
         var state = s.title
+        val events = if (appChanged) {
+            listOf(TaskLabelThrottle.Event.Immediate(title, nowMs))
+        } else {
+            listOf(TaskLabelThrottle.Event.Label(title, nowMs), TaskLabelThrottle.Event.Wake(nowMs))
+        }
         val actions = ArrayList<TaskLabelThrottle.Action>(2)
-        for (event in listOf(
-            TaskLabelThrottle.Event.Label(label, nowMs),
-            TaskLabelThrottle.Event.Wake(nowMs),
-        )) {
+        for (event in events) {
             val step = TaskLabelThrottle.transition(state, event)
             state = step.state
             actions.addAll(step.actions)
@@ -2491,7 +2503,12 @@ class Session(
         for (action in actions) {
             when (action) {
                 is TaskLabelThrottle.Action.Send -> {
-                    sendJson(mapOf("t" to "window.title", "stream" to s.stream, "title" to action.label))
+                    sendJson(
+                        mapOf(
+                            "t" to "window.title", "stream" to s.stream,
+                            "label" to top.label, "pkg" to top.pkg, "title" to action.label,
+                        ),
+                    )
                     // R-PRIV-1: a label is phone content — its length, never it.
                     log("window.title stream=${s.stream} task=${s.taskId} len=${action.label.length}")
                 }

@@ -14,9 +14,11 @@ package dev.pocketdeck.server
  * - [Phase.SENT] the last label went out at [State.sentAtMs].
  * - [Phase.HOLDING] a newer label waits for `sentAtMs + INTERVAL_MS`.
  *
- * Events are [Event.Label] (the phone's current label) and [Event.Wake] (the
- * wait an [Action.Wake] asked for has passed). Actions are returned, never
- * performed: [Action.Send] and [Action.Wake].
+ * Events are [Event.Label] (the phone's current label), [Event.Immediate] (the
+ * display's top app changed, so the message carrying `label`/`pkg` must go now
+ * and its `title` counts as this second's send) and [Event.Wake] (the wait an
+ * [Action.Wake] asked for has passed). Actions are returned, never performed:
+ * [Action.Send] and [Action.Wake].
  */
 internal object TaskLabelThrottle {
 
@@ -37,6 +39,12 @@ internal object TaskLabelThrottle {
         /** The phone reports this label at [nowMs]. */
         data class Label(val label: String, val nowMs: Long) : Event
 
+        /**
+         * The display's top app changed at [nowMs]: `window.title` goes at once
+         * with `label`/`pkg` and the current [label], and counts as a send.
+         */
+        data class Immediate(val label: String, val nowMs: Long) : Event
+
         /** The wait an earlier [Action.Wake] asked for has passed. */
         data class Wake(val nowMs: Long) : Event
     }
@@ -52,8 +60,17 @@ internal object TaskLabelThrottle {
 
     fun transition(state: State, event: Event): Transition = when (event) {
         is Event.Label -> onLabel(state, event)
+        is Event.Immediate -> onImmediate(state, event)
         is Event.Wake -> onWake(state, event)
     }
+
+    /**
+     * Every phase answers an identity change the same way: it goes now, and its
+     * title is what the Mac was last told. A label that waited behind it is
+     * superseded (it belonged to the previous app).
+     */
+    private fun onImmediate(state: State, event: Event.Immediate): Transition =
+        send(state.copy(latest = event.label), event.label, event.nowMs)
 
     private fun onLabel(state: State, event: Event.Label): Transition {
         val next = state.copy(latest = event.label)

@@ -284,7 +284,7 @@ Phone → Mac:
 | `window.opened` | `stream`, `displayId`, `w`, `h`, `taskId` — the task the display shows (0 for the Phone Mirror, which has none, or when the phone could not read its task list); `started`: `"moved"` (default; the task the display shows was moved to it, state kept) or `"fresh"` (the phone couldn't move the task and relaunched the same package; the app's state may be lost) |
 | `window.closed` | `stream`, `reason` (`requested`/`app_exited`/`error`) |
 | `window.resize.ack` | `stream`, `w`, `h`, `dpi` (the request echoed), `outcome`: `"resized"` (new size, new encoder), `"density"` (same size, new dpi, no encoder rebuild), `"same"` (the display already showed it) or `"kept"` (the encoder refused; the stream keeps its old size) or `"refused"` (the phone cannot apply it: no such stream, or a size of zero). Every `window.resize` is answered with one, the early returns included; the Mac keeps one resize in flight and sends the newest waiting value when this arrives, or when the stall limit passes without one |
-| `window.title` | phone mode: `stream`, `label`, `pkg` — the top app changed on that display. An app stream: `stream`, `title` — the task's own description (`RecentTaskInfo.taskDescription.label`), or the app's label while the phone describes none, sent when it changes and at most once a second (the newest label always goes out); the Mac titles the window with it while the app has several windows |
+| `window.title` | `stream`, `label`, `pkg` — the display's top app; every stream sends it at once when that app changes (`label` is the app's label, `pkg` its package). An app or link stream also carries `title`: the task's own description (`RecentTaskInfo.taskDescription.label`), or the app's label while the phone describes none. A change to `title` alone goes out at most once a second (the newest label always goes out); a message whose `label`/`pkg` changed carries the current `title` and counts as that send. The Mac titles a window with `title` while the app has several windows, and takes a link or handoff window's Dock identity from `pkg` |
 | `state` | `locked`: bool, `battery`: int, `charging`: bool, `dnd`: `"off"`/`"priority"`/`"alarms"`/`"none"`, `ringer`: `"normal"`/`"vibrate"`/`"silent"`, `volume`: int, `volumeMax`: int, `screen`: `"on"`/`"off"`, `secure`: bool, `panel`: `"on"`/`"off"`, `maxWindows`: int (the most app windows this phone allows at once; 4 today) — sent on change; `dnd`/`ringer` are absent on a phone that does not support them (old builds), `volume`/`volumeMax` are both absent on one that cannot read its music stream, `secure` while no phone window is open; see "Phone screen", "Volume" and "Secure screens" |
 | `audio.state` | `on`: bool, `codec`: int — audio capture on/off (for the UI dot) |
 | `ring.state` | `ringing`: bool — a `phone.ring` started (`true`) or ended (`false`) |
@@ -323,10 +323,13 @@ and what a window costs is `.agent/multiwin/spike.md`.
   window. It is read after the launch (which is what makes the task), so video
   that arrives before `window.opened` is held: its CONFIG and its keyframe go out
   after the reply, and delta frames that would precede them are dropped.
-- `window.title` on an app stream carries the task's label, not the app's, and
-  falls back to the app's label while the phone describes none. It is sent when
-  the label changes, at most once a second; the newest label always goes out (a
-  label that settles just after a send waits out the second, it is not dropped).
+- `window.title` always says which app the display shows (`label`, `pkg`), the
+  moment it changes: a link window's Dock identity and a handoff window's re-open
+  come from `pkg`. On an app or link stream the same message carries `title`, the
+  task's label, falling back to the app's label while the phone describes none. A
+  change to `title` alone waits out the second (at most once a second; the newest
+  label always goes out, a label that settles just after a send is not dropped),
+  while a new app on top goes at once and its `title` counts as that send.
 - `maxWindows` is per phone and counts app streams only; the Phone Mirror is a
   separate encoder and is not counted, and neither is a stream that has not named
   its content yet. Past it, `window.open` (with or without `newInstance`) answers
