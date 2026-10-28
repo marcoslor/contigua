@@ -74,6 +74,9 @@ struct CodeSheet: View {
             }
         case .denied:
             Text("Pairing was denied on the phone.").font(.callout).foregroundStyle(.red)
+        case .coolingDown:
+            // The phone's own 30 s window: trying again at once cannot work.
+            Text(PairingCopy.coolingDown).font(.callout).foregroundStyle(.orange)
         case .refused(let reason):
             Text(ConnectionFailure.message(for: reason, phoneName: displayName) ?? "Pairing is turned off on the phone.")
                 .font(.callout).foregroundStyle(.red)
@@ -89,7 +92,7 @@ struct CodeSheet: View {
     @ViewBuilder
     private var actions: some View {
         switch state {
-        case .denied, .timedOut, .unreachable, .refused:
+        case .denied, .coolingDown, .timedOut, .unreachable, .refused:
             HStack(spacing: 8) {
                 Button("Cancel") { controller.sheet = nil }.buttonStyle(.glass)
                 Button("Try again") { controller.retryPairing() }

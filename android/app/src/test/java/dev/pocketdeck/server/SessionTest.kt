@@ -366,7 +366,9 @@ class SessionTest {
         connect(pairDecisionTimeoutMs = 5_000, pairCooldown = cooldown)
         hello("c8", "SpamAgain")
         send(mapOf("t" to "pair.request"))
-        assertEquals("pair_denied", readUntil("error")["code"])
+        // PAIR-5: the cooldown has its own code, so the Mac can say "wait a
+        // moment" instead of repeating a denial the person already saw.
+        assertEquals("pair_cooldown", readUntil("error")["code"])
         assertEquals(1, platform.pairRequests.size)
 
         ms += PairCooldown.WINDOW_MS

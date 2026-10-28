@@ -976,6 +976,25 @@ check_pair() {
         && ok "[PAIR-8] C4 second launch auth_ok" || bad "[PAIR-8] C4 second launch did not auth"
     grep -q '"t":"pair.request"' "$WORK/events.jsonl" \
         && bad "[PAIR-8] C4 second launch tried to pair again" || ok "[PAIR-8] C4 second launch skipped pairing"
+
+    # PAIR-5: inside the phone's 30 s window the phone answers its own code,
+    # and the Mac's sheet says to wait rather than repeating the denial.
+    stop_fakephone
+    wait_until 5 no_fakephone
+    clean
+    FAKE_ARGS="--pair-cooldown" start_fake || return 1
+    launch --connect "127.0.0.1:$PORT" --quit-after 30
+    pair_ax() { ax_tree; }
+    wait_until 25 eval 'pair_ax | grep -qF "Wait a moment, then try again."' \
+        && ok "[PAIR-5] C4 the phone's cooldown reads \"Wait a moment, then try again.\"" \
+        || bad "[PAIR-5] C4 the cooldown sentence is missing ($(ax_tree | tr '\n' '|' | cut -c1-220))"
+    ! pair_ax | grep -qF "Pairing was denied on the phone." \
+        && ok "[PAIR-5] C4 the cooldown is not shown as a fresh denial" \
+        || bad "[PAIR-5] C4 the cooldown repeated the denial sentence"
+    pair_ax | grep -qF "Try again" \
+        && ok "[PAIR-5] C4 the sheet still offers Try again for after the window" \
+        || bad "[PAIR-5] C4 the cooldown sheet lost Try again"
+    stop_app
     stop_fakephone
 }
 
