@@ -447,6 +447,12 @@ interface TaskMove {
 
     /** Moves an existing task to a display. false means the system refused: relaunch instead. */
     fun move(taskId: Int, displayId: Int): Boolean
+
+    /**
+     * Ends one task (WIN-31: a window's task that outlived its display). Never
+     * the app: its other tasks keep running. false when the phone cannot say.
+     */
+    fun remove(taskId: Int): Boolean = false
 }
 
 /**
