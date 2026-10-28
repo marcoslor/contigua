@@ -153,3 +153,34 @@ final class BarContrastTests: XCTestCase {
         }
     }
 }
+
+/// The bar's material comes from the window's appearance as soon as the chrome
+/// is in a window, not only on a later change: a window created in Dark kept a
+/// light bar until something changed the system appearance (the capture in
+/// `.agent/conv-fixes-1/bar-focus.png`).
+@MainActor
+final class BarAppearanceTests: XCTestCase {
+    private func chrome(in appearance: NSAppearance?) -> (NSWindow, StreamChromeView) {
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 380, height: 800),
+                              styleMask: [.titled], backing: .buffered, defer: true)
+        window.isReleasedWhenClosed = false
+        window.appearance = appearance
+        let chrome = StreamChromeView(video: VideoLayerView(frame: NSRect(x: 0, y: 0, width: 360, height: 780)),
+                                      style: .framed)
+        chrome.frame = NSRect(x: 0, y: 0, width: 380, height: 800)
+        window.contentView = chrome
+        return (window, chrome)
+    }
+
+    func testADarkWindowGetsTheDarkBarWhenTheChromeLands() {
+        let (window, chrome) = chrome(in: NSAppearance(named: .darkAqua))
+        XCTAssertEqual(chrome.barMaterial, HeaderBar.material(dark: true))
+        window.close()
+    }
+
+    func testALightWindowGetsTheLightBar() {
+        let (window, chrome) = chrome(in: NSAppearance(named: .aqua))
+        XCTAssertEqual(chrome.barMaterial, HeaderBar.material(dark: false))
+        window.close()
+    }
+}

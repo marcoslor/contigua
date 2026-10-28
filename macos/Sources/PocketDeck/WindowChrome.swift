@@ -206,7 +206,7 @@ enum HeaderBar {
     /// appearances and a dark one in dark appearances, with the symbol colour
     /// the fill carries. Opaque enough that the stream behind it (white, black
     /// or busy) cannot pull the symbol below 3:1.
-    struct Material {
+    struct Material: Equatable {
         var fill: NSColor
         var symbol: NSColor
     }
