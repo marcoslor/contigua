@@ -232,7 +232,7 @@ struct AppCommands: Commands {
                 set: { _ in controller.windows.togglePhonePanelOff() })) {
                 Label("Turn Off Phone Screen", systemImage: "iphone.slash")
             }
-            .disabled(!streamMenu.phoneWindow)
+            .disabled(!streamMenu.phoneWindow || streamMenu.phoneOffline)
             Toggle(isOn: Binding(
                 get: { state.dnd?.isOn ?? false },
                 set: { actions.setDnd($0) })) {
@@ -269,21 +269,21 @@ struct AppCommands: Commands {
                 Label("Back", systemImage: "chevron.backward")
             }
             .keyboardShortcut("[")
-            .disabled(streamMenu.frozen)
+            .disabled(streamMenu.frozen || streamMenu.phoneOffline)
             Button {
                 send(#selector(PhoneWindowController.navigateHome(_:)))
             } label: {
                 Label("Home", systemImage: "house")
             }
             .keyboardShortcut("h", modifiers: [.command, .shift])
-            .disabled(streamMenu.frozen)
+            .disabled(streamMenu.frozen || streamMenu.phoneOffline)
             Button {
                 send(#selector(PhoneWindowController.navigateRecents(_:)))
             } label: {
                 Label("Recents", systemImage: "square.stack")
             }
             .keyboardShortcut(.upArrow, modifiers: .command)
-            .disabled(streamMenu.frozen)
+            .disabled(streamMenu.frozen || streamMenu.phoneOffline)
         }
         // Window ▸ Enter/Exit Full Screen: ⌃⌘F, the system's own full-screen
         // shortcut, and the title follows the key window. The phone window opts

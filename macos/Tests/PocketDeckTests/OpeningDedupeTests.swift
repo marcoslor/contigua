@@ -22,29 +22,55 @@ final class OpeningDedupeTests: XCTestCase {
 
     func testASecondOpenWhileTheAppIsOpeningRaisesTheSameWindow() {
         let manager = makeManager()
-        let first = manager.openApp(pkg: "com.android.chrome")
+        let first = manager.openOrRaise(pkg: "com.android.chrome")
         defer { first.window?.close() }
         XCTAssertTrue(first.isOpening)
 
-        let second = manager.openApp(pkg: "com.android.chrome")
+        let second = manager.openOrRaise(pkg: "com.android.chrome")
         XCTAssertIdentical(first, second, "the waiting window is raised, not a second one")
         XCTAssertEqual(manager.openStreams, [first.stream], "one stream, one launch asked of the phone")
 
         // Another app is still a new window.
-        let other = manager.openApp(pkg: "com.android.documentsui")
+        let other = manager.openOrRaise(pkg: "com.android.documentsui")
         defer { other.window?.close() }
         XCTAssertNotEqual(other.stream, first.stream)
         XCTAssertEqual(manager.openStreams.count, 2)
     }
 
+    /// The one open-or-raise entry point brings a window back: minimised in the
+    /// Dock, or ordered out, the next ask raises it rather than opening a
+    /// second stream.
+    func testARaisedWindowComesBackFromTheDockAndFromBehind() {
+        let manager = makeManager()
+        let first = manager.openOrRaise(pkg: "com.android.chrome")
+        defer { first.window?.close() }
+        first.noteFirstFrame()
+        guard let window = first.window else { return XCTFail("no window") }
+
+        window.miniaturize(nil)
+        // The Dock animation is asynchronous.
+        RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.5))
+        XCTAssertTrue(window.isMiniaturized, "the window is in the Dock")
+        let raised = manager.openOrRaise(pkg: "com.android.chrome")
+        XCTAssertIdentical(first, raised)
+        XCTAssertFalse(window.isMiniaturized, "the raise took it out of the Dock")
+        XCTAssertEqual(manager.openStreams, [first.stream])
+
+        window.orderOut(nil)
+        XCTAssertFalse(window.isVisible, "the window is out of sight")
+        _ = manager.openOrRaise(pkg: "com.android.chrome")
+        XCTAssertTrue(window.isVisible, "the raise put it back on screen")
+        XCTAssertEqual(manager.openStreams, [first.stream], "still one window, one stream")
+    }
+
     func testAFinishedWindowIsRaisedNotDuplicated() {
         let manager = makeManager()
-        let first = manager.openApp(pkg: "com.android.chrome")
+        let first = manager.openOrRaise(pkg: "com.android.chrome")
         defer { first.window?.close() }
         first.noteFirstFrame()
         XCTAssertFalse(first.isOpening)
 
-        let second = manager.openApp(pkg: "com.android.chrome")
+        let second = manager.openOrRaise(pkg: "com.android.chrome")
         XCTAssertIdentical(first, second, "the open window is raised, not duplicated")
         XCTAssertEqual(manager.openStreams, [first.stream], "one window, one stream, one launch")
     }

@@ -195,18 +195,24 @@ Material 3, edge-to-edge, dynamic color, light/dark.
 
 ### Opening a window
 
-- App window, before its first frame: the app's icon and name, a spinner,
-  **Opening on your phone…**.
-- Phone Mirror: the phone's icon and name, a spinner, **Opening your phone…**.
-- After 5 s: **Still opening…**.
-- After 20 s without a frame: **Couldn't open <app>.** (the Phone Mirror:
-  **Couldn't open your phone.**) with **Try Again** and **Close**. Try Again
-  sends the same open again; Close closes the window.
-- A phone that answers the open with `mirror_unavailable` (it cannot capture
-  its screen) gets **This phone can't share its screen with PocketDeck.** at
-  once, with **Close** only: no Try Again, because asking again cannot help.
-- The cover is a frozen mode: no input reaches the phone. The "Not responding"
-  watchdog runs only after the first frame.
+The loading state (L1 "Splash"): the app's large icon centred on the window's
+dark background, a 2 pt accent line sweeping under the title bar (indeterminate,
+never a made-up percentage) and the title **<App> — opening on <phone>**.
+
+- 0–5 s: the icon, the line and the title.
+- 5–20 s: the same, plus **Taking longer than usual** and **Cancel**. Cancel
+  closes the window and cancels the open on the phone.
+- The phone's refusal, or 20 s without a frame: the icon greys out; one sentence
+  **<phone> can't open <App>.** and, when the phone's error code has one, a
+  reason line (**The app is disabled on the phone.**, **The app isn't installed
+  any more.**); **Close** only. No **Try Again**: asking again cannot work.
+- The Phone Mirror wears the same cover: **Phone — opening on <phone>** and
+  **<phone> can't open the phone screen.** A phone that cannot capture its
+  screen (`mirror_unavailable`) puts its sentence on the reason line:
+  **This phone can't share its screen with PocketDeck.**
+- The cover is a frozen mode: no input reaches the phone, and the bar's
+  phone-side controls are dimmed. The "Not responding" watchdog runs only after
+  the first frame.
 
 ### The Phone Mirror's bar from the keyboard
 

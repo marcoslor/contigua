@@ -4494,6 +4494,24 @@ if tile["enabled"]:
 if root["reason"] != "Connect your phone to use these.":
     print("reason:", root["reason"]); sys.exit(1)
 PY
+    # [MIRROR-14] The mirror bar's own Turn Off Phone Screen is disabled with
+    # the offline reason too, and a click at it sends no phone.panel.
+    chrome_has "bar_offline=1" \
+        && ok "[WIN-22] the bar is offline after the phone went away" \
+        || bad "[WIN-22] the bar does not report the link down: $(chrome_state)"
+    chrome_has "bar_enabled=none" \
+        && ok "[WIN-22] every phone-side bar control is disabled offline (Turn Off Phone Screen included)" \
+        || bad "[WIN-22] a bar control stayed enabled offline: $(chrome_state)"
+    local bar_requests bar_panels
+    bar_requests="$(sed -n 's/.* panel_requests=\([0-9]*\).*/\1/p' <<< "$(chrome_state)")"
+    bar_panels="$(count_events '"t":"phone.panel"' | head -1)"
+    mirror_control panel-click || true
+    sleep 1
+    [ "$(sed -n 's/.* panel_requests=\([0-9]*\).*/\1/p' <<< "$(chrome_state)")" = "$bar_requests" ] \
+        && [ "$(count_events '"t":"phone.panel"' | head -1)" = "$bar_panels" ] \
+        && ok "[MIRROR-14] a click on the dimmed Turn Off Phone Screen sent no phone.panel" \
+        || bad "[MIRROR-14] the disabled bar button still sent a request"
+
     # A click on the disabled tile sends nothing: the Mac's own count of
     # phone.panel messages stays at zero, and the probe refuses the click.
     if mirror_control panelclick panel panel.screen; then
@@ -4536,7 +4554,7 @@ PY
     launch --connect "127.0.0.1:$PORT" --open-phone --float-windows \
         --debug-chrome-state "$WORK/chrome.txt" --debug-control "$WORK/control" --quit-after 45 \
         ${dark_args[@]+"${dark_args[@]}"}
-    if wait_until 15 chrome_has "loading=unavailable"; then
+    if wait_until 15 chrome_has "loading=failed"; then
         ok "[MIRROR-2] a phone that can't mirror says so as the window opens"
     else
         bad "[MIRROR-2] a phone that can't mirror got no sentence ($(chrome_state))"
@@ -4555,7 +4573,7 @@ PY
     fi
     # Past the 20 s mark the generic failure must not take the sentence over.
     sleep 21
-    if chrome_has "loading=unavailable cover_buttons=close"; then
+    if chrome_has "loading=failed cover_phase=failed cover_buttons=close"; then
         ok "[MIRROR-2] the refusal stands 20 s later (no generic failure, no retry loop)"
     else
         bad "[MIRROR-2] the cover changed after 20 s ($(chrome_state))"
@@ -4824,6 +4842,7 @@ PY
     launch --connect "127.0.0.1:$PORT" \
         --debug-intent "battery" \
         --debug-intent "open-app com.android.settings" \
+        --debug-intent "open-app com.android.settings" \
         --debug-intent "open-phone" \
         --debug-intent "send-link https://example.com/intents" \
         --debug-intent "send-file $WORK/intent-1mb.bin" \
@@ -4855,6 +4874,9 @@ PY
     events_have '"pkg":"com.android.settings"' && events_have '"t":"window.open"' \
         && ok "INTENTS the phone opened a window for the app's package" \
         || bad "INTENTS the phone never received window.open for com.android.settings"
+    [ "$(window_open_count com.android.settings)" = "1" ] \
+        && ok "[WIN-2] INTENTS a second Open Phone App intent raised the window (one window.open)" \
+        || bad "[WIN-2] INTENTS two intents sent $(window_open_count com.android.settings) window.open"
 
     if wait_until 30 intent_event open-phone; then
         line="$(intent_event open-phone)"
@@ -7367,6 +7389,24 @@ sys.exit(1)
 PY
 }
 
+# window_open_count <pkg> — how many window.open the fakephone received for the
+# package (the raise rule: one, however many times the entry point is used).
+window_open_count() {
+    python3 - "$WORK/events.jsonl" "$1" <<'PY'
+import json, sys
+count = 0
+for line in open(sys.argv[1]):
+    try:
+        event = json.loads(line)
+    except ValueError:
+        continue
+    msg = event.get("msg") or {}
+    if event.get("ev") == "rx" and msg.get("t") == "window.open" and msg.get("pkg") == sys.argv[2]:
+        count += 1
+print(count)
+PY
+}
+
 # Read the whole dump first: under pipefail, `grep -q` closing the pipe early fails the pipeline.
 registered_in_ls() { local dump; dump="$("$LSREGISTER" -dump 2>/dev/null)"; grep -qF -- "$1" <<< "$dump"; }
 
@@ -7385,7 +7425,9 @@ check_dock() {
     remove_dock_apps
     mkdir -p "$dir"
     start_fake || return 1
-    launch --connect "127.0.0.1:$PORT" --dock-dir "$dir" --dock-add "$pkg" --quit-after 120
+    mkdir -p "$WORK-control"
+    launch --connect "127.0.0.1:$PORT" --dock-dir "$dir" --dock-add "$pkg" \
+        --debug-control "$WORK-control" --quit-after 120
     shim_made() { ls -d "$dir"/*.app >/dev/null 2>&1; }
     wait_until 30 shim_made || { bad "DOCK no Dock app created in $dir"; stop_app; stop_fakephone; return 1; }
     shim="$(ls -d "$dir"/*.app | head -1)"
@@ -7405,6 +7447,24 @@ check_dock() {
         && ok "DOCK the app window appeared ($(windows | wc -l | tr -d ' ') windows)" || bad "DOCK no new window"
     wait_until 5 eval '[ -n "$(dock_shim_pids)" ]' \
         && ok "DOCK the shim runs as its own app (pid $(dock_shim_pids | tr '\n' ' '))" || bad "DOCK the shim is not running"
+
+    # The shim launched again (Launchpad, Spotlight, a Dock click) raises the
+    # window it stands for instead of relaunching the app on the phone.
+    local dock_opens dock_wins
+    dock_opens="$(count_events '"t":"window.open"' | head -1)"
+    dock_wins="$(windows | wc -l | tr -d ' ')"
+    open_quiet "$shim"
+    sleep 3
+    [ "$(count_events '"t":"window.open"' | head -1)" = "$dock_opens" ] \
+        && ok "[WIN-2] DOCK a second shim launch sent no window.open (still $dock_opens)" \
+        || bad "[WIN-2] DOCK the shim relaunched the app on the phone"
+    [ "$(windows | wc -l | tr -d ' ')" = "$dock_wins" ] \
+        && ok "[WIN-2] DOCK the second shim launch raised the one window" \
+        || bad "[WIN-2] DOCK the shim made a second window"
+    control keywindow "$WORK/keywindow.txt" >/dev/null 2>&1 || true
+    [ "$(sed -n 2p "$WORK/keywindow.txt" 2>/dev/null)" = "WhatsApp (FakePhone)" ] \
+        && ok "[WIN-2] DOCK the raised window is key and front" \
+        || bad "[WIN-2] DOCK the shim did not raise the window ($(tr '\n' '|' < "$WORK/keywindow.txt" 2>/dev/null))"
 
     kill $(dock_shim_pids) >/dev/null 2>&1
     wait_until 15 window_rx window.close \
@@ -7594,6 +7654,9 @@ check_windows() {
     # the control under test.
     wait_until 20 control deckquery || bad "WINDOWS deckquery: $CONTROL_REPLY"
     wait_until 20 control deckfocus grid || bad "WINDOWS deckfocus: $CONTROL_REPLY"
+    # The grid has drawn and its cells have their own places before the click:
+    # a visible run's activation can otherwise land a click on the old layout.
+    sleep 2
     local opens_before wins_before wins_one win
     opens_before="$(count_events '"t":"window.open"' | head -1)"
     wins_before="$(windows | wc -l | tr -d ' ')"
@@ -7628,7 +7691,177 @@ check_windows() {
     [ "$(sed -n 2p "$WORK/keywindow.txt" 2>/dev/null)" = "Chrome (FakePhone)" ] \
         && ok "[WIN-2] WINDOWS the existing window is key (raised)" \
         || bad "[WIN-2] WINDOWS the second click did not raise the window ($(tr '\n' '|' < "$WORK/keywindow.txt" 2>/dev/null))"
+
+    # --- Find Apps (⌘K) and the search's Return ---------------------------
+    # The same rule through the keyboard: ⌘K brings the Deck up, the query
+    # narrows to one app and Return opens it; the second time raises it.
+    local k_opens k_wins
+    control key cmd+k || bad "WINDOWS ⌘K: $CONTROL_REPLY"
+    sleep 1.5
+    control deckquery WhatsApp || bad "WINDOWS deckquery (Find Apps): $CONTROL_REPLY"
+    control key return || bad "WINDOWS Return in Find Apps: $CONTROL_REPLY"
+    wait_until 20 window_rx window.open com.whatsapp \
+        && ok "WINDOWS Find Apps' Return opened the app's window" \
+        || bad "WINDOWS Find Apps' Return sent no window.open for WhatsApp"
+    k_opens="$(count_events '"t":"window.open"' | head -1)"
+    k_wins="$(windows | wc -l | tr -d ' ')"
+    sleep 1
+    control key cmd+k || bad "WINDOWS ⌘K (second time): $CONTROL_REPLY"
+    sleep 0.5
+    control deckquery WhatsApp || bad "WINDOWS deckquery (second Find): $CONTROL_REPLY"
+    control key return || bad "WINDOWS Return in Find Apps (second time): $CONTROL_REPLY"
+    sleep 1
+    [ "$(count_events '"t":"window.open"' | head -1)" = "$k_opens" ] \
+        && ok "[WIN-2] WINDOWS Find Apps' second Return sent no window.open (still $k_opens)" \
+        || bad "[WIN-2] WINDOWS Find Apps asked for a second stream ($(count_events '"t":"window.open"' | head -1) opens)"
+    [ "$(windows | wc -l | tr -d ' ')" = "$k_wins" ] \
+        && ok "[WIN-2] WINDOWS Find Apps raised the existing window (one window)" \
+        || bad "[WIN-2] WINDOWS Find Apps made a second window"
+    control keywindow "$WORK/keywindow.txt" >/dev/null 2>&1 || true
+    [ "$(sed -n 2p "$WORK/keywindow.txt" 2>/dev/null)" = "WhatsApp (FakePhone)" ] \
+        && ok "[WIN-2] WINDOWS Find Apps' raise made the window key and front" \
+        || bad "[WIN-2] WINDOWS Find Apps did not raise the window ($(tr '\n' '|' < "$WORK/keywindow.txt" 2>/dev/null))"
     end_shared
+
+    # --- L1: opening -> slow -> Cancel ------------------------------------
+    # The fake holds the first frame, so a quiet run sees the opening state
+    # and, at 5 s, the slow one with Cancel.
+    clean
+    rm -f "$WORK/chrome.txt"
+    mkdir -p "$WORK/control"
+    FAKE_ARGS="--first-frame-delay 30" start_fake || return 1
+    launch --connect "127.0.0.1:$PORT" --open com.android.settings \
+        --debug-chrome-state "$WORK/chrome.txt" --debug-control "$WORK-control" --quit-after 75
+    ax_has() { ax_tree | grep -qF -- "$1"; }
+    wait_until 20 chrome_has "cover_phase=opening cover_buttons=none" \
+        && ok "[WIN-11] L1 opening: the cover is up with no buttons ($(chrome_state | grep -o 'loading=[^ ]* .*cover_buttons=[^ ]*'))" \
+        || bad "[WIN-11] L1 opening: $(chrome_state)"
+    # The shot first: the opening state lasts 5 s, and the accessibility walk
+    # is slower than the rest of that window. Two seconds in, the phone's app
+    # list and icon have usually arrived (a Deck click already has them).
+    if [ "$VISIBLE" = 1 ]; then
+        sleep 3
+        local lid
+        lid="$(await_window '$4 == 900')" \
+            && screencapture -x -o -l"$lid" "$SHOTS/l1-opening.png" \
+            && say "shot: $SHOTS/l1-opening.png" \
+            || bad "L1 no opening shot"
+    else
+        skip_visible "L1 the opening cover's shot"
+    fi
+    wait_until 10 ax_has "Settings — opening on FakePhone" \
+        && ok "[WIN-11] L1 the cover's title is \"<App> — opening on <phone>\"" \
+        || bad "[WIN-11] L1 the cover's title: $(ax_tree | grep -i 'opening' | head -2 | tr '\n' '|')"
+    wait_until 12 chrome_has "cover_phase=slow cover_buttons=cancel" \
+        && ok "[WIN-11] L1 at 5 s: the slow state shows Cancel" \
+        || bad "[WIN-11] L1 the slow state: $(chrome_state)"
+    wait_until 10 ax_has "Taking longer than usual" \
+        && ok "[WIN-11] L1 the slow state says \"Taking longer than usual\"" \
+        || bad "[WIN-11] L1 the slow line is missing"
+    if [ "$VISIBLE" = 1 ]; then
+        if [ -n "${lid:-}" ]; then
+            screencapture -x -o -l"$lid" "$SHOTS/l1-slow.png" && say "shot: $SHOTS/l1-slow.png"
+        fi
+    else
+        skip_visible "L1 the slow cover's shot"
+    fi
+    control coverclick Cancel \
+        || bad "L1 the Cancel click: $CONTROL_REPLY"
+    wait_until 10 events_have '"t":"window.close"' \
+        && ok "[WIN-11] L1 Cancel closes the window and sends window.close (the open is cancelled on the phone)" \
+        || bad "[WIN-11] L1 Cancel sent no window.close"
+    wait_until 5 eval '! windows | awk "\$4 == 900" | grep -q .' \
+        && ok "[WIN-11] L1 Cancel closed the window" \
+        || bad "[WIN-11] L1 the window stayed after Cancel"
+    stop_app
+    stop_fakephone
+
+    # --- L1: the phone's refusal fails the cover at once ------------------
+    clean
+    rm -f "$WORK/chrome.txt"
+    mkdir -p "$WORK/control"
+    FAKE_ARGS="--window-refuse app_disabled" start_fake || return 1
+    launch --connect "127.0.0.1:$PORT" --open com.android.settings \
+        --debug-chrome-state "$WORK/chrome.txt" --debug-control "$WORK-control" --quit-after 60
+    wait_until 20 chrome_has "cover_phase=failed cover_buttons=close" \
+        && ok "[WIN-11] L1 a refused app: the failed state offers Close alone" \
+        || bad "[WIN-11] L1 the refused cover: $(chrome_state)"
+    wait_until 10 ax_has "FakePhone can't open Settings." \
+        && ok "[WIN-11] L1 the refusal is \"<phone> can't open <app>.\"" \
+        || bad "[WIN-11] L1 the refusal sentence: $(ax_tree | grep -i 'can.t open' | head -2 | tr '\n' '|')"
+    wait_until 10 ax_has "The app is disabled on the phone." \
+        && ok "[WIN-11] L1 the reason line maps the phone's error code" \
+        || bad "[WIN-11] L1 the reason line is missing"
+    ! ax_has "Try Again" \
+        && ok "[WIN-11] L1 a refused open has no Try Again" \
+        || bad "[WIN-11] L1 the refused cover still offers Try Again"
+    if [ "$VISIBLE" = 1 ]; then
+        local fid
+        fid="$(await_window '$4 == 900')" \
+            && screencapture -x -o -l"$fid" "$SHOTS/l1-refused.png" \
+            && say "shot: $SHOTS/l1-refused.png" \
+            || bad "L1 no refused shot"
+        stop_app
+        # A new launch is a new window: count this phase's opens on their own.
+        : > "$WORK/events.jsonl"
+        launch --connect "127.0.0.1:$PORT" --open com.android.settings --appearance light \
+            --debug-chrome-state "$WORK/chrome.txt" --quit-after 30
+        wait_until 20 chrome_has "cover_phase=failed cover_buttons=close" || bad "L1 the light refusal did not show"
+        fid="$(await_window '$4 == 900')" \
+            && screencapture -x -o -l"$fid" "$SHOTS/l1-refused-light.png" \
+            && say "shot: $SHOTS/l1-refused-light.png" \
+            || bad "L1 no light refused shot"
+    else
+        skip_visible "L1 the refusal's dark and light shots"
+    fi
+    sleep 21
+    [ "$(count_events '"t":"window.open"' | head -1)" = "1" ] \
+        && ok "[WIN-11] L1 the refused phone was never asked again (one window.open)" \
+        || bad "[WIN-11] L1 the refused open sent $(count_events '"t":"window.open"' | head -1) window.open"
+    [ "$(chrome_state | grep -o 'loading=[^ ]*')" = "loading=failed" ] \
+        && ok "[WIN-11] L1 the refusal stands 21 s later (the clock does not replace it)" \
+        || bad "[WIN-11] L1 the cover changed after the refusal: $(chrome_state | grep -o 'loading=[^ ]*')"
+    stop_app
+    stop_fakephone
+
+    # --- L1 on the Phone Mirror: the same cover, "phone screen" wording ----
+    clean
+    rm -f "$WORK/chrome.txt"
+    FAKE_ARGS="--mirror-unavailable" start_fake || return 1
+    launch --connect "127.0.0.1:$PORT" --open-phone --appearance dark \
+        --debug-chrome-state "$WORK/chrome.txt" --debug-control "$WORK-control" --quit-after 45
+    wait_until 20 chrome_has "cover_phase=failed cover_buttons=close" \
+        && ok "[MIRROR-2] the Mirror wears the same cover, failed with Close only" \
+        || bad "[MIRROR-2] the Mirror's refused cover: $(chrome_state)"
+    # [WIN-22] A refused mirror freezes the bar's phone controls: a click at
+    # Back sends no nav to a phone that cannot mirror.
+    wait_until 5 chrome_has "bar_enabled=none" \
+        && ok "[WIN-22] the refused mirror's bar controls are disabled" \
+        || bad "[WIN-22] the refused mirror left a bar control enabled: $(chrome_state)"
+    local refused_navs
+    refused_navs="$(count_events '"t":"nav"' | head -1)"
+    control nav-click back || true
+    sleep 1
+    [ "$(count_events '"t":"nav"' | head -1)" = "$refused_navs" ] \
+        && ok "[WIN-22] a click on the disabled Back sent no nav to the phone" \
+        || bad "[WIN-22] the disabled Back still reached the phone"
+    wait_until 10 ax_has "FakePhone can't open the phone screen." \
+        && ok "[MIRROR-2] the Mirror's sentence uses the phone-screen wording" \
+        || bad "[MIRROR-2] the Mirror's sentence: $(ax_tree | grep -i 'phone screen' | head -2 | tr '\n' '|')"
+    wait_until 10 ax_has "This phone can't share its screen with PocketDeck." \
+        && ok "[MIRROR-2] conv-fixes-1's sentence is the refusal's reason line" \
+        || bad "[MIRROR-2] the refusal's reason line is missing"
+    if [ "$VISIBLE" = 1 ]; then
+        if screenshot_portrait "$SHOTS/mirror-unavailable.png"; then
+            say "shot: $SHOTS/mirror-unavailable.png"
+        else
+            bad "MIRROR-2 no shot of the refused cover"
+        fi
+    else
+        skip_visible "MIRROR-2 the refused cover's shot"
+    fi
+    stop_app
+    stop_fakephone
 }
 
 # --- Phone nickname (docs/ROADMAP.md #1, #2) --------------------------------

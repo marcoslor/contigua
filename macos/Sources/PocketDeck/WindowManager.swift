@@ -319,35 +319,31 @@ final class WindowManager {
         return controller
     }
 
+    /// The one way a phone app reaches a Mac window (CONV-MAC-11, WIN-2).
+    /// Every entry point — a Deck tile, Find Apps' Return, the Dock shim,
+    /// Launchpad/Spotlight (which launch the shim), a `pocketdeck://` or intent
+    /// link and the MCP `open_app` tool — calls this and nothing else. An app
+    /// that already has a window is raised (un-minimised, key, in front, this
+    /// app activated) and the phone is sent no second `window.open`. While the
+    /// window is still opening this also stops the v104 thrash (seven opens of
+    /// Chrome in 77 s, each a launch on the phone, none making the picture come
+    /// sooner).
+    ///
+    /// A future explicit "New Window" adds one parameter here (`newWindow:
+    /// Bool = false`); until it is built there is no second window of one app.
     @discardableResult
-    func openApp(pkg: String, activity: String? = nil) -> AppWindowController {
-        // One window per app (CONV-MAC-11, WIN-2): a second Deck click, Dock
-        // shim click or notification click raises the window the app already
-        // has instead of asking the phone for a second stream. While it is
-        // still opening this also stops the v104 thrash (seven opens of Chrome
-        // in 77 s, each a launch on the phone, none making the picture come
-        // sooner); once its picture is in, a second window waits for the
-        // explicit "New Window" that is not built.
+    func openOrRaise(pkg: String, activity: String? = nil) -> AppWindowController {
         if let existing = allControllers().compactMap({ $0 as? AppWindowController })
             .first(where: { $0.pkg == pkg }) {
             raise(existing)
             return existing
         }
-        let label = appsByPkg[pkg]?.label ?? pkg
+        let label = appsByPkg[pkg]?.label ?? pkg.split(separator: ".").last.map(String.init) ?? pkg
         let controller = open {
             AppWindowController(stream: $0, pkg: pkg, activity: activity, label: label, manager: self)
         }
         onAppWindowOpened?(pkg, controller.stream)
         return controller
-    }
-
-    /// A notification click's window: raise the app's window when it is
-    /// already open, else open one. The returned stream is where the phone
-    /// runs the notification's action.
-    @discardableResult
-    func openOrRaiseApp(pkg: String, activity: String? = nil) -> UInt32 {
-        // openApp is already open-or-raise, so every entry point shares it.
-        openApp(pkg: pkg, activity: activity).stream
     }
 
     @discardableResult
@@ -462,6 +458,12 @@ final class WindowManager {
 
     func setIcon(_ image: NSImage, pkg: String) {
         icons[pkg] = image
+        // A window opened before the icons arrived shows its app's icon as
+        // soon as it is here, not at the next phase change.
+        for controller in allControllers() {
+            guard let app = controller as? AppWindowController, app.pkg == pkg else { continue }
+            app.refreshOpeningCover()
+        }
     }
 
     /// "WhatsApp (Nicky)": the subject of a stream window's title, with the
@@ -474,7 +476,10 @@ final class WindowManager {
     func setPhoneName(_ name: String) {
         guard name != phoneName else { return }
         phoneName = name
-        for controller in allControllers() { controller.retitle() }
+        for controller in allControllers() {
+            controller.retitle()
+            controller.refreshOpeningCover()
+        }
     }
 
     func remove(stream: UInt32) {
@@ -604,9 +609,9 @@ final class WindowManager {
                 (controller(for: stream) as? HandoffWindowController)?.showFreshNotice()
             }
         case .phoneError(let code, _, let stream):
-            // A phone that cannot mirror answers the open itself; that window
-            // says so and offers Close only (MIRROR-2).
-            (controller(for: stream) as? PhoneWindowController)?.refuseOpening(code)
+            // A phone that refuses an open answers it itself: that window's
+            // cover says why and offers Close only (MIRROR-2, WIN-11).
+            controller(for: stream)?.refuseOpening(code)
         case .ready(_, let isReconnect, _):
             if isReconnect { reopenAll() }
         default:
