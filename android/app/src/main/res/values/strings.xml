@@ -73,6 +73,13 @@
     <string name="action_retry">Retry</string>
 
     <string name="home_keep_running">Keep running in the background</string>
+    <string name="home_keep_running_off">Runs only while PocketDeck is open.</string>
+    <string name="home_keep_running_on">Keeps running after you swipe it away and starts when the phone restarts.</string>
+    <string name="home_keep_running_restricted">Battery restriction still on — Android may stop it.</string>
+    <string name="action_open_battery_settings">Open battery settings</string>
+    <string name="keep_running_settings_failed">Couldn\'t open battery settings. Open Settings › Apps › PocketDeck › Battery.</string>
+    <string name="onboarding_keep_running_on">On — PocketDeck keeps running in the background</string>
+    <string name="onboarding_keep_running_restricted">Battery restriction still on</string>
     <string name="home_allow_connections">Allow connections</string>
     <string name="home_allow_pairings">Allow new pairings</string>
     <string name="home_allow_pairings_hint">Turn on Allow connections first.</string>

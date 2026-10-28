@@ -83,8 +83,12 @@ XML
   emu shell "run-as $PKG sh -c 'cat > shared_prefs/pocketdeck.xml'" < "$file"
 }
 
-restart_app() {
+stop_app() {
   emu shell am force-stop "$PKG" >/dev/null 2>&1 || true
+}
+
+restart_app() {
+  stop_app
   for _ in $(seq 1 10); do
     emu shell am start -n "$PKG/.app.MainActivity" >/dev/null 2>&1 || true
     sleep 2
@@ -202,6 +206,7 @@ fi
 # Grant the exemption (the person's Allow) and come back: the row settles and
 # the home carries the same line.
 emu shell "dumpsys deviceidle whitelist +$PKG" >/dev/null 2>&1 || true
+stop_app
 seed_prefs true true
 restart_app
 wait_for_text /data/local/tmp/pd-bg.xml 'Keep running in the background' 30 ||

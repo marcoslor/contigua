@@ -16,8 +16,10 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import dev.pocketdeck.IDeckService
 import dev.pocketdeck.R
+import dev.pocketdeck.app.BatteryExemption
 import dev.pocketdeck.app.DeckForegroundService
 import dev.pocketdeck.app.DeckState
+import dev.pocketdeck.app.KeepRunningAction
 import dev.pocketdeck.app.Prefs
 import dev.pocketdeck.app.QrPairing
 import dev.pocketdeck.app.ShizukuClient
@@ -47,6 +49,25 @@ class DeckViewModel(app: Application) : AndroidViewModel(app) {
     private val deckListener: () -> Unit = { refresh() }
 
     private val shizukuClientListener: (IDeckService?) -> Unit = { refresh() }
+
+    /**
+     * The one keep-running action (PHONE-19). The onboarding button and the
+     * home switch both go through it; the exemption is asked only while it is
+     * missing, and a failed request is reported, never swallowed.
+     */
+    private val keepRunning = KeepRunningAction(
+        isExempt = { BatteryExemption.isExempt(getApplication<Application>()) },
+        store = { Prefs.setEnabled(getApplication<Application>(), it) },
+        startService = { DeckForegroundService.start(getApplication<Application>()) },
+        requestExemption = {
+            val ctx = getApplication<Application>()
+            val opened = BatteryExemption.open(ctx)
+            // "Asked once" only when a screen really opened: a missing screen
+            // must not count as a completed onboarding step (PHONE-19).
+            if (opened != null) Prefs.setBatteryRequested(ctx, true)
+            opened != null
+        },
+    )
 
     private val shizukuPermissionListener = Shizuku.OnRequestPermissionResultListener { requestCode, grantResult ->
         if (requestCode == REQUEST_SHIZUKU) {
@@ -100,6 +121,7 @@ class DeckViewModel(app: Application) : AndroidViewModel(app) {
         _state.value = DeckUiState(
             onboardingDone = Prefs.isOnboardingDone(ctx),
             enabled = enabled,
+            keepRunning = keepRunningState(enabled, BatteryExemption.isExempt(ctx)),
             allowConnections = allowConnections,
             allowPairings = Prefs.isAllowPairings(ctx),
             notifyNoAccess = DeckState.notifyNoAccess,
@@ -174,27 +196,36 @@ class DeckViewModel(app: Application) : AndroidViewModel(app) {
 
     fun onNotificationPermissionResult() = refresh()
 
-    fun ignoreBatteryOptimizations() {
-        val ctx = getApplication<Application>()
-        Prefs.setBatteryRequested(ctx, true)
-        val intent = Intent(
-            Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
-            Uri.parse("package:${ctx.packageName}"),
-        ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        runCatching { ctx.startActivity(intent) }
-        refresh()
-    }
+    /**
+     * The onboarding step's button: the same action as turning the home switch
+     * on (PHONE-19), so the two cannot drift. It stored "asked once" and threw
+     * the settings intent away before; nothing turned the pref on.
+     */
+    fun keepRunningOn() = setEnabled(true)
 
     // ---- home actions --------------------------------------------------
 
     fun setEnabled(value: Boolean) {
         val ctx = getApplication<Application>()
-        Prefs.setEnabled(ctx, value)
+        // One action for the onboarding step and this switch (PHONE-19): store
+        // the pref, start the service, ask for the battery exemption only when
+        // it is missing. Off never stops the running service; it lets the task's
+        // swipe decide (PHONE-5/PHONE-7).
+        val result = keepRunning.apply(value)
         DeckState.enabled = value
-        // Off does not stop the service: it keeps serving while the task is
-        // open and stops on its own when the task leaves Recents. On also
-        // makes it start at boot and survive that swipe (BootReceiver).
-        if (value) DeckForegroundService.start(ctx)
+        if (result == KeepRunningAction.Result.ON_SETTINGS_UNAVAILABLE) {
+            Log.i(TAG, "keep running set; battery settings could not be opened")
+            postSnackbar(ctx.getString(R.string.keep_running_settings_failed))
+        }
+        refresh()
+    }
+
+    /** The keep-running row's fix when the exemption is still missing. */
+    fun openBatterySettings() {
+        val ctx = getApplication<Application>()
+        if (BatteryExemption.open(ctx) == null) {
+            postSnackbar(ctx.getString(R.string.keep_running_settings_failed))
+        }
         refresh()
     }
 

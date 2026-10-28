@@ -90,6 +90,22 @@ class ScreenshotTest {
         shoot("onboarding_3_notifications_dark", true, 2, ShizukuUiState.READY)
 
     @Test
+    fun onboardingKeepRunningOnLight() =
+        shootNotifications("onboarding_keep_running_on_light", dark = false, KeepRunningState.ON_EXEMPT)
+
+    @Test
+    fun onboardingKeepRunningOnDark() =
+        shootNotifications("onboarding_keep_running_on_dark", dark = true, KeepRunningState.ON_EXEMPT)
+
+    @Test
+    fun onboardingKeepRunningRestrictedLight() =
+        shootNotifications("onboarding_keep_running_restricted_light", dark = false, KeepRunningState.ON_RESTRICTED)
+
+    @Test
+    fun onboardingKeepRunningRestrictedDark() =
+        shootNotifications("onboarding_keep_running_restricted_dark", dark = true, KeepRunningState.ON_RESTRICTED)
+
+    @Test
     fun onboardingPairLight() = shoot("onboarding_4_pair_light", false, 3, ShizukuUiState.READY)
 
     @Test
@@ -110,6 +126,14 @@ class ScreenshotTest {
     @Test
     fun homeConnectedDark() =
         shootHome("home_connected_dark", true, homeState(connectedMac = "Studio Mac", liveClientId = "1a2b3c4d", windows = 2))
+
+    @Test
+    fun homeKeepRunningRestrictedLight() =
+        shootHome("home_keep_running_restricted_light", false, homeState(batteryExempt = false))
+
+    @Test
+    fun homeKeepRunningRestrictedDark() =
+        shootHome("home_keep_running_restricted_dark", true, homeState(batteryExempt = false))
 
     @Test
     fun homeConnectedRowSaysConnectedNow() {
@@ -182,10 +206,40 @@ class ScreenshotTest {
                 onOpenShizuku = {},
                 onAllowShizuku = {},
                 onAllowNotifications = {},
-                onIgnoreBattery = {},
+                onKeepRunning = {},
+                onOpenBatterySettings = {},
                 onScanQr = {},
                 onFinished = {},
                 initialPage = page,
+                autoAdvance = false,
+            )
+        }
+    }
+
+    /** The notifications step with the keep-running row in one of its states. */
+    private fun shootNotifications(name: String, dark: Boolean, keepRunning: KeepRunningState) {
+        val state = DeckUiState(
+            enabled = keepRunning != KeepRunningState.OFF,
+            keepRunning = keepRunning,
+            shizuku = ShizukuUiState.READY,
+            shizukuInstalled = true,
+            shizukuRunning = true,
+            shizukuGranted = true,
+            notificationsGranted = false,
+            batteryRequested = true,
+        )
+        capture(name, dark) {
+            OnboardingScreen(
+                state = state,
+                onGetShizuku = {},
+                onOpenShizuku = {},
+                onAllowShizuku = {},
+                onAllowNotifications = {},
+                onKeepRunning = {},
+                onOpenBatterySettings = {},
+                onScanQr = {},
+                onFinished = {},
+                initialPage = 2,
                 autoAdvance = false,
             )
         }
@@ -197,6 +251,7 @@ class ScreenshotTest {
         windows: Int = 0,
         shizukuRunning: Boolean = true,
         notifyNoAccess: Boolean = false,
+        batteryExempt: Boolean = true,
     ): DeckUiState {
         val status = mapStatus(
             StatusInput(
@@ -211,6 +266,7 @@ class ScreenshotTest {
         return DeckUiState(
             onboardingDone = true,
             enabled = true,
+            keepRunning = keepRunningState(true, batteryExempt),
             shizukuInstalled = true,
             shizukuRunning = shizukuRunning,
             shizukuGranted = shizukuRunning,
@@ -235,6 +291,7 @@ class ScreenshotTest {
             HomeScreen(
                 state = state,
                 onToggleEnabled = {},
+                onOpenBatterySettings = {},
                 onToggleAllowConnections = {},
                 onToggleAllowPairings = {},
                 onStatusAction = {},
