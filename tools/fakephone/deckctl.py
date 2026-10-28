@@ -2774,6 +2774,8 @@ def main(argv=None):
 
     signal.signal(signal.SIGTERM, _terminate)
     state = ClientState(args.state)
+    if args.name:
+        state.name = args.name
     device_hint = None
     try:
         if args.discover:

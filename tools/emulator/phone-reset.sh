@@ -86,6 +86,26 @@ stop_app() {
   emu shell am force-stop "$PKG" >/dev/null 2>&1 || true
 }
 
+start_app() {
+  for _ in $(seq 1 10); do
+    emu shell am start -n "$PKG/.app.MainActivity" >/dev/null 2>&1 || true
+    sleep 2
+    [ -n "$(emu shell "pidof $PKG" 2>/dev/null | tr -d '\r')" ] && return 0
+  done
+  return 1
+}
+
+# The shell service logs every AppLink transition; a push means the app handed
+# it the identity and pairings it may serve (logcat is cleared before start).
+wait_app_push() { # wait_app_push <timeout_s>
+  local deadline=$(( $(date +%s) + $1 ))
+  while [ "$(date +%s)" -lt "$deadline" ]; do
+    emu logcat -d -s PocketDeckSvc 2>/dev/null | grep -q -- '--push(' && return 0
+    sleep 1
+  done
+  return 1
+}
+
 restart_app() {
   stop_app
   for _ in $(seq 1 10); do
