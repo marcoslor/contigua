@@ -231,6 +231,27 @@ def recents(dev):
     return recents_tasks(dev.out_of("dumpsys", "activity", "recents"))
 
 
+def settle_recents(dev, quiet_s=1.5, timeout=8.0):
+    """The Recents set once it stops changing.
+
+    Every close ends its task off the reader thread, so the previous window's
+    card can leave between two reads of this check (boot 5 read the loss of
+    stream 3's task as part of stream 1's close). Waiting for the list to hold
+    still for [quiet_s] measures this close, not the one before it.
+    """
+    deadline = time.time() + timeout
+    last = None
+    stable_since = time.time()
+    while time.time() < deadline:
+        now = recents(dev)
+        if last is None or now != last:
+            last, stable_since = now, time.time()
+        elif time.time() - stable_since >= quiet_s:
+            return now
+        time.sleep(0.25)
+    return last
+
+
 def displays(dev):
     return logical_displays(dev.out_of("dumpsys", "display"))
 
@@ -616,13 +637,15 @@ def check_label(phone, dev, page, out):
 
 def check_close(phone, dev, first, second):
     task_a = first.get("taskId")
-    before = recents(dev)
+    # The window before this one (stream 3) closed a moment ago; its task ends
+    # asynchronously, so let Recents settle before this close is measured.
+    before = settle_recents(dev)
     frames_before = phone.frames(2)
     chrome_pid_before = dev.pid(CHROME)
     reason = close_window(phone, 1)
     time.sleep(2.5)
     frames_after = phone.frames(2)
-    after = recents(dev)
+    after = settle_recents(dev, quiet_s=1.0)
     chrome_pid_after = dev.pid(CHROME)
     lost = sorted(set(before) - set(after))
     gained = sorted(set(after) - set(before))
