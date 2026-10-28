@@ -44,6 +44,11 @@
 //                    the e2e chrome check's limit for an AX resize
 //   deck-frame PATH  the Deck window's frame, "x y w h" in screen points (the
 //                    frame a relaunch has to restore, DECK-19)
+//   deckclick LABEL  a click on that app's cell in the Deck grid: the cell's
+//                    own place from the accessibility tree, through the
+//                    Deck window's event handling
+//   keywindow PATH   the key window's identifier and title, one per line
+//                    (which window a raise actually put in front)
 //   quit             a real quit through NSApp.terminate (⌘Q's path), for a
 //                    check that relaunches the app
 //

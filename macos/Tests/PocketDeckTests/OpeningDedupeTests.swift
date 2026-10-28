@@ -1,7 +1,9 @@
-// Opening the same app again while its window is still waiting for the first
+// Opening the same app again must raise the window the app already has, not
+// ask the phone for a second stream: while the window waits for its first
 // frame (the v104 log: seven dock opens of Chrome in 77 s, the window black)
-// must raise that window, not ask the phone for a second stream. Once the
-// picture is in, a new open is a new window, as before.
+// and after the picture is in (a Deck click is a click on the app, and one app
+// opens one window — Launchpad's behaviour). A second window would wait for an
+// explicit "New Window", which is not built.
 
 import AppKit
 import XCTest
@@ -35,7 +37,7 @@ final class OpeningDedupeTests: XCTestCase {
         XCTAssertEqual(manager.openStreams.count, 2)
     }
 
-    func testAFinishedWindowDoesNotSwallowANewOpen() {
+    func testAFinishedWindowIsRaisedNotDuplicated() {
         let manager = makeManager()
         let first = manager.openApp(pkg: "com.android.chrome")
         defer { first.window?.close() }
@@ -43,8 +45,7 @@ final class OpeningDedupeTests: XCTestCase {
         XCTAssertFalse(first.isOpening)
 
         let second = manager.openApp(pkg: "com.android.chrome")
-        defer { second.window?.close() }
-        XCTAssertNotEqual(second.stream, first.stream)
-        XCTAssertEqual(manager.openStreams.count, 2)
+        XCTAssertIdentical(first, second, "the open window is raised, not duplicated")
+        XCTAssertEqual(manager.openStreams, [first.stream], "one window, one stream, one launch")
     }
 }

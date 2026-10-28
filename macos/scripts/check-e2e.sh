@@ -7582,6 +7582,55 @@ check_dock() {
     wait_until 5 no_fakephone
 }
 
+# --- Windows: one window per app, and the opening cover ---------------------
+
+# check_windows — the app window's own behaviour, driven through the Deck's
+# cells (the control a person clicks) and the window's chrome state. WIN-2: a
+# second Deck click on an app whose window is open raises that window, with no
+# second window.open. The opening-cover phases (WIN-11, the L1 design) follow.
+check_windows() {
+    begin_shared || return 1
+    # The Deck arrives with the session: setup waits for it, the cell click is
+    # the control under test.
+    wait_until 20 control deckquery || bad "WINDOWS deckquery: $CONTROL_REPLY"
+    wait_until 20 control deckfocus grid || bad "WINDOWS deckfocus: $CONTROL_REPLY"
+    local opens_before wins_before wins_one win
+    opens_before="$(count_events '"t":"window.open"' | head -1)"
+    wins_before="$(windows | wc -l | tr -d ' ')"
+    control deckclick Chrome \
+        || bad "WINDOWS the Deck cell click: $CONTROL_REPLY"
+    wait_until 25 [ "$(count_events '"t":"window.open"' | head -1)" -gt "$opens_before" ] \
+        && ok "WINDOWS the Deck cell opened an app window (one window.open)" \
+        || bad "WINDOWS the Deck cell sent no window.open ($(count_events '"t":"window.open"' | head -1) total)"
+    wait_until 25 events_have '"ev":"video"' \
+        || bad "WINDOWS the opened stream sent no video"
+    win="$(await_window '$4 == 900')" || bad "WINDOWS no 900 pt app window after the click"
+    titles_have "Chrome (FakePhone)" \
+        && ok "[WIN-3] WINDOWS the window is titled for the app and the phone" \
+        || bad "[WIN-3] WINDOWS the window title: $(window_titles "$APP_PID" | tr '\n' '|')"
+    sleep 1
+    wins_one="$(windows | wc -l | tr -d ' ')"
+
+    # The person clicks the same cell again, now that the picture is in.
+    local opens_one
+    opens_one="$(count_events '"t":"window.open"' | head -1)"
+    control deckfocus grid || bad "WINDOWS deckfocus (second click): $CONTROL_REPLY"
+    control deckclick Chrome \
+        || bad "WINDOWS the second Deck cell click: $CONTROL_REPLY"
+    sleep 1
+    [ "$(count_events '"t":"window.open"' | head -1)" = "$opens_one" ] \
+        && ok "[WIN-2] WINDOWS a second Deck click sent no window.open (still $opens_one)" \
+        || bad "[WIN-2] WINDOWS the second click asked for another stream ($(count_events '"t":"window.open"' | head -1) opens)"
+    [ "$(windows | wc -l | tr -d ' ')" = "$wins_one" ] \
+        && ok "[WIN-2] WINDOWS one window for the app, not two" \
+        || bad "[WIN-2] WINDOWS the app has $(windows | wc -l | tr -d ' ') windows (one before the click)"
+    control keywindow "$WORK/keywindow.txt" >/dev/null 2>&1 || true
+    [ "$(sed -n 2p "$WORK/keywindow.txt" 2>/dev/null)" = "Chrome (FakePhone)" ] \
+        && ok "[WIN-2] WINDOWS the existing window is key (raised)" \
+        || bad "[WIN-2] WINDOWS the second click did not raise the window ($(tr '\n' '|' < "$WORK/keywindow.txt" 2>/dev/null))"
+    end_shared
+}
+
 # --- Phone nickname (docs/ROADMAP.md #1, #2) --------------------------------
 
 # check_nickname — a nickname names the phone everywhere. It is set the way

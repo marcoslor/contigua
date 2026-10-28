@@ -2534,11 +2534,27 @@ final class ConnectionController {
             }
             return nil
         case "deckquery":
-            // Setup for the ⌘F check: the text already in the search field.
-            guard let text = arguments.first else { return "deckquery needs TEXT" }
+            // Setup for the ⌘F check: the text already in the search field;
+            // no argument clears it.
             guard let deck = DeckWindow.window else { return "no deck window" }
-            DeckSearch.setText(text, in: deck)
+            DeckSearch.setText(arguments.first ?? "", in: deck)
             return nil
+        case "deckclick":
+            // A Deck cell's click: its own drawn place, through the window's
+            // event handling (the Deck has no debug route that calls openApp).
+            guard let label = arguments.first else { return "deckclick needs an app label" }
+            guard let deck = DeckWindow.window else { return "no deck window" }
+            return DeckCellClick.click(label: label, in: deck)
+        case "keywindow":
+            // Which window a raise actually put in front: a read, for a check
+            // that must not infer it from the CG window list's order.
+            guard let path = arguments.first, path.hasPrefix("/") else {
+                return "keywindow needs an absolute PATH"
+            }
+            let window = NSApp.keyWindow
+            let line = "\(window?.identifier?.rawValue ?? "-")\n\(window?.title ?? "-")\n"
+            return (try? line.write(toFile: path, atomically: true, encoding: .utf8)) == nil
+                ? "keywindow failed" : nil
         case "phone-mirror":
             // Phone ▸ Phone Mirror's action (the same ConnectionController call the
             // menu, the panel and the Deck make), without a key or a menu: a quiet

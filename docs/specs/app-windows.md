@@ -28,7 +28,7 @@ The same AppKit window kind carries three subjects: an app (`AppWindowController
 | ID | Requirement (EARS) | Proof |
 |---|---|---|
 | WIN-1 | WHEN the person opens an app (a Deck cell, a Dock shim, Spotlight, Shortcuts, MCP, a notification click) THE Mac SHALL open one AppKit stream window for that app on the phone in use and send one `window.open` for it, carrying the stream's pixel size and dpi; the phone SHALL launch the app on a virtual display of that size. | e2e `chrome` `[WIN-1]` (one `window.open` per stream); e2e `pair` (three `window.open` for three subjects); review of `WindowManager.open`/`AppWindowController.sendOpen` |
-| WIN-2 | WHEN an app's window is opening and the person asks for that app again THE Mac SHALL raise the window already opening and SHALL NOT send a second `window.open`; WHEN the window is no longer opening THE Mac SHALL open a new window with its own stream (two windows of one app are two streams). | K2 `OpeningDedupeTests.testASecondOpenWhileTheAppIsOpeningRaisesTheSameWindow`, `testAFinishedWindowDoesNotSwallowANewOpen` |
+| WIN-2 | WHEN the person asks for an app that already has a window on this phone (opening or live) THE Mac SHALL raise that window and SHALL NOT send a second `window.open`; a second window of one app is available only through an explicit New Window, which is not built. | K2 `OpeningDedupeTests.testASecondOpenWhileTheAppIsOpeningRaisesTheSameWindow`, `testAFinishedWindowIsRaisedNotDuplicated`; e2e `windows` `[WIN-2]` (two Deck cell clicks, one window, one `window.open`, the window front) |
 | WIN-3 | THE window's title SHALL be "<app label> (<phone name>)" — the phone's nickname first, its own name otherwise, and just the label while no name is known — and SHALL retitle at once when the app list arrives late or the nickname changes; the title SHALL be hidden outside full screen and SHALL still name the window in the Window menu and Mission Control. | e2e `nickname` `[WIN-3]` (the app window retitled); K2 `PhoneNicknamesTests`; review of `WindowManager.titled`/`setPhoneName` |
 | WIN-4 | THE window SHALL be the 900×600 pt stream plus the style's 28 pt bar above it and nothing on the other three sides, SHALL never be smaller than a 320×240 pt stream, and SHALL NOT clip the picture at any size it is drawn at (1280×800 is the smallest supported screen). | e2e `chrome` `[WIN-4]` (900×628, the stream's own edges and bottom); K2 `WindowStyleTests.testFramedIsTheStreamPlusTheBar`, `testImmersiveIsTheStreamExactly`, `testTheBarNeverChangesTheStreamsWidthOrFullScreenSize` |
 | WIN-5 | THE stream SHALL be asked for at the window's points × the display's backing scale, floored to a multiple of 16 px, clamped to 320–2560 px with the aspect kept, and the dpi SHALL be `160 × pixels / points × density`; a 2560 px cap SHALL lower the dpi rather than crop. | e2e `resize` `[WIN-5]` (1600×1200, a tall shape, the 2560 cap and its dpi); e2e `chrome` `[WIN-5]` (the one size through three launches); K2 `GeometryTests` (the floor, the clamp, the aspect, the dpi) |
@@ -59,6 +59,7 @@ The window has one lifecycle (`Opening` → `Live` → closed) whose picture sta
 
 | State | Event | Result |
 |---|---|---|
+| Opening (no frame) / Live | `the person asks for that app again` | the window is raised; no second `window.open` (WIN-2) |
 | Opening (no frame) | `first frame` | Live; the cover is gone for good |
 | Opening | `5 s` / `20 s` | "Still opening…" / "Couldn't open <app>." + Try Again + Close; frozen |
 | Opening | `Try Again` | the same `window.open` again; the clock restarts |
@@ -76,7 +77,7 @@ The window has one lifecycle (`Opening` → `Live` → closed) whose picture sta
 | any | `phone closed the stream` (`window.closed`) | the window closes without sending `window.close` |
 | Live | `⌘Q` | every window closes; the app quits |
 
-Ignored events, stated so nobody builds them: a second open of an app that is still opening, a resize request that arrives during the live drag (it waits for the drag's end), a style or density switch while full screen (only the memory moves, the layout applies on exit), a ⌘+/⌘− on a window with no app package, and any input while the cover, the stall or the link down is up.
+Ignored events, stated so nobody builds them: a second open of an app whose window is already up (it raises, WIN-2), a resize request that arrives during the live drag (it waits for the drag's end), a style or density switch while full screen (only the memory moves, the layout applies on exit), a ⌘+/⌘− on a window with no app package, and any input while the cover, the stall or the link down is up.
 
 ## Phone count and connection
 
@@ -104,7 +105,7 @@ Ignored events, stated so nobody builds them: a second open of an app that is st
 | CONV-MAC-06 | applies: every shortcut the window offers is in a menu (⌥⌘F, ⌘+/⌘−/⌘0, ⌘[, ⇧⌘H, ⌘↑, ⇧⌘T, ⌃⌘F — MENU-8) or a help tag; the phone's own keys are not the app's shortcuts |
 | CONV-MAC-07 | n/a: the app's one re-used key is ⌘P = Phone Mirror, not this window's |
 | CONV-MAC-10 | n/a: the window is not the status item's panel |
-| CONV-MAC-11 | deviates, unapproved: an app window opens **once while it is opening** (WIN-2) but a second open after the first frame makes a second window of the same app on the same phone — two streams of one app (misses.md) |
+| CONV-MAC-11 | applies: WIN-2 (one window per app on the phone; every entry point raises the open window) |
 | CONV-MAC-12 | applies: WIN-13 (the frame per package is restored, clamped inside the screen) and WIN-19 (never larger than the screen); the restore itself is untested |
 | CONV-MAC-13 | applies: WIN-14 (the one Enter / Exit Full Screen item, disabled only for the Phone Mirror; the menus are menus.md MENU-7) |
 | CONV-MAC-14 | applies: WIN-4 and WIN-6 (laid out per frame, the fill covers a drag, nothing clipped at the minimum) |
@@ -151,7 +152,6 @@ Ignored events, stated so nobody builds them: a second open of an app that is st
 
 ## Open questions
 
-- [NEEDS CLARIFICATION] Is two windows of the same app on the same phone intended (CONV-MAC-11 says one per thing)? Recommended: no — raise the existing window on a Deck cell click the way the Dock shim and a notification click already do; two streams of one app cost two virtual displays and confuse which window the phone's app is in.
 - [NEEDS CLARIFICATION] Should an app window remember its size and position per package (CONV-MAC-12) or per app **and** phone? Today the key is `app.<pkg>`, so two phones share one frame. Recommended: keep one frame per package until several phones can be connected at once.
 - [NEEDS CLARIFICATION] A phone that refuses to show an app (`error{...}`, a pre-14 build) gets "Couldn't open <app>." after 20 s and a Try Again that cannot work. Recommended: map the phone's error to one sentence with Close only (CONV-PD-02), proved by a fake-phone flag.
 - [NEEDS CLARIFICATION] "Opening on your phone…" (UX.md and the cover) versus "Opening your phone…" (the Phone Mirror): is the app window's line the documented one? Recommended: keep "Opening on your phone…" for an app window and MIRROR's own line for the mirror.
