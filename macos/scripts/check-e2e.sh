@@ -7155,6 +7155,81 @@ PY
     run_limited 120 rmdir "$root/Documents/PDNew" 2>/dev/null || true
     wait_until 60 eval "[ ! -d \"$WORK/fsroot/Documents/PDNew\" ]" || true
 
+    # -- FILES-8: Finder's own delete of a phone file -------------------------
+    # The person's path: reveal the file in Finder, select it, ⌘⌫. The phone
+    # has no Trash, so Finder must warn that the item will be deleted for ever
+    # ("Delete Immediately"), not offer a Trash move that cannot happen.
+    printf 'delete me\n' > "$WORK/fsroot/Documents/finder-delete.txt"
+    wait_until 120 eval "[ -f \"$root/Documents/finder-delete.txt\" ]" \
+        && ok "FILES the file for the Finder delete is in the mount" \
+        || bad "FILES the Finder-delete file never appeared in the mount"
+    cat > "$WORK/finder-delete.sh" <<SH
+#!/bin/bash
+set -e
+osascript <<OSA
+tell application "Finder"
+    activate
+    set folderRef to (POSIX file "$root/Documents") as alias
+    open folderRef
+    delay 1.5
+    set target to file "finder-delete.txt" of folderRef
+    set selection to {target}
+    delay 0.5
+end tell
+tell application "System Events"
+    tell process "Finder"
+        key code 51 using command down
+        delay 1.5
+    end tell
+end tell
+OSA
+/usr/sbin/screencapture -x "$WORK/finder-delete.png"
+osascript <<OSA
+tell application "System Events"
+    tell process "Finder"
+        set dialogTexts to {}
+        set dialogButtons to {}
+        repeat with w in windows
+            try
+                set dialogTexts to dialogTexts & (value of every static text of w)
+            end try
+            try
+                set dialogButtons to dialogButtons & (name of every button of w)
+            end try
+            try
+                set dialogTexts to dialogTexts & (value of every static text of sheet 1 of w)
+                set dialogButtons to dialogButtons & (name of every button of sheet 1 of w)
+            end try
+        end repeat
+        do shell script "printf '%s' " & quoted form of (dialogTexts as string) & " > " & quoted form of "$WORK/finder-dialog.txt"
+        do shell script "printf '%s' " & quoted form of (dialogButtons as string) & " > " & quoted form of "$WORK/finder-buttons.txt"
+        key code 36
+        delay 1
+    end tell
+end tell
+OSA
+SH
+    if gui_run bash "$WORK/finder-delete.sh" > "$WORK/finder-delete.log" 2>&1; then
+        ok "FILES Finder selected the phone file and pressed ⌘⌫"
+    else
+        bad "FILES Finder could not delete the file: $(tail -2 "$WORK/finder-delete.log" | tr '\n' ' ')"
+    fi
+    sleep 2
+    if grep -qi "immediately" "$WORK/finder-dialog.txt" 2>/dev/null; then
+        ok "[FILES-8] Finder warns that the item is deleted immediately ($(head -c 160 "$WORK/finder-dialog.txt"))"
+    else
+        bad "[FILES-8] Finder did not show a Delete Immediately warning: \"$(cat "$WORK/finder-dialog.txt" 2>/dev/null | head -c 200)\" buttons: \"$(cat "$WORK/finder-buttons.txt" 2>/dev/null | head -c 120)\""
+    fi
+    ! grep -qi "Move to Trash" "$WORK/finder-buttons.txt" "$WORK/finder-dialog.txt" 2>/dev/null \
+        && ok "[FILES-8] Finder did not offer a Trash move for a phone file" \
+        || bad "[FILES-8] Finder offered Move to Trash for the location (a bug: the phone has no Trash)"
+    wait_until 120 eval "[ ! -f \"$WORK/fsroot/Documents/finder-delete.txt\" ]" \
+        && ok "[FILES-8] the delete reached the phone" \
+        || bad "[FILES-8] the file is still on the phone after Finder's delete"
+    [ ! -e "$WORK/fsroot/.Trash/finder-delete.txt" ] \
+        && ok "[FILES-8] nothing landed in a phone-side Trash" \
+        || bad "[FILES-8] the delete left a copy in .Trash"
+
     # -- The phone goes away: disconnected, cached file still opens -----------
     stop_fakephone
     wait_until 5 no_fakephone
