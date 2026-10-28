@@ -666,7 +666,7 @@ final class Session {
                 Log.session.error("unparseable JSON frame")
                 return
             }
-            handleJSON(message)
+            receive(message)
         case .videoConfig:
             guard let config = try? VideoConfig(payload: frame.payload) else {
                 Log.session.error("bad VIDEO_CONFIG payload")
@@ -720,7 +720,9 @@ final class Session {
         pendingPictures[UInt32(stream)] = PictureRect(x: x, y: y, w: w, h: h)
     }
 
-    private func handleJSON(_ message: JSONMessage) {
+    /// One decoded message from the phone. `internal` so a check can prove a
+    /// message's parse without a socket (WIN-28: `label` and `title` apart).
+    func receive(_ message: JSONMessage) {
         switch message.t {
         case "window.content":
             handleWindowContent(message)
