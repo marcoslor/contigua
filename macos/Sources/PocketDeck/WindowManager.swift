@@ -611,7 +611,7 @@ final class WindowManager {
             Log.app.info("phone closed stream \(stream, privacy: .public) (\(reason, privacy: .public))")
             controller(for: stream)?.closeFromRemote()
         case .windowResizeAck(let stream, let width, let height, let dpi, let outcome):
-            Log.video.info("stream \(stream, privacy: .public) resize ack \(width, privacy: .public)x\(height, privacy: .public) dpi=\(dpi, privacy: .public) (\(outcome, privacy: .public))")
+            Log.video.info("stream \(stream, privacy: .public) resize ack \(width, privacy: .public)x\(height, privacy: .public) dpi=\(dpi, privacy: .public) (\(outcome, privacy: .private))")
             controller(for: stream)?.resizeSettled(ResizeRequest(w: width, h: height, dpi: dpi))
         case .windowOpened(let stream, _, _, _, let started):
             if started == .fresh {
