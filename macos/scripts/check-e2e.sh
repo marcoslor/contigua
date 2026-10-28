@@ -4786,6 +4786,16 @@ panel_menu_done() { [ "$(cat "$WORK/control/panel-menu.done" 2>/dev/null)" = "ok
 
 panel_click_done() { [ "$(cat "$WORK/control/panel-click.done" 2>/dev/null)" = "ok" ]; }
 
+# panel_off_rx_count — how many phone.panel off requests the fake has received.
+panel_off_rx_count() {
+    grep -F '"t":"phone.panel"' "$WORK/events.jsonl" 2>/dev/null | grep -cF '"off":true' || true
+}
+
+# panel_off_events — how many times the fake reported state.panel off (the hold
+# is actually on: the person's screen is dark).
+panel_off_events() { grep -cF '"ev":"panel","state":"off"' "$WORK/events.jsonl" 2>/dev/null || true; }
+
+
 # panel_glyph_ms — the click -> glyph time the app recorded for its last panel
 # click: `panel_click_at` is the control's own click, `panel_glyph_at` the
 # `state.panel` that redrew the bar (host uptime ms, in the chrome state). -1
@@ -5385,6 +5395,63 @@ check_dnd_edge() {
         ok "[CTRL-2] the phone took the new Focus (priority)"
     else
         bad "[CTRL-2] the new Focus did not reach the phone"
+    fi
+    stop_app
+    stop_fakephone
+}
+
+# check_panel_edge — the second person report: "the phone screen sometimes goes
+# black while an app window is mirrored and I'm using the phone". A hold the
+# person ended with the phone's power button was re-asserted when the mirror
+# reopened on a reconnect, from the Mac's remembered per-phone setting. The same
+# edge rule applies: a person's wake stands until the person asks on the Mac.
+check_panel_edge() {
+    clean
+    mkdir -p "$WORK/control"
+    # The person's power press ends the hold 3 s after the request; the session
+    # drops at 18 s, well after that press.
+    FAKE_ARGS="--first-frame-delay 1 --panel-ends-after 3 --drop-after 18" start_fake || return 1
+    launch --connect "127.0.0.1:$PORT" --open-phone --float-windows \
+        --debug-chrome-state "$WORK/chrome.txt" --debug-control "$WORK/control" --quit-after 150
+    if wait_until 20 chrome_has "loading=0"; then
+        ok "[CTRL-6] the phone window opened with the panel on (nothing held)"
+    else
+        bad "[CTRL-6] the phone window never showed a frame ($(chrome_state))"
+    fi
+    # The person's Mac-side action: Phone ▸ Turn Off Phone Screen.
+    printf 'panel-menu\n' > "$WORK/control/panel-menu.cmd"
+    if ! wait_until 5 panel_menu_done; then
+        bad "[CTRL-6] the menu item did not run: $(cat "$WORK/control/panel-menu.done" 2>/dev/null)"
+        stop_app; stop_fakephone; return 1
+    fi
+    if wait_until 10 events_have '"ev":"panel","state":"off"'; then
+        ok "[CTRL-6] Turn Off Phone Screen sent phone.panel off and the phone held it"
+    else
+        bad "[CTRL-6] the phone never held the panel"
+    fi
+    if wait_until 15 events_have '"ev":"panel","state":"on"'; then
+        ok "[CTRL-5] the person's power press ended the hold on the phone"
+    else
+        bad "[CTRL-5] the person's power press did not end the hold"
+    fi
+    local sent held
+    sent="$(panel_off_rx_count)"
+    held="$(panel_off_events)"
+    if wait_until 45 auth_count_at_least 2; then
+        ok "[CTRL-5] the session dropped and the same phone reconnected"
+    else
+        bad "[CTRL-5] the fake phone never saw a second session (no reconnect)"
+    fi
+    sleep 4
+    if [ "$(panel_off_rx_count)" = "$sent" ]; then
+        ok "[CTRL-5] the reconnect and the reopened mirror did not ask for the panel again"
+    else
+        bad "[CTRL-5] the reopened mirror re-sent phone.panel off ($sent before, $(panel_off_rx_count) after)"
+    fi
+    if [ "$(panel_off_events)" = "$held" ]; then
+        ok "[CTRL-5] the phone's own panel state stayed on across the reconnect"
+    else
+        bad "[CTRL-5] the phone went dark again after the person had turned the panel back on"
     fi
     stop_app
     stop_fakephone
