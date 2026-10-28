@@ -23,7 +23,7 @@ internal class AndroidWindowObserver(private val ctx: Context, private val log: 
         val info = firstTask(displayId) ?: return null
         val pkg = packageOf(info) ?: return null
         val taskId = runCatching { info.javaClass.getField("taskId").get(info) as? Int }.getOrNull() ?: 0
-        return TopTask(pkg, label(pkg), taskId, taskLabel(info))
+        return TopTask(pkg, label(pkg), taskId, taskLabel(info) ?: descriptionLabel(taskId))
     }
 
     /**
@@ -35,6 +35,23 @@ internal class AndroidWindowObserver(private val ctx: Context, private val log: 
         val text = description.javaClass.getMethod("getLabel").invoke(description) as? CharSequence
         text?.toString()?.takeIf { it.isNotBlank() }
     }.getOrNull()
+
+    /**
+     * A task list read without extras can arrive with a description that carries
+     * only colours: ask the task manager for the description by id then. Null
+     * when this phone has neither, and the app's label is the fallback.
+     */
+    private fun descriptionLabel(taskId: Int): String? {
+        if (taskId <= 0) return null
+        val manager = atm ?: return null
+        val cls = Hidden.iface("android.app.IActivityTaskManager") ?: return null
+        val method = Hidden.method(cls, "getTaskDescription", Hidden.T_INT) ?: return null
+        return runCatching {
+            val description = method.invoke(manager, taskId) ?: return null
+            val text = description.javaClass.getMethod("getLabel").invoke(description) as? CharSequence
+            text?.toString()?.takeIf { it.isNotBlank() }
+        }.getOrNull()
+    }
 
     /** null when the query could not be made (as opposed to an empty task list). */
     /** The display's top task id for `window.opened`; null when the query fails. */
