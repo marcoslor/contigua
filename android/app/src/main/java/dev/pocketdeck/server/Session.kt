@@ -1239,20 +1239,12 @@ class Session(
      * task still exists and removes only one that no other window shows.
      */
     private fun endClosedTask(state: StreamState) {
-        if (!WindowCap.counted(state.content)) {
-            // The mirror has no task: still one line per close decision.
-            logCloseDecision(state, CloseTask.Decision(CloseTask.Action.NONE, CloseTask.Reason.MIRROR))
-            return
-        }
-        val mover = taskMove ?: run {
-            logCloseDecision(state, CloseTask.Decision(CloseTask.Action.NONE, CloseTask.Reason.UNREAD))
-            return
-        }
+        val mover = taskMove
+        val running = mover?.let { runCatching { it.tasks() }.getOrNull()?.map { t -> t.taskId }?.toSet() }
+        val recents = mover?.let { runCatching { it.recentTaskIds() }.getOrNull() }
         val otherTasks = synchronized(streams) {
             streams.values.mapNotNull { it.taskId.takeIf { id -> id > 0 } }.toSet()
         }
-        val running = runCatching { mover.tasks() }.getOrNull()?.map { it.taskId }?.toSet()
-        val recents = runCatching { mover.recentTaskIds() }.getOrNull()
         val decision = CloseTask.judge(
             CloseTask.Facts(
                 counted = WindowCap.counted(state.content),
@@ -1262,7 +1254,7 @@ class Session(
                 recentsNow = recents,
             ),
         )
-        if (decision.action == CloseTask.Action.REMOVE_TASK) {
+        if (decision.action == CloseTask.Action.REMOVE_TASK && mover != null) {
             runCatching { mover.remove(state.taskId) }
         }
         logCloseDecision(state, decision)
