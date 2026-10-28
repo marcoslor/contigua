@@ -264,7 +264,10 @@ final class ConnectionController {
     /// The stored Focus filter values (docs/design/focus.md).
     private let focusStore: FocusStore
     private(set) var focusValues = FocusFilterValues()
-    /// One reconcile per connection: the first `state` decides and sends once.
+    /// This phone's DND intent memory (docs/specs/controls.md): the value it
+    /// received last, so a reconnect only sends what changed while apart.
+    private let dndIntent: ControlIntentRecorder
+    /// One reconcile per connection: the first `state` applies what is new.
     private var focusReconciled = false
     /// `--debug-dnd on|off`, run when the first state shows the phone's support.
     private var pendingDebugDnd: Bool?
@@ -475,6 +478,7 @@ final class ConnectionController {
         batteryMemory = BatteryMemory(profile: profile)
         focusStore = FocusStore(profile: profile)
         focusValues = focusStore.load()
+        dndIntent = ControlIntentRecorder(store: ControlIntentStore(defaults: profile.defaults, control: .dnd))
         dockApps = DockApps(folder: DockApps.defaultFolder(profile: profile, override: options.dockDirectory),
                             profile: profile)
         windows = WindowManager(session: Session(endpoint: .hostPort(host: "127.0.0.1", port: 1),
@@ -1209,11 +1213,13 @@ final class ConnectionController {
     }
 
     /// The Focus filter's perform() (and the `--debug-focus` hook): store what
-    /// it asks for, then tell a connected phone at once. A phone that connects
-    /// later is reconciled once by [reconcileFocus].
+    /// it asks for, then apply it as one Mac-side edge (a Focus started or
+    /// ended). A phone that connects later gets the stored intent by
+    /// [reconcileFocus], and only when it differs from what that phone had.
     func setFocusFilter(_ values: FocusFilterValues) {
         storeFocusValues(values)
-        let sent = sendFocusIfSupported()
+        let wanted = focusValues.wanted ?? .off
+        let sent = applyDnd(wanted, edge: .intentChanged(wanted.rawValue))
         FocusDebugLog.write(focus: "filter", ok: true,
                             fields: ["enabled": values.enabled, "silence": values.silence,
                                      "allow": values.allow.rawValue,
@@ -1231,8 +1237,7 @@ final class ConnectionController {
     /// The menu bar item and the manual intent: send one mode now. The phone's
     /// next `state` moves the checkmark, never an optimistic local guess.
     func setPhoneDnd(_ mode: PhoneDndMode) {
-        guard link.isOnline, phoneDnd != nil, let session else { return }
-        session.setDnd(mode)
+        applyDnd(mode, edge: .personAction(mode.rawValue))
     }
 
     /// The menu item's click: on becomes priority, off becomes off.
@@ -1257,20 +1262,33 @@ final class ConnectionController {
                                      "current": current.rawValue])
     }
 
-    /// Sends the stored wanted state when this phone can take it; false when
-    /// there is no session or the phone is an old build.
+    /// The device the live session belongs to; nil when there is none.
+    private var controlDeviceId: String? {
+        let id = link.phone?.id ?? session?.phone?.id
+        guard let id, !id.isEmpty else { return nil }
+        return id
+    }
+
+    /// Applies one DND edge for this phone (docs/specs/controls.md): the machine
+    /// decides what to send from this phone's memory, so a value the phone has
+    /// already received is not sent again. False when no live phone can take it.
     @discardableResult
-    private func sendFocusIfSupported() -> Bool {
-        guard link.isOnline, phoneDnd != nil, let session else { return false }
-        session.setDnd(focusValues.wanted ?? .off)
+    private func applyDnd(_ wanted: PhoneDndMode, edge: ControlIntentEvent) -> Bool {
+        guard link.isOnline, phoneDnd != nil, let id = controlDeviceId, let session else { return false }
+        for action in dndIntent.record(edge, deviceId: id) {
+            if case .send(let value) = action, let mode = PhoneDndMode(rawValue: value) {
+                session.setDnd(mode)
+            }
+        }
         return true
     }
 
     /// Once per connection, on the first `state`: read the system's current
     /// filter first (a Focus that ended while PocketDeck was away is "not
-    /// wanted"), then decide. `dnd` is the only proof the phone supports the
-    /// command; not wanted sends off, which the phone's restore rule turns into
-    /// a no-op unless the DND is ours.
+    /// wanted"), then apply only what this phone has not had. The phone's own
+    /// `dnd` report has already moved the machine by then. `dnd` is the only
+    /// proof the phone supports the command; not wanted sends off, which the
+    /// phone's restore rule turns into a no-op unless the DND is ours.
     private func reconcileFocusOnFirstState(_ dnd: PhoneDndMode?) {
         guard !focusReconciled else { return }
         focusReconciled = true
@@ -1285,15 +1303,13 @@ final class ConnectionController {
     }
 
     private func reconcileFocus(onConnectWith dnd: PhoneDndMode?) {
-        switch FocusReconciler.onConnect(wanted: focusValues.wanted, phoneDnd: dnd) {
-        case .send(let mode):
-            session?.setDnd(mode)
+        guard dnd != nil, link.isOnline, let id = controlDeviceId, let session else { return }
+        let wanted = focusValues.wanted ?? .off
+        for action in dndIntent.record(.connected(wanted.rawValue), deviceId: id) {
+            guard case .send(let value) = action, let mode = PhoneDndMode(rawValue: value) else { continue }
+            session.setDnd(mode)
             FocusDebugLog.write(focus: "reconcile", ok: true,
-                                fields: ["wanted": focusValues.wanted?.rawValue ?? "off",
-                                         "sent": mode.rawValue])
-        case .unsupported:
-            // An old phone: the menu stays disabled and nothing is sent.
-            break
+                                fields: ["wanted": wanted.rawValue, "sent": mode.rawValue])
         }
     }
 
@@ -2016,6 +2032,12 @@ final class ConnectionController {
             if let secure { windows.setPhoneSecure(secure) }
             windows.setPhonePanel(panel)
             if let id = link.phone?.id { batteryMemory.record(deviceId: id, level: battery, charging: charging) }
+            // The phone's own report moves the DND machine first: it is what
+            // says whether the Mac's last value still stands (a person's change
+            // on the phone stands until the Mac intent changes again).
+            if let dnd, let id = controlDeviceId {
+                dndIntent.record(.phoneReported(dnd.rawValue), deviceId: id)
+            }
             reconcileFocusOnFirstState(dnd)
             runPendingDebugDnd()
         case .ringState(let playing):
