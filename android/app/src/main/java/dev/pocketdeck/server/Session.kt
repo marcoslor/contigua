@@ -1234,33 +1234,45 @@ class Session(
 
     /**
      * WIN-31: the closed display's task, when the platform left it behind.
-     * `FLAG_DESTROY_CONTENT_ON_REMOVAL` usually takes it with the display; the
-     * task list is read after the close so the phone removes only a survivor,
-     * and only one that no other window shows.
+     * `FLAG_DESTROY_CONTENT_ON_REMOVAL` takes the activity with the display but
+     * not the task's Recents card, so the decision asks both lists whether the
+     * task still exists and removes only one that no other window shows.
      */
     private fun endClosedTask(state: StreamState) {
-        if (!WindowCap.counted(state.content)) return
-        val mover = taskMove ?: return
+        if (!WindowCap.counted(state.content)) {
+            // The mirror has no task: still one line per close decision.
+            logCloseDecision(state, CloseTask.Decision(CloseTask.Action.NONE, CloseTask.Reason.MIRROR))
+            return
+        }
+        val mover = taskMove ?: run {
+            logCloseDecision(state, CloseTask.Decision(CloseTask.Action.NONE, CloseTask.Reason.UNREAD))
+            return
+        }
         val otherTasks = synchronized(streams) {
             streams.values.mapNotNull { it.taskId.takeIf { id -> id > 0 } }.toSet()
         }
-        val tasksNow = runCatching { mover.tasks() }.getOrNull()?.map { it.taskId }?.toSet()
-        val action = CloseTask.decide(
+        val running = runCatching { mover.tasks() }.getOrNull()?.map { it.taskId }?.toSet()
+        val recents = runCatching { mover.recentTaskIds() }.getOrNull()
+        val decision = CloseTask.judge(
             CloseTask.Facts(
                 counted = WindowCap.counted(state.content),
                 taskId = state.taskId,
                 otherTasks = otherTasks,
-                tasksNow = tasksNow,
+                runningNow = running,
+                recentsNow = recents,
             ),
         )
-        when (action) {
-            CloseTask.Action.NONE -> Unit
-            CloseTask.Action.REMOVE_TASK -> {
-                val gone = runCatching { mover.remove(state.taskId) }.getOrDefault(false)
-                // An id, never a label: R-PRIV-1.
-                log("close: task ${state.taskId} outlived its display; removed=$gone")
-            }
+        if (decision.action == CloseTask.Action.REMOVE_TASK) {
+            runCatching { mover.remove(state.taskId) }
         }
+        logCloseDecision(state, decision)
+    }
+
+    /** One line per close decision, ids and states only: R-PRIV-1. */
+    private fun logCloseDecision(state: StreamState, decision: CloseTask.Decision) {
+        val closeState = decision.action
+        val closeCode = decision.reason
+        log("close: stream=${state.stream} task=${state.taskId} action=$closeState reason=$closeCode")
     }
 
     private fun onWindowPause(obj: Map<String, Any?>, frame: Frame) {

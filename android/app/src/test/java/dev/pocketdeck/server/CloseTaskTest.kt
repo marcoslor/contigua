@@ -15,17 +15,21 @@ class CloseTaskTest : SessionFixture() {
 
     private class RecordingMove(
         var listed: List<SystemTask>?,
+        var recents: Set<Int>? = emptySet(),
         private val removeResult: Boolean = true,
     ) : TaskMove {
         val removed = CopyOnWriteArrayList<Int>()
 
         override fun tasks(): List<SystemTask>? = listed
 
+        override fun recentTaskIds(): Set<Int>? = recents
+
         override fun move(taskId: Int, displayId: Int): Boolean = false
 
         override fun remove(taskId: Int): Boolean {
             removed.add(taskId)
             listed = listed?.filter { it.taskId != taskId }
+            recents = recents?.minus(taskId)
             return removeResult
         }
     }
@@ -64,35 +68,50 @@ class CloseTaskTest : SessionFixture() {
 
     private fun task(id: Int) = SystemTask(id, "com.a", null, 0, isHome = false, isSystemUi = false)
 
+    private fun gone(taskId: Int, otherTasks: Set<Int> = emptySet(), running: Set<Int>? = emptySet(),
+                     recents: Set<Int>? = emptySet()) =
+        CloseTask.judge(CloseTask.Facts(true, taskId, otherTasks, running, recents))
+
     /** The removal runs off the reader thread now: wait for it, then let a wrong one show. */
-    private fun awaitRemoval(move: RecordingMove) {
+    private fun awaitRemoval(removed: List<Int>) {
         val deadline = System.currentTimeMillis() + 2_000
         // real-time: the removal runs on another thread; polling is the only way to see it
-        while (System.currentTimeMillis() < deadline && move.removed.isEmpty()) Thread.sleep(10) // real-time: waiting for another thread
+        while (System.currentTimeMillis() < deadline && removed.isEmpty()) Thread.sleep(10) // real-time: waiting for another thread
         Thread.sleep(150) // real-time: a second (wrong) removal would land in this window
     }
 
     @Test
     fun `the mirror has no task to end`() {
         assertEquals(
-            CloseTask.Action.NONE,
-            CloseTask.decide(CloseTask.Facts(counted = false, taskId = 11, otherTasks = emptySet(), tasksNow = setOf(11))),
+            CloseTask.Decision(CloseTask.Action.NONE, CloseTask.Reason.MIRROR),
+            CloseTask.judge(CloseTask.Facts(counted = false, taskId = 11, otherTasks = emptySet(),
+                                            runningNow = setOf(11), recentsNow = setOf(11))),
         )
     }
 
     @Test
     fun `a task the display already took is left alone`() {
         assertEquals(
-            CloseTask.Action.NONE,
-            CloseTask.decide(CloseTask.Facts(counted = true, taskId = 11, otherTasks = emptySet(), tasksNow = setOf(22))),
+            CloseTask.Decision(CloseTask.Action.NONE, CloseTask.Reason.GONE),
+            gone(11, running = setOf(22), recents = setOf(22)),
         )
     }
 
     @Test
     fun `a task that outlived its display is removed`() {
         assertEquals(
-            CloseTask.Action.REMOVE_TASK,
-            CloseTask.decide(CloseTask.Facts(counted = true, taskId = 11, otherTasks = setOf(22), tasksNow = setOf(11, 22))),
+            CloseTask.Decision(CloseTask.Action.REMOVE_TASK, CloseTask.Reason.EXISTS),
+            gone(11, otherTasks = setOf(22), running = setOf(11, 22), recents = setOf(11, 22)),
+        )
+    }
+
+    @Test
+    fun `a task that left the running list but stays in recents is removed`() {
+        // WIN-31: the activity died with its display, but the phone's Recents
+        // still holds the card. Recents is where the task exists, so it goes.
+        assertEquals(
+            CloseTask.Decision(CloseTask.Action.REMOVE_TASK, CloseTask.Reason.EXISTS),
+            gone(11, otherTasks = setOf(22), running = setOf(22), recents = setOf(11, 22)),
         )
     }
 
@@ -100,20 +119,36 @@ class CloseTaskTest : SessionFixture() {
     fun `a task another window shows is never removed`() {
         assertEquals(
             "two windows of one task: ending it would end both",
-            CloseTask.Action.NONE,
-            CloseTask.decide(CloseTask.Facts(counted = true, taskId = 11, otherTasks = setOf(11), tasksNow = setOf(11))),
+            CloseTask.Decision(CloseTask.Action.NONE, CloseTask.Reason.SHARED),
+            gone(11, otherTasks = setOf(11), running = setOf(11), recents = setOf(11)),
         )
     }
 
     @Test
-    fun `an unknown task id or an unreadable task list changes nothing`() {
-        assertEquals(CloseTask.Action.NONE, CloseTask.decide(CloseTask.Facts(true, 0, emptySet(), setOf(11))))
-        assertEquals(CloseTask.Action.NONE, CloseTask.decide(CloseTask.Facts(true, 11, emptySet(), tasksNow = null)))
+    fun `an unknown task id changes nothing`() {
+        assertEquals(
+            CloseTask.Decision(CloseTask.Action.NONE, CloseTask.Reason.NO_TASK),
+            gone(0, running = setOf(11), recents = setOf(11)),
+        )
+    }
+
+    @Test
+    fun `a task list the phone cannot read still removes a known task`() {
+        // `removeTask` on an id that is already gone is a no-op, so the safe
+        // answer when neither list can be read is to remove.
+        assertEquals(
+            CloseTask.Decision(CloseTask.Action.REMOVE_TASK, CloseTask.Reason.UNREAD),
+            gone(11, running = null, recents = null),
+        )
+        assertEquals(
+            CloseTask.Decision(CloseTask.Action.REMOVE_TASK, CloseTask.Reason.UNREAD),
+            gone(11, running = setOf(22), recents = null),
+        )
     }
 
     @Test
     fun `closing one window removes only its own task`() {
-        val move = RecordingMove(listOf(task(11), task(22)))
+        val move = RecordingMove(listOf(task(11), task(22)), recents = setOf(11, 22))
         connect(taskPresence = presence(11, 22), taskMove = move)
         open(1, "com.a")
         readUntil("window.opened")
@@ -122,7 +157,7 @@ class CloseTaskTest : SessionFixture() {
 
         send(mapOf("t" to "window.close", "stream" to 1))
         readUntil("window.closed")
-        awaitRemoval(move)
+        awaitRemoval(move.removed)
         assertEquals("only the closed window's task", listOf(11), move.removed)
 
         // The other window and the session are untouched.
@@ -135,7 +170,7 @@ class CloseTaskTest : SessionFixture() {
 
     @Test
     fun `a task the display took with it is not removed twice`() {
-        val move = RecordingMove(emptyList())
+        val move = RecordingMove(emptyList(), recents = emptySet())
         connect(taskPresence = presence(11), taskMove = move)
         open(1, "com.a")
         readUntil("window.opened")
@@ -146,8 +181,22 @@ class CloseTaskTest : SessionFixture() {
     }
 
     @Test
+    fun `a card left in recents is removed after its display is gone`() {
+        // WIN-31 on the boot: the task left the running list with its display
+        // but the phone still shows its card, so the close must still remove it.
+        val move = RecordingMove(emptyList(), recents = setOf(11))
+        connect(taskPresence = presence(11), taskMove = move)
+        open(1, "com.a")
+        readUntil("window.opened")
+        send(mapOf("t" to "window.close", "stream" to 1))
+        readUntil("window.closed")
+        awaitRemoval(move.removed)
+        assertEquals("the recents card's task", listOf(11), move.removed)
+    }
+
+    @Test
     fun `closing the phone mirror ends no task`() {
-        val move = RecordingMove(listOf(task(11)))
+        val move = RecordingMove(listOf(task(11)), recents = setOf(11))
         connect(taskPresence = presence(11), taskMove = move)
         open(1, "com.a", phone = true)
         readUntil("window.opened")

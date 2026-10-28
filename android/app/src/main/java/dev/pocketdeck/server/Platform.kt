@@ -449,6 +449,14 @@ interface TaskMove {
     fun move(taskId: Int, displayId: Int): Boolean
 
     /**
+     * WIN-31: the task ids the phone remembers in Recents, whether or not the
+     * task still runs. A closed window's task keeps its card here after its
+     * display is gone, so "is it gone" has to ask both lists. null when the
+     * phone cannot read Recents.
+     */
+    fun recentTaskIds(): Set<Int>? = null
+
+    /**
      * Ends one task (WIN-31: a window's task that outlived its display). Never
      * the app: its other tasks keep running. false when the phone cannot say.
      */
