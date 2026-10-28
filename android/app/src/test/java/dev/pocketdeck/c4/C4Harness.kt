@@ -39,8 +39,8 @@ object C4Harness {
 
         val platform = FakePlatform()
         platform.apps = listOf(
-            AppEntry("com.android.settings", "Settings", "com.android.settings/.Settings"),
-            AppEntry("com.android.chrome", "Chrome", "com.android.chrome/.Main"),
+            AppEntry("com.android.settings", "Settings", "com.android.settings/.Settings", multi = false),
+            AppEntry("com.android.chrome", "Chrome", "com.android.chrome/.Main", multi = true),
         )
         platform.video = CannedVideo { stream, w, h, sink ->
             Thread {

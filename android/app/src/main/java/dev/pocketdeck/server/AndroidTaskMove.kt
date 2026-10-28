@@ -23,6 +23,8 @@ internal class AndroidTaskMove(private val ctx: android.content.Context, private
     private val taskManagerClass: Class<*>? = Hidden.iface("android.app.IActivityTaskManager")
 
     private var loggedTasksPath = false
+    private var loggedReadFailure = false
+    private var loggedRecentsPath = false
 
 
     /**
@@ -32,13 +34,22 @@ internal class AndroidTaskMove(private val ctx: android.content.Context, private
      */
     @Volatile private var homePackages: Set<String> = emptySet()
 
-    override fun tasks(): List<SystemTask>? {
+    override fun tasks(): List<SystemTask>? = read(verbose = true)
+
+    /**
+     * The same read without the per-call log lines: `remove` re-reads the list
+     * every 50 ms while the system settles, and a full task list per poll would
+     * bury the one line that matters.
+     */
+    private fun quietTasks(): List<SystemTask>? = read(verbose = false)
+
+    private fun read(verbose: Boolean): List<SystemTask>? {
         if (homePackages.isEmpty()) {
             homePackages = resolveHomePackages()
             log("home packages: $homePackages")
         }
         val raw = viaGetTasks() ?: viaAllRootTaskInfos() ?: run {
-            log("task list: no source answered (getTasks / getAllRootTaskInfos)")
+            if (verbose) log("task list: no source answered (getTasks / getAllRootTaskInfos)")
             return null
         }
         val out = ArrayList<SystemTask>(raw.size)
@@ -51,7 +62,9 @@ internal class AndroidTaskMove(private val ctx: android.content.Context, private
             loggedTasksPath = true
             log("task list (first): ${raw.size} entries, ${out.size} with a package")
         }
-        log("picked pool: ${out.joinToString { "${it.pkg}#" + it.taskId + "@d" + it.displayId + (if (it.isHome) "(home)" else "") + (if (it.isSystemUi) "(sysui)" else "") }}")
+        if (verbose) {
+            log("picked pool: ${out.joinToString { "${it.pkg}#" + it.taskId + "@d" + it.displayId + (if (it.isHome) "(home)" else "") + (if (it.isSystemUi) "(sysui)" else "") }}")
+        }
         return out
     }
 
@@ -77,7 +90,93 @@ internal class AndroidTaskMove(private val ctx: android.content.Context, private
         return verified
     }
 
+    /**
+     * WIN-31: ends one task and proves it went. The service returns void, so the
+     * task is re-read from both lists — running tasks and Recents — because a
+     * closed window's card outlives its activity. A task the system still lists
+     * after a second is reported as not removed.
+     */
+    override fun remove(taskId: Int): Boolean {
+        val tm = taskManager ?: return false
+        val cls = taskManagerClass ?: return false
+        val method = Hidden.method(cls, "removeTask", Hidden.T_INT) ?: run {
+            log("no IActivityTaskManager.removeTask")
+            return false
+        }
+        try {
+            method.invoke(tm, taskId)
+        } catch (e: Throwable) {
+            log("removeTask($taskId) refused: ${e.message ?: e}")
+            return false
+        }
+        val deadline = System.currentTimeMillis() + REMOVE_VERIFY_MS
+        var polls = 0
+        while (true) {
+            polls++
+            val listed = runCatching { quietTasks() }.getOrNull()
+            val recents = runCatching { recentTaskIds() }.getOrNull()
+            val goneFromRunning = listed != null && listed.none { it.taskId == taskId }
+            // A Recents read that is not available cannot veto a running-list
+            // read that proves the task gone.
+            val goneFromRecents = recents == null || taskId !in recents
+            if (goneFromRunning && goneFromRecents) {
+                log("removeTask($taskId): gone from tasks and recents after $polls read(s)")
+                return true
+            }
+            if (System.currentTimeMillis() >= deadline) {
+                log("removeTask($taskId): still listed after $polls read(s)")
+                return false
+            }
+            Thread.sleep(50)
+        }
+    }
+
+    /**
+     * WIN-31: the ids Recents still holds, running or not
+     * (`IActivityTaskManager.getRecentTasks`). An empty answer is treated as
+     * unreadable: a session with windows always has tasks the phone remembers,
+     * so an empty list means the call was filtered for this caller, and
+     * "not there" must never be concluded from a filtered reply.
+     */
+    override fun recentTaskIds(): Set<Int>? {
+        val tm = taskManager ?: return null
+        val cls = taskManagerClass ?: return null
+        val method = cls.methods.firstOrNull {
+            it.name == "getRecentTasks" &&
+                it.parameterTypes.contentEquals(arrayOf(Hidden.T_INT, Hidden.T_INT, Hidden.T_INT))
+        } ?: run {
+            if (!loggedRecentsPath) {
+                loggedRecentsPath = true
+                log("no IActivityTaskManager.getRecentTasks(int,int,int)")
+            }
+            return null
+        }
+        val raw = runCatching {
+            method.invoke(tm, MAX_RECENTS, RECENT_FLAGS, currentUserId())
+        }.onFailure { logReadFailure("getRecentTasks", it) }.getOrNull() as? List<*> ?: return null
+        val ids = raw.mapNotNull { info -> info?.let { intValue(it, "taskId") } }.toSet()
+        if (ids.isEmpty()) {
+            if (!loggedRecentsPath) {
+                loggedRecentsPath = true
+                log("recents: empty answer treated as unreadable")
+            }
+            return null
+        }
+        if (!loggedRecentsPath) {
+            loggedRecentsPath = true
+            log("recents: ${ids.size} task id(s)")
+        }
+        return ids
+    }
+
     // ------------------------------------------------------------------
+
+    /** One line per removal: a verify loop that failed every 50 ms must not repeat itself. */
+    private fun logReadFailure(what: String, e: Throwable) {
+        if (loggedReadFailure) return
+        loggedReadFailure = true
+        log("$what failed: ${e.message ?: e}")
+    }
 
     /** `IActivityTaskManager.getTasks(maxNum, filterOnlyVisible, keepIntentExtra, displayId)`; -1 = every display. */
     private fun viaGetTasks(): List<*>? {
@@ -88,7 +187,7 @@ internal class AndroidTaskMove(private val ctx: android.content.Context, private
         }
         if (method == null) return null
         return runCatching { @Suppress("UNCHECKED_CAST") method.invoke(tm, MAX_TASKS, false, false, -1) as? List<*> }
-            .onFailure { log("getTasks failed: ${it.message ?: it}") }
+            .onFailure { logReadFailure("getTasks", it) }
             .getOrNull()
             ?.takeIf { it.isNotEmpty() }
     }
@@ -100,7 +199,7 @@ internal class AndroidTaskMove(private val ctx: android.content.Context, private
         val method = cls.methods.firstOrNull { it.name == "getAllRootTaskInfos" && it.parameterTypes.isEmpty() }
             ?: return null
         return runCatching { method.invoke(tm) as? List<*> }
-            .onFailure { log("getAllRootTaskInfos failed: ${it.message ?: it}") }
+            .onFailure { logReadFailure("getAllRootTaskInfos", it) }
             .getOrNull()
             ?.takeIf { it.isNotEmpty() }
     }
@@ -138,6 +237,17 @@ internal class AndroidTaskMove(private val ctx: android.content.Context, private
 
     private fun boolValue(info: Any, name: String): Boolean = readMember(info, name) as? Boolean ?: false
 
+    /**
+     * The user this process runs as, for `getRecentTasks`'s user argument.
+     * `UserHandle.getUserId` is not in the public SDK, so it is reflected; the
+     * phone's owner is user 0 when that fails.
+     */
+    private fun currentUserId(): Int = runCatching {
+        Class.forName("android.os.UserHandle")
+            .getMethod("getUserId", Int::class.javaPrimitiveType)
+            .invoke(null, android.os.Process.myUid()) as Int
+    }.getOrDefault(0)
+
     private fun componentValue(info: Any, name: String): android.content.ComponentName? =
         readMember(info, name) as? android.content.ComponentName
 
@@ -159,5 +269,14 @@ internal class AndroidTaskMove(private val ctx: android.content.Context, private
     private companion object {
         /** The list is read newest-first; plenty for "what is on top of the screen". */
         const val MAX_TASKS = 20
+
+        /** Recents keeps finished tasks too, so it needs the deeper cut. */
+        const val MAX_RECENTS = 100
+
+        /** `FLAG_ACTIVITY_...` flags are for launches; Recents needs none. */
+        const val RECENT_FLAGS = 0
+
+        /** How long a removed task may still be listed while the system settles. */
+        const val REMOVE_VERIFY_MS = 1_000L
     }
 }
