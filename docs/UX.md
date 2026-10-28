@@ -42,8 +42,8 @@ The app's own menu items carry SF Symbols, as Apple's apps draw theirs, and the 
 Find Apps · Framed / Immersive (⌥⌘F switches) · Hide Controls › · Show Touches · Live Text · Density › (Default, the other
 percentages, Larger ⌘+, Smaller ⌘−, Actual Size ⌘0). **Phone** holds Phone Mirror ⌘P · Move Phone App to Mac ⇧⌘C · Turn Off Phone
 Screen · Do Not Disturb · Ring Phone / Stop Ringing · Install APK…. **Navigate** holds Back · Home · Recents, **Window** the
-standard items plus Enter Full Screen ⌃⌘F, and **Help** is empty (there is no help book). A control that cannot work is
-disabled, never hidden.
+standard items plus Enter Full Screen ⌃⌘F and Next Window ⌘`, and **Help** is empty (there is no help book). **File** is
+Add Phone… ⇧⌘N · **New <App> Window** ⌘N · Close ⌘W · Close All ⌥⌘W. A control that cannot work is disabled, never hidden.
 
 1. **Deck** (the only main window; closing it hides it, the Dock icon and ⌘K bring it back; ⌘F focuses the search
    field and selects its text). What it shows is chosen by what this Mac remembers:
@@ -219,6 +219,27 @@ never a made-up percentage) and the title **<App> — opening on <phone>**.
   phone-side controls are dimmed. The "Not responding" watchdog runs only after
   the first frame.
 
+### A second window of one app
+
+Some apps can run more than once on the phone (the phone says which). **New <App>
+Window** (⌘N, File) opens one more window of the app in front; every other way in
+— the Deck cell, the Dock, Spotlight, a notification, a shortcut without the
+new-window argument — raises the window the app already has. A window of an app
+with two or more open is named **<App> — <task label>**; a lone window keeps
+**<App>** and is named <App> (<phone>).
+
+- **Next Window ⌘`** brings the next window of the app in front, wrapping; it
+  sends nothing to the phone, and with one window it does nothing.
+- The Dock app's and the Deck cell's menus list **New <App> Window** and, below
+  it, one item per open window, the front one checked; picking one raises it.
+- When the app cannot open another, the New item says why in its help tag:
+  **<App> opens one window at a time.**, **Close a <App> window to open another.**
+  (the phone's limit, four by default) or **Opening on your phone…**; while the
+  link is down it reads **Reconnecting…**, then **Phone offline**. A disabled item
+  sends nothing.
+- A phone that refuses one anyway closes the window that asked and the Deck says
+  **Close a <App> window to open another.**
+
 ### Installing an app
 
 - Phone ▸ **Install APK…** (or Open With / the "Install on Phone" Service) shows
@@ -283,6 +304,8 @@ Every keyboard shortcut the app defines (CONV-MAC-06). The first cell of each ro
 | ⇧⌘H | Home (phone mode) | Navigate |
 | ⌘↑ | Recents (phone mode) | Navigate |
 | ⌃⌘F | Enter / Exit Full Screen | Window |
+| ⌘N | New <App> Window: one more window of the key window's app | File |
+| ⌘` | Next Window: the next window of the key window's app, wrapping | Window |
 | ⌘F | Find in the Deck: focus and select the search field (the field's help tag names the key) | Deck |
 | ⌘, | Settings | Icon menu, Deck |
 | ⌘Q | Quit PocketDeck | Icon menu, app menu |
