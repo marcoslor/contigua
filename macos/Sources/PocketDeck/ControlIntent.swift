@@ -111,7 +111,7 @@ struct ControlIntentRecorder {
             if case .send = action { return true }
             return false
         }
-        Log.session.notice("controlintent \(store.control.rawValue, privacy: .public): \(ControlIntentLabel.state(before), privacy: .public) --\(event.token, privacy: .public)--> \(ControlIntentLabel.state(step.state), privacy: .public) \(sends ? "send" : "none", privacy: .public)")
+        Log.session.notice("controlintent \(store.control.rawValue, privacy: .public): \(ControlIntentLabel.state(before), privacy: .public) --\(event.token, privacy: .public)--> \(ControlIntentLabel.state(step.state), privacy: .public) \(sends ? "send" : "none", privacy: .public)") // log-ok: control names and closed machine tokens, never a value
         return step.actions
     }
 }
