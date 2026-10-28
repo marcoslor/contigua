@@ -140,4 +140,57 @@ final class ResizeCoalescerTests: XCTestCase {
         // value must still go out.
         XCTAssertEqual(machine.apply(.settled(a)), [.send(b)])
     }
+
+    // MARK: The stall bound (a phone that answers nothing)
+
+    func testATimeoutWithAValueWaitingSendsIt() {
+        var machine = idle()
+        _ = machine.apply(.request(a))
+        _ = machine.apply(.request(b))
+        // No ack and no CONFIG is coming: an old phone, a paused stream, a
+        // refused resize. The window must not stay stuck on `a`.
+        XCTAssertEqual(machine.apply(.settleTimeout), [.send(b)])
+        XCTAssertEqual(machine.state, .inFlight(b, pending: nil))
+    }
+
+    func testATimeoutWithNothingWaitingGoesIdle() {
+        var machine = idle()
+        _ = machine.apply(.request(a))
+        XCTAssertEqual(machine.apply(.settleTimeout), [])
+        XCTAssertEqual(machine.state, .idle(last: a))
+    }
+
+    func testATimeoutWhileIdleChangesNothing() {
+        var machine = idle(a)
+        XCTAssertEqual(machine.apply(.settleTimeout), [])
+        XCTAssertEqual(machine.state, .idle(last: a))
+    }
+
+    func testAnAckThatArrivesAfterTheTimeoutIsIgnored() {
+        var machine = idle()
+        _ = machine.apply(.request(a))
+        _ = machine.apply(.request(b))
+        XCTAssertEqual(machine.apply(.settleTimeout), [.send(b)])
+        // The phone's answer to `a` is late: it must not settle `b` (that would
+        // overlap two encoder re-attaches) and must not send anything.
+        XCTAssertEqual(machine.apply(.settled(a)), [])
+        XCTAssertEqual(machine.state, .inFlight(b, pending: nil))
+    }
+
+    func testAnAckAfterATimeoutWithNothingWaitingIsIgnored() {
+        var machine = idle()
+        _ = machine.apply(.request(a))
+        _ = machine.apply(.settleTimeout)
+        XCTAssertEqual(machine.apply(.settled(a)), [])
+        XCTAssertEqual(machine.state, .idle(last: a))
+        // The value the phone did apply is what a repeat is measured against.
+        XCTAssertEqual(machine.apply(.request(a)), [])
+    }
+
+    func testTheTimeoutIsTheStallLimitNotADebounce() {
+        // NFR `density_burst_stall_ms` (docs/NFR.md): the same 1.5 s the
+        // window's own "Not responding" rule uses.
+        XCTAssertEqual(StreamWindowController.resizeSettleTimeout, 1.5)
+        XCTAssertEqual(StreamWindowController.resizeSettleTimeout, FrameWatchdog.staleAfter)
+    }
 }

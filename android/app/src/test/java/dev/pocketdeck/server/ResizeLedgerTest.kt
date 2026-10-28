@@ -74,6 +74,7 @@ class ResizeLedgerTest {
         assertEquals("density", ResizeOutcome.DENSITY.wire)
         assertEquals("same", ResizeOutcome.SAME.wire)
         assertEquals("kept", ResizeOutcome.KEPT.wire)
+        assertEquals("refused", ResizeOutcome.REFUSED.wire)
         assertTrue(ResizeLedger().remember(base).need(base) == ResizeNeed.SAME)
         assertFalse(ResizeLedger().remember(base).need(wider) == ResizeNeed.SAME)
     }

@@ -82,9 +82,15 @@ display id on every injected event.
   shown or dropped. `window.resume` and `window.keyframe` may also be answered with
   CONFIG + keyframe. A resize that changes only the dpi keeps the frame size, so it
   answers with the ack alone ("density"): every app relayouts onto the surface the
-  running encoder still reads. A request the display already shows answers "same".
-  The Mac keeps one request in flight and sends only the newest value that waited
-  behind it, so re-attaching the encoder never overlaps with the last answer.
+  running encoder still reads. A request the display already shows answers "same",
+  and one the phone cannot apply (no such stream, or a size of zero) answers
+  "refused": every `window.resize` a phone reads is answered. The Mac keeps one
+  request in flight and sends only the newest value that waited behind it, so
+  re-attaching the encoder never overlaps with the last answer. A phone that
+  answers neither the request nor a CONFIG (an older build, a paused stream, a
+  refused resize) does not hold the window: the Mac counts the request settled
+  when the ack or CONFIG arrives, or when the resize stall limit passes
+  (`density_burst_stall_ms`, NFR.md).
 - The display content being static is not silence: the encoder repeats its
   last frame at least every 500 ms (`KEY_REPEAT_PREVIOUS_FRAME_AFTER`) while a
   stream is open, so a live stream is never quiet for long. That heartbeat is
@@ -230,7 +236,7 @@ Mac → phone (after `welcome`):
 | `apps.list` | — | phone replies `apps` |
 | `apps.icon` | `pkg`, optional `px` | phone replies `icon` (with `fg`/`bg`/`mono` layers when the icon is adaptive); `px` is the pixel side of the 108 dp layer it should render (default 216, clamped to 216…1296), an older phone ignores it |
 | `window.open` | `stream`, `w`, `h`, `dpi`, and `pkg` (+ optional `activity`) **or** `"mode":"phone"` | create VD + encoder, launch app on it; `mode: phone` mirrors display 0 instead (`window.opened` has `displayId` 0 and the frame's size, the codec's nearest size to the screen's aspect inside `w`×`h`, with the screen's picture in it as `window.content` says; a rotation sends a new VIDEO_CONFIG with the turned size; error `mirror_unavailable` if the phone can't) |
-| `window.resize` | `stream`, `w`, `h`, `dpi` | resize VD + reconfigure encoder; phone sends new VIDEO_CONFIG, then `window.resize.ack`. A request equal to what the display already shows is a no-op; the same size at a new dpi changes the display's density and rebuilds no encoder (so no new VIDEO_CONFIG) |
+| `window.resize` | `stream`, `w`, `h`, `dpi` | resize VD + reconfigure encoder; phone sends new VIDEO_CONFIG, then `window.resize.ack`. A request equal to what the display already shows is a no-op; the same size at a new dpi changes the display's density and rebuilds no encoder (so no new VIDEO_CONFIG); one the phone cannot apply answers `refused` |
 | `window.close` | `stream` | tear down that VD/encoder |
 | `window.pause` | `stream` | Mac window hidden/minimized/occluded: stop encoding (keep VD + app alive) |
 | `window.resume` | `stream` | resume; phone sends CONFIG + keyframe |
@@ -274,7 +280,7 @@ Phone → Mac:
 | `icon` | `pkg`, `png` (base64, 96×96 px, or 2/3 of `px` when the request had one); for an adaptive icon also the whole 108 dp layers as base64 PNGs at the requested `px` (216×216 px by default): `fg`, `bg` and, when present (API 33+), `mono` — optional, so an old Mac ignores them. Mac ▸ docs/design/dock.md §Icons for how the icons are drawn |
 | `window.opened` | `stream`, `displayId`, `w`, `h` — `started`: `"moved"` (default; the task the display shows was moved to it, state kept) or `"fresh"` (the phone couldn't move the task and relaunched the same package; the app's state may be lost) |
 | `window.closed` | `stream`, `reason` (`requested`/`app_exited`/`error`) |
-| `window.resize.ack` | `stream`, `w`, `h`, `dpi` (the request echoed), `outcome`: `"resized"` (new size, new encoder), `"density"` (same size, new dpi, no encoder rebuild), `"same"` (the display already showed it) or `"kept"` (the encoder refused; the stream keeps its old size). Every `window.resize` is answered with one; the Mac keeps one resize in flight and sends the newest waiting value when this arrives |
+| `window.resize.ack` | `stream`, `w`, `h`, `dpi` (the request echoed), `outcome`: `"resized"` (new size, new encoder), `"density"` (same size, new dpi, no encoder rebuild), `"same"` (the display already showed it) or `"kept"` (the encoder refused; the stream keeps its old size) or `"refused"` (the phone cannot apply it: no such stream, or a size of zero). Every `window.resize` is answered with one, the early returns included; the Mac keeps one resize in flight and sends the newest waiting value when this arrives, or when the stall limit passes without one |
 | `window.title` | `stream`, `label`, `pkg` — top app changed on that display (phone mode) |
 | `state` | `locked`: bool, `battery`: int, `charging`: bool, `dnd`: `"off"`/`"priority"`/`"alarms"`/`"none"`, `ringer`: `"normal"`/`"vibrate"`/`"silent"`, `volume`: int, `volumeMax`: int, `screen`: `"on"`/`"off"`, `secure`: bool, `panel`: `"on"`/`"off"` — sent on change; `dnd`/`ringer` are absent on a phone that does not support them (old builds), `volume`/`volumeMax` are both absent on one that cannot read its music stream, `secure` while no phone window is open; see "Phone screen", "Volume" and "Secure screens" |
 | `audio.state` | `on`: bool, `codec`: int — audio capture on/off (for the UI dot) |

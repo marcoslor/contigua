@@ -3539,6 +3539,36 @@ density_stored_is() {
 # Settings → General again. The choice lands under chrome.density.<package>
 # (the style store's scheme), and the profile reset forgets it.
 check_density() {
+    # A phone that answers a resize with nothing (an old build: no
+    # `window.resize.ack`, and a same-size dpi change keeps the encoder, so no
+    # new CONFIG either). One unanswered request used to swallow every later
+    # press, so the window stayed at the first density until it was reopened:
+    # the burst must still reach the phone's last value (WIN-24). This runs
+    # before the shared app, against its own phone, so nothing acking can
+    # answer for it.
+    clean
+    FAKE_ARGS="--no-resize-ack" start_fake || return 1
+    grep -q "window.resize acks off" "$WORK/fake.err" \
+        || { bad "C16 the old-phone phase's fakephone does not say acks are off"; end_shared; return 1; }
+    say "C16 old-phone phase: fakephone answers no resize"
+    launch_shared --connect "127.0.0.1:$PORT"
+    open_shared --open com.android.settings --debug-chrome-state "$WORK/chrome.txt" || return 1
+    wait_until 20 events_have '"ev":"video","stream":1,' \
+        || { bad "C16 no video for the old-phone burst window"; end_shared; return 1; }
+    sleep 1
+    local press pw0 top0
+    pw0=$((900 * RUN_SCALE / 16 * 16))
+    top0=$(python3 -c "print(int(160 * $pw0 / 900 * 1.5 + 0.5))")
+    for press in 1 2 3 4 5 6 7 8 9 10; do
+        control key "cmd+=" || bad "C16 old-phone burst press $press: $CONTROL_REPLY"
+    done
+    wait_until 20 density_stored_is com.android.settings 1.5 \
+        || bad "[WIN-24] C16 the old-phone burst left the override: $(defaults read "$DEFAULTS_SUITE" "chrome.density.com.android.settings" 2>&1)"
+    wait_until 8 stream_dpi_is 1 "$top0" \
+        && ok "[WIN-24] an old phone that answers nothing still gets the last density ($top0)" \
+        || bad "[WIN-24] C16 the old-phone burst stopped at dpi $(stream_dpi 1) (wanted $top0)"
+    end_shared
+
     begin_shared || return 1
     # The app's dpi: 160 × the quantised video width / the 900 pt stream, at
     # the run's backing scale (VideoGeometry.dpi).
@@ -3652,8 +3682,6 @@ PY
     stop_app
     stop_fakephone
 }
-
-# --- C15: trackpad gestures ---------------------------------------------------
 
 # check_trackpad — a two-finger scroll is a one-finger touch drag, a wheel is
 # still SCROLL, and raw trackpad fingers (modelled by the scripted driver) make
