@@ -30,6 +30,9 @@ internal class WindowStream(
     private companion object {
         const val MIME = "video/avc"
         const val FPS = 60
+
+        /** The lowest frame rate a congestion repair steps down to. */
+        const val MIN_FPS = 5
         const val I_FRAME_INTERVAL_S = 10
         const val MAX_BITRATE = 8_000_000
         const val MIN_BITRATE = 500_000
@@ -135,6 +138,9 @@ internal class WindowStream(
 
     /** `window.quality` fps cap; frames above it are dropped before queueing. */
     @Volatile private var maxFps: Int? = null
+
+    /** The congestion machine's own cap while a reader is slower than the bitrate floor. */
+    @Volatile private var congestionFps: Int? = null
 
     /** Encoder pts of the last frame actually queued, for the fps cap. */
     @Volatile private var lastForwardedUs = -1L
@@ -364,6 +370,34 @@ internal class WindowStream(
         val bps = quality.onDrop(SystemClock.elapsedRealtime()) ?: return
         log("stream $stream backpressure: bitrate -> ${mbps(bps)} (-25%)")
         applyBitrate()
+    }
+
+    /**
+     * The reader is still slower than the bitrate floor: halve the stream's
+     * frame-rate cap (down to [MIN_FPS]), so the queue carries fewer, shorter
+     * seconds of video instead of one repair keyframe after another. A
+     * keyframe is never dropped by the cap: it is the repair.
+     */
+    fun onBackpressureFrameRate() {
+        val current = congestionFps ?: FPS
+        val next = maxOf(MIN_FPS, current / 2)
+        if (next >= current) return
+        congestionFps = next
+        log("stream $stream backpressure: frame rate -> $next fps (congestion)")
+    }
+
+    /** The reader caught up: the stream's own frame rate again. */
+    fun restoreFrameRate() {
+        if (congestionFps == null) return
+        congestionFps = null
+        log("stream $stream backpressure: frame rate back to the stream's own (congestion over)")
+    }
+
+    /** What the congestion machine may still take from this stream (`CongestionStep`). */
+    fun congestionStep(): CongestionStep = when {
+        !quality.atFloor -> CongestionStep.BITRATE
+        (congestionFps ?: FPS) > MIN_FPS -> CongestionStep.FRAME_RATE
+        else -> CongestionStep.NONE
     }
 
     @Synchronized
@@ -784,18 +818,18 @@ internal class WindowStream(
             try {
                 val buf = codec.getOutputBuffer(idx)
                 if (buf != null && info.size > 0 && (info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) == 0) {
+                    val key = (info.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0
                     if (encoder !== codec) {
                         // Switched away mid-buffer: its size is no longer the stream's.
                     } else if (paused) {
                         // Paused with the encoder kept running: nothing goes out.
-                    } else if (dropForFps(info.presentationTimeUs)) {
+                    } else if (dropForFps(info.presentationTimeUs, key)) {
                         // Above the fps cap: never queued, so the socket sees less.
                     } else {
                         buf.position(info.offset)
                         buf.limit(info.offset + info.size)
                         val data = ByteArray(info.size)
                         buf.get(data)
-                        val key = (info.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0
                         sink.onFrame(stream, info.presentationTimeUs, key, data)
                         guard.onFrame(SystemClock.elapsedRealtime())?.let {
                             log("stream $stream first frame ${it}ms after the encoder attached (nudges=${guard.nudgeCount})")
@@ -810,16 +844,29 @@ internal class WindowStream(
     }
 
     /** @return true when the frame is above the fps cap and must not be queued. */
-    private fun dropForFps(ptsUs: Long): Boolean {
-        val cap = maxFps ?: return false
+    private fun dropForFps(ptsUs: Long, key: Boolean): Boolean {
+        val cap = fpsCap() ?: return false
         val previous = lastForwardedUs
         if (previous < 0 || ptsUs <= previous) { // fresh stream or a restarted pts base
             lastForwardedUs = ptsUs
             return false
         }
-        if (ptsUs - previous < 1_000_000L / cap) return true
+        // A keyframe is the repair for a slow reader; a cap on refresh must
+        // never be the reason the picture never comes back.
+        if (!key && ptsUs - previous < 1_000_000L / cap) return true
         lastForwardedUs = ptsUs
         return false
+    }
+
+    /** The stream's own fps cap and the congestion one, whichever is lower. */
+    private fun fpsCap(): Int? {
+        val requested = maxFps
+        val congestion = congestionFps
+        return when {
+            requested == null -> congestion
+            congestion == null -> requested
+            else -> minOf(requested, congestion)
+        }
     }
 
     /** Applies the current bitrate through `setParameters`; logs each change once. */
@@ -944,6 +991,17 @@ internal class AndroidDisplayLayer(
     override fun onBackpressure(stream: Int) {
         get(stream)?.onBackpressure()
     }
+
+    override fun onBackpressureFrameRate(stream: Int) {
+        get(stream)?.onBackpressureFrameRate()
+    }
+
+    override fun restoreFrameRate(stream: Int) {
+        get(stream)?.restoreFrameRate()
+    }
+
+    override fun congestionStep(stream: Int): CongestionStep =
+        get(stream)?.congestionStep() ?: CongestionStep.BITRATE
 
     override fun close(stream: Int) {
         take(stream)?.close()

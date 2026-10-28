@@ -28,6 +28,9 @@ internal class QualityAdaptation(
     /** The bitrate recovery grows back to. */
     val targetBps: Int get() = target
 
+    /** Whether a further drop can still lower the bitrate: the floor (or a lower target) is reached. */
+    val atFloor: Boolean get() = current <= minOf(floorBps, target)
+
     /** A new target (computed or requested): the stream restarts at it. */
     fun setTarget(bps: Int): Int {
         target = bps.coerceAtLeast(0)

@@ -1,6 +1,7 @@
 package dev.pocketdeck.server
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Test
 
@@ -83,5 +84,16 @@ class QualityAdaptationTest {
         q.onDrop(0)
         assertEquals(1_000_000, q.setTarget(1_000_000))
         assertNull("the floor is the target now", q.onDrop(0))
+    }
+
+    @Test
+    fun `the stream says when bitrate steps are used up`() {
+        q.setTarget(4_000_000)
+        assertFalse(q.atFloor)
+        while (!q.atFloor) q.onDrop(0)
+        assertEquals(1_000_000, q.bitrate)
+        // The congestion machine then steps the frame rate instead
+        // (CongestionStep.FRAME_RATE).
+        assertNull(q.onDrop(0))
     }
 }

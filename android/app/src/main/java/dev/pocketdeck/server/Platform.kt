@@ -291,7 +291,28 @@ interface DisplayLayer {
      * exceeded the protocol's budget; the encoder should lower its bitrate.
      */
     fun onBackpressure(stream: Int) {}
+
+    /**
+     * What this stream can still give up for a reader that stays behind
+     * (`CongestionStep`): a bitrate step, a frame-rate step at the bitrate
+     * floor, or nothing.
+     */
+    fun congestionStep(stream: Int): CongestionStep = CongestionStep.BITRATE
+
+    /** A reader is still slower than the bitrate floor: halve the stream's frame-rate cap. */
+    fun onBackpressureFrameRate(stream: Int) {}
+
+    /** The reader caught up: the stream's own frame rate again. */
+    fun restoreFrameRate(stream: Int) {}
 }
+
+/**
+ * What a stream can still give up for a reader that stays behind: a bitrate
+ * step while the encoder is above its floor, then frame-rate steps (bounded at
+ * 5 fps), then nothing. The encoder's own limits live with the display; the
+ * congestion machine only asks what is left (StreamCongestion.kt).
+ */
+enum class CongestionStep { BITRATE, FRAME_RATE, NONE }
 
 interface AppCatalog {
     fun list(): List<AppEntry>

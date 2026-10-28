@@ -40,6 +40,8 @@ internal class StreamCongestion(
     private val drainWaitMs: Long = DRAIN_WAIT_MS,
     private val repairIntervalMs: Long = REPAIR_INTERVAL_MS,
     private val healthyMs: Long = HEALTHY_MS,
+    /** The step the stream still has to give up; the caller owns the encoder's limits. */
+    private val available: () -> CongestionStep = { CongestionStep.BITRATE },
 ) {
 
     enum class State { FLOWING, DRAINING, RECOVERING }
@@ -59,7 +61,7 @@ internal class StreamCongestion(
         data class Tick(val nowMs: Long) : Event
     }
 
-    enum class Action { LOWER_BITRATE, REQUEST_KEYFRAME }
+    enum class Action { LOWER_BITRATE, LOWER_FRAME_RATE, RESTORE_FRAME_RATE, REQUEST_KEYFRAME }
 
     var state: State = State.FLOWING
         private set
@@ -141,7 +143,14 @@ internal class StreamCongestion(
         state = State.RECOVERING
         repaired = true
         repairedMs = nowMs
-        return listOf(Action.LOWER_BITRATE, Action.REQUEST_KEYFRAME)
+        val step = when (available()) {
+            CongestionStep.BITRATE -> Action.LOWER_BITRATE
+            CongestionStep.FRAME_RATE -> Action.LOWER_FRAME_RATE
+            // Nothing left to give up: the picture still needs the keyframe,
+            // or the held deltas never resume.
+            CongestionStep.NONE -> return listOf(Action.REQUEST_KEYFRAME)
+        }
+        return listOf(step, Action.REQUEST_KEYFRAME)
     }
 
     private fun canRepair(nowMs: Long): Boolean = !repaired || nowMs - repairedMs >= repairIntervalMs
@@ -173,6 +182,7 @@ internal class StreamCongestion(
 internal class CongestionDriver(
     private val queuedBytes: (Int) -> Int,
     private val stalled: (Int) -> Boolean,
+    private val available: (Int) -> CongestionStep,
     private val perform: (Int, StreamCongestion.Action) -> Unit,
     private val log: (String) -> Unit,
     private val clock: () -> Long = { System.nanoTime() / 1_000_000 },
@@ -181,7 +191,10 @@ internal class CongestionDriver(
     },
 ) : AutoCloseable {
 
-    private class Entry(val machine: StreamCongestion) {
+    private inner class Entry {
+        /** Read before the lock: the display's answer may need it only to be read, never to block. */
+        @Volatile var step: CongestionStep = CongestionStep.BITRATE
+        val machine = StreamCongestion(available = { step })
         var tick: ScheduledFuture<*>? = null
     }
 
@@ -201,10 +214,14 @@ internal class CongestionDriver(
     }
 
     private fun drive(stream: Int, event: (Long) -> StreamCongestion.Event) {
+        // The encoder's remaining step is the display's to answer; ask it
+        // outside the lock, like every other display call on this path.
+        val step = available(stream)
         var actions: List<StreamCongestion.Action> = emptyList()
         var line: String? = null
         synchronized(lock) {
-            val entry = streams.getOrPut(stream) { Entry(StreamCongestion()) }
+            val entry = streams.getOrPut(stream) { Entry() }
+            entry.step = step
             val before = entry.machine.state
             val event = event(clock())
             actions = entry.machine.onEvent(event)

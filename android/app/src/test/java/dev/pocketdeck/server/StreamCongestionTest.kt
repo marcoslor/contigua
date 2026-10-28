@@ -10,13 +10,20 @@ import org.junit.Test
 /**
  * Transitions of the stream congestion machine (StreamCongestion.kt). The bug
  * it fixes is one of the transitions: a drop must never request a keyframe, and
- * one episode must never cost more than one repair.
+ * one episode must never cost more than one repair per drained queue.
+ *
+ * Round 3 added two transitions the reviewer measured (a reader at half the
+ * source rate): a repair that has not yet drained may not take the next repair
+ * just because an interval passed, and a reader that is still slower than the
+ * bitrate floor takes frame-rate steps instead of more bitrate steps.
  */
 class StreamCongestionTest {
 
-    private fun machine() = StreamCongestion()
+    private fun machine(step: () -> CongestionStep = { CongestionStep.BITRATE }) = StreamCongestion(available = step)
 
     private val repair = listOf(Action.LOWER_BITRATE, Action.REQUEST_KEYFRAME)
+
+    private val frameRateRepair = listOf(Action.LOWER_FRAME_RATE, Action.REQUEST_KEYFRAME)
 
     @Test
     fun aDropOnlyStartsAnEpisode() {
@@ -46,16 +53,21 @@ class StreamCongestionTest {
     }
 
     @Test
-    fun dropsAfterTheRepairWaitForTheInterval() {
+    fun theNextRepairWaitsForTheQueuesDrainNotForAnInterval() {
         val m = machine()
         m.onEvent(Event.Drop(1_000))
         m.onEvent(Event.Drained(1_050, stalled = false))
-        // The keyframe's own backlog overflows: same episode.
+        // The repair keyframe is still going out: the queue refills and stays
+        // full. The old machine took the next repair as soon as the interval
+        // passed, straight into the backlog its own keyframe created — that is
+        // the loop the reviewer measured at a somewhat slow reader.
         assertEquals(emptyList<Action>(), m.onEvent(Event.Drop(1_300)))
+        assertEquals(emptyList<Action>(), m.onEvent(Event.Tick(2_100)))
+        assertEquals(emptyList<Action>(), m.onEvent(Event.Tick(3_500)))
         assertEquals(State.RECOVERING, m.state)
-        // A full second after the repair, a drop may open the next cycle.
-        assertEquals(emptyList<Action>(), m.onEvent(Event.Drop(2_100)))
-        assertEquals(State.DRAINING, m.state)
+        // The reader takes the backlog: the queue drains, the deltas are held
+        // for a keyframe, and only now may the next step and repair go out.
+        assertEquals(repair, m.onEvent(Event.Drained(3_800, stalled = true)))
     }
 
     @Test
@@ -79,27 +91,30 @@ class StreamCongestionTest {
     }
 
     @Test
-    fun aQueueThatStaysLatchedRearmsInsteadOfFreezing() {
+    fun aQueueThatStaysLatchedTakesTheNextStepAfterTheInterval() {
         val m = machine()
         m.onEvent(Event.Drop(1_000))
         m.onEvent(Event.Drained(1_050, stalled = false))
         // The reader is still behind: the deltas are held back and the queue is
-        // empty, so reporting "flowing" would freeze the picture forever.
-        assertEquals(emptyList<Action>(), m.onEvent(Event.Drained(2_100, stalled = true)))
-        assertEquals(State.DRAINING, m.state)
-        // The next drain takes the next repair.
-        assertEquals(repair, m.onEvent(Event.Drained(2_150, stalled = true)))
+        // empty, so reporting "flowing" would freeze the picture forever. The
+        // next repair still waits for the interval, and for this drain.
+        assertEquals(emptyList<Action>(), m.onEvent(Event.Drained(1_200, stalled = true)))
+        assertEquals(State.RECOVERING, m.state)
+        assertEquals(repair, m.onEvent(Event.Drained(2_100, stalled = true)))
+        assertEquals(State.RECOVERING, m.state)
     }
 
     @Test
-    fun aTickAfterTheIntervalRearmsWhenTheQueueNeverEmpties() {
+    fun aTickNeverRearmsAfterARepair() {
         val m = machine()
         m.onEvent(Event.Drop(1_000))
         m.onEvent(Event.Drained(1_050, stalled = false))
+        // A tick says the queue is still full; that is the repair's own
+        // backlog, not a reason to repair again.
         assertEquals(emptyList<Action>(), m.onEvent(Event.Tick(1_500)))
-        assertEquals(State.RECOVERING, m.state)
         assertEquals(emptyList<Action>(), m.onEvent(Event.Tick(2_100)))
-        assertEquals(State.DRAINING, m.state)
+        assertEquals(emptyList<Action>(), m.onEvent(Event.Tick(9_000)))
+        assertEquals(State.RECOVERING, m.state)
     }
 
     @Test
@@ -107,6 +122,45 @@ class StreamCongestionTest {
         val m = machine()
         assertEquals(emptyList<Action>(), m.onEvent(Event.Tick(1_000)))
         assertEquals(emptyList<Action>(), m.onEvent(Event.Drained(1_100, stalled = true)))
+        assertEquals(State.FLOWING, m.state)
+    }
+
+    @Test
+    fun aReaderBelowTheFloorTakesFrameRateStepsInsteadOfBitrateSteps() {
+        var step = CongestionStep.BITRATE
+        val m = machine { step }
+        m.onEvent(Event.Drop(1_000))
+        assertEquals(repair, m.onEvent(Event.Drained(1_100, stalled = false)))
+        // The bitrate reached its floor and the reader is still behind: the
+        // next repair halves the frame rate, so fewer deltas have to fit.
+        step = CongestionStep.FRAME_RATE
+        assertEquals(frameRateRepair, m.onEvent(Event.Drained(1_900, stalled = true)))
+        // The encoder is at its lowest frame rate too: repair the picture, step
+        // nothing (nothing is left to give up).
+        step = CongestionStep.NONE
+        assertEquals(listOf(Action.REQUEST_KEYFRAME), m.onEvent(Event.Drained(3_000, stalled = true)))
+    }
+
+    @Test
+    fun aRecoveredStreamGivesTheFrameRateBack() {
+        var step = CongestionStep.FRAME_RATE
+        val m = machine { step }
+        m.onEvent(Event.Drop(1_000))
+        assertEquals(frameRateRepair, m.onEvent(Event.Drained(1_100, stalled = false)))
+        // The reader keeps up: the healthy clock starts at the first drained
+        // queue and ends the episode 750 ms later.
+        assertEquals(emptyList<Action>(), m.onEvent(Event.Drained(1_200, stalled = false)))
+        assertEquals(listOf(Action.RESTORE_FRAME_RATE), m.onEvent(Event.Drained(1_950, stalled = false)))
+        assertEquals(State.FLOWING, m.state)
+    }
+
+    @Test
+    fun aRecoveryThatTookNoFrameRateStepRestoresNothing() {
+        val m = machine()
+        m.onEvent(Event.Drop(1_000))
+        m.onEvent(Event.Drained(1_050, stalled = false))
+        m.onEvent(Event.Drained(1_100, stalled = false))
+        assertEquals(emptyList<Action>(), m.onEvent(Event.Drained(1_850, stalled = false)))
         assertEquals(State.FLOWING, m.state)
     }
 

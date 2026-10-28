@@ -196,6 +196,7 @@ class Session(
     private val congestion = CongestionDriver(
         queuedBytes = { stream -> queue.queuedBytes(stream) },
         stalled = { stream -> queue.isDropping(stream) },
+        available = { stream -> display.congestionStep(stream) },
         perform = { stream, action -> congestionAction(stream, action) },
         log = { line -> log(line) },
     )
@@ -2356,6 +2357,9 @@ class Session(
     private fun congestionAction(stream: Int, action: StreamCongestion.Action) {
         when (action) {
             StreamCongestion.Action.LOWER_BITRATE -> runCatching { display.onBackpressure(stream) }
+            StreamCongestion.Action.LOWER_FRAME_RATE ->
+                runCatching { display.onBackpressureFrameRate(stream) }
+            StreamCongestion.Action.RESTORE_FRAME_RATE -> runCatching { display.restoreFrameRate(stream) }
             StreamCongestion.Action.REQUEST_KEYFRAME -> {
                 log("stream $stream congestion: keyframe requested")
                 runCatching { display.requestKeyframe(stream) }
