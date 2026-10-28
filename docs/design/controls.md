@@ -196,11 +196,36 @@ Extensions, the remaining cause is the extension's signing/registration (ad-hoc
 signing is enough for the File Provider extension, but not proven for a
 ControlCenter control).
 
+## The edge rule: what re-sends, and what does not
+
+A Mac intent is applied on its edge, not re-asserted (docs/specs/controls.md,
+CTRL-1/3/8). Every value the Mac sets on the phone, audited on 2026-10-28:
+
+| Control | Sent when | Re-sent on connect / timer / every `state`? | Code |
+|---|---|---|---|
+| DND (`phone.dnd`) | a Focus start or end, a menu pick, a Shortcut, an MCP call | Connect: only when the wanted value differs from what this phone received last (per phone, persisted). Never on a timer, never per `state`. | `ConnectionController.setFocusFilter`, `setPhoneDnd`, `reconcileFocus`, `ControlIntent.swift` |
+| Ringer (`phone.ringer`) | the menu / panel control / MCP call | No. A person's ringer change on the phone is never undone. | `ConnectionController.setPhoneRinger` |
+| Volume (`phone.volume`) | the panel slider's drag (throttled) and its release value | No. The phone's own hardware-key change stands. | `ConnectionController.setPhoneVolume`, `PhoneVolumeControl` |
+| Phone screen (`phone.wake`) | a phone window opening, reopening or reconnecting, and the Wake Screen button | Yes, on every open/reconnect by design (it only ever wakes). It never holds the screen on; the phone's own timeout applies. | `PhoneWindow.sendOpen` (docs/PROTOCOL.md "Phone screen" 3) |
+| Panel hold (`phone.panel off`) | "Turn Off Phone Screen" clicked, and a window opening with the setting remembered | Connect: only when this phone has not received that value since the person ended the hold. Never on a timer, never per `state`. | `PhoneWindow.setPanelOff`, `sendOpen`, `ControlIntent.swift` |
+| Panel restore (`phone.panel off:false`) | the same click off, the phone's power press, the window closing, the session ending | The restore is a Mac-side or phone-side edge; nothing re-sends it. | `PhoneWindow`, `PanelHold.kt` |
+| Keep-awake (display wake locks, keep-alive pokes) | while at least one stream is unpaused | n/a: not a value, a hold that ends with the last stream. It pokes the streaming display's group; where the panel shares that group (the S25+ virtual display is group 0) the pokes keep it interactive too, which is why CTRL-7 watches the person's unlock, not only a screen edge. | `AndroidPower.kt`, `DarkPanelPolicy.kt` |
+| Phone sleep after the last stream | the last stream closes, and only while PocketDeck's own wake still owns the phone | n/a: never on a timer. Left alone when the person unlocked, used or woke the phone (docs/specs/controls.md CTRL-7). | `AndroidPower.restoreAfterStop`, `WakeOwnership.kt` |
+| Clipboard gate (`clip.enable`) | the Settings toggle, and every ready session | Yes, on every connect: the phone's gate starts off and holds no memory. The person's choice is the Mac's; there is no phone-side override to lose. | `ConnectionController.clipboardSettingChanged`, `sessionReady` |
+| Notification gate (`notify.enable`) | the per-phone Settings toggle, and every ready session | Yes, on every connect, for the same reason as the clipboard gate. | `ConnectionController.notifySettingChanged`, `sessionReady` |
+| Audio routing (`audio.start`/`stop`) | the first unpaused stream, an unpause, and the last stream stopping | No: it follows the window lifecycle, not a connect. | `Session.startAudio`, `updatePower` |
+
+So the only controls that used to re-assert on a connect were DND and the panel
+hold; both now go through the one shared machine. The other two re-sent values
+(clipboard and notification gates) are Mac-owned opt-ins whose phone state is
+not persisted by design.
+
 ## Checks
 
 - Unit: `macos` `ControlsCoreTests` (snapshot round trip, 0600 atomic write,
-  request validation, reply codes, ringer cycle) and Android
-  `RingerControlTest` / `RingerSessionTest` (wire modes, DND refusal, old phone).
+  request validation, reply codes, ringer cycle), Android
+  `RingerControlTest` / `RingerSessionTest` (wire modes, DND refusal, old phone)
+  and `WakeOwnershipTest` (wake ownership and the person's-use edges, CTRL-7).
 - e2e host `controls` (`macos/scripts/check-e2e.sh controls`, no extension):
   a Python driver stands in for the extension, reads the snapshot and sends
   requests over `--controls-dir`'s socket. Covers DND on/off, Ring, Ringer, the

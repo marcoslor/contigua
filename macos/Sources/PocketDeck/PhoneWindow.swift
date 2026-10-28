@@ -85,6 +85,32 @@ final class PhoneWindowController: StreamWindowController {
     private var rotationObserver: NSObjectProtocol?
     private var blackTimer: Timer?
 
+    /// The Mac's memory of the panel edge for this phone (docs/specs/controls.md):
+    /// the value the phone received last, so a reconnect or a reopened mirror
+    /// does not put a screen the person woke back out.
+    private lazy var panelIntent = ControlIntentRecorder(
+        store: ControlIntentStore(defaults: manager.profileDefaults, control: .panel))
+
+    private var panelDeviceId: String? {
+        guard let id = manager.phone?.id, !id.isEmpty else { return nil }
+        return id
+    }
+
+    /// One phone.panel edge: the machine decides from this phone's memory, and
+    /// only a value it has not had is sent. True when `phone.panel` went out.
+    @discardableResult
+    private func applyPanel(_ off: Bool, edge: ControlIntentEvent) -> Bool {
+        guard let id = panelDeviceId else { return false }
+        var sent = false
+        for action in panelIntent.record(edge, deviceId: id) {
+            guard case .send(let value) = action, let panel = PhonePanel(rawValue: value) else { continue }
+            session.setPhonePanel(off: panel == .off, ignorePower: panelIgnorePower)
+            panelRequestCount += 1
+            sent = true
+        }
+        return sent
+    }
+
     /// The phone turned: the stream now has the other orientation, so the window
     /// turns too, keeping its top-left corner and its picture's area. A drag in
     /// progress owns the frame; the turn waits for `windowDidEndLiveResize`.
@@ -172,13 +198,12 @@ final class PhoneWindowController: StreamWindowController {
 
     /// "Turn Off Phone Screen": the phone holds its own panel's power off while
     /// this mirror keeps rendering. Remembered per phone, because it is a
-    /// choice about that phone.
+    /// choice about that phone: the click is the Mac-side edge that applies it.
     func setPanelOff(_ off: Bool) {
         guard panelOffShown != off else { return }
         panelClickedAtMs = Self.uptimeMs()
         if let id = manager.phone?.id { PhonePanelOffSetting.write(off, for: id, to: manager.profileDefaults) }
-        session.setPhonePanel(off: off, ignorePower: panelIgnorePower)
-        panelRequestCount += 1
+        applyPanel(off, edge: .personAction(off ? PhonePanel.off.rawValue : PhonePanel.on.rawValue))
         // The phone answers with a `state.panel`; if it does not within 2 s the
         // window says the request failed instead of pretending it worked.
         if off { screenModel.requestPanelOff(at: ProcessInfo.processInfo.systemUptime) }
@@ -203,7 +228,12 @@ final class PhoneWindowController: StreamWindowController {
     @objc func togglePanelOffMenuAction(_ sender: Any?) { togglePanelOff() }
 
     /// `state.panel` from the session: the check, the bar glyph and the pill.
+    /// The report also moves the panel machine: a phone that reports `on` after
+    /// we asked for `off` ended the hold itself, so its value stands.
     func setPhonePanel(_ panel: PhonePanel?) {
+        if let panel, let id = panelDeviceId {
+            panelIntent.record(.phoneReported(panel.rawValue), deviceId: id)
+        }
         let changed = screenModel.setPanel(panel, at: ProcessInfo.processInfo.systemUptime)
         guard changed else { return }
         panelGlyphAtMs = Self.uptimeMs()
@@ -277,13 +307,14 @@ final class PhoneWindowController: StreamWindowController {
         // stays up and the phone's own screen timeout applies as usual.
         screenModel.opened()
         session.wakePhone()
-        // "Turn Off Phone Screen" is remembered per phone: a window that opens
-        // with it on asks the phone again (the phone ends it on the person's
-        // power button, and then it stays off until they ask again).
+        // "Turn Off Phone Screen" is remembered per phone, and a reopened window
+        // is a connect edge: it applies the remembered value only when this
+        // phone has not had it since the person ended the hold themselves
+        // (docs/specs/controls.md). A hold the person's power press ended thus
+        // stays ended across a reopen and a reconnect.
         if let id = manager.phone?.id,
-           PhonePanelOffSetting.read(from: manager.profileDefaults, deviceId: id) {
-            session.setPhonePanel(off: true, ignorePower: panelIgnorePower)
-            panelRequestCount += 1
+           PhonePanelOffSetting.read(from: manager.profileDefaults, deviceId: id),
+           applyPanel(true, edge: .connected(PhonePanel.off.rawValue)) {
             screenModel.requestPanelOff(at: ProcessInfo.processInfo.systemUptime)
             applyPanelState()
         }

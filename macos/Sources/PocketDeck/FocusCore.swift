@@ -81,22 +81,7 @@ final class FocusStore {
     }
 }
 
-/// What a Mac sends a phone, or nothing when the phone cannot take it.
-enum FocusDecision: Equatable {
-    case send(PhoneDndMode)
-    /// The phone sends no `dnd` (an old build): nothing is sent, nothing is logged.
-    case unsupported
-}
-
 enum FocusReconciler {
-    /// Once per connection, when the first `state` arrives. A nil [wanted]
-    /// sends off, which the phone's restore rule turns into a no-op unless the
-    /// DND is PocketDeck's. `phoneDnd` nil means the phone cannot report DND.
-    static func onConnect(wanted: PhoneDndMode?, phoneDnd: PhoneDndMode?) -> FocusDecision {
-        guard phoneDnd != nil else { return .unsupported }
-        return .send(wanted ?? .off)
-    }
-
     /// A menu click: on becomes priority, on becomes off; nil (no phone or no
     /// DND support) does nothing.
     static func menuCommand(current: PhoneDndMode?) -> PhoneDndMode? {

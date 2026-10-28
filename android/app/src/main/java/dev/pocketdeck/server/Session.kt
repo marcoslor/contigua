@@ -289,7 +289,15 @@ class Session(
     /** The protocol's `state` stream: one emission per real change. */
     private val stateTracker = DeviceStateTracker { state -> sendState(state) }
 
+    /** The person's own use of the phone, for the wake machine's edges (CTRL-7). */
+    private val personUse = PersonUseTracker()
+
     private fun sendState(state: DeviceState) {
+        for (use in personUse.note(state)) when (use) {
+            PersonUse.UNLOCKED -> power.onPersonUnlocked()
+            PersonUse.SCREEN_ON -> power.onPersonScreen(true)
+            PersonUse.SCREEN_OFF -> power.onPersonScreen(false)
+        }
         val message = linkedMapOf<String, Any?>(
             "t" to "state",
             "locked" to state.locked,

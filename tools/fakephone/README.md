@@ -80,8 +80,12 @@ positions, levels and artwork dimensions/bytes only.
 
 Do Not Disturb (docs/design/focus.md): `state` carries `dnd` and `phone.dnd`
 sets the fake's zen mode with the phone's restore rule (`--dnd-person MODE`
-starts in a mode the person set, which must survive; `--dnd-unsupported` acts
-like a build that predates both).
+starts in a mode the person set, which must survive; `--dnd-person-after
+SECONDS` [and `--dnd-person-mode MODE`, default `off`] turns it off again that
+long after a Mac command, as the person would; `--dnd-unsupported` acts like a
+build that predates both). `--drop-after SECONDS` drops the first session that
+long after its welcome (a Wi-Fi loss) while the fake keeps serving and keeps
+its memory, so the Mac reconnects to the same phone.
 
 Screens and streams: `welcome` reports a 1080x2340 @450dpi locked phone. Each
 `window.open`/`resize`/`resume`/`keyframe` starts an ffmpeg

@@ -83,9 +83,13 @@ parameters:
   `phone.dnd` `priority`, `alarms` and `none`.
 
 `perform()` stores the wanted state in the profile's defaults and, when the app
-is running, asks the controller to reconcile now. A phone that connects later
-is reconciled once, when its first `state` arrives; repeated `state` messages
-do not send again, so a reconnect can only apply it once. "Not wanted" is sent
+is running, asks the controller to reconcile now. A Focus start or end is a
+Mac-side edge: the phone receives the new value once, on that edge. A phone that
+connects later receives the stored value only when it differs from the last one
+that phone received (the memory lives in the profile's defaults, keyed by device
+id, docs/specs/controls.md); repeated `state` messages never send again, and the
+same Focus on a new connection is not re-asserted. A DND the person changed on
+the phone thus stands until the next Focus start or end. "Not wanted" is sent
 as `phone.dnd off`, which the phone's restore rule turns into a no-op when the
 DND is not PocketDeck's.
 

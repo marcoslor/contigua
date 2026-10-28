@@ -36,7 +36,10 @@ Why this and not `SurfaceControl.createDisplay` + `setDisplayProjection`
   rendering. The bar shows an `iphone.slash` glyph and a "Phone screen off" pill
   for 2 s; the person's power button on the phone ends it (the Mac unchecks it
   and shows "Phone screen on" for 2 s), and closing the window, disconnecting or
-  a crash restores the panel. It is remembered per phone.
+  a crash restores the panel. It is remembered per phone, and a reopened or
+  reconnected window applies the remembered value only when this phone has not
+  had it since the person ended the hold themselves: a hold a power press ended
+  stays ended across a reopen (docs/specs/controls.md CTRL-5/6).
 
   The hold is one state machine on the phone (`PanelHold.kt`: `Off`, `Applying`,
   `Held`, `Suspended`, `Restoring`, with a pure transition and an action list),
