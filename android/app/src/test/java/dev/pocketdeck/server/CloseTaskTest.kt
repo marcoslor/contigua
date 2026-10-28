@@ -30,6 +30,26 @@ class CloseTaskTest : SessionFixture() {
         }
     }
 
+    /** A `remove` that takes a second, and records where it ran. */
+    private class BlockingMove(private var listed: List<SystemTask>?) : TaskMove {
+        val removed = CopyOnWriteArrayList<Int>()
+        @Volatile var threadName: String? = null
+        @Volatile var wasDaemon = false
+
+        override fun tasks(): List<SystemTask>? = listed
+
+        override fun move(taskId: Int, displayId: Int): Boolean = false
+
+        override fun remove(taskId: Int): Boolean {
+            threadName = Thread.currentThread().name
+            wasDaemon = Thread.currentThread().isDaemon
+            Thread.sleep(1_000) // real-time: a slow removal is the point of the case
+            listed = listed?.filter { it.taskId != taskId }
+            removed.add(taskId)
+            return true
+        }
+    }
+
     /** Each display opened, in order, shows the next of [ids]. */
     private fun presence(vararg ids: Int) = object : TaskPresence {
         private val byDisplay = HashMap<Int, Int>()
@@ -43,6 +63,14 @@ class CloseTaskTest : SessionFixture() {
     }
 
     private fun task(id: Int) = SystemTask(id, "com.a", null, 0, isHome = false, isSystemUi = false)
+
+    /** The removal runs off the reader thread now: wait for it, then let a wrong one show. */
+    private fun awaitRemoval(move: RecordingMove) {
+        val deadline = System.currentTimeMillis() + 2_000
+        // real-time: the removal runs on another thread; polling is the only way to see it
+        while (System.currentTimeMillis() < deadline && move.removed.isEmpty()) Thread.sleep(10) // real-time: waiting for another thread
+        Thread.sleep(150) // real-time: a second (wrong) removal would land in this window
+    }
 
     @Test
     fun `the mirror has no task to end`() {
@@ -94,6 +122,7 @@ class CloseTaskTest : SessionFixture() {
 
         send(mapOf("t" to "window.close", "stream" to 1))
         readUntil("window.closed")
+        awaitRemoval(move)
         assertEquals("only the closed window's task", listOf(11), move.removed)
 
         // The other window and the session are untouched.
@@ -112,6 +141,7 @@ class CloseTaskTest : SessionFixture() {
         readUntil("window.opened")
         send(mapOf("t" to "window.close", "stream" to 1))
         readUntil("window.closed")
+        Thread.sleep(300) // real-time: give a wrong removal its moment before the assert
         assertTrue("the display's own removal did it", move.removed.isEmpty())
     }
 
@@ -123,7 +153,38 @@ class CloseTaskTest : SessionFixture() {
         readUntil("window.opened")
         send(mapOf("t" to "window.close", "stream" to 1))
         readUntil("window.closed")
+        Thread.sleep(300) // real-time: give a wrong removal its moment before the assert
         assertTrue(move.removed.isEmpty())
+    }
+
+    @Test
+    fun `a slow task removal does not hold the reader`() {
+        val move = BlockingMove(listOf(task(11)))
+        connect(taskPresence = presence(11), taskMove = move)
+        open(1, "com.a")
+        readUntil("window.opened")
+        // A round trip first: the session is answering this socket now.
+        send(mapOf("t" to "ping", "ts" to 1))
+        assertEquals(1L, readUntil("pong")["ts"])
+
+        val started = System.nanoTime()
+        send(mapOf("t" to "window.close", "stream" to 1))
+        readUntil("window.closed")
+        val elapsedMs = (System.nanoTime() - started) / 1_000_000
+        assertTrue("window.closed came back in ${elapsedMs}ms", elapsedMs < 100)
+        assertTrue("the close is reported before the removal ends", move.removed.isEmpty())
+
+        // The removal still happens, on its own daemon thread, not the reader's.
+        val deadline = System.currentTimeMillis() + 5_000
+        // real-time: the removal runs off the reader thread, so it is awaited, not assumed
+        while (System.currentTimeMillis() < deadline && move.removed.isEmpty()) Thread.sleep(10) // real-time: waiting for another thread
+        assertEquals(listOf(11), move.removed)
+        assertEquals("pocketdeck-close", move.threadName)
+        assertTrue("the removal thread must not keep the app alive", move.wasDaemon)
+
+        // The session is still answering other windows.
+        send(mapOf("t" to "ping", "ts" to 7))
+        assertEquals(7L, readUntil("pong")["ts"])
     }
 
     @Test
@@ -136,6 +197,7 @@ class CloseTaskTest : SessionFixture() {
         readUntil("window.opened")
         send(mapOf("t" to "window.close", "stream" to 1))
         readUntil("window.closed")
+        Thread.sleep(300) // real-time: give a wrong removal its moment before the assert
         assertTrue("the task a live window still shows is not removed", move.removed.isEmpty())
     }
 }

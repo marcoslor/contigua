@@ -261,6 +261,16 @@ class Session(
         Thread(r, "pocketdeck-hover").apply { isDaemon = true }
     }
 
+    /**
+     * A closed window's task removal (WIN-31): it re-reads the task list and
+     * waits for the system to settle, so it must not run on the reader thread,
+     * which is the one that answers every other window meanwhile. One thread
+     * for the session, and its answer never blocks the close itself.
+     */
+    private val closeTasks = Executors.newSingleThreadExecutor { r ->
+        Thread(r, "pocketdeck-close").apply { isDaemon = true }
+    }
+
     /** The Mac asked for notifications; forwarding also needs the listener grant. */
     @Volatile private var notifyWanted = false
     @Volatile private var notifyGranted = false
@@ -501,6 +511,8 @@ class Session(
         runCatching { fsWatcher?.close() }
         stopStreamWatch()
         hoverExecutor.shutdownNow()
+        // A removal already running finishes; no close can arrive now.
+        closeTasks.shutdown()
         runCatching { audioCapture?.stop() }
         queue.clearAudio()
         // Close outside the lock: a stream's close stops an encoder and joins
@@ -1047,7 +1059,7 @@ class Session(
             state.taskId = task.taskId
         } else {
             launchOn(displayId, task.pkg, task.activity, newInstance = false)
-            state.taskId = awaitTaskId(displayId)
+            state.taskId = awaitTaskId(stream, displayId)
         }
         gate.announce(stream) {
             val fields = openedFields(stream, displayId, w, h, state.taskId)
@@ -1111,7 +1123,7 @@ class Session(
                 is WindowContent.Link -> viewOn(displayId, content.url)
                 WindowContent.Phone -> true
             }
-            val taskId = awaitTaskId(displayId)
+            val taskId = awaitTaskId(stream, displayId)
             state.taskId = taskId
             gate.announce(stream) { sendJson(openedFields(stream, displayId, w, h, taskId)) }
             if (!launched) {
@@ -1142,16 +1154,25 @@ class Session(
     /**
      * The task the display shows, waited for at most [TASK_WAIT_MS]: the platform
      * creates it inside the launch call, so this normally answers at once. 0 when
-     * the phone cannot read its task list.
+     * the phone cannot read its task list. The wait is measured per open: the
+     * reader thread pays it and answers no other window meanwhile.
      */
-    private fun awaitTaskId(displayId: Int): Int {
+    private fun awaitTaskId(stream: Int, displayId: Int): Int {
         val presence = taskPresence ?: return 0
-        val deadline = System.currentTimeMillis() + TASK_WAIT_MS
+        val startedMs = System.currentTimeMillis()
+        val deadline = startedMs + TASK_WAIT_MS
+        var taskId = 0
         while (true) {
-            runCatching { presence.taskId(displayId) }.getOrNull()?.let { return it }
-            if (System.currentTimeMillis() >= deadline) return 0
+            val found = runCatching { presence.taskId(displayId) }.getOrNull()
+            if (found != null) {
+                taskId = found
+                break
+            }
+            if (System.currentTimeMillis() >= deadline) break
             Thread.sleep(TASK_POLL_MS)
         }
+        log("opened stream=$stream task_wait_ms=${System.currentTimeMillis() - startedMs}")
+        return taskId
     }
 
     private fun onWindowResize(obj: Map<String, Any?>, frame: Frame) {
@@ -1197,14 +1218,17 @@ class Session(
         }
         display.close(stream)
         gate.forget(stream)
-        // WIN-31: the display is gone; if its task outlived it, end that task
-        // only (never the app: the other windows and the session keep running).
-        endClosedTask(state)
-        sendJson(mapOf("t" to "window.closed", "stream" to stream, "reason" to "requested"))
+        // The panel follows the session's windows, so it is settled before the
+        // reply: a closed window never leaves the Mac on a held panel.
         updatePower()
+        sendJson(mapOf("t" to "window.closed", "stream" to stream, "reason" to "requested"))
         stopAudioIfIdle()
         notifyAudioWindowsChanged()
         runCatching { callback.onSessionChanged(true, clientId, currentMacName ?: clientName, windowCount()) }
+        // WIN-31: the display is gone; a task that outlived it is ended off this
+        // thread, after the Mac has the close (never the app: the other windows
+        // and the session keep running).
+        closeTasks.execute { endClosedTask(state) }
         log("closed stream $stream (display ${state.displayId})")
     }
 
