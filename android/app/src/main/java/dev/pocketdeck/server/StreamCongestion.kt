@@ -210,12 +210,16 @@ internal class CongestionDriver(
             actions = entry.machine.onEvent(event)
             val after = entry.machine.state
             val drops = entry.machine.dropsInEpisode
-            if (after == StreamCongestion.State.FLOWING && before != after) {
-                line = "stream $stream congestion: $before --${eventName(event)}--> $after after $drops drops"
+            if (after == StreamCongestion.State.FLOWING) {
+                if (before != after) {
+                    line = "stream $stream congestion: $before --${eventName(event)}--> $after after $drops drops"
+                }
+                // A tick that outlived the episode may re-create a flowing
+                // entry; it must not stay in the map with nothing to drive.
                 streams.remove(stream)
             } else {
                 if (after != before) line = "stream $stream congestion: $before --${eventName(event)}--> $after"
-                if (after != StreamCongestion.State.FLOWING && entry.tick == null) {
+                if (entry.tick == null) {
                     entry.tick = runCatching {
                         executor.schedule({ tick(stream) }, StreamCongestion.TICK_MS, TimeUnit.MILLISECONDS)
                     }.getOrNull()
