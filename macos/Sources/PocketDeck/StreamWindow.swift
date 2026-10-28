@@ -1319,8 +1319,10 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         }
         pillShowWork = show
         pillOfflineWork = offline
-        DispatchQueue.main.asyncAfter(deadline: .now() + LinkPhaseClock.reconnectingAfter, execute: show)
-        DispatchQueue.main.asyncAfter(deadline: .now() + LinkPhaseClock.offlineAfter, execute: offline)
+        // The pill's two phases are one-shot timers on the main run loop, next
+        // to the machine's clock (LinkPhaseClock holds the same two numbers).
+        DispatchQueue.main.asyncAfter(deadline: .now() + LinkPhaseClock.reconnectingAfter, execute: show)  // gcd: the pill's delay
+        DispatchQueue.main.asyncAfter(deadline: .now() + LinkPhaseClock.offlineAfter, execute: offline)  // gcd: the pill's delay
     }
 
     // MARK: File-drop pill (docs/design/dragdrop.md)

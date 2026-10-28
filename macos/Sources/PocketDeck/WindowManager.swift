@@ -897,7 +897,9 @@ final class WindowManager {
             let first = firstFrameNoted.insert(stream).inserted
             lock.unlock()
             if first, let controller {
-                DispatchQueue.main.async { [weak self, weak controller] in
+                // One hop from the session's video queue to the main thread,
+                // where the window's cover and the menus live.
+                DispatchQueue.main.async { [weak self, weak controller] in  // gcd: off the video queue
                     controller?.noteFirstFrame()
                     // The New Window items say "Opening on your phone…" until
                     // this moment: the menus and the Dock shim read it now
