@@ -258,6 +258,7 @@ struct GeneralSettings: View {
                 }
             Toggle("Show in menu bar", isOn: $showMenuBar)
             Toggle("Share clipboard with your phone", isOn: $shareClipboard)
+                .onChange(of: shareClipboard) { _, on in controller.clipboardSettingChanged(on) }
             // The row says what it shares, in either position (AGENTS.md:
             // personal data is opt-in, so the off state has to be as clear as on).
             Text(

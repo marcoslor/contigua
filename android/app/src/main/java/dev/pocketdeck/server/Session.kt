@@ -184,6 +184,11 @@ class Session(
     private val clipSync = ClipSync()
     /** How many sensitive clips were kept on the phone this session (a count, never text). */
     @Volatile private var sensitiveClipsSkipped = 0
+    /** The Mac's clipboard gate for this session; Off until it says otherwise. */
+    @Volatile private var clipGateState = ClipGate.OFF
+
+    /** Whether the Mac's clipboard gate is on; the tests order a copy after it. */
+    internal val clipboardGateOn: Boolean get() = clipGateState == ClipGate.ON
     private val apk = packages?.let { ApkInstaller(it, ::sendJson, log) }
     private val share = ShareSender(::sendJson, queue::enqueueBulk, log)
     private val drop = dropLanding?.let { DropReceiver(it, ::sendJson, log) }
@@ -806,6 +811,7 @@ class Session(
                 "nav" -> onNav(obj, frame)
                 "text" -> onText(obj, frame)
                 "clip.set" -> onClipSet(obj)
+                "clip.enable" -> onClipEnable(obj)
                 "apk.install" -> onApkInstall(obj)
                 "apk.cancel" -> (obj["id"] as? Number)?.let { apk?.cancel(it.toLong()) }
                 "drop.start" -> onDropStart(obj)
@@ -1094,6 +1100,7 @@ class Session(
     private fun startClipboardSync() {
         val port = clipboard ?: return
         port.listen { clip ->
+            if (clipGateState == ClipGate.OFF) return@listen
             if (clip.sensitive) {
                 // A password manager's item: the count only, never its text.
                 sensitiveClipsSkipped += 1
@@ -1102,6 +1109,21 @@ class Session(
                 sendJson(mapOf("t" to "clip.set", "text" to clip.text))
             }
         }
+    }
+
+    /**
+     * `clip.enable`: the Mac's own "Share clipboard with your phone" setting,
+     * the only switch (SHARE-13). Off stops the phone's sends and its applies at
+     * once; on starts them again. One-way: the Mac needs no answer.
+     */
+    private fun onClipEnable(obj: Map<String, Any?>) {
+        val on = Json.bool(obj["on"]) ?: run {
+            sendError("bad_request", "clip.enable needs a boolean on", 0)
+            return
+        }
+        val next = clipGate(clipGateState, ClipGateEvent.MacSaid(on))
+        if (next != clipGateState) log("clip gate: ${clipGateState.name.lowercase()} -> ${next.name.lowercase()}")
+        clipGateState = next
     }
 
     private fun stopClipboardSync() {
@@ -1631,6 +1653,12 @@ class Session(
     private fun onClipSet(obj: Map<String, Any?>) {
         val port = clipboard ?: return
         val text = Json.str(obj["text"]) ?: return
+        // Off is off in both directions: the Mac's own setting says so, and its
+        // text does not land here either (SHARE-13).
+        if (clipGateState == ClipGate.OFF) {
+            log("clip.set ignored (clipboard sync is off)")
+            return
+        }
         if (!clipSync.accept(text)) {
             log("clip.set ignored (empty or over ${ClipSync.MAX_BYTES} bytes)")
             return
@@ -1795,6 +1823,7 @@ class Session(
     // ------------------------------------------------------------------
 
     private fun onClipImageStart(obj: Map<String, Any?>) {
+        if (clipGateState == ClipGate.OFF) return
         val id = (obj["id"] as? Number)?.toInt() ?: return
         val size = (obj["size"] as? Number)?.toLong() ?: -1L
         clipImageReceiver.begin(id, Json.str(obj["mime"]), size)
@@ -1833,7 +1862,7 @@ class Session(
     private fun clipImageLoop() {
         while (!closed.get() && clipImagePoll === Thread.currentThread()) {
             val port = clipImages
-            if (port != null) {
+            if (port != null && clipGateState == ClipGate.ON) {
                 val image = runCatching { port.readImage() }.getOrNull()
                 if (image != null && clipImageSync.shouldSend(image) &&
                     !clipImageSender.send(image)) {

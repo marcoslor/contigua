@@ -2063,6 +2063,15 @@ final class ConnectionController {
         }
     }
 
+    /// "Share clipboard with your phone" changed (Settings ▸ General): the
+    /// person's answer is stored, and a live session is told at once so the
+    /// phone stops (or resumes) sending and applying clips instead of being
+    /// ignored here (SHARE-13).
+    func clipboardSettingChanged(_ on: Bool) {
+        profile.defaults.set(on, forKey: ClipboardSync.enabledKey)
+        session?.enableClipboard(on)
+    }
+
     /// The per-device opt-in toggle changed (Settings ▸ Phones).
     func notifySettingChanged(deviceId: String, on: Bool) {
         if isPreview, previewNotify[deviceId] != nil {
@@ -2211,7 +2220,12 @@ final class ConnectionController {
             filesDomain.sessionReady(true)
         }
         everOnline = true
-        if let session { startClipboardSync(on: session) }
+        if let session {
+            startClipboardSync(on: session)
+            // The phone starts with its gate off: every ready session learns
+            // the Mac's own choice, as it learns the notify switch below.
+            session.enableClipboard(ClipboardSync.isEnabled(in: profile.defaults))
+        }
         session?.requestApps()
         // The per-phone toggle: a freshly ready session learns the opt-in now
         // (and after every reconnect, since the phone starts with gates off).

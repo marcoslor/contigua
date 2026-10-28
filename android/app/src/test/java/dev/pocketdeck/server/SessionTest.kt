@@ -173,6 +173,11 @@ class SessionTest {
         // The session starts the clipboard listener after queuing welcome, so a
         // test that copies right after reading welcome must wait for it.
         await { platform.clipListening }
+        // The phone starts with the gate off; this Mac has the switch on, as a
+        // real Mac sends right after welcome (SHARE-13). Wait for it to apply
+        // before a test copies anything; no frame is consumed doing so.
+        send(mapOf("t" to "clip.enable", "on" to true))
+        await { session?.clipboardGateOn == true }
     }
 
     private fun await(timeoutMs: Long = 2_000, condition: () -> Boolean) {
@@ -995,6 +1000,45 @@ class SessionTest {
         // the phone's own copy, not the text that just arrived.
         platform.changeClip("from phone")
         assertEquals("from phone", readUntil("clip.set")["text"])
+    }
+
+    /**
+     * `clip.enable` is the Mac's own switch, over the wire (SHARE share Q2): off
+     * stops the phone's sends and its applies at once, on starts them again.
+     */
+    @Test
+    fun thePhoneStopsSendingAfterTheMacTurnsTheGateOff() {
+        addAndAuthenticate()
+        send(mapOf("t" to "clip.enable", "on" to false))
+        // Messages are handled in order, so the pong proves the gate was applied.
+        send(mapOf("t" to "ping", "ts" to 91))
+        assertEquals("pong", readUntil("pong")["t"])
+
+        platform.changeClip("after the gate went off")
+        send(mapOf("t" to "ping", "ts" to 92))
+        // Nothing may precede the pong: a clip.set here is the gate failing.
+        assertEquals("pong", readJson()["t"])
+
+        send(mapOf("t" to "clip.enable", "on" to true))
+        send(mapOf("t" to "ping", "ts" to 93))
+        assertEquals("pong", readUntil("pong")["t"])
+        platform.changeClip("after the gate came back")
+        assertEquals("after the gate came back", readUntil("clip.set")["text"])
+    }
+
+    /** While the gate is off the phone also applies nothing the Mac sends. */
+    @Test
+    fun aClipFromTheMacIsNotAppliedWhileTheGateIsOff() {
+        addAndAuthenticate()
+        send(mapOf("t" to "clip.enable", "on" to false))
+        send(mapOf("t" to "ping", "ts" to 94))
+        assertEquals("pong", readUntil("pong")["t"])
+
+        send(mapOf("t" to "clip.set", "text" to "must not land"))
+        send(mapOf("t" to "ping", "ts" to 95))
+        assertEquals("pong", readUntil("pong")["t"])
+
+        assertEquals(emptyList<String>(), platform.clipWrites.toList())
     }
 
     /**
