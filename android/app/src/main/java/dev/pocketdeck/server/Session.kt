@@ -167,11 +167,17 @@ class Session(
         /** Read by pocketdeck-watch; written by the reader thread. */
         @Volatile var paused = false
 
+        /** The display's top task id (`window.opened`, `window.close`); 0 when unknown. */
+        @Volatile var taskId = 0
+
         /** Written before the state is published under `streams`; never reassigned. */
         var content: WindowContent? = null
 
         /** Written by pocketdeck-watch, read by the audio thread's capture plan. */
-        @Volatile var lastTitle: TopApp? = null
+        @Volatile var lastTitle: TopTask? = null
+
+        /** pocketdeck-watch only: an app stream's `window.title` throttle (WIN-28). */
+        var title = TaskLabelThrottle.State()
 
         /** pocketdeck-watch only. */
         var hadTask = false
@@ -188,6 +194,15 @@ class Session(
     private val teardown = AtomicReference(SessionTeardown.State.LIVE)
 
     private val streams = LinkedHashMap<Int, StreamState>()
+    /**
+     * `window.opened` before any video (PROTOCOL "Video rules"), while the opener
+     * waits for the task id it carries.
+     */
+    private val gate = OpenGate(
+        sendJson = { stream, json -> queue.enqueueControl(stream, Frames.encodeJson(stream, json)) },
+        sendControl = { stream, bytes -> queue.enqueueControl(stream, bytes) },
+        sendDelta = { stream, ptsUs, bytes -> queue.enqueueDelta(stream, ptsUs, bytes) },
+    )
     private val clipSync = ClipSync()
     /** How many sensitive clips were kept on the phone this session (a count, never text). */
     @Volatile private var sensitiveClipsSkipped = 0
@@ -246,6 +261,16 @@ class Session(
         Thread(r, "pocketdeck-hover").apply { isDaemon = true }
     }
 
+    /**
+     * A closed window's task removal (WIN-31): it re-reads the task list and
+     * waits for the system to settle, so it must not run on the reader thread,
+     * which is the one that answers every other window meanwhile. One thread
+     * for the session, and its answer never blocks the close itself.
+     */
+    private val closeTasks = Executors.newSingleThreadExecutor { r ->
+        Thread(r, "pocketdeck-close").apply { isDaemon = true }
+    }
+
     /** The Mac asked for notifications; forwarding also needs the listener grant. */
     @Volatile private var notifyWanted = false
     @Volatile private var notifyGranted = false
@@ -284,6 +309,8 @@ class Session(
         }
         // The phone's panel, when the person's Mac holds it off for the mirror.
         message["panel"] = if (power.panelHeldOff) "off" else "on"
+        // WIN-32: the most app windows this phone runs at once.
+        message["maxWindows"] = WindowCap.MAX_WINDOWS
         sendJson(message)
     }
 
@@ -484,6 +511,8 @@ class Session(
         runCatching { fsWatcher?.close() }
         stopStreamWatch()
         hoverExecutor.shutdownNow()
+        // A removal already running finishes; no close can arrive now.
+        closeTasks.shutdown()
         runCatching { audioCapture?.stop() }
         queue.clearAudio()
         // Close outside the lock: a stream's close stops an encoder and joins
@@ -937,7 +966,9 @@ class Session(
     }
 
     private fun onAppsList() {
-        val apps = catalog.list().map { mapOf("pkg" to it.pkg, "label" to it.label, "activity" to it.activity) }
+        val apps = catalog.list().map {
+            mapOf("pkg" to it.pkg, "label" to it.label, "activity" to it.activity, "multi" to it.multi)
+        }
         sendJson(mapOf("t" to "apps", "apps" to apps))
     }
 
@@ -971,7 +1002,7 @@ class Session(
             }
             WindowContent.App(pkg, Json.str(obj["activity"]))
         }
-        openStream(obj, stream, content)
+        openStream(obj, stream, content, newInstance = Json.bool(obj["newInstance"]) ?: false)
     }
 
     private fun onLinkOpen(obj: Map<String, Any?>, frame: Frame) {
@@ -980,7 +1011,7 @@ class Session(
             sendError("bad_url", "link.open needs an http, https, geo, tel or mailto URL", stream)
             return
         }
-        openStream(obj, stream, WindowContent.Link(url))
+        openStream(obj, stream, WindowContent.Link(url), newInstance = false)
     }
 
     /**
@@ -1013,20 +1044,28 @@ class Session(
             sendError("bad_size", "task.continue needs w,h", stream)
             return
         }
-        if (synchronized(streams) { streams.containsKey(stream) }) display.close(stream)
+        if (synchronized(streams) { streams.containsKey(stream) }) {
+            display.close(stream)
+            gate.forget(stream)
+        }
+        gate.expect(stream)
         val displayId = display.open(stream, w, h, dpi, this)
-        val state = StreamState(stream, displayId, IntSize(w, h))
-            .also { it.content = WindowContent.App(task.pkg, task.activity) }
+        val state = StreamState(stream, displayId, IntSize(w, h)).also { it.content = WindowContent.App(task.pkg, task.activity) }
         synchronized(streams) { streams[stream] = state }
         // Moving before the reply: `started` must match what actually happened.
         val moved = runCatching { mover.move(task.taskId, displayId) }.getOrDefault(false)
-        if (moved) goHome() else launchOn(stream, displayId, task.pkg, task.activity)
-        sendJson(
-            mapOf(
-                "t" to "window.opened", "stream" to stream, "displayId" to displayId,
-                "w" to w, "h" to h, "started" to (if (moved) "moved" else "fresh"),
-            ),
-        )
+        if (moved) {
+            goHome()
+            state.taskId = task.taskId
+        } else {
+            launchOn(displayId, task.pkg, task.activity, newInstance = false)
+            state.taskId = awaitTaskId(stream, displayId)
+        }
+        gate.announce(stream) {
+            val fields = openedFields(stream, displayId, w, h, state.taskId)
+            fields["started"] = if (moved) "moved" else "fresh"
+            sendJson(fields)
+        }
         updatePower()
         runCatching { callback.onSessionChanged(true, clientId, currentMacName ?: clientName, windowCount()) }
         startStreamWatch()
@@ -1042,7 +1081,7 @@ class Session(
     }
 
     /** Creates the display for a `window.open` / `link.open` and starts its content. */
-    private fun openStream(obj: Map<String, Any?>, stream: Int, content: WindowContent) {
+    private fun openStream(obj: Map<String, Any?>, stream: Int, content: WindowContent, newInstance: Boolean) {
         val w = floor16(Json.int(obj["w"]) ?: 0)
         val h = floor16(Json.int(obj["h"]) ?: 0)
         val dpi = Json.int(obj["dpi"]) ?: 160
@@ -1050,31 +1089,90 @@ class Session(
             sendError("bad_size", "${obj["t"]} needs w,h", stream)
             return
         }
-        if (synchronized(streams) { streams.containsKey(stream) }) display.close(stream)
+        // WIN-32: the cap is read before a display exists, so a refusal costs the
+        // phone nothing; the mirror is never counted (its own encoder).
+        if (WindowCap.counted(content) && !WindowCap.allows(openAppStreams(excluding = stream))) {
+            sendError("too_many_windows", "the phone runs at most ${WindowCap.MAX_WINDOWS} app windows", stream)
+            return
+        }
+        if (synchronized(streams) { streams.containsKey(stream) }) {
+            display.close(stream)
+            gate.forget(stream)
+        }
+        gate.expect(stream)
         if (content == WindowContent.Phone) {
             val size = runCatching { display.openMirror(stream, w, h, this) }.getOrElse {
                 log("phone mirror failed: ${it.message}")
+                gate.forget(stream)
                 sendError("mirror_unavailable", "this phone can't mirror its screen", stream)
                 return
             }
             val state = StreamState(stream, PHONE_DISPLAY, size).also { it.content = content }
             synchronized(streams) { streams[stream] = state }
-            sendJson(mapOf("t" to "window.opened", "stream" to stream, "displayId" to PHONE_DISPLAY, "w" to size.w, "h" to size.h))
+            gate.announce(stream) {
+                sendJson(openedFields(stream, PHONE_DISPLAY, size.w, size.h, taskId = 0))
+            }
         } else {
             val displayId = display.open(stream, w, h, dpi, this)
             val state = StreamState(stream, displayId, IntSize(w, h)).also { it.content = content }
             synchronized(streams) { streams[stream] = state }
-            sendJson(mapOf("t" to "window.opened", "stream" to stream, "displayId" to displayId, "w" to w, "h" to h))
-            when (content) {
-                is WindowContent.App -> launchOn(stream, displayId, content.pkg, content.activity)
-                is WindowContent.Link -> viewOn(stream, displayId, content.url)
-                WindowContent.Phone -> Unit
+            // The launch first: `window.opened` names the task it made (WIN-32),
+            // and video that arrived before this point waits in the gate.
+            val launched = when (content) {
+                is WindowContent.App -> launchOn(displayId, content.pkg, content.activity, newInstance)
+                is WindowContent.Link -> viewOn(displayId, content.url)
+                WindowContent.Phone -> true
+            }
+            val taskId = awaitTaskId(stream, displayId)
+            state.taskId = taskId
+            gate.announce(stream) { sendJson(openedFields(stream, displayId, w, h, taskId)) }
+            if (!launched) {
+                when (content) {
+                    is WindowContent.App -> sendError("launch_failed", "could not launch ${content.pkg}", stream)
+                    is WindowContent.Link -> sendError("launch_failed", "no app opens this link", stream)
+                    WindowContent.Phone -> Unit
+                }
             }
         }
         updatePower()
         runCatching { callback.onSessionChanged(true, clientId, currentMacName ?: clientName, windowCount()) }
         startStreamWatch()
         notifyAudioWindowsChanged()
+    }
+
+    private fun openedFields(stream: Int, displayId: Int, w: Int, h: Int, taskId: Int): LinkedHashMap<String, Any?> =
+        linkedMapOf(
+            "t" to "window.opened", "stream" to stream, "displayId" to displayId,
+            "w" to w, "h" to h, "taskId" to taskId,
+        )
+
+    /** App streams open now, the one being reopened excluded: the cap's count (WIN-32). */
+    private fun openAppStreams(excluding: Int): Int = synchronized(streams) {
+        streams.values.count { it.stream != excluding && WindowCap.counted(it.content) }
+    }
+
+    /**
+     * The task the display shows, waited for at most [TASK_WAIT_MS]: the platform
+     * creates it inside the launch call, so this normally answers at once. 0 when
+     * the phone cannot read its task list. The wait is measured per open: the
+     * reader thread pays it and answers no other window meanwhile.
+     */
+    private fun awaitTaskId(stream: Int, displayId: Int): Int {
+        val presence = taskPresence ?: return 0
+        val startedMs = System.currentTimeMillis()
+        val deadline = startedMs + TASK_WAIT_MS
+        var taskId = 0
+        while (true) {
+            val found = runCatching { presence.taskId(displayId) }.getOrNull()
+            if (found != null) {
+                taskId = found
+                break
+            }
+            if (System.currentTimeMillis() >= deadline) break
+            Thread.sleep(TASK_POLL_MS)
+        }
+        log("opened stream=$stream task_wait_ms=${System.currentTimeMillis() - startedMs}")
+        return taskId
     }
 
     private fun onWindowResize(obj: Map<String, Any?>, frame: Frame) {
@@ -1119,12 +1217,59 @@ class Session(
             return
         }
         display.close(stream)
-        sendJson(mapOf("t" to "window.closed", "stream" to stream, "reason" to "requested"))
+        gate.forget(stream)
+        // The panel follows the session's windows, so it is settled before the
+        // reply: a closed window never leaves the Mac on a held panel.
         updatePower()
+        sendJson(mapOf("t" to "window.closed", "stream" to stream, "reason" to "requested"))
         stopAudioIfIdle()
         notifyAudioWindowsChanged()
         runCatching { callback.onSessionChanged(true, clientId, currentMacName ?: clientName, windowCount()) }
+        // WIN-31: the display is gone; a task that outlived it is ended off this
+        // thread, after the Mac has the close (never the app: the other windows
+        // and the session keep running).
+        closeTasks.execute { endClosedTask(state) }
         log("closed stream $stream (display ${state.displayId})")
+    }
+
+    /**
+     * WIN-31: the closed display's task, when the platform left it behind.
+     * `FLAG_DESTROY_CONTENT_ON_REMOVAL` takes the activity with the display but
+     * not the task's Recents card, so the decision asks both lists whether the
+     * task still exists and removes only one that no other window shows.
+     */
+    private fun endClosedTask(state: StreamState) {
+        val mover = taskMove ?: run {
+            // No task manager (a build without the shell service): nothing can
+            // be read or removed, and the line says so instead of claiming one.
+            logCloseDecision(state, CloseTask.Decision(CloseTask.Action.NONE, CloseTask.Reason.UNREAD))
+            return
+        }
+        val running = runCatching { mover.tasks() }.getOrNull()?.map { it.taskId }?.toSet()
+        val recents = runCatching { mover.recentTaskIds() }.getOrNull()
+        val otherTasks = synchronized(streams) {
+            streams.values.mapNotNull { it.taskId.takeIf { id -> id > 0 } }.toSet()
+        }
+        val decision = CloseTask.judge(
+            CloseTask.Facts(
+                counted = WindowCap.counted(state.content),
+                taskId = state.taskId,
+                otherTasks = otherTasks,
+                runningNow = running,
+                recentsNow = recents,
+            ),
+        )
+        if (decision.action == CloseTask.Action.REMOVE_TASK) {
+            runCatching { mover.remove(state.taskId) }
+        }
+        logCloseDecision(state, decision)
+    }
+
+    /** One line per close decision, ids and states only: R-PRIV-1. */
+    private fun logCloseDecision(state: StreamState, decision: CloseTask.Decision) {
+        val closeState = decision.action
+        val closeCode = decision.reason
+        log("close: stream=${state.stream} task=${state.taskId} action=$closeState reason=$closeCode")
     }
 
     private fun onWindowPause(obj: Map<String, Any?>, frame: Frame) {
@@ -1162,7 +1307,9 @@ class Session(
     private fun onWindowLaunch(obj: Map<String, Any?>, frame: Frame) {
         val state = requireState(streamOf(obj, frame)) ?: return
         val pkg = Json.str(obj["pkg"]) ?: return
-        launchOn(state.stream, state.displayId, pkg, Json.str(obj["activity"]))
+        if (!launchOn(state.displayId, pkg, Json.str(obj["activity"]), newInstance = false)) {
+            sendError("launch_failed", "could not launch $pkg", state.stream)
+        }
         // The shown app changes: the audio follow decision refreshes once the
         // top-app poll reports the new one (streamWatchLoop notifies).
     }
@@ -2079,10 +2226,9 @@ class Session(
     override fun onConfig(stream: Int, codec: Int, w: Int, h: Int, csd: ByteArray, content: IntRect) {
         // The picture's rect goes ahead of the config on the same lane: the Mac
         // crops each frame of this config to it.
-        queue.enqueueControl(stream, Frames.encodeJson(stream,
-            """{"t":"window.content","stream":$stream,"x":${content.x},"y":${content.y},"w":${content.w},"h":${content.h}}"""))
+        val rect = """{"t":"window.content","stream":$stream,"x":${content.x},"y":${content.y},"w":${content.w},"h":${content.h}}"""
         val payload = Frames.encodeVideoConfig(VideoConfigPayload(codec, w, h, csd))
-        queue.enqueueControl(stream, Frames.encode(Frames.TYPE_VIDEO_CONFIG, stream, payload))
+        gate.config(stream, rect, Frames.encode(Frames.TYPE_VIDEO_CONFIG, stream, payload))
     }
 
     override fun onFrame(stream: Int, ptsUs: Long, key: Boolean, data: ByteArray) {
@@ -2091,8 +2237,7 @@ class Session(
         // (uptime milliseconds) is the seam the JVM tests replace.
         power.noteFrame(now())
         val payload = Frames.encodeVideoFrame(VideoFramePayload(ptsUs, key, data))
-        val bytes = Frames.encode(Frames.TYPE_VIDEO_FRAME, stream, payload)
-        if (key) queue.enqueueControl(stream, bytes) else queue.enqueueDelta(stream, ptsUs, bytes)
+        gate.frame(stream, ptsUs, key, Frames.encode(Frames.TYPE_VIDEO_FRAME, stream, payload))
     }
 
     // ------------------------------------------------------------------
@@ -2286,16 +2431,20 @@ class Session(
     }
 
     /**
-     * Polls the top app on each display (phone-mode `window.title`) and, at most
-     * every [exitPollIntervalMs], whether an app window's display still has a
-     * task. It performs no query at all while there are no streams (the task list
-     * is only polled while ≥1 stream is open and unpaused).
+     * Polls the top task on each display (phone-mode `window.title`, an app
+     * stream's task label) and, at most every [exitPollIntervalMs], whether an
+     * app window's display still has a task. It performs no query at all while
+     * there are no streams (the task list is only polled while ≥1 stream is open
+     * and unpaused).
      */
     private fun streamWatchLoop() {
         var lastExitCheck = 0L
         var lastSecureCheck = 0L
         while (!isClosed) {
             val snapshot = synchronized(streams) { streams.values.toList() }
+            // A held label's due time: the loop comes back for it instead of
+            // waiting its whole second (WIN-28's "the last value always goes out").
+            var wakeAtMs = 0L
             // The mirror's secure surface is only worth reading while a phone
             // window can show it, and at most once a second (the protocol says
             // state is sent on change, not on a poll tick).
@@ -2314,12 +2463,28 @@ class Session(
 
                 titleObserver?.let { observer ->
                     var titlesChanged = false
+                    val nowMs = System.currentTimeMillis()
                     for (s in unpaused) {
-                        val top = runCatching { observer.topApp(s.displayId) }.getOrNull() ?: continue
-                        if (top != s.lastTitle) {
+                        val top = runCatching { observer.topTask(s.displayId) }.getOrNull() ?: continue
+                        val previous = s.lastTitle
+                        val changed = top != previous
+                        // The app on top, not its label: a browser's tab title is
+                        // the throttled case, its package is not (WIN-3, WIN-28).
+                        val appChanged = previous == null || previous.pkg != top.pkg || previous.label != top.label
+                        if (changed) {
                             s.lastTitle = top
                             titlesChanged = true
-                            sendJson(mapOf("t" to "window.title", "stream" to s.stream, "label" to top.label, "pkg" to top.pkg))
+                        }
+                        if (top.taskId > 0) s.taskId = top.taskId
+                        when (s.content) {
+                            is WindowContent.App, is WindowContent.Link -> {
+                                val due = tickAppTitle(s, top, appChanged, nowMs)
+                                if (due > 0 && (wakeAtMs == 0L || due < wakeAtMs)) wakeAtMs = due
+                            }
+                            else -> if (changed) {
+                                // The phone's own screen: today's message, at once.
+                                sendJson(mapOf("t" to "window.title", "stream" to s.stream, "label" to top.label, "pkg" to top.pkg))
+                            }
                         }
                     }
                     // A window's top app changed: the audio follow plan does
@@ -2337,8 +2502,53 @@ class Session(
                 }
             }
 
-            synchronized(pairLock) { if (!isClosed) runCatching { pairLock.wait(1_000) } }
+            val wakeMs = if (wakeAtMs == 0L) 1_000L else (wakeAtMs - System.currentTimeMillis()).coerceIn(20L, 1_000L)
+            synchronized(pairLock) { if (!isClosed) runCatching { pairLock.wait(wakeMs) } }
         }
+    }
+
+    /**
+     * One tick of an app or link stream's `window.title` (WIN-3, WIN-28). Every
+     * message carries the display's `label` and `pkg`; `title` is the task's own
+     * label, the app's while the phone describes none.
+     *
+     * A new app on top goes out at once (the Mac's link and handoff windows take
+     * their package from it) and its title counts as the second's send; a change
+     * to the title alone waits the machine's second. Returns the time a held
+     * label is due, or 0 when nothing waits.
+     */
+    private fun tickAppTitle(s: StreamState, top: TopTask, appChanged: Boolean, nowMs: Long): Long {
+        val title = top.taskLabel ?: top.label
+        var state = s.title
+        val events = if (appChanged) {
+            listOf(TaskLabelThrottle.Event.Immediate(title, nowMs))
+        } else {
+            listOf(TaskLabelThrottle.Event.Label(title, nowMs), TaskLabelThrottle.Event.Wake(nowMs))
+        }
+        val actions = ArrayList<TaskLabelThrottle.Action>(2)
+        for (event in events) {
+            val step = TaskLabelThrottle.transition(state, event)
+            state = step.state
+            actions.addAll(step.actions)
+        }
+        s.title = state
+        var due = 0L
+        for (action in actions) {
+            when (action) {
+                is TaskLabelThrottle.Action.Send -> {
+                    sendJson(
+                        mapOf(
+                            "t" to "window.title", "stream" to s.stream,
+                            "label" to top.label, "pkg" to top.pkg, "title" to action.label,
+                        ),
+                    )
+                    // R-PRIV-1: a label is phone content — its length, never it.
+                    log("window.title stream=${s.stream} task=${s.taskId} len=${action.label.length}")
+                }
+                is TaskLabelThrottle.Action.Wake -> due = action.atMs
+            }
+        }
+        return due
     }
 
     private fun checkAppExit(candidates: List<StreamState>) {
@@ -2359,6 +2569,7 @@ class Session(
     private fun closeAppExited(stream: Int) {
         val state = synchronized(streams) { streams.remove(stream) } ?: return
         display.close(stream)
+        gate.forget(stream)
         sendJson(mapOf("t" to "window.closed", "stream" to stream, "reason" to "app_exited"))
         updatePower()
         stopAudioIfIdle()
@@ -2421,22 +2632,18 @@ class Session(
     private fun streamOf(obj: Map<String, Any?>, frame: Frame): Int =
         Json.int(obj["stream"]) ?: frame.stream
 
-    private fun launchOn(stream: Int, displayId: Int, pkg: String, activity: String?) {
-        if (displayId < 0) return
-        val ok = runCatching { launcher.launch(displayId, pkg, activity) }.getOrDefault(false)
-        if (!ok) {
-            sendError("launch_failed", "could not launch $pkg", stream)
-            log("launch $pkg failed on display $displayId")
-        }
+    private fun launchOn(displayId: Int, pkg: String, activity: String?, newInstance: Boolean): Boolean {
+        if (displayId < 0) return false
+        val ok = runCatching { launcher.launch(displayId, pkg, activity, newInstance) }.getOrDefault(false)
+        if (!ok) log("launch $pkg failed on display $displayId")
+        return ok
     }
 
-    private fun viewOn(stream: Int, displayId: Int, url: String) {
-        if (displayId < 0) return
+    private fun viewOn(displayId: Int, url: String): Boolean {
+        if (displayId < 0) return false
         val ok = runCatching { launcher.view(displayId, url) }.getOrDefault(false)
-        if (!ok) {
-            sendError("launch_failed", "no app opens this link", stream)
-            log("view link failed on display $displayId")
-        }
+        if (!ok) log("view link failed on display $displayId")
+        return ok
     }
 
     private fun logOnce(message: String) {
@@ -2461,6 +2668,10 @@ class Session(
 
         /** The phone's own screen: where "Continue on Mac" looks. */
         const val PHONE_DISPLAY_ID = 0
+
+        /** How long `window.opened` waits for the task id the launch made. */
+        const val TASK_WAIT_MS = 2_000L
+        const val TASK_POLL_MS = 50L
 
         /** A sanity bound on `notify.action`'s index (the app checks the real set). */
         const val MAX_ACTION_INDEX = 64

@@ -722,7 +722,9 @@ def cmd_apps(client, _args):
     msg = expect_json(client, "apps")
     apps = msg.get("apps", [])
     for app in apps:
-        print("%s\t%s" % (app.get("pkg"), app.get("label")))
+        # WIN-24: the phone says per app whether a second instance can run.
+        print("%s\t%s\t%s" % (app.get("pkg"), app.get("label"),
+                               "multi" if app.get("multi") else "single"))
     print("# %d apps" % len(apps))
     return 0
 
@@ -771,6 +773,9 @@ def _open_request(args, stream):
         req["mode"] = "phone"
     else:
         req["pkg"] = args.target
+    if getattr(args, "new_instance", False):
+        # WIN-32: another task of the same app, not a raise of its window.
+        req["newInstance"] = True
     return req
 
 
@@ -878,8 +883,8 @@ def cmd_open(client, args):
     first_ms = (stats["first_frame_at"] - started) * 1000.0
     fps = stats["frames"] / elapsed
     kbps = stats["bytes"] * 8.0 / elapsed / 1000.0
-    print("stream=%d size=%dx%d displayId=%s" %
-          (stream, w, h, stats["opened"].get("displayId")))
+    print("stream=%d size=%dx%d displayId=%s taskId=%s" %
+          (stream, w, h, stats["opened"].get("displayId"), stats["opened"].get("taskId")))
     print("fps=%.1f kbps=%.1f first_frame_ms=%.1f frames=%d" %
           (fps, kbps, first_ms, stats["frames"]))
     client.send_json({"t": "window.close", "stream": stream})
@@ -2571,6 +2576,8 @@ def build_parser():
     sp.add_argument("--layers-dir", help="also write fg/bg/mono layer PNGs here")
 
     sp = sub.add_parser("open", help="open a window and record video", **spp)
+    sp.add_argument("--new-instance", action="store_true", dest="new_instance",
+                    help="ask the phone for another task of the app (window.open newInstance)")
     sp.add_argument("target", nargs="?", help="package to launch")
     sp.add_argument("--phone", action="store_true", help="phone mode instead of an app")
     sp.add_argument("--url", help="open this link (link.open) instead of an app")

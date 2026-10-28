@@ -12,7 +12,11 @@ import java.io.File
 
 data class IntSize(val w: Int, val h: Int)
 
-data class AppEntry(val pkg: String, val label: String, val activity: String)
+/**
+ * @property multi whether a second instance can run in its own task (WIN-24,
+ *   [MultiInstancePolicy]); the Mac's New Window items follow it.
+ */
+data class AppEntry(val pkg: String, val label: String, val activity: String, val multi: Boolean)
 
 data class DeviceInfo(
     val id: String,
@@ -219,11 +223,19 @@ interface AudioCaptureLayer {
     fun stop()
 }
 
-/** Reports the top app on a display, for phone-mode `window.title` updates. */
-data class TopApp(val pkg: String, val label: String)
+/**
+ * The top task on a display: the app (phone-mode titles, the audio follow) and
+ * the task's own label (an app stream's `window.title`, WIN-28).
+ *
+ * @property taskId the phone's task id, 0 when unknown.
+ * @property taskLabel `taskDescription.label` — the window's own title (a
+ *   browser page's, a conversation's); null when the phone described none and
+ *   [label] is the fallback.
+ */
+data class TopTask(val pkg: String, val label: String, val taskId: Int = 0, val taskLabel: String? = null)
 
 fun interface WindowObserver {
-    fun topApp(displayId: Int): TopApp?
+    fun topTask(displayId: Int): TopTask?
 }
 
 /**
@@ -233,6 +245,12 @@ fun interface WindowObserver {
  */
 fun interface TaskPresence {
     fun hasTask(displayId: Int): Boolean?
+
+    /**
+     * The display's top task id, for `window.opened` (WIN-32); null when this
+     * phone cannot read it or the display has no task yet.
+     */
+    fun taskId(displayId: Int): Int? = null
 }
 
 /** Owns the VirtualDisplay + encoder for one window stream. */
@@ -297,8 +315,12 @@ interface AppCatalog {
 data class IconLayers(val fg: String, val bg: String, val mono: String?)
 
 interface Launcher {
-    /** @return true when the launch was accepted; false means report `launch_failed`. */
-    fun launch(displayId: Int, pkg: String, activity: String?): Boolean
+    /**
+     * @param newInstance `window.open`'s `newInstance`: another task of the same
+     *   activity ([LaunchFlags]).
+     * @return true when the launch was accepted; false means report `launch_failed`.
+     */
+    fun launch(displayId: Int, pkg: String, activity: String?, newInstance: Boolean): Boolean
 
     /** Starts `ACTION_VIEW` for an already validated URL; false means `launch_failed`. */
     fun view(displayId: Int, url: String): Boolean
@@ -425,6 +447,20 @@ interface TaskMove {
 
     /** Moves an existing task to a display. false means the system refused: relaunch instead. */
     fun move(taskId: Int, displayId: Int): Boolean
+
+    /**
+     * WIN-31: the task ids the phone remembers in Recents, whether or not the
+     * task still runs. A closed window's task keeps its card here after its
+     * display is gone, so "is it gone" has to ask both lists. null when the
+     * phone cannot read Recents.
+     */
+    fun recentTaskIds(): Set<Int>? = null
+
+    /**
+     * Ends one task (WIN-31: a window's task that outlived its display). Never
+     * the app: its other tasks keep running. false when the phone cannot say.
+     */
+    fun remove(taskId: Int): Boolean = false
 }
 
 /**
