@@ -60,9 +60,10 @@ object C4Harness {
         }
 
         val server = Server(
-            { socket ->
+            { socket, plain ->
                 Session(
                     socket = socket,
+                    plainSocket = plain,
                     display = platform,
                     catalog = platform,
                     launcher = platform,

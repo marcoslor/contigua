@@ -458,6 +458,14 @@ closes it:
   TLS (there is no identity to present). A relaunch pushes again: the same
   fingerprint and pins resume serving; a new identity (Clear data) starts from
   an empty paired set, so the Mac must pair again.
+- **Teardown is a hand-off.** `Server.dropSessions()` takes the live session out
+  of its slot and closes it on one daemon thread; `Session`'s teardown is one
+  state machine (Live → Ending → Dropped → Finished) and a drop cuts the plain
+  socket under TLS at once, then closes the TLS socket on that daemon. Both are
+  needed: the app's push is a binder call that can be on the app's UI thread
+  (Forget All), and the platform TLS socket's own close waits for a reader
+  blocked in `SSL_read` — a live session has no read timeout — so it can take as
+  long as the Mac stays away.
 - **Forget All Macs…** rotates the identity in the app (`PhoneIdentity.rotate`)
   and empties the paired list; the next push therefore differs and the same
   transition drops the session. The advertised device id is unchanged, so the

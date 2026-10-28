@@ -18,7 +18,7 @@ import java.net.Socket
 import java.net.SocketTimeoutException
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 
 import dev.pocketdeck.app.Prefs.PENDING_QR_TTL_MS
 import dev.pocketdeck.e2ee.KeyPin
@@ -36,6 +36,13 @@ import java.security.cert.X509Certificate
  */
 class Session(
     private val socket: Socket,
+    /**
+     * The plain socket under the TLS one, when the caller has it. A drop shuts
+     * this down first: the platform TLS socket's own close waits for a reader
+     * blocked in `SSL_read`, which is the whole of PAIR-20's 29 s. Defaults to
+     * [socket] for the plain-socket sessions the JVM tests hand in.
+     */
+    private val plainSocket: Socket = socket,
     private val display: DisplayLayer,
     private val catalog: AppCatalog,
     private val launcher: Launcher,
@@ -125,7 +132,7 @@ class Session(
      * screens"); null never reports it (tests, or a phone that cannot read it).
      */
     private val secureProbe: SecureProbe? = null,
-) : VideoSink, AudioSink {
+) : VideoSink, AudioSink, LiveSession {
 
     /** What the TLS layer knows about this connection (§1/§4b). */
     class TlsView(
@@ -174,11 +181,11 @@ class Session(
     }
 
     private val queue = SendQueue(maxDeltaBytesPerStream) { stream -> onDeltaDrop(stream) }
-    private val closed = AtomicBoolean(false)
     private val pairLock = Object()
 
     @Volatile private var phase = Phase.HELLO
-    @Volatile private var closeRequested = false
+    /** This session's teardown; [SessionTeardown.State.LIVE] while it serves. */
+    private val teardown = AtomicReference(SessionTeardown.State.LIVE)
 
     private val streams = LinkedHashMap<Int, StreamState>()
     private val clipSync = ClipSync()
@@ -280,14 +287,23 @@ class Session(
         sendJson(message)
     }
 
-    val isClosed: Boolean get() = closed.get()
+    /**
+     * Gone: dropped or finished. A dropped session has its transport cut, so no
+     * byte can be served from it again even while its reader cleans up.
+     */
+    override val isClosed: Boolean
+        get() = when (teardown.get()) {
+            SessionTeardown.State.LIVE, SessionTeardown.State.ENDING -> false
+            SessionTeardown.State.DROPPED, SessionTeardown.State.FINISHED -> true
+        }
 
     /** Authenticated and still open: shares may go out (docs/design/sharein.md). */
-    val isReady: Boolean get() = phase == Phase.READY && !closed.get() && !closeRequested
+    override val isReady: Boolean
+        get() = phase == Phase.READY && teardown.get() == SessionTeardown.State.LIVE
 
-    fun shareText(text: String): Int = if (isReady) share.text(text) else ShareStatus.NO_SESSION
+    override fun shareText(text: String): Int = if (isReady) share.text(text) else ShareStatus.NO_SESSION
 
-    fun shareFile(name: String, mime: String, input: java.io.InputStream): Int =
+    override fun shareFile(name: String, mime: String, input: java.io.InputStream): Int =
         if (isReady) share.file(name, mime, input) else ShareStatus.NO_SESSION
 
     /**
@@ -295,8 +311,8 @@ class Session(
      * session at once; the pairing switch drops only a session that has not
      * authenticated yet. Paired sessions keep running with pairings off.
      */
-    fun applyGates() {
-        if (closed.get() || closeRequested) return
+    override fun applyGates() {
+        if (teardown.get() != SessionTeardown.State.LIVE) return
         val settings = gateProvider()
         val decision = when {
             settings?.allowConnections != true -> GateDecision.REFUSE_CONNECTIONS_OFF
@@ -327,10 +343,64 @@ class Session(
     // lifecycle
     // ------------------------------------------------------------------
 
-    /** Request teardown from another thread (e.g. server shutdown). */
-    fun close() {
-        closeRequested = true
-        runCatching { socket.close() }
+    /**
+     * Request teardown from another thread (the server's drop, a gate change,
+     * the service shutting down). Never waits for the peer: the plain socket
+     * goes first, the TLS socket's own close — which takes the reader's read
+     * lock — finishes on the one daemon (docs/specs/pairing.md PAIR-20).
+     */
+    override fun close() = apply(SessionTeardown.Event.Drop)
+
+    /**
+     * Runs one step of the teardown machine and its returned actions. The state
+     * is the compare-and-set, so a drop racing the reader's own end runs one
+     * transition, not two.
+     */
+    private fun apply(event: SessionTeardown.Event) {
+        while (true) {
+            val before = teardown.get()
+            val step = SessionTeardown.transition(before, event)
+            if (!teardown.compareAndSet(before, step.to)) continue
+            if (step.to != before) {
+                log(
+                    "session teardown: ${SessionTeardown.describe(before)} " +
+                        "--${SessionTeardown.describe(event)}--> ${SessionTeardown.describe(step.to)}",
+                )
+            }
+            for (action in step.actions) {
+                when (action) {
+                    SessionTeardown.Action.ABORT -> abortTransport()
+                }
+            }
+            return
+        }
+    }
+
+    /**
+     * Cuts the connection now without waiting for the peer. The plain socket
+     * under TLS goes first: that is what ends a reader stuck in `SSL_read`, and
+     * the platform TLS close waits for exactly that reader.
+     */
+    private fun abortTransport() {
+        runCatching { plainSocket.shutdownInput() }
+        runCatching { plainSocket.shutdownOutput() }
+        runCatching { plainSocket.close() }
+        closeTlsSocketLater()
+    }
+
+    /** Closes the transport at the end of a session's own cleanup. */
+    private fun closeTransport() {
+        runCatching { plainSocket.close() }
+        closeTlsSocketLater()
+    }
+
+    /**
+     * The TLS socket's close, off every other thread: it can wait on a peer that
+     * went quiet, and a plain session socket is already closed.
+     */
+    private fun closeTlsSocketLater() {
+        if (plainSocket === socket) return
+        tlsCloser.execute { runCatching { socket.close() } }
     }
 
     fun run() {
@@ -362,7 +432,7 @@ class Session(
             runCatching { socket.sendBufferSize = SEND_BUFFER_BYTES }
             socket.soTimeout = handshakeTimeoutMs
             val reader = FrameReader(socket.getInputStream())
-            while (!closed.get() && !closeRequested) {
+            while (teardown.get() == SessionTeardown.State.LIVE) {
                 val frame = try {
                     reader.readFrame()
                 } catch (e: SocketTimeoutException) {
@@ -380,7 +450,10 @@ class Session(
     }
 
     private fun shutdown() {
-        if (!closed.compareAndSet(false, true)) return
+        // The reader loop is the one caller; a drop racing it has already cut
+        // the transport, so only the cleanup below is left.
+        if (teardown.get() == SessionTeardown.State.FINISHED) return
+        apply(SessionTeardown.Event.Ended)
         // The Mac's session ended: stop forwarding and tell the app.
         notifyWanted = false
         // The app's attention item is local state and must go even when the
@@ -427,7 +500,7 @@ class Session(
         runCatching { power.onPowerLocked = null }
         queue.close()
         runCatching { writerThread?.join(1000) }
-        runCatching { socket.close() }
+        closeTransport()
         if (phase == Phase.READY) runCatching { callback.onSessionChanged(false, clientId.ifEmpty { null }, null, 0) }
     }
 
@@ -439,12 +512,13 @@ class Session(
                 out.write(bytes)
                 out.flush()
             }
-            // Drained after a close request (e.g. pair_denied): wake the reader.
-            runCatching { socket.close() }
+            // Drained after a stop (e.g. pair_denied): the reader is still in a
+            // blocking read, and closing the transport is what wakes it.
+            closeTransport()
         } catch (e: Throwable) {
             log("writer ended: ${e.message}")
-            closeRequested = true
-            runCatching { socket.close() }
+            // A failed write is the transport's death, not the caller's wait.
+            apply(SessionTeardown.Event.Drop)
         }
     }
 
@@ -490,7 +564,7 @@ class Session(
         val v = Json.int(obj["v"])
         if (v != PROTOCOL_VERSION) {
             sendError("version", "unsupported protocol version $v")
-            closeRequested = true
+            apply(SessionTeardown.Event.Stop)
             return
         }
         clientId = Json.str(obj["clientId"]) ?: ""
@@ -520,12 +594,12 @@ class Session(
             hexToBytes(client.macFpHex)
         } catch (e: Exception) {
             sendError("bad_pin", "bad stored pin")
-            closeRequested = true
+            apply(SessionTeardown.Event.Stop)
             return
         }
         if (peer.size != 32 || stored.size != 32 || !peer.contentEquals(stored)) {
             sendError("bad_pin", "this Mac's certificate changed; pair again")
-            closeRequested = true
+            apply(SessionTeardown.Event.Stop)
             return
         }
         currentMacName = client.name
@@ -692,9 +766,9 @@ class Session(
      * prompt. Allow completes the pairing right here: the reader thread is
      * only watching the socket.
      */
-    fun respondPairing(requestId: String, allow: Boolean) {
+    override fun respondPairing(requestId: String, allow: Boolean) {
         val mine = synchronized(pairLock) {
-            if (requestId != pendingPairId || pairSettled || closed.get()) {
+            if (requestId != pendingPairId || pairSettled || isClosed) {
                 false
             } else {
                 pairSettled = true
@@ -756,7 +830,7 @@ class Session(
     /** Sends [code], lets it flush, then ends the session. */
     private fun finishWithError(code: String, message: String) {
         sendError(code, message)
-        closeRequested = true
+        apply(SessionTeardown.Event.Stop)
         queue.close()
     }
 
@@ -1158,7 +1232,7 @@ class Session(
         // A session that has not authenticated gets nothing but the machine; the
         // Mac's `notify.enable` after welcome asks again.
         if (phase != Phase.READY) return
-        val gate = notifyGate(notifyWanted && !closed.get(), notifyGranted)
+        val gate = notifyGate(notifyWanted && !isClosed, notifyGranted)
         val gateChanged = gate != notifyGateState
         if (gateChanged) {
             log("notify gate: ${notifyGateState.name.lowercase()} -> ${gate.name.lowercase()}")
@@ -1179,7 +1253,7 @@ class Session(
      * The app's notification listener connected or went away: a later grant
      * turns forwarding on without another Mac toggle.
      */
-    fun listenerAccessChanged(granted: Boolean) {
+    override fun listenerAccessChanged(granted: Boolean) {
         if (notifyGranted == granted) return
         notifyGranted = granted
         reconcileNotify()
@@ -1473,7 +1547,7 @@ class Session(
      * re-validated here: the phone side is not trusted either, and the wire must
      * never carry oversized or malformed values.
      */
-    fun onDeviceEvent(t: String, obj: Map<String, Any?>) {
+    override fun onDeviceEvent(t: String, obj: Map<String, Any?>) {
         if (phase != Phase.READY || !notifyForwarding) return
         when (t) {
             "notify.post" -> deviceNotifyPost(obj)
@@ -1860,7 +1934,7 @@ class Session(
     }
 
     private fun clipImageLoop() {
-        while (!closed.get() && clipImagePoll === Thread.currentThread()) {
+        while (!isClosed && clipImagePoll === Thread.currentThread()) {
             val port = clipImages
             if (port != null && clipGateState == ClipGate.ON) {
                 val image = runCatching { port.readImage() }.getOrNull()
@@ -2125,7 +2199,7 @@ class Session(
     private fun rejectProtocol(why: String) {
         log("protocol error: $why")
         sendError("protocol", why)
-        closeRequested = true
+        apply(SessionTeardown.Event.Stop)
     }
 
     // ------------------------------------------------------------------
@@ -2197,7 +2271,7 @@ class Session(
     private fun streamWatchLoop() {
         var lastExitCheck = 0L
         var lastSecureCheck = 0L
-        while (!closed.get()) {
+        while (!isClosed) {
             val snapshot = synchronized(streams) { streams.values.toList() }
             // The mirror's secure surface is only worth reading while a phone
             // window can show it, and at most once a second (the protocol says
@@ -2240,7 +2314,7 @@ class Session(
                 }
             }
 
-            synchronized(pairLock) { if (!closed.get()) runCatching { pairLock.wait(1_000) } }
+            synchronized(pairLock) { if (!isClosed) runCatching { pairLock.wait(1_000) } }
         }
     }
 
@@ -2379,5 +2453,15 @@ class Session(
 
         /** Virtual displays and encoders need dimensions that are multiples of 16. */
         fun floor16(v: Int): Int = if (v <= 0) 0 else (v / 16) * 16
+
+        /**
+         * One daemon for every session's TLS close: the platform close waits for
+         * a reader stuck in `SSL_read` and can take as long as the peer, so it
+         * must never hold a reader, a writer or a binder thread (PAIR-20).
+         */
+        private val tlsCloser: java.util.concurrent.Executor =
+            Executors.newSingleThreadExecutor { r ->
+                Thread(r, "pocketdeck-tls-close").apply { isDaemon = true }
+            }
     }
 }
