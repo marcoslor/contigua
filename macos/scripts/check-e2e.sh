@@ -7927,6 +7927,35 @@ check_multiwin() {
     rm -rf "$dir"; mkdir -p "$dir" "$ctl"; remove_dock_apps
     rm -f "$WORK"/menus-*.json "$WORK"/wm-*.json "$WORK/chrome.txt"
 
+    # The review's shots (visible run only, one appearance per boot:
+    # PD_E2E_SHOT_APPEARANCE=dark|light). They land in the work dir, which the
+    # VM copies back with the run.
+    local appearance="${PD_E2E_SHOT_APPEARANCE:-dark}"
+    mkdir -p "$WORK/shots"
+    shot() {
+        local file="$WORK/shots/$appearance-$1.png"
+        screencapture -x "$file" && say "shot: $file" || bad "MULTIWIN no screenshot $1"
+    }
+    # menu_shot NAME MENU — one of the app's own menus, held open by the same
+    # tracking loop a click starts, while the whole screen is captured.
+    menu_shot() {
+        local name="$1" menu="$2" report="$WORK/shots/$appearance-$1.json"
+        control menutrack "$report" "$menu" 4 \
+            || { bad "MULTIWIN menutrack $menu: $CONTROL_REPLY"; return 1; }
+        sleep 1.4
+        shot "$name"
+        wait_until 10 [ -s "$report" ] || bad "MULTIWIN menutrack $menu never reported"
+        sleep 0.4
+    }
+    # The app's windows at menu level: a popup menu is its own window (layer
+    # 101), which is how a check sees that a right click opened one.
+    menu_windows() {
+        "$CGBIN" all 2>/dev/null | awk -v pid="$APP_PID" '
+            $0 ~ ("pid=" pid " ") { for (i = 1; i <= NF; i++) {
+                if ($i ~ /^layer=/) { split($i, part, "="); if (part[2] >= 100) n++ } } }
+            END { print n + 0 }'
+    }
+
     # The count of window.open the phone saw, and of the ones asking for an
     # extra task; `window.open` is logged verbatim by the fake.
     pw_opens() { count_events '"t":"window.open"' | head -1; }
@@ -7998,8 +8027,11 @@ PY
     }
 
     # ---- Launch 1: the default cap (4), two windows, ⌘N, the menus, ⌘` ------
+    local look=()
+    [ "$VISIBLE" = 1 ] && look=(--appearance "$appearance")
     FAKE_ARGS="--label-after-window 2 --label-to Docs,Mail --tls-identity $WORK/phone.identity" start_fake || return 1
     launch --connect "127.0.0.1:$PORT" --dock-dir "$dir" --debug-control "$ctl" \
+        ${look[@]+"${look[@]}"} \
         --debug-chrome-state "$WORK/chrome.txt" --debug-banner "$banner" --quit-after 300
     APP_PID="${APP_PID:-}"
 
@@ -8015,7 +8047,18 @@ PY
     [ "$(pw_opens)" = "$before" ] \
         && ok "[WIN-24] multi:false: the New item sent no window.open for Settings" \
         || bad "[WIN-24] multi:false: the New item sent a window.open ($before -> $(pw_opens))"
-    skip "MULTIWIN ⌘N on the keyboard" "a quiet host app runs SwiftUI menu actions only through the item; the item's ⌘N is read back from the bar, K2 NewWindowTests and the VM round press the key"
+    if [ "$VISIBLE" = 1 ]; then
+        # The person's own key: a real ⌘N on a window whose app has one
+        # instance. The disabled item eats the key, so nothing goes out.
+        before="$(pw_opens)"
+        cg_input key --keycode 45 --cmd || bad "MULTIWIN the ⌘N press on Settings did not post"
+        sleep 2
+        [ "$(pw_opens)" = "$before" ] \
+            && ok "[WIN-24] a real ⌘N on Settings sent no window.open" \
+            || bad "[WIN-24] a real ⌘N on Settings sent a window.open ($before -> $(pw_opens))"
+    else
+        skip "MULTIWIN ⌘N on the keyboard" "a quiet host app runs SwiftUI menu actions only through the item; the item's ⌘N is read back from the bar, K2 NewWindowTests and the VM round press the key"
+    fi
     local item; item="$(file_new_item)"
     python3 - "$item" <<'PY' && ok "[WIN-24] the File item reads New Settings Window, disabled, with its sentence" \
         || bad "[WIN-24] the File item for Settings is not the design: $item"
@@ -8026,6 +8069,13 @@ if item.get("enabled") is not False: print("enabled", item.get("enabled")); sys.
 if item.get("toolTip") != "Settings opens one window at a time.":
     print("help", item.get("toolTip")); sys.exit(1)
 PY
+    if [ "$VISIBLE" = 1 ]; then
+        # 7: an app that opens one window: New Settings Window disabled (the
+        # sentence is the item's help tag, read above).
+        menu_shot 7-settings-one-window File
+    else
+        skip "MULTIWIN the Settings shot" "needs the VM's screen; the disabled item and its sentence are asserted above and in K2 NewWindowTests"
+    fi
     control menupick "File/Close" >/dev/null 2>&1   # the Settings window goes
     sleep 1
 
@@ -8049,13 +8099,23 @@ PY
 
     # [WIN-25] the New item (⌘N): exactly one window.open carrying newInstance.
     before="$(pw_opens)"
-    pick_new_window
-    wait_until 20 pw_instances_at_least 1 \
+    local instances_before
+    instances_before="$(pw_instances)"
+    if [ "$VISIBLE" = 1 ]; then
+        # The person's own press: a real ⌘N through the window server. First
+        # the Chrome window in front, so the key reaches this app's File menu.
+        cg_input key --keycode 45 --cmd || bad "MULTIWIN the ⌘N press did not post"
+        sleep 1.5
+    else
+        pick_new_window
+    fi
+    wait_until 20 eval '[ "$(pw_instances)" -gt "$instances_before" ]' \
         && ok "[WIN-25] ⌘N sent one window.open with newInstance" \
         || bad "[WIN-25] ⌘N sent no window.open with newInstance"
     [ "$(( $(pw_opens) - before ))" = "1" ] \
         && ok "[WIN-25] the New item sent exactly one window.open" \
         || bad "[WIN-25] the New item sent $(( $(pw_opens) - before )) window.open"
+    control menudump "$WORK/wm-menu.json" >/dev/null 2>&1
     python3 - "$WORK/wm-menu.json" <<'PY' && ok "[WIN-25] the item carries ⌘N and its title names the key app" \
         || bad "[WIN-25] the New item's key or title is wrong"
 import json, sys
@@ -8076,6 +8136,18 @@ PY
         && ok "[WIN-28] window.title retitled both windows by their tasks" \
         || bad "[WIN-28] the windows did not take their task labels: $(window_titles "$APP_PID" | tr '\n' '|')"
 
+    if [ "$VISIBLE" = 1 ]; then
+        # 1: two windows of one app, both live, named by their tasks (the bar
+        # hides the title outside full screen; the Window menu and the Dock
+        # shim name them). 5 and 2: the Window and File menus, held open the
+        # way a click opens them.
+        shot 1-two-windows
+        menu_shot 5-window-menu Window
+        menu_shot 2-file-menu File
+    else
+        skip "MULTIWIN the shots of the two windows and the File and Window menus" "visible VM run only (PD_E2E_SHOT_APPEARANCE=dark|light)"
+    fi
+
     # [WIN-26] the Dock shim's menu and the Deck cell's rows are the same list,
     # with the front window's row checked.
     wait_until 25 grep -q "Chrome — Docs" "$ctl/dockmenu-com.android.chrome.json" 2>/dev/null \
@@ -8093,6 +8165,16 @@ if [r.get("checked") for r in windows] != [True, False]:
 if not all(r.get("enabled") for r in rows if not r.get("separator")):
     print("a row is disabled"); sys.exit(1)
 PY
+    if [ "$VISIBLE" = 1 ]; then
+        # 3: the shim's own menu, the New + windows list a Dock right click
+        # shows (the Dock owns that click; the shim pops the same buildMenu).
+        printf '7' > "$ctl/dockmenu-com.android.chrome-show"
+        sleep 1.5
+        shot 3-dock-shim-menu
+        sleep 6
+    else
+        skip "MULTIWIN the Dock shim's menu shot" "the Dock owns its icon's click; the rows are the dump above and K2 AppWindowMenuTests"
+    fi
     control windowmenu "$WORK/wm-deck.json" com.android.chrome >/dev/null 2>&1
     python3 - "$WORK/wm-deck.json" <<'PY' && ok "[WIN-26] the Deck cell's rows are the same New + windows list" \
         || bad "[WIN-26] the Deck cell's rows differ from the shim's menu"
@@ -8104,7 +8186,33 @@ if titles != ["New Chrome Window", "Chrome — Mail", "Chrome — Docs"]:
 if [r["checked"] for r in rows[1:]] != [True, False]:
     print("checked:", [r["checked"] for r in rows[1:]]); sys.exit(1)
 PY
-    skip "MULTIWIN the Deck cell's right click" "needs a real pointer; K2 AppWindowMenuTests covers the same rows, the VM round clicks the cell"
+    if [ "$VISIBLE" = 1 ]; then
+        # The cell's own menu: the Deck in front, then a real pointer's
+        # secondary click at the cell's place. A popup menu is a window of its
+        # own (layer 101), which is how the click is proved; the shot shows the
+        # rows.
+        local menus_before cx cy
+        control deckfocus grid || bad "MULTIWIN deckfocus for the right click: $CONTROL_REPLY"
+        sleep 0.8
+        control deckcellpoint Chrome "$WORK/deckpoint.txt" \
+            || bad "MULTIWIN deckcellpoint: $CONTROL_REPLY"
+        if [ -s "$WORK/deckpoint.txt" ]; then
+            read -r cx cy < "$WORK/deckpoint.txt"
+            menus_before="$(menu_windows)"
+            cg_input rclickat --x "$cx" --y "$cy" || bad "MULTIWIN the right click did not post"
+            sleep 1
+            [ "$(menu_windows)" -gt "$menus_before" ] \
+                && ok "[WIN-26] a real secondary click on the Deck cell opened its menu" \
+                || bad "[WIN-26] the Deck cell's right click opened no menu ($menus_before menus before)"
+            shot 4-deck-cell-menu
+            cg_input key --keycode 53
+            sleep 0.6
+        else
+            bad "MULTIWIN no Deck cell point for the right click"
+        fi
+    else
+        skip "MULTIWIN the Deck cell's right click" "needs a real pointer; K2 AppWindowMenuTests covers the same rows, the VM round clicks the cell"
+    fi
     # A pick raises through the shim's own menu item (its target and action).
     printf '3' > "$ctl/dockmenu-com.android.chrome-press"
     wait_until 15 eval '[ "$(front_title)" = "Chrome — Docs (FakePhone)" ]' \
@@ -8196,6 +8304,13 @@ if item.get("enabled") is not False: print("enabled", item.get("enabled")); sys.
 if item.get("toolTip") != "Close a Chrome window to open another.":
     print("help", item.get("toolTip")); sys.exit(1)
 PY
+    if [ "$VISIBLE" = 1 ]; then
+        # 6: at the cap, New Chrome Window disabled (its help tag carries the
+        # sentence read above).
+        menu_shot 6-at-the-cap File
+    else
+        skip "MULTIWIN the shot at the cap" "needs the VM's screen; the disabled item and its sentence are asserted above"
+    fi
     stop_app
     remove_dock_apps
     stop_fakephone

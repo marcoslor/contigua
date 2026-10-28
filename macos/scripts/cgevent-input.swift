@@ -26,6 +26,7 @@
 //       every click it receives is appended to F as "x y" (Quartz points)
 //   swift scripts/cgevent-input.swift moveat  --x N --y N        (absolute Quartz point)
 //   swift scripts/cgevent-input.swift clickat --x N --y N
+//   swift scripts/cgevent-input.swift rclickat --x N --y N
 //   swift scripts/cgevent-input.swift dragat  --x N --y N --x2 N --y2 N [--steps N]
 //   swift scripts/cgevent-input.swift axmove --pid N --dx N --dy N [--title TITLE]
 //       move the app's windows (or the one titled TITLE) through Accessibility,
@@ -383,11 +384,11 @@ case "all":
     for entry in (CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]]) ?? [] {
         print("owner=\(entry[kCGWindowOwnerName as String] ?? "?") pid=\(entry[kCGWindowOwnerPID as String] ?? "?") id=\(entry[kCGWindowNumber as String] ?? "?") layer=\(entry[kCGWindowLayer as String] ?? "?") bounds=\(entry[kCGWindowBounds as String] ?? "?")")
     }
-case "moveat", "clickat", "dragat":
+case "moveat", "clickat", "rclickat", "dragat":
     // Absolute Quartz points, for a window the CG list cannot see (the
     // status-item panel) or a SwiftUI control inside a window (the rail).
     guard let x = doubleArgument("--x"), let y = doubleArgument("--y") else {
-        FileHandle.standardError.write(Data("cgevent-input: moveat/clickat/dragat need --x and --y\n".utf8))
+        FileHandle.standardError.write(Data("cgevent-input: moveat/clickat/rclickat/dragat need --x and --y\n".utf8))
         exit(1)
     }
     switch CommandLine.arguments[1] {
@@ -395,6 +396,8 @@ case "moveat", "clickat", "dragat":
         move(to: CGPoint(x: x, y: y))
     case "clickat":
         click(CGPoint(x: x, y: y), button: .left)
+    case "rclickat":
+        click(CGPoint(x: x, y: y), button: .right)
     default:
         guard let x2 = doubleArgument("--x2"), let y2 = doubleArgument("--y2") else {
             FileHandle.standardError.write(Data("cgevent-input: dragat needs --x2 and --y2\n".utf8))
@@ -585,6 +588,6 @@ case "key":
     if hasFlag("--shift") { keyFlags.insert(.maskShift) }
     pressKey(CGKeyCode(code), flags: keyFlags, hold: doubleArgument("--hold") ?? 0.04)
 default:
-    FileHandle.standardError.write(Data("usage: cgevent-input.swift list|release-all|click|drag|scroll|rclick|type|key ...\n".utf8))
+    FileHandle.standardError.write(Data("usage: cgevent-input.swift list|release-all|click|rclick|clickat|rclickat|drag|scroll|type|key ...\n".utf8))
     exit(1)
 }

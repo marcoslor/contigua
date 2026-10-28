@@ -2744,6 +2744,20 @@ final class ConnectionController {
             guard let label = arguments.first else { return "deckclick needs an app label" }
             guard let deck = DeckWindow.window else { return "no deck window" }
             return DeckCellClick.click(label: label, in: deck)
+        case "deckcellpoint":
+            // The cell's own place in Quartz coordinates (a read): the check
+            // posts a real right click there, so the cell's menu is the one a
+            // person's click opens (WIN-26).
+            guard arguments.count == 2, let path = arguments.last, path.hasPrefix("/") else {
+                return "deckcellpoint needs LABEL /absolute/path"
+            }
+            guard DeckWindow.window != nil else { return "no deck window" }
+            guard let point = DeckCellClick.centre(label: arguments[0]) else {
+                return "no Deck cell labelled \(arguments[0])"
+            }
+            let text = "\(point.x) \(point.y)\n"
+            return (try? text.write(toFile: path, atomically: true, encoding: .utf8)) == nil
+                ? "deckcellpoint failed" : nil
         case "coverclick":
             // A click on the opening cover's own button (Cancel or Close), at
             // its place in the window, through the window's event handling.
