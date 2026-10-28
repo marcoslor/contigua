@@ -8551,8 +8551,10 @@ if root["width"] != 300:
 if not root["mapped"]:
     print("items:", len(root["items"]), "controls:", len(root["controls"])); sys.exit(1)
 kinds = [row["kind"] for row in root["items"]]
-want = ["dnd", "ringer", "ring", "screen", "volume", "sessions", "phoneScreen", "findApps",
-        "continueOnMac", "installApk", "settings", "quit"]
+# The merged phone card (PANEL-5, UX.md §3): the gear heads it and the
+# Settings…/Quit rows live in the icon's own menu, not on the card.
+want = ["gear", "dnd", "ringer", "ring", "screen", "volume", "sessions", "phoneScreen",
+        "findApps", "continueOnMac", "installApk"]
 if kinds != want:
     print("items:", kinds); sys.exit(1)
 enabled = [row for row in root["items"] if row["enabled"]]
