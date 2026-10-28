@@ -220,6 +220,24 @@ final class LinkMachineTests: XCTestCase {
         XCTAssertEqual(machine.link, .pairing(phone, .comparing(code: "123456")))
     }
 
+    /// PAIR-5: a phone inside its cooldown answers with its own code, and the
+    /// sheet can say to wait instead of repeating a denial.
+    func testACooldownIsItsOwnStateWithItsOwnWords() {
+        var machine = LinkMachine()
+        machine.handle(.beginPairing(phone), at: t0)
+        machine.handle(.codeShown(phone, code: "123456"), at: at(1))
+        machine.handle(.attemptFailed(reason: "pair_cooldown"), at: at(2))
+        XCTAssertEqual(machine.link, .pairing(phone, .coolingDown))
+        XCTAssertEqual(PairingCopy.coolingDown, "Wait a moment, then try again.")
+
+        // A launch (no code on screen yet) that meets the same cooldown shows
+        // the sheet too, instead of a silent offline link.
+        var launch = LinkMachine()
+        launch.handle(.launch(phone), at: t0)
+        XCTAssertEqual(launch.handle(.attemptFailed(reason: "pair_cooldown"), at: at(1)), [.stopAttempts])
+        XCTAssertEqual(launch.link, .pairing(phone, .coolingDown))
+    }
+
     func testDeniedTimedOutAndLostAreInlineStates() {
         var machine = LinkMachine()
         machine.handle(.beginPairing(phone), at: t0)

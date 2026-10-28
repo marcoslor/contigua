@@ -541,8 +541,10 @@ class Session(
         // M-1: the last prompt was denied or timed out. Refuse this attempt
         // with the protocol's existing denial code instead of prompting again.
         if (pairCooldown.active()) {
+            // A distinct code: the Mac's sheet tells the person to wait for the
+            // window to pass, not that this Mac was refused again (PAIR-5).
             log("pair.request refused: cooling down after a denied prompt")
-            finishWithError("pair_denied", "pairing denied")
+            finishWithError("pair_cooldown", "pairing is cooling down after a denied prompt")
             return
         }
         val id = Crypto.toHex(Crypto.randomBytes(8))
