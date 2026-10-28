@@ -107,7 +107,10 @@ enum ShareHandoff {
     static func send(_ link: String, toApp app: URL, completion: @escaping @Sendable (Error?) -> Void) {
         guard let url = schemeURL(for: link) else { completion(CocoaError(.fileReadInvalidFileName)); return }
         let configuration = NSWorkspace.OpenConfiguration()
-        configuration.activates = true
+        // Plumbing, not a person's window: bringing PocketDeck forward would
+        // pull the person out of the app they were sharing from (the link opens
+        // on the phone). The app's own link path decides what to show.
+        configuration.activates = false
         NSWorkspace.shared.open([url], withApplicationAt: app, configuration: configuration) { _, error in
             completion(error)
         }
