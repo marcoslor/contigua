@@ -107,7 +107,7 @@ emu logcat -c >/dev/null 2>&1 || true
 step "proving the new server answers apps with multi"
 SERVER_RC=1
 if "$PYTHON" "$WT/tools/fakephone/deckctl.py" --host 127.0.0.1 --port "$PORT" --state "$STATE" \
-    apps >"$OUT/apps.txt" 2>"$OUT/apps.err"; then
+    --wait-for-free 20 apps >"$OUT/apps.txt" 2>"$OUT/apps.err"; then
   MULTI_N=$(awk -F'\t' '$3=="multi"' "$OUT/apps.txt" | wc -l | tr -d ' ')
   SINGLE_N=$(awk -F'\t' '$3=="single"' "$OUT/apps.txt" | wc -l | tr -d ' ')
   if [ "$MULTI_N" -ge 1 ] && [ "$SINGLE_N" -ge 1 ]; then
