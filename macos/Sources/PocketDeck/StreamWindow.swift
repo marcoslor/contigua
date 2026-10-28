@@ -245,6 +245,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     deinit {
         stallTimer?.invalidate()
         openingTimer?.invalidate()
+        settleTimer?.invalidate()
         if let barKeyMonitor { NSEvent.removeMonitor(barKeyMonitor) }
     }
 
@@ -594,6 +595,20 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     /// send every value, and every request re-attaches the phone's encoder.
     private var resizes = ResizeCoalescer()
 
+    /// How long the Mac waits for the phone to answer one resize before it
+    /// counts it settled (ResizeCoalescer `.settleTimeout`). The NFR stall limit
+    /// (`density_burst_stall_ms`), the same 1.5 s the window's own "Not
+    /// responding" rule uses. A bound on a protocol wait, not a debounce of
+    /// layout input: a request still goes out the moment the machine allows.
+    static let resizeSettleTimeout: TimeInterval = FrameWatchdog.staleAfter
+
+    /// Posts `.settleTimeout` while a request is in flight; restarted by every
+    /// send and dropped when nothing is in flight.
+    private var settleTimer: Timer?
+    /// The stall was said once for this window: a phone that never answers must
+    /// not fill the log with the same line.
+    private var resizeStallLogged = false
+
     private func resizeRequest() -> ResizeRequest {
         let pixels = displayPixels()
         return ResizeRequest(w: Int(pixels.width), h: Int(pixels.height),
@@ -625,8 +640,35 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
             case .send(let request):
                 session.resizeWindow(stream: stream, width: request.w, height: request.h,
                                      dpi: Double(request.dpi))
+                armSettleTimer()
             }
         }
+        if resizes.inFlight == nil {
+            settleTimer?.invalidate()
+            settleTimer = nil
+        }
+    }
+
+    private func armSettleTimer() {
+        settleTimer?.invalidate()
+        let timer = Timer(timeInterval: Self.resizeSettleTimeout, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated { self?.settleTimedOut() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        settleTimer = timer
+    }
+
+    /// The phone did not answer in time: the machine counts the request as
+    /// settled and sends what waited (a phone that predates the ack sends none,
+    /// and a paused or refused resize carries no new CONFIG either).
+    private func settleTimedOut() {
+        settleTimer = nil
+        guard resizes.inFlight != nil else { return }
+        if !resizeStallLogged {
+            resizeStallLogged = true
+            Log.video.notice("stream \(self.stream, privacy: .public): resize unanswered, moving on")
+        }
+        send(resizes.apply(.settleTimeout))
     }
 
     /// Programmatic stream size change (test hook); the top-left stays put.
@@ -696,6 +738,8 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         dwellTimer?.invalidate()
         stopDwellFeed()
         resizeWork?.cancel()
+        settleTimer?.invalidate()
+        settleTimer = nil
         if !closingFromRemote { sendClose() }
         manager.remove(stream: stream)
     }

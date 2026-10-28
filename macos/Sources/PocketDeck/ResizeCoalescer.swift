@@ -33,6 +33,11 @@ struct ResizeCoalescer {
         /// The phone applied that request (any outcome: resized, density only,
         /// refused). A value it does not name is a late answer and is ignored.
         case settled(ResizeRequest)
+        /// Nothing settled within the stall limit: a phone that predates the
+        /// ack, a paused stream (no new encoder, so no CONFIG) and a refused
+        /// request send neither. The request in flight counts as settled so the
+        /// window is not stuck until it reopens.
+        case settleTimeout
         /// A fresh `window.open` sizes the stream itself: the last value no
         /// longer means anything.
         case reset
@@ -59,7 +64,13 @@ struct ResizeCoalescer {
             guard request == inFlight else { return (state, []) }
             guard let pending else { return (.idle(last: inFlight), []) }
             return (.inFlight(pending, pending: nil), [.send(pending)])
-        case (.idle, .settled):
+        case (.inFlight(let inFlight, let pending), .settleTimeout):
+            // The phone said nothing: whatever waited goes out, and the timed-out
+            // value counts as the last one applied (a late ack for it is a
+            // request that is no longer in flight, so the guard above drops it).
+            guard let pending else { return (.idle(last: inFlight), []) }
+            return (.inFlight(pending, pending: nil), [.send(pending)])
+        case (.idle, .settled), (.idle, .settleTimeout):
             return (state, [])
         case (_, .reset):
             return (.idle(last: nil), [])

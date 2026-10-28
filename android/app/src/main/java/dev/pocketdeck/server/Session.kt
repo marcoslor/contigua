@@ -1003,25 +1003,36 @@ class Session(
 
     private fun onWindowResize(obj: Map<String, Any?>, frame: Frame) {
         val stream = streamOf(obj, frame)
-        val state = requireState(stream) ?: return
         val askedW = Json.int(obj["w"]) ?: 0
         val askedH = Json.int(obj["h"]) ?: 0
+        val dpi = Json.int(obj["dpi"]) ?: 160
+        // Every resize the phone reads is answered, the ones it cannot apply
+        // included: the Mac keeps one request in flight and only sends the value
+        // that waited behind it when this arrives. Silence here would swallow
+        // every later press and drag of that window.
+        val state = requireState(stream)
+        if (state == null) {
+            sendResizeAck(stream, askedW, askedH, dpi, ResizeOutcome.REFUSED)
+            return
+        }
         val w = floor16(askedW)
         val h = floor16(askedH)
-        val dpi = Json.int(obj["dpi"]) ?: 160
-        if (w <= 0 || h <= 0) return
+        if (w <= 0 || h <= 0) {
+            sendResizeAck(stream, askedW, askedH, dpi, ResizeOutcome.REFUSED)
+            return
+        }
         state.size = IntSize(w, h)
         val outcome = display.resize(stream, w, h, dpi)
-        // The Mac keeps one resize in flight and sends the one the person asked
-        // for last when this arrives (docs/PROTOCOL.md `window.resize.ack`), so
-        // every request is answered — including one that asked for what the
-        // display already showed, and a dpi-only change that rebuilt nothing.
         // The echo is the request as the Mac sent it, not the display's floored
         // size: the Mac matches it against the resize it has in flight.
-        sendJson(mapOf("t" to "window.resize.ack", "stream" to stream,
-                       "w" to askedW, "h" to askedH, "dpi" to dpi, "outcome" to outcome.wire))
+        sendResizeAck(stream, askedW, askedH, dpi, outcome)
         // The new size means a redraw: make sure the group is awake for it.
         updatePower()
+    }
+
+    private fun sendResizeAck(stream: Int, w: Int, h: Int, dpi: Int, outcome: ResizeOutcome) {
+        sendJson(mapOf("t" to "window.resize.ack", "stream" to stream,
+                       "w" to w, "h" to h, "dpi" to dpi, "outcome" to outcome.wire))
     }
 
     private fun onWindowClose(obj: Map<String, Any?>, frame: Frame) {

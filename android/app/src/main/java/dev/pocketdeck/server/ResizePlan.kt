@@ -81,6 +81,13 @@ enum class ResizeOutcome(val wire: String) {
 
     /** No encoder could be built for the size; the stream keeps its old one. */
     KEPT("kept"),
+
+    /**
+     * The phone read the request but could not apply it (no such stream, or a
+     * size the request cannot carry). It still answers: the Mac keeps one
+     * resize in flight and waits for every one it sent.
+     */
+    REFUSED("refused"),
 }
 
 /**
