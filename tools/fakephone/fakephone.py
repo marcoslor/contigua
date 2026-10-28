@@ -98,12 +98,16 @@ def dbg(message):
 
 DEFAULT_STATE = os.path.expanduser("~/.pocketdeck-fakephone.json")
 
+# `multi` is what the phone's `apps` reply says about a second instance
+# (WIN-24): Chrome's launcher is `singleInstancePerTask` and declares the
+# multi-instance property, so it is the one app that opens several windows; the
+# rest declare one.
 APPS = [
     {"pkg": "com.android.settings", "label": "Settings",
      "activity": "com.android.settings/.Settings"},
     {"pkg": "com.whatsapp", "label": "WhatsApp",
      "activity": "com.whatsapp/.Main"},
-    {"pkg": "com.android.chrome", "label": "Chrome",
+    {"pkg": "com.android.chrome", "label": "Chrome", "multi": True,
      "activity": "com.android.chrome/com.google.android.apps.chrome.Main"},
     {"pkg": "com.spotify.music", "label": "Spotify",
      "activity": "com.spotify.music/.MainActivity"},
@@ -820,6 +824,14 @@ class EventLog(object):
         self._emit({"ev": "apk", "id": install_id, "files": files, "ok": ok, "code": code,
                     "ts": time.time()})
 
+    def window(self, kind, stream, code=None):
+        """A window-level answer: `too_many_windows` (WIN-32) or a title change
+        (WIN-28). Never the label itself: only that one changed."""
+        event = {"ev": "window", "kind": kind, "stream": stream, "ts": time.time()}
+        if code is not None:
+            event["code"] = code
+        self._emit(event)
+
     def task_continue(self, stream, mode, started):
         self._emit({"ev": "task.continue", "stream": stream, "mode": mode,
                     "started": started, "ts": time.time()})
@@ -1491,6 +1503,7 @@ class WindowStream(object):
         else:
             self.display_id = phone.next_display_id()
         self.label = "Home" if mode == "phone" else (self._label_for(pkg) or pkg)
+        self.task_id = phone.next_task_id()
         self._enc = None
         self._reader = None
         self._configured = False
@@ -2187,11 +2200,33 @@ class Session(object):
             threading.Thread(target=self._send_shares, daemon=True).start()
         if self.phone.args.clip_copy is not None:
             threading.Thread(target=self._send_clip_copy, daemon=True).start()
+    def _label_later(self):
+        """--label-after-window: once that many windows of the app are open the
+        phone renames their tasks, and each app stream carries its own new label
+        (`window.title`'s `title`, WIN-28)."""
+        time.sleep(1)
+        pkg = self.phone.args.label_pkg
+        labels = [t for t in self.phone.args.label_to.split(",") if t]
+        sent = 0
+        mine = [w for w in self.windows.values() if w.mode == "app" and w.pkg == pkg]
+        for index, window in enumerate(sorted(mine, key=lambda w: w.stream_id)):
+            text = labels[index] if index < len(labels) else labels[-1] if labels else None
+            if text is None:
+                continue
+            window.label = text
+            self._send({"t": "window.title", "stream": window.stream_id, "title": text})
+            sent += 1
+        sys.stderr.write("fakephone: label change for %d stream(s)\n" % sent)
+        self.phone.events.window("title", 0)
 
     def send_state(self):
         """The `state` message, with `dnd` only when the phone supports it."""
         state = {"t": "state", "locked": True, "battery": BATTERY, "charging": False,
                  "screen": self.phone.screen_state, "panel": self.phone.panel_state}
+        # The most app windows this phone allows at once (WIN-32). The Phone
+        # Mirror is a separate encoder and is not counted.
+        if self.phone.args.max_windows is not None:
+            state["maxWindows"] = self.phone.args.max_windows
         if self.phone.secure_state is not None:
             state["secure"] = self.phone.secure_state
         if self.phone.zen.supported:
@@ -3403,6 +3438,17 @@ class Session(object):
             self._send_error(self.phone.args.window_refuse,
                              "the phone refused this app's window", stream_id)
             return
+        if mode == "app":
+            # Past the phone's cap no app window opens (WIN-32). The switch
+            # forces the same refusal below the cap, for the Mac's banner.
+            cap = self.phone.args.max_windows
+            app_windows = [w for w in self.windows.values() if w.mode == "app"]
+            forced = self.phone.args.force_too_many_windows and bool(msg.get("newInstance"))
+            if forced or (cap is not None and len(app_windows) >= cap):
+                sys.stderr.write("fakephone: window.open refused (too_many_windows)\n")
+                self.phone.events.window("refused", stream_id, "too_many_windows")
+                self._send_error("too_many_windows", "the phone is at its window cap", stream_id)
+                return
         if mode == "phone" and self.phone.args.mirror_unavailable:
             # A phone that cannot capture display 0 (docs/PROTOCOL.md
             # "window.open"): the same refusal a pre-14 build sends, with no
@@ -3413,7 +3459,15 @@ class Session(object):
                               pkg=msg.get("pkg"), activity=msg.get("activity"))
         self.windows[stream_id] = window
         self._send({"t": "window.opened", "stream": stream_id,
-                    "displayId": window.display_id, "w": window.w, "h": window.h})
+                    "displayId": window.display_id, "w": window.w, "h": window.h,
+                    "taskId": window.task_id})
+        if (mode == "app" and self.phone.args.label_after_window > 0
+                and self.phone.args.label_pkg == msg.get("pkg")):
+            mine = [w for w in self.windows.values()
+                    if w.mode == "app" and w.pkg == self.phone.args.label_pkg]
+            if len(mine) == self.phone.args.label_after_window:
+                threading.Thread(target=self._label_later, daemon=True).start()
+
         if self.phone.args.first_frame_delay > 0:
             window.start_after(self.phone.args.first_frame_delay,
                                lambda: self.windows.get(stream_id) is window)
@@ -3494,7 +3548,7 @@ class Session(object):
         self.windows[stream_id] = window
         self.phone.events.task_continue(stream_id, mode, started)
         self._send({"t": "window.opened", "stream": stream_id, "displayId": window.display_id,
-                    "w": window.w, "h": window.h, "started": started})
+                    "w": window.w, "h": window.h, "taskId": window.task_id, "started": started})
         window.start()
         # The real phone's title watcher reports the top app of every display;
         # the Mac titles the window ("Settings (FakePhone)") from it.
@@ -3718,6 +3772,9 @@ class FakePhone(object):
         self._layers_cache = {}
         self._icon_lock = threading.Lock()
         self._display_seq = 100
+        # Task ids are the phone's own (WIN-25): they name a display's task and
+        # are not stable across a reconnect.
+        self._task_seq = 0
         self._display_lock = threading.Lock()
         self._mdns = None
         self.label_dir = tempfile.mkdtemp(prefix="fakephone-") if args.labels else None
@@ -3735,6 +3792,13 @@ class FakePhone(object):
         with self._display_lock:
             self._display_seq += 1
             return self._display_seq
+
+    def next_task_id(self):
+        """A task id per open window (`window.opened`'s `taskId`, WIN-25): the
+        phone's own id for the display's task."""
+        with self._display_lock:
+            self._task_seq += 1
+            return 1000 + self._task_seq
 
     # The sizes the Mac may ask for (`apps.icon`'s optional px): the phone
     # clamps to what a launcher draws, exactly like the real one.
@@ -4057,6 +4121,17 @@ def build_parser():
     p.add_argument("--resize-delay-ms", type=int, default=0, metavar="MS",
                    help="hold back a window's new VIDEO_CONFIG this long after "
                         "window.resize (the Mac's live-resize fill); 0 answers at once")
+    p.add_argument("--max-windows", type=int, default=4, metavar="N",
+                   help="state.maxWindows: the most app windows at once (WIN-32)")
+    p.add_argument("--force-too-many-windows", action="store_true",
+                   dest="force_too_many_windows",
+                   help="answer every newInstance window.open with too_many_windows, below the cap")
+    p.add_argument("--label-after-window", type=int, default=0, metavar="N",
+                   help="rename the app's tasks once N of its windows are open (WIN-28)")
+    p.add_argument("--label-pkg", default="com.android.chrome", metavar="PKG",
+                   help="which app's tasks --label-after-window renames")
+    p.add_argument("--label-to", default="Docs", metavar="TEXT",
+                   help="comma-separated task labels, one per window")
     p.add_argument("--no-resize-ack", action="store_true",
                    help="answer window.resize like the old build: no "
                         "window.resize.ack, and a same-size dpi change sends no "
