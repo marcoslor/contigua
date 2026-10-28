@@ -12,6 +12,9 @@
 #     raises it, and a MENU key event plus a swipe is the fallback. The PIN
 #     is typed as key events, and if none of the known PIN views can be seen
 #     in the dump the script still enters it once before giving up.
+#   * one boot in three arrives with the screen dozing, where the dump shows no
+#     PIN view at all: the whole sequence is retried once after a wake and a
+#     `wm dismiss-keyguard` before the script dies.
 # The last dump and the window state are kept in $AGENT_DIR on failure.
 set -euo pipefail
 . "$(dirname "$0")/lib.sh"
@@ -99,35 +102,61 @@ unlocked() {
 }
 
 # 1. Ask the system for the bouncer: with a secure keyguard this shows the PIN.
-emu shell wm dismiss-keyguard >/dev/null 2>&1 || true
-sleep 2
-
-# 2. Swipe it up (and MENU, which wakes the bouncer on some builds) until the
-#    pad is on screen; typing into a pad that has not drawn yet loses digits.
-tried_menu=0
-for _ in $(seq 1 8); do
-  pin_pad_up && break
-  if [ "$tried_menu" = 0 ]; then
-    tried_menu=1
-    emu shell input keyevent KEYCODE_MENU >/dev/null 2>&1 || true
-    sleep 1
-  fi
-  emu shell input swipe 540 2000 540 700 250 >/dev/null
-  sleep 1
-done
-
-if pin_pad_up; then
-  enter_pin
-  unlocked && { step "unlocked"; exit 0; }
-fi
-
+# 2. Swipe it up until the pad is on screen, then type the PIN.
 # 3. No pad in the dump (the keyguard is not always visible to uiautomator):
 #    one more swipe and a blind PIN, which is what the pad expects anyway.
+# Returns 0 as soon as the keyguard is gone.
+try_unlock() {
+  # 1. Dismiss: with a secure keyguard this shows the bouncer.
+  emu shell wm dismiss-keyguard >/dev/null 2>&1 || true
+  sleep 2
+
+  # 2. Swipe it up (and MENU, which wakes the bouncer on some builds) until the
+  #    pad is on screen; typing into a pad that has not drawn yet loses digits.
+  local tried_menu=0
+  for _ in $(seq 1 8); do
+    pin_pad_up && break
+    if [ "$tried_menu" = 0 ]; then
+      tried_menu=1
+      emu shell input keyevent KEYCODE_MENU >/dev/null 2>&1 || true
+      sleep 1
+    fi
+    emu shell input swipe 540 2000 540 700 250 >/dev/null
+    sleep 1
+  done
+
+  if pin_pad_up; then
+    enter_pin
+    unlocked && return 0
+  fi
+
+  # 3. A bag of last resorts, then one more swipe and a blind PIN.
+  emu shell input keyevent KEYCODE_WAKEUP >/dev/null 2>&1 || true
+  emu shell input swipe 540 2000 540 700 250 >/dev/null
+  sleep 2
+  enter_pin
+  unlocked && return 0
+  return 1
+}
+
+if try_unlock; then
+  step "unlocked"
+  exit 0
+fi
+
+# One boot in three arrives with a dozing screen: the dump shows only
+# keyguard_carrier_text and no PIN view, and every swipe lands on a panel that
+# is not drawing yet. Wake it, let it settle, dismiss again, and run the whole
+# sequence once more before giving up (the boot is too expensive to lose here).
+step "no PIN pad: waking the screen and running the sequence again"
 emu shell input keyevent KEYCODE_WAKEUP >/dev/null 2>&1 || true
-emu shell input swipe 540 2000 540 700 250 >/dev/null
 sleep 2
-enter_pin
-unlocked && { step "unlocked"; exit 0; }
+emu shell wm dismiss-keyguard >/dev/null 2>&1 || true
+
+if try_unlock; then
+  step "unlocked after the retry"
+  exit 0
+fi
 
 save_evidence
 die "the PIN bouncer did not accept the PIN (evidence in $AGENT_DIR)"
