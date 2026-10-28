@@ -466,6 +466,10 @@ closes it:
   (Forget All), and the platform TLS socket's own close waits for a reader
   blocked in `SSL_read` — a live session has no read timeout — so it can take as
   long as the Mac stays away.
+- **Nothing for a reset runs on the app's UI thread.** Forget All empties the
+  list at once, then rotates the identity and pushes from a background thread,
+  the push after the rotation. The push is a binder call the shell answers, and
+  the shell's close can wait on the Mac, so the UI thread waits for neither.
 - **Forget All Macs…** rotates the identity in the app (`PhoneIdentity.rotate`)
   and empties the paired list; the next push therefore differs and the same
   transition drops the session. The advertised device id is unchanged, so the
