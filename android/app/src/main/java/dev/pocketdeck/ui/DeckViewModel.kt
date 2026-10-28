@@ -279,6 +279,23 @@ class DeckViewModel(app: Application) : AndroidViewModel(app) {
         refresh()
     }
 
+    /**
+     * Paired Macs ▸ Forget All Macs…: rotate the phone's identity and drop every
+     * pairing. The shell service sees a different fingerprint on the next push,
+     * so it closes the live session and forgets what it cached; every Mac's pin
+     * then reads Pair again (docs/specs/pairing.md PAIR-20).
+     */
+    fun forgetAllMacs() {
+        val ctx = getApplication<Application>()
+        pendingForgets.values.forEach { handler.removeCallbacks(it) }
+        pendingForgets.clear()
+        Prefs.forgetAll(ctx)
+        DeckState.paired = emptyList()
+        pushPaired()
+        refresh()
+        DeckState.notifyChanged()
+    }
+
     fun answerPairing(allow: Boolean) {
         val pending = DeckState.pending ?: return
         val ctx = getApplication<Application>()

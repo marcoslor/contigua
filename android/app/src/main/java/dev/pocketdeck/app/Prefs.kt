@@ -178,6 +178,9 @@ object Prefs {
             val id = dev.pocketdeck.e2ee.PhoneIdentity.ensure(ctx)
             mapOf("certPem" to id.certPem, "keyP8" to id.keyP8)
         }.getOrNull()
+        val identityFp = self
+            ?.let { dev.pocketdeck.e2ee.IdentityPin.of(it["certPem"] as String) }
+            .orEmpty()
         val qr = pendingQr(ctx)
         val pendingQr = qr?.let {
             mapOf("clientId" to it.clientId, "name" to it.name, "macFp" to it.macFp,
@@ -187,10 +190,24 @@ object Prefs {
             mapOf(
                 "deviceId" to deviceId(ctx),
                 "deviceName" to deviceName(ctx),
+                // The shell compares this with what it holds on every push: a
+                // different identity means the app's data was cleared or the
+                // person forgot all Macs (docs/design/e2ee.md §10).
+                "identityFp" to identityFp,
                 "clients" to paired(ctx).map { mapOf("clientId" to it.clientId, "name" to it.name, "macFp" to it.macFp) },
                 "self" to self,
                 "pendingQr" to pendingQr,
             ),
         )
+    }
+
+    /**
+     * Paired Macs ▸ Forget All Macs…: a fresh identity and no pairings, so no
+     * Mac's pin matches this phone again and every live session is dropped
+     * (docs/specs/pairing.md PAIR-20).
+     */
+    fun forgetAll(ctx: Context) {
+        dev.pocketdeck.e2ee.PhoneIdentity.rotate(ctx)
+        sp(ctx).edit().remove(KEY_PAIRED).remove(KEY_PENDING_QR).apply()
     }
 }

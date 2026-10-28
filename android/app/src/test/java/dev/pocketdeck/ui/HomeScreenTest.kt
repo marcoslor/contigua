@@ -40,6 +40,7 @@ class HomeScreenTest {
                         onStatusAction = {},
                         onForget = { "" },
                         onUndoForget = {},
+                        onForgetAll = {},
                         onPairNew = {},
                         relativeTime = { "5 minutes ago" },
                     )
@@ -100,6 +101,18 @@ class HomeScreenTest {
         val paired = compose.onNodeWithText("Paired Macs").getUnclippedBoundsInRoot().left.value
         assertEquals("switch row must not be indented inside the card's edge", card, row, 1f)
         assertEquals("Paired Macs title must share the same edge", card, paired, 1f)
+    }
+
+    @Test
+    fun `Forget All Macs is offered only while a Mac is paired`() {
+        shoot(state(enabled = true).copy(paired = listOf(PairedMacUi("c1", "Studio Mac", 5))))
+        compose.onNodeWithText("Forget All Macs…").fetchSemanticsNode()
+    }
+
+    @Test
+    fun `Forget All Macs is absent with no Macs paired`() {
+        shoot(state(enabled = true))
+        compose.onNodeWithText("Forget All Macs…").assertDoesNotExist()
     }
 
     @Test

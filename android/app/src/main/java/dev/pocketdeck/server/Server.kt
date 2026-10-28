@@ -108,6 +108,28 @@ class Server(
         active?.respondPairing(requestId, allow)
     }
 
+    /**
+     * The app's vouching changed or ended (docs/design/e2ee.md §10): end the
+     * live session now, not at the Mac's next reconnect. The listener keeps
+     * its port; without a linked identity every later handshake is refused
+     * before TLS completes.
+     */
+    fun dropSessions() {
+        val current = synchronized(sessionLock) { active.also { active = null } }
+        if (current != null) {
+            runCatching { current.close() }
+            log("app link changed: live session closed")
+        }
+    }
+
+    /** The cached TLS material was built from an identity the app no longer holds. */
+    fun forgetCachedIdentity() {
+        synchronized(contextLock) {
+            cachedContext = ""
+            cachedTlsContext = null
+        }
+    }
+
     /** The one session serves shares; with none ready the share is refused, never queued. */
     fun shareText(text: String): Int =
         active?.takeIf { it.isReady }?.shareText(text) ?: ShareStatus.NO_SESSION

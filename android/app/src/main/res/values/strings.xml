@@ -82,6 +82,11 @@
     <string name="home_forget">Forget</string>
     <string name="home_more_options">More options for %1$s</string>
     <string name="home_no_paired">No Macs paired yet.</string>
+    <string name="home_forget_all">Forget All Macs…</string>
+    <string name="home_forget_all_title">Forget all Macs?</string>
+    <string name="home_forget_all_body">PocketDeck will create a new identity for this phone. Every Mac must pair again.</string>
+    <string name="home_forget_all_confirm">Forget All</string>
+    <string name="cancel">Cancel</string>
     <string name="home_pair_new">Pair new Mac</string>
     <string name="home_forgotten">Forgot %1$s.</string>
     <string name="undo">Undo</string>

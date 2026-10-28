@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -43,6 +44,7 @@ import androidx.compose.material3.SwipeToDismissBox
 import androidx.compose.material3.SwipeToDismissBoxValue
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.runtime.Composable
@@ -83,6 +85,7 @@ fun HomeScreen(
     onStatusAction: (AttentionKind) -> Unit,
     onForget: (PairedMacUi) -> String,
     onUndoForget: (PairedMacUi) -> Unit,
+    onForgetAll: () -> Unit,
     onPairNew: () -> Unit,
     relativeTime: (Long) -> String = { DateUtils.getRelativeTimeSpanString(it).toString() },
     snackbarHostState: SnackbarHostState = remember { SnackbarHostState() },
@@ -91,6 +94,7 @@ fun HomeScreen(
     val scope = rememberCoroutineScope()
     val scrolled = scrollBehavior.state.collapsedFraction > 0f
     val horizontal = if (LocalConfiguration.current.screenWidthDp >= 600) 24.dp else 16.dp
+    var forgetAllOpen by remember { mutableStateOf(false) }
 
     Scaffold(
         modifier = Modifier.nestedScroll(scrollBehavior.nestedScrollConnection),
@@ -150,12 +154,46 @@ fun HomeScreen(
                 },
             )
             Spacer(Modifier.height(24.dp))
-            Text(
-                text = stringResource(R.string.home_paired_title),
-                style = MaterialTheme.typography.titleMedium,
-                color = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.padding(horizontal = horizontal),
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = horizontal),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = stringResource(R.string.home_paired_title),
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.weight(1f),
+                )
+                // The other end of the trust: one action for every Mac at once,
+                // with a fresh identity so the old pins can never match again.
+                if (state.paired.isNotEmpty()) {
+                    TextButton(onClick = { forgetAllOpen = true }) {
+                        Text(stringResource(R.string.home_forget_all))
+                    }
+                }
+            }
+            if (forgetAllOpen) {
+                AlertDialog(
+                    onDismissRequest = { forgetAllOpen = false },
+                    title = { Text(stringResource(R.string.home_forget_all_title)) },
+                    text = { Text(stringResource(R.string.home_forget_all_body)) },
+                    confirmButton = {
+                        TextButton(
+                            onClick = {
+                                forgetAllOpen = false
+                                onForgetAll()
+                            },
+                        ) {
+                            Text(stringResource(R.string.home_forget_all_confirm))
+                        }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { forgetAllOpen = false }) {
+                            Text(stringResource(R.string.cancel))
+                        }
+                    },
+                )
+            }
             Spacer(Modifier.height(8.dp))
             if (state.paired.isEmpty()) {
                 Text(

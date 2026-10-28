@@ -43,6 +43,7 @@ fun DeckApp(deck: DeckViewModel) {
             onStatusAction = deck::runStatusAction,
             onForget = deck::forget,
             onUndoForget = deck::undoForget,
+            onForgetAll = deck::forgetAllMacs,
             onPairNew = scanQr,
             snackbarHostState = snackbarHostState,
         )
