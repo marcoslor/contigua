@@ -44,7 +44,7 @@ class FakePlatform : DisplayLayer, AppCatalog, Launcher, Injector, Power, Device
 
     data class OpenCall(val stream: Int, val w: Int, val h: Int, val dpi: Int, val displayId: Int)
     data class ResizeCall(val stream: Int, val w: Int, val h: Int, val dpi: Int)
-    data class LaunchCall(val displayId: Int, val pkg: String, val activity: String?)
+    data class LaunchCall(val displayId: Int, val pkg: String, val activity: String?, val newInstance: Boolean)
     data class ViewCall(val displayId: Int, val url: String)
     data class TouchCall(val displayId: Int, val action: Int, val pointerId: Int, val nx: Float, val ny: Float, val downTime: Long, val eventTime: Long)
     data class KeyCall(val displayId: Int, val action: Int, val keycode: Int, val metaState: Int, val downTime: Long, val eventTime: Long)
@@ -177,8 +177,8 @@ class FakePlatform : DisplayLayer, AppCatalog, Launcher, Injector, Power, Device
 
     // ---- Launcher -----------------------------------------------------
 
-    override fun launch(displayId: Int, pkg: String, activity: String?): Boolean {
-        launches.add(LaunchCall(displayId, pkg, activity))
+    override fun launch(displayId: Int, pkg: String, activity: String?, newInstance: Boolean): Boolean {
+        launches.add(LaunchCall(displayId, pkg, activity, newInstance))
         return launchResult
     }
 

@@ -37,18 +37,19 @@ internal class AndroidLauncher(private val ctx: Context, private val log: (Strin
 
     private val pm get() = ctx.packageManager
 
-    override fun launch(displayId: Int, pkg: String, activity: String?): Boolean {
+    override fun launch(displayId: Int, pkg: String, activity: String?, newInstance: Boolean): Boolean {
         if (displayId < 0) return false
         val component = resolveComponent(pkg, activity) ?: run {
             log("no launcher activity for $pkg")
             return false
         }
+        val flags = LaunchFlags.of(newInstance)
         val intent = Intent(Intent.ACTION_MAIN).apply {
             setComponent(component)
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            addFlags(flags)
         }
         if (startViaBinder(intent, displayId)) return true
-        return startViaAm(displayId, component)
+        return startViaAm(displayId, component, flags)
     }
 
     override fun view(displayId: Int, url: String): Boolean {
@@ -88,9 +89,40 @@ internal class AndroidLauncher(private val ctx: Context, private val log: (Strin
             // Our own launcher is reached from the phone-mode window, not the app list.
             if (ai.packageName == Session.OWN_PACKAGE) continue
             val label = runCatching { ri.loadLabel(pm).toString() }.getOrDefault(ai.packageName)
-            out.add(AppEntry(ai.packageName, label, "${ai.packageName}/${ai.name}"))
+            val facts = LaunchFacts(
+                launchMode = ai.launchMode,
+                documentLaunchMode = ai.documentLaunchMode,
+                multiInstanceProperty = supportsMultiInstance(ai),
+            )
+            out.add(
+                AppEntry(
+                    pkg = ai.packageName,
+                    label = label,
+                    activity = "${ai.packageName}/${ai.name}",
+                    multi = MultiInstancePolicy.multi(ai.packageName, facts),
+                ),
+            )
         }
-        return out.sortedBy { it.label.lowercase() }
+        val sorted = out.sortedBy { it.label.lowercase() }
+        // The one line the emulator check reads for WIN-24: packages only, never
+        // an app label.
+        log("apps: ${sorted.size}, multi: ${sorted.filter { it.multi }.map { it.pkg }}")
+        return sorted
+    }
+
+    /**
+     * `PROPERTY_SUPPORTS_MULTI_INSTANCE_SYSTEM_UI` for the launcher activity:
+     * API 35+, and false on a phone that cannot answer (the property is the
+     * app's own claim, not the platform's decision).
+     */
+    private fun supportsMultiInstance(ai: android.content.pm.ActivityInfo): Boolean {
+        if (Build.VERSION.SDK_INT < 35) return false
+        return runCatching {
+            pm.getProperty(
+                android.view.WindowManager.PROPERTY_SUPPORTS_MULTI_INSTANCE_SYSTEM_UI,
+                ComponentName(ai.packageName, ai.name),
+            ).boolean
+        }.getOrDefault(false)
     }
 
     override fun iconPng(pkg: String, px: Int?): String? {
@@ -212,8 +244,16 @@ internal class AndroidLauncher(private val ctx: Context, private val log: (Strin
         else -> null
     }
 
-    private fun startViaAm(displayId: Int, component: ComponentName): Boolean =
-        runAm(arrayOf("am", "start", "--display", displayId.toString(), "-n", component.flattenToShortString()), displayId)
+    /** The fallback launch: the same flags, through `am start` (`-f`). */
+    private fun startViaAm(displayId: Int, component: ComponentName, flags: Int): Boolean =
+        runAm(
+            arrayOf(
+                "am", "start", "--display", displayId.toString(),
+                "-f", "0x%08x".format(flags),
+                "-n", component.flattenToShortString(),
+            ),
+            displayId,
+        )
 
     private fun runAm(argv: Array<String>, displayId: Int): Boolean {
         return try {
