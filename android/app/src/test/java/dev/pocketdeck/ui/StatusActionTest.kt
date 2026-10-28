@@ -87,6 +87,22 @@ class StatusActionTest {
         assertEquals(DeckForegroundService::class.java.name, started!!.component?.className)
     }
 
+    @Test
+    fun `the onboarding keep-running button does what the home switch does`() {
+        // The reported bug: the onboarding button stored "asked" and never
+        // turned the pref on, so tapping it did nothing visible.
+        Prefs.setEnabled(ctx, false)
+        val vm = DeckViewModel(ctx)
+        shadowOf(ctx).clearStartedServices()
+
+        vm.keepRunningOn()
+
+        assertTrue("the pref must be on after the onboarding tap", Prefs.isEnabled(ctx))
+        val started = shadowOf(ctx).nextStartedService
+        assertNotNull("the service must start, as the home switch does", started)
+        assertEquals(DeckForegroundService::class.java.name, started!!.component?.className)
+    }
+
     /**
      * The Shizuku-not-running card's action has to fit the phone: with the
      * package absent, opening it cannot work and the store is the fix

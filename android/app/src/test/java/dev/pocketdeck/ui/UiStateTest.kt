@@ -127,10 +127,22 @@ class UiStateTest {
     }
 
     @Test
-    fun `notifications step needs permission and one battery request`() {
+    fun `notifications step waits for the grant and a real exemption`() {
         assertFalse(isOnboardingComplete(OnboardingStep.NOTIFICATIONS, OnboardingInput(false, false, true, false, 0)))
         assertFalse(isOnboardingComplete(OnboardingStep.NOTIFICATIONS, OnboardingInput(false, false, false, true, 0)))
-        assertTrue(isOnboardingComplete(OnboardingStep.NOTIFICATIONS, OnboardingInput(false, false, true, true, 0)))
+        // Asked but still restricted: the step must not claim "keeps running".
+        assertFalse(
+            isOnboardingComplete(
+                OnboardingStep.NOTIFICATIONS,
+                OnboardingInput(false, false, true, true, 0, batteryExempt = false),
+            ),
+        )
+        assertTrue(
+            isOnboardingComplete(
+                OnboardingStep.NOTIFICATIONS,
+                OnboardingInput(false, false, true, true, 0, batteryExempt = true),
+            ),
+        )
     }
 
     @Test
@@ -149,6 +161,22 @@ class UiStateTest {
         assertEquals(listOf("b", "a"), live.map { it.clientId })
         assertEquals(listOf(true, false), live.map { it.connected })
         assertEquals(rows.map { false }, pairedRows(rows, null).map { it.connected })
+    }
+
+    @Test
+    fun `keep running is off until the pref is on`() {
+        assertEquals(KeepRunningState.OFF, keepRunningState(enabled = false, exempt = false))
+        assertEquals(KeepRunningState.OFF, keepRunningState(enabled = false, exempt = true))
+    }
+
+    @Test
+    fun `keep running on without the exemption says the restriction is still there`() {
+        assertEquals(KeepRunningState.ON_RESTRICTED, keepRunningState(enabled = true, exempt = false))
+    }
+
+    @Test
+    fun `keep running on with the exemption is the settled state`() {
+        assertEquals(KeepRunningState.ON_EXEMPT, keepRunningState(enabled = true, exempt = true))
     }
 
     @Test

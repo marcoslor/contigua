@@ -22,6 +22,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ElevatedCard
@@ -43,6 +44,7 @@ import androidx.compose.material3.SwipeToDismissBox
 import androidx.compose.material3.SwipeToDismissBoxValue
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.runtime.Composable
@@ -78,11 +80,13 @@ import kotlinx.coroutines.launch
 fun HomeScreen(
     state: DeckUiState,
     onToggleEnabled: (Boolean) -> Unit,
+    onOpenBatterySettings: () -> Unit,
     onToggleAllowConnections: (Boolean) -> Unit,
     onToggleAllowPairings: (Boolean) -> Unit,
     onStatusAction: (AttentionKind) -> Unit,
     onForget: (PairedMacUi) -> String,
     onUndoForget: (PairedMacUi) -> Unit,
+    onForgetAll: () -> Unit,
     onPairNew: () -> Unit,
     relativeTime: (Long) -> String = { DateUtils.getRelativeTimeSpanString(it).toString() },
     snackbarHostState: SnackbarHostState = remember { SnackbarHostState() },
@@ -91,6 +95,7 @@ fun HomeScreen(
     val scope = rememberCoroutineScope()
     val scrolled = scrollBehavior.state.collapsedFraction > 0f
     val horizontal = if (LocalConfiguration.current.screenWidthDp >= 600) 24.dp else 16.dp
+    var forgetAllOpen by remember { mutableStateOf(false) }
 
     Scaffold(
         modifier = Modifier.nestedScroll(scrollBehavior.nestedScrollConnection),
@@ -127,10 +132,10 @@ fun HomeScreen(
                 modifier = Modifier.padding(horizontal = horizontal),
             )
             Spacer(Modifier.height(16.dp))
-            SwitchRow(
-                headline = stringResource(R.string.home_keep_running),
-                checked = state.enabled,
+            KeepRunningRow(
+                state = state.keepRunning,
                 onToggle = onToggleEnabled,
+                onOpenBattery = onOpenBatterySettings,
             )
             HorizontalDivider(Modifier.padding(horizontal = horizontal, vertical = 8.dp))
             SwitchRow(
@@ -150,12 +155,46 @@ fun HomeScreen(
                 },
             )
             Spacer(Modifier.height(24.dp))
-            Text(
-                text = stringResource(R.string.home_paired_title),
-                style = MaterialTheme.typography.titleMedium,
-                color = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.padding(horizontal = horizontal),
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = horizontal),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = stringResource(R.string.home_paired_title),
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.weight(1f),
+                )
+                // The other end of the trust: one action for every Mac at once,
+                // with a fresh identity so the old pins can never match again.
+                if (state.paired.isNotEmpty()) {
+                    TextButton(onClick = { forgetAllOpen = true }) {
+                        Text(stringResource(R.string.home_forget_all))
+                    }
+                }
+            }
+            if (forgetAllOpen) {
+                AlertDialog(
+                    onDismissRequest = { forgetAllOpen = false },
+                    title = { Text(stringResource(R.string.home_forget_all_title)) },
+                    text = { Text(stringResource(R.string.home_forget_all_body)) },
+                    confirmButton = {
+                        TextButton(
+                            onClick = {
+                                forgetAllOpen = false
+                                onForgetAll()
+                            },
+                        ) {
+                            Text(stringResource(R.string.home_forget_all_confirm))
+                        }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { forgetAllOpen = false }) {
+                            Text(stringResource(R.string.cancel))
+                        }
+                    },
+                )
+            }
             Spacer(Modifier.height(8.dp))
             if (state.paired.isEmpty()) {
                 Text(
@@ -195,6 +234,51 @@ fun HomeScreen(
             Spacer(Modifier.height(24.dp))
         }
     }
+}
+
+/**
+ * "Keep running in the background": the switch is the pref, and the supporting
+ * line says what the pref plus the battery exemption actually mean
+ * (docs/specs/phone-app.md PHONE-19). A missing exemption is one tap away.
+ */
+@Composable
+private fun KeepRunningRow(
+    state: KeepRunningState,
+    onToggle: (Boolean) -> Unit,
+    onOpenBattery: () -> Unit,
+) {
+    val supporting = when (state) {
+        KeepRunningState.OFF -> stringResource(R.string.home_keep_running_off)
+        KeepRunningState.ON_EXEMPT -> stringResource(R.string.home_keep_running_on)
+        KeepRunningState.ON_RESTRICTED -> stringResource(R.string.home_keep_running_restricted)
+    }
+    ListItem(
+        headlineContent = { Text(stringResource(R.string.home_keep_running)) },
+        supportingContent = {
+            Column {
+                Text(supporting)
+                if (state == KeepRunningState.ON_RESTRICTED) {
+                    TextButton(
+                        onClick = onOpenBattery,
+                        contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp),
+                    ) {
+                        Text(stringResource(R.string.action_open_battery_settings))
+                    }
+                }
+            }
+        },
+        trailingContent = {
+            Switch(
+                checked = state != KeepRunningState.OFF,
+                onCheckedChange = null,
+            )
+        },
+        modifier = Modifier.toggleable(
+            value = state != KeepRunningState.OFF,
+            onValueChange = onToggle,
+            role = androidx.compose.ui.semantics.Role.Switch,
+        ),
+    )
 }
 
 @Composable

@@ -83,6 +83,8 @@ data class OnboardingInput(
     val notificationsGranted: Boolean,
     val batteryRequested: Boolean,
     val pairedCount: Int,
+    /** The exemption is granted: only then is "keeps running" true (PHONE-19). */
+    val batteryExempt: Boolean = false,
 )
 
 /**
@@ -93,7 +95,8 @@ data class OnboardingInput(
 fun isOnboardingComplete(step: OnboardingStep, input: OnboardingInput): Boolean = when (step) {
     OnboardingStep.WELCOME -> false
     OnboardingStep.SHIZUKU -> input.shizukuRunning && input.shizukuGranted
-    OnboardingStep.NOTIFICATIONS -> input.notificationsGranted && input.batteryRequested
+    OnboardingStep.NOTIFICATIONS ->
+        input.notificationsGranted && input.batteryRequested && input.batteryExempt
     OnboardingStep.PAIR -> input.pairedCount > 0
 }
 
@@ -107,9 +110,24 @@ data class PairedMacUi(
 
 data class PendingPairingUi(val requestId: String, val macName: String, val code: String)
 
+/**
+ * The keep-running row's state: the stored pref together with the battery
+ * exemption. "On" alone is not honest — Android can still stop the service
+ * without the exemption (docs/specs/phone-app.md PHONE-19).
+ */
+enum class KeepRunningState { OFF, ON_RESTRICTED, ON_EXEMPT }
+
+fun keepRunningState(enabled: Boolean, exempt: Boolean): KeepRunningState = when {
+    !enabled -> KeepRunningState.OFF
+    exempt -> KeepRunningState.ON_EXEMPT
+    else -> KeepRunningState.ON_RESTRICTED
+}
+
 data class DeckUiState(
     val onboardingDone: Boolean = false,
     val enabled: Boolean = false,
+    /** The pref plus the battery exemption: what the keep-running row says. */
+    val keepRunning: KeepRunningState = KeepRunningState.OFF,
     val allowConnections: Boolean = true,
     val allowPairings: Boolean = true,
     /** The Mac asked for notifications but this phone's listener grant is missing. */
@@ -129,5 +147,12 @@ data class DeckUiState(
     val status: DeckStatus = DeckStatus(StatusState.ERROR, AttentionKind.NONE),
 ) {
     val onboarding: OnboardingInput
-        get() = OnboardingInput(shizukuRunning, shizukuGranted, notificationsGranted, batteryRequested, paired.size)
+        get() = OnboardingInput(
+            shizukuRunning = shizukuRunning,
+            shizukuGranted = shizukuGranted,
+            notificationsGranted = notificationsGranted,
+            batteryRequested = batteryRequested,
+            pairedCount = paired.size,
+            batteryExempt = keepRunning == KeepRunningState.ON_EXEMPT,
+        )
 }

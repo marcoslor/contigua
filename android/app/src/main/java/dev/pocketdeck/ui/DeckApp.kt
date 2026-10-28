@@ -38,6 +38,7 @@ fun DeckApp(deck: DeckViewModel) {
         HomeScreen(
             state = state,
             onToggleEnabled = deck::setEnabled,
+            onOpenBatterySettings = deck::openBatterySettings,
             onToggleAllowConnections = deck::setAllowConnections,
             onToggleAllowPairings = deck::setAllowPairings,
             onStatusAction = { kind ->
@@ -51,6 +52,7 @@ fun DeckApp(deck: DeckViewModel) {
             },
             onForget = deck::forget,
             onUndoForget = deck::undoForget,
+            onForgetAll = deck::forgetAllMacs,
             onPairNew = scanQr,
             snackbarHostState = snackbarHostState,
         )
@@ -63,7 +65,8 @@ fun DeckApp(deck: DeckViewModel) {
             onAllowNotifications = {
                 notificationsLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
             },
-            onIgnoreBattery = deck::ignoreBatteryOptimizations,
+            onKeepRunning = deck::keepRunningOn,
+            onOpenBatterySettings = deck::openBatterySettings,
             onScanQr = scanQr,
             onFinished = deck::finishOnboarding,
             snackbarHostState = snackbarHostState,

@@ -5,12 +5,14 @@ import android.app.PendingIntent
 import android.content.Context
 import android.net.ssl.SSLSockets
 import android.os.Build
+import android.os.IBinder
 import android.os.ParcelFileDescriptor
 import android.os.SystemClock
 import android.util.Log
 import dev.pocketdeck.IDeckCallback
 import dev.pocketdeck.IDeckService
 import dev.pocketdeck.proto.Crypto
+import dev.pocketdeck.e2ee.IdentityPin
 import dev.pocketdeck.e2ee.TlsExporter
 import dev.pocketdeck.proto.Json
 import java.io.File
@@ -32,13 +34,33 @@ class DeckService(private val appContext: Context?) :
     constructor() : this(null)
 
     @Volatile private var callback: IDeckCallback? = null
-    @Volatile private var clients: List<PairedClient> = emptyList()
     @Volatile private var deviceId: String = ""
     @Volatile private var deviceName: String = "Android"
 
-    /** v2 in-memory TLS identity pushed from the app (never written, never logged). */
-    @Volatile var selfCertPem: String = ""
-    @Volatile var selfKeyP8: String = ""
+    /**
+     * What the app process currently vouches for: its TLS identity and the Macs
+     * it trusts (never written, never logged). Unlinked — nothing served — until
+     * the first push, and again the moment the app's binder dies. The app owns
+     * both values; the shell service outlives an app whose data was cleared,
+     * which is the bug this state machine closes (docs/design/e2ee.md §10).
+     */
+    @Volatile private var link: AppLink.State = AppLink.State.Unlinked
+
+    @Volatile private var appBinder: IBinder? = null
+
+    /**
+     * Clear data kills the app process, and uninstall removes it: in both the
+     * app's binder dies. That notification is immediate and needs no broadcast
+     * permission, so it works on API 30–36 (see docs/design/e2ee.md §10).
+     */
+    private val appDeath = object : IBinder.DeathRecipient {
+        override fun binderDied() {
+            log("app binder died")
+            appBinder = null
+            callback = null
+            apply(AppLink.Event.AppGone)
+        }
+    }
 
     /** The scanned QR the app handed over (R2); null when none or expired.
      * Never logged: the secret is HMAC fodder only. */
@@ -78,6 +100,8 @@ class DeckService(private val appContext: Context?) :
 
     override fun destroy() {
         log("destroy")
+        appBinder?.let { runCatching { it.unlinkToDeath(appDeath, 0) } }
+        appBinder = null
         runCatching { power?.shutdown() }
         runCatching { stopServer() }
         System.exit(0)
@@ -122,9 +146,10 @@ class DeckService(private val appContext: Context?) :
         // One quiet window per server process, shared by every session: a
         // reconnect must not reset it (review M-1).
         val pairCooldown = PairCooldown()
-        val factory = SessionFactory { socket ->
+        val factory = SessionFactory { socket, plain ->
             Session(
                 socket = socket,
+                plainSocket = plain,
                 display = display,
                 catalog = launcher,
                 launcher = launcher,
@@ -154,7 +179,7 @@ class DeckService(private val appContext: Context?) :
                 // be set or cleared between connections (review I-1).
                 autoApprovePairing = DebugFlags.autoApprovePairing(),
                 pairCooldown = pairCooldown,
-                selfCertProvider = { selfCertPem },
+                selfCertProvider = ::servedCertPem,
                 pendingQrProvider = { pendingQr },
                 pendingQrConsumer = { pendingQr = null },
                 gateProvider = { gates },
@@ -196,8 +221,8 @@ class DeckService(private val appContext: Context?) :
                 },
             )
         }
-        val srv = Server(factory, ::log, { selfCertPem }, { selfKeyP8 }, { gates },
-            { clients.map { it.macFpHex } })
+        val srv = Server(factory, ::log, ::servedCertPem, ::servedKeyP8, { gates },
+            { servedClients().map { it.macFpHex } })
         server = srv
         return srv.start()
     }
@@ -209,33 +234,82 @@ class DeckService(private val appContext: Context?) :
     }
 
     override fun setCallback(cb: IDeckCallback?) {
+        val previous = appBinder
         callback = cb
+        appBinder = null
+        if (previous != null) runCatching { previous.unlinkToDeath(appDeath, 0) }
+        if (cb == null) return
+        val binder = cb.asBinder()
+        val watching = runCatching { binder.linkToDeath(appDeath, 0) }.isSuccess
+        if (!watching) {
+            // No death notification means the app could outlive the state it
+            // vouched for: fail closed instead of serving blind.
+            log("app binder death watch refused; not serving")
+            callback = null
+            apply(AppLink.Event.AppGone)
+            return
+        }
+        appBinder = binder
     }
 
+    /**
+     * The app's identity and paired Macs on every bind and every change. The
+     * declared fingerprint is trusted only when it matches the certificate it
+     * arrived with; a push with no usable identity is the app being gone.
+     */
     override fun setPairedClients(json: String) {
         val obj = runCatching { Json.parseObject(json) }.getOrNull() ?: return
         Json.str(obj["deviceId"])?.let { if (it.isNotEmpty()) deviceId = it }
         Json.str(obj["deviceName"])?.let { if (it.isNotEmpty()) deviceName = it }
         val self = Json.asObject(obj["self"])
-        if (self != null) {
-            Json.str(self["certPem"])?.let { if (it.isNotEmpty()) selfCertPem = it }
-            Json.str(self["keyP8"])?.let { if (it.isNotEmpty()) selfKeyP8 = it }
-        }
+        val certPem = self?.let { Json.str(it["certPem"]) }.orEmpty()
+        val keyP8 = self?.let { Json.str(it["keyP8"]) }.orEmpty()
+        val declared = Json.str(obj["identityFp"]).orEmpty()
+        val fingerprint = IdentityPin.verified(declared, certPem)
         pendingQr = Json.asObject(obj["pendingQr"])
         val list = Json.asList(obj["clients"]).orEmpty().mapNotNull { entry ->
             val m = Json.asObject(entry) ?: return@mapNotNull null
             val id = Json.str(m["clientId"]) ?: return@mapNotNull null
             val pin = Json.str(m["macFp"]) ?: return@mapNotNull null
             // v1 clients carry a shared key; without a 32-byte pin they are v1
-            // leftovers, refsed here (the §7 forced re-pair).
+            // leftovers, refused here (the §7 forced re-pair).
             if (pin.length != 64) {
                 log("skipping client without a v2 pin")
                 return@mapNotNull null
             }
             PairedClient(id, Json.str(m["name"]) ?: "Mac", pin.lowercase())
         }
-        clients = list
-        log("paired clients: ${list.size}, device=$deviceId, self=${selfCertPem.isNotEmpty()}")
+        apply(AppLink.Event.AppPushed(fingerprint, certPem, keyP8, list))
+        log("paired clients: ${list.size}, device=$deviceId, self=${fingerprint.isNotEmpty()}")
+    }
+
+    /** The current state, for the log/`status`; never key material. */
+    private fun servedCertPem(): String = (link as? AppLink.State.Linked)?.certPem.orEmpty()
+
+    private fun servedKeyP8(): String = (link as? AppLink.State.Linked)?.keyP8.orEmpty()
+
+    private fun servedClients(): List<PairedClient> =
+        (link as? AppLink.State.Linked)?.pairs.orEmpty()
+
+    /**
+     * Runs one transition of the app-link machine and its returned actions.
+     * Never touches the network or the session directly: the machine decides,
+     * this applies.
+     */
+    private fun apply(event: AppLink.Event) {
+        val before = link
+        val transition = AppLink.transition(before, event)
+        link = transition.state
+        log(
+            "app link: ${AppLink.describe(before)} --${AppLink.describe(event)}--> " +
+                AppLink.describe(transition.state),
+        )
+        transition.actions.forEach { action ->
+            when (action) {
+                AppLink.Action.DROP_SESSIONS -> server?.dropSessions()
+                AppLink.Action.FORGET_CACHE -> server?.forgetCachedIdentity()
+            }
+        }
     }
 
     override fun respondPairing(requestId: String, allow: Boolean) {
@@ -245,7 +319,8 @@ class DeckService(private val appContext: Context?) :
     override fun status(): String {
         val srv = server
         return "uid=${android.system.Os.getuid()} pid=${android.system.Os.getpid()} " +
-            "port=${srv?.port ?: -1} clients=${clients.size} ctx=${appContext != null}"
+            "port=${srv?.port ?: -1} clients=${servedClients().size} " +
+            "link=${AppLink.describe(link)} ctx=${appContext != null}"
     }
 
     override fun shareText(text: String?): Int =
@@ -345,11 +420,9 @@ class DeckService(private val appContext: Context?) :
 
     // ---- PairingStore -------------------------------------------------
 
-    override fun snapshot(): List<PairedClient> = clients
+    override fun snapshot(): List<PairedClient> = servedClients()
 
-    override fun add(client: PairedClient) {
-        if (clients.none { it.clientId == client.clientId }) clients = clients + client
-    }
+    override fun add(client: PairedClient) = apply(AppLink.Event.PhonePaired(client))
 
     // ---- DeviceSource -------------------------------------------------
 
