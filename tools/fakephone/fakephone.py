@@ -1503,6 +1503,9 @@ class WindowStream(object):
         else:
             self.display_id = phone.next_display_id()
         self.label = "Home" if mode == "phone" else (self._label_for(pkg) or pkg)
+        # The task's own label (`window.title`'s `title`): the app's name until
+        # --label-after-window renames it (WIN-28).
+        self.task_title = self.label
         self.task_id = phone.next_task_id()
         self._enc = None
         self._reader = None
@@ -1529,6 +1532,17 @@ class WindowStream(object):
             if app["pkg"] == pkg:
                 return app["label"]
         return None
+
+    def title_message(self):
+        """`window.title` as the real phone sends it: the app the display shows
+        (`label`, `pkg`) and, on an app stream, its task's label (`title`,
+        WIN-28). The fields stay apart; the Mac keeps a link's subject on the
+        app, not the page."""
+        msg = {"t": "window.title", "stream": self.stream_id,
+               "label": self.label, "pkg": self.pkg or ""}
+        if self.mode == "app":
+            msg["title"] = self.task_title or self.label
+        return msg
 
     def _picture(self):
         """window.content for the current size: where the picture sits in the frame
@@ -2213,8 +2227,8 @@ class Session(object):
             text = labels[index] if index < len(labels) else labels[-1] if labels else None
             if text is None:
                 continue
-            window.label = text
-            self._send({"t": "window.title", "stream": window.stream_id, "title": text})
+            window.task_title = text
+            self._send(window.title_message())
             sent += 1
         sys.stderr.write("fakephone: label change for %d stream(s)\n" % sent)
         self.phone.events.window("title", 0)
@@ -3417,9 +3431,12 @@ class Session(object):
             return
         sys.stderr.write("fakephone: link.open stream %r %s\n" % (msg.get("stream"), url))
         self.phone.events.link(msg.get("stream"), url)
-        self._on_window_open(dict(msg, pkg="link"))
+        # The real phone reports the app that took the link; the fake's link
+        # target is a stub with no app name, so it names none (the Mac's link
+        # window keeps the link's host until an app is reported).
+        self._on_window_open(dict(msg, pkg="link"), announce=False)
 
-    def _on_window_open(self, msg):
+    def _on_window_open(self, msg, announce=True):
         stream_id = msg.get("stream")
         if stream_id is None:
             self._send_error("bad_request", "%s needs stream" % msg.get("t"))
@@ -3461,6 +3478,11 @@ class Session(object):
         self._send({"t": "window.opened", "stream": stream_id,
                     "displayId": window.display_id, "w": window.w, "h": window.h,
                     "taskId": window.task_id})
+        if announce and window.mode == "app":
+            # The display's app is on top: one `window.title` with the app and
+            # the task, the way the real phone's watcher sends it. The mirror
+            # names the phone, not an app, so it gets none (as before).
+            self._send(window.title_message())
         if (mode == "app" and self.phone.args.label_after_window > 0
                 and self.phone.args.label_pkg == msg.get("pkg")):
             mine = [w for w in self.windows.values()
@@ -3552,8 +3574,7 @@ class Session(object):
         window.start()
         # The real phone's title watcher reports the top app of every display;
         # the Mac titles the window ("Settings (FakePhone)") from it.
-        self._send({"t": "window.title", "stream": stream_id,
-                    "label": window.label, "pkg": pkg})
+        self._send(window.title_message())
 
     def _on_window_resize(self, msg):
         window = self._stream_or_error(msg)
@@ -3649,8 +3670,8 @@ class Session(object):
         window.pkg = msg.get("pkg", window.pkg)
         window.activity = msg.get("activity", window.activity)
         window.label = window._label_for(window.pkg) or window.pkg
-        self._send({"t": "window.title", "stream": msg["stream"],
-                    "label": window.label, "pkg": window.pkg})
+        window.task_title = window.label
+        self._send(window.title_message())
 
     def _on_nav(self, msg):
         window = self._stream_or_error(msg)

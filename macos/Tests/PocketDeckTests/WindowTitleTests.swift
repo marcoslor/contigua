@@ -59,7 +59,8 @@ final class WindowTitleTests: XCTestCase {
         let a = fixture.open(taskLabel: "Docs")
         _ = fixture.add(taskLabel: "Mail")
         let start = Date()
-        fixture.manager.handle(.windowTitle(stream: a.stream, label: "Inbox", pkg: "com.android.chrome"))
+        fixture.manager.handle(.windowTitle(stream: a.stream, label: "Chrome",
+                                            pkg: "com.android.chrome", title: "Inbox"))
         XCTAssertLessThan(Date().timeIntervalSince(start), 2, "the retitle is immediate")
         XCTAssertEqual(a.window?.title, "Chrome — Inbox (Pixel 9)")
     }
@@ -87,6 +88,22 @@ final class WindowTitleTests: XCTestCase {
             "t": "window.title", "stream": Int(link.stream),
             "label": "Chrome", "pkg": "com.android.chrome", "title": "Some Page"]))
         XCTAssertEqual(link.window?.title, "Chrome (Pixel 9)")
+    }
+
+    /// An app window's task is `title`; a message that carries none falls back
+    /// to the app's own name (WIN-28).
+    func testAnAppWindowTakesTheTitleFieldAsItsTask() {
+        let a = fixture.open()
+        _ = fixture.add()
+        fixture.session.onEvent = { [manager = fixture.manager] event in manager.handle(event) }
+        fixture.session.receive(JSONMessage(raw: [
+            "t": "window.title", "stream": Int(a.stream),
+            "label": "Chrome", "pkg": "com.android.chrome", "title": "Docs"]))
+        XCTAssertEqual(a.window?.title, "Chrome — Docs (Pixel 9)")
+        fixture.session.receive(JSONMessage(raw: [
+            "t": "window.title", "stream": Int(a.stream),
+            "label": "Chrome", "pkg": "com.android.chrome"]))
+        XCTAssertEqual(a.window?.title, "Chrome — Chrome (Pixel 9)", "no title: the app's own name")
     }
 
     /// The phone's display name is part of the title, and a rename reaches

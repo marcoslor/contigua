@@ -912,19 +912,24 @@ final class WindowManager {
 
     func handle(_ event: SessionEvent) {
         switch event {
-        case .windowTitle(let stream, let label, let pkg):
-            // On an app stream the label is the task's own (WIN-28); the phone
-            // and handoff windows use it for the app they show.
+        case .windowTitle(let stream, let label, let pkg, let title):
+            // An app window names its task (`title`, falling back to the app's
+            // own name, WIN-28); the phone, link and handoff windows name the
+            // app the display shows (`label`), never the page it is on
+            // (WIN-3), and a message that names no app leaves it standing.
             if controller(for: stream) is AppWindowController {
-                setTaskLabel(label, stream: stream)
-            } else {
+                let task = title ?? (label.isEmpty ? nil : label)
+                if task != nil { setTaskLabel(task, stream: stream) }
+            } else if !label.isEmpty {
                 (controller(for: stream) as? PhoneWindowController)?.setSubject(label)
             }
             (controller(for: stream) as? HandoffWindowController)?.adopt(pkg: pkg)
-            (controller(for: stream) as? HandoffWindowController)?.setSubject(label)
+            if !label.isEmpty {
+                (controller(for: stream) as? HandoffWindowController)?.setSubject(label)
+            }
             if let link = controller(for: stream) as? LinkWindowController {
                 let unknown = link.pkg == nil
-                link.setSubject(label)
+                if !label.isEmpty { link.setSubject(label) }
                 link.adopt(pkg: pkg)
                 if unknown, !pkg.isEmpty {
                     onAppWindowOpened?(pkg, stream)
