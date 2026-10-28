@@ -937,7 +937,9 @@ class Session(
     }
 
     private fun onAppsList() {
-        val apps = catalog.list().map { mapOf("pkg" to it.pkg, "label" to it.label, "activity" to it.activity) }
+        val apps = catalog.list().map {
+            mapOf("pkg" to it.pkg, "label" to it.label, "activity" to it.activity, "multi" to it.multi)
+        }
         sendJson(mapOf("t" to "apps", "apps" to apps))
     }
 

@@ -509,13 +509,16 @@ class SessionTest {
     fun appsListAndIcon() {
         addAndAuthenticate()
         platform.apps = listOf(
-            AppEntry("com.a", "Alpha", "com.a/.Main"),
-            AppEntry("com.b", "Beta", "com.b/.Main"),
+            AppEntry("com.a", "Alpha", "com.a/.Main", multi = true),
+            AppEntry("com.b", "Beta", "com.b/.Main", multi = false),
         )
         platform.iconResult = "AAAA"
         send(mapOf("t" to "apps.list"))
         val apps = readUntil("apps")["apps"] as List<*>
         assertEquals(2, apps.size)
+        // WIN-24: the Mac's New Window items follow each app's own answer.
+        assertEquals(true, (apps[0] as Map<*, *>)["multi"])
+        assertEquals(false, (apps[1] as Map<*, *>)["multi"])
         send(mapOf("t" to "apps.icon", "pkg" to "com.a"))
         val icon = readUntil("icon")
         assertEquals("com.a", icon["pkg"])
@@ -541,7 +544,7 @@ class SessionTest {
     @Test
     fun iconMessageCarriesTheAdaptiveLayersAsOptionalFields() {
         addAndAuthenticate()
-        platform.apps = listOf(AppEntry("com.a", "Alpha", "com.a/.Main"))
+        platform.apps = listOf(AppEntry("com.a", "Alpha", "com.a/.Main", multi = false))
         platform.iconResult = "AAAA"
         platform.iconLayersResult = IconLayers("fg-b64", "bg-b64", "mono-b64")
         send(mapOf("t" to "apps.icon", "pkg" to "com.a"))

@@ -12,7 +12,11 @@ import java.io.File
 
 data class IntSize(val w: Int, val h: Int)
 
-data class AppEntry(val pkg: String, val label: String, val activity: String)
+/**
+ * @property multi whether a second instance can run in its own task (WIN-24,
+ *   [MultiInstancePolicy]); the Mac's New Window items follow it.
+ */
+data class AppEntry(val pkg: String, val label: String, val activity: String, val multi: Boolean)
 
 data class DeviceInfo(
     val id: String,
