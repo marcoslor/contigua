@@ -146,9 +146,10 @@ class DeckService(private val appContext: Context?) :
         // One quiet window per server process, shared by every session: a
         // reconnect must not reset it (review M-1).
         val pairCooldown = PairCooldown()
-        val factory = SessionFactory { socket ->
+        val factory = SessionFactory { socket, plain ->
             Session(
                 socket = socket,
+                plainSocket = plain,
                 display = display,
                 catalog = launcher,
                 launcher = launcher,

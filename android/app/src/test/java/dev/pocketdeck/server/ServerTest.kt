@@ -4,6 +4,7 @@ import dev.pocketdeck.proto.FrameReader
 import dev.pocketdeck.proto.Frames
 import dev.pocketdeck.proto.Json
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.net.Socket
@@ -36,9 +37,10 @@ class ServerTest {
         val macIdentity = TestTls.generate("PocketDeck Mac (test)")
 
         val server = Server(
-            { socket ->
+            { socket, plain ->
                 Session(
                     socket = socket,
+                    plainSocket = plain,
                     display = platform,
                     catalog = platform,
                     launcher = platform,
@@ -98,7 +100,7 @@ class ServerTest {
     fun plainTextClientIsRefusedWithoutAWelcome() {
         val platform = FakePlatform()
         val phoneIdentity = TestTls.generate("PocketDeck Phone (plaintext test)")
-        val server = Server({ socket -> sessionFor(platform, socket) }, log = {},
+        val server = Server({ socket, plain -> sessionFor(platform, socket, plain) }, log = {},
             { phoneIdentity.certPem }, { phoneIdentity.keyP8 }, { GateSettings(true, true) })
         val port = server.start()
         try {
@@ -139,7 +141,7 @@ class ServerTest {
         val phoneIdentity = TestTls.generate("PocketDeck Phone (empty test)")
         val macIdentity = TestTls.generate("PocketDeck Mac (empty test)")
         val logs = java.util.Collections.synchronizedList(mutableListOf<String>())
-        val server = Server({ socket -> sessionFor(platform, socket) }, log = { logs.add(it) },
+        val server = Server({ socket, plain -> sessionFor(platform, socket, plain) }, log = { logs.add(it) },
             { phoneIdentity.certPem }, { phoneIdentity.keyP8 }, { GateSettings(true, true) })
         val port = server.start()
         try {
@@ -172,7 +174,7 @@ class ServerTest {
         platform.clients.add(PairedClient("c1", "MacBook", TlsV2Fixture.MAC_FP_HEX))
         val phoneIdentity = TestTls.generate("PocketDeck Phone (drop test)")
         val macIdentity = TestTls.generate("PocketDeck Mac (drop test)")
-        val server = Server({ socket -> sessionFor(platform, socket) }, log = {},
+        val server = Server({ socket, plain -> sessionFor(platform, socket, plain) }, log = {},
             { phoneIdentity.certPem }, { phoneIdentity.keyP8 }, { GateSettings(true, true) })
         val port = server.start()
         try {
@@ -215,7 +217,7 @@ class ServerTest {
         val macIdentity = TestTls.generate("PocketDeck Mac (forget test)")
         var cert = phoneIdentity.certPem
         var key = phoneIdentity.keyP8
-        val server = Server({ socket -> sessionFor(platform, socket) }, log = {},
+        val server = Server({ socket, plain -> sessionFor(platform, socket, plain) }, log = {},
             { cert }, { key }, { GateSettings(true, true) })
         val port = server.start()
         try {
@@ -243,6 +245,36 @@ class ServerTest {
         }
     }
 
+    /**
+     * PAIR-20's drop rule, measured where it is decided: the app's push runs on
+     * a binder thread the app may itself be waiting on (its UI thread for Forget
+     * All), so `dropSessions()` hands a slow close over and gives the slot up at
+     * once. A real session's close takes as long as the peer does.
+     */
+    @Test
+    fun droppingSessionsNeverWaitsForASlowClose() {
+        val session = FakeLiveSession(java.util.concurrent.CountDownLatch(1))
+        val dropper = SessionDropper(log = {})
+        dropper.adopt { session }
+        val server = Server(
+            { _, _ -> error("this test accepts no socket") },
+            log = {},
+            { "" },
+            { "" },
+            { GateSettings(true, true) },
+            sessions = dropper,
+        )
+
+        val started = System.nanoTime()
+        server.dropSessions()
+        val elapsedMs = (System.nanoTime() - started) / 1_000_000
+
+        assertTrue("dropSessions waited ${elapsedMs}ms for the close", elapsedMs < 100)
+        assertNull("the dropped session is still the server's live one", dropper.current())
+        assertTrue("the close never ran", session.closeStarted.await(1, java.util.concurrent.TimeUnit.SECONDS))
+        session.release()
+    }
+
     @Test
     fun emptyConnectionClassifier() {
         assertEquals(true, Server.isEmptyConnection(javax.net.ssl.SSLHandshakeException("x").apply { initCause(java.io.EOFException()) }))
@@ -261,7 +293,7 @@ class ServerTest {
         platform.clients.add(PairedClient("c1", "MacBook", TlsV2Fixture.MAC_FP_HEX))
         val phoneIdentity = TestTls.generate("PocketDeck Phone (silent test)")
         val macIdentity = TestTls.generate("PocketDeck Mac (silent test)")
-        val server = Server({ socket -> sessionFor(platform, socket) }, log = {},
+        val server = Server({ socket, plain -> sessionFor(platform, socket, plain) }, log = {},
             { phoneIdentity.certPem }, { phoneIdentity.keyP8 }, { GateSettings(true, true) })
         val port = server.start()
         try {
@@ -300,7 +332,7 @@ class ServerTest {
             dev.pocketdeck.e2ee.KeyPin.fingerprint(
                 pinnedMac.cert.publicKey as java.security.interfaces.ECPublicKey))
         val logs = java.util.Collections.synchronizedList(mutableListOf<String>())
-        val server = Server({ socket -> sessionFor(platform, socket) }, log = { logs.add(it) },
+        val server = Server({ socket, plain -> sessionFor(platform, socket, plain) }, log = { logs.add(it) },
             { phoneIdentity.certPem }, { phoneIdentity.keyP8 }, { GateSettings(false, true) },
             { listOf(pin) })
         val port = server.start()
@@ -330,8 +362,9 @@ class ServerTest {
         }
     }
 
-    private fun sessionFor(platform: FakePlatform, socket: Socket): Session = Session(
+    private fun sessionFor(platform: FakePlatform, socket: Socket, plain: Socket): Session = Session(
         socket = socket,
+        plainSocket = plain,
         display = platform,
         catalog = platform,
         launcher = platform,

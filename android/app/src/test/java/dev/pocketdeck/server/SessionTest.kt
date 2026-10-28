@@ -921,7 +921,7 @@ class SessionTest {
 
     @Test
     fun serverWithoutSessionIsNoSession() {
-        val server = Server({ error("no sessions here") })
+        val server = Server({ _, _ -> error("no sessions here") })
         assertEquals(ShareStatus.NO_SESSION, server.shareText("hi"))
         assertEquals(ShareStatus.NO_SESSION, server.shareFile("a.png", "image/png", java.io.ByteArrayInputStream(ByteArray(1))))
     }
