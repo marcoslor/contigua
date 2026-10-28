@@ -70,6 +70,10 @@ internal class StreamCongestion(
     private var repairedMs = 0L
     private var repaired = false
 
+    /** Drops the current episode has seen (logged when it ends). */
+    var dropsInEpisode = 0
+        private set
+
     fun onEvent(event: Event): List<Action> = when (event) {
         is Event.Drop -> onDrop(event.nowMs)
         is Event.Drained -> onDrained(event.nowMs, event.stalled)
@@ -82,14 +86,19 @@ internal class StreamCongestion(
             // it the bitrate step) waits until the queue has emptied, so the
             // keyframe is encoded at the lower bitrate and into an empty queue.
             episodeStartMs = nowMs
+            dropsInEpisode = 1
             state = State.DRAINING
             emptyList()
         }
         // Already congested: the drops are this episode's, not new ones.
-        State.DRAINING -> emptyList()
+        State.DRAINING -> {
+            dropsInEpisode++
+            emptyList()
+        }
         State.RECOVERING -> {
             // The repair's own backlog overflowed: the reader is still behind,
             // so the episode continues and the next cycle may repair again.
+            dropsInEpisode++
             if (canRepair(nowMs)) state = State.DRAINING
             emptyList()
         }
@@ -200,13 +209,17 @@ internal class CongestionDriver(
             val event = event(clock())
             actions = entry.machine.onEvent(event)
             val after = entry.machine.state
-            if (after != before) line = "stream $stream congestion: $before --${eventName(event)}--> $after"
-            if (after == StreamCongestion.State.FLOWING) {
+            val drops = entry.machine.dropsInEpisode
+            if (after == StreamCongestion.State.FLOWING && before != after) {
+                line = "stream $stream congestion: $before --${eventName(event)}--> $after after $drops drops"
                 streams.remove(stream)
-            } else if (entry.tick == null) {
-                entry.tick = runCatching {
-                    executor.schedule({ tick(stream) }, StreamCongestion.TICK_MS, TimeUnit.MILLISECONDS)
-                }.getOrNull()
+            } else {
+                if (after != before) line = "stream $stream congestion: $before --${eventName(event)}--> $after"
+                if (after != StreamCongestion.State.FLOWING && entry.tick == null) {
+                    entry.tick = runCatching {
+                        executor.schedule({ tick(stream) }, StreamCongestion.TICK_MS, TimeUnit.MILLISECONDS)
+                    }.getOrNull()
+                }
             }
         }
         line?.let(log)

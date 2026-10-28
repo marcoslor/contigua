@@ -41,6 +41,8 @@ class StreamCongestionTest {
         assertEquals(emptyList<Action>(), m.onEvent(Event.Drop(1_300)))
         assertEquals(emptyList<Action>(), m.onEvent(Event.Drop(1_600)))
         assertEquals(State.DRAINING, m.state)
+        // The episode's drop count is for the log line when it ends.
+        assertEquals(3, m.dropsInEpisode)
     }
 
     @Test
