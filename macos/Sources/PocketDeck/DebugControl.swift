@@ -47,6 +47,8 @@
 //   deckclick LABEL  a click on that app's cell in the Deck grid: the cell's
 //                    own place from the accessibility tree, through the
 //                    Deck window's event handling
+//   deckcellpoint LABEL PATH  that cell's centre in Quartz coordinates, for a
+//                    check that posts a real right click (the cell's menu)
 //   keywindow PATH   the key window's identifier and title, one per line
 //                    (which window a raise actually put in front)
 //   coverclick TITLE a click on the opening cover's Cancel or Close, at the

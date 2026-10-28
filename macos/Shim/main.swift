@@ -143,10 +143,37 @@ final class ShimDelegate: NSObject, NSApplicationDelegate {
 
     private func startDebugPoll() {
         let timer = Timer(timeInterval: 0.2, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.pollPress() }
+            MainActor.assumeIsolated {
+                self?.pollPress()
+                self?.pollShow()
+            }
         }
         RunLoop.main.add(timer, forMode: .common)
         debugTimer = timer
+    }
+
+    /// e2e (`--debug-control`): `dockmenu-<pkg>-show` pops the menu the Dock
+    /// hands it for the seconds in the file. The Dock owns a secondary click on
+    /// its own icon, so a check cannot post a person's right click; this shows
+    /// the same `buildMenu`, for the review's shot.
+    private func pollShow() {
+        guard let directory = menuDebugDir else { return }
+        let path = (directory as NSString).appendingPathComponent("dockmenu-\(pkg)-show")
+        guard let text = try? String(contentsOfFile: path, encoding: .utf8) else { return }
+        try? FileManager.default.removeItem(atPath: path)
+        guard let seconds = Double(text.trimmingCharacters(in: .whitespacesAndNewlines)),
+              seconds > 0, seconds <= 30, !rows.isEmpty else { return }
+        let menu = buildMenu()
+        // The tracking loop owns this thread until the timer cancels it, so the
+        // timer goes in before the menu is up.
+        let close = Timer(timeInterval: seconds, repeats: false) { _ in
+            MainActor.assumeIsolated { menu.cancelTracking() }
+        }
+        RunLoop.main.add(close, forMode: .common)
+        let screen = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1280, height: 800)
+        NSApp.activate(ignoringOtherApps: true)
+        menu.popUp(positioning: nil,
+                   at: NSPoint(x: screen.maxX - 120, y: screen.minY + 120), in: nil)
     }
 
     private func pollPress() {

@@ -59,7 +59,7 @@ vm_exists || { say "no VM '$VM'; run macos/scripts/vm-prepare.sh first"; exit 3;
 if [ "$CHECK_ONLY" = 1 ]; then
     # Rehearsal: the same arguments and paths a boot would use, without
     # taking the lock or starting the VM (a boot is budgeted).
-    say "rehearsal ok: $raw (profile ${PD_E2E_PROFILE:-e2e}, visible ${PD_VM_VISIBLE:-1}, port $VM_PORT)"
+    say "rehearsal ok: $raw (profile ${PD_E2E_PROFILE:-e2e}, visible ${PD_VM_VISIBLE:-1}, appearance ${PD_E2E_SHOT_APPEARANCE:-dark}, port $VM_PORT)"
     exit 0
 fi
 
@@ -175,7 +175,7 @@ exit "$failed"
 EOS
 
 rsync_to_guest "$OUT/run-check.sh" "$VM_ROOT/run-check.sh" || { say "run-check copy failed"; exit 3; }
-run_cmd="sudo launchctl asuser \$(id -u) sudo -u admin env PD_VM_CHECK_SECS=${PD_VM_CHECK_SECS:-2400} bash $VM_ROOT/run-check.sh $VISIBLE $VM_PORT ${PD_E2E_PROFILE:-e2e} ${CHECKS[*]}"
+run_cmd="sudo launchctl asuser \$(id -u) sudo -u admin env PD_VM_CHECK_SECS=${PD_VM_CHECK_SECS:-2400} PD_E2E_SHOT_APPEARANCE=${PD_E2E_SHOT_APPEARANCE:-dark} bash $VM_ROOT/run-check.sh $VISIBLE $VM_PORT ${PD_E2E_PROFILE:-e2e} ${CHECKS[*]}"
 ssh_guest "$run_cmd" 2>&1 | tee "$OUT/run.log"
 rc=${PIPESTATUS[0]}
 
