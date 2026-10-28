@@ -63,6 +63,18 @@ object PhoneIdentity {
         }
     }
 
+    /**
+     * Replace the identity with a fresh key and certificate. Only the person's
+     * Paired Macs ▸ Forget All Macs… does this: every Mac's pin then fails, and
+     * the shell service sees a different fingerprint (docs/specs/pairing.md
+     * PAIR-20). A plain relaunch never rotates it.
+     */
+    fun rotate(ctx: Context): Identity {
+        val id = generate()
+        save(ctx, id)
+        return id
+    }
+
     private fun generate(): Identity {
         val kpg = KeyPairGenerator.getInstance("EC")
         kpg.initialize(ECGenParameterSpec("secp256r1"))

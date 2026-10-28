@@ -16,8 +16,10 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import dev.pocketdeck.IDeckService
 import dev.pocketdeck.R
+import dev.pocketdeck.app.BatteryExemption
 import dev.pocketdeck.app.DeckForegroundService
 import dev.pocketdeck.app.DeckState
+import dev.pocketdeck.app.KeepRunningAction
 import dev.pocketdeck.app.Prefs
 import dev.pocketdeck.app.QrPairing
 import dev.pocketdeck.app.ShizukuClient
@@ -25,13 +27,31 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import rikka.shizuku.Shizuku
+import java.util.concurrent.Executor
+import java.util.concurrent.Executors
+
+/**
+ * The one shell push (`setPairedClients`): a binder call whose reply can be as
+ * slow as the shell service is, so it never runs on the main thread (PAIR-20).
+ */
+private fun pushToShell(json: String) {
+    runCatching { ShizukuClient.current()?.setPairedClients(json) }
+}
 
 /**
  * The single UI state holder. It observes the foreground service, the Shizuku
  * client and [Prefs], and exposes one [StateFlow]; composables only render and
  * call back into here, never touch Android services directly.
  */
-class DeckViewModel(app: Application) : AndroidViewModel(app) {
+class DeckViewModel(
+    app: Application,
+    /** Runs the identity rotation and the shell push off the main thread. */
+    private val background: Executor = Executors.newSingleThreadExecutor { r ->
+        Thread(r, "pocketdeck-pairing-push").apply { isDaemon = true }
+    },
+    /** The shell push; a test hands in a recorder instead of the binder. */
+    private val push: (String) -> Unit = ::pushToShell,
+) : AndroidViewModel(app) {
 
     private val _state = MutableStateFlow(DeckUiState())
     val state: StateFlow<DeckUiState> = _state.asStateFlow()
@@ -44,9 +64,31 @@ class DeckViewModel(app: Application) : AndroidViewModel(app) {
     /** Client ids removed from the list but still on disk until Undo expires. */
     private val pendingForgets = LinkedHashMap<String, Runnable>()
 
+    /** Forget All is rotating the identity off the main thread: list empty now. */
+    private var forgettingAll = false
+
     private val deckListener: () -> Unit = { refresh() }
 
     private val shizukuClientListener: (IDeckService?) -> Unit = { refresh() }
+
+    /**
+     * The one keep-running action (PHONE-19). The onboarding button and the
+     * home switch both go through it; the exemption is asked only while it is
+     * missing, and a failed request is reported, never swallowed.
+     */
+    private val keepRunning = KeepRunningAction(
+        isExempt = { BatteryExemption.isExempt(getApplication<Application>()) },
+        store = { Prefs.setEnabled(getApplication<Application>(), it) },
+        startService = { DeckForegroundService.start(getApplication<Application>()) },
+        requestExemption = {
+            val ctx = getApplication<Application>()
+            val opened = BatteryExemption.open(ctx)
+            // "Asked once" only when a screen really opened: a missing screen
+            // must not count as a completed onboarding step (PHONE-19).
+            if (opened != null) Prefs.setBatteryRequested(ctx, true)
+            opened != null
+        },
+    )
 
     private val shizukuPermissionListener = Shizuku.OnRequestPermissionResultListener { requestCode, grantResult ->
         if (requestCode == REQUEST_SHIZUKU) {
@@ -94,12 +136,19 @@ class DeckViewModel(app: Application) : AndroidViewModel(app) {
         }
         val port = DeckState.port
         val connected = DeckState.connectedMac
-        val paired = Prefs.paired(ctx).filterNot { pendingForgets.containsKey(it.clientId) }
+        // Forget All empties the list before the background rotation lands, so
+        // the row goes the moment the person confirms (PAIR-20).
+        val paired = if (forgettingAll) {
+            emptyList()
+        } else {
+            Prefs.paired(ctx).filterNot { pendingForgets.containsKey(it.clientId) }
+        }
 
         val allowConnections = Prefs.isAllowConnections(ctx)
         _state.value = DeckUiState(
             onboardingDone = Prefs.isOnboardingDone(ctx),
             enabled = enabled,
+            keepRunning = keepRunningState(enabled, BatteryExemption.isExempt(ctx)),
             allowConnections = allowConnections,
             allowPairings = Prefs.isAllowPairings(ctx),
             notifyNoAccess = DeckState.notifyNoAccess,
@@ -175,27 +224,36 @@ class DeckViewModel(app: Application) : AndroidViewModel(app) {
 
     fun onNotificationPermissionResult() = refresh()
 
-    fun ignoreBatteryOptimizations() {
-        val ctx = getApplication<Application>()
-        Prefs.setBatteryRequested(ctx, true)
-        val intent = Intent(
-            Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
-            Uri.parse("package:${ctx.packageName}"),
-        ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        runCatching { ctx.startActivity(intent) }
-        refresh()
-    }
+    /**
+     * The onboarding step's button: the same action as turning the home switch
+     * on (PHONE-19), so the two cannot drift. It stored "asked once" and threw
+     * the settings intent away before; nothing turned the pref on.
+     */
+    fun keepRunningOn() = setEnabled(true)
 
     // ---- home actions --------------------------------------------------
 
     fun setEnabled(value: Boolean) {
         val ctx = getApplication<Application>()
-        Prefs.setEnabled(ctx, value)
+        // One action for the onboarding step and this switch (PHONE-19): store
+        // the pref, start the service, ask for the battery exemption only when
+        // it is missing. Off never stops the running service; it lets the task's
+        // swipe decide (PHONE-5/PHONE-7).
+        val result = keepRunning.apply(value)
         DeckState.enabled = value
-        // Off does not stop the service: it keeps serving while the task is
-        // open and stops on its own when the task leaves Recents. On also
-        // makes it start at boot and survive that swipe (BootReceiver).
-        if (value) DeckForegroundService.start(ctx)
+        if (result == KeepRunningAction.Result.ON_SETTINGS_UNAVAILABLE) {
+            Log.i(TAG, "keep running set; battery settings could not be opened")
+            postSnackbar(ctx.getString(R.string.keep_running_settings_failed))
+        }
+        refresh()
+    }
+
+    /** The keep-running row's fix when the exemption is still missing. */
+    fun openBatterySettings() {
+        val ctx = getApplication<Application>()
+        if (BatteryExemption.open(ctx) == null) {
+            postSnackbar(ctx.getString(R.string.keep_running_settings_failed))
+        }
         refresh()
     }
 
@@ -284,6 +342,35 @@ class DeckViewModel(app: Application) : AndroidViewModel(app) {
         refresh()
     }
 
+    /**
+     * Paired Macs ▸ Forget All Macs…: rotate the phone's identity and drop every
+     * pairing. The shell service sees a different fingerprint on the next push,
+     * so it closes the live session and forgets what it cached; every Mac's pin
+     * then reads Pair again (docs/specs/pairing.md PAIR-20).
+     *
+     * The list empties at once. The identity rotation is key generation and the
+     * push is a binder call the shell may take time to answer: both run on
+     * [background], the push after the rotation, or the main thread would be
+     * waiting on them (the ANR this fixes).
+     */
+    fun forgetAllMacs() {
+        val ctx = getApplication<Application>()
+        pendingForgets.values.forEach { handler.removeCallbacks(it) }
+        pendingForgets.clear()
+        forgettingAll = true
+        DeckState.paired = emptyList()
+        refresh()
+        DeckState.notifyChanged()
+        background.execute {
+            Prefs.forgetAll(ctx)
+            pushNow(ctx)
+            handler.post {
+                forgettingAll = false
+                refresh()
+            }
+        }
+    }
+
     fun answerPairing(allow: Boolean) {
         val pending = DeckState.pending ?: return
         val ctx = getApplication<Application>()
@@ -321,7 +408,7 @@ class DeckViewModel(app: Application) : AndroidViewModel(app) {
                     Prefs.PendingQr(result.clientId, result.name, result.macFpHex,
                                     result.secretHex, now),
                 )
-                runCatching { ShizukuClient.current()?.setPairedClients(Prefs.serviceStateJson(ctx)) }
+                pushPaired()
                 postSnackbar(ctx.getString(R.string.qr_waiting, result.name))
             }
             QrPairing.Result.BadKey -> postSnackbar(ctx.getString(R.string.qr_bad_key))
@@ -342,7 +429,12 @@ class DeckViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun pushPaired() {
         val ctx = getApplication<Application>()
-        runCatching { ShizukuClient.current()?.setPairedClients(Prefs.serviceStateJson(ctx)) }
+        background.execute { pushNow(ctx) }
+    }
+
+    /** The push itself: `serviceStateJson` may generate the identity (keygen). */
+    private fun pushNow(ctx: Application) {
+        push(Prefs.serviceStateJson(ctx))
     }
 
     private fun postSnackbar(message: String) {

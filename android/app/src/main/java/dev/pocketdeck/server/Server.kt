@@ -16,7 +16,11 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 /** Builds a [Session] for an accepted socket (wired up by DeckService). */
 fun interface SessionFactory {
-    fun create(socket: Socket): Session
+    /**
+     * [socket] is the TLS session socket; [plain] is the accepted TCP socket
+     * under it, which a drop shuts down first (docs/specs/pairing.md PAIR-20).
+     */
+    fun create(socket: Socket, plain: Socket): Session
 }
 
 /**
@@ -36,13 +40,16 @@ class Server(
      * peer is closed without a word (review M-3).
      */
     private val pinnedPeerFpsProvider: () -> List<String> = { emptyList() },
+    /**
+     * The live session and the daemon that ends it: a drop hands the close over
+     * instead of running it on the caller's thread (PAIR-20). Injected so a
+     * test can hold a session whose close blocks.
+     */
+    private val sessions: SessionDropper = SessionDropper(),
 ) {
     private val serverSocket = ServerSocket()
     private val running = AtomicBoolean(false)
     @Volatile private var acceptThread: Thread? = null
-    @Volatile private var active: Session? = null
-    /** Serialises the "one session at a time" decision made by handshake workers. */
-    private val sessionLock = Object()
     /**
      * Bounded handshake pool (review H-1): the accept loop hands every socket to
      * one of two workers and immediately accepts again, so a peer that never
@@ -98,31 +105,52 @@ class Server(
         if (!running.compareAndSet(true, false)) return
         runCatching { serverSocket.close() }
         handshakes.shutdownNow()
-        active?.let { runCatching { it.close() } }
-        active = null
+        sessions.drop()
         acceptThread = null
         log("server stopped")
     }
 
     fun respondPairing(requestId: String, allow: Boolean) {
-        active?.respondPairing(requestId, allow)
+        sessions.current()?.respondPairing(requestId, allow)
+    }
+
+    /**
+     * The app's vouching changed or ended (docs/design/e2ee.md §10): end the
+     * live session now, not at the Mac's next reconnect. The listener keeps
+     * its port; without a linked identity every later handshake is refused
+     * before TLS completes.
+     *
+     * The close is handed to [SessionDropper]: this runs on a binder thread
+     * serving the app's push, and the app's UI thread may be the one waiting
+     * for the reply (PAIR-20).
+     */
+    fun dropSessions() {
+        if (sessions.drop()) log("app link changed: live session dropped")
+    }
+
+    /** The cached TLS material was built from an identity the app no longer holds. */
+    fun forgetCachedIdentity() {
+        synchronized(contextLock) {
+            cachedContext = ""
+            cachedTlsContext = null
+        }
     }
 
     /** The one session serves shares; with none ready the share is refused, never queued. */
     fun shareText(text: String): Int =
-        active?.takeIf { it.isReady }?.shareText(text) ?: ShareStatus.NO_SESSION
+        sessions.current()?.takeIf { it.isReady }?.shareText(text) ?: ShareStatus.NO_SESSION
 
     fun shareFile(name: String, mime: String, input: java.io.InputStream): Int =
-        active?.takeIf { it.isReady }?.shareFile(name, mime, input) ?: ShareStatus.NO_SESSION
+        sessions.current()?.takeIf { it.isReady }?.shareFile(name, mime, input) ?: ShareStatus.NO_SESSION
 
     /** The phone's notification-listener grant changed: sessions re-answer the gate. */
     fun listenerAccess(granted: Boolean) {
-        active?.takeIf { it.isReady }?.listenerAccessChanged(granted)
+        sessions.current()?.takeIf { it.isReady }?.listenerAccessChanged(granted)
     }
 
     /** One listener event push (app process → shell service → session). */
     fun onDeviceEvent(t: String, obj: Map<String, Any?>) {
-        active?.takeIf { it.isReady }?.onDeviceEvent(t, obj)
+        sessions.current()?.takeIf { it.isReady }?.onDeviceEvent(t, obj)
     }
 
     private fun acceptLoop() {
@@ -166,22 +194,18 @@ class Server(
                 refuseConnectionsOff(socket)
                 return
             }
-            synchronized(sessionLock) {
-                val current = active
-                if (current != null && !current.isClosed) {
-                    rejectBusy(socket)
-                    return
-                }
-                val session = factory.create(socket)
-                active = session
-                Thread({
-                    try {
-                        session.run()
-                    } finally {
-                        if (active === session) active = null
-                    }
-                }, "pocketdeck-session").also { it.start() }
+            val session = sessions.adopt { factory.create(socket, rawSocket) }
+            if (session == null) {
+                rejectBusy(socket)
+                return
             }
+            Thread({
+                try {
+                    session.run()
+                } finally {
+                    sessions.finished(session)
+                }
+            }, "pocketdeck-session").also { it.start() }
         } finally {
             // A slot is free again: the next saturated burst logs once more.
             handshakeBusyLogged.set(false)
@@ -266,7 +290,7 @@ class Server(
 
     /** Live gate change: the app switched a gate while a session is up. */
     fun applyGates() {
-        active?.takeIf { !it.isClosed }?.applyGates()
+        sessions.current()?.takeIf { !it.isClosed }?.applyGates()
     }
 
     private fun rejectBusy(socket: Socket) =

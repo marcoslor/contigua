@@ -35,11 +35,13 @@ class HomeScreenTest {
                     HomeScreen(
                         state = state,
                         onToggleEnabled = {},
+                        onOpenBatterySettings = {},
                         onToggleAllowConnections = {},
                         onToggleAllowPairings = {},
                         onStatusAction = {},
                         onForget = { "" },
                         onUndoForget = {},
+                        onForgetAll = {},
                         onPairNew = {},
                         relativeTime = { "5 minutes ago" },
                     )
@@ -56,9 +58,11 @@ class HomeScreenTest {
         pairNotifyMissing: Boolean = false,
         shizukuInstalled: Boolean = true,
         shizukuRunning: Boolean = true,
+        batteryExempt: Boolean = true,
     ) = DeckUiState(
         onboardingDone = true,
         enabled = enabled,
+        keepRunning = keepRunningState(enabled, batteryExempt),
         allowConnections = allowConnections,
         shizukuInstalled = shizukuInstalled,
         shizukuRunning = shizukuRunning,
@@ -84,7 +88,24 @@ class HomeScreenTest {
     fun `background off says the service stops with the task`() {
         shoot(state(enabled = false))
         compose.onNodeWithText("Stops when you close PocketDeck from recent apps.").fetchSemanticsNode()
+        compose.onNodeWithText("Runs only while PocketDeck is open.").fetchSemanticsNode()
         compose.onNodeWithText("Ready").fetchSemanticsNode()
+    }
+
+    @Test
+    fun `background on with the exemption says what it survives`() {
+        shoot(state(enabled = true, batteryExempt = true))
+        compose.onNodeWithText(
+            "Keeps running after you swipe it away and starts when the phone restarts.",
+        ).fetchSemanticsNode()
+        compose.onNodeWithText("Open battery settings").assertDoesNotExist()
+    }
+
+    @Test
+    fun `background on without the exemption says what is missing and offers the setting`() {
+        shoot(state(enabled = true, batteryExempt = false))
+        compose.onNodeWithText("Battery restriction still on — Android may stop it.").fetchSemanticsNode()
+        compose.onNodeWithText("Open battery settings").fetchSemanticsNode()
     }
 
     @Test

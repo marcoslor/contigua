@@ -26,6 +26,13 @@ class MainActivity : ComponentActivity() {
         handlePairingIntent(intent)
     }
 
+    override fun onResume() {
+        super.onResume()
+        // Returning from the battery or permissions screen changes what the
+        // app can honestly say: re-read it instead of keeping a stale line.
+        if (::deck.isInitialized) deck.refresh()
+    }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
