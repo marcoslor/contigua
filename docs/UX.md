@@ -147,7 +147,8 @@ Material 3, edge-to-edge, dynamic color, light/dark.
       (button **Open Shizuku** + 3-line "How to start it" with wireless debugging) →
       Permission needed (button **Allow**) → ✓ Ready. Auto-advance on ready.
    3. *Notifications* — needed for pairing prompts → **Allow** (POST_NOTIFICATIONS);
-      also offers **Let PocketDeck run in the background** once, with one line why.
+      also offers **Keep running in the background** once, with one line why (the home's
+      own words for that switch).
    4. *Pair your Mac* — "Open PocketDeck on your Mac. It will find this phone." +
       **Scan QR code** (outlined) — completes on first successful pairing.
 2. **Home**:

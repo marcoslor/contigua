@@ -287,7 +287,8 @@ private fun NotificationsPage(
         )
         Spacer(Modifier.height(8.dp))
         OutlinedButton(onClick = onIgnoreBattery, modifier = Modifier.fillMaxWidth()) {
-            Text(stringResource(R.string.onboarding_notifications_battery))
+            // One name with the home's switch (CONV-PD-07, misses.md M7).
+            Text(stringResource(R.string.home_keep_running))
         }
         Spacer(Modifier.height(8.dp))
         Button(
