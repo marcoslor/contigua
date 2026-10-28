@@ -1158,6 +1158,9 @@ final class Session {
     func installApk(id: UInt32, files: [[String: Any]]) { sendJSON(["t": "apk.install", "id": Int(id), "files": files]) }
     func cancelApk(id: UInt32) { sendJSON(["t": "apk.cancel", "id": Int(id)]) }
     func enableNotifications(_ on: Bool) { sendJSON(["t": "notify.enable", "on": on]) }
+    /// The Mac's own "Share clipboard with your phone" setting, sent at ready and
+    /// on every change: the phone has no switch, so this is what stops its sends.
+    func enableClipboard(_ on: Bool) { sendJSON(["t": "clip.enable", "on": on]) }
 
     /// A Mac banner click (docs/design/notify.md): run the phone notification's
     /// own action on the window's display or on the phone's screen. The id is

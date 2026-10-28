@@ -5261,10 +5261,13 @@ check_clip() {
 
     # (a) A fresh profile: the setting is off by default, so nothing travels in
     # either direction — neither what the phone already had nor a later copy.
+    # The Mac tells the phone its switch is off (SHARE-13); the phone's own copy
+    # after that never reaches the wire.
     printf '%s' pd-clip-0 | pbcopy
     "$FAKE_PY" "$FAKEPHONE" --port "$PORT" --no-mdns --auto-allow \
         --events "$WORK/events.jsonl" --state "$WORK/state.json" \
-        --clip-on-welcome pd-clip-1 > "$WORK/fake.log" 2>&1 &
+        --clip-on-welcome pd-clip-1 --clip-copy pd-clip-3 --clip-copy-after 6 \
+        > "$WORK/fake.log" 2>&1 &
     FAKE_PID=$!
     for _ in $(seq 1 40); do
         grep -q "listening" "$WORK/fake.log" && break
@@ -5275,7 +5278,9 @@ check_clip() {
     launch --connect "127.0.0.1:$PORT" --quit-after 60
     wait_until 30 authenticated \
         || bad "CLIP the app never authenticated on a fresh profile"
-    sleep 5
+    wait_until 20 events_have '"dir":"gate","on":false' \
+        && ok "[SHARE-13] CLIP the Mac told the phone its switch is off" \
+        || bad "[SHARE-13] CLIP the phone was never told the switch is off"
     clip_is pd-clip-0 \
         && ok "[SHARE-13] CLIP a fresh profile applies nothing: pd-clip-1 never landed" \
         || bad "[SHARE-13] CLIP a fresh profile applied the phone's clip ('$(pbpaste)')"
@@ -5284,16 +5289,23 @@ check_clip() {
     ! events_have '"dir":"rx","text":"pd-clip-2"' \
         && ok "[SHARE-13] CLIP a fresh profile sends nothing: the Mac's copy never reached the phone" \
         || bad "[SHARE-13] CLIP a fresh profile sent pd-clip-2 to the phone"
+    wait_until 20 events_have '"dir":"suppressed"' \
+        && ok "[SHARE-13] CLIP the phone kept its later copy: a suppressed copy, no clip.set" \
+        || bad "[SHARE-13] CLIP the phone's copy after the gate went off was not suppressed"
+    ! events_have '"dir":"rx","text":"pd-clip-3"' \
+        && ok "[SHARE-13] CLIP no clip.set for the copy made after the gate went off" \
+        || bad "[SHARE-13] CLIP the phone sent pd-clip-3 with the gate off"
     stop_app
     stop_fakephone
     wait_until 5 no_fakephone
 
-    # (b) The person turns the switch on in Settings ▸ General: both directions.
+    # (b) The person turns the switch on in Settings ▸ General: the phone is told
+    # again, and both directions work.
     defaults write "$DEFAULTS_SUITE" shareClipboard -bool true
     printf '%s' pd-clip-0 | pbcopy
     "$FAKE_PY" "$FAKEPHONE" --port "$PORT" --no-mdns --auto-allow \
         --events "$WORK/events.jsonl" --state "$WORK/state.json" \
-        --clip-on-welcome pd-clip-1 > "$WORK/fake.log" 2>&1 &
+        --clip-copy pd-clip-1 --clip-copy-after 3 > "$WORK/fake.log" 2>&1 &
     FAKE_PID=$!
     for _ in $(seq 1 40); do
         grep -q "listening" "$WORK/fake.log" && break
@@ -5302,6 +5314,9 @@ check_clip() {
     grep -q "listening" "$WORK/fake.log" || { bad "CLIP fakephone did not start"; return 1; }
 
     launch --connect "127.0.0.1:$PORT" --quit-after 60
+    wait_until 20 events_have '"dir":"gate","on":true' \
+        && ok "[SHARE-13] CLIP turning the switch on tells the phone again" \
+        || bad "[SHARE-13] CLIP the phone never heard the switch turn on"
     wait_until 30 clip_is pd-clip-1 \
         && ok "[SHARE-1] CLIP phone -> Mac: pbpaste shows pd-clip-1" \
         || bad "[SHARE-1] CLIP pbpaste shows '$(pbpaste)', not pd-clip-1"
