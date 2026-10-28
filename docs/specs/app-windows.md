@@ -211,12 +211,15 @@ Welcome/Nearby, a picked window item for a window already front, and a
 - Remembering the scroll position, the app's own state, or reopening an app at launch: the phone owns the app.
 - Keeping the phone awake, unlocking it, or changing a lock or screen-timeout setting (product promise).
 
+## Decided (the person, 2026-10-28)
+
+- A lone window keeps the short title "<App> (<phone>)"; the task label appears from the second window on (WIN-3, WIN-28).
+- The cap is reported by the phone (`state.maxWindows`), 4 by default (WIN-32).
+- ⌘` is ours: one "Next Window ⌘`" item scoped to the key app, AppKit's "Cycle Through Windows" removed; ⇧⌘` keeps the system's meaning (WIN-29, WIN-30).
+- One Dock shim per app; its menu lists the open windows (WIN-26).
+- Two windows of one app on one phone are intended, on request only (WIN-25, WIN-26).
+
 ## Open questions
 
-- [NEEDS CLARIFICATION] A window of an app that is alone keeps the short title "<App> (<phone>)", or always names its task? Recommended: short while alone — the task label is Chrome's own page title, which is noisy on a single window and changes the title under the person's eyes.
-- [NEEDS CLARIFICATION] The cap: four windows per phone (this spec), three, or a number the phone chooses from its own encoder? Recommended: the phone reports its own number (WIN-32) with 4 as the phone's default, because encoder sessions are a hardware limit and the Mac must not guess.
-- [NEEDS CLARIFICATION] Is ⌘` ours (one "Next Window ⌘`" item, AppKit's "Cycle Through Windows" removed) or the system's (which also cycles the Deck and Settings)? Recommended: ours, scoped to the key app, as the person asked.
-- [NEEDS CLARIFICATION] With two windows of Chrome open, does the Dock shim get one Dock identity or two? Recommended: one per app, its menu listing the windows (WIN-26) — a Dock icon per window fights the shim's one-identity-per-app design (`design/dock.md`).
-- [NEEDS CLARIFICATION] Is two windows of the same app on the same phone intended (CONV-MAC-11 says one per thing)? Recommended: yes, on request only (WIN-25/WIN-26) — this spec replaces the old "two windows are an accident" answer.
 - [NEEDS CLARIFICATION] Should an app window remember its size and position per package (CONV-MAC-12) or per app **and** phone? Today the key is `app.<pkg>`, so two phones share one frame. Recommended: keep one frame per package until several phones can be connected at once.
 - [NEEDS CLARIFICATION] DESIGN.md still describes a 52 pt hidden header band and a `.unified` toolbar, and `setFrameAutosaveName`; the code has a 28 pt bar, no toolbar and its own `streamFrames` store. Recommended: code wins; the design doc is corrected (the spec records the code).
