@@ -3389,6 +3389,12 @@ class Session(object):
         h = msg.get("h", SCREEN_H)
         dpi = msg.get("dpi", SCREEN_DPI)
         mode = "phone" if msg.get("mode") == "phone" else "app"
+        if mode == "phone" and self.phone.args.mirror_unavailable:
+            # A phone that cannot capture display 0 (docs/PROTOCOL.md
+            # "window.open"): the same refusal a pre-14 build sends, with no
+            # window and no frames, so the Mac must say why and not retry.
+            self._send_error("mirror_unavailable", "this phone can't mirror its screen", stream_id)
+            return
         window = WindowStream(self.phone, stream_id, w, h, dpi, mode,
                               pkg=msg.get("pkg"), activity=msg.get("activity"))
         self.windows[stream_id] = window
@@ -3925,6 +3931,9 @@ def build_parser():
                         "person's power press took the panel over (the Mac's grace)")
     p.add_argument("--rotate-after", type=float, default=0.0, metavar="SECONDS",
                    help="turn the screen to landscape this long after a phone window opens")
+    p.add_argument("--mirror-unavailable", action="store_true", dest="mirror_unavailable",
+                   help="answer a phone-mode window.open with error mirror_unavailable "
+                        "(a phone that cannot capture display 0, docs/PROTOCOL.md)")
     p.add_argument("--qr-uri", metavar="URI",
                    help="simulate the v2 QR scan (R2): stage a pocketdeck://pair "
                         "c/n/f/s URI; a Mac whose TLS fingerprint matches f gets "

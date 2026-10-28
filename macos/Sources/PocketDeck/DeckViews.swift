@@ -38,9 +38,17 @@ struct DeckRoot: View {
         }
         .animation(.smooth(duration: 0.3), value: controller.deckMode)
         .frame(minWidth: 640, minHeight: 420)
+        // The frame the profile remembers (DECK-19): placed once per open from
+        // the pure rules in DeckPlacement, saved on every move and resize.
+        .background { DeckWindowFrame() }
         // Previews stage the Settings screenshot; nothing else opens
         // the Settings window from here.
         .onChange(of: controller.settingsRequest) { _, _ in openSettings() }
+        .onChange(of: controller.deckMode) { _, _ in
+            // The toolbar is rebuilt with the mode (the title names the phone),
+            // and the search field is SwiftUI's: the Find key goes back on it.
+            if let window = DeckWindow.window { DeckSearch.applyFindHelp(in: window) }
+        }
         // A link dropped on the Deck opens on the phone (a .webloc file carries one too);
         // an app file (.apk, .apks, .xapk) installs on it; other files transfer
         // (docs/design/dragdrop.md).
@@ -59,9 +67,15 @@ struct DeckRoot: View {
             // The menu bar panel is AppKit's and outside this scene; keep the
             // action that brings the Deck back after the window was closed.
             DeckWindow.openAction = { openWindow(id: DeckWindow.id) }
+            // ⌘F is not a menu item, so the search field's help has to name it
+            // (DECK-9/CONV-MAC-06). SwiftUI builds the toolbar field with the
+            // window and again on a mode change: put the help on it now and
+            // once more after the first layout pass.
+            if let window = DeckWindow.window { DeckSearch.applyFindHelp(in: window) }
             // A launch hook's sheet waits for the window: presented while the
             // window is still being created, SwiftUI sometimes drops it.
             try? await Task.sleep(for: .seconds(0.3))
+            if let window = DeckWindow.window { DeckSearch.applyFindHelp(in: window) }
             controller.presentPendingSheet()
         }
         .sheet(item: $controller.sheet, onDismiss: { controller.sheetDismissed() }) { sheet in

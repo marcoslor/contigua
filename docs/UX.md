@@ -202,8 +202,27 @@ Material 3, edge-to-edge, dynamic color, light/dark.
 - After 20 s without a frame: **Couldn't open <app>.** (the Phone Mirror:
   **Couldn't open your phone.**) with **Try Again** and **Close**. Try Again
   sends the same open again; Close closes the window.
+- A phone that answers the open with `mirror_unavailable` (it cannot capture
+  its screen) gets **This phone can't share its screen with PocketDeck.** at
+  once, with **Close** only: no Try Again, because asking again cannot help.
 - The cover is a frozen mode: no input reaches the phone. The "Not responding"
   watchdog runs only after the first frame.
+
+### The Phone Mirror's bar from the keyboard
+
+The window's keys are the phone's: Tab types on Android, Esc is Back, ⌘F is
+Find in the app. The bar's four buttons get their own way in, so a person who
+cannot use a pointer can reach them:
+
+- **⌃Tab** moves the keyboard into the bar: the first button (Back) takes a
+  focus ring. Press it again, or **Esc**, to give the keyboard back to the
+  picture; nothing is sent to the phone either way.
+- **←** / **→** (or Tab / ⇧Tab) move between the bar's enabled buttons, wrapping
+  at both ends.
+- **Return** or **Space** presses the focused button — the same action a click
+  runs.
+- A frozen picture (a cover, or Live Text) has no enabled bar button, so ⌃Tab
+  has nowhere to go and the keyboard stays on the phone.
 
 ### Secondary click
 
@@ -232,6 +251,7 @@ Every keyboard shortcut the app defines (CONV-MAC-06). The first cell of each ro
 | ⇧⌘N | Add Phone… | File |
 | ⌘K | Find Apps | View |
 | ⌥⌘F | Framed window style (the same key toggles Framed / Immersive) | View |
+| ⌃Tab | Move the keyboard into the Phone Mirror's bar; ←/→, Tab, Return and Esc act there | Phone Mirror |
 | ⇧⌘T | Live Text | View |
 | ⌘+ | Larger: the Deck grid, or the window's density | View, Deck |
 | ⌘− | Smaller: the Deck grid, or the window's density | View, Deck |
@@ -242,7 +262,7 @@ Every keyboard shortcut the app defines (CONV-MAC-06). The first cell of each ro
 | ⇧⌘H | Home (phone mode) | Navigate |
 | ⌘↑ | Recents (phone mode) | Navigate |
 | ⌃⌘F | Enter / Exit Full Screen | Window |
-| ⌘F | Find in the Deck: focus and select the search field | Deck |
+| ⌘F | Find in the Deck: focus and select the search field (the field's help tag names the key) | Deck |
 | ⌘, | Settings | Icon menu, Deck |
 | ⌘Q | Quit PocketDeck | Icon menu, app menu |
 | ↩ | Default button: Find my phone, Try again | Deck, pairing sheets |

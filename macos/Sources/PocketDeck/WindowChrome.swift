@@ -206,7 +206,7 @@ enum HeaderBar {
     /// appearances and a dark one in dark appearances, with the symbol colour
     /// the fill carries. Opaque enough that the stream behind it (white, black
     /// or busy) cannot pull the symbol below 3:1.
-    struct Material {
+    struct Material: Equatable {
         var fill: NSColor
         var symbol: NSColor
     }
@@ -232,6 +232,16 @@ final class HeaderActionButton: NSView {
     private let icon = NSImageView()
     private let material: HeaderBar.Material
     private var hovered = false
+
+    /// The keyboard's focus is on this button (MIRROR-13): the ring is the
+    /// visible "you are here" for a person who cannot use a pointer.
+    var showsFocus = false {
+        didSet {
+            guard showsFocus != oldValue else { return }
+            setAccessibilityFocused(showsFocus)
+            needsDisplay = true
+        }
+    }
 
     var isEnabled: Bool = true {
         didSet {
@@ -263,6 +273,9 @@ final class HeaderActionButton: NSView {
         setAccessibilityLabel(action.help)
         setAccessibilityRole(.button)
         setAccessibilityEnabled(true)
+        // CONV-PD-09/MIRROR-13: the label names the action, the help says how
+        // to reach it without a pointer.
+        setAccessibilityHelp("\(action.help): ⌃Tab moves the keyboard to the bar, Return presses")
     }
 
     @available(*, unavailable)
@@ -298,9 +311,17 @@ final class HeaderActionButton: NSView {
     }
 
     override func draw(_ dirtyRect: NSRect) {
-        guard hovered, isEnabled else { return }
-        material.symbol.withAlphaComponent(0.12).setFill()
-        NSBezierPath(roundedRect: bounds.insetBy(dx: 3, dy: 3), xRadius: 7, yRadius: 7).fill()
+        if hovered, isEnabled {
+            material.symbol.withAlphaComponent(0.12).setFill()
+            NSBezierPath(roundedRect: bounds.insetBy(dx: 3, dy: 3), xRadius: 7, yRadius: 7).fill()
+        }
+        // The keyboard's focus ring (MIRROR-13): the accent, 2 pt, inside the
+        // button's 32x28 hit area and never over the symbol.
+        guard showsFocus, isEnabled else { return }
+        NSColor.controlAccentColor.setStroke()
+        let ring = NSBezierPath(roundedRect: bounds.insetBy(dx: 2.5, dy: 2.5), xRadius: 6, yRadius: 6)
+        ring.lineWidth = 2
+        ring.stroke()
     }
 }
 
@@ -356,6 +377,9 @@ final class HeaderBarView: NSView {
     private var buttons: [HeaderActionButton] = []
     private var liveTextActive = false
     private var frozen = false
+    /// The button the keyboard is on (MIRROR-13), kept across a rebuild: the
+    /// bar is rebuilt when the panel report changes its glyph.
+    private var focusedIndex: Int?
 
     var material: HeaderBar.Material = HeaderBar.material(dark: false) {
         didSet { rebuild() }
@@ -414,6 +438,7 @@ final class HeaderBarView: NSView {
             button.isEnabled = HeaderActionPolicy.isEnabled(button.action.kind,
                                                             frozen: frozen || liveTextActive)
         }
+        applyFocus()
     }
 
     /// What freezes the kinds (Live Text or a cover over the picture): every
@@ -428,6 +453,31 @@ final class HeaderBarView: NSView {
     /// The button that runs one kind (the e2e clicks its real control).
     func button(for kind: HeaderActionKind) -> HeaderActionButton? {
         buttons.first { $0.action.kind == kind }
+    }
+
+    /// The button at an index in reading order, for the keyboard.
+    func action(at index: Int) -> HeaderAction? {
+        buttons.indices.contains(index) ? buttons[index].action : nil
+    }
+
+    /// The bar's buttons the keyboard may focus, in reading order: a disabled
+    /// (frozen) button is skipped, so ⌃Tab can never land on one.
+    var focusableIndices: [Int] {
+        buttons.indices.filter { buttons[$0].isEnabled }
+    }
+
+    /// The keyboard's focus lands on a button (nil: back to the picture).
+    func setFocus(_ index: Int?) {
+        focusedIndex = index
+        applyFocus()
+    }
+
+    /// The focus ring survives a rebuild (the panel glyph changes the bar's
+    /// actions) but never stays on a button that is gone or disabled.
+    private func applyFocus() {
+        for (index, button) in buttons.enumerated() {
+            button.showsFocus = index == focusedIndex && button.isEnabled
+        }
     }
 
     /// The capsules are 28 pt tall in a bar that may be taller (Standard): keep
