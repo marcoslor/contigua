@@ -45,7 +45,7 @@ class ResizeLedgerTest {
         val ledger = ResizeLedger().remember(base)
         // `kept`: the phone still shows the old size, so the next identical
         // request must try again rather than answer "nothing to do".
-        ledger.keep()
+        ledger.settle(wider, ResizeOutcome.KEPT)
         assertEquals(ResizeNeed.FULL, ledger.need(wider))
         assertEquals(ResizeNeed.SAME, ledger.need(base))
     }
@@ -53,8 +53,38 @@ class ResizeLedgerTest {
     @Test
     fun `an unknown display has no applied request`() {
         val ledger = ResizeLedger()
-        ledger.keep()
+        ledger.settle(base, ResizeOutcome.KEPT)
         assertEquals(ResizeNeed.FULL, ledger.need(base))
+    }
+
+    @Test
+    fun `a repeat of a request the encoder fitted is a no-op`() {
+        // The Mac asks 1000x1000 and the encoder only takes 992x992. Round 1
+        // remembered the fitted size, so the same request read as FULL and
+        // rebuilt the encoder once more.
+        val steps = Recorder()
+        steps.fitted = IntSize(992, 992)
+        val ledger = ResizeLedger()
+        val asked = ResizeRequest(1000, 1000, 240)
+        assertEquals(ResizeNeed.FULL, ledger.need(asked))
+        val result = ResizeSequencer(steps).resize(asked.w, asked.h, asked.dpi,
+                                                  paused = false, current = IntSize(896, 592))
+        assertEquals(IntSize(992, 992), result.size)
+        assertEquals(ResizeSequencer.Outcome.RESIZED, result.outcome)
+        ledger.settle(asked, ResizeOutcome.RESIZED)
+        assertEquals(ResizeNeed.SAME, ledger.need(asked))
+        assertEquals(ResizeNeed.DENSITY, ledger.need(ResizeRequest(1000, 1000, 300)))
+    }
+
+    @Test
+    fun `a request that was kept or refused is not remembered`() {
+        val ledger = ResizeLedger().remember(ResizeRequest(1000, 1000, 240))
+        // The encoder refused a new size: the display still shows the old one.
+        ledger.settle(ResizeRequest(1200, 1000, 240), ResizeOutcome.KEPT)
+        assertEquals(ResizeNeed.FULL, ledger.need(ResizeRequest(1200, 1000, 240)))
+        // And a request the phone cannot apply at all changes nothing either.
+        ledger.settle(ResizeRequest(1000, 1000, 300), ResizeOutcome.REFUSED)
+        assertEquals(ResizeNeed.DENSITY, ledger.need(ResizeRequest(1000, 1000, 300)))
     }
 
     @Test
@@ -81,8 +111,10 @@ class ResizeLedgerTest {
 
     private class Recorder : ResizeSteps {
         val calls = ArrayList<String>()
+        /** The size the encoder takes, when the platform fits it. */
+        var fitted: IntSize? = null
 
-        override fun fit(w: Int, h: Int): IntSize = IntSize(w, h)
+        override fun fit(w: Int, h: Int): IntSize = fitted ?: IntSize(w, h)
 
         override fun prepare(size: IntSize): IntSize? {
             calls += "prepare ${size.w}x${size.h}"

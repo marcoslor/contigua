@@ -171,7 +171,7 @@ internal class WindowStream(
         startDrain(next.codec)
         rotationThread = Thread({ watchRotation() }, "pocketdeck-mirror-$stream").also { it.start() }
         log("stream $stream mirror of display 0 (${screen.w}x${screen.h}) at ${size.w}x${size.h}")
-        ledger.remember(ResizeRequest(size.w, size.h, baseDpi))
+        ledger.remember(ResizeRequest(mirrorBox.w, mirrorBox.h, baseDpi))
         return size
     }
 
@@ -207,7 +207,7 @@ internal class WindowStream(
                 mirrorScreen = now
                 mirrorBox = MirrorFit.turnBox(mirrorBox, now)
                 resizeLocked(mirrorBox.w, mirrorBox.h, baseDpi)
-                ledger.remember(ResizeRequest(width, height, baseDpi))
+                ledger.remember(ResizeRequest(mirrorBox.w, mirrorBox.h, baseDpi))
             }
         }
     }
@@ -235,7 +235,9 @@ internal class WindowStream(
         log("stream $stream vd=$displayIdValue ${size.w}x${size.h} dpi=$dpi path=${created.path}")
         log("stream $stream vd=$displayIdValue requested flags=0x${requested.toString(16)} (${virtualFlagNames(requested)})")
         log("stream $stream vd=$displayIdValue ${DisplayProbe.describe(displayIdValue)}")
-        ledger.remember(ResizeRequest(size.w, size.h, baseDpi))
+        // What a repeat is measured against is the request as it was asked, not
+        // the size the encoder fitted it to.
+        ledger.remember(ResizeRequest(w, h, baseDpi))
         return displayIdValue
     }
 
@@ -262,15 +264,16 @@ internal class WindowStream(
                 // Same pixels, new density: no encoder rebuild, so no re-attach
                 // and no lost frame (the 10-27 burst).
                 sequencer.densityOnly(IntSize(width, height), effectiveDpi)
-                ledger.remember(ResizeRequest(width, height, effectiveDpi))
+                ledger.settle(request, ResizeOutcome.DENSITY)
                 log("stream $stream density ${width}x$height dpi=$effectiveDpi (encoder kept)")
                 return ResizeOutcome.DENSITY
             }
             ResizeNeed.FULL -> Unit
         }
         val outcome = resizeLocked(box.w, box.h, effectiveDpi)
-        if (outcome == ResizeOutcome.KEPT) ledger.keep()
-        else ledger.remember(ResizeRequest(width, height, baseDpi))
+        // The asked box, not the fitted one: a repeat of the same request is a
+        // no-op even when the encoder shrank it (docs/PROTOCOL.md `window.resize`).
+        ledger.settle(request, outcome)
         return outcome
     }
 

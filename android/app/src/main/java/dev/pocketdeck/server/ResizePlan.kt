@@ -112,10 +112,17 @@ internal class ResizeLedger {
         return this
     }
 
-    /** The request was refused: what the display shows is unchanged. */
-    fun keep() {
-        // Nothing to record: the previous applied request still stands.
+    /**
+     * Records what an answered request means, in the terms it was asked: the box
+     * after floor16/turnBox and the effective dpi, never the size the encoder
+     * fitted it to. A repeat of the same request then reads as [ResizeNeed.SAME]
+     * instead of rebuilding the encoder for the fitted size.
+     */
+    fun settle(request: ResizeRequest, outcome: ResizeOutcome): ResizeLedger {
+        if (outcome == ResizeOutcome.KEPT || outcome == ResizeOutcome.REFUSED) return this
+        return remember(request)
     }
+
 }
 
 /**
