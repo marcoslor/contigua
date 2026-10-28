@@ -223,11 +223,19 @@ interface AudioCaptureLayer {
     fun stop()
 }
 
-/** Reports the top app on a display, for phone-mode `window.title` updates. */
-data class TopApp(val pkg: String, val label: String)
+/**
+ * The top task on a display: the app (phone-mode titles, the audio follow) and
+ * the task's own label (an app stream's `window.title`, WIN-28).
+ *
+ * @property taskId the phone's task id, 0 when unknown.
+ * @property taskLabel `taskDescription.label` — the window's own title (a
+ *   browser page's, a conversation's); null when the phone described none and
+ *   [label] is the fallback.
+ */
+data class TopTask(val pkg: String, val label: String, val taskId: Int = 0, val taskLabel: String? = null)
 
 fun interface WindowObserver {
-    fun topApp(displayId: Int): TopApp?
+    fun topTask(displayId: Int): TopTask?
 }
 
 /**

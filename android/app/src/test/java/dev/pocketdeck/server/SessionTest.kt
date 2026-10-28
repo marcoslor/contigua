@@ -29,7 +29,7 @@ class SessionTest {
     private lateinit var reader: FrameReader
 
     @Volatile private var session: Session? = null
-    @Volatile private var topApp: TopApp? = null
+    @Volatile private var topTask: TopTask? = null
     @Volatile private var taskPresent = false
     private var clock = 1_000L
 
@@ -67,7 +67,7 @@ class SessionTest {
                 device = platform,
                 store = platform,
                 callback = platform,
-                titleObserver = { topApp },
+                titleObserver = { topTask },
                 taskPresence = { taskPresent },
                 clipboard = platform,
                 packages = null,
@@ -770,13 +770,13 @@ class SessionTest {
     @Test
     fun windowTitleSentOnChange() {
         addAndAuthenticate()
-        topApp = TopApp("com.a", "Alpha")
+        topTask = TopTask("com.a", "Alpha", taskId = 11)
         send(mapOf("t" to "window.open", "stream" to 1, "w" to 400, "h" to 800, "dpi" to 160, "mode" to "phone"))
         readUntil("window.opened")
         val first = readUntil("window.title")
         assertEquals("com.a", first["pkg"])
         assertEquals("Alpha", first["label"])
-        topApp = TopApp("com.b", "Beta")
+        topTask = TopTask("com.b", "Beta", taskId = 12)
         val second = readUntil("window.title")
         assertEquals("com.b", second["pkg"])
         assertEquals("Beta", second["label"])
@@ -1214,11 +1214,11 @@ class SessionTest {
         reconnectWith(mover)
         send(mapOf("t" to "task.continue", "stream" to 8, "w" to 480, "h" to 320, "dpi" to 160))
         readUntil("window.opened")
-        // The window's subject follows the top app on its display, like every window.
-        topApp = TopApp("com.example.reader", "Reader")
+        // The window's subject follows the top task on its display, like every window.
+        topTask = TopTask("com.example.reader", "Reader", taskId = 40)
         val title = readUntil("window.title")
         assertEquals(8L, title["stream"])
-        assertEquals("Reader", title["label"])
+        assertEquals("an app stream names its task, with the app's label as the fallback", "Reader", title["title"])
     }
 
     // ------------------------------------------------------------------
