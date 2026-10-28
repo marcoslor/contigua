@@ -1303,8 +1303,11 @@ def cmd_backpressure(client, args):
     stream ends up frozen between keyframes at the bitrate floor. Here the
     reader consumes at `--read-kbps` during the slow phase (the socket still
     drains, so this is a slow reader, not `quality-test`'s stopped one), then
-    reads at full speed. The phone's own logcat holds the keyframe and bitrate
-    evidence; this side measures when frames flow again.
+    reads at full speed. `--stall-seconds` starts that phase with the socket
+    unread, which fills every buffer in the path first (the field Mac under
+    memory pressure stopped reading for stretches) and then keeps it full at the
+    slow rate. The phone's own logcat holds the keyframe and bitrate evidence;
+    this side measures when frames flow again.
 
     Three numbers, because a deep buffer hides behind the first:
     - `recovery_ms`: the first frame that arrives after the reader is free;
@@ -1330,17 +1333,23 @@ def cmd_backpressure(client, args):
     else:
         request["pkg"] = args.target
     client.send_json(request)
-    print("backpressure stream=%d %dx%d slow=%ss at %d kbps, then %ss free, "
+    print("backpressure stream=%d %dx%d slow=%ss (stall %ss) at %d kbps, then %ss free, "
           "rcvbuf=%d..%d%s" % (
-              stream, args.w, args.h, args.slow_seconds, args.read_kbps, args.free_seconds,
-              args.rcvbuf, effective_rcvbuf,
+              stream, args.w, args.h, args.slow_seconds, args.stall_seconds, args.read_kbps,
+              args.free_seconds, args.rcvbuf, effective_rcvbuf,
               " motion=%s/%s" % (args.motion_mode, args.motion) if args.motion else ""))
     try:
-        def phase(name, seconds, read_bps):
+        def phase(name, seconds, read_bps, stall=0.0):
             stats = {"configs": 0, "frames": 0, "bytes": 0, "sizes": [], "keys": 0, "marks": []}
             started = time.time()
-            _read_frames(client, seconds, stats, output, stream, args.motion, args.scroll_every,
-                         0, read=True, motion_mode=args.motion_mode, read_bps=read_bps)
+            if stall > 0:
+                # Unread on purpose: this is what fills the buffers in the path.
+                _read_frames(client, min(stall, seconds), stats, output, stream, args.motion,
+                             args.scroll_every, 0, read=False, motion_mode=args.motion_mode)
+            left = max(0.0, seconds - stall)
+            if left > 0:
+                _read_frames(client, left, stats, output, stream, args.motion, args.scroll_every,
+                             0, read=True, motion_mode=args.motion_mode, read_bps=read_bps)
             elapsed = max(1e-3, time.time() - started)
             avg = (sum(stats["sizes"]) / len(stats["sizes"])) if stats["sizes"] else 0.0
             kbps = sum(stats["sizes"]) * 8.0 / elapsed / 1000.0
@@ -1349,7 +1358,7 @@ def cmd_backpressure(client, args):
             return started, stats
 
         _warm_start, warm = phase("warm", args.warmup_seconds, 0.0)
-        phase("slow", args.slow_seconds, args.read_kbps * 1000.0 / 8.0)
+        phase("slow", args.slow_seconds, args.read_kbps * 1000.0 / 8.0, args.stall_seconds)
 
         free_start, free = phase("free", args.free_seconds, 0.0)
         baseline = _lag_baseline(warm["marks"])
@@ -2850,7 +2859,10 @@ def build_parser():
     sp.add_argument("--warmup-seconds", type=float, default=6.0,
                     help="full-speed read before the slow phase (sets the lag baseline)")
     sp.add_argument("--slow-seconds", type=float, default=3.0,
-                    help="seconds the reader is throttled to --read-kbps")
+                    help="length of the slow phase: --stall-seconds unread, the rest at --read-kbps")
+    sp.add_argument("--stall-seconds", type=float, default=0.0,
+                    help="start the slow phase with the socket unread, so the buffers in the "
+                         "path fill at once (0 = read slowly from the start)")
     sp.add_argument("--read-kbps", type=int, default=250,
                     help="the slow reader's rate; far below what the encoder produces")
     sp.add_argument("--free-seconds", type=float, default=4.0,
