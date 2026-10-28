@@ -462,6 +462,12 @@ final class WindowManager {
         controller(for: stream)?.setContentSize(size)
     }
 
+    /// A menu stopped tracking: a menu is transient, so a window it covered is
+    /// judged by its own occlusion again.
+    func reevaluatePause() {
+        for controller in allControllers() { controller.reevaluatePause() }
+    }
+
     func setIcon(_ image: NSImage, pkg: String) {
         icons[pkg] = image
     }
@@ -566,6 +572,9 @@ final class WindowManager {
         switch event {
         case .config(let stream, let config, let picture):
             videoDump?.write(config: config, stream: stream)
+            // A new CONFIG is the phone's answer to a resize too: the value
+            // that waited behind it may go out now.
+            controller(for: stream)?.resizeSettled()
             controller(for: stream)?.videoView.configure(config, picture: picture)
         case .frame(let stream, let frame):
             videoDump?.write(frame: frame, stream: stream)
@@ -601,6 +610,9 @@ final class WindowManager {
         case .windowClosed(let stream, let reason):
             Log.app.info("phone closed stream \(stream, privacy: .public) (\(reason, privacy: .public))")
             controller(for: stream)?.closeFromRemote()
+        case .windowResizeAck(let stream, let width, let height, let dpi, let outcome):
+            Log.video.info("stream \(stream, privacy: .public) resize ack \(width, privacy: .public)x\(height, privacy: .public) dpi=\(dpi, privacy: .public) (\(outcome, privacy: .public))")
+            controller(for: stream)?.resizeSettled(ResizeRequest(w: width, h: height, dpi: dpi))
         case .windowOpened(let stream, _, _, _, let started):
             if started == .fresh {
                 (controller(for: stream) as? HandoffWindowController)?.showFreshNotice()

@@ -3518,6 +3518,12 @@ class Session(object):
             window.h = round16(msg.get("h", window.h))
         window.dpi = msg.get("dpi", window.dpi)
         window.start()
+        # Every resize is answered (PROTOCOL.md `window.resize.ack`): the echo is
+        # the request, so the Mac matches it to the one it has in flight and can
+        # send the value that waited behind it.
+        self._send({"t": "window.resize.ack", "stream": window.stream_id,
+                    "w": msg.get("w"), "h": msg.get("h"), "dpi": msg.get("dpi"),
+                    "outcome": "resized"})
 
     def _on_window_close(self, msg):
         window = self._stream_or_error(msg)
