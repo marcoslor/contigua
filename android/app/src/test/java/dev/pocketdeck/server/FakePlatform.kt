@@ -305,10 +305,12 @@ class FakePlatform : DisplayLayer, AppCatalog, Launcher, Injector, Power, Device
     // ---- ClipboardPort ------------------------------------------------
 
     @Volatile var clipText: String? = null
+    /** The system's sensitive mark on the phone's current clip. */
+    @Volatile var clipSensitive = false
     val clipWrites = CopyOnWriteArrayList<String>()
-    @Volatile private var clipListener: ((String) -> Unit)? = null
+    @Volatile private var clipListener: ((ClipText) -> Unit)? = null
 
-    override fun getText(): String? = clipText
+    override fun getText(): ClipText? = clipText?.let { ClipText(it, clipSensitive) }
 
     /**
      * Like the platform, a write notifies the listener, which is the echo the
@@ -317,11 +319,12 @@ class FakePlatform : DisplayLayer, AppCatalog, Launcher, Injector, Power, Device
      */
     override fun setText(text: String) {
         clipText = text
-        clipListener?.invoke(text)
+        clipSensitive = false
+        clipListener?.invoke(ClipText(text, false))
         clipWrites.add(text)
     }
 
-    override fun listen(onChange: (String) -> Unit) {
+    override fun listen(onChange: (ClipText) -> Unit) {
         clipListener = onChange
     }
 
@@ -333,9 +336,10 @@ class FakePlatform : DisplayLayer, AppCatalog, Launcher, Injector, Power, Device
     val clipListening: Boolean get() = clipListener != null
 
     /** Simulates the person copying [text] on the phone. */
-    fun changeClip(text: String) {
+    fun changeClip(text: String, sensitive: Boolean = false) {
         clipText = text
-        clipListener?.invoke(text)
+        clipSensitive = sensitive
+        clipListener?.invoke(ClipText(text, sensitive))
     }
 
     // ---- PairingStore -------------------------------------------------

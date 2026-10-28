@@ -83,7 +83,7 @@ WRITE_TYPES = frozenset([
     "fs.setAttrs", "media.command", "media.choose", "notify.action",
     "notify.dismiss", "notify.enable", "notify.open", "phone.dnd",
     "phone.ringer", "phone.volume", "phone.ring", "phone.ring.stop", "window.launch",
-    "task.continue",
+    "task.continue", "clip.enable",
 ])
 
 # A control's action (Back/Home/Recents, typing) is input, not a write: the
@@ -794,6 +794,14 @@ class EventLog(object):
 
     def clip(self, direction, text):
         self._emit({"ev": "clip", "dir": direction, "text": text, "ts": time.time()})
+
+    def clip_gate(self, on):
+        """The Mac's `clip.enable` reached the phone."""
+        self._emit({"ev": "clip", "dir": "gate", "on": on, "ts": time.time()})
+
+    def clip_suppressed(self, length):
+        """A clipboard change the phone kept to itself (gate off): a length, never the text."""
+        self._emit({"ev": "clip", "dir": "suppressed", "len": length, "ts": time.time()})
 
     def icon(self, pkg, png_bytes, layers, px=None):
         """an icon reply: packages and lengths only (no base64 in the log)."""
@@ -1844,6 +1852,10 @@ class Session(object):
         self.client_id = None
         self.client_name = None
         self.mac_fp_hex = None          # the Mac's point fingerprint (hello `fp`)
+        # The Mac's clipboard switch (`clip.enable`): the phone starts with sync
+        # off, so a scripted copy sends nothing until the Mac says otherwise
+        # (docs/PROTOCOL.md "Clipboard sync").
+        self.clip_gate = None
         self.windows = {}
         self._unknown_types = set()
         self.audio = AudioTone(phone)
@@ -2166,6 +2178,8 @@ class Session(object):
             self.phone.events.clip("tx", text)
         if self.phone.args.share:
             threading.Thread(target=self._send_shares, daemon=True).start()
+        if self.phone.args.clip_copy is not None:
+            threading.Thread(target=self._send_clip_copy, daemon=True).start()
 
     def send_state(self):
         """The `state` message, with `dnd` only when the phone supports it."""
@@ -2269,6 +2283,7 @@ class Session(object):
             "nav": self._on_nav,
             "text": self._on_noop,
             "clip.set": self._on_clip_set,
+            "clip.enable": self._on_clip_enable,
             "apk.install": self._on_apk_install,
             "apk.cancel": self._on_apk_cancel,
             "drop.start": self._on_drop_start,
@@ -2995,6 +3010,25 @@ class Session(object):
 
     def _on_clip_set(self, msg):
         self.phone.events.clip("rx", msg.get("text"))
+
+    def _on_clip_enable(self, msg):
+        """The Mac's own clipboard switch: the phone honours it from here on."""
+        on = msg.get("on") is True
+        self.clip_gate = on
+        self.phone.events.clip_gate(on)
+
+    def _send_clip_copy(self):
+        """--clip-copy: what the person copies on the phone, after --clip-copy-after.
+        With the gate off the copy stays on the phone, as on the real phone."""
+        time.sleep(self.phone.args.clip_copy_after)
+        text = self.phone.args.clip_copy
+        if text is None:
+            return
+        if self.clip_gate is not True:
+            self.phone.events.clip_suppressed(len(text))
+            return
+        self._send({"t": "clip.set", "text": text})
+        self.phone.events.clip("tx", text)
 
     # -- notifications + media (docs/design/notify.md): the Mac's per-session
     # opt-in is what makes the phone post; the phone's own toggle gates it in the
@@ -3922,7 +3956,14 @@ def build_parser():
                         "default is next to --state, so restarts keep the pin. "
                         "A different dir is a rotated server certificate")
     p.add_argument("--clip-on-welcome", metavar="TEXT", default=None,
-                   help="send TEXT as clip.set right after welcome (the phone's clipboard)")
+                   help="send TEXT as clip.set right after welcome, without asking the "
+                        "gate (a phone that has not honoured clip.enable yet)")
+    p.add_argument("--clip-copy", metavar="TEXT", default=None,
+                   help="after welcome, copy TEXT on the phone like a person: sent as "
+                        "clip.set only while the Mac's clip.enable is on, else recorded "
+                        "as suppressed")
+    p.add_argument("--clip-copy-after", type=float, default=2.0, metavar="SECONDS",
+                   help="when --clip-copy happens, counted from welcome (default 2)")
     p.add_argument("--share", metavar="KIND:VALUE", action="append", default=[],
                    help="after welcome, share with the Mac like Share -> Send to Mac: "
                         "text:<text or URL> or image:<path to .png/.jpg>; repeatable, sent in order")

@@ -118,7 +118,19 @@ class DeckViewModel(app: Application) : AndroidViewModel(app) {
             batteryRequested = Prefs.isBatteryRequested(ctx),
             wifiName = wifiName(ctx),
             shizuku = shizukuUiState(installed, running, granted),
-            status = mapStatus(StatusInput(enabled, running, granted, port, connected, allowConnections)),
+            // Every fact the card reads comes from here, the flag included:
+            // a state set beside the mapping is a card that cannot be reached.
+            status = mapStatus(
+                StatusInput(
+                    enabled = enabled,
+                    shizukuRunning = running,
+                    shizukuGranted = granted,
+                    port = port,
+                    connectedMac = connected,
+                    allowConnections = allowConnections,
+                    notifyNoAccess = DeckState.notifyNoAccess,
+                ),
+            ),
         )
     }
 
@@ -222,7 +234,10 @@ class DeckViewModel(app: Application) : AndroidViewModel(app) {
         val ctx = getApplication<Application>()
         when (kind) {
             AttentionKind.CONNECTIONS_OFF -> setAllowConnections(true)
-            AttentionKind.SHIZUKU_NOT_RUNNING -> openShizuku()
+            // Not running is only openable when the app is there; a phone
+            // without it gets the store, or the one control cannot fix it.
+            AttentionKind.SHIZUKU_NOT_RUNNING ->
+                if (_state.value.shizuku == ShizukuUiState.NOT_INSTALLED) getShizuku() else openShizuku()
             AttentionKind.SHIZUKU_PERMISSION -> allowShizuku()
             // The Mac asked to share notifications but the listener grant is
             // missing: the one screen that can grant it.

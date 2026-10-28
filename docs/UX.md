@@ -106,7 +106,9 @@ disabled, never hidden.
    name, a dot plus **Connected** / **Connecting…** / **Reconnecting…** / **Offline** / **Pair again** and,
    while it is not connected, when it was last seen; **In Use** on the one the rest of the app shows) and an
    **Add Phone…** row — then **This Mac**: **General** (launch at login, show in menu bar, share clipboard with
-   your phone, show phone apps in the Dock, **glass app icons**, default window density, **reveal controls
+   your phone — off until it is turned on, and the row says in either position what travels: the text and images
+   you copy here reach the phone while it is connected, and what you copy there lands here — show phone apps in
+   the Dock, **glass app icons**, default window density, **reveal controls
    after**), **Input** (**hover over Android apps**) and **Automation**. A phone opens its page in the detail:
    a header with its icon, name, state and **In Use** or **Use This Phone** (**Pair Again…** when its key is
    gone), then the plain sections **Phone** (**Model**, **Rename…**), **Notifications** (**Share notifications
@@ -145,12 +147,14 @@ Material 3, edge-to-edge, dynamic color, light/dark.
       (button **Open Shizuku** + 3-line "How to start it" with wireless debugging) →
       Permission needed (button **Allow**) → ✓ Ready. Auto-advance on ready.
    3. *Notifications* — needed for pairing prompts → **Allow** (POST_NOTIFICATIONS);
-      also offers **Let PocketDeck run in the background** once, with one line why.
+      also offers **Keep running in the background** once, with one line why (the home's
+      own words for that switch).
    4. *Pair your Mac* — "Open PocketDeck on your Mac. It will find this phone." +
       **Scan QR code** (outlined) — completes on first successful pairing.
 2. **Home**:
    - Big status card: **Ready** · "Visible to Macs on *Wi-Fi name*" / **Connected to
-     *Mac name*** · "*N* windows open" / **Shizuku not running** (with fix button).
+     *Mac name*** · "*N* windows open" / **Shizuku not running** (with fix button), or
+     **Shizuku isn't installed** with **Get Shizuku** when the app is absent.
      With the background switch off the card still says **Ready**, with
      "Stops when you close PocketDeck from recent apps." — information, not a
      warning, and no button.

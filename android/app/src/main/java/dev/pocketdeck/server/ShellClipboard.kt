@@ -1,6 +1,7 @@
 package dev.pocketdeck.server
 
 import android.content.ClipData
+import android.content.ClipDescription
 import android.content.Context
 import android.net.Uri
 import androidx.core.content.FileProvider
@@ -27,17 +28,18 @@ internal class ShellClipboard(
 
     private val service: Any? by lazy { Hidden.proxy(IFACE, "clipboard") }
 
-    @Volatile private var onChange: ((String) -> Unit)? = null
+    @Volatile private var onChange: ((ClipText) -> Unit)? = null
     private var listener: Any? = null
 
-    override fun getText(): String? {
+    override fun getText(): ClipText? {
         val svc = service ?: return null
         val get = ClipboardApi.calls(log).get ?: return null
         val clip = runCatching { get.invoke(svc, *argsFor(get, null, null)) }
             .onFailure { log("clipboard: getPrimaryClip failed: $it") }
             .getOrNull() as? ClipData ?: return null
         if (clip.itemCount == 0) return null
-        return clip.getItemAt(0).text?.toString()
+        val text = clip.getItemAt(0).text?.toString() ?: return null
+        return ClipText(text, isSensitive(clip.description))
     }
 
     override fun setText(text: String) {
@@ -67,6 +69,7 @@ internal class ShellClipboard(
         if (clip.itemCount == 0) return null
         val item = clip.getItemAt(0)
         if (item.text != null) return null
+        if (isSensitive(clip.description)) return null
         val contentUri = item.uri ?: return null
         // API 29's filterMimeTypes avoids the per-index walk (countMimeTypes is a
         // later call than this code's floor).
@@ -98,7 +101,7 @@ internal class ShellClipboard(
         log("clipboard: image clip ${file.name} ($mime)")
     }
 
-    override fun listen(onChange: (String) -> Unit) {
+    override fun listen(onChange: (ClipText) -> Unit) {
         stop()
         val svc = service ?: run {
             log("clipboard: no clipboard service; sync off")
@@ -143,12 +146,28 @@ internal class ShellClipboard(
         runCatching { remove.invoke(svc, *argsFor(remove, iface, proxy)) }
             .onFailure { log("clipboard: removePrimaryClipChangedListener failed: $it") }
     }
+
+    /** The system's own "this is a secret" mark on a clip's description. */
+    private fun isSensitive(description: ClipDescription?): Boolean {
+        val extras = description?.extras ?: return false
+        return SENSITIVE_KEYS.any { key -> runCatching { extras.getBoolean(key, false) }.getOrDefault(false) }
+    }
 }
 
 private const val IFACE = "android.content.IClipboard"
 private const val LISTENER_IFACE = "android.content.IOnPrimaryClipChangedListener"
 private const val SHELL_PACKAGE = "com.android.shell"
 private const val CLIP_LABEL = "PocketDeck"
+
+/**
+ * The extra Android sets on a clip's description to mean "never leave this
+ * device": API 33's `ClipDescription.EXTRA_IS_SENSITIVE` and the same key
+ * written out, which older builds and password managers set by name.
+ */
+private val SENSITIVE_KEYS = setOf(
+    ClipDescription.EXTRA_IS_SENSITIVE,
+    "android.content.extra.IS_SENSITIVE",
+)
 
 /** The app's FileProvider: a shell-written file is served through the app's provider. */
 const val FILE_PROVIDER_AUTHORITY = "dev.pocketdeck.fileprovider"

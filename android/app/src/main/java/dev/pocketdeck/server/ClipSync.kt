@@ -39,3 +39,21 @@ internal class ClipSync {
         const val MAX_BYTES = 1_048_576
     }
 }
+
+/**
+ * The phone's clipboard gate (SHARE-13): the Mac's `clip.enable` is the only
+ * switch, the same shape as the notification gate. The phone starts Off, so
+ * nothing leaves it until the Mac's own setting says otherwise; off also stops
+ * what the Mac sends from being written here.
+ */
+internal enum class ClipGate { OFF, ON }
+
+internal sealed interface ClipGateEvent {
+    /** The Mac's setting arrived over the session. */
+    data class MacSaid(val on: Boolean) : ClipGateEvent
+}
+
+/** The one transition: the Mac's word is the state. */
+internal fun clipGate(state: ClipGate, event: ClipGateEvent): ClipGate = when (event) {
+    is ClipGateEvent.MacSaid -> if (event.on) ClipGate.ON else ClipGate.OFF
+}

@@ -1,6 +1,7 @@
 package dev.pocketdeck.ui
 
 import android.app.Application
+import android.content.Intent
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import dev.pocketdeck.app.DeckForegroundService
@@ -84,5 +85,22 @@ class StatusActionTest {
         val started = shadowOf(ctx).nextStartedService
         assertNotNull(started)
         assertEquals(DeckForegroundService::class.java.name, started!!.component?.className)
+    }
+
+    /**
+     * The Shizuku-not-running card's action has to fit the phone: with the
+     * package absent, opening it cannot work and the store is the fix
+     * (misses.md M6).
+     */
+    @Test
+    fun `a phone without Shizuku offers its install page`() {
+        val vm = DeckViewModel(ctx)
+
+        vm.runStatusAction(AttentionKind.SHIZUKU_NOT_RUNNING)
+
+        val started = shadowOf(ctx).nextStartedActivity
+        assertNotNull("Get Shizuku must open the store", started)
+        assertEquals(Intent.ACTION_VIEW, started!!.action)
+        assertTrue(started.dataString.orEmpty().contains(DeckViewModel.SHIZUKU_PACKAGE))
     }
 }

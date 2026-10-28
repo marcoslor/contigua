@@ -422,16 +422,23 @@ interface TaskMove {
 }
 
 /**
+ * A clipboard text as the sync sees it. [sensitive] is the system's own
+ * "do not put this anywhere" mark: a password manager's item carries it, and
+ * the phone never sends one (SHARE share Q3).
+ */
+data class ClipText(val text: String, val sensitive: Boolean = false)
+
+/**
  * The device clipboard as plain text. [listen] callbacks arrive on a platform
  * thread and fire for every primary-clip change, including our own [setText].
  */
 interface ClipboardPort {
-    /** Text of the primary clip, or null when it holds no text. */
-    fun getText(): String?
+    /** The primary clip's text, or null when it holds no text. */
+    fun getText(): ClipText?
     fun setText(text: String)
 
     /** Starts delivering text changes to [onChange]; replaces any earlier listener. */
-    fun listen(onChange: (String) -> Unit)
+    fun listen(onChange: (ClipText) -> Unit)
 
     /** Stops delivery. Safe to call more than once and without [listen]. */
     fun stop()
