@@ -367,6 +367,13 @@ class FakeZen(object):
             self.mode = code
             self.set_by_mac = code
 
+    def person_sets(self, name):
+        """The person changed DND on the phone themselves (docs/design/focus.md):
+        their mode stands and PocketDeck no longer owns it, so the next Mac
+        command is not mistaken for a restore of PocketDeck's own DND."""
+        self.mode = ZEN_MODES[name]
+        self.set_by_mac = None
+
 
 
 def add_demo_apps(count, no_icon_every):
@@ -1856,6 +1863,8 @@ class Session(object):
         # off, so a scripted copy sends nothing until the Mac says otherwise
         # (docs/PROTOCOL.md "Clipboard sync").
         self.clip_gate = None
+        # --dnd-person-after arms once per session (see _arm_person_dnd).
+        self._person_dnd_armed = False
         self.windows = {}
         self._unknown_types = set()
         self.audio = AudioTone(phone)
@@ -2187,6 +2196,22 @@ class Session(object):
             threading.Thread(target=self._send_shares, daemon=True).start()
         if self.phone.args.clip_copy is not None:
             threading.Thread(target=self._send_clip_copy, daemon=True).start()
+        self._arm_drop()
+
+    def _arm_drop(self):
+        """--drop-after: this session drops like a Wi-Fi loss this long after the
+        welcome, and the fake keeps serving, so the Mac reconnects to the same
+        phone with the same memory (the one-shot flag is the phone's, not the
+        session's: the second session must stay up)."""
+        after = self.phone.args.drop_after
+        if after <= 0 or self.phone.dropped_once:
+            return
+        self.phone.dropped_once = True
+        threading.Thread(target=self._drop_later, args=(after,), daemon=True).start()
+
+    def _drop_later(self, seconds):
+        time.sleep(seconds)
+        self.close()
 
     def send_state(self):
         """The `state` message, with `dnd` only when the phone supports it."""
@@ -2355,6 +2380,29 @@ class Session(object):
         self.phone.events.dnd(self.phone.zen.name(), self.phone.zen.set_by_mac is not None)
         # Like the real phone, the answer is a new state even when the mode did
         # not move (the person's own DND is left alone but the Mac gets truth).
+        self.send_state()
+        self._arm_person_dnd()
+
+    def _arm_person_dnd(self):
+        """--dnd-person-after: the person turns DND off again on the phone this
+        long after a Mac command that left it on. The fake keeps the mode in its
+        own memory, as a real phone keeps it in its shell service across a
+        session, so a reconnect can prove the Mac does not re-assert."""
+        after = self.phone.args.dnd_person_after
+        if after <= 0 or self.phone.zen.set_by_mac is None:
+            return
+        if self._person_dnd_armed or self.phone.person_dnd_done:
+            return
+        self._person_dnd_armed = True
+        self.phone.person_dnd_done = True
+        threading.Thread(target=self._person_changes_dnd, args=(after,), daemon=True).start()
+
+    def _person_changes_dnd(self, seconds):
+        time.sleep(seconds)
+        if self.phone.sender is not self.sender:
+            return
+        self.phone.zen.person_sets(self.phone.args.dnd_person_mode)
+        self.phone.events.dnd(self.phone.zen.name(), False)
         self.send_state()
 
     def _on_phone_ringer(self, msg):
@@ -3679,6 +3727,10 @@ class FakePhone(object):
         self.panel_state = "on"
         # None until --secure-after puts a secure surface over display 0.
         self.secure_state = None
+        # --drop-after drops the first session once; later ones stay up.
+        self.dropped_once = False
+        # --dnd-person-after is one person change, not one per session.
+        self.person_dnd_done = False
         tls_guard()
         self.store = Store(args.state)
         if args.qr_uri:
@@ -3949,6 +4001,16 @@ def build_parser():
     p.add_argument("--panel-refuse", action="store_true",
                    help="answer every phone.panel with error unavailable (a build that "
                         "cannot control its panel): the Mac must say the request failed")
+    p.add_argument("--dnd-person-after", type=float, default=0.0, metavar="SECONDS",
+                   help="after a Mac phone.dnd leaves DND on, the person turns it off "
+                        "on the phone this long later (the phone keeps its own memory)")
+    p.add_argument("--dnd-person-mode", choices=sorted(ZEN_MODES), default="off", metavar="MODE",
+                   help="with --dnd-person-after, the mode the person leaves it in "
+                        "(default off)")
+    p.add_argument("--drop-after", type=float, default=0.0, metavar="SECONDS",
+                   help="drop the first session this long after the welcome (a Wi-Fi "
+                        "loss): the fake keeps serving and keeps its memory, so the "
+                        "Mac reconnects to the same phone")
     p.add_argument("--secure-after", type=float, default=0.0, metavar="SECONDS",
                    help="after the phone window opens, a secure surface covers display 0: "
                         "send state.secure true and solid black frames for 5 s, then false "
