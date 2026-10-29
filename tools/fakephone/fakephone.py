@@ -174,6 +174,11 @@ NOTIFY_REPLY_TEXT = "pd-reply-1"
 NOTIFY_QUIET_ID = "pd-q1"
 NOTIFY_QUIET_POSTS = 10
 NOTIFY_QUIET_INTERVAL = 0.8
+# The hold case (NOTIFY-19): an app re-posts 100 ms after its first post (to add
+# an action or an icon) inside the Mac's 300 ms hold, with alert:false because
+# nothing changed. The one banner that reaches Notification Center must present.
+NOTIFY_HOLD_ID = "pd-q2"
+NOTIFY_HOLD_GAP = 0.1
 
 # NOTIFY-20 (docs/specs/notifications.md): a child of a group, its summary (which
 # a fixed phone does not forward while the child is active), a summary with no
@@ -3195,6 +3200,20 @@ class Session(object):
                                          titleLen=len(title), bodyLen=len(text),
                                          alert=1 if alert else 0, step=step)
                 time.sleep(NOTIFY_QUIET_INTERVAL)
+            # The same app re-posts 100 ms later with nothing new: the Mac's
+            # hold supersedes the first post, which must still present.
+            time.sleep(NOTIFY_HOLD_GAP)
+            self._send({"t": "notify.post", "id": NOTIFY_HOLD_ID, "pkg": "com.whatsapp",
+                        "title": "pd-notify-title-17", "text": "pd-notify-text-17",
+                        "when": int(time.time() * 1000), "alert": True})
+            self.phone.events.notify("post", id=NOTIFY_HOLD_ID, pkg="com.whatsapp",
+                                     titleLen=18, bodyLen=18, alert=1, step=0)
+            time.sleep(NOTIFY_HOLD_GAP)
+            self._send({"t": "notify.post", "id": NOTIFY_HOLD_ID, "pkg": "com.whatsapp",
+                        "title": "pd-notify-title-17", "text": "pd-notify-text-17",
+                        "when": int(time.time() * 1000), "alert": False})
+            self.phone.events.notify("post", id=NOTIFY_HOLD_ID, pkg="com.whatsapp",
+                                     titleLen=18, bodyLen=18, alert=0, step=1)
 
         threading.Thread(target=run, daemon=True).start()
 

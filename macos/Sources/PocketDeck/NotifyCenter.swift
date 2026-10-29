@@ -78,6 +78,20 @@ enum NotifyPostPolicy {
     }
 }
 
+/// A post that supersedes one still in its hold (NOTIFY-19): the earlier post
+/// never reached Notification Center, so the newcomer inherits its delivery
+/// state, and the delivered post alerts if either of them did. Only a banner
+/// already handed to the system can be replaced quietly.
+enum NotifyPostMerge {
+    static func alert(new: Bool, superseded: Bool?) -> Bool {
+        new || (superseded ?? false)
+    }
+
+    static func delivered(supersededReplacesDelivered: Bool?, requestIdExists: Bool) -> Bool {
+        supersededReplacesDelivered ?? requestIdExists
+    }
+}
+
 /// What the Mac's record says about one post: the wire's alert decision, the
 /// banners it holds for that id, and the running presented/quiet counts.
 struct NotifyBannerFacts: Equatable {
@@ -760,14 +774,24 @@ final class NotifyCenter {
         // still waits its hold so the line can carry the picture that follows.
         let category = log == nil ? categories.category(for: n, hasCode: code != nil) : shape
         let requestId = requestId(phoneId: phoneId, id: n.id)
-        let replacesDelivered = requestIds[n.id] != nil
+        // A post inside the hold of one still waiting supersedes it (NOTIFY-19):
+        // it inherits that post's delivery state and alerts if either did, so a
+        // quiet re-post can never swallow the first banner. Only a banner
+        // already handed to Notification Center can be replaced quietly.
+        let superseded = pending[n.id]
+        var delivered = n
+        delivered.alert = NotifyPostMerge.alert(new: n.alert, superseded: superseded?.notification.alert)
+        let replacesDelivered = NotifyPostMerge.delivered(
+            supersededReplacesDelivered: superseded?.replacesDelivered,
+            requestIdExists: requestIds[n.id] != nil,
+        )
         requestIds[n.id] = requestId
         // A cancellation of an earlier post for the same id ends its wait too.
         pending.removeValue(forKey: n.id)?.work.cancel()
         let work = DispatchWorkItem { [weak self] in
             self?.deliver(id: n.id)
         }
-        pending[n.id] = PendingPost(notification: n, phoneId: phoneId, phoneName: phoneName,
+        pending[n.id] = PendingPost(notification: delivered, phoneId: phoneId, phoneName: phoneName,
                                     title: title, body: body, category: category,
                                     image: nil, work: work, replacesDelivered: replacesDelivered)
         if hold > 0 {

@@ -287,6 +287,14 @@ one the spec allows: keep the delivered banner untouched and update only the
 Mac's record (the LIVE row and the dismiss state); the record already
 distinguishes a presented post from a quiet one.
 
+The hold is not a delivery (2026-10-29 review finding): a post waits up to
+300 ms for its picture, and an app that re-posts right away — to add an action
+or an icon — supersedes that waiting post. The newcomer inherits the wait's
+delivery state (`NotifyPostMerge.delivered`) and alerts if either post did
+(`NotifyPostMerge.alert`), so only a banner already handed to Notification
+Center can be replaced quietly. Without that, a quiet re-post 100 ms after an
+alerting one left the person with no banner at all (`presented=0`).
+
 ## Groups: summaries never land on their children (NOTIFY-20)
 
 Android bundles a chat's messages into a group: each message is a child and the
