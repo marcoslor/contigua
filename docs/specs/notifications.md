@@ -29,7 +29,7 @@ This surface owns the gate, the banners and their content, the click target, act
 |---|---|---|
 | NOTIFY-1 | THE forwarding switch SHALL be per phone, Mac-side, off by default and the only person-facing switch; WHEN it is on THE Mac SHALL send one `notify.enable {on:true}` when the session becomes ready (and again after every reconnect) and SHALL store the choice; WHILE it is off THE Mac SHALL send nothing, SHALL ask the phone for nothing and SHALL show no banner from that phone; turning it off WHILE the session is live SHALL stop forwarding at once and clear that phone's forwarded state. | e2e `notify` `[NOTIFY-1]` (the Mac asked; off: no `notify.enable`, no post, no click); K2 `NotifyMacTests`; K1 `NotifyGateTest` (the truth table) |
 | NOTIFY-2 | WHEN the Mac's switch is on and the phone's notification-listener grant is missing THE phone SHALL make one shell-UID grant attempt, then answer `notify.state {on:false, reason:"no_access"}`; its home SHALL show a "Notification access is off" attention item whose button opens the system's notification-access screen, the Mac's phone page SHALL say "Allow notification access on the phone." under the switch, and a later grant SHALL start forwarding with no further Mac toggle; turning sharing off SHALL clear the reason on both sides. | K1 `NotifySessionTest` (the attempt, `no_access`, the later grant, the revoked grant), `UiStateTest` (the attention item), `NotifyGateTest` (the reply); K2 `DevicesTabTests.testTheNotificationAccessHint`; e2e `settings` `[SET-DEV-09]` |
-| NOTIFY-3 | THE phone SHALL forward only a notification a person sees: it SHALL skip its own package (the debug poster excepted in a debug build), an ongoing notification the system did not promote, one with no title and no text, a malformed id, and a text over the wire's cap (dropped whole, never truncated); and it SHALL take a MessagingStyle post's text from the last `EXTRA_MESSAGES` entry when `EXTRA_TEXT` and `EXTRA_BIG_TEXT` are empty, with its title from `EXTRA_CONVERSATION_TITLE`, else that message's sender, when `EXTRA_TITLE` is empty, so a conversation is not dropped as contentless (the same per-string cap applies, and an over-cap string is dropped whole); it SHALL advertise at most three actions, each with a title ≤ 64 characters, an index into the notification's own actions and a PendingIntent, marking a reply action; it SHALL skip unusable and system-generated smart actions. | e2e `notify` `[NOTIFY-3]` (a post per package recorded), `notify-actions` `[NOTIFY-3]` (the reply shape's action counts); K1 `NotifyEventsTest` (the fields, the caps, the skips, the actions), `NotifyLiveTest` (`only a promoted ongoing notification is live`), `NotifyConversationTest` (the last message, the sender, the plain fields winning, an empty conversation); design/notify.md § "Actions on the wire" |
+| NOTIFY-3 | THE phone SHALL forward only a notification a person sees: it SHALL skip its own package (the debug poster excepted in a debug build), an ongoing notification the system did not promote, one with no title and no text, a malformed id, and a text over the wire's cap (dropped whole, never truncated); and it SHALL take a MessagingStyle post's text from the last `EXTRA_MESSAGES` entry when `EXTRA_TEXT` and `EXTRA_BIG_TEXT` are empty, with its title from `EXTRA_CONVERSATION_TITLE`, else that message's sender, when `EXTRA_TITLE` is empty, so a conversation is not dropped as contentless (the same per-string cap applies, and an over-cap string is dropped whole); it SHALL NOT forward a notification that carries `EXTRA_MEDIA_SESSION` — Now Playing owns that session, and a paused player is no longer ongoing; its removal is not announced like a skipped summary's; it SHALL advertise at most three actions, each with a title ≤ 64 characters, an index into the notification's own actions and a PendingIntent, marking a reply action; it SHALL skip unusable and system-generated smart actions. | e2e `notify` `[NOTIFY-3]` (a post per package recorded), `notify-actions` `[NOTIFY-3]` (the reply shape's action counts); K1 `NotifyEventsTest` (the fields, the caps, the skips, the actions), `NotifyLiveTest` (`only a promoted ongoing notification is live`), `NotifyConversationTest` (the last message, the sender, the plain fields winning, an empty conversation), `NotifyMediaSkipTest` (a media session's notification never banners and its removal is silent); design/notify.md § "Actions on the wire" |
 | NOTIFY-4 | THE banner's title SHALL be "‹the notification's title, else the app's label› (‹phone name›)" — just the phone name when the title is empty — its body the notification's own text (or the package when the app has no label), its thread the phone's id, or `<phone id>.<group>` when the post carries a group (NOTIFY-20), and it SHALL be silent on the Mac; the Mac SHALL ask for notification permission the first time it posts one, in context. | e2e `notify` `[NOTIFY-4]` (the posts grouped under the phone's id), `notify-actions` `[NOTIFY-20]` (the group's thread); K2 `NotifyMacTests.testTitleBuilderSuffixesThePhoneName`, `testTitleFallsBackToTheAppLabel`, `testTitleOnlyFromAnUnlabeledPackageKeepsTheNameAsBody`, `testATitlelessUnlabeledNotificationIsJustThePhoneName`, `testEmptyContentBecomesTheAppLabelWithThePhoneName`, `testAThreadedPostUsesThePhoneAndTheGroup`; review of `NotifyCenter.deliver` (`sound = nil`, `requestAuthorization`) |
 | NOTIFY-5 | WHEN a post arrives with an id already posted THE Mac SHALL replace that banner (not add a second) and SHALL present the replacement again only when the post is alerting (NOTIFY-19); an update that carries a picture SHALL carry it again so the replaced banner keeps it. | K2 `NotifyLiveMacTests.testFirstLivePostBannersAndLaterOnesUpdateInPlace`; review of `NotifyCenter.post` |
 | NOTIFY-6 | WHEN the phone takes a notification away (`notify.remove`) THE Mac SHALL remove that banner and its attachment; WHEN the person clears a banner THE Mac SHALL send `notify.dismiss {id}` for it, EXCEPT for a notification the wire marked ongoing, which the Mac SHALL refuse to dismiss and record as refused; a disconnect SHALL clear every banner and every attachment of that phone. | e2e `notify-actions` `[NOTIFY-6]` (the dismiss sent, the ongoing refused and not sent, the phone's remove reaching the Mac), `notify` `[NOTIFY-6]` (a removal recorded); K2 `NotifyMacTests` (the dismiss rule); K1 `NotifyEventsTest` (ongoing and no-clear are not dismissed) |
@@ -93,7 +93,7 @@ Conversations, media, calls:
 |---|---|---|---|---|---|---|
 | 14 | A conversation (MessagingStyle) with a new message on the same key | Replaces the conversation notification, one alert | Reads the last `EXTRA_MESSAGES` text and `EXTRA_CONVERSATION_TITLE`/sender when the plain fields are empty (`PdNotificationListener.lastMessage`); nothing is dropped as contentless | The same, with the same caps | OK | K1 `NotifyConversationTest` (the last message, the sender, plain fields winning, an empty conversation) |
 | 15 | A conversation with an inline reply | A RemoteInput in the shade | The reply action is advertised and `notify.action` fills the RemoteInput (`NotifyEvents.selectActions`; `PdNotificationListener.kt` `deliverAction`) | The same | OK | e2e `notify-actions` `[NOTIFY-9]`; K1 `NotifyEventsTest` |
-| 16 | Media (MediaStyle) | A media notification with artwork and transport buttons | Forwarded as a banner, while Now Playing carries the same session (`ConnectionController.swift` `.notifyPosted`) | Do not double a media session as a banner; the media surface owns it | GAP | MISSING |
+| 16 | Media (MediaStyle) | A media notification with artwork and transport buttons | Skipped: a post carrying `EXTRA_MEDIA_SESSION` logs `notify skip media id=…` (`PdNotificationListener`), and its removal is not announced | The media surface owns the session; no banner | OK | K1 `NotifyMediaSkipTest`; e2e `notify-media` (Now Playing still works with no banner) |
 | 17 | Call style, incoming | Full-screen intent, ringing, ongoing | Skipped: ongoing and not promoted (`PdNotificationListener.kt` `onNotificationPosted`) | A call reaches the Mac, or the person is told calls are not forwarded | GAP | MISSING |
 | 18 | Call style, ongoing | Persistent call chrome | Skipped (row 8) | Row 17's decision covers it | GAP | MISSING |
 
@@ -127,47 +127,15 @@ Android 16 Live Updates (promoted ongoing) — **audit only this round: no chang
 | 32 | A Live Update updates faster than once a second | The system draws each change | Coalesced to one per second, newest wins (`NotifyLiveThrottle`; `NotifyLiveStore`) | The same | OK | e2e `notify-media` (measured gaps); K1 `NotifyLiveTest` |
 | 33 | An ongoing notification while the system did not promote it | Service chrome | Skipped (row 8) | Keep skipping | OK | K1 `NotifyLiveTest` |
 
-### Round 2 backlog
+### Still open
 
-The `GAP`/`BUG` rows this round does not fix, smallest first; the Live Updates are last by
-the epic's order. Rows 3, 4, 7, 10, 11 and 12 are fixed here (NOTIFY-19, NOTIFY-20) and are
-not repeated.
+Rows 17, 18 and 30 are the only `GAP` rows left, and all three are out of scope for this round:
 
-1. **Row 20 — a low-priority notification must not present.** Carry the channel's importance
-   on `notify.post` (`important`: `low`/`default`/`high`) and present only default and high;
-   low is a `.passive` post. Proof: K1 `NotifyEventsTest` (importance → the post's alert),
-   e2e `notify-actions` (a low shape presents nothing, its record shows `alert=0`).
-2. **Row 5 — a MIN channel is not forwarded at all.** Same field: drop a MIN notification on
-   the phone, exactly as a contentless one, and say so in `notify.md`. Proof: K1
-   `NotifyEventsTest` (a MIN post is null), e2e `notify` (no post, one log line).
-3. **Row 6 — an update that only moves its progress bar is quiet.** Compare the progress
-   extras (`EXTRA_PROGRESS`, `EXTRA_PROGRESS_MAX`, `EXTRA_PROGRESS_INDETERMINATE`) in the
-   content hash, so a tick that changes nothing else is `alert:false`. Proof: K1
-   `NotifyEventsTest` (the hash moves with the bar, the alert rule sees it), e2e
-   `notify-actions` (a progress-only series: 1 presented, N quiet).
-4. **Row 13 — `GROUP_ALERT_SUMMARY` / `GROUP_ALERT_CHILDREN` is honoured.** Read the group's
-   alerting behaviour and teach the group machine which member may alert (the summary only,
-   the children only, or both); the quiet members still forward, silently. Proof: K1
-   `NotifyGroupMachineTest` (the three modes as events), e2e (`notify-actions`: one alerting
-   banner per parent group).
-5. **Row 14 — a MessagingStyle conversation shows its last message.** When `EXTRA_TEXT` is
-   absent, read the last `EXTRA_MESSAGES` entry's sender and text (both capped, the sender
-   never logged) so a conversation notification is not dropped as contentless. Proof: K1
-   `NotifyEventsTest` (the extraction and its caps), e2e (`notify-actions`: a MessagingStyle
-   shape posts with the sender in the body).
-6. **Row 16 — a media session is not also a banner.** Detect a `MediaStyle` notification whose
-   session the media surface already shows and forward it as the Now Playing update only;
-   a media notification for another session still banners. Proof: K1 (the style rule), e2e
-   `media` (one Now Playing row, no banner for the shown session).
-7. **Rows 17 and 18 — a call reaches the Mac.** An incoming `CallStyle` notification is
-   currently skipped as unpromoted chrome. Decide the treatment (a banner with the call's
-   answer/decline actions, or a sentence on the phone page that calls are not forwarded) and
-   carry the call's state; this is a product decision before it is code. Proof: e2e
-   `notify-actions` (a call shape) and the phone page's sentence.
-8. **Row 30 — a Live Update with no progress, chip or clock says what it is.** The row's
-   label falls back to the app only; use the notification's own title (capped) in the LIVE
-   row and in `liveWire`'s record. This is Live Update surface work and comes last. Proof:
-   K2 `NotifyLiveMacTests` (the row text), e2e `notify-media` (a bare promoted shape).
+- **Rows 17 and 18 — a call reaches the Mac.** The treatment of an incoming `CallStyle` notification
+  (a banner with the call's actions, or a sentence that calls are not forwarded) is a product
+  decision; it moves to the product vision's Calls item.
+- **Row 30 — a Live Update with no progress, chip or clock says what it is.** Live Update surface
+  work sits at the bottom of the backlog.
 
 ## States and events
 
