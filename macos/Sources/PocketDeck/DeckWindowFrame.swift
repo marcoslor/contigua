@@ -79,27 +79,32 @@ struct DeckWindowFrame: NSViewRepresentable {
             // Full screen is not the Deck's frame: the stored frame stays the
             // window's own one.
             guard !window.styleMask.contains(.fullScreen) else { return }
-            let frames = screenFrames(around: window)
+            let screens = screenFrames(around: window)
             let minimum = window.minSize.width > 0 ? window.minSize
                 : CGSize(width: 640, height: 420)
             let saved = DeckPlacement.saved(in: Profile.active.defaults)
-            let frame = DeckPlacement.frame(saved: saved, screens: frames, minimum: minimum)
+            let frame = DeckPlacement.frame(saved: saved, screens: screens.frames,
+                                            visible: screens.visible, minimum: minimum)
             let before = window.frame
             window.setFrame(frame, display: false)
-            let home = frames.first ?? .zero
-            Log.app.notice("deck placement: screens=\(frames.count, privacy: .public) home=\(Int(home.minX.rounded()), privacy: .public),\(Int(home.minY.rounded()), privacy: .public) \(Int(home.width.rounded()), privacy: .public)x\(Int(home.height.rounded()), privacy: .public) was=\(Int(before.minX.rounded()), privacy: .public),\(Int(before.minY.rounded()), privacy: .public) \(Int(before.width.rounded()), privacy: .public)x\(Int(before.height.rounded()), privacy: .public) frame=\(Int(frame.minX.rounded()), privacy: .public),\(Int(frame.minY.rounded()), privacy: .public) \(Int(frame.width.rounded()), privacy: .public)x\(Int(frame.height.rounded()), privacy: .public)")
+            let home = screens.visible.first ?? .zero
+            Log.app.notice("deck placement: screens=\(screens.visible.count, privacy: .public) home=\(Int(home.minX.rounded()), privacy: .public),\(Int(home.minY.rounded()), privacy: .public) \(Int(home.width.rounded()), privacy: .public)x\(Int(home.height.rounded()), privacy: .public) was=\(Int(before.minX.rounded()), privacy: .public),\(Int(before.minY.rounded()), privacy: .public) \(Int(before.width.rounded()), privacy: .public)x\(Int(before.height.rounded()), privacy: .public) frame=\(Int(frame.minX.rounded()), privacy: .public),\(Int(frame.minY.rounded()), privacy: .public) \(Int(frame.width.rounded()), privacy: .public)x\(Int(frame.height.rounded()), privacy: .public)")
         }
 
-        /// The visible frames, the window's own screen first: that is the one a
-        /// saved frame is restored on, and the one a lost frame is centred on.
-        private func screenFrames(around window: NSWindow) -> [CGRect] {
+        /// The screens' frames and their visible frames, the window's own
+        /// screen first: a saved frame is restored where it stands on a screen
+        /// (under the Dock is still on it), and a lost one is centred on the
+        /// home screen's visible area.
+        private func screenFrames(around window: NSWindow) -> (frames: [CGRect], visible: [CGRect]) {
             let screens = NSScreen.screens
             let home = window.screen ?? NSScreen.main ?? screens.first
-            var frames = screens.map(\.visibleFrame)
+            var frames = screens.map(\.frame)
+            var visible = screens.map(\.visibleFrame)
             if let home, let index = screens.firstIndex(where: { $0 === home }), index < frames.count {
                 frames.insert(frames.remove(at: index), at: 0)
+                visible.insert(visible.remove(at: index), at: 0)
             }
-            return frames
+            return (frames, visible)
         }
 
         /// A live resize sends a notification per frame: one save a fraction of
