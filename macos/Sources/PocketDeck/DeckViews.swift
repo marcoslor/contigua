@@ -990,7 +990,10 @@ struct AppGrid: View {
             }
             // The rail's current letter follows the scroll position. Only a
             // scroll is read here; the grid's layout never sees this value.
-            .onReceive(NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification)) { _ in
+            // The notification comes on the writer's thread; the state is the
+            // main actor's.
+            .onReceive(NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification)
+                .receive(on: RunLoop.main)) { _ in
                 let stored = DeckZoom.stored(in: Profile.active.defaults)
                 if stored != zoom { zoom = stored }
             }
