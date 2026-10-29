@@ -10712,6 +10712,79 @@ PY
     fi
     control deck-size 760 600 || bad "DECK deck-size 760 600 (restore): $CONTROL_REPLY"
 
+    # DECK-7, the approach zone and the S2 spacing. The rail is tracked on the
+    # grid's container, so a letter begins to grow over the last icon column and
+    # reaches full size at the rail; there its slots open proportionally, with
+    # the rest pitch giving way so the magnified rail still fits the clip.
+    control deck-size 1000 625 || bad "DECK deck-size 1000 625 (rail spacing): $CONTROL_REPLY"
+    sleep 1
+    control deckrailhoverout
+    sleep 0.5
+    shot_rail rail-rest-spacing.png
+    control deckrailapproach M 40 && ok "[DECK-7] the pointer 40 pt left of the rail" \
+        || bad "[DECK-7] deckrailapproach M 40: $CONTROL_REPLY"
+    sleep 1
+    shot_rail rail-approach.png
+    cmp -s "$railshots/rail-rest-spacing.png" "$railshots/rail-approach.png" \
+        && bad "[DECK-7] the approach shot is identical to rest" \
+        || ok "[DECK-7] the approach shot differs from rest (the letter grows before the rail)"
+    if control deckrailslots "$WORK/rail-approach.json"; then
+        python3 "$MACOS/scripts/deck-rail-slots.py" "$WORK/rail-approach.json" tag:none \
+            && ok "[DECK-7] the approach zone shows no tag" \
+            || bad "[DECK-7] the approach zone shows a tag"
+    else
+        bad "DECK deckrailslots (approach): $CONTROL_REPLY"
+    fi
+
+    # At the rail the slots are proportional to the scales, the rail's height is
+    # fixed (its gaps around M are the pure function's 17.7 pt), and the rest
+    # pitch leaves room for the overshoot: with the pointer on the first and the
+    # last letter every slot is inside the clip.
+    control deckrailapproach M 0 || bad "[DECK-7] deckrailapproach M 0: $CONTROL_REPLY"
+    if control deckrailslots "$WORK/rail-m.json"; then
+        python3 "$MACOS/scripts/deck-rail-slots.py" "$WORK/rail-m.json" gaps \
+            && ok "[DECK-7] at the rail the gaps around M are 17.7 pt and the slots fill the rail" \
+            || bad "[DECK-7] the rail's slots at M do not match the pure layout"
+        python3 "$MACOS/scripts/deck-rail-slots.py" "$WORK/rail-m.json" tag:M \
+            && ok "[DECK-7] the tag names M when the pointer is on the rail" \
+            || bad "[DECK-7] the tag at the rail does not name M"
+    else
+        bad "DECK deckrailslots (M): $CONTROL_REPLY"
+    fi
+    local edge
+    for edge in A '#'; do
+        control deckrailapproach "$edge" 0 || bad "DECK deckrailapproach $edge 0: $CONTROL_REPLY"
+        if control deckrailslots "$WORK/rail-edge.json"; then
+            python3 "$MACOS/scripts/deck-rail-slots.py" "$WORK/rail-edge.json" clip \
+                && ok "[DECK-7] with the pointer on $edge every slot is inside the clip" \
+                || bad "[DECK-7] with the pointer on $edge a slot leaves the clip"
+        else
+            bad "DECK deckrailslots ($edge): $CONTROL_REPLY"
+        fi
+    done
+
+    # DECK-7: the pointer never re-evaluates the grid's body. Twenty pointer
+    # events in one command, against an idle window of the same length (the
+    # quiet run flushes the window's own transaction about twice a second, so
+    # the bound is the idle count plus one).
+    local moves idle
+    control deckbodyreset
+    control deckrailsweep 20 || bad "DECK deckrailsweep 20: $CONTROL_REPLY"
+    sleep 0.3
+    control deckbodycount "$WORK/body-moves.txt" \
+        && moves="$(cat "$WORK/body-moves.txt")" || bad "DECK deckbodycount (moves): $CONTROL_REPLY"
+    control deckbodyreset
+    sleep 0.3
+    control deckbodycount "$WORK/body-idle.txt" \
+        && idle="$(cat "$WORK/body-idle.txt")" || bad "DECK deckbodycount (idle): $CONTROL_REPLY"
+    if [ "${moves:-999}" -le $(( ${idle:-0} + 1 )) ]; then
+        ok "[DECK-7] 20 pointer moves added no grid body evaluation (moves $moves, idle $idle)"
+    else
+        bad "[DECK-7] 20 pointer moves re-evaluated the grid $moves times (idle $idle)"
+    fi
+    control deckrailhoverout
+
+
     # ⌘F is the Deck's Find (focus the search field, select its text) and the
     # phone app's find-in-page when a stream window is key: a real key event
     # through the application's own dispatch (menu equivalents, local monitors,
@@ -10805,6 +10878,31 @@ if not root["focused"] or root["keyWindow"] != "deck":
 PY
     control open --close-stream 1:0 --debug-chrome-state "$WORK/chrome.txt" \
         || bad "DECK shared app: closing the stream window answered '$CONTROL_REPLY'"
+    # DECK-7 click-through: the rail's overlay fills the container so it can
+    # clip the growing rail. A click on a last-column cell inside that frame but
+    # off the rail must still reach the cell. It opens a stream, so it runs
+    # after the ⌘F/⌘K steps (which expect the first stream) and before the
+    # popover; the frame check at the end of the run stops the app.
+    # The stream closed above tears down in its own time: resizing the Deck
+    # under its teardown stalls the control channel, so settle first and do
+    # not resize.
+    sleep 4
+    control deckquery "" || bad "DECK deckquery (click-through): $CONTROL_REPLY"
+    sleep 0.5
+    control deck-rail A || bad "DECK deck-rail A (click-through): $CONTROL_REPLY"
+    sleep 1
+    local opens_before
+    opens_before="$(count_events '"t":"window.open"' | head -1)"
+    control deckfocus grid || bad "DECK deckfocus grid (click-through): $CONTROL_REPLY"
+    # The Deck is 760 pt wide: 6 columns, so the sixth cell of the first row is
+    # in the last column, under the overlay's frame and off the rail.
+    control deckclick Authenticator 5 \
+        && ok "[DECK-7] the last-column cell took a click through the rail's overlay" \
+        || bad "[DECK-7] deckclick Authenticator 5: $CONTROL_REPLY"
+    wait_until 20 [ "$(count_events '"t":"window.open"' | head -1)" -gt "$opens_before" ] \
+        && ok "[DECK-7] the click through the overlay opened the app" \
+        || bad "[DECK-7] the click through the overlay opened nothing"
+
     # The status pill opens the same phone controls in a popover (docs/DESIGN.md
     # "Deck"): one component, P3's tiles, and no Settings/Quit footer (the Deck
     # has its own gear and the app menu has both). Its DND tile is the real
