@@ -9019,6 +9019,12 @@ check_notify_actions() {
         n="$(grep -c "notify post id=pd-q1 " "$WORK/notify-quiet.log" 2>/dev/null)" || n=0
         [ "${n:-0}" -ge 10 ]
     }
+    # hold_post — the 100 ms re-post of NOTIFY-19 has been delivered.
+    hold_post() {
+        local n
+        n="$(grep -c "notify post id=pd-q2 " "$WORK/notify-quiet.log" 2>/dev/null)" || n=0
+        [ "${n:-0}" -ge 1 ]
+    }
     # group_hash ID — the 16-hex group hash the fake phone sent for that post.
     group_hash() {
         python3 - "$WORK/events.jsonl" "$1" <<'PY'
@@ -9206,6 +9212,25 @@ PY
         "$WORK/notify-quiet.log" "$WORK/app.log" "$WORK/events.jsonl" 2>/dev/null \
         && ok "[NOTIFY-14] NOTIFY-ACTIONS the quiet posts carried no text in a log" \
         || bad "[NOTIFY-14] NOTIFY-ACTIONS the quiet posts leaked text"
+
+    # (h2) [NOTIFY-19] the hold case: the same app re-posts 100 ms later (an
+    # action or an icon) inside the Mac's 300 ms hold, with alert:false. The
+    # post that supersedes one still waiting inherits its delivery state, so the
+    # one banner that reaches Notification Center presents.
+    wait_until 10 hold_post \
+        && ok "[NOTIFY-19] NOTIFY-ACTIONS the re-posted key reached the Mac" \
+        || bad "[NOTIFY-19] NOTIFY-ACTIONS no re-post inside the hold reached the Mac"
+    python3 - "$WORK/notify-quiet.log" <<'PY' \
+        && ok "[NOTIFY-19] NOTIFY-ACTIONS a quiet re-post inside the hold still presents the banner" \
+        || bad "[NOTIFY-19] NOTIFY-ACTIONS the quiet re-post inside the hold presented nothing"
+import sys
+lines = open(sys.argv[1]).read().splitlines()
+posts = [line for line in lines if line.startswith("notify post id=pd-q2 ")]
+if len(posts) != 1:
+    print("posts:", len(posts)); sys.exit(1)
+if not posts[0].endswith("alert=1 banners=1 presented=1 quiet=0"):
+    print("post:", posts[0]); sys.exit(1)
+PY
     stop_app
     stop_fakephone
     wait_until 5 no_fakephone
