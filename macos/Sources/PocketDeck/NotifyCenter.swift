@@ -287,6 +287,9 @@ struct PhoneNotification: Equatable {
     /// Whether Android would alert for this post (NOTIFY-19): the first post of
     /// a key, or an update the app did not silence. Required on the wire.
     var alert: Bool = true
+    /// `notify.post`'s `group`: a 64-bit hash of the phone's group key
+    /// (NOTIFY-20). Never the key itself; absent when the notification has none.
+    var group: String? = nil
 }
 
 /// One row of the menu bar's "Live on <phone>" section, updated in place.
@@ -343,6 +346,19 @@ enum NotifyMapping {
             body = n.pkg
         }
         return (title, body)
+    }
+
+    /// The banner's thread (NOTIFY-4, NOTIFY-20): the phone's id alone, or the
+    /// phone and the notification's group hash when it has one, so a group's
+    /// messages stack together and never with the rest of the phone. Only the
+    /// wire's 16 lowercase hex characters are accepted as a group.
+    static func thread(phoneId: String, group: String?) -> String {
+        guard let group, isValidGroup(group) else { return phoneId }
+        return "\(phoneId).\(group)"
+    }
+
+    static func isValidGroup(_ group: String) -> Bool {
+        group.count == 16 && group.allSatisfy { "0123456789abcdef".contains($0) }
     }
 
     /// Field sizes and counts only — never the text itself (privacy). The
@@ -794,6 +810,7 @@ final class NotifyCenter {
         var counts = postCounts[id] ?? (presented: 0, quiet: 0)
         if plan == .quietReplace { counts.quiet += 1 } else { counts.presented += 1 }
         postCounts[id] = counts
+        let thread = NotifyMapping.thread(phoneId: post.phoneId, group: post.notification.group)
         var info = post.image?.info
         var url: URL?
         if let image = post.image, let written = writeAttachment(phoneId: post.phoneId, id: id,
@@ -803,7 +820,7 @@ final class NotifyCenter {
             attachments[id] = written
         }
         record(NotifyMapping.record(posted: post.notification, title: post.title, body: post.body,
-                                    thread: post.phoneId, code: NotifyCode.find(title: post.notification.title,
+                                    thread: thread, code: NotifyCode.find(title: post.notification.title,
                                                                                  text: post.notification.text) != nil,
                                     category: post.category,
                                     facts: NotifyBannerFacts(alert: post.notification.alert,
@@ -815,7 +832,7 @@ final class NotifyCenter {
         let content = UNMutableNotificationContent()
         content.title = post.title
         if !post.body.isEmpty { content.body = post.body }
-        content.threadIdentifier = post.phoneId
+        content.threadIdentifier = thread
         content.sound = nil
         if plan == .quietReplace { content.interruptionLevel = .passive }
         content.categoryIdentifier = post.category

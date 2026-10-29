@@ -175,6 +175,21 @@ NOTIFY_QUIET_ID = "pd-q1"
 NOTIFY_QUIET_POSTS = 10
 NOTIFY_QUIET_INTERVAL = 0.8
 
+# NOTIFY-20 (docs/specs/notifications.md): a child of a group, its summary (which
+# a fixed phone does not forward while the child is active), a summary with no
+# children, and a child that arrives after that summary (the phone takes the
+# summary away first). `group` on the wire is 64 bits of SHA-256 over the
+# package and the Android key, never the key itself (privacy).
+NOTIFY_GROUP_CHILD = {"id": "pd-g1", "pkg": "com.whatsapp", "groupKey": "pd-group-alpha",
+                      "title": "pd-notify-title-13", "text": "pd-notify-text-13"}
+NOTIFY_GROUP_SUMMARY = {"id": "pd-g2", "pkg": "com.whatsapp", "groupKey": "pd-group-alpha",
+                        "title": "pd-notify-title-14", "text": "pd-notify-text-14", "summary": True}
+NOTIFY_LONE_SUMMARY = {"id": "pd-g3", "pkg": "com.whatsapp", "groupKey": "pd-group-bravo",
+                       "title": "pd-notify-title-15", "text": "pd-notify-text-15", "summary": True}
+NOTIFY_LATE_CHILD = {"id": "pd-g4", "pkg": "com.whatsapp", "groupKey": "pd-group-bravo",
+                     "title": "pd-notify-title-16", "text": "pd-notify-text-16"}
+NOTIFY_GROUP_INTERVAL = 0.9
+
 # Part 2b (docs/design/notify.md): pictures and Android 16 Live Updates. The
 # picture is a generated 160x120 test card (nobody's content); only its mime,
 # size and dimensions ever reach a log. `image: "bad"` sends an oversized one
@@ -3111,6 +3126,10 @@ class Session(object):
             # NOTIFY-19: one key, ten posts, only the first alerting.
             self._send_quiet_updates()
             return
+        if getattr(self.phone.args, "notify_groups", False):
+            # NOTIFY-20: the wire a phone with its group machine sends.
+            self._send_group_updates()
+            return
         only = getattr(self.phone.args, "notify_only", None)
         media = bool(getattr(self.phone.args, "notify_media", False))
         if only:
@@ -3176,6 +3195,56 @@ class Session(object):
                                          titleLen=len(title), bodyLen=len(text),
                                          alert=1 if alert else 0, step=step)
                 time.sleep(NOTIFY_QUIET_INTERVAL)
+
+        threading.Thread(target=run, daemon=True).start()
+
+    @staticmethod
+    def _group_hash(pkg, key):
+        """The phone's `group` field: 64 bits of SHA-256 over package and key."""
+        sha = hashlib.sha256()
+        sha.update(b"group")
+        for part in (pkg, key):
+            sha.update(b"\x00")
+            sha.update(part.encode("utf-8"))
+        return sha.hexdigest()[:16]
+
+    def _send_group_updates(self):
+        """NOTIFY-20 as a phone with its group machine sends it: a child, its
+        summary left on the phone, a lone summary, then a child that takes that
+        summary away. The group key never reaches the wire, only its hash."""
+        def run():
+            def post(shape, alert=True):
+                pkg, key = shape["pkg"], shape["groupKey"]
+                group = self._group_hash(pkg, key)
+                self._send({"t": "notify.post", "id": shape["id"], "pkg": pkg,
+                            "title": shape["title"], "text": shape["text"],
+                            "when": int(time.time() * 1000), "alert": alert,
+                            "group": group})
+                self.phone.events.notify("post", id=shape["id"], pkg=pkg,
+                                         titleLen=len(shape["title"]),
+                                         bodyLen=len(shape["text"]), alert=1 if alert else 0,
+                                         group=group, summary=1 if shape.get("summary") else 0)
+
+            def wait():
+                time.sleep(NOTIFY_GROUP_INTERVAL)
+                return self.sender is None or self._live_stop.is_set()
+
+            post(NOTIFY_GROUP_CHILD)
+            if wait():
+                return
+            # The summary of a group with a forwarded child stays on the phone.
+            self.phone.events.notify("skip", id=NOTIFY_GROUP_SUMMARY["id"], pkg="com.whatsapp",
+                                     summary=1)
+            if wait():
+                return
+            post(NOTIFY_LONE_SUMMARY)
+            if wait():
+                return
+            # A child arrives after the summary: the phone removes the summary
+            # first, then forwards the child.
+            self._send({"t": "notify.remove", "id": NOTIFY_LONE_SUMMARY["id"]})
+            self.phone.events.notify("remove", id=NOTIFY_LONE_SUMMARY["id"])
+            post(NOTIFY_LATE_CHILD)
 
         threading.Thread(target=run, daemon=True).start()
 
@@ -4153,6 +4222,9 @@ def build_parser():
     p.add_argument("--notify-quiet", action="store_true",
                    help="on notify.enable post one key ten times, the first alerting and "
                         "the nine updates not (NOTIFY-19; a progress bar's wire)")
+    p.add_argument("--notify-groups", action="store_true",
+                   help="on notify.enable send the group wire (NOTIFY-20): a child, its "
+                        "skipped summary, a lone summary, then a child that removes it")
     p.add_argument("--resize-delay-ms", type=int, default=0, metavar="MS",
                    help="hold back a window's new VIDEO_CONFIG this long after "
                         "window.resize (the Mac's live-resize fill); 0 answers at once")
