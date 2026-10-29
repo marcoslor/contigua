@@ -81,7 +81,7 @@ final class RailApproachTests: XCTestCase {
         XCTAssertEqual(drawnFit.pitch, 19.71, accuracy: 0.02, "the fitted pitch at 625 pt")
         let railTop = (container.height - CGFloat(drawnFit.count) * drawnFit.pitch) / 2
         let hover = CGPoint(x: 1000 - 44 + 13, y: railTop + 12.5 * drawnFit.pitch)
-        let point = RailApproach.railPoint(hover: hover, container: container, fit: drawnFit)
+        let point = RailApproach.railPoint(hover: hover, container: container, fit: drawnFit, trailing: 44)
         XCTAssertEqual(point.y, 12.5 * drawnFit.pitch, accuracy: 0.01,
                        "M's drawn centre must read as M's row")
         XCTAssertEqual(point.dx, 0, accuracy: 0.01, "inside the rail")
@@ -91,10 +91,10 @@ final class RailApproachTests: XCTestCase {
         let container = CGSize(width: 1000, height: 573)
         let leading = container.width - 44
         let hover = CGPoint(x: leading - 40, y: 200)
-        XCTAssertEqual(RailApproach.railPoint(hover: hover, container: container, fit: drawnFit).dx,
+        XCTAssertEqual(RailApproach.railPoint(hover: hover, container: container, fit: drawnFit, trailing: 44).dx,
                        40, accuracy: 0.01)
         let inside = CGPoint(x: leading + 5, y: 200)
-        XCTAssertEqual(RailApproach.railPoint(hover: inside, container: container, fit: drawnFit).dx,
+        XCTAssertEqual(RailApproach.railPoint(hover: inside, container: container, fit: drawnFit, trailing: 44).dx,
                        0, accuracy: 0.01)
     }
 
