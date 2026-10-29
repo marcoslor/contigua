@@ -9011,8 +9011,40 @@ EOF
 check_notify_actions() {
     clean
     local log="$WORK/notify-actions.log" script="$WORK/notify-actions-input.txt" device
-    local code_hash code_types
+    local code_hash code_types alpha bravo removed_line child_line
     log_has() { grep -qF -- "$1" "$log" 2>/dev/null; }
+    # quiet_posts — ten posts of the NOTIFY-19 key are in the share log.
+    quiet_posts() {
+        local n
+        n="$(grep -c "notify post id=pd-q1 " "$WORK/notify-quiet.log" 2>/dev/null)" || n=0
+        [ "${n:-0}" -ge 10 ]
+    }
+    # hold_post — the 100 ms re-post of NOTIFY-19 has been delivered.
+    hold_post() {
+        local n
+        n="$(grep -c "notify post id=pd-q2 " "$WORK/notify-quiet.log" 2>/dev/null)" || n=0
+        [ "${n:-0}" -ge 1 ]
+    }
+    # group_hash ID — the 16-hex group hash the fake phone sent for that post.
+    group_hash() {
+        python3 - "$WORK/events.jsonl" "$1" <<'PY'
+import json, sys
+for line in open(sys.argv[1]):
+    try:
+        event = json.loads(line)
+    except ValueError:
+        continue
+    if event.get("ev") == "notify" and event.get("kind") == "post" and event.get("id") == sys.argv[2]:
+        print(event.get("group", ""))
+        break
+PY
+    }
+    # groups_done — the three group posts and the summary's removal arrived.
+    groups_done() {
+        local n
+        n="$(grep -c "notify post id=pd-g" "$WORK/notify-groups.log" 2>/dev/null)" || n=0
+        [ "${n:-0}" -ge 3 ] && grep -q "notify remove id=pd-g3" "$WORK/notify-groups.log" 2>/dev/null
+    }
     # notify_rx KIND ID [I] [TEXTLEN] — a fakephone notification event.
     notify_rx() {
         python3 - "$WORK/events.jsonl" "$@" <<'PY'
@@ -9144,6 +9176,106 @@ EOF
         "$WORK/app.log" "$log" "$WORK/fake.log" "$WORK/fake.err" "$WORK/events.jsonl" 2>/dev/null \
         && ok "[NOTIFY-14] NOTIFY-ACTIONS no notification or reply text reached a log" \
         || bad "[NOTIFY-14] NOTIFY-ACTIONS notification text leaked"
+
+    # (h) [NOTIFY-19] an update the phone did not mark alerting replaces the
+    # delivered banner without presenting it: one key posted ten times, the
+    # first alerting and the nine quiet (a progress bar's wire). The Mac's own
+    # record carries, for each id, its post's `alert`, the banners it holds and
+    # the running presented/quiet counts; the last line is the end state. A
+    # share-log run: nothing reaches Notification Center.
+    stop_app
+    stop_fakephone
+    wait_until 5 no_fakephone
+    FAKE_ARGS="--notify-quiet" start_fake '' || return 1
+    defaults write "$DEFAULTS_SUITE" "notify.$device" -bool YES
+    launch --connect "127.0.0.1:$PORT" --quit-after 30 --share-log "$WORK/notify-quiet.log"
+    wait_until 20 quiet_posts \
+        && ok "[NOTIFY-19] NOTIFY-ACTIONS the same key was posted ten times" \
+        || bad "[NOTIFY-19] NOTIFY-ACTIONS fewer than ten posts of the quiet key"
+    python3 - "$WORK/notify-quiet.log" <<'PY' \
+        && ok "[NOTIFY-19] NOTIFY-ACTIONS 1 presented, 9 quiet replacements, 1 delivered banner" \
+        || bad "[NOTIFY-19] NOTIFY-ACTIONS the quiet updates did not replace quietly"
+import sys
+lines = open(sys.argv[1]).read().splitlines()
+posts = [line for line in lines if line.startswith("notify post id=pd-q1 ")]
+alerting = [line for line in posts if " alert=1" in line]
+quiet = [line for line in posts if " alert=0" in line]
+if len(posts) != 10:
+    print("posts:", len(posts)); sys.exit(1)
+if len(alerting) != 1 or len(quiet) != 9:
+    print("posts:", len(posts), "alerting:", len(alerting), "quiet:", len(quiet)); sys.exit(1)
+last = posts[-1]
+if " banners=1 presented=1 quiet=9" not in last:
+    print("last post:", last); sys.exit(1)
+PY
+    ! grep -qE 'pd-notify-(title|text)-[0-9]' \
+        "$WORK/notify-quiet.log" "$WORK/app.log" "$WORK/events.jsonl" 2>/dev/null \
+        && ok "[NOTIFY-14] NOTIFY-ACTIONS the quiet posts carried no text in a log" \
+        || bad "[NOTIFY-14] NOTIFY-ACTIONS the quiet posts leaked text"
+
+    # (h2) [NOTIFY-19] the hold case: the same app re-posts 100 ms later (an
+    # action or an icon) inside the Mac's 300 ms hold, with alert:false. The
+    # post that supersedes one still waiting inherits its delivery state, so the
+    # one banner that reaches Notification Center presents.
+    wait_until 10 hold_post \
+        && ok "[NOTIFY-19] NOTIFY-ACTIONS the re-posted key reached the Mac" \
+        || bad "[NOTIFY-19] NOTIFY-ACTIONS no re-post inside the hold reached the Mac"
+    python3 - "$WORK/notify-quiet.log" <<'PY' \
+        && ok "[NOTIFY-19] NOTIFY-ACTIONS a quiet re-post inside the hold still presents the banner" \
+        || bad "[NOTIFY-19] NOTIFY-ACTIONS the quiet re-post inside the hold presented nothing"
+import sys
+lines = open(sys.argv[1]).read().splitlines()
+posts = [line for line in lines if line.startswith("notify post id=pd-q2 ")]
+if len(posts) != 1:
+    print("posts:", len(posts)); sys.exit(1)
+if not posts[0].endswith("alert=1 banners=1 presented=1 quiet=0"):
+    print("post:", posts[0]); sys.exit(1)
+PY
+    stop_app
+    stop_fakephone
+    wait_until 5 no_fakephone
+
+    # (i) [NOTIFY-20] a group summary never lands on top of its child: the phone
+    # sends a child, leaves its summary on the phone, forwards a lone summary,
+    # then removes that summary before the child that supersedes it. Every
+    # grouped post is threaded under <phoneId>.<group hash>; no group key ever
+    # appears in a log.
+    FAKE_ARGS="--notify-groups" start_fake '' || return 1
+    defaults write "$DEFAULTS_SUITE" "notify.$device" -bool YES
+    launch --connect "127.0.0.1:$PORT" --quit-after 30 --share-log "$WORK/notify-groups.log"
+    wait_until 20 groups_done \
+        && ok "[NOTIFY-20] NOTIFY-ACTIONS the group wire arrived (child, lone summary, removal, child)" \
+        || bad "[NOTIFY-20] NOTIFY-ACTIONS the group wire did not arrive: $(tr '\n' '|' < "$WORK/notify-groups.log" 2>/dev/null)"
+    alpha="$(group_hash pd-g1)"
+    bravo="$(group_hash pd-g3)"
+    [ -n "$alpha" ] && [ -n "$bravo" ] && [ "$alpha" != "$bravo" ] \
+        && ok "[NOTIFY-20] NOTIFY-ACTIONS the phone sent a group hash, not the group key" \
+        || bad "[NOTIFY-20] NOTIFY-ACTIONS no distinct group hashes in the phone's events"
+    [ "$(grep -c "notify post id=pd-g1 " "$WORK/notify-groups.log" 2>/dev/null)" = "1" ] \
+        && [ "$(grep -c "notify post id=pd-g" "$WORK/notify-groups.log" 2>/dev/null)" = "3" ] \
+        && ok "[NOTIFY-20] NOTIFY-ACTIONS the summary of a group with a child never posted" \
+        || bad "[NOTIFY-20] NOTIFY-ACTIONS a second banner landed for the child's group"
+    grep -q "notify post id=pd-g1 .* thread=$device.$alpha" "$WORK/notify-groups.log" 2>/dev/null \
+        && ok "[NOTIFY-20] NOTIFY-ACTIONS the child is threaded under the phone and its group" \
+        || bad "[NOTIFY-20] NOTIFY-ACTIONS the child's thread carries no group hash"
+    grep -q "notify post id=pd-g3 .* thread=$device.$bravo" "$WORK/notify-groups.log" 2>/dev/null \
+        && ok "[NOTIFY-20] NOTIFY-ACTIONS a summary with no children banners, threaded under its group" \
+        || bad "[NOTIFY-20] NOTIFY-ACTIONS the lone summary did not banner under its group"
+    grep -q "notify post id=pd-g4 .* thread=$device.$bravo" "$WORK/notify-groups.log" 2>/dev/null \
+        && ok "[NOTIFY-20] NOTIFY-ACTIONS the child after the summary joined its thread" \
+        || bad "[NOTIFY-20] NOTIFY-ACTIONS the late child's thread is wrong"
+    removed_line="$(grep -n "notify remove id=pd-g3" "$WORK/notify-groups.log" 2>/dev/null | cut -d: -f1)"
+    child_line="$(grep -n "notify post id=pd-g4" "$WORK/notify-groups.log" 2>/dev/null | cut -d: -f1)"
+    [ -n "$removed_line" ] && [ -n "$child_line" ] && [ "$removed_line" -lt "$child_line" ] \
+        && ok "[NOTIFY-20] NOTIFY-ACTIONS the summary was removed before the child posted" \
+        || bad "[NOTIFY-20] NOTIFY-ACTIONS the summary removal did not precede the child"
+    ! grep -qE 'pd-group-(alpha|bravo)' \
+        "$WORK/notify-groups.log" "$WORK/app.log" "$WORK/fake.log" "$WORK/fake.err" "$WORK/events.jsonl" 2>/dev/null \
+        && ok "[NOTIFY-14] NOTIFY-ACTIONS no group key reached a log" \
+        || bad "[NOTIFY-14] NOTIFY-ACTIONS a group key leaked into a log"
+    stop_app
+    stop_fakephone
+    wait_until 5 no_fakephone
 
     defaults delete "$DEFAULTS_SUITE" "notify.$device" >/dev/null 2>&1
     defaults delete "$DEFAULTS_SUITE" "notify.mute.$device" >/dev/null 2>&1

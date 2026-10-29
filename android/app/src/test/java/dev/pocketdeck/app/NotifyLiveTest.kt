@@ -66,7 +66,7 @@ class NotifyLiveTest {
         val live = NotifyEvents.liveWire(0.7, "12 min", null, false)!!
         val event = NotifyEvents.notificationEvent(
             id = "0_com.uber_1_null_7", pkg = "com.uber", title = "Ride", text = "Arriving",
-            when_ = 5, ongoing = true, live = live,
+            when_ = 5, alert = true, ongoing = true, live = live,
         )!!
         assertEquals("notify.post", event["t"])
         assertEquals(true, event["ongoing"])
@@ -76,7 +76,7 @@ class NotifyLiveTest {
 
     @Test
     fun `a post without live has no live field`() {
-        val event = NotifyEvents.notificationEvent("k", "com.a", "t", "x", 1)!!
+        val event = NotifyEvents.notificationEvent("k", "com.a", "t", "x", 1, alert = true)!!
         assertFalse(event.containsKey("live"))
     }
 

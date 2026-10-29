@@ -1971,7 +1971,8 @@ final class ConnectionController {
                 nowPlaying.clear()
                 notifyCenter.clearAll()
             }
-        case .notifyPosted(let id, let pkg, let when, let title, let text, let actions, let ongoing, let live):
+        case .notifyPosted(let id, let pkg, let when, let title, let text, let actions, let ongoing, let live,
+                          let alert, let group):
             let ref = link.phone?.id.isEmpty == false ? link.phone
                 : session?.phone.map { PhoneRef(id: $0.id, name: $0.name, model: $0.model) }
             guard let phone = ref, !phone.id.isEmpty else { break }
@@ -1984,7 +1985,8 @@ final class ConnectionController {
             notifySeen[phone.id, default: []].insert(pkg)
             notifyCenter.post(
                 PhoneNotification(id: id, pkg: pkg, when: when, title: title, text: text,
-                                  ongoing: ongoing, actions: actions, live: live),
+                                  ongoing: ongoing, actions: actions, live: live,
+                                  alert: alert, group: group),
                 phoneId: phone.id,
                 phoneName: displayName(for: phone, fallback: "your phone"),
                 labelFor: { [weak self] in self?.labelFor($0) ?? nil },
