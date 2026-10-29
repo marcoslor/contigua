@@ -257,9 +257,12 @@ first bug.
 
 The decision now travels with the post. The phone marks `alert:true` on the
 first post of a key and on an update Android would alert for, and `alert:false`
-when the notification carries `FLAG_ONLY_ALERT_ONCE` or when its title and text
-hash equals the last forwarded post of that key (`NotifyEvents.alerts`; the
-hashes live in memory and are never logged).
+when the notification carries `FLAG_ONLY_ALERT_ONCE`, when its title and text
+hash equals the last forwarded post of that key, or when the only thing that
+moved is a progress bar (`NotifyEvents.alerts` with `progressOnly`: both posts
+carry a bar and the title hash is unchanged, so "12 MB of 50 MB" → "13 MB of
+50 MB" is quiet while the post that drops the bar is judged by its content).
+The hashes live in memory and are never logged.
 
 On the Mac, `NotifyPostPolicy.plan(alert:delivered:)` says what the post does:
 `.banner` for an alerting post with no banner, `.quietAdd` for a quiet one —

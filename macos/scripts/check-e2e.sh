@@ -9031,6 +9031,12 @@ check_notify_actions() {
         n="$(grep -c "notify post id=pd-q3 " "$WORK/notify-quiet.log" 2>/dev/null)" || n=0
         [ "${n:-0}" -ge 1 ]
     }
+    # progress_posts — the six posts of the NOTIFY-19 progress series arrived.
+    progress_posts() {
+        local n
+        n="$(grep -c "notify post id=pd-p1 " "$WORK/notify-quiet.log" 2>/dev/null)" || n=0
+        [ "${n:-0}" -ge 6 ]
+    }
     # group_hash ID — the 16-hex group hash the fake phone sent for that post.
     group_hash() {
         python3 - "$WORK/events.jsonl" "$1" <<'PY'
@@ -9252,6 +9258,27 @@ if len(posts) != 1:
     print("posts:", len(posts)); sys.exit(1)
 if not posts[0].endswith("alert=0 banners=1 presented=0 quiet=1"):
     print("post:", posts[0]); sys.exit(1)
+PY
+    # (h4) [NOTIFY-19] row 6: the bar moving is not news. Five ticks whose text
+    # changes and whose bar moves are quiet, the post that drops the bar alerts.
+    wait_until 20 progress_posts \
+        || bad "[NOTIFY-19] NOTIFY-ACTIONS the progress series did not arrive"
+    python3 - "$WORK/notify-quiet.log" <<'PY' \
+        && ok "[NOTIFY-19] NOTIFY-ACTIONS a moving progress bar is quiet; the post that drops it alerts" \
+        || bad "[NOTIFY-19] NOTIFY-ACTIONS the progress ticks did not follow the rule"
+import sys
+lines = open(sys.argv[1]).read().splitlines()
+posts = [line for line in lines if line.startswith("notify post id=pd-p1 ")]
+if len(posts) != 6:
+    print("posts:", len(posts)); sys.exit(1)
+alerting = [line for line in posts if " alert=1 " in line]
+quiet = [line for line in posts if " alert=0 " in line]
+if len(alerting) != 2 or len(quiet) != 4:
+    print("alerting:", len(alerting), "quiet:", len(quiet)); sys.exit(1)
+if " alert=1 " not in posts[0]:
+    print("first:", posts[0]); sys.exit(1)
+if not posts[-1].endswith("alert=1 banners=1 presented=2 quiet=4"):
+    print("last:", posts[-1]); sys.exit(1)
 PY
     stop_app
     stop_fakephone
