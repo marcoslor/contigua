@@ -111,6 +111,9 @@ final class RailPointerModel {
     /// Static per window size, so the pitch cannot jitter while the pointer
     /// moves.
     private(set) var railFit: (count: Int, pitch: CGFloat)?
+    /// The content height the fit was last computed for: a live resize asks once
+    /// per point of height, not once per frame.
+    private var fittedContent: CGFloat = -1
     /// The rail's slots as drawn, for the e2e's forced position.
     var slots: [DeckRail.Slot] = []
 
@@ -119,6 +122,8 @@ final class RailPointerModel {
     func noteContainerSize(_ size: CGSize) {
         guard size != containerSize else { return }
         containerSize = size
+        guard railFit == nil || abs(size.height - fittedContent) >= 1 else { return }
+        fittedContent = size.height
         railFit = RailLayout.fit(content: size.height)
     }
 

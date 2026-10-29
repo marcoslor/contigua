@@ -68,55 +68,88 @@ enum RailLayout {
     /// Down to 0 when nothing fits; `fit` condenses below 18.
     static func restPitch(count: Int, content: CGFloat) -> CGFloat {
         guard count > 0, content > 0 else { return 0 }
+        func fits(_ pitch: CGFloat) -> Bool {
+            CGFloat(count) * pitch + 2 * overshoot(count: count, pitch: pitch) <= content + 0.001
+        }
         var pitch = maximumPitch
-        for _ in 0..<4 {
+        for _ in 0..<3 {
             let need = (content - 2 * overshoot(count: count, pitch: pitch)) / CGFloat(count)
             if need >= maximumPitch { return maximumPitch }
             pitch = max(0, need)
         }
         var candidate = min(maximumPitch, pitch)
-        while candidate > 0 {
-            if CGFloat(count) * candidate + 2 * overshoot(count: count, pitch: candidate)
-                <= content + 0.001 {
-                return candidate
-            }
-            candidate -= 0.02
-        }
-        return 0
+        while candidate > 0 && !fits(candidate) { candidate -= 0.05 }
+        return max(0, candidate)
     }
 
     /// How far the drawn glyphs can reach past the rail's ends (in points) at
     /// full magnification (dx 0), over every pointer y. The layout is
-    /// scale-invariant in the pitch except for the fixed 9 pt glyph, so this is
-    /// recomputed per pitch and count.
+    /// scale-invariant in the pitch except for the fixed 9 pt glyph, so the
+    /// shape is tabulated once per letter count and evaluated per pitch.
     static func overshoot(count: Int, pitch: CGFloat) -> CGFloat {
         let total = CGFloat(count) * pitch
         guard count > 0, pitch > 0, total > 0 else { return 0 }
-        var worst: CGFloat = 0
-        var y: CGFloat = 0
-        let step = pitch / 32
-        while y <= total {
-            let scales = (0..<count).map {
-                RailFisheye.scale(distance: y / pitch - (CGFloat($0) + 0.5), reduceMotion: false)
+        return shape(for: count).overshoot(total: total) + overshootMargin
+    }
+
+    /// One count's layout shape: for every sampled pointer position (in
+    /// letters), each slot's glyph top and bottom as affine functions of the
+    /// rail's height. Built once per count.
+    private struct Shape {
+        /// Per sample and slot: the glyph top's fraction of the rail, and the
+        /// slot's scale.
+        var slopes: [CGFloat] = []
+        var scales: [CGFloat] = []
+
+        init(count: Int) {
+            let samples = count * 32
+            slopes.reserveCapacity(samples * count)
+            scales.reserveCapacity(samples * count)
+            for sample in 0...samples {
+                let y = CGFloat(sample) / 32
+                let scale = (0..<count).map {
+                    RailFisheye.scale(distance: y - (CGFloat($0) + 0.5), reduceMotion: false)
+                }
+                let sum = scale.reduce(0, +)
+                let relative = scale.map { $0 / sum }
+                let index = min(count - 1, max(0, Int(y)))
+                let fraction = min(max(y - CGFloat(index), 0), 0.9999)
+                var prefix: CGFloat = 0
+                for i in 0..<index { prefix += relative[i] }
+                // The anchor keeps the pointer at `fraction` of its slot.
+                let origin = y / CGFloat(count) - fraction * relative[index] - prefix
+                var running: CGFloat = 0
+                for i in 0..<count {
+                    slopes.append(origin + running + relative[i] / 2)
+                    scales.append(scale[i])
+                    running += relative[i]
+                }
             }
-            let sum = scales.reduce(0, +)
-            let heights = scales.map { total * $0 / sum }
-            let index = min(count - 1, max(0, Int(y / pitch)))
-            let fraction = min(max((y - CGFloat(index) * pitch) / pitch, 0), 0.9999)
-            var prefix: [CGFloat] = []
-            var run: CGFloat = 0
-            for height in heights {
-                prefix.append(run)
-                run += height
-            }
-            let origin = y - fraction * heights[index] - prefix[index]
-            for slot in 0..<count {
-                let top = origin + prefix[slot] + (heights[slot] - 9 * scales[slot]) / 2
-                worst = max(worst, -top, top + 9 * scales[slot] - total)
-            }
-            y += step
         }
-        return max(0, worst) + overshootMargin
+
+        /// The worst glyph reach past [0, total], in points.
+        func overshoot(total: CGFloat) -> CGFloat {
+            var worst: CGFloat = 0
+            for index in slopes.indices {
+                let glyph = 4.5 * scales[index]
+                let top = total * slopes[index] - glyph
+                let bottom = total * (slopes[index] - 1) + glyph
+                worst = max(worst, -top, bottom)
+            }
+            return max(0, worst)
+        }
+    }
+
+    /// The tabulated shapes for the rails the Deck draws (27, 14 and 9 slots).
+    private static let shapes: [Int: Shape] = {
+        let counts = [DeckRail.letters.count,
+                      (DeckRail.letters.count + 1) / 2,
+                      (DeckRail.letters.count + 2) / 3]
+        return Dictionary(uniqueKeysWithValues: counts.map { ($0, Shape(count: $0)) })
+    }()
+
+    private static func shape(for count: Int) -> Shape {
+        shapes[count] ?? Shape(count: count)
     }
 
     /// The slot drawn at `y`: hit-testing follows the drawn layout, so a click
