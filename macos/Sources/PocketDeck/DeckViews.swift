@@ -1114,7 +1114,8 @@ struct AppGrid: View {
             // fitted pitch, so the hover's point is reduced to its own space in
             // one place (RailApproach.railPoint), not with the nominal 20 pt.
             let fit = model.railFit ?? (count: model.slots.count, pitch: DeckRail.pitch)
-            let rail = RailApproach.railPoint(hover: point, container: model.containerSize, fit: fit)
+            let rail = RailApproach.railPoint(hover: point, container: model.containerSize, fit: fit,
+                                              trailing: DeckIndexRail.trailingSpace)
             model.track(dx: rail.dx, y: rail.y, zone: railZone, reduceMotion: reduceMotion)
         case .ended:
             model.leave(reduceMotion: reduceMotion)

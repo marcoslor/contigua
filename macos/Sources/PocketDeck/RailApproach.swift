@@ -14,11 +14,13 @@ enum RailApproach {
     /// A container hover point, reduced to the rail's own space: `dx` points
     /// left of the rail's leading edge (0 inside it) and `y` is measured from
     /// the rail's top, at the pitch the rail is actually drawn with.
+    /// `trailing` is the rail's width plus its trailing padding.
     static func railPoint(hover: CGPoint, container: CGSize,
-                          fit: (count: Int, pitch: CGFloat)) -> (dx: CGFloat, y: CGFloat) {
+                          fit: (count: Int, pitch: CGFloat),
+                          trailing: CGFloat) -> (dx: CGFloat, y: CGFloat) {
         let drawn = CGFloat(fit.count)
         let top = max(0, (container.height - drawn * fit.pitch) / 2)
-        let leading = container.width - 44
+        let leading = container.width - trailing
         return (max(0, leading - hover.x), hover.y - top)
     }
 }
