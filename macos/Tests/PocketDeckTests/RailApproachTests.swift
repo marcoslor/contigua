@@ -68,6 +68,36 @@ final class RailApproachTests: XCTestCase {
         }
     }
 
+    // MARK: The hover's conversion into the rail's drawn space
+
+    private var drawnFit: (count: Int, pitch: CGFloat) {
+        (27, RailLayout.restPitch(count: 27, content: 573))
+    }
+
+    /// A hover on M's drawn centre is M's row: the conversion uses the pitch
+    /// the rail is drawn with, not the nominal 20 pt.
+    func testRailPointPutsAHoverOnTheDrawnRow() {
+        let container = CGSize(width: 1000, height: 573)
+        XCTAssertEqual(drawnFit.pitch, 19.71, accuracy: 0.02, "the fitted pitch at 625 pt")
+        let railTop = (container.height - CGFloat(drawnFit.count) * drawnFit.pitch) / 2
+        let hover = CGPoint(x: 1000 - 44 + 13, y: railTop + 12.5 * drawnFit.pitch)
+        let point = RailApproach.railPoint(hover: hover, container: container, fit: drawnFit)
+        XCTAssertEqual(point.y, 12.5 * drawnFit.pitch, accuracy: 0.01,
+                       "M's drawn centre must read as M's row")
+        XCTAssertEqual(point.dx, 0, accuracy: 0.01, "inside the rail")
+    }
+
+    func testRailPointMeasuresDxFromTheRailsLeadingEdge() {
+        let container = CGSize(width: 1000, height: 573)
+        let leading = container.width - 44
+        let hover = CGPoint(x: leading - 40, y: 200)
+        XCTAssertEqual(RailApproach.railPoint(hover: hover, container: container, fit: drawnFit).dx,
+                       40, accuracy: 0.01)
+        let inside = CGPoint(x: leading + 5, y: 200)
+        XCTAssertEqual(RailApproach.railPoint(hover: inside, container: container, fit: drawnFit).dx,
+                       0, accuracy: 0.01)
+    }
+
     // MARK: Effective Reduce Motion
 
     func testTheDebugMotionHookMakesEffectiveReduceMotionFalse() {
