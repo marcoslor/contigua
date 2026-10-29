@@ -323,6 +323,9 @@ The phone now keeps a small machine per package+group (`NotifyGroups` in
 NotifyEvents.kt, one pure transition function over `EMPTY`, `CHILDREN`,
 `SUMMARY`; every transition is in `NotifyGroupMachineTest`):
 
+- a summary forwarded on its own is quiet when the app asked for
+  `GROUP_ALERT_CHILDREN` (`NotifyEvents.summaryAlerts`); children keep their
+  own decision, so the child that takes a summary away still alerts;
 - a child is forwarded and its id joins the group's set; a re-post of a known child is an update, not a second child (a chat updates its one notification per message);
 - the summary is forwarded only while the group has no forwarded child;
 - when a child arrives after a forwarded summary, the summary gets a

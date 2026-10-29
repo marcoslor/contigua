@@ -34,6 +34,18 @@ object NotifyEvents {
     /** `Notification.FLAG_GROUP_SUMMARY`: this notification summarises its group. */
     const val FLAG_GROUP_SUMMARY = 0x00000200
 
+    /** `Notification.GROUP_ALERT_*`: which member of a group may alert (row 13). */
+    const val GROUP_ALERT_ALL = 0
+    const val GROUP_ALERT_SUMMARY = 1
+    const val GROUP_ALERT_CHILDREN = 2
+
+    /**
+     * A summary forwarded on its own alerts unless the app asked for a
+     * children-only group (row 13, NOTIFY-20). Children keep their own
+     * decision: a child that supersedes the summary still alerts.
+     */
+    fun summaryAlerts(groupAlertBehavior: Int): Boolean = groupAlertBehavior != GROUP_ALERT_CHILDREN
+
     /** `NotificationManager.IMPORTANCE_*`, read from the channel's ranking (rows 5/20). */
     const val IMPORTANCE_MIN = 1
     const val IMPORTANCE_LOW = 2

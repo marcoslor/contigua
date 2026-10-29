@@ -264,6 +264,13 @@ class NotifyEventsTest {
     }
 
     @Test
+    fun `a children-only group keeps its lone summary quiet`() {
+        assertEquals(false, NotifyEvents.summaryAlerts(NotifyEvents.GROUP_ALERT_CHILDREN))
+        assertTrue(NotifyEvents.summaryAlerts(NotifyEvents.GROUP_ALERT_SUMMARY))
+        assertTrue(NotifyEvents.summaryAlerts(NotifyEvents.GROUP_ALERT_ALL))
+    }
+
+    @Test
     fun `importance can only make a post quieter`() {
         assertTrue(NotifyEvents.quietByImportance(NotifyEvents.IMPORTANCE_MIN))
         assertTrue(NotifyEvents.quietByImportance(NotifyEvents.IMPORTANCE_LOW))
