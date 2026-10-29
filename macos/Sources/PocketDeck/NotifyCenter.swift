@@ -63,17 +63,23 @@ enum NotifyLiveOutcome: Equatable {
 /// notifications.md): Android alerts the first post of a key and an update it
 /// did not silence, and never the quiet ones.
 enum NotifyPostPlan: Equatable {
-    /// No banner exists for this id: present one.
+    /// No banner exists and the post alerts: present one.
     case banner
+    /// No banner exists and the post is quiet: add it to the list, present
+    /// nothing (a LOW channel, or a notification first seen mid-life).
+    case quietAdd
     /// An alerting update of a delivered banner: present the replacement.
     case replace
     /// A quiet update: replace the delivered banner without presenting it.
     case quietReplace
+
+    /// Nothing is presented: the post only lands in the list.
+    var quiet: Bool { self == .quietAdd || self == .quietReplace }
 }
 
 enum NotifyPostPolicy {
     static func plan(alert: Bool, delivered: Bool) -> NotifyPostPlan {
-        guard delivered else { return .banner }
+        if !delivered { return alert ? .banner : .quietAdd }
         return alert ? .replace : .quietReplace
     }
 }
@@ -832,7 +838,7 @@ final class NotifyCenter {
         // presenting it. `.passive` is the level that adds to the list without
         // lighting the screen (UNNotificationContent.h, docs/design/notify.md).
         var counts = postCounts[id] ?? (presented: 0, quiet: 0)
-        if plan == .quietReplace { counts.quiet += 1 } else { counts.presented += 1 }
+        if plan.quiet { counts.quiet += 1 } else { counts.presented += 1 }
         postCounts[id] = counts
         let thread = NotifyMapping.thread(phoneId: post.phoneId, group: post.notification.group)
         var info = post.image?.info
@@ -858,7 +864,7 @@ final class NotifyCenter {
         if !post.body.isEmpty { content.body = post.body }
         content.threadIdentifier = thread
         content.sound = nil
-        if plan == .quietReplace { content.interruptionLevel = .passive }
+        if plan.quiet { content.interruptionLevel = .passive }
         content.categoryIdentifier = post.category
         content.userInfo = ["kind": NotificationRouter.phoneKind, "pkg": post.notification.pkg,
                             "id": id, "phone": post.phoneId]
