@@ -2949,6 +2949,13 @@ final class ConnectionController {
             }
             RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.3))
             return nil
+        case "deckrailanchor":
+            // The rail's top-left in Quartz screen coordinates, for a visible
+            // run's real pointer at a place measured from the render.
+            guard let path = arguments.first, path.hasPrefix("/") else {
+                return "deckrailanchor needs PATH"
+            }
+            return DeckRailPoint.anchorPoint(to: path) ? nil : "deckrailanchor failed"
         case "deckrailslots":
             // The rail's drawn geometry (DECK-7): the pitch, the rail and
             // container heights, the slots' y/height and their glyph boxes in
@@ -3038,11 +3045,14 @@ final class ConnectionController {
             #endif
         case "deckrailpoint":
             // The letter's centre in Quartz screen coordinates, for a visible
-            // VM run's real pointer.
-            guard arguments.count == 2, DeckRail.letters.contains(arguments[0]) else {
-                return "deckrailpoint needs A-Z or # and PATH"
+            // VM run's real pointer. An optional DX puts it that many points
+            // left of the rail's leading edge (the approach zone's sweep).
+            guard arguments.count >= 2, arguments.count <= 3,
+                  DeckRail.letters.contains(arguments[0]) else {
+                return "deckrailpoint needs A-Z or # and PATH [DX]"
             }
-            return DeckRailPoint.point(letter: arguments[0], to: arguments[1])
+            let dx = arguments.count == 3 ? CGFloat(Double(arguments[2]) ?? 0) : 0
+            return DeckRailPoint.point(letter: arguments[0], to: arguments[1], dx: dx)
                 ? nil : "deckrailpoint failed"
         case "settings-open":
             // The ⌘, route (a setup step for a check that needs Settings open).

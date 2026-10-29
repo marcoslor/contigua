@@ -10507,6 +10507,13 @@ have_flat_icons() { [ "$(icons_kind '"layers":false')" -ge 5 ]; }
 # log say both kinds arrived).
 check_deck() {
     clean
+    if [ "${PD_E2E_IN_VM:-0}" = 1 ]; then
+        # The VM is a test box: the real-pointer proof needs the fisheye, which
+        # Reduce Motion legitimately disables. Turn it off for this run.
+        sudo -n defaults write /Library/Preferences/com.apple.universalaccess reduceMotion -bool false 2>/dev/null \
+            || defaults write com.apple.universalaccess reduceMotion -bool false 2>/dev/null || true
+        sleep 1
+    fi
     # The grid's fixtures (v105's empty slot): one package with two launcher
     # activities, and one entry with no label at all.
     # A full grid (200 apps, more than the person's phone) like theirs: the
@@ -10601,21 +10608,79 @@ check_deck() {
             || bad "DECK no Deck window for the rail shot $1"
     }
     shot_rail rail-rest.png
-    local px py
+    local px py dx nx ny mcentre ncentre ax ay
     if [ "$VISIBLE" = 1 ]; then
-        if control deckrailpoint M "$WORK/deck-rail-shots/m.pt" \
-            && read -r px py < "$WORK/deck-rail-shots/m.pt"; then
-            shot_rail rail-hover-before.png
-            cg_input moveat --x "$px" --y "$py"
-            sleep 1
-            shot_rail rail-hover-m.png
-            if cmp -s "$railshots/rail-hover-before.png" "$railshots/rail-hover-m.png"; then
-                bad "DECK moving the real pointer onto M did not magnify the rail"
+        # The real pointer's positions come from the render: the rest shot's
+        # letter bands give M's and N's centres in window points, and the rail's
+        # anchor gives the rail's top-left on screen. No letter-index maths, so
+        # the pointer lands on the letter the shot shows.
+        if control deckrailanchor "$WORK/deck-rail-shots/anchor.pt" \
+            && read -r ax ay < "$WORK/deck-rail-shots/anchor.pt"; then
+            mcentre="$(python3 "$MACOS/scripts/rail-glyph.py" "$railshots/rail-rest.png" 760 600 "$RUN_SCALE" | sed -n 's/^centre M //p')"
+            ncentre="$(python3 "$MACOS/scripts/rail-glyph.py" "$railshots/rail-rest.png" 760 600 "$RUN_SCALE" | sed -n 's/^centre N //p')"
+            if [ -z "$mcentre" ] || [ -z "$ncentre" ]; then
+                bad "DECK the rest shot gave no M or N band"
             else
-                ok "DECK the real pointer on M magnified the rail"
+                for dx in 96 64 40 24 12 0; do
+                    px="$(python3 -c "print(round($ax + (760 - 31 if $dx == 0 else 760 - 44 - $dx)))")"
+                    py="$(python3 -c "print(round($ay + $mcentre))")"
+                    cg_input moveat --x "$px" --y "$py"
+                    sleep 0.8
+                    shot_rail "rail-dx$dx.png"
+                done
+                # The person's other appearance: dark, then light (in the VM).
+                if [ "${PD_E2E_IN_VM:-0}" = 1 ]; then
+                    osascript -e 'tell application "System Events" to tell appearance preferences to set dark mode to false' >/dev/null 2>&1 || true
+                    sleep 2
+                    shot_rail rail-dx0-light.png
+                    osascript -e 'tell application "System Events" to tell appearance preferences to set dark mode to true' >/dev/null 2>&1 || true
+                    sleep 1
+                fi
+                if python3 "$MACOS/scripts/rail-glyph.py" "$railshots" 760 600 "$RUN_SCALE" > "$WORK/rail-glyph.txt" 2>&1; then
+                    ok "[DECK-7] the real pointer's letter sizes match A2's scales ($(grep -m1 '^gaps' "$WORK/rail-glyph.txt"))"
+                else
+                    bad "[DECK-7] the real pointer's letter sizes or gaps are off: $(tr '\n' ' ' < "$WORK/rail-glyph.txt")"
+                fi
+                sed -n 's/^/  /p' "$WORK/rail-glyph.txt" | head -12
+                # A real click on N's drawn centre: the rail's own pick lands
+                # the grid on N's section and the tag names N.
+                nx="$(sed -n 's/^N centre \([0-9.]*\) pt.*/\1/p' "$WORK/rail-glyph.txt")"
+                if [ -n "$nx" ]; then
+                    px="$(python3 -c "print(round($ax + 760 - 31))")"
+                    py="$(python3 -c "print(round($ay + $nx))")"
+                    cg_input moveat --x "$px" --y "$py"
+                    sleep 0.5
+                    if control deckrailslots "$WORK/rail-n.json"; then
+                        python3 "$MACOS/scripts/deck-rail-slots.py" "$WORK/rail-n.json" tag:N \
+                            && ok "[DECK-7] the real pointer on N's drawn centre shows N's tag" \
+                            || bad "[DECK-7] the real pointer on N did not show N's tag"
+                    else
+                        bad "DECK deckrailslots (N): $CONTROL_REPLY"
+                    fi
+                    cg_input clickat --x "$px" --y "$py"
+                    sleep 1
+                    if python3 "$MACOS/scripts/deck-rail-pick.py" "$WORK/deck-grid.jsonl" N; then
+                        ok "[DECK-7] the real click on N's drawn centre landed on N's section"
+                    else
+                        bad "[DECK-7] the real click on N did not land on N"
+                    fi
+                else
+                    bad "DECK the glyph bands gave no N centre for the click"
+                fi
+                # Leaving: 0.3 s after the pointer is 200 pt away the rail is at rest.
+                px="$(python3 -c "print(round($ax + 760 - 44 - 200))")"
+                py="$(python3 -c "print(round($ay + $mcentre))")"
+                cg_input moveat --x "$px" --y "$py"
+                sleep 0.3
+                shot_rail rail-away.png
+                sleep 1
+                shot_rail rail-away-settled.png
+                cmp -s "$railshots/rail-away.png" "$railshots/rail-away-settled.png" \
+                    && ok "[DECK-7] the rail is back at rest 0.3 s after the pointer leaves" \
+                    || bad "[DECK-7] the rail was still moving 0.3 s after the pointer left"
             fi
         else
-            bad "DECK deckrailpoint M: $CONTROL_REPLY"
+            bad "DECK deckrailanchor: $CONTROL_REPLY"
         fi
     else
         control deckrailhover M && ok "[DECK-7] forced the rail's hover on M for the shot" \
