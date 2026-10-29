@@ -3,6 +3,7 @@ package dev.pocketdeck.server
 import dev.pocketdeck.app.MediaArtRules
 import dev.pocketdeck.app.MediaControl
 import dev.pocketdeck.app.NotifyEvents
+import dev.pocketdeck.app.NotifyImageRules
 import dev.pocketdeck.proto.Crypto
 import dev.pocketdeck.proto.Frame
 import dev.pocketdeck.proto.FrameReader
@@ -16,6 +17,7 @@ import java.io.BufferedOutputStream
 import java.io.File
 import java.net.Socket
 import java.net.SocketTimeoutException
+import java.util.Base64
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
@@ -1729,6 +1731,7 @@ class Session(
         if (phase != Phase.READY || !notifyForwarding) return
         when (t) {
             "notify.post" -> deviceNotifyPost(obj)
+            "notify.image" -> deviceNotifyImage(obj)
             "notify.remove" -> deviceNotifyRemove(obj)
             "media.state" -> deviceMedia(obj)
             "media.sessions" -> deviceMediaSessions(obj)
@@ -1743,11 +1746,16 @@ class Session(
         // holding this notification is not the person's app; only real
         // application packages are forwarded.
         val pkg = validToken(Json.str(obj["pkg"]), 255) ?: return dropNotifyPost("pkg")
+        // The Mac shows a post only when it knows whether Android would alert
+        // (NOTIFY-19), so the decision is required, never defaulted.
+        val alert = obj["alert"] as? Boolean ?: return dropNotifyPost("alert")
         val title = Json.str(obj["title"])?.takeIf { it.isNotEmpty() && it.length <= NotifyEvents.MAX_CHARS }
         val text = Json.str(obj["text"])?.takeIf { it.isNotEmpty() && it.length <= NotifyEvents.MAX_CHARS }
         if (title == null && text == null) return dropNotifyPost("empty content")
         val whenMs = Json.long(obj["when"])?.takeIf { it > 0 }
         val ongoing = Json.bool(obj["ongoing"]) == true
+        val group = validGroup(Json.str(obj["group"]))
+        val live = validLive(obj["live"])
         val actions = validActions(obj["actions"])
         val message = LinkedHashMap<String, Any?>()
         message["t"] = "notify.post"
@@ -1756,9 +1764,107 @@ class Session(
         if (title != null) message["title"] = title
         if (text != null) message["text"] = text
         if (whenMs != null) message["when"] = whenMs
+        message["alert"] = alert
         if (ongoing) message["ongoing"] = true
+        if (live != null) message["live"] = live
+        if (group != null) message["group"] = group
         if (actions.isNotEmpty()) message["actions"] = actions
         sendJson(message)
+    }
+
+    /**
+     * `group` is the phone's own hash (NOTIFY-20): 8 bytes of SHA-256 printed
+     * as lowercase hex, nothing else. Any other shape is dropped — the post
+     * itself is still the person's, so only the field goes.
+     */
+    private fun validGroup(raw: String?): String? {
+        if (raw == null) return null
+        if (raw.length != GROUP_HASH_CHARS || raw.any { it !in '0'..'9' && it !in 'a'..'f' }) {
+            log("notify.post group dropped")
+            return null
+        }
+        return raw
+    }
+
+    /**
+     * `live` (docs/design/notify.md "Part 2b"): the shape the listener's
+     * `liveFor` builds and the Mac's `NotifyLive(json:)` reads. A key the Mac
+     * never reads is dropped; a known key with the wrong type or outside its
+     * range drops the whole object, because the Mac would otherwise trust a
+     * value the phone promised. The log names the key, never its value.
+     */
+    private fun validLive(raw: Any?): Map<String, Any?>? {
+        if (raw == null) return null
+        val source = raw as? Map<*, *> ?: return dropLive("shape")
+        val live = LinkedHashMap<String, Any?>()
+        for ((key, value) in source) {
+            when (key) {
+                "progress" -> {
+                    val progress = (value as? Number)?.toDouble()?.takeIf { it.isFinite() }
+                        ?: return dropLive("progress")
+                    if (progress !in 0.0..1.0) return dropLive("progress")
+                    live["progress"] = progress
+                }
+                "chip" -> {
+                    val chip = (value as? String)?.trim() ?: return dropLive("chip")
+                    if (chip.isEmpty() || chip.length > NotifyEvents.MAX_CHIP) return dropLive("chip")
+                    live["chip"] = chip
+                }
+                "chrono" -> {
+                    val chrono = (value as? Number)?.toLong() ?: return dropLive("chrono")
+                    if (chrono <= 0L) return dropLive("chrono")
+                    live["chrono"] = chrono
+                }
+                "countDown" -> {
+                    val countDown = value as? Boolean ?: return dropLive("countDown")
+                    if (countDown) live["countDown"] = true
+                }
+                // The Mac reads no other key; an unknown one is dropped.
+                else -> Unit
+            }
+        }
+        // An empty object is still the marker a promoted notification sends.
+        return live
+    }
+
+    private fun dropLive(key: String): Map<String, Any?>? {
+        log("notify.post live dropped: $key")
+        return null
+    }
+
+    /**
+     * `notify.image` (docs/design/notify.md): the picture that follows a post
+     * for the same id. Re-checked so the Mac never holds more than the phone
+     * promised: the id token, the mime allowlist, the side bounds, the encoded
+     * cap and a body that decodes. A refusal names the field, never the bytes.
+     */
+    private fun deviceNotifyImage(obj: Map<String, Any?>) {
+        val id = validToken(Json.str(obj["id"]), 64) ?: return dropNotifyImage("id")
+        val mime = Json.str(obj["mime"])?.lowercase()
+        if (mime == null || mime !in NOTIFY_IMAGE_MIMES) return dropNotifyImage("mime")
+        val width = (obj["w"] as? Number)?.toInt() ?: return dropNotifyImage("w")
+        val height = (obj["h"] as? Number)?.toInt() ?: return dropNotifyImage("h")
+        if (width !in 1..NotifyImageRules.MAX_SIDE) return dropNotifyImage("w")
+        if (height !in 1..NotifyImageRules.MAX_SIDE) return dropNotifyImage("h")
+        val data = Json.str(obj["data"]) ?: return dropNotifyImage("data")
+        val bytes = runCatching { Base64.getDecoder().decode(data) }.getOrNull()
+            ?: return dropNotifyImage("data")
+        if (bytes.isEmpty() || bytes.size > NotifyImageRules.MAX_BYTES) return dropNotifyImage("bytes")
+        val message = LinkedHashMap<String, Any?>()
+        message["t"] = "notify.image"
+        message["id"] = id
+        message["mime"] = mime
+        message["w"] = width
+        message["h"] = height
+        // Canonical base64, so the Mac's decoder never sees padding or wrapping
+        // this side tolerated.
+        message["data"] = Base64.getEncoder().encodeToString(bytes)
+        sendJson(message)
+        log("notify.image id=$id mime=$mime w=$width h=$height size=${bytes.size}")
+    }
+
+    private fun dropNotifyImage(why: String) {
+        log("notify.image dropped: $why")
     }
 
     /**
@@ -2683,6 +2789,15 @@ class Session(
 
         /** A sanity bound on `notify.action`'s index (the app checks the real set). */
         const val MAX_ACTION_INDEX = 64
+
+        /** `NotifyEvents.groupHash`: 8 bytes of SHA-256 printed as lowercase hex. */
+        const val GROUP_HASH_CHARS = 16
+
+        /** The two formats the phone's `NotifyImageRules` can produce. */
+        private val NOTIFY_IMAGE_MIMES = setOf(
+            NotifyImageRules.mime(hasAlpha = false),
+            NotifyImageRules.mime(hasAlpha = true),
+        )
 
         /** The clipboard-image poll: images are user-paced, not sub-second. */
         const val CLIP_IMAGE_POLL_MS = 1_000L

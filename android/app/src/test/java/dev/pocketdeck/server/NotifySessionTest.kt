@@ -263,7 +263,7 @@ class NotifySessionTest {
 
         val push = mapOf(
             "t" to "notify.post", "id" to "key_wa_1", "pkg" to "com.whatsapp",
-            "title" to "Design review", "text" to "Deck at 4", "when" to 5L,
+            "title" to "Design review", "text" to "Deck at 4", "when" to 5L, "alert" to true,
         )
         session!!.onDeviceEvent("notify.post", push)
         val posted = readUntil("notify.post")
