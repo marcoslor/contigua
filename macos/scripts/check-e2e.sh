@@ -1092,6 +1092,15 @@ check_gates() {
     stop_fakephone
 }
 
+# sessions_opened — how many connections the fake accepted this run. A plain
+# `grep -c` prints 0 and exits 1 when nothing matches, so the count is read with
+# `|| true` and stays one number for the arithmetic test below.
+sessions_opened() {
+    local n
+    n="$(grep -c '"ev":"session","state":"open"' "$WORK/events.jsonl" 2>/dev/null || true)"
+    echo "${n:-0}"
+}
+
 # check_forgot — PAIR-23: a Mac that still holds this phone's pin but was
 # forgotten on the phone (Forget) is told at once and stops retrying, instead of
 # waiting out its 15 s handshake timeout and looping on the backoff.
@@ -1111,25 +1120,19 @@ check_forgot() {
     stop_fakephone
     sleep 1
     FAKE_ARGS="--forget-macs" start_fake || return 1
-    before="$(count_events '"ev":"session","state":"open"')"
+    before="$(sessions_opened)"
     rm -f "$banner"
     launch --connect "127.0.0.1:$PORT" --debug-banner "$banner" --quit-after 30
 
-    # 3. The phone answers not_paired at once; the Mac reads it and says so
-    # within 2 s (a timeout would take the phone's 15 s handshake limit).
-    wait_until 2 grep -qF "no longer trusts this Mac." "$banner" \
-        && ok "[PAIR-23] F2 the Mac says \"$(cat "$banner")\" within 2 s" \
-        || bad "[PAIR-23] F2 no banner within 2 s: '$(cat "$banner" 2>/dev/null)'"
-    wait_until 2 eval '[ "$(mac_failed_line)" = "session failed: not_paired" ]' \
-        && ok "[PAIR-23] F2 the Mac read not_paired" \
-        || bad "[PAIR-23] F2 Mac reason '$(mac_failed_line)'"
-    events_have '"state":"refused_not_paired"' \
-        && ok "[PAIR-23] F2 the phone answered not_paired instead of staying silent" \
-        || bad "[PAIR-23] F2 the phone left the Mac waiting"
+    # 3. The phone answers not_paired; from that moment the Mac has 2 s to say
+    # so (the app's own launch time is not the connect the person waits on).
+    wait_until 15 events_have '"state":"refused_not_paired"'         && ok "[PAIR-23] F2 the phone answered not_paired instead of staying silent"         || bad "[PAIR-23] F2 the phone left the Mac waiting"
+    wait_until 2 grep -qF "no longer trusts this Mac." "$banner"         && ok "[PAIR-23] F2 the Mac says \"$(cat "$banner")\" within 2 s"         || bad "[PAIR-23] F2 no banner within 2 s: '$(cat "$banner" 2>/dev/null)'"
+    wait_until 2 eval '[ "$(mac_failed_line)" = "session failed: not_paired" ]'         && ok "[PAIR-23] F2 the Mac read not_paired"         || bad "[PAIR-23] F2 Mac reason '$(mac_failed_line)'"
 
     # 4. No retry loop: twenty seconds without another connection.
     sleep 20
-    after="$(count_events '"ev":"session","state":"open"')"
+    after="$(sessions_opened)"
     [ "$after" -le "$((before + 1))" ] \
         && ok "[PAIR-23] F3 no further connect attempts for 20 s ($before -> $after)" \
         || bad "[PAIR-23] F3 the Mac kept connecting ($before -> $after)"

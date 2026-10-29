@@ -1042,6 +1042,14 @@ final class Session {
             if message.int("stream") == nil { phoneErrorCode = code }
             emit(.phoneError(code: code, message: message.string("message"),
                              stream: UInt32(message.int("stream") ?? 0)))
+            // A terminal reply before `welcome` ends the attempt now: the phone's
+            // next act is the close, and neither that close nor the 6 s watchdog
+            // may be what ends a handshake the phone already answered (PAIR-13's
+            // "return as soon as the terminal reply arrives").
+            if message.int("stream") == nil, !everReady {
+                fail(code)
+                return
+            }
         default:
             if !loggedUnknown.contains(message.t) {
                 loggedUnknown.insert(message.t)
