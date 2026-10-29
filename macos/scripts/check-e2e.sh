@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # End-to-end checks C3-C13 for the macOS client against tools/fakephone.
 #
-#   ./scripts/check-e2e.sh [qr|pair|gates|tls|render|resize|input|hover|mouseback|input-global|pause|direct|nav|mirror|spotlight|intents|mcp|focus|controls|pinch|chrome|menus|density|trackpad|clip|sharein|links|share|apk|drop|dock|nickname|notify|notify-actions|notify-media|media|audio|handoff|deck|nfr|all [--shard N/M]]
+#   ./scripts/check-e2e.sh [qr|pair|gates|forgot|tls|render|resize|input|hover|mouseback|input-global|pause|direct|nav|mirror|spotlight|intents|mcp|focus|controls|pinch|chrome|menus|density|trackpad|clip|sharein|links|share|apk|drop|dock|nickname|notify|notify-actions|notify-media|media|audio|handoff|deck|nfr|all [--shard N/M]]
 #
 # Every check starts from a clean slate (the shared-app checks share one, see
 # "The shared app" below): no PocketDeck or fakephone processes
@@ -1088,6 +1088,51 @@ check_gates() {
     [ "$attempts" -ge 2 ] && [ "$attempts" -le 6 ] \
         && ok "[PAIR-13] B3 connections off: $attempts attempts in the backoff window" \
         || bad "[PAIR-13] B3 connections off: $attempts attempts in the backoff window (tight loop or gave up)"
+    stop_app
+    stop_fakephone
+}
+
+# check_forgot — PAIR-23: a Mac that still holds this phone's pin but was
+# forgotten on the phone (Forget) is told at once and stops retrying, instead of
+# waiting out its 15 s handshake timeout and looping on the backoff.
+check_forgot() {
+    clean
+    local banner="$WORK/banner.txt" before after
+
+    # 1. Pair, so the Mac holds this phone's pin.
+    start_fake || return 1
+    launch --connect "127.0.0.1:$PORT" --quit-after 20
+    await_app 20 events_have '"state":"paired"'
+    events_have '"state":"paired"' \
+        && ok "[PAIR-23] F1 paired a Mac, so it holds the phone's pin" \
+        || { bad "[PAIR-23] F1 could not pair"; stop_fakephone; return 1; }
+
+    # 2. The phone forgets every Mac (its own identity and id stay).
+    stop_fakephone
+    sleep 1
+    FAKE_ARGS="--forget-macs" start_fake || return 1
+    before="$(count_events '"ev":"session","state":"open"')"
+    rm -f "$banner"
+    launch --connect "127.0.0.1:$PORT" --debug-banner "$banner" --quit-after 30
+
+    # 3. The phone answers not_paired at once; the Mac reads it and says so
+    # within 2 s (a timeout would take the phone's 15 s handshake limit).
+    wait_until 2 grep -qF "no longer trusts this Mac." "$banner" \
+        && ok "[PAIR-23] F2 the Mac says \"$(cat "$banner")\" within 2 s" \
+        || bad "[PAIR-23] F2 no banner within 2 s: '$(cat "$banner" 2>/dev/null)'"
+    wait_until 2 eval '[ "$(mac_failed_line)" = "session failed: not_paired" ]' \
+        && ok "[PAIR-23] F2 the Mac read not_paired" \
+        || bad "[PAIR-23] F2 Mac reason '$(mac_failed_line)'"
+    events_have '"state":"refused_not_paired"' \
+        && ok "[PAIR-23] F2 the phone answered not_paired instead of staying silent" \
+        || bad "[PAIR-23] F2 the phone left the Mac waiting"
+
+    # 4. No retry loop: twenty seconds without another connection.
+    sleep 20
+    after="$(count_events '"ev":"session","state":"open"')"
+    [ "$after" -le "$((before + 1))" ] \
+        && ok "[PAIR-23] F3 no further connect attempts for 20 s ($before -> $after)" \
+        || bad "[PAIR-23] F3 the Mac kept connecting ($before -> $after)"
     stop_app
     stop_fakephone
 }
