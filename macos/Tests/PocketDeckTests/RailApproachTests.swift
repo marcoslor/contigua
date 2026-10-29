@@ -167,11 +167,17 @@ final class RailApproachTests: XCTestCase {
         let pitch = try? XCTUnwrap(pointer.railFit?.pitch)
         let m = 12.5 * (pitch ?? 20)
         XCTAssertTrue(pointer.force(letter: "M", dx: 40, reduceMotion: false))
-        XCTAssertEqual(pointer.state, .approaching(dx: 40, y: m),
-                       "M is the 13th of 27 slots at the drawn pitch")
+        guard case .approaching(let dx, let y) = pointer.state else {
+            return XCTFail("M should approach")
+        }
+        XCTAssertEqual(dx, 40)
+        XCTAssertEqual(y, m, accuracy: 0.001, "M is the 13th of 27 slots at the drawn pitch")
         XCTAssertFalse(pointer.force(letter: "?", dx: 0, reduceMotion: false), "only a real letter is a position")
         XCTAssertTrue(pointer.force(letter: "M", dx: 0, reduceMotion: false))
-        XCTAssertEqual(pointer.state, .hovering(y: m), "dx zero is inside the rail")
+        guard case .hovering(let hoverY) = pointer.state else {
+            return XCTFail("dx zero is inside the rail")
+        }
+        XCTAssertEqual(hoverY, m, accuracy: 0.001)
     }
 
     @MainActor
@@ -185,6 +191,7 @@ final class RailApproachTests: XCTestCase {
         // A to Z every other letter: M is the 7th slot, mid-band at its pitch.
         // Slot 6 holds Y and Z at a 20 pt pitch; the band's middle is a quarter in.
         let pitch = pointer.railFit?.pitch ?? 20
-        XCTAssertEqual(pointer.state, .hovering(y: 6 * pitch + pitch / 4))
+        guard case .hovering(let y) = pointer.state else { return XCTFail("M should hover") }
+        XCTAssertEqual(y, 6 * pitch + pitch / 4, accuracy: 0.001)
     }
 }
