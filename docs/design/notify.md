@@ -307,12 +307,13 @@ The phone now keeps a small machine per package+group (`NotifyGroups` in
 NotifyEvents.kt, one pure transition function over `EMPTY`, `CHILDREN`,
 `SUMMARY`; every transition is in `NotifyGroupMachineTest`):
 
-- a child is forwarded, and the group counts its forwarded children;
+- a child is forwarded and its id joins the group's set; a re-post of a known child is an update, not a second child (a chat updates its one notification per message);
 - the summary is forwarded only while the group has no forwarded child;
 - when a child arrives after a forwarded summary, the summary gets a
   `notify.remove` first and the child follows;
-- the last forwarded child leaving returns the group to `EMPTY`, so a later
-  summary can be forwarded again.
+- a child's removal drops its id, and the last one leaving returns the group
+  to `EMPTY` (the state is forgotten), so a later summary can be forwarded
+  again; the set is bounded like the other maps.
 
 The wire's `group` is 64 bits of SHA-256 over the package and the Android group
 key (`NotifyEvents.groupHash`), never the key: apps put chat and folder names in
