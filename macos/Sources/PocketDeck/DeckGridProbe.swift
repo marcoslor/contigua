@@ -70,6 +70,19 @@ enum DeckGridProbe {
         append(["railTop": ["letter": letter, "index": index]])
     }
 
+    #if PD_TEST_HOOKS
+    /// How many times the grid's body has been evaluated. The rail's pointer is
+    /// tracked in a store only the rail reads; the e2e proves that pointer moves
+    /// in the approach zone leave this number alone (`control deckbodycount`).
+    @MainActor private(set) static var bodyCount = 0
+
+    @MainActor
+    static func noteBody() { bodyCount += 1 }
+
+    @MainActor
+    static func resetBodyCount() { bodyCount = 0 }
+    #endif
+
     private static func append(_ line: [String: Any]) {
         guard let path = AppEnvironment.shared.options.debugDeckGrid else { return }
         guard let data = try? JSONSerialization.data(withJSONObject: line, options: [.sortedKeys]),
