@@ -638,6 +638,13 @@ final class Session {
             if !intentionalClose {
                 Log.session.notice("the phone closed the TLS session")
             }
+            // PAIR-23: a phone that pins nothing for this Mac closes as soon as
+            // TLS completes, without a word. Before `welcome` that is not a
+            // transient network loss; the owner decides what a second one means.
+            if !everReady && phoneErrorCode == nil {
+                fail("closed-early")
+                return
+            }
         } else {
             Log.session.error("tls transport refused: \(message.lowercased().prefix(240), privacy: .private)")
         }

@@ -587,7 +587,9 @@ class Session(
         when (phase) {
             Phase.HELLO -> if (t == "hello") onHello(obj) else rejectProtocol("expected hello, got '$t'")
             Phase.PAIR -> when (t) {
-                "hello" -> onHello(obj)
+                // A second hello in one session is not a new handshake: the
+                // pairing phase it is already in decides (PAIR-10's QR probe).
+                "hello" -> logOnce("second hello ignored")
                 "pair.request" -> onPairRequest()
                 "pair.nonce" -> onPairNonce(obj)
                 "pair.ok" -> onPairingOkFromMac(obj)
@@ -610,11 +612,29 @@ class Session(
         // channel now has to prove it is still that Mac (a rotated cert means
         // the Mac reinstalled: pair again — docs/design/e2ee.md §7).
         val client = store.snapshot().firstOrNull { it.clientId == clientId }
-        when (ConnectionGate.decide(gateProvider(), isPaired = client != null)) {
+        // A user-driven pairing says so in its hello (PAIR-23); a Mac that
+        // believes it is paired sends a bare one. A scanned QR makes an unpinned
+        // probe a pairing too: the phone itself invited it.
+        val pairingAttempt = Json.bool(obj["pair"]) == true || qrPendingForPeer()
+        when (ConnectionGate.decide(gateProvider(), isPaired = client != null, isPairing = pairingAttempt)) {
             GateDecision.REFUSE_CONNECTIONS_OFF ->
                 return refuse(GateDecision.REFUSE_CONNECTIONS_OFF)
             GateDecision.REFUSE_PAIRING_OFF ->
                 return refuse(GateDecision.REFUSE_PAIRING_OFF)
+            GateDecision.NOT_PAIRED -> {
+                // The Mac holds our pin but we hold none of its: say so at once
+                // instead of waiting for a pair.request it will never send.
+                log("refused: no pairing for this Mac mac=${macIdHash(clientId)}")
+                finishWithError("not_paired", "this phone has no pairing with this Mac")
+                return
+            }
+            GateDecision.CLOSE_SILENT -> {
+                // PAIR-12: a peer we pin nothing for learns nothing at all.
+                log("refused: no pairing for this Mac, pairings off mac=${macIdHash(clientId)}")
+                apply(SessionTeardown.Event.Stop)
+                queue.close()
+                return
+            }
             GateDecision.ACCEPT -> Unit
         }
         if (client == null) {
@@ -681,6 +701,15 @@ class Session(
             it.isDaemon = true
             it.start()
         }
+    }
+
+    /** True when a scanned QR names this peer: the phone invited its hello. */
+    private fun qrPendingForPeer(): Boolean {
+        val qr = pendingQrProvider() ?: return false
+        val fp = Json.str(qr["macFp"]) ?: return false
+        val at = Json.long(qr["at"]) ?: 0
+        if (System.currentTimeMillis() - at !in 0..PENDING_QR_TTL_MS) return false
+        return fp.contentEqualsHex(tlsFacts.peerFingerprint())
     }
 
     /**

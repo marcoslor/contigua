@@ -135,7 +135,10 @@ display id on every injected event.
    refuses a Mac whose certificate fingerprint is not the pinned one with
    `{"t":"error","code":"bad_pin"}` and closes — "This phone's identity
    changed" on the Mac side is the same rule in the other direction).
-2. Mac → `{"t":"hello","v":3,"clientId":"<uuid>","name":"<Mac name>","id":"<the Mac's identity id>"}`.
+2. Mac → `{"t":"hello","v":3,"clientId":"<uuid>","name":"<Mac name>","id":"<the Mac's identity id>"}`,
+   plus `"pair":true` when the person asked this attempt to pair (a user-driven
+   pairing; it then sends `pair.request`). A hello without `pair` is a Mac that
+   believes it is already paired.
    A `v` other than 2 gets `{"t":"error","code":"version"}` and a close.
 3. The phone knows the Mac by `clientId` and applies its two connection
    switches before anything else. "Allow connections" off refuses every Mac,
@@ -144,15 +147,20 @@ display id on every injected event.
    message; any other peer is closed without a reply once TLS completes. The
    TLS handshake runs under a 10 s read timeout on a small worker pool, so one
    silent TCP peer never blocks the next connection.
-   "Allow new pairings" off refuses an unpaired Mac the same way with
-   `{"t":"error","code":"pairing_off"}` before any code exists; paired Macs
-   continue. If the phone cannot read the switches it refuses like
-   `connections_off` (fail closed). Otherwise:
+   "Allow new pairings" off refuses an unpaired Mac that asked to pair the
+   same way with `{"t":"error","code":"pairing_off"}` before any code exists;
+   paired Macs continue, and an unpaired Mac that did not ask to pair is
+   closed at once without a reply. If the phone cannot read the switches it
+   refuses like `connections_off` (fail closed). Otherwise:
    - **Paired**: its pinned fingerprint must equal the TLS peer's fingerprint;
      then the phone sends `welcome` and the session is ready.
-   - **Unpaired**: the phone waits in the pairing phase (next section). The
-     Mac asks for the code flow with `{"t":"pair.request"}`; a scanned QR is
-     answered by the phone itself with `pair.qr` (see Pairing).
+   - **Unpaired, asked to pair**: the phone waits in the pairing phase (next
+     section). The Mac asks for the code flow with `{"t":"pair.request"}`; a
+     scanned QR is answered by the phone itself with `pair.qr` (see Pairing).
+   - **Unpaired, no pairing intent**: the Mac believes it is paired and the
+     phone pins nothing for it. The phone answers
+     `{"t":"error","code":"not_paired"}` at once and closes, never after its
+     handshake timeout.
 4. Phone → `{"t":"welcome","device":{"id":..,"name":..,"model":..,"sdk":36,
    "screen":{"w":1080,"h":2340,"dpi":450},"locked":true}}`. The phone allows
    exactly one session at a time: a second connection gets
@@ -874,7 +882,9 @@ mode (docs/design/focus.md):
 
 `{"t":"error","code":...}` codes: `busy` (another session is active), `bad_pin` (the
 peer's certificate fingerprint is not the pinned one — the Mac shows "This phone's
-identity changed. Pair again."), `pair_denied`, `pair_cooldown`, `pair_commit` (the revealed nonce does
+identity changed. Pair again."), `not_paired` (the phone pins nothing for this Mac
+and the Mac did not ask to pair — the Mac shows "<phone name> no longer trusts this
+Mac." with Pair again and stops retrying), `pair_denied`, `pair_cooldown`, `pair_commit` (the revealed nonce does
 not match the commit), `version`, `protocol` (message not allowed in the current state;
 then close), `pair_timeout` (nobody answered the pairing prompt in 120 s; then close),
 `no_stream` (unknown `stream`), `launch_failed`, `bad_url` (a `link.open` URL that is
