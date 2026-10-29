@@ -175,6 +175,38 @@ final class SessionLifecycleTests: XCTestCase {
         session.close()
     }
 
+    /// A stray TCP connection that reaches this test's port — a dial to a
+    /// recycled ephemeral port from anywhere else — must not abort the whole
+    /// run: `onClosed` fires for it, and an over-fulfilled expectation kills
+    /// xctest (signal 6, seen 2 of 2 full runs on 10-29). This reproduces it
+    /// with a connect the test makes itself.
+    func testAStrayConnectionCannotAbortTheRun() throws {
+        try makeFake()
+        let session = makeSession(port: server.port, connectTimeout: 0.4)
+        let closed = expectation(description: "EOF after failure")
+        server.onClosed = { _ in closed.fulfill() }
+        server.brain = nil
+        server.onFrame = { connection, _ in
+            connection.sendJSON(["t": "error", "code": "protocol", "message": "x"])
+        }
+        // The stray arrives first and fails its TLS handshake, so it closes first.
+        let stray = NWConnection(host: "127.0.0.1",
+                                 port: NWEndpoint.Port(rawValue: server.port)!, using: .tcp)
+        stray.stateUpdateHandler = { state in
+            if case .ready = state {
+                stray.send(content: Data([0x00]), completion: .contentProcessed { _ in })
+            }
+        }
+        stray.start(queue: .global())
+        XCTAssertTrue(waitFor { self.server.accepted.count >= 1 }, "the stray never landed")
+
+        session.start()
+        XCTAssertTrue(waitFor { session.state == .failed("protocol") }, "state=\(session.state)")
+        wait(for: [closed], timeout: 5)
+        stray.cancel()
+        session.close()
+    }
+
     func testClosingASessionClosesItsSocket() throws {
         try makeFake()
         let session = makeSession(port: server.port)
