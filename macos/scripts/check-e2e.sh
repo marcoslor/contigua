@@ -181,6 +181,12 @@ clear_profile_state() {
 }
 
 clean() {
+    if [ "${PD_E2E_IN_VM:-0}" = 1 ]; then
+        # The VM is a test box: the real-pointer proof needs the fisheye, which
+        # Reduce Motion legitimately disables. Turn it off once per check.
+        sudo -n defaults write /Library/Preferences/com.apple.universalaccess reduceMotion -bool false 2>/dev/null \
+            || defaults write com.apple.universalaccess reduceMotion -bool false 2>/dev/null || true
+    fi
     end_shared
     kill_e2e_app
     stop_fakephone
@@ -10706,13 +10712,6 @@ PY
 
 check_deck() {
     clean
-    if [ "${PD_E2E_IN_VM:-0}" = 1 ]; then
-        # The VM is a test box: the real-pointer proof needs the fisheye, which
-        # Reduce Motion legitimately disables. Turn it off for this run.
-        sudo -n defaults write /Library/Preferences/com.apple.universalaccess reduceMotion -bool false 2>/dev/null \
-            || defaults write com.apple.universalaccess reduceMotion -bool false 2>/dev/null || true
-        sleep 1
-    fi
     # The grid's fixtures (v105's empty slot): one package with two launcher
     # activities, and one entry with no label at all.
     # A full grid (200 apps, more than the person's phone) like theirs: the
