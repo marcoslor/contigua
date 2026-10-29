@@ -9025,6 +9025,12 @@ check_notify_actions() {
         n="$(grep -c "notify post id=pd-q2 " "$WORK/notify-quiet.log" 2>/dev/null)" || n=0
         [ "${n:-0}" -ge 1 ]
     }
+    # quiet_add_post — the quiet first post of NOTIFY-19 has been delivered.
+    quiet_add_post() {
+        local n
+        n="$(grep -c "notify post id=pd-q3 " "$WORK/notify-quiet.log" 2>/dev/null)" || n=0
+        [ "${n:-0}" -ge 1 ]
+    }
     # group_hash ID — the 16-hex group hash the fake phone sent for that post.
     group_hash() {
         python3 - "$WORK/events.jsonl" "$1" <<'PY'
@@ -9229,6 +9235,22 @@ posts = [line for line in lines if line.startswith("notify post id=pd-q2 ")]
 if len(posts) != 1:
     print("posts:", len(posts)); sys.exit(1)
 if not posts[0].endswith("alert=1 banners=1 presented=1 quiet=0"):
+    print("post:", posts[0]); sys.exit(1)
+PY
+    # (h3) [NOTIFY-19] a first post with alert:false (a LOW channel, or a
+    # notification the Mac first sees mid-life) is added quietly: one banner in
+    # the list, nothing presented.
+    wait_until 10 quiet_add_post \
+        || bad "[NOTIFY-19] NOTIFY-ACTIONS no quiet first post reached the Mac"
+    python3 - "$WORK/notify-quiet.log" <<'PY' \
+        && ok "[NOTIFY-19] NOTIFY-ACTIONS a first post with alert:false is listed quietly, not presented" \
+        || bad "[NOTIFY-19] NOTIFY-ACTIONS a first post with alert:false presented a banner"
+import sys
+lines = open(sys.argv[1]).read().splitlines()
+posts = [line for line in lines if line.startswith("notify post id=pd-q3 ")]
+if len(posts) != 1:
+    print("posts:", len(posts)); sys.exit(1)
+if not posts[0].endswith("alert=0 banners=1 presented=0 quiet=1"):
     print("post:", posts[0]); sys.exit(1)
 PY
     stop_app

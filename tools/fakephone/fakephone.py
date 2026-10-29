@@ -179,6 +179,8 @@ NOTIFY_QUIET_INTERVAL = 0.8
 # nothing changed. The one banner that reaches Notification Center must present.
 NOTIFY_HOLD_ID = "pd-q2"
 NOTIFY_HOLD_GAP = 0.1
+# NOTIFY-19 (r3): a first post with alert:false is added quietly, not presented.
+NOTIFY_QUIET_ADD_ID = "pd-q3"
 
 # NOTIFY-20 (docs/specs/notifications.md): a child of a group, its summary (which
 # a fixed phone does not forward while the child is active), a summary with no
@@ -3214,6 +3216,14 @@ class Session(object):
                         "when": int(time.time() * 1000), "alert": False})
             self.phone.events.notify("post", id=NOTIFY_HOLD_ID, pkg="com.whatsapp",
                                      titleLen=18, bodyLen=18, alert=0, step=1)
+            # A notification the Mac first sees mid-life (or a LOW channel):
+            # alert:false on its first post, so it joins the list quietly.
+            time.sleep(NOTIFY_HOLD_GAP)
+            self._send({"t": "notify.post", "id": NOTIFY_QUIET_ADD_ID, "pkg": "com.whatsapp",
+                        "title": "pd-notify-title-18", "text": "pd-notify-text-18",
+                        "when": int(time.time() * 1000), "alert": False})
+            self.phone.events.notify("post", id=NOTIFY_QUIET_ADD_ID, pkg="com.whatsapp",
+                                     titleLen=18, bodyLen=18, alert=0, step=0)
 
         threading.Thread(target=run, daemon=True).start()
 

@@ -262,10 +262,11 @@ hash equals the last forwarded post of that key (`NotifyEvents.alerts`; the
 hashes live in memory and are never logged).
 
 On the Mac, `NotifyPostPolicy.plan(alert:delivered:)` says what the post does:
-`.banner` for an id with no banner, `.replace` for an alerting update, and
-`.quietReplace` for a non-alerting update of a delivered banner.
-`.quietReplace` submits the same request identifier with
-`content.interruptionLevel = .passive`.
+`.banner` for an alerting post with no banner, `.quietAdd` for a quiet one —
+`alert:false` is always quiet, so a LOW channel or a notification first seen
+mid-life is listed without a banner — `.replace` for an alerting update, and
+`.quietReplace` for a non-alerting update of a delivered banner. Both quiet
+plans submit with `content.interruptionLevel = .passive`.
 
 **Finding: a passive replacement is not presented.** `UNNotificationContent.h`
 (macOS 27.0 SDK, `UNNotificationInterruptionLevel`) defines `.passive` as
