@@ -66,15 +66,16 @@ class PdNotificationListener : NotificationListenerService() {
 
     /**
      * The content hash of the last forwarded post per id (NOTIFY-19). Hashes,
-     * never the text, and never the notification itself.
+     * never the text, and never the notification itself. Bounded like the
+     * forwarded ids themselves: forgetting one only costs a louder update.
      */
-    private val lastContent = HashMap<String, String>()
+    private val lastContent = BoundedIdMap<String>(MAX_TRACKED)
 
     /** The per-package-group forwarding states (NOTIFY-20). */
     private val groupStates = HashMap<String, NotifyGroupState>()
 
     /** Which forwarded ids belong to a group, so a removal updates its state. */
-    private val groupOf = HashMap<String, ForwardedGroup>()
+    private val groupOf = BoundedIdMap<ForwardedGroup>(MAX_TRACKED)
 
     private val sessionCallback = object : MediaController.Callback() {
         override fun onPlaybackStateChanged(state: PlaybackState?) = scheduleMediaPush()
@@ -413,9 +414,9 @@ class PdNotificationListener : NotificationListenerService() {
         // content hashes kept in memory; the text never leaves this block.
         val contentHash = NotifyEvents.contentHash(title, text)
         val alert = NotifyEvents.alerts(
-            firstPost = id !in lastContent,
+            firstPost = lastContent.get(id) == null,
             onlyAlertOnce = notification.flags and NotifyEvents.FLAG_ONLY_ALERT_ONCE != 0,
-            contentChanged = lastContent[id] != contentHash,
+            contentChanged = lastContent.get(id) != contentHash,
         )
         val groupKey = sbn.groupKey?.takeIf { it.isNotEmpty() }
         val summary = notification.flags and NotifyEvents.FLAG_GROUP_SUMMARY != 0
@@ -457,9 +458,9 @@ class PdNotificationListener : NotificationListenerService() {
                 Log.i(TAG, "notify group summary skipped: children active")
                 return
             }
-            groupOf[id] = ForwardedGroup(sbn.packageName, groupKey, summary)
+            groupOf.put(id, ForwardedGroup(sbn.packageName, groupKey, summary))
         }
-        lastContent[id] = contentHash
+        lastContent.put(id, contentHash)
         // The Mac can only ask for an id it received; the action stays here and
         // is never serialized onto the wire (docs/design/notify.md).
         val kept = actions.mapNotNull { candidate ->
@@ -741,5 +742,8 @@ class PdNotificationListener : NotificationListenerService() {
     private companion object {
         const val TAG = "PocketDeckApp"
         const val MEDIA_MERGE_MS = 200L
+
+        /** Content hashes and group links kept in memory (NOTIFY-19, NOTIFY-20). */
+        const val MAX_TRACKED = 400
     }
 }
