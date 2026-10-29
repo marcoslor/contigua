@@ -135,6 +135,59 @@ final class LinkMachineTests: XCTestCase {
         XCTAssertEqual(machine.link.chip, Chip(text: "Pair again", style: .orange))
     }
 
+    // MARK: PAIR-23: the phone no longer has this Mac
+
+    func testNotPairedIsTheTrustLostStateAtOnce() {
+        var machine = online()
+        XCTAssertEqual(machine.handle(.attemptFailed(reason: "not_paired"), at: at(5)), [.stopAttempts])
+        XCTAssertEqual(machine.link, .needsPairing(phone))
+        XCTAssertEqual(machine.link.banner, Banner(text: "Pixel 9 no longer trusts this Mac.", action: .pairAgain))
+        XCTAssertEqual(machine.link.chip, Chip(text: "Pair again", style: .orange))
+    }
+
+    func testARetryWhilePairingsAreOffKeepsItsSentenceAndBackoff() {
+        var machine = LinkMachine()
+        machine.handle(.launch(phone), at: t0)
+        XCTAssertEqual(machine.handle(.attemptFailed(reason: "pairing_off"), at: at(1)), [.attempt(after: 1)])
+        XCTAssertEqual(machine.link, .offline(phone, .pairingsOff))
+        XCTAssertEqual(machine.link.banner?.text, "Pixel 9 isn't accepting new pairings.")
+        // The retry cannot present a pin at all: that is the same refusal, not a
+        // lost key (it used to become "no longer trusts this Mac" a second in).
+        XCTAssertEqual(machine.handle(.attemptFailed(reason: "no-pin"), at: at(2)), [.attempt(after: 2)])
+        XCTAssertEqual(machine.link, .offline(phone, .pairingsOff))
+        XCTAssertEqual(machine.link.banner?.text, "Pixel 9 isn't accepting new pairings.")
+        XCTAssertEqual(machine.handle(.attemptFailed(reason: "pairing_off"), at: at(4)), [.attempt(after: 4)])
+        XCTAssertEqual(machine.link.banner?.text, "Pixel 9 isn't accepting new pairings.")
+    }
+
+    func testASilentEarlyCloseNeedsPairingOnlyTheSecondTimeInARow() {
+        var machine = LinkMachine()
+        machine.handle(.launch(phone), at: t0)
+        // One close may be the phone restarting: retry on the normal backoff.
+        XCTAssertEqual(machine.handle(.attemptFailed(reason: "closed-early"), at: at(1)), [.attempt(after: 1)])
+        XCTAssertEqual(machine.link, .connecting(phone))
+        XCTAssertNil(machine.link.banner)
+        // The second in a row is the phone refusing this Mac without a word.
+        XCTAssertEqual(machine.handle(.attemptFailed(reason: "closed-early"), at: at(3)), [.stopAttempts])
+        XCTAssertEqual(machine.link, .needsPairing(phone))
+    }
+
+    func testAnEarlyCloseCounterStartsOverAfterASessionOrTryNow() {
+        var onlineAgain = LinkMachine()
+        onlineAgain.handle(.launch(phone), at: t0)
+        onlineAgain.handle(.attemptFailed(reason: "closed-early"), at: at(1))
+        onlineAgain.handle(.welcome(phone), at: at(3))
+        XCTAssertEqual(onlineAgain.handle(.attemptFailed(reason: "closed-early"), at: at(5)), [.attempt(after: 1)])
+        XCTAssertNotEqual(onlineAgain.link, .needsPairing(phone))
+
+        var retried = LinkMachine()
+        retried.handle(.launch(phone), at: t0)
+        retried.handle(.attemptFailed(reason: "closed-early"), at: at(1))
+        retried.handle(.tryNow, at: at(2))
+        XCTAssertEqual(retried.handle(.attemptFailed(reason: "closed-early"), at: at(4)), [.attempt(after: 1)])
+        XCTAssertNotEqual(retried.link, .needsPairing(phone))
+    }
+
     func testBusyShowsTheBannerAtOnceAndRetriesSlowly() {
         var machine = LinkMachine()
         machine.handle(.launch(phone), at: t0)
