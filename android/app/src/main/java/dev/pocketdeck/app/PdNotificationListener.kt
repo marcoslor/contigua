@@ -457,7 +457,12 @@ class PdNotificationListener : NotificationListenerService() {
             extras.getInt(Notification.EXTRA_PROGRESS_MAX, 0) > 0
         // Rows 5/20: the channel's importance can only make a post quieter.
         val importance = importanceOf(sbn)
-        Log.i(TAG, "notify importance=${importance?.toString() ?: "unknown"} id=$id")
+        // A number, or the closed token; never a channel name (privacy).
+        if (importance == null) {
+            Log.i(TAG, "notify importance=unknown id=$id") // log-ok: closed token, never a channel name
+        } else {
+            Log.i(TAG, "notify importance=$importance id=$id") // log-ok: a number 1..5, never a channel name
+        }
         val alert = NotifyEvents.alerts(
             firstPost = lastContent.get(id) == null,
             onlyAlertOnce = notification.flags and NotifyEvents.FLAG_ONLY_ALERT_ONCE != 0,
@@ -559,8 +564,9 @@ class PdNotificationListener : NotificationListenerService() {
      * ever handed to the event builder, never logged.
      */
     private fun lastMessage(extras: Bundle): Pair<String, String?>? {
-        @Suppress("DEPRECATION")
-        val messages = extras.getParcelableArray(Notification.EXTRA_MESSAGES) ?: return null
+        // `EXTRA_MESSAGES` holds a Parcelable[] of Bundles; the typed accessor
+        // is API 33, and `get` keeps this one call site free of a suppression.
+        val messages = extras.get(Notification.EXTRA_MESSAGES) as? Array<*> ?: return null
         for (index in messages.indices.reversed()) {
             val message = messages[index] as? Bundle ?: continue
             val text = message.getCharSequence("text")?.toString()?.takeIf { it.isNotEmpty() } ?: continue
