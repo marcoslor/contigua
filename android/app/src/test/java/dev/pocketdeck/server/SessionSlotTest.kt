@@ -5,34 +5,44 @@ import org.junit.Test
 
 /**
  * The one-session slot's state machine (docs/specs/pairing.md PAIR-21): every
- * state and every event, including the events a state must ignore.
+ * state and every event, including the events a state must ignore. The session
+ * is a string here: the machine only carries it.
  */
 class SessionSlotTest {
 
     private val free = SlotState.Free
-    private val live = SlotState.Live("aa")
-    private val draining = SlotState.Draining("aa")
-    private val handing = SlotState.Handing(old = "aa", new = "bb")
+    private val live = SlotState.Live("aa", "s1")
+    private val draining = SlotState.Draining("aa", "s1")
+    private val handing = SlotState.Handing(old = "s1", oldMac = "aa", newMac = "bb")
 
     @Test
-    fun freeAdoptsTheFirstMac() {
+    fun freeAsksTheCallerToAdoptTheFirstMac() {
         assertEquals(
-            SlotStep(SlotState.Live("aa"), listOf(SlotAction.ADOPT)),
+            SlotStep(SlotState.Free, listOf(SlotAction.ADOPT)),
             SessionSlot.transition(free, SlotEvent.Connect("aa", samePinnedMac = false)),
         )
+        // The caller's session is what makes the slot live.
+        assertEquals(SlotState.Live("aa", "s1"), SessionSlot.adopt(free, "aa", "s1"))
+        assertEquals(SlotState.Live(null, "s2"), SessionSlot.adopt(free, null, "s2"))
     }
 
     @Test
     fun freeIgnoresTheEventsOfSessionsItDoesNotHold() {
-        for (event in listOf(SlotEvent.Ending, SlotEvent.TeardownDone, SlotEvent.TeardownSlow, SlotEvent.Ended)) {
+        for (event in listOf(
+            SlotEvent.Ending, SlotEvent.TeardownDone, SlotEvent.TeardownSlow,
+            SlotEvent.Ended, SlotEvent.Cancelled,
+        )) {
             assertEquals(SlotStep(free, emptyList()), SessionSlot.transition(free, event))
         }
     }
 
     @Test
-    fun theSamePinnedMacHandsTheSlotOver() {
+    fun theSamePinnedMacHandsItsSessionOver() {
         assertEquals(
-            SlotStep(SlotState.Handing(old = "aa", new = "aa"), listOf(SlotAction.DROP_OLD, SlotAction.AWAIT_TEARDOWN)),
+            SlotStep(
+                SlotState.Handing(old = "s1", oldMac = "aa", newMac = "aa"),
+                listOf(SlotAction.DROP_OLD, SlotAction.AWAIT_TEARDOWN),
+            ),
             SessionSlot.transition(live, SlotEvent.Connect("aa", samePinnedMac = true)),
         )
     }
@@ -46,24 +56,29 @@ class SessionSlotTest {
     }
 
     @Test
-    fun aLiveSessionThatCanNoLongerServeDrains() {
-        assertEquals(SlotStep(draining, emptyList()), SessionSlot.transition(live, SlotEvent.Ending))
+    fun aLiveSessionThatCanNoLongerServeDrainsAndKeepsItsSession() {
         assertEquals(
-            SlotStep(SlotState.Draining(null), emptyList()),
-            SessionSlot.transition(SlotState.Live(null), SlotEvent.Ending),
+            SlotStep(SlotState.Draining("aa", "s1"), emptyList()),
+            SessionSlot.transition(live, SlotEvent.Ending),
+        )
+        assertEquals(
+            SlotStep(SlotState.Draining(null, "s1"), emptyList()),
+            SessionSlot.transition(SlotState.Live(null, "s1"), SlotEvent.Ending),
         )
     }
 
     @Test
-    fun aLiveSlotIgnoresTeardownsOfOtherSessions() {
+    fun aLiveSlotIgnoresTeardownsOfSessionsItIsNotWaitingFor() {
         for (event in listOf(SlotEvent.TeardownDone, SlotEvent.TeardownSlow)) {
             assertEquals(SlotStep(live, emptyList()), SessionSlot.transition(live, event))
         }
     }
 
     @Test
-    fun aLiveSlotIsFreedByItsOwnEnd() {
-        assertEquals(SlotStep(free, emptyList()), SessionSlot.transition(live, SlotEvent.Ended))
+    fun aLiveSlotIsFreedByItsOwnEndOrByADrop() {
+        for (event in listOf(SlotEvent.Ended, SlotEvent.Cancelled)) {
+            assertEquals(SlotStep(free, emptyList()), SessionSlot.transition(live, event))
+        }
     }
 
     @Test
@@ -71,32 +86,36 @@ class SessionSlotTest {
         for (same in listOf(false, true)) {
             val connect = SlotEvent.Connect(if (same) "aa" else "bb", same)
             assertEquals(
-                SlotStep(SlotState.Handing(old = "aa", new = connect.peerMac), listOf(SlotAction.DROP_OLD, SlotAction.AWAIT_TEARDOWN)),
+                SlotStep(
+                    SlotState.Handing(old = "s1", oldMac = "aa", newMac = connect.peerMac),
+                    listOf(SlotAction.DROP_OLD, SlotAction.AWAIT_TEARDOWN),
+                ),
                 SessionSlot.transition(draining, connect),
             )
         }
     }
 
     @Test
-    fun aDrainingSlotIsFreedByItsEndAndIgnoresEarlierSignals() {
-        assertEquals(SlotStep(free, emptyList()), SessionSlot.transition(draining, SlotEvent.Ended))
+    fun aDrainingSlotIsFreedByItsEndOrByADrop() {
+        for (event in listOf(SlotEvent.Ended, SlotEvent.Cancelled)) {
+            assertEquals(SlotStep(free, emptyList()), SessionSlot.transition(draining, event))
+        }
         for (event in listOf(SlotEvent.Ending, SlotEvent.TeardownDone, SlotEvent.TeardownSlow)) {
             assertEquals(SlotStep(draining, emptyList()), SessionSlot.transition(draining, event))
         }
     }
 
     @Test
-    fun aRunningHandoverAdmitsTheWaitingMacWhenTheTeardownIsDone() {
-        assertEquals(
-            SlotStep(SlotState.Live("bb"), listOf(SlotAction.ADOPT)),
-            SessionSlot.transition(handing, SlotEvent.TeardownDone),
-        )
+    fun aFinishedTeardownLeavesTheSlotFreeForTheWaitingMac() {
+        assertEquals(SlotStep(free, emptyList()), SessionSlot.transition(handing, SlotEvent.TeardownDone))
     }
 
     @Test
-    fun aRunningHandoverAnswersBusyWhenTheTeardownIsSlow() {
+    fun aSlowTeardownLeavesTheOldSessionInTheSlot() {
+        // Not busy-forever: the old session keeps the slot (it is still
+        // draining) and its own end frees it.
         assertEquals(
-            SlotStep(SlotState.Live("aa"), listOf(SlotAction.BUSY_SLOW)),
+            SlotStep(SlotState.Live("aa", "s1"), listOf(SlotAction.BUSY_SLOW)),
             SessionSlot.transition(handing, SlotEvent.TeardownSlow),
         )
     }
@@ -112,11 +131,13 @@ class SessionSlotTest {
     }
 
     @Test
-    fun aRunningHandoverIgnoresTheOldSessionsEnd() {
-        // Its end is the latch the waiter is on, never a second transition.
+    fun aRunningHandoverIgnoresTheOldSessionsOwnEndAndADropFreesIt() {
+        // Its own end is the latch the waiter is on, never a second transition.
         for (event in listOf(SlotEvent.Ending, SlotEvent.Ended)) {
             assertEquals(SlotStep(handing, emptyList()), SessionSlot.transition(handing, event))
         }
+        // A drop always frees the slot, whatever was handing.
+        assertEquals(SlotStep(free, emptyList()), SessionSlot.transition(handing, SlotEvent.Cancelled))
     }
 
     @Test
@@ -126,11 +147,24 @@ class SessionSlotTest {
             listOf(free, live, draining, handing).map(SessionSlot::describe).toSet(),
         )
         assertEquals(
-            setOf("connect(same mac)", "connect(other mac)", "ending", "teardown done", "teardown slow", "ended"),
+            setOf(
+                "connect(same mac)", "connect(other mac)", "ending", "teardown done",
+                "teardown slow", "ended", "cancelled",
+            ),
             listOf(
                 SlotEvent.Connect("aa", true), SlotEvent.Connect("bb", false), SlotEvent.Ending,
-                SlotEvent.TeardownDone, SlotEvent.TeardownSlow, SlotEvent.Ended,
+                SlotEvent.TeardownDone, SlotEvent.TeardownSlow, SlotEvent.Ended, SlotEvent.Cancelled,
             ).map(SessionSlot::describe).toSet(),
         )
+    }
+
+    @Test
+    fun theSameSessionIsCarriedAcrossEveryState() {
+        // One value owns the phone from Live to Draining to Handing to its end.
+        val stepping = SessionSlot.transition(live, SlotEvent.Ending).next
+        assertEquals("s1", (stepping as SlotState.Draining).session)
+        val handingStep = SessionSlot.transition(stepping, SlotEvent.Connect("bb", false)).next
+        assertEquals("s1", (handingStep as SlotState.Handing).old)
+        assertEquals(SlotState.Live("bb", "s2"), SessionSlot.adopt(SlotState.Free, "bb", "s2"))
     }
 }
