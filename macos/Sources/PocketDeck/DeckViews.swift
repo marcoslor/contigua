@@ -1177,12 +1177,26 @@ enum RailFisheye {
 enum DeckRailPoint {
     static weak var anchor: NSView?
 
-    static func point(letter: String, to path: String) -> Bool {
+    /// The rail's top-left in Quartz screen coordinates (`deckrailanchor`), so
+    /// a visible run can put the pointer on a letter it measured from the
+    /// render instead of the letter-index arithmetic.
+    static func anchorPoint(to path: String) -> Bool {
+        guard let anchor, let window = anchor.window else { return false }
+        let local = anchor.convert(anchor.bounds, to: nil)
+        let screen = window.convertPoint(toScreen: NSPoint(x: local.minX, y: local.maxY))
+        let top = window.screen?.frame.maxY ?? NSScreen.screens.first?.frame.maxY ?? 0
+        let text = "\(screen.x) \(top - screen.y)\n"
+        return (try? text.write(toFile: path, atomically: true, encoding: .utf8)) != nil
+    }
+
+    static func point(letter: String, to path: String, dx: CGFloat = 0) -> Bool {
         guard let anchor, let window = anchor.window,
               let index = DeckRail.letters.firstIndex(of: letter) else { return false }
         let pitch = RailPointerModel.shared.railFit?.pitch ?? DeckRail.pitch
         let local = anchor.convert(anchor.bounds, to: nil)
-        let x = local.minX + 13
+        // On the rail (dx 0) the letter's own column; otherwise dx points left
+        // of the rail's leading edge, for the real pointer's approach.
+        let x = local.minX + (dx == 0 ? CGFloat(13) : -dx)
         let y = local.minY - (CGFloat(index) * pitch + pitch / 2)
         let screen = window.convertPoint(toScreen: NSPoint(x: x, y: y))
         let top = window.screen?.frame.maxY ?? NSScreen.screens.first?.frame.maxY ?? 0
