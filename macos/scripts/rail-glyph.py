@@ -136,7 +136,8 @@ def main():
     target, width, height, scale = sys.argv[1], float(sys.argv[2]), float(sys.argv[3]), float(sys.argv[4])
     rail_x = float(sys.argv[5])
     if os.path.isfile(target):
-        found = bands(target, width, height, scale, rail_strip(rail_x))
+        found = [band for band in bands(target, width, height, scale, rail_strip(rail_x))
+                 if band["bottom"] <= height - 3]
         for index, band in enumerate(found[:len(NAMES)]):
             print("centre %s %.1f" % (NAMES[index], (band["top"] + band["bottom"]) / 2))
         return 0
