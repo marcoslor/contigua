@@ -10514,7 +10514,10 @@ check_deckrail() {
     clean
     FAKE_ARGS="--demo-apps 60" start_fake || return 1
     FAKE_ARGS=""
-    launch_shared --connect "127.0.0.1:$PORT" --debug-deck-grid "$WORK/deck-grid.jsonl"
+    # The VM guest keeps its own Reduce Motion; the test hook makes the app's
+    # effective setting full so the fisheye (the proof) works here.
+    launch_shared --connect "127.0.0.1:$PORT" --debug-deck-grid "$WORK/deck-grid.jsonl" \
+        --debug-motion full
     wait_until 30 events_have '"t":"apps.list"' \
         && ok "DECKRAIL the app list was requested" || bad "DECKRAIL no apps.list"
     wait_until 30 grep -q '"count":' "$WORK/deck-grid.jsonl" \
@@ -10556,40 +10559,44 @@ PY
     else
         bad "DECKRAIL deckrailslots (rest): $CONTROL_REPLY"
     fi
-    if [ "$VISIBLE" = 1 ]; then
-        # The real pointer walks in from 96 pt left of the rail to on it, at M's
-        # drawn centre; rail-glyph.py reads the letter sizes back out of the
-        # pixels (rail column, the guest's backing scale).
-        for dx in 96 64 40 24 12 0; do
-            px="$(python3 -c "print(round($sx + 13 - $dx))")"
-            py="$(python3 -c "print(round($sy + $mcentre))")"
-            cg_input moveat --x "$px" --y "$py"
-            sleep 0.8
-            shot_rail "rail-dx$dx.png"
-        done
-        if [ "${PD_E2E_IN_VM:-0}" = 1 ]; then
-            osascript -e 'tell application "System Events" to tell appearance preferences to set dark mode to false' >/dev/null 2>&1 || true
-            sleep 2
-            shot_rail rail-dx0-light.png
-            osascript -e 'tell application "System Events" to tell appearance preferences to set dark mode to true' >/dev/null 2>&1 || true
-            sleep 1
+    if python3 "$MACOS/scripts/deck-rail-slots.py" "$railshots/rest.json" motion-off > "$WORK/rail-motion.txt" 2>&1; then
+        ok "DECKRAIL effective Reduce Motion is off ($(cat "$WORK/rail-motion.txt"))"
+        if [ "$VISIBLE" = 1 ]; then
+            # The real pointer walks in from 96 pt left of the rail to on it, at M's
+            # drawn centre; rail-glyph.py reads the letter sizes back out of the
+            # pixels (rail column, the guest's backing scale).
+            for dx in 96 64 40 24 12 0; do
+                px="$(python3 -c "print(round($sx + 13 - $dx))")"
+                py="$(python3 -c "print(round($sy + $mcentre))")"
+                cg_input moveat --x "$px" --y "$py"
+                sleep 0.8
+                shot_rail "rail-dx$dx.png"
+            done
+            if [ "${PD_E2E_IN_VM:-0}" = 1 ]; then
+                osascript -e 'tell application "System Events" to tell appearance preferences to set dark mode to false' >/dev/null 2>&1 || true
+                sleep 2
+                shot_rail rail-dx0-light.png
+                osascript -e 'tell application "System Events" to tell appearance preferences to set dark mode to true' >/dev/null 2>&1 || true
+                sleep 1
+            fi
+        else
+            # Quiet: the same shots from the forced positions.
+            for dx in 96 64 40 24 12 0; do
+                control deckrailapproach M "$dx" || bad "DECKRAIL deckrailapproach M $dx: $CONTROL_REPLY"
+                sleep 0.6
+                shot_rail "rail-dx$dx.png"
+            done
+            control deckrailhoverout
         fi
+        if python3 "$MACOS/scripts/rail-glyph.py" "$railshots" 1000 625 "$scale" "$wx" > "$WORK/rail-glyph.txt" 2>&1; then
+            ok "DECKRAIL the letter sizes match A2's scales ($(grep -m1 '^gaps' "$WORK/rail-glyph.txt"))"
+        else
+            bad "DECKRAIL the letter sizes or gaps are off: $(tr '\n' ' ' < "$WORK/rail-glyph.txt")"
+        fi
+        sed -n 's/^/  /p' "$WORK/rail-glyph.txt" | head -14
     else
-        # Quiet: the same shots from the forced positions.
-        for dx in 96 64 40 24 12 0; do
-            control deckrailapproach M "$dx" || bad "DECKRAIL deckrailapproach M $dx: $CONTROL_REPLY"
-            sleep 0.6
-            shot_rail "rail-dx$dx.png"
-        done
-        control deckrailhoverout
+        bad "DECKRAIL effective Reduce Motion is on (--debug-motion full did not reach the app); measurement skipped"
     fi
-    if python3 "$MACOS/scripts/rail-glyph.py" "$railshots" 1000 625 "$scale" > "$WORK/rail-glyph.txt" 2>&1; then
-        ok "DECKRAIL the letter sizes match A2's scales ($(grep -m1 '^gaps' "$WORK/rail-glyph.txt"))"
-    else
-        bad "DECKRAIL the letter sizes or gaps are off: $(tr '\n' ' ' < "$WORK/rail-glyph.txt")"
-    fi
-    sed -n 's/^/  /p' "$WORK/rail-glyph.txt" | head -14
-
     # At the rail: the S2 slots, the tag, A and # inside the clip.
     control deckrailhoverout
     sleep 0.3
@@ -10807,22 +10814,20 @@ check_deck() {
             || bad "DECK no Deck window for the rail shot $1"
     }
     shot_rail rail-rest.png
-    local px py dx nx ny mcentre ncentre ax ay
+    local px py dx nx ny mcentre ncentre ax ay wx wy sx sy scale
     if [ "$VISIBLE" = 1 ]; then
-        # The real pointer's positions come from the render: the rest shot's
-        # letter bands give M's and N's centres in window points, and the rail's
-        # anchor gives the rail's top-left on screen. No letter-index maths, so
-        # the pointer lands on the letter the shot shows.
+        # The real pointer's positions come from the rail's geometry: its
+        # top-left on screen and the drawn slots' centres (no row arithmetic).
         if control deckrailanchor "$WORK/deck-rail-shots/anchor.pt" \
-            && read -r ax ay < "$WORK/deck-rail-shots/anchor.pt"; then
-            mcentre="$(python3 "$MACOS/scripts/rail-glyph.py" "$railshots/rail-rest.png" 760 600 "$RUN_SCALE" | sed -n 's/^centre M //p')"
-            ncentre="$(python3 "$MACOS/scripts/rail-glyph.py" "$railshots/rail-rest.png" 760 600 "$RUN_SCALE" | sed -n 's/^centre N //p')"
+            && read -r wx wy sx sy scale < "$WORK/deck-rail-shots/anchor.pt"; then
+            mcentre="$(python3 "$MACOS/scripts/rail-glyph.py" "$railshots/rail-rest.png" 760 600 "$scale" "$wx" | sed -n 's/^centre M //p')"
+            ncentre="$(python3 "$MACOS/scripts/rail-glyph.py" "$railshots/rail-rest.png" 760 600 "$scale" "$wx" | sed -n 's/^centre N //p')"
             if [ -z "$mcentre" ] || [ -z "$ncentre" ]; then
                 bad "DECK the rest shot gave no M or N band"
             else
                 for dx in 96 64 40 24 12 0; do
-                    px="$(python3 -c "print(round($ax + (760 - 31 if $dx == 0 else 760 - 44 - $dx)))")"
-                    py="$(python3 -c "print(round($ay + $mcentre))")"
+                    px="$(python3 -c "print(round($sx + 13 - $dx))")"
+                    py="$(python3 -c "print(round($sy + $mcentre))")"
                     cg_input moveat --x "$px" --y "$py"
                     sleep 0.8
                     shot_rail "rail-dx$dx.png"
@@ -10835,7 +10840,7 @@ check_deck() {
                     osascript -e 'tell application "System Events" to tell appearance preferences to set dark mode to true' >/dev/null 2>&1 || true
                     sleep 1
                 fi
-                if python3 "$MACOS/scripts/rail-glyph.py" "$railshots" 760 600 "$RUN_SCALE" > "$WORK/rail-glyph.txt" 2>&1; then
+                if python3 "$MACOS/scripts/rail-glyph.py" "$railshots" 760 600 "$scale" "$wx" > "$WORK/rail-glyph.txt" 2>&1; then
                     ok "[DECK-7] the real pointer's letter sizes match A2's scales ($(grep -m1 '^gaps' "$WORK/rail-glyph.txt"))"
                 else
                     bad "[DECK-7] the real pointer's letter sizes or gaps are off: $(tr '\n' ' ' < "$WORK/rail-glyph.txt")"

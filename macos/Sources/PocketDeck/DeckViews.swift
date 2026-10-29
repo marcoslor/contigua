@@ -916,7 +916,10 @@ struct AppGrid: View {
     /// them about twice a second on some Macs), which re-evaluated this body
     /// while nothing about it had changed.
     @State private var zoom = DeckZoom.stored(in: Profile.active.defaults)
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
+    /// Effective Reduce Motion: the system's, unless `--debug-motion full` (a
+    /// test hook) turns it off; Motion holds the one rule.
+    private var reduceMotion: Bool { Motion.reduce(system: systemReduceMotion) }
     /// The letter at the top of the grid, and the last scroll position that
     /// produced it (the rail's accent and the e2e's landing proof).
     @State private var currentLetter: String?
@@ -1273,7 +1276,8 @@ private struct DeckIndexRail: View {
     let pick: (String) -> Void
 
     @State private var lastPicked: String?
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
+    private var reduceMotion: Bool { Motion.reduce(system: systemReduceMotion) }
 
     /// The rail this window draws, from the container height: 27 letters at the
     /// largest pitch that keeps room for the magnified overshoot, 14 or 9 when

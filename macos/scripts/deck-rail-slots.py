@@ -10,7 +10,7 @@ its glyph box. This checks the three things the spacing must hold:
   clip   every slot and every glyph is inside the content inset
   tag:X  the tag names X (tag:none when nothing shows)
 
-usage: deck-rail-slots.py FILE gaps|clip|tag:LETTER|tag:none
+usage: deck-rail-slots.py FILE gaps|clip|tag:LETTER|tag:none|motion-off
 """
 
 import json
@@ -67,6 +67,12 @@ def main():
                  % (low, high, -slack, rail + slack))
         print("%d slots inside the clip (%.1f..%.1f); reach %.1f..%.1f, slack %.1f"
               % (len(slots), -slack, rail + slack, low, high, slack))
+        return
+
+    if mode == "motion-off":
+        if data.get("reduceMotion"):
+            fail("effective Reduce Motion is still on")
+        print("effective Reduce Motion is off")
         return
 
     if mode.startswith("tag:"):

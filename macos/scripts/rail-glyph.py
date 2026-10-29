@@ -7,8 +7,11 @@ pixels. No image library: a small PNG reader (8-bit, no interlace) is all a
 screencapture needs. A window shot may carry its shadow, so the window is taken
 to sit centred in the image.
 
-usage: rail-glyph.py DIR WIDTH_POINTS HEIGHT_POINTS SCALE   (the six dx shots)
-       rail-glyph.py IMAGE WIDTH_POINTS HEIGHT_POINTS SCALE  (band centres)
+usage: rail-glyph.py DIR WIDTH_POINTS HEIGHT_POINTS SCALE RAIL_X   (six dx shots)
+       rail-glyph.py IMAGE WIDTH_POINTS HEIGHT_POINTS SCALE RAIL_X  (band centres)
+
+RAIL_X is the rail's leading edge in window points (deckrailanchor); the crop
+is the rail's 26 pt column only, so the tag left of the rail is never measured.
 
 DIR holds rail-dx{96,64,40,24,12,0}.png, plus rail-dx0-light.png in the VM. It
 prints the measured M height and its implied scale at each dx against A2's pure
@@ -122,17 +125,18 @@ def bands(path, width_points, height_points, scale, column):
              "height": (bottom + 1 - top) / scale} for top, bottom in found]
 
 
-def rail_strip(width):
-    return (width - 44 + 2, width - 18 - 2)      # the rail's 26 pt column, inset
+def rail_strip(rail_x):
+    return (rail_x + 1, rail_x + 25)             # the rail's 26 pt column only
 
 
 def main():
-    if len(sys.argv) != 5:
-        print("usage: rail-glyph.py DIR|IMAGE WIDTH_POINTS HEIGHT_POINTS SCALE")
+    if len(sys.argv) != 6:
+        print("usage: rail-glyph.py DIR|IMAGE WIDTH_POINTS HEIGHT_POINTS SCALE RAIL_X")
         return 2
     target, width, height, scale = sys.argv[1], float(sys.argv[2]), float(sys.argv[3]), float(sys.argv[4])
+    rail_x = float(sys.argv[5])
     if os.path.isfile(target):
-        found = bands(target, width, height, scale, rail_strip(width))
+        found = bands(target, width, height, scale, rail_strip(rail_x))
         for index, band in enumerate(found[:len(NAMES)]):
             print("centre %s %.1f" % (NAMES[index], (band["top"] + band["bottom"]) / 2))
         return 0
@@ -145,7 +149,7 @@ def main():
         if not os.path.exists(path):
             failures.append("no shot at dx %d" % dx)
             continue
-        found = bands(path, width, height, scale, rail_strip(width))
+        found = bands(path, width, height, scale, rail_strip(rail_x))
         if len(found) < 20:
             failures.append("dx %d: %d letter bands" % (dx, len(found)))
             continue
@@ -204,7 +208,7 @@ def main():
         print("letters drawn: %d (A top %.1f pt, # bottom %.1f pt of %d)"
               % (len(found), found[0]["top"], found[-1]["bottom"], int(height)))
         tag = bands(os.path.join(target, "rail-dx0.png"), width, height, scale,
-                    (width - 130, width - 46))
+                    (rail_x - 130, rail_x - 2))
         if not tag:
             failures.append("no tag beside the rail at dx 0")
         print("tag at dx 0: %s" % ("shown" if tag else "missing"))
@@ -214,7 +218,7 @@ def main():
             print("N centre %.1f pt down the window" % ((below["top"] + below["bottom"]) / 2))
     light = os.path.join(target, "rail-dx0-light.png")
     if os.path.exists(light):
-        found = bands(light, width, height, scale, rail_strip(width))
+        found = bands(light, width, height, scale, rail_strip(rail_x))
         print("light: %d letters at dx 0" % len(found))
         if len(found) < 20:
             failures.append("light: %d letters at dx 0" % len(found))
