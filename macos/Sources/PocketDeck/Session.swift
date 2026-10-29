@@ -426,12 +426,18 @@ final class Session {
         learnedCertProvider = { learnedCert.get() }
         transition(.handshaking, nil)
         Log.session.info("tls connected (\(self.describeEndpoint(), privacy: .public)); hello v2")
-        sendJSON(["t": "hello", "v": 3, "clientId": clientId, "name": ClientIdentity.name, "id": identity.deviceId])
-        // Unpaired target + a user-driven session: start the code pairing right
-        // away. A paired target answers `welcome` instead; policy .never stays
-        // silent (it would make the phone prompt for nobody), and a QR probe
-        // only opens the pairing channel for the phone to answer.
-        if pinned == nil, pairingPolicy == .allowed {
+        // A user-driven pairing says so in the hello: a Mac that believes it is
+        // paired sends a bare one, and a phone that pins nothing for it answers
+        // `not_paired` at once instead of waiting for a request that never comes
+        // (PAIR-23). A QR probe only opens the pairing channel (`.probe`), and
+        // `.never` stays silent, so neither is a pairing attempt.
+        let isPairingAttempt = pinned == nil && pairingPolicy == .allowed
+        var hello: [String: Any] = ["t": "hello", "v": 3, "clientId": clientId,
+                                    "name": ClientIdentity.name, "id": identity.deviceId]
+        if isPairingAttempt { hello["pair"] = true }
+        sendJSON(hello)
+        // Start the code pairing right away; a paired target answers `welcome`.
+        if isPairingAttempt {
             sendJSON(["t": "pair.request"])
         }
     }
