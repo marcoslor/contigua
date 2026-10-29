@@ -45,7 +45,7 @@ class Server(
      * instead of running it on the caller's thread (PAIR-20). Injected so a
      * test can hold a session whose close blocks.
      */
-    private val sessions: SessionDropper = SessionDropper(),
+    private val sessions: SessionDropper = SessionDropper(log),
 ) {
     private val serverSocket = ServerSocket()
     private val running = AtomicBoolean(false)
@@ -194,7 +194,13 @@ class Server(
                 refuseConnectionsOff(socket)
                 return
             }
-            val session = sessions.adopt { factory.create(socket, rawSocket) }
+            // PAIR-22: the kernel ends a peer that vanished without a FIN, so the
+            // slot frees in seconds instead of at the retransmit give-up. A
+            // failure never fails the session.
+            val keepalive = TcpKeepalive.apply(rawSocket)
+            log(if (keepalive == 0) "keepalive on" else "keepalive failed errno=$keepalive")
+            val peerMac = peerMacHex(socket)
+            val session = sessions.adopt(peerMac, isPinned(peerMac)) { factory.create(socket, rawSocket) }
             if (session == null) {
                 rejectBusy(socket)
                 return
@@ -295,6 +301,16 @@ class Server(
 
     private fun rejectBusy(socket: Socket) =
         reject(socket, "busy", "one session at a time")
+
+    /** The peer's TLS fingerprint hex, or null when the socket reports none (PAIR-21). */
+    private fun peerMacHex(socket: Socket): String? {
+        val peer = runCatching { Session.TlsView.from(socket).peerFingerprint() }.getOrNull()
+        return if (peer != null && peer.size == 32) Crypto.toHex(peer) else null
+    }
+
+    /** True when the app vouches for this fingerprint as one of its stored pins. */
+    private fun isPinned(hex: String?): Boolean =
+        hex != null && pinnedPeerFpsProvider().any { it.length == 64 && it.equals(hex, ignoreCase = true) }
 
     private fun reject(socket: Socket, code: String, message: String) {
         try {

@@ -255,7 +255,7 @@ class ServerTest {
     fun droppingSessionsNeverWaitsForASlowClose() {
         val session = FakeLiveSession(java.util.concurrent.CountDownLatch(1))
         val dropper = SessionDropper(log = {})
-        dropper.adopt { session }
+        dropper.adopt(null, false) { session }
         val server = Server(
             { _, _ -> error("this test accepts no socket") },
             log = {},
