@@ -1013,6 +1013,11 @@ struct AppGrid: View {
                         Color.clear.frame(width: 1, height: 1)
                     }
                     .padding(.trailing, DeckIndexRail.trailingPadding)
+                    // A growing rail may draw past its rest rows (S1/S3); the
+                    // clip is the content inset, so nothing lands under the
+                    // toolbar or over the grid.
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
+                    .clipped()
                 }
             }
             // The pointer is tracked on the grid's container, so the approach
@@ -1271,23 +1276,49 @@ private struct DeckIndexRail: View {
     private var pointer: RailPointer { RailPointerModel.shared.state }
     private var zone: CGFloat { RailApproach.zone }
 
+    /// The prototype's spacing (`--debug-proto railspace`); absent, the fixed
+    /// 20 pt rows this rail has always had.
+    private var spacing: RailSpacing { AppEnvironment.shared.options.railSpacing ?? .reference }
+
+    /// The fisheye's scale per slot: the approach ramp (A2) times the taper.
+    private var scales: [CGFloat] {
+        slots.indices.map { index in
+            guard let position = pointer.position else { return 1 }
+            return RailFisheye.scale(distance: position.y / DeckRail.pitch - (CGFloat(index) + 0.5),
+                                     dx: position.dx, zone: zone, reduceMotion: reduceMotion)
+        }
+    }
+
+    /// The drawn slots: the rest rows, or the prototype's spacing. The anchor
+    /// is the pointer's y, so the letter under the pointer stays under it while
+    /// the slots open.
+    private var layout: [RailLayout.Slot] {
+        RailLayout.slots(scales: scales, available: height, strategy: spacing,
+                         anchor: pointer.position?.y)
+    }
+
+    /// The letter drawn under `y`: hit-testing follows the drawn layout.
+    private func letter(atY y: CGFloat) -> String? {
+        RailLayout.letter(atY: y, in: layout, slots: slots)
+    }
+
     /// The slot and real letter level with the pointer (approach included, so
     /// a condensed slot names the letter it is growing towards).
     private var hovered: (slot: Int, letter: String)? {
         guard let position = pointer.position,
-              let letter = DeckRail.letter(atY: position.y, slots: slots),
+              let letter = letter(atY: position.y),
               let letterIndex = DeckRail.letters.firstIndex(of: letter),
               let slot = slotIndex(containing: letterIndex) else { return nil }
         return (slot, letter)
     }
 
     var body: some View {
-        VStack(spacing: 0) {
+        ZStack(alignment: .topLeading) {
             ForEach(Array(slots.enumerated()), id: \.offset) { index, slot in
                 slotView(index: index, slot: slot)
             }
         }
-        .frame(width: Self.width, height: height)
+        .frame(width: Self.width, height: height, alignment: .topLeading)
         .background(alignment: .topLeading) {
             DeckRailAnchor().frame(width: 1, height: 1)
         }
@@ -1310,16 +1341,14 @@ private struct DeckIndexRail: View {
     }
 
     private func slotView(index: Int, slot: DeckRail.Slot) -> some View {
+        let box = layout[index]
         let hoveredHere = hovered?.slot == index
         let range = slot.first..<(slot.first + slot.count)
         let containsCurrent = currentIndex.map(range.contains) ?? false
         let shown = hoveredHere ? (hovered?.letter ?? DeckRail.letters[slot.first])
             : containsCurrent ? (currentLetter ?? DeckRail.letters[slot.first])
             : DeckRail.letters[slot.first]
-        let scale = pointer.position.map {
-            RailFisheye.scale(distance: $0.y / DeckRail.pitch - (CGFloat(index) + 0.5),
-                              dx: $0.dx, zone: zone, reduceMotion: reduceMotion)
-        } ?? 1
+        let scale = scales[index]
         let highlighted = reduceMotion && pointer.showsHelpTag && hoveredHere
         let isCurrent = shown == currentLetter
         let hasApps = range.contains { entries[$0].index != nil }
@@ -1338,7 +1367,11 @@ private struct DeckIndexRail: View {
         .foregroundStyle(isCurrent ? AnyShapeStyle(Color.accentColor)
                                    : AnyShapeStyle(.secondary))
         .opacity(hasApps ? 1 : 0.35)
-        .frame(width: Self.width, height: DeckRail.pitch)
+        // S3 hangs each letter off the rail's trailing baseline (a 2 pt inset)
+        // and lets it grow leftward; S1/S2 keep the letters centred in the rail.
+        .padding(.trailing, spacing.isEdgeAnchored ? 2 : 0)
+        .frame(width: Self.width, height: box.height,
+               alignment: spacing.isEdgeAnchored ? .trailing : .center)
         .background(RoundedRectangle(cornerRadius: 4)
             .fill(Color.primary.opacity(highlighted ? 0.12 : 0)))
         .contentShape(.rect)
@@ -1347,6 +1380,7 @@ private struct DeckIndexRail: View {
         .accessibilityHint("Scrolls to \(DeckRail.letters[slot.first])")
         .accessibilityAddTraits(.isButton)
         .accessibilityAction { pick(DeckRail.letters[slot.first]) }
+        .offset(y: box.y)
     }
 
     /// The hovered real letter's tag, left of the rail and centred on its slot.
@@ -1354,8 +1388,9 @@ private struct DeckIndexRail: View {
     /// tag.
     @ViewBuilder
     private var helpTag: some View {
-        if pointer.showsHelpTag, let hovered {
+        if pointer.showsHelpTag, let hovered, layout.indices.contains(hovered.slot) {
             let count = counts[hovered.letter] ?? 0
+            let box = layout[hovered.slot]
             Text(count == 0 ? "\(hovered.letter) · no apps"
                             : "\(hovered.letter) · \(count) \(count == 1 ? "app" : "apps")")
                 .font(.caption)
@@ -1364,8 +1399,7 @@ private struct DeckIndexRail: View {
                 .background(.regularMaterial, in: .capsule)
                 .fixedSize()
                 .offset(x: -(Self.width + 6),
-                        y: CGFloat(hovered.slot) * DeckRail.pitch
-                            + (DeckRail.pitch - Self.tagHeight) / 2)
+                        y: box.y + (box.height - Self.tagHeight) / 2)
                 .allowsHitTesting(false)
         }
     }
@@ -1387,7 +1421,7 @@ private struct DeckIndexRail: View {
                 } else {
                     model.press(y: value.location.y, reduceMotion: reduceMotion)
                 }
-                guard let letter = DeckRail.letter(atY: value.location.y, slots: slots),
+                guard let letter = letter(atY: value.location.y),
                       letter != lastPicked else { return }
                 lastPicked = letter
                 pick(letter)
