@@ -615,8 +615,8 @@ Phone → Mac:
 | t | fields |
 |---|---|
 | `notify.state` | `on` — forwarding is live; `reason` — `no_access` when the Mac asked but the phone's listener grant is missing |
-| `notify.post` | `id`, `pkg`, `app`?, `when`, `title`?, `text`?, `alert`, `group`?, `ongoing`?, `actions`?, `live`? |
-| `notify.image` | `id`, `mime`, `w`, `h`, `data` (base64) |
+| `notify.post` | `id`, `pkg`, `app`?, `when`, `title`?, `text`?, `alert`, `group`?, `ongoing`?, `actions`?, `live`? — the shell server re-validates each field and forwards every one of them |
+| `notify.image` | `id`, `mime`, `w`, `h`, `data` (base64) — re-validated by the shell server and forwarded unchanged |
 | `notify.remove` | `id` |
 | `media.state` | `playing`, `pkg`?, `key`?, `title`?, `artist`?, `album`?, `durationMs`?, `positionMs`, `rate`, `canSeek`?, `volume`?, `volumeMax`? |
 | `media.sessions` | `list`: `[{key, pkg, app, playing}]` in the system's order, `chosen` (`key`?) |

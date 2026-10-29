@@ -48,6 +48,8 @@ phone has no second switch: its notification-listener grant is the phone-side ha
   the listener route is ever blocked by an OEM.
 - Plumbing: AIDL `IDeckService.pushNotificationEvent(json)` / `pushMediaState(json)` app→shell;
   `IDeckCallback.onMediaCommand(action)` shell→app. The shell `Session` validates and forwards.
+- Parity guard: K1 `NotifyWireParityTest` pushes every field the app's builders emit through
+  `Session.onDeviceEvent` and fails when the shell server drops or changes one.
 - Notifications on the Mac: UserNotifications, title = the notification's own title (else the app
   label) with the phone's name appended ("Review (Nicky)"), the name the Deck shows for that phone;
   a notification with neither title nor label shows the phone name alone; text = body, grouped per
