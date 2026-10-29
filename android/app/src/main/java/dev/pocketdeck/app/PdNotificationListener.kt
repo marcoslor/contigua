@@ -13,11 +13,19 @@ import android.os.Handler
 import android.os.HandlerThread
 import android.os.SystemClock
 import android.service.notification.NotificationListenerService
+import android.service.notification.NotificationListenerService.Ranking
 import android.service.notification.StatusBarNotification
 import android.app.Notification
 import android.app.RemoteInput
 import android.util.Log
 import dev.pocketdeck.proto.Json
+
+/**
+ * A JVM test's stand-in for the system's channel ranking (rows 5/20). The app
+ * leaves it null and reads `getCurrentRanking()` instead; nothing else touches it.
+ */
+@Volatile
+var notifyImportanceForTest: ((String) -> Int?)? = null
 
 /**
  * Reads notifications and the media session for a connected Mac (docs/design/
@@ -431,6 +439,9 @@ class PdNotificationListener : NotificationListenerService() {
         // Row 6: a bar that only moves is not news, even when its text moves.
         val hadBar = extras.getBoolean(Notification.EXTRA_PROGRESS_INDETERMINATE, false) ||
             extras.getInt(Notification.EXTRA_PROGRESS_MAX, 0) > 0
+        // Rows 5/20: the channel's importance can only make a post quieter.
+        val importance = importanceOf(sbn)
+        Log.i(TAG, "notify importance=${importance?.toString() ?: "unknown"} id=$id")
         val alert = NotifyEvents.alerts(
             firstPost = lastContent.get(id) == null,
             onlyAlertOnce = notification.flags and NotifyEvents.FLAG_ONLY_ALERT_ONCE != 0,
@@ -441,7 +452,7 @@ class PdNotificationListener : NotificationListenerService() {
                 previousTitleHash = lastTitle.get(id),
                 titleHash = titleHash,
             ),
-        )
+        ) && !NotifyEvents.quietByImportance(importance)
         val groupKey = sbn.groupKey?.takeIf { it.isNotEmpty() }
         val summary = notification.flags and NotifyEvents.FLAG_GROUP_SUMMARY != 0
         val event = NotifyEvents.notificationEvent(
@@ -517,6 +528,20 @@ class PdNotificationListener : NotificationListenerService() {
             ),
         )
         deliver(id, event, live, if (live == null) notification else null)
+    }
+
+    /**
+     * The channel's importance for this notification (rows 5/20), from the
+     * system's ranking of its key. Null when the system does not answer for it;
+     * today's alert rules then apply.
+     */
+    private fun importanceOf(sbn: StatusBarNotification): Int? {
+        notifyImportanceForTest?.let { return it(sbn.key ?: "") }
+        return runCatching {
+            val map = getCurrentRanking() ?: return@runCatching null
+            val ranking = Ranking()
+            if (map.getRanking(sbn.key, ranking)) ranking.importance else null
+        }.getOrNull()
     }
 
     /**
@@ -778,5 +803,6 @@ class PdNotificationListener : NotificationListenerService() {
 
         /** Content hashes and group links kept in memory (NOTIFY-19, NOTIFY-20). */
         const val MAX_TRACKED = 400
+
     }
 }

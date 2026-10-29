@@ -34,6 +34,13 @@ object NotifyEvents {
     /** `Notification.FLAG_GROUP_SUMMARY`: this notification summarises its group. */
     const val FLAG_GROUP_SUMMARY = 0x00000200
 
+    /** `NotificationManager.IMPORTANCE_*`, read from the channel's ranking (rows 5/20). */
+    const val IMPORTANCE_MIN = 1
+    const val IMPORTANCE_LOW = 2
+    const val IMPORTANCE_DEFAULT = 3
+    const val IMPORTANCE_HIGH = 4
+    const val IMPORTANCE_MAX = 5
+
     /** The marker a debug build's test poster puts on its own notifications. */
     const val DEBUG_POSTER_EXTRA = "dev.pocketdeck.debug.poster"
 
@@ -137,6 +144,13 @@ object NotifyEvents {
         previousTitleHash: String?,
         titleHash: String,
     ): Boolean = previousHadBar && hadBar && previousTitleHash == titleHash
+
+    /**
+     * A LOW or MIN channel never presents (rows 5/20): Android's shade shows it
+     * in the silent section, so the Mac lists it quietly rather than dropping
+     * it. DEFAULT and above keep today's rules; an unknown ranking does too.
+     */
+    fun quietByImportance(importance: Int?): Boolean = importance != null && importance <= IMPORTANCE_LOW
 
     /** 64 bits of SHA-256 over the content: updates are compared by this, never by text. */
     fun contentHash(title: String?, text: String?): String = digest("content", title.orEmpty(), text.orEmpty())
