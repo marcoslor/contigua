@@ -72,7 +72,7 @@ phone has no second switch: its notification-listener grant is the phone-side ha
   issued; the action never crosses the wire); `media.command {action: play|pause|next|prev}`.
 - phone→mac: `notify.state {on, reason?}` (true once granted and forwarding; `reason:"no_access"`
   when the Mac asked but the listener grant is missing); `notify.post {id, pkg, app?,
-  when, title?, text?, ongoing?}`; `notify.remove {id}`; `media.state {playing, pkg?, title?,
+  when, title?, text?, alert, ongoing?}`; `notify.remove {id}`; `media.state {playing, pkg?, title?,
   artist?, album?, durationMs?, positionMs, rate}` — empty media.state (no list fields) clears
   Now Playing.
 - Privacy: notification or media text is never logged (the e2e `--share-log` file records ids, package
@@ -242,6 +242,49 @@ host's Notification Center in e2e (`--share-log` records instead).
 Samsung's Now Bar has no public API; One UI 8 shows Android 16 Live Updates
 there, so the same promoted notification appears in it with no Samsung-specific
 code.
+
+## Quiet updates: which posts may present (NOTIFY-19)
+
+A notification that updates in place (a progress bar, a download, a timer)
+posts again for every tick. Reusing the request identifier replaces the banner
+on the Mac but does not make it quiet: `UNUserNotificationCenter.h`
+(`addNotificationRequest:`, macOS 27.0 SDK) says *"A notification request with
+the identifier as an existing delivered notifications will alert for the new
+notification request and replace the existing delivered notification when it is
+triggered."* Every update therefore presented again, which is the report's
+first bug.
+
+The decision now travels with the post. The phone marks `alert:true` on the
+first post of a key and on an update Android would alert for, and `alert:false`
+when the notification carries `FLAG_ONLY_ALERT_ONCE` or when its title and text
+hash equals the last forwarded post of that key (`NotifyEvents.alerts`; the
+hashes live in memory and are never logged).
+
+On the Mac, `NotifyPostPolicy.plan(alert:delivered:)` says what the post does:
+`.banner` for an id with no banner, `.replace` for an alerting update, and
+`.quietReplace` for a non-alerting update of a delivered banner.
+`.quietReplace` submits the same request identifier with
+`content.interruptionLevel = .passive`.
+
+**Finding: a passive replacement is not presented.** `UNNotificationContent.h`
+(macOS 27.0 SDK, `UNNotificationInterruptionLevel`) defines `.passive` as
+*"Added to the notification list; does not light up screen or play sound"* and
+`.active` as *"Presented immediately"*. Apple's documentation pages for
+`UNNotificationInterruptionLevel` and its `passive` case
+(`developer.apple.com/documentation/usernotifications/`) state the same. A
+replacement therefore lands in the list and the quiet update is never shown as
+a banner. Levels above `.active` are never set, and Focus is untouched
+(NOTIFY-18): a passive notification is still subject to the person's Focus.
+
+What this round does **not** prove: the system draws the banners, and host e2e
+runs are quiet (`--share-log`), so "no second banner" rests on the header
+definitions above plus the Mac's own record (`alert=`, `banners=`,
+`presented=`, `quiet=` on each `notify post` line) and the K2 test that posts
+ten times and reads it. A real banner's look stays with the `notify-vm` check.
+If a future OS did present a passive replacement anyway, the fallback is the
+one the spec allows: keep the delivered banner untouched and update only the
+Mac's record (the LIVE row and the dismiss state); the record already
+distinguishes a presented post from a quiet one.
 
 ## Media part 2 design (v0.2 #9)
 

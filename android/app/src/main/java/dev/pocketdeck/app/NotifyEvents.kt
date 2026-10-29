@@ -28,6 +28,12 @@ object NotifyEvents {
      */
     const val FLAG_PROMOTED_ONGOING = 0x00040000
 
+    /** `Notification.FLAG_ONLY_ALERT_ONCE`: the app asks for one alert per key. */
+    const val FLAG_ONLY_ALERT_ONCE = 0x00000008
+
+    /** `Notification.FLAG_GROUP_SUMMARY`: this notification summarises its group. */
+    const val FLAG_GROUP_SUMMARY = 0x00000200
+
     /** The marker a debug build's test poster puts on its own notifications. */
     const val DEBUG_POSTER_EXTRA = "dev.pocketdeck.debug.poster"
 
@@ -107,6 +113,36 @@ object NotifyEvents {
         ongoing && flags and FLAG_PROMOTED_ONGOING != 0
 
     /**
+     * Whether a post may present a banner on the Mac (NOTIFY-19), the same way
+     * Android decides to alert: the first post of a key always does, an update
+     * does unless the app asked for one alert ([FLAG_ONLY_ALERT_ONCE]) or the
+     * title and text did not change since the last forwarded post.
+     */
+    fun alerts(firstPost: Boolean, onlyAlertOnce: Boolean, contentChanged: Boolean): Boolean =
+        firstPost || (!onlyAlertOnce && contentChanged)
+
+    /** 64 bits of SHA-256 over the content: updates are compared by this, never by text. */
+    fun contentHash(title: String?, text: String?): String = digest("content", title.orEmpty(), text.orEmpty())
+
+    /**
+     * The wire's `group`: 64 bits of SHA-256 over the package and the Android
+     * group key, which apps fill with a chat or a folder name — the key itself
+     * never leaves the phone (NOTIFY-20, privacy).
+     */
+    fun groupHash(pkg: String, groupKey: String): String = digest("group", pkg, groupKey)
+
+    private fun digest(domain: String, vararg parts: String): String {
+        val sha = java.security.MessageDigest.getInstance("SHA-256")
+        sha.update(domain.toByteArray(Charsets.UTF_8))
+        for (part in parts) {
+            // A separator keeps "ab"+"c" and "a"+"bc" apart.
+            sha.update(0)
+            sha.update(part.toByteArray(Charsets.UTF_8))
+        }
+        return sha.digest().take(8).joinToString("") { "%02x".format(it.toInt() and 0xff) }
+    }
+
+    /**
      * A ProgressStyle fraction: `progress / max`, clamped. `max` is the style's
      * own maximum, which is the sum of the segment lengths for a segmented
      * style. Null when there is no usable maximum (indeterminate or absent).
@@ -150,7 +186,8 @@ object NotifyEvents {
     /**
      * One posted notification. Null when the message would be empty or a string
      * broke a cap: the phone never sends malformed events instead of policing
-     * them at the other end.
+     * them at the other end. `alert` (NOTIFY-19) is required on every post;
+     * `group` (NOTIFY-20) only for a notification that has a group.
      */
     fun notificationEvent(
         id: String,
@@ -158,10 +195,12 @@ object NotifyEvents {
         title: String?,
         text: String?,
         when_: Long,
+        alert: Boolean,
         actions: List<ActionCandidate> = emptyList(),
         ongoing: Boolean = false,
         debugPoster: Boolean = false,
         live: Map<String, Any?>? = null,
+        group: String? = null,
     ): Map<String, Any?>? {
         val validPkg = validPackage(pkg) ?: return null
         if (id.isEmpty() || id.length > 64) return null
@@ -179,8 +218,10 @@ object NotifyEvents {
             cleanTitle?.let { put("title", it) }
             cleanText?.let { put("text", it) }
             if (when_ > 0L) put("when", when_)
+            put("alert", alert)
             if (ongoing) put("ongoing", true)
             live?.let { put("live", it) }
+            group?.let { put("group", it) }
             val wire = actionWire(actions)
             if (wire.isNotEmpty()) put("actions", wire)
         }
@@ -230,4 +271,75 @@ object NotifyEvents {
     /** Transport, seek and volume commands; anything else is not a command. */
     fun validMediaCommand(action: String): String? =
         action.takeIf { it in MediaControl.actions }
+}
+
+/** A package+group's forwarding phase (NOTIFY-20). */
+enum class NotifyGroupPhase { EMPTY, CHILDREN, SUMMARY }
+
+/** One package+group's state: which of its children are forwarded, or its summary. */
+data class NotifyGroupState(
+    val phase: NotifyGroupPhase = NotifyGroupPhase.EMPTY,
+    val children: Int = 0,
+    val summaryId: String? = null,
+)
+
+/** What happened to one notification of a group. */
+sealed interface NotifyGroupEvent {
+    /** A child of the group was posted by its app. */
+    data class ChildPosted(val id: String) : NotifyGroupEvent
+    /** A forwarded child left (the app, the person or a timeout). */
+    data object ChildGone : NotifyGroupEvent
+    /** The app posted the group's summary. */
+    data class SummaryPosted(val id: String) : NotifyGroupEvent
+    /** A forwarded summary left. */
+    data object SummaryGone : NotifyGroupEvent
+}
+
+/** What the listener must do with a group notification. */
+sealed interface NotifyGroupAction {
+    /** Send the post. */
+    data object Forward : NotifyGroupAction
+    /** Keep it on the phone: its children are on the Mac already. */
+    data object Skip : NotifyGroupAction
+    /** Send `notify.remove` for a forwarded summary a child just superseded. */
+    data class RemoveSummary(val id: String) : NotifyGroupAction
+}
+
+/**
+ * The phone's per-package-group forwarding machine (NOTIFY-20): a summary would
+ * land a second banner on top of its children, so it is forwarded only while
+ * the group has none, and a child that arrives after a summary takes it away
+ * first. Pure, so every transition is JVM-tested; the listener performs the
+ * returned actions.
+ */
+object NotifyGroups {
+
+    fun transition(
+        state: NotifyGroupState,
+        event: NotifyGroupEvent,
+    ): Pair<NotifyGroupState, List<NotifyGroupAction>> = when (event) {
+        is NotifyGroupEvent.ChildPosted -> when (state.phase) {
+            NotifyGroupPhase.EMPTY -> NotifyGroupState(NotifyGroupPhase.CHILDREN, 1) to listOf(NotifyGroupAction.Forward)
+            NotifyGroupPhase.CHILDREN -> state.copy(children = state.children + 1) to listOf(NotifyGroupAction.Forward)
+            NotifyGroupPhase.SUMMARY -> NotifyGroupState(NotifyGroupPhase.CHILDREN, 1) to
+                listOfNotNull(state.summaryId?.let { NotifyGroupAction.RemoveSummary(it) }, NotifyGroupAction.Forward)
+        }
+        is NotifyGroupEvent.ChildGone -> when (state.phase) {
+            NotifyGroupPhase.CHILDREN -> if (state.children <= 1) {
+                NotifyGroupState() to emptyList()
+            } else {
+                state.copy(children = state.children - 1) to emptyList()
+            }
+            NotifyGroupPhase.EMPTY, NotifyGroupPhase.SUMMARY -> state to emptyList()
+        }
+        is NotifyGroupEvent.SummaryPosted -> when (state.phase) {
+            NotifyGroupPhase.EMPTY -> NotifyGroupState(NotifyGroupPhase.SUMMARY, 0, event.id) to listOf(NotifyGroupAction.Forward)
+            NotifyGroupPhase.SUMMARY -> state.copy(summaryId = event.id) to listOf(NotifyGroupAction.Forward)
+            NotifyGroupPhase.CHILDREN -> state to listOf(NotifyGroupAction.Skip)
+        }
+        is NotifyGroupEvent.SummaryGone -> when (state.phase) {
+            NotifyGroupPhase.SUMMARY -> NotifyGroupState() to emptyList()
+            NotifyGroupPhase.EMPTY, NotifyGroupPhase.CHILDREN -> state to emptyList()
+        }
+    }
 }

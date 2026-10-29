@@ -76,9 +76,11 @@ final class NotifyMacTests: XCTestCase {
         let line = NotifyMapping.record(
             posted: notification(pkg: "com.whatsapp", title: "Design review", text: "Deck vs slides at 4"),
             title: "Design review", body: "Deck vs slides at 4", thread: "phone-1",
-            code: false, category: "pd.n.0123456789abcdef")
+            code: false, category: "pd.n.0123456789abcdef",
+            facts: NotifyBannerFacts(alert: true, banners: 1, presented: 1, quiet: 0))
         XCTAssertEqual(line, "notify post id=k1 pkg=com.whatsapp titleLen=13 bodyLen=19 thread=phone-1"
-            + " actions=0 reply=0 code=0 ongoing=0 category=pd.n.0123456789abcdef")
+            + " actions=0 reply=0 code=0 ongoing=0 category=pd.n.0123456789abcdef"
+            + " alert=1 banners=1 presented=1 quiet=0")
         XCTAssertFalse(line.contains("Design"))
         XCTAssertFalse(line.contains("slides"))
         XCTAssertFalse(line.contains("Deck"))
@@ -110,6 +112,48 @@ final class NotifyMacTests: XCTestCase {
         XCTAssertEqual(raw.string("t"), "notify.post")
         XCTAssertEqual(raw.string("id"), "k1")
         XCTAssertEqual(raw.double("when"), 1_700_000_000_000)
+    }
+
+    // MARK: NOTIFY-19: a quiet update replaces the banner without presenting it
+
+    func testThePostPlanIsTheAndroidAlertRule() {
+        XCTAssertEqual(NotifyPostPolicy.plan(alert: true, delivered: false), .banner)
+        XCTAssertEqual(NotifyPostPolicy.plan(alert: false, delivered: false), .banner,
+                       "a quiet post the Mac never showed is still shown once")
+        XCTAssertEqual(NotifyPostPolicy.plan(alert: true, delivered: true), .replace)
+        XCTAssertEqual(NotifyPostPolicy.plan(alert: false, delivered: true), .quietReplace)
+    }
+
+    func testTheRecordCarriesTheAlertAndTheBannerCounts() {
+        let quiet = NotifyBannerFacts(alert: false, banners: 1, presented: 1, quiet: 9)
+        XCTAssertEqual(quiet.record, "alert=0 banners=1 presented=1 quiet=9")
+        let first = NotifyBannerFacts(alert: true, banners: 1, presented: 1, quiet: 0)
+        XCTAssertEqual(first.record, "alert=1 banners=1 presented=1 quiet=0")
+    }
+
+    @MainActor
+    func testTenPostsOfOneKeyPresentOnceAndReplaceQuietly() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("notify-quiet-\(UUID().uuidString).log")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let center = NotifyCenter()
+        center.log = url
+        center.hold = 0
+        for step in 0..<10 {
+            center.post(PhoneNotification(id: "q1", pkg: "com.whatsapp", when: nil,
+                                          title: "Progress", text: "step \(step)",
+                                          alert: step == 0),
+                        phoneId: "phone-1", phoneName: "Nicky", labelFor: { _ in nil })
+        }
+        let lines = try String(contentsOf: url, encoding: .utf8)
+            .split(separator: "\n").map(String.init)
+        let posts = lines.filter { $0.hasPrefix("notify post id=q1 ") }
+        XCTAssertEqual(posts.count, 10)
+        XCTAssertEqual(posts.filter { $0.contains(" alert=1 ") }.count, 1)
+        XCTAssertEqual(posts.filter { $0.contains(" alert=0 ") }.count, 9)
+        XCTAssertEqual(posts.last?.hasSuffix("alert=0 banners=1 presented=1 quiet=9"), true,
+                       "one delivered banner at the end; the last update was quiet")
+        XCTAssertFalse(lines.joined().contains("step 4"), "no text reaches the record")
     }
 
     // MARK: click setting (ROADMAP D2)
