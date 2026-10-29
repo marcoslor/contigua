@@ -98,9 +98,6 @@ struct LaunchOptions {
     /// `--controls-dir DIR`: where the Control Center snapshot and socket live,
     /// instead of the App Group container (e2e `controls` check; no extension).
     var controlsDirectory: String?
-    /// `--debug-proto railspace=S1|S2|S3` (prototype only, test hook): how the
-    /// rail spaces its letters while magnified. Absent, today's fixed rows.
-    var railSpacing: RailSpacing?
 
     /// nil when `--profile` was missing or not a usable name.
     var profile: Profile? { Profile(name: profileName) }
@@ -149,7 +146,6 @@ struct LaunchOptions {
         "--files-bridge-dir": true,
         "--files-domain-seen": true,
         "--controls-dir": true,
-        "--debug-proto": true,
     ]
 
     /// One line on stderr (the harness captures stderr into app.log); the
@@ -266,8 +262,6 @@ struct LaunchOptions {
                 options.filesDomainSeen = next()
             case "--controls-dir":
                 options.controlsDirectory = next()
-            case "--debug-proto":
-                if let value = next() { options.railSpacing = RailSpacing.parse(value) }
             default:
                 break
             }

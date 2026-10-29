@@ -107,6 +107,10 @@ final class RailPointerModel {
     /// The grid container's size in points, so a hover point can be turned
     /// into a distance left of the rail's leading edge and a y in the rail.
     private(set) var containerSize = CGSize.zero
+    /// The rail this content height draws: its letter count and rest pitch.
+    /// Static per window size, so the pitch cannot jitter while the pointer
+    /// moves.
+    private(set) var railFit: (count: Int, pitch: CGFloat)?
     /// The rail's slots as drawn, for the e2e's forced position.
     var slots: [DeckRail.Slot] = []
 
@@ -115,6 +119,7 @@ final class RailPointerModel {
     func noteContainerSize(_ size: CGSize) {
         guard size != containerSize else { return }
         containerSize = size
+        railFit = RailLayout.fit(content: size.height)
     }
 
     func track(dx: CGFloat, y: CGFloat, zone: CGFloat, reduceMotion: Bool) {
@@ -146,9 +151,10 @@ final class RailPointerModel {
         guard let index = DeckRail.letters.firstIndex(of: letter),
               let slot = slots.firstIndex(where: { index >= $0.first && index < $0.first + $0.count })
         else { return false }
+        let pitch = railFit?.pitch ?? DeckRail.pitch
         let band = CGFloat(index - slots[slot].first)
-        let y = CGFloat(slot) * DeckRail.pitch
-            + (band + 0.5) / CGFloat(slots[slot].count) * DeckRail.pitch
+        let y = CGFloat(slot) * pitch
+            + (band + 0.5) / CGFloat(slots[slot].count) * pitch
         send(.track(dx: max(dx, 0), y: y), zone: RailApproach.zone, reduceMotion: reduceMotion)
         return true
     }

@@ -991,26 +991,12 @@ struct AppGrid: View {
             .overlay(alignment: .trailing) {
                 if DeckRail.shows(count: cells.count, query: query) {
                     // R1 sits inside the content inset, left of the scroller.
-                    // ViewThatFits keeps 20 pt targets: the full 27-letter rail
-                    // at 540 pt, every other letter at 280 pt, every third at
-                    // 180 pt, and nothing below 8 slots.
-                    ViewThatFits(in: .vertical) {
-                        DeckIndexRail(entries: railEntries, counts: railCounts,
-                                      current: currentLetter ?? firstRailLetter,
-                                      slots: fullRailSlots) { letter in
-                            scroll(to: letter, proxy: proxy)
-                        }
-                        DeckIndexRail(entries: railEntries, counts: railCounts,
-                                      current: currentLetter ?? firstRailLetter,
-                                      slots: compactTwoRailSlots) { letter in
-                            scroll(to: letter, proxy: proxy)
-                        }
-                        DeckIndexRail(entries: railEntries, counts: railCounts,
-                                      current: currentLetter ?? firstRailLetter,
-                                      slots: compactThreeRailSlots) { letter in
-                            scroll(to: letter, proxy: proxy)
-                        }
-                        Color.clear.frame(width: 1, height: 1)
+                    // The rail picks the most letters whose rest pitch keeps
+                    // room for the magnified overshoot (RailLayout.fit), and
+                    // condenses below 18 pt.
+                    DeckIndexRail(entries: railEntries, counts: railCounts,
+                                  current: currentLetter ?? firstRailLetter) { letter in
+                        scroll(to: letter, proxy: proxy)
                     }
                     .padding(.trailing, DeckIndexRail.trailingPadding)
                     // A growing rail may draw past its rest rows (S1/S3); the
@@ -1044,15 +1030,6 @@ struct AppGrid: View {
     private var cellApps: [AppInfo] { cells.map(\.app) }
     private var railEntries: [DeckRail.Entry] { DeckRail.entries(for: cellApps) }
     private var firstRailLetter: String? { railEntries.first { $0.index != nil }?.letter }
-    private var fullRailSlots: [DeckRail.Slot] {
-        DeckRail.slots(forHeight: DeckRail.minimumHeight) ?? []
-    }
-    private var compactTwoRailSlots: [DeckRail.Slot] {
-        DeckRail.slots(forHeight: DeckRail.compactTwoHeight) ?? []
-    }
-    private var compactThreeRailSlots: [DeckRail.Slot] {
-        DeckRail.slots(forHeight: DeckRail.compactThreeHeight) ?? []
-    }
 
     /// Apps per letter, for R1's hover tag.
     private var railCounts: [String: Int] {
@@ -1203,9 +1180,10 @@ enum DeckRailPoint {
     static func point(letter: String, to path: String) -> Bool {
         guard let anchor, let window = anchor.window,
               let index = DeckRail.letters.firstIndex(of: letter) else { return false }
+        let pitch = RailPointerModel.shared.railFit?.pitch ?? DeckRail.pitch
         let local = anchor.convert(anchor.bounds, to: nil)
         let x = local.minX + 13
-        let y = local.minY - (CGFloat(index) * DeckRail.pitch + DeckRail.pitch / 2)
+        let y = local.minY - (CGFloat(index) * pitch + pitch / 2)
         let screen = window.convertPoint(toScreen: NSPoint(x: x, y: y))
         let top = window.screen?.frame.maxY ?? NSScreen.screens.first?.frame.maxY ?? 0
         let text = "\(screen.x) \(top - screen.y)\n"
@@ -1261,14 +1239,22 @@ private struct DeckIndexRail: View {
     let entries: [DeckRail.Entry]
     let counts: [String: Int]
     let current: String?
-    /// The rail's slots: 27 at full height, 14 or 9 when the window is short.
-    let slots: [DeckRail.Slot]
     let pick: (String) -> Void
 
     @State private var lastPicked: String?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    private var height: CGFloat { CGFloat(slots.count) * DeckRail.pitch }
+    /// The rail this window draws, from the container height: 27 letters at the
+    /// largest pitch that keeps room for the magnified overshoot, 14 or 9 when
+    /// it condenses. Static per window size, so the pitch never jitters.
+    private var fit: (count: Int, pitch: CGFloat)? { RailPointerModel.shared.railFit }
+    private var pitch: CGFloat { fit?.pitch ?? DeckRail.pitch }
+    /// The rail's slots: 27 at full height, 14 or 9 when the window is short.
+    private var slots: [DeckRail.Slot] {
+        guard let fit else { return [] }
+        return DeckRail.slots(forHeight: CGFloat(fit.count) * DeckRail.pitch) ?? []
+    }
+    private var height: CGFloat { CGFloat(slots.count) * pitch }
     private var currentIndex: Int? { current.flatMap(DeckRail.letters.firstIndex(of:)) }
     private var currentLetter: String? { currentIndex.map { DeckRail.letters[$0] } }
     /// The one pointer state; only the rail reads it, so a pointer over the
@@ -1276,24 +1262,20 @@ private struct DeckIndexRail: View {
     private var pointer: RailPointer { RailPointerModel.shared.state }
     private var zone: CGFloat { RailApproach.zone }
 
-    /// The prototype's spacing (`--debug-proto railspace`); absent, the fixed
-    /// 20 pt rows this rail has always had.
-    private var spacing: RailSpacing { AppEnvironment.shared.options.railSpacing ?? .reference }
-
     /// The fisheye's scale per slot: the approach ramp (A2) times the taper.
     private var scales: [CGFloat] {
         slots.indices.map { index in
             guard let position = pointer.position else { return 1 }
-            return RailFisheye.scale(distance: position.y / DeckRail.pitch - (CGFloat(index) + 0.5),
+            return RailFisheye.scale(distance: position.y / pitch - (CGFloat(index) + 0.5),
                                      dx: position.dx, zone: zone, reduceMotion: reduceMotion)
         }
     }
 
-    /// The drawn slots: the rest rows, or the prototype's spacing. The anchor
-    /// is the pointer's y, so the letter under the pointer stays under it while
-    /// the slots open.
+    /// The drawn slots: proportional to the scales with the rail's height
+    /// fixed. The anchor is the pointer's y, so the letter under the pointer
+    /// stays under it while the slots open.
     private var layout: [RailLayout.Slot] {
-        RailLayout.slots(scales: scales, available: height, strategy: spacing,
+        RailLayout.slots(scales: scales, available: height, pitch: pitch,
                          anchor: pointer.position?.y)
     }
 
@@ -1367,11 +1349,7 @@ private struct DeckIndexRail: View {
         .foregroundStyle(isCurrent ? AnyShapeStyle(Color.accentColor)
                                    : AnyShapeStyle(.secondary))
         .opacity(hasApps ? 1 : 0.35)
-        // S3 hangs each letter off the rail's trailing baseline (a 2 pt inset)
-        // and lets it grow leftward; S1/S2 keep the letters centred in the rail.
-        .padding(.trailing, spacing.isEdgeAnchored ? 2 : 0)
-        .frame(width: Self.width, height: box.height,
-               alignment: spacing.isEdgeAnchored ? .trailing : .center)
+        .frame(width: Self.width, height: box.height)
         .background(RoundedRectangle(cornerRadius: 4)
             .fill(Color.primary.opacity(highlighted ? 0.12 : 0)))
         .contentShape(.rect)
