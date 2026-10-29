@@ -10523,7 +10523,7 @@ check_deckrail() {
     wait_until 30 grep -q '"count":' "$WORK/deck-grid.jsonl" \
         && ok "DECKRAIL the grid drew its cells" || bad "DECKRAIL no grid dump"
     control deck-size 1000 625 || bad "DECKRAIL deck-size 1000 625: $CONTROL_REPLY"
-    sleep 2
+    sleep 1
     local railshots="$WORK/deck-rail-shots"
     mkdir -p "$railshots"
     shot_rail() {
@@ -10545,6 +10545,45 @@ check_deckrail() {
     # drawn slot's centre instead of guessing rows.
     if control deckrailanchor "$railshots/anchor.pt" && read -r wx wy sx sy scale < "$railshots/anchor.pt"; then
         ok "DECKRAIL the rail is at window ($wx,$wy), screen ($sx,$sy), scale $scale"
+        # A restored frame can put the rail past the screen's right edge (the
+        # guest is 1024 pt wide) and a real pointer cannot reach off-screen:
+        # bring the window back inside, then read its place again.
+        if control screens "$railshots/screens.txt"; then
+            python3 - "$railshots/screens.txt" "$sx" "$wy" "$scale" > "$railshots/move.txt" <<'PY'
+import re, sys
+lines = open(sys.argv[1]).read().splitlines()
+sx, wy, scale = float(sys.argv[2]), float(sys.argv[3]), float(sys.argv[4])
+rail_width = 26
+deck = None
+for line in lines:
+    match = re.match(r"deck=(-?[0-9]+),(-?[0-9]+)-([0-9]+)x([0-9]+)", line)
+    if match:
+        deck = tuple(float(match.group(i)) for i in range(1, 5))
+for line in lines:
+    match = re.match(r"screen \d+ frame=(-?[0-9.]+),(-?[0-9.]+)-([0-9.]+)x([0-9.]+)", line)
+    if not match or not deck:
+        continue
+    x, y, w, h = (float(match.group(i)) for i in range(1, 5))
+    if x <= sx <= x + w and y <= wy <= y + h:
+        edge = x + w - 2
+        over = sx + rail_width - edge
+        if over > 0:
+            print(int(round(deck[0] - over)), int(round(deck[1])))
+        else:
+            print(0, 0)
+        break
+else:
+    print(0, 0)
+PY
+            read -r movex movey < "$railshots/move.txt"
+            if [ "${movex:-0}" != 0 ] || [ "${movey:-0}" != 0 ]; then
+                control deck-move "$movex" "$movey" || bad "DECKRAIL deck-move: $CONTROL_REPLY"
+                sleep 1
+                control deckrailanchor "$railshots/anchor.pt" \
+                    && read -r wx wy sx sy scale < "$railshots/anchor.pt"
+                ok "DECKRAIL moved the window in: the rail is now at screen ($sx,$sy)"
+            fi
+        fi
     else
         bad "DECKRAIL deckrailanchor: $CONTROL_REPLY"
     fi
