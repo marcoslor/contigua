@@ -131,6 +131,43 @@ final class NotifyMacTests: XCTestCase {
         XCTAssertEqual(first.record, "alert=1 banners=1 presented=1 quiet=0")
     }
 
+    func testAThreadedPostUsesThePhoneAndTheGroup() {
+        XCTAssertEqual(NotifyMapping.thread(phoneId: "phone-1", group: nil), "phone-1")
+        XCTAssertEqual(NotifyMapping.thread(phoneId: "phone-1", group: ""), "phone-1")
+        XCTAssertEqual(NotifyMapping.thread(phoneId: "phone-1", group: "0123456789abcdef"),
+                       "phone-1.0123456789abcdef")
+        // Only the wire's own hash shape is a group: a raw key would leak a
+        // chat or folder name into a thread identifier.
+        XCTAssertEqual(NotifyMapping.thread(phoneId: "phone-1", group: "Family chat"), "phone-1")
+        XCTAssertEqual(NotifyMapping.thread(phoneId: "phone-1", group: "0123456789ABCDEF"), "phone-1")
+        XCTAssertEqual(NotifyMapping.thread(phoneId: "phone-1", group: "0123"), "phone-1")
+    }
+
+    @MainActor
+    func testAGroupedPostIsThreadedUnderItsGroup() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("notify-group-\(UUID().uuidString).log")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let center = NotifyCenter()
+        center.log = url
+        center.hold = 0
+        center.post(PhoneNotification(id: "g1", pkg: "com.whatsapp", when: nil,
+                                      title: "Chat", text: "One",
+                                      group: "0123456789abcdef"),
+                    phoneId: "phone-1", phoneName: "Nicky", labelFor: { _ in nil })
+        center.post(PhoneNotification(id: "g2", pkg: "com.whatsapp", when: nil,
+                                      title: "Chat", text: "Two", group: "Family chat"),
+                    phoneId: "phone-1", phoneName: "Nicky", labelFor: { _ in nil })
+        let lines = try String(contentsOf: url, encoding: .utf8)
+            .split(separator: "\n").map(String.init)
+        XCTAssertEqual(lines.count, 2)
+        XCTAssertTrue(lines[0].contains(" thread=phone-1.0123456789abcdef "),
+                      "a confirmed group hash threads under the phone and the group")
+        XCTAssertTrue(lines[1].contains(" thread=phone-1 "),
+                      "anything else joins the phone's own thread")
+        XCTAssertFalse(lines.joined().contains("Family chat"), "a raw group key never reaches the record")
+    }
+
     @MainActor
     func testTenPostsOfOneKeyPresentOnceAndReplaceQuietly() throws {
         let url = FileManager.default.temporaryDirectory

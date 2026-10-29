@@ -615,7 +615,7 @@ Phone → Mac:
 | t | fields |
 |---|---|
 | `notify.state` | `on` — forwarding is live; `reason` — `no_access` when the Mac asked but the phone's listener grant is missing |
-| `notify.post` | `id`, `pkg`, `app`?, `when`, `title`?, `text`?, `alert`, `ongoing`?, `actions`?, `live`? |
+| `notify.post` | `id`, `pkg`, `app`?, `when`, `title`?, `text`?, `alert`, `group`?, `ongoing`?, `actions`?, `live`? |
 | `notify.image` | `id`, `mime`, `w`, `h`, `data` (base64) |
 | `notify.remove` | `id` |
 | `media.state` | `playing`, `pkg`?, `key`?, `title`?, `artist`?, `album`?, `durationMs`?, `positionMs`, `rate`, `canSeek`?, `volume`?, `volumeMax`? |
@@ -664,6 +664,15 @@ forwarded post (the phone compares hashes kept in memory, never the text). The M
 an alerting post as a banner and replaces a delivered banner for a non-alerting one with
 `interruptionLevel = .passive`, so nothing is presented again. A post without `alert` is
 malformed and is ignored; there is no older-peer mode (AGENTS.md).
+
+`group` is present only when the Android notification belongs to a group, and is 16 lowercase
+hex characters: 64 bits of SHA-256 over the package and the Android group key, never the key
+itself (apps put chat or folder names in it). The phone leaves a `FLAG_GROUP_SUMMARY`
+notification on the phone while a forwarded child of its group is active, sends
+`notify.remove` for a forwarded summary when a child of that group supersedes it, and forwards
+a summary only while its group has no forwarded child. The Mac threads the banner under
+`<phone id>.<group>` when `group` is present and under the phone id otherwise; a value that
+is not that 16-hex shape is ignored and the banner joins the phone's thread.
 
 `actions` is an array of up to 3 `{"i": <index in the phone's Notification.actions>, "title": "≤ 64 chars", "reply": true?}`; `reply` marks an action with a free-form RemoteInput.
 A Mac that does not know the field ignores it. `notify.action` names only an id the phone

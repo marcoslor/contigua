@@ -51,7 +51,8 @@ phone has no second switch: its notification-listener grant is the phone-side ha
 - Notifications on the Mac: UserNotifications, title = the notification's own title (else the app
   label) with the phone's name appended ("Review (Nicky)"), the name the Deck shows for that phone;
   a notification with neither title nor label shows the phone name alone; text = body, grouped per
-  phone (`threadIdentifier` = phone id). "When I click a phone notification" (per phone, beside the
+  phone (`threadIdentifier` = phone id; `<phone id>.<group hash>` when the post carries a group,
+  NOTIFY-20). "When I click a phone notification" (per phone, beside the
   opt-in, enabled only while it is on) picks what a click does: **Open on Mac** (default) opens or
   raises the app's window and runs the notification's own `contentIntent` on that window's virtual
   display; **Open on phone** runs it on the phone's display 0 and opens no Mac window; **Do nothing**
@@ -72,7 +73,7 @@ phone has no second switch: its notification-listener grant is the phone-side ha
   issued; the action never crosses the wire); `media.command {action: play|pause|next|prev}`.
 - phone→mac: `notify.state {on, reason?}` (true once granted and forwarding; `reason:"no_access"`
   when the Mac asked but the listener grant is missing); `notify.post {id, pkg, app?,
-  when, title?, text?, alert, ongoing?}`; `notify.remove {id}`; `media.state {playing, pkg?, title?,
+  when, title?, text?, alert, group?, ongoing?}`; `notify.remove {id}`; `media.state {playing, pkg?, title?,
   artist?, album?, durationMs?, positionMs, rate}` — empty media.state (no list fields) clears
   Now Playing.
 - Privacy: notification or media text is never logged (the e2e `--share-log` file records ids, package
@@ -285,6 +286,38 @@ If a future OS did present a passive replacement anyway, the fallback is the
 one the spec allows: keep the delivered banner untouched and update only the
 Mac's record (the LIVE row and the dismiss state); the record already
 distinguishes a presented post from a quiet one.
+
+## Groups: summaries never land on their children (NOTIFY-20)
+
+Android bundles a chat's messages into a group: each message is a child and the
+app also posts one `FLAG_GROUP_SUMMARY` notification ("5 new messages") to fold
+them. The listener forwarded both, and the summary — a different key, hence a
+different banner — landed on top of the message that had just arrived. The wire
+also had no group, so the Mac put every notification of a phone into one thread.
+
+The phone now keeps a small machine per package+group (`NotifyGroups` in
+NotifyEvents.kt, one pure transition function over `EMPTY`, `CHILDREN`,
+`SUMMARY`; every transition is in `NotifyGroupMachineTest`):
+
+- a child is forwarded, and the group counts its forwarded children;
+- the summary is forwarded only while the group has no forwarded child;
+- when a child arrives after a forwarded summary, the summary gets a
+  `notify.remove` first and the child follows;
+- the last forwarded child leaving returns the group to `EMPTY`, so a later
+  summary can be forwarded again.
+
+The wire's `group` is 64 bits of SHA-256 over the package and the Android group
+key (`NotifyEvents.groupHash`), never the key: apps put chat and folder names in
+it, and a log or a thread identifier must not carry one. The Mac only accepts
+that 16-lowercase-hex shape (`NotifyMapping.thread`) and threads a grouped post
+under `<phone id>.<group>`; anything else joins the phone's own thread. Because
+the hash is salted by the package (and 64 bits wide), it is not reversible to a
+short name.
+
+Not proven here: the machine's decisions on a real listener (a K1 class and the
+fake phone's replay only). The emulator budget is 0 this round, so a real
+WhatsApp group on a real phone stays with the next device pass; the e2e proves
+the wire and the Mac's threading.
 
 ## Media part 2 design (v0.2 #9)
 

@@ -9011,13 +9011,33 @@ EOF
 check_notify_actions() {
     clean
     local log="$WORK/notify-actions.log" script="$WORK/notify-actions-input.txt" device
-    local code_hash code_types
+    local code_hash code_types alpha bravo removed_line child_line
     log_has() { grep -qF -- "$1" "$log" 2>/dev/null; }
     # quiet_posts — ten posts of the NOTIFY-19 key are in the share log.
     quiet_posts() {
         local n
         n="$(grep -c "notify post id=pd-q1 " "$WORK/notify-quiet.log" 2>/dev/null)" || n=0
         [ "${n:-0}" -ge 10 ]
+    }
+    # group_hash ID — the 16-hex group hash the fake phone sent for that post.
+    group_hash() {
+        python3 - "$WORK/events.jsonl" "$1" <<'PY'
+import json, sys
+for line in open(sys.argv[1]):
+    try:
+        event = json.loads(line)
+    except ValueError:
+        continue
+    if event.get("ev") == "notify" and event.get("kind") == "post" and event.get("id") == sys.argv[2]:
+        print(event.get("group", ""))
+        break
+PY
+    }
+    # groups_done — the three group posts and the summary's removal arrived.
+    groups_done() {
+        local n
+        n="$(grep -c "notify post id=pd-g" "$WORK/notify-groups.log" 2>/dev/null)" || n=0
+        [ "${n:-0}" -ge 3 ] && grep -q "notify remove id=pd-g3" "$WORK/notify-groups.log" 2>/dev/null
     }
     # notify_rx KIND ID [I] [TEXTLEN] — a fakephone notification event.
     notify_rx() {
@@ -9186,6 +9206,48 @@ PY
         "$WORK/notify-quiet.log" "$WORK/app.log" "$WORK/events.jsonl" 2>/dev/null \
         && ok "[NOTIFY-14] NOTIFY-ACTIONS the quiet posts carried no text in a log" \
         || bad "[NOTIFY-14] NOTIFY-ACTIONS the quiet posts leaked text"
+    stop_app
+    stop_fakephone
+    wait_until 5 no_fakephone
+
+    # (i) [NOTIFY-20] a group summary never lands on top of its child: the phone
+    # sends a child, leaves its summary on the phone, forwards a lone summary,
+    # then removes that summary before the child that supersedes it. Every
+    # grouped post is threaded under <phoneId>.<group hash>; no group key ever
+    # appears in a log.
+    FAKE_ARGS="--notify-groups" start_fake '' || return 1
+    defaults write "$DEFAULTS_SUITE" "notify.$device" -bool YES
+    launch --connect "127.0.0.1:$PORT" --quit-after 30 --share-log "$WORK/notify-groups.log"
+    wait_until 20 groups_done \
+        && ok "[NOTIFY-20] NOTIFY-ACTIONS the group wire arrived (child, lone summary, removal, child)" \
+        || bad "[NOTIFY-20] NOTIFY-ACTIONS the group wire did not arrive: $(tr '\n' '|' < "$WORK/notify-groups.log" 2>/dev/null)"
+    alpha="$(group_hash pd-g1)"
+    bravo="$(group_hash pd-g3)"
+    [ -n "$alpha" ] && [ -n "$bravo" ] && [ "$alpha" != "$bravo" ] \
+        && ok "[NOTIFY-20] NOTIFY-ACTIONS the phone sent a group hash, not the group key" \
+        || bad "[NOTIFY-20] NOTIFY-ACTIONS no distinct group hashes in the phone's events"
+    [ "$(grep -c "notify post id=pd-g1 " "$WORK/notify-groups.log" 2>/dev/null)" = "1" ] \
+        && [ "$(grep -c "notify post id=pd-g" "$WORK/notify-groups.log" 2>/dev/null)" = "3" ] \
+        && ok "[NOTIFY-20] NOTIFY-ACTIONS the summary of a group with a child never posted" \
+        || bad "[NOTIFY-20] NOTIFY-ACTIONS a second banner landed for the child's group"
+    grep -q "notify post id=pd-g1 .* thread=$device.$alpha" "$WORK/notify-groups.log" 2>/dev/null \
+        && ok "[NOTIFY-20] NOTIFY-ACTIONS the child is threaded under the phone and its group" \
+        || bad "[NOTIFY-20] NOTIFY-ACTIONS the child's thread carries no group hash"
+    grep -q "notify post id=pd-g3 .* thread=$device.$bravo" "$WORK/notify-groups.log" 2>/dev/null \
+        && ok "[NOTIFY-20] NOTIFY-ACTIONS a summary with no children banners, threaded under its group" \
+        || bad "[NOTIFY-20] NOTIFY-ACTIONS the lone summary did not banner under its group"
+    grep -q "notify post id=pd-g4 .* thread=$device.$bravo" "$WORK/notify-groups.log" 2>/dev/null \
+        && ok "[NOTIFY-20] NOTIFY-ACTIONS the child after the summary joined its thread" \
+        || bad "[NOTIFY-20] NOTIFY-ACTIONS the late child's thread is wrong"
+    removed_line="$(grep -n "notify remove id=pd-g3" "$WORK/notify-groups.log" 2>/dev/null | cut -d: -f1)"
+    child_line="$(grep -n "notify post id=pd-g4" "$WORK/notify-groups.log" 2>/dev/null | cut -d: -f1)"
+    [ -n "$removed_line" ] && [ -n "$child_line" ] && [ "$removed_line" -lt "$child_line" ] \
+        && ok "[NOTIFY-20] NOTIFY-ACTIONS the summary was removed before the child posted" \
+        || bad "[NOTIFY-20] NOTIFY-ACTIONS the summary removal did not precede the child"
+    ! grep -qE 'pd-group-(alpha|bravo)' \
+        "$WORK/notify-groups.log" "$WORK/app.log" "$WORK/fake.log" "$WORK/fake.err" "$WORK/events.jsonl" 2>/dev/null \
+        && ok "[NOTIFY-14] NOTIFY-ACTIONS no group key reached a log" \
+        || bad "[NOTIFY-14] NOTIFY-ACTIONS a group key leaked into a log"
     stop_app
     stop_fakephone
     wait_until 5 no_fakephone
