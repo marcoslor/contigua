@@ -98,6 +98,9 @@ struct LaunchOptions {
     /// `--controls-dir DIR`: where the Control Center snapshot and socket live,
     /// instead of the App Group container (e2e `controls` check; no extension).
     var controlsDirectory: String?
+    /// `--debug-motion full` (test hook): effective Reduce Motion is off for
+    /// this run, whatever the system says (the VM's fisheye proof).
+    var debugMotion: String?
 
     /// nil when `--profile` was missing or not a usable name.
     var profile: Profile? { Profile(name: profileName) }
@@ -146,6 +149,7 @@ struct LaunchOptions {
         "--files-bridge-dir": true,
         "--files-domain-seen": true,
         "--controls-dir": true,
+        "--debug-motion": true,
     ]
 
     /// One line on stderr (the harness captures stderr into app.log); the
@@ -262,6 +266,8 @@ struct LaunchOptions {
                 options.filesDomainSeen = next()
             case "--controls-dir":
                 options.controlsDirectory = next()
+            case "--debug-motion":
+                options.debugMotion = next()
             default:
                 break
             }
@@ -322,6 +328,7 @@ final class AppEnvironment {
 
     private init() {
         let options = LaunchOptions.parse(CommandLine.arguments)
+        Motion.overrideFull = options.debugMotion == "full"
         #if PD_TEST_HOOKS
         if ProcessInfo.processInfo.environment["PD_GRID_CHANGES"] != nil {
             // Line-buffered stdout, so a killed run still has its trace.

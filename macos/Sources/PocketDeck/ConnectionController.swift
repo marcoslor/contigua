@@ -2563,7 +2563,7 @@ final class ConnectionController {
     }
 
     private var railReduceMotion: Bool {
-        NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        Motion.reduce(system: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
     }
 
     /// `--debug-control` (DebugControl.swift): the e2e checks that share this
@@ -2996,6 +2996,7 @@ final class ConnectionController {
             case .dragging: state = "dragging"
             }
             let line: [String: Any] = ["pitch": Double(fit.pitch),
+                                       "reduceMotion": railReduceMotion,
                                        "railHeight": Double(height),
                                        "containerHeight": Double(model.containerSize.height),
                                        "state": state,

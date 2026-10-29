@@ -68,6 +68,23 @@ final class RailApproachTests: XCTestCase {
         }
     }
 
+    // MARK: Effective Reduce Motion
+
+    func testTheDebugMotionHookMakesEffectiveReduceMotionFalse() {
+        Motion.overrideFull = false
+        XCTAssertTrue(Motion.reduce(system: true), "the system setting stands without the hook")
+        Motion.overrideFull = true
+        defer { Motion.overrideFull = false }
+        XCTAssertFalse(Motion.reduce(system: true), "the test hook wins over the system")
+        XCTAssertFalse(Motion.reduce(system: false))
+    }
+
+    func testTheDebugMotionFlagIsParsed() {
+        let options = LaunchOptions.parse(["PocketDeck", "--profile", "e2e", "--debug-motion", "full"])
+        XCTAssertEqual(options.debugMotion, "full")
+        XCTAssertNil(LaunchOptions.parse(["PocketDeck", "--profile", "e2e"]).debugMotion)
+    }
+
     // MARK: The pointer state machine
 
     private func reduce(_ state: RailPointer, _ event: RailPointerEvent,
