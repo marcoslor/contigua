@@ -71,6 +71,10 @@ class PdNotificationListener : NotificationListenerService() {
      */
     private val lastContent = BoundedIdMap<String>(MAX_TRACKED)
 
+    /** The last forwarded title hash and whether it carried a bar (row 6). */
+    private val lastTitle = BoundedIdMap<String>(MAX_TRACKED)
+    private val lastHadBar = BoundedIdMap<Boolean>(MAX_TRACKED)
+
     /** The per-package-group forwarding states (NOTIFY-20), bounded like the rest. */
     private val groupStates = BoundedIdMap<NotifyGroupState>(MAX_TRACKED)
 
@@ -130,6 +134,8 @@ class PdNotificationListener : NotificationListenerService() {
         lastSessions = null
         sessionKeys.clear()
         lastContent.clear()
+        lastTitle.clear()
+        lastHadBar.clear()
         groupStates.clear()
         groupOf.clear()
         skippedSummaries.clear()
@@ -421,10 +427,20 @@ class PdNotificationListener : NotificationListenerService() {
         // NOTIFY-19: the same decision Android makes. The comparison is over
         // content hashes kept in memory; the text never leaves this block.
         val contentHash = NotifyEvents.contentHash(title, text)
+        val titleHash = NotifyEvents.titleHash(title)
+        // Row 6: a bar that only moves is not news, even when its text moves.
+        val hadBar = extras.getBoolean(Notification.EXTRA_PROGRESS_INDETERMINATE, false) ||
+            extras.getInt(Notification.EXTRA_PROGRESS_MAX, 0) > 0
         val alert = NotifyEvents.alerts(
             firstPost = lastContent.get(id) == null,
             onlyAlertOnce = notification.flags and NotifyEvents.FLAG_ONLY_ALERT_ONCE != 0,
             contentChanged = lastContent.get(id) != contentHash,
+            progressOnly = NotifyEvents.progressOnly(
+                previousHadBar = lastHadBar.get(id) == true,
+                hadBar = hadBar,
+                previousTitleHash = lastTitle.get(id),
+                titleHash = titleHash,
+            ),
         )
         val groupKey = sbn.groupKey?.takeIf { it.isNotEmpty() }
         val summary = notification.flags and NotifyEvents.FLAG_GROUP_SUMMARY != 0
@@ -473,6 +489,8 @@ class PdNotificationListener : NotificationListenerService() {
             skippedSummaries.remove(id)
         }
         lastContent.put(id, contentHash)
+        lastTitle.put(id, titleHash)
+        lastHadBar.put(id, hadBar)
         // The Mac can only ask for an id it received; the action stays here and
         // is never serialized onto the wire (docs/design/notify.md).
         val kept = actions.mapNotNull { candidate ->
@@ -655,6 +673,8 @@ class PdNotificationListener : NotificationListenerService() {
         val id = forwardId(sbn)
         NotifyIntents.remove(id)
         lastContent.remove(id)
+        lastTitle.remove(id)
+        lastHadBar.remove(id)
         val grouped = groupOf.remove(id)
         if (grouped != null) {
             groupEvent(

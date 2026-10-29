@@ -231,15 +231,48 @@ class NotifyEventsTest {
     @Test
     fun `alert follows Android's own rule`() {
         // The first post of a key always alerts, whatever the app asked for.
-        assertTrue(NotifyEvents.alerts(firstPost = true, onlyAlertOnce = false, contentChanged = true))
-        assertTrue(NotifyEvents.alerts(firstPost = true, onlyAlertOnce = true, contentChanged = false))
+        assertTrue(NotifyEvents.alerts(true, onlyAlertOnce = false, contentChanged = true, progressOnly = false))
+        assertTrue(NotifyEvents.alerts(true, onlyAlertOnce = true, contentChanged = false, progressOnly = true))
         // An update the app asked to alert once does not.
-        assertEquals(false, NotifyEvents.alerts(firstPost = false, onlyAlertOnce = true, contentChanged = true))
-        assertEquals(false, NotifyEvents.alerts(firstPost = false, onlyAlertOnce = true, contentChanged = false))
+        assertEquals(false, NotifyEvents.alerts(false, onlyAlertOnce = true, contentChanged = true, progressOnly = false))
+        assertEquals(false, NotifyEvents.alerts(false, onlyAlertOnce = true, contentChanged = false, progressOnly = false))
         // An update whose title and text did not change says nothing new.
-        assertEquals(false, NotifyEvents.alerts(firstPost = false, onlyAlertOnce = false, contentChanged = false))
+        assertEquals(false, NotifyEvents.alerts(false, onlyAlertOnce = false, contentChanged = false, progressOnly = false))
         // A changed update alerts.
-        assertTrue(NotifyEvents.alerts(firstPost = false, onlyAlertOnce = false, contentChanged = true))
+        assertTrue(NotifyEvents.alerts(false, onlyAlertOnce = false, contentChanged = true, progressOnly = false))
+    }
+
+    @Test
+    fun `a bar that only moves is not news`() {
+        // Row 6: both posts carry a bar and the title stayed -> quiet, even
+        // with a text that moves ("12 MB of 50 MB" -> "13 MB of 50 MB").
+        assertTrue(NotifyEvents.progressOnly(previousHadBar = true, hadBar = true,
+                                             previousTitleHash = "t1", titleHash = "t1"))
+        assertEquals(false, NotifyEvents.alerts(false, onlyAlertOnce = false, contentChanged = true, progressOnly = true))
+        // The post that drops the bar has no bar: it is not progress-only.
+        assertEquals(false, NotifyEvents.progressOnly(previousHadBar = true, hadBar = false,
+                                                      previousTitleHash = "t1", titleHash = "t1"))
+        assertTrue(NotifyEvents.alerts(false, onlyAlertOnce = false, contentChanged = true, progressOnly = false))
+        // A first post with a bar still alerts, and a new title alerts.
+        assertTrue(NotifyEvents.alerts(true, onlyAlertOnce = false, contentChanged = true, progressOnly = true))
+        assertEquals(false, NotifyEvents.progressOnly(previousHadBar = true, hadBar = true,
+                                                      previousTitleHash = "t1", titleHash = "t2"))
+        assertTrue(NotifyEvents.alerts(false, onlyAlertOnce = false, contentChanged = true, progressOnly = false))
+        // No previous post, no bar: nothing to compare.
+        assertEquals(false, NotifyEvents.progressOnly(previousHadBar = false, hadBar = true,
+                                                      previousTitleHash = null, titleHash = "t1"))
+    }
+
+    @Test
+    fun `the title hash is stable, short and carries no text`() {
+        val hash = NotifyEvents.titleHash("Download")
+        assertEquals(hash, NotifyEvents.titleHash("Download"))
+        assertEquals(16, hash.length)
+        assertTrue(hash.all { it in "0123456789abcdef" })
+        assertNotEquals(hash, NotifyEvents.titleHash("Download failed"))
+        assertNotEquals(hash, NotifyEvents.titleHash(null))
+        assertEquals(NotifyEvents.titleHash(null), NotifyEvents.titleHash(""))
+        assertEquals(false, hash.contains("Download"))
     }
 
     @Test

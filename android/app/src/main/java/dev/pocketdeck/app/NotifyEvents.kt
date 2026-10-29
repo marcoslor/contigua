@@ -115,14 +115,34 @@ object NotifyEvents {
     /**
      * Whether a post may present a banner on the Mac (NOTIFY-19), the same way
      * Android decides to alert: the first post of a key always does, an update
-     * does unless the app asked for one alert ([FLAG_ONLY_ALERT_ONCE]) or the
-     * title and text did not change since the last forwarded post.
+     * does unless the app asked for one alert ([FLAG_ONLY_ALERT_ONCE]), the
+     * title and text did not change since the last forwarded post, or the only
+     * thing that moved was a progress bar ([progressOnly]).
      */
-    fun alerts(firstPost: Boolean, onlyAlertOnce: Boolean, contentChanged: Boolean): Boolean =
-        firstPost || (!onlyAlertOnce && contentChanged)
+    fun alerts(
+        firstPost: Boolean,
+        onlyAlertOnce: Boolean,
+        contentChanged: Boolean,
+        progressOnly: Boolean,
+    ): Boolean = firstPost || (!onlyAlertOnce && contentChanged && !progressOnly)
+
+    /**
+     * An update only moves a bar (NOTIFY-19): both posts carry a progress bar
+     * and the title stayed, so "12 MB of 50 MB" → "13 MB of 50 MB" is not news.
+     * The post that drops the bar has no bar, so it is not progress-only.
+     */
+    fun progressOnly(
+        previousHadBar: Boolean,
+        hadBar: Boolean,
+        previousTitleHash: String?,
+        titleHash: String,
+    ): Boolean = previousHadBar && hadBar && previousTitleHash == titleHash
 
     /** 64 bits of SHA-256 over the content: updates are compared by this, never by text. */
     fun contentHash(title: String?, text: String?): String = digest("content", title.orEmpty(), text.orEmpty())
+
+    /** 64 bits of SHA-256 over the title alone (the progress tick rule). */
+    fun titleHash(title: String?): String = digest("title", title.orEmpty())
 
     /**
      * The wire's `group`: 64 bits of SHA-256 over the package and the Android
