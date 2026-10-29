@@ -140,6 +140,8 @@ def main():
                  if band["bottom"] <= height - 3]
         for index, band in enumerate(found[:len(NAMES)]):
             print("centre %s %.1f" % (NAMES[index], (band["top"] + band["bottom"]) / 2))
+        if found:
+            print("peak %.1f" % max(band["height"] for band in found))
         return 0
 
     failures = []
@@ -150,7 +152,8 @@ def main():
         if not os.path.exists(path):
             failures.append("no shot at dx %d" % dx)
             continue
-        found = bands(path, width, height, scale, rail_strip(rail_x))
+        found = [band for band in bands(path, width, height, scale, rail_strip(rail_x))
+                 if band["bottom"] <= height - 3]
         if len(found) < 20:
             failures.append("dx %d: %d letter bands" % (dx, len(found)))
             continue
