@@ -181,13 +181,15 @@ final class NotifyLiveMacTests: XCTestCase {
     func testThePostLineSaysItIsLiveAndCarriesTheImageFacts() {
         let n = PhoneNotification(id: "l1", pkg: "com.uber", when: nil, title: "Ride",
                                   text: "Arriving", live: live(progress: 0.2))
+        let facts = NotifyBannerFacts(alert: true, banners: 1, presented: 1, quiet: 0)
         var line = NotifyMapping.record(posted: n, title: "Ride (Nicky)", body: "Arriving",
-                                        thread: "phone-1", code: false, category: "pd.n.x")
+                                        thread: "phone-1", code: false, category: "pd.n.x",
+                                        facts: facts)
         XCTAssertTrue(line.hasSuffix(" live=1"))
         let info = NotifyImageInfo(mime: "image/jpeg", width: 160, height: 120, size: 1615)
         line = NotifyMapping.record(posted: n, title: "Ride (Nicky)", body: "Arriving",
                                     thread: "phone-1", code: false, category: "pd.n.x",
-                                    image: info)
+                                    facts: facts, image: info)
         XCTAssertTrue(line.contains(" image=image/jpeg w=160 h=120 size=1615"))
     }
 

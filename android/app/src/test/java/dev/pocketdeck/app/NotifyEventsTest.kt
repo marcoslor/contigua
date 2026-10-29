@@ -1,6 +1,7 @@
 package dev.pocketdeck.app
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -16,6 +17,7 @@ class NotifyEventsTest {
             title = "Design review",
             text = "Deck vs slides at 4",
             when_ = 1_700_000_000_000,
+            alert = true,
         )
         assertNotNull(event)
         assertEquals("notify.post", event!!["t"])
@@ -27,22 +29,22 @@ class NotifyEventsTest {
 
     @Test
     fun `long text is dropped whole, and empty content drops the event`() {
-        assertNull(NotifyEvents.notificationEvent("a", "com.a", "", "", 0))
+        assertNull(NotifyEvents.notificationEvent("a", "com.a", "", "", 0, alert = true))
         // over the cap: null (nothing partial goes out)
         assertNull(
-            NotifyEvents.notificationEvent("a", "com.a", "x".repeat(NotifyEvents.MAX_CHARS + 1), null, 5),
+            NotifyEvents.notificationEvent("a", "com.a", "x".repeat(NotifyEvents.MAX_CHARS + 1), null, 5, alert = true),
         )
         // title only, no text: still valid
-        assertNotNull(NotifyEvents.notificationEvent("a", "com.a", "title only", null, 5))
+        assertNotNull(NotifyEvents.notificationEvent("a", "com.a", "title only", null, 5, alert = true))
     }
 
     @Test
     fun `our own package and malformed ids are skipped`() {
-        assertNull(NotifyEvents.notificationEvent("a", "dev.pocketdeck", "t", "x", 1))
-        assertNull(NotifyEvents.notificationEvent("a", "bad pkg!", "t", "x", 1))
-        assertNull(NotifyEvents.notificationEvent("", "com.a", "t", "x", 1))
-        assertNull(NotifyEvents.notificationEvent("a".repeat(65), "com.a", "t", "x", 1))
-        assertNull(NotifyEvents.notificationEvent("has|space", "com.a", "t", "x", 1))
+        assertNull(NotifyEvents.notificationEvent("a", "dev.pocketdeck", "t", "x", 1, alert = true))
+        assertNull(NotifyEvents.notificationEvent("a", "bad pkg!", "t", "x", 1, alert = true))
+        assertNull(NotifyEvents.notificationEvent("", "com.a", "t", "x", 1, alert = true))
+        assertNull(NotifyEvents.notificationEvent("a".repeat(65), "com.a", "t", "x", 1, alert = true))
+        assertNull(NotifyEvents.notificationEvent("has|space", "com.a", "t", "x", 1, alert = true))
     }
 
     @Test
@@ -173,6 +175,7 @@ class NotifyEventsTest {
     fun `notification event carries actions and ongoing`() {
         val event = NotifyEvents.notificationEvent(
             id = "k-1", pkg = "com.chat", title = "t", text = "x", when_ = 5,
+            alert = true,
             actions = NotifyEvents.selectActions(listOf(candidate(1, "Reply", reply = true))),
             ongoing = true,
         )!!
@@ -182,7 +185,7 @@ class NotifyEventsTest {
         assertEquals(1, actions.single()["i"])
         assertEquals(true, actions.single()["reply"])
         // No actions, no field (an old Mac sees the same message as before).
-        assertNull(NotifyEvents.notificationEvent("k-1", "com.chat", "t", "x", 5)!!["actions"])
+        assertNull(NotifyEvents.notificationEvent("k-1", "com.chat", "t", "x", 5, alert = true)!!["actions"])
     }
 
     @Test
@@ -215,13 +218,65 @@ class NotifyEventsTest {
 
     @Test
     fun `the debug poster is the only own-package notification that leaves`() {
-        assertNull(NotifyEvents.notificationEvent("k", "dev.pocketdeck", "t", "x", 1))
+        assertNull(NotifyEvents.notificationEvent("k", "dev.pocketdeck", "t", "x", 1, alert = true))
         assertNotNull(
-            NotifyEvents.notificationEvent("k", "dev.pocketdeck", "t", "x", 1, debugPoster = true),
+            NotifyEvents.notificationEvent("k", "dev.pocketdeck", "t", "x", 1, alert = true, debugPoster = true),
         )
         assertTrue(NotifyEvents.debugPoster("dev.pocketdeck", flagged = true, debugBuild = true))
         // Release builds never forward their own package, flagged or not.
         assertEquals(false, NotifyEvents.debugPoster("dev.pocketdeck", flagged = true, debugBuild = false))
         assertEquals(false, NotifyEvents.debugPoster("com.other", flagged = true, debugBuild = true))
+    }
+
+    @Test
+    fun `alert follows Android's own rule`() {
+        // The first post of a key always alerts, whatever the app asked for.
+        assertTrue(NotifyEvents.alerts(firstPost = true, onlyAlertOnce = false, contentChanged = true))
+        assertTrue(NotifyEvents.alerts(firstPost = true, onlyAlertOnce = true, contentChanged = false))
+        // An update the app asked to alert once does not.
+        assertEquals(false, NotifyEvents.alerts(firstPost = false, onlyAlertOnce = true, contentChanged = true))
+        assertEquals(false, NotifyEvents.alerts(firstPost = false, onlyAlertOnce = true, contentChanged = false))
+        // An update whose title and text did not change says nothing new.
+        assertEquals(false, NotifyEvents.alerts(firstPost = false, onlyAlertOnce = false, contentChanged = false))
+        // A changed update alerts.
+        assertTrue(NotifyEvents.alerts(firstPost = false, onlyAlertOnce = false, contentChanged = true))
+    }
+
+    @Test
+    fun `content hashes compare posts without keeping their text`() {
+        val hash = NotifyEvents.contentHash("Design review", "Deck at 4")
+        assertEquals(hash, NotifyEvents.contentHash("Design review", "Deck at 4"))
+        assertEquals(16, hash.length)
+        assertTrue(hash.all { it in "0123456789abcdef" })
+        assertNotEquals(hash, NotifyEvents.contentHash("Design review", "Deck at 5"))
+        assertNotEquals(hash, NotifyEvents.contentHash("Design review 2", "Deck at 4"))
+        // A missing title and an empty one are the same content.
+        assertEquals(NotifyEvents.contentHash(null, "x"), NotifyEvents.contentHash("", "x"))
+        assertEquals(false, hash.contains("Deck"))
+    }
+
+    @Test
+    fun `group hashes are 64 bits over the package and the key`() {
+        val hash = NotifyEvents.groupHash("com.whatsapp", "Family chat")
+        assertEquals(hash, NotifyEvents.groupHash("com.whatsapp", "Family chat"))
+        assertEquals(16, hash.length)
+        assertTrue(hash.all { it in "0123456789abcdef" })
+        assertNotEquals(hash, NotifyEvents.groupHash("com.whatsapp", "Work chat"))
+        assertNotEquals(hash, NotifyEvents.groupHash("com.slack", "Family chat"))
+        // The separator keeps a split across the two strings apart.
+        assertNotEquals(NotifyEvents.groupHash("a", "bc"), NotifyEvents.groupHash("ab", "c"))
+        assertEquals(false, hash.contains("Family"))
+    }
+
+    @Test
+    fun `every post carries alert and only a grouped one carries group`() {
+        val plain = NotifyEvents.notificationEvent("k", "com.a", "t", "x", 1, alert = true)!!
+        assertEquals(true, plain["alert"])
+        assertEquals(false, plain.containsKey("group"))
+        val quiet = NotifyEvents.notificationEvent(
+            "k", "com.a", "t", "x", 1, alert = false, group = "0123456789abcdef",
+        )!!
+        assertEquals(false, quiet["alert"])
+        assertEquals("0123456789abcdef", quiet["group"])
     }
 }

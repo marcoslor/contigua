@@ -167,6 +167,14 @@ NOTIFY_SHAPES = [
 NOTIFY_REPLY_INDEX = 1
 NOTIFY_REPLY_TEXT = "pd-reply-1"
 
+# NOTIFY-19 (docs/specs/notifications.md): one key posted ten times, the first
+# alerting and the nine updates not — what a phone sends for a progress bar,
+# a download or a timer that only moves. The text changes each tick; the wire's
+# `alert` flag is the decision the Mac must obey. Markers for the privacy grep.
+NOTIFY_QUIET_ID = "pd-q1"
+NOTIFY_QUIET_POSTS = 10
+NOTIFY_QUIET_INTERVAL = 0.8
+
 # Part 2b (docs/design/notify.md): pictures and Android 16 Live Updates. The
 # picture is a generated 160x120 test card (nobody's content); only its mime,
 # size and dimensions ever reach a log. `image: "bad"` sends an oversized one
@@ -3099,6 +3107,10 @@ class Session(object):
             self._send({"t": "notify.state", "on": False, "reason": "no_access"})
             return
         self._send({"t": "notify.state", "on": True})
+        if getattr(self.phone.args, "notify_quiet", False):
+            # NOTIFY-19: one key, ten posts, only the first alerting.
+            self._send_quiet_updates()
+            return
         only = getattr(self.phone.args, "notify_only", None)
         media = bool(getattr(self.phone.args, "notify_media", False))
         if only:
@@ -3112,7 +3124,7 @@ class Session(object):
             live = post.get("live")
             if isinstance(live, dict):
                 live = self._live_wire(live)
-            wire = dict(post, t="notify.post", when=int(time.time() * 1000))
+            wire = dict(post, t="notify.post", when=int(time.time() * 1000), alert=True)
             wire.pop("image", None)
             wire.pop("tick", None)
             wire.pop("removeAfter", None)
@@ -3125,7 +3137,7 @@ class Session(object):
                                      actions=len(actions),
                                      reply=1 if any(a.get("reply") for a in actions) else 0,
                                      ongoing=1 if post.get("ongoing") or live is not None else 0,
-                                     live=1 if live is not None else 0)
+                                     live=1 if live is not None else 0, alert=1)
             if post.get("image"):
                 self._send_notify_image(post["id"], post["image"])
             if post.get("tick"):
@@ -3145,6 +3157,27 @@ class Session(object):
 
     def _media_mode(self):
         return bool(getattr(self.phone.args, "media", False))
+
+    def _send_quiet_updates(self):
+        """NOTIFY-19: one key's first post alerts; the nine updates the phone
+        decided Android would not alert for carry `alert: false`. The Mac must
+        replace the one delivered banner quietly. Nothing here is text in a log."""
+        def run():
+            for step in range(NOTIFY_QUIET_POSTS):
+                if self.sender is None or self._live_stop.is_set():
+                    return
+                alert = step == 0
+                title = "pd-notify-title-12"
+                text = "pd-notify-text-12-%d" % step
+                self._send({"t": "notify.post", "id": NOTIFY_QUIET_ID,
+                            "pkg": "com.whatsapp", "title": title, "text": text,
+                            "when": int(time.time() * 1000), "alert": alert})
+                self.phone.events.notify("post", id=NOTIFY_QUIET_ID, pkg="com.whatsapp",
+                                         titleLen=len(title), bodyLen=len(text),
+                                         alert=1 if alert else 0, step=step)
+                time.sleep(NOTIFY_QUIET_INTERVAL)
+
+        threading.Thread(target=run, daemon=True).start()
 
     def _older_phone(self):
         return bool(getattr(self.phone.args, "older_phone", False))
@@ -3273,7 +3306,8 @@ class Session(object):
     def _send_live_now(self, post, live):
         message = {k: v for k, v in post.items()
                    if k not in ("image", "tick", "live", "removeAfter")}
-        message.update({"t": "notify.post", "when": int(time.time() * 1000), "live": live})
+        message.update({"t": "notify.post", "when": int(time.time() * 1000), "live": live,
+                        "alert": True})
         self._send(message)
         self.phone.events.notify(
             "live", id=post["id"], progress=int(round(live.get("progress", 0) * 100)),
@@ -3301,11 +3335,11 @@ class Session(object):
         if kind == "image":
             wire = {k: v for k, v in post.items()
                     if k not in ("image", "tick", "live", "removeAfter")}
-            wire.update({"t": "notify.post", "when": int(time.time() * 1000)})
+            wire.update({"t": "notify.post", "when": int(time.time() * 1000), "alert": True})
             self._send(wire)
             self.phone.events.notify("post", id=post["id"], pkg=post["pkg"],
                                      titleLen=len(post["title"]), bodyLen=len(post["text"]),
-                                     actions=0, reply=0, ongoing=0, live=0)
+                                     actions=0, reply=0, ongoing=0, live=0, alert=1)
             self._send_notify_image(notify_id, "good")
         elif kind == "live":
             try:
@@ -4116,6 +4150,9 @@ def build_parser():
     p.add_argument("--notify-media", action="store_true",
                    help="on notify.enable also post the picture and Live Update shapes "
                         "(pd-m1, pd-m2, pd-l1, pd-l2) and advance pd-l1 every 2 s")
+    p.add_argument("--notify-quiet", action="store_true",
+                   help="on notify.enable post one key ten times, the first alerting and "
+                        "the nine updates not (NOTIFY-19; a progress bar's wire)")
     p.add_argument("--resize-delay-ms", type=int, default=0, metavar="MS",
                    help="hold back a window's new VIDEO_CONFIG this long after "
                         "window.resize (the Mac's live-resize fill); 0 answers at once")

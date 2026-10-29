@@ -9013,6 +9013,12 @@ check_notify_actions() {
     local log="$WORK/notify-actions.log" script="$WORK/notify-actions-input.txt" device
     local code_hash code_types
     log_has() { grep -qF -- "$1" "$log" 2>/dev/null; }
+    # quiet_posts — ten posts of the NOTIFY-19 key are in the share log.
+    quiet_posts() {
+        local n
+        n="$(grep -c "notify post id=pd-q1 " "$WORK/notify-quiet.log" 2>/dev/null)" || n=0
+        [ "${n:-0}" -ge 10 ]
+    }
     # notify_rx KIND ID [I] [TEXTLEN] — a fakephone notification event.
     notify_rx() {
         python3 - "$WORK/events.jsonl" "$@" <<'PY'
@@ -9144,6 +9150,45 @@ EOF
         "$WORK/app.log" "$log" "$WORK/fake.log" "$WORK/fake.err" "$WORK/events.jsonl" 2>/dev/null \
         && ok "[NOTIFY-14] NOTIFY-ACTIONS no notification or reply text reached a log" \
         || bad "[NOTIFY-14] NOTIFY-ACTIONS notification text leaked"
+
+    # (h) [NOTIFY-19] an update the phone did not mark alerting replaces the
+    # delivered banner without presenting it: one key posted ten times, the
+    # first alerting and the nine quiet (a progress bar's wire). The Mac's own
+    # record carries, for each id, its post's `alert`, the banners it holds and
+    # the running presented/quiet counts; the last line is the end state. A
+    # share-log run: nothing reaches Notification Center.
+    stop_app
+    stop_fakephone
+    wait_until 5 no_fakephone
+    FAKE_ARGS="--notify-quiet" start_fake '' || return 1
+    defaults write "$DEFAULTS_SUITE" "notify.$device" -bool YES
+    launch --connect "127.0.0.1:$PORT" --quit-after 30 --share-log "$WORK/notify-quiet.log"
+    wait_until 20 quiet_posts \
+        && ok "[NOTIFY-19] NOTIFY-ACTIONS the same key was posted ten times" \
+        || bad "[NOTIFY-19] NOTIFY-ACTIONS fewer than ten posts of the quiet key"
+    python3 - "$WORK/notify-quiet.log" <<'PY' \
+        && ok "[NOTIFY-19] NOTIFY-ACTIONS 1 presented, 9 quiet replacements, 1 delivered banner" \
+        || bad "[NOTIFY-19] NOTIFY-ACTIONS the quiet updates did not replace quietly"
+import sys
+lines = open(sys.argv[1]).read().splitlines()
+posts = [line for line in lines if line.startswith("notify post id=pd-q1 ")]
+alerting = [line for line in posts if " alert=1" in line]
+quiet = [line for line in posts if " alert=0" in line]
+if len(posts) != 10:
+    print("posts:", len(posts)); sys.exit(1)
+if len(alerting) != 1 or len(quiet) != 9:
+    print("posts:", len(posts), "alerting:", len(alerting), "quiet:", len(quiet)); sys.exit(1)
+last = posts[-1]
+if " banners=1 presented=1 quiet=9" not in last:
+    print("last post:", last); sys.exit(1)
+PY
+    ! grep -qE 'pd-notify-(title|text)-[0-9]' \
+        "$WORK/notify-quiet.log" "$WORK/app.log" "$WORK/events.jsonl" 2>/dev/null \
+        && ok "[NOTIFY-14] NOTIFY-ACTIONS the quiet posts carried no text in a log" \
+        || bad "[NOTIFY-14] NOTIFY-ACTIONS the quiet posts leaked text"
+    stop_app
+    stop_fakephone
+    wait_until 5 no_fakephone
 
     defaults delete "$DEFAULTS_SUITE" "notify.$device" >/dev/null 2>&1
     defaults delete "$DEFAULTS_SUITE" "notify.mute.$device" >/dev/null 2>&1
