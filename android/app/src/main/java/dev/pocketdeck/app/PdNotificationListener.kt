@@ -77,6 +77,13 @@ class PdNotificationListener : NotificationListenerService() {
     /** Which forwarded ids belong to a group, so a removal updates its state. */
     private val groupOf = BoundedIdMap<ForwardedGroup>(MAX_TRACKED)
 
+    /**
+     * The summaries the phone deliberately kept while their children were
+     * forwarded (NOTIFY-20). Their removals are the only ones not announced: the
+     * Mac never saw them. Bounded, like the rest.
+     */
+    private val skippedSummaries = BoundedIdMap<Boolean>(MAX_TRACKED)
+
     private val sessionCallback = object : MediaController.Callback() {
         override fun onPlaybackStateChanged(state: PlaybackState?) = scheduleMediaPush()
         override fun onMetadataChanged(metadata: MediaMetadata?) = scheduleMediaPush()
@@ -125,6 +132,7 @@ class PdNotificationListener : NotificationListenerService() {
         lastContent.clear()
         groupStates.clear()
         groupOf.clear()
+        skippedSummaries.clear()
         worker.quitSafely()
         super.onDestroy()
     }
@@ -455,10 +463,14 @@ class PdNotificationListener : NotificationListenerService() {
                 NotifyGroupAction.Forward -> Unit
             }
             if (skip) {
+                skippedSummaries.put(id, true)
                 Log.i(TAG, "notify group summary skipped: children active")
                 return
             }
             groupOf.put(id, ForwardedGroup(sbn.packageName, groupKey, summary))
+            // A notification forwarded after earlier being kept is announced
+            // on removal like any other.
+            skippedSummaries.remove(id)
         }
         lastContent.put(id, contentHash)
         // The Mac can only ask for an id it received; the action stays here and
@@ -641,7 +653,6 @@ class PdNotificationListener : NotificationListenerService() {
         )
         if (sbn.packageName in NotifyEvents.skippedPackages && !debugPoster) return
         val id = forwardId(sbn)
-        val forwarded = NotifyIntents.get(id)
         NotifyIntents.remove(id)
         lastContent.remove(id)
         val grouped = groupOf.remove(id)
@@ -652,10 +663,12 @@ class PdNotificationListener : NotificationListenerService() {
                 if (grouped.summary) NotifyGroupEvent.SummaryGone else NotifyGroupEvent.ChildGone(id),
             )
         }
-        // Only an id the Mac knows about is announced: a skipped summary or a
-        // contentless post was never forwarded, so its removal is not news.
-        if (forwarded == null) {
-            Log.i(TAG, "notify remove id=$id not forwarded")
+        // Every other removal is announced, even after the forwarded-id map
+        // forgot the id: the Mac still holds that banner, and swallowing the
+        // removal would leave a ghost (NOTIFY-20). Only an id the phone
+        // deliberately kept — a skipped summary — was never forwarded.
+        if (skippedSummaries.remove(id) != null) {
+            Log.i(TAG, "notify remove id=$id was not forwarded")
             return
         }
         // Posts leave through mediaHandler; the removal takes the same queue so
