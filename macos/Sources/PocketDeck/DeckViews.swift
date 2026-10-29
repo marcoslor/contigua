@@ -911,7 +911,11 @@ struct AppGrid: View {
     let apps: [AppInfo]
     let query: String
     let navigator: GridNavigator
-    @AppStorage(DeckZoom.key, store: Profile.active.defaults) private var zoom = 1.0
+    /// The zoom step as a state, not @AppStorage: SwiftUI's @AppStorage
+    /// re-publishes on every defaults change notification (the system posts
+    /// them about twice a second on some Macs), which re-evaluated this body
+    /// while nothing about it had changed.
+    @State private var zoom = DeckZoom.stored(in: Profile.active.defaults)
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// The letter at the top of the grid, and the last scroll position that
     /// produced it (the rail's accent and the e2e's landing proof).
@@ -926,7 +930,11 @@ struct AppGrid: View {
         #if PD_TEST_HOOKS
         // The e2e's pointer-move proof counts grid bodies (deckbodycount); a
         // count that moves is the regression, so the call sits here, not in a
-        // child the pointer could invalidate.
+        // child the pointer could invalidate. PD_GRID_CHANGES names what
+        // changed, for the one run that has to explain a count.
+        if ProcessInfo.processInfo.environment["PD_GRID_CHANGES"] != nil {
+            let _ = Self._printChanges()
+        }
         DeckGridProbe.noteBody()
         #endif
         return ScrollViewReader { proxy in
@@ -982,6 +990,10 @@ struct AppGrid: View {
             }
             // The rail's current letter follows the scroll position. Only a
             // scroll is read here; the grid's layout never sees this value.
+            .onReceive(NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification)) { _ in
+                let stored = DeckZoom.stored(in: Profile.active.defaults)
+                if stored != zoom { zoom = stored }
+            }
             .onScrollGeometryChange(for: RailScroll.self) { geometry in
                 RailScroll(offset: geometry.visibleRect.minY + geometry.contentInsets.top,
                            width: geometry.containerSize.width)
@@ -1177,15 +1189,17 @@ enum RailFisheye {
 enum DeckRailPoint {
     static weak var anchor: NSView?
 
-    /// The rail's top-left in Quartz screen coordinates (`deckrailanchor`), so
-    /// a visible run can put the pointer on a letter it measured from the
-    /// render instead of the letter-index arithmetic.
+    /// The rail's top-left in window points, in Quartz screen points, and the
+    /// window's backing scale (`deckrailanchor`): a visible run puts the pointer
+    /// on the drawn slot's centre (`deckrailslots`) and crops the shot at the
+    /// same place without assuming the display's scale.
     static func anchorPoint(to path: String) -> Bool {
         guard let anchor, let window = anchor.window else { return false }
         let local = anchor.convert(anchor.bounds, to: nil)
         let screen = window.convertPoint(toScreen: NSPoint(x: local.minX, y: local.maxY))
         let top = window.screen?.frame.maxY ?? NSScreen.screens.first?.frame.maxY ?? 0
-        let text = "\(screen.x) \(top - screen.y)\n"
+        let text = "\(local.minX) \(window.frame.height - local.maxY)"
+            + " \(screen.x) \(top - screen.y) \(window.backingScaleFactor)\n"
         return (try? text.write(toFile: path, atomically: true, encoding: .utf8)) != nil
     }
 

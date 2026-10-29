@@ -3016,11 +3016,15 @@ final class ConnectionController {
                 return "deckrailsweep needs N"
             }
             guard let fit = RailPointerModel.shared.railFit else { return "no rail" }
+            // One runloop turn per move (about 30 ms), as a pointer's moves
+            // arrive: a single turn for all twenty would coalesce them into one
+            // transaction and hide a per-move invalidation.
             for step in 0..<steps {
                 RailPointerModel.shared.track(dx: step % 2 == 0 ? 12 : 0,
                                               y: 12.5 * fit.pitch,
                                               zone: RailApproach.zone,
                                               reduceMotion: railReduceMotion)
+                RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.03))
             }
             return nil
         case "deckbodycount":
