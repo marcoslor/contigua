@@ -154,8 +154,15 @@ class SessionTest {
         error("never received '$t'")
     }
 
-    private fun hello(clientId: String, name: String) {
-        send(mapOf("t" to "hello", "v" to 3, "clientId" to clientId, "name" to name))
+    /**
+     * The Mac's hello. [pairing] is the user-driven pairing's own field
+     * (PAIR-23): without it the phone reads the Mac as one that believes it is
+     * paired and answers `not_paired`.
+     */
+    private fun hello(clientId: String, name: String, pairing: Boolean = false) {
+        val fields = mutableMapOf<String, Any?>("t" to "hello", "v" to 3, "clientId" to clientId, "name" to name)
+        if (pairing) fields["pair"] = true
+        send(fields)
     }
 
     private fun authenticate(clientId: String, name: String = "MacBook"): Map<String, Any?> {
@@ -233,7 +240,7 @@ class SessionTest {
      */
     @Test
     fun pairingCommitsThenRevealsAndTheCodeMatchesTheInputs() {
-        hello("c2", "NewMac")
+        hello("c2", "NewMac", pairing = true)
         send(mapOf("t" to "pair.request"))
         val commit = readUntil("pair.commit")
         send(mapOf("t" to "pair.nonce", "n" to "3fb962da6c0eaaee44a7a16a2bcf9c97")) // vector B Nm
@@ -265,7 +272,7 @@ class SessionTest {
                 session!!.respondPairing(req.requestId, true)
             }.start()
         }
-        hello("c2", "NewMac")
+        hello("c2", "NewMac", pairing = true)
         send(mapOf("t" to "pair.request"))
         readUntil("pair.commit")
         send(mapOf("t" to "pair.nonce", "n" to "0".repeat(32)))
@@ -287,7 +294,7 @@ class SessionTest {
         // push a notify toggle and the person's own panel can change at any
         // time; both are post-welcome state. Before the fix, `notify.state`
         // landed where the Mac expected `pair.reveal` (boot 1 of the rig).
-        hello("c9", "NewMac")
+        hello("c9", "NewMac", pairing = true)
         send(mapOf("t" to "pair.request"))
         readUntil("pair.commit")
 
@@ -312,7 +319,7 @@ class SessionTest {
     }
 
     @Test
-    fun denyReportsPairDeniedAndCloses() {        hello("c3", "Bad")
+    fun denyReportsPairDeniedAndCloses() {        hello("c3", "Bad", pairing = true)
         send(mapOf("t" to "pair.request"))
         readUntil("pair.commit")
         send(mapOf("t" to "pair.nonce", "n" to "0".repeat(32)))
@@ -330,7 +337,7 @@ class SessionTest {
         runCatching { serverSocket.close() }
         val cooldown = PairCooldown()
         connect(pairDecisionTimeoutMs = 500, pairCooldown = cooldown)
-        hello("c4", "Slow")
+        hello("c4", "Slow", pairing = true)
         send(mapOf("t" to "pair.request"))
         readUntil("pair.commit")
         send(mapOf("t" to "pair.nonce", "n" to "0".repeat(32)))
@@ -352,7 +359,7 @@ class SessionTest {
         var ms = 1_000L
         val cooldown = PairCooldown(now = { ms })
         connect(pairDecisionTimeoutMs = 5_000, pairCooldown = cooldown)
-        hello("c7", "Spam")
+        hello("c7", "Spam", pairing = true)
         send(mapOf("t" to "pair.request"))
         readUntil("pair.commit")
         send(mapOf("t" to "pair.nonce", "n" to "0".repeat(32)))
@@ -364,7 +371,7 @@ class SessionTest {
         runCatching { client.close() }
         runCatching { serverSocket.close() }
         connect(pairDecisionTimeoutMs = 5_000, pairCooldown = cooldown)
-        hello("c8", "SpamAgain")
+        hello("c8", "SpamAgain", pairing = true)
         send(mapOf("t" to "pair.request"))
         // PAIR-5: the cooldown has its own code, so the Mac can say "wait a
         // moment" instead of repeating a denial the person already saw.
@@ -375,14 +382,14 @@ class SessionTest {
         runCatching { client.close() }
         runCatching { serverSocket.close() }
         connect(pairDecisionTimeoutMs = 5_000, pairCooldown = cooldown)
-        hello("c9", "Later")
+        hello("c9", "Later", pairing = true)
         send(mapOf("t" to "pair.request"))
         readUntil("pair.commit")
     }
 
     @Test
     fun macHangingUpDismissesThePhonePrompt() {
-        hello("c5", "Cancelling")
+        hello("c5", "Cancelling", pairing = true)
         send(mapOf("t" to "pair.request"))
         readUntil("pair.commit")
         send(mapOf("t" to "pair.nonce", "n" to "0".repeat(32)))
@@ -399,7 +406,7 @@ class SessionTest {
 
     @Test
     fun answeringAfterAllowIsIgnored() {
-        hello("c6", "Twice")
+        hello("c6", "Twice", pairing = true)
         send(mapOf("t" to "pair.request"))
         readUntil("pair.commit")
         send(mapOf("t" to "pair.nonce", "n" to "0".repeat(32)))
@@ -418,7 +425,7 @@ class SessionTest {
         runCatching { client.close() }
         runCatching { serverSocket.close() }
         connect(pairDecisionTimeoutMs = 1000, autoApprovePairing = false)
-        hello("cAutoFalse", "MacAutoFalse")
+        hello("cAutoFalse", "MacAutoFalse", pairing = true)
         send(mapOf("t" to "pair.request"))
         readUntil("pair.commit")
         send(mapOf("t" to "pair.nonce", "n" to "0".repeat(32)))
@@ -433,7 +440,7 @@ class SessionTest {
         runCatching { client.close() }
         runCatching { serverSocket.close() }
         connect(pairDecisionTimeoutMs = 30_000, autoApprovePairing = true)
-        hello("cAuto", "MacAuto")
+        hello("cAuto", "MacAuto", pairing = true)
         send(mapOf("t" to "pair.request"))
         readUntil("pair.commit")
         send(mapOf("t" to "pair.nonce", "n" to "0".repeat(32)))
@@ -1256,11 +1263,52 @@ class SessionTest {
     fun pairingsOffRefusesAnUnknownMacBeforeAnyCode() {
         closeCurrent()
         connect(pairDecisionTimeoutMs = 30_000, gates = { GateSettings(true, false) })
-        hello("unknown", "Mac")
+        hello("unknown", "Mac", pairing = true)
         // The refusal is the first frame: no pair.commit (the code) ever went out.
         val first = readJson()
         assertEquals("error", first["t"])
         assertEquals("pairing_off", first["code"])
+    }
+
+    /**
+     * PAIR-23 (bug 2): a Mac that still holds this phone's pin but was forgotten
+     * here is told at once. Left in the pairing phase it waits for a
+     * `pair.request` that a Mac which believes it is paired never sends, and
+     * its 15 s handshake timeout is the only thing that ever ends it.
+     */
+    @Test
+    fun anUnpinnedHelloIsAnsweredNotPairedAtOnce() {
+        closeCurrent()
+        connect(pairDecisionTimeoutMs = 30_000)
+        client.soTimeout = 1_000
+        val started = System.currentTimeMillis()
+        hello("forgotten", "Mac")
+        val error = readUntil("error")
+        val elapsedMs = System.currentTimeMillis() - started
+        assertEquals("not_paired", error["code"])
+        assertTrue("the answer took ${elapsedMs}ms", elapsedMs < 1_000)
+    }
+
+    /**
+     * PAIR-23 with "Allow new pairings" off: PAIR-12 stands — a peer the phone
+     * pins nothing for is closed at once without a reply, not left hanging
+     * until the handshake timeout.
+     */
+    @Test
+    fun aForgottenMacIsClosedAtOnceWithPairingsOff() {
+        closeCurrent()
+        connect(pairDecisionTimeoutMs = 30_000, gates = { GateSettings(true, false) })
+        client.soTimeout = 1_500
+        val started = System.currentTimeMillis()
+        hello("forgotten", "Mac")
+        val outcome = runCatching { client.getInputStream().read() }
+        val elapsedMs = System.currentTimeMillis() - started
+        assertTrue(
+            "a forgotten Mac was still waiting after ${elapsedMs}ms: $outcome",
+            outcome.isSuccess,
+        )
+        assertEquals("a forgotten Mac got a reply", -1, outcome.getOrNull())
+        assertTrue("the close took ${elapsedMs}ms", elapsedMs < 1_000)
     }
 
     @Test
@@ -1292,7 +1340,7 @@ class SessionTest {
         closeCurrent()
         val gates = AtomicReference(GateSettings(true, true))
         connect(pairDecisionTimeoutMs = 30_000, gates = { gates.get() })
-        hello("unknown", "Mac")
+        hello("unknown", "Mac", pairing = true)
         send(mapOf("t" to "pair.request"))
         readUntil("pair.commit")
         gates.set(GateSettings(true, false))

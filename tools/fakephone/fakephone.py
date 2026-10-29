@@ -2023,8 +2023,12 @@ class Session(object):
             # The phone's master switch: every Mac, paired or not.
             return self._refuse("connections_off", "refused_connections")
         if self.phone.args.refuse_pairings and self.phone.store.pinned_for(self.client_id) is None:
-            # The pairing switch: unknown Macs only, before any code exists.
-            return self._refuse("pairing_off", "refused_pairing")
+            # The pairing switch: unknown Macs only, before any code exists. A
+            # Mac that asked to pair is refused in words; one that believes it
+            # is paired is closed without a reply (docs/specs/pairing.md PAIR-12).
+            if msg.get("pair"):
+                return self._refuse("pairing_off", "refused_pairing")
+            return False
         if self.phone.args.legacy_phone:
             # A v1 phone answers hello with its challenge and then waits for
             # auth like any v1 phone would; the v2 Mac surfaces the version
@@ -2058,6 +2062,12 @@ class Session(object):
         pending = self.phone.store.pending_qr
         if self._pending_qr_fresh(pending) and (pending["macFp"] or "").lower() == self.mac_fp_hex:
             return self.pair_qr_flow(pending)
+        if not msg.get("pair"):
+            # A Mac that holds our pin but which this phone forgot: the phone
+            # says so at once (PAIR-23) instead of leaving it in the pairing
+            # phase until its own handshake timeout.
+            return self._refuse("not_paired", "refused_not_paired",
+                                "this phone does not have a pairing with this Mac")
         return self.pair_request_flow()
 
     def _pending_qr_fresh(self, pending):
@@ -3557,12 +3567,12 @@ class Session(object):
             self._send_error("no_stream", "unknown stream %r" % (stream_id,), stream_id)
         return window
 
-    def _refuse(self, code, state):
+    def _refuse(self, code, state, message=None):
         """Send a gate refusal and hold the socket until the Mac reads it and
         closes (the same write-then-close shape the real phone uses)."""
         self.phone.events.session(state)
-        self._send_error(code, "the phone is not accepting %s" %
-                         ("connections" if code == "connections_off" else "new pairings"))
+        self._send_error(code, message or ("the phone is not accepting %s" %
+                         ("connections" if code == "connections_off" else "new pairings")))
         while True:
             try:
                 if proto.recv_frame(self.sock) is None:
@@ -3890,6 +3900,10 @@ class FakePhone(object):
         self.person_dnd_done = False
         tls_guard()
         self.store = Store(args.state)
+        if args.forget_macs and self.store.clients:
+            # The phone's Forget All: the pins go, the identity and id stay.
+            self.store.clients = {}
+            self.store.save()
         if args.qr_uri:
             scan_qr_uri(self.store, args.qr_uri)
         # One identity per state file's directory, so restarts keep serving the
@@ -4117,6 +4131,9 @@ def build_parser():
     p.add_argument("--no-mdns", action="store_true", help="do not advertise over mDNS")
     p.add_argument("--refuse-connections", action="store_true",
                    help="refuse every Mac at the handshake (the phone's Allow connections switch is off)")
+    p.add_argument("--forget-macs", action="store_true",
+                   help="forget every pinned Mac at start (the phone's Forget All); "
+                        "the identity and the device id stay")
     p.add_argument("--refuse-pairings", action="store_true",
                    help="refuse unknown Macs at the handshake (the phone's Allow new pairings switch is off)")
     p.add_argument("--auto-allow", action="store_true",

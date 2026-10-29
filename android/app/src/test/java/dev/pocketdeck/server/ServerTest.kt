@@ -255,7 +255,7 @@ class ServerTest {
     fun droppingSessionsNeverWaitsForASlowClose() {
         val session = FakeLiveSession(java.util.concurrent.CountDownLatch(1))
         val dropper = SessionDropper(log = {})
-        dropper.adopt { session }
+        dropper.adopt(null, false) { session }
         val server = Server(
             { _, _ -> error("this test accepts no socket") },
             log = {},
@@ -361,6 +361,66 @@ class ServerTest {
             server.stop()
         }
     }
+
+    /**
+     * PAIR-21: a Mac whose own session is still live (a network drop the phone
+     * has not noticed) is adopted at once instead of hearing `busy` until the
+     * kernel gives up on the vanished peer. A different Mac still gets `busy`.
+     */
+    @Test
+    fun theSamePinnedMacSupersedesItsOwnLiveSession() {
+        val platform = FakePlatform()
+        platform.clients.add(PairedClient("c1", "MacBook", TlsV2Fixture.MAC_FP_HEX))
+        val phoneIdentity = TestTls.generate("PocketDeck Phone (supersede test)")
+        val macA = TestTls.generate("PocketDeck Mac (A)")
+        val macB = TestTls.generate("PocketDeck Mac (B)")
+        val logs = java.util.Collections.synchronizedList(mutableListOf<String>())
+        val server = Server({ socket, plain -> sessionFor(platform, socket, plain) }, log = { logs.add(it) },
+            { phoneIdentity.certPem }, { phoneIdentity.keyP8 }, { GateSettings(true, true) },
+            { listOf(fingerprintHex(macA)) })
+        val port = server.start()
+        try {
+            client(port, macA, phoneIdentity).use { first ->
+                val firstReader = FrameReader(first.getInputStream())
+                first.getOutputStream().write(
+                    Frames.encodeJson(0, Json.encode(mapOf("t" to "hello", "v" to 3, "clientId" to "c1", "name" to "MacBook"))),
+                )
+                first.getOutputStream().flush()
+                assertEquals("welcome", readJson(firstReader)["t"])
+
+                // A different Mac is not the same person coming back.
+                client(port, macB, phoneIdentity).use { other ->
+                    val reader = FrameReader(other.getInputStream())
+                    other.getOutputStream().write(
+                        Frames.encodeJson(0, Json.encode(mapOf("t" to "hello", "v" to 3, "clientId" to "c1", "name" to "MacBook"))),
+                    )
+                    other.getOutputStream().flush()
+                    val error = readJson(reader)
+                    assertEquals("error", error["t"])
+                    assertEquals("busy", error["code"])
+                }
+
+                val started = System.nanoTime()
+                client(port, macA, phoneIdentity).use { again ->
+                    val reader = FrameReader(again.getInputStream())
+                    again.getOutputStream().write(
+                        Frames.encodeJson(0, Json.encode(mapOf("t" to "hello", "v" to 3, "clientId" to "c1", "name" to "MacBook"))),
+                    )
+                    again.getOutputStream().flush()
+                    assertEquals("welcome", readJson(reader)["t"])
+                }
+                val elapsedMs = (System.nanoTime() - started) / 1_000_000
+                assertTrue("the same Mac waited ${elapsedMs}ms to be adopted", elapsedMs < 2_000)
+                assertTrue("the supersede left no line", logs.contains("session superseded"))
+            }
+        } finally {
+            server.stop()
+        }
+    }
+
+    private fun fingerprintHex(identity: TestTls.Identity): String = dev.pocketdeck.e2ee.KeyPin.toHex(
+        dev.pocketdeck.e2ee.KeyPin.fingerprint(identity.cert.publicKey as java.security.interfaces.ECPublicKey),
+    )
 
     private fun sessionFor(platform: FakePlatform, socket: Socket, plain: Socket): Session = Session(
         socket = socket,
