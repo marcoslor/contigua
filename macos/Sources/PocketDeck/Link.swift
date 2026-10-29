@@ -346,6 +346,14 @@ struct LinkMachine {
             // v2: the TLS-level pairing state died, or the phone no longer pins
             // this Mac at all (PAIR-23); retries never fix it, the re-pair hint
             // handles the person's next step.
+            //
+            // A retry to a phone whose pairing switch is off cannot present a
+            // pin at all, so its `no-pin` is that same refusal, not a lost key:
+            // the sentence and the backoff stay (PAIR-13).
+            if reason == "no-pin", case .offline(_, .pairingsOff) = link {
+                failures += 1
+                return [.attempt(after: ReconnectPolicy.delay(afterFailures: failures))]
+            }
             link = .needsPairing(phone)
             return [.stopAttempts]
         case "closed-early":

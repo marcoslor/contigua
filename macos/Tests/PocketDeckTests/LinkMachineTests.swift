@@ -145,6 +145,21 @@ final class LinkMachineTests: XCTestCase {
         XCTAssertEqual(machine.link.chip, Chip(text: "Pair again", style: .orange))
     }
 
+    func testARetryWhilePairingsAreOffKeepsItsSentenceAndBackoff() {
+        var machine = LinkMachine()
+        machine.handle(.launch(phone), at: t0)
+        XCTAssertEqual(machine.handle(.attemptFailed(reason: "pairing_off"), at: at(1)), [.attempt(after: 1)])
+        XCTAssertEqual(machine.link, .offline(phone, .pairingsOff))
+        XCTAssertEqual(machine.link.banner?.text, "Pixel 9 isn't accepting new pairings.")
+        // The retry cannot present a pin at all: that is the same refusal, not a
+        // lost key (it used to become "no longer trusts this Mac" a second in).
+        XCTAssertEqual(machine.handle(.attemptFailed(reason: "no-pin"), at: at(2)), [.attempt(after: 2)])
+        XCTAssertEqual(machine.link, .offline(phone, .pairingsOff))
+        XCTAssertEqual(machine.link.banner?.text, "Pixel 9 isn't accepting new pairings.")
+        XCTAssertEqual(machine.handle(.attemptFailed(reason: "pairing_off"), at: at(4)), [.attempt(after: 4)])
+        XCTAssertEqual(machine.link.banner?.text, "Pixel 9 isn't accepting new pairings.")
+    }
+
     func testASilentEarlyCloseNeedsPairingOnlyTheSecondTimeInARow() {
         var machine = LinkMachine()
         machine.handle(.launch(phone), at: t0)
