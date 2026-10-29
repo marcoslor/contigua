@@ -156,7 +156,18 @@ display id on every injected event.
 4. Phone → `{"t":"welcome","device":{"id":..,"name":..,"model":..,"sdk":36,
    "screen":{"w":1080,"h":2340,"dpi":450},"locked":true}}`. The phone allows
    exactly one session at a time: a second connection gets
-   `{"t":"error","code":"busy","message":"one session at a time"}` and a close.
+   `{"t":"error","code":"busy","message":"one session at a time"}` and a close —
+   unless it is the live session's own pinned Mac (a network drop the phone has
+   not noticed yet): the phone drops the stale session, waits for its teardown
+   to release the phone's shared state (at most 2 s) and adopts the new
+   connection; at the bound it answers `busy`. A different Mac, an unpinned peer
+   and a peer that has not authenticated always get `busy`.
+5. Every accepted session socket carries TCP keepalive (`SO_KEEPALIVE`,
+   `TCP_KEEPIDLE` 20 s, `TCP_KEEPINTVL` 5 s, `TCP_KEEPCNT` 4) and
+   `TCP_USER_TIMEOUT` 40 000 ms. A Mac that vanished without a FIN is therefore
+   ended by the kernel in about 40 s instead of at the retransmit give-up
+   (~15 min), and a healthy Mac is never dropped: its kernel answers the probes
+   while the Mac app sleeps. A live session has no app-level read deadline.
 
 Nothing but `hello`, `pair.request`, `pair.nonce` and `pair.ok` is accepted
 before `welcome`; anything else is `{"t":"error","code":"protocol"}` and a
