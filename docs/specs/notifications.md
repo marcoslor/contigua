@@ -1,6 +1,6 @@
 # Notifications
 
-Prefix: `NOTIFY`. Owner docs: [design/notify.md](../design/notify.md) (all parts), [PROTOCOL.md](../PROTOCOL.md) § "Notifications + media", [UX.md](../UX.md) §4 (the per-phone switches), [settings.md](settings.md) (`SET-DEV-09`–`11`). Last reviewed: 2026-10-27, against main `6073e3c`.
+Prefix: `NOTIFY`. Owner docs: [design/notify.md](../design/notify.md) (all parts), [PROTOCOL.md](../PROTOCOL.md) § "Notifications + media", [UX.md](../UX.md) §4 (the per-phone switches), [settings.md](settings.md) (`SET-DEV-09`–`11`). Last reviewed: 2026-10-28, against `68ce259` (v119).
 
 ## Purpose
 
@@ -47,6 +47,82 @@ This surface owns the gate, the banners and their content, the click target, act
 | NOTIFY-18 | Banners SHALL be the system's: the person's Focus and Do Not Disturb SHALL silence them as they silence any notification, and the app SHALL NOT override that; a phone's own Do Not Disturb is the phone's business and SHALL NOT be changed by forwarding. | review of `NotifyCenter` (nothing sets `interruptionLevel`/`sound`); AGENTS.md product promises |
 
 Priority note: NOTIFY-1, 2, 3, 4, 6, 7, 8, 9 and 14 are P1 — the gate, an honest banner, a click that goes where it says, and no text in a log. Codes, pictures, live rows and the mute list are P2.
+
+## Case matrix
+
+Every Android notification shape the listener can meet, what Android does with it, what the
+Mac does today (the code that decides it), what it should do, and the check that proves the
+row. **Status is the state at `68ce259` (v119)**: `OK` matches Android already, `GAP` is
+missing behaviour, `BUG` is behaviour that is demonstrably wrong. A row this round fixes keeps
+its `BUG`/`GAP` status as the record of the report, and names the fix's requirement and proof.
+
+Plain posts and updates:
+
+| # | Shape | Android | Mac today | Mac should | Status | Proof |
+|---|---|---|---|---|---|---|
+| 1 | A plain post (new key, alerting) | One banner, one alert | `NotifyCenter.post` → `deliver` adds a request (`NotifyCenter.swift` `post`, `deliver`); thread = the phone's id | The same | OK | e2e `notify` `[NOTIFY-4]`, `[NOTIFY-5]` |
+| 2 | An update in place (same key) with changed content, alerting | Replaces the notification; alerts again (the app can silence it) | Every post is delivered; re-adding a delivered identifier alerts again (`UNUserNotificationCenter.h`, `addNotificationRequest`: "will alert for the new notification request") | Present an alerting update as Android would; a quiet one must not present (rows 3–4) | OK | e2e `notify-actions` `[NOTIFY-19]` (the alerting first post), K2 `NotifyMacTests` |
+| 3 | An update with `FLAG_ONLY_ALERT_ONCE` | Replaces silently | The Mac cannot tell; the post carries no alert decision, so it banners again (`PdNotificationListener.kt` `onNotificationPosted`; `NotifyCenter.swift` `deliver`) | The phone marks it `alert:false`; the Mac replaces the delivered banner without presenting it (`.passive`) | BUG | e2e `notify-actions` `[NOTIFY-19]`; K1 `NotifyEventsTest` (the decision); K2 `NotifyMacTests` |
+| 4 | An update whose title and text did not change | As the app says; a repeated identical notification is another post | Banners again (same path) | The phone marks it `alert:false` (hashes kept in memory, never the text); the Mac replaces it quietly | BUG | e2e `notify-actions` `[NOTIFY-19]`; K1 `NotifyEventsTest` (hash and decision) |
+| 5 | A silent or low-importance (MIN) channel | No sound; a MIN channel does not appear in the shade at all | Not read: the importance/channel is not on the wire and every post banners (`NotifyEvents.notificationEvent`) | Mirror the channel: a MIN channel is not forwarded, a LOW one never presents | GAP | MISSING |
+| 6 | A determinate progress update whose text changes each tick, from an app that did not set `FLAG_ONLY_ALERT_ONCE` | Alerts each time the app says so; progress apps normally set the flag | Every tick banners | Quiet once the bar only moves (`EXTRA_PROGRESS` changed, title/text otherwise the same) | GAP | MISSING |
+| 7 | An indeterminate progress update whose text did not change | One notification, no fraction | Banners each tick | Quiet: the content did not change (row 4's rule) | BUG | e2e `notify-actions` `[NOTIFY-19]` (the unchanged-content case) |
+
+Ongoing:
+
+| # | Shape | Android | Mac today | Mac should | Status | Proof |
+|---|---|---|---|---|---|---|
+| 8 | An ongoing notification the system did not promote | Persistent, not dismissable, service chrome | Skipped (`PdNotificationListener.kt` `onNotificationPosted`, `NotifyEvents.promoted`) | Keep skipping (the spec's open question names why) | OK | K1 `NotifyLiveTest` ("only a promoted ongoing notification is live") |
+| 9 | A foreground-service notification | Persistent chrome | Skipped with row 8 | Keep skipping | OK | K1 `NotifyLiveTest` |
+
+Groups:
+
+| # | Shape | Android | Mac today | Mac should | Status | Proof |
+|---|---|---|---|---|---|---|
+| 10 | A group child (no summary seen) | One notification in the group | Each child is its own banner; thread = the phone's id, so every notification of the phone shares one thread (`NotifyCenter.swift` `deliver`) | Thread per group (`<phoneId>.<group hash>`) | BUG | e2e `notify-actions` `[NOTIFY-20]`; K2 `NotifyMacTests` (the thread) |
+| 11 | A group summary while its children are forwarded | Replaces the group's children in the shade with one summary | The summary is forwarded as its own post: a second banner on top of the children (`PdNotificationListener.kt` `onNotificationPosted` has no group rule; the wire had no group) | The phone does not forward a summary while a forwarded child of that group is active; when a child arrives after a forwarded summary it sends `notify.remove` for the summary first | BUG | e2e `notify-actions` `[NOTIFY-20]`; K1 `NotifyGroupMachineTest` (every transition) |
+| 12 | A group summary with no forwarded children | One summary | Banners as a plain post | Banner it, threaded under its group | BUG | e2e `notify-actions` `[NOTIFY-20]`; K1 `NotifyGroupMachineTest` |
+| 13 | `GROUP_ALERT_SUMMARY` / `GROUP_ALERT_CHILDREN` | Chooses which of the summary and the children alert | Not read; both banner | One alerting post per parent group, as the app asked | GAP | MISSING |
+
+Conversations, media, calls:
+
+| # | Shape | Android | Mac today | Mac should | Status | Proof |
+|---|---|---|---|---|---|---|
+| 14 | A conversation (MessagingStyle) with a new message on the same key | Replaces the conversation notification, one alert | Reads `EXTRA_TITLE`/`EXTRA_TEXT`/`EXTRA_BIG_TEXT` only (`PdNotificationListener.kt` `onNotificationPosted`), so a MessagingStyle post whose last message lives in `EXTRA_MESSAGES` can be dropped as "no title and no text" (`NotifyEvents.notificationEvent`) | Read the last message of `EXTRA_MESSAGES` (sender + text) when `EXTRA_TEXT` is absent, and mark the sender | GAP | MISSING |
+| 15 | A conversation with an inline reply | A RemoteInput in the shade | The reply action is advertised and `notify.action` fills the RemoteInput (`NotifyEvents.selectActions`; `PdNotificationListener.kt` `deliverAction`) | The same | OK | e2e `notify-actions` `[NOTIFY-9]`; K1 `NotifyEventsTest` |
+| 16 | Media (MediaStyle) | A media notification with artwork and transport buttons | Forwarded as a banner, while Now Playing carries the same session (`ConnectionController.swift` `.notifyPosted`) | Do not double a media session as a banner; the media surface owns it | GAP | MISSING |
+| 17 | Call style, incoming | Full-screen intent, ringing, ongoing | Skipped: ongoing and not promoted (`PdNotificationListener.kt` `onNotificationPosted`) | A call reaches the Mac, or the person is told calls are not forwarded | GAP | MISSING |
+| 18 | Call style, ongoing | Persistent call chrome | Skipped (row 8) | Row 17's decision covers it | GAP | MISSING |
+
+Actions, priority, silence:
+
+| # | Shape | Android | Mac today | Mac should | Status | Proof |
+|---|---|---|---|---|---|---|
+| 19 | A notification with actions | Up to three buttons, a reply field | Up to three advertised; the phone's own index (`NotifyEvents.selectActions`) | The same | OK | e2e `notify-actions` `[NOTIFY-9]`; K1 `NotifyEventsTest` |
+| 20 | Heads-up vs low priority | Importance decides the heads-up | Not read; every forwarded post presents | LOW importance never presents; DEFAULT/HIGH present as today | GAP | MISSING |
+| 21 | The Mac's Do Not Disturb / Focus | — | The banners are the system's; `sound = nil` and nothing sets a level above `.active` (`NotifyCenter.swift` `deliver`) | Focus silences them as it silences any notification | OK | NOTIFY-18; review |
+| 22 | The phone's own Do Not Disturb | The notification is posted or suppressed on the phone | Forwarding neither reads nor changes it | Leave it alone | OK | review (NOTIFY-18) |
+
+Removal:
+
+| # | Shape | Android | Mac today | Mac should | Status | Proof |
+|---|---|---|---|---|---|---|
+| 23 | The app removes its own notification | Gone from the shade | `notify.remove` drops the banner and its attachment (`PdNotificationListener.kt` `onNotificationRemoved`; `NotifyCenter.swift` `remove`) | The same | OK | e2e `notify` `[NOTIFY-6]`, `notify-media` |
+| 24 | The person removes it on the phone | Gone | Same path (the listener reports every removal) | The same | OK | e2e `notify-actions` `[NOTIFY-6]` |
+| 25 | It times out | Gone | Same path | The same | OK | e2e `notify` `[NOTIFY-6]` |
+| 26 | The person clears the Mac banner | — | `notify.dismiss`; refused for ongoing and no-clear (`NotifyCenter.swift` `performDismiss`; `PdNotificationListener.kt` `deliverDismiss`) | The same | OK | e2e `notify-actions` `[NOTIFY-6]`; K1 `NotifyEventsTest` |
+
+Android 16 Live Updates (promoted ongoing) — **audit only this round: no change to live rows or their surface**:
+
+| # | Shape | Android | Mac today | Mac should | Status | Proof |
+|---|---|---|---|---|---|---|
+| 27 | A Live Update with progress (download, navigation, delivery) | Promoted; a live chip with a bar | First post banners; later posts update the in-panel row at most once a second (`NotifyLiveStore`; `NotifyCenter.swift` `post`) | The same | OK | e2e `notify-media`; K2 `NotifyLiveMacTests` |
+| 28 | A Live Update timer or stopwatch | Promoted; a running clock | A live row with a chronometer (`NotifyLiveItem.chrono`, `countDown`) | The same | OK | e2e `notify-media`; K2 `NotifyLiveMacTests` |
+| 29 | A Live Update for a match (chip and progress) | Promoted; a chip | The chip and the bar (`NotifyLive.chip`) | The same | OK | e2e `notify-media`; K2 `NotifyLiveMacTests` |
+| 30 | A Live Update with neither progress, chip nor chronometer (a flashlight) | Promoted; the row is the control | A row whose label is only the app (`NotifyEvents.liveWire` returns an empty object; the menu row shows the app) | Say the activity is live and what it is | GAP | MISSING |
+| 31 | A Live Update ends | Promoted flag cleared, or removed | `notify.remove` ends the row (`NotifyLiveStore.end`) | The same | OK | e2e `notify-media` |
+| 32 | A Live Update updates faster than once a second | The system draws each change | Coalesced to one per second, newest wins (`NotifyLiveThrottle`; `NotifyLiveStore`) | The same | OK | e2e `notify-media` (measured gaps); K1 `NotifyLiveTest` |
+| 33 | An ongoing notification while the system did not promote it | Service chrome | Skipped (row 8) | Keep skipping | OK | K1 `NotifyLiveTest` |
 
 ## States and events
 
