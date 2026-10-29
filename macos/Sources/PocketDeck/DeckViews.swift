@@ -912,6 +912,7 @@ struct AppGrid: View {
     let query: String
     let navigator: GridNavigator
     @AppStorage(DeckZoom.key, store: Profile.active.defaults) private var zoom = 1.0
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// The letter at the top of the grid, and the last scroll position that
     /// produced it (the rail's accent and the e2e's landing proof).
     @State private var currentLetter: String?
@@ -922,7 +923,14 @@ struct AppGrid: View {
     private var metrics: DeckGridSize { DeckGridSize(zoom: CGFloat(zoom)) }
 
     var body: some View {
-        ScrollViewReader { proxy in
+        #if PD_TEST_HOOKS
+        // The e2e's pointer-move proof counts grid bodies (deckbodycount); a
+        // count that moves is the regression, so the call sits here, not in a
+        // child the pointer could invalidate.
+        DeckGridProbe.noteBody()
+        #endif
+        return ScrollViewReader { proxy in
+
             ScrollView {
                 Group {
                     if apps.isEmpty && !controller.appsLoaded && query.isEmpty {
@@ -960,6 +968,11 @@ struct AppGrid: View {
             // width (the clipped edges during a zoom).
             .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { outer in
                 DeckGridMetrics.noteViewport(outer)
+                // The approach zone is measured from the rail's leading edge,
+                // at a y in the rail's own space, so a hover point needs the
+                // container's size. Written only on a change, and only the
+                // rail reads it.
+                RailPointerModel.shared.noteContainerSize(outer.size)
                 // Arrow keys move by the drawn columns. The drawn layout comes
                 // from the layout pass itself (DeckGridLayout); this is only
                 // the keyboard's copy of the same number and no view reads it.
@@ -999,9 +1012,13 @@ struct AppGrid: View {
                         }
                         Color.clear.frame(width: 1, height: 1)
                     }
-                    .padding(.trailing, 18)
+                    .padding(.trailing, DeckIndexRail.trailingPadding)
                 }
             }
+            // The pointer is tracked on the grid's container, so the approach
+            // zone covers the grid plus the rail. Tracking only: the zone never
+            // takes a click or a hover from the last icon column.
+            .onContinuousHover { phase in trackRail(phase) }
             .onChange(of: navigator.selection) { _, pkg in
                 if let pkg { withAnimation(.smooth(duration: 0.15)) { proxy.scrollTo(pkg) } }
             }
@@ -1079,6 +1096,35 @@ struct AppGrid: View {
         }
     }
 
+    /// The container hover, reduced to where the pointer is relative to the
+    /// rail: `dx` points left of its leading edge, 0 inside it. The zone comes
+    /// from `--debug-proto railzone=A<n>`; absent, `dx` 0 is today's on/off.
+    private func trackRail(_ phase: HoverPhase) {
+        let model = RailPointerModel.shared
+        guard DeckRail.shows(count: cells.count, query: query) else {
+            model.leave(reduceMotion: reduceMotion)
+            return
+        }
+        switch phase {
+        case .active(let point):
+            // Before the first layout there is no container size to measure
+            // against; the next hover point corrects it.
+            guard model.containerSize.width > 0 else { return }
+            // The rail is centred vertically in the container (the trailing
+            // overlay), so the hover's y is shifted by that gap to reach the
+            // rail's own coordinate space.
+            let leading = model.containerSize.width - DeckIndexRail.trailingSpace
+            let railHeight = CGFloat(model.slots.count) * DeckRail.pitch
+            let top = max(0, (model.containerSize.height - railHeight) / 2)
+            model.track(dx: max(0, leading - point.x), y: point.y - top,
+                        zone: railZone, reduceMotion: reduceMotion)
+        case .ended:
+            model.leave(reduceMotion: reduceMotion)
+        }
+    }
+
+    private var railZone: CGFloat { RailApproach.zone }
+
     /// Nothing more is coming for this icon: the phone said it has none, or
     /// the link is down.
     private func iconIsMissing(_ app: AppInfo) -> Bool {
@@ -1127,32 +1173,18 @@ enum RailFisheye {
         let t = max(0, 1 - abs(distance) / reach)
         return 1 + (maxScale - 1) * t * t * (3 - 2 * t)
     }
-}
 
-/// The pointer over the rail as one state: hovering or dragging. A press
-/// happens over the rail, so no pair of flags can disagree.
-private enum RailPointer: Equatable {
-    case away
-    case hovering(CGFloat)
-    case dragging(CGFloat)
-
-    var position: CGFloat? {
-        switch self {
-        case .away: nil
-        case .hovering(let y), .dragging(let y): y
-        }
+    /// The approach zone's ramp (proto/rail2): full size at the rail (`dx` 0)
+    /// easing to rest at the zone's outer edge. `smoothstep` so the growth has
+    /// no corner at either end; it is the same magnification, scaled.
+    static func scale(distance: CGFloat, dx: CGFloat, zone: CGFloat,
+                      reduceMotion: Bool) -> CGFloat {
+        guard !reduceMotion else { return 1 }
+        let peak = scale(distance: distance, reduceMotion: false)
+        guard zone > 0 else { return dx <= 0 ? peak : 1 }
+        let t = min(max(1 - dx / zone, 0), 1)
+        return 1 + (peak - 1) * t * t * (3 - 2 * t)
     }
-}
-
-/// R1's forced hover for the e2e (`control deckrailhover LETTER`). A quiet run
-/// cannot move the pointer to the rail, so the shot route names the letter and
-/// the rail draws it as hovered; a real pointer's hover is its own
-/// `onContinuousHover`, proved in the VM.
-@MainActor
-@Observable
-final class DeckRailHover {
-    static let shared = DeckRailHover()
-    var letter: String?
 }
 
 /// Where the rail is on screen, for a visible VM run's real pointer
@@ -1190,13 +1222,36 @@ private struct DeckRailAnchor: NSViewRepresentable {
     }
 }
 
+/// A letter whose size follows the fisheye. A font is not itself animatable, so
+/// the size is the animation's interpolated number: the ease back to rest runs
+/// through this value frame by frame instead of swapping the glyph.
+private struct RailLetterSize: ViewModifier, Animatable {
+    var size: CGFloat
+    let weight: Font.Weight
+
+    var animatableData: CGFloat {
+        get { size }
+        set { size = newValue }
+    }
+
+    func body(content: Content) -> some View {
+        content.font(.system(size: size, weight: weight))
+    }
+}
+
 /// R1: the A–Z rail on the Deck's trailing edge, inside the content inset and
-/// clear of the scroller. The letter under the pointer magnifies and names its
-/// app count; clicking or dragging a letter jumps the grid; the letter at the
-/// top of the grid is the accent one, and a letter with no apps is dimmed.
+/// clear of the scroller. The letter near the pointer magnifies, ramped by the
+/// approach zone (proto/rail2) so it begins growing over the last icon column;
+/// on the rail it names its app count; clicking or dragging a letter jumps the
+/// grid; the letter at the top of the grid is the accent one, and a letter with
+/// no apps is dimmed.
 private struct DeckIndexRail: View {
     private static let width: CGFloat = 26
     private static let tagHeight: CGFloat = 22
+    /// The rail's gap to the scroller; the approach distance is measured from
+    /// `width + gap`, the rail's leading edge.
+    static let trailingPadding: CGFloat = 18
+    static let trailingSpace: CGFloat = width + trailingPadding
 
     let entries: [DeckRail.Entry]
     let counts: [String: Int]
@@ -1205,39 +1260,25 @@ private struct DeckIndexRail: View {
     let slots: [DeckRail.Slot]
     let pick: (String) -> Void
 
-    @State private var pointer: RailPointer = .away
     @State private var lastPicked: String?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var height: CGFloat { CGFloat(slots.count) * DeckRail.pitch }
     private var currentIndex: Int? { current.flatMap(DeckRail.letters.firstIndex(of:)) }
     private var currentLetter: String? { currentIndex.map { DeckRail.letters[$0] } }
+    /// The one pointer state; only the rail reads it, so a pointer over the
+    /// grid never invalidates the grid's body.
+    private var pointer: RailPointer { RailPointerModel.shared.state }
+    private var zone: CGFloat { RailApproach.zone }
 
-    /// The slot and real letter under the pointer (or the e2e's forced one).
+    /// The slot and real letter level with the pointer (approach included, so
+    /// a condensed slot names the letter it is growing towards).
     private var hovered: (slot: Int, letter: String)? {
-        if let forced = DeckRailHover.shared.letter,
-           let letterIndex = DeckRail.letters.firstIndex(of: forced),
-           let slot = slotIndex(containing: letterIndex) {
-            return (slot, forced)
-        }
-        guard let y = pointer.position,
-              let letter = DeckRail.letter(atY: y, slots: slots),
+        guard let position = pointer.position,
+              let letter = DeckRail.letter(atY: position.y, slots: slots),
               let letterIndex = DeckRail.letters.firstIndex(of: letter),
               let slot = slotIndex(containing: letterIndex) else { return nil }
         return (slot, letter)
-    }
-
-    /// The pointer's y for the fisheye. A forced hover has no real pointer, so
-    /// it sits in the middle of the real letter's band inside its slot.
-    private var activePosition: CGFloat? {
-        if let forced = DeckRailHover.shared.letter,
-           let letterIndex = DeckRail.letters.firstIndex(of: forced),
-           let slot = slotIndex(containing: letterIndex) {
-            let band = letterIndex - slots[slot].first
-            return CGFloat(slot) * DeckRail.pitch
-                + (CGFloat(band) + 0.5) / CGFloat(slots[slot].count) * DeckRail.pitch
-        }
-        return pointer.position
     }
 
     var body: some View {
@@ -1253,22 +1294,15 @@ private struct DeckIndexRail: View {
         .contentShape(.rect)
         .overlay(alignment: .topTrailing) { helpTag }
         .gesture(drag)
-        .onContinuousHover { phase in
-            guard !isDragging else { return }
-            switch phase {
-            case .active(let point): pointer = .hovering(point.y)
-            case .ended: pointer = .away
-            }
+        .onChange(of: slots, initial: true) { _, slots in
+            // The forced e2e position (`deckrailapproach`) resolves a letter to
+            // its band with the layout the rail is actually drawing.
+            RailPointerModel.shared.slots = slots
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("App index")
         .accessibilityValue(currentLetter ?? "")
         .accessibilityHint("Click or drag a letter to scroll to it")
-    }
-
-    private var isDragging: Bool {
-        if case .dragging = pointer { return true }
-        return false
     }
 
     private func slotIndex(containing letterIndex: Int) -> Int? {
@@ -1282,17 +1316,17 @@ private struct DeckIndexRail: View {
         let shown = hoveredHere ? (hovered?.letter ?? DeckRail.letters[slot.first])
             : containsCurrent ? (currentLetter ?? DeckRail.letters[slot.first])
             : DeckRail.letters[slot.first]
-        let scale = activePosition.map {
-            RailFisheye.scale(distance: $0 / DeckRail.pitch - (CGFloat(index) + 0.5),
-                              reduceMotion: reduceMotion)
+        let scale = pointer.position.map {
+            RailFisheye.scale(distance: $0.y / DeckRail.pitch - (CGFloat(index) + 0.5),
+                              dx: $0.dx, zone: zone, reduceMotion: reduceMotion)
         } ?? 1
-        let highlighted = reduceMotion && hoveredHere
+        let highlighted = reduceMotion && pointer.showsHelpTag && hoveredHere
         let isCurrent = shown == currentLetter
         let hasApps = range.contains { entries[$0].index != nil }
         return HStack(spacing: 0) {
             Text(shown)
-                .font(.system(size: 9 * scale,
-                              weight: isCurrent || highlighted ? .semibold : .regular))
+                .modifier(RailLetterSize(size: 9 * scale,
+                                         weight: isCurrent || highlighted ? .semibold : .regular))
             if !hoveredHere && slot.count > 1 {
                 // A bullet for each skipped letter in this slot, so the
                 // condensed rail still reads as the whole alphabet.
@@ -1316,9 +1350,11 @@ private struct DeckIndexRail: View {
     }
 
     /// The hovered real letter's tag, left of the rail and centred on its slot.
+    /// Hovering and dragging only: gliding past in the approach zone shows no
+    /// tag.
     @ViewBuilder
     private var helpTag: some View {
-        if let hovered {
+        if pointer.showsHelpTag, let hovered {
             let count = counts[hovered.letter] ?? 0
             Text(count == 0 ? "\(hovered.letter) · no apps"
                             : "\(hovered.letter) · \(count) \(count == 1 ? "app" : "apps")")
@@ -1345,7 +1381,12 @@ private struct DeckIndexRail: View {
     private var drag: some Gesture {
         DragGesture(minimumDistance: 0)
             .onChanged { value in
-                pointer = .dragging(value.location.y)
+                let model = RailPointerModel.shared
+                if model.state.isDragging {
+                    model.drag(y: value.location.y, reduceMotion: reduceMotion)
+                } else {
+                    model.press(y: value.location.y, reduceMotion: reduceMotion)
+                }
                 guard let letter = DeckRail.letter(atY: value.location.y, slots: slots),
                       letter != lastPicked else { return }
                 lastPicked = letter
@@ -1353,7 +1394,7 @@ private struct DeckIndexRail: View {
             }
             .onEnded { value in
                 lastPicked = nil
-                pointer = .hovering(value.location.y)
+                RailPointerModel.shared.release(y: value.location.y, reduceMotion: reduceMotion)
             }
     }
 }

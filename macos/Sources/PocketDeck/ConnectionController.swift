@@ -2553,6 +2553,19 @@ final class ConnectionController {
         return nil
     }
 
+    /// The forced rail position (`deckrailhover`/`deckrailapproach`): a quiet
+    /// run cannot move the pointer, so the state machine is fed the same event
+    /// the container's hover sends, and the rest of the path (ramp, help tag,
+    /// ease) is the live one.
+    private func forceRail(letter: String, dx: CGFloat) -> Bool {
+        RailPointerModel.shared.force(letter: letter, dx: dx,
+                                      reduceMotion: railReduceMotion)
+    }
+
+    private var railReduceMotion: Bool {
+        NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+    }
+
     /// `--debug-control` (DebugControl.swift): the e2e checks that share this
     /// running app reset it between them and open their windows through it.
     /// Returns nil when the command ran, else why not.
@@ -2908,18 +2921,52 @@ final class ConnectionController {
         case "deckrailhover":
             // The rail's magnification for a shot: a quiet run cannot move the
             // pointer to the rail's letters. A real pointer's hover is the
-            // rail's own onContinuousHover, proved in the VM.
+            // rail's own container tracking, proved in the VM.
             guard let letter = arguments.first, DeckRail.letters.contains(letter) else {
                 return "deckrailhover needs A-Z or #"
             }
             guard DeckWindow.window != nil else { return "no deck window" }
-            DeckRailHover.shared.letter = letter
+            guard forceRail(letter: letter, dx: 0) else { return "deckrailhover failed" }
             RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.3))
             return nil
         case "deckrailhoverout":
-            DeckRailHover.shared.letter = nil
+            RailPointerModel.shared.leave(reduceMotion: railReduceMotion)
             RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.3))
             return nil
+        case "deckrailapproach":
+            // The pointer as if it were DX points left of the rail, level with
+            // LETTER, so the approach zone can be shot and checked in a quiet
+            // run.
+            guard arguments.count == 2, DeckRail.letters.contains(arguments[0]),
+                  let dx = Double(arguments[1]), dx >= 0 else {
+                return "deckrailapproach needs A-Z or # and DX"
+            }
+            guard DeckWindow.window != nil else { return "no deck window" }
+            guard forceRail(letter: arguments[0], dx: CGFloat(dx)) else {
+                return "deckrailapproach failed"
+            }
+            RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.3))
+            return nil
+        case "deckbodycount":
+            // The grid body's evaluation count: the proof a pointer in the
+            // approach zone does not invalidate the grid.
+            guard let path = arguments.first, path.hasPrefix("/") else {
+                return "deckbodycount needs PATH"
+            }
+            #if PD_TEST_HOOKS
+            let line = "\(DeckGridProbe.bodyCount)\n"
+            return (try? line.write(toFile: path, atomically: true, encoding: .utf8)) == nil
+                ? "deckbodycount failed" : nil
+            #else
+            return "deckbodycount needs a test-hooks build"
+            #endif
+        case "deckbodyreset":
+            #if PD_TEST_HOOKS
+            DeckGridProbe.resetBodyCount()
+            return nil
+            #else
+            return "deckbodyreset needs a test-hooks build"
+            #endif
         case "deckrailpoint":
             // The letter's centre in Quartz screen coordinates, for a visible
             // VM run's real pointer.
