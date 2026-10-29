@@ -71,8 +71,8 @@ class PdNotificationListener : NotificationListenerService() {
      */
     private val lastContent = BoundedIdMap<String>(MAX_TRACKED)
 
-    /** The per-package-group forwarding states (NOTIFY-20). */
-    private val groupStates = HashMap<String, NotifyGroupState>()
+    /** The per-package-group forwarding states (NOTIFY-20), bounded like the rest. */
+    private val groupStates = BoundedIdMap<NotifyGroupState>(MAX_TRACKED)
 
     /** Which forwarded ids belong to a group, so a removal updates its state. */
     private val groupOf = BoundedIdMap<ForwardedGroup>(MAX_TRACKED)
@@ -499,9 +499,9 @@ class PdNotificationListener : NotificationListenerService() {
         event: NotifyGroupEvent,
     ): List<NotifyGroupAction> {
         val key = "$pkg\u0000$groupKey"
-        val from = groupStates[key] ?: NotifyGroupState()
+        val from = groupStates.get(key) ?: NotifyGroupState()
         val (next, actions) = NotifyGroups.transition(from, event)
-        if (next.phase == NotifyGroupPhase.EMPTY) groupStates.remove(key) else groupStates[key] = next
+        if (next.phase == NotifyGroupPhase.EMPTY) groupStates.remove(key) else groupStates.put(key, next)
         val name = when (event) {
             is NotifyGroupEvent.ChildPosted -> "child-post"
             is NotifyGroupEvent.ChildGone -> "child-gone"
@@ -511,7 +511,7 @@ class PdNotificationListener : NotificationListenerService() {
         Log.i(
             TAG,
             "notify group $pkg: ${from.phase} --$name--> ${next.phase}"
-                + " children=${next.children} actions=${actions.size}",
+                + " children=${next.children.size} actions=${actions.size}",
         )
         return actions
     }
@@ -649,7 +649,7 @@ class PdNotificationListener : NotificationListenerService() {
             groupEvent(
                 grouped.pkg,
                 grouped.groupKey,
-                if (grouped.summary) NotifyGroupEvent.SummaryGone else NotifyGroupEvent.ChildGone,
+                if (grouped.summary) NotifyGroupEvent.SummaryGone else NotifyGroupEvent.ChildGone(id),
             )
         }
         // Only an id the Mac knows about is announced: a skipped summary or a

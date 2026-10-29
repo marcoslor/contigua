@@ -276,19 +276,47 @@ object NotifyEvents {
 /** A package+group's forwarding phase (NOTIFY-20). */
 enum class NotifyGroupPhase { EMPTY, CHILDREN, SUMMARY }
 
-/** One package+group's state: which of its children are forwarded, or its summary. */
+/** One package+group's state: the forwarded children, or its summary (NOTIFY-20). */
 data class NotifyGroupState(
     val phase: NotifyGroupPhase = NotifyGroupPhase.EMPTY,
-    val children: Int = 0,
+    val children: Set<String> = emptySet(),
     val summaryId: String? = null,
-)
+) {
+    /**
+     * The child set after a post of `id`: a known child keeps its place (a chat
+     * updates its one notification per message, which is not a new child), and
+     * the oldest id is dropped past [MAX_CHILDREN] like the other maps.
+     */
+    fun withChild(id: String): NotifyGroupState {
+        val next = LinkedHashSet(children)
+        next.remove(id)
+        next.add(id)
+        while (next.size > MAX_CHILDREN) {
+            val oldest = next.firstOrNull() ?: break
+            next.remove(oldest)
+        }
+        return copy(phase = NotifyGroupPhase.CHILDREN, children = next, summaryId = null)
+    }
+
+    /** The state after `id` left; the group is empty when no child is left. */
+    fun withoutChild(id: String): NotifyGroupState {
+        val next = LinkedHashSet(children)
+        next.remove(id)
+        return if (next.isEmpty()) NotifyGroupState() else copy(children = next)
+    }
+
+    companion object {
+        /** More forwarded children than the forwarded-id map keeps. */
+        const val MAX_CHILDREN = 200
+    }
+}
 
 /** What happened to one notification of a group. */
 sealed interface NotifyGroupEvent {
-    /** A child of the group was posted by its app. */
+    /** A child of the group was posted by its app (an update of one too). */
     data class ChildPosted(val id: String) : NotifyGroupEvent
     /** A forwarded child left (the app, the person or a timeout). */
-    data object ChildGone : NotifyGroupEvent
+    data class ChildGone(val id: String) : NotifyGroupEvent
     /** The app posted the group's summary. */
     data class SummaryPosted(val id: String) : NotifyGroupEvent
     /** A forwarded summary left. */
@@ -319,21 +347,18 @@ object NotifyGroups {
         event: NotifyGroupEvent,
     ): Pair<NotifyGroupState, List<NotifyGroupAction>> = when (event) {
         is NotifyGroupEvent.ChildPosted -> when (state.phase) {
-            NotifyGroupPhase.EMPTY -> NotifyGroupState(NotifyGroupPhase.CHILDREN, 1) to listOf(NotifyGroupAction.Forward)
-            NotifyGroupPhase.CHILDREN -> state.copy(children = state.children + 1) to listOf(NotifyGroupAction.Forward)
-            NotifyGroupPhase.SUMMARY -> NotifyGroupState(NotifyGroupPhase.CHILDREN, 1) to
+            NotifyGroupPhase.EMPTY -> state.withChild(event.id) to listOf(NotifyGroupAction.Forward)
+            NotifyGroupPhase.CHILDREN -> state.withChild(event.id) to listOf(NotifyGroupAction.Forward)
+            NotifyGroupPhase.SUMMARY -> state.withChild(event.id) to
                 listOfNotNull(state.summaryId?.let { NotifyGroupAction.RemoveSummary(it) }, NotifyGroupAction.Forward)
         }
         is NotifyGroupEvent.ChildGone -> when (state.phase) {
-            NotifyGroupPhase.CHILDREN -> if (state.children <= 1) {
-                NotifyGroupState() to emptyList()
-            } else {
-                state.copy(children = state.children - 1) to emptyList()
-            }
+            NotifyGroupPhase.CHILDREN -> state.withoutChild(event.id) to emptyList()
             NotifyGroupPhase.EMPTY, NotifyGroupPhase.SUMMARY -> state to emptyList()
         }
         is NotifyGroupEvent.SummaryPosted -> when (state.phase) {
-            NotifyGroupPhase.EMPTY -> NotifyGroupState(NotifyGroupPhase.SUMMARY, 0, event.id) to listOf(NotifyGroupAction.Forward)
+            NotifyGroupPhase.EMPTY -> NotifyGroupState(NotifyGroupPhase.SUMMARY, emptySet(), event.id) to
+                listOf(NotifyGroupAction.Forward)
             NotifyGroupPhase.SUMMARY -> state.copy(summaryId = event.id) to listOf(NotifyGroupAction.Forward)
             NotifyGroupPhase.CHILDREN -> state to listOf(NotifyGroupAction.Skip)
         }
