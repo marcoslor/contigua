@@ -43,10 +43,11 @@ final class DeckPlacementTests: XCTestCase {
         XCTAssertEqual(frame, saved)
     }
 
-    /// A window that stands under the Dock still stands on its screen: a
-    /// person who left the Deck there gets it back there, not centred (the
-    /// quiet e2e's virtual display puts its visible bottom 30 pt above the
-    /// screen's).
+    /// A window that stands outside the visible frame but on its screen still
+    /// stands on it: a person (or AppKit's own constraint) left the Deck there,
+    /// so it comes back there, not centred. The quiet e2e's virtual display
+    /// keeps a 30 pt strip at its top out of the visible frame, and AppKit lets
+    /// the window's top reach the screen's top there.
     func testAFrameUnderTheDockComesBack() {
         let full = CGRect(x: 1440, y: 100, width: 1280, height: 800)
         let visible = CGRect(x: 1440, y: 100, width: 1280, height: 770)
