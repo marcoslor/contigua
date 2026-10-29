@@ -157,12 +157,18 @@ class SessionDropperTest {
             "a session was adopted over a running teardown",
             dropper.adopt(macA, pinned = true) { FakeLiveSession() },
         )
-        assertEquals(null, dropper.current())
         assertTrue(
             "no line said the hand-over gave up: $lines",
             lines.any { it.startsWith("session supersede gave up") },
         )
+        // The old session keeps the slot until its own teardown ends; a session
+        // that is closed never serves.
         gate.countDown()
+        assertTrue(old.awaitClosed())
+        assertEquals(null, dropper.current())
+        dropper.finished(old)
+        val next = FakeLiveSession()
+        assertSame("the closed session's end did not free the slot", next, dropper.adopt(macA, pinned = true) { next })
     }
 
     // ------------------------------------------------------------------
@@ -192,7 +198,7 @@ class SessionDropperTest {
         val old = FakeLiveSession(gate)
         val dropper = SessionDropper(log = {}, closer = behind(), handoffWaitMs = 150)
         dropper.adopt(macA, pinned = true) { old }
-        assertNull("the gated teardown did not answer busy", dropper.adopt(macB, pinned = false) { FakeLiveSession() })
+        assertNull("the gated teardown did not answer busy", dropper.adopt(macA, pinned = true) { FakeLiveSession() })
 
         gate.countDown()
         assertTrue(old.awaitClosed())
