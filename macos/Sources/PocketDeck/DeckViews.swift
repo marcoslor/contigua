@@ -1110,14 +1110,12 @@ struct AppGrid: View {
             // Before the first layout there is no container size to measure
             // against; the next hover point corrects it.
             guard model.containerSize.width > 0 else { return }
-            // The rail is centred vertically in the container (the trailing
-            // overlay), so the hover's y is shifted by that gap to reach the
-            // rail's own coordinate space.
-            let leading = model.containerSize.width - DeckIndexRail.trailingSpace
-            let railHeight = CGFloat(model.slots.count) * DeckRail.pitch
-            let top = max(0, (model.containerSize.height - railHeight) / 2)
-            model.track(dx: max(0, leading - point.x), y: point.y - top,
-                        zone: railZone, reduceMotion: reduceMotion)
+            // The rail is centred vertically in the container and drawn at the
+            // fitted pitch, so the hover's point is reduced to its own space in
+            // one place (RailApproach.railPoint), not with the nominal 20 pt.
+            let fit = model.railFit ?? (count: model.slots.count, pitch: DeckRail.pitch)
+            let rail = RailApproach.railPoint(hover: point, container: model.containerSize, fit: fit)
+            model.track(dx: rail.dx, y: rail.y, zone: railZone, reduceMotion: reduceMotion)
         case .ended:
             model.leave(reduceMotion: reduceMotion)
         }

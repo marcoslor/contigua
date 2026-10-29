@@ -10713,7 +10713,7 @@ PY
         # quiet run forces the same positions).
         if [ "$VISIBLE" = 1 ]; then
             for dx in 96 64 40 24 12 0; do
-                px="$(python3 -c "print(round($sx + 13 - $dx))")"
+                px="$(python3 -c "print(round($sx + 13 if $dx == 0 else $sx - $dx))")"
                 py="$(python3 -c "print(round($sy + $mcentre))")"
                 cg_input moveat --x "$px" --y "$py"
                 sleep 0.8
@@ -10972,7 +10972,7 @@ check_deck() {
                 bad "DECK the rest shot gave no M or N band"
             else
                 for dx in 96 64 40 24 12 0; do
-                    px="$(python3 -c "print(round($sx + 13 - $dx))")"
+                    px="$(python3 -c "print(round($sx + 13 if $dx == 0 else $sx - $dx))")"
                     py="$(python3 -c "print(round($sy + $mcentre))")"
                     cg_input moveat --x "$px" --y "$py"
                     sleep 0.8

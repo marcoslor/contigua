@@ -3000,6 +3000,8 @@ final class ConnectionController {
                                        "railHeight": Double(height),
                                        "containerHeight": Double(model.containerSize.height),
                                        "state": state,
+                                       "dx": Double(position?.dx ?? -1),
+                                       "y": Double(position?.y ?? -1),
                                        "tag": tag,
                                        "slots": items]
             guard let data = try? JSONSerialization.data(withJSONObject: line, options: [.sortedKeys]),
