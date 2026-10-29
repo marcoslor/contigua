@@ -179,6 +179,11 @@ NOTIFY_QUIET_INTERVAL = 0.8
 # nothing changed. The one banner that reaches Notification Center must present.
 NOTIFY_HOLD_ID = "pd-q2"
 NOTIFY_HOLD_GAP = 0.1
+# NOTIFY-19 (r3): a first post with alert:false is added quietly, not presented.
+NOTIFY_QUIET_ADD_ID = "pd-q3"
+# Row 6 (NOTIFY-19): a download whose bar moves; the last post drops the bar.
+NOTIFY_PROGRESS_ID = "pd-p1"
+NOTIFY_PROGRESS_TICKS = 5
 
 # NOTIFY-20 (docs/specs/notifications.md): a child of a group, its summary (which
 # a fixed phone does not forward while the child is active), a summary with no
@@ -3214,6 +3219,36 @@ class Session(object):
                         "when": int(time.time() * 1000), "alert": False})
             self.phone.events.notify("post", id=NOTIFY_HOLD_ID, pkg="com.whatsapp",
                                      titleLen=18, bodyLen=18, alert=0, step=1)
+            # A notification the Mac first sees mid-life (or a LOW channel):
+            # alert:false on its first post, so it joins the list quietly.
+            time.sleep(NOTIFY_HOLD_GAP)
+            self._send({"t": "notify.post", "id": NOTIFY_QUIET_ADD_ID, "pkg": "com.whatsapp",
+                        "title": "pd-notify-title-18", "text": "pd-notify-text-18",
+                        "when": int(time.time() * 1000), "alert": False})
+            self.phone.events.notify("post", id=NOTIFY_QUIET_ADD_ID, pkg="com.whatsapp",
+                                     titleLen=18, bodyLen=18, alert=0, step=0)
+            # Row 6: a download. The bar moves every tick and the text with it
+            # ("12 MB of 50 MB" -> ...), the title does not: the five ticks are
+            # alert:false, the last post drops the bar and alerts. The fake
+            # records the fraction it "saw"; the wire only carries alert.
+            time.sleep(NOTIFY_HOLD_GAP)
+            for step in range(NOTIFY_PROGRESS_TICKS):
+                alert = step == 0
+                text = "pd-notify-text-19-%d" % step
+                self._send({"t": "notify.post", "id": NOTIFY_PROGRESS_ID, "pkg": "com.android.settings",
+                            "title": "pd-notify-title-19", "text": text,
+                            "when": int(time.time() * 1000), "alert": alert})
+                self.phone.events.notify("post", id=NOTIFY_PROGRESS_ID, pkg="com.android.settings",
+                                         titleLen=18, bodyLen=len(text),
+                                         alert=1 if alert else 0, progress=20 * (step + 1), step=step)
+                time.sleep(NOTIFY_QUIET_INTERVAL)
+            text = "pd-notify-text-19-done"
+            self._send({"t": "notify.post", "id": NOTIFY_PROGRESS_ID, "pkg": "com.android.settings",
+                        "title": "pd-notify-title-19", "text": text,
+                        "when": int(time.time() * 1000), "alert": True})
+            self.phone.events.notify("post", id=NOTIFY_PROGRESS_ID, pkg="com.android.settings",
+                                     titleLen=18, bodyLen=len(text), alert=1, progress=None,
+                                     step=NOTIFY_PROGRESS_TICKS)
 
         threading.Thread(target=run, daemon=True).start()
 

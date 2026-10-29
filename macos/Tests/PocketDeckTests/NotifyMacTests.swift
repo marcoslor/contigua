@@ -118,8 +118,8 @@ final class NotifyMacTests: XCTestCase {
 
     func testThePostPlanIsTheAndroidAlertRule() {
         XCTAssertEqual(NotifyPostPolicy.plan(alert: true, delivered: false), .banner)
-        XCTAssertEqual(NotifyPostPolicy.plan(alert: false, delivered: false), .banner,
-                       "a quiet post the Mac never showed is still shown once")
+        XCTAssertEqual(NotifyPostPolicy.plan(alert: false, delivered: false), .quietAdd,
+                       "alert:false is always quiet, a first post included")
         XCTAssertEqual(NotifyPostPolicy.plan(alert: true, delivered: true), .replace)
         XCTAssertEqual(NotifyPostPolicy.plan(alert: false, delivered: true), .quietReplace)
     }
@@ -177,6 +177,28 @@ final class NotifyMacTests: XCTestCase {
         XCTAssertTrue(lines[1].contains(" thread=phone-1 "),
                       "anything else joins the phone's own thread")
         XCTAssertFalse(lines.joined().contains("Family chat"), "a raw group key never reaches the record")
+    }
+
+    @MainActor
+    func testAFirstPostThatDoesNotAlertIsAddedQuietly() throws {
+        // NOTIFY-19 (r3): alert:false is always quiet on the Mac, delivered or
+        // not — a LOW channel, a notification first seen mid-life. The banner
+        // is added to the list, never presented.
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("notify-quietadd-\(UUID().uuidString).log")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let center = NotifyCenter()
+        center.log = url
+        center.hold = 0
+        center.post(PhoneNotification(id: "s1", pkg: "com.whatsapp", when: nil,
+                                      title: "Chat", text: "One", alert: false),
+                    phoneId: "phone-1", phoneName: "Nicky", labelFor: { _ in nil })
+        let posts = try String(contentsOf: url, encoding: .utf8)
+            .split(separator: "\n").map(String.init)
+            .filter { $0.hasPrefix("notify post id=s1 ") }
+        XCTAssertEqual(posts.count, 1, "one banner is added")
+        XCTAssertTrue(posts.first?.hasSuffix("alert=0 banners=1 presented=0 quiet=1") == true,
+                      "it is listed quietly: \(posts.first ?? "none")")
     }
 
     @MainActor

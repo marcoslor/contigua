@@ -13,11 +13,19 @@ import android.os.Handler
 import android.os.HandlerThread
 import android.os.SystemClock
 import android.service.notification.NotificationListenerService
+import android.service.notification.NotificationListenerService.Ranking
 import android.service.notification.StatusBarNotification
 import android.app.Notification
 import android.app.RemoteInput
 import android.util.Log
 import dev.pocketdeck.proto.Json
+
+/**
+ * A JVM test's stand-in for the system's channel ranking (rows 5/20). The app
+ * leaves it null and reads `getCurrentRanking()` instead; nothing else touches it.
+ */
+@Volatile
+var notifyImportanceForTest: ((String) -> Int?)? = null
 
 /**
  * Reads notifications and the media session for a connected Mac (docs/design/
@@ -71,6 +79,10 @@ class PdNotificationListener : NotificationListenerService() {
      */
     private val lastContent = BoundedIdMap<String>(MAX_TRACKED)
 
+    /** The last forwarded title hash and whether it carried a bar (row 6). */
+    private val lastTitle = BoundedIdMap<String>(MAX_TRACKED)
+    private val lastHadBar = BoundedIdMap<Boolean>(MAX_TRACKED)
+
     /** The per-package-group forwarding states (NOTIFY-20), bounded like the rest. */
     private val groupStates = BoundedIdMap<NotifyGroupState>(MAX_TRACKED)
 
@@ -78,11 +90,12 @@ class PdNotificationListener : NotificationListenerService() {
     private val groupOf = BoundedIdMap<ForwardedGroup>(MAX_TRACKED)
 
     /**
-     * The summaries the phone deliberately kept while their children were
-     * forwarded (NOTIFY-20). Their removals are the only ones not announced: the
-     * Mac never saw them. Bounded, like the rest.
+     * The ids the phone deliberately did not forward — a summary kept while its
+     * children were (NOTIFY-20), a media session's notification (NOTIFY-3).
+     * Their removals are the only ones not announced: the Mac never saw them.
+     * Bounded, like the rest.
      */
-    private val skippedSummaries = BoundedIdMap<Boolean>(MAX_TRACKED)
+    private val skipped = BoundedIdMap<Boolean>(MAX_TRACKED)
 
     private val sessionCallback = object : MediaController.Callback() {
         override fun onPlaybackStateChanged(state: PlaybackState?) = scheduleMediaPush()
@@ -130,9 +143,11 @@ class PdNotificationListener : NotificationListenerService() {
         lastSessions = null
         sessionKeys.clear()
         lastContent.clear()
+        lastTitle.clear()
+        lastHadBar.clear()
         groupStates.clear()
         groupOf.clear()
-        skippedSummaries.clear()
+        skipped.clear()
         worker.quitSafely()
         super.onDestroy()
     }
@@ -411,24 +426,57 @@ class PdNotificationListener : NotificationListenerService() {
         if (sbn.packageName in NotifyEvents.skippedPackages && !debugPoster) return
         if (sbn.isOngoing && !promoted && !debugPoster) return
         val id = forwardId(sbn)
+        // Row 16: a media session's notification is Now Playing's, not a banner
+        // (a paused player stops being ongoing and would otherwise banner).
+        if (extras.containsKey(Notification.EXTRA_MEDIA_SESSION)) {
+            skipped.put(id, true)
+            Log.i(TAG, "notify skip media id=$id")
+            return
+        }
         val candidates = actionCandidates(notification)
         val actions = NotifyEvents.selectActions(candidates)
         val live = liveFor(sbn, notification, promoted, debugPoster)
-        val title = extras.getString(Notification.EXTRA_TITLE)
+        val plainTitle = extras.getString(Notification.EXTRA_TITLE)
             ?: extras.getString(Notification.EXTRA_TITLE_BIG)
-        val text = extras.getString(Notification.EXTRA_TEXT)
+        val plainText = extras.getString(Notification.EXTRA_TEXT)
             ?: extras.getString(Notification.EXTRA_BIG_TEXT)
+        // Row 14: a MessagingStyle conversation keeps its messages in
+        // EXTRA_MESSAGES and its name in EXTRA_CONVERSATION_TITLE, so a post
+        // without the plain fields is not contentless.
+        val message = if (plainText.isNullOrEmpty()) lastMessage(extras) else null
+        val title = plainTitle?.takeIf { it.isNotEmpty() }
+            ?: extras.getString(Notification.EXTRA_CONVERSATION_TITLE)?.takeIf { it.isNotEmpty() }
+            ?: message?.second?.takeIf { it.isNotEmpty() }
+        val text = plainText?.takeIf { it.isNotEmpty() } ?: message?.first
         // NOTIFY-19: the same decision Android makes. The comparison is over
         // content hashes kept in memory; the text never leaves this block.
         val contentHash = NotifyEvents.contentHash(title, text)
+        val titleHash = NotifyEvents.titleHash(title)
+        // Row 6: a bar that only moves is not news, even when its text moves.
+        val hadBar = extras.getBoolean(Notification.EXTRA_PROGRESS_INDETERMINATE, false) ||
+            extras.getInt(Notification.EXTRA_PROGRESS_MAX, 0) > 0
+        // Rows 5/20: the channel's importance can only make a post quieter.
+        val importance = importanceOf(sbn)
+        // A number, or the closed token; never a channel name (privacy).
+        if (importance == null) {
+            Log.i(TAG, "notify importance=unknown id=$id") // log-ok: closed token, never a channel name
+        } else {
+            Log.i(TAG, "notify importance=$importance id=$id") // log-ok: a number 1..5, never a channel name
+        }
         val alert = NotifyEvents.alerts(
             firstPost = lastContent.get(id) == null,
             onlyAlertOnce = notification.flags and NotifyEvents.FLAG_ONLY_ALERT_ONCE != 0,
             contentChanged = lastContent.get(id) != contentHash,
-        )
+            progressOnly = NotifyEvents.progressOnly(
+                previousHadBar = lastHadBar.get(id) == true,
+                hadBar = hadBar,
+                previousTitleHash = lastTitle.get(id),
+                titleHash = titleHash,
+            ),
+        ) && !NotifyEvents.quietByImportance(importance)
         val groupKey = sbn.groupKey?.takeIf { it.isNotEmpty() }
         val summary = notification.flags and NotifyEvents.FLAG_GROUP_SUMMARY != 0
-        val event = NotifyEvents.notificationEvent(
+        var event = NotifyEvents.notificationEvent(
             id = id,
             pkg = sbn.packageName,
             title = title,
@@ -462,17 +510,26 @@ class PdNotificationListener : NotificationListenerService() {
                 }
                 NotifyGroupAction.Forward -> Unit
             }
+            if (!skip && summary &&
+                !NotifyEvents.summaryAlerts(notification.groupAlertBehavior)
+            ) {
+                // Row 13: a lone summary the app wanted quiet (children only)
+                // is listed, never presented.
+                event = event + ("alert" to false)
+            }
             if (skip) {
-                skippedSummaries.put(id, true)
+                skipped.put(id, true)
                 Log.i(TAG, "notify group summary skipped: children active")
                 return
             }
             groupOf.put(id, ForwardedGroup(sbn.packageName, groupKey, summary))
             // A notification forwarded after earlier being kept is announced
             // on removal like any other.
-            skippedSummaries.remove(id)
+            skipped.remove(id)
         }
         lastContent.put(id, contentHash)
+        lastTitle.put(id, titleHash)
+        lastHadBar.put(id, hadBar)
         // The Mac can only ask for an id it received; the action stays here and
         // is never serialized onto the wire (docs/design/notify.md).
         val kept = actions.mapNotNull { candidate ->
@@ -499,6 +556,38 @@ class PdNotificationListener : NotificationListenerService() {
             ),
         )
         deliver(id, event, live, if (live == null) notification else null)
+    }
+
+    /**
+     * A MessagingStyle post's last message with text (row 14): its text and its
+     * sender, from `EXTRA_MESSAGES`. Null when there is none. The text is only
+     * ever handed to the event builder, never logged.
+     */
+    private fun lastMessage(extras: Bundle): Pair<String, String?>? {
+        // `EXTRA_MESSAGES` holds a Parcelable[] of Bundles; the typed accessor
+        // is API 33, and `get` keeps this one call site free of a suppression.
+        val messages = extras.get(Notification.EXTRA_MESSAGES) as? Array<*> ?: return null
+        for (index in messages.indices.reversed()) {
+            val message = messages[index] as? Bundle ?: continue
+            val text = message.getCharSequence("text")?.toString()?.takeIf { it.isNotEmpty() } ?: continue
+            val sender = message.getCharSequence("sender")?.toString()?.takeIf { it.isNotEmpty() }
+            return text to sender
+        }
+        return null
+    }
+
+    /**
+     * The channel's importance for this notification (rows 5/20), from the
+     * system's ranking of its key. Null when the system does not answer for it;
+     * today's alert rules then apply.
+     */
+    private fun importanceOf(sbn: StatusBarNotification): Int? {
+        notifyImportanceForTest?.let { return it(sbn.key ?: "") }
+        return runCatching {
+            val map = getCurrentRanking() ?: return@runCatching null
+            val ranking = Ranking()
+            if (map.getRanking(sbn.key, ranking)) ranking.importance else null
+        }.getOrNull()
     }
 
     /**
@@ -655,6 +744,8 @@ class PdNotificationListener : NotificationListenerService() {
         val id = forwardId(sbn)
         NotifyIntents.remove(id)
         lastContent.remove(id)
+        lastTitle.remove(id)
+        lastHadBar.remove(id)
         val grouped = groupOf.remove(id)
         if (grouped != null) {
             groupEvent(
@@ -667,7 +758,7 @@ class PdNotificationListener : NotificationListenerService() {
         // forgot the id: the Mac still holds that banner, and swallowing the
         // removal would leave a ghost (NOTIFY-20). Only an id the phone
         // deliberately kept — a skipped summary — was never forwarded.
-        if (skippedSummaries.remove(id) != null) {
+        if (skipped.remove(id) != null) {
             Log.i(TAG, "notify remove id=$id was not forwarded")
             return
         }
@@ -758,5 +849,6 @@ class PdNotificationListener : NotificationListenerService() {
 
         /** Content hashes and group links kept in memory (NOTIFY-19, NOTIFY-20). */
         const val MAX_TRACKED = 400
+
     }
 }

@@ -34,6 +34,25 @@ object NotifyEvents {
     /** `Notification.FLAG_GROUP_SUMMARY`: this notification summarises its group. */
     const val FLAG_GROUP_SUMMARY = 0x00000200
 
+    /** `Notification.GROUP_ALERT_*`: which member of a group may alert (row 13). */
+    const val GROUP_ALERT_ALL = 0
+    const val GROUP_ALERT_SUMMARY = 1
+    const val GROUP_ALERT_CHILDREN = 2
+
+    /**
+     * A summary forwarded on its own alerts unless the app asked for a
+     * children-only group (row 13, NOTIFY-20). Children keep their own
+     * decision: a child that supersedes the summary still alerts.
+     */
+    fun summaryAlerts(groupAlertBehavior: Int): Boolean = groupAlertBehavior != GROUP_ALERT_CHILDREN
+
+    /** `NotificationManager.IMPORTANCE_*`, read from the channel's ranking (rows 5/20). */
+    const val IMPORTANCE_MIN = 1
+    const val IMPORTANCE_LOW = 2
+    const val IMPORTANCE_DEFAULT = 3
+    const val IMPORTANCE_HIGH = 4
+    const val IMPORTANCE_MAX = 5
+
     /** The marker a debug build's test poster puts on its own notifications. */
     const val DEBUG_POSTER_EXTRA = "dev.pocketdeck.debug.poster"
 
@@ -115,14 +134,41 @@ object NotifyEvents {
     /**
      * Whether a post may present a banner on the Mac (NOTIFY-19), the same way
      * Android decides to alert: the first post of a key always does, an update
-     * does unless the app asked for one alert ([FLAG_ONLY_ALERT_ONCE]) or the
-     * title and text did not change since the last forwarded post.
+     * does unless the app asked for one alert ([FLAG_ONLY_ALERT_ONCE]), the
+     * title and text did not change since the last forwarded post, or the only
+     * thing that moved was a progress bar ([progressOnly]).
      */
-    fun alerts(firstPost: Boolean, onlyAlertOnce: Boolean, contentChanged: Boolean): Boolean =
-        firstPost || (!onlyAlertOnce && contentChanged)
+    fun alerts(
+        firstPost: Boolean,
+        onlyAlertOnce: Boolean,
+        contentChanged: Boolean,
+        progressOnly: Boolean,
+    ): Boolean = firstPost || (!onlyAlertOnce && contentChanged && !progressOnly)
+
+    /**
+     * An update only moves a bar (NOTIFY-19): both posts carry a progress bar
+     * and the title stayed, so "12 MB of 50 MB" → "13 MB of 50 MB" is not news.
+     * The post that drops the bar has no bar, so it is not progress-only.
+     */
+    fun progressOnly(
+        previousHadBar: Boolean,
+        hadBar: Boolean,
+        previousTitleHash: String?,
+        titleHash: String,
+    ): Boolean = previousHadBar && hadBar && previousTitleHash == titleHash
+
+    /**
+     * A LOW or MIN channel never presents (rows 5/20): Android's shade shows it
+     * in the silent section, so the Mac lists it quietly rather than dropping
+     * it. DEFAULT and above keep today's rules; an unknown ranking does too.
+     */
+    fun quietByImportance(importance: Int?): Boolean = importance != null && importance <= IMPORTANCE_LOW
 
     /** 64 bits of SHA-256 over the content: updates are compared by this, never by text. */
     fun contentHash(title: String?, text: String?): String = digest("content", title.orEmpty(), text.orEmpty())
+
+    /** 64 bits of SHA-256 over the title alone (the progress tick rule). */
+    fun titleHash(title: String?): String = digest("title", title.orEmpty())
 
     /**
      * The wire's `group`: 64 bits of SHA-256 over the package and the Android

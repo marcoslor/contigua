@@ -257,15 +257,19 @@ first bug.
 
 The decision now travels with the post. The phone marks `alert:true` on the
 first post of a key and on an update Android would alert for, and `alert:false`
-when the notification carries `FLAG_ONLY_ALERT_ONCE` or when its title and text
-hash equals the last forwarded post of that key (`NotifyEvents.alerts`; the
-hashes live in memory and are never logged).
+when the notification carries `FLAG_ONLY_ALERT_ONCE`, when its title and text
+hash equals the last forwarded post of that key, or when the only thing that
+moved is a progress bar (`NotifyEvents.alerts` with `progressOnly`: both posts
+carry a bar and the title hash is unchanged, so "12 MB of 50 MB" → "13 MB of
+50 MB" is quiet while the post that drops the bar is judged by its content).
+The hashes live in memory and are never logged.
 
 On the Mac, `NotifyPostPolicy.plan(alert:delivered:)` says what the post does:
-`.banner` for an id with no banner, `.replace` for an alerting update, and
-`.quietReplace` for a non-alerting update of a delivered banner.
-`.quietReplace` submits the same request identifier with
-`content.interruptionLevel = .passive`.
+`.banner` for an alerting post with no banner, `.quietAdd` for a quiet one —
+`alert:false` is always quiet, so a LOW channel or a notification first seen
+mid-life is listed without a banner — `.replace` for an alerting update, and
+`.quietReplace` for a non-alerting update of a delivered banner. Both quiet
+plans submit with `content.interruptionLevel = .passive`.
 
 **Finding: a passive replacement is not presented.** `UNNotificationContent.h`
 (macOS 27.0 SDK, `UNNotificationInterruptionLevel`) defines `.passive` as
@@ -295,6 +299,39 @@ delivery state (`NotifyPostMerge.delivered`) and alerts if either post did
 Center can be replaced quietly. Without that, a quiet re-post 100 ms after an
 alerting one left the person with no banner at all (`presented=0`).
 
+## Conversations: the last message is the body (NOTIFY-3)
+
+A `MessagingStyle` notification keeps its conversation in `EXTRA_MESSAGES` (a
+`Bundle[]` of text, time and sender) and its name in `EXTRA_CONVERSATION_TITLE`;
+`EXTRA_TITLE`/`EXTRA_TEXT` may both be empty, so r1 dropped such a post as
+"no title and no text". The listener now walks the messages back to the last one
+with text, uses that text as the body and, when `EXTRA_TITLE` is empty, the
+conversation title (else that message's sender) as the title. A plain title and
+text still win; the wire's per-string caps are unchanged, and a string over the
+cap is dropped whole. MessagingStyle itself caps a message's own text at 1024,
+so the wire cap is not reachable from a real conversation.
+
+## Media notifications are not banners (NOTIFY-3)
+
+A player's notification carries `EXTRA_MEDIA_SESSION`; while it plays it is also
+ongoing, and r1's promoted-ongoing gate happened to skip it — but a paused
+player is not ongoing, so the notification would banner on the Mac beside the Now
+Playing row for the same session. A post carrying a media session is now skipped
+with `notify skip media id=…` and its id joins the not-announced set (a removal
+for a notification the Mac never saw is not news). Now Playing is unchanged.
+
+## Channels: LOW and MIN are listed quietly (NOTIFY-21)
+
+Android's shade shows a MIN channel in its silent section and a LOW one without
+a heads-up; neither is a banner. The listener reads the channel's importance
+from the system's ranking of the notification's key
+(`getCurrentRanking().getRanking(key, ranking)`), marks every post of a LOW or
+MIN channel `alert:false`, and still forwards it — the Mac lists it with
+`.passive` (NOTIFY-19) instead of dropping a notification Android would show.
+DEFAULT and above keep the alert rules, and a ranking the system does not
+answer for leaves today's rules in place with `notify importance=unknown` in
+logcat. The line carries the number (or `unknown`), never a channel name.
+
 ## Groups: summaries never land on their children (NOTIFY-20)
 
 Android bundles a chat's messages into a group: each message is a child and the
@@ -307,6 +344,9 @@ The phone now keeps a small machine per package+group (`NotifyGroups` in
 NotifyEvents.kt, one pure transition function over `EMPTY`, `CHILDREN`,
 `SUMMARY`; every transition is in `NotifyGroupMachineTest`):
 
+- a summary forwarded on its own is quiet when the app asked for
+  `GROUP_ALERT_CHILDREN` (`NotifyEvents.summaryAlerts`); children keep their
+  own decision, so the child that takes a summary away still alerts;
 - a child is forwarded and its id joins the group's set; a re-post of a known child is an update, not a second child (a chat updates its one notification per message);
 - the summary is forwarded only while the group has no forwarded child;
 - when a child arrives after a forwarded summary, the summary gets a
