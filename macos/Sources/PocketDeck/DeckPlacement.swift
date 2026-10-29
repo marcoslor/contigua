@@ -13,25 +13,29 @@ enum DeckPlacement {
     static let frameKey = "deck.windowFrame"
 
     /// The frame to open at. `saved` is the frame last stored for this profile,
-    /// `screens` the visible frames (the home screen first) and `minimum` the
-    /// Deck's own minimum size.
+    /// `screens` the screens' frames and `visible` their visible frames (the
+    /// home screen first in both), and `minimum` the Deck's own minimum size.
     ///
-    /// - A stored frame that fits a current screen comes back exactly.
-    /// - Otherwise the Deck opens centred on the home screen, at the stored size
-    ///   when it still fits there (a person's size survives an unplugged
-    ///   display), else at the default size.
+    /// - A stored frame that fits a current screen comes back exactly. A window
+    ///   may stand under the Dock or the menu bar's strip: that still fits its
+    ///   screen, and a person who left it there gets it back there.
+    /// - Otherwise the Deck opens centred on the home screen's visible area, at
+    ///   the stored size when it still fits there (a person's size survives an
+    ///   unplugged display), else at the default size.
     /// - The result is never smaller than `minimum` and never larger than the
     ///   screen it opens on.
-    static func frame(saved: CGRect?, screens: [CGRect], minimum: CGSize) -> CGRect {
-        guard let home = screens.first else {
+    static func frame(saved: CGRect?, screens: [CGRect], visible: [CGRect],
+                      minimum: CGSize) -> CGRect {
+        guard let home = visible.first else {
             return saved ?? CGRect(origin: .zero, size: defaultSize)
         }
         let fallbackSize = fitted(defaultSize, minimum: minimum, screen: home)
         guard let saved else { return centred(fallbackSize, in: home) }
-        // The screen it fits, else None: a frame on the home screen wins over
-        // one that merely overlaps it.
-        if let host = screens.first(where: { $0.contains(saved) }) {
-            return CGRect(origin: saved.origin, size: fitted(saved.size, minimum: minimum, screen: host))
+        // The screen it stands on, else None: a frame on the home screen wins
+        // over one that merely overlaps it.
+        if let index = screens.firstIndex(where: { $0.contains(saved) }) {
+            let shown = visible.indices.contains(index) ? visible[index] : home
+            return CGRect(origin: saved.origin, size: fitted(saved.size, minimum: minimum, screen: shown))
         }
         let size = fitted(saved.size, minimum: minimum, screen: home)
         return centred(size, in: home)
