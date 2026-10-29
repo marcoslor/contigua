@@ -1263,6 +1263,47 @@ class SessionTest {
         assertEquals("pairing_off", first["code"])
     }
 
+    /**
+     * PAIR-23 (bug 2): a Mac that still holds this phone's pin but was forgotten
+     * here is told at once. Left in the pairing phase it waits for a
+     * `pair.request` that a Mac which believes it is paired never sends, and
+     * its 15 s handshake timeout is the only thing that ever ends it.
+     */
+    @Test
+    fun anUnpinnedHelloIsAnsweredNotPairedAtOnce() {
+        closeCurrent()
+        connect(pairDecisionTimeoutMs = 30_000)
+        client.soTimeout = 1_000
+        val started = System.currentTimeMillis()
+        hello("forgotten", "Mac")
+        val error = readUntil("error")
+        val elapsedMs = System.currentTimeMillis() - started
+        assertEquals("not_paired", error["code"])
+        assertTrue("the answer took ${elapsedMs}ms", elapsedMs < 1_000)
+    }
+
+    /**
+     * PAIR-23 with "Allow new pairings" off: PAIR-12 stands — a peer the phone
+     * pins nothing for is closed at once without a reply, not left hanging
+     * until the handshake timeout.
+     */
+    @Test
+    fun aForgottenMacIsClosedAtOnceWithPairingsOff() {
+        closeCurrent()
+        connect(pairDecisionTimeoutMs = 30_000, gates = { GateSettings(true, false) })
+        client.soTimeout = 1_500
+        val started = System.currentTimeMillis()
+        hello("forgotten", "Mac")
+        val outcome = runCatching { client.getInputStream().read() }
+        val elapsedMs = System.currentTimeMillis() - started
+        assertTrue(
+            "a forgotten Mac was still waiting after ${elapsedMs}ms: $outcome",
+            outcome.isSuccess,
+        )
+        assertEquals("a forgotten Mac got a reply", -1, outcome.getOrNull())
+        assertTrue("the close took ${elapsedMs}ms", elapsedMs < 1_000)
+    }
+
     @Test
     fun pairingsOffStillAcceptsAPairedMac() {
         closeCurrent()
