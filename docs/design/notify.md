@@ -315,6 +315,11 @@ NotifyEvents.kt, one pure transition function over `EMPTY`, `CHILDREN`,
   to `EMPTY` (the state is forgotten), so a later summary can be forwarded
   again; the set is bounded like the other maps.
 
+A removal is announced for every id the phone forwarded, whatever its bounded
+forwarded-id map still holds: the Mac keeps the banner, so a swallowed removal
+is a ghost. The only silent removals are the summaries the phone deliberately
+kept (they were never forwarded), remembered in a small bounded set.
+
 The wire's `group` is 64 bits of SHA-256 over the package and the Android group
 key (`NotifyEvents.groupHash`), never the key: apps put chat and folder names in
 it, and a log or a thread identifier must not carry one. The Mac only accepts
