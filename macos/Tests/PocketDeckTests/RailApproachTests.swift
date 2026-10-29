@@ -162,22 +162,29 @@ final class RailApproachTests: XCTestCase {
     @MainActor
     func testForcedPositionResolvesALetterToItsBand() {
         let pointer = RailPointerModel()
+        pointer.noteContainerSize(CGSize(width: 1000, height: 573))
         pointer.slots = DeckRail.slots(forHeight: DeckRail.minimumHeight) ?? []
+        let pitch = try? XCTUnwrap(pointer.railFit?.pitch)
+        let m = 12.5 * (pitch ?? 20)
         XCTAssertTrue(pointer.force(letter: "M", dx: 40, reduceMotion: false))
-        XCTAssertEqual(pointer.state, .approaching(dx: 40, y: 250),
-                       "M is the 13th of 27 slots at a 20 pt pitch")
+        XCTAssertEqual(pointer.state, .approaching(dx: 40, y: m),
+                       "M is the 13th of 27 slots at the drawn pitch")
         XCTAssertFalse(pointer.force(letter: "?", dx: 0, reduceMotion: false), "only a real letter is a position")
         XCTAssertTrue(pointer.force(letter: "M", dx: 0, reduceMotion: false))
-        XCTAssertEqual(pointer.state, .hovering(y: 250), "dx zero is inside the rail")
+        XCTAssertEqual(pointer.state, .hovering(y: m), "dx zero is inside the rail")
     }
 
     @MainActor
     func testForcedPositionInACondensedRailUsesItsBand() {
         let pointer = RailPointerModel()
+        pointer.noteContainerSize(CGSize(width: 1000, height: 368))
         pointer.slots = DeckRail.slots(forHeight: DeckRail.compactTwoHeight) ?? []
         XCTAssertEqual(pointer.slots.count, 14)
+        XCTAssertEqual(pointer.railFit?.count, 14)
         XCTAssertTrue(pointer.force(letter: "M", dx: 0, reduceMotion: false))
-        // A to Z every other letter: M is the 7th slot, mid-band at 20 pt.
-        XCTAssertEqual(pointer.state, .hovering(y: 125))
+        // A to Z every other letter: M is the 7th slot, mid-band at its pitch.
+        // Slot 6 holds Y and Z at a 20 pt pitch; the band's middle is a quarter in.
+        let pitch = pointer.railFit?.pitch ?? 20
+        XCTAssertEqual(pointer.state, .hovering(y: 6 * pitch + pitch / 4))
     }
 }
