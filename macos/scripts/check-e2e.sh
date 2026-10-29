@@ -10570,26 +10570,32 @@ check_deckrail() {
             python3 - "$railshots/screens.txt" "$sx" "$sy" "$scale" > "$railshots/move.txt" <<'PY'
 import re, sys
 lines = open(sys.argv[1]).read().splitlines()
-sx, wy, scale = float(sys.argv[2]), float(sys.argv[3]), float(sys.argv[4])
+sx, sy, scale = float(sys.argv[2]), float(sys.argv[3]), float(sys.argv[4])
 rail_width = 26
 deck = None
+screens = []
 for line in lines:
     match = re.match(r"deck=(-?[0-9]+),(-?[0-9]+)-([0-9]+)x([0-9]+)", line)
     if match:
         deck = tuple(float(match.group(i)) for i in range(1, 5))
-for line in lines:
-    match = re.match(r"screen \d+ frame=(-?[0-9.]+),(-?[0-9.]+)-([0-9.]+)x([0-9.]+)", line)
-    if not match or not deck:
-        continue
-    x, y, w, h = (float(match.group(i)) for i in range(1, 5))
-    if x <= sx <= x + w and y <= wy <= y + h:
-        edge = x + w - 2
-        over = sx + rail_width - edge
-        if over > 0:
-            print(int(round(deck[0] - over)), int(round(deck[1])))
-        else:
-            print(0, 0)
-        break
+    match = re.match(r"screen \d+ frame=(-?[0-9.]+),(-?[0-9.]+)-([0-9.]+)x([0-9.]+)"
+                     r" visible=(-?[0-9.]+),(-?[0-9.]+)-([0-9.]+)x([0-9.]+)", line)
+    if match:
+        screens.append(tuple(float(match.group(i)) for i in range(1, 9)))
+if not deck or not screens:
+    print(0, 0); sys.exit(0)
+def overlap(screen):
+    x, y, w, h = screen[:4]
+    return max(0, min(x + w, deck[0] + deck[2]) - max(x, deck[0])) \
+        * max(0, min(y + h, deck[1] + deck[3]) - max(y, deck[1]))
+vx, vy, vw, vh = max(screens, key=overlap)[4:]
+# The rail's column must sit on the visible frame; move the window sideways,
+# never vertically (the window's height already fits or it is the guest's).
+if sx + rail_width > vx + vw - 2:
+    target = vx + vw - 2 - rail_width
+    print(int(round(deck[0] + (target - sx))), int(round(deck[1])))
+elif sx < vx:
+    print(int(round(deck[0] + (vx - sx))), int(round(deck[1])))
 else:
     print(0, 0)
 PY
@@ -10635,17 +10641,26 @@ import re, sys
 lines = open(sys.argv[1]).read().splitlines()
 sx, sy, scale, railh = (float(sys.argv[i]) for i in range(2, 6))
 rail_width = 26
+deck = None
+screens = []
 for line in lines:
-    match = re.match(r"screen \d+ frame=(-?[0-9.]+),(-?[0-9.]+)-([0-9.]+)x([0-9.]+) visible=(-?[0-9.]+),(-?[0-9.]+)-([0-9.]+)x([0-9.]+)", line)
-    if not match:
-        continue
-    x, y, w, h, vx, vy, vw, vh = (float(match.group(i)) for i in range(1, 9))
-    if x <= sx <= x + w and y <= sy <= y + h:
-        inside = sx >= vx and sy >= vy and sx + rail_width <= vx + vw and sy + railh <= vy + vh
-        print("rail %.0f..%.0f on screen visible %.0f..%.0f" % (sx, sx + rail_width, vx, vx + vw))
-        sys.exit(0 if inside else 1)
-print("no screen holds the rail")
-sys.exit(1)
+    match = re.match(r"deck=(-?[0-9]+),(-?[0-9]+)-([0-9]+)x([0-9]+)", line)
+    if match:
+        deck = tuple(float(match.group(i)) for i in range(1, 5))
+    match = re.match(r"screen \d+ frame=(-?[0-9.]+),(-?[0-9.]+)-([0-9.]+)x([0-9.]+)"
+                     r" visible=(-?[0-9.]+),(-?[0-9.]+)-([0-9.]+)x([0-9.]+)", line)
+    if match:
+        screens.append(tuple(float(match.group(i)) for i in range(1, 9)))
+if not deck or not screens:
+    print("no screens report"); sys.exit(1)
+def overlap(screen):
+    x, y, w, h = screen[:4]
+    return max(0, min(x + w, deck[0] + deck[2]) - max(x, deck[0])) \
+        * max(0, min(y + h, deck[1] + deck[3]) - max(y, deck[1]))
+vx, vy, vw, vh = max(screens, key=overlap)[4:]
+inside = sx >= vx and sy >= vy and sx + rail_width <= vx + vw and sy + railh <= vy + vh
+print("rail %.0f..%.0f,%.0f on the visible frame %.0f..%.0f" % (sx, sx + rail_width, sy, vx, vx + vw))
+sys.exit(0 if inside else 1)
 PY
         then
             onscreen=0
