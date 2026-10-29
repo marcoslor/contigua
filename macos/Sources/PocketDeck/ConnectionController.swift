@@ -2713,7 +2713,9 @@ final class ConnectionController {
         case "deckclick":
             // A Deck cell's click: its own drawn place, through the window's
             // event handling (the Deck has no debug route that calls openOrRaise).
-            guard let label = arguments.first else { return "deckclick needs an app label" }
+            // The label may hold spaces (an app's words are its name).
+            guard !arguments.isEmpty else { return "deckclick needs an app label" }
+            let label = arguments.joined(separator: " ")
             guard let deck = DeckWindow.window else { return "no deck window" }
             return DeckCellClick.click(label: label, in: deck)
         case "coverclick":
@@ -2946,6 +2948,73 @@ final class ConnectionController {
                 return "deckrailapproach failed"
             }
             RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.3))
+            return nil
+        case "deckrailslots":
+            // The rail's drawn geometry (DECK-7): the pitch, the rail and
+            // container heights, the slots' y/height and their glyph boxes in
+            // the rail's own points, plus the tag's letter while it shows.
+            guard let path = arguments.first, path.hasPrefix("/") else {
+                return "deckrailslots needs PATH"
+            }
+            let model = RailPointerModel.shared
+            guard let fit = model.railFit, !model.slots.isEmpty else { return "no rail" }
+            let height = CGFloat(fit.count) * fit.pitch
+            let position = model.state.position
+            let scales = (0..<fit.count).map { index in
+                RailFisheye.scale(distance: (position?.y ?? 0) / fit.pitch - (CGFloat(index) + 0.5),
+                                  dx: position?.dx ?? 0, zone: RailApproach.zone,
+                                  reduceMotion: railReduceMotion)
+            }
+            let layout = RailLayout.slots(scales: scales, available: height,
+                                          pitch: fit.pitch, anchor: position?.y)
+            var items: [[String: Any]] = []
+            for (index, box) in layout.enumerated() {
+                let glyph = 9 * scales[index]
+                items.append(["first": model.slots[index].first,
+                              "letters": model.slots[index].count,
+                              "y": Double(box.y),
+                              "height": Double(box.height),
+                              "glyphTop": Double(box.y + (box.height - glyph) / 2),
+                              "glyphBottom": Double(box.y + (box.height + glyph) / 2)])
+            }
+            let tag: Any = model.state.showsHelpTag
+                ? (RailLayout.letter(atY: position?.y ?? 0, in: layout, slots: model.slots)
+                   ?? NSNull())
+                : NSNull()
+            let state: String
+            switch model.state {
+            case .away: state = "away"
+            case .approaching: state = "approaching"
+            case .hovering: state = "hovering"
+            case .dragging: state = "dragging"
+            }
+            let line: [String: Any] = ["pitch": Double(fit.pitch),
+                                       "railHeight": Double(height),
+                                       "containerHeight": Double(model.containerSize.height),
+                                       "state": state,
+                                       "tag": tag,
+                                       "slots": items]
+            guard let data = try? JSONSerialization.data(withJSONObject: line, options: [.sortedKeys]),
+                  var text = String(data: data, encoding: .utf8) else {
+                return "deckrailslots failed"
+            }
+            text += "\n"
+            return (try? text.write(toFile: path, atomically: true, encoding: .utf8)) == nil
+                ? "deckrailslots failed" : nil
+        case "deckrailsweep":
+            // Twenty pointer events in one command: the body-count proof's
+            // moves, without a runloop spin each, so an idle window of the same
+            // (short) length can be compared.
+            guard let steps = Int(arguments.first ?? ""), steps > 0 else {
+                return "deckrailsweep needs N"
+            }
+            guard let fit = RailPointerModel.shared.railFit else { return "no rail" }
+            for step in 0..<steps {
+                RailPointerModel.shared.track(dx: step % 2 == 0 ? 12 : 0,
+                                              y: 12.5 * fit.pitch,
+                                              zone: RailApproach.zone,
+                                              reduceMotion: railReduceMotion)
+            }
             return nil
         case "deckbodycount":
             // The grid body's evaluation count: the proof a pointer in the
