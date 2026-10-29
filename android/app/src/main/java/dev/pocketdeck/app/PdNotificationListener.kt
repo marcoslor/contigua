@@ -455,7 +455,7 @@ class PdNotificationListener : NotificationListenerService() {
         ) && !NotifyEvents.quietByImportance(importance)
         val groupKey = sbn.groupKey?.takeIf { it.isNotEmpty() }
         val summary = notification.flags and NotifyEvents.FLAG_GROUP_SUMMARY != 0
-        val event = NotifyEvents.notificationEvent(
+        var event = NotifyEvents.notificationEvent(
             id = id,
             pkg = sbn.packageName,
             title = title,
@@ -488,6 +488,13 @@ class PdNotificationListener : NotificationListenerService() {
                     Log.i(TAG, "notify group summary replaced id=${action.id}")
                 }
                 NotifyGroupAction.Forward -> Unit
+            }
+            if (!skip && summary &&
+                !NotifyEvents.summaryAlerts(notification.groupAlertBehavior)
+            ) {
+                // Row 13: a lone summary the app wanted quiet (children only)
+                // is listed, never presented.
+                event = event + ("alert" to false)
             }
             if (skip) {
                 skippedSummaries.put(id, true)
