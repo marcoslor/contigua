@@ -165,6 +165,127 @@ class SessionDropperTest {
         gate.countDown()
     }
 
+    // ------------------------------------------------------------------
+    // PAIR-21: a slow teardown must never wedge the slot
+    // ------------------------------------------------------------------
+
+    @Test
+    fun aSlowTeardownsOldSessionFinishingFreesTheSlotForItsOwnMac() {
+        val gate = CountDownLatch(1)
+        val old = FakeLiveSession(gate)
+        val dropper = SessionDropper(log = {}, closer = behind(), handoffWaitMs = 150)
+        dropper.adopt(macA, pinned = true) { old }
+        assertNull("the gated teardown did not answer busy", dropper.adopt(macA, pinned = true) { FakeLiveSession() })
+
+        gate.countDown()
+        assertTrue(old.awaitClosed())
+        dropper.finished(old)
+
+        val next = FakeLiveSession()
+        assertSame("the slot did not free after the teardown", next, dropper.adopt(macA, pinned = true) { next })
+        assertSame(next, dropper.current())
+    }
+
+    @Test
+    fun aSlowTeardownsOldSessionFinishingFreesTheSlotForAnotherMac() {
+        val gate = CountDownLatch(1)
+        val old = FakeLiveSession(gate)
+        val dropper = SessionDropper(log = {}, closer = behind(), handoffWaitMs = 150)
+        dropper.adopt(macA, pinned = true) { old }
+        assertNull("the gated teardown did not answer busy", dropper.adopt(macB, pinned = false) { FakeLiveSession() })
+
+        gate.countDown()
+        assertTrue(old.awaitClosed())
+        dropper.finished(old)
+
+        // The slot is free: a pairing peer, not only the old Mac, is adopted.
+        val next = FakeLiveSession()
+        assertSame("another Mac was not adopted on a free slot", next, dropper.adopt(macB, pinned = false) { next })
+        assertSame(next, dropper.current())
+    }
+
+    @Test
+    fun aSlowTeardownThenAConnectThatWaitsIsAdoptedWhenTheTeardownEnds() {
+        val gate = CountDownLatch(1)
+        val old = FakeLiveSession(gate)
+        val dropper = SessionDropper(log = {}, closer = behind(), handoffWaitMs = 2_000)
+        dropper.adopt(macA, pinned = true) { old }
+        assertNull("the gated teardown did not answer busy", dropper.adopt(macA, pinned = true) { FakeLiveSession() })
+
+        val taken = java.util.concurrent.atomic.AtomicReference<LiveSession?>()
+        val worker = thread { taken.set(dropper.adopt(macA, pinned = true) { FakeLiveSession() }) }
+        Thread.sleep(100) // real-time: the second connect must be inside its wait
+        gate.countDown()
+        assertTrue(old.awaitClosed())
+        dropper.finished(old)
+        worker.join(3_000)
+
+        assertNotNull("the waiting Mac was not adopted when the teardown ended", taken.get())
+        assertSame(taken.get(), dropper.current())
+    }
+
+    @Test
+    fun aSlowTeardownThenADropFreesTheSlotForTheNextMac() {
+        val gate = CountDownLatch(1)
+        val old = FakeLiveSession(gate)
+        val dropper = SessionDropper(log = {}, closer = behind(), handoffWaitMs = 150)
+        dropper.adopt(macA, pinned = true) { old }
+        assertNull("the gated teardown did not answer busy", dropper.adopt(macA, pinned = true) { FakeLiveSession() })
+
+        assertTrue("a slow teardown left nothing to drop", dropper.drop())
+        gate.countDown()
+        assertTrue(old.awaitClosed())
+        dropper.finished(old)
+
+        val next = FakeLiveSession()
+        assertSame("the slot did not free after a drop", next, dropper.adopt(macA, pinned = true) { next })
+        assertSame(next, dropper.current())
+    }
+
+    @Test
+    fun everyInterleavingEndsFreeWithTheNextMacAdopted() {
+        val plans = listOf(
+            listOf("adopt", "slow", "finish"),
+            listOf("adopt", "slow", "drop"),
+            listOf("adopt", "slow", "finish", "adopt", "finish"),
+            listOf("adopt", "slow", "finish", "drop"),
+            listOf("adopt", "finish"),
+            listOf("adopt", "drop"),
+            listOf("adopt", "slow", "finish", "adopt", "drop"),
+        )
+        for (plan in plans) runInterleaving(plan)
+    }
+
+    /** One plan of the sequence test: every old session is finished at the end. */
+    private fun runInterleaving(plan: List<String>) {
+        val gate = CountDownLatch(1)
+        val dropper = SessionDropper(log = {}, closer = behind(), handoffWaitMs = 120)
+        val sessions = mutableListOf<FakeLiveSession>()
+        fun adopt(): LiveSession? {
+            val session = FakeLiveSession(gate)
+            sessions.add(session)
+            return dropper.adopt(macA, pinned = true) { session }
+        }
+        fun release() {
+            gate.countDown()
+            sessions.forEach { it.awaitClosed() }
+            sessions.forEach { dropper.finished(it) }
+        }
+        for (step in plan) {
+            when (step) {
+                "adopt" -> assertNotNull("$plan: an adopt on a free slot was refused", adopt())
+                "slow" -> assertNull("$plan: a gated teardown answered a session", adopt())
+                "finish" -> release()
+                "drop" -> dropper.drop()
+                else -> error("unknown step $step")
+            }
+        }
+        release() // every old session finished before the last connect
+        val next = FakeLiveSession()
+        assertSame("$plan: the next Mac was not adopted", next, dropper.adopt(macB, pinned = false) { next })
+        assertSame("$plan: the slot does not hold the new session", next, dropper.current())
+    }
+
     @Test
     fun theNewSessionIsCreatedOnlyAfterTheOldTeardownFinished() {
         val order = java.util.Collections.synchronizedList(mutableListOf<String>())
