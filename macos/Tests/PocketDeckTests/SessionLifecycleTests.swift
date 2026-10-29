@@ -155,17 +155,34 @@ final class SessionLifecycleTests: XCTestCase {
         session.close()
     }
 
+    /// Arms [server] to answer with a protocol error and to fulfil [closed] for
+    /// **this session's own connection only**: `onClosed` fires for every channel
+    /// the fake accepted, and a stray connect that lands on a recycled port (a
+    /// dial from anywhere else) must never over-fulfil the expectation — XCTest
+    /// aborts the whole run on that (signal 6, 2 of 2 full runs on 10-29).
+    private func armFailedSession(_ server: FakeServer, closed: XCTestExpectation) {
+        // The own connection is the one that speaks: a stray fails TLS and never
+        // sends a frame. `onFrame` runs before any close of that channel.
+        let own = SessionLockedBox<Int?>(value: nil)
+        server.brain = nil
+        server.onFrame = { connection, _ in
+            if own.get() == nil { own.set(connection.id) }
+            connection.sendJSON(["t": "error", "code": "protocol", "message": "x"])
+        }
+        server.onClosed = { connection in
+            guard connection.id == own.get() else { return }
+            closed.fulfill()
+        }
+    }
+
     func testAFailedSessionClosesItsSocket() throws {
         try makeFake()
         let session = makeSession(port: server.port, connectTimeout: 0.4)
         let closed = expectation(description: "EOF after failure")
-        server.onClosed = { _ in closed.fulfill() }
         // The phone refuses with an error right away: the session fails, and
-        // the abandoned socket must see EOF (it is never left dangling).
-        server.brain = nil
-        server.onFrame = { connection, _ in
-            connection.sendJSON(["t": "error", "code": "protocol", "message": "x"])
-        }
+        // the abandoned socket must see EOF (it is never left dangling). Only
+        // that socket counts: a stray on this port stays silent, not fatal.
+        armFailedSession(server, closed: closed)
         session.start()
         XCTAssertTrue(waitFor { session.state == .failed("protocol") }, "state=\(session.state)")
         wait(for: [closed], timeout: 5)
@@ -184,12 +201,10 @@ final class SessionLifecycleTests: XCTestCase {
         try makeFake()
         let session = makeSession(port: server.port, connectTimeout: 0.4)
         let closed = expectation(description: "EOF after failure")
-        server.onClosed = { _ in closed.fulfill() }
-        server.brain = nil
-        server.onFrame = { connection, _ in
-            connection.sendJSON(["t": "error", "code": "protocol", "message": "x"])
-        }
-        // The stray arrives first and fails its TLS handshake, so it closes first.
+        armFailedSession(server, closed: closed)
+        // The stray arrives first and fails its TLS handshake, so it is the first
+        // channel to close: it must be ignored, and the session's own EOF is the
+        // only thing that fulfils.
         let stray = NWConnection(host: "127.0.0.1",
                                  port: NWEndpoint.Port(rawValue: server.port)!, using: .tcp)
         stray.stateUpdateHandler = { state in
@@ -198,12 +213,15 @@ final class SessionLifecycleTests: XCTestCase {
             }
         }
         stray.start(queue: .global())
-        XCTAssertTrue(waitFor { self.server.accepted.count >= 1 }, "the stray never landed")
+        XCTAssertTrue(waitFor { self.server.accepted.contains { $0.id == 0 } }, "the stray never landed")
+        stray.cancel()
 
         session.start()
         XCTAssertTrue(waitFor { session.state == .failed("protocol") }, "state=\(session.state)")
         wait(for: [closed], timeout: 5)
-        stray.cancel()
+        // The session did not reconnect: its own channel is the only one left and
+        // it is gone; nothing is served on the slot.
+        XCTAssertTrue(server.accepted.isEmpty, "a failed session reconnected: \(server.accepted.count) connections")
         session.close()
     }
 
