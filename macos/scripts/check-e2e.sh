@@ -10512,6 +10512,12 @@ have_flat_icons() { [ "$(icons_kind '"layers":false')" -ge 5 ]; }
 # from 96 pt left of the rail to on it, dark and then light.
 check_deckrail() {
     clean
+    # The host proof of the on-screen move: start from a stored frame whose rail
+    # stands past the virtual display's right edge (as the VM's restored frame
+    # did). PD_DECKRAIL_NO_MOVE=1 then shows gate A failing before the move.
+    if [ -n "${PD_DECKRAIL_START_FRAME:-}" ]; then
+        defaults write "$DEFAULTS_SUITE" deck.windowFrame "$PD_DECKRAIL_START_FRAME"
+    fi
     FAKE_ARGS="--demo-apps 60" start_fake || return 1
     FAKE_ARGS=""
     # The VM guest keeps its own Reduce Motion; the test hook makes the app's
@@ -10522,8 +10528,20 @@ check_deckrail() {
         && ok "DECKRAIL the app list was requested" || bad "DECKRAIL no apps.list"
     wait_until 30 grep -q '"count":' "$WORK/deck-grid.jsonl" \
         && ok "DECKRAIL the grid drew its cells" || bad "DECKRAIL no grid dump"
+    # A stored frame cannot put the rail off-screen (placement rejects one that
+    # leaves the screen); moving the window first and then growing it can, as
+    # the guest's restored small frame did. PD_DECKRAIL_NO_MOVE=1 then shows
+    # gate A failing before the move is allowed.
+    if [ -n "${PD_DECKRAIL_START_X:-}" ]; then
+        control deck-move "$PD_DECKRAIL_START_X" 150 || bad "DECKRAIL deck-move (start): $CONTROL_REPLY"
+        sleep 1
+    fi
     control deck-size 1000 625 || bad "DECKRAIL deck-size 1000 625: $CONTROL_REPLY"
     sleep 1
+    # The host proof that the on-screen move works: start with the window's rail
+    # past the virtual display's right edge (PD_DECKRAIL_START_X), and
+    # PD_DECKRAIL_NO_MOVE=1 shows gate A failing before the move.
+
     local railshots="$WORK/deck-rail-shots"
     mkdir -p "$railshots"
     shot_rail() {
@@ -10549,7 +10567,7 @@ check_deckrail() {
         # guest is 1024 pt wide) and a real pointer cannot reach off-screen:
         # bring the window back inside, then read its place again.
         if control screens "$railshots/screens.txt"; then
-            python3 - "$railshots/screens.txt" "$sx" "$wy" "$scale" > "$railshots/move.txt" <<'PY'
+            python3 - "$railshots/screens.txt" "$sx" "$sy" "$scale" > "$railshots/move.txt" <<'PY'
 import re, sys
 lines = open(sys.argv[1]).read().splitlines()
 sx, wy, scale = float(sys.argv[2]), float(sys.argv[3]), float(sys.argv[4])
@@ -10577,6 +10595,12 @@ else:
 PY
             read -r movex movey < "$railshots/move.txt"
             if [ "${movex:-0}" != 0 ] || [ "${movey:-0}" != 0 ]; then
+                if [ "${PD_DECKRAIL_NO_MOVE:-0}" = 1 ]; then
+                    say "DECKRAIL not moving the window (PD_DECKRAIL_NO_MOVE=1)"
+                    movex=0
+                fi
+            fi
+            if [ "${movex:-0}" != 0 ] || [ "${movey:-0}" != 0 ]; then
                 control deck-move "$movex" "$movey" || bad "DECKRAIL deck-move: $CONTROL_REPLY"
                 sleep 1
                 control deckrailanchor "$railshots/anchor.pt" \
@@ -10595,15 +10619,84 @@ m = [s for s in d["slots"] if s["first"] == 12][0]
 print((m["y"] + m["height"] / 2) if d["state"] == "away" else (m["glyphTop"] + m["glyphBottom"]) / 2)
 PY
 )"
+        local railheight
+        railheight="$(python3 -c "import json;print(json.load(open('$railshots/rest.json'))['railHeight'])")"
+        ok "DECKRAIL the rail is $(printf '%.1f' "$railheight") pt tall, M's centre $(printf '%.1f' "$mcentre") pt down"
     else
         bad "DECKRAIL deckrailslots (rest): $CONTROL_REPLY"
     fi
+    # Gate A: the rail must stand wholly inside the screen's visible frame. The
+    # real pointer cannot reach a rail past the edge, and a forced position then
+    # draws a tag at rest that reads as a magnified letter.
+    local onscreen=1
+    if control screens "$railshots/screens.txt"; then
+        if ! python3 - "$railshots/screens.txt" "$sx" "$sy" "$scale" "$railheight" > "$railshots/onscreen.txt" 2>&1 <<'PY'
+import re, sys
+lines = open(sys.argv[1]).read().splitlines()
+sx, sy, scale, railh = (float(sys.argv[i]) for i in range(2, 6))
+rail_width = 26
+for line in lines:
+    match = re.match(r"screen \d+ frame=(-?[0-9.]+),(-?[0-9.]+)-([0-9.]+)x([0-9.]+) visible=(-?[0-9.]+),(-?[0-9.]+)-([0-9.]+)x([0-9.]+)", line)
+    if not match:
+        continue
+    x, y, w, h, vx, vy, vw, vh = (float(match.group(i)) for i in range(1, 9))
+    if x <= sx <= x + w and y <= sy <= y + h:
+        inside = sx >= vx and sy >= vy and sx + rail_width <= vx + vw and sy + railh <= vy + vh
+        print("rail %.0f..%.0f on screen visible %.0f..%.0f" % (sx, sx + rail_width, vx, vx + vw))
+        sys.exit(0 if inside else 1)
+print("no screen holds the rail")
+sys.exit(1)
+PY
+        then
+            onscreen=0
+            bad "DECKRAIL gate A: the rail is not wholly on the screen ($(cat "$railshots/onscreen.txt"))"
+        else
+            ok "DECKRAIL gate A: the rail is wholly on the screen ($(cat "$railshots/onscreen.txt"))"
+        fi
+    else
+        onscreen=0
+        bad "DECKRAIL gate A: no screens report ($CONTROL_REPLY)"
+    fi
+    # Gate B: effective Reduce Motion off (its plain tint would read as a tag).
     if python3 "$MACOS/scripts/deck-rail-slots.py" "$railshots/rest.json" motion-off > "$WORK/rail-motion.txt" 2>&1; then
-        ok "DECKRAIL effective Reduce Motion is off ($(cat "$WORK/rail-motion.txt"))"
+        ok "DECKRAIL gate B: effective Reduce Motion is off ($(cat "$WORK/rail-motion.txt"))"
+    else
+        onscreen=0
+        bad "DECKRAIL gate B: effective Reduce Motion is on (--debug-motion full did not reach the app)"
+    fi
+    if [ "$onscreen" = 1 ]; then
+        # Gate C: the forced position at the rail matches the pure layout, with
+        # the real pointer parked off the window (a visible run).
+        if [ "$VISIBLE" = 1 ]; then cg_input moveat --x 5 --y 5; sleep 0.5; fi
+        control deckrailapproach M 0 || bad "DECKRAIL gate C: deckrailapproach M 0: $CONTROL_REPLY"
+        sleep 0.4
+        if control deckrailslots "$WORK/rail-gate.json" \
+            && python3 "$MACOS/scripts/deck-rail-slots.py" "$WORK/rail-gate.json" gaps >/dev/null; then
+            ok "DECKRAIL gate C: the forced M 0 gives the pure layout"
+        else
+            onscreen=0
+            bad "DECKRAIL gate C: the forced M 0 does not match the pure layout"
+        fi
+        # Gate D: the forced M shot is 2.2x the rest shot's M (+/-15%).
+        shot_rail rail-forced-m.png
+        python3 "$MACOS/scripts/rail-glyph.py" "$railshots/rail-forced-m.png" 1000 625 "$scale" "$wx" > "$railshots/forced.txt" 2>&1
+        python3 "$MACOS/scripts/rail-glyph.py" "$railshots/rail-rest.png" 1000 625 "$scale" "$wx" > "$railshots/rest-glyph.txt" 2>&1
+        local forced rest_peak
+        forced="$(sed -n 's/^peak //p' "$railshots/forced.txt")"
+        rest_peak="$(sed -n 's/^peak //p' "$railshots/rest-glyph.txt")"
+        if [ -n "$forced" ] && [ -n "$rest_peak" ] \
+            && python3 -c "import sys; f=float('$forced'); r=float('$rest_peak'); sys.exit(0 if r > 0 and abs(f/r - 2.2) <= 2.2*0.15 else 1)"; then
+            ok "DECKRAIL gate D: the forced M is $(python3 -c "print(round(float('$forced')/float('$rest_peak'),2))") x the rest"
+        else
+            onscreen=0
+            bad "DECKRAIL gate D: the forced M shot is not 2.2x the rest (forced '$forced', rest '$rest_peak')"
+        fi
+        control deckrailhoverout
+    fi
+    if [ "$onscreen" = 1 ]; then
+        # The sweep: the real pointer walks in from 96 pt left of the rail (the
+        # quiet run forces the same positions).
         if [ "$VISIBLE" = 1 ]; then
-            # The real pointer walks in from 96 pt left of the rail to on it, at M's
-            # drawn centre; rail-glyph.py reads the letter sizes back out of the
-            # pixels (rail column, the guest's backing scale).
             for dx in 96 64 40 24 12 0; do
                 px="$(python3 -c "print(round($sx + 13 - $dx))")"
                 py="$(python3 -c "print(round($sy + $mcentre))")"
@@ -10619,9 +10712,8 @@ PY
                 sleep 1
             fi
         else
-            # Quiet: the same shots from the forced positions.
             for dx in 96 64 40 24 12 0; do
-                control deckrailapproach M "$dx" || bad "DECKRAIL deckrailapproach M $dx: $CONTROL_REPLY"
+                control deckrailapproach M "$dx"  >/dev/null || bad "DECKRAIL deckrailapproach M $dx: $CONTROL_REPLY"
                 sleep 0.6
                 shot_rail "rail-dx$dx.png"
             done
@@ -10634,7 +10726,7 @@ PY
         fi
         sed -n 's/^/  /p' "$WORK/rail-glyph.txt" | head -14
     else
-        bad "DECKRAIL effective Reduce Motion is on (--debug-motion full did not reach the app); measurement skipped"
+        bad "DECKRAIL a gate failed; the real-pointer sweep is skipped"
     fi
     # At the rail: the S2 slots, the tag, A and # inside the clip.
     control deckrailhoverout

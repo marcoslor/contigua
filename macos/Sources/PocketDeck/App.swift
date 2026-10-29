@@ -328,7 +328,6 @@ final class AppEnvironment {
 
     private init() {
         let options = LaunchOptions.parse(CommandLine.arguments)
-        Motion.overrideFull = options.debugMotion == "full"
         #if PD_TEST_HOOKS
         if ProcessInfo.processInfo.environment["PD_GRID_CHANGES"] != nil {
             // Line-buffered stdout, so a killed run still has its trace.

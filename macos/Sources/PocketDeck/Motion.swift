@@ -7,8 +7,11 @@ import Foundation
 
 enum Motion {
     /// `--debug-motion full` (test hooks only; a release build ignores the
-    /// flag, so this stays false there).
-    nonisolated(unsafe) static var overrideFull = false
+    /// flag, so this stays false there). Initialised from the command line on
+    /// first use: a scene body can be evaluated before AppEnvironment exists,
+    /// and a flag that is not observable would then never reach the rail.
+    nonisolated(unsafe) static var overrideFull =
+        LaunchOptions.parse(CommandLine.arguments).debugMotion == "full"
 
     /// Effective Reduce Motion: the system's, unless the hook overrides it.
     static func reduce(system: Bool) -> Bool {
