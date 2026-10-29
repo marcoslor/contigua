@@ -311,6 +311,15 @@ text still win; the wire's per-string caps are unchanged, and a string over the
 cap is dropped whole. MessagingStyle itself caps a message's own text at 1024,
 so the wire cap is not reachable from a real conversation.
 
+## Media notifications are not banners (NOTIFY-3)
+
+A player's notification carries `EXTRA_MEDIA_SESSION`; while it plays it is also
+ongoing, and r1's promoted-ongoing gate happened to skip it — but a paused
+player is not ongoing, so the notification would banner on the Mac beside the Now
+Playing row for the same session. A post carrying a media session is now skipped
+with `notify skip media id=…` and its id joins the not-announced set (a removal
+for a notification the Mac never saw is not news). Now Playing is unchanged.
+
 ## Channels: LOW and MIN are listed quietly (NOTIFY-21)
 
 Android's shade shows a MIN channel in its silent section and a LOW one without

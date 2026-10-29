@@ -90,11 +90,12 @@ class PdNotificationListener : NotificationListenerService() {
     private val groupOf = BoundedIdMap<ForwardedGroup>(MAX_TRACKED)
 
     /**
-     * The summaries the phone deliberately kept while their children were
-     * forwarded (NOTIFY-20). Their removals are the only ones not announced: the
-     * Mac never saw them. Bounded, like the rest.
+     * The ids the phone deliberately did not forward — a summary kept while its
+     * children were (NOTIFY-20), a media session's notification (NOTIFY-3).
+     * Their removals are the only ones not announced: the Mac never saw them.
+     * Bounded, like the rest.
      */
-    private val skippedSummaries = BoundedIdMap<Boolean>(MAX_TRACKED)
+    private val skipped = BoundedIdMap<Boolean>(MAX_TRACKED)
 
     private val sessionCallback = object : MediaController.Callback() {
         override fun onPlaybackStateChanged(state: PlaybackState?) = scheduleMediaPush()
@@ -146,7 +147,7 @@ class PdNotificationListener : NotificationListenerService() {
         lastHadBar.clear()
         groupStates.clear()
         groupOf.clear()
-        skippedSummaries.clear()
+        skipped.clear()
         worker.quitSafely()
         super.onDestroy()
     }
@@ -425,6 +426,13 @@ class PdNotificationListener : NotificationListenerService() {
         if (sbn.packageName in NotifyEvents.skippedPackages && !debugPoster) return
         if (sbn.isOngoing && !promoted && !debugPoster) return
         val id = forwardId(sbn)
+        // Row 16: a media session's notification is Now Playing's, not a banner
+        // (a paused player stops being ongoing and would otherwise banner).
+        if (extras.containsKey(Notification.EXTRA_MEDIA_SESSION)) {
+            skipped.put(id, true)
+            Log.i(TAG, "notify skip media id=$id")
+            return
+        }
         val candidates = actionCandidates(notification)
         val actions = NotifyEvents.selectActions(candidates)
         val live = liveFor(sbn, notification, promoted, debugPoster)
@@ -505,14 +513,14 @@ class PdNotificationListener : NotificationListenerService() {
                 event = event + ("alert" to false)
             }
             if (skip) {
-                skippedSummaries.put(id, true)
+                skipped.put(id, true)
                 Log.i(TAG, "notify group summary skipped: children active")
                 return
             }
             groupOf.put(id, ForwardedGroup(sbn.packageName, groupKey, summary))
             // A notification forwarded after earlier being kept is announced
             // on removal like any other.
-            skippedSummaries.remove(id)
+            skipped.remove(id)
         }
         lastContent.put(id, contentHash)
         lastTitle.put(id, titleHash)
@@ -744,7 +752,7 @@ class PdNotificationListener : NotificationListenerService() {
         // forgot the id: the Mac still holds that banner, and swallowing the
         // removal would leave a ghost (NOTIFY-20). Only an id the phone
         // deliberately kept — a skipped summary — was never forwarded.
-        if (skippedSummaries.remove(id) != null) {
+        if (skipped.remove(id) != null) {
             Log.i(TAG, "notify remove id=$id was not forwarded")
             return
         }
