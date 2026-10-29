@@ -322,6 +322,12 @@ final class AppEnvironment {
 
     private init() {
         let options = LaunchOptions.parse(CommandLine.arguments)
+        #if PD_TEST_HOOKS
+        if ProcessInfo.processInfo.environment["PD_GRID_CHANGES"] != nil {
+            // Line-buffered stdout, so a killed run still has its trace.
+            setvbuf(stdout, nil, _IOLBF, 0)
+        }
+        #endif
         // A profile name that does not parse must not fall back to the default
         // profile: a test run would then use the user's data.
         let release = Bundle.main.object(forInfoDictionaryKey: "PDBuildVariant") as? String == "release"

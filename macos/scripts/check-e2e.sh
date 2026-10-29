@@ -10505,6 +10505,205 @@ have_flat_icons() { [ "$(icons_kind '"layers":false')" -ge 5 ]; }
 # shows both without errors and the grid is captured for the human (glass is
 # judged by eye in .agent/glass/; this check only asserts the wire and the
 # log say both kinds arrived).
+# The DECK-7 rail on its own, for the VM: the deck check's setup plus the rail
+# steps only (DECK-4/5/19/20 assume a screen bigger than the 1024x768 guest).
+# Quiet, the positions are forced (deckrailapproach) and the same shots are
+# what proves rail-glyph.py before the boot; visible, the real pointer walks in
+# from 96 pt left of the rail to on it, dark and then light.
+check_deckrail() {
+    clean
+    FAKE_ARGS="--demo-apps 60" start_fake || return 1
+    FAKE_ARGS=""
+    launch_shared --connect "127.0.0.1:$PORT" --debug-deck-grid "$WORK/deck-grid.jsonl"
+    wait_until 30 events_have '"t":"apps.list"' \
+        && ok "DECKRAIL the app list was requested" || bad "DECKRAIL no apps.list"
+    wait_until 30 grep -q '"count":' "$WORK/deck-grid.jsonl" \
+        && ok "DECKRAIL the grid drew its cells" || bad "DECKRAIL no grid dump"
+    control deck-size 1000 625 || bad "DECKRAIL deck-size 1000 625: $CONTROL_REPLY"
+    sleep 2
+    local railshots="$WORK/deck-rail-shots"
+    mkdir -p "$railshots"
+    shot_rail() {
+        local id
+        id="$(await_window '$4 >= 600')" \
+            && screencapture -x -l"$id" "$railshots/$1" >/dev/null 2>&1 \
+            && say "shot: $railshots/$1" \
+            || bad "DECKRAIL no Deck window for $1"
+    }
+    local dx px py mcentre ncentre ax ay aw wx wy sx sy scale
+    if [ "$VISIBLE" = 1 ]; then
+        # Park the real pointer outside the Deck before any forced step.
+        cg_input moveat --x 5 --y 5
+        sleep 0.5
+    fi
+    shot_rail rail-rest.png
+    # The rest geometry: the rail's top-left (window and screen points, and the
+    # backing scale) and its slots, so a visible run places the pointer on the
+    # drawn slot's centre instead of guessing rows.
+    if control deckrailanchor "$railshots/anchor.pt" && read -r wx wy sx sy scale < "$railshots/anchor.pt"; then
+        ok "DECKRAIL the rail is at window ($wx,$wy), screen ($sx,$sy), scale $scale"
+    else
+        bad "DECKRAIL deckrailanchor: $CONTROL_REPLY"
+    fi
+    if control deckrailslots "$railshots/rest.json"; then
+        mcentre="$(python3 - "$railshots/rest.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+m = [s for s in d["slots"] if s["first"] == 12][0]
+print((m["y"] + m["height"] / 2) if d["state"] == "away" else (m["glyphTop"] + m["glyphBottom"]) / 2)
+PY
+)"
+    else
+        bad "DECKRAIL deckrailslots (rest): $CONTROL_REPLY"
+    fi
+    if [ "$VISIBLE" = 1 ]; then
+        # The real pointer walks in from 96 pt left of the rail to on it, at M's
+        # drawn centre; rail-glyph.py reads the letter sizes back out of the
+        # pixels (rail column, the guest's backing scale).
+        for dx in 96 64 40 24 12 0; do
+            px="$(python3 -c "print(round($sx + 13 - $dx))")"
+            py="$(python3 -c "print(round($sy + $mcentre))")"
+            cg_input moveat --x "$px" --y "$py"
+            sleep 0.8
+            shot_rail "rail-dx$dx.png"
+        done
+        if [ "${PD_E2E_IN_VM:-0}" = 1 ]; then
+            osascript -e 'tell application "System Events" to tell appearance preferences to set dark mode to false' >/dev/null 2>&1 || true
+            sleep 2
+            shot_rail rail-dx0-light.png
+            osascript -e 'tell application "System Events" to tell appearance preferences to set dark mode to true' >/dev/null 2>&1 || true
+            sleep 1
+        fi
+    else
+        # Quiet: the same shots from the forced positions.
+        for dx in 96 64 40 24 12 0; do
+            control deckrailapproach M "$dx" || bad "DECKRAIL deckrailapproach M $dx: $CONTROL_REPLY"
+            sleep 0.6
+            shot_rail "rail-dx$dx.png"
+        done
+        control deckrailhoverout
+    fi
+    if python3 "$MACOS/scripts/rail-glyph.py" "$railshots" 1000 625 "$scale" > "$WORK/rail-glyph.txt" 2>&1; then
+        ok "DECKRAIL the letter sizes match A2's scales ($(grep -m1 '^gaps' "$WORK/rail-glyph.txt"))"
+    else
+        bad "DECKRAIL the letter sizes or gaps are off: $(tr '\n' ' ' < "$WORK/rail-glyph.txt")"
+    fi
+    sed -n 's/^/  /p' "$WORK/rail-glyph.txt" | head -14
+
+    # At the rail: the S2 slots, the tag, A and # inside the clip.
+    control deckrailhoverout
+    sleep 0.3
+    control deckrailapproach M 0 || bad "DECKRAIL deckrailapproach M 0: $CONTROL_REPLY"
+    if control deckrailslots "$WORK/rail-m.json"; then
+        python3 "$MACOS/scripts/deck-rail-slots.py" "$WORK/rail-m.json" gaps \
+            && ok "[DECK-7] the gaps around M are the pure layout's and the slots fill the rail" \
+            || bad "[DECK-7] the rail's slots at M do not match the pure layout"
+        python3 "$MACOS/scripts/deck-rail-slots.py" "$WORK/rail-m.json" tag:M \
+            && ok "[DECK-7] the tag names M when the pointer is on the rail" \
+            || bad "[DECK-7] the tag at the rail does not name M"
+    else
+        bad "DECKRAIL deckrailslots (M): $CONTROL_REPLY"
+    fi
+    local edge
+    for edge in A '#'; do
+        control deckrailapproach "$edge" 0 || bad "DECKRAIL deckrailapproach $edge 0: $CONTROL_REPLY"
+        if control deckrailslots "$WORK/rail-edge.json"; then
+            python3 "$MACOS/scripts/deck-rail-slots.py" "$WORK/rail-edge.json" clip \
+                && ok "[DECK-7] with the pointer on $edge every slot is inside the clip" \
+                || bad "[DECK-7] with the pointer on $edge a slot leaves the clip"
+        else
+            bad "DECKRAIL deckrailslots ($edge): $CONTROL_REPLY"
+        fi
+    done
+
+    # The pointer never re-evaluates the grid's body: twenty moves, one runloop
+    # turn each, against an idle window of the same wall time.
+    local t0 dur moves idle
+    control deckbodyreset
+    t0="$(python3 -c 'import time;print(time.time())')"
+    control deckrailsweep 20 || bad "DECKRAIL deckrailsweep 20: $CONTROL_REPLY"
+    dur="$(python3 -c "import time;print(round(time.time() - $t0, 2))")"
+    control deckbodycount "$WORK/body-moves.txt" \
+        && moves="$(cat "$WORK/body-moves.txt")" || bad "DECKRAIL deckbodycount (moves): $CONTROL_REPLY"
+    control deckbodyreset
+    sleep "$dur"
+    control deckbodycount "$WORK/body-idle.txt" \
+        && idle="$(cat "$WORK/body-idle.txt")" || bad "DECKRAIL deckbodycount (idle): $CONTROL_REPLY"
+    if [ "${moves:-999}" -le $(( ${idle:-0} + 1 )) ]; then
+        ok "[DECK-7] 20 pointer moves added no grid body evaluation (moves $moves, idle $idle over ${dur} s)"
+    else
+        bad "[DECK-7] 20 pointer moves re-evaluated the grid $moves times (idle $idle over ${dur} s)"
+    fi
+
+    # A real click on N's drawn centre (visible), or the rail's own pick.
+    control deckrailhoverout
+    sleep 0.3
+    if control deckrailslots "$WORK/rail-n.json"; then
+        ncentre="$(python3 - "$WORK/rail-n.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+n = [s for s in d["slots"] if s["first"] == 13][0]
+print((n["glyphTop"] + n["glyphBottom"]) / 2)
+PY
+)"
+        if [ "$VISIBLE" = 1 ]; then
+            px="$(python3 -c "print(round($sx + 13))")"
+            py="$(python3 -c "print(round($sy + $mcentre))")"
+            cg_input moveat --x "$px" --y "$py"
+            sleep 0.5
+            control deckrailslots "$WORK/rail-n.json"
+            python3 "$MACOS/scripts/deck-rail-slots.py" "$WORK/rail-n.json" tag:M \
+                && ok "[DECK-7] the real pointer on M's drawn centre shows M's tag" \
+                || bad "[DECK-7] the real pointer on M did not show M's tag"
+            py="$(python3 -c "print(round($sy + $ncentre))")"
+            cg_input moveat --x "$px" --y "$py"
+            sleep 0.5
+            control deckrailslots "$WORK/rail-n.json"
+            python3 "$MACOS/scripts/deck-rail-slots.py" "$WORK/rail-n.json" tag:N \
+                && ok "[DECK-7] the real pointer on N's drawn centre shows N's tag" \
+                || bad "[DECK-7] the real pointer on N did not show N's tag"
+            cg_input clickat --x "$px" --y "$py"
+            sleep 1
+        else
+            control deck-rail N
+            sleep 1
+        fi
+        python3 "$MACOS/scripts/deck-rail-pick.py" "$WORK/deck-grid.jsonl" N \
+            && ok "[DECK-7] the click on N landed on N's section" \
+            || bad "[DECK-7] the click on N did not land on N"
+        # Leaving: 0.3 s after the pointer is 200 pt away the rail is at rest.
+        if [ "$VISIBLE" = 1 ]; then
+            px="$(python3 -c "print(round($sx + 13 - 200))")"
+            cg_input moveat --x "$px" --y "$(python3 -c "print(round($sy + $mcentre))")"
+            sleep 0.3
+            shot_rail rail-away.png
+            sleep 1
+            shot_rail rail-away-settled.png
+            cmp -s "$railshots/rail-away.png" "$railshots/rail-away-settled.png" \
+                && ok "[DECK-7] the rail is back at rest 0.3 s after the pointer leaves" \
+                || bad "[DECK-7] the rail was still moving 0.3 s after the pointer left"
+        fi
+    else
+        bad "DECKRAIL deckrailslots (N): $CONTROL_REPLY"
+    fi
+
+    # The rail's overlay fills the container; a last-column cell inside it but
+    # off the rail still opens its app.
+    control deckquery "" || bad "DECKRAIL deckquery: $CONTROL_REPLY"
+    control deck-rail A || bad "DECKRAIL deck-rail A: $CONTROL_REPLY"
+    sleep 1
+    local opens_before
+    opens_before="$(count_events '"t":"window.open"' | head -1)"
+    control deckfocus grid || bad "DECKRAIL deckfocus grid: $CONTROL_REPLY"
+    control deckclick Chrome \
+        && ok "[DECK-7] the last-column cell took a click through the rail's overlay" \
+        || bad "DECKRAIL deckclick Chrome: $CONTROL_REPLY"
+    wait_until 20 [ "$(count_events '"t":"window.open"' | head -1)" -gt "$opens_before" ] \
+        && ok "[DECK-7] the click through the overlay opened the app" \
+        || bad "[DECK-7] the click through the overlay opened nothing"
+    stop_app
+}
+
 check_deck() {
     clean
     if [ "${PD_E2E_IN_VM:-0}" = 1 ]; then
@@ -10832,20 +11031,21 @@ PY
     # events in one command, against an idle window of the same length (the
     # quiet run flushes the window's own transaction about twice a second, so
     # the bound is the idle count plus one).
-    local moves idle
+    local t0 dur moves idle
     control deckbodyreset
+    t0="$(python3 -c 'import time;print(time.time())')"
     control deckrailsweep 20 || bad "DECK deckrailsweep 20: $CONTROL_REPLY"
-    sleep 0.3
+    dur="$(python3 -c "import time;print(round(time.time() - $t0, 2))")"
     control deckbodycount "$WORK/body-moves.txt" \
         && moves="$(cat "$WORK/body-moves.txt")" || bad "DECK deckbodycount (moves): $CONTROL_REPLY"
     control deckbodyreset
-    sleep 0.3
+    sleep "$dur"
     control deckbodycount "$WORK/body-idle.txt" \
         && idle="$(cat "$WORK/body-idle.txt")" || bad "DECK deckbodycount (idle): $CONTROL_REPLY"
     if [ "${moves:-999}" -le $(( ${idle:-0} + 1 )) ]; then
-        ok "[DECK-7] 20 pointer moves added no grid body evaluation (moves $moves, idle $idle)"
+        ok "[DECK-7] 20 pointer moves added no grid body evaluation (moves $moves, idle $idle over ${dur} s)"
     else
-        bad "[DECK-7] 20 pointer moves re-evaluated the grid $moves times (idle $idle)"
+        bad "[DECK-7] 20 pointer moves re-evaluated the grid $moves times (idle $idle over ${dur} s)"
     fi
     control deckrailhoverout
 
