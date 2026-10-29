@@ -264,6 +264,15 @@ class NotifyEventsTest {
     }
 
     @Test
+    fun `importance can only make a post quieter`() {
+        assertTrue(NotifyEvents.quietByImportance(NotifyEvents.IMPORTANCE_MIN))
+        assertTrue(NotifyEvents.quietByImportance(NotifyEvents.IMPORTANCE_LOW))
+        assertEquals(false, NotifyEvents.quietByImportance(NotifyEvents.IMPORTANCE_DEFAULT))
+        assertEquals(false, NotifyEvents.quietByImportance(NotifyEvents.IMPORTANCE_HIGH))
+        assertEquals(false, NotifyEvents.quietByImportance(null))
+    }
+
+    @Test
     fun `the title hash is stable, short and carries no text`() {
         val hash = NotifyEvents.titleHash("Download")
         assertEquals(hash, NotifyEvents.titleHash("Download"))

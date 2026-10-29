@@ -299,6 +299,18 @@ delivery state (`NotifyPostMerge.delivered`) and alerts if either post did
 Center can be replaced quietly. Without that, a quiet re-post 100 ms after an
 alerting one left the person with no banner at all (`presented=0`).
 
+## Channels: LOW and MIN are listed quietly (NOTIFY-21)
+
+Android's shade shows a MIN channel in its silent section and a LOW one without
+a heads-up; neither is a banner. The listener reads the channel's importance
+from the system's ranking of the notification's key
+(`getCurrentRanking().getRanking(key, ranking)`), marks every post of a LOW or
+MIN channel `alert:false`, and still forwards it — the Mac lists it with
+`.passive` (NOTIFY-19) instead of dropping a notification Android would show.
+DEFAULT and above keep the alert rules, and a ranking the system does not
+answer for leaves today's rules in place with `notify importance=unknown` in
+logcat. The line carries the number (or `unknown`), never a channel name.
+
 ## Groups: summaries never land on their children (NOTIFY-20)
 
 Android bundles a chat's messages into a group: each message is a child and the
