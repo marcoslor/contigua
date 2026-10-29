@@ -157,6 +157,23 @@ final class RailApproachTests: XCTestCase {
         XCTAssertTrue(RailPointer.dragging(y: 1).showsHelpTag)
     }
 
+    /// The fit is never for more room than the container has: a live resize
+    /// that shrinks it by less than a point must not keep a pitch whose
+    /// magnified overshoot no longer fits (DECK-7, nothing clipped).
+    @MainActor
+    func testTheFitNeverOutgrowsTheContainer() {
+        let pointer = RailPointerModel()
+        for height in [573.0, 572.4, 571.9, 571.2] as [CGFloat] {
+            pointer.noteContainerSize(CGSize(width: 1000, height: height))
+            let fit = try? XCTUnwrap(pointer.railFit)
+            let count = fit?.count ?? 0
+            let pitch = fit?.pitch ?? 0
+            let needed = CGFloat(count) * pitch + 2 * RailLayout.overshoot(count: count, pitch: pitch)
+            XCTAssertLessThanOrEqual(needed, height + 0.001,
+                                     "the fit at \(height) pt needs \(needed) pt")
+        }
+    }
+
     // MARK: The e2e's forced position
 
     @MainActor
