@@ -299,6 +299,18 @@ delivery state (`NotifyPostMerge.delivered`) and alerts if either post did
 Center can be replaced quietly. Without that, a quiet re-post 100 ms after an
 alerting one left the person with no banner at all (`presented=0`).
 
+## Conversations: the last message is the body (NOTIFY-3)
+
+A `MessagingStyle` notification keeps its conversation in `EXTRA_MESSAGES` (a
+`Bundle[]` of text, time and sender) and its name in `EXTRA_CONVERSATION_TITLE`;
+`EXTRA_TITLE`/`EXTRA_TEXT` may both be empty, so r1 dropped such a post as
+"no title and no text". The listener now walks the messages back to the last one
+with text, uses that text as the body and, when `EXTRA_TITLE` is empty, the
+conversation title (else that message's sender) as the title. A plain title and
+text still win; the wire's per-string caps are unchanged, and a string over the
+cap is dropped whole. MessagingStyle itself caps a message's own text at 1024,
+so the wire cap is not reachable from a real conversation.
+
 ## Channels: LOW and MIN are listed quietly (NOTIFY-21)
 
 Android's shade shows a MIN channel in its silent section and a LOW one without

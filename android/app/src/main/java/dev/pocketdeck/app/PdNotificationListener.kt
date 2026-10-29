@@ -428,10 +428,18 @@ class PdNotificationListener : NotificationListenerService() {
         val candidates = actionCandidates(notification)
         val actions = NotifyEvents.selectActions(candidates)
         val live = liveFor(sbn, notification, promoted, debugPoster)
-        val title = extras.getString(Notification.EXTRA_TITLE)
+        val plainTitle = extras.getString(Notification.EXTRA_TITLE)
             ?: extras.getString(Notification.EXTRA_TITLE_BIG)
-        val text = extras.getString(Notification.EXTRA_TEXT)
+        val plainText = extras.getString(Notification.EXTRA_TEXT)
             ?: extras.getString(Notification.EXTRA_BIG_TEXT)
+        // Row 14: a MessagingStyle conversation keeps its messages in
+        // EXTRA_MESSAGES and its name in EXTRA_CONVERSATION_TITLE, so a post
+        // without the plain fields is not contentless.
+        val message = if (plainText.isNullOrEmpty()) lastMessage(extras) else null
+        val title = plainTitle?.takeIf { it.isNotEmpty() }
+            ?: extras.getString(Notification.EXTRA_CONVERSATION_TITLE)?.takeIf { it.isNotEmpty() }
+            ?: message?.second?.takeIf { it.isNotEmpty() }
+        val text = plainText?.takeIf { it.isNotEmpty() } ?: message?.first
         // NOTIFY-19: the same decision Android makes. The comparison is over
         // content hashes kept in memory; the text never leaves this block.
         val contentHash = NotifyEvents.contentHash(title, text)
@@ -535,6 +543,23 @@ class PdNotificationListener : NotificationListenerService() {
             ),
         )
         deliver(id, event, live, if (live == null) notification else null)
+    }
+
+    /**
+     * A MessagingStyle post's last message with text (row 14): its text and its
+     * sender, from `EXTRA_MESSAGES`. Null when there is none. The text is only
+     * ever handed to the event builder, never logged.
+     */
+    private fun lastMessage(extras: Bundle): Pair<String, String?>? {
+        @Suppress("DEPRECATION")
+        val messages = extras.getParcelableArray(Notification.EXTRA_MESSAGES) ?: return null
+        for (index in messages.indices.reversed()) {
+            val message = messages[index] as? Bundle ?: continue
+            val text = message.getCharSequence("text")?.toString()?.takeIf { it.isNotEmpty() } ?: continue
+            val sender = message.getCharSequence("sender")?.toString()?.takeIf { it.isNotEmpty() }
+            return text to sender
+        }
+        return null
     }
 
     /**
