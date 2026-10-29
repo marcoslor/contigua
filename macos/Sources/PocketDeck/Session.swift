@@ -163,7 +163,8 @@ enum SessionEvent {
     /// `no_access` when the Mac asked but the phone's listener grant is missing.
     case notifyState(on: Bool, reason: String?)
     case notifyPosted(id: String, pkg: String, when: Date?, title: String?, text: String?,
-                      actions: [NotifyActionInfo], ongoing: Bool, live: NotifyLive? = nil)
+                      actions: [NotifyActionInfo], ongoing: Bool, live: NotifyLive? = nil,
+                      alert: Bool, group: String? = nil)
     /// The picture that follows a `notify.post` (docs/design/notify.md, 2b).
     case notifyImage(id: String, mime: String, width: Int, height: Int, data: Data)
     case notifyRemoved(id: String)
@@ -945,6 +946,9 @@ final class Session {
         case "notify.state":
             emit(.notifyState(on: message.bool("on") ?? false, reason: message.string("reason")))
         case "notify.post":
+            // `alert` is required (NOTIFY-19): a post that does not say whether
+            // Android would alert cannot be shown honestly.
+            guard let alert = message.bool("alert") else { return }
             let whenMs = message.double("when")
             let live = NotifyLive(json: message.object("live"))
             emit(.notifyPosted(id: message.string("id") ?? "", pkg: message.string("pkg") ?? "",
@@ -952,7 +956,7 @@ final class Session {
                                title: message.string("title"), text: message.string("text"),
                                actions: (message.array("actions") ?? []).compactMap { NotifyActionInfo(json: $0) },
                                ongoing: message.bool("ongoing") ?? false,
-                               live: live))
+                               live: live, alert: alert, group: message.string("group")))
         case "notify.image":
             guard let encoded = message.string("data"),
                   let data = Data(base64Encoded: encoded),

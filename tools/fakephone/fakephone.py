@@ -167,6 +167,34 @@ NOTIFY_SHAPES = [
 NOTIFY_REPLY_INDEX = 1
 NOTIFY_REPLY_TEXT = "pd-reply-1"
 
+# NOTIFY-19 (docs/specs/notifications.md): one key posted ten times, the first
+# alerting and the nine updates not — what a phone sends for a progress bar,
+# a download or a timer that only moves. The text changes each tick; the wire's
+# `alert` flag is the decision the Mac must obey. Markers for the privacy grep.
+NOTIFY_QUIET_ID = "pd-q1"
+NOTIFY_QUIET_POSTS = 10
+NOTIFY_QUIET_INTERVAL = 0.8
+# The hold case (NOTIFY-19): an app re-posts 100 ms after its first post (to add
+# an action or an icon) inside the Mac's 300 ms hold, with alert:false because
+# nothing changed. The one banner that reaches Notification Center must present.
+NOTIFY_HOLD_ID = "pd-q2"
+NOTIFY_HOLD_GAP = 0.1
+
+# NOTIFY-20 (docs/specs/notifications.md): a child of a group, its summary (which
+# a fixed phone does not forward while the child is active), a summary with no
+# children, and a child that arrives after that summary (the phone takes the
+# summary away first). `group` on the wire is 64 bits of SHA-256 over the
+# package and the Android key, never the key itself (privacy).
+NOTIFY_GROUP_CHILD = {"id": "pd-g1", "pkg": "com.whatsapp", "groupKey": "pd-group-alpha",
+                      "title": "pd-notify-title-13", "text": "pd-notify-text-13"}
+NOTIFY_GROUP_SUMMARY = {"id": "pd-g2", "pkg": "com.whatsapp", "groupKey": "pd-group-alpha",
+                        "title": "pd-notify-title-14", "text": "pd-notify-text-14", "summary": True}
+NOTIFY_LONE_SUMMARY = {"id": "pd-g3", "pkg": "com.whatsapp", "groupKey": "pd-group-bravo",
+                       "title": "pd-notify-title-15", "text": "pd-notify-text-15", "summary": True}
+NOTIFY_LATE_CHILD = {"id": "pd-g4", "pkg": "com.whatsapp", "groupKey": "pd-group-bravo",
+                     "title": "pd-notify-title-16", "text": "pd-notify-text-16"}
+NOTIFY_GROUP_INTERVAL = 0.9
+
 # Part 2b (docs/design/notify.md): pictures and Android 16 Live Updates. The
 # picture is a generated 160x120 test card (nobody's content); only its mime,
 # size and dimensions ever reach a log. `image: "bad"` sends an oversized one
@@ -3099,6 +3127,14 @@ class Session(object):
             self._send({"t": "notify.state", "on": False, "reason": "no_access"})
             return
         self._send({"t": "notify.state", "on": True})
+        if getattr(self.phone.args, "notify_quiet", False):
+            # NOTIFY-19: one key, ten posts, only the first alerting.
+            self._send_quiet_updates()
+            return
+        if getattr(self.phone.args, "notify_groups", False):
+            # NOTIFY-20: the wire a phone with its group machine sends.
+            self._send_group_updates()
+            return
         only = getattr(self.phone.args, "notify_only", None)
         media = bool(getattr(self.phone.args, "notify_media", False))
         if only:
@@ -3112,7 +3148,7 @@ class Session(object):
             live = post.get("live")
             if isinstance(live, dict):
                 live = self._live_wire(live)
-            wire = dict(post, t="notify.post", when=int(time.time() * 1000))
+            wire = dict(post, t="notify.post", when=int(time.time() * 1000), alert=True)
             wire.pop("image", None)
             wire.pop("tick", None)
             wire.pop("removeAfter", None)
@@ -3125,7 +3161,7 @@ class Session(object):
                                      actions=len(actions),
                                      reply=1 if any(a.get("reply") for a in actions) else 0,
                                      ongoing=1 if post.get("ongoing") or live is not None else 0,
-                                     live=1 if live is not None else 0)
+                                     live=1 if live is not None else 0, alert=1)
             if post.get("image"):
                 self._send_notify_image(post["id"], post["image"])
             if post.get("tick"):
@@ -3145,6 +3181,91 @@ class Session(object):
 
     def _media_mode(self):
         return bool(getattr(self.phone.args, "media", False))
+
+    def _send_quiet_updates(self):
+        """NOTIFY-19: one key's first post alerts; the nine updates the phone
+        decided Android would not alert for carry `alert: false`. The Mac must
+        replace the one delivered banner quietly. Nothing here is text in a log."""
+        def run():
+            for step in range(NOTIFY_QUIET_POSTS):
+                if self.sender is None or self._live_stop.is_set():
+                    return
+                alert = step == 0
+                title = "pd-notify-title-12"
+                text = "pd-notify-text-12-%d" % step
+                self._send({"t": "notify.post", "id": NOTIFY_QUIET_ID,
+                            "pkg": "com.whatsapp", "title": title, "text": text,
+                            "when": int(time.time() * 1000), "alert": alert})
+                self.phone.events.notify("post", id=NOTIFY_QUIET_ID, pkg="com.whatsapp",
+                                         titleLen=len(title), bodyLen=len(text),
+                                         alert=1 if alert else 0, step=step)
+                time.sleep(NOTIFY_QUIET_INTERVAL)
+            # The same app re-posts 100 ms later with nothing new: the Mac's
+            # hold supersedes the first post, which must still present.
+            time.sleep(NOTIFY_HOLD_GAP)
+            self._send({"t": "notify.post", "id": NOTIFY_HOLD_ID, "pkg": "com.whatsapp",
+                        "title": "pd-notify-title-17", "text": "pd-notify-text-17",
+                        "when": int(time.time() * 1000), "alert": True})
+            self.phone.events.notify("post", id=NOTIFY_HOLD_ID, pkg="com.whatsapp",
+                                     titleLen=18, bodyLen=18, alert=1, step=0)
+            time.sleep(NOTIFY_HOLD_GAP)
+            self._send({"t": "notify.post", "id": NOTIFY_HOLD_ID, "pkg": "com.whatsapp",
+                        "title": "pd-notify-title-17", "text": "pd-notify-text-17",
+                        "when": int(time.time() * 1000), "alert": False})
+            self.phone.events.notify("post", id=NOTIFY_HOLD_ID, pkg="com.whatsapp",
+                                     titleLen=18, bodyLen=18, alert=0, step=1)
+
+        threading.Thread(target=run, daemon=True).start()
+
+    @staticmethod
+    def _group_hash(pkg, key):
+        """The phone's `group` field: 64 bits of SHA-256 over package and key."""
+        sha = hashlib.sha256()
+        sha.update(b"group")
+        for part in (pkg, key):
+            sha.update(b"\x00")
+            sha.update(part.encode("utf-8"))
+        return sha.hexdigest()[:16]
+
+    def _send_group_updates(self):
+        """NOTIFY-20 as a phone with its group machine sends it: a child, its
+        summary left on the phone, a lone summary, then a child that takes that
+        summary away. The group key never reaches the wire, only its hash."""
+        def run():
+            def post(shape, alert=True):
+                pkg, key = shape["pkg"], shape["groupKey"]
+                group = self._group_hash(pkg, key)
+                self._send({"t": "notify.post", "id": shape["id"], "pkg": pkg,
+                            "title": shape["title"], "text": shape["text"],
+                            "when": int(time.time() * 1000), "alert": alert,
+                            "group": group})
+                self.phone.events.notify("post", id=shape["id"], pkg=pkg,
+                                         titleLen=len(shape["title"]),
+                                         bodyLen=len(shape["text"]), alert=1 if alert else 0,
+                                         group=group, summary=1 if shape.get("summary") else 0)
+
+            def wait():
+                time.sleep(NOTIFY_GROUP_INTERVAL)
+                return self.sender is None or self._live_stop.is_set()
+
+            post(NOTIFY_GROUP_CHILD)
+            if wait():
+                return
+            # The summary of a group with a forwarded child stays on the phone.
+            self.phone.events.notify("skip", id=NOTIFY_GROUP_SUMMARY["id"], pkg="com.whatsapp",
+                                     summary=1)
+            if wait():
+                return
+            post(NOTIFY_LONE_SUMMARY)
+            if wait():
+                return
+            # A child arrives after the summary: the phone removes the summary
+            # first, then forwards the child.
+            self._send({"t": "notify.remove", "id": NOTIFY_LONE_SUMMARY["id"]})
+            self.phone.events.notify("remove", id=NOTIFY_LONE_SUMMARY["id"])
+            post(NOTIFY_LATE_CHILD)
+
+        threading.Thread(target=run, daemon=True).start()
 
     def _older_phone(self):
         return bool(getattr(self.phone.args, "older_phone", False))
@@ -3273,7 +3394,8 @@ class Session(object):
     def _send_live_now(self, post, live):
         message = {k: v for k, v in post.items()
                    if k not in ("image", "tick", "live", "removeAfter")}
-        message.update({"t": "notify.post", "when": int(time.time() * 1000), "live": live})
+        message.update({"t": "notify.post", "when": int(time.time() * 1000), "live": live,
+                        "alert": True})
         self._send(message)
         self.phone.events.notify(
             "live", id=post["id"], progress=int(round(live.get("progress", 0) * 100)),
@@ -3301,11 +3423,11 @@ class Session(object):
         if kind == "image":
             wire = {k: v for k, v in post.items()
                     if k not in ("image", "tick", "live", "removeAfter")}
-            wire.update({"t": "notify.post", "when": int(time.time() * 1000)})
+            wire.update({"t": "notify.post", "when": int(time.time() * 1000), "alert": True})
             self._send(wire)
             self.phone.events.notify("post", id=post["id"], pkg=post["pkg"],
                                      titleLen=len(post["title"]), bodyLen=len(post["text"]),
-                                     actions=0, reply=0, ongoing=0, live=0)
+                                     actions=0, reply=0, ongoing=0, live=0, alert=1)
             self._send_notify_image(notify_id, "good")
         elif kind == "live":
             try:
@@ -4116,6 +4238,12 @@ def build_parser():
     p.add_argument("--notify-media", action="store_true",
                    help="on notify.enable also post the picture and Live Update shapes "
                         "(pd-m1, pd-m2, pd-l1, pd-l2) and advance pd-l1 every 2 s")
+    p.add_argument("--notify-quiet", action="store_true",
+                   help="on notify.enable post one key ten times, the first alerting and "
+                        "the nine updates not (NOTIFY-19; a progress bar's wire)")
+    p.add_argument("--notify-groups", action="store_true",
+                   help="on notify.enable send the group wire (NOTIFY-20): a child, its "
+                        "skipped summary, a lone summary, then a child that removes it")
     p.add_argument("--resize-delay-ms", type=int, default=0, metavar="MS",
                    help="hold back a window's new VIDEO_CONFIG this long after "
                         "window.resize (the Mac's live-resize fill); 0 answers at once")

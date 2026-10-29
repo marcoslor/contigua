@@ -76,9 +76,11 @@ final class NotifyMacTests: XCTestCase {
         let line = NotifyMapping.record(
             posted: notification(pkg: "com.whatsapp", title: "Design review", text: "Deck vs slides at 4"),
             title: "Design review", body: "Deck vs slides at 4", thread: "phone-1",
-            code: false, category: "pd.n.0123456789abcdef")
+            code: false, category: "pd.n.0123456789abcdef",
+            facts: NotifyBannerFacts(alert: true, banners: 1, presented: 1, quiet: 0))
         XCTAssertEqual(line, "notify post id=k1 pkg=com.whatsapp titleLen=13 bodyLen=19 thread=phone-1"
-            + " actions=0 reply=0 code=0 ongoing=0 category=pd.n.0123456789abcdef")
+            + " actions=0 reply=0 code=0 ongoing=0 category=pd.n.0123456789abcdef"
+            + " alert=1 banners=1 presented=1 quiet=0")
         XCTAssertFalse(line.contains("Design"))
         XCTAssertFalse(line.contains("slides"))
         XCTAssertFalse(line.contains("Deck"))
@@ -110,6 +112,124 @@ final class NotifyMacTests: XCTestCase {
         XCTAssertEqual(raw.string("t"), "notify.post")
         XCTAssertEqual(raw.string("id"), "k1")
         XCTAssertEqual(raw.double("when"), 1_700_000_000_000)
+    }
+
+    // MARK: NOTIFY-19: a quiet update replaces the banner without presenting it
+
+    func testThePostPlanIsTheAndroidAlertRule() {
+        XCTAssertEqual(NotifyPostPolicy.plan(alert: true, delivered: false), .banner)
+        XCTAssertEqual(NotifyPostPolicy.plan(alert: false, delivered: false), .banner,
+                       "a quiet post the Mac never showed is still shown once")
+        XCTAssertEqual(NotifyPostPolicy.plan(alert: true, delivered: true), .replace)
+        XCTAssertEqual(NotifyPostPolicy.plan(alert: false, delivered: true), .quietReplace)
+    }
+
+    func testAPostInsideTheHoldInheritsTheWaitingOne() {
+        XCTAssertTrue(NotifyPostMerge.alert(new: true, superseded: false))
+        XCTAssertTrue(NotifyPostMerge.alert(new: false, superseded: true))
+        XCTAssertFalse(NotifyPostMerge.alert(new: false, superseded: false))
+        XCTAssertFalse(NotifyPostMerge.alert(new: false, superseded: nil))
+        XCTAssertFalse(NotifyPostMerge.delivered(supersededReplacesDelivered: false, requestIdExists: true),
+                       "a post still in its hold was never handed to the system")
+        XCTAssertTrue(NotifyPostMerge.delivered(supersededReplacesDelivered: true, requestIdExists: true))
+        XCTAssertTrue(NotifyPostMerge.delivered(supersededReplacesDelivered: nil, requestIdExists: true))
+        XCTAssertFalse(NotifyPostMerge.delivered(supersededReplacesDelivered: nil, requestIdExists: false))
+    }
+
+    func testTheRecordCarriesTheAlertAndTheBannerCounts() {        let quiet = NotifyBannerFacts(alert: false, banners: 1, presented: 1, quiet: 9)
+        XCTAssertEqual(quiet.record, "alert=0 banners=1 presented=1 quiet=9")
+        let first = NotifyBannerFacts(alert: true, banners: 1, presented: 1, quiet: 0)
+        XCTAssertEqual(first.record, "alert=1 banners=1 presented=1 quiet=0")
+    }
+
+    func testAThreadedPostUsesThePhoneAndTheGroup() {
+        XCTAssertEqual(NotifyMapping.thread(phoneId: "phone-1", group: nil), "phone-1")
+        XCTAssertEqual(NotifyMapping.thread(phoneId: "phone-1", group: ""), "phone-1")
+        XCTAssertEqual(NotifyMapping.thread(phoneId: "phone-1", group: "0123456789abcdef"),
+                       "phone-1.0123456789abcdef")
+        // Only the wire's own hash shape is a group: a raw key would leak a
+        // chat or folder name into a thread identifier.
+        XCTAssertEqual(NotifyMapping.thread(phoneId: "phone-1", group: "Family chat"), "phone-1")
+        XCTAssertEqual(NotifyMapping.thread(phoneId: "phone-1", group: "0123456789ABCDEF"), "phone-1")
+        XCTAssertEqual(NotifyMapping.thread(phoneId: "phone-1", group: "0123"), "phone-1")
+    }
+
+    @MainActor
+    func testAGroupedPostIsThreadedUnderItsGroup() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("notify-group-\(UUID().uuidString).log")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let center = NotifyCenter()
+        center.log = url
+        center.hold = 0
+        center.post(PhoneNotification(id: "g1", pkg: "com.whatsapp", when: nil,
+                                      title: "Chat", text: "One",
+                                      group: "0123456789abcdef"),
+                    phoneId: "phone-1", phoneName: "Nicky", labelFor: { _ in nil })
+        center.post(PhoneNotification(id: "g2", pkg: "com.whatsapp", when: nil,
+                                      title: "Chat", text: "Two", group: "Family chat"),
+                    phoneId: "phone-1", phoneName: "Nicky", labelFor: { _ in nil })
+        let lines = try String(contentsOf: url, encoding: .utf8)
+            .split(separator: "\n").map(String.init)
+        XCTAssertEqual(lines.count, 2)
+        XCTAssertTrue(lines[0].contains(" thread=phone-1.0123456789abcdef "),
+                      "a confirmed group hash threads under the phone and the group")
+        XCTAssertTrue(lines[1].contains(" thread=phone-1 "),
+                      "anything else joins the phone's own thread")
+        XCTAssertFalse(lines.joined().contains("Family chat"), "a raw group key never reaches the record")
+    }
+
+    @MainActor
+    func testAnUpdateInsideTheHoldStillPresentsTheFirstBanner() throws {
+        // NOTIFY-19: an app often re-posts right away (an action, an icon). A
+        // second post inside the 300 ms hold supersedes the first, which never
+        // reached Notification Center: the delivered one must still present.
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("notify-hold-\(UUID().uuidString).log")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let center = NotifyCenter()
+        center.log = url
+        center.hold = 0.25
+        center.post(PhoneNotification(id: "h1", pkg: "com.whatsapp", when: nil,
+                                      title: "Chat", text: "One", alert: true),
+                    phoneId: "phone-1", phoneName: "Nicky", labelFor: { _ in nil })
+        center.post(PhoneNotification(id: "h1", pkg: "com.whatsapp", when: nil,
+                                      title: "Chat", text: "One", alert: false),
+                    phoneId: "phone-1", phoneName: "Nicky", labelFor: { _ in nil })
+        let settled = expectation(description: "the hold elapsed")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { settled.fulfill() }
+        wait(for: [settled], timeout: 3)
+        let posts = try String(contentsOf: url, encoding: .utf8)
+            .split(separator: "\n").map(String.init)
+            .filter { $0.hasPrefix("notify post id=h1 ") }
+        XCTAssertEqual(posts.count, 1, "the hold delivers one banner")
+        XCTAssertTrue(posts.first?.hasSuffix("alert=1 banners=1 presented=1 quiet=0") == true,
+                      "the first banner presented: \(posts.first ?? "none")")
+    }
+
+    @MainActor
+    func testTenPostsOfOneKeyPresentOnceAndReplaceQuietly() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("notify-quiet-\(UUID().uuidString).log")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let center = NotifyCenter()
+        center.log = url
+        center.hold = 0
+        for step in 0..<10 {
+            center.post(PhoneNotification(id: "q1", pkg: "com.whatsapp", when: nil,
+                                          title: "Progress", text: "step \(step)",
+                                          alert: step == 0),
+                        phoneId: "phone-1", phoneName: "Nicky", labelFor: { _ in nil })
+        }
+        let lines = try String(contentsOf: url, encoding: .utf8)
+            .split(separator: "\n").map(String.init)
+        let posts = lines.filter { $0.hasPrefix("notify post id=q1 ") }
+        XCTAssertEqual(posts.count, 10)
+        XCTAssertEqual(posts.filter { $0.contains(" alert=1 ") }.count, 1)
+        XCTAssertEqual(posts.filter { $0.contains(" alert=0 ") }.count, 9)
+        XCTAssertEqual(posts.last?.hasSuffix("alert=0 banners=1 presented=1 quiet=9"), true,
+                       "one delivered banner at the end; the last update was quiet")
+        XCTAssertFalse(lines.joined().contains("step 4"), "no text reaches the record")
     }
 
     // MARK: click setting (ROADMAP D2)
