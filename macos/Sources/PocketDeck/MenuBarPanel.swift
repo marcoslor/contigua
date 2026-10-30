@@ -255,19 +255,31 @@ final class MenuBarController: NSObject {
     /// One link change: the pulse machine takes it (logging its transition),
     /// then the image is drawn in the frame the machine chose.
     private func updateIcon(link: Link, dot: Bool) {
-        runPulse(pulse.handle(.pulses(Self.pulses(link))), event: "pulses", before: pulse.state)
+        runPulse(pulse.handle(.pulses(Self.pulses(link))), event: .pulses, before: pulse.state)
         renderIcon(link: link, dot: dot)
     }
 
     @objc private func pulseTicked() {
-        runPulse(pulse.handle(.tick), event: "tick", before: pulse.state)
+        runPulse(pulse.handle(.tick), event: .tick, before: pulse.state)
     }
 
-    private func runPulse(_ actions: [MenuBarPulseAction], event: String,
+    /// Which event a field log line names (a closed set; the state's names are
+    /// the log's values).
+    private enum PulseLogEvent {
+        case pulses
+        case tick
+    }
+
+    private func runPulse(_ actions: [MenuBarPulseAction], event: PulseLogEvent,
                           before: MenuBarPulseState) {
         let after = pulse.state
         if after != before {
-            Log.app.notice("menu bar icon: \(before.rawValue, privacy: .public) --\(event, privacy: .public)--> \(after.rawValue, privacy: .public)")
+            switch event {
+            case .pulses:
+                Log.app.notice("menu bar icon: \(before.rawValue, privacy: .public) --pulses--> \(after.rawValue, privacy: .public)")
+            case .tick:
+                Log.app.notice("menu bar icon: \(before.rawValue, privacy: .public) --tick--> \(after.rawValue, privacy: .public)")
+            }
         }
         for action in actions {
             switch action {
