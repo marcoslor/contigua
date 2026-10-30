@@ -22,7 +22,7 @@ The menu-bar panel is the phone's remote control and its noticeboard: one Contro
 
 | ID | Requirement (EARS) | Proof |
 |---|---|---|
-| PANEL-1 | WHILE Settings ▸ General's "show in menu bar" is on (the default) THE app SHALL show one status item, with the tooltip "PocketDeck", the symbol `apps.iphone` (`iphone.slash` while offline, pulsing while reconnecting) and a dot while an AI agent is connected; turning the setting off SHALL remove the item and close any open card. | review of `MenuBarController.applyVisibility`/`MenuBarIcon` (untested end to end) |
+| PANEL-1 | WHILE Settings ▸ General's "show in menu bar" is on (the default) THE app SHALL show one status item, with the tooltip "PocketDeck", the symbol `apps.iphone` (`iphone.slash` while offline, pulsing while reconnecting) and a dot while an AI agent is connected; turning the setting off SHALL remove the item and close any open card. | K2 `MenuBarIconTests` (the symbol per link, the dot); e2e `menubar-shots` `[PANEL-1]` (the dot with a client connected); review of `MenuBarController.applyVisibility` |
 | PANEL-2 | WHEN the status item is clicked THE card SHALL open; WHEN it is clicked again WHILE open THE card SHALL close; a click that arrives WHILE closing SHALL be ignored; a click outside the card or the item, Esc, or an action that opens a window SHALL close it; losing key SHALL NOT close it. | K2 `MenuBarPanelMachineTests.testIconClickTogglesThePanel`, `testEveryTransition`, `testAClickWhileClosingStillEndsClosed`; e2e `menus` (the panel host opens) |
 | PANEL-3 | WHEN the status item is right-clicked or ⌃-clicked THE card SHALL close at once (no fade) and the icon's own menu SHALL open under it; the card's gear SHALL be the same request; the menu SHALL be Settings… ⌘, · About PocketDeck · a separator · Quit PocketDeck ⌘Q, built by one function that also serves the dump; Settings… and About SHALL close the card and open the window or the About panel, and Quit SHALL quit. | K2 `MenuBarPanelMachineTests.testASecondaryClickClosesThePanelFirstThenShowsTheMenu`, `testTheSecondaryClickIsARightClickOrAControlClick`, `testTheIconMenuIsSettingsAboutQuit`; e2e `menus` `[PANEL-3]` (the dump is that menu); e2e `menubar-shots` (the real gear's menu, visible runs) |
 | PANEL-4 | THE card SHALL be a 320 pt-wide glass panel (300 pt of content plus 10 pt on each side) anchored under the status item, centred on it, 6 pt below it and never closer than 8 pt to the visible frame's edges; it SHALL be a non-activating panel that still takes the keyboard, join every Space and float over full-screen apps, and fade in and out over 0.12 s. | review of `MenuBarController.showPanel`/`PanelProbe`; e2e `menubar-shots` `[PANEL-4]` (the panel window's size) and `controls` (the card's 300 pt contents) |
@@ -46,6 +46,7 @@ The menu-bar panel is the phone's remote control and its noticeboard: one Contro
 | PANEL-22 | THE card SHALL use one 12 pt inset and one 8/12 pt rhythm for every section, the 134×62 pt tiles, the 28 pt rows and the 46 pt window buttons; its glass SHALL render in light and dark, with the accent and Increase Contrast, and every clickable element SHALL have a hover and a pressed state. | K2 `PhonePanelP3Tests.testTheTilesAreTwoRowsOfTwoAtTheirReviewSize`, `testTheVolumeRowAndWindowsRow`; e2e `menubar-shots` (the states in both appearances; a real hover in a visible run) |
 | PANEL-23 | THE panel SHALL log no notification text, app name from a notification, media title or file name: ids, counts and closed states only. | review of the panel's logging; K2 `NotifyMacTests.testRecordsCarrySizesAndPackagesNotText` (the wire's redaction) |
 | PANEL-24 | WHILE the person only opens and closes the card, or reads it, the app SHALL send no write to the phone. | untested (no read-only-panel phase in `nfr`) |
+| PANEL-25 | THE status item SHALL be AppKit's own, sized to its content (`NSStatusItem.variableLength`), and SHALL draw its state only as the button's own template image — `apps.iphone`, `iphone.slash` while offline, the agent dot drawn into that image and widening it, nothing layered over the button — so AppKit centres it and the menu bar dims it on an inactive display as it dims its neighbours; the reconnecting pulse SHALL swap two frames of that same template image on a timer; the image SHALL follow the link and the agent count without polling; and the item's VoiceOver label SHALL name the agent while the dot shows. | K2 `MenuBarIconTests` (the symbol per link, the template image, the dot widens it, every pulse transition); e2e `menubar-shots` `[PANEL-25]` (`length=variable image=template subviews=0`) and the item's crops on the active and inactive displays |
 
 Priority note: PANEL-1, 2, 3, 5, 6, 8, 11, 13, 16, 17, 19 and 20 are P1 (the card is the app's always-available control). The picker, Live rows and the appearance detail are P2.
 
@@ -77,6 +78,15 @@ The card is one three-state machine (`MenuBarPanelMachine`, `macOS/Sources/Pocke
 | Settling | `matching echo` | Idle, showing the phone's value |
 | Settling | `1 s passes, different value` | Idle, showing the phone's value |
 | Settling | `a new drag` | Dragging |
+
+| State | Event | Result |
+|---|---|---|
+| Steady | `pulses(true)` | Bright: the full frame shows; the frame timer starts |
+| Bright | `tick` | Dim: the dim frame shows |
+| Dim | `tick` | Bright |
+| Bright / Dim | `pulses(false)` | Steady: the full frame shows; the timer stops |
+| Steady | `pulses(false)` / `tick` | ignored (no timer is running) |
+| Bright / Dim | `pulses(true)` | ignored (the pulse is already running) |
 
 | State | Event | Result |
 |---|---|---|
@@ -123,8 +133,8 @@ Ignored events, stated so nobody builds them: an icon click while the card is cl
 | CONV-MAC-14 | n/a: the card does not resize; its content is laid out once at its fixed 300 pt width |
 | CONV-MAC-15 | n/a: the card is not a window that a person closes to quit, and closing it never quits the app |
 | CONV-MAC-16 | n/a: no drop target, no paste, no Services in the card |
-| CONV-MAC-20 | applies: PANEL-22 (light, dark, accent and Increase Contrast; the offline and disabled states stay legible) |
-| CONV-MAC-21 | applies: PANEL-21 |
+| CONV-MAC-20 | applies: PANEL-22 (light, dark, accent and Increase Contrast; the offline and disabled states stay legible) and PANEL-25 (the item is the button's own template image, so the menu bar dims it on an inactive display as it dims its neighbours) |
+| CONV-MAC-21 | applies: PANEL-21 and PANEL-25 (the item's label names the agent while the dot shows) |
 | CONV-MAC-22 | applies: the card's only motion is its 0.12 s fade, which Reduce Motion allows; Reduce Transparency replaces the material with a solid fill (the system's `NSVisualEffectView`) |
 | CONV-MAC-23 | applies: PANEL-6 and PANEL-9 (states are words as well as a dot or a lit tile, and a disabled tile is never colour-only) |
 | CONV-MAC-24 | applies: the card asks for no permission; DND and ringing are phone-side and the phone's own Focus/notifications permissions govern them |

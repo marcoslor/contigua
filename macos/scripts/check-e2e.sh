@@ -11882,13 +11882,54 @@ PY
 # server's). The shots go to $WORK/menubar-shots/ and are judged by eye.
 check_menubar_shots() {
     clean
-    local shots="$WORK/menubar-shots" result device
+    local shots="$WORK/menubar-shots" result device vcx vcy
+    local mainx mainy mainw mainh vx vy vw vh
     mkdir -p "$shots"
     shot_panel() {
         local id
         id="$(await_window '$4 >= 300 && $4 <= 340 && $5 >= 300 && $5 <= 800')" \
             || { bad "MENUBAR-SHOTS no panel window for $1"; return 1; }
         screencapture -x -l"$id" "$shots/$1" >/dev/null 2>&1 && say "shot: $shots/$1"
+    }
+    # shot_item NAME CENTRE_X CENTRE_Y "DISPLAY x y w h": a 300×30 pt menu bar
+    # crop around the item, kept inside that display. The person's own items are
+    # the neighbours: tight, and the crops stay in $WORK, never committed.
+    shot_item() {
+        local name="$1" cx="$2" cy="$3" x y w=300 h=30 sx sy sw sh
+        read -r sx sy sw sh <<< "$4"
+        x=$(( cx - w / 2 )); y=$(( cy - h / 2 ))
+        [ "$x" -lt $(( sx + 4 )) ] && x=$(( sx + 4 ))
+        [ $(( x + w )) -gt $(( sx + sw - 4 )) ] && x=$(( sx + sw - 4 - w ))
+        [ "$y" -lt "$sy" ] && y="$sy"
+        [ $(( y + h )) -gt $(( sy + sh )) ] && y=$(( sy + sh - h ))
+        screencapture -x -R "${x},${y},${w},${h}" "$shots/$name" >/dev/null 2>&1 \
+            && say "shot: $shots/$name rect=${x},${y},${w},${h}" \
+            || bad "MENUBAR-SHOTS no $name"
+    }
+    # display_of main|ID — that display's "x y w h" in Quartz points.
+    display_of() {
+        "$MENUBARBIN" displays | awk -v want="$1" \
+            '$1 == want || (want == "main" && $NF == "main=1") { print $2, $3, $4, $5; exit }'
+    }
+    # item_shots [PREFIX] — the item's crop on the active display and on the
+    # run's own display, an inactive one: there every item is drawn dimmed,
+    # ours included. The frame line says where the item is in each crop.
+    item_shots() {
+        local fx fy fw fh icx icy
+        read -r fx fy fw fh <<< "$("$MENUBARBIN" frame "$APP_PID")" \
+            || { bad "MENUBAR-SHOTS no AX frame for the status item"; return 1; }
+        say "MENUBAR-SHOTS item frame=${fx},${fy},${fw}x${fh}"
+        icx=$(( fx + fw / 2 )); icy=$(( fy + fh / 2 ))
+        read -r mainx mainy mainw mainh <<< "$(display_of main)"
+        [ -n "$mainw" ] || { bad "MENUBAR-SHOTS no main display"; return 1; }
+        shot_item "${1:-menubar-item}-main.png" "$icx" "$icy" "$mainx $mainy $mainw $mainh"
+        [ -n "${VDISPLAY_ID:-}" ] || return 0
+        read -r vx vy vw vh <<< "$(display_of "$VDISPLAY_ID")"
+        [ -n "$vw" ] || { bad "MENUBAR-SHOTS no run display $VDISPLAY_ID"; return 1; }
+        # The same distance from the display's right edge, on its menu bar.
+        vcx=$(( vx + vw - (mainx + mainw - icx) ))
+        vcy=$(( vy + icy - mainy ))
+        shot_item "${1:-menubar-item}-inactive.png" "$vcx" "$vcy" "$vx $vy $vw $vh"
     }
 
     FAKE_ARGS="--media" start_fake || return 1
@@ -11902,6 +11943,19 @@ check_menubar_shots() {
         --open com.whatsapp
     wait_until 30 events_have '"t":"apps.list"' \
         || { bad "MENUBAR-SHOTS the session never started"; stop_app; stop_fakephone; return 1; }
+    # [PANEL-25] the item is a real status item: AppKit's, sized to its own
+    # template image with no foreign view over the button. A fixed length and a
+    # hosting view pinned over the button were the person's padding, the
+    # off-centre glyph and the icon that stayed bright on the inactive display.
+    control menubaricon || true
+    result="$CONTROL_REPLY"
+    case "$result" in
+        "length=variable image=template subviews=0 state=online dot=0")
+            ok "MENUBAR-PANEL-25 length=variable image=template subviews=0 state=online dot=0" ;;
+        *)
+            bad "[PANEL-25] the status item is '$result' (wanted length=variable image=template subviews=0 state=online dot=0)" ;;
+    esac
+    item_shots
     control panelopen && ok "[PANEL-4] the panel host opened" \
         || bad "[PANEL-4] panelopen: $CONTROL_REPLY"
     control paneldump panel "$WORK/menubar-shots/panel.json" \
@@ -12047,6 +12101,59 @@ PY
     stop_app
     defaults delete "$DEFAULTS_SUITE" "notify.$device" >/dev/null 2>&1
     defaults delete "$DEFAULTS_SUITE" "showAppsInDock" >/dev/null 2>&1
+
+    # The agent dot (PANEL-1/PANEL-25): the same item with an automation client
+    # connected. A socket client is what the count follows; the probe says the
+    # dot is in the drawing and the crop shows the glyph with it.
+    FAKE_ARGS="--media" start_fake || return 1
+    rm -rf "$WORK-control"
+    mkdir -p "$WORK-control"
+    launch --mcp-enable --connect "127.0.0.1:$PORT" --quit-after 90 --debug-control "$WORK-control"
+    wait_until 30 events_have '"t":"apps.list"' \
+        || { bad "MENUBAR-SHOTS the dot session never started"; stop_app; stop_fakephone; return 1; }
+    local sock="$HOME/Library/Application Support/PocketDeck-$PROFILE/mcp.sock" agent_pid dot=0
+    if ! wait_until 20 test -S "$sock"; then
+        bad "MENUBAR-SHOTS no automation socket for the dot"
+    else
+        python3 - "$sock" >/dev/null 2>&1 <<'PY' &
+import socket, sys, time
+client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+for _ in range(100):
+    try:
+        client.connect(sys.argv[1])
+        break
+    except OSError:
+        time.sleep(0.1)
+time.sleep(60)
+PY
+        agent_pid=$!
+        for _ in $(seq 1 100); do
+            control menubaricon || true
+            case "$CONTROL_REPLY" in *"dot=1"*) dot=1; break ;; esac
+            sleep 0.1
+        done
+        [ "$dot" = 1 ] \
+            && ok "[PANEL-1] the item carries the agent dot while a client is connected" \
+            || bad "[PANEL-1] no agent dot with a client connected ($CONTROL_REPLY)"
+        # The crop is taken while the client is still connected: the dot is in
+        # the drawing, not a second view over the button.
+        item_shots menubar-item-dot
+        kill "$agent_pid" 2>/dev/null
+        wait "$agent_pid" 2>/dev/null
+        # And it leaves with the client: the image follows the count both ways.
+        dot=0
+        for _ in $(seq 1 100); do
+            control menubaricon || true
+            case "$CONTROL_REPLY" in *"dot=0"*) dot=1; break ;; esac
+            sleep 0.1
+        done
+        [ "$dot" = 1 ] \
+            && ok "[PANEL-1] the dot leaves when the client disconnects" \
+            || bad "[PANEL-1] the dot stayed after the client left ($CONTROL_REPLY)"
+    fi
+    stop_app
+    stop_fakephone
+    wait_until 10 no_fakephone
     shoot_panel_states
 }
 

@@ -22,6 +22,10 @@
 //   swift scripts/menubar-item.swift layers PID
 //       every on-screen window of the process: "id layer x y w h", for a failed
 //       answer above.
+//   swift scripts/menubar-item.swift displays
+//       every online display: "id x y w h main=0|1", in Quartz global points,
+//       so a shot can be cropped around the item on the active display and on
+//       the run's inactive (virtual) one.
 
 import AppKit
 import ApplicationServices
@@ -122,7 +126,17 @@ case "layers":
         } ?? .zero
         print("\(number) \(layer) \(Int(bounds.minX)) \(Int(bounds.minY)) \(Int(bounds.width)) \(Int(bounds.height))")
     }
+case "displays":
+    var count: UInt32 = 0
+    CGGetOnlineDisplayList(0, nil, &count)
+    var ids = [CGDirectDisplayID](repeating: 0, count: Int(count))
+    CGGetOnlineDisplayList(count, &ids, &count)
+    let main = CGMainDisplayID()
+    for id in ids.prefix(Int(count)) {
+        let bounds = CGDisplayBounds(id)
+        print("\(id) \(Int(bounds.minX)) \(Int(bounds.minY)) \(Int(bounds.width)) \(Int(bounds.height)) main=\(id == main ? 1 : 0)")
+    }
 default:
-    FileHandle.standardError.write(Data("usage: frame|click|rclick|panel|menu|layers PID\n".utf8))
+    FileHandle.standardError.write(Data("usage: frame|click|rclick|panel|menu|layers|displays PID\n".utf8))
     exit(2)
 }
