@@ -10544,9 +10544,10 @@ have_flat_icons() { [ "$(icons_kind '"layers":false')" -ge 5 ]; }
 # log say both kinds arrived).
 # The DECK-7 rail on its own, for the VM: the deck check's setup plus the rail
 # steps only (DECK-4/5/19/20 assume a screen bigger than the 1024x768 guest).
-# Quiet, the positions are forced (deckrailapproach) and the same shots are
-# what proves rail-glyph.py before the boot; visible, the real pointer walks in
-# from 96 pt left of the rail to on it, dark and then light.
+# Quiet, the positions are forced (deckrailenter / deckrailmove) and the same
+# shots are what proves rail-glyph.py before the boot; visible, the real pointer
+# comes onto the rail at M, sideways there, down to Z and #, and out again,
+# dark and then light.
 check_deckrail() {
     clean
     # The host proof of the on-screen move: start from a stored frame whose rail
@@ -10717,17 +10718,22 @@ PY
         bad "DECKRAIL gate B: effective Reduce Motion is on (--debug-motion full did not reach the app)"
     fi
     if [ "$onscreen" = 1 ]; then
-        # Gate C: the forced position at the rail matches the pure layout, with
-        # the real pointer parked off the window (a visible run).
+        # Gate C: the forced enter at M gives the pure layout (equal gaps, the
+        # slot under the pointer at the centre, M's tag), with the real pointer
+        # parked off the window (a visible run).
         if [ "$VISIBLE" = 1 ]; then cg_input moveat --x 5 --y 5; sleep 0.5; fi
-        control deckrailapproach M 0 || bad "DECKRAIL gate C: deckrailapproach M 0: $CONTROL_REPLY"
+        control deckrailleave
+        sleep 0.3
+        control deckrailenter M || bad "DECKRAIL gate C: deckrailenter M: $CONTROL_REPLY"
         sleep 0.4
         if control deckrailslots "$WORK/rail-gate.json" \
-            && python3 "$MACOS/scripts/deck-rail-slots.py" "$WORK/rail-gate.json" gaps >/dev/null; then
-            ok "DECKRAIL gate C: the forced M 0 gives the pure layout"
+            && python3 "$MACOS/scripts/deck-rail-slots.py" "$WORK/rail-gate.json" gaps >/dev/null \
+            && python3 "$MACOS/scripts/deck-rail-slots.py" "$WORK/rail-gate.json" centre >/dev/null \
+            && python3 "$MACOS/scripts/deck-rail-slots.py" "$WORK/rail-gate.json" tag:M >/dev/null; then
+            ok "DECKRAIL gate C: the forced enter at M gives the pure layout"
         else
             onscreen=0
-            bad "DECKRAIL gate C: the forced M 0 does not match the pure layout"
+            bad "DECKRAIL gate C: the forced enter at M does not match the pure layout"
         fi
         # Gate D: the forced M shot is 2.2x the rest shot's M (+/-15%).
         shot_rail rail-forced-m.png
@@ -10743,60 +10749,188 @@ PY
             onscreen=0
             bad "DECKRAIL gate D: the forced M shot is not 2.2x the rest (forced '$forced', rest '$rest_peak')"
         fi
-        control deckrailhoverout
+        control deckrailleave
+        sleep 0.3
+    fi
+    # M's, Z's and #'s drawn centres at rest: where a visible run puts the
+    # pointer, and the rows a move names in a quiet one.
+    local zcentre hcentre
+    if control deckrailslots "$railshots/rest.json"; then
+        read -r zcentre hcentre < <(python3 - "$railshots/rest.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+by_index = {s["first"]: s for s in d["slots"]}
+def centre(index):
+    s = by_index[index]
+    return (s["glyphTop"] + s["glyphBottom"]) / 2
+print(centre(25), centre(26))
+PY
+)
+    else
+        bad "DECKRAIL deckrailslots (rest, centres): $CONTROL_REPLY"
     fi
     if [ "$onscreen" = 1 ]; then
-        # The sweep: the real pointer walks in from 96 pt left of the rail (the
-        # quiet run forces the same positions).
-        if [ "$VISIBLE" = 1 ]; then
-            for dx in 96 64 40 24 12 0; do
-                px="$(python3 -c "print(round($sx + 13 if $dx == 0 else $sx - $dx))")"
-                py="$(python3 -c "print(round($sy + $mcentre))")"
-                cg_input moveat --x "$px" --y "$py"
+        # The enter set, in order: enter at M, sideways at M (visible only: the
+        # scale never depends on x), down to Z and #, out to the left. Each step
+        # reads the drawn slots, so the frozen ends are checked on the way.
+        # Enter at M: the real pointer moves onto the rail, or the quiet run
+        # forces the same event; then the drawn state must say M. A shot is a
+        # record, never the proof.
+        deckrail_enter_m() {
+            if [ "$VISIBLE" = 1 ]; then
+                cg_input moveat --x "$(python3 -c "print(round($sx + 13))")" \
+                    --y "$(python3 -c "print(round($sy + $mcentre))")"
                 sleep 0.8
-                shot_rail "rail-dx$dx.png"
+            else
+                control deckrailenter M || bad "DECKRAIL deckrailenter M: $CONTROL_REPLY"
+                sleep 0.5
+            fi
+        }
+        deckrail_check_m() {
+            local file="$1" label="$2"
+            if control deckrailslots "$file"; then
+                python3 "$MACOS/scripts/deck-rail-slots.py" "$file" centre \
+                    && ok "[DECK-7] $label: the drawn M is under the pointer" \
+                    || bad "[DECK-7] $label: the drawn M is not under the pointer"
+                python3 "$MACOS/scripts/deck-rail-slots.py" "$file" tag:M \
+                    && ok "[DECK-7] $label: the tag names M" \
+                    || bad "[DECK-7] $label: the tag does not name M"
+            else
+                bad "DECKRAIL deckrailslots ($label): $CONTROL_REPLY"
+            fi
+        }
+        if [ "$VISIBLE" = 1 ]; then
+            # From outside the arc's room, straight onto the rail at M.
+            cg_input moveat --x "$(python3 -c "print(round($sx - 200))")" \
+                --y "$(python3 -c "print(round($sy + $mcentre))")"
+            sleep 0.5
+        fi
+        deckrail_enter_m
+        deckrail_check_m "$WORK/rail-enter.json" "the enter at M"
+        if control deckrailslots "$WORK/rail-enter.json"; then
+            python3 "$MACOS/scripts/deck-rail-slots.py" "$WORK/rail-enter.json" gaps \
+                && ok "[DECK-7] on the enter the gaps are equal and the rest gap's" \
+                || bad "[DECK-7] the enter's gaps are not equal or not the rest gap's"
+        else
+            bad "DECKRAIL deckrailslots (enter): $CONTROL_REPLY"
+        fi
+        shot_rail rail-enter-m.png
+        if [ "$VISIBLE" = 1 ]; then
+            # Sideways inside the column at M: leading x, then trailing x.
+            local side px
+            for side in leading trailing; do
+                if [ "$side" = leading ]; then
+                    px="$(python3 -c "print(round($sx + 3))")"
+                else
+                    px="$(python3 -c "print(round($sx + 23))")"
+                fi
+                cg_input moveat --x "$px" --y "$(python3 -c "print(round($sy + $mcentre))")"
+                sleep 0.6
+                shot_rail "rail-side-$side.png"
+                control deckrailslots "$WORK/rail-side-$side.json" \
+                    || bad "DECKRAIL deckrailslots (side $side): $CONTROL_REPLY"
             done
-            if [ "${PD_E2E_IN_VM:-0}" = 1 ]; then
-                osascript -e 'tell application "System Events" to tell appearance preferences to set dark mode to false' >/dev/null 2>&1 || true
-                sleep 2
-                shot_rail rail-dx0-light.png
-                osascript -e 'tell application "System Events" to tell appearance preferences to set dark mode to true' >/dev/null 2>&1 || true
-                sleep 1
+            if control deckrailslots "$WORK/rail-side-trailing.json" \
+                && python3 - "$WORK/rail-enter.json" "$WORK/rail-side-trailing.json" <<'PY'
+import json, sys
+a = json.load(open(sys.argv[1]))
+b = json.load(open(sys.argv[2]))
+def m(d):
+    return [s for s in d["slots"] if s["first"] == 12][0]["scale"]
+print("M %.3f on the enter, %.3f at the column's trailing x" % (m(a), m(b)))
+sys.exit(0 if abs(m(b) / m(a) - 1) <= 0.05 else 1)
+PY
+            then
+                ok "[DECK-7] sideways at M the scale does not change (+/-5%)"
+            else
+                bad "[DECK-7] moving sideways at M changed the scale"
             fi
         else
-            for dx in 96 64 40 24 12 0; do
-                control deckrailapproach M "$dx"  >/dev/null || bad "DECKRAIL deckrailapproach M $dx: $CONTROL_REPLY"
-                sleep 0.6
-                shot_rail "rail-dx$dx.png"
-            done
-            control deckrailhoverout
+            skip_visible "DECK-7 sideways at M (the scale never depends on x)"
         fi
-        if python3 "$MACOS/scripts/rail-glyph.py" "$railshots" 1000 625 "$scale" "$wx" > "$WORK/rail-glyph.txt" 2>&1; then
-            ok "DECKRAIL the letter sizes match A2's scales ($(grep -m1 '^gaps' "$WORK/rail-glyph.txt"))"
+        # Down the rail to Z, then #: A's top and #'s bottom do not move.
+        local target
+        for target in Z '#'; do
+            if [ "$target" = Z ]; then
+                py="$(python3 -c "print(round($sy + $zcentre))")"
+                shot="rail-down-z.png"
+                file="$WORK/rail-z.json"
+            else
+                py="$(python3 -c "print(round($sy + $hcentre))")"
+                shot="rail-down-hash.png"
+                file="$WORK/rail-hash.json"
+            fi
+            if [ "$VISIBLE" = 1 ]; then
+                cg_input moveat --x "$(python3 -c "print(round($sx + 13))")" --y "$py"
+                sleep 0.6
+            else
+                control deckrailmove "$target" || bad "DECKRAIL deckrailmove $target: $CONTROL_REPLY"
+                sleep 0.6
+            fi
+            shot_rail "$shot"
+            if control deckrailslots "$file"; then
+                python3 "$MACOS/scripts/deck-rail-slots.py" "$file" frozen:"$WORK/rail-enter.json" \
+                    && ok "[DECK-7] moving to $target leaves A's top and #'s bottom put" \
+                    || bad "[DECK-7] moving to $target moved the frozen ends"
+                python3 "$MACOS/scripts/deck-rail-slots.py" "$file" centre \
+                    && ok "[DECK-7] the move to $target puts the drawn $target under the pointer" \
+                    || bad "[DECK-7] the move to $target does not put it under the pointer"
+                python3 "$MACOS/scripts/deck-rail-slots.py" "$file" tag:"$target" \
+                    && ok "[DECK-7] the move to $target names it" \
+                    || bad "[DECK-7] the move to $target does not name it"
+                python3 "$MACOS/scripts/deck-rail-slots.py" "$file" gaps \
+                    && ok "[DECK-7] the gaps stay equal and the rest gap's at $target" \
+                    || bad "[DECK-7] the gaps at $target are not equal or not the rest gap's"
+            else
+                bad "DECKRAIL deckrailslots ($target): $CONTROL_REPLY"
+            fi
+        done
+        # The light appearance, proved not posed: switch it, let the cross-fade
+        # settle, then enter at M and require the drawn state before the shot.
+        if [ "$VISIBLE" = 1 ]; then
+            osascript -e 'tell application "System Events" to tell appearance preferences to set dark mode to false' >/dev/null 2>&1 || true
+            sleep 2
+            control deckrailleave
+            sleep 0.3
+            deckrail_enter_m
+            deckrail_check_m "$WORK/rail-light.json" "the light enter at M"
+            shot_rail rail-enter-m-light.png
+            osascript -e 'tell application "System Events" to tell appearance preferences to set dark mode to true' >/dev/null 2>&1 || true
+            sleep 1
+        fi
+        # Out to the left, past the arc's room: back at rest within 0.3 s.
+        if [ "$VISIBLE" = 1 ]; then
+            cg_input moveat --x "$(python3 -c "print(round($sx - 200))")" \
+                --y "$(python3 -c "print(round($sy + $mcentre))")"
+            sleep 0.3
         else
-            bad "DECKRAIL the letter sizes or gaps are off: $(tr '\n' ' ' < "$WORK/rail-glyph.txt")"
+            control deckrailleave
+            sleep 0.3
+        fi
+        if control deckrailslots "$WORK/rail-away.json"; then
+            python3 "$MACOS/scripts/deck-rail-slots.py" "$WORK/rail-away.json" rest \
+                && ok "[DECK-7] the rail is a rest box at the drawn pitch 0.3 s after the pointer leaves" \
+                || bad "[DECK-7] the rail is not at rest 0.3 s after the pointer left"
+        else
+            bad "DECKRAIL deckrailslots (away): $CONTROL_REPLY"
+        fi
+        shot_rail rail-away.png
+        if python3 "$MACOS/scripts/rail-glyph.py" "$railshots" 1000 625 "$scale" "$wx" > "$WORK/rail-glyph.txt" 2>&1; then
+            ok "DECKRAIL the letter sizes and A's top match the pure layout ($(grep -m1 '^A.s top' "$WORK/rail-glyph.txt"))"
+        else
+            bad "DECKRAIL the letter sizes or A's top are off: $(tr '\n' ' ' < "$WORK/rail-glyph.txt")"
         fi
         sed -n 's/^/  /p' "$WORK/rail-glyph.txt" | head -14
     else
-        bad "DECKRAIL a gate failed; the real-pointer sweep is skipped"
+        bad "DECKRAIL a gate failed; the real-pointer steps are skipped"
     fi
-    # At the rail: the S2 slots, the tag, A and # inside the clip.
-    control deckrailhoverout
-    sleep 0.3
-    control deckrailapproach M 0 || bad "DECKRAIL deckrailapproach M 0: $CONTROL_REPLY"
-    if control deckrailslots "$WORK/rail-m.json"; then
-        python3 "$MACOS/scripts/deck-rail-slots.py" "$WORK/rail-m.json" gaps \
-            && ok "[DECK-7] the gaps around M are the pure layout's and the slots fill the rail" \
-            || bad "[DECK-7] the rail's slots at M do not match the pure layout"
-        python3 "$MACOS/scripts/deck-rail-slots.py" "$WORK/rail-m.json" tag:M \
-            && ok "[DECK-7] the tag names M when the pointer is on the rail" \
-            || bad "[DECK-7] the tag at the rail does not name M"
-    else
-        bad "DECKRAIL deckrailslots (M): $CONTROL_REPLY"
-    fi
+    # Nothing clipped: with the pointer on the first and the last letter, every
+    # slot and every glyph is inside the content inset.
     local edge
     for edge in A '#'; do
-        control deckrailapproach "$edge" 0 || bad "DECKRAIL deckrailapproach $edge 0: $CONTROL_REPLY"
+        control deckrailleave
+        sleep 0.3
+        control deckrailenter "$edge" || bad "DECKRAIL deckrailenter $edge: $CONTROL_REPLY"
         if control deckrailslots "$WORK/rail-edge.json"; then
             python3 "$MACOS/scripts/deck-rail-slots.py" "$WORK/rail-edge.json" clip \
                 && ok "[DECK-7] with the pointer on $edge every slot is inside the clip" \
@@ -10805,6 +10939,8 @@ PY
             bad "DECKRAIL deckrailslots ($edge): $CONTROL_REPLY"
         fi
     done
+    control deckrailleave
+    sleep 0.3
 
     # The pointer never re-evaluates the grid's body: twenty moves, one runloop
     # turn each, against an idle window of the same wall time.
@@ -10825,60 +10961,82 @@ PY
         bad "[DECK-7] 20 pointer moves re-evaluated the grid $moves times (idle $idle over ${dur} s)"
     fi
 
-    # A real click on N's drawn centre (visible), or the rail's own pick.
-    control deckrailhoverout
+    # A real click on N's drawn centre (visible), or the rail's own pick. The
+    # screen points come from the rail's own geometry (deckrailpoint), the hook
+    # the T click uses: the frozen span moves the letters, so the rail's own
+    # resolution of a letter to its row is what a person's pointer follows.
+    control deckrailleave
     sleep 0.3
-    if control deckrailslots "$WORK/rail-n.json"; then
-        ncentre="$(python3 - "$WORK/rail-n.json" <<'PY'
-import json, sys
-d = json.load(open(sys.argv[1]))
-n = [s for s in d["slots"] if s["first"] == 13][0]
-print((n["glyphTop"] + n["glyphBottom"]) / 2)
-PY
-)"
-        if [ "$VISIBLE" = 1 ]; then
-            px="$(python3 -c "print(round($sx + 13))")"
-            py="$(python3 -c "print(round($sy + $mcentre))")"
-            cg_input moveat --x "$px" --y "$py"
-            sleep 0.5
-            control deckrailslots "$WORK/rail-n.json"
+    if [ "$VISIBLE" = 1 ]; then
+        local mx my
+        if control deckrailpoint M "$WORK/m.pt" && read -r mx my < "$WORK/m.pt"; then
+            cg_input moveat --x "$mx" --y "$my"
+            sleep 0.6
+            control deckrailslots "$WORK/rail-n.json" \
+                || bad "DECKRAIL deckrailslots (M): $CONTROL_REPLY"
             python3 "$MACOS/scripts/deck-rail-slots.py" "$WORK/rail-n.json" tag:M \
                 && ok "[DECK-7] the real pointer on M's drawn centre shows M's tag" \
                 || bad "[DECK-7] the real pointer on M did not show M's tag"
-            py="$(python3 -c "print(round($sy + $ncentre))")"
+        else
+            bad "DECKRAIL deckrailpoint M: $CONTROL_REPLY"
+        fi
+        if control deckrailpoint N "$WORK/n.pt" && read -r px py < "$WORK/n.pt"; then
             cg_input moveat --x "$px" --y "$py"
-            sleep 0.5
-            control deckrailslots "$WORK/rail-n.json"
-            python3 "$MACOS/scripts/deck-rail-slots.py" "$WORK/rail-n.json" tag:N \
-                && ok "[DECK-7] the real pointer on N's drawn centre shows N's tag" \
-                || bad "[DECK-7] the real pointer on N did not show N's tag"
+            sleep 0.6
+        else
+            bad "DECKRAIL deckrailpoint N: $CONTROL_REPLY"
+        fi
+    else
+        control deckrailenter M || bad "DECKRAIL deckrailenter M (N click): $CONTROL_REPLY"
+        sleep 0.4
+        control deckrailslots "$WORK/rail-n.json" \
+            || bad "DECKRAIL deckrailslots (M): $CONTROL_REPLY"
+        python3 "$MACOS/scripts/deck-rail-slots.py" "$WORK/rail-n.json" tag:M \
+            && ok "[DECK-7] the enter at M names M" \
+            || bad "[DECK-7] the enter at M does not name M"
+        control deckrailmove N || bad "DECKRAIL deckrailmove N: $CONTROL_REPLY"
+        sleep 0.5
+    fi
+    if control deckrailslots "$WORK/rail-n.json"; then
+        python3 "$MACOS/scripts/deck-rail-slots.py" "$WORK/rail-n.json" tag:N \
+            && ok "[DECK-7] the pointer on N shows N's tag" \
+            || bad "[DECK-7] the pointer on N did not show N's tag"
+        if [ "$VISIBLE" = 1 ]; then
             cg_input clickat --x "$px" --y "$py"
-            sleep 1
         else
             control deck-rail N
-            sleep 1
         fi
+        sleep 1
         python3 "$MACOS/scripts/deck-rail-pick.py" "$WORK/deck-grid.jsonl" N \
             && ok "[DECK-7] the click on N landed on N's section" \
             || bad "[DECK-7] the click on N did not land on N"
-        # Leaving: 0.3 s after the pointer is 200 pt away the rail is at rest.
-        if [ "$VISIBLE" = 1 ]; then
-            px="$(python3 -c "print(round($sx + 13 - 200))")"
-            cg_input moveat --x "$px" --y "$(python3 -c "print(round($sy + $mcentre))")"
-            sleep 0.3
-            shot_rail rail-away.png
-            sleep 1
-            shot_rail rail-away-settled.png
-            cmp -s "$railshots/rail-away.png" "$railshots/rail-away-settled.png" \
-                && ok "[DECK-7] the rail is back at rest 0.3 s after the pointer leaves" \
-                || bad "[DECK-7] the rail was still moving 0.3 s after the pointer left"
-        fi
     else
         bad "DECKRAIL deckrailslots (N): $CONTROL_REPLY"
     fi
+    # A person who clicks a letter and then moves the pointer away gets the
+    # rail back at rest. The real pointer only: a forced leave would prove
+    # nothing about the click.
+    if [ "$VISIBLE" = 1 ]; then
+        cg_input moveat --x "$(python3 -c "print(round($sx + 13 - 200))")" \
+            --y "$(python3 -c "print(round($sy + $mcentre))")"
+        sleep 0.3
+        if control deckrailslots "$WORK/rail-post-click.json"; then
+            python3 "$MACOS/scripts/deck-rail-slots.py" "$WORK/rail-post-click.json" rest \
+                && ok "[DECK-7] after a click and a move out the rail is at rest within 0.3 s" \
+                || bad "[DECK-7] after a click and a move out the rail is not at rest"
+        else
+            bad "DECKRAIL deckrailslots (post-click): $CONTROL_REPLY"
+        fi
+    else
+        skip_visible "DECK-7 the rail after a click and a move out (the real pointer)"
+    fi
 
     # The rail's overlay fills the container; a last-column cell inside it but
-    # off the rail still opens its app.
+    # off the rail still opens its app. The pointer leaves the rail first: the
+    # click is about the rest overlay, and the magnified hit area is the arc's
+    # room, which reaches a few points into the cell's trailing edge.
+    control deckrailleave
+    sleep 0.3
     control deckquery "" || bad "DECKRAIL deckquery: $CONTROL_REPLY"
     control deck-rail A || bad "DECKRAIL deck-rail A: $CONTROL_REPLY"
     sleep 1
@@ -10907,7 +11065,7 @@ check_deck() {
     # activities, and one entry with no label at all.
     # A full grid (200 apps, more than the person's phone) like theirs: the
     # zoom cost grows with the number of cells the grid lays out.
-    FAKE_ARGS="--dup-launcher --no-label-app com.spotify.music --demo-apps 200" start_fake || return 1
+    FAKE_ARGS="--dup-launcher --no-label-app com.spotify.music --demo-apps 200 --rail-letters" start_fake || return 1
     FAKE_ARGS=""
     # The shared app's own launch: the checks after this one use it.
     launch_shared --connect "127.0.0.1:$PORT" --debug-deck-grid "$WORK/deck-grid.jsonl" \
@@ -11018,8 +11176,8 @@ PY
     control deck-size 760 600 || bad "DECK deck-size 760: $CONTROL_REPLY"
 
     # The A–Z rail (R1): rest, the letter under the pointer magnified, and the
-    # accent after a jump. A quiet run cannot move the pointer, so deckrailhover
-    # forces the letter the shot needs; the real pointer is proved in the VM.
+    # accent after a jump. A quiet run cannot move the pointer, so deckrailenter
+    # enters at the letter the shot needs; the real pointer is proved in the VM.
     local railshots="$WORK/deck-rail-shots"
     mkdir -p "$railshots"
     shot_rail() {
@@ -11030,84 +11188,18 @@ PY
             || bad "DECK no Deck window for the rail shot $1"
     }
     shot_rail rail-rest.png
-    local px py dx nx ny mcentre ncentre ax ay wx wy sx sy scale
+    local px py wx wy sx sy scale
+    # The rail's magnification for the shot. A quiet run forces the enter; the
+    # real pointer's enter, sideways move, sweep to Z and #, leave and click are
+    # deckrail's, in the VM.
     if [ "$VISIBLE" = 1 ]; then
-        # The real pointer's positions come from the rail's geometry: its
-        # top-left on screen and the drawn slots' centres (no row arithmetic).
-        if control deckrailanchor "$WORK/deck-rail-shots/anchor.pt" \
-            && read -r wx wy sx sy scale < "$WORK/deck-rail-shots/anchor.pt"; then
-            mcentre="$(python3 "$MACOS/scripts/rail-glyph.py" "$railshots/rail-rest.png" 760 600 "$scale" "$wx" | sed -n 's/^centre M //p')"
-            ncentre="$(python3 "$MACOS/scripts/rail-glyph.py" "$railshots/rail-rest.png" 760 600 "$scale" "$wx" | sed -n 's/^centre N //p')"
-            if [ -z "$mcentre" ] || [ -z "$ncentre" ]; then
-                bad "DECK the rest shot gave no M or N band"
-            else
-                for dx in 96 64 40 24 12 0; do
-                    px="$(python3 -c "print(round($sx + 13 if $dx == 0 else $sx - $dx))")"
-                    py="$(python3 -c "print(round($sy + $mcentre))")"
-                    cg_input moveat --x "$px" --y "$py"
-                    sleep 0.8
-                    shot_rail "rail-dx$dx.png"
-                done
-                # The person's other appearance: dark, then light (in the VM).
-                if [ "${PD_E2E_IN_VM:-0}" = 1 ]; then
-                    osascript -e 'tell application "System Events" to tell appearance preferences to set dark mode to false' >/dev/null 2>&1 || true
-                    sleep 2
-                    shot_rail rail-dx0-light.png
-                    osascript -e 'tell application "System Events" to tell appearance preferences to set dark mode to true' >/dev/null 2>&1 || true
-                    sleep 1
-                fi
-                if python3 "$MACOS/scripts/rail-glyph.py" "$railshots" 760 600 "$scale" "$wx" > "$WORK/rail-glyph.txt" 2>&1; then
-                    ok "[DECK-7] the real pointer's letter sizes match A2's scales ($(grep -m1 '^gaps' "$WORK/rail-glyph.txt"))"
-                else
-                    bad "[DECK-7] the real pointer's letter sizes or gaps are off: $(tr '\n' ' ' < "$WORK/rail-glyph.txt")"
-                fi
-                sed -n 's/^/  /p' "$WORK/rail-glyph.txt" | head -12
-                # A real click on N's drawn centre: the rail's own pick lands
-                # the grid on N's section and the tag names N.
-                nx="$(sed -n 's/^N centre \([0-9.]*\) pt.*/\1/p' "$WORK/rail-glyph.txt")"
-                if [ -n "$nx" ]; then
-                    px="$(python3 -c "print(round($ax + 760 - 31))")"
-                    py="$(python3 -c "print(round($ay + $nx))")"
-                    cg_input moveat --x "$px" --y "$py"
-                    sleep 0.5
-                    if control deckrailslots "$WORK/rail-n.json"; then
-                        python3 "$MACOS/scripts/deck-rail-slots.py" "$WORK/rail-n.json" tag:N \
-                            && ok "[DECK-7] the real pointer on N's drawn centre shows N's tag" \
-                            || bad "[DECK-7] the real pointer on N did not show N's tag"
-                    else
-                        bad "DECK deckrailslots (N): $CONTROL_REPLY"
-                    fi
-                    cg_input clickat --x "$px" --y "$py"
-                    sleep 1
-                    if python3 "$MACOS/scripts/deck-rail-pick.py" "$WORK/deck-grid.jsonl" N; then
-                        ok "[DECK-7] the real click on N's drawn centre landed on N's section"
-                    else
-                        bad "[DECK-7] the real click on N did not land on N"
-                    fi
-                else
-                    bad "DECK the glyph bands gave no N centre for the click"
-                fi
-                # Leaving: 0.3 s after the pointer is 200 pt away the rail is at rest.
-                px="$(python3 -c "print(round($ax + 760 - 44 - 200))")"
-                py="$(python3 -c "print(round($ay + $mcentre))")"
-                cg_input moveat --x "$px" --y "$py"
-                sleep 0.3
-                shot_rail rail-away.png
-                sleep 1
-                shot_rail rail-away-settled.png
-                cmp -s "$railshots/rail-away.png" "$railshots/rail-away-settled.png" \
-                    && ok "[DECK-7] the rail is back at rest 0.3 s after the pointer leaves" \
-                    || bad "[DECK-7] the rail was still moving 0.3 s after the pointer left"
-            fi
-        else
-            bad "DECK deckrailanchor: $CONTROL_REPLY"
-        fi
+        skip_visible "DECK the real pointer's rail enter and moves (VM: deckrail)"
     else
-        control deckrailhover M && ok "[DECK-7] forced the rail's hover on M for the shot" \
-            || bad "[DECK-7] deckrailhover M: $CONTROL_REPLY"
+        control deckrailenter M && ok "[DECK-7] forced the rail's enter at M for the shot" \
+            || bad "[DECK-7] deckrailenter M: $CONTROL_REPLY"
         sleep 1
         shot_rail rail-hover-m.png
-        control deckrailhoverout || bad "DECK deckrailhoverout: $CONTROL_REPLY"
+        control deckrailleave || bad "DECK deckrailleave: $CONTROL_REPLY"
     fi
 
     # A letter click scrolls to that letter's first app. A quiet run cannot
@@ -11187,58 +11279,117 @@ PY
     # the real letter under the pointer and its tag.
     if control deck-size 760 450 >/dev/null; then
         sleep 1
-        control deckrailhover T && ok "[DECK-7] the short rail's hover on T is forced" \
-            || bad "[DECK-7] deckrailhover T (short): $CONTROL_REPLY"
+        control deckrailenter T && ok "[DECK-7] the short rail's enter at T is forced" \
+            || bad "[DECK-7] deckrailenter T (short): $CONTROL_REPLY"
         sleep 1
         shot_rail rail-short.png
-        control deckrailhoverout || bad "DECK deckrailhoverout (short): $CONTROL_REPLY"
+        control deckrailleave || bad "DECK deckrailleave (short): $CONTROL_REPLY"
     else
         bad "DECK deck-size 760 450: $CONTROL_REPLY"
     fi
     control deck-size 760 600 || bad "DECK deck-size 760 600 (restore): $CONTROL_REPLY"
 
-    # DECK-7, the approach zone and the S2 spacing. The rail is tracked on the
-    # grid's container, so a letter begins to grow over the last icon column and
-    # reaches full size at the rail; there its slots open proportionally, with
-    # the rest pitch giving way so the magnified rail still fits the clip.
-    control deck-size 1000 625 || bad "DECK deck-size 1000 625 (rail spacing): $CONTROL_REPLY"
+    # DECK-7: the rail's magnification. A quiet run cannot move the pointer, so
+    # the enter and the moves are forced; the real pointer is proved in the VM.
+    # On enter the span is computed at that y and frozen: A's top and #'s bottom
+    # must not move while the pointer sweeps to # and Z, the gaps stay equal and
+    # the rest gap's, and the drawn letter under the pointer is the one the tag
+    # names and a click picks.
+    control deck-size 1000 625 || bad "DECK deck-size 1000 625 (rail): $CONTROL_REPLY"
     sleep 1
-    control deckrailhoverout
+    control deckrailleave
     sleep 0.5
-    shot_rail rail-rest-spacing.png
-    control deckrailapproach M 40 && ok "[DECK-7] the pointer 40 pt left of the rail" \
-        || bad "[DECK-7] deckrailapproach M 40: $CONTROL_REPLY"
-    sleep 1
-    shot_rail rail-approach.png
-    cmp -s "$railshots/rail-rest-spacing.png" "$railshots/rail-approach.png" \
-        && bad "[DECK-7] the approach shot is identical to rest" \
-        || ok "[DECK-7] the approach shot differs from rest (the letter grows before the rail)"
-    if control deckrailslots "$WORK/rail-approach.json"; then
-        python3 "$MACOS/scripts/deck-rail-slots.py" "$WORK/rail-approach.json" tag:none \
-            && ok "[DECK-7] the approach zone shows no tag" \
-            || bad "[DECK-7] the approach zone shows a tag"
+    shot_rail rail-rest.png
+    if control deckrailanchor "$railshots/anchor.pt" \
+        && read -r wx wy sx sy scale < "$railshots/anchor.pt"; then
+        ok "[DECK-7] the rail is at window ($wx,$wy) at scale $scale"
     else
-        bad "DECK deckrailslots (approach): $CONTROL_REPLY"
+        bad "DECK deckrailanchor (rail): $CONTROL_REPLY"
     fi
-
-    # At the rail the slots are proportional to the scales, the rail's height is
-    # fixed (its gaps around M are the pure function's 17.7 pt), and the rest
-    # pitch leaves room for the overshoot: with the pointer on the first and the
-    # last letter every slot is inside the clip.
-    control deckrailapproach M 0 || bad "[DECK-7] deckrailapproach M 0: $CONTROL_REPLY"
+    control deckrailenter M && ok "[DECK-7] the pointer enters the rail at M" \
+        || bad "[DECK-7] deckrailenter M: $CONTROL_REPLY"
+    sleep 0.6
+    shot_rail rail-enter-m.png
     if control deckrailslots "$WORK/rail-m.json"; then
         python3 "$MACOS/scripts/deck-rail-slots.py" "$WORK/rail-m.json" gaps \
-            && ok "[DECK-7] at the rail the gaps around M are 17.7 pt and the slots fill the rail" \
-            || bad "[DECK-7] the rail's slots at M do not match the pure layout"
+            && ok "[DECK-7] on the enter every gap is equal and the rest gap's" \
+            || bad "[DECK-7] the enter's gaps are not equal or not the rest gap's"
+        python3 "$MACOS/scripts/deck-rail-slots.py" "$WORK/rail-m.json" centre \
+            && ok "[DECK-7] the enter at M puts the drawn M under the pointer" \
+            || bad "[DECK-7] the enter at M does not put M under the pointer"
         python3 "$MACOS/scripts/deck-rail-slots.py" "$WORK/rail-m.json" tag:M \
             && ok "[DECK-7] the tag names M when the pointer is on the rail" \
             || bad "[DECK-7] the tag at the rail does not name M"
     else
         bad "DECK deckrailslots (M): $CONTROL_REPLY"
     fi
+    local target shot file
+    for target in '#' Z; do
+        if [ "$target" = '#' ]; then
+            shot="rail-down-hash.png"; file="$WORK/rail-hash.json"
+        else
+            shot="rail-down-z.png"; file="$WORK/rail-z.json"
+        fi
+        control deckrailmove "$target" || bad "[DECK-7] deckrailmove $target: $CONTROL_REPLY"
+        sleep 0.6
+        shot_rail "$shot"
+        if control deckrailslots "$file"; then
+            python3 "$MACOS/scripts/deck-rail-slots.py" "$file" frozen:"$WORK/rail-m.json" \
+                && ok "[DECK-7] moving to $target leaves A's top and #'s bottom put" \
+                || bad "[DECK-7] moving to $target moved the frozen ends"
+            python3 "$MACOS/scripts/deck-rail-slots.py" "$file" centre \
+                && ok "[DECK-7] the move to $target puts the drawn $target under the pointer" \
+                || bad "[DECK-7] the move to $target does not put it under the pointer"
+            python3 "$MACOS/scripts/deck-rail-slots.py" "$file" tag:"$target" \
+                && ok "[DECK-7] the tag names $target" \
+                || bad "[DECK-7] the tag does not name $target"
+            python3 "$MACOS/scripts/deck-rail-slots.py" "$file" gaps \
+                && ok "[DECK-7] the gaps stay equal and the rest gap's at $target" \
+                || bad "[DECK-7] the gaps at $target are not equal or not the rest gap's"
+        else
+            bad "DECK deckrailslots ($target): $CONTROL_REPLY"
+        fi
+    done
+    # The click picks the letter under the pointer: move to N and pick, and the
+    # grid lands in N's section with the tag naming N.
+    control deckrailmove N || bad "[DECK-7] deckrailmove N: $CONTROL_REPLY"
+    sleep 0.5
+    if control deckrailslots "$WORK/rail-n.json"; then
+        python3 "$MACOS/scripts/deck-rail-slots.py" "$WORK/rail-n.json" tag:N \
+            && ok "[DECK-7] the tag names N with the pointer on N" \
+            || bad "[DECK-7] the tag with the pointer on N does not name N"
+    else
+        bad "DECK deckrailslots (N): $CONTROL_REPLY"
+    fi
+    control deck-rail N || bad "DECK deck-rail N: $CONTROL_REPLY"
+    sleep 1
+    python3 "$MACOS/scripts/deck-rail-pick.py" "$WORK/deck-grid.jsonl" N \
+        && ok "[DECK-7] the click on N landed on N's section" \
+        || bad "[DECK-7] the click on N did not land on N"
+    # Leaving: the rail is at rest within 0.3 s.
+    control deckrailleave
+    sleep 0.3
+    if control deckrailslots "$WORK/rail-away.json"; then
+        python3 "$MACOS/scripts/deck-rail-slots.py" "$WORK/rail-away.json" rest \
+            && ok "[DECK-7] the rail is a rest box at the drawn pitch 0.3 s after the pointer leaves" \
+            || bad "[DECK-7] the rail is not at rest 0.3 s after the pointer left"
+    else
+        bad "DECK deckrailslots (away): $CONTROL_REPLY"
+    fi
+    shot_rail rail-away.png
+    if python3 "$MACOS/scripts/rail-glyph.py" "$railshots" 1000 625 "$scale" "$wx" > "$WORK/rail-glyph.txt" 2>&1; then
+        ok "[DECK-7] the shots match the layout: $(grep -m1 '^A.s top' "$WORK/rail-glyph.txt")"
+    else
+        bad "[DECK-7] the shots do not match the layout: $(tr '\n' ' ' < "$WORK/rail-glyph.txt")"
+    fi
+    sed -n 's/^/  /p' "$WORK/rail-glyph.txt" | head -14
+    # Nothing clipped: with the pointer on the first and the last letter, every
+    # slot and every glyph is inside the content inset.
     local edge
     for edge in A '#'; do
-        control deckrailapproach "$edge" 0 || bad "DECK deckrailapproach $edge 0: $CONTROL_REPLY"
+        control deckrailleave
+        sleep 0.3
+        control deckrailenter "$edge" || bad "DECK deckrailenter $edge: $CONTROL_REPLY"
         if control deckrailslots "$WORK/rail-edge.json"; then
             python3 "$MACOS/scripts/deck-rail-slots.py" "$WORK/rail-edge.json" clip \
                 && ok "[DECK-7] with the pointer on $edge every slot is inside the clip" \
@@ -11247,11 +11398,13 @@ PY
             bad "DECK deckrailslots ($edge): $CONTROL_REPLY"
         fi
     done
+    control deckrailleave
+    sleep 0.3
 
-    # DECK-7: the pointer never re-evaluates the grid's body. Twenty pointer
-    # events in one command, against an idle window of the same length (the
-    # quiet run flushes the window's own transaction about twice a second, so
-    # the bound is the idle count plus one).
+    # DECK-7: the pointer never re-evaluates the grid's body. Twenty moves, one
+    # runloop turn each, against an idle window of the same length (the quiet
+    # run flushes the window's own transaction about twice a second, so the
+    # bound is the idle count plus one).
     local t0 dur moves idle
     control deckbodyreset
     t0="$(python3 -c 'import time;print(time.time())')"
@@ -11268,8 +11421,31 @@ PY
     else
         bad "[DECK-7] 20 pointer moves re-evaluated the grid $moves times (idle $idle over ${dur} s)"
     fi
-    control deckrailhoverout
+    control deckrailleave
 
+    # DECK-7: the letter a rail click lands on stays lit, not the letter of the
+    # row it shares. The fake phone's --rail-letters fixtures put I mid-row
+    # with J beside it and X beside Y in the last screenful (whose row cannot
+    # come to the top). A scroll by other means hands the accent back to the
+    # top row's letter; the jump's own animated scroll must not.
+    control deck-scroll -100000 || bad "DECK deck-scroll to the top: $CONTROL_REPLY"
+    sleep 0.5
+    local railletter railjson railstart
+    railjson="$WORK/deck-grid.jsonl"
+    for railletter in I X; do
+        control deck-rail "$railletter" >/dev/null || bad "DECK deck-rail $railletter: $CONTROL_REPLY"
+        sleep 1
+        python3 "$MACOS/scripts/deck-rail-accent.py" pick "$railjson" "$railletter" \
+            && ok "[DECK-7] the rail's $railletter click keeps $railletter lit, not its row's letter" \
+            || bad "[DECK-7] the rail's $railletter click lit another letter"
+        railstart="$(wc -l < "$railjson" | tr -d ' ')"
+        control deck-scroll -120 >/dev/null || bad "DECK deck-scroll after $railletter: $CONTROL_REPLY"
+        sleep 0.5
+        python3 "$MACOS/scripts/deck-rail-accent.py" top "$railjson" "$railstart" \
+            && ok "[DECK-7] a scroll after the $railletter pick hands the accent back to the top row" \
+            || bad "[DECK-7] after a scroll the accent is not the top row's letter"
+    done
+    control deck-scroll -100000 || bad "DECK deck-scroll to the top (restore): $CONTROL_REPLY"
 
     # ⌘F is the Deck's Find (focus the search field, select its text) and the
     # phone app's find-in-page when a stream window is key: a real key event
