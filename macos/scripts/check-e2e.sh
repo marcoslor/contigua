@@ -8096,13 +8096,15 @@ check_dock() {
     local cover_app="$dir/Camera (FakePhone).app" plate_app="$dir/Gallery (FakePhone).app" flat_edge
     launch --connect "127.0.0.1:$PORT" --dock-dir "$dir" --dock-add "com.android.camera2" --quit-after 90
     # The phone answers one session at a time; a busy one is retried with a
-    # backoff, so this can take a while on a loaded host.
-    wait_until 60 eval '[ -d "$cover_app" ]' \
-        || { bad "DOCK icon: no shim for the covering flat icon"; stop_app; stop_fakephone; return 1; }
+    # backoff, so this can take a while on a loaded host. Wait for the icon
+    # itself, not the bundle's folder: the bundle exists a moment before its
+    # .icns is written, and stopping the app in that gap leaves it iconless.
+    wait_until 60 eval '[ -f "$cover_app/Contents/Resources/AppIcon.icns" ]' \
+        || { bad "DOCK icon: no shim icon for the covering flat icon"; stop_app; stop_fakephone; return 1; }
     stop_app
     launch --connect "127.0.0.1:$PORT" --dock-dir "$dir" --dock-add "com.android.gallery3d" --quit-after 90
-    wait_until 60 eval '[ -d "$plate_app" ]' \
-        || { bad "DOCK icon: no shim for the plating flat icon"; stop_app; stop_fakephone; return 1; }
+    wait_until 60 eval '[ -f "$plate_app/Contents/Resources/AppIcon.icns" ]' \
+        || { bad "DOCK icon: no shim icon for the plating flat icon"; stop_app; stop_fakephone; return 1; }
     stop_app
     if [ -f "$cover_app/Contents/Resources/AppIcon.icns" ] \
         && [ -f "$plate_app/Contents/Resources/AppIcon.icns" ]; then
