@@ -83,7 +83,7 @@ Pairing is one machine on the Mac (`LinkMachine`, `macOS/Sources/PocketDeck/Link
 | cooling | a scanned QR | honoured (it needs the person at the Mac's screen) |
 | paired | `hello` with "Allow connections" off | `error connections_off` and close |
 | paired | `hello` with a pinned fingerprint mismatch | `error bad_pin` and close |
-| paired | its own Mac connects while its session is still live | the stale session drops; once its teardown is done (≤ 2 s) the new connection is adopted, else `busy` |
+| paired | its own Mac connects while its session is still live, with no `join` | the stale session drops; once its teardown is done (≤ 2 s) the new connection is adopted, else `busy` (a hello carrying `join` attaches as one more **path** of the live session instead — transport.md PATH-3) |
 | paired | a different Mac, an unpinned peer or a pairing peer connects while a session is live | `busy` and close |
 | any (session) | the accepted socket | TCP keepalive and `TCP_USER_TIMEOUT` set; a Mac that vanished without a FIN is noticed by the kernel (~40 s), a live one is never dropped |
 | any (shell) | the app pushes the same identity fingerprint and paired set | no change; the live session keeps running |
