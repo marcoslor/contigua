@@ -278,7 +278,9 @@ final class MenuBarController: NSObject {
             case .pulses:
                 Log.app.notice("menu bar icon: \(before.rawValue, privacy: .public) --pulses--> \(after.rawValue, privacy: .public)")
             case .tick:
-                Log.app.notice("menu bar icon: \(before.rawValue, privacy: .public) --tick--> \(after.rawValue, privacy: .public)")
+                // Twice a second while reconnecting: debug only, so the
+                // pulse does not fill the unified log.
+                Log.app.debug("menu bar icon: \(before.rawValue, privacy: .public) --tick--> \(after.rawValue, privacy: .public)")
             }
         }
         for action in actions {
