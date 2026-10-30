@@ -243,4 +243,32 @@ final class RailPointerTests: XCTestCase {
         guard case .hovering(_, let y) = pointer.state else { return XCTFail("M should hover") }
         XCTAssertEqual(y, 6 * pitch + pitch / 4, accuracy: 0.001)
     }
+
+    /// The leave edge and the hit area follow the Deck's zoom: the last column
+    /// moves with it, so the room is the zoomed one, never the 100 % one. Where
+    /// the zoomed column leaves space beside the rail, the hit area keeps the
+    /// 4 pt clearance; where it reaches under the rail (a wide zoom in a narrow
+    /// window, a layout question of its own), the rail grows no hit area at all.
+    @MainActor
+    func testTheRoomFollowsTheDeckZoom() {
+        let pointer = RailPointerModel()
+        for width in [CGFloat(640), 760, 1000] {
+            pointer.noteContainerSize(CGSize(width: width, height: 625))
+            for zoom in [CGFloat(0.75), 1, 1.25, 1.5] {
+                pointer.noteZoom(zoom)
+                XCTAssertEqual(pointer.room, RailArc.hitRoom(width: width, zoom: zoom), accuracy: 0.001)
+                XCTAssertEqual(pointer.arcRoom, RailArc.room(width: width, zoom: zoom), accuracy: 0.001)
+                let metrics = DeckGridSize(zoom: zoom)
+                let cellRight = metrics.originX(forWidth: width) + metrics.span(forWidth: width)
+                let railLeading = width - DeckRail.trailingSpace
+                if cellRight + RailArc.minimumClearance <= railLeading {
+                    XCTAssertGreaterThanOrEqual(railLeading - pointer.room,
+                                                cellRight + RailArc.minimumClearance - 0.001,
+                                                "\(width) pt at \(zoom)x: the hit area reaches into the last column")
+                } else {
+                    XCTAssertEqual(pointer.room, 0, "\(width) pt at \(zoom)x: no room, no growth")
+                }
+            }
+        }
+    }
 }

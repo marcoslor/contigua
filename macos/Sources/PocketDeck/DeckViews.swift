@@ -988,6 +988,7 @@ struct AppGrid: View {
                 // container's size. Written only on a change, and only the
                 // rail reads it.
                 RailPointerModel.shared.noteContainerSize(outer.size)
+                RailPointerModel.shared.noteZoom(zoom)
                 // Arrow keys move by the drawn columns. The drawn layout comes
                 // from the layout pass itself (DeckGridLayout); this is only
                 // the keyboard's copy of the same number and no view reads it.
@@ -1003,6 +1004,10 @@ struct AppGrid: View {
                 .receive(on: RunLoop.main)) { _ in
                 let stored = DeckZoom.stored(in: Profile.active.defaults)
                 if stored != zoom { zoom = stored }
+            }
+            // The rail's room follows the zoom: ⌘+ moves the last column right.
+            .onChange(of: zoom, initial: true) { _, zoom in
+                RailPointerModel.shared.noteZoom(zoom)
             }
             .onScrollGeometryChange(for: RailScroll.self) { geometry in
                 RailScroll(offset: geometry.visibleRect.minY + geometry.contentInsets.top,
@@ -1291,18 +1296,17 @@ private struct DeckIndexRail: View {
 
     /// The window's room for the arc: how far a magnified letter may reach left
     /// before it comes within the clearance to the last column's cell.
-    private var arcRoom: CGFloat {
-        RailArc.room(width: RailPointerModel.shared.containerSize.width)
-    }
+    private var arcRoom: CGFloat { RailPointerModel.shared.arcRoom }
     /// The drawn letter's leftward offset: only a magnified letter reaches.
     private func arcOffset(_ scale: CGFloat) -> CGFloat {
         RailArc.offset(scale: scale, reduceMotion: reduceMotion, room: arcRoom)
     }
     /// How far the rail's hit area grows left while it is magnified: the room,
-    /// which keeps the clearance to the last icon column's cell.
+    /// which keeps the clearance to the last icon column's cell at the Deck's
+    /// zoom.
     private var hitGrowth: CGFloat {
         guard frozen != nil, !reduceMotion else { return 0 }
-        return RailArc.hitRoom(width: RailPointerModel.shared.containerSize.width)
+        return RailPointerModel.shared.room
     }
 
     /// The fisheye centre: solve `Y(u) = y` inside the frozen span, so the
