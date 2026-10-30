@@ -11903,14 +11903,8 @@ check_menubar_shots() {
         [ "$y" -lt "$sy" ] && y="$sy"
         [ $(( y + h )) -gt $(( sy + sh )) ] && y=$(( sy + sh - h ))
         screencapture -x -R "${x},${y},${w},${h}" "$shots/$name" >/dev/null 2>&1 \
-            && say "shot: $shots/$name" || bad "MENUBAR-SHOTS no $name"
-    }
-    # item_centre — "cx cy" of the item's own AX frame.
-    item_centre() {
-        local line
-        line="$("$MENUBARBIN" frame "$APP_PID")" || return 1
-        read -r ix iy iw ih <<< "$line"
-        echo $(( ix + iw / 2 )) $(( iy + ih / 2 ))
+            && say "shot: $shots/$name rect=${x},${y},${w},${h}" \
+            || bad "MENUBAR-SHOTS no $name"
     }
     # display_of main|ID — that display's "x y w h" in Quartz points.
     display_of() {
@@ -11919,10 +11913,13 @@ check_menubar_shots() {
     }
     # item_shots [PREFIX] — the item's crop on the active display and on the
     # run's own display, an inactive one: there every item is drawn dimmed,
-    # ours included.
+    # ours included. The frame line says where the item is in each crop.
     item_shots() {
-        read -r icx icy <<< "$(item_centre)" \
+        local fx fy fw fh icx icy
+        read -r fx fy fw fh <<< "$("$MENUBARBIN" frame "$APP_PID")" \
             || { bad "MENUBAR-SHOTS no AX frame for the status item"; return 1; }
+        say "MENUBAR-SHOTS item frame=${fx},${fy},${fw}x${fh}"
+        icx=$(( fx + fw / 2 )); icy=$(( fy + fh / 2 ))
         read -r mainx mainy mainw mainh <<< "$(display_of main)"
         [ -n "$mainw" ] || { bad "MENUBAR-SHOTS no main display"; return 1; }
         shot_item "${1:-menubar-item}-main.png" "$icx" "$icy" "$mainx $mainy $mainw $mainh"
@@ -12135,12 +12132,24 @@ PY
             case "$CONTROL_REPLY" in *"dot=1"*) dot=1; break ;; esac
             sleep 0.1
         done
-        kill "$agent_pid" 2>/dev/null
-        wait "$agent_pid" 2>/dev/null
         [ "$dot" = 1 ] \
             && ok "[PANEL-1] the item carries the agent dot while a client is connected" \
             || bad "[PANEL-1] no agent dot with a client connected ($CONTROL_REPLY)"
+        # The crop is taken while the client is still connected: the dot is in
+        # the drawing, not a second view over the button.
         item_shots menubar-item-dot
+        kill "$agent_pid" 2>/dev/null
+        wait "$agent_pid" 2>/dev/null
+        # And it leaves with the client: the image follows the count both ways.
+        dot=0
+        for _ in $(seq 1 100); do
+            control menubaricon || true
+            case "$CONTROL_REPLY" in *"dot=0"*) dot=1; break ;; esac
+            sleep 0.1
+        done
+        [ "$dot" = 1 ] \
+            && ok "[PANEL-1] the dot leaves when the client disconnects" \
+            || bad "[PANEL-1] the dot stayed after the client left ($CONTROL_REPLY)"
     fi
     stop_app
     stop_fakephone
