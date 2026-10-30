@@ -59,6 +59,13 @@ every place.
 - The Deck asks 432 and renders the 56 pt tile from a 224 px render; building a Dock shim
   asks 1296 and renders one 1024 px icon (its 864 px visible crop downscales into the
   824 px body, so nothing is upscaled), from which every `.icns` size is scaled.
+- A covered flat icon is the one source a render enlarges, because its crop is smaller than
+  the tile by design. The Deck's request gives a 288 px flat and stays under 1.0: 0.84× at
+  worst, a 38 % rounded square's 0.745 crop (a 10 % margin's 0.77 crop is 0.82×). The Dock's
+  gives 864 px and costs 1.28× at worst. No cover crops more than 0.13 of a side, which
+  keeps the rule's ceiling at 1.29×. The Dock shim therefore reads the flat of its own size
+  class, and `icon_covered_flat_scale` in docs/NFR.md holds the 1.3× bound: past it, the
+  shim drew a covered icon from the Deck's flat, or the crop rule was widened.
 - `IconCache` keeps one slot per size class (`deck` = 432, `dock` = 1296), so a 1296 render
   is never replaced by a 216 one; entries from before size classes are read as `deck`.
 - The shim's `Info.plist` carries `PDIconVersion`, bumped with the renderer. A shim with an

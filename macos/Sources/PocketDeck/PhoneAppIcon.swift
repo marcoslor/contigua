@@ -316,7 +316,10 @@ enum PhoneAppIcon {
         // inset the crop's corner sits just inside the icon's own corner arc
         // (0.7r√2 = 0.99r from the arc's centre), so covering the crop pushes
         // that arc outside our squircle and no transparency is left inside it.
-        let inset = radius * 0.3
+        // A very round square would crop past the upscale bound (a 48 % radius
+        // leaves 0.71 of the icon: 1.34× at the Dock), so no cover crops more
+        // than 0.13 of the side, which keeps the worst crop at 0.74 (1.29×).
+        let inset = min(radius * 0.3, 0.13 * Double(short))
         let cropMinX = CGFloat(shape.minX) + inset, cropMinY = CGFloat(shape.minY) + inset
         let cropMaxX = CGFloat(shape.maxX) + 1 - inset, cropMaxY = CGFloat(shape.maxY) + 1 - inset
         guard cropMaxX - cropMinX >= 1, cropMaxY - cropMinY >= 1 else { return .plate }

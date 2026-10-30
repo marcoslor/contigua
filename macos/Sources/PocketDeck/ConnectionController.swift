@@ -258,6 +258,9 @@ final class ConnectionController {
     /// The Dock's 1296 px icon was asked once this connection (the shim waits
     /// for it the first time, docs/design/dock.md §Icons).
     private var dockIconAsked: Set<String> = []
+    /// "Add to Dock" presses waiting for the Dock's 1296 px reply, keyed by
+    /// `{deviceId}/{pkg}`.
+    private var pendingDockAdds: [String: (deviceId: String, pkg: String, label: String)] = [:]
     private(set) var status: PhoneStatus?
     /// `ring.state` from the phone: a ring this Mac started is still playing.
     private(set) var ringing = false
@@ -842,11 +845,33 @@ final class ConnectionController {
 
     func addToDock(_ app: AppInfo) {
         guard let phone = link.phone else { return }
+        guard dockIconReady(pkg: app.pkg, deviceId: phone.id) else {
+            // The shim's icon is drawn once, from the Dock's size class: wait
+            // for the phone's 1296 px reply instead of baking the Deck's flat.
+            pendingDockAdds["\(phone.id)/\(app.pkg)"] = (phone.id, app.pkg, app.label)
+            requestDockIcon(app.pkg)
+            return
+        }
         if dockApps.add(deviceId: phone.id, pkg: app.pkg, label: app.label, phoneName: displayName(for: phone),
                         launch: true, pinned: true) == nil {
             showTransient("Couldn't add \(app.label) to the Dock.")
         }
         dockRevision += 1
+    }
+
+    /// "Add to Dock" presses waiting for the Dock's 1296 px reply.
+    private func runPendingDockAdds() {
+        guard let phone = link.phone, !pendingDockAdds.isEmpty else { return }
+        for key in pendingDockAdds.keys.sorted() {
+            guard let add = pendingDockAdds[key], add.deviceId == phone.id,
+                  dockIconReady(pkg: add.pkg, deviceId: add.deviceId) else { continue }
+            pendingDockAdds[key] = nil
+            if dockApps.add(deviceId: add.deviceId, pkg: add.pkg, label: add.label,
+                            phoneName: displayName(for: phone), launch: true, pinned: true) == nil {
+                showTransient("Couldn't add \(add.label) to the Dock.")
+            }
+            dockRevision += 1
+        }
     }
 
     func removeFromDock(_ app: AppInfo) {
@@ -904,6 +929,10 @@ final class ConnectionController {
         guard dockHooksPending, let phone = link.phone, appsLoaded else { return }
         if let pkg = options.dockAdd {
             guard IconCache.shared.loadData(pkg: pkg, deviceId: phone.id) != nil || missingIcons.contains(pkg) else { return }
+            guard dockIconReady(pkg: pkg, deviceId: phone.id) else {
+                requestDockIcon(pkg)
+                return
+            }
             let label = apps.first { $0.pkg == pkg }?.label ?? pkg
             dockApps.add(deviceId: phone.id, pkg: pkg, label: label, phoneName: displayName(for: phone),
                          launch: false, pinned: true)
@@ -1004,7 +1033,7 @@ final class ConnectionController {
         // for them once and wait (a flat icon, or a phone that predates `px`,
         // needs no wait). docs/design/dock.md §Icons.
         if state == .cached, !dockIconReady(pkg: pkg, deviceId: phone.id) {
-            if dockIconAsked.insert(pkg).inserted { requestIcon(pkg, px: IconSizeClass.dock.layerPx) }
+            requestDockIcon(pkg)
             return
         }
         let info = dockApps.shimIconInfo(deviceId: phone.id, pkg: pkg)
@@ -1075,12 +1104,19 @@ final class ConnectionController {
         return missingIcons.contains(pkg) ? .reportedMissing : .unknown
     }
 
-    /// Whether the Dock's size class has an answer: 1296 px layers, or a flat
-    /// answer from a phone with no adaptive layers (it must not be asked again).
+    /// Whether the Dock's size class has an answer. Every shim icon is drawn
+    /// from the phone's 1296 px reply — its layers, or the 864 px flat a flat
+    /// icon covers its tile with — so a flat-only app asks too: the Deck slot's
+    /// 288 px flat would be a 2.9× upscale at 1024 (docs/design/dock.md §Icons).
+    /// An app the phone says it has no icon for is ready without one.
     private func dockIconReady(pkg: String, deviceId: String) -> Bool {
-        let cache = IconCache.shared
-        if cache.layersAnswered(pkg: pkg, deviceId: deviceId, sizeClass: .dock) { return true }
-        return !cache.hasLayers(pkg: pkg, deviceId: deviceId)
+        if missingIcons.contains(pkg) { return true }
+        return IconCache.shared.layersAnswered(pkg: pkg, deviceId: deviceId, sizeClass: .dock)
+    }
+
+    /// Asks for the Dock's 1296 px icon once per connection.
+    private func requestDockIcon(_ pkg: String) {
+        if dockIconAsked.insert(pkg).inserted { requestIcon(pkg, px: IconSizeClass.dock.layerPx) }
     }
 
     /// Asks the phone for one icon at `px`, remembering the size so the reply
@@ -2025,6 +2061,7 @@ final class ConnectionController {
                 missingIcons.insert(pkg)
             }
             runDockHooks()
+            runPendingDockAdds()
             recheckOpenWindows()
         case .phoneState(let locked, let battery, let charging, let dnd, let ringer, let volume,
                          let volumeMax, let screen, let secure, let panel):
@@ -2443,6 +2480,7 @@ final class ConnectionController {
                                keep: dockPkgsOfOpenWindows)
         }
         runDockHooks()
+        runPendingDockAdds()
         recheckOpenWindows()
         // An open-app intent needs the live list (a fresh profile has no cache).
         runPendingDebugIntents(immediateOnly: false)
