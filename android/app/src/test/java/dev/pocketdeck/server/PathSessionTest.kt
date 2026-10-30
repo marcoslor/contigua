@@ -1,0 +1,259 @@
+package dev.pocketdeck.server
+
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+/** docs/design/paths.md §6: every state/event pair, ignored events, every timer. */
+class PathSessionTest {
+    private fun machine(
+        live: Set<String> = setOf("a"),
+        current: String = "a",
+        ended: String? = null,
+        orphanedSince: Double? = null,
+    ): PathSessionMachine = if (ended != null) {
+        PathSessionMachine(state = PathSessionState.Ended(ended))
+    } else if (orphanedSince != null) {
+        PathSessionMachine(state = PathSessionState.Orphaned(orphanedSince))
+    } else {
+        PathSessionMachine(
+            state = PathSessionState.Live(current),
+            live = live.toMutableSet(),
+            scores = live.associateWith { 500 }.toMutableMap(),
+        )
+    }
+
+    @Test
+    fun pathUpAddsAPathAndStartsItsPing() {
+        val m = machine()
+        val actions = m.handle(PathSessionEvent.PathUp("b", joined = true), 10.0)
+        assertEquals(PathSessionState.Live("a"), m.state)
+        assertTrue(m.live.contains("b"))
+        assertEquals(
+            listOf(
+                PathSessionAction.StartPing("b"),
+                PathSessionAction.Ranking(PathRankingEvent.PathUp("b")),
+            ),
+            actions,
+        )
+    }
+
+    @Test
+    fun aSecondPathUpForALivePathClosesTheSecondSocket() {
+        val m = machine()
+        assertEquals(
+            listOf(PathSessionAction.ClosePath("a")),
+            m.handle(PathSessionEvent.PathUp("a", joined = true), 10.0),
+        )
+    }
+
+    @Test
+    fun aPathUpAfterTheEndIsIgnored() {
+        val m = machine(ended = "close")
+        assertEquals(
+            listOf(PathSessionAction.Ignore),
+            m.handle(PathSessionEvent.PathUp("b", joined = false), 1.0),
+        )
+    }
+
+    @Test
+    fun aPlannedPeerSwitchMigratesAndDrainsTheOldPath() {
+        val m = machine(live = setOf("a", "b"))
+        val actions = m.handle(PathSessionEvent.PeerSwitch("b", 9, "a"), 20.0)
+        assertEquals(PathSessionState.Migrating("a", "b", 20.0), m.state)
+        assertEquals(
+            listOf(
+                PathSessionAction.StartPing("b"),
+                PathSessionAction.Ranking(PathRankingEvent.ExternalSwitch("b")),
+            ),
+            actions,
+        )
+        assertEquals(
+            listOf(
+                PathSessionAction.ClosePath("a"),
+                PathSessionAction.StopPing("a"),
+                PathSessionAction.Ranking(PathRankingEvent.ExternalSwitch("b")),
+            ),
+            m.handle(PathSessionEvent.PeerSwitch("b", 3, "b"), 20.1),
+        )
+        assertEquals(PathSessionState.Live("b"), m.state)
+        assertFalse(m.live.contains("a"))
+    }
+
+    @Test
+    fun aPeerSwitchArrivingOnTheNewPathIsAlreadyComplete() {
+        val m = machine(live = setOf("a", "b"))
+        val actions = m.handle(PathSessionEvent.PeerSwitch("b", 9, "b"), 3.0)
+        assertEquals(PathSessionState.Live("b"), m.state)
+        assertEquals(
+            listOf(
+                PathSessionAction.ClosePath("a"),
+                PathSessionAction.StopPing("a"),
+                PathSessionAction.StartPing("b"),
+                PathSessionAction.Ranking(PathRankingEvent.ExternalSwitch("b")),
+            ),
+            actions,
+        )
+    }
+
+    @Test
+    fun aMarkerForAnUnknownPathIsIgnored() {
+        val m = machine()
+        assertEquals(
+            listOf(PathSessionAction.Ignore),
+            m.handle(PathSessionEvent.PeerSwitch("zz", 1, "a"), 0.0),
+        )
+    }
+
+    @Test
+    fun theCurrentPathFailingSwitchesAtOnce() {
+        val m = machine(live = setOf("a", "b"))
+        m.scores["a"] = 100
+        m.scores["b"] = 900
+        val actions = m.handle(PathSessionEvent.CurrentFailed("a"), 5.0)
+        assertEquals(PathSessionState.Migrating("a", "b", 5.0), m.state)
+        assertEquals(
+            listOf(
+                PathSessionAction.StopPing("a"),
+                PathSessionAction.SwitchTo("b"),
+                PathSessionAction.ReplayFromLastAck,
+                PathSessionAction.RequestKeyframes,
+                PathSessionAction.StartPing("b"),
+                PathSessionAction.Ranking(PathRankingEvent.CurrentFailed("a")),
+            ),
+            actions,
+        )
+    }
+
+    @Test
+    fun currentFailedWithNoOtherPathOrphansAndSaysReconnecting() {
+        val m = machine()
+        val actions = m.handle(PathSessionEvent.CurrentFailed("a"), 7.0)
+        assertEquals(PathSessionState.Orphaned(7.0), m.state)
+        assertTrue(actions.contains(PathSessionAction.MarkReconnecting))
+        assertFalse(actions.contains(PathSessionAction.SwitchTo("a")))
+    }
+
+    @Test
+    fun aPathDownForAnotherPathKeepsTheSessionLive() {
+        val m = machine(live = setOf("a", "b"))
+        assertEquals(
+            listOf(PathSessionAction.Ranking(PathRankingEvent.PathDown("b"))),
+            m.handle(PathSessionEvent.PathDown("b"), 1.0),
+        )
+        assertEquals(PathSessionState.Live("a"), m.state)
+    }
+
+    @Test
+    fun theGraceEndsTheSessionAtThirtySecondsNotBefore() {
+        val m = machine(orphanedSince = 100.0)
+        assertEquals(emptyList<PathSessionAction>(), m.handle(PathSessionEvent.GraceExpired, 129.9))
+        assertEquals(PathSessionState.Orphaned(100.0), m.state)
+        assertEquals(
+            listOf(PathSessionAction.End("graceExpired")),
+            m.handle(PathSessionEvent.GraceExpired, 130.0),
+        )
+        assertEquals(PathSessionState.Ended("graceExpired"), m.state)
+    }
+
+    @Test
+    fun aJoinDuringTheGraceFoundTheLiveSessionAgain() {
+        val m = machine(orphanedSince = 0.0)
+        val actions = m.handle(PathSessionEvent.PathUp("b", joined = true), 12.0)
+        assertEquals(PathSessionState.Live("b"), m.state)
+        assertEquals(
+            listOf(
+                PathSessionAction.SwitchTo("b"),
+                PathSessionAction.ReplayFromLastAck,
+                PathSessionAction.RequestKeyframes,
+                PathSessionAction.StartPing("b"),
+                PathSessionAction.Ranking(PathRankingEvent.PathUp("b")),
+            ),
+            actions,
+        )
+    }
+
+    @Test
+    fun pathDownDuringTheGraceStaysOrphaned() {
+        val m = machine(orphanedSince = 1.0)
+        assertEquals(
+            listOf(PathSessionAction.Ranking(PathRankingEvent.PathDown("a"))),
+            m.handle(PathSessionEvent.PathDown("a"), 2.0),
+        )
+        assertEquals(PathSessionState.Orphaned(1.0), m.state)
+    }
+
+    @Test
+    fun theDrainBackstopClosesTheOldPathAndStaysMigrating() {
+        val m = machine(live = setOf("a", "b"))
+        m.handle(PathSessionEvent.PeerSwitch("b", 1, "a"), 0.0)
+        assertEquals(
+            listOf(PathSessionAction.ClosePath("a"), PathSessionAction.StopPing("a")),
+            m.handle(PathSessionEvent.DrainExpired, 2.0),
+        )
+        assertEquals(PathSessionState.Migrating("a", "b", 0.0), m.state)
+        assertFalse(m.live.contains("a"))
+    }
+
+    @Test
+    fun theNewPathFailingDuringMigrationFallsBackToTheOldOne() {
+        val m = machine(live = setOf("a", "b"))
+        m.handle(PathSessionEvent.PeerSwitch("b", 1, "a"), 0.0)
+        assertEquals(
+            listOf(PathSessionAction.Ranking(PathRankingEvent.ExternalSwitch("a"))),
+            m.handle(PathSessionEvent.PathDown("b"), 1.0),
+        )
+        assertEquals(PathSessionState.Live("a"), m.state)
+    }
+
+    @Test
+    fun theNewPathFailingWithNothingElseOrphans() {
+        val m = machine(live = setOf("a", "b"))
+        m.handle(PathSessionEvent.PeerSwitch("b", 1, "a"), 0.0)
+        m.live.remove("a")
+        val actions = m.handle(PathSessionEvent.PathDown("b"), 1.0)
+        assertEquals(PathSessionState.Orphaned(1.0), m.state)
+        assertTrue(actions.contains(PathSessionAction.MarkReconnecting))
+    }
+
+    @Test
+    fun closeEndsEveryLiveState() {
+        val states = listOf(
+            PathSessionState.Live("a"),
+            PathSessionState.Migrating("a", "b", 0.0),
+            PathSessionState.Orphaned(0.0),
+        )
+        for (s in states) {
+            val m = PathSessionMachine(state = s, live = mutableSetOf("a", "b"))
+            assertEquals(
+                listOf(PathSessionAction.End("person")),
+                m.handle(PathSessionEvent.Close("person"), 0.0),
+            )
+            assertEquals(PathSessionState.Ended("person"), m.state)
+        }
+    }
+
+    @Test
+    fun theEndedStateIgnoresEverything() {
+        val m = machine(ended = "x")
+        for (event in listOf(
+            PathSessionEvent.PathDown("a"),
+            PathSessionEvent.CurrentFailed("a"),
+            PathSessionEvent.PeerSwitch("b", 1, "a"),
+            PathSessionEvent.GraceExpired,
+            PathSessionEvent.DrainExpired,
+            PathSessionEvent.Close("y"),
+        )) {
+            assertEquals(listOf(PathSessionAction.Ignore), m.handle(event, 99.0))
+        }
+    }
+
+    @Test
+    fun theMachineLogsOnlyClosedTokens() {
+        val m = machine()
+        assertEquals("live a", m.describe())
+        m.handle(PathSessionEvent.CurrentFailed("a"), 1.0)
+        assertEquals("orphaned", m.describe())
+    }
+}
