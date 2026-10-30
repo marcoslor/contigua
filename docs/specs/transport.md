@@ -220,7 +220,7 @@ publish running (the network is released at once); a publish callback after
   `wifiaware_allowlist=0`) are a person's own machine-wide change, made by the
   person, never by the scripts and never by an agent.
 - `direct.json` (0600) is where the Mac's direct key lives during the alpha
-  (open question 1).
+  (decided by the reviewer, 10-30).
 
 ## Non-goals
 
@@ -236,28 +236,14 @@ publish running (the network is released at once); a publish callback after
 - Surviving a phone reboot, an app kill or Clear data: those end the session, as
   today.
 
-## Open questions
+## Decisions (reviewer, 10-30)
 
-- [NEEDS CLARIFICATION] D9 says the Mac stores the NDP key "in the Keychain",
-  while pairing.md PAIR-1 says this alpha keeps key material in the profile's
-  `0600` files and never in the login Keychain (and a root daemon cannot read a
-  person's login keychain at all — the research hit exactly that failure).
-  **Recommended:** the profile's `direct.json` (`0600`), as DIRECT-9 states; the
-  Keychain returns with Wallet-style code signing, as PAIR-1's roadmap note says.
-- [NEEDS CLARIFICATION] The direct path's throughput is unmeasured (the proof
-  only carried ~1 Mbit/s), so its class floor is the 8 Mbit/s one mirror needs.
-  Should direct be scored at that floor, or be failover-only until P4 measures
-  it? **Recommended:** keep the floor (8) — the ranking then lets it win only
-  when the LAN is genuinely bad, and P4 replaces the number with the measurement
-  in the one place it lives.
-- [NEEDS CLARIFICATION] Where the Mac's Direct link switch lives: on that
-  phone's Settings page (it needs that phone's key and the helper) or in This
-  Mac ▸ General (it is a Mac-wide install). **Recommended:** that phone's page,
-  beside "Share notifications and Now Playing", because everything it needs is
-  per phone — with the helper's probe state shown once in General, where the
-  install belongs.
-- [NEEDS CLARIFICATION] The 100-point switch margin is this design's number, not
-  the plan's (D5 fixes the 5 s hysteresis, not the margin). **Recommended:**
-  keep 100 — it is three times the score movement a 2 ms swing in p50 causes at
-  today's LAN numbers, so one noisy sample cannot start a switch — and record it
-  beside the formula so a later measurement can move it in one place.
+The four questions this spec raised are decided. The design docs record the
+same outcomes where the numbers live.
+
+| Question | Decision |
+|---|---|
+| The Mac's direct key: D9 said "Keychain", PAIR-1 keeps key material in the profile's `0600` files | **The profile's `direct.json` (`0600`)**, handed to the helper per dial (DIRECT-9). The Keychain waits for Wallet-style code signing, as PAIR-1's roadmap note says. |
+| Scoring a direct path whose throughput is unmeasured | **Scored at the 8 Mbit/s floor** until P4 measures it; the floor lives beside the formula (design/paths.md §7.1). |
+| Where the Mac's Direct link switch lives | **On that phone's Settings page**, beside "Share notifications and Now Playing"; the probe's answer is shown once in **This Mac ▸ General**, where the install belongs. P4 draws both, after options. |
+| The 100-point switch margin (D5 fixes only the 5 s hysteresis) | **100 points**, recorded beside the formula (design/paths.md §7.2). |

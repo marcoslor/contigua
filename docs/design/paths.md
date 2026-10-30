@@ -381,7 +381,8 @@ score  = 1000 · (0.45·q_rtt + 0.15·q_jit + 0.20·q_loss + 0.20·q_bw)      //
   one 1080p60 mirror needs, ARCHITECTURE; the link's real rate is unmeasured),
   `wan` = 2 (the remote cap in ROADMAP). An unmeasured path is therefore scored
   at its floor, never at zero and never at a guess. A LAN therefore does not
-  score a full bandwidth term either: 100/209 = 0.478.
+  score a full bandwidth term either: 100/209 = 0.478. The floors — and scoring
+  direct at 8 until P4 measures it — are the reviewer's decision of 10-30.
 - The weights say what a mirror feels: latency first, then loss (a retransmit
   stall), then the room to grow, then jitter.
 - A path is **rankable** only once it has 2 pongs in the window (4 s). An
@@ -420,7 +421,8 @@ whatever the scores say.
 
 The margin is 100 because that is three times the score movement one ping of
 jitter causes at these numbers (2 ms of p50 moves `q_rtt` by 0.074, i.e. 33
-points), so a single noisy sample cannot start a switch.
+points), so a single noisy sample cannot start a switch. **Decided by the
+reviewer on 10-30:** 100 stands, and it is recorded here, beside the formula.
 
 ### 7.3 The ranking's state machine
 
