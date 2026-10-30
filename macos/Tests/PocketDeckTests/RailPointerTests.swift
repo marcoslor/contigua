@@ -106,6 +106,34 @@ final class RailPointerTests: XCTestCase {
         XCTAssertTrue(awayActions.isEmpty, "already away leaves nothing to ease")
     }
 
+    /// K2: a release past the span's ends is outside the rail: the rail eases
+    /// back rather than holding a frozen span the pointer is not on. A release
+    /// inside the span stays on the rail.
+    func testAReleaseOutsideTheSpanEndsTheHover() {
+        let (entered, _) = reduce(.away, .track(dx: 0, y: y0))
+        guard case .hovering(let span, _) = entered else { return XCTFail("no enter") }
+        let (pressed, _) = reduce(entered, .press(y: y0))
+        let (outside, actions) = reduce(pressed, .release(y: span.bottom + 30))
+        XCTAssertEqual(outside, .away, "a release below the span left the rail hovering")
+        XCTAssertEqual(actions, [.animateRest(duration: RailPointer.easeDuration)])
+        let (above, _) = reduce(pressed, .release(y: span.top - 30))
+        XCTAssertEqual(above, .away)
+        let (inside, _) = reduce(pressed, .release(y: y0 + 20))
+        XCTAssertEqual(inside, .hovering(span: span, y: y0 + 20))
+    }
+
+    /// K2: the container's hover ending during a drag (the pointer left the
+    /// window with the button down) ends the hover, not a stale span.
+    func testTheHoverEndingDuringADragEndsTheHover() {
+        let (entered, _) = reduce(.away, .track(dx: 0, y: y0))
+        guard case .hovering = entered else { return XCTFail("no enter") }
+        let (pressed, _) = reduce(entered, .press(y: y0 + 5))
+        guard case .dragging = pressed else { return XCTFail("no drag") }
+        let (left, actions) = reduce(pressed, .leave)
+        XCTAssertEqual(left, .away, "the hover ending during a drag left the rail on its span")
+        XCTAssertEqual(actions, [.animateRest(duration: RailPointer.easeDuration)])
+    }
+
     func testAPressCannotStartOutsideTheRail() {
         for state in [RailPointer.away] {
             XCTAssertEqual(reduce(state, .press(y: 50)).0, state)

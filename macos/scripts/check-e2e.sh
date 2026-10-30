@@ -10736,32 +10736,48 @@ PY
         # The enter set, in order: enter at M, sideways at M (visible only: the
         # scale never depends on x), down to Z and #, out to the left. Each step
         # reads the drawn slots, so the frozen ends are checked on the way.
+        # Enter at M: the real pointer moves onto the rail, or the quiet run
+        # forces the same event; then the drawn state must say M. A shot is a
+        # record, never the proof.
+        deckrail_enter_m() {
+            if [ "$VISIBLE" = 1 ]; then
+                cg_input moveat --x "$(python3 -c "print(round($sx + 13))")" \
+                    --y "$(python3 -c "print(round($sy + $mcentre))")"
+                sleep 0.8
+            else
+                control deckrailenter M || bad "DECKRAIL deckrailenter M: $CONTROL_REPLY"
+                sleep 0.5
+            fi
+        }
+        deckrail_check_m() {
+            local file="$1" label="$2"
+            if control deckrailslots "$file"; then
+                python3 "$MACOS/scripts/deck-rail-slots.py" "$file" centre \
+                    && ok "[DECK-7] $label: the drawn M is under the pointer" \
+                    || bad "[DECK-7] $label: the drawn M is not under the pointer"
+                python3 "$MACOS/scripts/deck-rail-slots.py" "$file" tag:M \
+                    && ok "[DECK-7] $label: the tag names M" \
+                    || bad "[DECK-7] $label: the tag does not name M"
+            else
+                bad "DECKRAIL deckrailslots ($label): $CONTROL_REPLY"
+            fi
+        }
         if [ "$VISIBLE" = 1 ]; then
             # From outside the arc's room, straight onto the rail at M.
             cg_input moveat --x "$(python3 -c "print(round($sx - 200))")" \
                 --y "$(python3 -c "print(round($sy + $mcentre))")"
             sleep 0.5
-            cg_input moveat --x "$(python3 -c "print(round($sx + 13))")" \
-                --y "$(python3 -c "print(round($sy + $mcentre))")"
-            sleep 0.8
-        else
-            control deckrailenter M || bad "DECKRAIL deckrailenter M: $CONTROL_REPLY"
-            sleep 0.6
         fi
-        shot_rail rail-enter-m.png
+        deckrail_enter_m
+        deckrail_check_m "$WORK/rail-enter.json" "the enter at M"
         if control deckrailslots "$WORK/rail-enter.json"; then
-            python3 "$MACOS/scripts/deck-rail-slots.py" "$WORK/rail-enter.json" centre \
-                && ok "[DECK-7] the enter at M puts M under the pointer, at the centre" \
-                || bad "[DECK-7] the enter at M does not put M under the pointer"
-            python3 "$MACOS/scripts/deck-rail-slots.py" "$WORK/rail-enter.json" tag:M \
-                && ok "[DECK-7] the enter at M names M" \
-                || bad "[DECK-7] the enter at M does not name M"
             python3 "$MACOS/scripts/deck-rail-slots.py" "$WORK/rail-enter.json" gaps \
                 && ok "[DECK-7] on the enter the gaps are equal and the rest gap's" \
                 || bad "[DECK-7] the enter's gaps are not equal or not the rest gap's"
         else
             bad "DECKRAIL deckrailslots (enter): $CONTROL_REPLY"
         fi
+        shot_rail rail-enter-m.png
         if [ "$VISIBLE" = 1 ]; then
             # Sideways inside the column at M: leading x, then trailing x.
             local side px
@@ -10832,9 +10848,15 @@ PY
                 bad "DECKRAIL deckrailslots ($target): $CONTROL_REPLY"
             fi
         done
+        # The light appearance, proved not posed: switch it, let the cross-fade
+        # settle, then enter at M and require the drawn state before the shot.
         if [ "$VISIBLE" = 1 ]; then
             osascript -e 'tell application "System Events" to tell appearance preferences to set dark mode to false' >/dev/null 2>&1 || true
             sleep 2
+            control deckrailleave
+            sleep 0.3
+            deckrail_enter_m
+            deckrail_check_m "$WORK/rail-light.json" "the light enter at M"
             shot_rail rail-enter-m-light.png
             osascript -e 'tell application "System Events" to tell appearance preferences to set dark mode to true' >/dev/null 2>&1 || true
             sleep 1
@@ -10953,6 +10975,23 @@ PY
             || bad "[DECK-7] the click on N did not land on N"
     else
         bad "DECKRAIL deckrailslots (N): $CONTROL_REPLY"
+    fi
+    # A person who clicks a letter and then moves the pointer away gets the
+    # rail back at rest. The real pointer only: a forced leave would prove
+    # nothing about the click.
+    if [ "$VISIBLE" = 1 ]; then
+        cg_input moveat --x "$(python3 -c "print(round($sx + 13 - 200))")" \
+            --y "$(python3 -c "print(round($sy + $mcentre))")"
+        sleep 0.3
+        if control deckrailslots "$WORK/rail-post-click.json"; then
+            python3 "$MACOS/scripts/deck-rail-slots.py" "$WORK/rail-post-click.json" rest \
+                && ok "[DECK-7] after a click and a move out the rail is at rest within 0.3 s" \
+                || bad "[DECK-7] after a click and a move out the rail is not at rest"
+        else
+            bad "DECKRAIL deckrailslots (post-click): $CONTROL_REPLY"
+        fi
+    else
+        skip_visible "DECK-7 the rail after a click and a move out (the real pointer)"
     fi
 
     # The rail's overlay fills the container; a last-column cell inside it but

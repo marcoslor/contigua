@@ -27,6 +27,14 @@ enum RailArc {
         return max(0, railLeading - cellRight + centredLead - minimumClearance)
     }
 
+    /// How far left the rail's hit area may grow while it is magnified: the
+    /// room less the letter's own leading inset, so its left edge keeps the
+    /// same `minimumClearance` from the last icon column's cell as the letters
+    /// do. A click on the cell's trailing edge must still reach the cell.
+    static func hitRoom(width: CGFloat, zoom: CGFloat = 1) -> CGFloat {
+        max(0, room(width: width, zoom: zoom) - centredLead)
+    }
+
     /// The half-width growth of the centred letter at `scale`.
     static func growth(scale: CGFloat) -> CGFloat {
         max(0, scale - 1) * centredGrowth

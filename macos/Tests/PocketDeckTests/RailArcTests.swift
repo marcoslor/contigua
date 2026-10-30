@@ -49,6 +49,25 @@ final class RailArcTests: XCTestCase {
                              9, "at 1000 pt the arc reaches further than 9 pt")
     }
 
+    /// The magnified hit area grows left with the arc but never over the last
+    /// icon column's cell: its left edge keeps the 4 pt clearance the widest
+    /// letter keeps, and it still covers the letters it must.
+    func testTheHitAreaKeepsClearOfTheLastIconColumn() {
+        for width in [CGFloat(640), 760, 1000] {
+            let metrics = DeckGridSize(zoom: 1)
+            let cellRight = metrics.originX(forWidth: width) + metrics.span(forWidth: width)
+            let railLeading = width - DeckRail.trailingSpace
+            let hitEdge = railLeading - RailArc.hitRoom(width: width)
+            XCTAssertGreaterThanOrEqual(hitEdge, cellRight + RailArc.minimumClearance - 0.001,
+                                        "at \(width) pt the hit area reaches \(hitEdge), the cell ends at \(cellRight)")
+            let reach = RailArc.reach(scale: RailFisheye.maxScale, reduceMotion: false,
+                                      room: RailArc.room(width: width))
+            let widestLead = railLeading + RailArc.centredLead - reach
+            XCTAssertLessThanOrEqual(hitEdge, widestLead + 0.001,
+                                     "at \(width) pt the hit area starts right of the widest letter")
+        }
+    }
+
     func testTheTagSitsLeftOfTheWidestLetter() {
         let reach = RailArc.reach(scale: 2.2, reduceMotion: false,
                                   room: RailArc.room(width: 1000))
