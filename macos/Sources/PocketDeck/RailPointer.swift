@@ -130,6 +130,10 @@ extension RailPointer {
             return (.dragging(span: span, y: y), [])
         case .release(let y):
             guard case .dragging(let span, _) = state else { return (state, []) }
+            // A drag can end outside the rail (SwiftUI keeps sending a drag past
+            // its view): the frozen span's ends are where the rail ends, so a
+            // release there is a leave, not a hover nobody can see.
+            guard y >= span.top, y <= span.bottom else { return (.away, rest()) }
             return (.hovering(span: span, y: y), [])
         }
     }

@@ -1302,7 +1302,7 @@ private struct DeckIndexRail: View {
     /// which keeps the clearance to the last icon column's cell.
     private var hitGrowth: CGFloat {
         guard frozen != nil, !reduceMotion else { return 0 }
-        return arcRoom
+        return RailArc.hitRoom(width: RailPointerModel.shared.containerSize.width)
     }
 
     /// The fisheye centre: solve `Y(u) = y` inside the frozen span, so the
