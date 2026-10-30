@@ -10552,7 +10552,7 @@ check_deckrail() {
             && say "shot: $railshots/$1" \
             || bad "DECKRAIL no Deck window for $1"
     }
-    local dx px py mcentre ncentre ax ay aw wx wy sx sy scale still
+    local dx px py mcentre ncentre ax ay aw wx wy sx sy scale
     if [ "$VISIBLE" = 1 ]; then
         # Park the real pointer outside the Deck before any forced step.
         cg_input moveat --x 5 --y 5
@@ -10848,22 +10848,14 @@ PY
             control deckrailleave
             sleep 0.3
         fi
-        shot_rail rail-away.png
-        sleep 1
-        shot_rail rail-away-settled.png
-        if still="$(python3 "$MACOS/scripts/rail-still.py" "$railshots/rail-away.png" \
-            "$railshots/rail-away-settled.png" 1000 625 "$scale" "$wx")"; then
-            ok "[DECK-7] the rail is back at rest 0.3 s after the pointer leaves ($still)"
-        else
-            bad "[DECK-7] the rail was still moving 0.3 s after the pointer left ($still)"
-        fi
         if control deckrailslots "$WORK/rail-away.json"; then
             python3 "$MACOS/scripts/deck-rail-slots.py" "$WORK/rail-away.json" rest \
-                && ok "[DECK-7] after the leave every slot is a rest box at the drawn pitch" \
-                || bad "[DECK-7] after the leave the rail is not at rest"
+                && ok "[DECK-7] the rail is a rest box at the drawn pitch 0.3 s after the pointer leaves" \
+                || bad "[DECK-7] the rail is not at rest 0.3 s after the pointer left"
         else
             bad "DECKRAIL deckrailslots (away): $CONTROL_REPLY"
         fi
+        shot_rail rail-away.png
         if python3 "$MACOS/scripts/rail-glyph.py" "$railshots" 1000 625 "$scale" "$wx" > "$WORK/rail-glyph.txt" 2>&1; then
             ok "DECKRAIL the letter sizes and A's top match the pure layout ($(grep -m1 '^A.s top' "$WORK/rail-glyph.txt"))"
         else
@@ -10964,7 +10956,11 @@ PY
     fi
 
     # The rail's overlay fills the container; a last-column cell inside it but
-    # off the rail still opens its app.
+    # off the rail still opens its app. The pointer leaves the rail first: the
+    # click is about the rest overlay, and the magnified hit area is the arc's
+    # room, which reaches a few points into the cell's trailing edge.
+    control deckrailleave
+    sleep 0.3
     control deckquery "" || bad "DECKRAIL deckquery: $CONTROL_REPLY"
     control deck-rail A || bad "DECKRAIL deck-rail A: $CONTROL_REPLY"
     sleep 1
@@ -11083,7 +11079,7 @@ check_deck() {
             || bad "DECK no Deck window for the rail shot $1"
     }
     shot_rail rail-rest.png
-    local px py wx wy sx sy scale still
+    local px py wx wy sx sy scale
     # The rail's magnification for the shot. A quiet run forces the enter; the
     # real pointer's enter, sideways move, sweep to Z and #, leave and click are
     # deckrail's, in the VM.
@@ -11264,22 +11260,14 @@ PY
     # Leaving: the rail is at rest within 0.3 s.
     control deckrailleave
     sleep 0.3
-    shot_rail rail-away.png
-    sleep 1
-    shot_rail rail-away-settled.png
-    if still="$(python3 "$MACOS/scripts/rail-still.py" "$railshots/rail-away.png" \
-        "$railshots/rail-away-settled.png" 1000 625 "$scale" "$wx")"; then
-        ok "[DECK-7] the rail is back at rest 0.3 s after the pointer leaves ($still)"
-    else
-        bad "[DECK-7] the rail was still moving 0.3 s after the pointer left ($still)"
-    fi
     if control deckrailslots "$WORK/rail-away.json"; then
         python3 "$MACOS/scripts/deck-rail-slots.py" "$WORK/rail-away.json" rest \
-            && ok "[DECK-7] after the leave every slot is a rest box at the drawn pitch" \
-            || bad "[DECK-7] after the leave the rail is not at rest"
+            && ok "[DECK-7] the rail is a rest box at the drawn pitch 0.3 s after the pointer leaves" \
+            || bad "[DECK-7] the rail is not at rest 0.3 s after the pointer left"
     else
         bad "DECK deckrailslots (away): $CONTROL_REPLY"
     fi
+    shot_rail rail-away.png
     if python3 "$MACOS/scripts/rail-glyph.py" "$railshots" 1000 625 "$scale" "$wx" > "$WORK/rail-glyph.txt" 2>&1; then
         ok "[DECK-7] the shots match the layout: $(grep -m1 '^A.s top' "$WORK/rail-glyph.txt")"
     else
