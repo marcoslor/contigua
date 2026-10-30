@@ -149,10 +149,22 @@ ON_RAIL = ("enter M", "side leading", "side trailing", "move Z", "move #")
 
 
 def letters(path, width, height, scale, rail_x):
-    """The A..# bands, top to bottom, in the rail's strip."""
+    """The A..# bands, top to bottom, in the rail's strip.
+
+    A window also draws its toolbar's bottom edge at this x, and on a 2x guest
+    that line is tall enough to pass for a letter, shifting every index by one.
+    The letters sit one rest pitch apart, so a leading band that is not one
+    pitch from the next is dropped.
+    """
     found = [band for band in bands(path, width, height, scale, rail_strip(rail_x))
              if band["bottom"] <= height - 3]
-    return found[:len(NAMES)]
+    if not found:
+        return []
+    # The toolbar's bottom edge runs across this x too, and on a 2x guest it is
+    # a thin band above every letter (2.5 pt against the letters' 6.5). Keeping
+    # only bands of letter height drops it and the window's bottom rounding.
+    floor = 0.6 * statistics.median(band["height"] for band in found)
+    return [band for band in found if band["height"] >= floor][:len(NAMES)]
 
 
 def main():
