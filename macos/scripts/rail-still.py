@@ -34,7 +34,7 @@ def strip_pixels(path, width_points, height_points, scale, rail_x):
     for y in range(y0, y1):
         line = rows[y]
         pixels.append(line[x0 * channels:x1 * channels])
-    return pixels, x1 - x0
+    return pixels, x1 - x0, channels
 
 
 def main():
@@ -45,8 +45,8 @@ def main():
     width, height, scale = float(sys.argv[3]), float(sys.argv[4]), float(sys.argv[5])
     rail_x = float(sys.argv[6])
     try:
-        rows_a, columns = strip_pixels(a, width, height, scale, rail_x)
-        rows_b, _ = strip_pixels(b, width, height, scale, rail_x)
+        rows_a, columns, channels = strip_pixels(a, width, height, scale, rail_x)
+        rows_b, _, _ = strip_pixels(b, width, height, scale, rail_x)
     except (OSError, ValueError) as error:
         print("cannot read the shots: %s" % error)
         return 1
@@ -56,7 +56,7 @@ def main():
     changed = 0
     worst = 0
     for line_a, line_b in zip(rows_a, rows_b):
-        for i in range(0, min(len(line_a), len(line_b)), 3):
+        for i in range(0, min(len(line_a), len(line_b)) - 2, channels):
             delta = max(abs(line_a[i + c] - line_b[i + c]) for c in range(3))
             worst = max(worst, delta)
             if delta > TOLERANCE:

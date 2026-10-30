@@ -10851,9 +10851,12 @@ PY
         shot_rail rail-away.png
         sleep 1
         shot_rail rail-away-settled.png
-        cmp -s "$railshots/rail-away.png" "$railshots/rail-away-settled.png" \
-            && ok "[DECK-7] the rail is back at rest 0.3 s after the pointer leaves" \
-            || bad "[DECK-7] the rail was still moving 0.3 s after the pointer left"
+        if still="$(python3 "$MACOS/scripts/rail-still.py" "$railshots/rail-away.png" \
+            "$railshots/rail-away-settled.png" 1000 625 "$scale" "$wx")"; then
+            ok "[DECK-7] the rail is back at rest 0.3 s after the pointer leaves ($still)"
+        else
+            bad "[DECK-7] the rail was still moving 0.3 s after the pointer left ($still)"
+        fi
         if control deckrailslots "$WORK/rail-away.json"; then
             python3 "$MACOS/scripts/deck-rail-slots.py" "$WORK/rail-away.json" rest \
                 && ok "[DECK-7] after the leave every slot is a rest box at the drawn pitch" \
@@ -10908,39 +10911,47 @@ PY
     fi
 
     # A real click on N's drawn centre (visible), or the rail's own pick. The
-    # centre comes from the drawn slots after the enter, not from row
-    # arithmetic: the frozen span moves the letters.
+    # screen points come from the rail's own geometry (deckrailpoint), the hook
+    # the T click uses: the frozen span moves the letters, so the rail's own
+    # resolution of a letter to its row is what a person's pointer follows.
     control deckrailleave
     sleep 0.3
     if [ "$VISIBLE" = 1 ]; then
-        px="$(python3 -c "print(round($sx + 13))")"
-        cg_input moveat --x "$px" --y "$(python3 -c "print(round($sy + $mcentre))")"
-        sleep 0.6
+        local mx my
+        if control deckrailpoint M "$WORK/m.pt" && read -r mx my < "$WORK/m.pt"; then
+            cg_input moveat --x "$mx" --y "$my"
+            sleep 0.6
+            control deckrailslots "$WORK/rail-n.json" \
+                || bad "DECKRAIL deckrailslots (M): $CONTROL_REPLY"
+            python3 "$MACOS/scripts/deck-rail-slots.py" "$WORK/rail-n.json" tag:M \
+                && ok "[DECK-7] the real pointer on M's drawn centre shows M's tag" \
+                || bad "[DECK-7] the real pointer on M did not show M's tag"
+        else
+            bad "DECKRAIL deckrailpoint M: $CONTROL_REPLY"
+        fi
+        if control deckrailpoint N "$WORK/n.pt" && read -r px py < "$WORK/n.pt"; then
+            cg_input moveat --x "$px" --y "$py"
+            sleep 0.6
+        else
+            bad "DECKRAIL deckrailpoint N: $CONTROL_REPLY"
+        fi
     else
         control deckrailenter M || bad "DECKRAIL deckrailenter M (N click): $CONTROL_REPLY"
-        sleep 0.5
-    fi
-    if control deckrailslots "$WORK/rail-n.json"; then
+        sleep 0.4
+        control deckrailslots "$WORK/rail-n.json" \
+            || bad "DECKRAIL deckrailslots (M): $CONTROL_REPLY"
         python3 "$MACOS/scripts/deck-rail-slots.py" "$WORK/rail-n.json" tag:M \
             && ok "[DECK-7] the enter at M names M" \
             || bad "[DECK-7] the enter at M does not name M"
-        ncentre="$(python3 "$MACOS/scripts/deck-rail-slots.py" "$WORK/rail-n.json" centre:13)"
-        if [ "$VISIBLE" = 1 ]; then
-            cg_input moveat --x "$px" --y "$(python3 -c "print(round($sy + $ncentre))")"
-            sleep 0.6
-            control deckrailslots "$WORK/rail-n.json" \
-                || bad "DECKRAIL deckrailslots (N): $CONTROL_REPLY"
-        else
-            control deckrailmove N || bad "DECKRAIL deckrailmove N: $CONTROL_REPLY"
-            sleep 0.5
-            control deckrailslots "$WORK/rail-n.json" \
-                || bad "DECKRAIL deckrailslots (N): $CONTROL_REPLY"
-        fi
+        control deckrailmove N || bad "DECKRAIL deckrailmove N: $CONTROL_REPLY"
+        sleep 0.5
+    fi
+    if control deckrailslots "$WORK/rail-n.json"; then
         python3 "$MACOS/scripts/deck-rail-slots.py" "$WORK/rail-n.json" tag:N \
-            && ok "[DECK-7] the pointer on N's drawn centre shows N's tag" \
-            || bad "[DECK-7] the pointer on N's drawn centre did not show N's tag"
+            && ok "[DECK-7] the pointer on N shows N's tag" \
+            || bad "[DECK-7] the pointer on N did not show N's tag"
         if [ "$VISIBLE" = 1 ]; then
-            cg_input clickat --x "$px" --y "$(python3 -c "print(round($sy + $ncentre))")"
+            cg_input clickat --x "$px" --y "$py"
         else
             control deck-rail N
         fi
@@ -10950,31 +10961,6 @@ PY
             || bad "[DECK-7] the click on N did not land on N"
     else
         bad "DECKRAIL deckrailslots (N): $CONTROL_REPLY"
-    fi
-    # Leaving: 0.3 s after the pointer is out of the arc's room the rail is at
-    # rest, and stays there.
-    if [ "$VISIBLE" = 1 ]; then
-        cg_input moveat --x "$(python3 -c "print(round($sx + 13 - 200))")" \
-            --y "$(python3 -c "print(round($sy + $mcentre))")"
-    else
-        control deckrailleave
-    fi
-    sleep 0.3
-    shot_rail rail-away.png
-    sleep 1
-    shot_rail rail-away-settled.png
-    if still="$(python3 "$MACOS/scripts/rail-still.py" "$railshots/rail-away.png" \
-        "$railshots/rail-away-settled.png" 1000 625 "$scale" "$wx")"; then
-        ok "[DECK-7] the rail is back at rest 0.3 s after the pointer leaves ($still)"
-    else
-        bad "[DECK-7] the rail was still moving 0.3 s after the pointer left ($still)"
-    fi
-    if control deckrailslots "$WORK/rail-away.json"; then
-        python3 "$MACOS/scripts/deck-rail-slots.py" "$WORK/rail-away.json" rest \
-            && ok "[DECK-7] after the leave every slot is a rest box at the drawn pitch" \
-            || bad "[DECK-7] after the leave the rail is not at rest"
-    else
-        bad "DECKRAIL deckrailslots (away): $CONTROL_REPLY"
     fi
 
     # The rail's overlay fills the container; a last-column cell inside it but

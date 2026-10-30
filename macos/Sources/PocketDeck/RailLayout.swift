@@ -63,8 +63,22 @@ enum RailLayout {
     /// The layout's worst reach past the rest top or bottom (in points at full
     /// magnification) over every pointer y: the growth above the pointer moves
     /// the top end up, the growth below moves the bottom down. The rest pitch
-    /// only changes the gap, so this depends on the count alone.
+    /// only changes the gap, so this depends on the count alone, and the three
+    /// counts the Deck draws are tabulated once: the fit runs on every point of
+    /// a resize, and the sampling costs a few hundred thousand glyphs.
     static func endExtension(count: Int) -> CGFloat {
+        extensions[count] ?? sampledExtension(count: count)
+    }
+
+    /// The counts the Deck draws (27, 14 and 9 slots), computed on first use.
+    private static let extensions: [Int: CGFloat] = {
+        let counts = [DeckRail.letters.count,
+                      (DeckRail.letters.count + 1) / 2,
+                      (DeckRail.letters.count + 2) / 3]
+        return Dictionary(uniqueKeysWithValues: counts.map { ($0, sampledExtension(count: $0)) })
+    }()
+
+    private static func sampledExtension(count: Int) -> CGFloat {
         guard count > 0 else { return 0 }
         var worst: CGFloat = 0
         var sample = 0
