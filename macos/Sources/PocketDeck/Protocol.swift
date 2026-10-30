@@ -476,9 +476,14 @@ struct JSONMessage {
 }
 
 enum JSONFrame {
-    static func encode(_ object: [String: Any]) -> [UInt8] {
+    /// The JSON payload bytes (without the frame header).
+    static func payload(_ object: [String: Any]) -> [UInt8] {
         let data = (try? JSONSerialization.data(withJSONObject: object)) ?? Data()
-        return Frame(type: .json, stream: 0, payload: [UInt8](data)).encoded
+        return [UInt8](data)
+    }
+
+    static func encode(_ object: [String: Any]) -> [UInt8] {
+        Frame(type: .json, stream: 0, payload: payload(object)).encoded
     }
 
     static func decode(payload: [UInt8]) -> JSONMessage? {
