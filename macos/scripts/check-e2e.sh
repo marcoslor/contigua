@@ -10552,7 +10552,7 @@ check_deckrail() {
             && say "shot: $railshots/$1" \
             || bad "DECKRAIL no Deck window for $1"
     }
-    local dx px py mcentre ncentre ax ay aw wx wy sx sy scale
+    local dx px py mcentre ncentre ax ay aw wx wy sx sy scale still
     if [ "$VISIBLE" = 1 ]; then
         # Park the real pointer outside the Deck before any forced step.
         cg_input moveat --x 5 --y 5
@@ -10963,9 +10963,12 @@ PY
     shot_rail rail-away.png
     sleep 1
     shot_rail rail-away-settled.png
-    cmp -s "$railshots/rail-away.png" "$railshots/rail-away-settled.png" \
-        && ok "[DECK-7] the rail is back at rest 0.3 s after the pointer leaves" \
-        || bad "[DECK-7] the rail was still moving 0.3 s after the pointer left"
+    if still="$(python3 "$MACOS/scripts/rail-still.py" "$railshots/rail-away.png" \
+        "$railshots/rail-away-settled.png" 1000 625 "$scale" "$wx")"; then
+        ok "[DECK-7] the rail is back at rest 0.3 s after the pointer leaves ($still)"
+    else
+        bad "[DECK-7] the rail was still moving 0.3 s after the pointer left ($still)"
+    fi
     if control deckrailslots "$WORK/rail-away.json"; then
         python3 "$MACOS/scripts/deck-rail-slots.py" "$WORK/rail-away.json" rest \
             && ok "[DECK-7] after the leave every slot is a rest box at the drawn pitch" \
@@ -11094,7 +11097,7 @@ check_deck() {
             || bad "DECK no Deck window for the rail shot $1"
     }
     shot_rail rail-rest.png
-    local px py wx wy sx sy scale
+    local px py wx wy sx sy scale still
     # The rail's magnification for the shot. A quiet run forces the enter; the
     # real pointer's enter, sideways move, sweep to Z and #, leave and click are
     # deckrail's, in the VM.
@@ -11278,9 +11281,12 @@ PY
     shot_rail rail-away.png
     sleep 1
     shot_rail rail-away-settled.png
-    cmp -s "$railshots/rail-away.png" "$railshots/rail-away-settled.png" \
-        && ok "[DECK-7] the rail is back at rest 0.3 s after the pointer leaves" \
-        || bad "[DECK-7] the rail was still moving 0.3 s after the pointer left"
+    if still="$(python3 "$MACOS/scripts/rail-still.py" "$railshots/rail-away.png" \
+        "$railshots/rail-away-settled.png" 1000 625 "$scale" "$wx")"; then
+        ok "[DECK-7] the rail is back at rest 0.3 s after the pointer leaves ($still)"
+    else
+        bad "[DECK-7] the rail was still moving 0.3 s after the pointer left ($still)"
+    fi
     if control deckrailslots "$WORK/rail-away.json"; then
         python3 "$MACOS/scripts/deck-rail-slots.py" "$WORK/rail-away.json" rest \
             && ok "[DECK-7] after the leave every slot is a rest box at the drawn pitch" \

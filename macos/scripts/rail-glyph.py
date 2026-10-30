@@ -24,6 +24,7 @@ each letter's band centre in window points, for the pointer.
 """
 
 import os
+import statistics
 import struct
 import sys
 import zlib
@@ -127,7 +128,9 @@ def bands(path, width_points, height_points, scale, column):
 
 
 def rail_strip(rail_x):
-    return (rail_x + 1, rail_x + 25)             # the rail's 26 pt column only
+    # The rail's column plus the room the arc reaches into: a magnified letter
+    # grows left of the column, so a column-only crop would measure a sliver.
+    return (rail_x - 12, rail_x + 26)
 
 
 STEPS = [("rest", "rail-rest.png"),
@@ -137,6 +140,19 @@ STEPS = [("rest", "rail-rest.png"),
          ("move Z", "rail-down-z.png"),
          ("move #", "rail-down-hash.png"),
          ("away", "rail-away.png")]
+# Which letter is under the pointer in each step: its band is the tallest. The
+# dim # is left out of the size check: its 35% ink loses antialiased rows to the
+# band threshold, so only its position is measured from the pixels.
+TARGET = {"enter M": 12, "side leading": 12, "side trailing": 12, "move Z": 25}
+# The steps with the pointer on the rail: A's first ink row is frozen there.
+ON_RAIL = ("enter M", "side leading", "side trailing", "move Z", "move #")
+
+
+def letters(path, width, height, scale, rail_x):
+    """The A..# bands, top to bottom, in the rail's strip."""
+    found = [band for band in bands(path, width, height, scale, rail_strip(rail_x))
+             if band["bottom"] <= height - 3]
+    return found[:len(NAMES)]
 
 
 def main():
@@ -146,9 +162,8 @@ def main():
     target, width, height, scale = sys.argv[1], float(sys.argv[2]), float(sys.argv[3]), float(sys.argv[4])
     rail_x = float(sys.argv[5])
     if os.path.isfile(target):
-        found = [band for band in bands(target, width, height, scale, rail_strip(rail_x))
-                 if band["bottom"] <= height - 3]
-        for index, band in enumerate(found[:len(NAMES)]):
+        found = letters(target, width, height, scale, rail_x)
+        for index, band in enumerate(found):
             print("centre %s %.1f" % (NAMES[index], (band["top"] + band["bottom"]) / 2))
         if found:
             print("peak %.1f" % max(band["height"] for band in found))
@@ -163,8 +178,7 @@ def main():
                 continue        # a quiet run cannot move the pointer sideways
             failures.append("no %s shot (%s)" % (label, name))
             continue
-        found = [band for band in bands(path, width, height, scale, rail_strip(rail_x))
-                 if band["bottom"] <= height - 3]
+        found = letters(path, width, height, scale, rail_x)
         if len(found) < 20:
             failures.append("%s: %d letter bands" % (label, len(found)))
             continue
@@ -173,62 +187,74 @@ def main():
         print("; ".join(failures) or "no rest shot")
         return 1
 
-    def m_of(found):
-        # M is the 13th letter while the whole alphabet is drawn.
-        return found[12] if len(found) >= 27 else max(found, key=lambda band: band["height"])
+    def tallest(found):
+        return max(range(len(found)), key=lambda i: found[i]["height"])
 
-    base = m_of(draws["rest"])["height"]
-    print("step           M height   implied  expected   A top")
+    # The rest ink heights vary a point with antialiasing; the median is the
+    # honest base for the ratio.
+    base = statistics.median(band["height"] for band in draws["rest"])
+    print("step           tallest   implied  expected   A top")
     for label, _ in STEPS:
         if label not in draws:
             continue
         found = draws[label]
-        m = m_of(found)
-        expected = 2.2 if label in ("enter M", "side leading", "side trailing",
-                                    "move Z", "move #") else 1.0
-        implied = m["height"] / base
-        print("%-14s %7.1f pt %8.2f %8.2f   %6.2f"
-              % (label, m["height"], implied, expected, found[0]["top"]))
-        if "side" not in label and abs(implied - expected) > expected * TOLERANCE + 0.02:
-            failures.append("%s: M is %.2fx, expected %.2fx +/-15%%"
-                            % (label, implied, expected))
+        index = tallest(found)
+        expected = 2.2 if label in TARGET else 1.0
+        implied = found[index]["height"] / base
+        print("%-14s %5s %5.1f pt %8.2f %8.2f   %6.2f"
+              % (label, NAMES[index], found[index]["height"], implied, expected,
+                 found[0]["top"]))
+        if label == "move #":
+            continue        # dimmed: its slot's scale is the JSON's to prove
+        if label not in TARGET:
+            continue
+        if index != TARGET[label]:
+            failures.append("%s: the tallest letter is %s, not %s"
+                            % (label, NAMES[index], NAMES[TARGET[label]]))
+        if abs(implied - expected) > expected * TOLERANCE + 0.02:
+            failures.append("%s: %s is %.2fx, expected %.2fx +/-15%%"
+                            % (label, NAMES[index], implied, expected))
     # Sideways inside the column: the scale does not change.
     for label in ("side leading", "side trailing"):
         if label in draws and "enter M" in draws:
-            ratio = m_of(draws[label])["height"] / m_of(draws["enter M"])["height"]
+            ratio = draws[label][12]["height"] / draws["enter M"][12]["height"]
             if abs(ratio - 1) > 0.05:
                 failures.append("%s: M changed to %.2f x the enter's" % (label, ratio))
             print("%s: M %.2f x the enter's (unchanged +/-5%%)" % (label, ratio))
 
-    # The frozen span: A's first ink row does not move while the pointer sweeps.
-    tops = {label: found[0]["top"] for label, found in draws.items()}
-    if tops:
-        first = tops.get("rest", next(iter(tops.values())))
-        for label, top in tops.items():
+    # The frozen span: on the rail, A's first ink row does not move while the
+    # pointer sweeps. Leaving returns it to the rest row.
+    rail_tops = {label: draws[label][0]["top"] for label in draws
+                 if label in ON_RAIL}
+    if rail_tops:
+        first = rail_tops.get("enter M", next(iter(rail_tops.values())))
+        for label, top in rail_tops.items():
             if abs(top - first) > 1.0 / scale + 0.01:
-                failures.append("%s: A's top moved to %.2f pt, was %.2f" % (label, top, first))
-        print("A's top across the moves: %s (%.2f pt, +/- %.2f)"
-              % (", ".join("%s %.2f" % (label, top) for label, top in tops.items()),
+                failures.append("on the rail, %s: A's top moved to %.2f pt, was %.2f"
+                                % (label, top, first))
+        print("A's top on the rail: %s (%.2f pt, +/- %.2f)"
+              % (", ".join("%s %.2f" % (label, top) for label, top in rail_tops.items()),
                  first, 1.0 / scale))
+    if "away" in draws:
+        moved = abs(draws["away"][0]["top"] - draws["rest"][0]["top"])
+        if moved > 1.0 / scale + 0.01:
+            failures.append("away: A's top is %.1f pt from rest" % moved)
+        print("A's top back at rest: %.2f (was %.2f)" % (draws["away"][0]["top"],
+                                                         draws["rest"][0]["top"]))
 
     if "enter M" in draws:
         found = draws["enter M"]
         if found[0]["top"] < 1 or found[-1]["bottom"] > height - 1:
             failures.append("a letter is cut at the window's edge")
         tag = bands(os.path.join(target, "rail-enter-m.png"), width, height, scale,
-                    (rail_x - 130, rail_x - 2))
+                    (rail_x - 130, rail_x - 22))
         if not tag:
             failures.append("no tag beside the rail on the enter")
         print("tag on the enter: %s" % ("shown" if tag else "missing"))
-        if len(found) >= 27:
-            print("M centre %.1f pt down the window"
-                  % ((found[12]["top"] + found[12]["bottom"]) / 2))
-            print("N centre %.1f pt down the window"
-                  % ((found[13]["top"] + found[13]["bottom"]) / 2))
 
     light = os.path.join(target, "rail-enter-m-light.png")
     if os.path.exists(light):
-        found = bands(light, width, height, scale, rail_strip(rail_x))
+        found = letters(light, width, height, scale, rail_x)
         print("light: %d letters on the enter" % len(found))
         if len(found) < 20:
             failures.append("light: %d letters on the enter" % len(found))
