@@ -426,6 +426,30 @@ def add_demo_apps(count, no_icon_every):
                 NO_ICON_PKGS.add(app["pkg"])
 
 
+# DECK-7's accent: a letter whose first app shares its row with the next letter
+# (I with J; a row does not start at a letter boundary), and letters in the
+# grid's last screenful, where the row cannot come to the top (X with Y below).
+# Five H apps put I on the row's second column at the e2e's 8 columns.
+RAIL_LETTER_LABELS = ["Harbor", "Harbor 2", "Harbor 3", "Harbor 4", "Harbor 5",
+                      "Invoices", "Journal", "Outbox", "Xylophone", "Yoga"]
+
+
+def add_rail_letters():
+    """Swap fillers for the rail's fixtures: the same cell count, so the grid
+    screenshots and their counts stay put. The fillers go from after J, which
+    keeps I mid-row instead of on a row boundary."""
+    for label in RAIL_LETTER_LABELS:
+        pkg = "fixture.%s" % label.lower().replace(" ", "")
+        APPS.append({"pkg": pkg, "label": label, "activity": "%s/.Main" % pkg})
+    drop = len(RAIL_LETTER_LABELS)
+    kept = []
+    for app in APPS:
+        if drop and app["pkg"].startswith("demo.") and app["label"][:1].lower() in ("p", "r"):
+            drop -= 1
+            continue
+        kept.append(app)
+    APPS[:] = kept
+
 
 # --- tiny 5x7 bitmap font (ffmpeg here has no drawtext; we render our own) ---
 _GLYPHS = {
@@ -550,6 +574,67 @@ def render_text_png(text, width, height, fg, bg, scale=None):
     return _png(width, height, canvas)
 
 
+# Two flat-only apps (no adaptive layers) draw shaped icons, so a check can
+# tell the two ways a flat icon is drawn (docs/design/dock.md §Icons): an
+# opaque rounded square with a transparent margin, which covers its tile, and
+# a disc on transparency, which keeps its plate. Both flat PNGs are RGBA, at
+# the size the Mac asked for.
+COVER_FLAT_PKG = "com.android.camera2"
+COVER_FLAT_RGB = (0, 128, 96)
+PLATE_FLAT_PKG = "com.android.gallery3d"
+PLATE_FLAT_RGB = (200, 60, 60)
+
+
+def _shape_png(size, rgb, span):
+    """An RGBA canvas whose row y is opaque from span(y) = (x0, x1)."""
+    clear = bytearray(b"\x00\x00\x00\x00") * size
+    pixel = bytes(rgb) + b"\xff"
+    rows = []
+    for y in range(size):
+        x0, x1 = span(y)
+        if x1 < x0:
+            rows.append(bytearray(clear))
+        else:
+            rows.append(bytearray(clear[:x0 * 4] + pixel * (x1 - x0 + 1) + clear[(x1 + 1) * 4:]))
+    return _png_rgba(size, size, rows)
+
+
+def render_cover_flat_png(size, rgb):
+    """A rounded square with a 10 % transparent margin: covers its tile."""
+    margin = size * 0.10
+    radius = max(1.0, size * 0.05)
+    side = size - 2 * margin
+
+    def span(y):
+        py = y + 0.5 - margin
+        if py < 0 or py > side:
+            return 1, 0
+        dy = 0.0
+        if py < radius:
+            dy = radius - py
+        elif py > side - radius:
+            dy = py - (side - radius)
+        inset = radius - (radius * radius - dy * dy) ** 0.5
+        return int(margin + inset + 0.5), int(margin + side - inset)
+
+    return _shape_png(size, rgb, span)
+
+
+def render_plate_flat_png(size, rgb):
+    """A disc on transparency: keeps its plate."""
+    centre = (size - 1) / 2.0
+    radius = size * 0.42
+
+    def span(y):
+        dy = (y + 0.5) - centre
+        if abs(dy) > radius:
+            return 1, 0
+        half = (radius * radius - dy * dy) ** 0.5
+        return int(centre - half + 0.5), int(centre + half)
+
+    return _shape_png(size, rgb, span)
+
+
 def render_disc_png(size, rgba, radius_fraction=0.32):
     """The fg layer of the fake adaptive icons: a filled disc with a white
     "plane" triangle through the centre, on a transparent canvas. With a white
@@ -582,7 +667,11 @@ ADAPTIVE_EVERY = 3
 
 def is_adaptive_pkg(pkg):
     """Every 3rd app of the label list uses an adaptive icon, like most real
-    launchers; the others keep their flat one so the Deck shows both kinds."""
+    launchers; the others keep their flat one so the Deck shows both kinds.
+    The two shaped flat fixtures never get layers: the cover/plate check needs
+    the same shape whatever --demo-apps pads the list to."""
+    if pkg in (COVER_FLAT_PKG, PLATE_FLAT_PKG):
+        return False
     for position, app in enumerate(sorted(APPS, key=lambda a: a["label"].lower())):
         if app["pkg"] == pkg:
             return position % ADAPTIVE_EVERY == 1
@@ -3979,7 +4068,12 @@ class FakePhone(object):
             cached = self._icon_cache.get(key)
             if cached is not None:
                 return cached
-        png = render_text_png(self._icon_letter(pkg) or "?", size, size, (255, 255, 255), pkg_color(pkg))
+        if pkg == COVER_FLAT_PKG:
+            png = render_cover_flat_png(size, COVER_FLAT_RGB)
+        elif pkg == PLATE_FLAT_PKG:
+            png = render_plate_flat_png(size, PLATE_FLAT_RGB)
+        else:
+            png = render_text_png(self._icon_letter(pkg) or "?", size, size, (255, 255, 255), pkg_color(pkg))
         with self._icon_lock:
             self._icon_cache[key] = png
         return png
@@ -4155,6 +4249,9 @@ def build_parser():
                    help="log each stream's cumulative frame count once a second")
     p.add_argument("--demo-apps", type=int, default=0, metavar="N",
                    help="pad the app list to N apps (grid screenshots)")
+    p.add_argument("--rail-letters", action="store_true",
+                   help="with --demo-apps, swap ten filler apps for the rail's fixtures: "
+                        "I mid-row with J beside it, and X beside Y in the last screenful (DECK-7)")
     p.add_argument("--no-icon-every", type=int, default=0, metavar="K",
                    help="with --demo-apps, every K-th app has no icon")
     p.add_argument("--dup-launcher", action="store_true",
@@ -4322,6 +4419,8 @@ def add_duplicate_launcher(no_label_pkg):
 def main(argv=None):
     args = build_parser().parse_args(argv)
     add_demo_apps(args.demo_apps, args.no_icon_every)
+    if args.rail_letters:
+        add_rail_letters()
     if args.dup_launcher or args.no_label_app:
         add_duplicate_launcher(args.no_label_app)
     phone = FakePhone(args)

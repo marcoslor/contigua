@@ -436,13 +436,16 @@ final class DockApps: NSObject {
     /// path and the automatic one. Runs on the caller's thread.
     private func make(_ spec: DockShimSpec, shellBinary: URL) -> URL? {
         do {
-            // The icon: the Dock's own 1296 px layers when the phone answered
-            // that request, else the Deck's layers upscaled, else the flat icon
-            // on the plate. One 1024 px render feeds every .icns size.
+            // The icon: the Dock's own 1296 px reply when the phone answered
+            // that request, else the Deck's layers upscaled. The flat follows
+            // the same rule: its 864 px copy in the Dock's slot, not the Deck's
+            // 288 px one (docs/design/dock.md §Icons). One 1024 px render feeds
+            // every .icns size.
             let dockLayers = IconCache.shared.loadLayerData(pkg: spec.pkg, deviceId: spec.deviceId,
                                                             sizeClass: .dock)
             let layers = dockLayers ?? IconCache.shared.loadLayerData(pkg: spec.pkg, deviceId: spec.deviceId)
-            let flat = IconCache.shared.loadData(pkg: spec.pkg, deviceId: spec.deviceId)
+            let flat = IconCache.shared.loadData(pkg: spec.pkg, deviceId: spec.deviceId, sizeClass: .dock)
+                ?? IconCache.shared.loadData(pkg: spec.pkg, deviceId: spec.deviceId)
             let icon = PhoneAppIcon.render(fg: layers?.fg, bg: layers?.bg, flat: flat, px: 1024)
             var withIcon = spec
             withIcon.iconLayers = layers != nil
