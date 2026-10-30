@@ -11028,7 +11028,7 @@ check_deck() {
     # activities, and one entry with no label at all.
     # A full grid (200 apps, more than the person's phone) like theirs: the
     # zoom cost grows with the number of cells the grid lays out.
-    FAKE_ARGS="--dup-launcher --no-label-app com.spotify.music --demo-apps 200" start_fake || return 1
+    FAKE_ARGS="--dup-launcher --no-label-app com.spotify.music --demo-apps 200 --rail-letters" start_fake || return 1
     FAKE_ARGS=""
     # The shared app's own launch: the checks after this one use it.
     launch_shared --connect "127.0.0.1:$PORT" --debug-deck-grid "$WORK/deck-grid.jsonl" \
@@ -11353,6 +11353,29 @@ PY
     fi
     control deckrailleave
 
+    # DECK-7: the letter a rail click lands on stays lit, not the letter of the
+    # row it shares. The fake phone's --rail-letters fixtures put I mid-row
+    # with J beside it and X beside Y in the last screenful (whose row cannot
+    # come to the top). A scroll by other means hands the accent back to the
+    # top row's letter; the jump's own animated scroll must not.
+    control deck-scroll -100000 || bad "DECK deck-scroll to the top: $CONTROL_REPLY"
+    sleep 0.5
+    local railletter railjson railstart
+    railjson="$WORK/deck-grid.jsonl"
+    for railletter in I X; do
+        control deck-rail "$railletter" >/dev/null || bad "DECK deck-rail $railletter: $CONTROL_REPLY"
+        sleep 1
+        python3 "$MACOS/scripts/deck-rail-accent.py" pick "$railjson" "$railletter" \
+            && ok "[DECK-7] the rail's $railletter click keeps $railletter lit, not its row's letter" \
+            || bad "[DECK-7] the rail's $railletter click lit another letter"
+        railstart="$(wc -l < "$railjson" | tr -d ' ')"
+        control deck-scroll -120 >/dev/null || bad "DECK deck-scroll after $railletter: $CONTROL_REPLY"
+        sleep 0.5
+        python3 "$MACOS/scripts/deck-rail-accent.py" top "$railjson" "$railstart" \
+            && ok "[DECK-7] a scroll after the $railletter pick hands the accent back to the top row" \
+            || bad "[DECK-7] after a scroll the accent is not the top row's letter"
+    done
+    control deck-scroll -100000 || bad "DECK deck-scroll to the top (restore): $CONTROL_REPLY"
 
     # ⌘F is the Deck's Find (focus the search field, select its text) and the
     # phone app's find-in-page when a stream window is key: a real key event

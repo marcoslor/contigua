@@ -141,8 +141,7 @@ final class DeckGridTests: XCTestCase {
     }
 
     /// The rail's current letter is the LAST section start in the top visible
-    /// row; with no section start there it is the row's first tile. A jump to
-    /// T must accent T even when S apps share the top row.
+    /// row; with no section start there it is the row's first tile.
     func testRailCurrentLetterIsTheLastSectionStartInTheTopRow() {
         let apps = railApps((1...5).map { "Slack \($0)" } + ["Telegram"]
                             + (1...5).map { "Tuner \($0)" })
@@ -151,8 +150,6 @@ final class DeckGridTests: XCTestCase {
         XCTAssertEqual(metrics.columns(forWidth: width), 6)
         XCTAssertEqual(DeckRail.currentLetter(offset: 0, apps: apps, metrics: metrics, width: width),
                        "T", "T's section starts in the top row, after five Slack tiles")
-        XCTAssertEqual(DeckRail.accentLetter(target: 5, top: 0, apps: apps, columns: 6), "T",
-                       "a jump to T accents T, not the row's first S")
         let oneSection = railApps((1...6).map { "Slack \($0)" })
         XCTAssertEqual(DeckRail.currentLetter(offset: 0, apps: oneSection, metrics: metrics, width: width),
                        "S", "no section starts in the row, so the first tile's letter")
@@ -235,21 +232,17 @@ final class DeckGridTests: XCTestCase {
                        "Reduce Motion keeps the letters at their rest size")
     }
 
-    /// The rail's accent is the top visible row. While a click or drag jump is
-    /// settling, that is the target's row, not the row that was on top when the
-    /// pick started (the prototype's lag).
-    func testRailAccentUsesTheJumpTargetsRow() {
-        let apps = railApps((1...20).map { "Alpha \($0)" })
-        let columns = 6
-        XCTAssertEqual(DeckRail.rowStart(containing: 13, columns: columns), 12)
-        XCTAssertEqual(DeckRail.accentLetter(target: 13, top: 6, apps: apps, columns: columns), "A")
-        XCTAssertEqual(DeckRail.accentLetter(target: nil, top: 13, apps: apps, columns: columns), "A")
-        XCTAssertNil(DeckRail.accentLetter(target: 99, top: 0, apps: apps, columns: columns),
-                     "a target past the end has no letter")
-        XCTAssertNil(DeckRail.accentLetter(target: nil, top: nil, apps: apps, columns: columns))
+    /// A rail pick lands on its letter's first app, or forward over an empty
+    /// letter; the accent is that letter, not the row it shares.
+    func testRailPickIsTheLandedLetter() {
         let letters = railApps(["Alpha", "Bixby", "Delta", "Echo", "Foxtrot", "Golf", "Hotel"])
-        XCTAssertEqual(DeckRail.accentLetter(target: 6, top: 0, apps: letters, columns: 6), "H",
-                       "a target in the second row accents that row's first app")
+        XCTAssertEqual(DeckRail.pick("A", in: letters), DeckRail.Pick(letter: "A", index: 0))
+        XCTAssertEqual(DeckRail.pick("C", in: letters), DeckRail.Pick(letter: "D", index: 2),
+                       "an empty letter skips forward to the next one with apps")
+        XCTAssertEqual(DeckRail.pick("H", in: letters), DeckRail.Pick(letter: "H", index: 6),
+                       "H's first app is mid-row in the second row")
+        XCTAssertNil(DeckRail.pick("Z", in: letters))
+        XCTAssertNil(DeckRail.pick("A", in: []))
     }
 
     func testFallbackInitialSkipsPunctuationAndFallsBackToThePackage() {

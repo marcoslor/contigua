@@ -2925,6 +2925,13 @@ final class ConnectionController {
             deckRailToken += 1
             deckRailRequest = DeckRailRequest(letter: letter, token: deckRailToken)
             return nil
+        case "deck-scroll":
+            // The rail is pointer-only and a quiet run cannot move the real
+            // pointer, so the e2e scrolls the grid by other means (what the
+            // scroll bar does) through this verb; the accent's return to the
+            // top row's letter is the proof (DECK-7).
+            guard let dy = arguments.first.flatMap(Double.init) else { return "deck-scroll needs DY" }
+            return DeckGridScroll.scroll(by: CGFloat(dy))
         case "deckrailenter":
             // The pointer enters the rail's rest column at LETTER's band, which
             // freezes the span there.
