@@ -314,9 +314,12 @@ ensure_forward >/dev/null || { echo "locked-open: no server port"; echo "failed:
 
 # --- control: the same window and taps with the phone awake -----------------
 # The tap target must open a screen when the phone is healthy; otherwise a
-# locked run with no reaction would prove nothing about the phone.
-emu shell input keyevent KEYCODE_WAKEUP >/dev/null 2>&1 || true
-sleep 2
+# locked run with no reaction would prove nothing about the phone. A --no-boot
+# rig can still be locked from an earlier phase: the rig's own test PIN gets it
+# back (unlock.sh refuses any serial but an emulator's; the phone under test is
+# never unlocked by the check's own actions).
+bash "$EMU_DIR/unlock.sh" || fail "could not unlock the rig for the awake control"
+sleep 1
 emu logcat -c >/dev/null 2>&1 || true
 : > "$CONTROL"
 "${DRIVER[@]}" --seconds "$SECONDS_CONTROL" > "$CONTROL" 2>&1
