@@ -540,6 +540,10 @@ enum GridNavigation {
 /// the first index per letter and the letter a scroll offset lands on.
 enum DeckRail {
     static let minimumApps = 30
+    /// The rail's width plus its gap to the scroller: the approach's leading
+    /// edge and the arc's clearance both measure from the window's trailing
+    /// edge by this.
+    static let trailingSpace: CGFloat = 26 + 18
     static let letters: [String] = (65...90).map { String(UnicodeScalar($0)!) } + ["#"]
     /// R1's one letter's hit target: 20 pt, the AGENTS minimum.
     static let pitch: CGFloat = 20
@@ -642,15 +646,25 @@ enum DeckRail {
         return last
     }
 
-    /// The letter the rail accents: the top visible row. While a click or drag
-    /// jump is settling, the target's row will be the top one, so the accent
-    /// moves at once instead of staying on the outgoing row (the prototype's
-    /// lag).
-    static func accentLetter(target: Int?, top: Int?, apps: [AppInfo], columns: Int) -> String? {
-        guard !apps.isEmpty else { return nil }
-        let index = target.map { rowStart(containing: $0, columns: columns) } ?? top
-        guard let index else { return nil }
-        return rowLetter(rowStart: index, apps: apps, columns: columns)
+    /// The letter a rail pick lands on: the clicked letter's own first app, or
+    /// the letter it skips forward to when the clicked letter has no apps.
+    ///
+    /// The accent, not the row the app sits in: rows do not start at letter
+    /// boundaries, so the row's letter is often another letter (an I app can
+    /// share a row that starts with H and holds J).
+    static func pick(_ letter: String, in apps: [AppInfo]) -> Pick? {
+        let entries = entries(for: apps)
+        guard let index = target(for: letter, in: entries), apps.indices.contains(index) else {
+            return nil
+        }
+        return Pick(letter: self.letter(for: apps[index].displayLabel), index: index)
+    }
+
+    struct Pick: Equatable {
+        /// The letter the jump lands on; an empty click forwards to this one.
+        let letter: String
+        /// The app the jump scrolls to.
+        let index: Int
     }
 
     /// The letter at `y` in a column `height` tall; the letters share it evenly.
@@ -690,6 +704,99 @@ enum DeckRail {
         let within = clamped - CGFloat(slotIndex) * pitch
         let band = min(slot.count - 1, max(0, Int(within / pitch * CGFloat(slot.count))))
         return letters[slot.first + band]
+    }
+}
+
+/// DECK-7's accent state: which letter the rail lights. At rest it is the top
+/// row's letter. A rail click or drag holds the letter the jump lands on —
+/// rows do not start at letter boundaries, and the grid's last screenful
+/// cannot bring its row to the top, so the row's letter is often not the
+/// clicked one. The pick lasts until the grid scrolls by other means (the
+/// wheel, the trackpad, the scroll bar or the keys), or another pick replaces
+/// it; then the top row's letter is back.
+///
+/// The machine is pure: the view feeds it the pick and every scroll position
+/// and draws the letter it returns. The jump's own animated scroll is
+/// `jumping` — it settles only when the target's row is the top one, or the
+/// grid reaches its end with the target row still below (the last
+/// screenful) — so it never reads as the person's own scroll.
+enum RailAccent: Equatable {
+    /// No pick: the accent follows the row at the top.
+    case topRow
+    /// A pick's jump is running toward the app at `target`, from the top row
+    /// `fromTop` (nil before the grid reported a position); the accent is the
+    /// `letter` it will land on.
+    case jumping(letter: String, target: Int, fromTop: Int?)
+    /// The jump landed at `landingOffset`; the accent stays `letter` until the
+    /// grid moves away from that offset.
+    case picked(letter: String, landingOffset: CGFloat)
+
+    enum Event: Equatable {
+        /// A rail click or drag: the letter it picks, the app it aims at and
+        /// the top row the jump starts from.
+        case pick(letter: String, target: Int, fromTop: Int?)
+        /// A scroll position: the first app of the top row, the content
+        /// offset, the drawn columns and the furthest offset the grid reaches.
+        case scroll(top: Int, offset: CGFloat, columns: Int, maxOffset: CGFloat)
+    }
+
+    /// The jump's last animated frame lands within this many points of the
+    /// recorded offset; a person's scroll moves further than this.
+    static let landingTolerance: CGFloat = 1
+
+    static func reduce(_ state: RailAccent, _ event: Event) -> RailAccent {
+        switch (state, event) {
+        case (_, .pick(let letter, let target, let fromTop)):
+            return .jumping(letter: letter, target: target, fromTop: fromTop)
+        case (.topRow, .scroll):
+            return .topRow
+        case (.jumping(let letter, let target, let fromTop),
+              .scroll(let top, let offset, let columns, let maxOffset)):
+            let row = DeckRail.rowStart(containing: target, columns: columns)
+            // The row reached the top: the jump landed.
+            if top == row { return .picked(letter: letter, landingOffset: offset) }
+            if let fromTop, fromTop != row {
+                if fromTop < row {
+                    // A downward jump that reached the grid's end with the
+                    // row still below: X, Y and Z in the last screenful land
+                    // here, and the pick holds there. A zero end is a layout
+                    // that has not reported a size yet, not a landing.
+                    if maxOffset > 0, offset >= maxOffset - landingTolerance {
+                        return .picked(letter: letter, landingOffset: offset)
+                    }
+                    // Off the jump's path (above where it started, or past
+                    // the target's row): the person scrolled instead.
+                    if top < fromTop || top > row { return .topRow }
+                } else if top > fromTop || top < row {
+                    // An upward jump: the person scrolled below where it
+                    // started, or above the target's row.
+                    return .topRow
+                }
+            }
+            return state
+        case (.picked(let letter, let landingOffset), .scroll(_, let offset, _, _)):
+            // The jump's own last frames stay within the tolerance; anything
+            // further is the person's wheel, trackpad, scroll bar or keys.
+            return abs(offset - landingOffset) <= landingTolerance
+                ? state : .topRow
+        }
+    }
+
+    /// The letter to draw: a held pick, else the top row's.
+    func letter(topRow: String?) -> String? {
+        switch self {
+        case .topRow: return topRow
+        case .jumping(let letter, _, _), .picked(let letter, _): return letter
+        }
+    }
+
+    /// The state's name, for the transition log.
+    var name: String {
+        switch self {
+        case .topRow: return "topRow"
+        case .jumping: return "jumping"
+        case .picked: return "picked"
+        }
     }
 }
 
@@ -924,8 +1031,9 @@ struct AppGrid: View {
     /// produced it (the rail's accent and the e2e's landing proof).
     @State private var currentLetter: String?
     @State private var scrollBox = RailScrollBox()
-    /// The rail's pending target index: reported once its row is on screen.
-    @State private var railTarget: Int?
+    /// DECK-7's accent, and the pending rail jump inside it: a pick holds its
+    /// landed letter until the grid scrolls by other means.
+    @State private var railAccent: RailAccent = .topRow
 
     private var metrics: DeckGridSize { DeckGridSize(zoom: CGFloat(zoom)) }
 
@@ -981,11 +1089,12 @@ struct AppGrid: View {
             // width (the clipped edges during a zoom).
             .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { outer in
                 DeckGridMetrics.noteViewport(outer)
-                // The approach zone is measured from the rail's leading edge,
-                // at a y in the rail's own space, so a hover point needs the
+                // The hover is measured from the rail's leading edge, at a y
+                // in the rail's own space, so a hover point needs the
                 // container's size. Written only on a change, and only the
                 // rail reads it.
                 RailPointerModel.shared.noteContainerSize(outer.size)
+                RailPointerModel.shared.noteZoom(zoom)
                 // Arrow keys move by the drawn columns. The drawn layout comes
                 // from the layout pass itself (DeckGridLayout); this is only
                 // the keyboard's copy of the same number and no view reads it.
@@ -1002,9 +1111,19 @@ struct AppGrid: View {
                 let stored = DeckZoom.stored(in: Profile.active.defaults)
                 if stored != zoom { zoom = stored }
             }
+            // The rail's room follows the zoom: ⌘+ moves the last column right.
+            .onChange(of: zoom, initial: true) { _, zoom in
+                RailPointerModel.shared.noteZoom(zoom)
+            }
             .onScrollGeometryChange(for: RailScroll.self) { geometry in
                 RailScroll(offset: geometry.visibleRect.minY + geometry.contentInsets.top,
-                           width: geometry.containerSize.width)
+                           width: geometry.containerSize.width,
+                           // The grid's end is its content height minus the
+                           // viewport: what the scroll bar stops at, and the
+                           // offset a jump to the last screenful lands on.
+                           maxOffset: max(0, geometry.contentSize.height
+                                              + geometry.contentInsets.bottom
+                                              - geometry.containerSize.height))
             } action: { _, scroll in
                 follow(scroll)
             }
@@ -1012,16 +1131,17 @@ struct AppGrid: View {
                 if DeckRail.shows(count: cells.count, query: query) {
                     // R1 sits inside the content inset, left of the scroller.
                     // The rail picks the most letters whose rest pitch keeps
-                    // room for the magnified overshoot (RailLayout.fit), and
-                    // condenses below 18 pt.
+                    // room for the magnified end extension (RailLayout.fit),
+                    // and condenses below 18 pt.
                     DeckIndexRail(entries: railEntries, counts: railCounts,
                                   current: currentLetter ?? firstRailLetter) { letter in
                         scroll(to: letter, proxy: proxy)
                     }
                     .padding(.trailing, DeckIndexRail.trailingPadding)
-                    // A growing rail may draw past its rest rows (S1/S3); the
-                    // clip is the content inset, so nothing lands under the
-                    // toolbar or over the grid.
+                    // The magnified rail may draw past its rest rows (the
+                    // ends extend from the pointer); the clip is the content
+                    // inset, so nothing lands under the toolbar or over the
+                    // grid.
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
                     .clipped()
                 }
@@ -1059,48 +1179,72 @@ struct AppGrid: View {
     }
 
     /// Scroll to a rail letter: its own first app, or the next letter with apps
-    /// when the letter itself is empty.
+    /// when the letter itself is empty. The accent takes the landed letter at
+    /// once, so a jump whose row shares another letter's apps lights the
+    /// clicked one.
     private func scroll(to letter: String, proxy: ScrollViewProxy) {
-        guard let index = DeckRail.target(for: letter, in: railEntries),
-              cells.indices.contains(index) else { return }
-        railTarget = index
-        DeckGridProbe.reportRailPick(letter: letter, index: index)
-        withAnimation(.smooth(duration: 0.15)) { proxy.scrollTo(cells[index].id, anchor: .top) }
+        guard let pick = DeckRail.pick(letter, in: cellApps),
+              cells.indices.contains(pick.index) else { return }
+        let fromTop = scrollBox.lastTop ?? currentTop
+        let picked = RailAccent.reduce(railAccent, .pick(letter: pick.letter, target: pick.index,
+                                                         fromTop: fromTop))
+        if picked != railAccent {
+            Log.app.debug("rail accent: \(railAccent.name, privacy: .public) --pick--> \(picked.name, privacy: .public)") // log-ok: the machine's closed state names, never a value
+        }
+        railAccent = picked
+        DeckGridProbe.reportRailPick(letter: letter, index: pick.index)
+        withAnimation(.smooth(duration: 0.15)) { proxy.scrollTo(cells[pick.index].id, anchor: .top) }
         // A target already on screen scrolls nowhere, so no geometry change
         // follows: report the landing from the position we have.
         if let last = scrollBox.last { follow(last) }
     }
 
-    /// The letter (and, for a rail click, the target) at a scroll position.
-    /// While a jump settles the accent is the target's row, so it moves at
-    /// once instead of staying on the outgoing row (the prototype's lag).
+    /// The first app of the row at the last scroll position.
+    private var currentTop: Int? {
+        guard let last = scrollBox.last else { return nil }
+        return DeckRail.topIndex(offset: last.offset, apps: cellApps, metrics: metrics,
+                                 width: last.width)
+    }
+
+    /// The accent and the pending jump at a scroll position. A jump is in
+    /// flight until its row is the top one (or, for a jump down, the grid
+    /// reaches its end with the row still below); then the accent holds the
+    /// pick until a scroll by other means moves away from where it landed.
     private func follow(_ scroll: RailScroll) {
         scrollBox.last = scroll
         let apps = cellApps
         guard let top = DeckRail.topIndex(offset: scroll.offset, apps: apps,
                                           metrics: metrics, width: scroll.width) else {
-            currentLetter = nil
+            railAccent = .topRow
+            if currentLetter != nil { currentLetter = nil }
             return
         }
         let columns = metrics.columns(forWidth: scroll.width)
-        let letter = DeckRail.accentLetter(target: railTarget, top: top, apps: apps,
-                                           columns: columns)
-        if letter != currentLetter { currentLetter = letter }
-        if let target = railTarget {
-            if top <= target, target < top + columns {
-                railTarget = nil
-                DeckGridProbe.reportRailTop(
-                    letter: DeckRail.letter(for: apps[top].displayLabel), index: top)
-            } else if top > target {
-                // The person scrolled past the pending jump; stop holding it.
-                railTarget = nil
-            }
+        let before = railAccent
+        railAccent = RailAccent.reduce(before, .scroll(top: top, offset: scroll.offset,
+                                                       columns: columns,
+                                                       maxOffset: scroll.maxOffset))
+        if railAccent != before {
+            Log.app.debug("rail accent: \(before.name, privacy: .public) --scroll--> \(railAccent.name, privacy: .public)") // log-ok: the machine's closed state names, never a value
+        }
+        if case .jumping = before, case .picked = railAccent {
+            DeckGridProbe.reportRailTop(
+                letter: DeckRail.letter(for: apps[top].displayLabel), index: top)
+        }
+        let topLetter = DeckRail.rowLetter(rowStart: top, apps: apps, columns: columns)
+        let letter = railAccent.letter(topRow: topLetter)
+        let topMoved = scrollBox.lastTop != top
+        scrollBox.lastTop = top
+        if letter != currentLetter || railAccent != before || topMoved {
+            currentLetter = letter
+            DeckGridProbe.reportRailAccent(letter: letter, topRow: topLetter, top: top,
+                                           columns: columns, state: railAccent.name,
+                                           offset: scroll.offset, maxOffset: scroll.maxOffset)
         }
     }
 
     /// The container hover, reduced to where the pointer is relative to the
-    /// rail: `dx` points left of its leading edge, 0 inside it. The zone comes
-    /// from `--debug-proto railzone=A<n>`; absent, `dx` 0 is today's on/off.
+    /// rail: `dx` points left of its leading edge, 0 inside it.
     private func trackRail(_ phase: HoverPhase) {
         let model = RailPointerModel.shared
         guard DeckRail.shows(count: cells.count, query: query) else {
@@ -1114,17 +1258,15 @@ struct AppGrid: View {
             guard model.containerSize.width > 0 else { return }
             // The rail is centred vertically in the container and drawn at the
             // fitted pitch, so the hover's point is reduced to its own space in
-            // one place (RailApproach.railPoint), not with the nominal 20 pt.
+            // one place (RailHover.point), not with the nominal 20 pt.
             let fit = model.railFit ?? (count: model.slots.count, pitch: DeckRail.pitch)
-            let rail = RailApproach.railPoint(hover: point, container: model.containerSize, fit: fit,
-                                              trailing: DeckIndexRail.trailingSpace)
-            model.track(dx: rail.dx, y: rail.y, zone: railZone, reduceMotion: reduceMotion)
+            let rail = RailHover.point(hover: point, container: model.containerSize, fit: fit,
+                                       trailing: DeckIndexRail.trailingSpace)
+            model.track(dx: rail.dx, y: rail.y, reduceMotion: reduceMotion)
         case .ended:
             model.leave(reduceMotion: reduceMotion)
         }
     }
-
-    private var railZone: CGFloat { RailApproach.zone }
 
     /// Nothing more is coming for this icon: the phone said it has none, or
     /// the link is down.
@@ -1152,6 +1294,9 @@ struct AppGrid: View {
 private struct RailScroll: Equatable {
     var offset: CGFloat
     var width: CGFloat
+    /// The furthest `offset` the grid reaches: the last screenful cannot bring
+    /// its row to the top, so a jump there lands at this end.
+    var maxOffset: CGFloat
 }
 
 /// The last scroll position for the rail's already-visible case. A reference
@@ -1159,11 +1304,14 @@ private struct RailScroll: Equatable {
 /// invalidate the grid's body (the e2e drag p95 is measured on exactly that).
 private final class RailScrollBox {
     var last: RailScroll?
+    /// The first app of the row at `last`: a pick's jump starts from here.
+    var lastTop: Int?
 }
 
 /// Dock-style magnification (R1): the letter under the pointer swells to
-/// about 2× and its neighbours taper to 1× over three letters. Reduce Motion
-/// keeps every letter at its rest size (CONV-MAC-22).
+/// about 2× and its neighbours taper to 1× over three letters. It depends on
+/// the vertical distance only; Reduce Motion keeps every letter at its rest
+/// size (CONV-MAC-22).
 enum RailFisheye {
     static let maxScale: CGFloat = 2.2
     static let reach: CGFloat = 3
@@ -1173,18 +1321,6 @@ enum RailFisheye {
         guard !reduceMotion else { return 1 }
         let t = max(0, 1 - abs(distance) / reach)
         return 1 + (maxScale - 1) * t * t * (3 - 2 * t)
-    }
-
-    /// The approach zone's ramp (proto/rail2): full size at the rail (`dx` 0)
-    /// easing to rest at the zone's outer edge. `smoothstep` so the growth has
-    /// no corner at either end; it is the same magnification, scaled.
-    static func scale(distance: CGFloat, dx: CGFloat, zone: CGFloat,
-                      reduceMotion: Bool) -> CGFloat {
-        guard !reduceMotion else { return 1 }
-        let peak = scale(distance: distance, reduceMotion: false)
-        guard zone > 0 else { return dx <= 0 ? peak : 1 }
-        let t = min(max(1 - dx / zone, 0), 1)
-        return 1 + (peak - 1) * t * t * (3 - 2 * t)
     }
 }
 
@@ -1258,18 +1394,18 @@ private struct RailLetterSize: ViewModifier, Animatable {
 }
 
 /// R1: the A–Z rail on the Deck's trailing edge, inside the content inset and
-/// clear of the scroller. The letter near the pointer magnifies, ramped by the
-/// approach zone (proto/rail2) so it begins growing over the last icon column;
-/// on the rail it names its app count; clicking or dragging a letter jumps the
-/// grid; the letter at the top of the grid is the accent one, and a letter with
-/// no apps is dimmed.
+/// clear of the scroller. When the pointer enters the rail's column the letters
+/// magnify around it, the span frozen until the pointer leaves; on the rail it
+/// names its app count; clicking or dragging a letter jumps the grid; the
+/// letter at the top of the grid is the accent one, and a letter with no apps
+/// is dimmed.
 private struct DeckIndexRail: View {
     private static let width: CGFloat = 26
     private static let tagHeight: CGFloat = 22
-    /// The rail's gap to the scroller; the approach distance is measured from
+    /// The rail's gap to the scroller; the hover's distance is measured from
     /// `width + gap`, the rail's leading edge.
     static let trailingPadding: CGFloat = 18
-    static let trailingSpace: CGFloat = width + trailingPadding
+    static let trailingSpace = DeckRail.trailingSpace
 
     let entries: [DeckRail.Entry]
     let counts: [String: Int]
@@ -1281,8 +1417,8 @@ private struct DeckIndexRail: View {
     private var reduceMotion: Bool { Motion.reduce(system: systemReduceMotion) }
 
     /// The rail this window draws, from the container height: 27 letters at the
-    /// largest pitch that keeps room for the magnified overshoot, 14 or 9 when
-    /// it condenses. Static per window size, so the pitch never jitters.
+    /// largest pitch that keeps room for the magnified end extension, 14 or 9
+    /// when it condenses. Static per window size, so the pitch never jitters.
     private var fit: (count: Int, pitch: CGFloat)? { RailPointerModel.shared.railFit }
     private var pitch: CGFloat { fit?.pitch ?? DeckRail.pitch }
     /// The rail's slots: 27 at full height, 14 or 9 when the window is short.
@@ -1296,23 +1432,47 @@ private struct DeckIndexRail: View {
     /// The one pointer state; only the rail reads it, so a pointer over the
     /// grid never invalidates the grid's body.
     private var pointer: RailPointer { RailPointerModel.shared.state }
-    private var zone: CGFloat { RailApproach.zone }
+    /// The frozen span and the pointer inside it, while the pointer is on the
+    /// rail.
+    private var frozen: (span: RailLayout.Span, y: CGFloat)? { pointer.frozen }
 
-    /// The fisheye's scale per slot: the approach ramp (A2) times the taper.
-    private var scales: [CGFloat] {
-        slots.indices.map { index in
-            guard let position = pointer.position else { return 1 }
-            return RailFisheye.scale(distance: position.y / pitch - (CGFloat(index) + 0.5),
-                                     dx: position.dx, zone: zone, reduceMotion: reduceMotion)
-        }
+    /// The window's room for the arc: how far a magnified letter may reach left
+    /// before it comes within the clearance to the last column's cell.
+    private var arcRoom: CGFloat { RailPointerModel.shared.arcRoom }
+    /// The drawn letter's leftward offset: only a magnified letter reaches.
+    private func arcOffset(_ scale: CGFloat) -> CGFloat {
+        RailArc.offset(scale: scale, reduceMotion: reduceMotion, room: arcRoom)
+    }
+    /// How far the rail's hit area grows left while it is magnified: the room,
+    /// which keeps the clearance to the last icon column's cell at the Deck's
+    /// zoom.
+    private var hitGrowth: CGFloat {
+        guard frozen != nil, !reduceMotion else { return 0 }
+        return RailPointerModel.shared.room
     }
 
-    /// The drawn slots: proportional to the scales with the rail's height
-    /// fixed. The anchor is the pointer's y, so the letter under the pointer
-    /// stays under it while the slots open.
+    /// The fisheye centre: solve `Y(u) = y` inside the frozen span, so the
+    /// drawn slot under the pointer is the centre (hit = highlight).
+    private var centre: CGFloat? {
+        guard let frozen else { return nil }
+        return RailLayout.frozenCentre(atY: frozen.y, span: frozen.span, count: slots.count)
+    }
+
+    /// The fisheye's scale per slot: the taper around the solved centre. At
+    /// rest every letter is 1, and Reduce Motion magnifies nothing.
+    private var scales: [CGFloat] {
+        guard let centre else { return Array(repeating: 1, count: slots.count) }
+        return RailLayout.scales(count: slots.count, centre: centre,
+                                 reduceMotion: reduceMotion)
+    }
+
+    /// The drawn slots: the natural rest layout, or the frozen span with its
+    /// equal gaps, whose ends do not depend on the pointer.
     private var layout: [RailLayout.Slot] {
-        RailLayout.slots(scales: scales, available: height, pitch: pitch,
-                         anchor: pointer.position?.y)
+        guard let frozen else {
+            return slots.indices.map { RailLayout.Slot(y: CGFloat($0) * pitch, height: pitch) }
+        }
+        return RailLayout.frozenSlots(scales: scales, span: frozen.span)
     }
 
     /// The letter drawn under `y`: hit-testing follows the drawn layout.
@@ -1320,31 +1480,42 @@ private struct DeckIndexRail: View {
         RailLayout.letter(atY: y, in: layout, slots: slots)
     }
 
-    /// The slot and real letter level with the pointer (approach included, so
-    /// a condensed slot names the letter it is growing towards).
+    /// The slot and real letter level with the pointer (the letter the drawn
+    /// slot under the pointer names).
     private var hovered: (slot: Int, letter: String)? {
-        guard let position = pointer.position,
-              let letter = letter(atY: position.y),
+        guard let frozen,
+              let letter = letter(atY: frozen.y),
               let letterIndex = DeckRail.letters.firstIndex(of: letter),
               let slot = slotIndex(containing: letterIndex) else { return nil }
         return (slot, letter)
     }
 
-    var body: some View {
-        ZStack(alignment: .topLeading) {
+    var body: some View { rail }
+
+    private var rail: some View {
+        // One layout and one set of scales per body: the bisection per slot
+        // would repeat the solve 27 times a frame.
+        let drawn = layout
+        let drawnScales = scales
+        let hoveredSlot = hovered
+        return ZStack(alignment: .topLeading) {
             ForEach(Array(slots.enumerated()), id: \.offset) { index, slot in
-                slotView(index: index, slot: slot)
+                slotView(index: index, slot: slot, box: drawn[index],
+                         scale: drawnScales[index], hovered: hoveredSlot)
             }
         }
         .frame(width: Self.width, height: height, alignment: .topLeading)
         .background(alignment: .topLeading) {
             DeckRailAnchor().frame(width: 1, height: 1)
         }
+        // The arc draws left of the column; the hit area grows with it (the
+        // room stops it at the clearance to the last column's cell).
+        .padding(.leading, hitGrowth)
         .contentShape(.rect)
         .overlay(alignment: .topTrailing) { helpTag }
         .gesture(drag)
         .onChange(of: slots, initial: true) { _, slots in
-            // The forced e2e position (`deckrailapproach`) resolves a letter to
+            // The forced e2e position (`deckrailenter`) resolves a letter to
             // its band with the layout the rail is actually drawing.
             RailPointerModel.shared.slots = slots
         }
@@ -1358,15 +1529,14 @@ private struct DeckIndexRail: View {
         slots.firstIndex { letterIndex >= $0.first && letterIndex < $0.first + $0.count }
     }
 
-    private func slotView(index: Int, slot: DeckRail.Slot) -> some View {
-        let box = layout[index]
+    private func slotView(index: Int, slot: DeckRail.Slot, box: RailLayout.Slot,
+                          scale: CGFloat, hovered: (slot: Int, letter: String)?) -> some View {
         let hoveredHere = hovered?.slot == index
         let range = slot.first..<(slot.first + slot.count)
         let containsCurrent = currentIndex.map(range.contains) ?? false
         let shown = hoveredHere ? (hovered?.letter ?? DeckRail.letters[slot.first])
             : containsCurrent ? (currentLetter ?? DeckRail.letters[slot.first])
             : DeckRail.letters[slot.first]
-        let scale = scales[index]
         let highlighted = reduceMotion && pointer.showsHelpTag && hoveredHere
         let isCurrent = shown == currentLetter
         let hasApps = range.contains { entries[$0].index != nil }
@@ -1385,7 +1555,10 @@ private struct DeckIndexRail: View {
         .foregroundStyle(isCurrent ? AnyShapeStyle(Color.accentColor)
                                    : AnyShapeStyle(.secondary))
         .opacity(hasApps ? 1 : 0.35)
-        .frame(width: Self.width, height: box.height)
+        // The letters stay centred in the column; only a magnified one reaches
+        // left, out of the column, toward the grid.
+        .frame(width: Self.width, height: box.height, alignment: .center)
+        .offset(x: arcOffset(scale))
         .background(RoundedRectangle(cornerRadius: 4)
             .fill(Color.primary.opacity(highlighted ? 0.12 : 0)))
         .contentShape(.rect)
@@ -1398,13 +1571,17 @@ private struct DeckIndexRail: View {
     }
 
     /// The hovered real letter's tag, left of the rail and centred on its slot.
-    /// Hovering and dragging only: gliding past in the approach zone shows no
-    /// tag.
+    /// Hovering and dragging only: a pointer away from the rail shows no tag.
     @ViewBuilder
     private var helpTag: some View {
         if pointer.showsHelpTag, let hovered, layout.indices.contains(hovered.slot) {
             let count = counts[hovered.letter] ?? 0
             let box = layout[hovered.slot]
+            // Left of the widest drawn letter (the one under the pointer), so
+            // the tag never covers the arc.
+            let reach = RailArc.reach(scale: scales[hovered.slot],
+                                      reduceMotion: reduceMotion, room: arcRoom)
+            let tagRight = Self.width - RailArc.centredLead + reach
             Text(count == 0 ? "\(hovered.letter) · no apps"
                             : "\(hovered.letter) · \(count) \(count == 1 ? "app" : "apps")")
                 .font(.caption)
@@ -1412,7 +1589,7 @@ private struct DeckIndexRail: View {
                 .frame(height: Self.tagHeight)
                 .background(.regularMaterial, in: .capsule)
                 .fixedSize()
-                .offset(x: -(Self.width + 6),
+                .offset(x: -(tagRight + 6),
                         y: box.y + (box.height - Self.tagHeight) / 2)
                 .allowsHitTesting(false)
         }

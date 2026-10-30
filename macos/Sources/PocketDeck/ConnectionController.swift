@@ -2591,13 +2591,12 @@ final class ConnectionController {
         return nil
     }
 
-    /// The forced rail position (`deckrailhover`/`deckrailapproach`): a quiet
-    /// run cannot move the pointer, so the state machine is fed the same event
-    /// the container's hover sends, and the rest of the path (ramp, help tag,
-    /// ease) is the live one.
-    private func forceRail(letter: String, dx: CGFloat) -> Bool {
-        RailPointerModel.shared.force(letter: letter, dx: dx,
-                                      reduceMotion: railReduceMotion)
+    /// The forced rail position (`deckrailenter`/`deckrailmove`): a quiet run
+    /// cannot move the pointer, so the state machine is fed the same event the
+    /// container's hover sends, and the rest of the path (the frozen span, the
+    /// help tag, the ease) is the live one.
+    private func forceRail(letter: String) -> Bool {
+        RailPointerModel.shared.force(letter: letter, reduceMotion: railReduceMotion)
     }
 
     private var railReduceMotion: Bool {
@@ -2958,33 +2957,35 @@ final class ConnectionController {
             deckRailToken += 1
             deckRailRequest = DeckRailRequest(letter: letter, token: deckRailToken)
             return nil
-        case "deckrailhover":
-            // The rail's magnification for a shot: a quiet run cannot move the
-            // pointer to the rail's letters. A real pointer's hover is the
-            // rail's own container tracking, proved in the VM.
+        case "deck-scroll":
+            // The rail is pointer-only and a quiet run cannot move the real
+            // pointer, so the e2e scrolls the grid by other means (what the
+            // scroll bar does) through this verb; the accent's return to the
+            // top row's letter is the proof (DECK-7).
+            guard let dy = arguments.first.flatMap(Double.init) else { return "deck-scroll needs DY" }
+            return DeckGridScroll.scroll(by: CGFloat(dy))
+        case "deckrailenter":
+            // The pointer enters the rail's rest column at LETTER's band, which
+            // freezes the span there.
             guard let letter = arguments.first, DeckRail.letters.contains(letter) else {
-                return "deckrailhover needs A-Z or #"
+                return "deckrailenter needs A-Z or #"
             }
             guard DeckWindow.window != nil else { return "no deck window" }
-            guard forceRail(letter: letter, dx: 0) else { return "deckrailhover failed" }
+            guard forceRail(letter: letter) else { return "deckrailenter failed" }
             RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.3))
             return nil
-        case "deckrailhoverout":
+        case "deckrailmove":
+            // The pointer moves to LETTER's band inside the frozen span; the
+            // ends must not move.
+            guard let letter = arguments.first, DeckRail.letters.contains(letter) else {
+                return "deckrailmove needs A-Z or #"
+            }
+            guard DeckWindow.window != nil else { return "no deck window" }
+            guard forceRail(letter: letter) else { return "deckrailmove failed" }
+            RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.3))
+            return nil
+        case "deckrailleave":
             RailPointerModel.shared.leave(reduceMotion: railReduceMotion)
-            RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.3))
-            return nil
-        case "deckrailapproach":
-            // The pointer as if it were DX points left of the rail, level with
-            // LETTER, so the approach zone can be shot and checked in a quiet
-            // run.
-            guard arguments.count == 2, DeckRail.letters.contains(arguments[0]),
-                  let dx = Double(arguments[1]), dx >= 0 else {
-                return "deckrailapproach needs A-Z or # and DX"
-            }
-            guard DeckWindow.window != nil else { return "no deck window" }
-            guard forceRail(letter: arguments[0], dx: CGFloat(dx)) else {
-                return "deckrailapproach failed"
-            }
             RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.3))
             return nil
         case "deckrailanchor":
@@ -3004,32 +3005,39 @@ final class ConnectionController {
             let model = RailPointerModel.shared
             guard let fit = model.railFit, !model.slots.isEmpty else { return "no rail" }
             let height = CGFloat(fit.count) * fit.pitch
-            let position = model.state.position
-            let scales = (0..<fit.count).map { index in
-                RailFisheye.scale(distance: (position?.y ?? 0) / fit.pitch - (CGFloat(index) + 0.5),
-                                  dx: position?.dx ?? 0, zone: RailApproach.zone,
-                                  reduceMotion: railReduceMotion)
+            let frozen = model.state.frozen
+            let scales: [CGFloat]
+            let layout: [RailLayout.Slot]
+            if let frozen {
+                // The centre is solved inside the frozen span.
+                let centre = RailLayout.frozenCentre(atY: frozen.y, span: frozen.span,
+                                                     count: fit.count)
+                scales = RailLayout.scales(count: fit.count, centre: centre,
+                                           reduceMotion: railReduceMotion)
+                layout = RailLayout.frozenSlots(scales: scales, span: frozen.span)
+            } else {
+                scales = Array(repeating: 1, count: fit.count)
+                layout = (0..<fit.count).map {
+                    RailLayout.Slot(y: CGFloat($0) * fit.pitch, height: fit.pitch)
+                }
             }
-            let layout = RailLayout.slots(scales: scales, available: height,
-                                          pitch: fit.pitch, anchor: position?.y)
             var items: [[String: Any]] = []
             for (index, box) in layout.enumerated() {
                 let glyph = 9 * scales[index]
                 items.append(["first": model.slots[index].first,
                               "letters": model.slots[index].count,
+                              "scale": Double(scales[index]),
                               "y": Double(box.y),
                               "height": Double(box.height),
                               "glyphTop": Double(box.y + (box.height - glyph) / 2),
                               "glyphBottom": Double(box.y + (box.height + glyph) / 2)])
             }
-            let tag: Any = model.state.showsHelpTag
-                ? (RailLayout.letter(atY: position?.y ?? 0, in: layout, slots: model.slots)
-                   ?? NSNull())
-                : NSNull()
+            let tag: Any = frozen.map {
+                RailLayout.letter(atY: $0.y, in: layout, slots: model.slots) ?? NSNull()
+            } ?? NSNull()
             let state: String
             switch model.state {
             case .away: state = "away"
-            case .approaching: state = "approaching"
             case .hovering: state = "hovering"
             case .dragging: state = "dragging"
             }
@@ -3038,8 +3046,9 @@ final class ConnectionController {
                                        "railHeight": Double(height),
                                        "containerHeight": Double(model.containerSize.height),
                                        "state": state,
-                                       "dx": Double(position?.dx ?? -1),
-                                       "y": Double(position?.y ?? -1),
+                                       "y": Double(frozen?.y ?? -1),
+                                       "spanTop": Double(frozen?.span.top ?? -1),
+                                       "spanBottom": Double(frozen?.span.bottom ?? -1),
                                        "tag": tag,
                                        "slots": items]
             guard let data = try? JSONSerialization.data(withJSONObject: line, options: [.sortedKeys]),
@@ -3050,27 +3059,25 @@ final class ConnectionController {
             return (try? text.write(toFile: path, atomically: true, encoding: .utf8)) == nil
                 ? "deckrailslots failed" : nil
         case "deckrailsweep":
-            // Twenty pointer events in one command: the body-count proof's
-            // moves, without a runloop spin each, so an idle window of the same
-            // (short) length can be compared.
+            // N pointer moves in one command, the body-count proof's moves: the
+            // first enters at A and the rest sweep down the rail, one runloop
+            // turn per move (about 30 ms), as a pointer's moves arrive. A single
+            // turn for all of them would coalesce them into one transaction and
+            // hide a per-move invalidation.
             guard let steps = Int(arguments.first ?? ""), steps > 0 else {
                 return "deckrailsweep needs N"
             }
             guard let fit = RailPointerModel.shared.railFit else { return "no rail" }
-            // One runloop turn per move (about 30 ms), as a pointer's moves
-            // arrive: a single turn for all twenty would coalesce them into one
-            // transaction and hide a per-move invalidation.
+            let total = CGFloat(fit.count) * fit.pitch
             for step in 0..<steps {
-                RailPointerModel.shared.track(dx: step % 2 == 0 ? 12 : 0,
-                                              y: 12.5 * fit.pitch,
-                                              zone: RailApproach.zone,
-                                              reduceMotion: railReduceMotion)
+                let y = steps == 1 ? 0 : total * CGFloat(step) / CGFloat(steps - 1)
+                RailPointerModel.shared.track(dx: 0, y: y, reduceMotion: railReduceMotion)
                 RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.03))
             }
             return nil
         case "deckbodycount":
-            // The grid body's evaluation count: the proof a pointer in the
-            // approach zone does not invalidate the grid.
+            // The grid body's evaluation count: the proof a pointer on the
+            // rail does not invalidate the grid.
             guard let path = arguments.first, path.hasPrefix("/") else {
                 return "deckbodycount needs PATH"
             }
@@ -3091,7 +3098,7 @@ final class ConnectionController {
         case "deckrailpoint":
             // The letter's centre in Quartz screen coordinates, for a visible
             // VM run's real pointer. An optional DX puts it that many points
-            // left of the rail's leading edge (the approach zone's sweep).
+            // left of the rail's leading edge.
             guard arguments.count >= 2, arguments.count <= 3,
                   DeckRail.letters.contains(arguments[0]) else {
                 return "deckrailpoint needs A-Z or # and PATH [DX]"
