@@ -235,14 +235,20 @@ ACK (0x31):       len = 13;      type 0x31; stream = 0
   sent at most every 10 ms and at least once per 16 received frames, on any live
   path.
 - A duplicate (`seq < ack`) is dropped and acked at once. A frame above the next
-  expected seq waits in a reorder window of at most 64 frames and 4 MiB; one
-  that does not fit is dropped, and the sender replays it from the last ack.
+  expected seq waits in a reorder window of at most 64 frames and 4 MiB; when it
+  is full the receiver **stops reading that path** until the gap fills (TCP
+  backpressure) — it never drops a frame and never ends the session.
 - A receiver acks and drops an unknown `innerType`, so a new message never
   stalls the stream. A `RELIABLE` whose outer `stream` differs from
   `innerStream` is a protocol error.
 - The sender keeps unacked reliable frames in a replay buffer of at most
-  **16 MiB** per direction. Past it the session ends (`replay_overflow`): a
-  frame is never silently dropped.
+  **16 MiB** per direction, and it is **credit-based**: before reading the next
+  chunk of its source a producer checks that the frame fits, and waits for an ACK
+  if it does not. So the buffer never overflows, no frame is dropped, and the
+  session is never ended for a full buffer. Bulk frames (`APK_DATA`,
+  `SHARE_DATA`, `DROP_DATA`, `CLIP_DATA`, `FS_DATA`) may hold at most **12 MiB**,
+  which keeps **4 MiB** free so a `JSON`, `TOUCH`, `SCROLL` or `KEY` frame never
+  waits behind a file (`docs/design/paths.md` §8).
 
 Example bytes, `ACK` with `ack` 42:
 
