@@ -426,6 +426,30 @@ def add_demo_apps(count, no_icon_every):
                 NO_ICON_PKGS.add(app["pkg"])
 
 
+# DECK-7's accent: a letter whose first app shares its row with the next letter
+# (I with J; a row does not start at a letter boundary), and letters in the
+# grid's last screenful, where the row cannot come to the top (X with Y below).
+# Five H apps put I on the row's second column at the e2e's 8 columns.
+RAIL_LETTER_LABELS = ["Harbor", "Harbor 2", "Harbor 3", "Harbor 4", "Harbor 5",
+                      "Invoices", "Journal", "Outbox", "Xylophone", "Yoga"]
+
+
+def add_rail_letters():
+    """Swap fillers for the rail's fixtures: the same cell count, so the grid
+    screenshots and their counts stay put. The fillers go from after J, which
+    keeps I mid-row instead of on a row boundary."""
+    for label in RAIL_LETTER_LABELS:
+        pkg = "fixture.%s" % label.lower().replace(" ", "")
+        APPS.append({"pkg": pkg, "label": label, "activity": "%s/.Main" % pkg})
+    drop = len(RAIL_LETTER_LABELS)
+    kept = []
+    for app in APPS:
+        if drop and app["pkg"].startswith("demo.") and app["label"][:1].lower() in ("p", "r"):
+            drop -= 1
+            continue
+        kept.append(app)
+    APPS[:] = kept
+
 
 # --- tiny 5x7 bitmap font (ffmpeg here has no drawtext; we render our own) ---
 _GLYPHS = {
@@ -4155,6 +4179,9 @@ def build_parser():
                    help="log each stream's cumulative frame count once a second")
     p.add_argument("--demo-apps", type=int, default=0, metavar="N",
                    help="pad the app list to N apps (grid screenshots)")
+    p.add_argument("--rail-letters", action="store_true",
+                   help="with --demo-apps, swap ten filler apps for the rail's fixtures: "
+                        "I mid-row with J beside it, and X beside Y in the last screenful (DECK-7)")
     p.add_argument("--no-icon-every", type=int, default=0, metavar="K",
                    help="with --demo-apps, every K-th app has no icon")
     p.add_argument("--dup-launcher", action="store_true",
@@ -4322,6 +4349,8 @@ def add_duplicate_launcher(no_label_pkg):
 def main(argv=None):
     args = build_parser().parse_args(argv)
     add_demo_apps(args.demo_apps, args.no_icon_every)
+    if args.rail_letters:
+        add_rail_letters()
     if args.dup_launcher or args.no_label_app:
         add_duplicate_launcher(args.no_label_app)
     phone = FakePhone(args)
