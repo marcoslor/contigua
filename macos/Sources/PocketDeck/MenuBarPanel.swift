@@ -179,6 +179,9 @@ final class MenuBarController: NSObject {
     private let defaults: UserDefaults
     private let statusItem: NSStatusItem
     private var machine = MenuBarPanelMachine()
+    private var pulse = MenuBarPulseMachine()
+    private var pulseTimer: Timer?
+    private var launchTask: Task<Void, Never>?
     private var panel: MenuBarPanel?
     private var localMouseMonitor: Any?
     private var globalMouseMonitor: Any?
@@ -188,12 +191,16 @@ final class MenuBarController: NSObject {
     init(controller: ConnectionController, defaults: UserDefaults) {
         self.controller = controller
         self.defaults = defaults
-        statusItem = NSStatusBar.system.statusItem(withLength: 30)
+        // AppKit sizes the item around the button's own image. A fixed width
+        // was the person's padding and pushed the glyph off-centre (2026-10-30).
+        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         super.init()
         Self.current = self
         installButton()
         installMonitors()
         applyVisibility()
+        observeIcon()
+        openDeckAtLaunch()
         defaultsObserver = NotificationCenter.default.addObserver(
             forName: UserDefaults.didChangeNotification, object: nil, queue: .main
         ) { [weak self] _ in
@@ -202,6 +209,8 @@ final class MenuBarController: NSObject {
     }
 
     deinit {
+        pulseTimer?.invalidate()
+        launchTask?.cancel()
         if let localMouseMonitor { NSEvent.removeMonitor(localMouseMonitor) }
         if let globalMouseMonitor { NSEvent.removeMonitor(globalMouseMonitor) }
         if let localKeyMonitor { NSEvent.removeMonitor(localKeyMonitor) }
@@ -225,17 +234,80 @@ final class MenuBarController: NSObject {
         button.action = #selector(iconClicked(_:))
         button.sendAction(on: [.leftMouseUp, .rightMouseUp])
         button.toolTip = "PocketDeck"
-        // The icon keeps the states the SwiftUI label had, including the pulse
-        // while reconnecting and the dot while an agent is connected.
-        let host = NSHostingView(rootView: MenuBarIcon().environment(controller))
-        host.translatesAutoresizingMaskIntoConstraints = false
-        button.addSubview(host)
-        NSLayoutConstraint.activate([
-            host.leadingAnchor.constraint(equalTo: button.leadingAnchor),
-            host.trailingAnchor.constraint(equalTo: button.trailingAnchor),
-            host.topAnchor.constraint(equalTo: button.topAnchor),
-            host.bottomAnchor.constraint(equalTo: button.bottomAnchor),
-        ])
+        // The glyph is the button's own template image: AppKit centres it and
+        // the menu bar dims it on an inactive display. Nothing is layered over
+        // the button; the states it had (the reconnecting pulse, the agent dot)
+        // are frames of that image.
+        button.image = MenuBarGlyph.image(link: controller.link,
+                                          dot: controller.mcp.clientCount > 0)
+    }
+
+    /// The image follows the link and the agent count through Observation, the
+    /// same two reads the SwiftUI label made, re-armed after every change.
+    private func observeIcon() {
+        withObservationTracking {
+            updateIcon(link: controller.link, dot: controller.mcp.clientCount > 0)
+        } onChange: { [weak self] in
+            Task { @MainActor [weak self] in self?.observeIcon() }
+        }
+    }
+
+    /// One link change: the pulse machine takes it (logging its transition),
+    /// then the image is drawn in the frame the machine chose.
+    private func updateIcon(link: Link, dot: Bool) {
+        runPulse(pulse.handle(.pulses(Self.pulses(link))), event: "pulses", before: pulse.state)
+        renderIcon(link: link, dot: dot)
+    }
+
+    @objc private func pulseTicked() {
+        runPulse(pulse.handle(.tick), event: "tick", before: pulse.state)
+    }
+
+    private func runPulse(_ actions: [MenuBarPulseAction], event: String,
+                          before: MenuBarPulseState) {
+        let after = pulse.state
+        if after != before {
+            Log.app.notice("menu bar icon: \(before.rawValue, privacy: .public) --\(event, privacy: .public)--> \(after.rawValue, privacy: .public)")
+        }
+        for action in actions {
+            switch action {
+            case .show:
+                renderIcon(link: controller.link, dot: controller.mcp.clientCount > 0)
+            case .startTimer:
+                pulseTimer = pulseTimer ?? Timer.scheduledTimer(
+                    timeInterval: Self.pulseInterval, target: self,
+                    selector: #selector(pulseTicked), userInfo: nil, repeats: true)
+            case .stopTimer:
+                pulseTimer?.invalidate()
+                pulseTimer = nil
+            }
+        }
+    }
+
+    private func renderIcon(link: Link, dot: Bool) {
+        let button = statusItem.button
+        button?.image = MenuBarGlyph.image(link: link, dot: dot, dimmed: pulse.isDim)
+        // The dot's meaning is part of the drawing now, so the item's label
+        // carries it, as the dot view's own label did before.
+        button?.setAccessibilityLabel(dot ? "PocketDeck, an AI agent is connected" : "PocketDeck")
+    }
+
+    private static let pulseInterval: TimeInterval = 0.55
+
+    private static func pulses(_ link: Link) -> Bool {
+        if case .reconnecting = link { return true }
+        return false
+    }
+
+    /// The Deck's launch open, moved here from `MenuBarIcon`'s `.task` when the
+    /// view went away: the item exists from launch, and started from a shell
+    /// (the test harness) SwiftUI sometimes does not present the Deck by itself.
+    private func openDeckAtLaunch() {
+        launchTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(0.5))
+            guard self != nil else { return }
+            DeckWindow.open()
+        }
     }
 
     @objc private func iconClicked(_ sender: Any?) {
