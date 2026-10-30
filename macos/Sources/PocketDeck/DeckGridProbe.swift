@@ -70,6 +70,18 @@ enum DeckGridProbe {
         append(["railTop": ["letter": letter, "index": index]])
     }
 
+    /// The rail's accent letter, the letter of the row it sits on, and the
+    /// machine's state: the e2e proves a pick keeps the clicked letter — the
+    /// row's letter differs — that the jump settled, and that a scroll by
+    /// other means hands the accent back to the row's letter.
+    @MainActor
+    static func reportRailAccent(letter: String?, topRow: String?, top: Int, columns: Int,
+                                 state: String, offset: CGFloat, maxOffset: CGFloat) {
+        append(["railAccent": ["letter": letter ?? "", "row": topRow ?? "",
+                               "top": top, "columns": columns, "state": state,
+                               "offset": Double(offset), "max": Double(maxOffset)]])
+    }
+
     #if PD_TEST_HOOKS
     /// How many times the grid's body has been evaluated. The rail's pointer is
     /// tracked in a store only the rail reads; the e2e proves that pointer moves

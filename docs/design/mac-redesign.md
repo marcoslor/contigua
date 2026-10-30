@@ -131,8 +131,10 @@ backgrounds), window background default.
 - **A–Z rail (D):** the Deck's trailing edge carries one 16 pt column, 8 pt from the edge: A–Z then `#`, 9 pt letters
   on a 12 pt pitch, the current letter accent and semibold, empty letters dimmed at 35 %. It appears only when the
   search field is empty and there are at least 30 apps. Clicking or dragging a letter scrolls to its first app; an
-  empty letter skips forward to the next one with apps. The current letter comes from the first app in the top
-  visible row, read from `visibleRect.minY + contentInsets.top`.
+  empty letter skips forward to the next one with apps. The accent lights the letter the jump landed on and keeps
+  it until the grid is scrolled by other means (the wheel, the trackpad, the scroll bar or the keys) or another
+  letter is picked; otherwise it is the last section start in the top visible row, read from
+  `visibleRect.minY + contentInsets.top`.
 - **Data:** apps and icons come from `AppsCache` (§6.3) first, then refresh from the phone, so the grid
   is populated at launch before the first connection. Offline/reconnecting: grid `.opacity(0.5)`,
   `.allowsHitTesting(false)`.
