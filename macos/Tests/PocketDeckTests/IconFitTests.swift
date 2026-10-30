@@ -406,4 +406,17 @@ final class IconFitTests: XCTestCase {
             XCTAssertEqual(holes(rendered), 0, "\(entry.short): the plate shows inside the squircle")
         }
     }
+
+    func testTheGridProbeReadsTheTilesEdgeAsDrawn() throws {
+        // The e2e's flat-icon step reads this value: a cover fills the body's
+        // leading edge with the icon, a plate shows the plate there.
+        let covered = try XCTUnwrap(PhoneAppIcon.render(layers: nil, flat: solid(0, 128 / 255, 96 / 255), px: 224))
+        XCTAssertEqual(DeckGridProbe.edgeInk(NSImage(cgImage: covered, size: NSSize(width: 224, height: 224))),
+                       "0,128,96", "a covered tile's edge is the icon's own colour")
+        let plated = try XCTUnwrap(PhoneAppIcon.render(layers: nil, flat: discImage(radius: 80,
+                                                                                  fill: colour(0.78, 0.24, 0.24)),
+                                                      px: 224))
+        XCTAssertEqual(DeckGridProbe.edgeInk(NSImage(cgImage: plated, size: NSSize(width: 224, height: 224))),
+                       "255,255,255", "a plated tile's edge is its white plate")
+    }
 }

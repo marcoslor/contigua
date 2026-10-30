@@ -550,6 +550,67 @@ def render_text_png(text, width, height, fg, bg, scale=None):
     return _png(width, height, canvas)
 
 
+# Two flat-only apps (no adaptive layers) draw shaped icons, so a check can
+# tell the two ways a flat icon is drawn (docs/design/dock.md §Icons): an
+# opaque rounded square with a transparent margin, which covers its tile, and
+# a disc on transparency, which keeps its plate. Both flat PNGs are RGBA, at
+# the size the Mac asked for.
+COVER_FLAT_PKG = "com.android.camera2"
+COVER_FLAT_RGB = (0, 128, 96)
+PLATE_FLAT_PKG = "com.android.gallery3d"
+PLATE_FLAT_RGB = (200, 60, 60)
+
+
+def _shape_png(size, rgb, span):
+    """An RGBA canvas whose row y is opaque from span(y) = (x0, x1)."""
+    clear = bytearray(b"\x00\x00\x00\x00") * size
+    pixel = bytes(rgb) + b"\xff"
+    rows = []
+    for y in range(size):
+        x0, x1 = span(y)
+        if x1 < x0:
+            rows.append(bytearray(clear))
+        else:
+            rows.append(bytearray(clear[:x0 * 4] + pixel * (x1 - x0 + 1) + clear[(x1 + 1) * 4:]))
+    return _png_rgba(size, size, rows)
+
+
+def render_cover_flat_png(size, rgb):
+    """A rounded square with a 10 % transparent margin: covers its tile."""
+    margin = size * 0.10
+    radius = max(1.0, size * 0.05)
+    side = size - 2 * margin
+
+    def span(y):
+        py = y + 0.5 - margin
+        if py < 0 or py > side:
+            return 1, 0
+        dy = 0.0
+        if py < radius:
+            dy = radius - py
+        elif py > side - radius:
+            dy = py - (side - radius)
+        inset = radius - (radius * radius - dy * dy) ** 0.5
+        return int(margin + inset + 0.5), int(margin + side - inset)
+
+    return _shape_png(size, rgb, span)
+
+
+def render_plate_flat_png(size, rgb):
+    """A disc on transparency: keeps its plate."""
+    centre = (size - 1) / 2.0
+    radius = size * 0.42
+
+    def span(y):
+        dy = (y + 0.5) - centre
+        if abs(dy) > radius:
+            return 1, 0
+        half = (radius * radius - dy * dy) ** 0.5
+        return int(centre - half + 0.5), int(centre + half)
+
+    return _shape_png(size, rgb, span)
+
+
 def render_disc_png(size, rgba, radius_fraction=0.32):
     """The fg layer of the fake adaptive icons: a filled disc with a white
     "plane" triangle through the centre, on a transparent canvas. With a white
@@ -582,7 +643,11 @@ ADAPTIVE_EVERY = 3
 
 def is_adaptive_pkg(pkg):
     """Every 3rd app of the label list uses an adaptive icon, like most real
-    launchers; the others keep their flat one so the Deck shows both kinds."""
+    launchers; the others keep their flat one so the Deck shows both kinds.
+    The two shaped flat fixtures never get layers: the cover/plate check needs
+    the same shape whatever --demo-apps pads the list to."""
+    if pkg in (COVER_FLAT_PKG, PLATE_FLAT_PKG):
+        return False
     for position, app in enumerate(sorted(APPS, key=lambda a: a["label"].lower())):
         if app["pkg"] == pkg:
             return position % ADAPTIVE_EVERY == 1
@@ -3979,7 +4044,12 @@ class FakePhone(object):
             cached = self._icon_cache.get(key)
             if cached is not None:
                 return cached
-        png = render_text_png(self._icon_letter(pkg) or "?", size, size, (255, 255, 255), pkg_color(pkg))
+        if pkg == COVER_FLAT_PKG:
+            png = render_cover_flat_png(size, COVER_FLAT_RGB)
+        elif pkg == PLATE_FLAT_PKG:
+            png = render_plate_flat_png(size, PLATE_FLAT_RGB)
+        else:
+            png = render_text_png(self._icon_letter(pkg) or "?", size, size, (255, 255, 255), pkg_color(pkg))
         with self._icon_lock:
             self._icon_cache[key] = png
         return png

@@ -968,7 +968,9 @@ struct AppGrid: View {
                 }
                 .frame(maxWidth: .infinity)
             }
-            .task(id: cells.map(\.id)) {
+            // The drawn icons are part of the id: a tile's ink is only known
+            // once its render lands (the flat-icon check reads it).
+            .task(id: cells.map(\.id) + ["drawn:\(controller.deckIcons.count)"]) {
                 DeckGridProbe.report(cells, icons: controller.icons,
                                      rendered: controller.deckIcons,
                                      missing: controller.missingIcons,
