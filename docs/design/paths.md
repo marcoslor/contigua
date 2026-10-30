@@ -130,6 +130,12 @@ is closed with `error version`, so the slot only ever sees a v4 `hello` — with
 | `Handing` | any `Connect` | `BUSY` |
 | any | the live session's own end (`Ended`) | `Free` |
 
+A connection from either listener reaches the slot the same way (the LAN
+listener is the shell's; the direct build's Aware listener runs in the app
+process and hands each accepted socket to the shell — `docs/design/direct-link.md`
+§4). A session may be founded by either: a `Connect` with no `join` is
+`ADOPT` whatever listener it came from.
+
 `JOIN` details: the slot keeps the same session object and the same session id;
 the new socket gets its own TLS check (already done), its own path id from the
 `hello`, and is added to the session's path set. A join is refused when the
@@ -528,6 +534,37 @@ a failure — it is simply absent, and the settings say why. A provider that onl
 exists in a direct build is not offered at all by a public one, so nothing is
 dialed that the other side could not join.
 
+### 9.1 Starting a session on any path (the connect order)
+
+A session does not have to start on the LAN. The Mac starts every ready
+provider **at once** and only the *hello* is serialized, because two plain
+hellos would make the phone supersede its own fresh session:
+
+1. **t = 0.** The LAN provider dials Bonjour, then its cached address; the
+   direct provider asks the helper for a `dial` (subscribe → discovery → NDP →
+   the phone's Aware listener, then the fd). The two run in parallel.
+2. **The first attempt to finish TLS sends the plain `hello`** (no `join`) and
+   waits for `welcome`. Every other attempt that also finished TLS holds its
+   hello.
+3. **The first `welcome` founds the session** (a new id). Every held attempt
+   now sends `hello{"join":<id>}` and becomes a path. If the attempt that held
+   the plain hello fails before `welcome`, the next finished attempt sends the
+   plain hello instead — at most one plain hello is ever in flight.
+4. **Timers.** The LAN attempt keeps today's 6 s connect timeout. The direct
+   attempt's NDP budget is 20 s in the helper (the proof measured ~3.5 s) and
+   its TCP connect 3 s after the NDP is up. The session's connect phase ends at
+   the first `welcome`; it fails (and the ordinary backoff starts) only when
+   **every** started provider has failed. A direct-only start therefore takes
+   the NDP's few seconds; when a LAN exists it still founds the session inside
+   `connect_ms`. A path that finishes after the session is up joins inside the
+   30 s grace like any other.
+5. **Nothing waits on a provider that is absent.** A public build starts one
+   provider; a phone that is not published is not dialed over Aware.
+
+The phone's slot sees one `Connect` per listener and does not care which one it
+came from (`Server` for the LAN, the app's Aware acceptor for direct —
+`docs/design/direct-link.md` §4).
+
 ## 10. The test plan for P1
 
 P1 is the public build with `lan` plus a **test-only second provider** (a second
@@ -548,6 +585,7 @@ carry the same cases:
 | `PathSessionTests` | every state/event pair of §6, the ignored events, every timer with a virtual clock (2 s, 1.5 s, 30 s grace, 2 s drain) |
 | `PathRankingTests` | the formula's four terms at the boundary values; the worked example's 722 and 463; the busy row (412: no switch) and the congested row (321: switch after 5 s); 4.9 s does not switch; a failure switches at once; an unrankable path can fail over but never wins on margin |
 | `PathSwitchTests` | a planned switch sends the marker last on the old path; an unplanned one sends it first on the new; a marker for an unknown path is ignored; the keyframe request goes out per open stream |
+| `PathStartTests` | two providers started at once: exactly one plain hello, the other holds and then joins with the winner's id; the plain hello moves to the other attempt when the first fails; the attempt fails only when every provider did; a direct-only start founds the session |
 | `SessionSlotTest` (K1) | the join table of §4, every state; a join never supersedes; `no_session` only for the live Mac; `too_many_paths` |
 | `PathIdsTests` | 32-hex session ids are random per session; 8-hex path ids are unique per live set |
 | `VersionTests` (K2) / `VersionTest` (K1) | `hello.v` is 4 on both sides; a `v` of 3 or 5 gets `error version` and a close before `welcome`; the Mac maps it to its incompatible-version state and stops retrying; no path frame, `join` or `session` field is sent to a peer that was refused |
@@ -595,6 +633,7 @@ pdpathfault.py --listen 47961 --connect 127.0.0.1:47960 \
 | `pathmirror` | a mirror is live on a path; the proxy black-holes it; the next VIDEO_CONFIG/keyframe arrives on the second path and the picture is live again **within 2 s** (`stale_picture_ms`) | PATH-5, PATH-17 |
 | `pathswitch` | a planned switch (the Mac switches by margin, `--slow-pong` on the LAN) loses no reliable frame: the fake phone's received seqs are contiguous across the switch, and no duplicate is delivered | PATH-3, PATH-9 |
 | `pathgrace` | every path is killed and no join ever comes: at 30 s the session ends cleanly — one `paths: live --grace--> ended`, the phone's slot is free, the Mac retries, no orphaned socket stays open | PATH-6, PATH-16 |
+| `pathstart` | a fake phone that answers on its second listener only: the Mac's session is founded there (exactly one plain `hello` on the wire, the LAN attempt held and then joined with the winner's id), and the session is usable | PATH-20 |
 | `pathversion` | version pinning, both ways: a v3 fake phone answers the Mac's v4 `hello` with `error version` and closes (the Mac shows its incompatible-version state and stops retrying), and a v3-shaped `hello` against a v4 phone gets the same answer and no `welcome` — no path frame, no `join`, and no served session in either direction | PATH-1 |
 
 `[PATH-n]` tags go on the `ok`/`bad` lines of those checks.

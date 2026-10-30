@@ -238,12 +238,15 @@ docs/                    ARCHITECTURE, PROTOCOL, ROADMAP, TRY-IT, UX, design/
 
 - No session → no VD, no encoder, no wake lock, no polling; idle cost is one
   listening socket + NSD registration.
-- **One exception, and only in a direct build:** while a session is live and the
-  phone's and the Mac's direct switches are both on, the phone keeps a Wi-Fi
-  Aware publish session and an idle data path up, so the direct path is a live
-  standby the session can switch to at once. It ends with the session or with
-  either switch, and it never exists while there is no session
-  (docs/design/direct-link.md §4.3, `DIRECT-7`).
+- **Two exceptions, and only in a direct build** (the phone's switch on with a
+  key for a paired Mac):
+  1. an **idle publish** with no session, so a direct path can *start* a session
+     after the LAN is gone;
+  2. a **standby NDP** while a session is live, so a switch is instant.
+  Both end with the phone's switch (or the Mac's); the standby also ends with
+  the session. Neither exists in the public build, and the settings name the
+  battery cost in one sentence (docs/design/direct-link.md §4.3, `DIRECT-1`,
+  `DIRECT-7`, `DIRECT-16`).
 - A session outlives its connection: from protocol 4 one session has one to
   three **paths** (each one TLS connection), and a path that dies is replaced
   without a new session — up to the 30 s grace, then the session ends as above

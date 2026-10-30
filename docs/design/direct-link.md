@@ -339,8 +339,9 @@ anything else in `/Library`.
    `setDataPathSecurityConfig(WifiAwareDataPathSecurityConfig.Builder(
    WIFI_AWARE_CIPHER_SUITE_NCS_SK_128).setPskPassphrase(passphrase).build())`,
    `setTerminateNotificationEnabled(true)`.
-4. One publish session per Mac whose direct switch is on, because the SSI is
-   per PSK and a Mac can only recognise its own. The platform allows 8
+4. One publish session per Mac it holds a key for and whose switch was last
+   reported on (§4.3), because the SSI is per PSK and a Mac can only recognise
+   its own. The platform allows 8
    publishers; past that (or on `onSessionConfigFailed`) direct is off for this
    session with the reason "This phone's Wi-Fi is already busy with another
    Aware app."
@@ -360,8 +361,11 @@ and the helper's `Info.plist` declares it.
    TRANSPORT_WIFI_AWARE, callback, handler, 30_000)`.
 2. On `onAvailable(network)`: create the `ServerSocket`, `network.bindSocket(ss)`
    so it is bound to the Aware network, `ss.bind(InetSocketAddress(P))`, and
-   accept. `WifiAwareNetworkInfo` gives the peer's IPv6 (the Mac's) and the
-   link's bandwidth estimate, which is logged as a number and nothing else.
+   accept — in the **app** process, because the network belongs to the uid that
+   asked for it (§4.5). `WifiAwareNetworkInfo` gives the peer's IPv6 (the Mac's)
+   and the link's bandwidth estimate, which is logged as a number and nothing
+   else. A connection can arrive at any time the NDP is up: as a path of a live
+   session, or as the first path that founds one.
 3. Each accepted socket goes through the **existing** server path: the same TLS
    wrap, the same gates, the same `Session` slot (a `join`, with a 4-protocol
    `hello`). One more listener, no second server: the Aware socket and the LAN
@@ -375,22 +379,40 @@ The phone publishes while **all** of these hold, and tears down within one
 second of any of them failing:
 
 - its own **Direct link** switch is on (and its permission is granted);
-- a session is live with a Mac whose `direct.enable` for this phone was `on`
-  (a Mac without the direct build never sends it, so nothing publishes);
-- the app process is alive (the shell service cannot publish: it has no
-  `WifiAwareManager` of its own).
+- it holds a direct key for at least one paired Mac **whose switch was last
+  reported on** — the key only exists once that Mac turned its own direct switch
+  on inside a LAN session (§5), and `direct.enable` is stored, not just acted
+  on, so `on: false` (with no session open) keeps that Mac from being published
+  for; a later `on: true` restores it. This is the phone's half of "a paired Mac
+  has direct on";
+- the app process is alive: only the app may own an Aware network, so only the
+  app can publish and accept (§4.2).
+
+**A session is not required** (D8; the review's F2). Publishing with no session
+is what lets a direct path *start* a session: after the LAN has gone and the
+30 s grace has ended, the phone is still discoverable, the Mac's helper is still
+subscribed, and the next attempt can be a direct one. A publish alone carries no
+data path and no traffic.
 
 While a session is live the NDP is kept up as a **standby path**, even when the
-LAN is carrying everything — that is what makes the switch instant and what
-the battery cost buys. The exception to ARCHITECTURE's idle-cost rule starts
-with a live session and ends with it: no session, no publish, no NDP, no radio
-hold. When the direct path becomes current, nothing changes on the phone: it
-is the same TLS server on a different socket.
+LAN is carrying everything — that is what makes a switch instant. The standby
+begins with the session (the Mac's `direct.enable` for this phone and a live
+session) and ends with it. So the direct build has **two** exceptions to
+ARCHITECTURE's idle-cost rule, and the settings name both: an idle **publish**
+whenever the switch is on and a key exists, and the **standby NDP** while a
+session is live. The reviewer measures the idle drain with publish on and off
+(percent per hour) and the phone's row repeats the cost in one sentence
+(transport.md `DIRECT-16`).
+
+A session may start on either path. The Mac dials the LAN and the direct path in
+parallel (§paths §9); the first to finish TLS sends the plain `hello` and founds
+the session, and the other joins it. The phone's slot does not care which
+listener a connection came from — it sees one `Connect` either way.
 
 A network that is lost (`onLost`) or an Aware state change tears the NDP down,
-tells the session (the path goes down), and republishes on the next attach —
-the session layer's grace (§paths §6) covers the gap. Every change the phone
-makes to its own side (the switch, the permission, a refused publish) is sent as
+tells the session (the path goes down), and leaves the publish running so the
+next attempt (or the grace) can bring an NDP back. Every change the phone makes
+to its own side (the switch, the permission, a refused publish) is sent as
 `direct.state` (PROTOCOL.md "Direct link"), so the Mac's row shows the phone's
 real state instead of assuming it.
 
@@ -547,11 +569,14 @@ a port and the port has a fake:
   passphrase, onStarted)`, `updateSsi(ssi)`, `requestNetwork(passphrase, port,
   onAvailable(Network), onLost)`, `unpublish()`. The real adapter
   (`PlatformAwarePort`) is thin: it maps the platform callbacks one-to-one.
-- `AwareLink` (the machine): `Off → Attaching → Publishing → NdpPending → Up`,
-  plus `Lost` and `Blocked(code)`. Events: `SwitchOn`, `SwitchOff`,
-  `Attached`, `PublishStarted`, `SessionLive(mac, directOn)`, `SessionEnded`,
+- `AwareLink` (the machine): `Off → Attaching → Publishing`, then
+  `NdpPending → Up` while a session is live, plus `Lost` and `Blocked(code)`.
+  Events: `SwitchOn`, `SwitchOff`, `KeyStored`, `KeyForgotten`, `Attached`,
+  `PublishStarted`, `SessionLive(directOn)`, `SessionEnded`,
   `NdpAvailable(network)`, `NdpLost`, `AwareStateChanged`, `PermissionDenied`,
-  `SsiTick(window)`.
+  `SsiTick(window)`. `Attaching` needs the switch, the permission and a stored
+  key — **not** a session; `NdpPending` needs a live session and the Mac's
+  `direct.enable`, and it returns to `Publishing` when the session ends.
 - K1 tests every transition, including the ignored ones (a publish callback
   after `SwitchOff` is dropped; an `NdpAvailable` with no publish is closed at
   once; two `SsiTick`s in one window do nothing).
@@ -594,6 +619,6 @@ because it is the price the settings text promises.
 | **The network policy changes** | a BPF tap stops delivering, or `nan0` gains a route policy | the probe's first dial fails → no provider; the fallback is the LAN, which is always there |
 | **AMFI off hurts the Mac** | every JVM dies; a person's other tools break | the installer says it plainly and never sets it; the public build needs none of it; uninstall prints the exact revert |
 | **Throughput is too low for a mirror** | direct works for control and files but not for video | the class floor (8 Mbit/s) and the ranking keep the LAN current unless direct can win; P2 measures, P4 confirms; if the measurement misses the need, the class floor is lowered in one place and direct becomes a fallback-only path — no session-layer change |
-| **Battery** | a phone on a desk drains faster while a session is live | the standby exists only with a live session and only with both switches on; the phone's switch off ends it at once; the settings say the cost in words |
+| **Battery** | a phone on a desk drains faster with an idle publish and, while a session is live, a standby NDP | the publish needs the switch on and a stored key; the standby needs a live session; the switch off ends both at once; the settings name both costs in one sentence and the reviewer measures the idle drain (percent per hour) for `DIRECT-16` |
 | **Two phones, two keys** | more publish sessions than the platform allows | one publish per Mac with direct on, capped at 8 with a reason; the Mac side is single-phone today anyway (settings.md) |
 | **An old phone or an old Mac** | a peer on protocol 3 | it is refused with `error version` and a close (paths §1.1); no `direct.*` message is ever sent to one, and nothing tells a v3 peer that this build has the provider |
