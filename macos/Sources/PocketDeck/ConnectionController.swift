@@ -2818,6 +2818,12 @@ final class ConnectionController {
             guard let path = arguments.first, path.hasPrefix("/") else { return "iconmenu needs PATH" }
             guard let menuBar = MenuBarController.current else { return "no menu bar item" }
             return menuBar.dumpSecondaryMenu(to: path) ? nil : "iconmenu could not write \(path)"
+        case "menubaricon":
+            // The item itself: its length, the button's own image, foreign
+            // views over it, the link and the agent dot (e2e menubar-shots,
+            // PANEL-25). The reply is the line the check reads, not "ok".
+            guard let menuBar = MenuBarController.current else { return "no menu bar item" }
+            return menuBar.iconDescription()
         case "panelwindows":
             guard let path = arguments.first, path.hasPrefix("/") else { return "panelwindows needs PATH" }
             return PanelProbe.windowsReport(to: path) ? nil : "panelwindows failed"

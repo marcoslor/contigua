@@ -245,6 +245,32 @@ final class MenuBarController: NSObject {
         handle(click == .secondary ? .iconSecondaryClick : .iconClick)
     }
 
+    /// `menubaricon` (e2e `menubar-shots`, PANEL-25): the item as AppKit has
+    /// it — the length, whether the drawing is the button's own template image,
+    /// and foreign views over the button.
+    func iconDescription() -> String {
+        let length = statusItem.length == NSStatusItem.variableLength
+            ? "variable" : "\(Int(statusItem.length))"
+        let image: String
+        if let drawn = statusItem.button?.image {
+            image = drawn.isTemplate ? "template" : "plain"
+        } else {
+            image = "none"
+        }
+        let state: String
+        switch controller.link {
+        case .idle: state = "idle"
+        case .connecting: state = "connecting"
+        case .online: state = "online"
+        case .reconnecting: state = "reconnecting"
+        case .offline: state = "offline"
+        case .needsPairing: state = "needsPairing"
+        case .pairing: state = "pairing"
+        }
+        return "length=\(length) image=\(image) subviews=\(statusItem.button?.subviews.count ?? 0)"
+            + " state=\(state) dot=\(controller.mcp.clientCount > 0 ? 1 : 0)"
+    }
+
     // MARK: Events
 
     private func handle(_ event: MenuBarPanelEvent) {
