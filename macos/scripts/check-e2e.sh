@@ -11882,7 +11882,7 @@ PY
 # server's). The shots go to $WORK/menubar-shots/ and are judged by eye.
 check_menubar_shots() {
     clean
-    local shots="$WORK/menubar-shots" result device iteml icx icy vcx vcy
+    local shots="$WORK/menubar-shots" result device vcx vcy
     local mainx mainy mainw mainh vx vy vw vh
     mkdir -p "$shots"
     shot_panel() {
