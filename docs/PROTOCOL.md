@@ -152,7 +152,9 @@ display id on every injected event.
    8 lowercase hex, unique among the session's live paths) and is on every
    hello. A hello on a **later** connection for the same session also carries
    `"join":"<32 hex>"`, the session id from `welcome` — see "Paths".
-   A `v` other than 4 gets `{"t":"error","code":"version"}` and a close.
+   A `v` other than 4 gets `{"t":"error","code":"version","v":4}` and a close:
+   `v` is the version that refused, so the Mac can name which app to update
+   (see "Versioning").
 3. The phone knows the Mac by `clientId` and applies its two connection
    switches before anything else. "Allow connections" off refuses every Mac,
    paired or not, with `{"t":"error","code":"connections_off"}` and a close —
@@ -1039,7 +1041,8 @@ peer's certificate fingerprint is not the pinned one — the Mac shows "This pho
 identity changed. Pair again."), `not_paired` (the phone pins nothing for this Mac
 and the Mac did not ask to pair — the Mac shows "<phone name> no longer trusts this
 Mac." with Pair again and stops retrying), `pair_denied`, `pair_cooldown`, `pair_commit` (the revealed nonce does
-not match the commit), `version`, `protocol` (message not allowed in the current state;
+not match the commit), `version` (this side's protocol version differs; `v` carries the
+version that refused, so the other side can say which app to update), `protocol` (message not allowed in the current state;
 then close), `pair_timeout` (nobody answered the pairing prompt in 120 s; then close),
 `no_stream` (unknown `stream`), `launch_failed`, `bad_url` (a `link.open` URL that is
 not allowed), `bad_size` (`task.continue` without w/h) — plus the device commands'
@@ -1065,8 +1068,12 @@ Oversized frames close the session without a reply. JSON nesting is capped at
 ids, joins, `RELIABLE`/`ACK`, `path.*` — and the direct-link messages; 3 added
 `window.content`, which every VIDEO_CONFIG needs). Both apps ship together and
 there is no older-peer mode: a peer that does not serve 4 replies
-`{"t":"error","code":"version"}` and closes, in both directions, and the Mac
-stops retrying with its "incompatible version" banner. There is no v1
+`{"t":"error","code":"version","v":4}` and closes, in both directions.
+`v` is the refusing side's own version, so the other side can compare it with
+its own and say which app to update: the phone's `v` below the Mac's (or absent,
+as from a v3 phone) means "Update PocketDeck on your phone."; above means
+"Update PocketDeck on this Mac.". The Mac stops retrying. The phone's own screen
+names the Mac's side the same way from the `hello`'s `v`. There is no v1
 negotiation, no plaintext fallback and no reduced transport (v2 and v3 are
 TLS-only). The mDNS TXT `v` is the discovery record's own generation (`1`), a
 Mac ignores records with another value.

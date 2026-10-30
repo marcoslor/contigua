@@ -36,12 +36,13 @@ session: the seq/ack/replay stream, the switch, the ranking, the phone's slot.
 This ships to two apps that update separately, and the answer is **not** a
 negotiation: the protocol version moves with the session layer. `hello.v` is 4
 (it was 3 before this epic), and a peer on another version gets
-`{"t":"error","code":"version"}` and a close, exactly as today. There is no
-dual mode, no reduced transport, and no fallback to the one-connection session:
-a v3 peer is refused, not served. The alpha's rule is the reason
-(AGENTS.md — both apps ship together, and a protocol change may require a
-field); the version is the reason the person sees a plain "incompatible
-version" sentence instead of a session that half-works.
+`{"t":"error","code":"version","v":<the refusing side's version>}` and a close,
+exactly as today. There is no dual mode, no reduced transport, and no fallback
+to the one-connection session: a v3 peer is refused, not served. The alpha's
+rule is the reason (AGENTS.md — both apps ship together, and a protocol change
+may require a field); naming the side is the reason the person sees "Update
+PocketDeck on your phone." or "…on this Mac." instead of a session that
+half-works.
 
 So the session layer is always on in a v4 session. Nothing in this document has
 a "when both sides can" clause.
@@ -166,11 +167,15 @@ section explains it.
   **Mac** per attempt, in `hello.path`; unique among the session's live paths.
   Every path is dialed by the Mac, so every path is named by the Mac.
 - **Version**: `hello.v` is 4. A phone that does not serve 4 answers
-  `{"t":"error","code":"version"}` and closes before it sends `welcome`; the
-  Mac shows its existing "incompatible version" state and stops retrying. A v4
-  Mac dialing a v3 phone gets the same refusal from the phone's own check (a v3
-  phone refuses 4), and a v3 Mac dialing a v4 phone is refused the same way, so
-  the rule is symmetric without either side trusting the other's claim.
+  `{"t":"error","code":"version","v":4}` — its own version — and closes before
+  it sends `welcome`; the Mac compares that with its own and says which app to
+  update: a phone `v` below its own, or absent (a v3 phone sends none), means
+  "Update PocketDeck on your phone."; above means "Update PocketDeck on this
+  Mac.". It then stops retrying. The phone's screen names the Mac's side the
+  same way from the `hello`'s `v`. A v4 Mac dialing a v3 phone gets the refusal
+  from the phone's own check (a v3 phone refuses 4, with no `v`), and a v3 Mac
+  dialing a v4 phone is refused the same way, so the rule is symmetric without
+  either side trusting the other's claim.
 
 ### 5.2 `hello.path`, `hello.join`, `welcome.session`, `no_session`
 
@@ -592,7 +597,7 @@ carry the same cases:
 | `PathStartTests` | two providers started at once: exactly one plain hello, the other holds and then joins with the winner's id; the plain hello moves to the other attempt when the first fails; the attempt fails only when every provider did; a direct-only start founds the session |
 | `SessionSlotTest` (K1) | the join table of §4, every state; a join never supersedes; `no_session` only for the live Mac; `too_many_paths` |
 | `PathIdsTests` | 32-hex session ids are random per session; 8-hex path ids are unique per live set |
-| `VersionTests` (K2) / `VersionTest` (K1) | `hello.v` is 4 on both sides; a `v` of 3 or 5 gets `error version` and a close before `welcome`; the Mac maps it to its incompatible-version state and stops retrying; no path frame, `join` or `session` field is sent to a peer that was refused |
+| `VersionTests` (K2) / `VersionTest` (K1) | `hello.v` is 4 on both sides; a `v` of 3 or 5 gets `error version` carrying the refusing side's `v` and a close before `welcome`; the Mac says "Update PocketDeck on your phone." for a lower or absent `v` and "…on this Mac." for a higher one, the phone says the same from the hello's `v`, and both stop retrying; no path frame, `join` or `session` field is sent to a peer that was refused |
 | `NoFallbackTests` | there is no reduced mode: no code path builds a session without seq/ack/replay, and a refused version is never retried as a one-connection session |
 
 ### 10.2 `fakephone`
