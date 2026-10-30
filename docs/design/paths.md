@@ -330,9 +330,10 @@ error, session ends), a `PathUp` while `Ended`, a second `PathUp` for a path id
 already live (the second socket is closed), a `Pong` from a path that is not
 live.
 
-The session ends (not just the path) on: the 30 s grace expiring, a replay
-overflow (§8), an oversized frame, a bad pin on the last path, the person
-closing the window/forgetting the phone, or the phone's own drop. Ending is
+The session ends (not just the path) on: the 30 s grace expiring, an oversized
+frame, a bad pin on the last path, the person closing the window/forgetting the
+phone, or the phone's own drop. A full replay buffer is **not** on this list: a
+producer waits for credit (§8). Ending is
 today's ending: the phone restores every power state it touched and frees the
 slot; the Mac emits one failure with a reason and retries on the existing
 backoff.
@@ -447,24 +448,51 @@ coalescing 10 ms / 16 frames; reorder window 64 frames / 4 MiB; old-path drain
 backstop 2 s; a joined path that never answers a ping is dropped at 5 s; at most
 3 paths per session.
 
-## 8. The bounds
+## 8. The bounds: credit, never a drop
 
 - **Replay buffer: 16 MiB per direction**, holding every reliable frame from
   the peer's last ack to the newest sent one, with its seq and byte count.
-  Since the largest possible frame is 8 MiB, the buffer always holds at least
-  two frames; a frame bigger than the cap cannot exist.
-- **Overflow ends the session**, as an oversized frame does today: the sender
-  stops, the session ends with reason `replay_overflow` (logged with counts
-  only), the phone frees its slot and restores its power state, and the Mac
-  shows its ordinary "connection lost" state and retries on the backoff. It is
-  not a silent drop: a frame is never discarded while its session lives.
+- **It never overflows, because a producer waits instead.** Before a producer
+  reads the next chunk of its source it checks `unackedBytes + nextFrameBytes`
+  against its budget; if the frame would not fit, the producer stops reading
+  and resumes when an ACK frees enough. No frame is created that the buffer
+  cannot hold, no frame is dropped, and the session does **not** end because a
+  buffer is full — a 200 MiB drop or a file read must survive a Wi-Fi blip.
+- **Two budgets inside the 16 MiB**, so control never waits behind a file:
+
+  | Producer | Budget | Frames |
+  |---|---|---|
+  | bulk | at most **12 MiB** of unacked bytes | `APK_DATA`, `SHARE_DATA`, `DROP_DATA`, `CLIP_DATA`, `FS_DATA` |
+  | control | the rest, and always at least **4 MiB** free | `JSON` (every message), `TOUCH`, `SCROLL`, `KEY` |
+
+  A bulk producer may not push the bulk total past 12 MiB whatever control is
+  doing, so a `KEY`, a `TOUCH` or a `window.*` always has room and goes out at
+  once. Control may use the whole 16 MiB when no bulk transfer is running.
+- **How each bulk producer pauses**, on both sides, is the same rule: the
+  sender owns a chunked reader over its source and stops pulling from it while
+  its budget is full, so nothing is buffered beyond the frame it does not read.
+  Mac: `DROP_DATA` (a Finder file), `APK_DATA` (a `.apk` file), `CLIP_DATA` and
+  `FS_DATA` (a write) pause their file/stream reads. Phone: `SHARE_DATA` (the
+  shared file), `FS_DATA` (a read) and `CLIP_DATA` pause theirs. A paused
+  producer holds one file descriptor and a position, nothing more; the ack
+  that frees a budget resumes it. The producer's own progress messages
+  (`drop.progress`, `fs.progress`, `apk.progress`, `share.*`) are control
+  frames and keep flowing, so the UI never looks stalled.
+- **The reorder window works the same way.** 64 frames / 4 MiB; when it is
+  full, the reader **stops reading the path** whose frames are ahead of the gap
+  (TCP backpressure), and resumes when the gap fills. It never drops a frame
+  and never ends the session. The path that holds the gap keeps being read, and
+  ACKs still go out on any path, so progress toward the gap is never blocked by
+  the window.
+- A frame larger than the whole buffer cannot exist: the wire's maximum is
+  8 MiB, so 16 MiB always holds at least two frames.
 - A switch replays **from the peer's last ack**, so a planned switch costs the
   bytes beyond the last ack (at most one path's send window), not the buffer.
-- **Phone memory.** The paths layer adds at most 16 MiB (send) + 4 MiB
-  (reorder window) = 20 MiB of heap while a session is live, on top of the
-  existing per-stream ~250 ms video queue; video and audio never enter either
-  buffer. With no session it allocates nothing and holds nothing: the buffers
-  are created with the session and freed with it.
+- **Phone memory.** The paths layer adds at most 16 MiB (send, credit-bounded)
+  + 4 MiB (reorder window) = 20 MiB of heap while a session is live, on top of
+  the existing per-stream ~250 ms video queue; video and audio never enter
+  either buffer. With no session it allocates nothing and holds nothing: the
+  buffers are created with the session and freed with it.
 - The phone's slot, the session id and the path ids are per session; nothing
   about a path survives the session.
 
@@ -514,8 +542,9 @@ carry the same cases:
 | Test | Asserts |
 |---|---|
 | `PathCodecTests` (K2) / `PathCodecTest` (K1) | the two golden byte strings above; a 8 MiB − 18 inner payload round-trips; a 9th inner byte is refused; a mismatched outer `stream` is a protocol error |
-| `ReplayBufferTests` | release on ack, a duplicate is dropped, resume from the last ack, the 16 MiB cap ends the session at exactly one byte past it, a 8 MiB frame fits |
-| `ReorderWindowTests` | in-order delivery, a gap holds ≤ 64 frames, an out-of-window frame is dropped and replayed, the ack does not advance past a gap |
+| `ReplayBufferTests` | release on ack, a duplicate is dropped, resume from the last ack, a 8 MiB frame fits, and a frame that would pass the cap is never created |
+| `CreditTests` | a bulk producer stops at 12 MiB and resumes on the ack that frees it; a `KEY` goes out at once while bulk holds 12 MiB; control may use all 16 MiB when no bulk runs; a 200 MiB transfer across a 10 s orphan completes byte-exact with ≤ 16 MiB held |
+| `ReorderWindowTests` | in-order delivery, a gap holds ≤ 64 frames, a full window stops reading that path instead of dropping (the fake reader counts the bytes it was allowed to read), the ack does not advance past a gap |
 | `PathSessionTests` | every state/event pair of §6, the ignored events, every timer with a virtual clock (2 s, 1.5 s, 30 s grace, 2 s drain) |
 | `PathRankingTests` | the formula's four terms at the boundary values; the worked example's 722 and 463; the busy row (412: no switch) and the congested row (321: switch after 5 s); 4.9 s does not switch; a failure switches at once; an unrankable path can fail over but never wins on margin |
 | `PathSwitchTests` | a planned switch sends the marker last on the old path; an unplanned one sends it first on the new; a marker for an unknown path is ignored; the keyframe request goes out per open stream |
@@ -562,7 +591,7 @@ pdpathfault.py --listen 47961 --connect 127.0.0.1:47960 \
 
 | Check | What it proves | Requirement |
 |---|---|---|
-| `pathkill` | a big file read (`fs.read`, or a drop) goes through a path the proxy resets mid-transfer at 30%; the Mac reconnects on the second path and the file's SHA-256 matches byte for byte | PATH-4 |
+| `pathkill` | a large file (≥ 64 MiB) goes through a path the proxy black-holes for 10 s mid-transfer: the producer waits on credit, the session stays live on the second path, and the file's SHA-256 matches byte for byte with ≤ 16 MiB ever held | PATH-4, PATH-10 |
 | `pathmirror` | a mirror is live on a path; the proxy black-holes it; the next VIDEO_CONFIG/keyframe arrives on the second path and the picture is live again **within 2 s** (`stale_picture_ms`) | PATH-5, PATH-17 |
 | `pathswitch` | a planned switch (the Mac switches by margin, `--slow-pong` on the LAN) loses no reliable frame: the fake phone's received seqs are contiguous across the switch, and no duplicate is delivered | PATH-3, PATH-9 |
 | `pathgrace` | every path is killed and no join ever comes: at 30 s the session ends cleanly — one `paths: live --grace--> ended`, the phone's slot is free, the Mac retries, no orphaned socket stays open | PATH-6, PATH-16 |
