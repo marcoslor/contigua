@@ -123,8 +123,22 @@ def bands(path, width_points, height_points, scale, column):
     if start is not None:
         found.append((start, last))
     found = [band for band in found if band[1] - band[0] >= 2 * scale]
-    return [{"top": top / scale - margin, "bottom": (bottom + 1) / scale - margin,
-             "height": (bottom + 1 - top) / scale} for top, bottom in found]
+    measured = []
+    for top, bottom in found:
+        # The band's ink width too: a letter is at most a letter wide, while
+        # the toolbar's bottom edge runs across the whole strip.
+        first = last = None
+        for y in range(top, bottom + 1):
+            line = rows[y]
+            for x in range(x0 + 2, x1 - 2):
+                pixel = line[x * channels:x * channels + 3]
+                if max(abs(pixel[i] - background[i]) for i in range(3)) > 20:
+                    first = x if first is None else min(first, x)
+                    last = x if last is None else max(last, x)
+        measured.append({"top": top / scale - margin, "bottom": (bottom + 1) / scale - margin,
+                         "height": (bottom + 1 - top) / scale,
+                         "width": ((last - first + 1) / scale) if first is not None else 0})
+    return measured
 
 
 def rail_strip(rail_x):
@@ -158,13 +172,10 @@ def letters(path, width, height, scale, rail_x):
     """
     found = [band for band in bands(path, width, height, scale, rail_strip(rail_x))
              if band["bottom"] <= height - 3]
-    if not found:
-        return []
     # The toolbar's bottom edge runs across this x too, and on a 2x guest it is
-    # a thin band above every letter (2.5 pt against the letters' 6.5). Keeping
-    # only bands of letter height drops it and the window's bottom rounding.
-    floor = 0.6 * statistics.median(band["height"] for band in found)
-    return [band for band in found if band["height"] >= floor][:len(NAMES)]
+    # a band above every letter; the window's bottom rounding is a band below.
+    # Both span the strip, so only bands no wider than a letter are letters.
+    return [band for band in found if 0 < band["width"] <= 20][:len(NAMES)]
 
 
 def main():
