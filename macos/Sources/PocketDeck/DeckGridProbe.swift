@@ -17,6 +17,10 @@ enum DeckGridProbe {
     @MainActor
     static func report(_ cells: [DeckCell], icons: [String: NSImage],
                        rendered: [String: NSImage], missing: Set<String>, online: Bool) {
+        // The flat-icon check reads one pixel of each drawn tile, so the dump
+        // must be rewritten when an icon lands, not only when the cells do
+        // (`DeckViews`' task id includes the drawn count for that).
+        let wantsInk = AppEnvironment.shared.options.debugDeckGrid != nil
         let items: [[String: String]] = cells.map { cell in
             let pkg = cell.app.pkg
             let icon: String
@@ -29,9 +33,34 @@ enum DeckGridProbe {
             } else {
                 icon = "waiting"
             }
-            return ["id": cell.id, "label": cell.label, "icon": icon]
+            var item = ["id": cell.id, "label": cell.label, "icon": icon]
+            if wantsInk, let image = rendered[pkg], let ink = edgeInk(image) { item["ink"] = ink }
+            return item
         }
         append(["count": cells.count, "items": items])
+    }
+
+    /// The colour the tile drew just inside the body's leading edge, at half
+    /// height: a plated flat icon shows its plate there, a covered one its own
+    /// pixels (docs/design/dock.md §Icons). The body starts at 10 % of the
+    /// canvas and a plated icon reaches 18.6 %, so 12.5 % tells them apart.
+    static func edgeInk(_ image: NSImage) -> String? {
+        guard let cg = image.cgImage(forProposedRect: nil, context: nil, hints: nil),
+              let space = CGColorSpace(name: CGColorSpace.sRGB) else { return nil }
+        let column = Int(Double(cg.width) * 0.125), row = cg.height / 2
+        var pixel = [UInt8](repeating: 0, count: 4)
+        pixel.withUnsafeMutableBytes { buffer in
+            guard let context = CGContext(data: buffer.baseAddress, width: 1, height: 1, bitsPerComponent: 8,
+                                          bytesPerRow: 4, space: space,
+                                          bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+            else { return }
+            // No colour management and no interpolation: the bytes the render
+            // wrote. CG's y is up, the dump's rows are top down.
+            context.interpolationQuality = .none
+            context.draw(cg, in: CGRect(x: -Double(column), y: -Double(cg.height - 1 - row),
+                                        width: Double(cg.width), height: Double(cg.height)))
+        }
+        return "\(pixel[0]),\(pixel[1]),\(pixel[2])"
     }
 
     /// The block the layout drew, at the zoom step the run uses. Written on

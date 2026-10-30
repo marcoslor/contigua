@@ -74,10 +74,12 @@ final class IconCache {
         return NSImage(data: data)
     }
 
-    /// Raw PNG (Spotlight thumbnails want the bytes, not an NSImage).
-    func loadData(pkg: String, deviceId: String) -> Data? {
+    /// Raw PNG (Spotlight thumbnails want the bytes, not an NSImage). The Dock
+    /// shim reads its own size class: its flat is 864 px there, and a covered
+    /// flat icon needs it (docs/design/dock.md §Icons).
+    func loadData(pkg: String, deviceId: String, sizeClass: IconSizeClass = .deck) -> Data? {
         lock.lock(); defer { lock.unlock() }
-        guard let side = sides(pkg: pkg, deviceId: deviceId, sizeClass: .deck) else { return nil }
+        guard let side = sides(pkg: pkg, deviceId: deviceId, sizeClass: sizeClass) else { return nil }
         return try? Data(contentsOf: side.png)
     }
 
@@ -108,7 +110,7 @@ final class IconCache {
     /// The rendered icon for the shim (.icns source) and other places that want
     /// pixels rather than the flat PNG.
     func renderedCGImage(pkg: String, deviceId: String, sizeClass: IconSizeClass, px: Int) -> CGImage? {
-        let flat = loadData(pkg: pkg, deviceId: deviceId)
+        let flat = loadData(pkg: pkg, deviceId: deviceId, sizeClass: sizeClass)
         let layers = loadLayerData(pkg: pkg, deviceId: deviceId, sizeClass: sizeClass)
         return PhoneAppIcon.render(fg: layers?.fg, bg: layers?.bg, flat: flat, px: px)
     }

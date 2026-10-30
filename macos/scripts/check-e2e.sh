@@ -8090,6 +8090,45 @@ check_dock() {
         && ok "DOCK icon: an old-version shim was rebuilt" \
         || bad "DOCK icon: the old-version shim was not rebuilt"
 
+    # A flat-only app's shim carries the same renderer (docs/design/dock.md
+    # §Icons), drawn from the Dock's own 864 px flat: the rounded square covers
+    # its tile and the disc keeps its white plate.
+    local cover_app="$dir/Camera (FakePhone).app" plate_app="$dir/Gallery (FakePhone).app" flat_edge
+    launch --connect "127.0.0.1:$PORT" --dock-dir "$dir" --dock-add "com.android.camera2" --quit-after 90
+    # The phone answers one session at a time; a busy one is retried with a
+    # backoff, so this can take a while on a loaded host. Wait for the icon
+    # itself, not the bundle's folder: the bundle exists a moment before its
+    # .icns is written, and stopping the app in that gap leaves it iconless.
+    wait_until 60 eval '[ -f "$cover_app/Contents/Resources/AppIcon.icns" ]' \
+        || { bad "DOCK icon: no shim icon for the covering flat icon"; stop_app; stop_fakephone; return 1; }
+    stop_app
+    launch --connect "127.0.0.1:$PORT" --dock-dir "$dir" --dock-add "com.android.gallery3d" --quit-after 90
+    wait_until 60 eval '[ -f "$plate_app/Contents/Resources/AppIcon.icns" ]' \
+        || { bad "DOCK icon: no shim icon for the plating flat icon"; stop_app; stop_fakephone; return 1; }
+    stop_app
+    if [ -f "$cover_app/Contents/Resources/AppIcon.icns" ] \
+        && [ -f "$plate_app/Contents/Resources/AppIcon.icns" ]; then
+        sips -s format png "$cover_app/Contents/Resources/AppIcon.icns" \
+            --out "$WORK/shim-cover.png" >/dev/null 2>&1
+        sips -s format png "$plate_app/Contents/Resources/AppIcon.icns" \
+            --out "$WORK/shim-plate.png" >/dev/null 2>&1
+        flat_edge="$(icon_pixel "$WORK/shim-cover.png" 120 512)"
+        near "$flat_edge" 0 128 96 8 \
+            && ok "DOCK icon: a flat square covers its tile ($flat_edge)" \
+            || bad "DOCK icon: the flat square did not cover ($flat_edge)"
+        flat_edge="$(icon_pixel "$WORK/shim-plate.png" 120 512)"
+        near "$flat_edge" 255 255 255 4 \
+            && ok "DOCK icon: a flat disc keeps its white plate ($flat_edge)" \
+            || bad "DOCK icon: the flat disc's plate is not white ($flat_edge)"
+        flat_edge="$(icon_pixel "$WORK/shim-plate.png" 512 512)"
+        near "$flat_edge" 200 60 60 8 \
+            && ok "DOCK icon: the disc's own colour is inside the plate ($flat_edge)" \
+            || bad "DOCK icon: the disc is not drawn ($flat_edge)"
+    else
+        bad "DOCK icon: a flat app's shim has no AppIcon.icns"
+    fi
+    remove_dock_apps
+
     # A visible run (the VM) records what the person sees: the Dock with a
     # phone app's shim next to the native icons, and the Deck grid.
     if [ "$VISIBLE" = "1" ]; then
@@ -11047,6 +11086,39 @@ check_deck() {
     ! grep -qiE "fatal|protocol error" "$WORK/app.log" 2>/dev/null \
         && ok "DECK the app logged no fatal/protocol error" \
         || bad "DECK the app log has fatal/protocol lines"
+    # A flat-only reply is drawn by its own shape (docs/design/dock.md §Icons):
+    # fakephone's green rounded square covers its tile and its red disc keeps a
+    # white plate. The grid dump carries the colour just inside the body's
+    # leading edge, where a cover shows the icon and a plate shows the plate.
+    wait_until 20 grep -q 'CameraLauncher","ink"' "$WORK/deck-grid.jsonl" 2>/dev/null \
+        && ok "[DECK-2] the grid reported what its tiles drew" || bad "[DECK-2] no ink in the grid dump"
+    wait_until 20 grep -q 'GalleryActivity","ink"' "$WORK/deck-grid.jsonl" 2>/dev/null \
+        && ok "[DECK-2] the plating app's tile was drawn" || bad "[DECK-2] the plating app never drew"
+    python3 - "$WORK/deck-grid.jsonl" <<'PY' \
+        && ok "[DECK-2] a flat square covers its tile and a flat disc keeps its plate" \
+        || bad "[DECK-2] the flat replies did not draw as a cover and a plate"
+import json, sys
+
+lines = [json.loads(line) for line in open(sys.argv[1]) if line.strip()]
+# The biggest dump is the whole grid (its last one, when every icon has
+# landed); later lines are search results.
+grids = [line for line in lines if "items" in line]
+whole = max(line["count"] for line in grids)
+grid = [line for line in grids if line["count"] == whole][-1]
+ink = {}
+for item in grid["items"]:
+    if "ink" in item:
+        ink[item["id"].split("/")[0]] = tuple(int(v) for v in item["ink"].split(","))
+
+cover = ink.get("com.android.camera2")
+plate = ink.get("com.android.gallery3d")
+if cover is None or any(abs(a - b) > 6 for a, b in zip(cover, (0, 128, 96))):
+    print("the covering flat icon's edge is", cover)
+    sys.exit(1)
+if plate is None or any(v < 248 for v in plate):
+    print("the plating flat icon's edge is", plate)
+    sys.exit(1)
+PY
     # The cells the grid drew (--debug-deck-grid): both entries of the repeated
     # package are there with their own id and words under them, and the entry
     # the phone sent without a label still has words (the package's last part).
