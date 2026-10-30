@@ -6,15 +6,15 @@ phone stays locked**. LAN only. Open source.
 
 ```
  macOS app (Swift)                             Android phone
-┌──────────────────────────────┐  1 TCP session ┌────────────────────────────────────┐
+┌──────────────────────────────┐ 1-3 paths (TLS)┌────────────────────────────────────┐
 │ ConnectionController ────────┼───────────────►│ App process (dev.pocketdeck)       │
-│ Session + Protocol (frames)  │  (PROTOCOL.md) │  MainActivity, PairingPrompt,      │
-│ Discovery (Bonjour) / Direct │◄───────────────┤  NsdAdvertiser, ShizukuClient,     │
+│ Session (paths) + Protocol   │  (PROTOCOL.md) │  MainActivity, PairingPrompt,      │
+│ Path providers: lan, direct  │◄───────────────┤  NsdAdvertiser, ShizukuClient,     │
 │ Deck (app grid, search)      │                │  PdNotificationListener, prefs     │
 │ AppWindow/StreamWindow +     │                │        │ AIDL (control only)       │
 │  WindowStyle chrome          │                │ Shell service (UID 2000, Shizuku)  │
 │  VideoLayerView              │                │  DeckService (IDeckService.aidl)   │
-│ InputMapper + gestures       │                │  Server → Session →                │
+│ InputMapper + gestures       │                │  Server → Session (paths) →        │
 │ AudioEngine (Opus/AAC)       │                │   WindowStream × N:                │
 │ NotifyCenter / NowPlaying    │                │    VirtualDisplay + MediaCodec     │
 │ ClipboardSync, FileDrop,     │                │   WindowStream.startMirror         │
@@ -238,6 +238,16 @@ docs/                    ARCHITECTURE, PROTOCOL, ROADMAP, TRY-IT, UX, design/
 
 - No session → no VD, no encoder, no wake lock, no polling; idle cost is one
   listening socket + NSD registration.
+- **One exception, and only in a direct build:** while a session is live and the
+  phone's and the Mac's direct switches are both on, the phone keeps a Wi-Fi
+  Aware publish session and an idle data path up, so the direct path is a live
+  standby the session can switch to at once. It ends with the session or with
+  either switch, and it never exists while there is no session
+  (docs/design/direct-link.md §4.3, `DIRECT-7`).
+- A session outlives its connection: from protocol 4 one session has one to
+  three **paths** (each one TLS connection), and a path that dies is replaced
+  without a new session — up to the 30 s grace, then the session ends as above
+  (docs/design/paths.md).
 - Windows hidden/occluded → `window.pause` (encoder stopped, VD surface
   detached). Static content emits no frames. App-level ping every 15 s.
 - Keep-awake pokes the VD's display group (on stream open, throttled input,
