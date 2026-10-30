@@ -151,6 +151,9 @@ final class RailPointerModel {
     /// The grid container's size in points, so a hover point can be turned
     /// into a distance left of the rail's leading edge and a y in the rail.
     private(set) var containerSize = CGSize.zero
+    /// The Deck's zoom: the grid's last column moves with it, and so does the
+    /// room the arc and the hit area may take left of the rail.
+    private(set) var zoom: CGFloat = 1
     /// The rail this content height draws: its letter count and rest pitch.
     /// Static per window size, so the pitch cannot jitter while the pointer
     /// moves.
@@ -173,8 +176,17 @@ final class RailPointerModel {
         railFit = RailLayout.fit(content: content)
     }
 
-    /// The arc's room left of the rail: the magnified hit area's left edge.
-    var room: CGFloat { RailArc.room(width: containerSize.width) }
+    func noteZoom(_ zoom: CGFloat) {
+        guard zoom != self.zoom else { return }
+        self.zoom = zoom
+    }
+
+    /// How far the arc may reach left of the rail at this width and zoom.
+    var arcRoom: CGFloat { RailArc.room(width: containerSize.width, zoom: zoom) }
+
+    /// The magnified hit area's left edge, which is also where the pointer
+    /// leaves: the same clearance from the last column's cell as the letters.
+    var room: CGFloat { RailArc.hitRoom(width: containerSize.width, zoom: zoom) }
 
     func track(dx: CGFloat, y: CGFloat, reduceMotion: Bool) {
         send(.track(dx: dx, y: y), reduceMotion: reduceMotion)
