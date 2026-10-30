@@ -75,12 +75,12 @@ Spec of every state, copy and transitions: [design/mac-redesign.md](design/mac-r
   that letter's first app, and an empty letter skips forward. The current letter follows the first app in the top
   visible row.
 
-- **Glass app icons** (Settings → General, `deck.glassIcons`, default on): with it on, each tile is the shared
-  `PhoneAppIcon` render (docs/design/dock.md §Icons) at 224 px — the macOS squircle (22.5 % corners), the adaptive
-  `fg`/`bg` layers at full opacity cropped to the visible 72 dp of the 108 dp canvas, or the flat icon at 78 % on a
-  white plate, with one small top light and a specular edge. Nothing is tinted or put under a material, so the tile
-  shows the phone's colours; hovering lifts the tile by 4 %. Off is the previous look exactly (the flat 96 px image,
-  radius 13). The Dock, Launchpad and Spotlight use the same renderer, so an app's icon is the same everywhere;
+- **App icons:** every tile is the shared `PhoneAppIcon` render (docs/design/dock.md §Icons) at 224 px — the macOS
+  squircle (22.5 % corners), the adaptive `fg`/`bg` layers at full opacity cropped to the visible 72 dp of the 108 dp
+  canvas, or the flat icon drawn by its own shape (covering the tile, or at 78 % on a plate tinted from its edge),
+  with one small top light and a specular edge. Nothing is tinted or put under a material, so the tile
+  shows the phone's colours; hovering lifts the tile by 4 %. The tile draws the render or the placeholder, never the
+  bare flat image. The Dock, Launchpad and Spotlight use the same renderer, so an app's icon is the same everywhere;
   placeholders and the generated tile are unchanged, and `mono` is stored for a later round.
 
 ### Pairing-code sheet (numeric comparison)

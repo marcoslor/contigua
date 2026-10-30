@@ -646,15 +646,25 @@ enum DeckRail {
         return last
     }
 
-    /// The letter the rail accents: the top visible row. While a click or drag
-    /// jump is settling, the target's row will be the top one, so the accent
-    /// moves at once instead of staying on the outgoing row (the prototype's
-    /// lag).
-    static func accentLetter(target: Int?, top: Int?, apps: [AppInfo], columns: Int) -> String? {
-        guard !apps.isEmpty else { return nil }
-        let index = target.map { rowStart(containing: $0, columns: columns) } ?? top
-        guard let index else { return nil }
-        return rowLetter(rowStart: index, apps: apps, columns: columns)
+    /// The letter a rail pick lands on: the clicked letter's own first app, or
+    /// the letter it skips forward to when the clicked letter has no apps.
+    ///
+    /// The accent, not the row the app sits in: rows do not start at letter
+    /// boundaries, so the row's letter is often another letter (an I app can
+    /// share a row that starts with H and holds J).
+    static func pick(_ letter: String, in apps: [AppInfo]) -> Pick? {
+        let entries = entries(for: apps)
+        guard let index = target(for: letter, in: entries), apps.indices.contains(index) else {
+            return nil
+        }
+        return Pick(letter: self.letter(for: apps[index].displayLabel), index: index)
+    }
+
+    struct Pick: Equatable {
+        /// The letter the jump lands on; an empty click forwards to this one.
+        let letter: String
+        /// The app the jump scrolls to.
+        let index: Int
     }
 
     /// The letter at `y` in a column `height` tall; the letters share it evenly.
@@ -694,6 +704,99 @@ enum DeckRail {
         let within = clamped - CGFloat(slotIndex) * pitch
         let band = min(slot.count - 1, max(0, Int(within / pitch * CGFloat(slot.count))))
         return letters[slot.first + band]
+    }
+}
+
+/// DECK-7's accent state: which letter the rail lights. At rest it is the top
+/// row's letter. A rail click or drag holds the letter the jump lands on —
+/// rows do not start at letter boundaries, and the grid's last screenful
+/// cannot bring its row to the top, so the row's letter is often not the
+/// clicked one. The pick lasts until the grid scrolls by other means (the
+/// wheel, the trackpad, the scroll bar or the keys), or another pick replaces
+/// it; then the top row's letter is back.
+///
+/// The machine is pure: the view feeds it the pick and every scroll position
+/// and draws the letter it returns. The jump's own animated scroll is
+/// `jumping` — it settles only when the target's row is the top one, or the
+/// grid reaches its end with the target row still below (the last
+/// screenful) — so it never reads as the person's own scroll.
+enum RailAccent: Equatable {
+    /// No pick: the accent follows the row at the top.
+    case topRow
+    /// A pick's jump is running toward the app at `target`, from the top row
+    /// `fromTop` (nil before the grid reported a position); the accent is the
+    /// `letter` it will land on.
+    case jumping(letter: String, target: Int, fromTop: Int?)
+    /// The jump landed at `landingOffset`; the accent stays `letter` until the
+    /// grid moves away from that offset.
+    case picked(letter: String, landingOffset: CGFloat)
+
+    enum Event: Equatable {
+        /// A rail click or drag: the letter it picks, the app it aims at and
+        /// the top row the jump starts from.
+        case pick(letter: String, target: Int, fromTop: Int?)
+        /// A scroll position: the first app of the top row, the content
+        /// offset, the drawn columns and the furthest offset the grid reaches.
+        case scroll(top: Int, offset: CGFloat, columns: Int, maxOffset: CGFloat)
+    }
+
+    /// The jump's last animated frame lands within this many points of the
+    /// recorded offset; a person's scroll moves further than this.
+    static let landingTolerance: CGFloat = 1
+
+    static func reduce(_ state: RailAccent, _ event: Event) -> RailAccent {
+        switch (state, event) {
+        case (_, .pick(let letter, let target, let fromTop)):
+            return .jumping(letter: letter, target: target, fromTop: fromTop)
+        case (.topRow, .scroll):
+            return .topRow
+        case (.jumping(let letter, let target, let fromTop),
+              .scroll(let top, let offset, let columns, let maxOffset)):
+            let row = DeckRail.rowStart(containing: target, columns: columns)
+            // The row reached the top: the jump landed.
+            if top == row { return .picked(letter: letter, landingOffset: offset) }
+            if let fromTop, fromTop != row {
+                if fromTop < row {
+                    // A downward jump that reached the grid's end with the
+                    // row still below: X, Y and Z in the last screenful land
+                    // here, and the pick holds there. A zero end is a layout
+                    // that has not reported a size yet, not a landing.
+                    if maxOffset > 0, offset >= maxOffset - landingTolerance {
+                        return .picked(letter: letter, landingOffset: offset)
+                    }
+                    // Off the jump's path (above where it started, or past
+                    // the target's row): the person scrolled instead.
+                    if top < fromTop || top > row { return .topRow }
+                } else if top > fromTop || top < row {
+                    // An upward jump: the person scrolled below where it
+                    // started, or above the target's row.
+                    return .topRow
+                }
+            }
+            return state
+        case (.picked(let letter, let landingOffset), .scroll(_, let offset, _, _)):
+            // The jump's own last frames stay within the tolerance; anything
+            // further is the person's wheel, trackpad, scroll bar or keys.
+            return abs(offset - landingOffset) <= landingTolerance
+                ? state : .topRow
+        }
+    }
+
+    /// The letter to draw: a held pick, else the top row's.
+    func letter(topRow: String?) -> String? {
+        switch self {
+        case .topRow: return topRow
+        case .jumping(let letter, _, _), .picked(let letter, _): return letter
+        }
+    }
+
+    /// The state's name, for the transition log.
+    var name: String {
+        switch self {
+        case .topRow: return "topRow"
+        case .jumping: return "jumping"
+        case .picked: return "picked"
+        }
     }
 }
 
@@ -928,8 +1031,9 @@ struct AppGrid: View {
     /// produced it (the rail's accent and the e2e's landing proof).
     @State private var currentLetter: String?
     @State private var scrollBox = RailScrollBox()
-    /// The rail's pending target index: reported once its row is on screen.
-    @State private var railTarget: Int?
+    /// DECK-7's accent, and the pending rail jump inside it: a pick holds its
+    /// landed letter until the grid scrolls by other means.
+    @State private var railAccent: RailAccent = .topRow
 
     private var metrics: DeckGridSize { DeckGridSize(zoom: CGFloat(zoom)) }
 
@@ -958,7 +1062,7 @@ struct AppGrid: View {
                     } else {
                         grid {
                             ForEach(cells) { cell in
-                                AppCell(app: cell.app, icon: controller.icons[cell.app.pkg],
+                                AppCell(app: cell.app,
                                         rendered: controller.deckIcons[cell.app.pkg],
                                         iconIsMissing: iconIsMissing(cell.app),
                                         metrics: metrics,
@@ -972,7 +1076,9 @@ struct AppGrid: View {
                 }
                 .frame(maxWidth: .infinity)
             }
-            .task(id: cells.map(\.id)) {
+            // The drawn icons are part of the id: a tile's ink is only known
+            // once its render lands (the flat-icon check reads it).
+            .task(id: cells.map(\.id) + ["drawn:\(controller.deckIcons.count)"]) {
                 DeckGridProbe.report(cells, icons: controller.icons,
                                      rendered: controller.deckIcons,
                                      missing: controller.missingIcons,
@@ -1011,7 +1117,13 @@ struct AppGrid: View {
             }
             .onScrollGeometryChange(for: RailScroll.self) { geometry in
                 RailScroll(offset: geometry.visibleRect.minY + geometry.contentInsets.top,
-                           width: geometry.containerSize.width)
+                           width: geometry.containerSize.width,
+                           // The grid's end is its content height minus the
+                           // viewport: what the scroll bar stops at, and the
+                           // offset a jump to the last screenful lands on.
+                           maxOffset: max(0, geometry.contentSize.height
+                                              + geometry.contentInsets.bottom
+                                              - geometry.containerSize.height))
             } action: { _, scroll in
                 follow(scroll)
             }
@@ -1067,42 +1179,67 @@ struct AppGrid: View {
     }
 
     /// Scroll to a rail letter: its own first app, or the next letter with apps
-    /// when the letter itself is empty.
+    /// when the letter itself is empty. The accent takes the landed letter at
+    /// once, so a jump whose row shares another letter's apps lights the
+    /// clicked one.
     private func scroll(to letter: String, proxy: ScrollViewProxy) {
-        guard let index = DeckRail.target(for: letter, in: railEntries),
-              cells.indices.contains(index) else { return }
-        railTarget = index
-        DeckGridProbe.reportRailPick(letter: letter, index: index)
-        withAnimation(.smooth(duration: 0.15)) { proxy.scrollTo(cells[index].id, anchor: .top) }
+        guard let pick = DeckRail.pick(letter, in: cellApps),
+              cells.indices.contains(pick.index) else { return }
+        let fromTop = scrollBox.lastTop ?? currentTop
+        let picked = RailAccent.reduce(railAccent, .pick(letter: pick.letter, target: pick.index,
+                                                         fromTop: fromTop))
+        if picked != railAccent {
+            Log.app.debug("rail accent: \(railAccent.name, privacy: .public) --pick--> \(picked.name, privacy: .public)") // log-ok: the machine's closed state names, never a value
+        }
+        railAccent = picked
+        DeckGridProbe.reportRailPick(letter: letter, index: pick.index)
+        withAnimation(.smooth(duration: 0.15)) { proxy.scrollTo(cells[pick.index].id, anchor: .top) }
         // A target already on screen scrolls nowhere, so no geometry change
         // follows: report the landing from the position we have.
         if let last = scrollBox.last { follow(last) }
     }
 
-    /// The letter (and, for a rail click, the target) at a scroll position.
-    /// While a jump settles the accent is the target's row, so it moves at
-    /// once instead of staying on the outgoing row (the prototype's lag).
+    /// The first app of the row at the last scroll position.
+    private var currentTop: Int? {
+        guard let last = scrollBox.last else { return nil }
+        return DeckRail.topIndex(offset: last.offset, apps: cellApps, metrics: metrics,
+                                 width: last.width)
+    }
+
+    /// The accent and the pending jump at a scroll position. A jump is in
+    /// flight until its row is the top one (or, for a jump down, the grid
+    /// reaches its end with the row still below); then the accent holds the
+    /// pick until a scroll by other means moves away from where it landed.
     private func follow(_ scroll: RailScroll) {
         scrollBox.last = scroll
         let apps = cellApps
         guard let top = DeckRail.topIndex(offset: scroll.offset, apps: apps,
                                           metrics: metrics, width: scroll.width) else {
-            currentLetter = nil
+            railAccent = .topRow
+            if currentLetter != nil { currentLetter = nil }
             return
         }
         let columns = metrics.columns(forWidth: scroll.width)
-        let letter = DeckRail.accentLetter(target: railTarget, top: top, apps: apps,
-                                           columns: columns)
-        if letter != currentLetter { currentLetter = letter }
-        if let target = railTarget {
-            if top <= target, target < top + columns {
-                railTarget = nil
-                DeckGridProbe.reportRailTop(
-                    letter: DeckRail.letter(for: apps[top].displayLabel), index: top)
-            } else if top > target {
-                // The person scrolled past the pending jump; stop holding it.
-                railTarget = nil
-            }
+        let before = railAccent
+        railAccent = RailAccent.reduce(before, .scroll(top: top, offset: scroll.offset,
+                                                       columns: columns,
+                                                       maxOffset: scroll.maxOffset))
+        if railAccent != before {
+            Log.app.debug("rail accent: \(before.name, privacy: .public) --scroll--> \(railAccent.name, privacy: .public)") // log-ok: the machine's closed state names, never a value
+        }
+        if case .jumping = before, case .picked = railAccent {
+            DeckGridProbe.reportRailTop(
+                letter: DeckRail.letter(for: apps[top].displayLabel), index: top)
+        }
+        let topLetter = DeckRail.rowLetter(rowStart: top, apps: apps, columns: columns)
+        let letter = railAccent.letter(topRow: topLetter)
+        let topMoved = scrollBox.lastTop != top
+        scrollBox.lastTop = top
+        if letter != currentLetter || railAccent != before || topMoved {
+            currentLetter = letter
+            DeckGridProbe.reportRailAccent(letter: letter, topRow: topLetter, top: top,
+                                           columns: columns, state: railAccent.name,
+                                           offset: scroll.offset, maxOffset: scroll.maxOffset)
         }
     }
 
@@ -1157,6 +1294,9 @@ struct AppGrid: View {
 private struct RailScroll: Equatable {
     var offset: CGFloat
     var width: CGFloat
+    /// The furthest `offset` the grid reaches: the last screenful cannot bring
+    /// its row to the top, so a jump there lands at this end.
+    var maxOffset: CGFloat
 }
 
 /// The last scroll position for the rail's already-visible case. A reference
@@ -1164,6 +1304,8 @@ private struct RailScroll: Equatable {
 /// invalidate the grid's body (the e2e drag p95 is measured on exactly that).
 private final class RailScrollBox {
     var last: RailScroll?
+    /// The first app of the row at `last`: a pick's jump starts from here.
+    var lastTop: Int?
 }
 
 /// Dock-style magnification (R1): the letter under the pointer swells to
@@ -1540,7 +1682,6 @@ private extension View {
 
 struct AppCell: View {
     let app: AppInfo
-    let icon: NSImage?
     /// The shared renderer's icon for the tile (docs/design/dock.md §Icons).
     let rendered: NSImage?
     let iconIsMissing: Bool
@@ -1549,13 +1690,12 @@ struct AppCell: View {
     let selected: Bool
     let open: () -> Void
     @State private var hovering = false
-    @AppStorage(GlassIconsSetting.key, store: Profile.active.defaults) private var glassIconsOn = true
 
     var body: some View {
         Button(action: open) {
             VStack(spacing: metrics.iconLabelGap) {
-                AppIconView(app: app, image: icon, rendered: rendered, isMissing: iconIsMissing,
-                            glassOn: glassIconsOn, hovering: hovering, side: metrics.iconSide)
+                AppIconView(app: app, rendered: rendered, isMissing: iconIsMissing,
+                            hovering: hovering, side: metrics.iconSide)
                 Text(app.displayLabel)
                     .font(.caption)
                     .lineLimit(1)

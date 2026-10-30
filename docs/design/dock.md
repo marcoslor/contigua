@@ -42,8 +42,21 @@ every place.
   its 108 dp layer (the tile's `cropRect`/`zoomFactor` math, `zoomFactor` 3/2), clipped to
   the body. No tint, no material over the colours: this is what the phone's launcher draws,
   in Apple's shape.
-- Legacy (flat) icons: the flat image at 78 % of the body on a white plate, the way the
-  phone's launcher shows an icon with no adaptive layers.
+- Legacy (flat) icons are drawn by their own shape. The alpha is trimmed to its opaque
+  bounds (alpha > 0.5), and `PhoneAppIcon.flatFit` decides between cover and plate:
+  - **Cover** when the trimmed outline is a square or a rounded square: near square (ratio
+    ≤ 1.05), every edge's middle opaque, the four corner radii within 2 px or 6 % of the
+    side, and the measured coverage the one that radius explains — a rounded square loses
+    (4 − π)·r² of its bounds to its corners, ±0.03, and at least 0.8. The crop is 0.3 × the
+    measured corner radius in from each side (never more than 0.13 of the side), so the
+    icon's own rounded corners land outside the squircle and no transparency is left inside
+    it; the crop aspect-fills the body, clipped to the squircle. **No plate is drawn under
+    a cover**, so a cover has no plate colour to get wrong.
+  - **Plate** for everything else — a circle, a logo on transparency, an outline whose four
+    corners disagree (a baked soft shadow, a bitten corner): the flat image at 78 % of the
+    body. The plate is the median colour of the icon's outer opaque ring (the outer 5 % of
+    its bounds, at least 2 px), unless that colour is within ΔE 15 of the logo's own mean
+    colour — then it stays white, as before.
 - Finish: two constants only — a soft top light (white 0 → 5.5 % over the top 40 % of the
   body) and a thin inner specular edge (2 px at 8 % white, inset 1.5 % of the body). Neither
   changes the colour at the centre (unit test: ΔE below 2 against the layer's colour).
@@ -59,6 +72,13 @@ every place.
 - The Deck asks 432 and renders the 56 pt tile from a 224 px render; building a Dock shim
   asks 1296 and renders one 1024 px icon (its 864 px visible crop downscales into the
   824 px body, so nothing is upscaled), from which every `.icns` size is scaled.
+- A covered flat icon is the one source a render enlarges, because its crop is smaller than
+  the tile by design. The Deck's request gives a 288 px flat and stays under 1.0: 0.84× at
+  worst, a 38 % rounded square's 0.745 crop (a 10 % margin's 0.77 crop is 0.82×). The Dock's
+  gives 864 px and costs 1.28× at worst. No cover crops more than 0.13 of a side, which
+  keeps the rule's ceiling at 1.29×. The Dock shim therefore reads the flat of its own size
+  class, and `icon_covered_flat_scale` in docs/NFR.md holds the 1.3× bound: past it, the
+  shim drew a covered icon from the Deck's flat, or the crop rule was widened.
 - `IconCache` keeps one slot per size class (`deck` = 432, `dock` = 1296), so a 1296 render
   is never replaced by a 216 one; entries from before size classes are read as `deck`.
 - The shim's `Info.plist` carries `PDIconVersion`, bumped with the renderer. A shim with an
@@ -71,7 +91,8 @@ every place.
 A shape-perfect legacy `.icns` is **not** put in the grey plate: the shim's tile sits in
 the Dock at the same size and shape as the native icons around it, with its own white
 squircle and the phone's colours, and the Deck grid draws every app in one shape
-(adaptive layers at full opacity, legacy icons on the plate). The `.icns` carries a
+(adaptive layers at full opacity; flat icons covered by their own shape or on their
+edge-tinted plate). The `.icns` carries a
 1024 px representation, its canvas corners are transparent and its centre is the bg
 colour — the dock e2e asserts all three. The real Mac's Dock with the user's own apps is
 still unverified (test profiles only).

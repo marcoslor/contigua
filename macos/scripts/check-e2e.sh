@@ -8090,6 +8090,45 @@ check_dock() {
         && ok "DOCK icon: an old-version shim was rebuilt" \
         || bad "DOCK icon: the old-version shim was not rebuilt"
 
+    # A flat-only app's shim carries the same renderer (docs/design/dock.md
+    # §Icons), drawn from the Dock's own 864 px flat: the rounded square covers
+    # its tile and the disc keeps its white plate.
+    local cover_app="$dir/Camera (FakePhone).app" plate_app="$dir/Gallery (FakePhone).app" flat_edge
+    launch --connect "127.0.0.1:$PORT" --dock-dir "$dir" --dock-add "com.android.camera2" --quit-after 90
+    # The phone answers one session at a time; a busy one is retried with a
+    # backoff, so this can take a while on a loaded host. Wait for the icon
+    # itself, not the bundle's folder: the bundle exists a moment before its
+    # .icns is written, and stopping the app in that gap leaves it iconless.
+    wait_until 60 eval '[ -f "$cover_app/Contents/Resources/AppIcon.icns" ]' \
+        || { bad "DOCK icon: no shim icon for the covering flat icon"; stop_app; stop_fakephone; return 1; }
+    stop_app
+    launch --connect "127.0.0.1:$PORT" --dock-dir "$dir" --dock-add "com.android.gallery3d" --quit-after 90
+    wait_until 60 eval '[ -f "$plate_app/Contents/Resources/AppIcon.icns" ]' \
+        || { bad "DOCK icon: no shim icon for the plating flat icon"; stop_app; stop_fakephone; return 1; }
+    stop_app
+    if [ -f "$cover_app/Contents/Resources/AppIcon.icns" ] \
+        && [ -f "$plate_app/Contents/Resources/AppIcon.icns" ]; then
+        sips -s format png "$cover_app/Contents/Resources/AppIcon.icns" \
+            --out "$WORK/shim-cover.png" >/dev/null 2>&1
+        sips -s format png "$plate_app/Contents/Resources/AppIcon.icns" \
+            --out "$WORK/shim-plate.png" >/dev/null 2>&1
+        flat_edge="$(icon_pixel "$WORK/shim-cover.png" 120 512)"
+        near "$flat_edge" 0 128 96 8 \
+            && ok "DOCK icon: a flat square covers its tile ($flat_edge)" \
+            || bad "DOCK icon: the flat square did not cover ($flat_edge)"
+        flat_edge="$(icon_pixel "$WORK/shim-plate.png" 120 512)"
+        near "$flat_edge" 255 255 255 4 \
+            && ok "DOCK icon: a flat disc keeps its white plate ($flat_edge)" \
+            || bad "DOCK icon: the flat disc's plate is not white ($flat_edge)"
+        flat_edge="$(icon_pixel "$WORK/shim-plate.png" 512 512)"
+        near "$flat_edge" 200 60 60 8 \
+            && ok "DOCK icon: the disc's own colour is inside the plate ($flat_edge)" \
+            || bad "DOCK icon: the disc is not drawn ($flat_edge)"
+    else
+        bad "DOCK icon: a flat app's shim has no AppIcon.icns"
+    fi
+    remove_dock_apps
+
     # A visible run (the VM) records what the person sees: the Dock with a
     # phone app's shim next to the native icons, and the Deck grid.
     if [ "$VISIBLE" = "1" ]; then
@@ -11028,7 +11067,7 @@ check_deck() {
     # activities, and one entry with no label at all.
     # A full grid (200 apps, more than the person's phone) like theirs: the
     # zoom cost grows with the number of cells the grid lays out.
-    FAKE_ARGS="--dup-launcher --no-label-app com.spotify.music --demo-apps 200" start_fake || return 1
+    FAKE_ARGS="--dup-launcher --no-label-app com.spotify.music --demo-apps 200 --rail-letters" start_fake || return 1
     FAKE_ARGS=""
     # The shared app's own launch: the checks after this one use it.
     launch_shared --connect "127.0.0.1:$PORT" --debug-deck-grid "$WORK/deck-grid.jsonl" \
@@ -11047,6 +11086,39 @@ check_deck() {
     ! grep -qiE "fatal|protocol error" "$WORK/app.log" 2>/dev/null \
         && ok "DECK the app logged no fatal/protocol error" \
         || bad "DECK the app log has fatal/protocol lines"
+    # A flat-only reply is drawn by its own shape (docs/design/dock.md §Icons):
+    # fakephone's green rounded square covers its tile and its red disc keeps a
+    # white plate. The grid dump carries the colour just inside the body's
+    # leading edge, where a cover shows the icon and a plate shows the plate.
+    wait_until 20 grep -q 'CameraLauncher","ink"' "$WORK/deck-grid.jsonl" 2>/dev/null \
+        && ok "[DECK-2] the grid reported what its tiles drew" || bad "[DECK-2] no ink in the grid dump"
+    wait_until 20 grep -q 'GalleryActivity","ink"' "$WORK/deck-grid.jsonl" 2>/dev/null \
+        && ok "[DECK-2] the plating app's tile was drawn" || bad "[DECK-2] the plating app never drew"
+    python3 - "$WORK/deck-grid.jsonl" <<'PY' \
+        && ok "[DECK-2] a flat square covers its tile and a flat disc keeps its plate" \
+        || bad "[DECK-2] the flat replies did not draw as a cover and a plate"
+import json, sys
+
+lines = [json.loads(line) for line in open(sys.argv[1]) if line.strip()]
+# The biggest dump is the whole grid (its last one, when every icon has
+# landed); later lines are search results.
+grids = [line for line in lines if "items" in line]
+whole = max(line["count"] for line in grids)
+grid = [line for line in grids if line["count"] == whole][-1]
+ink = {}
+for item in grid["items"]:
+    if "ink" in item:
+        ink[item["id"].split("/")[0]] = tuple(int(v) for v in item["ink"].split(","))
+
+cover = ink.get("com.android.camera2")
+plate = ink.get("com.android.gallery3d")
+if cover is None or any(abs(a - b) > 6 for a, b in zip(cover, (0, 128, 96))):
+    print("the covering flat icon's edge is", cover)
+    sys.exit(1)
+if plate is None or any(v < 248 for v in plate):
+    print("the plating flat icon's edge is", plate)
+    sys.exit(1)
+PY
     # The cells the grid drew (--debug-deck-grid): both entries of the repeated
     # package are there with their own id and words under them, and the entry
     # the phone sent without a label still has words (the package's last part).
@@ -11353,6 +11425,29 @@ PY
     fi
     control deckrailleave
 
+    # DECK-7: the letter a rail click lands on stays lit, not the letter of the
+    # row it shares. The fake phone's --rail-letters fixtures put I mid-row
+    # with J beside it and X beside Y in the last screenful (whose row cannot
+    # come to the top). A scroll by other means hands the accent back to the
+    # top row's letter; the jump's own animated scroll must not.
+    control deck-scroll -100000 || bad "DECK deck-scroll to the top: $CONTROL_REPLY"
+    sleep 0.5
+    local railletter railjson railstart
+    railjson="$WORK/deck-grid.jsonl"
+    for railletter in I X; do
+        control deck-rail "$railletter" >/dev/null || bad "DECK deck-rail $railletter: $CONTROL_REPLY"
+        sleep 1
+        python3 "$MACOS/scripts/deck-rail-accent.py" pick "$railjson" "$railletter" \
+            && ok "[DECK-7] the rail's $railletter click keeps $railletter lit, not its row's letter" \
+            || bad "[DECK-7] the rail's $railletter click lit another letter"
+        railstart="$(wc -l < "$railjson" | tr -d ' ')"
+        control deck-scroll -120 >/dev/null || bad "DECK deck-scroll after $railletter: $CONTROL_REPLY"
+        sleep 0.5
+        python3 "$MACOS/scripts/deck-rail-accent.py" top "$railjson" "$railstart" \
+            && ok "[DECK-7] a scroll after the $railletter pick hands the accent back to the top row" \
+            || bad "[DECK-7] after a scroll the accent is not the top row's letter"
+    done
+    control deck-scroll -100000 || bad "DECK deck-scroll to the top (restore): $CONTROL_REPLY"
 
     # ⌘F is the Deck's Find (focus the search field, select its text) and the
     # phone app's find-in-page when a stream window is key: a real key event
@@ -11859,13 +11954,54 @@ PY
 # server's). The shots go to $WORK/menubar-shots/ and are judged by eye.
 check_menubar_shots() {
     clean
-    local shots="$WORK/menubar-shots" result device
+    local shots="$WORK/menubar-shots" result device vcx vcy
+    local mainx mainy mainw mainh vx vy vw vh
     mkdir -p "$shots"
     shot_panel() {
         local id
         id="$(await_window '$4 >= 300 && $4 <= 340 && $5 >= 300 && $5 <= 800')" \
             || { bad "MENUBAR-SHOTS no panel window for $1"; return 1; }
         screencapture -x -l"$id" "$shots/$1" >/dev/null 2>&1 && say "shot: $shots/$1"
+    }
+    # shot_item NAME CENTRE_X CENTRE_Y "DISPLAY x y w h": a 300×30 pt menu bar
+    # crop around the item, kept inside that display. The person's own items are
+    # the neighbours: tight, and the crops stay in $WORK, never committed.
+    shot_item() {
+        local name="$1" cx="$2" cy="$3" x y w=300 h=30 sx sy sw sh
+        read -r sx sy sw sh <<< "$4"
+        x=$(( cx - w / 2 )); y=$(( cy - h / 2 ))
+        [ "$x" -lt $(( sx + 4 )) ] && x=$(( sx + 4 ))
+        [ $(( x + w )) -gt $(( sx + sw - 4 )) ] && x=$(( sx + sw - 4 - w ))
+        [ "$y" -lt "$sy" ] && y="$sy"
+        [ $(( y + h )) -gt $(( sy + sh )) ] && y=$(( sy + sh - h ))
+        screencapture -x -R "${x},${y},${w},${h}" "$shots/$name" >/dev/null 2>&1 \
+            && say "shot: $shots/$name rect=${x},${y},${w},${h}" \
+            || bad "MENUBAR-SHOTS no $name"
+    }
+    # display_of main|ID — that display's "x y w h" in Quartz points.
+    display_of() {
+        "$MENUBARBIN" displays | awk -v want="$1" \
+            '$1 == want || (want == "main" && $NF == "main=1") { print $2, $3, $4, $5; exit }'
+    }
+    # item_shots [PREFIX] — the item's crop on the active display and on the
+    # run's own display, an inactive one: there every item is drawn dimmed,
+    # ours included. The frame line says where the item is in each crop.
+    item_shots() {
+        local fx fy fw fh icx icy
+        read -r fx fy fw fh <<< "$("$MENUBARBIN" frame "$APP_PID")" \
+            || { bad "MENUBAR-SHOTS no AX frame for the status item"; return 1; }
+        say "MENUBAR-SHOTS item frame=${fx},${fy},${fw}x${fh}"
+        icx=$(( fx + fw / 2 )); icy=$(( fy + fh / 2 ))
+        read -r mainx mainy mainw mainh <<< "$(display_of main)"
+        [ -n "$mainw" ] || { bad "MENUBAR-SHOTS no main display"; return 1; }
+        shot_item "${1:-menubar-item}-main.png" "$icx" "$icy" "$mainx $mainy $mainw $mainh"
+        [ -n "${VDISPLAY_ID:-}" ] || return 0
+        read -r vx vy vw vh <<< "$(display_of "$VDISPLAY_ID")"
+        [ -n "$vw" ] || { bad "MENUBAR-SHOTS no run display $VDISPLAY_ID"; return 1; }
+        # The same distance from the display's right edge, on its menu bar.
+        vcx=$(( vx + vw - (mainx + mainw - icx) ))
+        vcy=$(( vy + icy - mainy ))
+        shot_item "${1:-menubar-item}-inactive.png" "$vcx" "$vcy" "$vx $vy $vw $vh"
     }
 
     FAKE_ARGS="--media" start_fake || return 1
@@ -11879,6 +12015,19 @@ check_menubar_shots() {
         --open com.whatsapp
     wait_until 30 events_have '"t":"apps.list"' \
         || { bad "MENUBAR-SHOTS the session never started"; stop_app; stop_fakephone; return 1; }
+    # [PANEL-25] the item is a real status item: AppKit's, sized to its own
+    # template image with no foreign view over the button. A fixed length and a
+    # hosting view pinned over the button were the person's padding, the
+    # off-centre glyph and the icon that stayed bright on the inactive display.
+    control menubaricon || true
+    result="$CONTROL_REPLY"
+    case "$result" in
+        "length=variable image=template subviews=0 state=online dot=0")
+            ok "MENUBAR-PANEL-25 length=variable image=template subviews=0 state=online dot=0" ;;
+        *)
+            bad "[PANEL-25] the status item is '$result' (wanted length=variable image=template subviews=0 state=online dot=0)" ;;
+    esac
+    item_shots
     control panelopen && ok "[PANEL-4] the panel host opened" \
         || bad "[PANEL-4] panelopen: $CONTROL_REPLY"
     control paneldump panel "$WORK/menubar-shots/panel.json" \
@@ -12024,6 +12173,59 @@ PY
     stop_app
     defaults delete "$DEFAULTS_SUITE" "notify.$device" >/dev/null 2>&1
     defaults delete "$DEFAULTS_SUITE" "showAppsInDock" >/dev/null 2>&1
+
+    # The agent dot (PANEL-1/PANEL-25): the same item with an automation client
+    # connected. A socket client is what the count follows; the probe says the
+    # dot is in the drawing and the crop shows the glyph with it.
+    FAKE_ARGS="--media" start_fake || return 1
+    rm -rf "$WORK-control"
+    mkdir -p "$WORK-control"
+    launch --mcp-enable --connect "127.0.0.1:$PORT" --quit-after 90 --debug-control "$WORK-control"
+    wait_until 30 events_have '"t":"apps.list"' \
+        || { bad "MENUBAR-SHOTS the dot session never started"; stop_app; stop_fakephone; return 1; }
+    local sock="$HOME/Library/Application Support/PocketDeck-$PROFILE/mcp.sock" agent_pid dot=0
+    if ! wait_until 20 test -S "$sock"; then
+        bad "MENUBAR-SHOTS no automation socket for the dot"
+    else
+        python3 - "$sock" >/dev/null 2>&1 <<'PY' &
+import socket, sys, time
+client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+for _ in range(100):
+    try:
+        client.connect(sys.argv[1])
+        break
+    except OSError:
+        time.sleep(0.1)
+time.sleep(60)
+PY
+        agent_pid=$!
+        for _ in $(seq 1 100); do
+            control menubaricon || true
+            case "$CONTROL_REPLY" in *"dot=1"*) dot=1; break ;; esac
+            sleep 0.1
+        done
+        [ "$dot" = 1 ] \
+            && ok "[PANEL-1] the item carries the agent dot while a client is connected" \
+            || bad "[PANEL-1] no agent dot with a client connected ($CONTROL_REPLY)"
+        # The crop is taken while the client is still connected: the dot is in
+        # the drawing, not a second view over the button.
+        item_shots menubar-item-dot
+        kill "$agent_pid" 2>/dev/null
+        wait "$agent_pid" 2>/dev/null
+        # And it leaves with the client: the image follows the count both ways.
+        dot=0
+        for _ in $(seq 1 100); do
+            control menubaricon || true
+            case "$CONTROL_REPLY" in *"dot=0"*) dot=1; break ;; esac
+            sleep 0.1
+        done
+        [ "$dot" = 1 ] \
+            && ok "[PANEL-1] the dot leaves when the client disconnects" \
+            || bad "[PANEL-1] the dot stayed after the client left ($CONTROL_REPLY)"
+    fi
+    stop_app
+    stop_fakephone
+    wait_until 10 no_fakephone
     shoot_panel_states
 }
 
