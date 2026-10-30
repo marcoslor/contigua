@@ -2981,6 +2981,7 @@ final class ConnectionController {
                 let glyph = 9 * scales[index]
                 items.append(["first": model.slots[index].first,
                               "letters": model.slots[index].count,
+                              "scale": Double(scales[index]),
                               "y": Double(box.y),
                               "height": Double(box.height),
                               "glyphTop": Double(box.y + (box.height - glyph) / 2),
