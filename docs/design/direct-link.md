@@ -257,6 +257,10 @@ same order, and prints one JSON line:
 - A failed probe means there is **no `direct` provider at all** for that
   session: the app offers only `lan`, and the settings row for direct is
   disabled with the code's sentence (honest settings, CONV-PD-09).
+- **Where the person sees it** (decided by the reviewer, 10-30): the Direct
+  link switch lives on that phone's Settings page, beside "Share notifications
+  and Now Playing"; the probe's answer is shown once in **This Mac ▸ General**,
+  where the install belongs. P4 draws both, after the person sees options.
 
 ## 3. Install and uninstall
 
@@ -488,8 +492,9 @@ session, the NDP and the key.
 - **Storage, Mac**: a per-profile `direct.json` (`0600`, in the `0700` profile
   folder, beside `pins.json`), one record per phone: `{"<deviceId>":{"key":
   "<64 hex>","created":<epoch s>}}`. **Not the login Keychain**, which is
-  today's profile rule for key material (pairing.md PAIR-1) — see the open
-  question in `docs/specs/transport.md`; the daemon cannot read the person's
+  today's profile rule for key material (pairing.md PAIR-1); decided by the
+  reviewer on 10-30, recorded in `docs/specs/transport.md`'s decisions. The
+  daemon cannot read the person's
   login keychain anyway (the research hit exactly that: "No keychain is
   available"), which is why the key is handed to the helper per dial rather
   than read by it.
