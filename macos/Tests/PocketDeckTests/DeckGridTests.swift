@@ -310,10 +310,8 @@ final class DeckGridTests: XCTestCase {
     /// placeholder (never nothing), and a phone that said "no icon" draws the
     /// generated one.
     func testAMissingIconStillDrawsATile() {
-        XCTAssertEqual(GlassIcon.variant(rendered: nil, image: nil, isMissing: false, glassOn: true),
-                       .placeholder)
-        XCTAssertEqual(GlassIcon.variant(rendered: nil, image: nil, isMissing: true, glassOn: true),
-                       .fallback)
+        XCTAssertEqual(GlassIcon.variant(rendered: nil, isMissing: false), .placeholder)
+        XCTAssertEqual(GlassIcon.variant(rendered: nil, isMissing: true), .fallback)
     }
 
     // MARK: the zoom's layout rate (NFR deck_zoom_frame_p95_ms)
@@ -416,12 +414,11 @@ final class DeckGridTests: XCTestCase {
         XCTAssertGreaterThan(fit.rightInset - fit.leftInset, 1)
     }
 
-    // MARK: glass tile (docs/DESIGN.md "The app grid")
+    // MARK: the tile (docs/DESIGN.md "The app grid")
 
     func testGlassTileGeometry() {
         XCTAssertEqual(GlassIcon.tileSide, 56, "56 pt tile as today")
         XCTAssertEqual(GlassIcon.cornerRadius, 12.6, accuracy: 0.01, "22.5 % of the side")
-        XCTAssertEqual(GlassIcon.flatSide, 43.68, accuracy: 0.01, "a flat icon sits at 78 % of the tile")
     }
 
     func testCropRectIsTheCentralTwoThirdsOfTheCanvas() {
@@ -434,22 +431,17 @@ final class DeckGridTests: XCTestCase {
 
     @MainActor
     func testWhichVariantAnEntryPicks() {
-        let image = NSImage(size: NSSize(width: 96, height: 96))
         let rendered = NSImage(size: NSSize(width: 224, height: 224))
 
-        XCTAssertEqual(GlassIcon.variant(rendered: rendered, image: image, isMissing: false, glassOn: true),
-                       .rendered(rendered), "setting on: the shared renderer's image")
-        XCTAssertEqual(GlassIcon.variant(rendered: nil, image: image, isMissing: false, glassOn: true),
-                       .bare(image), "no render yet: the flat image, never a blank tile")
-        XCTAssertEqual(GlassIcon.variant(rendered: rendered, image: image, isMissing: false, glassOn: false),
-                       .bare(image), "setting off: today's look")
-        XCTAssertEqual(GlassIcon.variant(rendered: rendered, image: image, isMissing: true, glassOn: true),
+        XCTAssertEqual(GlassIcon.variant(rendered: rendered, isMissing: false),
+                       .rendered(rendered), "the shared renderer's image")
+        XCTAssertEqual(GlassIcon.variant(rendered: rendered, isMissing: true),
                        .rendered(rendered), "a missing icon that answered is still an image")
         XCTAssertNil(AppIconLayers(fg: nil, bg: NSImage(size: NSSize(width: 216, height: 216)), mono: nil),
                      "half an answer is no layers")
-        XCTAssertEqual(GlassIcon.variant(rendered: nil, image: nil, isMissing: false, glassOn: true),
-                       .placeholder, "waiting for the phone")
-        XCTAssertEqual(GlassIcon.variant(rendered: nil, image: nil, isMissing: true, glassOn: true),
+        XCTAssertEqual(GlassIcon.variant(rendered: nil, isMissing: false),
+                       .placeholder, "no render yet: the placeholder, never the bare flat image")
+        XCTAssertEqual(GlassIcon.variant(rendered: nil, isMissing: true),
                        .fallback, "the phone said there is no icon")
     }
 }

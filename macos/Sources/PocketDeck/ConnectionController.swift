@@ -244,7 +244,7 @@ final class ConnectionController {
     private(set) var apps: [AppInfo] = []
     private(set) var appsLoaded = false
     private(set) var icons: [String: NSImage] = [:]
-    /// The adaptive layers of the icons that have them (`deck.glassIcons`).
+    /// The adaptive layers of the icons that have them.
     private(set) var iconLayers: [String: AppIconLayers] = [:]
     /// The shared renderer's icon for the Deck tile (docs/design/dock.md §Icons).
     private(set) var deckIcons: [String: NSImage] = [:]
@@ -2462,13 +2462,17 @@ final class ConnectionController {
                 icons[app.pkg] = cached
                 windows.setIcon(cached, pkg: app.pkg)
                 loadCachedLayers(app.pkg, deviceId: id)
+                // A cached flat (or a phone that predates layers) still gets a
+                // render: the tile never draws the flat image itself, and the
+                // phone's answer may take a while or never come.
+                if deckIcons[app.pkg] == nil { refreshDeckIcon(app.pkg) }
             } else {
                 requestIcon(app.pkg, px: IconSizeClass.deck.layerPx)
             }
         }
         // A cached icon without layers may predate them: ask once per
         // connection, so a phone that has layers catches the rendered look up.
-        if GlassIconsSetting.isEnabled(in: profile.defaults), let id = link.phone?.id {
+        if let id = link.phone?.id {
             for app in list where iconLayers[app.pkg] == nil && icons[app.pkg] != nil && IconCache.shared.hasLayers(pkg: app.pkg, deviceId: id) == false {
                 if layerRefresh.allow(pkg: app.pkg) { requestIcon(app.pkg, px: IconSizeClass.deck.layerPx) }
             }

@@ -1062,7 +1062,7 @@ struct AppGrid: View {
                     } else {
                         grid {
                             ForEach(cells) { cell in
-                                AppCell(app: cell.app, icon: controller.icons[cell.app.pkg],
+                                AppCell(app: cell.app,
                                         rendered: controller.deckIcons[cell.app.pkg],
                                         iconIsMissing: iconIsMissing(cell.app),
                                         metrics: metrics,
@@ -1682,7 +1682,6 @@ private extension View {
 
 struct AppCell: View {
     let app: AppInfo
-    let icon: NSImage?
     /// The shared renderer's icon for the tile (docs/design/dock.md §Icons).
     let rendered: NSImage?
     let iconIsMissing: Bool
@@ -1691,13 +1690,12 @@ struct AppCell: View {
     let selected: Bool
     let open: () -> Void
     @State private var hovering = false
-    @AppStorage(GlassIconsSetting.key, store: Profile.active.defaults) private var glassIconsOn = true
 
     var body: some View {
         Button(action: open) {
             VStack(spacing: metrics.iconLabelGap) {
-                AppIconView(app: app, image: icon, rendered: rendered, isMissing: iconIsMissing,
-                            glassOn: glassIconsOn, hovering: hovering, side: metrics.iconSide)
+                AppIconView(app: app, rendered: rendered, isMissing: iconIsMissing,
+                            hovering: hovering, side: metrics.iconSide)
                 Text(app.displayLabel)
                     .font(.caption)
                     .lineLimit(1)
