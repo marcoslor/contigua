@@ -366,10 +366,11 @@ and the helper's `Info.plist` declares it.
    and the link's bandwidth estimate, which is logged as a number and nothing
    else. A connection can arrive at any time the NDP is up: as a path of a live
    session, or as the first path that founds one.
-3. Each accepted socket goes through the **existing** server path: the same TLS
-   wrap, the same gates, the same `Session` slot (a `join`, with a 4-protocol
-   `hello`). One more listener, no second server: the Aware socket and the LAN
-   socket feed the same `Server`.
+3. Each accepted socket is handed to the shell service (§4.5) and then goes
+   through the **existing** server path: the same TLS wrap, the same gates, the
+   same `Session` slot (a `join`, or the first path of a new session). One more
+   listener, no second server: the Aware socket and the LAN socket feed the same
+   `Server`.
 4. Because the Mac dials, the phone needs no client-side Aware code at all:
    no `subscribe`, no `NetworkRequest` from the phone.
 
@@ -432,6 +433,48 @@ real state instead of assuming it.
   with them off reports "Location is off, so Wi-Fi Aware cannot find your Mac."
 - Nothing else is asked, and the public build asks for none of it (§1.3).
 
+### 4.5 The process split: the app owns Aware, the shell serves the socket
+
+An Aware network created by `requestNetwork` belongs to the **UID that asked
+for it**, and only the app process has a `WifiAwareManager`. The shell service
+(UID 2000) can do neither. So, and this is the decision:
+
+- **The app process** owns `attach`, `publish`, the NDP's `requestNetwork`, the
+  `ServerSocket` bound to the network (`network.bindSocket`), and `accept`.
+- **Every accepted socket goes to the shell service** as a
+  `ParcelFileDescriptor` (`ParcelFileDescriptor.fromSocket(socket)`) over the
+  existing AIDL — one new growable transaction, `adoptDirectSocket(fd)`, added
+  at the end of `IDeckService` (the transaction codes only ever grow). The app
+  hands the descriptor over and closes its own copy; the shell `dup`s it and
+  wraps it as a `Socket`, then runs **the same** TLS wrap, the same gates, the
+  same `SessionSlot` and the same `Session` as a LAN socket. TLS still
+  terminates in the shell, exactly as for the LAN, and a handed-over socket can
+  be a session's *first* path as readily as a later one (§4.3).
+- **The key never goes to the shell.** The app stores it Keystore-wrapped and
+  decrypts it only for its own `publish` and `requestNetwork` calls (§5).
+
+**The named risk**: using an accepted socket's descriptor from another UID. On
+Android a socket descriptor is not UID-bound once it is duplicated into another
+process, but no public API promises that: SELinux policy, a library that checks
+the creator's credentials, or a future platform change could refuse it. The
+proof is the reviewer's phone: the shell's TLS handshake completes over a
+handed-over Aware socket (`DIRECT-17`). Wrapping the descriptor uses the
+platform's package-private `Socket(FileDescriptor)` constructor through the
+same guarded reflection the shell already uses elsewhere; a failure logs one
+closed token (`path-fd-wrap failed`) and is not fatal.
+
+**The named fallback**: the *bridge*. The app creates an `AF_UNIX` `socketpair`,
+hands one end to the shell over the same AIDL call, keeps the other, and copies
+bytes between the Aware socket and its end (two threads, 8 KiB buffers, no
+framing, no parsing). TLS still terminates in the shell, so the guarantee is
+unchanged; the cost is two copies per byte (a few percent of one core at mirror
+rates). It is used only when the descriptor cannot be wrapped for that session,
+and it logs `path-bridge` once so a log shows which path ran.
+
+A path that ends closes its socket in the shell and frees the app's reference;
+nothing about a socket survives the path. Only the app process holds the Aware
+session, the NDP and the key.
+
 ## 5. The key (D9)
 
 - **Length and shape**: 32 random bytes from the Mac's system RNG
@@ -453,9 +496,8 @@ real state instead of assuming it.
 - **Storage, phone**: `AES-256-GCM` with a non-exportable key in the Android
   Keystore (alias `pocketdeck-direct-psk`); the ciphertext (`iv ‖ ct`, base64)
   lives in the app's private prefs as `direct.psk.<clientId>`. The app decrypts
-  it only to hand the plaintext to the shell service over the existing AIDL
-  push, which then builds the publish session. The shell never writes it to
-  disk.
+  it only for its own `publish` and `requestNetwork` calls (§4.5); it never
+  crosses AIDL and the shell service never receives it.
 - **Rotation**: deleting the pairing deletes the key on both sides — the Mac on
   Forget This Phone… (and on a pin mismatch that forces a re-pair), the phone
   on Forget / Forget All Macs… (Forget All rotates the phone's identity, so the

@@ -59,15 +59,19 @@ that never offers a direct path is simply never asked to join one.
 | `PathConnection` (one per path; today's transport half of `Session`) | Mac | the endpoint, the TLS handshake and pin check, the `FrameDecoder`, the per-path reader, the per-path 2 s ping | see a message before the path layer |
 | `PathProvider` (`lan`, `direct`, `wan` later) | Mac | dialing a path to a phone (or a listener, for the phone's side), its throughput class, "is available" | see a plaintext byte |
 | `DirectLinkd` (direct builds only) | Mac | the UNIX-socket client of `pocketdeck-directd` | see a plaintext byte |
-| `Server` | phone | the listeners (LAN, and the Aware-bound one in direct builds), the TLS wrap, the accept gate | keep a second session |
+| `Server` | phone | the LAN listener, the TLS wrap of every socket it is handed, the accept gate | keep a second session |
+| `AwareAcceptor` (direct build, app process) | phone | attach, publish, the NDP, the Aware `ServerSocket`, `accept`, and the hand-off of each accepted socket to the shell (`docs/design/direct-link.md` §4.5) | see a frame, hold the key in the shell |
 | `Session` | phone | the session id, the path set, the same path layer, the shell-side features (windows, files, notifications) | decide a switch |
 | `SessionSlot` / `SessionDropper` | phone | who owns the phone: free, live, draining, handing (§4) | join a path |
 
-Everything stays where it is today, process-wise: on the phone the whole path
-layer lives in the shell process (UID 2000) next to the TLS sockets and the
-window streams; nothing about a path crosses the AIDL boundary, and the app
-process still only pushes identity, pins and switches. On the Mac it lives on
-`Session`'s one serial queue (no new locks, no second actor).
+Everything stays where it is today, process-wise: on the phone the LAN listener,
+the TLS and the whole path layer live in the shell process (UID 2000) next to
+the window streams. A direct build adds one thing on the app side: the Aware
+listener (only the app may own an Aware network), which hands each accepted
+socket to the shell as a descriptor; the shell runs the same TLS, the same slot
+and the same path layer on it. Nothing about a path's content crosses AIDL, and
+the app process still only pushes identity, pins and switches. On the Mac it all
+lives on `Session`'s one serial queue (no new locks, no second actor).
 
 ## 3. Where seq / ack / replay sits
 
