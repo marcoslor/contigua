@@ -1,7 +1,8 @@
-// The rail's spacing (DECK-7): proportional slots with the rail's height fixed
-// (S2), the rest pitch giving way so the magnified overshoot fits, the drawn
-// letter under the pointer being the fisheye's centre, nothing clipped at any
-// window height, and no slot edge jumping.
+// The rail's vertical layout (DECK-7): 11 pt boxes with equal gaps, the rest
+// pitch giving way so the magnified ends fit, and the span frozen on enter so
+// A's top and #'s bottom do not move while the pointer sweeps. Nothing clipped,
+// the drawn slot under the pointer is the fisheye's centre, and no slot edge
+// jumps.
 
 import XCTest
 @testable import PocketDeck
@@ -23,16 +24,18 @@ final class RailLayoutTests: XCTestCase {
         DeckRail.slots(forHeight: CGFloat(count) * DeckRail.pitch) ?? []
     }
 
-    private func scales(_ y: CGFloat, pitch: CGFloat, count: Int, dx: CGFloat = 0) -> [CGFloat] {
-        (0..<count).map {
-            RailFisheye.scale(distance: y / pitch - (CGFloat($0) + 0.5),
-                              dx: dx, zone: RailApproach.zone, reduceMotion: false)
-        }
+    private func rest(_ count: Int, pitch: CGFloat) -> [RailLayout.Slot] {
+        RailLayout.slots(scales: Array(repeating: 1, count: count), pitch: pitch, anchor: nil)
     }
 
-    private func layout(_ y: CGFloat, pitch: CGFloat, count: Int, dx: CGFloat = 0) -> [RailLayout.Slot] {
-        RailLayout.slots(scales: scales(y, pitch: pitch, count: count, dx: dx),
-                         available: CGFloat(count) * pitch, pitch: pitch, anchor: y)
+    /// The drawn slots at `y` after entering at `anchor`: the centre solved
+    /// inside the frozen span, exactly as the rail draws it.
+    private func drawn(at y: CGFloat, from anchor: CGFloat, pitch: CGFloat, count: Int)
+        -> (layout: [RailLayout.Slot], scales: [CGFloat]) {
+        let span = RailLayout.span(count: count, pitch: pitch, anchor: anchor)
+        let centre = RailLayout.frozenCentre(atY: y, span: span, count: count)
+        let scales = RailLayout.scales(count: count, centre: centre, reduceMotion: false)
+        return (RailLayout.frozenSlots(scales: scales, span: span), scales)
     }
 
     private func edges(_ layout: [RailLayout.Slot]) -> [CGFloat] {
@@ -62,10 +65,10 @@ final class RailLayoutTests: XCTestCase {
             XCTAssertGreaterThanOrEqual(p, previous, "a taller window never narrows the pitch")
             previous = p
             guard p >= 18 else { continue }
-            XCTAssertLessThanOrEqual(27 * p + 2 * RailLayout.overshoot(count: 27, pitch: p),
-                                     content + 0.001, "the pitch must leave room for the overshoot at \(content)")
+            XCTAssertLessThanOrEqual(27 * p + 2 * RailLayout.endExtension(count: 27),
+                                     content + 0.001, "the pitch must leave room at \(content)")
             if p < 20 {
-                XCTAssertGreaterThan(27 * (p + 0.5) + 2 * RailLayout.overshoot(count: 27, pitch: p + 0.5),
+                XCTAssertGreaterThan(27 * (p + 0.5) + 2 * RailLayout.endExtension(count: 27),
                                      content, "half a point more would not fit at \(content)")
             }
         }
@@ -85,27 +88,35 @@ final class RailLayoutTests: XCTestCase {
 
     // MARK: The three properties
 
-    /// DECK-7: no glyph is ever clipped, at any pointer y, at any window height
-    /// from the minimum to 900 pt.
+    /// DECK-7: no glyph is ever clipped, at any pointer y and any window height
+    /// from the minimum to 900 pt. Entering at any y freezes a span that holds
+    /// every slot and every glyph, so the drawn rail cannot leave the inset.
     func testNothingIsClippedAtAnyPointerYOrWindowHeight() {
-        for content in stride(from: contentMinimum, through: 848, by: 5) {
+        for content in stride(from: contentMinimum, through: 848, by: 10) {
             let (count, pitch) = fit(content)
             let total = CGFloat(count) * pitch
             let slack = (content - total) / 2
             XCTAssertGreaterThanOrEqual(slack, 0, "the rail fits its content at \(content)")
-            var y: CGFloat = 0
-            while y <= total {
-                let layout = layout(y, pitch: pitch, count: count)
-                for (index, box) in layout.enumerated() {
-                    let glyph = 9 * RailFisheye.scale(distance: y / pitch - (CGFloat(index) + 0.5),
-                                                     dx: 0, zone: RailApproach.zone, reduceMotion: false)
-                    let top = box.y + (box.height - glyph) / 2
-                    XCTAssertGreaterThanOrEqual(top, -slack - 0.001,
-                                                "\(count) slots at \(content): glyph \(index) above the clip at y \(y)")
-                    XCTAssertLessThanOrEqual(top + glyph, total + slack + 0.001,
-                                             "\(count) slots at \(content): glyph \(index) below the clip at y \(y)")
+            // The span is the open layout's own ends, so the worst enter y is
+            // the one whose ends reach furthest; sample every 4 pt and the ends.
+            var anchor: CGFloat = 0
+            while anchor <= total {
+                let span = RailLayout.span(count: count, pitch: pitch, anchor: anchor)
+                XCTAssertGreaterThanOrEqual(span.top, -slack - 0.001,
+                                            "\(count) slots at \(content): the span's top at enter \(anchor)")
+                XCTAssertLessThanOrEqual(span.bottom, total + slack + 0.001,
+                                         "\(count) slots at \(content): the span's bottom at enter \(anchor)")
+                for fraction in [CGFloat(0), 0.25, 0.5, 0.75, 1] {
+                    let y = span.top + span.length * fraction
+                    let layout = drawn(at: y, from: anchor, pitch: pitch, count: count).layout
+                    for (index, box) in layout.enumerated() {
+                        XCTAssertGreaterThanOrEqual(box.y, span.top - 0.001,
+                                                    "\(content): slot \(index) above the frozen span")
+                        XCTAssertLessThanOrEqual(box.y + box.height, span.bottom + 0.001,
+                                                 "\(content): slot \(index) below the frozen span")
+                    }
                 }
-                y += 0.5
+                anchor += 4
             }
         }
     }
@@ -116,26 +127,25 @@ final class RailLayoutTests: XCTestCase {
         for content in [content625, contentMinimum, 848] {
             let (count, pitch) = fit(content)
             let total = CGFloat(count) * pitch
-            let slots = slots(count)
-            for dx in [CGFloat(64), 24, 0] {
-                var y: CGFloat = 0
-                while y < total {
-                    let s = scales(y, pitch: pitch, count: count, dx: dx)
-                    let layout = RailLayout.slots(scales: s, available: total, pitch: pitch, anchor: y)
-                    guard let drawn = RailLayout.slotIndex(atY: y, in: layout) else {
+            let railSlots = slots(count)
+            for anchor in [12.5 * pitch, 0] {
+                let frozenSpan = RailLayout.span(count: count, pitch: pitch, anchor: anchor)
+                var y = frozenSpan.top
+                while y < frozenSpan.bottom {
+                    let (layout, scales) = drawn(at: y, from: anchor, pitch: pitch, count: count)
+                    guard let drawnSlot = RailLayout.slotIndex(atY: y, in: layout) else {
                         XCTFail("no slot at y \(y)"); return
                     }
-                    let anchor = min(count - 1, Int(y / pitch))
-                    XCTAssertEqual(drawn, anchor, "\(content) dx \(dx): the pointer at \(y) is in its own slot")
-                    XCTAssertEqual(s[drawn], s.max() ?? 0, accuracy: 0.0001,
-                                   "\(content) dx \(dx): the slot under the pointer is the fisheye's centre")
-                    let box = layout[drawn]
+                    XCTAssertEqual(scales[drawnSlot], scales.max() ?? 0, accuracy: 0.0001,
+                                   "\(content): the slot under \(y) is the fisheye's centre")
+                    let box = layout[drawnSlot]
                     let within = min(max((y - box.y) / box.height, 0), 0.999_999)
-                    let band = min(slots[drawn].count - 1, max(0, Int(within * CGFloat(slots[drawn].count))))
-                    XCTAssertEqual(RailLayout.letter(atY: y, in: layout, slots: slots),
-                                   DeckRail.letters[slots[drawn].first + band],
-                                   "\(content) dx \(dx): the tag and the click name the drawn letter")
-                    y += 0.5
+                    let band = min(railSlots[drawnSlot].count - 1,
+                                   max(0, Int(within * CGFloat(railSlots[drawnSlot].count))))
+                    XCTAssertEqual(RailLayout.letter(atY: y, in: layout, slots: railSlots),
+                                   DeckRail.letters[railSlots[drawnSlot].first + band],
+                                   "\(content): the tag and the click name the drawn letter")
+                    y += 1
                 }
             }
         }
@@ -146,87 +156,151 @@ final class RailLayoutTests: XCTestCase {
         for content in [content625, contentMinimum, 848] {
             let (count, pitch) = fit(content)
             let total = CGFloat(count) * pitch
-            var previous: [CGFloat]?
+            for anchor in [12.5 * pitch, total - 0.5] {
+                let span = RailLayout.span(count: count, pitch: pitch, anchor: anchor)
+                var previous: [CGFloat]?
+                var y = span.top
+                while y <= span.bottom {
+                    let current = edges(drawn(at: y, from: anchor, pitch: pitch, count: count).layout)
+                    if let previous {
+                        let step = zip(previous, current).map { abs($0 - $1) }.max() ?? 0
+                        XCTAssertLessThanOrEqual(step, 2, "\(content): a slot edge jumped \(step) pt at y \(y)")
+                    }
+                    previous = current
+                    y += 0.5
+                }
+            }
+        }
+    }
+
+    // MARK: The frozen span
+
+    /// K2: enter at M, A, C, Y and #, then sweep the pointer: A's top and #'s
+    /// bottom stay exactly where they were on enter (±0.01 pt).
+    func testTheFrozenSpanKeepsTheEndsFixed() {
+        let (count, pitch) = fit(content625)
+        let total = CGFloat(count) * pitch
+        for enterIndex in [12, 0, 2, 24, 26] {
+            let anchor = (CGFloat(enterIndex) + 0.5) * pitch
+            let span = RailLayout.span(count: count, pitch: pitch, anchor: anchor)
+            let first = drawn(at: anchor, from: anchor, pitch: pitch, count: count).layout
+            let top = first[0].y
+            let bottom = first[count - 1].y + first[count - 1].height
+            XCTAssertEqual(top, span.top, accuracy: 0.01)
+            XCTAssertEqual(bottom, span.bottom, accuracy: 0.01)
             var y: CGFloat = 0
             while y <= total {
-                let current = edges(layout(y, pitch: pitch, count: count))
-                if let previous {
-                    let step = zip(previous, current).map { abs($0 - $1) }.max() ?? 0
-                    XCTAssertLessThanOrEqual(step, 2, "\(content): a slot edge jumped \(step) pt at y \(y)")
-                }
-                previous = current
-                y += 0.5
+                let layout = drawn(at: y, from: anchor, pitch: pitch, count: count).layout
+                XCTAssertEqual(layout[0].y, top, accuracy: 0.01,
+                               "A's top moved at y \(y), entered at index \(enterIndex)")
+                XCTAssertEqual(layout[count - 1].y + layout[count - 1].height, bottom, accuracy: 0.01,
+                               "# 's bottom moved at y \(y), entered at index \(enterIndex)")
+                y += 1
             }
         }
     }
 
-    /// DECK-7: and no edge moves more than 2 pt per 1 pt of approach closing at M.
-    func testNoSlotEdgeJumpsAsTheApproachCloses() {
-        for content in [content625, contentMinimum, 848] {
-            let (count, pitch) = fit(content)
-            let total = CGFloat(count) * pitch
-            let slots = slots(count)
-            let m = slots.firstIndex { $0.first <= 12 && 12 < $0.first + $0.count } ?? 0
-            let y = CGFloat(m) * pitch + pitch / 2
-            var previous: [CGFloat]?
-            for dx in stride(from: CGFloat(64), through: 0, by: -1) {
-                let current = edges(layout(y, pitch: pitch, count: count, dx: dx))
-                if let previous {
-                    let step = zip(previous, current).map { abs($0 - $1) }.max() ?? 0
-                    XCTAssertLessThanOrEqual(step, 2, "\(content): a slot edge jumped \(step) pt at dx \(dx)")
-                }
-                previous = current
-            }
-        }
-    }
-
-    // MARK: S2 itself
-
-    func testTheSlotsAreProportionalAndFillTheRail() {
+    /// K2: entering does not jump. At the entry y the frozen span draws exactly
+    /// the layout the rail drew before the enter (±0.01 pt).
+    func testTheFrozenLayoutEqualsTheEnterLayout() {
         let (count, pitch) = fit(content625)
-        let layout = layout(246, pitch: pitch, count: count)
-        XCTAssertEqual(layout.map(\.height).reduce(0, +), CGFloat(count) * pitch, accuracy: 0.001)
-        for (index, slot) in layout.enumerated() {
-            XCTAssertEqual(slot.height / scales(246, pitch: pitch, count: count)[index],
-                           CGFloat(count) * pitch / scales(246, pitch: pitch, count: count).reduce(0, +),
-                           accuracy: 0.001, "slot \(index) is proportional to its scale")
+        for enterIndex in [12, 0, 2, 24, 26] {
+            let anchor = (CGFloat(enterIndex) + 0.5) * pitch
+            let frozen = drawn(at: anchor, from: anchor, pitch: pitch, count: count).layout
+            let open = RailLayout.slots(
+                scales: RailLayout.scales(count: count, centre: anchor / pitch, reduceMotion: false),
+                pitch: pitch, anchor: anchor)
+            XCTAssertEqual(frozen.count, open.count)
+            for index in 0..<count {
+                XCTAssertEqual(frozen[index].y, open[index].y, accuracy: 0.01,
+                               "slot \(index) differs on enter at index \(enterIndex)")
+                XCTAssertEqual(frozen[index].height, open[index].height, accuracy: 0.01)
+            }
         }
-        XCTAssertLessThan(layout[0].height, pitch, "the far letters pay")
-        XCTAssertGreaterThan(layout[12].height, pitch, "the letter under the pointer grows")
     }
+
+    /// K2: every gap inside the frozen span is equal to every other, and equal
+    /// to the rest gap at the entry y.
+    func testTheFrozenGapsAreEqual() {
+        let (count, pitch) = fit(content625)
+        let restGap = pitch - RailLayout.letterBox
+        for enterIndex in [12, 0] {
+            let anchor = (CGFloat(enterIndex) + 0.5) * pitch
+            let span = RailLayout.span(count: count, pitch: pitch, anchor: anchor)
+            let entered = drawn(at: anchor, from: anchor, pitch: pitch, count: count)
+            XCTAssertEqual(RailLayout.frozenGap(scales: entered.scales, span: span), restGap,
+                           accuracy: 0.01, "the gap on enter is not the rest gap")
+            var y = span.top
+            while y <= span.bottom {
+                let (layout, scales) = drawn(at: y, from: anchor, pitch: pitch, count: count)
+                var previous: CGFloat?
+                for index in 0..<count {
+                    let gap = layout[index].height - RailLayout.letterBox * scales[index]
+                    XCTAssertLessThanOrEqual(abs(gap - restGap), 1,
+                                             "the gap at \(y) moved \(gap - restGap) pt from rest")
+                    if let previous {
+                        XCTAssertEqual(gap, previous, accuracy: 0.01,
+                                       "gaps differ at index \(index), y \(y)")
+                    }
+                    previous = gap
+                }
+                y += 2
+            }
+        }
+    }
+
+    /// K2: Y(u) strictly increases over [0, count], and the bisection inverts it
+    /// to 0.01 pt.
+    func testTheCentreMappingIsStrictlyIncreasing() {
+        let (count, pitch) = fit(content625)
+        let span = RailLayout.span(count: count, pitch: pitch, anchor: 12.5 * pitch)
+        var previous = RailLayout.frozenCentreY(0, span: span, count: count)
+        for step in 1...count * 100 {
+            let u = CGFloat(step) / 100
+            let y = RailLayout.frozenCentreY(u, span: span, count: count)
+            XCTAssertGreaterThan(y, previous, "Y(u) does not increase at u \(u)")
+            previous = y
+            let solved = RailLayout.frozenCentre(atY: y, span: span, count: count)
+            XCTAssertEqual(RailLayout.frozenCentreY(solved, span: span, count: count), y,
+                           accuracy: 0.01, "Y(u) = \(y) does not invert at u \(u)")
+        }
+    }
+
+    // MARK: The rest layout
 
     func testTheRestScalesGiveUniformRowsAtTheDrawnPitch() {
         let pitch: CGFloat = 19.7
-        let rest = RailLayout.slots(scales: Array(repeating: 1, count: 27),
-                                    available: 27 * pitch, pitch: pitch, anchor: nil)
-        for (index, slot) in rest.enumerated() {
+        for (index, slot) in rest(27, pitch: pitch).enumerated() {
             XCTAssertEqual(slot.y, CGFloat(index) * pitch, accuracy: 0.001)
             XCTAssertEqual(slot.height, pitch, accuracy: 0.001)
         }
     }
 
-    func testTheFarLettersPayForTheMagnifiedOne() {
-        let (count, pitch) = fit(content625)
-        let y: CGFloat = 12.5 * pitch
-        let rest = RailLayout.slots(scales: Array(repeating: 1, count: count),
-                                    available: CGFloat(count) * pitch, pitch: pitch, anchor: y)
-        let lens = layout(y, pitch: pitch, count: count)
-        let restAbove = rest[12].y - (rest[0].y + rest[0].height)
-        let lensAbove = lens[12].y - (lens[0].y + lens[0].height)
-        XCTAssertLessThan(lensAbove, restAbove)
-        let restBelow = rest[26].y - (rest[12].y + rest[12].height)
-        let lensBelow = lens[26].y - (lens[12].y + lens[12].height)
-        XCTAssertLessThan(lensBelow, restBelow)
+    /// The boxes are `letterBox x scale` and the gaps never grow: the growth
+    /// above the pointer pushes the top end up, the one below the bottom down.
+    func testTheMagnifiedBoxesKeepTheirGapsAndExtendTheEnds() {
+        let pitch: CGFloat = 19.7
+        let total = 27 * pitch
+        let gap = pitch - RailLayout.letterBox
+        let anchor = 13.5 * pitch
+        let scales = RailLayout.scales(count: 27, centre: anchor / pitch, reduceMotion: false)
+        let layout = RailLayout.slots(scales: scales, pitch: pitch, anchor: anchor)
+        XCTAssertLessThan(layout[0].y, -1, "the top end grows up")
+        XCTAssertGreaterThan(layout[26].y + layout[26].height, total + 1, "the bottom end grows down")
+        for index in 0..<26 {
+            let boxBottom = layout[index].y + RailLayout.letterBox * scales[index]
+            XCTAssertEqual(layout[index + 1].y - boxBottom, gap, accuracy: 0.01,
+                           "the gap after slot \(index) stays \(gap) pt")
+        }
     }
 
     func testHitTestingSplitsACondensedSlotTheSameWay() {
-        let slots = DeckRail.slots(forHeight: DeckRail.compactTwoHeight) ?? []
-        XCTAssertEqual(slots.count, 14)
+        let railSlots = DeckRail.slots(forHeight: DeckRail.compactTwoHeight) ?? []
+        XCTAssertEqual(railSlots.count, 14)
         let pitch = RailLayout.maximumPitch
-        let layout = RailLayout.slots(scales: Array(repeating: 1, count: 14),
-                                      available: DeckRail.compactTwoHeight, pitch: pitch, anchor: nil)
-        XCTAssertEqual(RailLayout.letter(atY: layout[0].y + 1, in: layout, slots: slots), "A")
-        XCTAssertEqual(RailLayout.letter(atY: layout[0].y + pitch - 1, in: layout, slots: slots), "B")
-        XCTAssertEqual(RailLayout.letter(atY: layout[3].y + 1, in: layout, slots: slots), "G")
+        let layout = rest(14, pitch: pitch)
+        XCTAssertEqual(RailLayout.letter(atY: layout[0].y + 1, in: layout, slots: railSlots), "A")
+        XCTAssertEqual(RailLayout.letter(atY: layout[0].y + pitch - 1, in: layout, slots: railSlots), "B")
+        XCTAssertEqual(RailLayout.letter(atY: layout[3].y + 1, in: layout, slots: railSlots), "G")
     }
 }
