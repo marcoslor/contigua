@@ -96,16 +96,17 @@ final class PhoneAppIconTests: XCTestCase {
         XCTAssertLessThan(deltaE((centre.r, centre.g, centre.b), (255, 0, 0)), 2, "the fg is not blended into the bg")
     }
 
-    func testALegacyIconSitsOnAWhitePlate() throws {
+    func testALegacySquareFillsTheTile() throws {
+        // The picked look (docs/design/dock.md §Icons): a full-bleed flat
+        // square covers the tile, so its colour reaches the body's edge. The
+        // plate cases are pinned in IconFitTests.
         let image = try XCTUnwrap(PhoneAppIcon.render(layers: nil, flat: solid(0, 1, 0), px: 1024))
+        let edge = rgba(image, x: 110, y: 512)
         let centre = rgba(image, x: 512, y: 512)
-        let plate = rgba(image, x: 110, y: 512)
 
         XCTAssertLessThan(deltaE((centre.r, centre.g, centre.b), (0, 255, 0)), 3, "the flat icon keeps its colour")
-        XCTAssertGreaterThanOrEqual(plate.r, 250, "outside the 78 % inset the plate is white")
-        XCTAssertGreaterThanOrEqual(plate.g, 250)
-        XCTAssertGreaterThanOrEqual(plate.b, 250)
-        XCTAssertEqual(plate.a, 255)
+        XCTAssertLessThan(deltaE((edge.r, edge.g, edge.b), (0, 255, 0)), 3, "the square reaches the tile's edge")
+        XCTAssertEqual(edge.a, 255)
     }
 
     // The two reported bugs, pinned as numeric repros: the old Deck tile put

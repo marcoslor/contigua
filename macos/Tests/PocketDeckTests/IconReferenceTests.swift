@@ -114,6 +114,39 @@ final class IconReferenceTests: XCTestCase {
         check("legacy-flat.png", rendered)
     }
 
+    /// The one place a source is enlarged: a covered flat icon (docs/design/
+    /// dock.md §Icons). The person's rounded square with a 10 % margin crops to
+    /// 0.77 (1.24× at the Dock); the roundest square a cover accepts, a 45 %
+    /// corner radius, crops to 0.74 and is the worst case, so the 824 px body
+    /// of the shim's 1024 px render needs 1114 px of source. The Deck asks 432
+    /// px (flat 288) and stays under 1.0; the Dock asks 1296 (flat 864) and
+    /// costs 1.29×, the bound in docs/NFR.md.
+    func testACoveredLegacyIconStaysInsideTheUpscaleBound() throws {
+        let side = 96, lo = 0, hi = 95, radius = 43
+        var values = [UInt8](repeating: 0, count: side * side)
+        for y in 0..<side {
+            for x in 0..<side {
+                guard x >= lo, x <= hi, y >= lo, y <= hi else { continue }
+                let cx = x < lo + radius ? lo + radius : (x > hi - radius ? hi - radius : x)
+                let cy = y < lo + radius ? lo + radius : (y > hi - radius ? hi - radius : y)
+                if (x - cx) * (x - cx) + (y - cy) * (y - cy) <= radius * radius { values[y * side + x] = 255 }
+            }
+        }
+        let fit = PhoneAppIcon.flatFit(alpha: PhoneAppIcon.AlphaMap(width: side, height: side, values: values))
+        guard case .cover(let crop) = fit else { return XCTFail("a rounded square with a margin covers: \(fit)") }
+
+        func factor(_ sizeClass: IconSizeClass) -> Double {
+            let render = sizeClass == .deck ? 224 : 1024
+            let flat = Double(sizeClass.layerPx) * 2 / 3
+            return PhoneAppIcon.bodyRect(px: render).width / (crop.width * flat)
+        }
+        XCTAssertLessThanOrEqual(factor(.deck), 1.0, "the Deck's 288 px flat covers without upscaling")
+        let bound = NFRTestLimits.shared.double("icon_covered_flat_scale")
+        XCTAssertLessThanOrEqual(factor(.dock), bound,
+                                 "the Dock's 864 px flat is \(factor(.dock))×, bound \(bound)")
+        XCTAssertLessThanOrEqual(bound, 1.3, "the bound a cover may cost")
+    }
+
     func testNoIconIsUpscaled() {
         XCTAssertGreaterThanOrEqual(PhoneAppIcon.version, 1)
         // The shim renders one 1024 px image and cuts every .icns size from it.

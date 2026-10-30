@@ -126,6 +126,50 @@ final class DockAppsTests: XCTestCase {
         XCTAssertEqual(widths.max(), 1024, "the largest representation is the render, not a 96 px upscale")
     }
 
+    /// A flat-only app's shim carries the shared renderer's output, not the
+    /// phone's flat PNG (docs/design/dock.md §Icons): the render is shaped to
+    /// the macOS squircle, so an opaque full-bleed flat's canvas corner is
+    /// transparent in the `.icns` and the body is the flat's own colour.
+    func testAFlatOnlyShimsIconComesFromTheRenderer() throws {
+        let flat = flatPNG(red: 0, green: 128, blue: 96)
+        let icon = try XCTUnwrap(PhoneAppIcon.render(fg: nil, bg: nil, flat: flat, px: 1024),
+                                 "a flat-only app renders without layers")
+        let url = try DockShimBuilder.build(spec(), in: folder, shimBinary: try binary(), icon: icon)
+        let data = try Data(contentsOf: url.appendingPathComponent("Contents/Resources/AppIcon.icns"))
+        let image = try XCTUnwrap(NSImage(data: data))
+        let rep = try XCTUnwrap(image.representations.first { $0.pixelsWide == 1024 } as? NSBitmapImageRep)
+        let cg = try XCTUnwrap(rep.cgImage)
+        XCTAssertEqual(pixel(cg, x: 2, y: 2).a, 0, "the renderer's squircle, not the bare square")
+        let centre = pixel(cg, x: 512, y: 512)
+        XCTAssertEqual(centre.r, 0)
+        XCTAssertEqual(centre.g, 128)
+        XCTAssertEqual(centre.b, 96)
+        XCTAssertEqual(centre.a, 255)
+    }
+
+    private func flatPNG(size: Int = 96, red: UInt8, green: UInt8, blue: UInt8) -> Data {
+        let space = CGColorSpace(name: CGColorSpace.sRGB)!
+        let context = CGContext(data: nil, width: size, height: size, bitsPerComponent: 8, bytesPerRow: 0,
+                                space: space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+        context.setFillColor(CGColor(colorSpace: space, components: [CGFloat(red) / 255, CGFloat(green) / 255,
+                                                                    CGFloat(blue) / 255, 1])!)
+        context.fill(CGRect(x: 0, y: 0, width: size, height: size))
+        return NSBitmapImageRep(cgImage: context.makeImage()!).representation(using: .png, properties: [:])!
+    }
+
+    private func pixel(_ cg: CGImage, x: Int, y: Int) -> (r: UInt8, g: UInt8, b: UInt8, a: UInt8) {
+        var bytes = [UInt8](repeating: 0, count: 4)
+        bytes.withUnsafeMutableBytes { buffer in
+            guard let context = CGContext(data: buffer.baseAddress, width: 1, height: 1, bitsPerComponent: 8,
+                                          bytesPerRow: 4, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                          bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return }
+            context.interpolationQuality = .none
+            context.draw(cg, in: CGRect(x: -x, y: -(cg.height - 1 - y),
+                                        width: cg.width, height: cg.height))
+        }
+        return (bytes[0], bytes[1], bytes[2], bytes[3])
+    }
+
     // MARK: Cleanup decisions
 
     private func record(_ pkg: String, device: String = "d1", name: String, pinned: Bool = false) -> DockShimRecord {
