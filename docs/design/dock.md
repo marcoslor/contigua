@@ -42,8 +42,21 @@ every place.
   its 108 dp layer (the tile's `cropRect`/`zoomFactor` math, `zoomFactor` 3/2), clipped to
   the body. No tint, no material over the colours: this is what the phone's launcher draws,
   in Apple's shape.
-- Legacy (flat) icons: the flat image at 78 % of the body on a white plate, the way the
-  phone's launcher shows an icon with no adaptive layers.
+- Legacy (flat) icons are drawn by their own shape. The alpha is trimmed to its opaque
+  bounds (alpha > 0.5), and `PhoneAppIcon.flatFit` decides between cover and plate:
+  - **Cover** when the trimmed outline is a square or a rounded square: near square (ratio
+    ≤ 1.05), every edge's middle opaque, the four corner radii within 2 px or 6 % of the
+    side, and the measured coverage the one that radius explains — a rounded square loses
+    (4 − π)·r² of its bounds to its corners, ±0.03, and at least 0.8. The crop is 0.3 × the
+    measured corner radius in from each side (never more than 0.13 of the side), so the
+    icon's own rounded corners land outside the squircle and no transparency is left inside
+    it; the crop aspect-fills the body, clipped to the squircle. **No plate is drawn under
+    a cover**, so a cover has no plate colour to get wrong.
+  - **Plate** for everything else — a circle, a logo on transparency, an outline whose four
+    corners disagree (a baked soft shadow, a bitten corner): the flat image at 78 % of the
+    body. The plate is the median colour of the icon's outer opaque ring (the outer 5 % of
+    its bounds, at least 2 px), unless that colour is within ΔE 15 of the logo's own mean
+    colour — then it stays white, as before.
 - Finish: two constants only — a soft top light (white 0 → 5.5 % over the top 40 % of the
   body) and a thin inner specular edge (2 px at 8 % white, inset 1.5 % of the body). Neither
   changes the colour at the centre (unit test: ΔE below 2 against the layer's colour).
@@ -78,7 +91,8 @@ every place.
 A shape-perfect legacy `.icns` is **not** put in the grey plate: the shim's tile sits in
 the Dock at the same size and shape as the native icons around it, with its own white
 squircle and the phone's colours, and the Deck grid draws every app in one shape
-(adaptive layers at full opacity, legacy icons on the plate). The `.icns` carries a
+(adaptive layers at full opacity; flat icons covered by their own shape or on their
+edge-tinted plate). The `.icns` carries a
 1024 px representation, its canvas corners are transparent and its centre is the bg
 colour — the dock e2e asserts all three. The real Mac's Dock with the user's own apps is
 still unverified (test profiles only).
