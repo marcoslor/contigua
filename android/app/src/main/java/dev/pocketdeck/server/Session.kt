@@ -491,9 +491,14 @@ class Session(
     /**
      * True from the moment this session starts closing. A reader must not ack
      * a frame after a refusal/bye was queued: that ACK would land behind the
-     * last frame on the wire.
+     * last frame on the wire. Derived from the teardown machine, not a parallel
+     * flag (AGENTS.md).
      */
-    @Volatile private var closing = false
+    private val closing: Boolean
+        get() = when (teardown.get()) {
+            SessionTeardown.State.ENDING, SessionTeardown.State.DROPPED -> true
+            SessionTeardown.State.LIVE, SessionTeardown.State.FINISHED -> false
+        }
 
     /**
      * Runs one step of the teardown machine and its returned actions. The state
@@ -505,9 +510,6 @@ class Session(
             val before = teardown.get()
             val step = SessionTeardown.transition(before, event)
             if (!teardown.compareAndSet(before, step.to)) continue
-            if (step.to == SessionTeardown.State.ENDING || step.to == SessionTeardown.State.DROPPED) {
-                closing = true
-            }
             if (step.to != before) {
                 log(
                     "session teardown: ${SessionTeardown.describe(before)} " +

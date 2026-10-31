@@ -134,7 +134,6 @@ class PathHub(
          * (a monotonic ms value; 0 = don't wait). A parked write never blocks
          * a close for longer than that.
          */
-        /** Waits for the queued bytes to be written, at most until [deadline]. */
         fun drain(deadline: Long) {
             synchronized(writeLock) {
                 while (!closed && (writing || priority.isNotEmpty() || normal.isNotEmpty())) {
@@ -645,7 +644,9 @@ class PathHub(
             pingSentAt[id] = at
             lastPingAt = at
         }
-        sendJSONOn(id, mapOf("t" to "path.ping", "path" to id, "ts" to at))
+        // PATH-23 names the join ping a priority frame: it starts the path's
+        // ranking ahead of any queued bulk.
+        sendJSONOn(id, mapOf("t" to "path.ping", "path" to id, "ts" to at), priority = true)
     }
 
     /** D-1: the ticker's next deadline (absolute ms), not a fixed poll. */
