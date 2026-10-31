@@ -199,6 +199,32 @@ class PathHubWriteTest {
         )
     }
 
+    /**
+     * RR-14: the phone's join ping went out on the normal lane, behind any
+     * queued bulk, while PATH-23 names it a priority frame.
+     */
+    @Test
+    fun theJoinPingTakesThePriorityLane() {
+        hub.start(transport("aaaa0001", parking))
+        val sender = Thread {
+            hub.send(Frames.encodeJson(0, Json.encode(mapOf("t" to "window.content", "stream" to 1))))
+        }.apply { isDaemon = true }
+        sender.start()
+        assertTrue("the write never started", parking.entered.await(2, TimeUnit.SECONDS))
+        // A normal-lane frame queues behind the parked write; the join ping
+        // must jump it.
+        hub.send(Frames.encodeJson(0, Json.encode(mapOf("t" to "state", "locked" to true))))
+        hub.pingPath("aaaa0001")
+        parking.release()
+        assertTrue("the three writes did not finish", parking.written.await(2, TimeUnit.SECONDS))
+        val all = java.io.ByteArrayOutputStream()
+        synchronized(parking.chunks) { for (chunk in parking.chunks) all.write(chunk) }
+        val reader = dev.pocketdeck.proto.FrameReader(ByteArrayInputStream(all.toByteArray()))
+        val frames = generateSequence { reader.readFrame() }.toList()
+        assertEquals("the three writes are not three frames: ${frames.map { it.type }}", 3, frames.size)
+        assertEquals("the join ping is not second", "path.ping", pathJson(frames[1])["t"])
+    }
+
     @Test
     fun aParkedWriteOnOnePathLeavesTheHubUsable() {        val other = CollectingStream()
         hub.start(transport("aaaa0001", parking))
