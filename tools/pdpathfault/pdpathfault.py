@@ -17,7 +17,10 @@ Modes (docs/design/paths.md §10.3):
 
 The mode can be changed at run time by writing one line to --ctl-file
 (`mode blackhole`), so a check can kill a path at a precise byte of a transfer.
-Every accepted connection and each mode change is a JSON line on --events.
+Every accepted connection and each mode change is a JSON line on --events. A
+peer's FIN is forwarded to the other side (the connection is half-closed, not
+left hanging), and delivered bytes are reported per direction (`"ev":"bytes"`),
+so a check can show where a transfer actually ran.
 """
 
 import argparse
@@ -185,6 +188,11 @@ class Connection(object):
         self.queues = {0: queue.Queue(), 1: queue.Queue()}
         self.threads = []
         self.token = {0: 0.0, 1: 0.0}
+        # Delivered bytes per direction: a drop check has to show the data
+        # moving on one proxy and then on the other, not just the final hash.
+        self.bytes = {0: 0, 1: 0}
+        self.pending_bytes = {0: 0, 1: 0}
+        self.last_bytes_event = {0: 0.0, 1: 0.0}
 
     def reset(self):
         for sock in (self.client, self.upstream):
@@ -201,12 +209,32 @@ class Connection(object):
 
     def close(self):
         self.stop.set()
+        for direction in (0, 1):
+            self._flush_bytes(direction)
         for sock in (self.client, self.upstream):
             try:
                 sock.close()
             except OSError:
                 pass
         self.proxy.event({"ev": "close", "id": self.id})
+
+    # -- byte accounting --
+    def _count_bytes(self, direction, size):
+        now = time.time()
+        self.bytes[direction] += size
+        self.pending_bytes[direction] += size
+        if now - self.last_bytes_event[direction] >= 0.5:
+            self._flush_bytes(direction, now)
+
+    def _flush_bytes(self, direction, now=None):
+        size = self.pending_bytes[direction]
+        if size <= 0:
+            return
+        now = time.time() if now is None else now
+        self.pending_bytes[direction] = 0
+        self.last_bytes_event[direction] = now
+        self.proxy.event({"ev": "bytes", "id": self.id, "dir": direction,
+                          "n": size, "total": self.bytes[direction], "ts": now})
 
     def run(self):
         for direction in (0, 1):
@@ -229,6 +257,10 @@ class Connection(object):
             if not data:
                 break
             self.queues[direction].put((time.time(), data))
+        # The peer's FIN: the other side of this proxy has to see it. A path
+        # check once waited out the Mac's whole 6 s connect timeout because a
+        # phone-side close stopped here (it looked like a stalled handshake).
+        self.proxy.event({"ev": "eof", "id": self.id, "dir": direction})
         self.queues[direction].put(None)
 
     def _forward(self, direction):
@@ -238,7 +270,14 @@ class Connection(object):
         while not self.stop.is_set():
             item = self.queues[direction].get()
             if item is None:
-                break
+                # Half-close: the peer ended this direction; pass the FIN on
+                # and let the other direction keep carrying bytes.
+                self._flush_bytes(direction)
+                try:
+                    dst.shutdown(socket.SHUT_WR)
+                except OSError:
+                    pass
+                return
             enqueued, data = item
             mode = self.proxy.get_mode()
             if mode == "rst":
@@ -256,8 +295,10 @@ class Connection(object):
             try:
                 dst.sendall(data)
             except OSError:
-                break
-        self.stop.set()
+                # A broken destination makes the other direction pointless.
+                self.stop.set()
+                return
+            self._count_bytes(direction, len(data))
 
     def _throttle(self, direction, size):
         rate = max(0.001, float(self.proxy.args.rate_mbit)) * 1000 * 1000 / 8.0
