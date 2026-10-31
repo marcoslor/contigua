@@ -9,6 +9,7 @@ import java.net.ServerSocket
 import java.net.Socket
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -37,6 +38,31 @@ class PathHubTest {
     fun close() {
         hub.closeAll()
         for (socket in sockets) runCatching { socket.close() }
+    }
+
+    @Test
+    fun aPongLossWhileThePathStillReceivesIsOnlyASample() {
+        var clock = 3_000L
+        val hub = PathHub(now = { clock })
+        hub.start(transport("aaaa0001"))
+        assertTrue(hub.attach(transport("bbbb0002")))
+        hub.pingAll()
+        // A is still delivering a frame 1.5 s after its ping; B is silent.
+        clock = 4_000
+        hub.receive("aaaa0001", Frame(PathCodec.TYPE_ACK, 0, ByteArray(8)))
+        clock = 4_600
+        val losses = hub.pongLosses().associateBy { it.path }
+        assertTrue("A delivered bytes: its lost pong is a sample", losses.getValue("aaaa0001").alive)
+        assertFalse("B delivered nothing: its lost pong fails it", losses.getValue("bbbb0002").alive)
+    }
+
+    @Test
+    fun detachClosesTheSocketAndForgetsThePath() {
+        val t = transport("aaaa0001")
+        hub.start(t)
+        assertTrue(hub.detach("aaaa0001"))
+        assertTrue(t.closed)
+        assertFalse(hub.hasPath("aaaa0001"))
     }
 
     @Test
