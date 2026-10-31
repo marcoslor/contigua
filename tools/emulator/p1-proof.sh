@@ -609,7 +609,7 @@ pair_once() {
     pin_stored && pin=1
     outcome="$(pair_outcome "$pin" "$prompt" "$log")"
     case "$outcome" in
-        paired) PAIR_CLASS=paired; PAIR_REASON=pin-stored ;;
+        paired) PAIR_CLASS=paired; PAIR_REASON="pin-stored" ;;
         product) PAIR_CLASS=product; PAIR_REASON=tap-then-session-failed ;;
         rig:*) PAIR_CLASS=rig; PAIR_REASON="${outcome#rig:}" ;;
     esac
@@ -723,7 +723,6 @@ TLS_TIMES="$(grep -o '^2026-[0-9-]* [0-9:.]*.*tls connected (path [0-9a-f]*)' "$
     awk '!seen[$4]++')"
 FIRST_TLS="$(printf '%s\n' "$TLS_TIMES" | sed -n '1p')"
 SECOND_TLS="$(printf '%s\n' "$TLS_TIMES" | sed -n '2p')"
-FOUNDER_PATH="$(printf '%s' "$FIRST_TLS" | awk '{print $4}')"
 JOIN_PATH="$(printf '%s' "$SECOND_TLS" | awk '{print $4}')"
 TLS_DELTA=""
 if [ -n "$FIRST_TLS" ] && [ -n "$SECOND_TLS" ]; then
