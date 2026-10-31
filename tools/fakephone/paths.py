@@ -21,7 +21,6 @@ PING_MS = 2000
 PING_IDLE_MS = 15000
 TRANSFER_MS = 3000
 PONG_TIMEOUT_MS = 1500
-DRAIN_BACKSTOP_MS = 2000
 JOINED_PING_DROP_MS = 5000
 ACK_MS = 10
 ACK_FRAMES = 16
@@ -169,7 +168,6 @@ class PathHub(object):
         self.last_bulk_at = 0
         self.ping_sent_at = {}
         self.joined_waiting = {}
-        self.draining = {}
         self.closed = False
         # --pong-mode overrides: path -> True (off) / milliseconds (delay).
         self.pong_modes = {}
@@ -214,7 +212,6 @@ class PathHub(object):
                 return False
             if self.current == path_id:
                 self.current = None
-            self.draining.pop(path_id, None)
             self.ping_sent_at.pop(path_id, None)
             self.joined_waiting.pop(path_id, None)
             transport.close()
@@ -227,7 +224,6 @@ class PathHub(object):
             all_paths = list(self.paths.values())
             self.paths.clear()
             self.current = None
-            self.draining.clear()
             self.ping_sent_at.clear()
             self.joined_waiting.clear()
             self.cv.notify_all()
@@ -327,23 +323,14 @@ class PathHub(object):
                 self._failed(transport.id)
                 return
 
-    def move_to(self, to, planned_from=None):
+    def move_to(self, to):
+        """Move the sending path. The old path is a standby, never closed:
+        the Mac decides a path's life, and only a socket error or the Mac's
+        close ends one (E-3)."""
         with self.lock:
             if to not in self.paths:
                 return
             self.current = to
-            if planned_from and planned_from != to and planned_from in self.paths:
-                self.draining[planned_from] = self.now() + DRAIN_BACKSTOP_MS
-
-    def close_drained(self):
-        with self.lock:
-            at = self.now()
-            expired = [pid for pid, due in self.draining.items() if at >= due]
-            for pid in expired:
-                self.draining.pop(pid, None)
-        for pid in expired:
-            self.log("path drain backstop: %s" % pid)
-            self.detach(pid)
 
     def _failed(self, path_id):
         self.log("path down: %s" % path_id)
