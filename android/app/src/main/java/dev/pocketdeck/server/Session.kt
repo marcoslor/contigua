@@ -657,12 +657,18 @@ class Session(
     /** The Mac named the path: follow it, and answer with our own marker (PATH-9). */
     private fun followSwitch(item: Inbound.PeerSwitch) {
         val plannedFrom = if (item.arrivedOn != item.path && hub.hasPath(item.arrivedOn)) item.arrivedOn else null
+        val from = hub.currentPath
         if (plannedFrom != null) {
             hub.sendMarkerOn(plannedFrom, item.path)
             hub.moveTo(item.path, plannedFrom)
         } else {
             hub.moveTo(item.path, plannedFrom = null)
             hub.sendMarker(item.path)
+        }
+        if (from != null && from != item.path) {
+            // The sending path moved on the Mac's marker: from, to and whether
+            // the Mac planned it (path.switch on the old path) or fled a fault.
+            log("paths: sending $from -> ${item.path} (${if (plannedFrom != null) "planned" else "failure"})")
         }
         hub.replayOnCurrent()
         // A lost AUDIO_CONFIG costs one frame, not the rest of the audio (§5.6).
@@ -778,7 +784,7 @@ class Session(
         sendWelcomeOn(pathId)
         startPathReader(t)
         inbound.offer(Inbound.Up(pathId, joined = true))
-        log("paths: joined $pathId")
+        log("paths: joined $pathId (paths ${hub.pathCount})")
         return AttachResult.ATTACHED
     }
 
