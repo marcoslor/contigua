@@ -456,6 +456,35 @@ final class DockAppsTests: XCTestCase {
         XCTAssertEqual(decide(shimExists: true, shimRunning: true, shimHasIcon: true, icon: .cached), .skip)
     }
 
+    // MARK: A launch that lands after its window closed
+
+    func testALaunchForAClosedWindowIsQuitNeverBound() {
+        XCTAssertEqual(DockLaunch.landing(pid: 12, windowOpen: false, settingOn: true, pinned: false),
+                       .quitWindowClosed, "a shim bound to a dead stream would never be closed again")
+        XCTAssertEqual(DockLaunch.landing(pid: 12, windowOpen: false, settingOn: true, pinned: true),
+                       .quitWindowClosed, "a hand-added bundle launched for a window still follows that window")
+    }
+
+    func testALaunchForAnOpenWindowIsBound() {
+        XCTAssertEqual(DockLaunch.landing(pid: 12, windowOpen: true, settingOn: true, pinned: false), .bind)
+        XCTAssertEqual(DockLaunch.landing(pid: 12, windowOpen: true, settingOn: false, pinned: false),
+                       .quitSettingOff, "the setting turned off while the bundle was built")
+        XCTAssertEqual(DockLaunch.landing(pid: 12, windowOpen: true, settingOn: false, pinned: true), .bind,
+                       "a hand-added identity follows the existing setting rule")
+    }
+
+    func testALaunchWithNoShimDoesNothing() {
+        XCTAssertEqual(DockLaunch.landing(pid: nil, windowOpen: true, settingOn: true, pinned: false), .nothing)
+        XCTAssertEqual(DockLaunch.landing(pid: nil, windowOpen: false, settingOn: true, pinned: false), .nothing)
+    }
+
+    func testAnUnboundLaunchIsQuitWhenTheAppQuits() {
+        XCTAssertEqual(DockLaunch.landing(pid: 12, windowOpen: true, settingOn: true, pinned: false, quitting: true),
+                       .quitShuttingDown)
+        XCTAssertEqual(DockLaunch.landing(pid: 12, windowOpen: true, settingOn: true, pinned: true, quitting: true),
+                       .quitShuttingDown, "a launch in flight at quit is stopped whether or not it is pinned")
+    }
+
     // MARK: Bindings
 
     func testAShimExitClosesItsWindowOnceWhicheverPathSeesIt() throws {
