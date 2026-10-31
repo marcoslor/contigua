@@ -61,8 +61,16 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
     /** Set from the keep-alive step: only safe to wake on input when the panel is not shared. */
     @Volatile private var groupOnly = false
 
-    /** `debug.pocketdeck.keepalive_ms`: fixed cadence for on-device A/B tests. */
-    private val intervalOverrideMs: Long? = Hidden.systemProperty(KEEPALIVE_MS)?.toLongOrNull()?.takeIf { it > 0 }
+    /**
+     * `debug.pocketdeck.keepalive_ms`: fixed cadence for on-device A/B tests.
+     * Debug builds only: a release APK must not take any of these test knobs.
+     */
+    private val intervalOverrideMs: Long? =
+        if (dev.pocketdeck.BuildConfig.DEBUG) {
+            Hidden.systemProperty(KEEPALIVE_MS)?.toLongOrNull()?.takeIf { it > 0 }
+        } else {
+            null
+        }
 
     private var powerWatch: Thread? = null
 
@@ -102,7 +110,9 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
     @Volatile private var overrideLive = false
 
     private val panel = PanelPower(log)
-    private val policy = DarkPanelPolicy(forced = Hidden.systemProperty(FORCE_PANEL_OFF) == "1")
+    private val policy = DarkPanelPolicy(
+        forced = dev.pocketdeck.BuildConfig.DEBUG && Hidden.systemProperty(FORCE_PANEL_OFF) == "1",
+    )
     private val watchdog = Watchdog(ctx, log)
 
     /**
@@ -153,7 +163,7 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
      * display's power group on.
      */
     private val displayWakeLockMethod: Method? =
-        if (Hidden.systemProperty(FORCE_TIMER) == "1") null
+        if (dev.pocketdeck.BuildConfig.DEBUG && Hidden.systemProperty(FORCE_TIMER) == "1") null
         else Hidden.method(PowerManager::class.java, "newWakeLock", Hidden.T_INT, String::class.java, Hidden.T_INT)
 
     init {
@@ -226,8 +236,10 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
                 activeDisplays.addAll(displayIds)
                 val isActive = activeDisplays.isNotEmpty()
                 if (isActive && !wasActive) {
+                    // The timer starts after the take-over below: its first
+                    // step must find the group already woken, never race the
+                    // launch for the wake.
                     acquireWakeLockLocked()
-                    startTimerLocked()
                     started = true
                 } else if (!isActive && wasActive) {
                     releaseWakeLockLocked()
@@ -251,7 +263,13 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
             }
         }
         if (started) {
-            synchronized(policyLock) { policy.streamsStarted() }
+            // The take-over is the episode's first action, before the activity
+            // launch that follows this call: on a phone whose VD shares the
+            // panel's sleeping group the launch waits for the display to wake
+            // (the 10-30 report: 11 s inside the launch, 23 s to the first
+            // frame, and the activity's input sink had no channel meanwhile).
+            takeOverBeforeLaunch(mirroring)
+            synchronized(lock) { startTimerLocked() }
             // The wake machine's baseline belongs to the episode and is reset by
             // the close (WakeEvent.StreamsStopped), not by a new stream.
             // Watch the person's power press from the episode's first second:
@@ -266,6 +284,44 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
         // away, so the wake (and the panel-off after it) never blocks the session
         // thread.
         synchronized(lock) { lock.notifyAll() }
+    }
+
+    /**
+     * The episode start's take-over, before its first activity is launched.
+     *
+     * A virtual display created while the panel's power group sleeps starts OFF
+     * (the 10-30 log: `Changing state of virtual display pocketdeck-1 from
+     * UNKNOWN to OFF`), and the platform does not launch onto it until the
+     * group is awake: the launch sat 11 s before its transition. Waking from
+     * the keep-alive step, which only runs after `window.open` has launched and
+     * awaited its task, therefore costs the whole first-frame budget. So the
+     * group is woken here, on the session thread, and [DarkPanelPolicy] leaves
+     * the panel-off owed to the first step (that one sleeps through the
+     * transitional re-applies and must not delay the launch).
+     *
+     * The wake and the decision are one critical section against the keep-alive
+     * step: a step that slipped in between could power the panel off before the
+     * wake and the wake would light it again.
+     */
+    private fun takeOverBeforeLaunch(mirroring: Boolean) {
+        val ids = synchronized(lock) { activeDisplays.toIntArray().toList() }
+        if (ids.isEmpty()) return
+        val panelOn = DisplayProbe.state(PANEL_DISPLAY_ID) == Display.STATE_ON
+        synchronized(policyLock) {
+            policy.streamsStarted()
+            val strategy = policy.strategy(ids.map { DisplayProbe.displayGroupId(it) }, mirroring = mirroring)
+            val plan = policy.episodeStarted(panelOn, strategy) ?: return
+            if (!DarkPanelPolicy.wakesGroup(strategy, plan)) return
+            val now = SystemClock.uptimeMillis()
+            policy.ownWake(now)
+            if (strategy == PanelStrategy.PANEL_DARK) wakeOwner.dispatch(WakeEvent.OurWake(now))
+            for (id in ids) {
+                userActivity(id)
+                wakeDisplay(id)
+            }
+            keepLit = true
+            log("power: episode take-over: display ${ids.joinToString(",")} woken before the launch; panel off owed")
+        }
     }
 
     /**
@@ -418,7 +474,9 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
             lastPlan = plan
             lastPanelOn = panelOn
         }
-        keepLit = plan.wake
+        // A take-over in flight (the episode start woke the group before its
+        // launch) keeps the group lit even though this step issues no wake.
+        keepLit = plan.wake || plan.panelOff
         val wasDark = darkEpisode
         darkEpisode = plan.panelOff
         if (plan.panelOff) startPowerWatch()
@@ -438,7 +496,12 @@ internal class AndroidPower(private val ctx: Context, private val log: (String) 
             // The panel is the platform's again, so the crash guard is done.
             if (overrideLive) standDownOverride()
         }
-        if (!plan.wake) return
+        if (!plan.wake) {
+            // The episode start already woke the group before its launch; the
+            // panel-off it owes is all this step has left to do.
+            if (plan.panelOff && !holding) applyPanelOff(plan.transitional)
+            return
+        }
         // On the panel's group a wake is a full phone wake: it overrides a power
         // press the user just made and starts the keyguard's face unlock, which
         // unlocks the phone if the user is in front of it. So the shared group
