@@ -216,7 +216,7 @@ filled; the cache size class is the first whose source stays inside the 1.3× up
 bound (docs/NFR.md). No icon cached, or a source too small: the picture stays a circle
 without a badge, and with no picture there is nothing to attach. A composed PNG that
 would exceed 200 KiB (or the `NotifyImageCaps` caps) falls back to the phone's picture as
-sent, today's behaviour. The record carries facts only — `composed shape=… badge=yes|no
+sent, today's behaviour; an undecodable picture keeps the phone's bytes too. The record carries facts only — `composed shape=… badge=yes|no
 side=… class=…`, or `composed fallback=over_cap|no_icon` — never pixels or text
 (R-PRIV-1). There is no setting, and the banner's own icon stays PocketDeck's.
 

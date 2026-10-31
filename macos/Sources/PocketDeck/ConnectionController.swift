@@ -533,6 +533,9 @@ final class ConnectionController {
         // The same `--share-log` file records what both halves would have shown.
         let shareLog = options.shareLog.map { URL(fileURLWithPath: $0) }
         notifyCenter.log = shareLog
+        // NOTIFY-22: the banner's attachment carries the sending app's icon,
+        // from the same cache the Deck and Dock draw.
+        notifyCenter.iconFor = NotifyCenter.cachedIcon
         notifyCenter.onOpen = { [weak self] click in
             MainActor.assumeIsolated { self?.notificationClicked(click) }
         }

@@ -149,6 +149,17 @@ NOTIFY_POSTS = [
      "title": "pd-notify-title-2", "text": "pd-notify-text-2"},
 ]
 NOTIFY_REMOVE = "pd-n2"
+# NOTIFY-22 (docs/specs/notifications.md): one picture post and one picture-less
+# post for an app whose icon the fake serves. Sent a few seconds after
+# notify.enable so the Mac has cached the app's icon from the app list.
+NOTIFY_BADGE_POSTS = [
+    {"id": "pd-b1", "pkg": "com.whatsapp", "title": "pd-notify-title-20",
+     "text": "pd-notify-text-20", "image": "good"},
+    {"id": "pd-b2", "pkg": "com.whatsapp", "title": "pd-notify-title-21",
+     "text": "pd-notify-text-21"},
+]
+NOTIFY_BADGE_DELAY = 4.0
+
 # Part 2 shapes (docs/design/notify.md): a reply-capable chat, two buttons, an
 # ongoing service notification, a sign-in code and a package for the mute test.
 # The code in pd-a4 is a fake fixture; no log ever carries text.
@@ -3289,6 +3300,8 @@ class Session(object):
         if not only:
             self._send({"t": "notify.remove", "id": NOTIFY_REMOVE})
             self.phone.events.notify("remove", id=NOTIFY_REMOVE)
+        if getattr(self.phone.args, "notify_badge", False):
+            self._send_badge_posts()
         if self._media_mode():
             self._send_media()
         else:
@@ -3296,6 +3309,27 @@ class Session(object):
             self.phone.events.notify("media.state", playing=NOTIFY_MEDIA_STATE["playing"],
                                      titleLen=len(NOTIFY_MEDIA_STATE["title"]),
                                      durationMs=NOTIFY_MEDIA_STATE["durationMs"])
+
+    def _send_badge_posts(self):
+        """NOTIFY-22: one post with a picture and one without, for an app whose
+        icon the fake serves. The delay lets the Mac cache the icon from the
+        app list first, so the banner's badge has a source to draw."""
+        def run():
+            time.sleep(NOTIFY_BADGE_DELAY)
+            for post in NOTIFY_BADGE_POSTS:
+                if self.sender is None or self._live_stop.is_set():
+                    return
+                wire = dict(post, t="notify.post", when=int(time.time() * 1000), alert=True)
+                wire.pop("image", None)
+                self._send(wire)
+                self.phone.events.notify("post", id=post["id"], pkg=post["pkg"],
+                                         titleLen=len(post["title"]), bodyLen=len(post["text"]),
+                                         alert=1)
+                if post.get("image"):
+                    self._send_notify_image(post["id"], post["image"])
+                time.sleep(0.4)
+
+        threading.Thread(target=run, daemon=True).start()
 
     def _media_mode(self):
         return bool(getattr(self.phone.args, "media", False))
@@ -4420,6 +4454,9 @@ def build_parser():
     p.add_argument("--notify-groups", action="store_true",
                    help="on notify.enable send the group wire (NOTIFY-20): a child, its "
                         "skipped summary, a lone summary, then a child that removes it")
+    p.add_argument("--notify-badge", action="store_true",
+                   help="on notify.enable also post one picture post and one icon-only post "
+                        "for an app whose icon the fake serves (NOTIFY-22)")
     p.add_argument("--resize-delay-ms", type=int, default=0, metavar="MS",
                    help="hold back a window's new VIDEO_CONFIG this long after "
                         "window.resize (the Mac's live-resize fill); 0 answers at once")
