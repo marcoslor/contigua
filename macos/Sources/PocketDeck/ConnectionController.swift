@@ -1917,7 +1917,9 @@ final class ConnectionController {
         case .versionRefused(let sentence):
             // PATH-1: name which app to update; the retry loop stops below on
             // the `version` failure and `retriesAutomatically` says no.
-            showTransient(sentence)
+            // A version mismatch is not a blip: keep the sentence that names
+            // the app to update up long enough to read (PATH-1).
+            showTransient(sentence, seconds: 30)
         case .clipboard(let text):
             clipboardSync?.receive(text)
         case .dropProgress(let id, let bytes):
@@ -2476,14 +2478,14 @@ final class ConnectionController {
         sheet = .code
     }
 
-    private func showTransient(_ text: String) {
+    private func showTransient(_ text: String, seconds: TimeInterval = 5) {
         transientBanner = Banner(text: text, action: nil)
         transientTimer?.cancel()
         let work = DispatchWorkItem { [weak self] in
             MainActor.assumeIsolated { self?.transientBanner = nil }
         }
         transientTimer = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 5, execute: work)
+        DispatchQueue.main.asyncAfter(deadline: .now() + seconds, execute: work)  // gcd: the banner's dismissal timer
     }
 
     // MARK: Test hooks

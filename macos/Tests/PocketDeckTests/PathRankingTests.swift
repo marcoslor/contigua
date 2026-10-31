@@ -40,6 +40,19 @@ final class PathRankingTests: XCTestCase {
         }
     }
 
+    func testTheFirstTickWithPongsElectsTheRealSessionsCurrentPath() {
+        // pathUp arrives before the first pong can: the ranking must not stay
+        // idle forever (the founder becomes current on the first tick with a
+        // ranked path).
+        var ranking = PathRanking()
+        ranking.register(id: "lan", kind: .lan)
+        XCTAssertTrue(ranking.handle(.pathUp("lan"), now: 0).isEmpty)
+        XCTAssertEqual(ranking.state, .idle)
+        feed(&ranking, "lan", rtt: 5.5, at: 2)
+        XCTAssertEqual(ranking.handle(.tick(now: 2), now: 2), [])
+        XCTAssertEqual(ranking.state, .steady(current: "lan"))
+    }
+
     func testAHealthyCurrentPathKeepsTheMarginAndDoesNotSwitch() {
         var ranking = PathRanking()
         feed(&ranking, "lan", rtt: 5.5, at: 0)

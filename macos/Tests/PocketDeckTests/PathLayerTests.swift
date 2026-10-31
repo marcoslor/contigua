@@ -137,6 +137,31 @@ final class PathLayerTests: XCTestCase {
         }
     }
 
+    func testAFrameThatDoesNotFitHoldsEveryLaterFrameInOrder() throws {
+        let size = (8 << 20) - 1_000
+        let bulk = { (byte: UInt8) in
+            Frame(type: .dropData, stream: 1,
+                  payload: [UInt8](repeating: byte, count: size))
+        }
+        layer.send(bulk(1))
+        layer.send(bulk(2))         // does not fit the 12 MiB bulk budget
+        layer.send(bulk(3))         // still queued behind the second
+        layer.send(json("key"))     // and the JSON behind both
+        XCTAssertEqual(1, wire.all().count, "only the first frame was admitted")
+        _ = layer.receive(path: "aaaa0001", frame: PathCodec.encodeAck(2))
+        XCTAssertEqual(2, wire.all().count, "one more bulk frame fits")
+        _ = layer.receive(path: "aaaa0001", frame: PathCodec.encodeAck(3))
+        let sent = wire.all()
+        XCTAssertEqual(4, sent.count)
+        let types = try sent.map { try XCTUnwrap(Frame(encoded: $0)) }
+            .map { try PathCodec.decodeReliable($0).inner.type }
+        XCTAssertEqual([MessageType.dropData.rawValue, MessageType.dropData.rawValue,
+                        MessageType.dropData.rawValue, MessageType.json.rawValue], types)
+        let payloads = try sent.map { try XCTUnwrap(Frame(encoded: $0)) }
+            .map { try PathCodec.decodeReliable($0).inner.payload.first ?? 0 }
+        XCTAssertEqual([1, 2, 3, 123], payloads)
+    }
+
     func testAnAckAboveWhatWasSentIsAProtocolError() {
         let events = layer.receive(path: "aaaa0001", frame: PathCodec.encodeAck(99))
         XCTAssertEqual(1, events.count)

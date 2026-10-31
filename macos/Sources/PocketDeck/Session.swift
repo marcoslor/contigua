@@ -320,7 +320,7 @@ final class Session {
     }
 
     private let pathLayer = PathLayer(log: { line in
-        Log.session.notice("paths: \(line, privacy: .private)")
+        Log.session.notice("paths: \(line, privacy: .public)")  // log-ok: closed tokens and a byte count, never a value from the wire
     })
     private var pathStart = PathStart()
     private var attempts: [String: Attempt] = [:]
@@ -643,6 +643,11 @@ final class Session {
             handlePath(.pathUp(id: id, joined: true))
         }
         pathRanking.register(id: id, kind: attempt.kind)
+        if pathLayer.currentPath == id {
+            // The ranking's current starts as the session's current: the
+            // founder was made live without a pathUp event.
+            _ = pathRanking.handle(.externalSwitch(id), now: uptime)
+        }
         dialedAddress = attempt.address ?? dialedAddress
     }
 
@@ -686,6 +691,7 @@ final class Session {
         for id in pathMachine.live {
             pathMachine.scores[id] = pathRanking.score(id: id, now: now) ?? -1
         }
+        let before = pathMachine.state
         let actions = pathMachine.handle(event, now: now)
         for action in actions {
             switch action {
@@ -708,6 +714,9 @@ final class Session {
             }
         }
         if case .live = pathMachine.state { setReconnecting(false) }
+        if before != pathMachine.state {
+            Log.session.notice("paths: \(before.token, privacy: .public) --\(event.token, privacy: .public)--> \(self.pathMachine.state.token, privacy: .public)")  // log-ok: closed state tokens, never a value
+        }
     }
 
     /// A failure or an orphan's join: the marker is the first frame on the new
@@ -721,7 +730,10 @@ final class Session {
 
     /// A margin switch: the marker is the last frame on the old path (§5.4).
     private func plannedSwitch(to path: String) {
-        guard pathLayer.hasPath(path), let old = pathLayer.currentPath, old != path else { return }
+        guard pathLayer.hasPath(path), let old = pathLayer.currentPath, old != path else {
+            Log.session.notice("paths: planned switch not possible")  // log-ok: a state token
+            return
+        }
         guard pathLayer.sendMarker(on: old, to: path) else { return }
         pathLayer.moveTo(path, plannedFrom: old)
         pathLayer.replayOnCurrent()
@@ -766,6 +778,7 @@ final class Session {
         for action in pathRanking.handle(.tick(now: now), now: now) {
             switch action {
             case .switchTo(let path):
+                Log.session.notice("paths: rank switch to \(path, privacy: .public)")  // log-ok: a path id, not a value from the wire
                 plannedSwitch(to: path)
             case .sessionOrphan:
                 if let current = pathLayer.currentPath { handlePath(.currentFailed(id: current)) }

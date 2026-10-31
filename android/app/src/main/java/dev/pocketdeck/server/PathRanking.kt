@@ -140,7 +140,13 @@ class PathRanking {
             }
             is PathRankingEvent.Tick -> {
                 when (val s = state) {
-                    is PathRankingState.Idle -> return emptyList()
+                    is PathRankingState.Idle -> {
+                        // A real start is PathUp first, pongs seconds later:
+                        // the first tick with a ranked path elects it.
+                        val best = bestLiveRankable(event.now) ?: return emptyList()
+                        state = PathRankingState.Steady(best)
+                        return emptyList()
+                    }
                     is PathRankingState.Steady -> {
                         val challenger = bestLiveRankable(event.now, excluding = s.current)
                             ?: return emptyList()
