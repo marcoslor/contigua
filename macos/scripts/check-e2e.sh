@@ -7805,6 +7805,19 @@ dock_dir() { echo "$WORK/dock-apps"; }
 
 dock_shim_pids() { [ -n "${WORK:-}" ] && pgrep -f -- "$(dock_dir)/.*/Contents/MacOS/PocketDeckShim"; }
 
+# dock_shim_ready — the first built bundle is complete: icon written and signed
+# (the directory appears while the build is still writing into it).
+dock_shim_ready() {
+    local shim
+    shim="$(ls -d "$(dock_dir)"/*.app 2>/dev/null | head -1)"
+    [ -n "$shim" ] && [ -s "$shim/Contents/Resources/AppIcon.icns" ] \
+        && codesign --verify --strict "$shim" 2>/dev/null
+}
+
+# window_close_count — window.close messages the fakephone has received (the
+# app sends one when a person closes a stream window).
+window_close_count() { awk '/"ev":"rx"/ && /"t":"window.close"/ {n++} END {print n+0}' "$WORK/events.jsonl"; }
+
 # Dock apps made from the profile folder are the automatic ones (a check that
 # opens app windows without --dock-dir). Every run cleans its own.
 profile_dock_dir() { echo "$HOME/Library/Application Support/PocketDeck-$PROFILE/Dock Apps"; }
@@ -7930,6 +7943,7 @@ check_dock() {
     id="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$shim/Contents/Info.plist" 2>/dev/null)"
     [ "$(basename "$shim")" = "WhatsApp (FakePhone).app" ] && [ "$id" = "dev.pocketdeck.dock.$PROFILE.$(/usr/libexec/PlistBuddy -c 'Print :PDDeviceId' "$shim/Contents/Info.plist").com-whatsapp" ] \
         && ok "DOCK created $(basename "$shim") ($id)" || bad "DOCK unexpected bundle $(basename "$shim") ($id)"
+    wait_until 15 dock_shim_ready
     [ -s "$shim/Contents/Resources/AppIcon.icns" ] && codesign --verify --strict "$shim" 2>/dev/null \
         && ok "DOCK has AppIcon.icns from the phone's icon and is signed" || bad "DOCK no icon or bad signature"
     wait_until 10 registered_in_ls "$id" && ok "DOCK registered with LaunchServices" || bad "DOCK not registered with LaunchServices"
@@ -7972,8 +7986,11 @@ check_dock() {
 
     # Automatic identity (default on): a window the app opens itself builds and
     # launches its shim, and the shim exits when the window closes.
+    local auto_opens auto_closes
+    auto_opens="$(window_open_count "$pkg")"
+    auto_closes="$(window_close_count)"
     launch --connect "127.0.0.1:$PORT" --dock-dir "$dir" --open "$pkg" --close-stream 1:20 --quit-after 60
-    wait_until 30 window_rx window.open "$pkg" \
+    wait_until 30 eval '[ "$(window_open_count "$pkg")" -gt "$auto_opens" ]' \
         && ok "DOCK auto: window.open arrived for $pkg" || bad "DOCK auto: no window.open for $pkg"
     wait_until 30 shim_made \
         && ok "DOCK auto: the window's Dock app was created ($(ls "$dir" | head -1))" \
@@ -7981,12 +7998,86 @@ check_dock() {
     wait_until 10 eval '[ -n "$(dock_shim_pids)" ]' \
         && ok "DOCK auto: the shim runs for the window (pid $(dock_shim_pids | tr '\n' ' '))" \
         || bad "DOCK auto: the shim is not running"
+    # The close timer counts from the app becoming ready, so wait for the close
+    # itself before judging the shim: a loaded Mac can run that timer seconds
+    # late, and the exit has to be measured from the close.
+    wait_until 30 eval '[ "$(window_close_count)" -gt "$auto_closes" ]' \
+        && ok "DOCK auto: the window closed" || bad "DOCK auto: the window never closed"
     wait_until 20 eval '[ -z "$(dock_shim_pids)" ]' \
         && ok "DOCK auto: closing the window made the shim exit" || bad "DOCK auto: the shim outlives the window"
     stop_app
     wait_until 5 eval '[ -z "$(dock_shim_pids)" ]' \
         && ok "DOCK auto: quitting the app leaves no shim behind" || bad "DOCK auto: a shim survived the app"
     remove_dock_apps
+
+    # The race, made deterministic (reviewer 10-30): a window that closes before
+    # its identity finishes launching. The pending work is dropped, so no shim is
+    # ever built for a stream that is gone (docs/design/dock.md §Lifecycle).
+    local race_opens race_closes
+    race_opens="$(window_open_count "$pkg")"
+    race_closes="$(window_close_count)"
+    launch --connect "127.0.0.1:$PORT" --dock-dir "$dir" --open "$pkg" --close-stream 1:3 \
+        --dock-launch-delay 6 --quit-after 40
+    wait_until 30 eval '[ "$(window_open_count "$pkg")" -gt "$race_opens" ]' \
+        && ok "DOCK auto race: window.open arrived for $pkg" \
+        || { bad "DOCK auto race: no window.open for $pkg"; stop_app; stop_fakephone; return 1; }
+    wait_until 15 eval '[ "$(window_close_count)" -gt "$race_closes" ]' \
+        && ok "DOCK auto race: the window closed before its identity launched" \
+        || bad "DOCK auto race: the window never closed"
+    sleep 8
+    [ -z "$(dock_shim_pids)" ] \
+        && ok "DOCK auto race: no shim was built for the closed stream" \
+        || bad "DOCK auto race: a shim was built for a window that was gone"
+    [ "$(window_open_count "$pkg")" = "$((race_opens + 1))" ] \
+        && ok "DOCK auto race: no window came back with it" \
+        || bad "DOCK auto race: a late launch brought its window back"
+    stop_app
+    wait_until 5 eval '[ -z "$(dock_shim_pids)" ]' \
+        && ok "DOCK auto race: quitting the app leaves no shim behind" || bad "DOCK auto race: a shim survived the app"
+    remove_dock_apps
+
+    # The same race with the launch already in flight: the pid that lands after
+    # its window closed is quit at once and logged, never bound.
+    race_opens="$(window_open_count "$pkg")"
+    race_closes="$(window_close_count)"
+    launch --connect "127.0.0.1:$PORT" --dock-dir "$dir" --open "$pkg" --close-stream 1:3 \
+        --dock-bind-delay 7 --quit-after 40
+    wait_until 30 eval '[ "$(window_open_count "$pkg")" -gt "$race_opens" ]' \
+        && ok "DOCK auto race: window.open arrived for $pkg (late launch)" \
+        || { bad "DOCK auto race: no window.open for $pkg (late launch)"; stop_app; stop_fakephone; return 1; }
+    wait_until 15 eval '[ "$(window_close_count)" -gt "$race_closes" ]' \
+        && ok "DOCK auto race: the window closed while the launch was in flight" \
+        || bad "DOCK auto race: the window never closed (late launch)"
+    sleep 9
+    [ -z "$(dock_shim_pids)" ] \
+        && ok "DOCK auto race: a launch landing after its window closed is quit, not bound" \
+        || bad "DOCK auto race: a shim outlived the window it was launched for"
+    log show --last 3m --info \
+        --predicate 'subsystem == "dev.pocketdeck.mac" AND category == "app"' 2>/dev/null \
+        | grep -q "dock auto: late launch for closed stream 1" \
+        && ok "DOCK auto race: the late launch was logged as a decision" \
+        || bad "DOCK auto race: no 'late launch for closed stream' line"
+    stop_app
+    remove_dock_apps
+
+    # A launch still in flight when the app quits: the shim it started is stopped
+    # with the app, so the second assertion holds for a launch at quit too.
+    race_opens="$(window_open_count "$pkg")"
+    launch --connect "127.0.0.1:$PORT" --dock-dir "$dir" --open "$pkg" \
+        --dock-bind-delay 20 --quit-after 6
+    wait_until 30 eval '[ "$(window_open_count "$pkg")" -gt "$race_opens" ]' \
+        && ok "DOCK auto race: window.open arrived for $pkg (quit)" \
+        || { bad "DOCK auto race: no window.open for $pkg (quit)"; stop_app; stop_fakephone; return 1; }
+    wait_until 15 eval '[ -n "$(dock_shim_pids)" ]' \
+        && ok "DOCK auto race: the shim runs while its launch callback has not landed" \
+        || bad "DOCK auto race: the shim never started"
+    wait_until 15 eval '[ -z "$(e2e_app_pids)" ]' \
+        || { bad "DOCK auto race: the app did not quit"; stop_app; stop_fakephone; return 1; }
+    wait_until 5 eval '[ -z "$(dock_shim_pids)" ]' \
+        && ok "DOCK auto race: quitting the app stops a shim it launched but never bound" \
+        || bad "DOCK auto race: a shim it launched but never bound survived the app"
+    remove_dock_apps
+
 
     # Turning the setting off while an automatic identity runs: the shim stops,
     # the window stays (the identity was only the Dock tile), and nothing

@@ -66,6 +66,36 @@ enum DockQuit {
     }
 }
 
+/// What to do with an automatic shim once its launch finishes: bind it to the
+/// window it was started for, or stop it. A launch can finish after that window
+/// closed; binding it then leaves a Dock icon nothing will ever close again
+/// (docs/design/dock.md §Lifecycle).
+enum DockLaunchLanding: Equatable {
+    /// No shim was started (the build or the launch failed).
+    case nothing
+    /// The window is still open: the pid is its identity now.
+    case bind
+    /// The window closed meanwhile: the shim must quit and must never be bound.
+    case quitWindowClosed
+    /// The setting turned off while it launched and it was not added by hand.
+    case quitSettingOff
+    /// PocketDeck is quitting: an unbound automatic launch is stopped.
+    case quitShuttingDown
+}
+
+enum DockLaunch {
+    static func landing(pid: Int?, windowOpen: Bool, settingOn: Bool, pinned: Bool,
+                        quitting: Bool = false) -> DockLaunchLanding {
+        guard pid != nil else { return .nothing }
+        // PocketDeck quitting: an automatic launch that has not been bound yet
+        // has no window to follow, so it is stopped with the app.
+        if quitting { return .quitShuttingDown }
+        // The window closed while the bundle was built or the shim launched.
+        if !windowOpen { return .quitWindowClosed }
+        return settingOn || pinned ? .bind : .quitSettingOff
+    }
+}
+
 /// Everything a shim bundle is made from.
 struct DockShimSpec: Equatable {
     var deviceId: String
@@ -294,6 +324,10 @@ final class DockApps: NSObject {
 
     /// Shim pid → the window (stream, pkg) it stands for.
     private(set) var bindings: [Int: Binding] = [:]
+    /// Automatic shims this app launched that no window is bound to yet: a quit
+    /// can land between the launch and the bind (docs/design/dock.md §Lifecycle).
+    private var unboundLaunches: Set<Int> = []
+    private let launchLock = NSLock()
     /// Shim pid → a watch on its exit. NSWorkspace does not report every app's
     /// end (agent shims in background mode), and a killed shim never posts its
     /// quit message; whichever notices first closes the window, once.
@@ -302,6 +336,9 @@ final class DockApps: NSObject {
     /// The file system and LaunchServices work of the automatic path runs here:
     /// creating a shim for the first time must never slow the window it stands for.
     private let workQueue = DispatchQueue(label: "dev.pocketdeck.dock", qos: .utility)
+    /// e2e race hook: hold the automatic launch's pid callback back, the way a
+    /// slow launch would. Zero outside the harness.
+    private let bindDelay: TimeInterval
 
     static let lsregister = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
 
@@ -325,9 +362,10 @@ final class DockApps: NSObject {
         return url
     }
 
-    init(folder: URL, profile: Profile) {
+    init(folder: URL, profile: Profile, bindDelay: TimeInterval = 0) {
         self.folder = folder
         self.profile = profile
+        self.bindDelay = bindDelay
         super.init()
     }
 
@@ -402,6 +440,9 @@ final class DockApps: NSObject {
     /// Ask a shim to quit without treating it as the person quitting it: its
     /// binding goes first, so its window is not closed with it.
     func quit(pid: Int) {
+        launchLock.lock()
+        unboundLaunches.remove(pid)
+        launchLock.unlock()
         exitWatches.removeValue(forKey: pid)?.cancel()
         bindings.removeValue(forKey: pid)
         NSRunningApplication(processIdentifier: pid_t(pid))?.terminate()
@@ -413,10 +454,12 @@ final class DockApps: NSObject {
     func buildAndLaunch(_ spec: DockShimSpec, bind stream: UInt32, launched: @escaping (Int?) -> Void) {
         workQueue.async { [self] in
             guard let binary = Self.shimBinary, let url = make(spec, shellBinary: binary) else {
-                DispatchQueue.main.async { launched(nil) }
+                DispatchQueue.main.async { launched(nil) }  // gcd: one main hop from the work queue
                 return
             }
-            open(url) { pid in DispatchQueue.main.async { launched(pid) } }
+            open(url, arguments: DockApps.automaticArguments, delayedLaunch: true, automatic: true) { pid in
+                DispatchQueue.main.async { launched(pid) }  // gcd: one main hop from the work queue
+            }
         }
     }
 
@@ -425,12 +468,19 @@ final class DockApps: NSObject {
     func relaunch(deviceId: String, pkg: String, bind stream: UInt32, launched: @escaping (Int?) -> Void) {
         workQueue.async { [self] in
             guard let record = records().first(where: { $0.deviceId == deviceId && $0.pkg == pkg }) else {
-                DispatchQueue.main.async { launched(nil) }
+                DispatchQueue.main.async { launched(nil) }  // gcd: one main hop from the work queue
                 return
             }
-            open(record.url) { pid in DispatchQueue.main.async { launched(pid) } }
+            open(record.url, arguments: DockApps.automaticArguments, delayedLaunch: true, automatic: true) { pid in
+                DispatchQueue.main.async { launched(pid) }  // gcd: one main hop from the work queue
+            }
         }
     }
+
+    /// Automatic launches stand for a window that is already open, so their
+    /// shim must not ask the host to open one: the host binds it or stops it.
+    /// A manual launch (Dock click, Launchpad) keeps its open request.
+    static let automaticArguments = ["--no-open"]
 
     /// The synchronous bundle build and registration, shared by the "Add to Dock"
     /// path and the automatic one. Runs on the caller's thread.
@@ -463,12 +513,39 @@ final class DockApps: NSObject {
         }
     }
 
-    private func open(_ url: URL, launched: @escaping (Int?) -> Void) {
+    private func open(_ url: URL, arguments: [String] = [], delayedLaunch: Bool = false,
+                      automatic: Bool = false, launched: @escaping (Int?) -> Void) {
         let configuration = NSWorkspace.OpenConfiguration()
         configuration.activates = !BackgroundMode.isOn
-        NSWorkspace.shared.openApplication(at: url, configuration: configuration) { app, _ in
-            launched(app.map { Int($0.processIdentifier) })
+        configuration.arguments = arguments
+        NSWorkspace.shared.openApplication(at: url, configuration: configuration) { [weak self] app, _ in
+            let pid = app.map { Int($0.processIdentifier) }
+            // Recorded before the callback is (possibly) held back: a quit must
+            // still find a shim whose launch has not been bound yet.
+            if automatic, let pid = pid { self?.noteUnboundLaunch(pid) }
+            let deliver = { launched(pid) }
+            guard delayedLaunch, let delay = self?.bindDelay, delay > 0 else {
+                DispatchQueue.main.async(execute: deliver)  // gcd: one main hop from the open callback
+                return
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: deliver)  // gcd: e2e hold of that hop
         }
+    }
+
+    private func noteUnboundLaunch(_ pid: Int) {
+        launchLock.lock()
+        unboundLaunches.insert(pid)
+        launchLock.unlock()
+    }
+
+    /// Stops every automatic shim a launch handed us that no window owns. The
+    /// app's quit path calls this after it has waited for in-flight launches.
+    func quitUnboundLaunches() {
+        launchLock.lock()
+        let pids = unboundLaunches
+        unboundLaunches.removeAll()
+        launchLock.unlock()
+        for pid in pids { quit(pid: pid) }
     }
 
     @discardableResult
@@ -534,6 +611,9 @@ final class DockApps: NSObject {
 
     /// The shim is up and its pid now stands for the window of `stream`.
     func bind(pid: Int, stream: UInt32, pkg: String) {
+        launchLock.lock()
+        unboundLaunches.remove(pid)
+        launchLock.unlock()
         bindings[pid] = Binding(stream: stream, pkg: pkg)
         watchExit(of: pid)
         post(DockMessage.opened, pid: pid)
@@ -567,7 +647,13 @@ final class DockApps: NSObject {
 
     /// A window closed: its shim exits.
     func streamClosed(_ stream: UInt32) {
-        for (pid, bound) in bindings where bound.stream == stream {
+        let pids = bindings.filter { $0.value.stream == stream }.map(\.key)
+        if pids.isEmpty {
+            Log.app.notice("dock: stream \(stream, privacy: .public) closed; no shim bound")
+        } else {
+            Log.app.notice("dock: stream \(stream, privacy: .public) closed; stopping \(pids.count, privacy: .public) shim(s)")
+        }
+        for (pid, binding) in bindings where binding.stream == stream {
             bindings.removeValue(forKey: pid)
             exitWatches.removeValue(forKey: pid)?.cancel()
             post(DockMessage.closed, pid: pid)
