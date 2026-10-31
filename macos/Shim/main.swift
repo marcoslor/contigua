@@ -16,6 +16,8 @@ final class ShimDelegate: NSObject, NSApplicationDelegate {
     private var startedAt = Date()
     private var launchedHost = false
     private var retry: Timer?
+    /// An automatic launch does not ask for a window (`--no-open`).
+    private var asksForWindow = true
 
     override init() {
         let info = Bundle.main.infoDictionary ?? [:]
@@ -33,7 +35,17 @@ final class ShimDelegate: NSObject, NSApplicationDelegate {
                            object: profile, suspensionBehavior: .deliverImmediately)
         center.addObserver(self, selector: #selector(closed(_:)), name: DockMessage.closed,
                            object: profile, suspensionBehavior: .deliverImmediately)
-        requestOpen()
+        // An automatic launch stands for a window that is already open: the host
+        // binds it and answers `opened`, so asking for a window would only open a
+        // second one (or bring a closed one back). It still quits if nobody
+        // answers, so a lost host never leaves a Dock tile behind.
+        if CommandLine.arguments.contains("--no-open") {
+            asksForWindow = false
+            startedAt = Date()
+            startRetry()
+        } else {
+            requestOpen()
+        }
     }
 
     /// Dock click while running.
@@ -55,6 +67,10 @@ final class ShimDelegate: NSObject, NSApplicationDelegate {
         acknowledged = false
         startedAt = Date()
         post(DockMessage.open)
+        startRetry()
+    }
+
+    private func startRetry() {
         retry?.invalidate()
         retry = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.retryOpen() }
@@ -65,6 +81,7 @@ final class ShimDelegate: NSObject, NSApplicationDelegate {
         guard !acknowledged else { retry?.invalidate(); return }
         let waited = Date().timeIntervalSince(startedAt)
         if waited > 30 { NSApp.terminate(nil); return }
+        guard asksForWindow else { return }
         if waited >= 2, !launchedHost { launchHostIfNeeded() }
         post(DockMessage.open)
     }
