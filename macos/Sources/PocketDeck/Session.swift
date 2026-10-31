@@ -309,11 +309,10 @@ final class Session {
         var sendRaw: (@Sendable ([UInt8]) -> Void)?
         var exporter: (() -> [UInt8]?)?
         var timer: DispatchWorkItem?  // gcd: the session's one timeout timer per attempt
-        /// The session id this path's hello asked to join (nil = plain hello).
-        var joinAsked: String?
+        /// dialing -> ready -> hello/join -> welcomed, or failed (R-14).
+        var machine = AttemptMachine()
         /// The dial used a pin: only such a path may join.
         var dialedPinned = false
-        var ready = false
         /// The dialed host:port, for the cached address (C10).
         var address: CachedAddress?
         let kind: PathKind
@@ -532,11 +531,11 @@ final class Session {
     private func install(_ id: String,
                          result: (channel: Channel, exporter: () -> [UInt8]?, send: @Sendable (Frame) -> Void),
                          target: (host: String, port: Int)) {
-        guard !intentionalClose, var attempt = attempts[id], !attempt.ready else {
+        guard !intentionalClose, var attempt = attempts[id],
+              attempt.machine.phase == .dialing else {
             result.channel.close()
             return
         }
-        attempt.ready = true
         attempt.channel = result.channel
         attempt.exporter = result.exporter
         attempt.sendRaw = { bytes in
@@ -545,6 +544,7 @@ final class Session {
         }
         attempt.address = UInt16(exactly: target.port).map { CachedAddress(host: target.host, port: $0) }
         attempts[id] = attempt
+        attemptEvent(id, .tlsReady)
         if state == .connecting { transition(.handshaking, nil) }
         Log.session.info("tls connected (path \(id, privacy: .public)); hello v\(PathVersion.current, privacy: .private)")
         performStart(pathStart.handle(.ready(id)))
@@ -565,6 +565,17 @@ final class Session {
         }
     }
 
+    /// Records one attempt transition and logs it (`attempt: <from> --<event>--> <to>`).
+    /// Runs on the session queue, where the attempt record lives (R-14).
+    private func attemptEvent(_ id: String, _ event: AttemptEvent) {
+        guard var attempt = attempts[id] else { return }
+        let before = attempt.machine.phase
+        _ = attempt.machine.handle(event)
+        attempts[id] = attempt
+        guard before != attempt.machine.phase else { return }
+        Log.session.notice("attempt: \(before.token, privacy: .public) --\(event.token, privacy: .public)--> \(attempt.machine.phase.token, privacy: .public) (path \(id, privacy: .public))")  // log-ok: closed phase tokens and a path id
+    }
+
     /// Sends this path's `hello` directly (no seq space exists before welcome).
     private func sendHello(on id: String, join: String?) {
         guard var attempt = attempts[id], let send = attempt.sendRaw else { return }
@@ -575,8 +586,6 @@ final class Session {
                 closeAttempt(id)
                 return
             }
-            attempt.joinAsked = join
-            attempts[id] = attempt
         }
         var hello: [String: Any] = [
             "t": "hello", "v": PathVersion.current, "path": id,
@@ -584,6 +593,8 @@ final class Session {
         ]
         if let join { hello["join"] = join }
         if pairingAttempt, join == nil { hello["pair"] = true }
+        attempt.machine.handle(.sentHello(join: join))
+        attempts[id] = attempt
         send(Frame(type: MessageType.json.rawValue, stream: 0, payload: JSONFrame.payload(hello)).encoded)
         if join == nil {
             preWelcomeSender.set(send)
@@ -598,14 +609,14 @@ final class Session {
     private func attemptFailed(_ id: String, reason: String) {
         guard !intentionalClose, let attempt = attempts[id] else { return }
         // A late timer for a path that already welcomed is not a failure.
-        if pathLayer.hasPath(id) { attempt.timer?.cancel(); return }
-        attempt.timer?.cancel()
-        attempts.removeValue(forKey: id)
-        attemptReasons[id] = reason
-        if pathLayer.hasPath(id) {
-            handlePathError(id, "failed")
+        if attempt.machine.phase.isWelcomed || pathLayer.hasPath(id) {
+            attempt.timer?.cancel()
             return
         }
+        attempt.timer?.cancel()
+        attemptEvent(id, .failed(reason: reason))
+        attempts.removeValue(forKey: id)
+        attemptReasons[id] = reason
         performStart(pathStart.handle(.attemptFailed(id)))
     }
 
@@ -626,9 +637,8 @@ final class Session {
             handlePath(wasCurrent ? .currentFailed(id: id) : .pathDown(id: id))
             return
         }
-        guard let attempt = attempts[id] else { return }
-        attempt.timer?.cancel()
-        closeAttempt(id)
+        guard attempts[id] != nil else { return }
+        attempts[id]?.timer?.cancel()
         var reason = "tls"
         let lowered = message.lowercased()
         if message.contains("closed-by-peer") {
@@ -636,11 +646,14 @@ final class Session {
         } else if lowered.contains("certificate_verify_failed") || lowered.contains("certificate verify failed") {
             reason = "pin-mismatch"
         }
+        attemptEvent(id, .failed(reason: reason))
+        closeAttempt(id)
         attemptReasons[id] = reason
         performStart(pathStart.handle(.attemptFailed(id)))
     }
 
     private func closeAttempt(_ id: String) {
+        attemptEvent(id, .closed)
         guard let attempt = attempts.removeValue(forKey: id) else { return }
         attempt.timer?.cancel()
         if let channel = attempt.channel { channel.close() }
@@ -1210,7 +1223,7 @@ final class Session {
                 return
             }
             let welcomedOn = lastFramePath
-            if let welcomedOn, let asked = attempts[welcomedOn]?.joinAsked {
+            if let welcomedOn, let asked = attempts[welcomedOn]?.machine.phase.joinSession {
                 guard asked == session else {
                     Log.session.notice("path join mismatch")
                     closeAttempt(welcomedOn)
@@ -1218,6 +1231,7 @@ final class Session {
                 }
                 // A later path: one more connection, no second session, no
                 // second ready event (PATH-3).
+                attemptEvent(welcomedOn, .welcomed(session: session))
                 attachPath(welcomedOn)
                 emit(.pathsReconnecting(false))
                 return
@@ -1227,7 +1241,10 @@ final class Session {
             // and a frame with no attached path is held for the join (R-4).
             preWelcomeSender.set(nil)
             founded.set(true)
-            if let welcomedOn { attachPath(welcomedOn) }
+            if let welcomedOn {
+                attemptEvent(welcomedOn, .welcomed(session: session))
+                attachPath(welcomedOn)
+            }
             performStart(pathStart.handle(.welcome(attempt: welcomedOn ?? "", session: session)))
             if let strict = strictDeviceId, info.id != strict {
                 // A cached address must keep belonging to the same phone.
