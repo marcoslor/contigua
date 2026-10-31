@@ -241,13 +241,19 @@ Rules:
 - A receiver that sees an unknown `innerType` acks it and drops it (today's
   rule for unknown types), so a new message type never stalls the stream.
 - An ACK is sent at most every 10 ms and at least once per 16 received
-  frames; the coalescing timer is an implementation constant, not a decision.
+  frames; the 10 ms timer flushes the tail of a burst by itself. Both are
+  implementation constants, not decisions.
 - Duplicates (`seq < expected`) are dropped and answered with an immediate ACK.
 - Out-of-order frames (`seq > expected`) wait in a **reorder window** of 64
-  frames / 4 MiB. One that does not fit is dropped without an ack; the sender
-  replays it once the gap closes, because its ack did not advance.
-- A RELIABLE frame whose `stream` differs from `innerStream` is a protocol
-  error (close the session): the outer stream exists only for routing.
+  frames / 4 MiB. When the window is full, a frame ahead of a gap that another
+  path holds pauses that path's reader (TCP backpressure) rather than being
+  dropped; a frame ahead of a gap on that same path's own stream does not pause
+  its reader — it is held (at most one window) and retried when there is room,
+  never dropped. Either way the sender's ack does not advance, so nothing is
+  lost.
+- A RELIABLE frame whose `stream` differs from `innerStream`, or that does
+  not decode, is a protocol error: the session closes, with no path detach and
+  no replay (the outer stream exists only for routing).
 
 ### 5.4 The path messages
 
@@ -257,7 +263,7 @@ path and mean nothing after a switch):
 
 | t | fields | dir | meaning |
 |---|---|---|---|
-| `path.ping` | `path` (8 hex), `ts` (u64 ms, sender's monotonic clock) | both | sent on that path only, every 2 s |
+| `path.ping` | `path` (8 hex), `ts` (u64 ms, sender's monotonic clock) | both | sent on that path only: every 2 s with two or more paths while the phone's screen is on or a transfer runs, every 15 s otherwise, never with one path (D1) |
 | `path.pong` | `path`, `ts` (echoed) | both | answered on the same path at once |
 | `path.switch` | `path` (8 hex, the path being moved **to**), `seq` (u64) | both | "my next reliable frame is `seq` and it goes on `path`" |
 
@@ -512,11 +518,23 @@ low / 1 MiB high per path.
   (`drop.progress`, `fs.progress`, `apk.progress`, `share.*`) are control
   frames and keep flowing, so the UI never looks stalled.
 - **The reorder window works the same way.** 64 frames / 4 MiB; when it is
-  full, the reader **stops reading the path** whose frames are ahead of the gap
-  (TCP backpressure), keeps the frame it could not place, and resumes when the
-  gap fills. It never drops a frame and never ends the session. The path that
-  holds the gap keeps being read, and ACKs still go out on any path, so progress
-  toward the gap is never blocked by the window.
+  full, the reader **stops reading only the path** whose next frame is ahead of
+  a gap another path holds (TCP backpressure). A frame ahead of a gap on that
+  same path's own stream does not pause its reader: the receiver keeps it (at
+  most one window) and retries it when the window has room. It never drops a
+  frame and never ends the session. The path that holds the gap keeps being
+  read, and ACKs still go out on any path, so progress toward the gap is never
+  blocked by the window.
+- **Every path writes from its own writer.** No socket write happens under the
+  session lock: one path's writes stay in order, and `detach` and `closeAll`
+  close a socket without it, so a stalled path never freezes another's reader,
+  the ticker or teardown (R-2).
+- **The delivery hand-off is bounded by bytes.** A receiver ACKs a reliable
+  frame only after handing it to the session dispatcher; a full dispatcher
+  blocks that path's reader and pushes back through TCP instead of dropping an
+  acked frame. The hand-off holds at most 4 MiB and admits one larger frame only
+  when it is empty — part of the same 20 MiB, because a delivered frame has
+  already left the reorder window (R-1/PATH-15).
 - **Priority inside a path.** `path.ping`, `path.pong`, ACK and `path.switch`
   are written at once, never behind queued bulk: the Mac holds admitted bulk in
   the path layer and feeds the channel only while it reports writable (a 256 KiB
@@ -529,10 +547,12 @@ low / 1 MiB high per path.
 - A switch replays **from the peer's last ack**, so a planned switch costs the
   bytes beyond the last ack (at most one path's send window), not the buffer.
 - **Phone memory.** The paths layer adds at most 16 MiB (send, credit-bounded)
-  + 4 MiB (reorder window) = 20 MiB of heap while a session is live, on top of
-  the existing per-stream ~250 ms video queue; video and audio never enter
-  either buffer. With no session it allocates nothing and holds nothing: the
-  buffers are created with the session and freed with it.
+  + 4 MiB (reorder window) = 20 MiB of heap while a session is live, with the
+  receive-side delivery hand-off's 4 MiB inside the same window (a delivered
+  frame has already left it), on top of the existing per-stream ~250 ms video
+  queue; video and audio never enter either buffer. With no session it
+  allocates nothing and holds nothing: the buffers are created with the session
+  and freed with it.
 - The phone's slot, the session id and the path ids are per session; nothing
   about a path survives the session.
 
