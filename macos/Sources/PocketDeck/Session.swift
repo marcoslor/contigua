@@ -325,8 +325,16 @@ final class Session {
     private var pathStart = PathStart()
     private var attempts: [String: Attempt] = [:]
     private var attemptReasons: [String: String] = [:]
-    /// The attempt holding the one plain hello: pre-welcome frames go there.
-    private var helloAttempt: String?
+    /// True once a path was attached: a later path reaching an empty layer is
+    /// a rejoin, not the founder (it replays instead of starting).
+    private var everAttached = false
+    /// Pre-welcome sends travel bare on the one attempt holding the plain
+    /// hello (PATH-2). The box carries the decision across threads; the
+    /// session queue clears it at the founding welcome (R-4/R-7).
+    private let preWelcomeSender = SessionLockedBox<(@Sendable ([UInt8]) -> Void)?>(value: nil)
+    /// Set once a `welcome` founded the session: from then on every frame is a
+    /// path-layer frame, even with no path attached (PATH-6).
+    private let founded = SessionLockedBox(value: false)
     private var lastFramePath: String?
     private var pathSessionId: String?
     private var pathMachine = PathSessionMachine()
@@ -578,7 +586,7 @@ final class Session {
         if pairingAttempt, join == nil { hello["pair"] = true }
         send(Frame(type: MessageType.json.rawValue, stream: 0, payload: JSONFrame.payload(hello)).encoded)
         if join == nil {
-            helloAttempt = id
+            preWelcomeSender.set(send)
             exporterProvider = attempt.exporter
             if pairingAttempt {
                 send(Frame(type: MessageType.json.rawValue, stream: 0,
@@ -650,7 +658,14 @@ final class Session {
                                   close: { channel.close() })
         if pathLayer.pathCount == 0 {
             pathLayer.start(first: path)
-            pathMachine.startLive(path: id)
+            if everAttached {
+                // An orphan's path came back: unplanned-switch semantics, so the
+                // frames held while no path was up replay onto it (PATH-6/9).
+                handlePath(.pathUp(id: id, joined: true))
+            } else {
+                everAttached = true
+                pathMachine.startLive(path: id)
+            }
         } else {
             pathLayer.attach(path, joined: true)
             // Item 7's join predicate: a Mac-side fact that two paths are live
@@ -869,7 +884,9 @@ final class Session {
         for id in Array(attempts.keys) { closeAttempt(id) }
         attempts.removeAll()
         attemptReasons.removeAll()
-        helloAttempt = nil
+        preWelcomeSender.set(nil)
+        founded.set(false)
+        everAttached = false
         pathLayer.closeAll()
     }
 
@@ -1206,6 +1223,10 @@ final class Session {
                 return
             }
             pathSessionId = session
+            // From here the seq space exists: no frame may travel bare again,
+            // and a frame with no attached path is held for the join (R-4).
+            preWelcomeSender.set(nil)
+            founded.set(true)
             if let welcomedOn { attachPath(welcomedOn) }
             performStart(pathStart.handle(.welcome(attempt: welcomedOn ?? "", session: session)))
             if let strict = strictDeviceId, info.id != strict {
@@ -1526,15 +1547,16 @@ final class Session {
 
     func sendBytes(_ bytes: [UInt8]) {
         guard let frame = Frame(encoded: bytes) else { return }
-        if pathLayer.pathCount > 0 {
-            pathLayer.send(frame)
-            return
-        }
         // Before welcome there is no seq space: handshake and pairing frames
         // travel bare on the one path that holds the plain hello (PATH-2).
-        if let helloAttempt, let send = attempts[helloAttempt]?.sendRaw {
-            send(bytes)
+        if let preWelcome = preWelcomeSender.get() {
+            preWelcome(bytes)
+            return
         }
+        // After welcome every frame is a path-layer frame: with no attached
+        // path it is held for replay, never written bare to a dead attempt
+        // (PATH-6, R-4).
+        pathLayer.send(frame)
     }
 
     func sendJSON(_ object: [String: Any]) {
@@ -1717,9 +1739,9 @@ final class Session {
         sendJSON(["t": on ? "fs.watch" : "fs.unwatch", "id": Int(id), "paths": paths])
     }
     private func sendData(_ kind: MessageType, id: UInt32, bytes: [UInt8], sent: @escaping @Sendable (Bool) -> Void) {
-        guard pathLayer.pathCount > 0 else { return sent(false) }
         // The replay buffer holds the frame; the completion means "accepted for
-        // delivery", so a producer waits on credit without blocking the UI.
+        // delivery", so a producer waits on credit without blocking the UI,
+        // and an orphaned session keeps the frame for the join (PATH-6, R-4).
         pathLayer.send(Frame(type: kind, stream: id, payload: bytes), completion: sent)
     }
     func sendClipboard(_ text: String) { sendJSON(["t": "clip.set", "text": text]) }
