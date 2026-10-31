@@ -2,6 +2,8 @@ package dev.pocketdeck.server
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -70,6 +72,108 @@ class DarkPanelPolicyTest {
             assertFalse(plan.panelOff)
             assertFalse(plan.transitional)
         }
+    }
+
+    // --- an episode that starts while the group sleeps ----------------
+    // The 10-30 report: the VD starts OFF with the panel's group, the activity
+    // launch waits for the group to wake, and the take-over only ran after the
+    // launch and its task wait (23 s to the first frame). The take-over is now
+    // the episode start's own action, before the launch; the panel-off it owes
+    // is the first step's.
+
+    @Test
+    fun `an episode on a sleeping group is woken before the launch, panel off after`() {
+        val p = policy(forced = true)
+        p.streamsStarted()
+        val takeOver = p.episodeStarted(panelOn = false, strategy = PanelStrategy.PANEL_DARK)
+        assertNotNull("the take-over must not wait for the launch", takeOver)
+        assertEquals(PanelPlan(wake = true, panelOff = false, transitional = true), takeOver)
+        assertTrue(
+            "the shared group is woken now",
+            DarkPanelPolicy.wakesGroup(PanelStrategy.PANEL_DARK, takeOver!!),
+        )
+        // The wake lights the lock screen: the first step still owes the
+        // panel-off, does not wake again, and keeps the transitional re-applies.
+        val step = p.step(panelOn = true, strategy = PanelStrategy.PANEL_DARK)
+        assertEquals(PanelPlan(wake = false, panelOff = true, transitional = true), step)
+        // From there it is the existing steady dark path.
+        assertEquals(
+            PanelPlan(wake = true, panelOff = true, transitional = false),
+            p.step(panelOn = false, strategy = PanelStrategy.PANEL_DARK),
+        )
+    }
+
+    @Test
+    fun `a take-over in flight is not repeated when the step already decided`() {
+        val p = policy(forced = true)
+        p.streamsStarted()
+        p.step(panelOn = false, strategy = PanelStrategy.PANEL_DARK)
+        assertNull(p.episodeStarted(panelOn = false, strategy = PanelStrategy.PANEL_DARK))
+    }
+
+    @Test
+    fun `an episode on a lit panel is never taken over`() {
+        val p = policy(forced = true)
+        p.streamsStarted()
+        assertNull("the person's panel is not ours to take", p.episodeStarted(panelOn = true, strategy = PanelStrategy.PANEL_DARK))
+        val step = p.step(panelOn = true, strategy = PanelStrategy.PANEL_DARK)
+        assertFalse(step.wake || step.panelOff || step.transitional)
+    }
+
+    @Test
+    fun `an own-group episode is woken before its launch without owing a panel-off`() {
+        val p = policy()
+        p.streamsStarted()
+        val takeOver = requireNotNull(p.episodeStarted(panelOn = false, strategy = PanelStrategy.GROUP_ONLY)) {
+            "its own group also starts asleep with a new VD"
+        }
+        assertTrue(takeOver.wake)
+        assertFalse(takeOver.panelOff)
+        assertTrue("the step's own-group wake stays a harmless repeat", p.step(panelOn = false, strategy = PanelStrategy.GROUP_ONLY).wake)
+    }
+
+    @Test
+    fun `a mirror is never woken before the launch`() {
+        val p = policy(forced = true)
+        p.streamsStarted()
+        assertNull(p.episodeStarted(panelOn = false, strategy = PanelStrategy.PANEL_ALONE))
+    }
+
+    @Test
+    fun `a close during the take-over hands the wake's panel back`() {
+        val p = policy(forced = true)
+        p.streamsStarted()
+        p.episodeStarted(panelOn = false, strategy = PanelStrategy.PANEL_DARK)
+        assertTrue("the wake lit the panel: a failed launch must restore it", p.streamsStopped())
+    }
+
+    @Test
+    fun `a press during the take-over is the person's`() {
+        val p = policy(forced = true)
+        p.streamsStarted()
+        p.episodeStarted(panelOn = false, strategy = PanelStrategy.PANEL_DARK)
+        p.ownWake(nowMs = 1_000)
+        assertEquals(
+            "our own wake's off edge is not a press",
+            PowerWatchAction.NONE,
+            p.interactiveOff(nowMs = 1_100, streamsUp = true),
+        )
+        assertEquals(
+            PowerWatchAction.HAND_BACK,
+            p.interactiveOff(nowMs = 3_000, streamsUp = true),
+        )
+    }
+
+    @Test
+    fun `a pause during the take-over keeps the owed panel-off`() {
+        val p = policy(forced = true)
+        p.streamsStarted()
+        p.episodeStarted(panelOn = false, strategy = PanelStrategy.PANEL_DARK)
+        assertFalse("the panel is already ours", p.streamsPaused(nowMs = 1_000))
+        assertEquals(
+            PanelPlan(wake = false, panelOff = true, transitional = true),
+            p.step(panelOn = true, strategy = PanelStrategy.PANEL_DARK),
+        )
     }
 
     // --- the person's direct use wins (CTRL-11) -----------------------
