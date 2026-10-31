@@ -457,7 +457,7 @@ extension PathLayerTests {
         layer.pingAll(active: false)
         wire.clear(); second.clear()
         layer.send(bulkFrame(1))
-        clock += 2_500
+        clock += 1_500
         layer.pingAll(active: false)
         XCTAssertFalse(wire.all().isEmpty, "a transfer runs: the fast interval applies")
     }

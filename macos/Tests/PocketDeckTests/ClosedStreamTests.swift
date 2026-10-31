@@ -33,6 +33,20 @@ final class ClosedStreamTests: XCTestCase {
         XCTAssertEqual(closed.decide(type: "task.continue", stream: 1), .send)
     }
 
+    /// RR-9: an open stream is the session's "activity" while the phone's
+    /// screen is off; the close ends it.
+    func testAnOpenStreamCountsAsActivityUntilItCloses() {
+        var streams = ClosedStreams()
+        XCTAssertFalse(streams.hasOpenStream)
+        XCTAssertEqual(streams.decide(type: "window.open", stream: 1), .send)
+        XCTAssertTrue(streams.hasOpenStream)
+        XCTAssertEqual(streams.decide(type: "window.open", stream: 2), .send)
+        XCTAssertEqual(streams.decide(type: "window.close", stream: 1), .send)
+        XCTAssertTrue(streams.hasOpenStream, "stream 2 is still open")
+        XCTAssertEqual(streams.decide(type: "window.close", stream: 2), .send)
+        XCTAssertFalse(streams.hasOpenStream)
+    }
+
     func testEachOpenerRevivesTheStream() {
         for opener in ClosedStreams.opening {
             var closed = ClosedStreams()

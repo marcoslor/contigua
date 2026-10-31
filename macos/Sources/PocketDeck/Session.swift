@@ -943,9 +943,20 @@ final class Session {
         pathTimer = timer
     }
 
+    /// D-1/PATH-7/RR-9: "active" is the phone's screen on, any open stream
+    /// (a mirrored app window outlives the screen), or a bulk transfer in the
+    /// last 2 s. The same rule on both sides.
+    private var pingActive: Bool {
+        if phoneScreenOn { return true }
+        closedStreamsLock.lock()
+        let streams = closedStreams.hasOpenStream
+        closedStreamsLock.unlock()
+        return streams || pathLayer.transferActive
+    }
+
     private func tickPaths() {
         maintainPaths()
-        pathLayer.pingAll(active: phoneScreenOn)
+        pathLayer.pingAll(active: pingActive)
         let now = uptime
         for lost in pathLayer.lostPings() {
             pathRanking.addSample(id: lost, rttMs: nil, at: now)
