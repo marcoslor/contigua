@@ -26,6 +26,8 @@ import java.util.ArrayDeque
 class PathHub(
     private val log: (String) -> Unit = {},
     private val now: () -> Long = { System.nanoTime() / 1_000_000 },
+    /** R-15: wakes the ticker so the 10 ms ACK timer is not late. */
+    private val wake: () -> Unit = {},
 ) {
     /**
      * One path's socket plus its own writer (R-2): nothing is written under
@@ -163,6 +165,9 @@ class PathHub(
     private val pendingAck = HashSet<String>()
     private var ackFrames = 0
     private var lastAckAt = 0L
+    /** R-15: when the coalesced ACK's 10 ms timer expires, and its path. */
+    private var ackDueAt = 0L
+    private var ackPath: String? = null
     private var lastPingAt = 0L
     private var lastBulkAt = 0L
     private val pingSentAt = HashMap<String, Long>()
@@ -490,6 +495,20 @@ class PathHub(
     /** The reader handed this frame's events to the session: ACK may advance. */
     fun ackHandled(path: String) = ackLater(path)
 
+    /** R-15: the 10 ms coalescing timer fired (the ticker calls this). */
+    fun flushAck() {
+        val path = synchronized(lock) {
+            if (closed || ackDueAt == 0L || now() < ackDueAt) return
+            val id = ackPath
+            ackFrames = 0
+            lastAckAt = now()
+            ackDueAt = 0
+            ackPath = null
+            id
+        }
+        if (path != null) sendAckNow(path)
+    }
+
     private fun sendAckNow(path: String) {
         val ack = synchronized(lock) {
             if (closed) return
@@ -500,16 +519,28 @@ class PathHub(
     }
 
     private fun ackLater(path: String) {
+        var startTimer = false
         val send = synchronized(lock) {
             if (closed) return
+            val at = now()
             ackFrames++
-            val due = ackFrames >= ACK_FRAMES || now() - lastAckAt >= ACK_MS
+            val due = ackFrames >= ACK_FRAMES || at - lastAckAt >= ACK_MS
             if (due) {
                 ackFrames = 0
-                lastAckAt = now()
+                lastAckAt = at
+                ackDueAt = 0
+                ackPath = null
                 true
-            } else false
+            } else {
+                if (ackDueAt == 0L) {
+                    ackDueAt = at + ACK_MS
+                    startTimer = true
+                }
+                ackPath = path
+                false
+            }
         }
+        if (startTimer) wake()
         if (send) sendAckNow(path)
     }
 
@@ -582,6 +613,7 @@ class PathHub(
                 if (due in 0 until next) next = due
             }
             for (due in draining.values) if (due in 0 until next) next = due
+            if (ackDueAt != 0L && ackDueAt in 0 until next) next = ackDueAt
             next
         }
     }
