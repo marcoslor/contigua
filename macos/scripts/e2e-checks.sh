@@ -703,10 +703,10 @@ check_pathrejoin() {
     sleep 2
     pathfault_mode "$ctl" pass
     wait_until 20 path_join_hello "$session" \
-        && ok "[PATH-3] PATHREJOIN the Mac re-dialed a join with the same session id" \
+        && ok "[PATH-22] PATHREJOIN the Mac re-dialed a join with the same session id" \
         || bad "[PATH-3] PATHREJOIN no join named the session again: $(grep '"ev":"hello"' "$WORK/events.jsonl" | tail -2)"
     wait_until 15 path_joined_up \
-        && ok "[PATH-6] PATHREJOIN the phone attached the path to the same session" \
+        && ok "[PATH-22] PATHREJOIN the phone attached the path to the same session" \
         || bad "[PATH-6] PATHREJOIN no path attached after the route came back"
     path_lines=""
     for _ in $(seq 1 40); do
@@ -732,7 +732,7 @@ print("plain=%d" % plain)
 sys.exit(0 if plain == 1 else 1)
 PY
     [ $? -eq 0 ] \
-        && ok "[PATH-3] PATHREJOIN no new session started (one plain hello)" \
+        && ok "[PATH-22] PATHREJOIN no new session started (one plain hello)" \
         || bad "[PATH-3] PATHREJOIN a second session started"
     sleep 1
     grep -qF "session failed" "$WORK/app.log" \
@@ -793,7 +793,7 @@ PY2
     # still not be failed by a late pong.
     pathfault_mode "$fast_ctl" pass
     if wait_until 70 grep -q '"ev":"drop".*"match":true.*"ok":true' "$WORK/events.jsonl"; then
-        ok "[PATH-10] PATHBULK the 32 MiB file arrived byte-exact across the throttled path"
+        ok "[PATH-10] [PATH-23] PATHBULK the 32 MiB file arrived byte-exact across the throttled path"
     else
         bad "[PATH-10] PATHBULK the file never arrived intact: $(grep '"ev":"drop"' "$WORK/events.jsonl" | tail -2)"
     fi
@@ -805,11 +805,11 @@ PY2
     local path_lines
     path_lines="$(path_log)"
     grep -q -- '--pong-lost-->' <<<"$path_lines" \
-        && bad "[PATH-7] PATHBULK the throttled path was failed by a lost pong during the transfer" \
-        || ok "[PATH-7] PATHBULK no path was demoted by a lost pong during the transfer"
+        && bad "[PATH-23] PATHBULK the throttled path was failed by a lost pong during the transfer" \
+        || ok "[PATH-23] PATHBULK no path was demoted by a lost pong during the transfer"
     grep -q "paths: path down" <<<"$path_lines" \
-        && bad "[PATH-7] PATHBULK a path died during the transfer" \
-        || ok "[PATH-7] PATHBULK both paths stayed open"
+        && bad "[PATH-23] PATHBULK a path died during the transfer" \
+        || ok "[PATH-23] PATHBULK both paths stayed open"
     # The check is vacuous unless the throttle actually carried the file.
     bytes_ok="$(python3 - "$WORK/fault-$((PORT + 3)).events" <<'PY'
 import json, sys
@@ -825,13 +825,13 @@ print(total)
 PY
 )"
     if [ -n "$bytes_ok" ] && [ "$bytes_ok" -ge $((1 << 20)) ]; then
-        ok "[PATH-10] PATHBULK the throttled path carried $bytes_ok bytes"
+        ok "[PATH-23] PATHBULK the throttled path carried $bytes_ok bytes"
     else
-        bad "[PATH-10] PATHBULK the throttled path carried ${bytes_ok:-0} bytes"
+        bad "[PATH-23] PATHBULK the throttled path carried ${bytes_ok:-0} bytes"
     fi
     grep -qF "session failed" "$WORK/app.log" \
-        && bad "[PATH-7] PATHBULK the session ended during the transfer" \
-        || ok "[PATH-7] PATHBULK the session stayed live"
+        && bad "[PATH-23] PATHBULK the session ended during the transfer" \
+        || ok "[PATH-23] PATHBULK the session stayed live"
     # E-4/PATH-23: a fresh session on the same two listeners, both throttled at
     # 400 Mbit/s (a fast LAN, the link where input_latency_ms is a real
     # promise). A KEY typed 0.6 s into a 64 MiB drop must not wait behind the
