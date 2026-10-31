@@ -4,13 +4,13 @@ Prefix: `DOCK`. Owner docs: docs/design/dock.md, docs/UX.md §Deck (the tile's m
 
 ## Purpose
 
-A phone app can have its own Mac app identity: a small shim bundle with the app's real icon and an "App (Phone)" name, in `~/Applications/PocketDeck Apps` (`~/Applications/PocketDeck Apps` is where Launchpad, Spotlight and Raycast look) or the profile's Application Support folder for a test profile. The same bundle is the Dock and ⌘-Tab identity of an open app window (DOCK-10/11), a shortcut the person adds for one app (DOCK-4), and a shortcut the phone's Save all switch adds for every app (DOCK-5). One bundle kind, one icon renderer, four reasons it exists (DOCK-2).
+A phone app can have its own Mac app identity: a small shim bundle with the app's real icon and an "App (Phone)" name, in `~/Applications/PocketDeck Apps` (`~/Applications/PocketDeck Apps` is where Launchpad and Spotlight look, and other launchers scan it too) or the profile's Application Support folder for a test profile. The same bundle is the Dock and ⌘-Tab identity of an open app window (DOCK-10/11), a shortcut the person adds for one app (DOCK-4), and a shortcut the phone's Save all switch adds for every app (DOCK-5). One bundle kind, one icon renderer, four reasons it exists (DOCK-2).
 
 ## User stories
 
 | ID | Priority | Story |
 |---|---|---|
-| DOCK-S1 | P1 | As a person with a paired phone, I want the phone's apps to appear in Launchpad, Spotlight and Raycast as real apps, named for their phone, so that I can launch them like any Mac app. |
+| DOCK-S1 | P1 | As a person with a paired phone, I want the phone's apps to appear in Launchpad, Spotlight and other launchers as real apps, named for their phone, so that I can launch them like any Mac app. |
 | DOCK-S2 | P1 | As a person, I want to add or remove one app's shortcut, so that only the apps I choose live in my Applications folder. |
 | DOCK-S3 | P2 | As a person with many apps, I want one switch that saves all of a phone's apps as shortcuts, so that I do not add them one by one. |
 | DOCK-S4 | P1 | As a person, I want to see which of these reasons a shortcut exists for, so that turning one switch off never deletes a shortcut I asked for another way. |
@@ -24,7 +24,7 @@ A phone app can have its own Mac app identity: a small shim bundle with the app'
 | DOCK-3 | WHEN the person chooses Add to Dock THE Mac SHALL add `dock`, build the bundle and launch it, whatever the Show-phone-apps setting; WHEN the person chooses Remove from Dock App THE Mac SHALL remove only `dock` and SHALL keep a shim another origin holds, stopping a running shim that does not stand for a window. | e2e `dock` (Add to Dock, Remove), `shortcuts` `[DOCK-3]`; K2 `DockAppsTests.testEveryOriginTransition` |
 | DOCK-4 | THE Deck tile's menu SHALL offer Add to Applications (adds `manual`) and, when the shim carries `manual`, Remove from Applications (removes only `manual`) next to Add to Dock/Remove from Dock App; an app Save all already covers SHALL still offer Add to Applications, which keeps it after Save all is turned off; the item SHALL be disabled with a reason when no phone is connected. | e2e `shortcuts` `[DOCK-4]` (the debug control route creates and removes the bundle in the run's folder; the Dock origin is unaffected); K2 `DockAppsTests.testEveryOriginTransition` |
 | DOCK-5 | THE phone's page SHALL offer "Save all apps as shortcuts", per phone, off by default and stored per phone id; WHEN it is turned on THE Mac SHALL add `all` to every app of that phone; WHEN it is turned off THE Mac SHALL remove `all` from every shim of that phone, rewriting the ones another origin keeps and removing the rest. | K2 `DockAppsTests.testSaveAllPlanIsOnEveryAppOffOnlyAll`, `testSaveAllAddsAllOnARefreshAndRemovesOnlyAll`, `testSaveAllSettingIsPerPhoneAndOffByDefault`; e2e `settings` (the switch), `shortcuts` `[DOCK-5]` (40 shims on, two kept off) |
-| DOCK-6 | WHILE Save all builds many shims THE Mac SHALL request the Dock's 1296 px icon for at most four apps at a time, build each bundle off the main thread when its icon answers (or the phone reports none), and SHALL NOT wait for the window to open. | K2 `DockAppsTests.testSaveAllPlanIsOnEveryAppOffOnlyAll` (one step per app, one origin); e2e `shortcuts` `[DOCK-6]` (40 icons answered at most four at a time, 40 `.icns` present, no hang) |
+| DOCK-6 | WHILE Save all builds many shims THE Mac SHALL request the Dock's 1296 px icon for at most four apps at a time, build each bundle off the main thread when its icon answers (or the phone reports none), and SHALL NOT wait for the window to open. | K2 `DockAppsTests.testSaveAllPlanIsOnEveryAppOffOnlyAll` (one step per app); e2e `shortcuts` `[DOCK-6]` (40 `.icns` present while the Deck still answers); review of `dockIconOutstanding`'s limit of four and DockApps' serial build queue |
 | DOCK-7 | WHEN an app list arrives THE Mac SHALL reconcile that phone's shims: an app no longer installed SHALL lose `all` and `manual` and keep a shim only while `dock` or `window` holds it; a new app SHALL gain `all` when Save all is on; a renamed app or phone SHALL rebuild its shims; a shim standing for an open window SHALL NOT be removed or rebuilt before its window is gone. | K2 `DockAppsTests.testUninstalledAppsAreRemovedRenamedOnesRebuilt`, `testAnUninstalledAppKeepsOnlyTheDockAndWindowReasons`; e2e `shortcuts` `[DOCK-7]`, `nickname` |
 | DOCK-8 | WHEN the person forgets a phone THE Mac SHALL remove every shim of that phone, whatever its origins, and leave another phone's shims untouched. | K2 `DockAppsTests.testForgetRemovesOnlyThatPhonesShims`; e2e `settings` `[SET-DEV-07]`, `shortcuts` `[DOCK-8]` |
 | DOCK-9 | WHILE an app has a shim THE Mac SHALL NOT also index it as a CoreSpotlight item: the item SHALL be removed when the shim appears, and the phone's list SHALL be indexed again when the shim goes away. | K2 `SpotlightTests.testAShimmedAppIsNotIndexedTwice`; e2e `shortcuts` `[DOCK-9]` (the index's own count drops by the shimmed apps) |
@@ -40,11 +40,11 @@ A phone app can have its own Mac app identity: a small shim bundle with the app'
 
 One app's shim, and the origin set it carries. Every event is accepted in every state; `write` means build or rewrite the bundle, `remove` means delete it.
 
-| From (origins) | `add(o)` | `remove(o)` | `reconcile` installed, Save all on | `reconcile` installed, Save all off | `reconcile` gone | `forget` |
+| From (origins) | `add(o)` | `remove(o)` | `reconcile` (installed, Save all on) | `reconcile` (installed, Save all off) | `reconcile` (gone) | `forget` |
 |---|---|---|---|---|---|---|
 | `{}` | `{o}`, write | `{}`, ignored | `{all}`, write | `{}`, ignored | `{}`, ignored | `{}`, ignored |
-| `{o}` | `{o}`, ignored | `{}`, remove | `{o, all}`, write | `{}` when `o` is `all`, else `{o}`, write/ignored | `{}` when `o` is `all`/`manual`, else `{o}`, remove/ignored | `{}`, remove |
-| `{o, p}` | `{o, p}`, ignored when `o` is there | `{p}`, write | `{o, p, all}`, write when `all` is new | `{o, p}` without `all`, write when it had one | `{p}` when `o` is `all`/`manual`, else `{o, p}`, write/ignored | `{}`, remove |
+| `S` with `o` | `S`, ignored | `S − {o}`; empty → remove, else write | `S ∪ {all}`, write when it changed | `S − {all}`; empty → remove, else write when it changed | `S − {all, manual}`; empty → remove, else write when it changed | `{}`, remove |
+| `S` without `o` | `S ∪ {o}`, write | `S`, ignored | `S ∪ {all}`, write when it changed | `S − {all}`; empty → remove, else write when it changed | `S − {all, manual}`; empty → remove, else write when it changed | `{}`, remove |
 
 The full 26-transition table is `DockAppsTests.testEveryOriginTransition`; the reconcile and Save all plans are `DockCleanup.plan` and `DockSaveAll.plan`, both built from the same `DockOrigins.applying`.
 

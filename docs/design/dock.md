@@ -10,7 +10,8 @@ Launching it opens (or focuses) that app's PocketDeck window; quitting it closes
 <folder>/WhatsApp (Pixel).app/Contents/
   Info.plist           CFBundleIdentifier dev.pocketdeck.dock.<profile.>?<deviceId>.<pkg>
                        CFBundleName/DisplayName "WhatsApp (Pixel)", CFBundleIconFile AppIcon,
-                       PDDeviceId, PDPackage, PDProfile, PDHostPath (the PocketDeck.app that made it)
+                       PDDeviceId, PDPackage, PDProfile, PDHostPath (the PocketDeck.app that made it),
+                       PDLabel (the phone's raw label), PDOrigins (why the bundle exists, §Shortcuts)
   MacOS/PocketDeckShim the shim binary, copied from the host's Contents/MacOS
   Resources/AppIcon.icns rendered by PhoneAppIcon (all sizes from one 1024 px render)
 ```
@@ -159,11 +160,11 @@ PocketDeck itself keeps its own Dock icon. Rejected: rendering the stream inside
 (a second session or frame forwarding, double the cost) and swapping the host's Dock tile per
 window (`NSApp.applicationIconImage` is per process, not per window).
 
-## Shortcuts (Launchpad, Spotlight and Raycast)
+## Shortcuts (Launchpad, Spotlight and other launchers)
 
 A **shortcut** is the same shim bundle as a Dock identity: same folder, same
 icon, same "App (Phone)" name. A shortcut in an `~/Applications` subfolder is
-listed by Launchpad, Spotlight and Raycast; a CoreSpotlight item is not an app,
+listed by Launchpad, Spotlight and other launchers; a CoreSpotlight item is not an app,
 so it never is. One mechanism, four reasons a bundle exists — its **origin set**:
 
 | Origin | Asked for by |

@@ -646,10 +646,10 @@ final class DockApps: NSObject {
                 url = rebuilt
             }
             guard FileManager.default.fileExists(atPath: url.path) else {
-                DispatchQueue.main.async { launched(nil) }
+                DispatchQueue.main.async { launched(nil) } // gcd: DockApps' queue reports on main (the existing pattern)
                 return
             }
-            open(url) { pid in DispatchQueue.main.async { launched(pid) } }
+            open(url) { pid in DispatchQueue.main.async { launched(pid) } } // gcd: the result hops to main
         }
     }
 
@@ -719,18 +719,18 @@ final class DockApps: NSObject {
     /// thread, one app at a time, and `done` reports on main.
     func addInBackground(deviceId: String, pkg: String, label: String, phoneName: String,
                          origins: DockOriginSet, done: @escaping (Bool) -> Void) {
-        workQueue.async { [self] in
+        workQueue.async { [self] in // gcd: the file work runs on DockApps' serial utility queue
             let url = add(deviceId: deviceId, pkg: pkg, label: label, phoneName: phoneName,
                           launch: false, origins: origins)
-            DispatchQueue.main.async { done(url != nil) }
+            DispatchQueue.main.async { done(url != nil) } // gcd: the caller reads main-actor state
         }
     }
 
     /// Save all off removes bundles off the main thread too.
     func removeInBackground(deviceId: String, pkg: String, done: @escaping () -> Void) {
-        workQueue.async { [self] in
+        workQueue.async { [self] in // gcd: the file work runs on DockApps' serial utility queue
             remove(deviceId: deviceId, pkg: pkg)
-            DispatchQueue.main.async { done() }
+            DispatchQueue.main.async { done() } // gcd: the caller reads main-actor state
         }
     }
 

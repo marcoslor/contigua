@@ -87,6 +87,22 @@ struct PhoneSettingsPage: View {
 
         Section {
             Toggle(isOn: Binding(
+                get: { controller.saveAllShortcuts(deviceId: phone.id) },
+                set: { controller.setSaveAllShortcuts($0, for: phone.id) },
+            )) {
+                Text("Save all apps as shortcuts")
+            }
+            .disabled(!controller.canMakeShortcuts)
+            .help("Give every app on this phone its own Mac app in Applications, so Launchpad, Spotlight and other launchers list it.")
+            Text("Every app on this phone gets its own app in Applications, named for the phone. Turning it off removes only the shortcuts this switch made; ones you added yourself or in the Dock stay. A phone that is offline keeps its shortcuts.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        } header: {
+            Text(PhonePageSection.applications.rawValue)
+        }
+
+        Section {
+            Toggle(isOn: Binding(
                 get: { PhonePanelIgnorePowerSetting.read(from: profileDefaults, deviceId: phone.id) },
                 set: { PhonePanelIgnorePowerSetting.write($0, for: phone.id, to: profileDefaults) },
             )) {
@@ -97,22 +113,6 @@ struct PhoneSettingsPage: View {
                 .foregroundStyle(.secondary)
         } header: {
             Text(PhonePageSection.screen.rawValue)
-        }
-
-        Section {
-            Toggle(isOn: Binding(
-                get: { controller.saveAllShortcuts(deviceId: phone.id) },
-                set: { controller.setSaveAllShortcuts($0, for: phone.id) },
-            )) {
-                Text("Save all apps as shortcuts")
-            }
-            .disabled(!controller.canMakeShortcuts)
-            .help("Give every app on this phone its own Mac app in Applications, so Launchpad, Spotlight and Raycast list it.")
-            Text("Every app on this phone gets its own app in Applications, named for the phone. Turning it off removes only the shortcuts this switch made; ones you added yourself or in the Dock stay. A phone that is offline keeps its shortcuts.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        } header: {
-            Text(PhonePageSection.applications.rawValue)
         }
 
         Section {
