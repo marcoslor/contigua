@@ -74,6 +74,10 @@ final class PathLayer {
     /// Admitted reliable frames per path, in seq order, fed to the channel only
     /// while it is writable (D-2). The replay buffer still owns them.
     private var outbox: [String: [[UInt8]]] = [:]
+    /// Bytes in each outbox: bulk enters the seq space only while its path's
+    /// outbox is under [bulkAdmitBytes] (E-4), so a key is never behind a
+    /// whole file's credit.
+    private var outboxBytes: [String: Int] = [:]
     /// The last time any frame arrived on a path: a path that is still receiving
     /// is alive even when a pong is late (D-2).
     private var lastInboundAt: [String: Int64] = [:]
@@ -124,6 +128,7 @@ final class PathLayer {
             order = [first.id]
             current = first.id
             outbox[first.id] = []
+            outboxBytes[first.id] = 0
         }
     }
 
@@ -138,6 +143,7 @@ final class PathLayer {
             paths[path.id] = path
             order.append(path.id)
             outbox[path.id] = []
+            outboxBytes[path.id] = 0
             if current == nil { current = path.id }
             if joined {
                 let at = nowMs()
@@ -164,6 +170,7 @@ final class PathLayer {
             pingSentAt.removeValue(forKey: id)
             joinedAwaitingPong.removeValue(forKey: id)
             outbox.removeValue(forKey: id)
+            outboxBytes.removeValue(forKey: id)
             lastInboundAt.removeValue(forKey: id)
             overflow.removeValue(forKey: id)
             readingPaused.remove(id)
@@ -187,6 +194,7 @@ final class PathLayer {
             joinedAwaitingPong.removeAll()
             pending.removeAll()
             outbox.removeAll()
+            outboxBytes.removeAll()
             lastInboundAt.removeAll()
             overflow.removeAll()
             readingPaused.removeAll()
@@ -209,6 +217,7 @@ final class PathLayer {
                 draining[plannedFrom] = nowMs() + Self.drainBackstopMs
             } else if let old, old != to {
                 outbox[old] = []
+                outboxBytes[old] = 0
             }
             return old
         }
@@ -255,7 +264,10 @@ final class PathLayer {
             // admitted against its own budget at once, and seqs are assigned
             // at admission, so the wire order stays a valid seq order.
             if bulk {
-                guard pending.isEmpty else {
+                // Bulk waits outside the seq space while anything is already
+                // pending, or while the current path's outbox is over its low
+                // watermark (E-4): it gets a seq only when that path has room.
+                guard pending.isEmpty, outboxHasBulkRoomLocked else {
                     pending.append(Pending(frame: frame, bulk: bulk, completion: completion))
                     return
                 }
@@ -272,6 +284,7 @@ final class PathLayer {
             if bulk { lastBulkAt = nowMs() }
             if let id = current, paths[id] != nil {
                 outbox[id, default: []].append(wrapped)
+                outboxBytes[id, default: 0] += wrapped.count
                 queuedOn = id
             }
         }
@@ -284,12 +297,30 @@ final class PathLayer {
     /// an ACK or a marker never queues behind megabytes of a file (D-2).
     private func pump(_ id: String) {
         while true {
+            var flushed: [Flushed] = []
             let next: (Path, [UInt8])? = locked {
-                guard let path = paths[id], let first = outbox[id]?.first,
-                      path.isWritable() else { return nil }
+                guard let path = paths[id], path.isWritable() else { return nil }
+                if outbox[id]?.isEmpty ?? true {
+                    // The outbox drained: bulk that was waiting outside the
+                    // seq space may enter it now, while there is room (E-4).
+                    if id == current, outboxHasBulkRoomLocked {
+                        flushed = admitPendingLocked()
+                        for item in flushed {
+                            outbox[id, default: []].append(item.bytes)
+                            outboxBytes[id, default: 0] += item.bytes.count
+                        }
+                    }
+                    guard let first = outbox[id]?.first else { return nil }
+                    outbox[id]?.removeFirst()
+                    outboxBytes[id, default: 0] = max(0, (outboxBytes[id] ?? 0) - first.count)
+                    return (path, first)
+                }
+                guard let first = outbox[id]?.first else { return nil }
                 outbox[id]?.removeFirst()
+                outboxBytes[id, default: 0] = max(0, (outboxBytes[id] ?? 0) - first.count)
                 return (path, first)
             }
+            for item in flushed { item.completion?(true) }
             guard let (path, bytes) = next else { return }
             path.send(bytes)
         }
@@ -320,6 +351,7 @@ final class PathLayer {
             try? replay.append(seq: seq, frame: wrapped, bulk: false)
             peakHeldBytes = max(peakHeldBytes, replay.heldBytes)
             outbox[on, default: []].append(wrapped)
+            outboxBytes[on, default: 0] += wrapped.count
             sent = true
         }
         if sent { pump(on) }
@@ -331,7 +363,9 @@ final class PathLayer {
     func replayOnCurrent() {
         let id: String? = locked {
             guard !closed, let id = current, paths[id] != nil else { return nil }
-            outbox[id] = replay.unacked.map(\.frame)
+            let frames = replay.unacked.map(\.frame)
+            outbox[id] = frames
+            outboxBytes[id] = frames.reduce(0) { $0 + $1.count }
             return id
         }
         if let id { pump(id) }
@@ -352,7 +386,10 @@ final class PathLayer {
                 _ = replay.ack(ack)
                 flush = admitPendingLocked()
                 if let id = current, paths[id] != nil {
-                    for item in flush { outbox[id, default: []].append(item.bytes) }
+                    for item in flush {
+                        outbox[id, default: []].append(item.bytes)
+                        outboxBytes[id, default: 0] += item.bytes.count
+                    }
                     target = id
                 }
                 return false
@@ -512,16 +549,41 @@ final class PathLayer {
         }
     }
 
+    /// The current path's outbox bytes; 0 with no attached current path (an
+    /// orphan's bulk waits in the replay buffer like every reliable frame).
+    private var currentOutboxBytesLocked: Int {
+        guard let id = current, paths[id] != nil else { return 0 }
+        return outboxBytes[id] ?? 0
+    }
+
+    /// True while bulk may take a seq on the current path (E-4). "Room" is the
+    /// path's whole unacknowledged queue, not only what is still in the layer's
+    /// outbox: the channel's own buffers hold a written frame until the peer
+    /// reads it, and a gate on the outbox alone let the full 12 MiB credit sit
+    /// in the kernel (the key was still about a credit late).
+    private var outboxHasBulkRoomLocked: Bool {
+        currentOutboxBytesLocked < Self.bulkAdmitBytes
+            && replay.bulkBytes < Self.bulkAdmitBytes
+    }
+
     /// Admits the fitting prefix of [pending] in order. The bytes are already
     /// wrapped; the caller sends them. Nothing is re-queued through `send`:
     /// that would put the prefix behind the remainder and reorder the stream.
     private func admitPendingLocked() -> [Flushed] {
         var out: [Flushed] = []
+        var queued = currentOutboxBytesLocked
+        var inFlight = replay.bulkBytes
         while let item = pending.first {
+            // Bulk waits outside the seq space until its path has room (E-4):
+            // its outbox and its unacked queue both under the low watermark.
+            // Control is admitted at once.
+            if item.bulk, queued >= Self.bulkAdmitBytes || inFlight >= Self.bulkAdmitBytes { break }
             let wrapped = try? PathCodec.encodeReliable(seq: replay.nextSeq, inner: item.frame).encoded
             guard let wrapped, replay.canAdmit(bytes: wrapped.count, bulk: item.bulk) else {
                 break
             }
+            queued += wrapped.count
+            if item.bulk { inFlight += wrapped.count }
             let seq = replay.nextSeq
             try? replay.append(seq: seq, frame: wrapped, bulk: item.bulk)
             peakHeldBytes = max(peakHeldBytes, replay.heldBytes)
@@ -663,4 +725,8 @@ final class PathLayer {
     static let drainBackstopMs: Int64 = 2_000
     static let ackEveryMs: Int64 = 10
     static let ackFrames = 16
+    /// E-4: bulk enters the seq space only while its path's outbox is under
+    /// this. The channel's own low write watermark is the same 256 KiB (D-2),
+    /// so a key is never behind more than a watermark plus one chunk.
+    static let bulkAdmitBytes = 256 << 10
 }

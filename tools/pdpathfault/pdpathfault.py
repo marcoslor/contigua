@@ -36,6 +36,11 @@ import time
 
 MODES = ("pass", "delay", "blackhole", "rst", "throttle")
 CHUNK = 65536
+# Read at most this much ahead of the forwarder per direction: a real socket's
+# receive buffer is bounded, and a proxy with an unbounded queue would hide the
+# sender's own write buffer (the Mac's outbox never fills, so a check could not
+# see back-pressure at all).
+QUEUE_CAP = 256 * 1024
 
 
 class Proxy(object):
@@ -98,9 +103,15 @@ class Proxy(object):
                     lines = []
                 if lines:
                     last = lines[-1]
+                    self.event({"ev": "ctl", "line": lines[-1]})
+                    if last.startswith("rate "):
+                        try:
+                            self.args.rate_mbit = float(last[5:].strip())
+                        except ValueError:
+                            pass
+                        continue
                     if last.startswith("mode "):
                         last = last[5:].strip()
-                    self.event({"ev": "ctl", "line": lines[-1]})
                     self.set_mode(last)
             self.stop.wait(0.05)
 
@@ -192,6 +203,8 @@ class Connection(object):
         # moving on one proxy and then on the other, not just the final hash.
         self.bytes = {0: 0, 1: 0}
         self.pending_bytes = {0: 0, 1: 0}
+        self.queued = {0: 0, 1: 0}
+        self.queue_cv = threading.Condition()
         self.last_bytes_event = {0: 0.0, 1: 0.0}
 
     def reset(self):
@@ -256,6 +269,10 @@ class Connection(object):
                 break
             if not data:
                 break
+            with self.queue_cv:
+                while self.queued[direction] >= QUEUE_CAP and not self.stop.is_set():
+                    self.queue_cv.wait(0.02)
+                self.queued[direction] += len(data)
             self.queues[direction].put((time.time(), data))
         # The peer's FIN: the other side of this proxy has to see it. A path
         # check once waited out the Mac's whole 6 s connect timeout because a
@@ -284,6 +301,7 @@ class Connection(object):
                 self.reset()
                 return
             if mode == "blackhole":
+                self._released(direction, len(data))
                 continue
             if mode == "delay":
                 due = enqueued + self.proxy.args.delay_ms / 1000.0
@@ -298,7 +316,13 @@ class Connection(object):
                 # A broken destination makes the other direction pointless.
                 self.stop.set()
                 return
+            self._released(direction, len(data))
             self._count_bytes(direction, len(data))
+
+    def _released(self, direction, size):
+        with self.queue_cv:
+            self.queued[direction] = max(0, self.queued[direction] - size)
+            self.queue_cv.notify_all()
 
     def _throttle(self, direction, size):
         rate = max(0.001, float(self.proxy.args.rate_mbit)) * 1000 * 1000 / 8.0
