@@ -12,8 +12,10 @@
 #     and the panel awake.
 #
 # It boots once (budget .agent/budgets/direct-p0), and kills only
-# `adb -s emulator-5554 emu kill`. Evidence lands in $WORK and the caller's
-# stdout; every line is also teed to $WORK/p1-proof.out (the reviewer's copy).
+# `adb -s emulator-5554 emu kill`. A rig failure in the pair step is retried
+# once; a tap that then died on the Mac is a product failure and stops. Evidence
+# lands in $WORK and the caller's stdout; every line is also teed to
+# $WORK/p1-proof.out (the reviewer's copy).
 # Each phase gets its own `fault-{a,b}.<phase>.{events,log,ctl}` and the drop's
 # verdict reads those events plus the proxies' delivered-byte counts. The table
 # goes to .agent/direct-link/p1-emulator.md.
@@ -66,6 +68,65 @@ except (OSError, ValueError):
     sys.exit(1)
 sys.exit(0 if any(re.fullmatch(r"[0-9a-fA-F]{64}", r.get("phoneFingerprintHex") or "") for r in records) else 1)
 PY
+}
+
+# --- the pair step and its one retry ----------------------------------------
+# A rig race must not cost a boot (boot 9: the only prompt appeared while
+# wait-prompt was taking its baseline dump). One retry, and only for a failure
+# the rig owns: a tap that died on the Mac is the product's, and stops.
+PAIR_CLASS=""
+PAIR_REASON=""
+PAIR_ATTEMPT=0
+
+# pair_failure_reason <wait-prompt log> — a closed token for the retry line,
+# never the prompt's text or code.
+pair_failure_reason() {
+    local prompt="$1"
+    if grep -q 'no new pairing code' "$prompt" 2>/dev/null; then
+        printf 'no-prompt'
+    elif grep -q 'Allow was not reachable' "$prompt" 2>/dev/null; then
+        printf 'no-tap'
+    else
+        printf 'no-pin'
+    fi
+}
+
+# pair_outcome <pin 0|1> <wait-prompt log> <Mac log> — a finished attempt's
+# class: `paired`, `product` or `rig:<reason>`. Only a tap that the Mac then
+# failed is the product's; no prompt, no tap or no pin is the rig's.
+pair_outcome() {
+    local pin="$1" prompt="$2" log="$3"
+    if [ "$pin" = 1 ]; then
+        printf 'paired'
+    elif grep -q 'tap-allow: tapped' "$prompt" 2>/dev/null &&
+         grep -q 'session failed' "$log" 2>/dev/null; then
+        printf 'product'
+    else
+        printf 'rig:%s' "$(pair_failure_reason "$prompt")"
+    fi
+}
+
+# pair_with_retry — 0 paired, 1 failed twice, 2 product failure (not retried).
+# pair_once (the device step) sets PAIR_CLASS to paired|rig|product.
+pair_with_retry() {
+    local attempt
+    for attempt in 1 2; do
+        pair_once "$attempt"
+        if [ "$PAIR_CLASS" = paired ]; then
+            return 0
+        fi
+        printf '[p1-proof] pair attempt %s failed: %s\n' "$attempt" "$PAIR_REASON"
+        if [ "$PAIR_CLASS" = product ]; then
+            printf '[p1-proof] pair attempt %s died on the Mac after the tap: a product failure, no retry\n' \
+                "$attempt"
+            return 2
+        fi
+        [ "$attempt" -eq 2 ] && return 1
+        # The phone holds the failed attempt's session in its own grace after
+        # the Mac quits; wait the slot free before the second dial.
+        stop_app
+        wait_slot_free "$WORK/phone-pair-$attempt-end.log" 40 pair || true
+    done
 }
 
 # --- --check: everything a boot would die on, without touching a device -----
@@ -151,8 +212,57 @@ if [ "$MODE" = check ]; then
                 END { exit bad ? 0 : 1 }' "$checkdir/drop-script.txt"; then
             cfail "a debug-input wait is over 60 s: $(cat "$checkdir/drop-script.txt" | tr '\n' ' ')"
         fi
+        # The attempt's class decides whether the boot retries, so pin it here:
+        # a pin is paired, a tap plus the Mac's `session failed` is the
+        # product's, and a missing prompt (or a tap with no failure and no pin)
+        # is the rig's.
+        pair_outcome_branch() { # pair_outcome_branch <name> <want> <pin> <prompt text> <log text>
+            local name="$1" want="$2" pin="$3" prompt_text="$4" log_text="$5"
+            local prompt="$checkdir/pair-prompt.txt" log="$checkdir/pair-mac.txt" got
+            printf '%s\n' "$prompt_text" > "$prompt"
+            printf '%s\n' "$log_text" > "$log"
+            got="$(pair_outcome "$pin" "$prompt" "$log")"
+            if [ "$got" = "$want" ]; then
+                printf 'P1-PROOF CHECK: pair class %s -> %s\n' "$name" "$got"
+            else
+                cfail "pair class $name: got '$got', want '$want'"
+            fi
+        }
+        pair_outcome_branch pin-stored paired 1 'wait-prompt: prompt shows code 111111' ''
+        pair_outcome_branch tap-died product 0 'tap-allow: tapped at 896,2304 (dialog)' 'session failed: tls'
+        pair_outcome_branch no-prompt rig:no-prompt 0 'poc: error: no new pairing code within 60s' ''
+        pair_outcome_branch tap-no-death rig:no-pin 0 'tap-allow: tapped at 896,2304 (dialog)' ''
         rm -rf "$checkdir"
     fi
+    # The pair retry's two branches cost a boot each to reach on a device, so
+    # rehearse them here with stubs for the device steps: a rig failure retries
+    # once, a product failure after the tap never retries, and two rig failures
+    # stop at two attempts.
+    pair_branch() { # pair_branch <name> <want rc> <want attempts> <want slot waits> <classes...>
+        local name="$1" want_rc="$2" want_attempts="$3" want_slots="$4"
+        shift 4
+        local -a PAIR_PLAN=("$@")
+        local attempts=0 slots=0 rc=0
+        pair_once() {
+            attempts=$((attempts + 1))
+            PAIR_CLASS="${PAIR_PLAN[$((attempts - 1))]}"
+            PAIR_REASON="$PAIR_CLASS-reason"
+            PAIR_ATTEMPT=$attempts
+        }
+        stop_app() { :; }
+        wait_slot_free() { slots=$((slots + 1)); return 0; }
+        pair_with_retry || rc=$?
+        if [ "$rc" -eq "$want_rc" ] && [ "$attempts" -eq "$want_attempts" ] &&
+            [ "$slots" -eq "$want_slots" ]; then
+            printf 'P1-PROOF CHECK: pair %s branch rehearsed (rc=%s attempts=%s slot-waits=%s)\n' \
+                "$name" "$rc" "$attempts" "$slots"
+        else
+            cfail "pair $name branch: rc=$rc attempts=$attempts slot-waits=$slots (want rc=$want_rc attempts=$want_attempts slot-waits=$want_slots)"
+        fi
+    }
+    pair_branch rig-then-paired 0 2 1 rig paired
+    pair_branch product-stop 2 1 0 product
+    pair_branch rig-twice 1 2 1 rig rig
     if [ "$CHECK_FAIL" -eq 0 ]; then
         echo "P1-PROOF CHECK PASS: one boot, $SERIAL, APK $(apk_version_code "$ROOT/android/app/build/outputs/apk/debug/app-debug.apk"), app $APP"
         exit 0
@@ -441,47 +551,76 @@ emu logcat -c >/dev/null 2>&1 || true
 
 # A fresh Mac profile: no pin from a previous run can make this a reconnect.
 rm -rf "$SUPPORT"
-# flow.sh's step before a pair: the app must be the resumed activity, or the
-# prompt is a notification in a window poc.py does not read.
-bring_app_forward
+
+# pair_once <attempt> — one pairing attempt: the app dials, the rig watches the
+# phone's own prompt and taps Allow, and a pin in the fresh profile proves the
+# welcome arrived (the phone stores it while the Mac handles it; `--> live`
+# never existed, so that gate could only fail). Sets PAIR_CLASS
+# (paired|rig|product) and PAIR_REASON (a closed token), and leaves the app
+# stopped and the tap helper collected.
+pair_once() {
+    local attempt="$1"
+    local log="$WORK/mac-pair-$attempt.log"
+    local prompt="$WORK/wait-prompt-$attempt.log"
+    PAIR_CLASS=""
+    PAIR_REASON=""
+    PAIR_ATTEMPT="$attempt"
+    # flow.sh's step before a pair: the app must be the resumed activity, or the
+    # prompt is a notification in a window poc.py does not read.
+    bring_app_forward
+    "$PYTHON" "$HERE/poc.py" --addr "$ADDR" --serial "$SERIAL" \
+        wait-prompt --timeout 60 --stale none --evidence "$WORK/pair-$attempt" \
+        > "$prompt" 2>&1 &
+    TAP_PID=$!
+    "$APP" --profile "$PROFILE" --background --connect "$ADDR" \
+        --open-phone --quit-after 70 > "$WORK/app-pair-$attempt.out" 2>&1 &
+    APP_PID=$!
+    LOG_STREAM="$(stream_log "$APP_PID" "$log")"
+    if ! wait_for 60 pin_stored; then
+        refresh_log "$APP_PID" "$log"
+        phone_evidence "pair-failed-$attempt"
+    fi
+    # The tap's outcome decides the class. The pair phase holds one connection,
+    # so a `session failed` in this attempt's log is after the tap: the Mac got
+    # the approval and then dropped the session, which is the product's fault.
+    # No tap (or no prompt at all) is the rig's, and gets the one retry.
+    local pin=0 outcome
+    pin_stored && pin=1
+    outcome="$(pair_outcome "$pin" "$prompt" "$log")"
+    case "$outcome" in
+        paired) PAIR_CLASS=paired; PAIR_REASON=pin-stored ;;
+        product) PAIR_CLASS=product; PAIR_REASON=tap-then-session-failed ;;
+        rig:*) PAIR_CLASS=rig; PAIR_REASON="${outcome#rig:}" ;;
+    esac
+    sleep 1
+    stop_app
+    wait "$TAP_PID" 2>/dev/null || true
+    TAP_PID=""
+}
 
 # --- pair the Mac app ------------------------------------------------------
 section pair
-"$PYTHON" "$HERE/poc.py" --addr "$ADDR" --serial "$SERIAL" \
-    wait-prompt --timeout 60 --stale none --evidence "$WORK" > "$WORK/wait-prompt.log" 2>&1 &
-TAP_PID=$!
-"$APP" --profile "$PROFILE" --background --connect "$ADDR" \
-    --open-phone --quit-after 70 > "$WORK/app-pair.out" 2>&1 &
-APP_PID=$!
-LOG_STREAM="$(stream_log "$APP_PID" "$WORK/mac-pair.log")"
-# The welcome stores the pin while the Mac handles it, so a pin in the fresh
-# profile is the real "paired and welcomed" predicate. (`--> live` never existed:
-# that gate could only fail, even when pairing worked.)
-if wait_for 60 pin_stored; then
-    ok "the Mac app paired and stored the phone pin"
-else
-    refresh_log "$APP_PID" "$WORK/mac-pair.log"
-    phone_evidence pair-failed
-    if pin_stored; then
-        ok "the Mac app paired and stored the phone pin"
-    else
-        bad "the Mac app did not pair/store a pin (tap: $(tail -2 "$WORK/wait-prompt.log" 2>/dev/null))"
-        tail -5 "$WORK/mac-pair.log"
-    fi
-fi
-sleep 1
-stop_app
-wait "$TAP_PID" 2>/dev/null || true
-TAP_PID=""
+PAIR_RC=0
+pair_with_retry || PAIR_RC=$?
 # No pin means every later launch is a pairing attempt again, not a join: the
 # three remaining proofs cannot run. Stop here instead of sinking the boot.
-if pin_stored; then
-    ok "the Mac stored the phone pin before the join"
+if [ "$PAIR_RC" -eq 0 ]; then
+    if [ "$PAIR_ATTEMPT" -gt 1 ]; then
+        ok "the Mac app paired and stored the phone pin on attempt $PAIR_ATTEMPT (after a rig failure)"
+    else
+        ok "the Mac app paired and stored the phone pin"
+    fi
 else
-    bad "no pin in $SUPPORT/pins.json after pairing; the join cannot run"
+    if [ "$PAIR_RC" -eq 2 ]; then
+        bad "the Mac app died after the pair tap (session failed): a product failure, not retried"
+    else
+        bad "the Mac app did not pair/store a pin after $PAIR_ATTEMPT attempts"
+    fi
+    tail -5 "$WORK/mac-pair-$PAIR_ATTEMPT.log" 2>/dev/null
     printf '\n== result ==\nFAIL: %s proof(s) failed (one boot, stopped after pair)\n' "$FAIL"
     exit 1
 fi
+ok "the Mac stored the phone pin before the join"
 # The phone's own grace keeps the pair session for 30 s after the Mac app
 # quits; wait it out so the join dials a free slot (boot 8 raced it and the
 # supersede muddied the first dial).
