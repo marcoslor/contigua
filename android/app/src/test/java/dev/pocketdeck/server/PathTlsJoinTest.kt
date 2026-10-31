@@ -70,6 +70,56 @@ class PathTlsJoinTest {
     }
 
     @Test
+    fun thePhoneAnswersTheMacsPathPingRightAfterWelcome() {
+        harness().use { phone ->
+            phone.client().use { first ->
+                val reader = FrameReader(first.getInputStream())
+                first.getOutputStream().write(hello("a1b2c3d4"))
+                first.getOutputStream().flush()
+                val welcome = readJson(reader)
+                assertEquals("welcome", welcome["t"])
+                first.getOutputStream().write(
+                    Frames.encodeJson(0, Json.encode(mapOf(
+                        "t" to "path.ping", "path" to "a1b2c3d4", "ts" to 7,
+                    ))),
+                )
+                first.getOutputStream().flush()
+                val pong = gatherUntil(reader, "t", "path.pong")
+                assertEquals("a1b2c3d4", pong["path"])
+                assertEquals(7L, pong["ts"])
+            }
+        }
+    }
+
+    @Test
+    fun oneLostPongOnTheOnlyPathDoesNotReconnect() {
+        val clock = { System.nanoTime() / 1_000_000 }
+        harness(clock = clock).use { phone ->
+            phone.client().use { socket ->
+                socket.soTimeout = 10_000
+                val reader = FrameReader(socket.getInputStream())
+                val out = socket.getOutputStream()
+                out.write(hello("a1b2c3d4"))
+                out.flush()
+                val welcome = readJson(reader)
+                assertEquals("welcome", welcome["t"])
+                // The phone pings at once; this Mac never answers that ping.
+                val ping = gatherUntil(reader, "t", "path.ping")
+                assertEquals("a1b2c3d4", ping["path"])
+                Thread.sleep(2_400) // real-time: the phone's 2 s ticker and 1.5 s pong rule
+                assertFalse(
+                    "one lost pong failed the only path: ${phone.logs}",
+                    phone.logs.any { it == "paths: reconnecting" },
+                )
+                // Still live: the session answers an app ping.
+                out.write(json(mapOf("t" to "ping", "ts" to 31)))
+                out.flush()
+                assertEquals(31L, gatherUntil(reader, "ts", 31L)["ts"])
+            }
+        }
+    }
+
+    @Test
     fun aJoinOverASecondTlsConnectionAttachesWithoutSuperseding() {
         harness().use { phone ->
             phone.client().use { first ->
@@ -172,7 +222,7 @@ class PathTlsJoinTest {
             while (System.nanoTime() < deadline &&
                 !phone.logs.any { it.startsWith("tls handshake failed") }
             ) {
-                Thread.sleep(20)
+                Thread.sleep(20) // real-time: polls the real server's line
             }
             assertTrue(
                 "a non-TLS byte on the listener left no handshake line: ${phone.logs}",
@@ -246,13 +296,13 @@ class PathTlsJoinTest {
 
                     val deadline = System.nanoTime() + 3_000_000_000L
                     while (System.nanoTime() < deadline && phone.platform.pairRequests.isEmpty()) {
-                        Thread.sleep(20)
+                        Thread.sleep(20) // real-time: polls the real server's state
                     }
                     val request = phone.platform.pairRequests.firstOrNull()
                         ?: error("the phone never asked its person: ${phone.logs}")
                     // Longer than the 250 ms pairing poll: the reader timed out and
                     // resumed many times before the decision, as boot 4 did.
-                    Thread.sleep(1_500)
+                    Thread.sleep(1_500) // real-time: a real reader timeout on the pairing poll
                     phone.server.respondPairing(request.requestId, true)
 
                     val ok = readJson(reader)
@@ -286,6 +336,7 @@ class PathTlsJoinTest {
     private fun harness(
         clients: List<PairedClient> = listOf(PairedClient("c1", "MacBook", TlsV2Fixture.MAC_FP_HEX)),
         serverTls: ServerTls? = null,
+        clock: () -> Long = { 1_000 },
     ): Harness {
         val platform = FakePlatform()
         platform.clients.addAll(clients)
@@ -293,7 +344,7 @@ class PathTlsJoinTest {
         val macIdentity = TestTls.generate("PocketDeck Mac (join paranoia)")
         val logs = Collections.synchronizedList(mutableListOf<String>())
         val server = Server(
-            { socket, plain, hello -> sessionFor(platform, socket, plain, hello, logs) },
+            { socket, plain, hello -> sessionFor(platform, socket, plain, hello, logs, clock) },
             log = { logs.add(it) },
             { phoneIdentity.certPem }, { phoneIdentity.keyP8 }, { GateSettings(true, true) },
             { listOf(fingerprintHex(macIdentity)) },
@@ -324,6 +375,7 @@ class PathTlsJoinTest {
         plain: Socket,
         hello: Map<String, Any?>?,
         logs: MutableList<String>,
+        clock: () -> Long = { 1_000 },
     ): Session = Session(
         socket = socket,
         plainSocket = plain,
@@ -335,7 +387,7 @@ class PathTlsJoinTest {
         device = platform,
         store = platform,
         callback = platform,
-        now = { 1_000 },
+        now = clock,
         log = { logs.add(it) },
         handshakeTimeoutMs = 3_000,
         tlsView = TlsV2Fixture.view,

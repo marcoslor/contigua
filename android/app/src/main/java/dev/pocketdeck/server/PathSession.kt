@@ -17,7 +17,16 @@ sealed interface PathSessionState {
 sealed interface PathSessionEvent {
     data class PathUp(val id: String, val joined: Boolean) : PathSessionEvent
     data class PathDown(val id: String) : PathSessionEvent
+
+    /** A socket error, or a five-second joined-path silence: the path is gone. */
     data class CurrentFailed(val id: String) : PathSessionEvent
+
+    /**
+     * One ping went unanswered for 1.5 s (PATH-7). With two or more paths that
+     * fails the current one at once; with only one it is a ranking sample and
+     * the caller has already recorded it.
+     */
+    data class PongLost(val id: String) : PathSessionEvent
 
     /** The peer's marker arrived on [arrivedOn]; [id] is the path moved to. */
     data class PeerSwitch(val id: String, val seq: Long, val arrivedOn: String) : PathSessionEvent
@@ -50,6 +59,14 @@ object PathTimers {
     const val JOINED_PING_DROP = 5.0
     const val MAX_PATHS = 3
 }
+
+/**
+ * The path whose lost pong is a failover signal: the migration's target while
+ * a switch is pending (the phone's sending path is still the old one until the
+ * Mac's marker arrives), else the sending path.
+ */
+internal fun pongWatchPath(state: PathSessionState, sending: String?): String? =
+    if (state is PathSessionState.Migrating) state.to else sending
 
 class PathSessionMachine(
     var state: PathSessionState = PathSessionState.Orphaned(0.0),
@@ -110,6 +127,31 @@ class PathSessionMachine(
             }
             is PathSessionEvent.CurrentFailed -> {
                 if (event.id != s.current) return emptyList()
+                live.remove(event.id)
+                val next = bestLive()
+                if (next != null) {
+                    state = PathSessionState.Migrating(event.id, next, now)
+                    return listOf(
+                        PathSessionAction.StopPing(event.id),
+                        PathSessionAction.SwitchTo(next),
+                        PathSessionAction.ReplayFromLastAck,
+                        PathSessionAction.RequestKeyframes,
+                        PathSessionAction.StartPing(next),
+                        PathSessionAction.Ranking(PathRankingEvent.CurrentFailed(event.id)),
+                    )
+                }
+                state = PathSessionState.Orphaned(now)
+                return listOf(
+                    PathSessionAction.StopPing(event.id),
+                    PathSessionAction.MarkReconnecting,
+                    PathSessionAction.Ranking(PathRankingEvent.CurrentFailed(event.id)),
+                )
+            }
+            is PathSessionEvent.PongLost -> {
+                if (event.id != s.current) return emptyList()
+                // PATH-7 scopes the 1.5 s rule to two or more paths: with one
+                // there is nothing to switch to and the sample above is all.
+                if (live.size < 2) return emptyList()
                 live.remove(event.id)
                 val next = bestLive()
                 if (next != null) {
@@ -229,6 +271,33 @@ class PathSessionMachine(
                     PathSessionAction.Ranking(PathRankingEvent.CurrentFailed(event.id)),
                 )
             }
+            is PathSessionEvent.PongLost -> {
+                // A migration means a failover already happened: a lost pong
+                // on its target now orphans (the grace), even when the old
+                // path's drain left it the only live path.
+                if (event.id != s.to) return emptyList()
+                live.remove(event.id)
+                val next = bestLive(excluding = s.from)
+                if (next != null) {
+                    state = PathSessionState.Migrating(s.from, next, now)
+                    return listOf(
+                        PathSessionAction.SwitchTo(next),
+                        PathSessionAction.ReplayFromLastAck,
+                        PathSessionAction.RequestKeyframes,
+                        PathSessionAction.StartPing(next),
+                        PathSessionAction.Ranking(PathRankingEvent.CurrentFailed(event.id)),
+                    )
+                }
+                if (s.from in live) {
+                    state = PathSessionState.Live(s.from)
+                    return listOf(PathSessionAction.Ranking(PathRankingEvent.ExternalSwitch(s.from)))
+                }
+                state = PathSessionState.Orphaned(now)
+                return listOf(
+                    PathSessionAction.MarkReconnecting,
+                    PathSessionAction.Ranking(PathRankingEvent.CurrentFailed(event.id)),
+                )
+            }
             PathSessionEvent.DrainExpired -> {
                 live.remove(s.from)
                 return listOf(PathSessionAction.ClosePath(s.from), PathSessionAction.StopPing(s.from))
@@ -282,6 +351,11 @@ class PathSessionMachine(
             is PathSessionEvent.CurrentFailed -> {
                 live.remove(event.id)
                 return listOf(PathSessionAction.Ranking(PathRankingEvent.CurrentFailed(event.id)))
+            }
+            is PathSessionEvent.PongLost -> {
+                // No path carries the session: nothing to fail over from.
+                live.remove(event.id)
+                return emptyList()
             }
             is PathSessionEvent.PeerSwitch -> return listOf(PathSessionAction.Ignore)
             is PathSessionEvent.Close -> {

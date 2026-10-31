@@ -32,6 +32,7 @@ extension PathSessionEvent {
         case .pathUp: return "up"
         case .pathDown: return "down"
         case .currentFailed: return "failed"
+        case .pongLost: return "pong-lost"
         case .peerSwitch: return "switch"
         case .close: return "close"
         case .graceExpired: return "grace"
@@ -43,7 +44,12 @@ extension PathSessionEvent {
 enum PathSessionEvent: Equatable {
     case pathUp(id: String, joined: Bool)
     case pathDown(id: String)
+    /// A socket error (or a five-second joined-path silence): the path is gone.
     case currentFailed(id: String)
+    /// One ping went unanswered for 1.5 s (PATH-7). With two or more paths
+    /// that fails the current one at once; with only one it is a ranking
+    /// sample and the caller has already recorded it.
+    case pongLost(id: String)
     /// The peer's marker arrived on `arrivedOn`; `id` is the path being moved to.
     case peerSwitch(id: String, seq: UInt64, arrivedOn: String)
     case close(reason: String)
@@ -152,6 +158,21 @@ struct PathSessionMachine {
                 state = .orphaned(since: now)
                 return [.stopPing(path: id), .markReconnecting, .ranking(.currentFailed(id: id))]
 
+            case .pongLost(let id):
+                guard id == current else { return [] }
+                // PATH-7 scopes the 1.5 s rule to two or more paths: with one
+                // there is nothing to switch to and the sample above is all.
+                guard live.count >= 2 else { return [] }
+                live.remove(id)
+                if let next = bestLive() {
+                    state = .migrating(from: id, to: next, since: now)
+                    return [.stopPing(path: id), .switchTo(path: next),
+                            .replayFromLastAck, .requestKeyframes,
+                            .startPing(path: next), .ranking(.currentFailed(id: id))]
+                }
+                state = .orphaned(since: now)
+                return [.stopPing(path: id), .markReconnecting, .ranking(.currentFailed(id: id))]
+
             case .pathDown(let id):
                 live.remove(id)
                 if id == current {
@@ -217,6 +238,25 @@ struct PathSessionMachine {
                 return [.markReconnecting, .ranking(.currentFailed(id: id))]
             case .currentFailed:
                 return []
+            case .pongLost(let id) where id == to:
+                // A migration means a failover already happened: a lost pong
+                // on its target now orphans (the grace), even when the old
+                // path's drain left it the only live path.
+                live.remove(id)
+                if let next = bestLive(excluding: from) {
+                    state = .migrating(from: from, to: next, since: now)
+                    return [.switchTo(path: next), .replayFromLastAck,
+                            .requestKeyframes, .startPing(path: next),
+                            .ranking(.currentFailed(id: id))]
+                }
+                if live.contains(from) {
+                    state = .live(current: from)
+                    return [.ranking(.externalSwitch(from))]
+                }
+                state = .orphaned(since: now)
+                return [.markReconnecting, .ranking(.currentFailed(id: id))]
+            case .pongLost:
+                return []
             case .drainExpired:
                 // The peer's marker was not read in 2 s: close the old path and
                 // stay Migrating; the new path's own pong timeout decides next.
@@ -254,6 +294,10 @@ struct PathSessionMachine {
             case .currentFailed(let id):
                 live.remove(id)
                 return [.ranking(.currentFailed(id: id))]
+            case .pongLost(let id):
+                // No path is carrying the session: nothing to fail over from.
+                live.remove(id)
+                return []
             case .peerSwitch:
                 return [.ignore]
             case .close(let reason):

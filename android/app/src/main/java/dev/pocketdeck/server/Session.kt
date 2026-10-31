@@ -674,10 +674,15 @@ class Session(
 
     private fun tickPaths() {
         hub.pingAll()
+        // During a switch the phone's sending path is still the old one until
+        // the Mac's marker arrives; the path the session is moving to is the
+        // current one for the pong rule (PATH-7), or a lost pong on it would
+        // never reach the machine.
+        val current = pongWatchPath(pathMachine.state, hub.currentPath)
         for (lost in hub.pongTimeouts()) {
             val at = now() / 1000.0
             pathRanking.addSample(lost, null, at)
-            if (lost == hub.currentPath) handlePathEvent(PathSessionEvent.CurrentFailed(lost))
+            if (lost == current) handlePathEvent(PathSessionEvent.PongLost(lost))
         }
         for (stale in hub.joinedTimeouts()) {
             val wasCurrent = stale == hub.currentPath

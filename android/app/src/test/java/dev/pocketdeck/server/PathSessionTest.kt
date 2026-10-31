@@ -135,6 +135,91 @@ class PathSessionTest {
         assertFalse(actions.contains(PathSessionAction.SwitchTo("a")))
     }
 
+    /** PATH-7: the 1.5 s rule is for two or more paths. On the only path a
+     * lost pong is a ranking sample, not a failure: no switch, no reconnect. */
+    @Test
+    fun oneLostPongOnTheOnlyPathStaysLive() {
+        val m = machine()
+        assertEquals(emptyList<PathSessionAction>(), m.handle(PathSessionEvent.PongLost("a"), 2.0))
+        assertEquals(PathSessionState.Live("a"), m.state)
+        assertTrue(m.live.contains("a"))
+        // A socket error still fails the only path.
+        assertEquals(
+            listOf(
+                PathSessionAction.StopPing("a"),
+                PathSessionAction.MarkReconnecting,
+                PathSessionAction.Ranking(PathRankingEvent.CurrentFailed("a")),
+            ),
+            m.handle(PathSessionEvent.CurrentFailed("a"), 3.0),
+        )
+    }
+
+    @Test
+    fun aLostPongWithTwoPathsSwitchesAtOnce() {
+        val m = machine(live = setOf("a", "b"))
+        m.scores["a"] = 100
+        m.scores["b"] = 900
+        val actions = m.handle(PathSessionEvent.PongLost("a"), 4.0)
+        assertEquals(PathSessionState.Migrating("a", "b", 4.0), m.state)
+        assertEquals(
+            listOf(
+                PathSessionAction.StopPing("a"),
+                PathSessionAction.SwitchTo("b"),
+                PathSessionAction.ReplayFromLastAck,
+                PathSessionAction.RequestKeyframes,
+                PathSessionAction.StartPing("b"),
+                PathSessionAction.Ranking(PathRankingEvent.CurrentFailed("a")),
+            ),
+            actions,
+        )
+    }
+
+    @Test
+    fun aLostPongForAStandbyPathIsOnlyASample() {
+        val m = machine(live = setOf("a", "b"))
+        assertEquals(emptyList<PathSessionAction>(), m.handle(PathSessionEvent.PongLost("b"), 1.0))
+        assertEquals(PathSessionState.Live("a"), m.state)
+    }
+
+    @Test
+    fun aLostPongOnTheNewPathDuringMigrationFallsBack() {
+        val m = PathSessionMachine(
+            state = PathSessionState.Migrating("a", "b", 1.0),
+            live = mutableSetOf("a", "b"),
+            scores = mutableMapOf("a" to 500, "b" to 500),
+        )
+        assertEquals(
+            listOf(PathSessionAction.Ranking(PathRankingEvent.ExternalSwitch("a"))),
+            m.handle(PathSessionEvent.PongLost("b"), 2.0),
+        )
+        assertEquals(PathSessionState.Live("a"), m.state)
+    }
+
+    /** Boot 6's grace: the drain left the migration's target as the only live
+     * path and its pong stopped too. That is no usable path: the grace starts. */
+    @Test
+    fun aLostPongOnTheOnlyRemainingMigrationTargetOrphans() {
+        val m = PathSessionMachine(
+            state = PathSessionState.Migrating("a", "b", 1.0),
+            live = mutableSetOf("b"),
+            scores = mutableMapOf("b" to 500),
+        )
+        val actions = m.handle(PathSessionEvent.PongLost("b"), 4.0)
+        assertEquals(PathSessionState.Orphaned(4.0), m.state)
+        assertTrue(actions.contains(PathSessionAction.MarkReconnecting))
+        assertFalse(actions.contains(PathSessionAction.SwitchTo("b")))
+    }
+
+    @Test
+    fun thePongWatchIsTheMigrationTargetDuringASwitch() {
+        assertEquals(
+            "b",
+            pongWatchPath(PathSessionState.Migrating("a", "b", 1.0), "a"),
+        )
+        assertEquals("a", pongWatchPath(PathSessionState.Live("a"), "a"))
+        assertEquals("a", pongWatchPath(PathSessionState.Orphaned(1.0), "a"))
+    }
+
     @Test
     fun aPathDownForAnotherPathKeepsTheSessionLive() {
         val m = machine(live = setOf("a", "b"))

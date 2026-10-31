@@ -74,6 +74,55 @@ final class PathSessionTests: XCTestCase {
         XCTAssertFalse(actions.contains(.switchTo(path: "a")))
     }
 
+    /// PATH-7: the 1.5 s rule is for two or more paths. On the only path a
+    /// lost pong is a ranking sample, not a failure: no switch, no reconnect.
+    func testOneLostPongOnTheOnlyPathStaysLive() {
+        var machine = machine()
+        XCTAssertEqual(machine.handle(.pongLost(id: "a"), now: 2), [])
+        XCTAssertEqual(machine.state, .live(current: "a"))
+        XCTAssertTrue(machine.live.contains("a"))
+        // A socket error still fails the only path (the rule is the pong's).
+        XCTAssertEqual(machine.handle(.currentFailed(id: "a"), now: 3),
+                       [.stopPing(path: "a"), .markReconnecting,
+                        .ranking(.currentFailed(id: "a"))])
+    }
+
+    func testALostPongWithTwoPathsSwitchesAtOnce() {
+        var machine = machine(live: ["a", "b"])
+        machine.scores = ["a": 100, "b": 900]
+        let actions = machine.handle(.pongLost(id: "a"), now: 4)
+        XCTAssertEqual(machine.state, .migrating(from: "a", to: "b", since: 4))
+        XCTAssertEqual(actions, [.stopPing(path: "a"), .switchTo(path: "b"),
+                                 .replayFromLastAck, .requestKeyframes,
+                                 .startPing(path: "b"), .ranking(.currentFailed(id: "a"))])
+    }
+
+    func testALostPongForAStandbyPathIsOnlyASample() {
+        var machine = machine(live: ["a", "b"])
+        XCTAssertEqual(machine.handle(.pongLost(id: "b"), now: 1), [])
+        XCTAssertEqual(machine.state, .live(current: "a"))
+    }
+
+    func testALostPongOnTheNewPathDuringMigrationFallsBack() {
+        var machine = PathSessionMachine(state: .migrating(from: "a", to: "b", since: 1),
+                                         live: ["a", "b"], scores: ["a": 500, "b": 500])
+        XCTAssertEqual(machine.handle(.pongLost(id: "b"), now: 2),
+                       [.ranking(.externalSwitch("a"))])
+        XCTAssertEqual(machine.state, .live(current: "a"))
+    }
+
+    /// Boot 6's grace: the first path failed, the drain left the migration's
+    /// target as the only live path, and its pong also stopped. That is no
+    /// path usable, so the grace starts (PATH-6), not a silent hang.
+    func testALostPongOnTheOnlyRemainingMigrationTargetOrphans() {
+        var machine = PathSessionMachine(state: .migrating(from: "a", to: "b", since: 1),
+                                         live: ["b"], scores: ["b": 500])
+        let actions = machine.handle(.pongLost(id: "b"), now: 4)
+        XCTAssertEqual(machine.state, .orphaned(since: 4))
+        XCTAssertTrue(actions.contains(.markReconnecting))
+        XCTAssertFalse(actions.contains(.switchTo(path: "b")))
+    }
+
     func testAPathDownForAnotherPathKeepsTheSessionLive() {
         var machine = machine(live: ["a", "b"])
         XCTAssertEqual(machine.handle(.pathDown(id: "b"), now: 1),
