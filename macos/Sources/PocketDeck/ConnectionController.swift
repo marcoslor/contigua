@@ -999,16 +999,22 @@ final class ConnectionController {
     // MARK: Spotlight's one entry per app (docs/specs/dock.md DOCK-9)
 
     /// A shim appeared or went away: an app with one is not a CoreSpotlight item
-    /// too. A new shim takes its item out; a removed one puts the phone's list
-    /// back in (without the apps that still have shims).
+    /// too. A new shim takes its item out (cheap); a removed one puts the phone's
+    /// list back in, without the apps that still have shims.
     private func spotlightShortcutChanged(deviceId: String, pkg: String) {
         if dockApps.hasShim(deviceId: deviceId, pkg: pkg) {
             spotlight.remove(deviceId: deviceId, pkg: pkg)
+        } else {
+            spotlightRefreshPending.insert(deviceId)
         }
-        // Either way the phone's list is indexed again without the apps that
-        // have a shim; Save all's batch does it once, when the last build lands.
-        spotlightRefreshPending.insert(deviceId)
         if shortcutBuilding.isEmpty { flushSpotlightRefreshes() }
+    }
+
+    /// Save all's batch ends: one exclusion pass for the whole batch, since each
+    /// new shim already took its own item out.
+    private func spotlightBatchFinished(deviceId: String) {
+        spotlightRefreshPending.insert(deviceId)
+        flushSpotlightRefreshes()
     }
 
     /// Save all off removes many bundles: one re-index when the last is gone.
@@ -1113,6 +1119,9 @@ final class ConnectionController {
                             self.queueSaveAll(deviceId: work.deviceId)
                         }
                         self.pumpShortcutWork()
+                        // The last removal already put the phone's list back;
+                        // this covers a pending removal left by an add batch.
+                        if self.shortcutBuilding.isEmpty { self.flushSpotlightRefreshes() }
                     }
                 }
             } else if dockIconReady(pkg: work.pkg, deviceId: work.deviceId) {
@@ -1135,6 +1144,7 @@ final class ConnectionController {
                             self.queueSaveAll(deviceId: work.deviceId)
                         }
                         self.pumpShortcutWork()
+                        if self.shortcutBuilding.isEmpty { self.spotlightBatchFinished(deviceId: work.deviceId) }
                     }
                 }
             } else if !dockIconAsked.contains(work.pkg), dockIconOutstanding.count < 4 {
