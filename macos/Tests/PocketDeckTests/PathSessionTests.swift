@@ -217,3 +217,29 @@ final class PathSessionTests: XCTestCase {
         XCTAssertEqual(machine.description, "orphaned")
     }
 }
+
+extension PathSessionTests {
+    /// D-2: a demoted path stays reachable by the margin rule. The ranking's
+    /// planned switch arrives as a peer switch naming the standby; it becomes
+    /// current and leaves the standby set, and the old path is closed after its
+    /// marker like any planned switch.
+    func testAStandbyCanWinBackOnMargin() {
+        var machine = machine(live: ["a", "b"])
+        machine.scores = ["a": 300, "b": 800]
+        _ = machine.handle(.pongLost(id: "a"), now: 1)
+        XCTAssertEqual(.live(current: "b"), machine.state)
+        XCTAssertEqual(Set(["a"]), machine.standby)
+        // The ranking now prefers a again (it kept being pinged): plannedSwitch
+        // sends the marker on b and names a.
+        XCTAssertEqual(machine.handle(.peerSwitch(id: "a", seq: 0, arrivedOn: "b"), now: 9),
+                       [.startPing(path: "a"), .ranking(.externalSwitch("a"))])
+        XCTAssertEqual(.migrating(from: "b", to: "a", since: 9), machine.state)
+        XCTAssertFalse(machine.standby.contains("a"))
+        // The peer's marker completes it and the old path closes.
+        XCTAssertEqual(machine.handle(.peerSwitch(id: "a", seq: 0, arrivedOn: "a"), now: 10),
+                       [.closePath(path: "b"), .stopPing(path: "b"),
+                        .ranking(.externalSwitch("a"))])
+        XCTAssertEqual(.live(current: "a"), machine.state)
+        XCTAssertEqual(Set(["a"]), machine.live)
+    }
+}
