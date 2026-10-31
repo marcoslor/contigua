@@ -318,7 +318,9 @@ answers, a path failure (D5).
 One closed set of states, one pure transition `(state, event) -> (state,
 actions)`; side effects run from the returned actions, and every transition logs
 `paths: <from> --<event>--> <to>` with closed tokens only (never an address, a
-fingerprint or a key).
+fingerprint or a key). One dial is its own small machine (dialing → ready →
+hello/join → welcomed, or failed/closed) and logs
+`attempt: <from> --<event>--> <to> (path <id>)` the same way.
 
 | State | Event | Result |
 |---|---|---|
@@ -328,9 +330,12 @@ fingerprint or a key).
 | `Live(cur)` | `CurrentFailed(cur)` and a ranked path `b` is up | `Migrating(cur, b)`; send `path.switch` on `b`, replay from the last ack, then `window.keyframe` per stream |
 | `Live(cur)` | `CurrentFailed(cur)`, no other path up | `Orphaned(now)`; mark the UI "reconnecting" |
 | `Live(cur)` | `PathDown(other)` | stay `Live` |
+| `Live(cur)` | `PongLost(cur)` and another usable path `b` is up | `Live(b)` at once; `cur` becomes a **standby** — kept open, still pinged, never chosen on a failover, only the margin rule brings it back (D-2) |
+| `Live(cur)` | `PongLost(cur)`, no other usable path | stay `Live(cur)`; the lost pong is a sample only (PATH-21) |
 | `Live(cur)` | `Close(why)` | `Ended(why)` |
 | `Migrating(from, to)` | `PeerSwitch(to, seq)` | `Live(to)`; the switch is complete |
 | `Migrating(from, to)` | `PathDown(to)` | `Orphaned(now)` if nothing else is up, else back to `Live(from)` when `from` is still usable, else `Migrating` to the next ranked path |
+| `Migrating(from, to)` | `PongLost(to)` | `Live(from)` when `from` is usable (`to` becomes a standby); else the next usable path; else `Orphaned(now)` (PATH-21/D-2) |
 | `Migrating(from, to)` | `drain 2 s` (planned switch, the peer's marker was not read) | close `from`; stay `Migrating` until the peer's marker or the new path's own pong timeout decides |
 | `Migrating` | `Close(why)` | `Ended(why)` |
 | `Orphaned(since)` | `PathUp(p, joined)` | `Live(p)`; send `path.switch{p, N}` on `p` as the first frame, replay from the last ack, `window.keyframe` per stream |
@@ -340,10 +345,16 @@ fingerprint or a key).
 | `Ended` | any | `Ended` (ignored) |
 
 Ignored on purpose, so nobody builds them: a `PeerSwitch` for a path this side
-does not have (logged once), an `Ack` for a seq above what was sent (protocol
-error, session ends), a `PathUp` while `Ended`, a second `PathUp` for a path id
+does not have (logged once), an `Ack` for a seq above what was sent or a
+`RELIABLE` frame whose outer stream disagrees with its inner one (protocol
+errors, session ends), a `PathUp` while `Ended`, a second `PathUp` for a path id
 already live (the second socket is closed), a `Pong` from a path that is not
 live.
+
+While `Orphaned` (and whenever the path count is below what the ready providers
+can give) the Mac re-dials them with `hello{join}` on the reconnect backoff
+(1, 2, 4, 8, 15 s), inside the 30 s grace (PATH-22/D-3). A rejoin is
+`PathUp` on the orphan, so it gets the unplanned switch's marker and replay.
 
 The session ends (not just the path) on: the 30 s grace expiring, an oversized
 frame, a bad pin on the last path, the person closing the window/forgetting the
@@ -355,9 +366,12 @@ backoff.
 
 ## 7. The ranking
 
-D5: every path — the standby included — is pinged every 2 s; RTT p50/p95 and
-loss over the last 30 s; the score is a pure function of those numbers plus the
-provider's throughput class; only the Mac decides.
+D1: one path is never pinged (PATH-18's 15 s session ping and TCP keepalive
+cover it); with two or more, every path — the standby included — is pinged every
+2 s while the phone's screen is on or a transfer runs, and every 15 s otherwise.
+RTT p50/p95 and loss over the last 30 s; the score is a pure function of those
+numbers plus the provider's throughput class; only the Mac decides. A path that
+keeps receiving frames is alive even when a pong is late (D-2).
 
 ### 7.1 The score
 
@@ -454,16 +468,18 @@ one that sends `path.switch`.
 
 | Timer | Value | Where | Source |
 |---|---|---|---|
-| path ping | **2 s** | both sides, every path, standby included | D5 |
-| pong timeout | **1.5 s** per ping | both | D5 |
+| path ping | **2 s** with two or more paths while the screen is on or a transfer runs; **15 s** otherwise; **never** with one path | both sides, every path, standby included | D1 |
+| pong timeout | **1.5 s** per ping; not lost while the path receives | both | D5/D2 |
+| rejoin dial | reconnect backoff **1, 2, 4, 8, 15 s**, inside the 30 s grace | Mac | D3 |
 | sample window | **30 s** (≤ 15 samples) | both | D5 |
 | switch hysteresis | **5 s** at the margin | Mac acts; both compute | D5 |
 | orphan grace | **30 s** with no path before the session ends | both | D4 |
 
 Implementation constants (named so they are not mistaken for decisions): ACK
-coalescing 10 ms / 16 frames; reorder window 64 frames / 4 MiB; old-path drain
-backstop 2 s; a joined path that never answers a ping is dropped at 5 s; at most
-3 paths per session.
+coalescing 10 ms / 16 frames with a 10 ms timer flush; reorder window 64 frames /
+4 MiB; old-path drain backstop 2 s; a joined path that never answers a ping is
+dropped at 5 s; at most 3 paths per session; the Mac's write watermark is 256 KiB
+low / 1 MiB high per path.
 
 ## 8. The bounds: credit, never a drop
 
@@ -497,10 +513,17 @@ backstop 2 s; a joined path that never answers a ping is dropped at 5 s; at most
   frames and keep flowing, so the UI never looks stalled.
 - **The reorder window works the same way.** 64 frames / 4 MiB; when it is
   full, the reader **stops reading the path** whose frames are ahead of the gap
-  (TCP backpressure), and resumes when the gap fills. It never drops a frame
-  and never ends the session. The path that holds the gap keeps being read, and
-  ACKs still go out on any path, so progress toward the gap is never blocked by
-  the window.
+  (TCP backpressure), keeps the frame it could not place, and resumes when the
+  gap fills. It never drops a frame and never ends the session. The path that
+  holds the gap keeps being read, and ACKs still go out on any path, so progress
+  toward the gap is never blocked by the window.
+- **Priority inside a path.** `path.ping`, `path.pong`, ACK and `path.switch`
+  are written at once, never behind queued bulk: the Mac holds admitted bulk in
+  the path layer and feeds the channel only while it reports writable (a 256 KiB
+  low write watermark per path), and the phone gives the same frames a priority
+  lane in its writer. A path that received anything in the last 1.5 s is alive
+  even if its pong is late, and a pong-only failure demotes it to a standby
+  rather than closing it (D-2).
 - A frame larger than the whole buffer cannot exist: the wire's maximum is
   8 MiB, so 16 MiB always holds at least two frames.
 - A switch replays **from the peer's last ack**, so a planned switch costs the
