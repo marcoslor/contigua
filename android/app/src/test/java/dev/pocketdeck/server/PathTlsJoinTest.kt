@@ -36,14 +36,18 @@ class PathTlsJoinTest {
         }
     }
 
-    private fun hello(path: String, join: String? = null): ByteArray {
+    private fun hello(path: String, join: String? = null, pairing: Boolean = false): ByteArray {
         val fields = mutableMapOf<String, Any?>(
             "t" to "hello", "v" to 4, "path" to path,
             "clientId" to "c1", "name" to "MacBook",
         )
         if (join != null) fields["join"] = join
+        if (pairing) fields["pair"] = true
         return Frames.encodeJson(0, Json.encode(fields))
     }
+
+    private fun json(fields: Map<String, Any?>): ByteArray =
+        Frames.encodeJson(0, Json.encode(fields))
 
     @Test
     fun aPairedHelloGetsWelcomeSession() {
@@ -195,10 +199,66 @@ class PathTlsJoinTest {
         }
     }
 
+    /**
+     * The emulator's boot-4 sequence: a person reads the code for a few seconds
+     * (the reader polls the TLS socket at 250 ms the whole time) and only then
+     * taps Allow, which completes the pairing from another thread. The phone
+     * must put `pair.ok` and `welcome` on the wire and keep the session live.
+     */
+    @Test
+    fun anInteractiveApprovalOverTlsPairsAndWelcomes() {
+        harness(clients = emptyList()).use { phone ->
+            phone.client().use { socket ->
+                socket.soTimeout = 10_000
+                val reader = FrameReader(socket.getInputStream())
+                val out = socket.getOutputStream()
+                out.write(hello("a1b2c3d4", pairing = true))
+                out.flush()
+                out.write(json(mapOf("t" to "pair.request")))
+                out.flush()
+                val commit = readJson(reader)
+                assertEquals("pair.commit", commit["t"])
+                out.write(json(mapOf("t" to "pair.nonce", "n" to "3fb962da6c0eaaee44a7a16a2bcf9c97")))
+                out.flush()
+                val reveal = readJson(reader)
+                assertEquals("pair.reveal", reveal["t"])
+
+                val deadline = System.nanoTime() + 3_000_000_000L
+                while (System.nanoTime() < deadline && phone.platform.pairRequests.isEmpty()) {
+                    Thread.sleep(20)
+                }
+                val request = phone.platform.pairRequests.firstOrNull()
+                    ?: error("the phone never asked its person: ${phone.logs}")
+                // Longer than the 250 ms pairing poll: the reader timed out and
+                // resumed many times before the decision, as boot 4 did.
+                Thread.sleep(1_500)
+                phone.server.respondPairing(request.requestId, true)
+
+                val ok = readJson(reader)
+                assertEquals("pair.ok", ok["t"])
+                assertEquals(TlsV2Fixture.MAC_FP_HEX, ok["macFP"])
+                val welcome = readJson(reader)
+                assertEquals("welcome", welcome["t"])
+                assertEquals(32, (welcome["session"] as String).length)
+
+                // The session is READY on the same socket: a bare ping is served.
+                out.write(json(mapOf("t" to "ping", "ts" to 21)))
+                out.flush()
+                assertEquals(21L, gatherUntil(reader, "ts", 21L)["ts"])
+                assertTrue(
+                    "no welcome line: ${phone.logs}",
+                    phone.logs.any { it.contains(": welcome (protocol 4)") },
+                )
+            }
+        }
+    }
+
     /** One real [Server] with TLS on loopback and a paired Mac. */
-    private fun harness(): Harness {
+    private fun harness(
+        clients: List<PairedClient> = listOf(PairedClient("c1", "MacBook", TlsV2Fixture.MAC_FP_HEX)),
+    ): Harness {
         val platform = FakePlatform()
-        platform.clients.add(PairedClient("c1", "MacBook", TlsV2Fixture.MAC_FP_HEX))
+        platform.clients.addAll(clients)
         val phoneIdentity = TestTls.generate("PocketDeck Phone (join paranoia)")
         val macIdentity = TestTls.generate("PocketDeck Mac (join paranoia)")
         val logs = Collections.synchronizedList(mutableListOf<String>())
@@ -217,7 +277,7 @@ class PathTlsJoinTest {
         private val phoneIdentity: TestTls.Identity,
         val platform: FakePlatform,
         val logs: MutableList<String>,
-        private val server: Server,
+        val server: Server,
     ) : Closeable {
         fun client(port: Int = this.port): Socket =
             TestTls.clientSocket(macIdentity, phoneIdentity.certPem, "127.0.0.1", port)
