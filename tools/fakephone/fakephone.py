@@ -4563,10 +4563,12 @@ class FakePhone(object):
                 return
             if not self.args.legacy_phone:
                 if msg.get("v") != self.args.version:
-                    # PATH-1: the answer names the version that refused.
-                    self._refuse_conn_version(conn, self.args.version)
+                    # PATH-1: the answer names the version that refused. Log
+                    # the decision before the write-and-drain, so a check never
+                    # waits on how long the peer takes to close.
                     self.events.path("version_refused", None,
                                      current=None, peer=msg.get("v"), v=self.args.version)
+                    self._refuse_conn_version(conn, self.args.version)
                     return
             self.events.hello(msg, listener=listener_port)
             mac_fp = (proto.point_fp_from_der(conn.client_der)
