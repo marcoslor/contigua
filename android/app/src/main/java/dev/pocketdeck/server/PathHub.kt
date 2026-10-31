@@ -299,6 +299,9 @@ class PathHub(
             return
         }
         val bulk = PathCodec.isBulk(type)
+        // E-4: bulk enters the seq space only while its path has room, so a key
+        // or a window frame is at most the watermark plus a chunk behind.
+        if (bulk) awaitPathRoom()
         // The replay buffer holds the frame as sent: the wrapper adds 13 bytes.
         awaitCredit(bytes.size + PathCodec.WRAPPER_BYTES, bulk)
         synchronized(lock) {
@@ -329,6 +332,22 @@ class PathHub(
         synchronized(lock) {
             while (!closed && !replay.canAdmit(bytes, bulk)) {
                 lock.wait(100)
+            }
+        }
+    }
+
+    /**
+     * E-4/RR-4: a bulk producer waits here, outside the seq space, while the
+     * sending path still holds its watermark. The path's writer notifies only
+     * its own lock, so this polls at a fraction of the smallest useful chunk's
+     * time on the slowest path (256 KiB at 16 Mbit is 128 ms).
+     */
+    private fun awaitPathRoom() {
+        synchronized(lock) {
+            while (!closed) {
+                val t = current?.let { paths[it] } ?: return
+                if (t.queuedBytes < BULK_QUEUE_WATERMARK_BYTES) return
+                lock.wait(10)
             }
         }
     }
@@ -691,5 +710,8 @@ class PathHub(
         const val CLOSE_DRAIN_MS = 300L
         /** E-1/RR-1: a lossy frame waits for the path's writer over this backlog. */
         const val LOSSY_QUEUE_CAP_BYTES = 128 * 1024
+
+        /** E-4/RR-4: bulk takes a seq only while the sending path is under this. */
+        const val BULK_QUEUE_WATERMARK_BYTES = 256 * 1024
     }
 }
