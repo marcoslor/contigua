@@ -337,9 +337,3 @@ enum PathEndpoint: Equatable {
     case service(String)
 }
 
-/// A source of paths (design/paths.md §9). A provider moves bytes and declares
-/// its class; it never reads a frame or decides a switch.
-protocol PathProvider {
-    var kind: PathKind { get }
-    var availability: PathAvailability { get }
-}
