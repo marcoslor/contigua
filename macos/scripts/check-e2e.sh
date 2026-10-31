@@ -7856,6 +7856,35 @@ sys.exit(1)
 PY
 }
 
+# stream_after_close <stream> — what the fakephone received for that stream
+# after the Mac's window.close for it, as the message types in arrival order
+# ("none" when nothing). The phone forgets a stream at its close, so anything
+# the Mac still sends for it comes back `error no_stream` (WIN-38).
+stream_after_close() {
+    python3 - "$WORK/events.jsonl" "$1" <<'PY'
+import json, sys
+stream = int(sys.argv[2])
+closed = False
+late = []
+for line in open(sys.argv[1]):
+    try:
+        event = json.loads(line)
+    except ValueError:
+        continue
+    msg = event.get("msg") or {}
+    if event.get("ev") == "rx" and msg.get("t") == "window.close" and msg.get("stream") == stream:
+        closed = True
+        continue
+    if not closed:
+        continue
+    if event.get("ev") == "rx" and msg.get("stream") == stream:
+        late.append(str(msg.get("t")))
+    elif event.get("ev") == "input" and event.get("stream") == stream:
+        late.append("input:" + str(event.get("kind")))
+print(",".join(late) if late else "none")
+PY
+}
+
 # window_open_count <pkg> — how many window.open the fakephone received for the
 # package (the raise rule: one, however many times the entry point is used).
 window_open_count() {
@@ -8366,6 +8395,40 @@ check_windows() {
     else
         skip_visible "MIRROR-2 the refused cover's shot"
     fi
+    stop_app
+    stop_fakephone
+
+    # --- WIN-38: a Mac close is quiet -------------------------------------
+    # The person closes a live app window with ⌘W while the pointer is over the
+    # picture (a hover is live and a hover move is waiting in the mapper's 16 ms
+    # throttle) and AppKit reports the key window occluded as it goes. Both used
+    # to reach the phone after `window.close`; it answers `error no_stream` and
+    # the launcher showed "That window is no longer open on the phone".
+    clean
+    rm -f "$WORK/banner.txt"
+    start_fake || return 1
+    printf 'wait 3\nhover 0.5 0.5\nhover 0.4 0.5\nkey cmd+w\nwait 10\n' > "$WORK/close-input.txt"
+    launch --connect "127.0.0.1:$PORT" --open com.whatsapp \
+        --debug-input-script "$WORK/close-input.txt" \
+        --debug-banner "$WORK/banner.txt" --quit-after 30
+    wait_until 25 window_rx window.open "com.whatsapp" \
+        || bad "WIN-38 the app window never opened"
+    wait_until 20 events_have '"ev":"video","stream":1,' \
+        || bad "WIN-38 the stream never sent video"
+    wait_until 15 window_rx window.close \
+        || bad "WIN-38 the person's close sent no window.close"
+    wait_until 10 eval '! windows | awk "\$4 == 900" | grep -q .' \
+        && ok "[WIN-12] closing the app window closed it" \
+        || bad "[WIN-12] the app window stayed after its close"
+    # The phone's answer to a late message takes a round trip: give it 3 s.
+    sleep 3
+    late="$(stream_after_close 1)"
+    [ "$late" = "none" ] \
+        && ok "[WIN-38] the Mac sent nothing for the closed stream after its window.close" \
+        || bad "[WIN-38] the Mac sent $late for stream 1 after its window.close"
+    ! grep -qF "That window is no longer open on the phone" "$WORK/banner.txt" 2>/dev/null \
+        && ok "[WIN-38] the launcher said nothing about the closed window" \
+        || bad "[WIN-38] the launcher showed \"$(cat "$WORK/banner.txt" 2>/dev/null)\" after a close"
     stop_app
     stop_fakephone
 }

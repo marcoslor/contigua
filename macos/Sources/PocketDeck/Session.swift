@@ -272,6 +272,12 @@ final class Session {
     private var loggedExporterSha = false
     private var failedOnce = false
 
+    /// The streams this session closed: no later message may go out for one
+    /// (WIN-38). Guarded by its own lock: sends come from the main thread, the
+    /// session queue and the video queue.
+    private var closedStreams = ClosedStreams()
+    private let closedStreamsLock = NSLock()
+
     enum PairingPolicy { case never, allowed, probe }
     var pairingPolicy: PairingPolicy = .allowed
 
@@ -1142,7 +1148,24 @@ final class Session {
     }
 
     func sendJSON(_ object: [String: Any]) {
+        if let type = object["t"] as? String,
+           let value = object["stream"] as? Int,
+           let stream = UInt32(exactly: value),
+           !sendAllowed(type: type, stream: stream) { return }
         sendBytes(JSONFrame.encode(object))
+    }
+
+    /// The one gate for a closed stream (WIN-38): false when the message must
+    /// be dropped. Every per-stream JSON message and input frame comes through
+    /// here, so a late hover flush, pause, resize or input from any caller
+    /// never reaches a phone that has forgotten the stream.
+    private func sendAllowed(type: String, stream: UInt32) -> Bool {
+        closedStreamsLock.lock()
+        let decision = closedStreams.decide(type: type, stream: stream)
+        closedStreamsLock.unlock()
+        guard decision == .drop else { return true }
+        Log.session.notice("\(ClosedStreams.lateLog(type: type, stream: stream), privacy: .public)")
+        return false
     }
 
     func requestApps() { sendJSON(["t": "apps.list"]) }
@@ -1316,10 +1339,23 @@ final class Session {
         }
     }
     func sendClipboard(_ text: String) { sendJSON(["t": "clip.set", "text": text]) }
-    func touch(_ event: TouchEvent, stream: UInt32) { sendBytes(Frame(type: .touch, stream: stream, payload: event.payload).encoded) }
-    func scroll(_ event: ScrollEvent, stream: UInt32) { sendBytes(Frame(type: .scroll, stream: stream, payload: event.payload).encoded) }
-    func hover(_ event: HoverEvent, stream: UInt32) { sendBytes(Frame(type: .hover, stream: stream, payload: event.payload).encoded) }
-    func key(_ event: KeyEvent, stream: UInt32) { sendBytes(Frame(type: .key, stream: stream, payload: event.payload).encoded) }
+    func touch(_ event: TouchEvent, stream: UInt32) {
+        sendInput(Frame(type: .touch, stream: stream, payload: event.payload), type: "touch")
+    }
+    func scroll(_ event: ScrollEvent, stream: UInt32) {
+        sendInput(Frame(type: .scroll, stream: stream, payload: event.payload), type: "scroll")
+    }
+    func hover(_ event: HoverEvent, stream: UInt32) {
+        sendInput(Frame(type: .hover, stream: stream, payload: event.payload), type: "hover")
+    }
+    func key(_ event: KeyEvent, stream: UInt32) {
+        sendInput(Frame(type: .key, stream: stream, payload: event.payload), type: "key")
+    }
+
+    private func sendInput(_ frame: Frame, type: String) {
+        guard sendAllowed(type: type, stream: frame.stream) else { return }
+        sendBytes(frame.encoded)
+    }
 
     // MARK: Fail
 
