@@ -360,4 +360,21 @@ class PathSessionTest {
         m.handle(PathSessionEvent.CurrentFailed("a"), 1.0)
         assertEquals("orphaned", m.describe())
     }
+
+    @Test
+    fun everyTransitionLogsAsPathsFromEventTo() {
+        val before = PathSessionState.Live("a")
+        assertEquals(
+            "paths: live a --failed--> migrating a->b",
+            PathSessionLog.line(before, PathSessionEvent.CurrentFailed("a"), PathSessionState.Migrating("a", "b", 1.0)),
+        )
+        assertEquals(
+            "paths: live a --pong-lost--> live b",
+            PathSessionLog.line(before, PathSessionEvent.PongLost("a"), PathSessionState.Live("b")),
+        )
+        assertEquals(
+            "paths: live a --close--> ended person",
+            PathSessionLog.line(before, PathSessionEvent.Close("person"), PathSessionState.Ended("person")),
+        )
+    }
 }

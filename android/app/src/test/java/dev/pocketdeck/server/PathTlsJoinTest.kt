@@ -145,6 +145,31 @@ class PathTlsJoinTest {
         }
     }
 
+    /** R-14/AGENTS: every session-machine transition is one `<from> --event--> <to>`
+     * line with closed tokens. */
+    @Test
+    fun theSessionMachineLogsEachTransition() {
+        harness().use { phone ->
+            phone.client().use { first ->
+                val reader = FrameReader(first.getInputStream())
+                first.getOutputStream().write(hello("a1b2c3d4"))
+                first.getOutputStream().flush()
+                assertEquals("welcome", readJson(reader)["t"])
+                first.close()
+                val deadline = System.currentTimeMillis() + 3_000
+                while (System.currentTimeMillis() < deadline &&
+                    phone.logs.none { it.startsWith("paths: live a1b2c3d4 --") }
+                ) {
+                    Thread.sleep(20)
+                }
+                assertTrue(
+                    "no transition line: ${phone.logs}",
+                    phone.logs.contains("paths: live a1b2c3d4 --failed--> orphaned"),
+                )
+            }
+        }
+    }
+
     @Test
     fun aJoinOverASecondTlsConnectionAttachesWithoutSuperseding() {
         harness().use { phone ->

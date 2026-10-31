@@ -688,10 +688,13 @@ class Session(
 
     private fun handlePathEvent(event: PathSessionEvent) {
         val at = now() / 1000.0
+        val before = pathMachine.state
         for (id in pathMachine.live) {
             pathMachine.scores[id] = pathRanking.score(id, at) ?: -1
         }
         val actions = pathMachine.handle(event, at)
+        val after = pathMachine.state
+        if (after != before) log(PathSessionLog.line(before, event, after))
         for (action in actions) {
             when (action) {
                 is PathSessionAction.StartPing, is PathSessionAction.StopPing -> Unit

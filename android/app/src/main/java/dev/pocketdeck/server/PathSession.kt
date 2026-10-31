@@ -76,6 +76,32 @@ internal fun pongWatchPath(state: PathSessionState, sending: String?): String? =
 internal fun pongFailure(loss: PathHub.PongLoss, current: String?): PathSessionEvent? =
     if (!loss.alive && loss.path == current) PathSessionEvent.PongLost(loss.path) else null
 
+/** R-14: the state's closed token for the transition log (PATH-14). */
+internal fun PathSessionState.describe(): String = when (this) {
+    is PathSessionState.Live -> "live $current"
+    is PathSessionState.Migrating -> "migrating $from->$to"
+    is PathSessionState.Orphaned -> "orphaned"
+    is PathSessionState.Ended -> "ended $reason"
+}
+
+/** The event's closed token: an id or reason may follow in the state, never here. */
+internal fun PathSessionEvent.token(): String = when (this) {
+    is PathSessionEvent.PathUp -> "up"
+    is PathSessionEvent.PathDown -> "down"
+    is PathSessionEvent.CurrentFailed -> "failed"
+    is PathSessionEvent.PongLost -> "pong-lost"
+    is PathSessionEvent.PeerSwitch -> "switch"
+    is PathSessionEvent.Close -> "close"
+    PathSessionEvent.GraceExpired -> "grace"
+    PathSessionEvent.DrainExpired -> "drain"
+}
+
+/** AGENTS.md: `paths: <from> --<event>--> <to>`, closed tokens only. */
+internal object PathSessionLog {
+    fun line(before: PathSessionState, event: PathSessionEvent, after: PathSessionState): String =
+        "paths: ${before.describe()} --${event.token()}--> ${after.describe()}"
+}
+
 class PathSessionMachine(
     var state: PathSessionState = PathSessionState.Orphaned(0.0),
     val live: MutableSet<String> = mutableSetOf(),
@@ -351,12 +377,7 @@ class PathSessionMachine(
     }
 
     /** A closed token for the transition log (PATH-14): never an address. */
-    fun describe(): String = when (val s = state) {
-        is PathSessionState.Live -> "live ${s.current}"
-        is PathSessionState.Migrating -> "migrating ${s.from}->${s.to}"
-        is PathSessionState.Orphaned -> "orphaned"
-        is PathSessionState.Ended -> "ended ${s.reason}"
-    }
+    fun describe(): String = state.describe()
 }
 
 enum class PathSwitchKind { PLANNED, UNPLANNED }
