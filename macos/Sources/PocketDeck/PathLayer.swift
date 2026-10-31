@@ -84,6 +84,11 @@ final class PathLayer {
     /// Reliable frames that did not fit a full reorder window, per path: kept,
     /// never dropped, while that path's reader is stopped (R-11).
     private var overflow: [String: [(UInt64, Frame)]] = [:]
+    /// Bytes held per path's overflow: one window at most (PATH-10/PATH-15).
+    private var overflowBytes: [String: Int] = [:]
+    /// The path that last delivered in order: the gap before [reorder.expected]
+    /// is that path's to fill (RR-7). Nil until the first delivery.
+    private var gapPath: String?
     private var readingPaused: Set<String> = []
     private var ackFrames = 0
     private var lastAckPath: String?
@@ -173,6 +178,7 @@ final class PathLayer {
             outboxBytes.removeValue(forKey: id)
             lastInboundAt.removeValue(forKey: id)
             overflow.removeValue(forKey: id)
+            overflowBytes.removeValue(forKey: id)
             readingPaused.remove(id)
             return path
         }
@@ -197,6 +203,7 @@ final class PathLayer {
             outboxBytes.removeAll()
             lastInboundAt.removeAll()
             overflow.removeAll()
+            overflowBytes.removeAll()
             readingPaused.removeAll()
             return all
         }
@@ -412,6 +419,9 @@ final class PathLayer {
             }
             var fed = Fed()
             locked { fed = feedLocked(id, reliable) }
+            if let token = fed.protocolError {
+                return [.protocolError(token)]
+            }
             for pid in fed.pause { locked { paths[pid] }?.setReading(false) }
             for pid in fed.resume { locked { paths[pid] }?.setReading(true) }
             if fed.delivered.contains(where: { PathCodec.isBulk($0.frame.inner.type) }) {
@@ -488,6 +498,8 @@ final class PathLayer {
         var duplicates: [String] = []
         var pause: [String] = []
         var resume: [String] = []
+        /// More than one window ahead of a gap this path must fill itself.
+        var protocolError: String?
     }
 
     /// Takes one reliable frame into the reorder window. A frame that does not
@@ -521,14 +533,27 @@ final class PathLayer {
     private func feedOneLocked(_ id: String, _ reliable: ReliableFrame, into fed: inout Fed) {
         switch reorder.receive(reliable) {
         case .deliver(let frames):
+            gapPath = id
             for frame in frames { fed.delivered.append((id, frame)) }
         case .duplicate:
             fed.duplicates.append(id)
         case .buffered:
             break
         case .full:
+            // RR-7/PATH-10: a frame ahead of a gap on this path's own stream
+            // never stops its reader — a paused reader could never read the
+            // frame that fills the gap. It waits in this path's overflow, one
+            // window at most. Only a gap another path holds stops this one.
             overflow[id, default: []].append((reliable.seq, reliable.inner))
-            if readingPaused.insert(id).inserted { fed.pause.append(id) }
+            overflowBytes[id, default: 0] += reliable.inner.payload.count
+            if overflow[id]!.count > ReorderWindow.maxFrames
+                || overflowBytes[id]! > ReorderWindow.maxBytes {
+                fed.protocolError = "reorder-overflow"
+                return
+            }
+            if gapPath != nil, gapPath != id, readingPaused.insert(id).inserted {
+                fed.pause.append(id)
+            }
             return
         }
         drainLocked(id, into: &fed)
@@ -538,12 +563,17 @@ final class PathLayer {
         while let next = overflow[id]?.first {
             switch reorder.receive(ReliableFrame(seq: next.0, inner: next.1)) {
             case .deliver(let frames):
+                gapPath = id
                 overflow[id]?.removeFirst()
+                overflowBytes[id, default: 0] = max(0, (overflowBytes[id] ?? 0) - next.1.payload.count)
                 for frame in frames { fed.delivered.append((id, frame)) }
             case .duplicate, .buffered:
                 overflow[id]?.removeFirst()
+                overflowBytes[id, default: 0] = max(0, (overflowBytes[id] ?? 0) - next.1.payload.count)
             case .full:
-                if readingPaused.insert(id).inserted { fed.pause.append(id) }
+                if gapPath != nil, gapPath != id, readingPaused.insert(id).inserted {
+                    fed.pause.append(id)
+                }
                 return
             }
         }

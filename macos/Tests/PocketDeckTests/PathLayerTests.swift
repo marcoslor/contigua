@@ -477,10 +477,12 @@ extension PathLayerTests {
 // MARK: - R-11, R-15, R-16
 
 extension PathLayerTests {
-    /// R-11, the reviewer's scratch case: seqs 2…66 arrive before 1. Nothing is
-    /// dropped on a full window: the path's reader stops, and seq 1 delivers
-    /// all 66.
-    func testAFullReorderWindowStopsTheReaderAndLosesNothing() throws {
+    /// R-11/RR-7, the reviewer's scratch case: seqs 2…66 arrive before 1 on
+    /// the same path. The gap is on that path's own stream, so its reader must
+    /// keep reading (a paused reader could never read the missing seq 1); the
+    /// frames wait in the overflow, bounded by one window, and deliver when 1
+    /// arrives.
+    func testAFullWindowOnTheSamePathsOwnStreamKeepsItsReaderReading() throws {
         let inner = { (n: Int) in
             Frame(type: MessageType.json.rawValue, stream: 0, payload: JSONFrame.payload(["t": "x", "i": n]))
         }
@@ -488,13 +490,46 @@ extension PathLayerTests {
             let frame = Frame(encoded: try PathCodec.encodeReliable(seq: seq, inner: inner(Int(seq))).encoded)!
             XCTAssertTrue(layer.receive(path: "aaaa0001", frame: frame).isEmpty, "seq \(seq) waits for 1")
         }
-        XCTAssertEqual([false], wire.readings(), "the path ahead of the gap stopped reading")
+        XCTAssertEqual([], wire.readings(), "the path holding its own gap must keep reading")
         XCTAssertEqual(1, layer.ackValue, "nothing past the gap was acknowledged")
         let first = Frame(encoded: try PathCodec.encodeReliable(seq: 1, inner: inner(1)).encoded)!
         let delivered = layer.receive(path: "aaaa0001", frame: first)
         XCTAssertEqual(66, delivered.count, "every held seq delivered after the gap filled")
         XCTAssertEqual(67, layer.ackValue)
-        XCTAssertEqual([false, true], wire.readings(), "the reader resumed")
+        XCTAssertEqual([], wire.readings(), "the reader was never stopped")
+    }
+
+    /// RR-7/PATH-10: the reader stops only when the gap is on another path. A
+    /// path's frames ahead of the gap that path A holds wait in that path's
+    /// overflow, and the reader resumes when the gap fills.
+    func testAFullWindowAheadOfAnotherPathsGapStopsOnlyThatReader() throws {
+        let second = Wire()
+        layer.attach(PathLayer.Path(id: "bbbb0002", kind: .lan, send: second.send,
+                                    close: second.close, isWritable: second.isWritable,
+                                    setReading: second.setReading), joined: true)
+        second.clear()
+        let inner = { (n: Int) in
+            Frame(type: MessageType.json.rawValue, stream: 0, payload: JSONFrame.payload(["t": "x", "i": n]))
+        }
+        let frame = { (seq: UInt64) in
+            Frame(encoded: try! PathCodec.encodeReliable(seq: seq, inner: inner(Int(seq))).encoded)!
+        }
+        XCTAssertEqual(1, layer.receive(path: "aaaa0001", frame: frame(1)).count)
+        for seq in UInt64(3)...UInt64(66) {
+            XCTAssertTrue(layer.receive(path: "bbbb0002", frame: frame(seq)).isEmpty, "seq \(seq) waits for 2")
+        }
+        XCTAssertEqual([], wire.readings(), "the path holding the gap keeps reading")
+        XCTAssertTrue(layer.receive(path: "bbbb0002", frame: frame(67)).isEmpty,
+                      "the 65th buffered frame does not fit")
+        XCTAssertEqual([false], second.readings(), "the path ahead of another path's gap stopped reading")
+        XCTAssertEqual(2, layer.ackValue)
+        // The gap's own path fills it: everything delivers and the paused
+        // reader resumes.
+        let delivered = layer.receive(path: "aaaa0001", frame: frame(2))
+        XCTAssertEqual(66, delivered.count)
+        let readings = second.readings()
+        XCTAssertEqual([false, true], readings, "the reader resumed after the gap filled")
+        XCTAssertEqual(68, layer.ackValue)
     }
 
     /// R-15: a burst inside 10 ms is acknowledged by the timer, not by the next
