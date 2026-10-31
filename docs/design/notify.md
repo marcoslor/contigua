@@ -200,6 +200,26 @@ image: the image is dropped with `notify image id=… late` (a second banner for
 one notification is worse than a missing thumbnail). Late means the hold has
 elapsed; deeper queues are not reordered.
 
+### The attachment's app badge
+
+N4, picked 10-31. With a picture, the attachment is a square PNG with alpha: the picture
+is scaled to fill (**cover**) and clipped to a circle, with the sending app's icon as a
+circular badge at the bottom-right — 40 % of the side, inset 4.5 % from the right and
+bottom edges, clipped to a circle, **no ring**. With no picture, the app's icon alone is
+the attachment at 256 px, filling the square and clipped to a rounded square with a 22 %
+corner (never a circle, so it cannot be read as a person's photo). A picture's side is
+min(512 px, its long side).
+
+The icon is the Deck's and Dock's rendering: the cached adaptive layers, else the flat
+icon, through `PhoneAppIcon` (F3 plate included), drawn body-full so the badge or tile is
+filled; the cache size class is the first whose source stays inside the 1.3× upscale
+bound (docs/NFR.md). No icon cached, or a source too small: the picture stays a circle
+without a badge, and with no picture there is nothing to attach. A composed PNG that
+would exceed 200 KiB (or the `NotifyImageCaps` caps) falls back to the phone's picture as
+sent, today's behaviour. The record carries facts only — `composed shape=… badge=yes|no
+side=… class=…`, or `composed fallback=over_cap|no_icon` — never pixels or text
+(R-PRIV-1). There is no setting, and the banner's own icon stays PocketDeck's.
+
 ### Live Updates
 
 Android 16 promotes an eligible ongoing notification (a ProgressStyle, CallStyle
