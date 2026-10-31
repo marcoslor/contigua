@@ -155,6 +155,14 @@ class SessionTest {
     private fun frameOf(encoded: ByteArray): Frame =
         Frame(encoded[4].toInt() and 0xFF, PathCodec.readInt(encoded, 5), encoded.copyOfRange(9, encoded.size))
 
+    /** Sends a reliable JSON frame with an explicit seq (the reorder vectors). */
+    private fun sendJsonAt(seq: Long, obj: Map<String, Any?>) {
+        val bytes = Frames.encodeJson(0, Json.encode(obj))
+        val out = client.getOutputStream()
+        out.write(PathCodec.encodeReliable(seq, frameOf(bytes)))
+        out.flush()
+    }
+
     /** Best-effort: a peer that answered and closed may reset before the ACK. */
     private fun sendAck(ack: Long) = runCatching {
         val out = client.getOutputStream()
@@ -1449,6 +1457,27 @@ class SessionTest {
             if (message["t"] == "pong") seen.add((message["ts"] as Number).toLong())
         }
         assertEquals((0L until 300L).toList(), seen)
+    }
+
+    /**
+     * R-11: a full reorder window whose missing seq is earlier in the same
+     * path's stream must not pause that reader: the gap could never arrive.
+     */
+    @Test
+    fun aFullReorderWindowOnOnePathNeverDeadlocks() {
+        platform.clients.add(PairedClient("c1", "MacBook", TlsV2Fixture.MAC_FP_HEX))
+        authenticate("c1")
+        // 2..65 fill the 64-frame window; 66 is the frame that does not fit.
+        for (seq in 2L..66L) sendJsonAt(seq, mapOf("t" to "ping", "ts" to seq))
+        sendJsonAt(1L, mapOf("t" to "ping", "ts" to 1L))
+        sendJsonAt(67L, mapOf("t" to "ping", "ts" to 67L))
+        val seen = mutableListOf<Long>()
+        val deadline = System.currentTimeMillis() + 10_000
+        while (seen.size < 67 && System.currentTimeMillis() < deadline) {
+            val message = readJson()
+            if (message["t"] == "pong") seen.add((message["ts"] as Number).toLong())
+        }
+        assertEquals((1L..67L).toList(), seen)
     }
 
     private fun closeCurrent() {
