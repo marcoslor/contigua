@@ -152,6 +152,53 @@ class PathHubWriteTest {
         }
     }
 
+    /**
+     * RR-4/E-4: the phone's bulk (fs reads to the Mac, APK) used to take a seq
+     * as soon as the replay had credit, so 12 MiB of it could sit ahead of a
+     * key or a window frame. Bulk now waits outside the seq space until the
+     * sending path holds less than its 256 KiB watermark.
+     */
+    @Test
+    fun aControlFrameQueuedDuringBulkHasAtMostTheWatermarkAheadOfIt() {
+        hub.start(transport("aaaa0001", parking))
+        val bulk = Frames.encode(Frames.TYPE_FS_DATA, 0, ByteArray(64 * 1024))
+        val control = Frames.encodeJson(0, Json.encode(mapOf("t" to "window.content", "probe" to true)))
+        val sender = Thread {
+            repeat(32) { hub.send(bulk) }
+        }.apply { isDaemon = true }
+        sender.start()
+        // The first write is parked; on the old code the sender queues all
+        // 32 chunks, on the fixed one it stops at the watermark.
+        Thread.sleep(300) // real-time: the sender reaches the watermark or finishes
+        hub.send(control)
+        parking.release()
+        sender.join(3_000)
+        hub.drain(3_000)
+
+        val all = java.io.ByteArrayOutputStream()
+        synchronized(parking.chunks) { for (chunk in parking.chunks) all.write(chunk) }
+        val reader = dev.pocketdeck.proto.FrameReader(ByteArrayInputStream(all.toByteArray()))
+        var ahead = 0
+        var found = false
+        while (true) {
+            val frame = reader.readFrame() ?: break
+            if (frame.type != PathCodec.TYPE_RELIABLE) continue
+            val inner = PathCodec.decodeReliable(frame).inner
+            if (inner.type == Frames.TYPE_JSON &&
+                Json.parseObject(String(inner.payload))["probe"] == true
+            ) {
+                found = true
+                break
+            }
+            if (PathCodec.isBulk(inner.type)) ahead += inner.payload.size
+        }
+        assertTrue("the control frame never reached the wire", found)
+        assertTrue(
+            "bulk ahead of the control frame: $ahead bytes",
+            ahead <= PathHub.BULK_QUEUE_WATERMARK_BYTES + 64 * 1024,
+        )
+    }
+
     @Test
     fun aParkedWriteOnOnePathLeavesTheHubUsable() {        val other = CollectingStream()
         hub.start(transport("aaaa0001", parking))
