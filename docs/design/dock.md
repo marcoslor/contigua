@@ -134,6 +134,9 @@ when it is activated (⌘-Tab) it posts the distributed notification
 answers `dev.pocketdeck.dock.opened` (pid) and opens the window, or brings an open one to
 the front. Until that answer arrives the shim re-posts every second; after 2 s with no host
 running from PDHostPath it launches that bundle (`--profile <profile>`); after 30 s it quits.
+A shim started by the automatic path (`--no-open`) skips the first `open`: its window is
+already open, so the host binds it or stops it, and only a person's later Dock click asks
+for a window.
 
 Why distributed notifications: both sides are unsandboxed, they need no registration or
 entitlement, and the profile name as `object` keeps a test copy from ever reaching the
@@ -149,6 +152,11 @@ launchd job; Apple Events need an automation permission prompt.
   quit or crash closes the window too.
 - Closing the window (or the phone closing the stream, forgetting the phone) posts
   `dev.pocketdeck.dock.closed` (pid) and the shim exits, so a Dock icon never outlives its window.
+- An automatic identity still building or launching when its window closes is dropped
+  (nothing built) or quit the moment its pid arrives, and is never bound: a shim bound to a
+  closed stream has no event left that would ever stop it. Quitting PocketDeck likewise
+  stops any automatic shim it launched that no window owns, including one whose launch is
+  in flight at quit.
 
 ## Dock and ⌘-Tab while the window is open
 
