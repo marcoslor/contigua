@@ -205,10 +205,14 @@ struct ReplayBuffer {
     }
 
     /// Appends one reliable frame. The caller has checked [canAdmit] with the
-    /// same size and [seq] is the next seq.
-    mutating func append(seq: UInt64, frame: [UInt8], bulk: Bool) throws {
+    /// same size and [seq] is the next seq. `force` is for the switch's marker
+    /// only: one small control frame that never waits for credit (E-6).
+    mutating func append(seq: UInt64, frame: [UInt8], bulk: Bool,
+                         force: Bool = false) throws {
         guard seq == nextSeq else { throw PathCodecError.malformed }
-        guard canAdmit(bytes: frame.count, bulk: bulk) else { throw PathCodecError.frameTooLarge(frame.count) }
+        guard force || canAdmit(bytes: frame.count, bulk: bulk) else {
+            throw PathCodecError.frameTooLarge(frame.count)
+        }
         entries.append(Entry(seq: seq, frame: frame, bulk: bulk))
         lastSeq = seq
         heldBytes += frame.count

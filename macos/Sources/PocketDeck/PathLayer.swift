@@ -343,12 +343,12 @@ final class PathLayer {
             let frame = Frame(type: MessageType.json.rawValue, stream: 0, payload: JSONFrame.payload([
                 "t": "path.switch", "path": to, "seq": NSNumber(value: seq + 1),
             ]))
+            // E-6: the marker is one small control frame and never waits for
+            // credit. Its field is the seq of the frame after it, set here,
+            // when it is admitted — never earlier, and it is never queued in
+            // the pending list with a stale field.
             guard let wrapped = try? PathCodec.encodeReliable(seq: seq, inner: frame).encoded else { return }
-            guard replay.canAdmit(bytes: wrapped.count, bulk: false) else {
-                pending.append(Pending(frame: frame, bulk: false, completion: nil))
-                return
-            }
-            try? replay.append(seq: seq, frame: wrapped, bulk: false)
+            try? replay.append(seq: seq, frame: wrapped, bulk: false, force: true)
             peakHeldBytes = max(peakHeldBytes, replay.heldBytes)
             outbox[on, default: []].append(wrapped)
             outboxBytes[on, default: 0] += wrapped.count
