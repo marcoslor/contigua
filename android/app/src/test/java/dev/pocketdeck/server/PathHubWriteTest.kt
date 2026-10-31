@@ -35,6 +35,7 @@ class PathHubWriteTest {
 
     private class ParkingStream : OutputStream() {
         val entered = CountDownLatch(1)
+        val written = CountDownLatch(3)
         val chunks = java.util.Collections.synchronizedList(mutableListOf<ByteArray>())
         private val lock = Object()
         private var released = false
@@ -47,6 +48,7 @@ class PathHubWriteTest {
                 while (!released) lock.wait()
             }
             chunks.add(b.copyOfRange(off, off + len))
+            written.countDown()
         }
 
         fun release() = synchronized(lock) {
@@ -104,9 +106,7 @@ class PathHubWriteTest {
             ),
         )
         parking.release()
-        val deadline = System.currentTimeMillis() + 2_000
-        while (parking.chunks.size < 3 && System.currentTimeMillis() < deadline) Thread.sleep(10)
-        assertTrue("only ${parking.chunks.size} writes happened", parking.chunks.size >= 3)
+        assertTrue("the three writes did not finish", parking.written.await(2, TimeUnit.SECONDS))
         assertEquals("the pong is not second", Frames.TYPE_JSON, parking.chunks[1][4].toInt() and 0xFF)
         assertEquals("the video frame is not third", Frames.TYPE_VIDEO_FRAME, parking.chunks[2][4].toInt() and 0xFF)
     }
