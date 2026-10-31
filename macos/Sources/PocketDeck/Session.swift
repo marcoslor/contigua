@@ -726,9 +726,7 @@ final class Session {
             else { token = "other" }
             Log.session.notice("paths: path down \(id, privacy: .public) (\(token, privacy: .public))")  // log-ok: closed reason token, never the wire message
             let wasCurrent = pathLayer.currentPath == id
-            pathLayer.detach(id)
-            pathProvider.removeValue(forKey: id)
-            attempts.removeValue(forKey: id)
+            dropPath(id)
             handlePath(wasCurrent ? .currentFailed(id: id) : .pathDown(id: id))
             return
         }
@@ -758,6 +756,16 @@ final class Session {
         if let channel = attempt.channel { channel.close() }
     }
 
+    /// Ends one attached path: closes its channel and forgets the provider that
+    /// dialed it, so a provider with no path is missing and gets re-dialed
+    /// (E-5/PATH-22). Every detach goes through here: the machine's closePath,
+    /// a socket error, a joined-path timeout and the planned drain.
+    private func dropPath(_ id: String) {
+        pathLayer.detach(id)
+        pathProvider.removeValue(forKey: id)
+        attempts.removeValue(forKey: id)
+    }
+
     /// Adds a welcome'd path to the layer; the first one founds the session.
     private func attachPath(_ id: String) {
         guard let attempt = attempts[id], let send = attempt.sendRaw, let channel = attempt.channel else { return }
@@ -771,6 +779,10 @@ final class Session {
                                   isWritable: attempt.isWritable ?? { true },
                                   setReading: attempt.setReading ?? { _ in })
         pathProvider[id] = attempt.providerIndex
+        // E-5: the attempt is the path now. Counting a welcomed attempt as
+        // well made `pathCount + attempts.count` count every attached path
+        // twice, so a session that lost one of two never re-dialed.
+        attempts.removeValue(forKey: id)
         if pathLayer.pathCount == 0 {
             pathLayer.start(first: path)
             if everAttached {
@@ -870,7 +882,7 @@ final class Session {
             case .ranking(let rankingEvent):
                 _ = pathRanking.handle(rankingEvent, now: now)
             case .closePath(let path):
-                pathLayer.detach(path)
+                dropPath(path)
             case .switchTo(let path):
                 switchTo(path, why: event.token)
             case .replayFromLastAck:
@@ -941,10 +953,10 @@ final class Session {
         }
         for stale in pathLayer.joinedTimeouts() {
             let wasCurrent = pathLayer.currentPath == stale
-            pathLayer.detach(stale)
+            dropPath(stale)
             handlePath(wasCurrent ? .currentFailed(id: stale) : .pathDown(id: stale))
         }
-        for path in pathLayer.closeDrained() { pathLayer.detach(path) }
+        for path in pathLayer.closeDrained() { dropPath(path) }
         if case .migrating(_, _, let since) = pathMachine.state, now - since >= PathTimers.drainBackstop {
             handlePath(.drainExpired)
         }
