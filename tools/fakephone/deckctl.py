@@ -131,20 +131,151 @@ class Client(object):
         self.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         # Keeps partial frames across timed reads (a stall can split a frame).
         self._reader = proto.FrameReader()
+        # Protocol 4 paths (docs/PROTOCOL.md "Paths"): this client is one path
+        # until a check opens a second one. Reliable frames get seqs, ACKs and
+        # a replay list; JSON and the input types travel wrapped.
+        self.path_id = "%08x" % random.getrandbits(32)
+        self.current_path = self.path_id
+        self.session_id = None
+        self.out_seq = 1
+        self.in_seq = 1
+        self.in_buffer = {}
+        self.unacked = {}
+        self._inbox = []
+        self._ack_pending = False
+        self._ack_frames = 0
+        self._last_ack = 0.0
+        self.peer_switch = None
+        self.hello_v = None
 
     # -- framing --
-    def send_json(self, obj):
+    def _bare(self, obj):
         self.sock.sendall(proto.pack_json(obj, obj.get("stream", 0) or 0))
 
+    def send_json(self, obj):
+        if self.session_id is None:
+            # Before the welcome only hello/pair.* exist; they are bare (§4).
+            self._bare(obj)
+            return
+        stream = obj.get("stream", 0) or 0
+        inner = proto.Frame(proto.TYPE_JSON, stream,
+                            proto.pack_json(obj, stream)[9:])
+        self._send_reliable(inner)
+
+    def _send_reliable(self, inner):
+        seq = self.out_seq
+        wrapped = proto.pack_reliable(seq, inner)
+        self.unacked[seq] = wrapped
+        self.out_seq += 1
+        self.sock.sendall(wrapped)
+
     def send_raw(self, data):
-        self.sock.sendall(data)
+        """Send a pre-framed message; reliable types get the wrapper."""
+        if self.session_id is None or len(data) < 5:
+            self.sock.sendall(data)
+            return
+        type_ = data[4] & 0xFF
+        if proto.is_reliable(type_):
+            stream = struct.unpack_from(">I", data, 5)[0]
+            self._send_reliable(proto.Frame(type_, stream, data[9:]))
+        else:
+            self.sock.sendall(data)
+
+    def _send_ack(self):
+        try:
+            self.sock.sendall(proto.pack_ack(self.in_seq))
+            self._last_ack = time.time()
+            self._ack_pending = False
+            self._ack_frames = 0
+        except OSError:
+            pass
+
+    def _ack_later(self):
+        self._ack_frames += 1
+        self._ack_pending = True
+        if self._ack_frames >= 16 or time.time() - self._last_ack >= 0.010:
+            self._send_ack()
+
+    def _path_frame(self, frame):
+        """Handle one path-layer frame. Returns an inner Frame to deliver, or
+        None when the frame was consumed (ACK, ping, pong, our own marker)."""
+        if frame.type == proto.TYPE_ACK:
+            try:
+                ack = proto.unpack_ack(frame)
+            except proto.ProtocolError:
+                return None
+            for seq in [seq for seq in self.unacked if seq < ack]:
+                self.unacked.pop(seq, None)
+            return None
+        if frame.type == proto.TYPE_RELIABLE:
+            seq, inner = proto.unpack_reliable(frame)
+            if seq < self.in_seq:
+                self._send_ack()
+                return None
+            self.in_buffer[seq] = inner
+            while self.in_seq in self.in_buffer:
+                item = self.in_buffer.pop(self.in_seq)
+                self.in_seq += 1
+                if item.type == proto.TYPE_JSON:
+                    try:
+                        msg = proto.unpack_json(item)
+                    except Exception:
+                        msg = None
+                    if msg and msg.get("t") == "path.switch" and msg.get("path"):
+                        # The phone's own marker: its next reliable seq.
+                        self.peer_switch = (msg["path"], msg.get("seq") or 0)
+                        self.current_path = msg["path"]
+                self._inbox.append(item)
+            self._ack_later()
+            return None
+        if frame.type == proto.TYPE_JSON:
+            try:
+                msg = proto.unpack_json(frame)
+            except Exception:
+                return frame
+            kind = msg.get("t")
+            if kind == "path.ping":
+                self.sock.sendall(proto.pack_json(
+                    {"t": "path.pong", "path": msg.get("path") or self.path_id,
+                     "ts": msg.get("ts") or 0}))
+                return None
+            if kind == "path.pong":
+                return None
+            if kind == "path.switch":
+                target = msg.get("path")
+                if target:
+                    self.peer_switch = (target, msg.get("seq") or 0)
+                    self.current_path = target
+                    # Answer with our own marker: the next reliable seq + 1.
+                    marker = {"t": "path.switch", "path": target,
+                              "seq": self.out_seq + 1}
+                    self.send_json(marker)
+                    for wrapped in list(self.unacked.values()):
+                        self.sock.sendall(wrapped)
+                return None
+            return frame
+        return frame
 
     def recv(self, timeout=DEFAULT_TIMEOUT):
-        """Next complete frame, TIMEOUT if none arrived in time, None on EOF."""
-        try:
-            return self._reader.read(self.sock, timeout)
-        except socket.timeout:
-            return TIMEOUT
+        """Next complete message, TIMEOUT if none arrived, None on EOF."""
+        deadline = None if timeout is None else time.time() + timeout
+        while True:
+            if self._inbox:
+                return self._inbox.pop(0)
+            if self._ack_pending and time.time() - self._last_ack >= 0.010:
+                self._send_ack()
+            remaining = None if deadline is None else max(0.0, deadline - time.time())
+            if deadline is not None and remaining <= 0 and not self._inbox:
+                return TIMEOUT
+            try:
+                frame = self._reader.read(self.sock, remaining)
+            except socket.timeout:
+                return TIMEOUT
+            if frame is None:
+                return None
+            inner = self._path_frame(frame)
+            if inner is not None:
+                return inner
 
     def close(self):
         try:
@@ -152,12 +283,17 @@ class Client(object):
         except OSError:
             pass
 
-    # -- handshake (v2: no challenge, no auth) --
-    def send_hello(self):
+    # -- handshake (v4: no challenge, no auth) --
+    def send_hello(self, pair=False):
         client_id, name = self.state.ensure_identity(self.state.name)
         # The Mac's identity rides the TLS handshake's client certificate; the
-        # hello carries only the display identity (§4: no self-reported pin).
-        self.send_json({"t": "hello", "v": 3, "clientId": client_id, "name": name})
+        # hello carries only the display identity and this path's id (§4).
+        self.hello_v = 4
+        hello = {"t": "hello", "v": 4, "clientId": client_id, "name": name,
+                 "path": self.path_id}
+        if pair:
+            hello["pair"] = True
+        self.send_json(hello)
         self.client_name = name
 
     def _next_frame(self, timeout=HANDSHAKE_TIMEOUT):
@@ -172,6 +308,8 @@ class Client(object):
         if msg.get("t") == "error":
             if msg.get("code") == "busy":
                 raise Busy()
+            if msg.get("code") == "version":
+                raise DeckError("phone refused protocol 4 (it speaks %r)" % msg.get("v"))
             raise DeckError("phone error: %s" % msg.get("code"))
         return msg
 
@@ -192,15 +330,17 @@ class Client(object):
         if msg.get("t") != "welcome":
             raise DeckError("expected welcome, got %r" % msg.get("t"))
         self.device = msg.get("device", {})
+        self.session_id = msg.get("session")
         return msg
 
     def connect(self):
-        """Pin-verifying reconnect: hello v2, then welcome without pairing."""
+        """Pin-verifying reconnect: hello v4, then welcome without pairing."""
         self.send_hello()
         msg = self._next_frame()
         if msg.get("t") != "welcome":
             raise DeckError("expected welcome without pairing, got %r" % msg.get("t"))
         self.device = msg.get("device", {})
+        self.session_id = msg.get("session")
         device_id = self.device.get("id")
         # Mirror the Mac's pin check: the phone's handshake cert must be the
         # one stored for this device id (§1); anything else is a re-pair.
@@ -211,13 +351,14 @@ class Client(object):
 
     def pair(self, on_code, decision_timeout=130.0):
         """The §4 machine: pair.request → commit → nonce → reveal rehash → code."""
-        self.send_hello()
+        self.send_hello(pair=True)
         self.send_json({"t": "pair.request"})
         msg = self._next_frame()
         if msg.get("t") == "welcome":
             # The phone already knows this Mac (a leftover pin) — done.
             self.device = msg.get("device", {})
             self.device_id = self.device.get("id")
+            self.session_id = msg.get("session")
             return
         if msg.get("t") != "pair.commit" or not msg.get("c"):
             raise DeckError("expected pair.commit, got %r" % msg.get("t"))
@@ -2568,6 +2709,17 @@ def build_parser():
     sub = p.add_subparsers(dest="command", required=True)
 
     sub.add_parser("apps", help="list launchable apps", **spp)
+    sub.add_parser("version", help="print the protocol hello/session/path ids", **spp)
+    sub.add_parser("paths", help="list the phone's live paths (fakephone)", **spp)
+    sp = sub.add_parser("switch", help="send path.switch and wait for the phone's marker", **spp)
+    sp.add_argument("path", help="a path id, or 'current' for this client's path")
+    sp.add_argument("--timeout", type=float, default=3.0, metavar="SECONDS")
+    sp = sub.add_parser("kill-path", help="close a path (fakephone debug verb)", **spp)
+    sp.add_argument("path")
+    sp = sub.add_parser("pong-mode", help="a path's ping answer (fakephone debug verb)", **spp)
+    sp.add_argument("path")
+    sp.add_argument("mode", choices=["on", "off", "delay"])
+    sp.add_argument("--ms", type=int, default=300)
 
     sp = sub.add_parser("icon", help="fetch an app icon PNG", **spp)
     sp.add_argument("pkg")
@@ -2826,8 +2978,98 @@ def build_parser():
     return p
 
 
+def cmd_version(client, _args):
+    print("hello.v=%s session=%s path=%s protocol=4"
+          % (client.hello_v, client.session_id, client.path_id))
+    return 0
+
+
+def _debug_wait(client, want, timeout=2.0):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        frame = client.recv(max(0.05, deadline - time.time()))
+        if frame is TIMEOUT:
+            break
+        if frame is None:
+            raise DeckError("phone closed while waiting for %r" % want)
+        if frame.type != proto.TYPE_JSON:
+            continue
+        msg = proto.unpack_json(frame)
+        if msg.get("t") == "error":
+            raise DeckError("phone error %s: %s"
+                            % (msg.get("code"), msg.get("message", "")))
+        if msg.get("t") == want:
+            return msg
+    return None
+
+
+def cmd_paths(client, _args):
+    """List the phone's live paths (fakephone answers debug.paths)."""
+    reply = None
+    if client.session_id is not None:
+        client.send_json({"t": "debug.paths"})
+        try:
+            reply = _debug_wait(client, "paths.list", 2.0)
+        except (DeckError, socket.timeout):
+            reply = None
+    if reply is None:
+        print("%s%s (local; the phone did not list paths)"
+              % (client.path_id, " *current*" if client.current_path == client.path_id else ""))
+        return 0
+    current = reply.get("current")
+    for path_id in reply.get("paths") or []:
+        print("%s%s" % (path_id, " *current*" if path_id == current else ""))
+    return 0
+
+
+def cmd_switch(client, args):
+    target = args.path
+    if target in ("current", "self"):
+        target = client.current_path
+    marker = {"t": "path.switch", "path": target, "seq": client.out_seq + 1}
+    client.send_json(marker)
+    deadline = time.time() + max(1.0, args.timeout)
+    while time.time() < deadline:
+        if client.peer_switch is not None:
+            print("switched to %s (phone marker seq %s)"
+                  % (client.peer_switch[0], client.peer_switch[1]))
+            return 0
+        frame = client.recv(max(0.05, deadline - time.time()))
+        if frame is TIMEOUT:
+            break
+        if frame is None:
+            raise DeckError("phone closed before its switch marker")
+    sys.stderr.write("deckctl: no path.switch answer for %s\n" % target)
+    return 1
+
+
+def cmd_kill_path(client, args):
+    target = args.path
+    if target == client.path_id:
+        client.close()
+        print("closed %s (this client's only path)" % target)
+        return 0
+    client.send_json({"t": "debug.kill-path", "path": target})
+    print("asked the fake phone to close %s" % target)
+    return 0
+
+
+def cmd_pong_mode(client, args):
+    mode = args.mode
+    client.send_json({"t": "debug.pong", "path": args.path, "mode": mode,
+                      "ms": args.ms})
+    print("pong-mode %s %s%s" % (args.path, mode,
+                                  (" %dms" % args.ms) if mode == "delay" else ""))
+    return 0
+
+
 COMMANDS = {
     "apps": cmd_apps,
+    "version": cmd_version,
+    "paths": cmd_paths,
+    "switch": cmd_switch,
+    "kill-path": cmd_kill_path,
+    "pong-mode": cmd_pong_mode,
     "icon": cmd_icon,
     "open": cmd_open,
     "resize-test": cmd_resize_test,

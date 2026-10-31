@@ -1,0 +1,307 @@
+#!/usr/bin/env python3
+"""pdpathfault - a TCP fault proxy in front of one PocketDeck path listener.
+
+Sits between the Mac and the phone so a check can break a path exactly as a
+person's Wi-Fi would, without touching the other paths:
+
+    pdpathfault.py --listen 47961 --connect 127.0.0.1:47960 \
+                   --mode pass|delay|blackhole|rst|throttle \
+                   [--delay-ms 120] [--rate-mbit 2] [--ctl-file /tmp/pdpathfault.ctl]
+
+Modes (docs/design/paths.md §10.3):
+    pass       bytes both ways, unmodified (the default)
+    delay      each direction delayed by --delay-ms, in order
+    blackhole  reads and drops, writes nothing (a dead radio, socket open)
+    rst        closes both sides with a reset at once
+    throttle   caps each direction at --rate-mbit
+
+The mode can be changed at run time by writing one line to --ctl-file
+(`mode blackhole`), so a check can kill a path at a precise byte of a transfer.
+Every accepted connection and each mode change is a JSON line on --events.
+"""
+
+import argparse
+import json
+import os
+import queue
+import signal
+import socket
+import struct
+import sys
+import threading
+import time
+
+MODES = ("pass", "delay", "blackhole", "rst", "throttle")
+CHUNK = 65536
+
+
+class Proxy(object):
+    def __init__(self, args):
+        self.args = args
+        self.lock = threading.Lock()
+        self.mode = args.mode
+        self.connections = []
+        self.stop = threading.Event()
+        self.events_lock = threading.Lock()
+        self.events_fp = open(args.events, "a") if args.events else None
+        self.conn_seq = 0
+        self._ctl_mtime = None
+
+    # -- events --
+    def event(self, obj):
+        if self.events_fp is None:
+            return
+        obj = dict(obj)
+        obj.setdefault("ts", time.time())
+        with self.events_lock:
+            self.events_fp.write(json.dumps(obj, separators=(",", ":")) + "\n")
+            self.events_fp.flush()
+
+    # -- mode --
+    def set_mode(self, mode):
+        if mode not in MODES:
+            self.event({"ev": "error", "message": "unknown mode %r" % (mode,)})
+            return False
+        with self.lock:
+            if mode == self.mode:
+                return True
+            self.mode = mode
+            self.event({"ev": "mode", "mode": mode})
+            connections = list(self.connections)
+        if mode == "rst":
+            for conn in connections:
+                conn.reset()
+        return True
+
+    def get_mode(self):
+        with self.lock:
+            return self.mode
+
+    def watch_ctl(self):
+        path = self.args.ctl_file
+        if not path:
+            return
+        while not self.stop.is_set():
+            try:
+                mtime = os.stat(path).st_mtime
+            except OSError:
+                mtime = None
+            if mtime != self._ctl_mtime and mtime is not None:
+                self._ctl_mtime = mtime
+                try:
+                    with open(path, "r") as fp:
+                        lines = [line.strip() for line in fp if line.strip()]
+                except OSError:
+                    lines = []
+                if lines:
+                    last = lines[-1]
+                    if last.startswith("mode "):
+                        last = last[5:].strip()
+                    self.event({"ev": "ctl", "line": lines[-1]})
+                    self.set_mode(last)
+            self.stop.wait(0.05)
+
+    # -- connections --
+    def run(self):
+        srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        srv.bind(("127.0.0.1", self.args.listen))
+        srv.listen(16)
+        srv.settimeout(0.25)
+        self.event({"ev": "start", "listen": self.args.listen,
+                    "connect": self.args.connect, "mode": self.mode,
+                    "delay_ms": self.args.delay_ms, "rate_mbit": self.args.rate_mbit})
+        threading.Thread(target=self.watch_ctl, daemon=True).start()
+        print("pdpathfault 127.0.0.1:%d -> %s mode=%s"
+              % (self.args.listen, self.args.connect, self.mode), file=sys.stderr)
+        sys.stderr.flush()
+        try:
+            while not self.stop.is_set():
+                try:
+                    client, peer = srv.accept()
+                except socket.timeout:
+                    continue
+                except OSError:
+                    break
+                thread = threading.Thread(target=self.handle, args=(client, peer),
+                                          daemon=True)
+                thread.start()
+        finally:
+            srv.close()
+            self.stop.set()
+            with self.lock:
+                connections = list(self.connections)
+            for conn in connections:
+                conn.close()
+            if self.events_fp is not None:
+                self.events_fp.close()
+
+    def handle(self, client, peer):
+        with self.lock:
+            self.conn_seq += 1
+            conn_id = self.conn_seq
+        try:
+            host, port = self.args.connect.rsplit(":", 1)
+            upstream = socket.create_connection((host, int(port)), timeout=5.0)
+        except OSError as exc:
+            self.event({"ev": "conn", "id": conn_id, "peer": "%s:%d" % peer,
+                        "ok": False, "error": str(exc)})
+            try:
+                client.close()
+            except OSError:
+                pass
+            return
+        client.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        upstream.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        client.settimeout(None)
+        upstream.settimeout(None)
+        conn = Connection(self, conn_id, client, upstream, peer)
+        with self.lock:
+            self.connections.append(conn)
+        self.event({"ev": "conn", "id": conn_id, "peer": "%s:%d" % peer,
+                    "mode": self.get_mode(), "ok": True})
+        try:
+            if self.get_mode() == "rst":
+                conn.reset()
+                return
+            conn.run()
+        finally:
+            with self.lock:
+                if conn in self.connections:
+                    self.connections.remove(conn)
+            conn.close()
+
+
+class Connection(object):
+    """One proxied TCP pair. Each direction may be delayed, dropped or capped."""
+
+    def __init__(self, proxy, conn_id, client, upstream, peer):
+        self.proxy = proxy
+        self.id = conn_id
+        self.client = client
+        self.upstream = upstream
+        self.peer = peer
+        self.stop = threading.Event()
+        self.queues = {0: queue.Queue(), 1: queue.Queue()}
+        self.threads = []
+        self.token = {0: 0.0, 1: 0.0}
+
+    def reset(self):
+        for sock in (self.client, self.upstream):
+            try:
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER,
+                                struct.pack("ii", 1, 0))
+            except OSError:
+                pass
+            try:
+                sock.close()
+            except OSError:
+                pass
+        self.stop.set()
+
+    def close(self):
+        self.stop.set()
+        for sock in (self.client, self.upstream):
+            try:
+                sock.close()
+            except OSError:
+                pass
+        self.proxy.event({"ev": "close", "id": self.id})
+
+    def run(self):
+        for direction in (0, 1):
+            self.threads.append(threading.Thread(target=self._forward,
+                                                 args=(direction,), daemon=True))
+        self.threads.append(threading.Thread(target=self._control, daemon=True))
+        for thread in self.threads:
+            thread.start()
+        self.threads[0].join()
+        self.threads[1].join()
+
+    # direction 0 = client -> upstream, 1 = upstream -> client
+    def _read_loop(self, direction):
+        src = self.client if direction == 0 else self.upstream
+        while not self.stop.is_set():
+            try:
+                data = src.recv(CHUNK)
+            except OSError:
+                break
+            if not data:
+                break
+            self.queues[direction].put((time.time(), data))
+        self.queues[direction].put(None)
+
+    def _forward(self, direction):
+        reader = threading.Thread(target=self._read_loop, args=(direction,), daemon=True)
+        reader.start()
+        dst = self.upstream if direction == 0 else self.client
+        while not self.stop.is_set():
+            item = self.queues[direction].get()
+            if item is None:
+                break
+            enqueued, data = item
+            mode = self.proxy.get_mode()
+            if mode == "rst":
+                self.reset()
+                return
+            if mode == "blackhole":
+                continue
+            if mode == "delay":
+                due = enqueued + self.proxy.args.delay_ms / 1000.0
+                left = due - time.time()
+                if left > 0 and self.stop.wait(min(left, 1.0)):
+                    return
+            if mode == "throttle":
+                self._throttle(direction, len(data))
+            try:
+                dst.sendall(data)
+            except OSError:
+                break
+        self.stop.set()
+
+    def _throttle(self, direction, size):
+        rate = max(0.001, float(self.proxy.args.rate_mbit)) * 1000 * 1000 / 8.0
+        due = time.time() + size / rate
+        now = time.time()
+        if self.token[direction] < now:
+            self.token[direction] = now
+        self.token[direction] = max(self.token[direction], due)
+        sleep_for = self.token[direction] - now
+        if sleep_for > 0:
+            self.stop.wait(min(sleep_for, 1.0))
+
+    def _control(self):
+        while not self.stop.wait(0.1):
+            if self.proxy.get_mode() == "rst":
+                self.reset()
+                return
+
+
+def build_parser():
+    p = argparse.ArgumentParser(description="A TCP fault proxy for one PocketDeck path.")
+    p.add_argument("--listen", type=int, required=True, help="port to listen on")
+    p.add_argument("--connect", required=True, metavar="HOST:PORT",
+                   help="the path listener behind the proxy")
+    p.add_argument("--mode", choices=MODES, default="pass")
+    p.add_argument("--delay-ms", type=int, default=120)
+    p.add_argument("--rate-mbit", type=float, default=2.0)
+    p.add_argument("--ctl-file", default=None,
+                   help="write `mode blackhole` here to change the mode")
+    p.add_argument("--events", default=None, help="JSON Lines events here")
+    return p
+
+
+def main(argv=None):
+    args = build_parser().parse_args(argv)
+
+    def stop(_signum, _frame):
+        raise SystemExit(0)
+
+    signal.signal(signal.SIGTERM, stop)
+    signal.signal(signal.SIGINT, stop)
+    Proxy(args).run()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
