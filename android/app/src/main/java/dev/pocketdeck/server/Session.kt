@@ -726,10 +726,10 @@ class Session(
         // current one for the pong rule (PATH-7), or a lost pong on it would
         // never reach the machine.
         val current = pongWatchPath(pathMachine.state, hub.currentPath)
-        for (lost in hub.pongTimeouts()) {
+        for (loss in hub.pongLosses()) {
             val at = now() / 1000.0
-            pathRanking.addSample(lost, null, at)
-            if (lost == current) handlePathEvent(PathSessionEvent.PongLost(lost))
+            pathRanking.addSample(loss.path, null, at)
+            pongFailure(loss, current)?.let { handlePathEvent(it) }
         }
         for (stale in hub.joinedTimeouts()) {
             val wasCurrent = stale == hub.currentPath

@@ -124,8 +124,7 @@ class PathHub(
         }
     }
 
-    sealed interface Event {
-        /** One frame the session dispatcher sees, already deduped and in order. */
+    sealed interface Event {        /** One frame the session dispatcher sees, already deduped and in order. */
         data class Deliver(val frame: Frame) : Event
 
         /** The path died (EOF, reset, write error). */
@@ -147,6 +146,9 @@ class PathHub(
         data object Backpressure : Event
     }
 
+    /** One ping went unanswered; [alive] is true while the path keeps delivering. */
+    data class PongLoss(val path: String, val alive: Boolean)
+
     private val lock = Object()
     private val paths = LinkedHashMap<String, Transport>()
     private var current: String? = null
@@ -156,7 +158,9 @@ class PathHub(
     private var ackFrames = 0
     private var lastAckAt = 0L
     private var lastPingAt = 0L
-    private var pingSentAt = HashMap<String, Long>()
+    private val pingSentAt = HashMap<String, Long>()
+    /** D-2: the last time each path delivered any inbound bytes. */
+    private val lastInboundAt = HashMap<String, Long>()
     /** A joined path that never answers a ping is dropped at 5 s (PATH-13). */
     private val joinedAwaitingPong = HashMap<String, Long>()
     private var closed = false
@@ -218,6 +222,7 @@ class PathHub(
             if (current == id) current = null
             draining.remove(id)
             pingSentAt.remove(id)
+            lastInboundAt.remove(id)
             joinedAwaitingPong.remove(id)
             removed
         }
@@ -352,6 +357,7 @@ class PathHub(
      * reordered and acked; the returned events are what the session dispatches.
      */
     fun receive(path: String, frame: Frame): List<Event> {
+        synchronized(lock) { lastInboundAt[path] = now() }
         val events = ArrayList<Event>()
         when (frame.type) {
             PathCodec.TYPE_ACK -> {
@@ -515,15 +521,20 @@ class PathHub(
     }
 
     /** A ping with no pong within 1.5 s is one lost sample (PATH-7). */
-    fun pongTimeouts(): List<String> {
+    fun pongLosses(): List<PongLoss> {
         val at = now()
         val lost = synchronized(lock) {
             pingSentAt.filterValues { at - it > PONG_TIMEOUT_MS }.keys.toList()
         }
+        val out = ArrayList<PongLoss>(lost.size)
         for (id in lost) {
-            synchronized(lock) { pingSentAt.remove(id) }
+            val alive = synchronized(lock) {
+                pingSentAt.remove(id)
+                lastInboundAt[id]?.let { at - it <= PONG_ALIVE_MS } ?: false
+            }
+            out.add(PongLoss(id, alive))
         }
-        return lost
+        return out
     }
 
     /** Joined paths that have answered no ping in 5 s (PATH-13). */
@@ -540,6 +551,8 @@ class PathHub(
         const val MAX_PATHS = 3
         const val PING_MS = 2_000L
         const val PONG_TIMEOUT_MS = 1_500L
+        /** D-2: inbound bytes this recently mean the path is alive despite a pong loss. */
+        const val PONG_ALIVE_MS = 1_500L
         const val DRAIN_BACKSTOP_MS = 2_000L
         const val JOINED_PING_DROP_MS = 5_000L
         const val ACK_MS = 10L

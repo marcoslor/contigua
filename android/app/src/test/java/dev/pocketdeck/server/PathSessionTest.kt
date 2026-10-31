@@ -113,6 +113,7 @@ class PathSessionTest {
         m.scores["b"] = 900
         val actions = m.handle(PathSessionEvent.CurrentFailed("a"), 5.0)
         assertEquals(PathSessionState.Migrating("a", "b", 5.0), m.state)
+        assertFalse("a socket error fails the path", m.live.contains("a"))
         assertEquals(
             listOf(
                 PathSessionAction.StopPing("a"),
@@ -154,24 +155,30 @@ class PathSessionTest {
         )
     }
 
+    /** D-2/R-10: a pong-only failure demotes the current path to a standby; it
+     * is not closed, stays pinged, and the phone never replays on it. */
     @Test
-    fun aLostPongWithTwoPathsSwitchesAtOnce() {
+    fun aLostPongDemotesTheCurrentPathToStandbyWithoutClosingIt() {
         val m = machine(live = setOf("a", "b"))
         m.scores["a"] = 100
         m.scores["b"] = 900
         val actions = m.handle(PathSessionEvent.PongLost("a"), 4.0)
-        assertEquals(PathSessionState.Migrating("a", "b", 4.0), m.state)
-        assertEquals(
-            listOf(
-                PathSessionAction.StopPing("a"),
-                PathSessionAction.SwitchTo("b"),
-                PathSessionAction.ReplayFromLastAck,
-                PathSessionAction.RequestKeyframes,
-                PathSessionAction.StartPing("b"),
-                PathSessionAction.Ranking(PathRankingEvent.CurrentFailed("a")),
-            ),
-            actions,
-        )
+        assertEquals(PathSessionState.Live("b"), m.state)
+        assertTrue("the demoted path stays open and pinged", m.live.contains("a"))
+        assertFalse(actions.any { it is PathSessionAction.ClosePath })
+        assertFalse(actions.contains(PathSessionAction.ReplayFromLastAck))
+        assertEquals(listOf(PathSessionAction.Ranking(PathRankingEvent.CurrentFailed("a"))), actions)
+    }
+
+    /** D-2: a path that is still delivering bytes is alive; its lost pong is a
+     * ranking sample, so the current path keeps its role. */
+    @Test
+    fun aPongLostCurrentPathWithFreshInboundKeepsItsRole() {
+        val m = machine(live = setOf("a", "b"))
+        assertEquals(null, pongFailure(PathHub.PongLoss("a", alive = true), "a"))
+        assertEquals(PathSessionState.Live("a"), m.state)
+        assertEquals(null, pongFailure(PathHub.PongLoss("b", alive = false), "a"))
+        assertEquals(PathSessionEvent.PongLost("a"), pongFailure(PathHub.PongLoss("a", alive = false), "a"))
     }
 
     @Test
