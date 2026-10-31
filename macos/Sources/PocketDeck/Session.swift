@@ -605,6 +605,14 @@ final class Session {
     /// it, one path died and the session lives on (§6).
     private func handlePathError(_ id: String, _ message: String) {
         if pathLayer.hasPath(id) {
+            // Boot 6 left no trace of which side closed a live path: name the
+            // class, never the message (R-PRIV-1).
+            let token: String
+            if message.contains("closed-by-peer") { token = "closed-by-peer" }
+            else if message.hasPrefix("framing") { token = "framing" }
+            else if message.hasPrefix("tls") { token = "tls" }
+            else { token = "other" }
+            Log.session.notice("paths: path down \(id, privacy: .public) (\(token, privacy: .public))")  // log-ok: closed reason token, never the wire message
             let wasCurrent = pathLayer.currentPath == id
             pathLayer.detach(id)
             handlePath(wasCurrent ? .currentFailed(id: id) : .pathDown(id: id))
