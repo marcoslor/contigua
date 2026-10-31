@@ -100,6 +100,10 @@ final class PathLayer {
     private var pingSentAt: [String: Int64] = [:]
     private var joinedAwaitingPong: [String: Int64] = [:]
     private var draining: [String: Int64] = [:]
+    /// Paths whose pump is running right now: one writer per path keeps a
+    /// path's writes in order (PATH-4/RR-14). A second sender leaves its frame
+    /// in the outbox and the running pump picks it up.
+    private var pumping: Set<String> = []
     private var closed = false
 
     /// Test seams.
@@ -305,32 +309,56 @@ final class PathLayer {
     /// waits here instead of in the channel's write buffer, so a ping, a pong,
     /// an ACK or a marker never queues behind megabytes of a file (D-2).
     private func pump(_ id: String) {
+        // One pump per path (PATH-4/RR-14): a second sender leaves its frame in
+        // the outbox and the running pump picks it up, so two senders' frames
+        // can never reach the channel out of seq order.
+        let owner: Bool = locked {
+            if pumping.contains(id) { return false }
+            pumping.insert(id)
+            return true
+        }
+        guard owner else { return }
         while true {
             var flushed: [Flushed] = []
+            var stop = false
             let next: (Path, [UInt8])? = locked {
-                guard let path = paths[id], path.isWritable() else { return nil }
-                if outbox[id]?.isEmpty ?? true {
-                    // The outbox drained: bulk that was waiting outside the
-                    // seq space may enter it now, while there is room (E-4).
-                    if id == current, outboxHasBulkRoomLocked {
-                        flushed = admitPendingLocked()
-                        for item in flushed {
-                            outbox[id, default: []].append(item.bytes)
-                            outboxBytes[id, default: 0] += item.bytes.count
-                        }
-                    }
-                    guard let first = outbox[id]?.first else { return nil }
-                    outbox[id]?.removeFirst()
-                    outboxBytes[id, default: 0] = max(0, (outboxBytes[id] ?? 0) - first.count)
-                    return (path, first)
+                guard let path = paths[id], path.isWritable() else {
+                    stop = true
+                    return nil
                 }
-                guard let first = outbox[id]?.first else { return nil }
+                if outbox[id]?.isEmpty ?? true, id == current, outboxHasBulkRoomLocked {
+                    // The outbox drained: bulk that waited outside the seq
+                    // space may enter it now, while there is room (E-4).
+                    flushed = admitPendingLocked()
+                    for item in flushed {
+                        outbox[id, default: []].append(item.bytes)
+                        outboxBytes[id, default: 0] += item.bytes.count
+                    }
+                }
+                guard let first = outbox[id]?.first else {
+                    stop = true
+                    return nil
+                }
                 outbox[id]?.removeFirst()
                 outboxBytes[id, default: 0] = max(0, (outboxBytes[id] ?? 0) - first.count)
                 return (path, first)
             }
             for item in flushed { item.completion?(true) }
-            guard let (path, bytes) = next else { return }
+            guard let (path, bytes) = next else {
+                if !stop { return }
+                // Give up the claim and look again under the same lock: a
+                // frame appended just before the claim is dropped is picked up
+                // here, and one appended after it starts a fresh pump.
+                let again: Bool = locked {
+                    pumping.remove(id)
+                    guard let path = paths[id], path.isWritable(),
+                          !(outbox[id]?.isEmpty ?? true) else { return false }
+                    pumping.insert(id)
+                    return true
+                }
+                if again { continue }
+                return
+            }
             path.send(bytes)
         }
     }
@@ -726,6 +754,20 @@ final class PathLayer {
             }.map(\.key)
             for id in lost { pingSentAt.removeValue(forKey: id) }
             return lost
+        }
+    }
+
+    /// Pings that timed out on a path that is still receiving: one ranking
+    /// sample, never a failure (D-2/RR-14), exactly as the phone records it.
+    func latePongs() -> [String] {
+        let at = nowMs()
+        return locked {
+            let late = pingSentAt.filter { id, sent in
+                at - sent > Self.pongTimeoutMs
+                    && at - (lastInboundAt[id] ?? at - Self.aliveMs - 1) <= Self.aliveMs
+            }.map(\.key)
+            for id in late { pingSentAt.removeValue(forKey: id) }
+            return late
         }
     }
 

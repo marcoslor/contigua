@@ -400,6 +400,49 @@ extension PathLayerTests {
     }
 }
 
+extension PathLayerTests {
+    /// RR-14: one pump per path, so two senders' frames reach the channel in
+    /// seq order. The first write parks inside the channel; a second sender
+    /// must not take the next frame and write it ahead of the parked one.
+    func testTwoSendersOnOnePathKeepTheWiresSeqOrder() throws {
+        let entered = DispatchSemaphore(value: 0)
+        let gate = DispatchSemaphore(value: 0)
+        let done = DispatchSemaphore(value: 0)
+        let lock = NSLock()
+        var writes: [UInt64] = []
+        var first = true
+        let parked = PathLayer.Path(id: "cccc0003", kind: .lan, send: { bytes in
+            lock.lock(); let isFirst = first; first = false; lock.unlock()
+            if isFirst {
+                entered.signal()
+                _ = gate.wait(timeout: .now() + 5)
+            }
+            if let frame = Frame(encoded: bytes),
+               let reliable = try? PathCodec.decodeReliable(frame) {
+                lock.lock(); writes.append(reliable.seq); lock.unlock()
+            }
+        }, close: {})
+        layer.attach(parked, joined: false)
+        layer.moveTo("cccc0003", plannedFrom: nil)
+        let parkedSend = expectation(description: "the parked writer")
+        DispatchQueue.global().async {
+            self.layer.send(self.json("one"))
+            parkedSend.fulfill()
+            done.signal()
+        }
+        XCTAssertEqual(.success, entered.wait(timeout: .now() + 2), "the first write never parked")
+        layer.send(json("two"))
+        gate.signal()
+        wait(for: [parkedSend], timeout: 5)
+        _ = done.wait(timeout: .now() + 1)
+        lock.lock()
+        let seqs = writes
+        lock.unlock()
+        XCTAssertEqual(Array(1...UInt64(seqs.count)), seqs, "writes reached the channel out of seq order")
+        XCTAssertEqual([1, 2], Array(seqs.suffix(2)), "the parked frame went first")
+    }
+}
+
 // MARK: - D-1: the ping policy
 
 extension PathLayerTests {
@@ -460,6 +503,24 @@ extension PathLayerTests {
         clock += 1_500
         layer.pingAll(active: false)
         XCTAssertFalse(wire.all().isEmpty, "a transfer runs: the fast interval applies")
+    }
+
+    /// RR-14/D-2: a pong lost on a path that is still receiving is a ranking
+    /// sample, not a silent drop (the phone records one too).
+    func testALatePongOnAnAlivePathIsOneRankingSample() {
+        let second = Wire()
+        layer.attach(PathLayer.Path(id: "bbbb0002", kind: .lan, send: second.send,
+                                    close: second.close, isWritable: second.isWritable), joined: true)
+        clock += 2_000
+        layer.pingAll(active: true)
+        clock += 1_400
+        let inbound = Frame(type: .json, stream: 0, payload: JSONFrame.payload(["t": "noop"]))
+        _ = layer.receive(path: "aaaa0001", frame: inbound)
+        clock += 200      // 1.6 s after the ping; the path received 0.2 s ago
+        XCTAssertEqual(["aaaa0001"], layer.latePongs())
+        XCTAssertFalse(layer.lostPings().contains("aaaa0001"),
+                       "an alive path was reported failed")
+        XCTAssertTrue(layer.latePongs().isEmpty, "one lost ping is one sample")
     }
 
     /// A joined path is pinged at once, before any tick (PATH-12/D-1).

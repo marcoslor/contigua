@@ -345,17 +345,22 @@ final class Session {
     private var rejoinFailures = 0
     private var rejoinNextAt: TimeInterval = 0
     /// True once a path was attached: a later path reaching an empty layer is
-    /// a rejoin, not the founder (it replays instead of starting).
-    private var everAttached = false
+    /// a rejoin, not the founder (it replays instead of starting). Derived from
+    /// the machine, never a flag beside it (RR-14).
+    private var everAttached: Bool {
+        if case .orphaned(since: 0) = pathMachine.state { return false }
+        return true
+    }
     /// Pre-welcome sends travel bare on the one attempt holding the plain
     /// hello (PATH-2). The box carries the decision across threads; the
     /// session queue clears it at the founding welcome (R-4/R-7).
     private let preWelcomeSender = SessionLockedBox<(@Sendable ([UInt8]) -> Void)?>(value: nil)
     /// Set once a `welcome` founded the session: from then on every frame is a
-    /// path-layer frame, even with no path attached (PATH-6).
-    private let founded = SessionLockedBox(value: false)
+    /// path-layer frame, even with no path attached (PATH-6). The box is the
+    /// one cross-thread view of [pathSessionId]; there is no second flag
+    /// (RR-14).
+    private let pathSessionId = SessionLockedBox<String?>(value: nil)
     private var lastFramePath: String?
-    private var pathSessionId: String?
     private var pathMachine = PathSessionMachine()
     private var pathRanking = PathRanking()
     /// D-1: the phone's screen state from the last `state` message. A session
@@ -599,7 +604,7 @@ final class Session {
         attemptEvent(id, .tlsReady)
         if state == .connecting { transition(.handshaking, nil) }
         Log.session.info("tls connected (path \(id, privacy: .public)); hello v\(PathVersion.current, privacy: .private)")
-        if attempts[id]?.rejoin == true, let session = pathSessionId {
+        if attempts[id]?.rejoin == true, let session = pathSessionId.get() {
             // D-3: the orphan's own dial joins the session it was on.
             sendHello(on: id, join: session)
         } else {
@@ -692,7 +697,7 @@ final class Session {
     /// session is below the paths its providers can give (D-3: orphaned or a
     /// path short). Runs on the session queue's tick.
     private func maintainPaths() {
-        guard !intentionalClose, founded.get(), pathSessionId != nil else { return }
+        guard !intentionalClose, pathSessionId.get() != nil else { return }
         let ready = readyProviders()
         guard !ready.isEmpty else { return }
         let target = min(ready.count, PathLayer.maxPaths)
@@ -790,7 +795,6 @@ final class Session {
                 // frames held while no path was up replay onto it (PATH-6/9).
                 handlePath(.pathUp(id: id, joined: true))
             } else {
-                everAttached = true
                 pathMachine.startLive(path: id)
             }
         } else {
@@ -958,6 +962,11 @@ final class Session {
         maintainPaths()
         pathLayer.pingAll(active: pingActive)
         let now = uptime
+        // A pong lost on a path that is still receiving is a ranking sample,
+        // never a failure (D-2/RR-14), exactly as the phone records it.
+        for late in pathLayer.latePongs() {
+            pathRanking.addSample(id: late, rttMs: nil, at: now)
+        }
         for lost in pathLayer.lostPings() {
             pathRanking.addSample(id: lost, rttMs: nil, at: now)
             if lost == pathLayer.currentPath { handlePath(.pongLost(id: lost)) }
@@ -1030,8 +1039,7 @@ final class Session {
         attempts.removeAll()
         attemptReasons.removeAll()
         preWelcomeSender.set(nil)
-        founded.set(false)
-        everAttached = false
+        pathSessionId.set(nil)
         pathProvider.removeAll()
         rejoinFailures = 0
         rejoinNextAt = 0
@@ -1371,11 +1379,12 @@ final class Session {
                 emit(.pathsReconnecting(false))
                 return
             }
-            pathSessionId = session
             // From here the seq space exists: no frame may travel bare again,
             // and a frame with no attached path is held for the join (R-4).
+            // Clear the bare sender first: a frame racing the founding is
+            // dropped (E-2), never written bare after the welcome.
             preWelcomeSender.set(nil)
-            founded.set(true)
+            pathSessionId.set(session)
             if let welcomedOn {
                 attemptEvent(welcomedOn, .welcomed(session: session))
                 attachPath(welcomedOn)
@@ -1728,7 +1737,7 @@ final class Session {
             completion?(true)
             return
         }
-        guard founded.get() else {
+        guard pathSessionId.get() != nil else {
             completion?(false)
             return
         }
