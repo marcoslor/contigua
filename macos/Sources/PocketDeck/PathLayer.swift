@@ -49,6 +49,9 @@ final class PathLayer {
         case down(path: String)
         /// An ACK above anything sent: a protocol error the session ends on.
         case ackAboveSent
+        /// A reliable frame whose outer stream disagreed with its inner one:
+        /// §5.3 makes it a session protocol error, not one path's (R-16).
+        case protocolError(String)
     }
 
     private struct Pending {
@@ -74,7 +77,13 @@ final class PathLayer {
     /// The last time any frame arrived on a path: a path that is still receiving
     /// is alive even when a pong is late (D-2).
     private var lastInboundAt: [String: Int64] = [:]
+    /// Reliable frames that did not fit a full reorder window, per path: kept,
+    /// never dropped, while that path's reader is stopped (R-11).
+    private var overflow: [String: [(UInt64, Frame)]] = [:]
+    private var readingPaused: Set<String> = []
     private var ackFrames = 0
+    private var lastAckPath: String?
+    private var ackFlushArmed = false
     private var lastAckAt: Int64 = 0
     /// The last bulk frame admitted or delivered (D-1's transfer window).
     private var lastBulkAt: Int64 = 0
@@ -156,6 +165,8 @@ final class PathLayer {
             joinedAwaitingPong.removeValue(forKey: id)
             outbox.removeValue(forKey: id)
             lastInboundAt.removeValue(forKey: id)
+            overflow.removeValue(forKey: id)
+            readingPaused.remove(id)
             return path
         }
         guard let path else { return false }
@@ -177,6 +188,8 @@ final class PathLayer {
             pending.removeAll()
             outbox.removeAll()
             lastInboundAt.removeAll()
+            overflow.removeAll()
+            readingPaused.removeAll()
             return all
         }
         for path in all { path.close() }
@@ -351,36 +364,39 @@ final class PathLayer {
         }
         if frame.type == PathCodec.reliableType {
             let reliable: ReliableFrame
-            do { reliable = try PathCodec.decodeReliable(frame) } catch {
+            do {
+                reliable = try PathCodec.decodeReliable(frame)
+            } catch PathCodecError.streamMismatch {
+                // §5.3: the outer stream disagreed with the inner one, which a
+                // correct writer never produces: a session protocol error (R-16).
+                return [.protocolError("stream-mismatch")]
+            } catch {
                 return [.down(path: id)]
             }
-            let result: ReorderWindow.Result = locked { reorder.receive(reliable) }
-            switch result {
-            case .deliver(let frames):
-                if frames.contains(where: { PathCodec.isBulk($0.inner.type) }) {
-                    locked { lastBulkAt = nowMs() }
-                }
-                for item in frames {
-                    // A marker travels reliable, like every JSON frame: the
-                    // inner path.switch is the peer's switch, not a message
-                    // for the session (PATH-9).
-                    if item.inner.type == MessageType.json.rawValue,
-                       let message = JSONFrame.decode(payload: item.inner.payload),
-                       message.t == "path.switch",
-                       let target = message.string("path"),
-                       let seq = message.int("seq"), hasPath(target) {
-                        events.append(.peerSwitch(path: target,
-                                                  seq: UInt64(max(0, seq)),
-                                                  arrivedOn: id))
-                    } else {
-                        events.append(.deliver(item.inner))
-                    }
-                }
-            case .duplicate:
-                sendAckNow(on: id)
-            case .buffered, .full:
-                break
+            var fed = Fed()
+            locked { fed = feedLocked(id, reliable) }
+            for pid in fed.pause { locked { paths[pid] }?.setReading(false) }
+            for pid in fed.resume { locked { paths[pid] }?.setReading(true) }
+            if fed.delivered.contains(where: { PathCodec.isBulk($0.frame.inner.type) }) {
+                locked { lastBulkAt = nowMs() }
             }
+            for item in fed.delivered {
+                // A marker travels reliable, like every JSON frame: the
+                // inner path.switch is the peer's switch, not a message
+                // for the session (PATH-9).
+                if item.frame.inner.type == MessageType.json.rawValue,
+                   let message = JSONFrame.decode(payload: item.frame.inner.payload),
+                   message.t == "path.switch",
+                   let target = message.string("path"),
+                   let seq = message.int("seq"), hasPath(target) {
+                    events.append(.peerSwitch(path: target,
+                                              seq: UInt64(max(0, seq)),
+                                              arrivedOn: item.path))
+                } else {
+                    events.append(.deliver(item.frame.inner))
+                }
+            }
+            for pid in fed.duplicates { sendAckNow(on: pid) }
             ackLater(on: id)
             return events
         }
@@ -430,6 +446,72 @@ final class PathLayer {
         let completion: (@Sendable (Bool) -> Void)?
     }
 
+    private struct Fed {
+        var delivered: [(path: String, frame: ReliableFrame)] = []
+        var duplicates: [String] = []
+        var pause: [String] = []
+        var resume: [String] = []
+    }
+
+    /// Takes one reliable frame into the reorder window. A frame that does not
+    /// fit is kept here and its path's reader is stopped — never dropped
+    /// (PATH-10/R-11) — and drained when the gap fills.
+    private func feedLocked(_ id: String, _ reliable: ReliableFrame?) -> Fed {
+        var fed = Fed()
+        if let reliable { feedOneLocked(id, reliable, into: &fed) }
+        // A path that was stopped for a full window resumes as soon as there is
+        // room again, and its held frames go in.
+        for pid in Array(readingPaused) {
+            if (overflow[pid]?.isEmpty ?? true) {
+                readingPaused.remove(pid)
+                fed.resume.append(pid)
+                continue
+            }
+            guard reorderHasRoom else { continue }
+            drainLocked(pid, into: &fed)
+            if overflow[pid]?.isEmpty ?? true {
+                readingPaused.remove(pid)
+                fed.resume.append(pid)
+            }
+        }
+        return fed
+    }
+
+    private var reorderHasRoom: Bool {
+        reorder.bufferedCount < ReorderWindow.maxFrames && reorder.bufferedBytes < ReorderWindow.maxBytes
+    }
+
+    private func feedOneLocked(_ id: String, _ reliable: ReliableFrame, into fed: inout Fed) {
+        switch reorder.receive(reliable) {
+        case .deliver(let frames):
+            for frame in frames { fed.delivered.append((id, frame)) }
+        case .duplicate:
+            fed.duplicates.append(id)
+        case .buffered:
+            break
+        case .full:
+            overflow[id, default: []].append((reliable.seq, reliable.inner))
+            if readingPaused.insert(id).inserted { fed.pause.append(id) }
+            return
+        }
+        drainLocked(id, into: &fed)
+    }
+
+    private func drainLocked(_ id: String, into fed: inout Fed) {
+        while let next = overflow[id]?.first {
+            switch reorder.receive(ReliableFrame(seq: next.0, inner: next.1)) {
+            case .deliver(let frames):
+                overflow[id]?.removeFirst()
+                for frame in frames { fed.delivered.append((id, frame)) }
+            case .duplicate, .buffered:
+                overflow[id]?.removeFirst()
+            case .full:
+                if readingPaused.insert(id).inserted { fed.pause.append(id) }
+                return
+            }
+        }
+    }
+
     /// Admits the fitting prefix of [pending] in order. The bytes are already
     /// wrapped; the caller sends them. Nothing is re-queued through `send`:
     /// that would put the prefix behind the remainder and reorder the stream.
@@ -461,6 +543,7 @@ final class PathLayer {
     private func ackLater(on id: String) {
         let due: Bool = locked {
             ackFrames += 1
+            lastAckPath = id
             if ackFrames >= Self.ackFrames || nowMs() - lastAckAt >= Self.ackEveryMs {
                 ackFrames = 0
                 lastAckAt = nowMs()
@@ -468,7 +551,38 @@ final class PathLayer {
             }
             return false
         }
-        if due { sendAckNow(on: id) }
+        if due {
+            sendAckNow(on: id)
+        } else {
+            armAckFlush()
+        }
+    }
+
+    /// R-15: the coalesced ACK is not left waiting for the next frame. 10 ms
+    /// after the first unflushed frame the running session's queue flushes it.
+    private func armAckFlush() {
+        let arm: Bool = locked {
+            guard !ackFlushArmed else { return false }
+            ackFlushArmed = true
+            return true
+        }
+        guard arm else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(10)) { [weak self] in
+            self?.flushAck()
+        }
+    }
+
+    /// Sends the one ACK a burst within the 10 ms window earned.
+    func flushAck() {
+        let target: (path: String, ack: UInt64)? = locked {
+            ackFlushArmed = false
+            guard ackFrames > 0, let id = lastAckPath ?? current else { return nil }
+            ackFrames = 0
+            lastAckAt = nowMs()
+            return (id, reorder.ack)
+        }
+        guard let target, let path = locked({ paths[target.path] }) else { return }
+        path.send(PathCodec.encodeAck(target.ack).encoded)
     }
 
     // MARK: Ping and health
