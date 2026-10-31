@@ -10,8 +10,11 @@ final class PathLayerTests: XCTestCase {
         var writes: [[UInt8]] = []
         var closed = false
         var writable = true
+        var reading: [Bool] = []
 
         func send(_ bytes: [UInt8]) { lock.lock(); writes.append(bytes); lock.unlock() }
+        func setReading(_ on: Bool) { lock.lock(); reading.append(on); lock.unlock() }
+        func readings() -> [Bool] { lock.lock(); defer { lock.unlock() }; return reading }
         func close() { lock.lock(); closed = true; lock.unlock() }
         func all() -> [[UInt8]] { lock.lock(); defer { lock.unlock() }; return writes }
         func clear() { lock.lock(); writes.removeAll(); lock.unlock() }
@@ -28,7 +31,8 @@ final class PathLayerTests: XCTestCase {
         wire = Wire()
         layer = PathLayer(nowMs: { [unowned self] in self.clock })
         layer.start(first: PathLayer.Path(id: "aaaa0001", kind: .lan, send: wire.send,
-                                          close: wire.close, isWritable: wire.isWritable))
+                                          close: wire.close, isWritable: wire.isWritable,
+                                          setReading: wire.setReading))
     }
 
     private func json(_ t: String) -> Frame {
@@ -363,5 +367,66 @@ extension PathLayerTests {
         XCTAssertEqual(1, writes.count)
         XCTAssertEqual("path.ping", JSONFrame.decode(payload: writes[0].payload)?.t)
         XCTAssertEqual("bbbb0002", JSONFrame.decode(payload: writes[0].payload)?.string("path"))
+    }
+}
+
+// MARK: - R-11, R-15, R-16
+
+extension PathLayerTests {
+    /// R-11, the reviewer's scratch case: seqs 2…66 arrive before 1. Nothing is
+    /// dropped on a full window: the path's reader stops, and seq 1 delivers
+    /// all 66.
+    func testAFullReorderWindowStopsTheReaderAndLosesNothing() throws {
+        let inner = { (n: Int) in
+            Frame(type: MessageType.json.rawValue, stream: 0, payload: JSONFrame.payload(["t": "x", "i": n]))
+        }
+        for seq in UInt64(2)...UInt64(66) {
+            let frame = Frame(encoded: try PathCodec.encodeReliable(seq: seq, inner: inner(Int(seq))).encoded)!
+            XCTAssertTrue(layer.receive(path: "aaaa0001", frame: frame).isEmpty, "seq \(seq) waits for 1")
+        }
+        XCTAssertEqual([false], wire.readings(), "the path ahead of the gap stopped reading")
+        XCTAssertEqual(1, layer.ackValue, "nothing past the gap was acknowledged")
+        let first = Frame(encoded: try PathCodec.encodeReliable(seq: 1, inner: inner(1)).encoded)!
+        let delivered = layer.receive(path: "aaaa0001", frame: first)
+        XCTAssertEqual(66, delivered.count, "every held seq delivered after the gap filled")
+        XCTAssertEqual(67, layer.ackValue)
+        XCTAssertEqual([false, true], wire.readings(), "the reader resumed")
+    }
+
+    /// R-15: a burst inside 10 ms is acknowledged by the timer, not by the next
+    /// frame.
+    func testTheCoalescedAckFlushesAfterTenMilliseconds() throws {
+        let inner = { (n: Int) in
+            Frame(type: MessageType.json.rawValue, stream: 0, payload: JSONFrame.payload(["t": "x", "i": n]))
+        }
+        let first = Frame(encoded: try PathCodec.encodeReliable(seq: 1, inner: inner(1)).encoded)!
+        _ = layer.receive(path: "aaaa0001", frame: first)
+        let lateFirstAck = wire.all().last.flatMap { Frame(encoded: $0) }?.type == PathCodec.ackType
+        XCTAssertTrue(lateFirstAck, "the first frame acks at once")
+        wire.clear()
+        for seq in UInt64(2)...UInt64(4) {
+            let frame = Frame(encoded: try PathCodec.encodeReliable(seq: seq, inner: inner(Int(seq))).encoded)!
+            _ = layer.receive(path: "aaaa0001", frame: frame)
+        }
+        XCTAssertFalse(wire.all().last.flatMap { Frame(encoded: $0) }?.type == PathCodec.ackType,
+                       "a burst inside 10 ms is not acked by arrival alone")
+        let expectation = expectation(description: "the 10 ms flush")
+        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(30)) { expectation.fulfill() }
+        wait(for: [expectation], timeout: 1)
+        let last = try XCTUnwrap(wire.all().last.flatMap { Frame(encoded: $0) })
+        XCTAssertEqual(PathCodec.ackType, last.type)
+        XCTAssertEqual(5, try PathCodec.decodeAck(last))
+    }
+
+    /// R-16: a reliable frame whose outer stream disagrees with its inner one is
+    /// a session protocol error, not one path going down.
+    func testAMismatchedOuterStreamIsAProtocolError() throws {
+        let inner = Frame(type: .touch, stream: 9, payload: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+        let wrapped = try PathCodec.encodeReliable(seq: 1, inner: inner)
+        // The wrapper says stream 9 inside; the outer frame claims 7.
+        let mismatched = Frame(type: PathCodec.reliableType, stream: 7, payload: wrapped.payload)
+        let events = layer.receive(path: "aaaa0001", frame: mismatched)
+        XCTAssertEqual(1, events.count)
+        if case .protocolError = events[0] {} else { XCTFail("expected protocolError, got \(events)") }
     }
 }
