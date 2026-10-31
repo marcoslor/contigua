@@ -294,6 +294,9 @@ final class PathLayer {
             return
         }
         let bulk = PathCodec.isBulk(frame.type)
+        // The frame's wire size does not depend on its seq: size it before the
+        // gate, so the unacknowledged window is a hard bound (E-4).
+        let bulkSize = bulk ? (try? PathCodec.encodeReliable(seq: 0, inner: frame).encoded.count) ?? Int.max : 0
         var queuedOn: String?
         locked {
             guard !closed else { return }
@@ -302,9 +305,9 @@ final class PathLayer {
             // at admission, so the wire order stays a valid seq order.
             if bulk {
                 // Bulk waits outside the seq space while anything is already
-                // pending, or while the current path's outbox is over its low
-                // watermark (E-4): it gets a seq only when that path has room.
-                guard pending.isEmpty, outboxHasBulkRoomLocked else {
+                // pending, or while the current path has no room (E-4): it
+                // gets a seq only when that path has room.
+                guard pending.isEmpty, outboxHasBulkRoomLocked(for: bulkSize) else {
                     pending.append(Pending(frame: frame, bulk: bulk, completion: completion))
                     return
                 }
@@ -350,7 +353,7 @@ final class PathLayer {
                     stop = true
                     return nil
                 }
-                if outbox[id]?.isEmpty ?? true, id == current, outboxHasBulkRoomLocked {
+                if outbox[id]?.isEmpty ?? true, id == current {
                     // The outbox drained: bulk that waited outside the seq
                     // space may enter it now, while there is room (E-4).
                     flushed = admitPendingLocked()
@@ -641,13 +644,14 @@ final class PathLayer {
     }
 
     /// True while bulk may take a seq on the current path (E-4). "Room" is the
-    /// path's whole unacknowledged queue, not only what is still in the layer's
-    /// outbox: the channel's own buffers hold a written frame until the peer
-    /// reads it, and a gate on the outbox alone let the full 12 MiB credit sit
-    /// in the kernel (the key was still about a credit late).
-    private var outboxHasBulkRoomLocked: Bool {
-        currentOutboxBytesLocked < Self.bulkAdmitBytes
-            && replay.bulkBytes < Self.bulkAdmitBytes
+    /// path's outbox under its 256 KiB watermark *and* its unacknowledged bulk
+    /// under the 1 MiB window: the channel's own buffers hold a written frame
+    /// until the peer reads it, so a gate on the outbox alone let the full
+    /// 12 MiB credit sit in the kernel (the key was still about a credit late).
+    private func outboxHasBulkRoomLocked(for size: Int) -> Bool {
+        guard currentOutboxBytesLocked < Self.bulkAdmitBytes else { return false }
+        // One frame larger than the window is admitted on an empty queue.
+        return replay.bulkBytes == 0 || replay.bulkBytes + size <= Self.bulkWindowBytes
     }
 
     /// Admits the fitting prefix of [pending] in order. The bytes are already
@@ -659,9 +663,14 @@ final class PathLayer {
         var inFlight = replay.bulkBytes
         while let item = pending.first {
             // Bulk waits outside the seq space until its path has room (E-4):
-            // its outbox and its unacked queue both under the low watermark.
-            // Control is admitted at once.
-            if item.bulk, queued >= Self.bulkAdmitBytes || inFlight >= Self.bulkAdmitBytes { break }
+            // its outbox under the low watermark and its unacknowledged queue
+            // inside the window. Control is admitted at once.
+            let size = (try? PathCodec.encodeReliable(seq: 0, inner: item.frame).encoded.count) ?? Int.max
+            if item.bulk,
+               queued >= Self.bulkAdmitBytes
+                || (inFlight > 0 && inFlight + size > Self.bulkWindowBytes) {
+                break
+            }
             let wrapped = try? PathCodec.encodeReliable(seq: replay.nextSeq, inner: item.frame).encoded
             guard let wrapped, replay.canAdmit(bytes: wrapped.count, bulk: item.bulk) else {
                 break
@@ -828,6 +837,11 @@ final class PathLayer {
     /// this. The channel's own low write watermark is the same 256 KiB (D-2),
     /// so a key is never behind more than a watermark plus one chunk.
     static let bulkAdmitBytes = 256 << 10
+    /// The unacknowledged window bulk may fill: RR-4's 1 MiB floor (about two
+    /// RTTs at a LAN rate). The outbox keeps its 256 KiB watermark; without
+    /// the floor one frame per ack round starved a 64 MiB drop on a path with
+    /// packet-sized ack coalescing.
+    static let bulkWindowBytes = 1 << 20
     /// E-1: lossy frames may queue at most this much on a path that is over
     /// its write watermark (the old SEND_BUFFER_BYTES role).
     static let lossyCapBytes = 128 << 10

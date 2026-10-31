@@ -269,10 +269,14 @@ class Connection(object):
                 break
             if not data:
                 break
-            with self.queue_cv:
-                while self.queued[direction] >= QUEUE_CAP and not self.stop.is_set():
-                    self.queue_cv.wait(0.02)
-                self.queued[direction] += len(data)
+            # Only a throttled link models a bounded buffer: `pass` is a wire,
+            # and capping it would throttle the checks that stream video and
+            # file data through it side by side.
+            if self.proxy.get_mode() == "throttle":
+                with self.queue_cv:
+                    while self.queued[direction] >= QUEUE_CAP and not self.stop.is_set():
+                        self.queue_cv.wait(0.02)
+                    self.queued[direction] += len(data)
             self.queues[direction].put((time.time(), data))
         # The peer's FIN: the other side of this proxy has to see it. A path
         # check once waited out the Mac's whole 6 s connect timeout because a

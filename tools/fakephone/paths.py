@@ -164,6 +164,10 @@ class PathHub(object):
         self.reorder = ReorderWindow()
         self.ack_frames = 0
         self.last_ack_at = 0
+        # R-15/PATH-4: the 10 ms timer that flushes the tail of a burst. Without
+        # it an ack waited for the next frame, and a sender with a small window
+        # (E-4) stalled waiting for an ack that only the next frame could send.
+        self.ack_timer_pending = False
         self.last_ping_at = 0
         self.last_bulk_at = 0
         self.ping_sent_at = {}
@@ -448,14 +452,28 @@ class PathHub(object):
         self.send_bare_on(path_id, proto.pack_ack(ack))
 
     def _ack_later(self, path_id):
+        arm_timer = False
         with self.lock:
             self.ack_frames += 1
             due = self.ack_frames >= ACK_FRAMES or self.now() - self.last_ack_at >= ACK_MS
             if due:
                 self.ack_frames = 0
                 self.last_ack_at = self.now()
+            elif not self.ack_timer_pending:
+                self.ack_timer_pending = True
+                arm_timer = True
         if due:
             self._send_ack_now(path_id)
+        elif arm_timer:
+            threading.Timer(ACK_MS / 1000.0, self._ack_timer, args=(path_id,)).start()
+
+    def _ack_timer(self, path_id):
+        with self.lock:
+            self.ack_timer_pending = False
+            if self.closed or self.ack_frames == 0:
+                return
+            self.last_ack_at = self.now()
+        self._send_ack_now(path_id)
 
     def await_reorder_space(self):
         with self.cv:

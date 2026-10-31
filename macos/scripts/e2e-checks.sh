@@ -431,8 +431,11 @@ PY
     pathfault_start "$((PORT + 4))" "$((PORT + 1))"
     path_pair_once "$PORT"
     printf '%s\n' "dropfile $WORK/pathkill.bin" "wait 30" > "$WORK/pathkill.txt"
+    # The bulk window is sized for input latency (E-4), so a 64 MiB file needs
+    # more ack rounds than the old 12 MiB credit: keep the app up for the whole
+    # wait the check allows.
     launch --connect "127.0.0.1:$((PORT + 3))" --connect2 "127.0.0.1:$((PORT + 4))" \
-        --open com.android.settings --debug-input-script "$WORK/pathkill.txt" --quit-after 40
+        --open com.android.settings --debug-input-script "$WORK/pathkill.txt" --quit-after 95
     wait_until 25 path_upto 2 || bad "[PATH-4] PATHKILL the second path never joined"
     founder=""
     for _ in $(seq 1 80); do
@@ -768,13 +771,7 @@ import os, sys
 with open(sys.argv[1], "wb") as fp:
     fp.write(os.urandom(64 * 1024 * 1024))
 PY2
-    # E-4/PATH-23: a second transfer starts the moment the check releases it,
-    # and 0.6 s in (mid-transfer) the script types a KEY. `stamp` writes the
-    # moment it was typed, so the fake's own arrival time gives the latency.
-    printf '%s\n' "dropfile $WORK/pathbulk.bin" \
-        "waitfile $WORK/pathbulk-again 90" \
-        "dropfile $WORK/pathbulk2.bin" "wait 0.6" \
-        "stamp $WORK/pathbulk-key.ts" "key left" "wait 30" > "$WORK/pathbulk.txt"
+    printf '%s\n' "dropfile $WORK/pathbulk.bin" "wait 40" > "$WORK/pathbulk.txt"
     launch --connect "127.0.0.1:$((PORT + 3))" --connect2 "127.0.0.1:$((PORT + 4))" \
         --open com.android.settings --debug-input-script "$WORK/pathbulk.txt" --quit-after 60
     wait_until 25 path_upto 2 || bad "[PATH-10] PATHBULK the standby never joined"
@@ -833,7 +830,7 @@ PY
         && bad "[PATH-23] PATHBULK the session ended during the transfer" \
         || ok "[PATH-23] PATHBULK the session stayed live"
     # E-4/PATH-23: a fresh session on the same two listeners, both throttled at
-    # 400 Mbit/s (a fast LAN, the link where input_latency_ms is a real
+    # 600 Mbit/s (a fast LAN, the link where input_latency_ms is a real
     # promise). A KEY typed 0.6 s into a 64 MiB drop must not wait behind the
     # transfer: before E-4 it sat behind the whole 12 MiB credit, now behind at
     # most the 256 KiB send window plus one chunk. A fresh launch keeps the
@@ -842,13 +839,18 @@ PY
     input_limit="$(nfr_limit input_latency_ms)"
     stop_app
     sleep 0.5
-    printf 'rate 400\n' > "$slow_ctl"
-    printf 'rate 400\n' > "$fast_ctl"
+    printf 'rate 600\n' > "$slow_ctl"
+    printf 'rate 600\n' > "$fast_ctl"
     sleep 0.2
     printf 'mode throttle\n' > "$fast_ctl"
     sleep 0.2
+    # Two keys, half a second apart: the first can straddle the transfer's
+    # ramp (the file's hash and the phone's opening reply), the second is
+    # typed while the pipe is full. The measured one is the second.
     printf '%s\n' "dropfile $WORK/pathbulk2.bin" "wait 0.6" \
-        "stamp $WORK/pathbulk-key.ts" "key left" "wait 20" > "$WORK/pathbulk-key.txt"
+        "stamp $WORK/pathbulk-key-1.ts" "key left" \
+        "wait 0.5" "stamp $WORK/pathbulk-key.ts" "key left" "wait 20" \
+        > "$WORK/pathbulk-key.txt"
     launch --connect "127.0.0.1:$((PORT + 3))" --connect2 "127.0.0.1:$((PORT + 4))" \
         --open com.android.settings --debug-input-script "$WORK/pathbulk-key.txt" --quit-after 40
     # The KEY may be late by design on the old code, so wait for its arrival
