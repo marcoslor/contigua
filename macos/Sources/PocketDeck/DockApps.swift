@@ -66,6 +66,31 @@ enum DockQuit {
     }
 }
 
+/// What to do with an automatic shim once its launch finishes: bind it to the
+/// window it was started for, or stop it. A launch can finish after that window
+/// closed; binding it then leaves a Dock icon nothing will ever close again
+/// (docs/design/dock.md §Lifecycle).
+enum DockLaunchLanding: Equatable {
+    /// No shim was started (the build or the launch failed).
+    case nothing
+    /// The window is still open: the pid is its identity now.
+    case bind
+    /// The window closed meanwhile: the shim must quit and must never be bound.
+    case quitWindowClosed
+    /// The setting turned off while it launched and it was not added by hand.
+    case quitSettingOff
+    /// PocketDeck is quitting: an unbound automatic launch is stopped.
+    case quitShuttingDown
+}
+
+enum DockLaunch {
+    static func landing(pid: Int?, windowOpen: Bool, settingOn: Bool, pinned: Bool,
+                        quitting: Bool = false) -> DockLaunchLanding {
+        guard pid != nil else { return .nothing }
+        return settingOn || pinned ? .bind : .quitSettingOff
+    }
+}
+
 /// Everything a shim bundle is made from.
 struct DockShimSpec: Equatable {
     var deviceId: String
@@ -302,6 +327,9 @@ final class DockApps: NSObject {
     /// The file system and LaunchServices work of the automatic path runs here:
     /// creating a shim for the first time must never slow the window it stands for.
     private let workQueue = DispatchQueue(label: "dev.pocketdeck.dock", qos: .utility)
+    /// e2e race hook: hold the automatic launch's pid callback back, the way a
+    /// slow launch would. Zero outside the harness.
+    private let bindDelay: TimeInterval
 
     static let lsregister = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
 
@@ -325,9 +353,10 @@ final class DockApps: NSObject {
         return url
     }
 
-    init(folder: URL, profile: Profile) {
+    init(folder: URL, profile: Profile, bindDelay: TimeInterval = 0) {
         self.folder = folder
         self.profile = profile
+        self.bindDelay = bindDelay
         super.init()
     }
 
@@ -416,7 +445,9 @@ final class DockApps: NSObject {
                 DispatchQueue.main.async { launched(nil) }
                 return
             }
-            open(url) { pid in DispatchQueue.main.async { launched(pid) } }
+            open(url, arguments: DockApps.automaticArguments, delayedLaunch: true) { pid in
+                DispatchQueue.main.async { launched(pid) }
+            }
         }
     }
 
@@ -428,9 +459,16 @@ final class DockApps: NSObject {
                 DispatchQueue.main.async { launched(nil) }
                 return
             }
-            open(record.url) { pid in DispatchQueue.main.async { launched(pid) } }
+            open(record.url, arguments: DockApps.automaticArguments, delayedLaunch: true) { pid in
+                DispatchQueue.main.async { launched(pid) }
+            }
         }
     }
+
+    /// Automatic launches stand for a window that is already open, so their
+    /// shim must not ask the host to open one: the host binds it or stops it.
+    /// A manual launch (Dock click, Launchpad) keeps its open request.
+    static let automaticArguments = ["--no-open"]
 
     /// The synchronous bundle build and registration, shared by the "Add to Dock"
     /// path and the automatic one. Runs on the caller's thread.
@@ -463,11 +501,19 @@ final class DockApps: NSObject {
         }
     }
 
-    private func open(_ url: URL, launched: @escaping (Int?) -> Void) {
+    private func open(_ url: URL, arguments: [String] = [], delayedLaunch: Bool = false,
+                      launched: @escaping (Int?) -> Void) {
         let configuration = NSWorkspace.OpenConfiguration()
         configuration.activates = !BackgroundMode.isOn
-        NSWorkspace.shared.openApplication(at: url, configuration: configuration) { app, _ in
-            launched(app.map { Int($0.processIdentifier) })
+        configuration.arguments = arguments
+        NSWorkspace.shared.openApplication(at: url, configuration: configuration) { [weak self] app, _ in
+            let pid = app.map { Int($0.processIdentifier) }
+            let deliver = { launched(pid) }
+            guard delayedLaunch, let delay = self?.bindDelay, delay > 0 else {
+                DispatchQueue.main.async(execute: deliver)
+                return
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: deliver)
         }
     }
 

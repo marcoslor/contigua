@@ -483,7 +483,7 @@ final class ConnectionController {
         focusValues = focusStore.load()
         dndIntent = ControlIntentRecorder(store: ControlIntentStore(defaults: profile.defaults, control: .dnd))
         dockApps = DockApps(folder: DockApps.defaultFolder(profile: profile, override: options.dockDirectory),
-                            profile: profile)
+                            profile: profile, bindDelay: options.dockBindDelay ?? 0)
         windows = WindowManager(session: Session(endpoint: .hostPort(host: "127.0.0.1", port: 1),
                                                  knownDeviceId: nil, clientId: ""),
                                 defaults: profile.defaults)
@@ -1056,7 +1056,7 @@ final class ConnectionController {
             bindWhenDockCleared(deviceId: phone.id, pkg: pkg, stream: stream) { launched in
                 self.dockApps.buildAndLaunch(
                     DockShimSpec(deviceId: phone.id, pkg: pkg, label: label, phoneName: self.displayName(for: phone),
-                                 profile: profile, hostPath: Bundle.main.bundleURL.path),
+                                 profile: self.profile, hostPath: Bundle.main.bundleURL.path),
                     bind: stream, launched: launched)
             }
         }
@@ -1064,26 +1064,44 @@ final class ConnectionController {
 
     /// Runs the launch and clears the in-flight key and binds the pid when it is up.
     private func bindWhenDockCleared(deviceId: String, pkg: String, stream: UInt32,
-                                     work: (_ launched: @escaping (Int?) -> Void) -> Void) {
+                                     work: @escaping (_ launched: @escaping (Int?) -> Void) -> Void) {
         let key = "\(deviceId)/\(pkg)"
         dockEstablishing.insert(key)
-        work { [weak self] pid in
-            MainActor.assumeIsolated {
-                guard let self else { return }
-                self.dockEstablishing.remove(key)
-                if let pid {
-                    // The setting can turn off while the bundle is being built:
-                    // the fresh identity must not outlive it (only manual ones
-                    // do), so it is stopped instead of bound.
-                    if self.showAppsInDock || self.dockApps.isPinned(deviceId: deviceId, pkg: pkg) {
-                        self.dockApps.bind(pid: pid, stream: stream, pkg: pkg)
-                    } else {
-                        self.dockApps.quit(pid: pid)
-                    }
+        let start = { [weak self] in
+            guard let self else { return }
+            work { pid in
+                MainActor.assumeIsolated {
+                    self.dockLaunchFinished(stream: stream, deviceId: deviceId, pkg: pkg, pid: pid)
                 }
-                self.recheckOpenWindows()
             }
         }
+        // e2e: hold the build and launch back, so it lands after a window that
+        // closes in the meantime (the load-dependent race, made deterministic).
+        if let delay = options.dockLaunchDelay, delay > 0 {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { start() }
+        } else {
+            start()
+        }
+    }
+
+    /// The automatic launch finished. A pid for a window that is no longer open
+    /// must quit at once: nothing would ever close that shim again, and it would
+    /// outlive its window and the app (docs/design/dock.md §Lifecycle).
+    private func dockLaunchFinished(stream: UInt32, deviceId: String, pkg: String, pid: Int?) {
+        dockEstablishing.remove("\(deviceId)/\(pkg)")
+        let landing = DockLaunch.landing(
+            pid: pid,
+            windowOpen: windows.openAppWindows.contains { $0.stream == stream },
+            settingOn: showAppsInDock, pinned: dockApps.isPinned(deviceId: deviceId, pkg: pkg))
+        switch landing {
+        case .nothing:
+            break
+        case .bind:
+            if let pid { dockApps.bind(pid: pid, stream: stream, pkg: pkg) }
+        case .quitWindowClosed, .quitSettingOff, .quitShuttingDown:
+            if let pid { dockApps.quit(pid: pid) }
+        }
+        recheckOpenWindows()
     }
 
     /// The automatic path reconsiders every open app window: after the app list,
