@@ -28,6 +28,7 @@ check_list() {
 # --- paths (P1, docs/design/paths.md §10.4) --------------------------------
 # The six checks share the fault proxy and a fake phone with two listeners.
 PATHFAULT_PIDS=()
+PATHFAULT_CTL=""
 
 # path_log — the running app's session lines (the path transitions and the
 # replay peak are privacy: .public, so the check reads the exact tokens).
@@ -36,7 +37,11 @@ path_log() {
         --predicate 'subsystem == "dev.pocketdeck.mac"' 2>/dev/null
 }
 
-# pathfault_start <listen> <target> [mode] [delay-ms] — prints the ctl file.
+# pathfault_start <listen> <target> [mode] [delay-ms] — starts one proxy and
+# sets PATHFAULT_CTL to its ctl file. Call it directly, never in `$(...)`:
+# a command substitution runs in a subshell, so PATHFAULT_PIDS loses the PID
+# and pathfault_stop_all cannot kill the proxy (pathmirror once left 47736/
+# 47737 running; only the next check's pathfault_nuke hid it).
 pathfault_start() {
     local listen="$1" target="$2" mode="${3:-pass}" delay="${4:-}" ctl
     ctl="$WORK/fault-$listen.ctl"
@@ -57,7 +62,7 @@ pathfault_start() {
         grep -q "pdpathfault .* listening" "$WORK/fault-$listen.log" 2>/dev/null && break
         sleep 0.1
     done
-    printf '%s\n' "$ctl"
+    PATHFAULT_CTL="$ctl"
 }
 
 # pathfault_nuke — kill a proxy an earlier failed run left on one of this
@@ -192,7 +197,8 @@ check_pathstart() {
     # blackhole drops them, and a real path cannot finish TLS from bytes it
     # never sent again. 600 ms is longer than the second listener's handshake
     # and far inside the 6 s connect budget.
-    ctl="$(pathfault_start "$listen" "$PORT" delay 600)"
+    pathfault_start "$listen" "$PORT" delay 600
+    ctl="$PATHFAULT_CTL"
     path_pair_once "$((PORT + 1))"
     launch --connect "127.0.0.1:$listen" --connect2 "127.0.0.1:$((PORT + 1))" \
         --open-phone --quit-after 25
@@ -310,15 +316,15 @@ PY
 check_pathkill() {
     clean
     pathfault_nuke
-    local px1 px2 ctl founder ok_peak
+    local ctl founder ok_peak
     python3 - "$WORK/pathkill.bin" <<'PY'
 import os, sys
 with open(sys.argv[1], "wb") as fp:
     fp.write(os.urandom(64 * 1024 * 1024))
 PY
     FAKE_ARGS="--paths 2" start_fake || return 1
-    px1="$(pathfault_start "$((PORT + 3))" "$PORT")"
-    px2="$(pathfault_start "$((PORT + 4))" "$((PORT + 1))")"
+    pathfault_start "$((PORT + 3))" "$PORT"
+    pathfault_start "$((PORT + 4))" "$((PORT + 1))"
     path_pair_once "$PORT"
     printf '%s\n' "dropfile $WORK/pathkill.bin" "wait 30" > "$WORK/pathkill.txt"
     launch --connect "127.0.0.1:$((PORT + 3))" --connect2 "127.0.0.1:$((PORT + 4))" \
@@ -363,10 +369,10 @@ PY
 check_pathmirror() {
     clean
     pathfault_nuke
-    local px1 px2 ctl founder t0 delta
+    local ctl founder t0 delta
     FAKE_ARGS="--paths 2" start_fake || return 1
-    px1="$(pathfault_start "$((PORT + 3))" "$PORT")"
-    px2="$(pathfault_start "$((PORT + 4))" "$((PORT + 1))")"
+    pathfault_start "$((PORT + 3))" "$PORT"
+    pathfault_start "$((PORT + 4))" "$((PORT + 1))"
     path_pair_once "$PORT"
     launch --connect "127.0.0.1:$((PORT + 3))" --connect2 "127.0.0.1:$((PORT + 4))" \
         --open-phone --quit-after 25
