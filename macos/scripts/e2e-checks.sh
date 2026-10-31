@@ -763,7 +763,18 @@ PY
     pathfault_start "$((PORT + 4))" "$((PORT + 1))" delay 600
     fast_ctl="$PATHFAULT_CTL"
     path_pair_once "$PORT"
-    printf '%s\n' "dropfile $WORK/pathbulk.bin" "wait 40" > "$WORK/pathbulk.txt"
+    python3 - "$WORK/pathbulk2.bin" <<'PY2'
+import os, sys
+with open(sys.argv[1], "wb") as fp:
+    fp.write(os.urandom(64 * 1024 * 1024))
+PY2
+    # E-4/PATH-23: a second transfer starts the moment the check releases it,
+    # and 0.6 s in (mid-transfer) the script types a KEY. `stamp` writes the
+    # moment it was typed, so the fake's own arrival time gives the latency.
+    printf '%s\n' "dropfile $WORK/pathbulk.bin" \
+        "waitfile $WORK/pathbulk-again 90" \
+        "dropfile $WORK/pathbulk2.bin" "wait 0.6" \
+        "stamp $WORK/pathbulk-key.ts" "key left" "wait 30" > "$WORK/pathbulk.txt"
     launch --connect "127.0.0.1:$((PORT + 3))" --connect2 "127.0.0.1:$((PORT + 4))" \
         --open com.android.settings --debug-input-script "$WORK/pathbulk.txt" --quit-after 60
     wait_until 25 path_upto 2 || bad "[PATH-10] PATHBULK the standby never joined"
@@ -821,6 +832,76 @@ PY
     grep -qF "session failed" "$WORK/app.log" \
         && bad "[PATH-7] PATHBULK the session ended during the transfer" \
         || ok "[PATH-7] PATHBULK the session stayed live"
+    # E-4/PATH-23: a fresh session on the same two listeners, both throttled at
+    # 400 Mbit/s (a fast LAN, the link where input_latency_ms is a real
+    # promise). A KEY typed 0.6 s into a 64 MiB drop must not wait behind the
+    # transfer: before E-4 it sat behind the whole 12 MiB credit, now behind at
+    # most the 256 KiB send window plus one chunk. A fresh launch keeps the
+    # window (and its input route) out of the first phase's long transfer.
+    local input_limit latency_ms
+    input_limit="$(nfr_limit input_latency_ms)"
+    stop_app
+    sleep 0.5
+    printf 'rate 400\n' > "$slow_ctl"
+    printf 'rate 400\n' > "$fast_ctl"
+    sleep 0.2
+    printf 'mode throttle\n' > "$fast_ctl"
+    sleep 0.2
+    printf '%s\n' "dropfile $WORK/pathbulk2.bin" "wait 0.6" \
+        "stamp $WORK/pathbulk-key.ts" "key left" "wait 20" > "$WORK/pathbulk-key.txt"
+    launch --connect "127.0.0.1:$((PORT + 3))" --connect2 "127.0.0.1:$((PORT + 4))" \
+        --open com.android.settings --debug-input-script "$WORK/pathbulk-key.txt" --quit-after 40
+    # The KEY may be late by design on the old code, so wait for its arrival
+    # (30 s, more than the whole 64 MiB drop) before judging it.
+    for _ in $(seq 1 120); do
+        [ -s "$WORK/pathbulk-key.ts" ] && grep -q '"kind":"key"' "$WORK/events.jsonl" && break
+        sleep 0.25
+    done
+    latency_ms="$(python3 - "$WORK/pathbulk-key.ts" "$WORK/events.jsonl" <<'PY'
+import json, sys
+try:
+    stamp = float(open(sys.argv[1]).read().strip())
+except (OSError, ValueError):
+    sys.exit(2)
+starts = {}
+ends = {}
+key = None
+for line in open(sys.argv[2]):
+    try:
+        event = json.loads(line)
+    except ValueError:
+        continue
+    if event.get("ev") == "rx" and (event.get("msg") or {}).get("t") == "drop.start":
+        starts[event["msg"].get("id")] = event.get("ts", 0)
+    if event.get("ev") == "drop":
+        ends[event.get("id")] = event.get("ts", 0)
+    if (event.get("ev") == "input" and event.get("kind") == "key"
+            and event.get("action") == 0 and event.get("ts", 0) >= stamp and key is None):
+        key = event["ts"]
+# The KEY must have been typed while the second drop ran; if it was typed
+# after the transfer ended, the measurement proves nothing.
+running = [sid for sid, at in starts.items()
+           if at <= stamp and ends.get(sid, stamp + 1) > stamp]
+if not running:
+    print("not-running")
+    sys.exit(3)
+if key is None:
+    sys.exit(1)
+print("%.1f" % ((key - stamp) * 1000.0))
+PY
+)"
+    case "$latency_ms" in
+        not-running)
+            bad "[PATH-23] PATHBULK the KEY was typed after the second drop had finished" ;;
+        ""|2)
+            bad "[PATH-23] PATHBULK the KEY never reached the phone during the drop" ;;
+        *)
+            if python3 -c "import sys; sys.exit(0 if float('$latency_ms') <= $input_limit else 1)"; then
+                ok "[PATH-23] PATHBULK a KEY typed mid-drop reached the phone in ${latency_ms} ms (input_latency_ms $input_limit)"
+            else
+                bad "[PATH-23] PATHBULK a KEY typed mid-drop took ${latency_ms} ms (input_latency_ms $input_limit)"
+            fi ;;
+    esac
     stop_app
     stop_fakephone
     pathfault_stop_all
