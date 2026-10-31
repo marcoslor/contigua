@@ -699,12 +699,14 @@ final class DockApps: NSObject {
             Log.app.error("dock: no shim executable in this build")
             return nil
         }
-        // A rebuild for a name or an origin change keeps the bundle's token, so
-        // a shim that is already running still matches the token the host
-        // stores (sec L-8); a brand-new bundle gets a fresh one.
+        // A rebuild for a name or an origin change keeps the bundle's token and
+        // its running identity: the person's window stays open and the shim's
+        // messages still match (sec L-8); a brand-new bundle gets a fresh one.
         let existing = records().first { $0.deviceId == deviceId && $0.pkg == pkg }
         // A rename leaves the old bundle under its old file name.
-        for record in records() where record.deviceId == deviceId && record.pkg == pkg { remove(record.url) }
+        for record in records() where record.deviceId == deviceId && record.pkg == pkg {
+            remove(record.url, terminating: false)
+        }
         var spec = DockShimSpec(deviceId: deviceId, pkg: pkg, label: label, phoneName: phoneName,
                                 profile: profile, hostPath: Bundle.main.bundleURL.path, origins: origins)
         if let token = existing?.token, !token.isEmpty { spec.token = token }
@@ -737,10 +739,14 @@ final class DockApps: NSObject {
     }
 
     /// Unregister first: LaunchServices keeps a deleted bundle's entry otherwise.
-    func remove(_ url: URL) {
-        for app in NSRunningApplication.runningApplications(withBundleIdentifier: bundleId(of: url) ?? "")
-        where app.bundleURL?.standardizedFileURL == url.standardizedFileURL {
-            app.terminate()
+    /// `terminating` false rebuilds the bundle in place (an origin or a name
+    /// changed) without closing the window its running shim stands for.
+    func remove(_ url: URL, terminating: Bool = true) {
+        if terminating {
+            for app in NSRunningApplication.runningApplications(withBundleIdentifier: bundleId(of: url) ?? "")
+            where app.bundleURL?.standardizedFileURL == url.standardizedFileURL {
+                app.terminate()
+            }
         }
         Self.run(Self.lsregister, ["-u", url.path])
         try? FileManager.default.removeItem(at: url)

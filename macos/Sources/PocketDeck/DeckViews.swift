@@ -1725,9 +1725,19 @@ struct DockMenuItems: View {
     var body: some View {
         if controller.isInDock(app) {
             Button("Remove from Dock App") { controller.removeFromDock(app) }
+                .help("Stop this app having its own icon in the Dock. The shortcut in Applications stays.")
         } else {
             Button("Add to Dock") { controller.addToDock(app) }
                 .disabled(!controller.canAddToDock)
+                .help("Give this app its own Dock icon and window identity.")
+        }
+        if controller.hasManualShortcut(app) {
+            Button("Remove from Applications") { controller.removeFromApplications(app) }
+                .help("Remove this app's shortcut from Applications. A copy Save all or the Dock keeps stays.")
+        } else {
+            Button("Add to Applications") { controller.addToApplications(app) }
+                .disabled(!controller.canAddToApplications)
+                .help("Add this app as a real Mac app in Applications, listed by Launchpad, Spotlight and Raycast.")
         }
     }
 }

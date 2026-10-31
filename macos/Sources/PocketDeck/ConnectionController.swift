@@ -262,6 +262,8 @@ final class ConnectionController {
     /// "Add to Dock" presses waiting for the Dock's 1296 px reply, keyed by
     /// `{deviceId}/{pkg}`.
     private var pendingDockAdds: [String: (deviceId: String, pkg: String, label: String)] = [:]
+    /// "Add to Applications" presses waiting for the Dock's 1296 px reply.
+    private var pendingApplicationAdds: [String: (deviceId: String, pkg: String, label: String)] = [:]
     private(set) var status: PhoneStatus?
     /// `ring.state` from the phone: a ring this Mac started is still playing.
     private(set) var ringing = false
@@ -836,10 +838,12 @@ final class ConnectionController {
 
     // MARK: Dock apps (docs/design/dock.md)
 
+    /// Whether the app's shim carries the Dock reason (Add to Dock): Save all
+    /// and Add to Applications never make a tile's menu say Remove from Dock.
     func isInDock(_ app: AppInfo) -> Bool {
         _ = dockRevision
         guard let id = link.phone?.id else { return false }
-        return dockApps.hasShim(deviceId: id, pkg: app.pkg)
+        return dockApps.origins(deviceId: id, pkg: app.pkg).contains(.dock)
     }
 
     var canAddToDock: Bool { dockApps.isAvailable && link.phone != nil }
@@ -878,8 +882,88 @@ final class ConnectionController {
 
     func removeFromDock(_ app: AppInfo) {
         guard let id = link.phone?.id else { return }
-        dockApps.remove(deviceId: id, pkg: app.pkg)
+        removeDockOrigin(deviceId: id, pkg: app.pkg)
         dockRevision += 1
+    }
+
+    private func removeDockOrigin(deviceId: String, pkg: String) {
+        let decision = DockOrigins.applying(.remove(.dock), to: dockApps.origins(deviceId: deviceId, pkg: pkg))
+        switch decision.action {
+        case .remove:
+            dockApps.remove(deviceId: deviceId, pkg: pkg)
+        case .write:
+            // Another reason keeps the shortcut: only the Dock identity goes.
+            let label = apps.first { $0.pkg == pkg }?.label ?? pkg
+            if let phone = link.phone, phone.id == deviceId {
+                dockApps.add(deviceId: deviceId, pkg: pkg, label: label, phoneName: displayName(for: phone),
+                             launch: false, origins: decision.origins)
+            }
+            dockApps.quitIfUnbound(deviceId: deviceId, pkg: pkg)
+        case .none:
+            break
+        }
+    }
+
+    // MARK: Application shortcuts (docs/design/dock.md §Shortcuts)
+
+    /// Whether the app's shim carries the reason "Add to Applications".
+    func hasManualShortcut(_ app: AppInfo) -> Bool {
+        _ = dockRevision
+        guard let id = link.phone?.id else { return false }
+        return dockApps.origins(deviceId: id, pkg: app.pkg).contains(.manual)
+    }
+
+    var canAddToApplications: Bool { dockApps.isAvailable && link.phone != nil }
+
+    /// "Add to Applications": adds `manual` and builds the shortcut, launching
+    /// nothing — it is a Launchpad/Spotlight/Raycast entry, not a window.
+    func addToApplications(_ app: AppInfo) {
+        guard let phone = link.phone, dockApps.isAvailable else { return }
+        guard dockIconReady(pkg: app.pkg, deviceId: phone.id) else {
+            pendingApplicationAdds["\(phone.id)/\(app.pkg)"] = (phone.id, app.pkg, app.label)
+            requestDockIcon(app.pkg)
+            return
+        }
+        installShortcut(deviceId: phone.id, pkg: app.pkg, label: app.label, phone: phone)
+    }
+
+    /// "Remove from Applications": removes only `manual`; a shim Save all or the
+    /// Dock still asks for stays.
+    func removeFromApplications(_ app: AppInfo) {
+        guard let id = link.phone?.id else { return }
+        let decision = DockOrigins.applying(.remove(.manual), to: dockApps.origins(deviceId: id, pkg: app.pkg))
+        switch decision.action {
+        case .remove:
+            dockApps.remove(deviceId: id, pkg: app.pkg)
+        case .write:
+            if let phone = link.phone, phone.id == id {
+                dockApps.add(deviceId: id, pkg: app.pkg, label: app.label, phoneName: displayName(for: phone),
+                             launch: false, origins: decision.origins)
+            }
+        case .none:
+            break
+        }
+        dockRevision += 1
+    }
+
+    private func installShortcut(deviceId: String, pkg: String, label: String, phone: PhoneRef) {
+        let origins = dockApps.origins(deviceId: deviceId, pkg: pkg).union(.manual)
+        if dockApps.add(deviceId: deviceId, pkg: pkg, label: label, phoneName: displayName(for: phone),
+                        launch: false, origins: origins) == nil {
+            showTransient("Couldn't add \(label) to Applications.")
+        }
+        dockRevision += 1
+    }
+
+    /// "Add to Applications" presses waiting for the Dock's 1296 px reply.
+    private func runPendingApplicationAdds() {
+        guard let phone = link.phone, !pendingApplicationAdds.isEmpty else { return }
+        for key in pendingApplicationAdds.keys.sorted() {
+            guard let add = pendingApplicationAdds[key], add.deviceId == phone.id,
+                  dockIconReady(pkg: add.pkg, deviceId: add.deviceId) else { continue }
+            pendingApplicationAdds[key] = nil
+            installShortcut(deviceId: add.deviceId, pkg: add.pkg, label: add.label, phone: phone)
+        }
     }
 
     /// A Dock app was launched, clicked or ⌘-Tabbed to: its window opens or comes forward.
@@ -939,7 +1023,9 @@ final class ConnectionController {
             dockApps.add(deviceId: phone.id, pkg: pkg, label: label, phoneName: displayName(for: phone),
                          launch: false, origins: dockApps.origins(deviceId: phone.id, pkg: pkg).union(.dock))
         }
-        if let pkg = options.dockRemove { dockApps.remove(deviceId: phone.id, pkg: pkg) }
+        if let pkg = options.dockRemove {
+            removeDockOrigin(deviceId: phone.id, pkg: pkg)
+        }
         // `--set-nickname`: the rename a person does in Settings ▸ Phones ▸
         // Rename, driven as a hook so the check runs the real code path.
         if let name = options.setNickname { setNickname(name, for: phone.id) }
@@ -1102,6 +1188,13 @@ final class ConnectionController {
 
     private func appLabel(_ pkg: String) -> String? {
         windows.appsByPkg[pkg]?.label ?? apps.first { $0.pkg == pkg }?.label
+    }
+
+    /// One app of the phone in use, by package: the live list, else the cache.
+    private func appInfo(_ pkg: String) -> AppInfo? {
+        if let app = apps.first(where: { $0.pkg == pkg }) ?? windows.appsByPkg[pkg] { return app }
+        guard let id = link.phone?.id else { return nil }
+        return appsCache.load(deviceId: id).first { $0.pkg == pkg }
     }
 
     private func iconState(pkg: String, deviceId: String) -> DockFollow.IconState {
@@ -2067,6 +2160,7 @@ final class ConnectionController {
             }
             runDockHooks()
             runPendingDockAdds()
+            runPendingApplicationAdds()
             recheckOpenWindows()
         case .phoneState(let locked, let battery, let charging, let dnd, let ringer, let volume,
                          let volumeMax, let screen, let secure, let panel):
@@ -2493,6 +2587,7 @@ final class ConnectionController {
         }
         runDockHooks()
         runPendingDockAdds()
+        runPendingApplicationAdds()
         recheckOpenWindows()
         // An open-app intent needs the live list (a fresh profile has no cache).
         runPendingDebugIntents(immediateOnly: false)
@@ -2767,6 +2862,20 @@ final class ConnectionController {
             let label = arguments.joined(separator: " ")
             guard let deck = DeckWindow.window else { return "no deck window" }
             return DeckCellClick.click(label: label, in: deck)
+        case "shortcut", "dock":
+            // The tile's menu actions (docs/specs/dock.md DOCK-3/4): a context
+            // menu cannot be clicked in a quiet run, so the check runs the same
+            // controller action the item runs, by package. Setup for the e2e.
+            guard arguments.count >= 2, ["add", "remove"].contains(arguments[0]) else {
+                return "\(command) needs add|remove PKG"
+            }
+            guard let app = appInfo(arguments[1]) else { return "no app \(arguments[1])" }
+            if command == "dock" {
+                arguments[0] == "add" ? addToDock(app) : removeFromDock(app)
+            } else {
+                arguments[0] == "add" ? addToApplications(app) : removeFromApplications(app)
+            }
+            return nil
         case "coverclick":
             // A click on the opening cover's own button (Cancel or Close), at
             // its place in the window, through the window's event handling.
