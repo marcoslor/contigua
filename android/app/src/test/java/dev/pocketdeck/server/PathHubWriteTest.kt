@@ -111,6 +111,47 @@ class PathHubWriteTest {
         assertEquals("the video frame is not third", Frames.TYPE_VIDEO_FRAME, parking.chunks[2][4].toInt() and 0xFF)
     }
 
+    /**
+     * RR-1/E-1: the lossy lane lost its back-pressure when R-2 gave each path
+     * its own writer. A parked socket must stop the session writer at the cap
+     * so SendQueue's delta-drop rule still fires (a posting at 8 Mbit/s on a
+     * 4 Mbit/s link otherwise backs up minutes of video into the heap).
+     */
+    @Test
+    fun aStalledLossyPathKeepsTheCapAndDropsTheBacklog() {
+        val drops = java.util.concurrent.atomic.AtomicInteger()
+        val queue = SendQueue(onDeltaDrop = { drops.incrementAndGet() })
+        hub.start(transport("aaaa0001", parking))
+        val sent = java.util.concurrent.atomic.AtomicInteger()
+        val writer = Thread {
+            while (true) {
+                val bytes = queue.poll() ?: break
+                hub.send(bytes)
+                sent.incrementAndGet()
+            }
+        }.apply { isDaemon = true }
+        writer.start()
+        try {
+            // The first frame parks in the socket; the rest arrive slowly (a
+            // live encoder), so a writer that never blocks would drain them all.
+            val frame = Frames.encode(Frames.TYPE_VIDEO_FRAME, 0, ByteArray(8 * 1024))
+            repeat(200) { i ->
+                queue.enqueueDelta(1, i * 1_000L, frame)
+                Thread.sleep(2) // real-time: a live encoder's pace
+            }
+            Thread.sleep(200) // real-time: the writer reaches its blocked state or drains
+            assertTrue("the delta-drop rule never fired", drops.get() > 0)
+            assertTrue("the writer drained every video frame: sent ${sent.get()}", sent.get() < 200)
+            val queued = hub.transport("aaaa0001")!!.queuedBytes
+            assertTrue("the stalled path queued $queued bytes", queued <= PathHub.LOSSY_QUEUE_CAP_BYTES)
+        } finally {
+            queue.close()
+            parking.release()
+            hub.closeAll()
+            writer.join(1_000)
+        }
+    }
+
     @Test
     fun aParkedWriteOnOnePathLeavesTheHubUsable() {        val other = CollectingStream()
         hub.start(transport("aaaa0001", parking))

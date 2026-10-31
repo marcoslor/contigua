@@ -50,14 +50,41 @@ class PathHub(
         private val writeLock = Object()
         private val priority = ArrayDeque<ByteArray>()
         private val normal = ArrayDeque<ByteArray>()
+        private var priorityBytes = 0
+        private var normalBytes = 0
+        private var writingBytes = 0
         private var writer: Thread? = null
         private var writing = false
 
-        /** Queues bytes for this path; never blocks on the socket. */
-        fun send(bytes: ByteArray, priorityLane: Boolean = false) {
+        /** Bytes queued on this path, the blocked write included (E-1/RR-1). */
+        val queuedBytes: Int
+            get() = synchronized(writeLock) { priorityBytes + normalBytes + writingBytes }
+
+        /**
+         * Queues bytes for this path; never blocks on the socket. E-1: a lossy
+         * frame (video, audio, hover) waits here while the path already holds a
+         * cap's worth, as the writer waited on the kernel buffer before R-2.
+         * Priority lanes (ping, pong, ACK, marker) never wait on this.
+         */
+        fun send(bytes: ByteArray, priorityLane: Boolean = false, lossy: Boolean = false) {
             synchronized(writeLock) {
+                if (lossy && !priorityLane) {
+                    // One frame larger than the cap is admitted when the path is
+                    // empty: waiting could never make room for it.
+                    while (!closed && priorityBytes + normalBytes + writingBytes > 0 &&
+                        priorityBytes + normalBytes + writingBytes + bytes.size > LOSSY_QUEUE_CAP_BYTES
+                    ) {
+                        writeLock.wait(100)
+                    }
+                }
                 if (closed) return
-                if (priorityLane) priority.addLast(bytes) else normal.addLast(bytes)
+                if (priorityLane) {
+                    priority.addLast(bytes)
+                    priorityBytes += bytes.size
+                } else {
+                    normal.addLast(bytes)
+                    normalBytes += bytes.size
+                }
                 writeLock.notifyAll()
                 if (writer == null) {
                     writer = Thread({ writerLoop() }, "pocketdeck-path-writer-$id").apply {
@@ -73,7 +100,12 @@ class PathHub(
                 val bytes = synchronized(writeLock) {
                     while (!closed && priority.isEmpty() && normal.isEmpty()) writeLock.wait()
                     if (closed) return
-                    val next = if (priority.isNotEmpty()) priority.removeFirst() else normal.removeFirst()
+                    val next = if (priority.isNotEmpty()) {
+                        priority.removeFirst().also { priorityBytes -= it.size }
+                    } else {
+                        normal.removeFirst().also { normalBytes -= it.size }
+                    }
+                    writingBytes = next.size
                     writing = true
                     next
                 }
@@ -83,6 +115,7 @@ class PathHub(
                 } catch (e: Throwable) {
                     synchronized(writeLock) {
                         writing = false
+                        writingBytes = 0
                         writeLock.notifyAll()
                     }
                     if (!closed) onFailure?.invoke(e)
@@ -90,6 +123,7 @@ class PathHub(
                 }
                 synchronized(writeLock) {
                     writing = false
+                    writingBytes = 0
                     writeLock.notifyAll()
                 }
             }
@@ -264,7 +298,7 @@ class PathHub(
         val type = bytes[4].toInt() and 0xFF
         if (!PathCodec.isReliable(type)) {
             val target = synchronized(lock) { current }
-            if (target != null) writeTo(target, bytes)
+            if (target != null) writeTo(target, bytes, lossy = true)
             return
         }
         val bulk = PathCodec.isBulk(type)
@@ -481,9 +515,9 @@ class PathHub(
         Frame(encoded[4].toInt() and 0xFF, PathCodec.readInt(encoded, 5),
               encoded.copyOfRange(9, encoded.size))
 
-    private fun writeTo(path: String, bytes: ByteArray, priority: Boolean = false) {
+    private fun writeTo(path: String, bytes: ByteArray, priority: Boolean = false, lossy: Boolean = false) {
         val t = synchronized(lock) { paths[path] } ?: return
-        t.send(bytes, priority)
+        t.send(bytes, priority, lossy)
     }
 
     private fun failPath(path: String, why: Throwable) {
@@ -665,5 +699,7 @@ class PathHub(
         const val ACK_FRAMES = 16
         /** How long a close waits for queued bytes (a refusal, a switch marker). */
         const val CLOSE_DRAIN_MS = 300L
+        /** E-1/RR-1: a lossy frame waits for the path's writer over this backlog. */
+        const val LOSSY_QUEUE_CAP_BYTES = 128 * 1024
     }
 }
