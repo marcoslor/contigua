@@ -279,6 +279,7 @@ class SessionTest {
         val error = readUntil("error")
         assertEquals("version", error["code"])
         assertEquals(4L, (error["v"] as Number).toLong())
+        assertEquals(listOf(3), platform.versionRefusals)
         assertEquals(null, reader.readFrame())
     }
 

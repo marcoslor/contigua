@@ -1067,6 +1067,7 @@ class Session(
             // PATH-1: the refusal carries this phone's own version; the screen
             // names the Mac's side from the hello's v.
             log("version: ${dev.pocketdeck.proto.PathVersion.phoneSentence(v)}")
+            runCatching { callback.onVersionRefused(v) }
             sendJson(mapOf(
                 "t" to "error",
                 "code" to "version",
