@@ -303,7 +303,26 @@ class PathHub(
                 val result = synchronized(lock) { reorder.receive(inner) }
                 when (result) {
                     is ReorderWindow.Result.Deliver -> {
-                        for (f in result.frames) events.add(Event.Deliver(f.inner))
+                        for (f in result.frames) {
+                            // A marker travels reliable, like every JSON frame:
+                            // the inner path.switch is the peer's switch, not a
+                            // message for the session (PATH-9).
+                            val inner = f.inner
+                            val obj = if (inner.type == Frames.TYPE_JSON) {
+                                runCatching { Json.parseObject(String(inner.payload)) }.getOrNull()
+                            } else null
+                            if (obj?.get("t") == "path.switch") {
+                                val target = obj["path"] as? String
+                                val seq = (obj["seq"] as? Number)?.toLong() ?: 0
+                                if (target != null && target in currentPaths()) {
+                                    events.add(Event.PeerSwitch(target, seq, path))
+                                } else {
+                                    log("path.switch for unknown path ignored")
+                                }
+                            } else {
+                                events.add(Event.Deliver(inner))
+                            }
+                        }
                         synchronized(lock) { lock.notifyAll() }
                     }
                     ReorderWindow.Result.Duplicate -> sendAckNow(path)

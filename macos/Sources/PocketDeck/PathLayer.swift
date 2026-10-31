@@ -261,7 +261,22 @@ final class PathLayer {
             let result: ReorderWindow.Result = locked { reorder.receive(reliable) }
             switch result {
             case .deliver(let frames):
-                for item in frames { events.append(.deliver(item.inner)) }
+                for item in frames {
+                    // A marker travels reliable, like every JSON frame: the
+                    // inner path.switch is the peer's switch, not a message
+                    // for the session (PATH-9).
+                    if item.inner.type == MessageType.json.rawValue,
+                       let message = JSONFrame.decode(payload: item.inner.payload),
+                       message.t == "path.switch",
+                       let target = message.string("path"),
+                       let seq = message.int("seq"), hasPath(target) {
+                        events.append(.peerSwitch(path: target,
+                                                  seq: UInt64(max(0, seq)),
+                                                  arrivedOn: id))
+                    } else {
+                        events.append(.deliver(item.inner))
+                    }
+                }
             case .duplicate:
                 sendAckNow(on: id)
             case .buffered, .full:
