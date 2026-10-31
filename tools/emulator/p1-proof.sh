@@ -70,6 +70,30 @@ sys.exit(0 if any(re.fullmatch(r"[0-9a-fA-F]{64}", r.get("phoneFingerprintHex") 
 PY
 }
 
+# wait_slot_free <log> <cap seconds> <label> — the Mac app is gone; wait up to
+# `cap` seconds for the phone to record the slot free. The phone keeps a
+# session for its own 30 s grace after the last path dies (PATH-6), and a new
+# plain hello during that grace has to supersede it: waiting makes the next
+# dial start on a free slot instead of racing one. Returns 1 when the slot did
+# not free.
+wait_slot_free() { # wait_slot_free <log> <cap seconds> <label>
+    local log="$1" cap="$2" label="$3"
+    # A second line: `local` expands $cap before assigning it, and set -u
+    # made that fatal at boot 10 (pair PASS, then a dead boot).
+    local deadline=$(( $(date +%s) + cap ))
+    while [ "$(date +%s)" -lt "$deadline" ]; do
+        emu logcat -d -v time -s PocketDeckSvc:I 2>/dev/null > "$log"
+        if grep -Eq 'session slot: [a-z]+ --[a-z ]+--> free' "$log"; then
+            printf '[p1-proof] %s: the phone slot is free (%s)\n' "$label" \
+                "$(grep -E 'session slot: .*--> free' "$log" | tail -1 | sed 's/^.*PocketDeckSvc([^)]*): //')"
+            return 0
+        fi
+        sleep 0.25
+    done
+    printf '[p1-proof] %s: the phone slot was not seen free in %ss\n' "$label" "$cap"
+    return 1
+}
+
 # --- the pair step and its one retry ----------------------------------------
 # A rig race must not cost a boot (boot 9: the only prompt appeared while
 # wait-prompt was taking its baseline dump). One retry, and only for a failure
@@ -232,6 +256,24 @@ if [ "$MODE" = check ]; then
         pair_outcome_branch tap-died product 0 'tap-allow: tapped at 896,2304 (dialog)' 'session failed: tls'
         pair_outcome_branch no-prompt rig:no-prompt 0 'poc: error: no new pairing code within 60s' ''
         pair_outcome_branch tap-no-death rig:no-pin 0 'tap-allow: tapped at 896,2304 (dialog)' ''
+        # wait_slot_free runs only against a phone, and boot 10 died inside it
+        # (an unbound `cap` under set -u) right after a PASS pair. Rehearse both
+        # outcomes with a stub emulator: a free-slot line returns at once, and
+        # an empty log runs the 1 s cap out and returns 1.
+        SLOT_LINE=''
+        emu() { printf '%s\n' "$SLOT_LINE"; }
+        SLOT_LINE='10-31 09:00:00.000  123  123 I PocketDeckSvc(  123): session slot: live --ended--> free'
+        if wait_slot_free "$checkdir/slot-free.log" 5 pair >/dev/null 2>&1; then
+            printf 'P1-PROOF CHECK: wait_slot_free sees a free slot\n'
+        else
+            cfail "wait_slot_free did not see a free slot"
+        fi
+        SLOT_LINE=''
+        if wait_slot_free "$checkdir/slot-busy.log" 1 pair >/dev/null 2>&1; then
+            cfail "wait_slot_free claimed a free slot from an empty log"
+        else
+            printf 'P1-PROOF CHECK: wait_slot_free waits out an empty log\n'
+        fi
         rm -rf "$checkdir"
     fi
     # The pair retry's two branches cost a boot each to reach on a device, so
@@ -304,27 +346,6 @@ refresh_log() { # refresh_log <pid> <file> — merge log show: a late stream sta
     /usr/bin/log show --last 10m --info --style syslog \
         --predicate "processID == $1 AND subsystem == \"dev.pocketdeck.mac\"" \
         2>/dev/null >> "$2"
-}
-
-# wait_slot_free <log> <cap seconds> <label> — the Mac app is gone; wait up to
-# `cap` seconds for the phone to record the slot free. The phone keeps a
-# session for its own 30 s grace after the last path dies (PATH-6), and a new
-# plain hello during that grace has to supersede it: waiting makes the next
-# dial start on a free slot instead of racing one. Returns 1 when the slot did
-# not free.
-wait_slot_free() { # wait_slot_free <log> <cap seconds> <label>
-    local log="$1" cap="$2" label="$3" deadline=$(( $(date +%s) + cap ))
-    while [ "$(date +%s)" -lt "$deadline" ]; do
-        emu logcat -d -v time -s PocketDeckSvc:I 2>/dev/null > "$log"
-        if grep -Eq 'session slot: [a-z]+ --[a-z ]+--> free' "$log"; then
-            printf '[p1-proof] %s: the phone slot is free (%s)\n' "$label" \
-                "$(grep -E 'session slot: .*--> free' "$log" | tail -1 | sed 's/^.*PocketDeckSvc([^)]*): //')"
-            return 0
-        fi
-        sleep 0.25
-    done
-    printf '[p1-proof] %s: the phone slot was not seen free in %ss\n' "$label" "$cap"
-    return 1
 }
 
 # The pairing prompt is the phone app's own dialog; the app can sit behind the
