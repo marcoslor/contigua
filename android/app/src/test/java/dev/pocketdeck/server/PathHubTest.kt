@@ -75,19 +75,22 @@ class PathHubTest {
     fun aFullWindowWithTheGapOnTheSamePathNeverStopsThatReader() {
         hub.start(transport("aaaa0001"))
         for (seq in 2L..65L) {
-            val events = hub.receive("aaaa0001", reliable(seq))
+            val events = hub.receive("aaaa0001", reliable(seq)).events
             assertTrue("seq $seq should buffer, got $events", events.isEmpty())
         }
-        val pressure = hub.receive("aaaa0001", reliable(66)).filterIsInstance<PathHub.Event.Backpressure>()
+        val pressure = hub.receive("aaaa0001", reliable(66)).events
+            .filterIsInstance<PathHub.Event.Backpressure>()
         assertEquals(1, pressure.size)
         assertFalse("the gap is this path's own stream: never pause it", pressure[0].stop)
         assertEquals("aaaa0001", pressure[0].path)
 
         // The gap arrives later on the same path: it fills and the held frame
         // can be retried, so the read never deadlocks.
-        val delivered = hub.receive("aaaa0001", reliable(1)).filterIsInstance<PathHub.Event.Deliver>()
+        val delivered = hub.receive("aaaa0001", reliable(1)).events
+            .filterIsInstance<PathHub.Event.Deliver>()
         assertEquals(65, delivered.size)
-        val retried = hub.receive("aaaa0001", reliable(66)).filterIsInstance<PathHub.Event.Deliver>()
+        val retried = hub.receive("aaaa0001", reliable(66)).events
+            .filterIsInstance<PathHub.Event.Deliver>()
         assertEquals(1, retried.size)
     }
 
@@ -95,15 +98,17 @@ class PathHubTest {
     fun aFullWindowAheadOfAnotherPathsGapStopsTheAheadPath() {
         hub.start(transport("aaaa0001"))
         assertTrue(hub.attach(transport("bbbb0002")))
-        assertTrue(hub.receive("aaaa0001", reliable(1)).any { it is PathHub.Event.Deliver })
+        assertTrue(hub.receive("aaaa0001", reliable(1)).events.any { it is PathHub.Event.Deliver })
         // The gap is seq 2 (still on A); B runs 3..66, one window ahead.
         for (seq in 3L..66L) hub.receive("bbbb0002", reliable(seq))
-        val pressure = hub.receive("bbbb0002", reliable(67)).filterIsInstance<PathHub.Event.Backpressure>()
+        val pressure = hub.receive("bbbb0002", reliable(67)).events
+            .filterIsInstance<PathHub.Event.Backpressure>()
         assertEquals(1, pressure.size)
         assertTrue("another path holds the gap: pause the ahead reader", pressure[0].stop)
         assertEquals("bbbb0002", pressure[0].path)
         // The other path fills the gap and every buffered frame comes out.
-        val delivered = hub.receive("aaaa0001", reliable(2)).filterIsInstance<PathHub.Event.Deliver>()
+        val delivered = hub.receive("aaaa0001", reliable(2)).events
+            .filterIsInstance<PathHub.Event.Deliver>()
         assertEquals(65, delivered.size)
     }
 
@@ -114,7 +119,7 @@ class PathHubTest {
         val wrapped = PathCodec.encodeReliable(1, inner)
         // The outer header names stream 9; the wrapper's own stream is 0.
         val outer = Frame(PathCodec.TYPE_RELIABLE, 9, wrapped.copyOfRange(9, wrapped.size))
-        assertEquals(listOf(PathHub.Event.ProtocolError), hub.receive("aaaa0001", outer))
+        assertEquals(listOf(PathHub.Event.ProtocolError), hub.receive("aaaa0001", outer).events)
     }
 
     /**
@@ -178,7 +183,10 @@ class PathHubTest {
                 .toByteArray(),
         )
         val wrapped = PathCodec.encodeReliable(1, inner)
-        val events = hub.receive("aaaa0001", Frame(PathCodec.TYPE_RELIABLE, 0, wrapped.copyOfRange(9, wrapped.size)))
+        val events = hub.receive(
+            "aaaa0001",
+            Frame(PathCodec.TYPE_RELIABLE, 0, wrapped.copyOfRange(9, wrapped.size)),
+        ).events
         assertEquals(1, events.size)
         val event = events[0]
         assertTrue("expected PeerSwitch, got $event", event is PathHub.Event.PeerSwitch)
