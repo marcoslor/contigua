@@ -244,7 +244,7 @@ final class SettingsSidebarTests: XCTestCase {
     func testSectionHeadingsArePlainAndNeverCarryThePhoneName() {
         let names = phoneRows().map(\.name) + ["Galaxy S25+", "Pixel 9", "Pixel 8"]
         XCTAssertEqual(PhonePageSection.allCases.map(\.rawValue),
-                       ["Phone", "Notifications", "Screen", "Forget"])
+                       ["Phone", "Notifications", "Applications", "Screen", "Forget"])
         for section in PhonePageSection.allCases {
             for name in names {
                 XCTAssertFalse(section.rawValue.contains(name),

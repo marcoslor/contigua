@@ -115,6 +115,9 @@ enum DebugInputAction: Equatable {
     case fingerRotate(at: NormalizedPoint, degrees: Double, hold: Double)
     case showTouches(Bool)
     case dockApps(Bool)
+    /// `shortcutsall on|off`: the phone page's "Save all apps as shortcuts"
+    /// for the phone in use, through the same write-then-apply path (e2e).
+    case shortcutsAll(Bool)
     case windowStyle(String)
     /// View ▸ Immersive's pick (the reveal choice and the immersive style).
     case immersive(ImmersiveMenuItem)
@@ -243,6 +246,12 @@ enum DebugInputScript {
             case "on" where args.count == 1: return .dockApps(true)
             case "off" where args.count == 1: return .dockApps(false)
             default: throw LineError(message: "dockapps needs on or off")
+            }
+        case "shortcutsall":
+            switch args.first {
+            case "on" where args.count == 1: return .shortcutsAll(true)
+            case "off" where args.count == 1: return .shortcutsAll(false)
+            default: throw LineError(message: "shortcutsall needs on or off")
             }
         case "windowstyle":
             switch args.first {
@@ -552,6 +561,9 @@ final class DebugInputDriver {
     /// `dockapps on|off`: the Settings → General toggle, through the same
     /// write-then-handle path its onChange runs (e2e).
     var dockApps: ((Bool) -> Void)?
+    /// `shortcutsall on|off`: the phone page's Save all switch for the phone
+    /// in use (e2e).
+    var shortcutsAll: ((Bool) -> Void)?
     /// `panelopen` / `panelclose`: the menu bar panel's debug host window.
     var panelOpen: (() -> Void)?
     var panelClose: (() -> Void)?
@@ -661,6 +673,8 @@ final class DebugInputDriver {
             (view.window?.windowController as? StreamWindowController)?.manager.showTouches = enabled
         case .dockApps(let on):
             dockApps?(on)
+        case .shortcutsAll(let on):
+            shortcutsAll?(on)
         case .windowStyle(let target):
             guard let controller = view.window?.windowController as? StreamWindowController else { return }
             switch target {
