@@ -221,7 +221,10 @@ TAP_PID=""
 # leave no phone log at all: the process, its crash buffer and the lifecycle
 # lines are exactly what tells a dropped session from a dead server.
 phone_evidence() {
-    local label="$1" log="$WORK/phone-evidence-$label.log"
+    # Two `local` lines: `local label=$1 log=...$label` expands $label before
+    # local assigns it, and set -u makes that fatal in a script (boot 5).
+    local label="$1"
+    local log="$WORK/phone-evidence-$label.log"
     [ -n "${WORK:-}" ] && [ -d "$WORK" ] || return 0
     if ! device_present; then
         printf '[p1-proof] %s: no device, no phone evidence\n' "$label" >> "$log"
