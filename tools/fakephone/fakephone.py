@@ -852,6 +852,10 @@ class EventLog(object):
                     "join": msg.get("join"), "plain": not bool(msg.get("join")),
                     "listener": listener, "ts": time.time()})
 
+    def welcome(self, session):
+        """The session id this phone welcomed (an id only, never a value)."""
+        self._emit({"ev": "welcome", "session": session, "ts": time.time()})
+
     def paths(self, ports):
         self._emit({"ev": "paths", "ports": ports, "count": len(ports),
                     "ts": time.time()})
@@ -2679,6 +2683,7 @@ class Session(object):
     def welcome(self):
         self._welcomed = True
         self.phone.session_welcomed(self)
+        self.phone.events.welcome(self.session_id)
         self._send({"t": "welcome", "session": self.session_id,
                     "device": self.device_message()})
 
