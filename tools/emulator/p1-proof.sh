@@ -367,7 +367,10 @@ mac_app() {
         : > "$out"
         dry_app "$@"
     else
-        "$APP" "$@" > "$out" 2>&1
+        # exec: the background job's PID must be the app's own PID, or
+        # `log stream --predicate "processID == $APP_PID"` reads nothing
+        # (boot 11: every Mac-side line was lost that way).
+        exec "$APP" "$@" > "$out" 2>&1
     fi
 }
 
@@ -502,7 +505,9 @@ PY
                 esac ;;
             shell)
                 case "$*" in
-                    *"stat -c %s"*) printf '12582912\n' ;;
+                    *"ls -la /sdcard/Download/PocketDeck"*)
+                        printf '%s\n' 'total 32768' \
+                            '-rw------- 1 u0_a200 u0_a200 12582912 Jan  1 00:00 .part-33554432-0123456789ab' ;;
                     *sha256sum*)
                         printf '%s  /sdcard/Download/PocketDeck/dry.bin\n' \
                             "$(shasum -a 256 "$WORK"/pd-direct-p1-*.bin 2>/dev/null | awk '{print $1}')" ;;
@@ -1033,11 +1038,23 @@ if [ "$MODE" = dry ]; then
 fi
 STARTED=0
 PART_AT_BLACKHOLE=""
+# The receiver's temp is `.part-<size>-<sha12>` in the drop folder. Read it
+# from the listing: boot 11's `stat -c %s` glob stayed empty through a real
+# 4 s transfer, so the size came from nowhere and the cut landed after the
+# file was already saved.
+part_size() {
+    emu shell "ls -la /sdcard/Download/PocketDeck 2>&1" 2>/dev/null | tr -d '\r' |
+        awk '/\.part-/ { print $5; exit }'
+}
 for _ in $(seq 1 240); do
-    PART_AT_BLACKHOLE="$(emu shell "stat -c %s /sdcard/Download/PocketDeck/.part-* 2>/dev/null" 2>/dev/null | tr -d '\r' | head -1)"
+    PART_AT_BLACKHOLE="$(part_size)"
     if [ -n "$PART_AT_BLACKHOLE" ] && [ "$PART_AT_BLACKHOLE" -ge 8388608 ] 2>/dev/null; then STARTED=1; break; fi
     sleep 0.25
 done
+if [ "$STARTED" = 0 ]; then
+    # Keep what the folder really held at the cut, for the next boot.
+    emu shell "ls -la /sdcard/Download/PocketDeck 2>&1" > "$WORK/drop-listing.log" 2>&1 || true
+fi
 if [ "$STARTED" = 1 ]; then
     ok "the drop reached 8 MiB on the founder (.part $PART_AT_BLACKHOLE bytes at the cut)"
 else
