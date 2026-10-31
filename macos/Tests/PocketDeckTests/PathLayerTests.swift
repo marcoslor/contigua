@@ -430,3 +430,13 @@ extension PathLayerTests {
         if case .protocolError = events[0] {} else { XCTFail("expected protocolError, got \(events)") }
     }
 }
+
+extension PathLayerTests {
+    /// PATH-12: a pong naming a path this side never opened is ignored.
+    func testAPongForAnUnknownPathIsIgnored() {
+        let pong = Frame(type: .json, stream: 0, payload: JSONFrame.payload([
+            "t": "path.pong", "path": "deadbeef", "ts": 1,
+        ]))
+        XCTAssertTrue(layer.receive(path: "aaaa0001", frame: pong).isEmpty)
+    }
+}
