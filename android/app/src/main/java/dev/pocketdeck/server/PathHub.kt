@@ -391,7 +391,9 @@ class PathHub(
                 val inner = try {
                     PathCodec.decodeReliable(frame)
                 } catch (e: Throwable) {
-                    return listOf(Event.Down(path))
+                    // §5.3: a wrapper that contradicts its own header (or is
+                    // malformed) is a session protocol error, not one path.
+                    return listOf(Event.ProtocolError)
                 }
                 val result = synchronized(lock) { reorder.receive(inner) }
                 when (result) {

@@ -108,6 +108,16 @@ class PathHubTest {
     }
 
     @Test
+    fun aReliableFrameWhoseOuterStreamDiffersIsAProtocolError() {
+        hub.start(transport("aaaa0001"))
+        val inner = Frame(Frames.TYPE_JSON, 0, Json.encode(mapOf("t" to "ping", "ts" to 1)).toByteArray())
+        val wrapped = PathCodec.encodeReliable(1, inner)
+        // The outer header names stream 9; the wrapper's own stream is 0.
+        val outer = Frame(PathCodec.TYPE_RELIABLE, 9, wrapped.copyOfRange(9, wrapped.size))
+        assertEquals(listOf(PathHub.Event.ProtocolError), hub.receive("aaaa0001", outer))
+    }
+
+    @Test
     fun aWrappedSwitchMarkerIsThePeersSwitch() {
         hub.start(transport("aaaa0001"))
         assertTrue(hub.attach(transport("bbbb0002")))

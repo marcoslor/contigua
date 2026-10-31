@@ -1480,6 +1480,31 @@ class SessionTest {
         assertEquals((1L..67L).toList(), seen)
     }
 
+    /** R-16: the RELIABLE wrapper's stream is routing only; a mismatch is a
+     * protocol error that ends the session, not one path. */
+    @Test
+    fun aReliableFrameWithAMismatchedOuterStreamEndsTheSession() {
+        platform.clients.add(PairedClient("c1", "MacBook", TlsV2Fixture.MAC_FP_HEX))
+        authenticate("c1")
+        val inner = Frame(Frames.TYPE_JSON, 0, Json.encode(mapOf("t" to "ping", "ts" to 1)).toByteArray())
+        val wrapped = PathCodec.encodeReliable(1, inner)
+        client.getOutputStream().write(Frames.encode(PathCodec.TYPE_RELIABLE, 9, wrapped.copyOfRange(9, wrapped.size)))
+        client.getOutputStream().flush()
+        var closed = false
+        val deadline = System.currentTimeMillis() + 5_000
+        while (System.currentTimeMillis() < deadline) {
+            try {
+                if (reader.readFrame() == null) {
+                    closed = true
+                    break
+                }
+            } catch (e: java.net.SocketTimeoutException) {
+                break
+            }
+        }
+        assertTrue("the session stayed open after the protocol error", closed)
+    }
+
     private fun closeCurrent() {
         runCatching { client.close() }
         runCatching { serverSocket.close() }
