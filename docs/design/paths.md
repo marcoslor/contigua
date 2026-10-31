@@ -268,21 +268,26 @@ path and mean nothing after a switch):
 | `path.switch` | `path` (8 hex, the path being moved **to**), `seq` (u64) | both | "my next reliable frame is `seq` and it goes on `path`" |
 
 `path.switch` is itself a reliable frame, so its own seq is `seq − 1` (the field
-names the frame after it). On a **planned** switch it is the last frame the
-sender puts on the path it is leaving (so it is also the marker the
-receiver drains to: TCP order means everything before it has already arrived).
-On an **unplanned** switch the old path is dead, so the same message goes out
-first on the new path.
+names the frame after it). It is a small control frame: it **never waits for
+credit** (it may pass the 16 MiB bound by its own size), it takes the priority
+lane on both sides, and its `seq` field is fixed when it is written, never when
+it is queued. On a **planned** switch it is the last frame the sender puts on
+the path it is leaving (so it is also the marker the receiver drains to: TCP
+order means everything before it has already arrived). On an **unplanned**
+switch the old path is dead, so the same message goes out first on the new
+path.
 
 On receiving `path.switch{path:P, seq:N}`:
 
-1. My sending path becomes `P`; my frames' seqs continue from where they were.
-2. If the message arrived on a path other than `P`, nothing is drained: that old
-   path is gone and its in-flight reliable frames are replayed from the peer's
-   last ack.
-3. If it arrived on a path that is not `P` **and** that path is still usable
-   (the planned case, arriving on the path being left), the old path is closed
-   after the peer's own marker has been read from it, or after 2 s.
+1. My sending path becomes `P`; my frames' seqs continue from where they were,
+   and the replay from the peer's last ack goes out on `P`.
+2. If the message arrived on a path other than `P`, nothing is drained: the
+   replay goes out on `P` and the old path stays attached as a **standby**.
+3. Nothing is closed here. The phone closes a path only on its own socket
+   error or EOF, or when the Mac closes it. The Mac closes a path itself after
+   a planned switch's drain (the peer's marker read on the old path, or the 2 s
+   backstop), and it keeps a demoted path as a standby until that path wins
+   back on margin or fails.
 4. Every open video stream gets one `window.keyframe` from the Mac (§5.6).
 
 RTT is measured as `now − ts` on the side that receives the `pong`, using that
@@ -305,6 +310,10 @@ answers, a path failure (D5).
   dropped rather than resent, because a resent frame is a stale picture; a
   planned switch does not lose it at all, because it arrives before the marker.
 - A new frame type is lossy unless this table lists it.
+- A lossy frame is written without credit, so it queues on a path only while
+  that path's writer holds at most **128 KiB** (a larger frame only on an empty
+  queue); past that it is dropped, which is what lossy means, and the delta-drop
+  rule still sees a stalled consumer (E-1/RR-1).
 - A reliable frame is never dropped silently: it either arrives, or the session
   ends (§8).
 
@@ -331,8 +340,8 @@ hello/join → welcomed, or failed/closed) and logs
 | State | Event | Result |
 |---|---|---|
 | `Live(cur)` | `PathUp(id, joined)` | stay `Live`; start that path's ping; ranking gets `PathUp` |
-| `Live(cur)` | `PeerSwitch(id, seq)` on the path being left | `Migrating(cur, id)`; after the peer's marker the old path is closed (the 2 s drain bound is only a backstop) |
-| `Live(cur)` | `PeerSwitch(id, seq)` on the new path | `Live(id)`; the old path is already gone |
+| `Live(cur)` | `PeerSwitch(id, seq)` on the path being left | `Migrating(cur, id)`; the Mac closes `cur` after the peer's marker or the 2 s drain backstop |
+| `Live(cur)` | `PeerSwitch(id, seq)` on the new path | `Live(id)`; `cur` stays attached as a standby (the phone never closes it on a switch) |
 | `Live(cur)` | `CurrentFailed(cur)` and a ranked path `b` is up | `Migrating(cur, b)`; send `path.switch` on `b`, replay from the last ack, then `window.keyframe` per stream |
 | `Live(cur)` | `CurrentFailed(cur)`, no other path up | `Orphaned(now)`; mark the UI "reconnecting" |
 | `Live(cur)` | `PathDown(other)` | stay `Live` |
@@ -474,7 +483,7 @@ one that sends `path.switch`.
 
 | Timer | Value | Where | Source |
 |---|---|---|---|
-| path ping | **2 s** with two or more paths while the screen is on or a transfer runs; **15 s** otherwise; **never** with one path | both sides, every path, standby included | D1 |
+| path ping | **2 s** with two or more paths while the screen is on, an app stream is open, or bulk moved within the **2 s** transfer window; **15 s** otherwise; **never** with one path | both sides, every path, standby included | D1/RR-9 |
 | pong timeout | **1.5 s** per ping; not lost while the path receives | both | D5/D2 |
 | rejoin dial | reconnect backoff **1, 2, 4, 8, 15 s**, inside the 30 s grace | Mac | D3 |
 | sample window | **30 s** (≤ 15 samples) | both | D5 |
@@ -520,11 +529,18 @@ low / 1 MiB high per path.
 - **The reorder window works the same way.** 64 frames / 4 MiB; when it is
   full, the reader **stops reading only the path** whose next frame is ahead of
   a gap another path holds (TCP backpressure). A frame ahead of a gap on that
-  same path's own stream does not pause its reader: the receiver keeps it (at
-  most one window) and retries it when the window has room. It never drops a
-  frame and never ends the session. The path that holds the gap keeps being
-  read, and ACKs still go out on any path, so progress toward the gap is never
-  blocked by the window.
+  same path's own stream does not pause its reader: the receiver keeps it in
+  that path's own overflow — bounded by both the 64-frame count and the 4 MiB
+  byte budget, past which it is a protocol error — and retries it when the
+  window has room. It never drops a frame and never ends the session for this.
+  The path that holds the gap keeps being read, and ACKs still go out on any
+  path, so progress toward the gap is never blocked by the window (RR-7).
+- **Bulk enters the seq space only when its path has room.** A bulk frame takes
+  a seq only while the sending path's outbox and unacknowledged queue are both
+  under the **256 KiB** low watermark; until then it waits outside the seq
+  space in the pending list with no seq. Control frames are admitted at once,
+  so a key is never more than the watermark plus one chunk behind the file, at
+  any link rate (E-4). The 12 MiB credit stays the hard cap on unacked bulk.
 - **Every path writes from its own writer.** No socket write happens under the
   session lock: one path's writes stay in order, and `detach` and `closeAll`
   close a socket without it, so a stalled path never freezes another's reader,
@@ -539,20 +555,27 @@ low / 1 MiB high per path.
   are written at once, never behind queued bulk: the Mac holds admitted bulk in
   the path layer and feeds the channel only while it reports writable (a 256 KiB
   low write watermark per path), and the phone gives the same frames a priority
-  lane in its writer. A path that received anything in the last 1.5 s is alive
-  even if its pong is late, and a pong-only failure demotes it to a standby
-  rather than closing it (D-2).
+  lane in its writer (the join ping included). The switch marker never waits
+  for credit and its seq is fixed when it is written (E-6). A path that
+  received anything in the last 1.5 s is alive even if its pong is late, a pong
+  lost there is one ranking sample, and a pong-only failure demotes it to a
+  standby rather than closing it (D-2/RR-14).
+- **One writer per path.** A path's frames are written in seq order by one pump
+  at a time: a second sender leaves its frame in the outbox and the running
+  pump takes it, so two threads can never reach the channel out of order
+  (PATH-4/RR-14).
 - A frame larger than the whole buffer cannot exist: the wire's maximum is
   8 MiB, so 16 MiB always holds at least two frames.
 - A switch replays **from the peer's last ack**, so a planned switch costs the
   bytes beyond the last ack (at most one path's send window), not the buffer.
 - **Phone memory.** The paths layer adds at most 16 MiB (send, credit-bounded)
-  + 4 MiB (reorder window) = 20 MiB of heap while a session is live, with the
-  receive-side delivery hand-off's 4 MiB inside the same window (a delivered
-  frame has already left it), on top of the existing per-stream ~250 ms video
-  queue; video and audio never enter either buffer. With no session it
-  allocates nothing and holds nothing: the buffers are created with the session
-  and freed with it.
+  + 4 MiB (reorder window) + 4 MiB (delivery hand-off) + 4 MiB (frames held
+  ahead of a same-path gap) = **28 MiB** of heap while a session is live, plus
+  one frame up to 8 MiB in the hand-off and one in a path's writer queue, on
+  top of the existing per-stream ~250 ms video queue; video and audio never
+  enter either buffer. A lossy frame queues on a path only while its writer
+  holds at most 128 KiB. With no session it allocates nothing and holds
+  nothing: the buffers are created with the session and freed with it.
 - The phone's slot, the session id and the path ids are per session; nothing
   about a path survives the session.
 
@@ -676,8 +699,11 @@ pdpathfault.py --listen 47961 --connect 127.0.0.1:47960 \
 - `rst`: closes both sides with a reset at once (a Wi-Fi drop with a RST).
 - `throttle`: caps each direction at `--rate-mbit` (a congested LAN).
 - The mode can be changed at run time by writing one line to `--ctl-file`
-  (`mode blackhole`), so a check can kill a path at a precise byte of a file
-  transfer. Every request and its mode is written as a JSON line to `--events`.
+  (`mode blackhole`, `rate 400`), so a check can kill a path at a precise byte
+  of a file transfer or change its rate mid-run. Its store-and-forward queue is
+  bounded per direction (256 KiB), like a socket buffer, so a sender's own
+  write queue can fill and back-pressure is real. Every request and its mode is
+  written as a JSON line to `--events`.
 
 ### 10.4 e2e, one check each
 
@@ -689,6 +715,8 @@ pdpathfault.py --listen 47961 --connect 127.0.0.1:47960 \
 | `pathgrace` | every path is killed and no join ever comes: at 30 s the session ends cleanly — one `paths: live --grace--> ended`, the phone's slot is free, the Mac retries, no orphaned socket stays open | PATH-6, PATH-16 |
 | `pathstart` | a fake phone that answers on its second listener only: the Mac's session is founded there (exactly one plain `hello` on the wire, the LAN attempt held and then joined with the winner's id), and the session is usable | PATH-20 |
 | `pathversion` | version pinning, both ways: a v3 fake phone answers the Mac's v4 `hello` with `error version` and closes (the Mac shows its incompatible-version state and stops retrying), and a v3-shaped `hello` against a v4 phone gets the same answer and no `welcome` — no path frame, no `join`, and no served session in either direction | PATH-1 |
+| `pathrejoin` | the only path dies and the route returns inside the 30 s grace: the Mac re-dials a join on the reconnect backoff, the same session id comes back, the windows clear "reconnecting", and no second session starts | PATH-22, PATH-17 |
+| `pathbulk` | a 16 Mbit/s path carries a 32 MiB drop with a fast standby: no lost pong, no path down, both paths open, the hash exact; then, on a 400 Mbit/s path, a KEY typed 0.6 s into a 64 MiB drop reaches the fake phone within `input_latency_ms` | PATH-23, PATH-7, PATH-10 |
 
 `[PATH-n]` tags go on the `ok`/`bad` lines of those checks.
 
