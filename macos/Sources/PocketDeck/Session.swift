@@ -792,7 +792,7 @@ final class Session {
         let now = uptime
         for lost in pathLayer.lostPings() {
             pathRanking.addSample(id: lost, rttMs: nil, at: now)
-            if lost == pathLayer.currentPath { handlePath(.currentFailed(id: lost)) }
+            if lost == pathLayer.currentPath { handlePath(.pongLost(id: lost)) }
         }
         for stale in pathLayer.joinedTimeouts() {
             let wasCurrent = pathLayer.currentPath == stale

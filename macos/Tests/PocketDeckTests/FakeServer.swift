@@ -73,6 +73,8 @@ final class FakeServer {
     /// Every frame as it arrived, before the reliable unwrap (path tests).
     var onRawFrame: ((Connection, Frame) -> Void)?
     var onClosed: ((Connection) -> Void)?
+    /// False models a Mac whose ping this phone never answers (liveness tests).
+    var answerPings = true
 
     /// The scripted phone brain; when set, frames go to it first and only
     /// unhandled ones reach the test's raw `onFrame`.
@@ -97,8 +99,12 @@ final class FakeServer {
     func stop() {
         lock.lock(); let already = stopped; stopped = true; lock.unlock()
         guard !already else { return }
-        serverChannel?.close(promise: nil)
-        for connection in snapshotAccepted() { connection.channel.close(promise: nil) }
+        var closing: [Channel] = []
+        if let serverChannel { closing.append(serverChannel) }
+        closing.append(contentsOf: snapshotAccepted().map(\.channel))
+        // Wait for each close before the group goes: an unresolved close
+        // promise trips NIO's leak assertion when the next test runs.
+        for channel in closing { try? channel.close().wait() }
         try? group.syncShutdownGracefully()
     }
 
@@ -185,8 +191,10 @@ final class FakeServer {
     private func dispatch(_ connection: Connection, _ frame: Frame) {
         if frame.type == MessageType.json.rawValue,
            let message = JSONFrame.decode(payload: frame.payload), message.t == "path.ping" {
-            connection.sendJSON(["t": "path.pong", "path": message.string("path") ?? "",
-                                 "ts": message.int("ts") ?? 0])
+            if answerPings {
+                connection.sendJSON(["t": "path.pong", "path": message.string("path") ?? "",
+                                     "ts": message.int("ts") ?? 0])
+            }
             return
         }
         if let brain, brain.handle(connection: connection, frame: frame) { return }
