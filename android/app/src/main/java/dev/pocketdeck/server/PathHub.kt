@@ -344,30 +344,39 @@ class PathHub(
         }
     }
 
+    /**
+     * E-3/E-6: follows the Mac's `path.switch`. The path left behind is never
+     * closed here (E-3), and the marker never waits for credit: the replay is
+     * what earns the ACK a waiting marker could never see.
+     */
+    fun followSwitch(to: String, markerOn: String) {
+        moveTo(to)
+        replayOnCurrent()
+        sendMarkerOn(markerOn, to)
+    }
+
     /** The phone's own marker: my next reliable frame is nextSeq and goes on [to]. */
-    fun sendMarker(to: String) = sendMarkerOn(to, to, priority = true)
+    fun sendMarker(to: String) = sendMarkerOn(to, to)
 
     /**
-     * A planned switch sends its marker on the path being left (PATH-9). The
-     * marker is itself reliable frame `N`, so the field names `N + 1`.
+     * A marker names the path being moved to (PATH-9); a planned switch sends
+     * it on the path being left, an unplanned one on the new path. It is
+     * itself reliable frame `N`, so the field names `N + 1`. E-6: it bypasses
+     * credit (the replay it would wait for is what earns the ACK) and always
+     * takes the priority lane; its seq is fixed here, under the lock that
+     * assigns every seq, never when a writer later picks it up.
      */
-    fun sendMarkerOn(onPath: String, to: String, priority: Boolean = false) {
+    fun sendMarkerOn(onPath: String, to: String) {
         synchronized(lock) {
-            while (!closed) {
-                val markerSeq = replay.nextSeq
-                val bytes = Frames.encodeJson(
-                    0,
-                    Json.encode(mapOf("t" to "path.switch", "path" to to, "seq" to markerSeq + 1)),
-                )
-                if (!replay.canAdmit(bytes.size, bulk = false)) {
-                    lock.wait(100)
-                    continue
-                }
-                val wrapped = PathCodec.encodeReliable(markerSeq, frameOf(bytes))
-                replay.append(markerSeq, wrapped, false)
-                paths[onPath]?.send(wrapped, priority)
-                return
-            }
+            if (closed) return
+            val markerSeq = replay.nextSeq
+            val bytes = Frames.encodeJson(
+                0,
+                Json.encode(mapOf("t" to "path.switch", "path" to to, "seq" to markerSeq + 1)),
+            )
+            val wrapped = PathCodec.encodeReliable(markerSeq, frameOf(bytes))
+            replay.appendUncredited(markerSeq, wrapped)
+            paths[onPath]?.send(wrapped, priorityLane = true)
         }
     }
 

@@ -200,6 +200,14 @@ class ReplayBuffer {
         if (bulk) bulkBytes += frame.size
     }
 
+    /** E-6: a switch marker never waits for credit: it is small and control. */
+    fun appendUncredited(seq: Long, frame: ByteArray) {
+        if (seq != nextSeq) throw PathException("seq $seq is not the next ($nextSeq)")
+        entries.addLast(Entry(seq, frame, bulk = false))
+        lastSeq = seq
+        heldBytes += frame.size
+    }
+
     /** Releases everything the peer acknowledged; returns the release count. */
     fun ack(nextExpected: Long): Int {
         if (nextExpected <= lastAck) return 0

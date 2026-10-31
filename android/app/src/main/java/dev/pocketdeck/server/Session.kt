@@ -722,19 +722,14 @@ class Session(
         val plannedFrom = if (item.arrivedOn != item.path && hub.hasPath(item.arrivedOn)) item.arrivedOn else null
         val from = hub.currentPath
         // E-3: the old path stays attached as a standby (still read, still
-        // answering pings); the Mac decides when it goes.
-        hub.moveTo(item.path)
-        if (plannedFrom != null) {
-            hub.sendMarkerOn(plannedFrom, item.path)
-        } else {
-            hub.sendMarker(item.path)
-        }
+        // answering pings); the Mac decides when it goes. E-6: the replay goes
+        // out before the marker, which never waits for credit.
+        hub.followSwitch(item.path, plannedFrom ?: item.path)
         if (from != null && from != item.path) {
             // The sending path moved on the Mac's marker: from, to and whether
             // the Mac planned it (path.switch on the old path) or fled a fault.
             log("paths: sending $from -> ${item.path} (${if (plannedFrom != null) "planned" else "failure"})")
         }
-        hub.replayOnCurrent()
         // A lost AUDIO_CONFIG costs one frame, not the rest of the audio (§5.6).
         lastAudioConfig?.let { queue.enqueueControl(0, it) }
         handlePathEvent(PathSessionEvent.PeerSwitch(item.path, item.seq, item.path))
