@@ -24,7 +24,6 @@ import java.util.ArrayDeque
 import java.util.Base64
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.Executors
-import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 
@@ -260,7 +259,49 @@ class Session(
     override val pathSessionId: String? get() = liveSessionId
     private var firstPathId = ""
     private var firstTransport: PathHub.Transport? = null
-    private val inbound = LinkedBlockingQueue<Inbound>(256)
+    private class InboundQueue(private val maxBytes: Int) {
+        private val lock = Object()
+        private val items = ArrayDeque<Inbound>()
+        private var bytes = 0
+        private var closed = false
+
+        private fun cost(item: Inbound): Int =
+            if (item is Inbound.Deliver) item.frame.payload.size + PATH_FRAME_OVERHEAD else 0
+
+        /** Blocks the reader until the session has room: never drops an event. */
+        fun put(item: Inbound) {
+            val cost = cost(item)
+            synchronized(lock) {
+                while (!closed && items.isNotEmpty() && bytes + cost > maxBytes) lock.wait()
+                if (closed) return
+                items.addLast(item)
+                bytes += cost
+                lock.notifyAll()
+            }
+        }
+
+        fun poll(timeoutMs: Long): Inbound? {
+            synchronized(lock) {
+                if (items.isEmpty() && !closed) lock.wait(timeoutMs)
+                if (items.isEmpty()) return null
+                val item = items.removeFirst()
+                bytes -= cost(item)
+                lock.notifyAll()
+                return item
+            }
+        }
+
+        fun close() {
+            synchronized(lock) {
+                closed = true
+                items.clear()
+                bytes = 0
+                lock.notifyAll()
+            }
+        }
+    }
+
+    private val inbound = InboundQueue(INBOX_MAX_BYTES)
     private var pathTicker: Thread? = null
     // Joined from the server thread and read from the session thread.
     private val pathReaders = CopyOnWriteArrayList<Thread>()
@@ -576,7 +617,7 @@ class Session(
                     drainReaderWork()
                     if (teardown.get() != SessionTeardown.State.LIVE) break
                     val item = try {
-                        inbound.poll(500, TimeUnit.MILLISECONDS)
+                        inbound.poll(500)
                     } catch (e: InterruptedException) {
                         break
                     } ?: continue
@@ -717,7 +758,7 @@ class Session(
                 } catch (e: InterruptedException) {
                     break
                 }
-                inbound.offer(Inbound.Tick)
+                inbound.put(Inbound.Tick)
             }
         }, "pocketdeck-paths").also { it.start() }
     }
@@ -742,26 +783,30 @@ class Session(
                     pending = null
                     for (event in events) {
                         when (event) {
-                            is PathHub.Event.Deliver -> inbound.offer(Inbound.Deliver(event.frame))
+                            is PathHub.Event.Deliver -> inbound.put(Inbound.Deliver(event.frame))
                             is PathHub.Event.Down -> {
-                                inbound.offer(Inbound.Down(event.path))
+                                inbound.put(Inbound.Down(event.path))
                                 return@Thread
                             }
-                            is PathHub.Event.Pong -> inbound.offer(Inbound.Pong(event.path, event.rttMs))
+                            is PathHub.Event.Pong -> inbound.put(Inbound.Pong(event.path, event.rttMs))
                             is PathHub.Event.Ping -> Unit
                             is PathHub.Event.PeerSwitch ->
-                                inbound.offer(Inbound.PeerSwitch(event.path, event.seq, event.arrivedOn))
-                            PathHub.Event.AckAboveSent -> inbound.offer(Inbound.AckAboveSent)
+                                inbound.put(Inbound.PeerSwitch(event.path, event.seq, event.arrivedOn))
+                            PathHub.Event.AckAboveSent -> inbound.put(Inbound.AckAboveSent)
                             PathHub.Event.Backpressure -> Unit
                         }
                     }
+                    // R-1: the ACK leaves only after every frame the hub
+                    // delivered is in the session's hand-off, so a slow handler
+                    // pushes back through TCP instead of losing an acked frame.
+                    hub.ackHandled(t.id)
                 }
             } catch (e: Throwable) {
                 if (teardown.get() == SessionTeardown.State.LIVE) {
                     log("path reader ended: ${e.message}")
                 }
             } finally {
-                if (teardown.get() == SessionTeardown.State.LIVE) inbound.offer(Inbound.Down(t.id))
+                if (teardown.get() == SessionTeardown.State.LIVE) inbound.put(Inbound.Down(t.id))
             }
         }, "pocketdeck-path-${t.id}")
         thread.isDaemon = true
@@ -783,7 +828,7 @@ class Session(
         hub.expectFirstPong(pathId)
         sendWelcomeOn(pathId)
         startPathReader(t)
-        inbound.offer(Inbound.Up(pathId, joined = true))
+        inbound.put(Inbound.Up(pathId, joined = true))
         log("paths: joined $pathId (paths ${hub.pathCount})")
         return AttachResult.ATTACHED
     }
@@ -842,6 +887,8 @@ class Session(
         runCatching { power.onPowerLocked = null }
         pathTicker?.interrupt()
         pathTicker = null
+        // Wake a reader blocked in the hand-off: the session is going.
+        inbound.close()
         // The writer drains the queue through the path hub: close the hub only
         // after it has written the last frame (a refusal's error, a bye).
         queue.close()
@@ -3205,6 +3252,16 @@ class Session(
 
         /** The phone's own screen: where "Continue on Mac" looks. */
         const val PHONE_DISPLAY_ID = 0
+
+        /**
+         * R-1/PATH-15: the session's inbound hand-off is bounded by bytes, not
+         * by a frame count: a 256-slot queue could hold 2 GiB of 8 MiB frames.
+         * The reorder window's own budget covers it because a delivered frame
+         * has left the window; a single frame larger than the budget is still
+         * admitted when the queue is empty.
+         */
+        const val INBOX_MAX_BYTES = 4 shl 20
+        const val PATH_FRAME_OVERHEAD = 9
 
         /** How long `window.opened` waits for the task id the launch made. */
         const val TASK_WAIT_MS = 2_000L

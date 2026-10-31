@@ -17,6 +17,8 @@ import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.Socket
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 
 /**
@@ -1419,6 +1421,34 @@ class SessionTest {
         gates.set(GateSettings(true, false))
         session!!.applyGates()
         assertEquals("pairing_off", readUntil("error")["code"])
+    }
+
+    /**
+     * R-1: the hub has already acked a reliable frame by the time it reaches
+     * the session's inbound queue. A handler that blocks (a 2 s window.open, a
+     * slow drop write) must push back on the reader; a full queue must never
+     * lose a frame the Mac has been told was received.
+     */
+    @Test
+    fun everyAckedReliableFrameIsDeliveredWhileTheHandlerBlocks() {
+        addAndAuthenticate()
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        platform.onOpen = {
+            entered.countDown()
+            release.await(5, TimeUnit.SECONDS)
+        }
+        send(mapOf("t" to "window.open", "stream" to 7, "w" to 640, "h" to 480, "dpi" to 160, "pkg" to "com.android.settings"))
+        assertTrue("the handler never started", entered.await(2, TimeUnit.SECONDS))
+        repeat(300) { i -> send(mapOf("t" to "ping", "ts" to i)) }
+        release.countDown()
+        val seen = mutableListOf<Long>()
+        val deadline = System.currentTimeMillis() + 10_000
+        while (seen.size < 300 && System.currentTimeMillis() < deadline) {
+            val message = readJson()
+            if (message["t"] == "pong") seen.add((message["ts"] as Number).toLong())
+        }
+        assertEquals((0L until 300L).toList(), seen)
     }
 
     private fun closeCurrent() {

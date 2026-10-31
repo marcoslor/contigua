@@ -329,7 +329,6 @@ class PathHub(
                     ReorderWindow.Result.Buffered -> Unit
                     ReorderWindow.Result.Full -> events.add(Event.Backpressure)
                 }
-                if (result !is ReorderWindow.Result.Full) ackLater(path)
             }
             else -> {
                 if (frame.type == Frames.TYPE_JSON) {
@@ -396,6 +395,9 @@ class PathHub(
         log("path down: $path (${why.javaClass.simpleName}: ${why.message})")
         detach(path)
     }
+
+    /** The reader handed this frame's events to the session: ACK may advance. */
+    fun ackHandled(path: String) = ackLater(path)
 
     private fun sendAckNow(path: String) {
         val ack = synchronized(lock) { reorder.ack }
