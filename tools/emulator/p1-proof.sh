@@ -16,11 +16,21 @@
 # stdout; the table goes to .agent/direct-link/p1-emulator.md.
 #
 # Run it as: heavy.sh timeout 2700 bash tools/emulator/p1-proof.sh
+# Rehearse it as the same heavy.sh line with --check (no device, no boot).
 set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 . "$HERE/lib.sh"
+
+MODE=run
+for arg in "$@"; do
+    case "$arg" in
+        --check) MODE=check ;;
+        -h|--help) sed -n '2,19p' "$0"; exit 0 ;;
+        *) echo "p1-proof.sh: unknown flag $arg" >&2; exit 2 ;;
+    esac
+done
 
 WORK="${PD_PROOF_WORK:-/tmp/pd-direct-p1-emu}"
 rm -rf "$WORK"
@@ -30,6 +40,44 @@ SUPPORT="$HOME/Library/Application Support/PocketDeck-$PROFILE"
 APP="$ROOT/macos/build/e2e/PocketDeck.app/Contents/MacOS/PocketDeck"
 FAIL=0
 PHASE=""
+
+# --- --check: everything a boot would die on, without touching a device -----
+if [ "$MODE" = check ]; then
+    CHECK_FAIL=0
+    cfail() { echo "P1-PROOF CHECK FAIL: $*"; CHECK_FAIL=1; }
+    [ "$SERIAL" = "emulator-5554" ] ||
+        cfail "serial '$SERIAL' is not emulator-5554 (never any other serial)"
+    bash "$HERE/preflight.sh" || CHECK_FAIL=1
+    [ -x "$APP" ] || cfail "no e2e Mac app at $APP (build it: macos/scripts/build-e2e.sh)"
+    if [ -x "$APP" ]; then
+        # Swift keeps short strings (--connect2) inline, so probe a long test
+        # hook the proof needs: it is in __cstring only in a PD_TEST_HOOKS build.
+        grep -aq -- '--debug-input-script' "$APP" ||
+            cfail "$APP has no --debug-input-script (built without PD_TEST_HOOKS?)"
+        stale="$(find "$ROOT/macos/Sources" -type f -newer "$APP" -print -quit 2>/dev/null)"
+        [ -z "$stale" ] || cfail "the Mac app is older than $stale"
+    fi
+    for f in "$ROOT/tools/pdpathfault/pdpathfault.py" "$HERE/poc.py" \
+             "$ROOT/tools/fakephone/proto.py" "$ROOT/android/app/build/outputs/apk/debug/app-debug.apk"; do
+        [ -f "$f" ] || cfail "missing $f"
+    done
+    stale="$(find "$ROOT/android/app/src/main" -type f -newer \
+        "$ROOT/android/app/build/outputs/apk/debug/app-debug.apk" -print -quit 2>/dev/null)"
+    [ -z "$stale" ] || cfail "the APK is older than $stale (rebuild :app:assembleDebug)"
+    "$PYTHON" "$HERE/poc.py" --help >/dev/null 2>&1 || cfail "poc.py --help"
+    "$PYTHON" "$ROOT/tools/pdpathfault/pdpathfault.py" --help >/dev/null 2>&1 ||
+        cfail "pdpathfault.py --help"
+    [ -x /usr/bin/log ] || cfail "no /usr/bin/log for the Mac app's lines"
+    free_kb="$(df -k /tmp | awk 'NR == 2 { print $4 }')"
+    [ -n "$free_kb" ] && [ "$free_kb" -ge 204800 ] ||
+        cfail "less than 200 MiB free in /tmp for the 32 MiB drop"
+    if [ "$CHECK_FAIL" -eq 0 ]; then
+        echo "P1-PROOF CHECK PASS: one boot, $SERIAL, APK $(apk_version_code "$ROOT/android/app/build/outputs/apk/debug/app-debug.apk"), app $APP"
+        exit 0
+    fi
+    echo "P1-PROOF CHECK FAIL"
+    exit 1
+fi
 
 section() { PHASE="$1"; printf '\n== %s ==\n' "$1"; }
 ok() { printf 'PASS [%s] %s\n' "$PHASE" "$*"; }
@@ -49,6 +97,30 @@ stream_log() { # stream_log <pid> <file>
     /usr/bin/log stream --info --style syslog --predicate "processID == $1" \
         > "$2" 2>/dev/null &
     echo $!
+}
+
+refresh_log() { # refresh_log <pid> <file> — merge log show: a late stream start
+                # must not hide a line the checks are about
+    /usr/bin/log show --last 10m --info --style syslog --process "$1" \
+        --predicate 'subsystem == "dev.pocketdeck.mac"' 2>/dev/null >> "$2"
+}
+
+# settle_before_next <label> — the Mac app is gone; wait up to 50 s for the
+# phone's 30 s orphan grace to end that session, so the next launch's plain
+# hello founds a fresh session instead of superseding a live slot. A note
+# either way: the dedicated grace section proves the timer itself.
+settle_before_next() {
+    local label="$1" deadline=$(( $(date +%s) + 50 ))
+    while [ "$(date +%s)" -lt "$deadline" ]; do
+        emu logcat -d -v time -s PocketDeckSvc:I 2>/dev/null > "$WORK/phone-$label-end.log"
+        if grep -q 'paths: ended graceExpired' "$WORK/phone-$label-end.log"; then
+            printf '[p1-proof] %s: the previous session ended at the grace (slot free)\n' "$label"
+            return 0
+        fi
+        sleep 0.25
+    done
+    printf '[p1-proof] %s: the previous session did not end in 50 s; the next plain hello supersedes it\n' "$label"
+    return 0
 }
 
 APP_PID=""
@@ -115,7 +187,7 @@ ADDR="$(sed -n 's/^POCKETDECK_ADDR=//p' "$WORK/start.log" | tail -1)"
 DEVPORT="$(sed -n 's/^POCKETDECK_DEVICE_PORT=//p' "$WORK/start.log" | tail -1)"
 [ -n "$ADDR" ] && [ -n "$DEVPORT" ] || { tail -20 "$WORK/start.log"; bad "no address/port"; exit 1; }
 ok "booted, real server at $ADDR (device $DEVPORT)"
-adb logcat -c >/dev/null 2>&1 || true
+emu logcat -c >/dev/null 2>&1 || true
 
 # A fresh Mac profile: no pin from a previous run can make this a reconnect.
 rm -rf "$SUPPORT"
@@ -129,21 +201,28 @@ TAP_PID=$!
     --open-phone --quit-after 70 > "$WORK/app-pair.out" 2>&1 &
 APP_PID=$!
 LOG_STREAM="$(stream_log "$APP_PID" "$WORK/mac-pair.log")"
-if wait_for 60 grep -q 'replay peak' "$WORK/mac-pair.log"; then
+if wait_for 60 grep -q -- '--> live' "$WORK/mac-pair.log"; then
     ok "the Mac app paired and founded a live session"
 else
-    bad "the Mac app did not pair/found (tap: $(tail -2 "$WORK/wait-prompt.log" 2>/dev/null))"
-    tail -5 "$WORK/mac-pair.log"
+    refresh_log "$APP_PID" "$WORK/mac-pair.log"
+    if grep -q -- '--> live' "$WORK/mac-pair.log"; then
+        ok "the Mac app paired and founded a live session"
+    else
+        bad "the Mac app did not pair/found (tap: $(tail -2 "$WORK/wait-prompt.log" 2>/dev/null))"
+        tail -5 "$WORK/mac-pair.log"
+    fi
 fi
 sleep 1
 stop_app
 wait "$TAP_PID" 2>/dev/null || true
 TAP_PID=""
-sleep 3   # the phone's last path is down; the slot is drained for the adopt
+settle_before_next pair
 
 # --- two providers, one session: the join ----------------------------------
 section join
-adb logcat -c >/dev/null 2>&1 || true
+emu logcat -c >/dev/null 2>&1 || true
+# A .part-* from an earlier rig run would trip the 8 MiB "drop started" check.
+emu shell "rm -f /sdcard/Download/PocketDeck/.part-*" >/dev/null 2>&1 || true
 # A: fast (it must found), B: 1.5 s in the way (it must hold, then join).
 printf 'mode pass\n' > "$WORK/fault-a.ctl"
 printf 'mode delay\n' > "$WORK/fault-b.ctl"
@@ -179,7 +258,7 @@ LOG_STREAM="$(stream_log "$APP_PID" "$WORK/mac-join.log")"
 
 JOINED=0
 for _ in $(seq 1 160); do
-    adb logcat -d -v time -s PocketDeckSvc:I 2>/dev/null > "$WORK/phone-join.log"
+    emu logcat -d -v time -s PocketDeckSvc:I 2>/dev/null > "$WORK/phone-join.log"
     grep -q 'paths: joined' "$WORK/phone-join.log" && { JOINED=1; break; }
     sleep 0.25
 done
@@ -190,8 +269,21 @@ else
 fi
 grep -q 'paths: ended' "$WORK/phone-join.log" && bad "a path/session ended before the drop" \
     || ok "no session ended before the drop (no supersede)"
-wait_for 20 grep -q 'replay peak' "$WORK/mac-join.log" && ok "the Mac session is live with the second provider" \
-    || bad "the Mac session never became live on two providers"
+UPS=0
+for _ in $(seq 1 40); do
+    UPS="$(grep -c -- '--up-->' "$WORK/mac-join.log" || true)"
+    [ "${UPS:-0}" -ge 2 ] && break
+    sleep 0.25
+done
+if [ "${UPS:-0}" -lt 2 ]; then
+    refresh_log "$APP_PID" "$WORK/mac-join.log"
+    UPS="$(grep -c -- '--up-->' "$WORK/mac-join.log" || true)"
+fi
+if [ "${UPS:-0}" -ge 2 ]; then
+    ok "the Mac saw both providers attach to one live session ($UPS up transitions)"
+else
+    bad "the Mac did not see the second provider attach ($UPS up transitions)"
+fi
 
 # The proxy that connected first is the session's founder (A by construction,
 # but the evidence decides). Throttle it so the drop lasts long enough to cut.
@@ -241,7 +333,7 @@ fi
 : > "$WORK/drop-go"
 STARTED=0
 for _ in $(seq 1 200); do
-    size="$(adb shell "stat -c %s /sdcard/Download/PocketDeck/.part-* 2>/dev/null" 2>/dev/null | tr -d '\r' | head -1)"
+    size="$(emu shell "stat -c %s /sdcard/Download/PocketDeck/.part-* 2>/dev/null" 2>/dev/null | tr -d '\r' | head -1)"
     if [ -n "$size" ] && [ "$size" -ge 8388608 ] 2>/dev/null; then STARTED=1; break; fi
     sleep 0.25
 done
@@ -253,7 +345,7 @@ fi
 [ -n "$FOUNDER_CTL" ] && printf 'mode blackhole\n' > "$FOUNDER_CTL"
 SAVED=0
 for _ in $(seq 1 480); do
-    adb logcat -d -v time -s PocketDeckSvc:I 2>/dev/null > "$WORK/phone-drop.log"
+    emu logcat -d -v time -s PocketDeckSvc:I 2>/dev/null > "$WORK/phone-drop.log"
     grep -q 'drop [0-9]*: saved' "$WORK/phone-drop.log" && { SAVED=1; break; }
     sleep 0.25
 done
@@ -263,7 +355,7 @@ if [ "$SAVED" = 1 ]; then
 else
     bad "the drop never finished"
 fi
-GOT_SHA="$(adb shell "sha256sum '$TARGET' 2>/dev/null" | tr -d '\r' | awk '{print $1}')"
+GOT_SHA="$(emu shell "sha256sum '$TARGET' 2>/dev/null" | tr -d '\r' | awk '{print $1}')"
 if [ -n "$GOT_SHA" ] && [ "$GOT_SHA" = "$EXPECT_SHA" ]; then
     ok "the 32 MiB file is byte-exact across the black-holed path (sha256 $EXPECT_SHA)"
 else
@@ -274,11 +366,11 @@ grep -q 'drop: ok' "$WORK/mac-join.log" && ok "the Mac's drop sender reported ok
 grep -q 'session failed' "$WORK/mac-join.log" && bad "the session failed during the drop" \
     || ok "the session stayed live through the drop"
 stop_app
-sleep 3   # let the phone drain the path before the grace launch adopts the slot
+settle_before_next join
 
 # --- 30 s grace ------------------------------------------------------------
 section grace
-adb logcat -c >/dev/null 2>&1 || true
+emu logcat -c >/dev/null 2>&1 || true
 printf 'mode pass\n' > "$WORK/fault-a.ctl"
 printf 'mode pass\n' > "$WORK/fault-b.ctl"
 : > "$WORK/fault-a.events"
@@ -290,7 +382,7 @@ APP_PID=$!
 LOG_STREAM="$(stream_log "$APP_PID" "$WORK/mac-grace.log")"
 GRACE_JOINED=0
 for _ in $(seq 1 160); do
-    adb logcat -d -v time -s PocketDeckSvc:I 2>/dev/null > "$WORK/phone-grace.log"
+    emu logcat -d -v time -s PocketDeckSvc:I 2>/dev/null > "$WORK/phone-grace.log"
     grep -q 'paths: joined' "$WORK/phone-grace.log" && { GRACE_JOINED=1; break; }
     sleep 0.25
 done
@@ -300,7 +392,7 @@ printf 'mode blackhole\n' > "$WORK/fault-a.ctl"
 printf 'mode blackhole\n' > "$WORK/fault-b.ctl"
 GRACE_PHONE=0
 for _ in $(seq 1 180); do
-    adb logcat -d -v time -s PocketDeckSvc:I 2>/dev/null > "$WORK/phone-grace.log"
+    emu logcat -d -v time -s PocketDeckSvc:I 2>/dev/null > "$WORK/phone-grace.log"
     grep -q 'paths: ended graceExpired' "$WORK/phone-grace.log" && { GRACE_PHONE=1; break; }
     sleep 0.25
 done
@@ -309,15 +401,21 @@ if [ "$GRACE_PHONE" = 1 ]; then
 else
     bad "the phone never ended the grace session"
 fi
-if wait_for 5 grep -q 'orphaned --grace--> ended' "$WORK/mac-grace.log"; then
+if wait_for 10 grep -q -- 'orphaned --grace--> ended' "$WORK/mac-grace.log"; then
     ok "the Mac ended the same session at the grace (paths: orphaned --grace--> ended)"
 else
-    bad "no Mac grace transition"
+    refresh_log "$APP_PID" "$WORK/mac-grace.log"
+    if grep -q -- 'orphaned --grace--> ended' "$WORK/mac-grace.log"; then
+        ok "the Mac ended the same session at the grace (paths: orphaned --grace--> ended)"
+    else
+        bad "no Mac grace transition"
+    fi
 fi
-sleep 1
+sleep 2
+emu logcat -d -v time -s PocketDeckSvc:I 2>/dev/null > "$WORK/phone-grace.log"
 grep -E 'power:|panel given back|phone back to sleep' "$WORK/phone-grace.log" > "$WORK/phone-power.log" 2>/dev/null || true
-adb shell dumpsys power 2>/dev/null | grep -E 'mWakefulness|Display Power' > "$WORK/dumpsys-power.txt" 2>/dev/null || true
-adb shell dumpsys display 2>/dev/null | grep -E 'mScreenState|mState=' | head -5 > "$WORK/dumpsys-display.txt" 2>/dev/null || true
+emu shell dumpsys power 2>/dev/null | grep -E 'mWakefulness|Display Power' > "$WORK/dumpsys-power.txt" 2>/dev/null || true
+emu shell dumpsys display 2>/dev/null | grep -E 'mScreenState|mState=' | head -5 > "$WORK/dumpsys-display.txt" 2>/dev/null || true
 if grep -q 'mWakefulness=Awake' "$WORK/dumpsys-power.txt"; then
     ok "the panel is awake after the grace ($(tr '\n' ' ' < "$WORK/dumpsys-power.txt"))"
 else
@@ -369,7 +467,7 @@ if "$PYTHON" "$HERE/poc.py" --addr "$ADDR" --serial "$SERIAL" \
 else
     bad "the paired probe did not check out: $(tail -2 "$WORK/deckctl-check.log")"
 fi
-adb logcat -d -v time -s PocketDeckSvc:I 2>/dev/null > "$WORK/phone-final.log"
+emu logcat -d -v time -s PocketDeckSvc:I 2>/dev/null > "$WORK/phone-final.log"
 
 printf '\n== result ==\n'
 if [ "$FAIL" -eq 0 ]; then
