@@ -10,6 +10,7 @@ private final class SpyIndex: SearchIndexing {
     var failure: Error?
     var indexedCalls: [[CSSearchableItem]] = []
     var deletedDomains: [[String]] = []
+    var deletedIdentifiers: [[String]] = []
     /// Every call in order, so a test can tell a delete-then-add from an add alone.
     var calls: [String] = []
 
@@ -24,6 +25,13 @@ private final class SpyIndex: SearchIndexing {
                                completionHandler: (@Sendable (Error?) -> Void)?) {
         deletedDomains.append(domainIdentifiers)
         calls.append("delete")
+        completionHandler?(nil)
+    }
+
+    func deleteSearchableItems(withIdentifiers identifiers: [String],
+                               completionHandler: (@Sendable (Error?) -> Void)?) {
+        deletedIdentifiers.append(identifiers)
+        calls.append("delete-item")
         completionHandler?(nil)
     }
 }
@@ -175,6 +183,34 @@ final class SpotlightTests: XCTestCase {
         // Forget-then-reconnect indexes again instead of trusting the stale cache.
         index.index(apps: apps, deviceId: "a1b2c3", phoneName: "FakePhone", iconData: { _ in nil })
         XCTAssertEqual(spy.indexedCalls.count, 2)
+    }
+
+    /// An app with a shortcut bundle is listed once, by the real bundle: its
+    /// CoreSpotlight item is not indexed, is removed when the shim appears, and
+    /// comes back only when the shim goes away (DOCK-9).
+    func testAShimmedAppIsNotIndexedTwice() {
+        let spy = SpyIndex()
+        let index = SpotlightIndex(index: spy)
+        let pkg = apps[1].pkg
+        index.index(apps: apps, deviceId: "a1b2c3", phoneName: "FakePhone",
+                    excluding: [pkg], iconData: { _ in nil })
+        XCTAssertEqual(spy.indexedCalls[0].count, apps.count - 1)
+        XCTAssertFalse(spy.indexedCalls[0].contains { $0.uniqueIdentifier.hasSuffix("/\(pkg)") })
+
+        // The same list and the same shims: nothing to re-send.
+        index.index(apps: apps, deviceId: "a1b2c3", phoneName: "FakePhone",
+                    excluding: [pkg], iconData: { _ in nil })
+        XCTAssertEqual(spy.indexedCalls.count, 1)
+
+        // A shim appeared for that app while the list did not change: one item goes.
+        index.remove(deviceId: "a1b2c3", pkg: pkg)
+        XCTAssertEqual(spy.deletedIdentifiers, [["a1b2c3/\(pkg)"]])
+
+        // The shim went away: the whole phone is indexed again, this app included.
+        index.index(apps: apps, deviceId: "a1b2c3", phoneName: "FakePhone", iconData: { _ in nil })
+        XCTAssertEqual(spy.indexedCalls.count, 2)
+        XCTAssertEqual(spy.indexedCalls[1].count, apps.count)
+        XCTAssertTrue(spy.deletedDomains.contains(["a1b2c3"]))
     }
 
     func testForgetRemovesOnlyThePrefixedDomainOfItsProfile() {

@@ -8304,6 +8304,65 @@ check_shortcuts() {
     stop_app
     stop_fakephone
     remove_dock_apps
+
+    # --- Reconcile on an app list, and Spotlight (DOCK-7, DOCK-9) ----------
+    # The phone drops WhatsApp (installed before the list arrives) and adds
+    # Notes between two app lists: the uninstalled app's shim goes even with
+    # Save all and manual on it, the new app gains Save all's reason, and the
+    # index holds no item for an app that has a shim.
+    FAKE_ARGS="--demo-apps 20 --drop-after 60 --apps-revise --apps-drop com.whatsapp --apps-add com.example.notes=Notes" \
+        start_fake || { stop_fakephone; return 1; }
+    launch --connect "127.0.0.1:$PORT" --dock-dir "$dir" --debug-control "$WORK-control" --quit-after 420
+    wait_until 30 events_have '"t":"apps.icon"' \
+        || { bad "SHORTCUTS the reconcile app list never arrived"; stop_app; stop_fakephone; return 1; }
+    control shortcut add com.whatsapp || bad "SHORTCUTS reconcile: shortcut add: $CONTROL_REPLY"
+    wait_until 30 eval '[ -d "$dir/WhatsApp (FakePhone).app" ]' \
+        || { bad "SHORTCUTS reconcile: no WhatsApp shim before the change"; stop_app; stop_fakephone; return 1; }
+    control shortcutsall on || bad "SHORTCUTS reconcile: shortcutsall on: $CONTROL_REPLY"
+    wait_until 180 eval '[ "$(count_shims)" = "20" ]' \
+        && ok "[DOCK-7] Save all made the 20 shortcuts before the app list changed" \
+        || bad "[DOCK-7] only $(count_shims) of 20 shortcuts before the change"
+    [ "$(origins_of "$dir/WhatsApp (FakePhone).app")" = "manual all" ] \
+        && ok "[DOCK-7] the app that will be uninstalled carries manual and all" \
+        || bad "[DOCK-7] WhatsApp's reasons before the change: '$(origins_of "$dir/WhatsApp (FakePhone).app")'"
+    wait_until 120 eval '[ ! -d "$dir/WhatsApp (FakePhone).app" ]' \
+        && ok "[DOCK-7] the uninstalled app's shim went, manual and all included" \
+        || bad "[DOCK-7] the uninstalled app still has its shim"
+    wait_until 120 eval '[ "$(origins_of "$dir/Notes (FakePhone).app")" = "all" ]' \
+        && ok "[DOCK-7] the new app gained Save all's reason" \
+        || bad "[DOCK-7] the new app's shim is '$(origins_of "$dir/Notes (FakePhone).app")'"
+    [ "$(count_shims)" = "20" ] \
+        && ok "[DOCK-7] the list is 20 again (19 kept, one added)" \
+        || bad "[DOCK-7] the folder holds $(count_shims) shims, wanted 20"
+    # Every app has a shim, so nothing of that phone is a CoreSpotlight item.
+    local dev spot
+    dev="$(/usr/libexec/PlistBuddy -c 'Print :PDDeviceId' "$dir/Notes (FakePhone).app/Contents/Info.plist" 2>/dev/null)"
+    [ -n "$dev" ] || bad "[DOCK-8] no device id in the shim"
+    sleep 2
+    spot="$(/usr/bin/log show --last 5m --info \
+        --predicate 'subsystem == "dev.pocketdeck.mac" AND process == "PocketDeck"' 2>/dev/null \
+        | grep -o "spotlight: indexing [0-9]* apps for $dev" | tail -1)"
+    [ "$spot" = "spotlight: indexing 0 apps for $dev" ] \
+        && ok "[DOCK-9] no app with a shortcut is also a CoreSpotlight item (last index: $spot)" \
+        || bad "[DOCK-9] the last Spotlight index was '${spot:-none}', wanted no items"
+
+    # --- Forget removes every shim (DOCK-8) --------------------------------
+    control settings-open >/dev/null 2>&1 || bad "[DOCK-8] settings-open: $CONTROL_REPLY"
+    wait_until 25 windows_at_least 2 \
+        || { bad "[DOCK-8] the Settings window never opened"; stop_app; stop_fakephone; return 1; }
+    control settings-select "phone:$dev" >/dev/null 2>&1
+    sleep 1
+    control settings-forget "$dev" >/dev/null 2>&1 || bad "[DOCK-8] settings-forget: $CONTROL_REPLY"
+    sleep 1
+    control key tab >/dev/null 2>&1
+    control key space >/dev/null 2>&1
+    wait_until 30 eval '[ "$(count_shims)" = "0" ]' \
+        && ok "[DOCK-8] forgetting the phone removed every shim, whatever its reasons" \
+        || bad "[DOCK-8] $(count_shims) shims survived the forget ($(ls "$dir" 2>/dev/null | tr '\n' ' '))"
+
+    stop_app
+    stop_fakephone
+    remove_dock_apps
     wait_until 5 no_fakephone
 }
 
