@@ -2353,7 +2353,6 @@ class Session(object):
         for stale in self.hub.joined_timeouts():
             dbg("path joined without a pong: dropped")
             self._path_down(stale)
-        self.hub.close_drained()
         if self.hub.path_count == 0:
             if self._grace_deadline is None:
                 self._grace_deadline = time.monotonic() + 30.0
@@ -2368,16 +2367,18 @@ class Session(object):
     def _follow_switch(self, target, seq, arrived_on):
         planned_from = arrived_on if (arrived_on != target and self.hub.has_path(arrived_on)) else None
         if planned_from is not None:
+            # The marker arrived on the path being left: our own marker is the
+            # last frame we send on it, so the Mac has read everything before
+            # it and closes that path after its drain. It stays attached as a
+            # standby until then, and is never closed by this side (E-3).
             self.hub.send_marker_on(planned_from, target)
-            self.hub.move_to(target, planned_from)
+            self.hub.move_to(target)
         else:
-            self.hub.move_to(target, None)
+            self.hub.move_to(target)
             self.hub.send_marker(target)
         self.hub.replay_on_current()
         self.phone.events.path("switch", target, current=self.hub.current_path,
                                arrived_on=arrived_on, seq=seq)
-        # The marker arrived on the path being left: our own marker is out, so
-        # the switch is complete and the old path may drain (PATH-9).
         self._pump_ended()
 
     def _pump_ended(self):

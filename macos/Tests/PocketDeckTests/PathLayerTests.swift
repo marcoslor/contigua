@@ -296,6 +296,46 @@ extension PathLayerTests {
     }
 }
 
+extension PathLayerTests {
+    /// E-3: a planned switch leaves the old path attached and draining; the
+    /// Mac itself closes it after the 2 s drain backstop (the phone never
+    /// closes a path on a switch).
+    func testAPlannedSwitchDrainsTheOldPathAndTheMacClosesIt() {
+        let second = Wire()
+        layer.attach(PathLayer.Path(id: "bbbb0002", kind: .lan, send: second.send,
+                                    close: second.close, isWritable: second.isWritable),
+                     joined: true)
+        XCTAssertTrue(layer.sendMarker(on: "aaaa0001", to: "bbbb0002"))
+        layer.moveTo("bbbb0002", plannedFrom: "aaaa0001")
+        XCTAssertTrue(layer.hasPath("aaaa0001"), "the old path is kept while it drains")
+        XCTAssertFalse(wire.closed)
+        clock += 1_999
+        XCTAssertTrue(layer.closeDrained().isEmpty, "no drain before the 2 s backstop")
+        XCTAssertTrue(layer.hasPath("aaaa0001"))
+        clock += 1
+        XCTAssertEqual(["aaaa0001"], layer.closeDrained(), "the drain backstop passed")
+        XCTAssertTrue(layer.detach("aaaa0001"), "the Mac closes the old path itself")
+        XCTAssertTrue(wire.closed)
+        XCTAssertEqual(["bbbb0002"], layer.pathIds)
+    }
+
+    /// E-3/D-2: a demoted path is a standby, not a drain: it stays attached
+    /// and open for as long as the session lives, so it can win back on margin.
+    func testADemotedStandbySurvivesTheSwitchAndIsNeverDrained() {
+        let second = Wire()
+        layer.attach(PathLayer.Path(id: "bbbb0002", kind: .lan, send: second.send,
+                                    close: second.close, isWritable: second.isWritable),
+                     joined: true)
+        layer.moveTo("bbbb0002", plannedFrom: nil)
+        XCTAssertEqual("bbbb0002", layer.currentPath)
+        XCTAssertTrue(layer.hasPath("aaaa0001"), "the demoted path was closed on the switch")
+        clock += 30_000
+        XCTAssertTrue(layer.closeDrained().isEmpty, "a standby must never be drained")
+        XCTAssertFalse(wire.closed, "the standby's socket was closed")
+        XCTAssertEqual(["aaaa0001", "bbbb0002"], layer.pathIds)
+    }
+}
+
 // MARK: - D-1: the ping policy
 
 extension PathLayerTests {
