@@ -86,6 +86,9 @@ final class PathLayer {
     private var overflow: [String: [(UInt64, Frame)]] = [:]
     /// Bytes held per path's overflow: one window at most (PATH-10/PATH-15).
     private var overflowBytes: [String: Int] = [:]
+    /// Lossy bytes written into a path's channel while it is over its water
+    /// mark, per path: E-1's 128 KiB cap. Reset when the channel drains.
+    private var lossyQueued: [String: Int] = [:]
     /// The path that last delivered in order: the gap before [reorder.expected]
     /// is that path's to fill (RR-7). Nil until the first delivery.
     private var gapPath: String?
@@ -185,6 +188,7 @@ final class PathLayer {
             lastInboundAt.removeValue(forKey: id)
             overflow.removeValue(forKey: id)
             overflowBytes.removeValue(forKey: id)
+            lossyQueued.removeValue(forKey: id)
             readingPaused.remove(id)
             return path
         }
@@ -210,6 +214,7 @@ final class PathLayer {
             lastInboundAt.removeAll()
             overflow.removeAll()
             overflowBytes.removeAll()
+            lossyQueued.removeAll()
             readingPaused.removeAll()
             return all
         }
@@ -238,8 +243,11 @@ final class PathLayer {
     }
 
     /// The channel under a path became writable again: feed it what the layer
-    /// has been holding (D-2).
-    func writable(_ id: String) { pump(id) }
+    /// has been holding (D-2) and let lossy frames queue again (E-1).
+    func writable(_ id: String) {
+        locked { lossyQueued[id] = 0 }
+        pump(id)
+    }
 
     /// Old paths whose drain backstop passed; the caller detaches them.
     func closeDrained() -> [String] {
@@ -264,9 +272,25 @@ final class PathLayer {
     private func sendLocked(_ frame: Frame, completion: (@Sendable (Bool) -> Void)?) {
         guard !locked({ closed }) else { completion?(false); return }
         guard PathCodec.isReliable(frame.type) else {
-            let target: Path? = locked { current.flatMap { paths[$0] } }
+            // E-1: lossy frames go straight to the channel, which has no
+            // credit. While the channel is over its water mark they are
+            // capped at 128 KiB per path: past that the frame is dropped (a
+            // lossy frame is never replayed) instead of queueing without
+            // bound. A writable channel resets the count.
+            var target: Path?
+            var sent = false
+            locked {
+                guard !closed, let id = current, let path = paths[id] else { return }
+                if !path.isWritable() {
+                    let queued = lossyQueued[id, default: 0]
+                    guard queued < Self.lossyCapBytes else { return }
+                    lossyQueued[id] = queued + frame.encoded.count
+                }
+                target = path
+                sent = true
+            }
             if let target { target.send(frame.encoded) }
-            completion?(target != nil)
+            completion?(sent)
             return
         }
         let bulk = PathCodec.isBulk(frame.type)
@@ -804,4 +828,7 @@ final class PathLayer {
     /// this. The channel's own low write watermark is the same 256 KiB (D-2),
     /// so a key is never behind more than a watermark plus one chunk.
     static let bulkAdmitBytes = 256 << 10
+    /// E-1: lossy frames may queue at most this much on a path that is over
+    /// its write watermark (the old SEND_BUFFER_BYTES role).
+    static let lossyCapBytes = 128 << 10
 }
