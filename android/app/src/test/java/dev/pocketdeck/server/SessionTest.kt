@@ -1493,6 +1493,50 @@ class SessionTest {
         )
     }
 
+    /**
+     * RR-10: the frames held ahead of a same-path gap were bounded by a count
+     * (64 frames, up to 64 x 8 MiB). PATH-15 promises one window: the held
+     * deque is bounded by bytes now, and a peer past that ends the session.
+     */
+    @Test
+    fun theHeldReorderFramesAreBoundedByBytes() {
+        platform.clients.add(PairedClient("c1", "MacBook", TlsV2Fixture.MAC_FP_HEX))
+        authenticate("c1")
+        // 2..65 fill the 64-frame window; 66.. are ahead of the same path's gap.
+        for (seq in 2L..65L) sendJsonAt(seq, mapOf("t" to "ping", "ts" to seq))
+        // The bound trips inside these writes (4 MiB); a write after the session
+        // closed is expected evidence, not a failure.
+        var sentPads = 0
+        for (seq in 66L..72L) {
+            if (runCatching { sendJsonAtWithPad(seq, 1024 * 1024) }.isFailure) break
+            sentPads++
+        }
+        assertTrue("the session ended before the held window passed its bytes: $sentPads", sentPads >= 3)
+        var closed = false
+        val deadline = System.currentTimeMillis() + 10_000
+        while (System.currentTimeMillis() < deadline) {
+            try {
+                if (reader.readFrame() == null) {
+                    closed = true
+                    break
+                }
+            } catch (e: java.net.SocketTimeoutException) {
+                break
+            }
+        }
+        assertTrue("the session stayed open with more than one window held", closed)
+    }
+
+    private fun sendJsonAtWithPad(seq: Long, pad: Int) {
+        val bytes = Frames.encodeJson(
+            0,
+            Json.encode(mapOf("t" to "ping", "ts" to seq, "pad" to "x".repeat(pad))),
+        )
+        val out = client.getOutputStream()
+        out.write(PathCodec.encodeReliable(seq, frameOf(bytes)))
+        out.flush()
+    }
+
     /** Every frame type the session puts out within [ms]; stops at the timeout. */
     private fun framesFor(ms: Int): List<Int> {
         val types = mutableListOf<Int>()

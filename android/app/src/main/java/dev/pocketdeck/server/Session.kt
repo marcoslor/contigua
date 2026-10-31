@@ -827,13 +827,16 @@ class Session(
         val thread = Thread({
             var pending: Frame? = first
             // R-11: frames ahead of a gap that this same path must fill wait
-            // here, never dropped and never behind a paused reader.
+            // here, never dropped and never behind a paused reader. RR-10:
+            // bounded by bytes (one window, PATH-15), not by a frame count.
             val held = ArrayDeque<Frame>()
+            var heldBytes = 0
             try {
                 while (teardown.get() == SessionTeardown.State.LIVE && !t.closed) {
                     val frame = when {
                         pending != null -> pending!!.also { pending = null }
-                        held.isNotEmpty() && hub.canBuffer() -> held.removeFirst()
+                        held.isNotEmpty() && hub.canBuffer() ->
+                            held.removeFirst().also { heldBytes -= it.payload.size }
                         else -> reader.readFrame() ?: break
                     }
                     val read = hub.receive(t.id, frame)
@@ -847,7 +850,10 @@ class Session(
                             // The gap is earlier in this same path's stream:
                             // pausing the reader would never fill it (PATH-10).
                             held.addLast(frame)
-                            if (held.size > ReorderWindow.MAX_FRAMES) {
+                            heldBytes += frame.payload.size
+                            if (held.size > ReorderWindow.MAX_FRAMES ||
+                                heldBytes > ReorderWindow.MAX_BYTES
+                            ) {
                                 inbound.put(Inbound.ProtocolError)
                                 return@Thread
                             }
