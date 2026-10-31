@@ -543,6 +543,7 @@ class ServerTest {
             { phoneIdentity.certPem },
             { phoneIdentity.keyP8 },
             { GateSettings(true, true) },
+            { listOf(fingerprintHex(macIdentity)) },
             onVersionRefused = { seen.add(it) },
         )
         val port = server.start()
@@ -555,6 +556,37 @@ class ServerTest {
                 assertEquals("version", readJson(reader)["code"])
             }
             assertEquals(listOf<Int?>(3), seen)
+        } finally {
+            server.stop()
+        }
+    }
+
+    /** RR-13: an unpinned peer never reaches the slot; its hello must not put
+     * a sentence on the person's card either. */
+    @Test
+    fun anUnpinnedRefusedVersionLeavesTheCardAlone() {
+        val platform = FakePlatform()
+        val phoneIdentity = TestTls.generate("PocketDeck Phone (version unpinned)")
+        val macIdentity = TestTls.generate("PocketDeck Mac (version unpinned)")
+        val seen = mutableListOf<Int?>()
+        val server = Server(
+            { socket, plain, hello -> sessionFor(platform, socket, plain, hello) },
+            log = {},
+            { phoneIdentity.certPem },
+            { phoneIdentity.keyP8 },
+            { GateSettings(true, true) },
+            onVersionRefused = { seen.add(it) },
+        )
+        val port = server.start()
+        try {
+            client(port, macIdentity, phoneIdentity).use { old ->
+                val reader = FrameReader(old.getInputStream())
+                old.getOutputStream().write(Frames.encodeJson(0, Json.encode(mapOf(
+                    "t" to "hello", "v" to 3, "path" to "a1b2c3d4", "clientId" to "c3", "name" to "OldMac"))))
+                old.getOutputStream().flush()
+                assertEquals("version", readJson(reader)["code"])
+            }
+            assertEquals(emptyList<Int?>(), seen)
         } finally {
             server.stop()
         }
