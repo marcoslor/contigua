@@ -119,6 +119,24 @@ final class PathLayerTests: XCTestCase {
         XCTAssertEqual("aaaa0001", body.string("path"))
     }
 
+    func testAWrappedSwitchMarkerIsThePeersSwitchNotADelivery() throws {
+        layer.attach(PathLayer.Path(id: "bbbb0002", kind: .lan,
+                                    send: { _ in }, close: {}), joined: true)
+        let marker = Frame(type: .json, stream: 0, payload: JSONFrame.payload([
+            "t": "path.switch", "path": "bbbb0002", "seq": 4,
+        ]))
+        let frame = Frame(encoded: try PathCodec.encodeReliable(seq: 1, inner: marker).encoded)!
+        let events = layer.receive(path: "aaaa0001", frame: frame)
+        XCTAssertEqual(1, events.count)
+        if case .peerSwitch(let path, let seq, let arrivedOn) = events[0] {
+            XCTAssertEqual("bbbb0002", path)
+            XCTAssertEqual(4, seq)
+            XCTAssertEqual("aaaa0001", arrivedOn)
+        } else {
+            XCTFail("expected peerSwitch, got \(events)")
+        }
+    }
+
     func testAnAckAboveWhatWasSentIsAProtocolError() {
         let events = layer.receive(path: "aaaa0001", frame: PathCodec.encodeAck(99))
         XCTAssertEqual(1, events.count)
