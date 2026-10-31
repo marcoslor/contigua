@@ -132,6 +132,22 @@ sys.exit(0 if count >= want else 1)
 PY
 }
 
+# path_rel_paths — how many distinct paths carried a reliable frame.
+path_rel_paths() {
+    python3 - "$WORK/events.jsonl" <<'PY'
+import json, sys
+paths = set()
+for line in open(sys.argv[1]):
+    try:
+        event = json.loads(line)
+    except ValueError:
+        continue
+    if event.get("ev") == "rel":
+        paths.add(event.get("path"))
+print(len(paths))
+PY
+}
+
 check_pathstart() {
     clean
     pathfault_nuke
@@ -397,6 +413,10 @@ check_pathswitch() {
     else
         bad "[PATH-9] PATHSWITCH no margin switch happened: $(grep '"kind":"' "$WORK/events.jsonl" | tail -3)"
     fi
+    # The input script runs for ~20 s; the switch can land at 9 s. Give the
+    # next click a bounded moment to travel on the new path, or the verdict
+    # would only ever see the old one and stop the app first.
+    wait_until 6 test "$(path_rel_paths)" -ge 2 || true
     verdict="$(python3 - "$WORK/events.jsonl" <<'PY'
 import json, sys
 seqs = []
