@@ -10,7 +10,8 @@ Launching it opens (or focuses) that app's PocketDeck window; quitting it closes
 <folder>/WhatsApp (Pixel).app/Contents/
   Info.plist           CFBundleIdentifier dev.pocketdeck.dock.<profile.>?<deviceId>.<pkg>
                        CFBundleName/DisplayName "WhatsApp (Pixel)", CFBundleIconFile AppIcon,
-                       PDDeviceId, PDPackage, PDProfile, PDHostPath (the PocketDeck.app that made it)
+                       PDDeviceId, PDPackage, PDProfile, PDHostPath (the PocketDeck.app that made it),
+                       PDLabel (the phone's raw label), PDOrigins (why the bundle exists, §Shortcuts)
   MacOS/PocketDeckShim the shim binary, copied from the host's Contents/MacOS
   Resources/AppIcon.icns rendered by PhoneAppIcon (all sizes from one 1024 px render)
 ```
@@ -167,6 +168,47 @@ PocketDeck itself keeps its own Dock icon. Rejected: rendering the stream inside
 (a second session or frame forwarding, double the cost) and swapping the host's Dock tile per
 window (`NSApp.applicationIconImage` is per process, not per window).
 
+## Shortcuts (Launchpad, Spotlight and other launchers)
+
+A **shortcut** is the same shim bundle as a Dock identity: same folder, same
+icon, same "App (Phone)" name. A shortcut in an `~/Applications` subfolder is
+listed by Launchpad, Spotlight and other launchers; a CoreSpotlight item is not an app,
+so it never is. One mechanism, four reasons a bundle exists — its **origin set**:
+
+| Origin | Asked for by |
+|---|---|
+| `dock` | Add to Dock (today's `pinned`) |
+| `manual` | Add to Applications on one app |
+| `all` | the phone's "Save all apps as shortcuts" switch |
+| `window` | the automatic identity of an open window (today's unpinned) |
+
+The bundle stays while the set is non-empty, and removing an origin removes only
+that origin, so two features can never silently delete each other's shortcut. A
+record from before the set existed migrates its `PDPinned` marker: pinned (or
+missing, the old default) → `dock`, unpinned → `window`.
+
+- **Per phone: Save all.** Settings ▸ a phone ▸ Applications ▸ "Save all apps as
+  shortcuts", off by default, stored per phone id. On: every app of that phone
+  gains `all`. Off: `all` is removed from every shim of the phone; a shim another
+  origin keeps is rewritten, the rest are removed. A phone that is offline keeps
+  its shims.
+- **Per app: Add to Applications / Remove from Applications** in the Deck tile's
+  menu, next to Add to Dock (origin `manual`). Remove takes only `manual`; with
+  Save all on, the App already in Applications offers Add (which makes it stay
+  when Save all is turned off), never a silent delete of the `all` shim.
+- **Icons.** Save all may build ~230 bundles: the Dock's 1296 px icons are
+  requested at most four at a time, and each shim is built when its icon answers,
+  off the main thread. A shim is always drawn from the Dock's size class
+  (§Icons), never from the Deck's 288 px flat.
+- **Reconcile on every app list** (connect, refresh, nickname): an uninstalled app
+  loses `all` and `manual` — it keeps a shim only while `dock` or `window` holds
+  it; a new app gains `all` when Save all is on; a renamed app or phone rebuilds
+  its shims (the existing rule). Forget a phone: every shim of that phone goes,
+  whatever its origins.
+- **Spotlight duplicates.** An app with a shim is not also a CoreSpotlight item:
+  its item is removed when the shim appears, and the phone's list is indexed
+  again (without it) when the shim goes away.
+
 ## Lifecycle
 
 - Automatic: a phone app's window opening — from the Deck, Spotlight, a link,
@@ -176,9 +218,9 @@ window (`NSApp.applicationIconImage` is per process, not per window).
   phone says it has none — so the Dock never shows a blank tile. An identity already
   on disk (kept from Add to Dock) is simply launched. The phone mirror window gets
   none. With the setting off nothing runs automatically and the menu item below
-  still works; turning it off also stops the running automatic identities ("PDPinned"
-  false — their windows stay open, the bundles stay on disk), while ones added by
-  hand keep running with their windows.
+  still works; turning it off also stops the running automatic identities (the
+  ones whose origins hold only `window` — their windows stay open, the bundles
+  stay on disk), while ones added by hand keep running with their windows.
 - Manual: Deck → app context menu → **Add to Dock** creates and launches the shim
   regardless of the setting; the person chooses Options → Keep in Dock. PocketDeck
   never writes the Dock's preferences. Remove: the same menu → **Remove from Dock App**.
@@ -188,9 +230,10 @@ window (`NSApp.applicationIconImage` is per process, not per window).
   window only launches the identity again.
 - One set per phone: the id and file name include the phone, so the same app on two phones
   gets two shims; re-adding replaces the bundle in place.
-- Cleanup: when a phone's app list arrives, shims of packages no longer on it are removed and
-  shims whose name changed (phone renamed, app relabelled) are rebuilt — except shims of
-  open windows, which follow when their window is gone; forgetting a phone removes all of
-  its shims. Removal = `lsregister -u`, then delete. Decisions are a pure function of
-  (shims on disk, app list, phone name), unit-tested; so is whether a window's identity
-  is created, relaunched, skipped or waits for its icon.
+- Cleanup: when a phone's app list arrives, an uninstalled app loses the `all` and `manual`
+  reasons (its shim goes unless `dock` or `window` keep it), and shims whose name changed
+  (phone renamed, app relabelled) are rebuilt — except shims of open windows, which follow
+  when their window is gone; forgetting a phone removes all of its shims. Removal =
+  `lsregister -u`, then delete. Decisions are a pure function of (shims on disk, app list,
+  phone name, Save all), unit-tested; so is whether a window's identity is created,
+  relaunched, skipped or waits for its icon.

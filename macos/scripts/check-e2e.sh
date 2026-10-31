@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # End-to-end checks C3-C13 for the macOS client against tools/fakephone.
 #
-#   ./scripts/check-e2e.sh [qr|pair|gates|forgot|tls|render|resize|input|hover|mouseback|input-global|pause|direct|nav|mirror|spotlight|intents|mcp|focus|controls|pinch|chrome|menus|density|trackpad|clip|sharein|links|share|apk|drop|dock|nickname|notify|notify-actions|notify-media|media|audio|handoff|deck|nfr|all [--shard N/M]]
+#   ./scripts/check-e2e.sh [qr|pair|gates|forgot|tls|render|resize|input|hover|mouseback|input-global|pause|direct|nav|mirror|spotlight|intents|mcp|focus|controls|pinch|chrome|menus|density|trackpad|clip|sharein|links|share|apk|drop|dock|shortcuts|nickname|notify|notify-actions|notify-media|media|audio|handoff|deck|nfr|all [--shard N/M]]
 #
 # Every check starts from a clean slate (the shared-app checks share one, see
 # "The shared app" below): no PocketDeck or fakephone processes
@@ -8268,6 +8268,195 @@ check_dock() {
     wait_until 5 no_fakephone
 }
 
+# --- Application shortcuts (docs/specs/dock.md) ---------------------------
+
+# origins_of <bundle> — the shim's PDOrigins as one spaced string ("dock manual").
+origins_of() {
+    python3 - "$1/Contents/Info.plist" <<'PY'
+import plistlib, sys
+try:
+    with open(sys.argv[1], "rb") as handle:
+        print(" ".join(plistlib.load(handle).get("PDOrigins", [])))
+except Exception:
+    print("")
+PY
+}
+
+# check_shortcuts — DOCK-3 and DOCK-4: the Deck tile's menu actions (through the
+# debug control route the Dock checks use, because a context menu cannot be
+# clicked in a quiet run). Add to Applications creates the shim in the run's
+# folder with the manual reason and opens no window; Add to Dock adds its reason
+# and launches; Remove from Applications takes only manual; Remove from Dock App
+# removes the bundle. Save all, reconcile, forget and Spotlight follow below.
+check_shortcuts() {
+    clean
+    local dir="$WORK/dock-apps" pkg="com.whatsapp" shim label="WhatsApp (FakePhone).app"
+    remove_dock_apps
+    mkdir -p "$dir" "$WORK-control"
+    start_fake || return 1
+    launch --connect "127.0.0.1:$PORT" --dock-dir "$dir" --debug-control "$WORK-control" --quit-after 300
+    wait_until 30 events_have '"t":"apps.icon"' \
+        || { bad "SHORTCUTS the app list never arrived"; stop_app; stop_fakephone; return 1; }
+    shim="$dir/$label"
+
+    # Add to Applications: the action the tile's item runs.
+    control shortcut add "$pkg" || bad "SHORTCUTS shortcut add: $CONTROL_REPLY"
+    wait_until 30 eval '[ -d "$shim" ]' \
+        || { bad "SHORTCUTS no shortcut bundle in $dir ($(ls "$dir" 2>/dev/null | tr '\n' ' '))"; stop_app; stop_fakephone; return 1; }
+    [ "$(origins_of "$shim")" = "manual" ] \
+        && ok "[DOCK-4] Add to Applications creates the shortcut with the manual reason" \
+        || bad "[DOCK-4] the shortcut's reasons are '$(origins_of "$shim")'"
+    [ -s "$shim/Contents/Resources/AppIcon.icns" ] \
+        && ok "[DOCK-4] the shortcut carries the app's own icon" \
+        || bad "[DOCK-4] the shortcut has no AppIcon.icns"
+    [ "$(count_events '"t":"window.open"' | head -1)" = "0" ] \
+        && ok "[DOCK-14] adding a shortcut launched nothing" \
+        || bad "[DOCK-14] adding a shortcut opened a window"
+
+    # Add to Dock on the same app: both reasons, and the Dock identity runs.
+    control dock add "$pkg" || bad "SHORTCUTS dock add: $CONTROL_REPLY"
+    wait_until 20 window_rx window.open "$pkg" \
+        && ok "[DOCK-3] Add to Dock launched the app's window" \
+        || bad "[DOCK-3] Add to Dock opened no window"
+    wait_until 20 eval '[ "$(origins_of "$shim")" = "dock manual" ]' \
+        && ok "[DOCK-3] Add to Dock kept the shortcut's manual reason" \
+        || bad "[DOCK-3] the reasons after Add to Dock are '$(origins_of "$shim")'"
+
+    # Remove from Applications: only manual goes; the Dock shim and its window stay.
+    control shortcut remove "$pkg" || bad "SHORTCUTS shortcut remove: $CONTROL_REPLY"
+    wait_until 20 eval '[ "$(origins_of "$shim")" = "dock" ]' \
+        && ok "[DOCK-4] Remove from Applications removes only manual" \
+        || bad "[DOCK-4] the reasons after Remove from Applications are '$(origins_of "$shim")'"
+    [ -d "$shim" ] && ok "[DOCK-4] the Dock's shim stays" || bad "[DOCK-4] the Dock's shim was deleted"
+    [ -n "$(dock_shim_pids)" ] && ok "[DOCK-4] its running identity stays" \
+        || bad "[DOCK-4] Remove from Applications stopped the Dock identity"
+
+    # Remove from Dock App: the bundle goes and the shim stops.
+    control dock remove "$pkg" || bad "SHORTCUTS dock remove: $CONTROL_REPLY"
+    wait_until 20 eval '[ ! -d "$shim" ]' \
+        && ok "[DOCK-3] Remove from Dock App removes the bundle" \
+        || bad "[DOCK-3] the bundle is still there after Remove from Dock App"
+    wait_until 10 eval '[ -z "$(dock_shim_pids)" ]' \
+        && ok "[DOCK-3] its shim stopped" || bad "[DOCK-3] the shim kept running"
+
+    stop_app
+    remove_dock_apps
+
+    # --- Save all (docs/design/dock.md §Shortcuts, SET-DEV-25) -------------
+    # 40 fakephone apps, the switch on through the page's own write path: one
+    # shortcut per app, each with its icon, and no window opened along the way.
+    count_shims() { ls -d "$dir"/*.app 2>/dev/null | wc -l | tr -d ' '; }
+    count_icons() { local n=0 app; for app in "$dir"/*.app; do [ -s "$app/Contents/Resources/AppIcon.icns" ] && n=$((n + 1)); done; echo "$n"; }
+    stop_fakephone
+    FAKE_ARGS="--demo-apps 40" start_fake || { stop_fakephone; return 1; }
+    launch --connect "127.0.0.1:$PORT" --dock-dir "$dir" --debug-control "$WORK-control" --quit-after 420
+    wait_until 30 events_have '"t":"apps.icon"' \
+        || { bad "SHORTCUTS the save-all app list never arrived"; stop_app; stop_fakephone; return 1; }
+    control shortcutsall on || bad "SHORTCUTS save-all phase: shortcutsall on: $CONTROL_REPLY"
+    wait_until 60 eval '[ "$(count_shims)" = "40" ]' || true
+    if [ "$(count_shims)" != "40" ]; then
+        control shortcutstats "$WORK/shortcut-stats.txt" >/dev/null 2>&1
+        say "shortcuts after 60 s: $(tr '\n' ' ' < "$WORK/shortcut-stats.txt" 2>/dev/null)"
+    fi
+    wait_until 180 eval '[ "$(count_shims)" = "40" ]' \
+        && ok "[DOCK-5] Save all made all 40 app shortcuts ($(ls "$dir" 2>/dev/null | tr '\n' ' ' | cut -c1-80)…)" \
+        || bad "[DOCK-5] Save all made $(count_shims) of 40 shortcuts"
+    [ "$(count_icons)" = "40" ] \
+        && ok "[DOCK-6] every one of the 40 shortcuts carries its .icns" \
+        || bad "[DOCK-6] only $(count_icons) of 40 shortcuts have an .icns"
+    control deckquery "" >/dev/null 2>&1 \
+        && ok "[DOCK-6] the Deck still answers while the shims are written" \
+        || bad "[DOCK-6] the Deck stopped answering during the build"
+    [ "$(count_events '"t":"window.open"' | head -1)" = "0" ] \
+        && ok "[DOCK-14] Save all opened no window" \
+        || bad "[DOCK-14] Save all opened a window"
+
+    # Two shortcuts the person keeps another way: one manual, one Dock. Turning
+    # the switch off removes only `all`, so exactly those two stay.
+    control shortcut add com.whatsapp || bad "SHORTCUTS save-all phase: shortcut add: $CONTROL_REPLY"
+    control dock add com.android.chrome || bad "SHORTCUTS save-all phase: dock add: $CONTROL_REPLY"
+    wait_until 30 eval '[ "$(origins_of "$dir/WhatsApp (FakePhone).app")" = "manual all" ]' \
+        && ok "[DOCK-2] WhatsApp carries all and manual" \
+        || bad "[DOCK-2] WhatsApp's reasons are '$(origins_of "$dir/WhatsApp (FakePhone).app")'"
+    wait_until 30 eval '[ "$(origins_of "$dir/Chrome (FakePhone).app")" = "dock all" ]' \
+        && ok "[DOCK-2] Chrome carries all and dock" \
+        || bad "[DOCK-2] Chrome's reasons are '$(origins_of "$dir/Chrome (FakePhone).app")'"
+    control shortcutsall off || bad "SHORTCUTS save-all phase: shortcutsall off: $CONTROL_REPLY"
+    wait_until 120 eval '[ "$(count_shims)" = "2" ]' \
+        && ok "[DOCK-5] Save all off left only the manual and Dock shortcuts (2)" \
+        || bad "[DOCK-5] Save all off left $(count_shims) shortcuts ($(ls "$dir" 2>/dev/null | tr '\n' ' '))"
+    [ "$(origins_of "$dir/WhatsApp (FakePhone).app")" = "manual" ] \
+        && ok "[DOCK-5] the manual shortcut lost only all" \
+        || bad "[DOCK-5] WhatsApp's reasons after off: '$(origins_of "$dir/WhatsApp (FakePhone).app")'"
+    [ "$(origins_of "$dir/Chrome (FakePhone).app")" = "dock" ] \
+        && ok "[DOCK-5] the Dock shortcut lost only all" \
+        || bad "[DOCK-5] Chrome's reasons after off: '$(origins_of "$dir/Chrome (FakePhone).app")'"
+
+    stop_app
+    stop_fakephone
+    remove_dock_apps
+
+    # --- Reconcile on an app list, and Spotlight (DOCK-7, DOCK-9) ----------
+    # The phone drops WhatsApp (installed before the list arrives) and adds
+    # Notes between two app lists: the uninstalled app's shim goes even with
+    # Save all and manual on it, the new app gains Save all's reason, and the
+    # index holds no item for an app that has a shim.
+    FAKE_ARGS="--demo-apps 20 --drop-after 60 --apps-revise --apps-drop com.whatsapp --apps-add com.example.notes=Notes" \
+        start_fake || { stop_fakephone; return 1; }
+    launch --connect "127.0.0.1:$PORT" --dock-dir "$dir" --debug-control "$WORK-control" --quit-after 420
+    wait_until 30 events_have '"t":"apps.icon"' \
+        || { bad "SHORTCUTS the reconcile app list never arrived"; stop_app; stop_fakephone; return 1; }
+    control shortcut add com.whatsapp || bad "SHORTCUTS reconcile: shortcut add: $CONTROL_REPLY"
+    wait_until 30 eval '[ -d "$dir/WhatsApp (FakePhone).app" ]' \
+        || { bad "SHORTCUTS reconcile: no WhatsApp shim before the change"; stop_app; stop_fakephone; return 1; }
+    control shortcutsall on || bad "SHORTCUTS reconcile: shortcutsall on: $CONTROL_REPLY"
+    wait_until 180 eval '[ "$(count_shims)" = "20" ]' \
+        && ok "[DOCK-7] Save all made the 20 shortcuts before the app list changed" \
+        || bad "[DOCK-7] only $(count_shims) of 20 shortcuts before the change"
+    [ "$(origins_of "$dir/WhatsApp (FakePhone).app")" = "manual all" ] \
+        && ok "[DOCK-7] the app that will be uninstalled carries manual and all" \
+        || bad "[DOCK-7] WhatsApp's reasons before the change: '$(origins_of "$dir/WhatsApp (FakePhone).app")'"
+    wait_until 120 eval '[ ! -d "$dir/WhatsApp (FakePhone).app" ]' \
+        && ok "[DOCK-7] the uninstalled app's shim went, manual and all included" \
+        || bad "[DOCK-7] the uninstalled app still has its shim"
+    wait_until 120 eval '[ "$(origins_of "$dir/Notes (FakePhone).app")" = "all" ]' \
+        && ok "[DOCK-7] the new app gained Save all's reason" \
+        || bad "[DOCK-7] the new app's shim is '$(origins_of "$dir/Notes (FakePhone).app")'"
+    [ "$(count_shims)" = "20" ] \
+        && ok "[DOCK-7] the list is 20 again (19 kept, one added)" \
+        || bad "[DOCK-7] the folder holds $(count_shims) shims, wanted 20"
+    # Every app has a shim, so nothing of that phone is a CoreSpotlight item.
+    local dev spot
+    dev="$(/usr/libexec/PlistBuddy -c 'Print :PDDeviceId' "$dir/Notes (FakePhone).app/Contents/Info.plist" 2>/dev/null)"
+    [ -n "$dev" ] || bad "[DOCK-8] no device id in the shim"
+    sleep 2
+    spot="$(/usr/bin/log show --last 5m --info \
+        --predicate 'subsystem == "dev.pocketdeck.mac" AND process == "PocketDeck"' 2>/dev/null \
+        | grep -o "spotlight: indexing [0-9]* apps for $dev" | tail -1)"
+    [ "$spot" = "spotlight: indexing 0 apps for $dev" ] \
+        && ok "[DOCK-9] no app with a shortcut is also a CoreSpotlight item (last index: $spot)" \
+        || bad "[DOCK-9] the last Spotlight index was '${spot:-none}', wanted no items"
+
+    # --- Forget removes every shim (DOCK-8) --------------------------------
+    control settings-open >/dev/null 2>&1 || bad "[DOCK-8] settings-open: $CONTROL_REPLY"
+    wait_until 25 windows_at_least 2 \
+        || { bad "[DOCK-8] the Settings window never opened"; stop_app; stop_fakephone; return 1; }
+    control settings-select "phone:$dev" >/dev/null 2>&1
+    sleep 1
+    control settings-forget "$dev" >/dev/null 2>&1 || bad "[DOCK-8] settings-forget: $CONTROL_REPLY"
+    sleep 1
+    control key tab >/dev/null 2>&1
+    control key space >/dev/null 2>&1
+    wait_until 30 eval '[ "$(count_shims)" = "0" ]' \
+        && ok "[DOCK-8] forgetting the phone removed every shim, whatever its reasons" \
+        || bad "[DOCK-8] $(count_shims) shims survived the forget ($(ls "$dir" 2>/dev/null | tr '\n' ' '))"
+
+    stop_app
+    stop_fakephone
+    remove_dock_apps
+    wait_until 5 no_fakephone
+}
+
 # --- Windows: one window per app, and the opening cover ---------------------
 
 # check_windows — the app window's own behaviour, driven through the Deck's
@@ -8782,9 +8971,10 @@ check_settings() {
     # --- plain section headings: the phone's name appears once (SET-WIN-06) -
     [ "$(report_value "title.phone")" = "Phone" ] \
         && [ "$(report_value "title.notifications")" = "Notifications" ] \
+        && [ "$(report_value "title.applications")" = "Applications" ] \
         && [ "$(report_value "title.screen")" = "Screen" ] \
         && [ "$(report_value "title.forget")" = "Forget" ] \
-        && ok "SET [SET-WIN-06] the section headings are plain: Phone, Notifications, Screen, Forget" \
+        && ok "SET [SET-WIN-06] the section headings are plain: Phone, Notifications, Applications, Screen, Forget" \
         || bad "SET [SET-WIN-06] headings: $(grep '^title\.' "$dump" | tr '\n' '|')"
     if grep '^title\.' "$dump" | grep -qE 'Galaxy|Pixel| — '; then
         bad "SET [SET-WIN-06] a section heading carries the phone's name: $(grep '^title\.' "$dump" | tr '\n' '|')"

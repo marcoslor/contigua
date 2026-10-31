@@ -49,6 +49,15 @@
 //   deckclick LABEL  a click on that app's cell in the Deck grid: the cell's
 //                    own place from the accessibility tree, through the
 //                    Deck window's event handling
+//   deckmenu LABEL   the cell's own context menu, through a secondary click at
+//                    the cell's drawn place (for the quiet screenshots)
+//   shortcut add|remove PKG
+//                    the Deck tile's Add to/Remove from Applications action
+//                    (docs/specs/dock.md DOCK-4); a context menu cannot be
+//                    clicked in a quiet run
+//   dock add|remove PKG  the tile's Add to Dock/Remove from Dock App action
+//   shortcutsall on|off  the phone page's Save all switch, through its own
+//                    write-then-apply path
 //   keywindow PATH   the key window's identifier and title, one per line
 //                    (which window a raise actually put in front)
 //   coverclick TITLE a click on the opening cover's Cancel or Close, at the

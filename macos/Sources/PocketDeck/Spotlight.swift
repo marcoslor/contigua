@@ -44,15 +44,17 @@ enum SpotlightIndexer {
         return SpotlightOpenRequest(deviceId: String(parts[0]), pkg: String(parts[1]))
     }
 
-    /// Changes whenever anything a user can see about an app changes.
-    static func signature(apps: [AppInfo], phoneName: String) -> String {
-        (["phone=\(phoneName)"] + apps.map { "\($0.pkg)|\($0.label)|\($0.activity ?? "")" })
+    /// Changes whenever anything a user can see about an app changes, or the
+    /// set of apps that have a shortcut does (those are not indexed here).
+    static func signature(apps: [AppInfo], phoneName: String, excluding: Set<String> = []) -> String {
+        ([ "phone=\(phoneName)", "shims=\(excluding.sorted().joined(separator: ","))" ]
+            + apps.map { "\($0.pkg)|\($0.label)|\($0.activity ?? "")" })
             .joined(separator: "\n")
     }
 
     static func items(apps: [AppInfo], deviceId: String, phoneName: String, domainPrefix: String = "",
-                      iconData: (String) -> Data?) -> [CSSearchableItem] {
-        apps.map { app in
+                      excluding: Set<String> = [], iconData: (String) -> Data?) -> [CSSearchableItem] {
+        apps.filter { !excluding.contains($0.pkg) }.map { app in
             let attributes = CSSearchableItemAttributeSet(contentType: .application)
             attributes.title = title(label: app.label, phoneName: phoneName)
             attributes.displayName = attributes.title
@@ -87,6 +89,8 @@ protocol SearchIndexing: AnyObject {
     func indexSearchableItems(_ items: [CSSearchableItem],
                               completionHandler: (@Sendable (Error?) -> Void)?)
     func deleteSearchableItems(withDomainIdentifiers domainIdentifiers: [String],
+                               completionHandler: (@Sendable (Error?) -> Void)?)
+    func deleteSearchableItems(withIdentifiers identifiers: [String],
                                completionHandler: (@Sendable (Error?) -> Void)?)
 }
 
@@ -217,16 +221,18 @@ final class SpotlightIndex {
         self.itemCount = itemCount
     }
 
-    func index(apps: [AppInfo], deviceId: String, phoneName: String, iconData: (String) -> Data?) {
+    func index(apps: [AppInfo], deviceId: String, phoneName: String,
+               excluding: Set<String> = [], iconData: (String) -> Data?) {
         guard !deviceId.isEmpty else { return }
-        let signature = SpotlightIndexer.signature(apps: apps, phoneName: phoneName)
+        let signature = SpotlightIndexer.signature(apps: apps, phoneName: phoneName, excluding: excluding)
         guard signatures[deviceId] != signature else { return }
         let wasIndexed = signatures[deviceId] != nil
         signatures[deviceId] = signature
         if wasIndexed { deleteDomain(deviceId: deviceId) }
 
         let items = SpotlightIndexer.items(apps: apps, deviceId: deviceId, phoneName: phoneName,
-                                           domainPrefix: domainPrefix, iconData: iconData)
+                                           domainPrefix: domainPrefix, excluding: excluding,
+                                           iconData: iconData)
         let verification = SpotlightVerification(deviceId: deviceId, phoneName: phoneName,
                                                  expectedCount: items.count)
         Log.app.notice("spotlight: indexing \(items.count, privacy: .public) apps for \(deviceId, privacy: .public)")
@@ -245,6 +251,22 @@ final class SpotlightIndex {
     func remove(deviceId: String) {
         signatures.removeValue(forKey: deviceId)
         deleteDomain(deviceId: deviceId)
+    }
+
+    /// One app now has a shortcut bundle, so its CoreSpotlight item goes: an app
+    /// is listed once, by the scan that finds the real app (docs/specs/dock.md
+    /// DOCK-9). The stored signature stays as it was, so the item is not added
+    /// back by the next app-list pass and comes back only when the set changes.
+    func remove(deviceId: String, pkg: String) {
+        guard !deviceId.isEmpty, !pkg.isEmpty else { return }
+        let identifier = SpotlightIndexer.uniqueIdentifier(deviceId: deviceId, pkg: pkg,
+                                                           domainPrefix: domainPrefix)
+        index.deleteSearchableItems(withIdentifiers: [identifier]) { error in
+            if let error {
+                let code = Self.errorCode(error)
+                Log.app.debug("spotlight: item delete failed: \(code, privacy: .public)")
+            }
+        }
     }
 
     private func deleteDomain(deviceId: String) {

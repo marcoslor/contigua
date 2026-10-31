@@ -409,6 +409,20 @@ class FakeZen(object):
 
 
 
+def revised_apps(apps, drops, adds):
+    """The app list after an install and an uninstall (`--apps-revise`): the
+    Mac's reconcile-on-app-list check. `adds` are PKG=LABEL."""
+    out = [a for a in apps if a["pkg"] not in drops]
+    known = {a["pkg"] for a in out}
+    for spec in adds:
+        pkg, _, label = spec.partition("=")
+        if not pkg or not label or pkg in known:
+            continue
+        out.append({"pkg": pkg, "label": label, "activity": "%s/.Main" % pkg})
+        known.add(pkg)
+    return sorted(out, key=lambda a: a["label"].lower())
+
+
 def add_demo_apps(count, no_icon_every):
     """Grow APPS to `count` entries (screenshots of a full grid); every
     `no_icon_every`-th app of the whole list gets no icon."""
@@ -3630,6 +3644,9 @@ class Session(object):
 
     def _on_apps_list(self, _msg):
         apps = sorted(APPS, key=lambda a: a["label"].lower())
+        self.phone.apps_list_count += 1
+        if self.phone.args.apps_revise and self.phone.apps_list_count > 1:
+            apps = revised_apps(apps, set(self.phone.args.apps_drop), self.phone.args.apps_add)
         self._send({"t": "apps", "apps": apps})
 
     def _on_apps_icon(self, msg):
@@ -3985,6 +4002,9 @@ class FakePhone(object):
         self.secure_state = None
         # --drop-after drops the first session once; later ones stay up.
         self.dropped_once = False
+        # How many app lists the Mac has asked for: --apps-revise answers the
+        # second and later ones with the installed/uninstalled changes.
+        self.apps_list_count = 0
         # --dnd-person-after is one person change, not one per session.
         self.person_dnd_done = False
         tls_guard()
@@ -4249,6 +4269,13 @@ def build_parser():
                    help="log each stream's cumulative frame count once a second")
     p.add_argument("--demo-apps", type=int, default=0, metavar="N",
                    help="pad the app list to N apps (grid screenshots)")
+    p.add_argument("--apps-revise", action="store_true",
+                   help="answer the second and later apps.list with the installed/uninstalled "
+                        "changes from --apps-drop/--apps-add (the Mac reconciles on reconnect)")
+    p.add_argument("--apps-drop", action="append", default=[], metavar="PKG",
+                   help="with --apps-revise, an app uninstalled before the next list")
+    p.add_argument("--apps-add", action="append", default=[], metavar="PKG=LABEL",
+                   help="with --apps-revise, an app installed before the next list")
     p.add_argument("--rail-letters", action="store_true",
                    help="with --demo-apps, swap ten filler apps for the rail's fixtures: "
                         "I mid-row with J beside it, and X beside Y in the last screenful (DECK-7)")
