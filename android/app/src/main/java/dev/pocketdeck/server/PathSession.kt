@@ -142,7 +142,6 @@ class PathSessionMachine(
                     return listOf(
                         PathSessionAction.StopPing(event.id),
                         PathSessionAction.SwitchTo(next),
-                        PathSessionAction.ReplayFromLastAck,
                         PathSessionAction.RequestKeyframes,
                         PathSessionAction.StartPing(next),
                         PathSessionAction.Ranking(PathRankingEvent.CurrentFailed(event.id)),
@@ -177,7 +176,6 @@ class PathSessionMachine(
                         return listOf(
                             PathSessionAction.StopPing(event.id),
                             PathSessionAction.SwitchTo(next),
-                            PathSessionAction.ReplayFromLastAck,
                             PathSessionAction.RequestKeyframes,
                             PathSessionAction.StartPing(next),
                             PathSessionAction.Ranking(PathRankingEvent.CurrentFailed(event.id)),
@@ -231,7 +229,6 @@ class PathSessionMachine(
                     return listOf(
                         PathSessionAction.StopPing(event.id),
                         PathSessionAction.SwitchTo(next),
-                        PathSessionAction.ReplayFromLastAck,
                         PathSessionAction.RequestKeyframes,
                         PathSessionAction.StartPing(next),
                         PathSessionAction.Ranking(PathRankingEvent.CurrentFailed(event.id)),
@@ -251,7 +248,6 @@ class PathSessionMachine(
                     state = PathSessionState.Migrating(s.from, next, now)
                     return listOf(
                         PathSessionAction.SwitchTo(next),
-                        PathSessionAction.ReplayFromLastAck,
                         PathSessionAction.RequestKeyframes,
                         PathSessionAction.StartPing(next),
                         PathSessionAction.Ranking(PathRankingEvent.CurrentFailed(event.id)),
@@ -321,7 +317,6 @@ class PathSessionMachine(
                 state = PathSessionState.Live(event.id)
                 return listOf(
                     PathSessionAction.SwitchTo(event.id),
-                    PathSessionAction.ReplayFromLastAck,
                     PathSessionAction.RequestKeyframes,
                     PathSessionAction.StartPing(event.id),
                     PathSessionAction.Ranking(PathRankingEvent.PathUp(event.id)),

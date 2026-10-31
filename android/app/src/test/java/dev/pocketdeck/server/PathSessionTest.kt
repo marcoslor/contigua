@@ -118,7 +118,6 @@ class PathSessionTest {
             listOf(
                 PathSessionAction.StopPing("a"),
                 PathSessionAction.SwitchTo("b"),
-                PathSessionAction.ReplayFromLastAck,
                 PathSessionAction.RequestKeyframes,
                 PathSessionAction.StartPing("b"),
                 PathSessionAction.Ranking(PathRankingEvent.CurrentFailed("a")),
@@ -179,6 +178,20 @@ class PathSessionTest {
         assertEquals(PathSessionState.Live("a"), m.state)
         assertEquals(null, pongFailure(PathHub.PongLoss("b", alive = false), "a"))
         assertEquals(PathSessionEvent.PongLost("a"), pongFailure(PathHub.PongLoss("a", alive = false), "a"))
+    }
+
+    /** R-10: the phone's health decisions never replay; only followSwitch does. */
+    @Test
+    fun thePhoneNeverReplaysOnItsOwnHealthDecisions() {
+        for (event in listOf(
+            PathSessionEvent.PongLost("a"),
+            PathSessionEvent.CurrentFailed("a"),
+            PathSessionEvent.PathDown("a"),
+        )) {
+            val m = machine(live = setOf("a", "b"))
+            val actions = m.handle(event, 1.0)
+            assertFalse("$event emitted a replay", actions.contains(PathSessionAction.ReplayFromLastAck))
+        }
     }
 
     @Test
@@ -257,7 +270,6 @@ class PathSessionTest {
         assertEquals(
             listOf(
                 PathSessionAction.SwitchTo("b"),
-                PathSessionAction.ReplayFromLastAck,
                 PathSessionAction.RequestKeyframes,
                 PathSessionAction.StartPing("b"),
                 PathSessionAction.Ranking(PathRankingEvent.PathUp("b")),
