@@ -2275,9 +2275,11 @@ class Session(object):
 
     def _ping_on_welcome(self, path_id):
         """--ping-on-welcome: the phone's first ping names the path it has just
-        attached. The founder's follows its welcome; a join's can precede it
-        (the ticker's race, modelled above). A pong must come back at once."""
+        attached. D-1: only a join is pinged at once; a founder is not, because
+        a session with one path is never pinged."""
         if not self.phone.args.ping_on_welcome:
+            return
+        if self.hub.path_count < 2:
             return
         self.hub.ping_now(path_id)
 
@@ -2345,7 +2347,7 @@ class Session(object):
     def _tick_paths(self):
         if self.hub is None or self._ending:
             return
-        self.hub.ping_all()
+        self.hub.ping_all(active=self.phone.screen_state == "on")
         for lost in self.hub.pong_timeouts():
             self.phone.events.path("pong_lost", lost, current=self.hub.current_path)
         for stale in self.hub.joined_timeouts():

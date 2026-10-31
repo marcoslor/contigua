@@ -16,6 +16,10 @@ CURRENT_VERSION = 4
 
 MAX_PATHS = 3
 PING_MS = 2000
+# D-1: one path is never pinged; with two or more, 2 s while the screen is on
+# or a transfer runs, otherwise 15 s.
+PING_IDLE_MS = 15000
+TRANSFER_MS = 3000
 PONG_TIMEOUT_MS = 1500
 DRAIN_BACKSTOP_MS = 2000
 JOINED_PING_DROP_MS = 5000
@@ -162,6 +166,7 @@ class PathHub(object):
         self.ack_frames = 0
         self.last_ack_at = 0
         self.last_ping_at = 0
+        self.last_bulk_at = 0
         self.ping_sent_at = {}
         self.joined_waiting = {}
         self.draining = {}
@@ -260,6 +265,8 @@ class PathHub(object):
             inner = proto.Frame(type_, struct.unpack_from(">I", data, 5)[0], data[9:])
             wrapped = proto.pack_reliable(seq, inner)
             self.replay.append(seq, wrapped, bulk)
+            if bulk:
+                self.last_bulk_at = self.now()
             target = self.paths.get(self.current) if self.current else None
         if target is not None:
             try:
@@ -369,6 +376,8 @@ class PathHub(object):
                     # until a gap fills, hence not sorted here).
                     self.on_seq(path_id, seq)
                 if result[0] == "deliver":
+                    if any(proto.is_bulk(f.type) for f in result[1]):
+                        self.last_bulk_at = self.now()
                     for inner_frame in result[1]:
                         # A marker travels reliable, like every JSON frame: the
                         # inner path.switch is the peer's switch, not a message
@@ -484,10 +493,22 @@ class PathHub(object):
             self.ping_sent_at[path_id] = at
         self.send_json_on(path_id, {"t": "path.ping", "path": path_id, "ts": at})
 
-    def ping_all(self):
+    def transfer_active(self):
+        with self.lock:
+            return self.now() - self.last_bulk_at <= TRANSFER_MS
+
+    def ping_all(self, active=True):
         at = self.now()
         with self.lock:
-            if self.closed or at - self.last_ping_at < PING_MS:
+            if self.closed:
+                return
+            if len(self.paths) < 2:
+                # D-1: a one-path session is never pinged (TCP keepalive and
+                # the session's own ping cover it).
+                self.last_ping_at = at
+                return
+            interval = PING_MS if (active or at - self.last_bulk_at <= TRANSFER_MS) else PING_IDLE_MS
+            if at - self.last_ping_at < interval:
                 return
             self.last_ping_at = at
             targets = list(self.paths.keys())

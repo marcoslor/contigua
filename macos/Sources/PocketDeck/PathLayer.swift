@@ -76,6 +76,8 @@ final class PathLayer {
     private var lastInboundAt: [String: Int64] = [:]
     private var ackFrames = 0
     private var lastAckAt: Int64 = 0
+    /// The last bulk frame admitted or delivered (D-1's transfer window).
+    private var lastBulkAt: Int64 = 0
     private var lastPingAt: Int64 = 0
     private var pingSentAt: [String: Int64] = [:]
     private var joinedAwaitingPong: [String: Int64] = [:]
@@ -119,14 +121,27 @@ final class PathLayer {
     func hasPath(_ id: String) -> Bool { locked { paths[id] != nil } }
 
     /// Adds a joined path. The session enforces the 3-path cap before calling.
+    /// A join is pinged at once (PATH-12/D-1), so its ranking starts at once.
     func attach(_ path: Path, joined: Bool) {
+        var pingNow = false
         locked {
             guard !closed, paths[path.id] == nil else { return }
             paths[path.id] = path
             order.append(path.id)
             outbox[path.id] = []
             if current == nil { current = path.id }
-            if joined { joinedAwaitingPong[path.id] = nowMs() }
+            if joined {
+                let at = nowMs()
+                joinedAwaitingPong[path.id] = at
+                pingSentAt[path.id] = at
+                pingNow = true
+            }
+        }
+        if pingNow {
+            let frame = Frame(type: MessageType.json.rawValue, stream: 0, payload: JSONFrame.payload([
+                "t": "path.ping", "path": path.id, "ts": NSNumber(value: nowMs()),
+            ]))
+            path.send(frame.encoded)
         }
     }
 
@@ -241,6 +256,7 @@ final class PathLayer {
             let seq = replay.nextSeq
             try? replay.append(seq: seq, frame: wrapped, bulk: bulk)
             peakHeldBytes = max(peakHeldBytes, replay.heldBytes)
+            if bulk { lastBulkAt = nowMs() }
             if let id = current, paths[id] != nil {
                 outbox[id, default: []].append(wrapped)
                 queuedOn = id
@@ -341,6 +357,9 @@ final class PathLayer {
             let result: ReorderWindow.Result = locked { reorder.receive(reliable) }
             switch result {
             case .deliver(let frames):
+                if frames.contains(where: { PathCodec.isBulk($0.inner.type) }) {
+                    locked { lastBulkAt = nowMs() }
+                }
                 for item in frames {
                     // A marker travels reliable, like every JSON frame: the
                     // inner path.switch is the peer's switch, not a message
@@ -454,11 +473,20 @@ final class PathLayer {
 
     // MARK: Ping and health
 
-    /// Every path is pinged every 2 s, the standby included (PATH-7).
-    func pingAll() {
+    /// D-1's policy: one path is never pinged (its liveness is TCP keepalive
+    /// plus the session's 15 s ping); two or more are pinged every 2 s while
+    /// the phone's screen is on or a transfer runs, otherwise every 15 s. The
+    /// standby is included (PATH-7).
+    func pingAll(active: Bool) {
         let at = nowMs()
         let targets: [Path] = locked {
-            guard !closed, at - lastPingAt >= Self.pingIntervalMs else { return [] }
+            guard !closed else { return [] }
+            guard paths.count >= 2 else {
+                lastPingAt = at
+                return []
+            }
+            let interval = (active || transferActiveLocked(at)) ? Self.pingIntervalMs : Self.pingIdleIntervalMs
+            guard at - lastPingAt >= interval else { return [] }
             lastPingAt = at
             return order.compactMap { paths[$0] }
         }
@@ -470,6 +498,12 @@ final class PathLayer {
             ]))
             path.send(frame.encoded)
         }
+    }
+
+    /// A transfer runs while a bulk frame moved recently (a drop, an APK, fs
+    /// bulk or clipboard images); the 2 s ping interval applies then (D-1).
+    private func transferActiveLocked(_ at: Int64) -> Bool {
+        at - lastBulkAt <= Self.transferWindowMs
     }
 
     /// Paths whose ping went unanswered for 1.5 s (one lost sample). A path
@@ -504,6 +538,10 @@ final class PathLayer {
 
     static let maxPaths = 3
     static let pingIntervalMs: Int64 = 2_000
+    /// The slower ping with two paths and no screen or transfer (D-1).
+    static let pingIdleIntervalMs: Int64 = 15_000
+    /// How recently a bulk frame must have moved to count as "a transfer runs".
+    static let transferWindowMs: Int64 = 3_000
     static let pongTimeoutMs: Int64 = 1_500
     /// A path that delivered anything this recently is alive (D-2).
     static let aliveMs: Int64 = 1_500

@@ -236,6 +236,27 @@ sys.exit(1)
 PY
 }
 
+# path_mac_pings_since <epoch> — how many path.ping frames the Mac sent after
+# <epoch> (the fake logs every JSON it receives).
+path_mac_pings_since() {
+    python3 - "$WORK/events.jsonl" "$1" <<'PY'
+import json, sys
+start = float(sys.argv[2])
+count = 0
+for line in open(sys.argv[1]):
+    try:
+        event = json.loads(line)
+    except ValueError:
+        continue
+    if event.get("ev") != "rx" or event.get("ts", 0) < start:
+        continue
+    msg = event.get("msg") or {}
+    if msg.get("t") == "path.ping":
+        count += 1
+print(count)
+PY
+}
+
 check_pathstart() {
     clean
     pathfault_nuke
@@ -616,10 +637,19 @@ check_pathrejoin() {
     path_pair_once "$PORT"
     pathfault_start "$((PORT + 3))" "$PORT"
     ctl="$PATHFAULT_CTL"
+    local t_launch
+    t_launch="$(date +%s)"
     launch --connect "127.0.0.1:$((PORT + 3))" --open-phone --quit-after 40
     wait_until 20 events_have '"ev":"video"' \
         && ok "[PATH-6] PATHREJOIN the session is live on its only path" \
         || bad "[PATH-6] PATHREJOIN the session never opened a window"
+    # D-1: one path is never pinged. Give the 2 s ticker two chances to prove it.
+    sleep 3
+    local mac_pings
+    mac_pings="$(path_mac_pings_since "$t_launch")"
+    [ "${mac_pings:-1}" -eq 0 ] \
+        && ok "[PATH-7] PATHREJOIN a one-path session sends no path.ping" \
+        || bad "[PATH-7] PATHREJOIN a one-path session sent $mac_pings path.pings"
     session="$(path_welcome_session)"
     [ -n "$session" ] \
         && ok "[PATH-3] PATHREJOIN the phone minted the session" \

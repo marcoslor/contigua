@@ -358,6 +358,9 @@ final class Session {
     private var pathSessionId: String?
     private var pathMachine = PathSessionMachine()
     private var pathRanking = PathRanking()
+    /// D-1: the phone's screen state from the last `state` message. A session
+    /// that has not heard one yet counts as active (the safe default).
+    private var phoneScreenOn = true
     private var reconnectingEmitted = false
     private var pairingAttempt = false
     /// The founding path's phone identity, for the pairing pin record.
@@ -926,7 +929,7 @@ final class Session {
 
     private func tickPaths() {
         maintainPaths()
-        pathLayer.pingAll()
+        pathLayer.pingAll(active: phoneScreenOn)
         let now = uptime
         for lost in pathLayer.lostPings() {
             pathRanking.addSample(id: lost, rttMs: nil, at: now)
@@ -1408,6 +1411,7 @@ final class Session {
                               label: message.string("label") ?? "",
                               pkg: message.string("pkg") ?? ""))
         case "state":
+            phoneScreenOn = (message.string("screen") ?? "on") == "on"
             emit(.phoneState(locked: message.bool("locked") ?? false,
                              battery: message.int("battery") ?? 0,
                              charging: message.bool("charging") ?? false,
