@@ -9211,7 +9211,8 @@ check_handoff() {
 # never the text); `notifyclick` runs the same routing a banner click runs and
 # opens that app's window on the Mac; `mediacmd` drives what a Now Playing
 # control drives. With the opt-in off (the default) the Mac forwards nothing and
-# never asks the phone to enable.
+# never asks the phone to enable. Two extra posts (pd-b1 with a picture, pd-b2
+# without) prove the composed attachment (NOTIFY-22).
 check_notify() {
     clean
     local log="$WORK/notify.log" offlog="$WORK/notify-off.log" script="$WORK/notify-input.txt" device
@@ -9245,7 +9246,9 @@ PY
         return 0
     }
 
-    start_fake || return 1
+    # NOTIFY-22: two extra posts (one with a picture, one without) for an app
+    # whose icon the fake serves, after the Mac has cached the icon.
+    FAKE_ARGS="--notify-badge" start_fake || return 1
     device="$(sed -n 's/^fakephone \([^ ]*\) listening.*/\1/p' "$WORK/fake.log" "$WORK/fake.err" | head -1)"
     [ -n "$device" ] || { bad "NOTIFY no device id in the fakephone listening line"; stop_fakephone; return 1; }
     # The per-phone opt-in is a stored default of the e2e profile, off by default
@@ -9325,6 +9328,25 @@ PY
     no_notify_text "$WORK/app.log" "$log" "$WORK/fake.log" "$WORK/events.jsonl" \
         && ok "[NOTIFY-14] NOTIFY no notification text in the app log, share log, fake log or event log" \
         || bad "[NOTIFY-14] NOTIFY notification text leaked"
+
+    # (g) NOTIFY-22: the attachment carries the sending app's icon. The fake
+    # posts pd-b1 with a picture and pd-b2 without, for com.whatsapp, whose icon
+    # it serves and the Mac caches from the app list.
+    wait_until 30 log_has "notify post id=pd-b1 pkg=com.whatsapp" \
+        && ok "[NOTIFY-22] NOTIFY the picture post was recorded" \
+        || bad "NOTIFY pd-b1 not recorded: $(tr '\n' '|' < "$log" 2>/dev/null)"
+    wait_until 30 log_has "notify post id=pd-b2 pkg=com.whatsapp" \
+        && ok "[NOTIFY-22] NOTIFY the icon-only post was recorded" \
+        || bad "NOTIFY pd-b2 not recorded"
+    grep -qE 'notify post id=pd-b1 .*composed shape=circle badge=yes side=160 class=deck' "$log" 2>/dev/null \
+        && ok "[NOTIFY-22] NOTIFY the picture is a circle with the app's badge" \
+        || bad "NOTIFY pd-b1 was not composed: $(grep 'id=pd-b1' "$log" 2>/dev/null | tr '\n' '|')"
+    grep -qE 'notify post id=pd-b2 .*composed shape=icon badge=no side=256 class=deck' "$log" 2>/dev/null \
+        && ok "[NOTIFY-22] NOTIFY no picture: the app's icon alone" \
+        || bad "NOTIFY pd-b2 was not the icon alone: $(grep 'id=pd-b2' "$log" 2>/dev/null | tr '\n' '|')"
+    no_notify_text "$log" \
+        && ok "[NOTIFY-22] NOTIFY the composition facts carry no text" \
+        || bad "[NOTIFY-22] NOTIFY the composition line leaked text"
 
     # (f) "When I click a phone notification" (ROADMAP D2): Open on Mac (the
     # default, used above) opens the window and runs the action there; Open on
@@ -9671,7 +9693,7 @@ lines = open(sys.argv[1]).read().splitlines()
 posts = [line for line in lines if line.startswith("notify post id=pd-q2 ")]
 if len(posts) != 1:
     print("posts:", len(posts)); sys.exit(1)
-if not posts[0].endswith("alert=1 banners=1 presented=1 quiet=0"):
+if " alert=1 banners=1 presented=1 quiet=0" not in posts[0]:
     print("post:", posts[0]); sys.exit(1)
 PY
     # (h3) [NOTIFY-19] a first post with alert:false (a LOW channel, or a
@@ -9687,7 +9709,7 @@ lines = open(sys.argv[1]).read().splitlines()
 posts = [line for line in lines if line.startswith("notify post id=pd-q3 ")]
 if len(posts) != 1:
     print("posts:", len(posts)); sys.exit(1)
-if not posts[0].endswith("alert=0 banners=1 presented=0 quiet=1"):
+if " alert=0 banners=1 presented=0 quiet=1" not in posts[0]:
     print("post:", posts[0]); sys.exit(1)
 PY
     # (h4) [NOTIFY-19] row 6: the bar moving is not news. Five ticks whose text
@@ -9708,7 +9730,7 @@ if len(alerting) != 2 or len(quiet) != 4:
     print("alerting:", len(alerting), "quiet:", len(quiet)); sys.exit(1)
 if " alert=1 " not in posts[0]:
     print("first:", posts[0]); sys.exit(1)
-if not posts[-1].endswith("alert=1 banners=1 presented=2 quiet=4"):
+if " alert=1 banners=1 presented=2 quiet=4" not in posts[-1]:
     print("last:", posts[-1]); sys.exit(1)
 PY
     stop_app
@@ -9808,10 +9830,10 @@ EOF
     # (a) the picture joins its post: mime, dimensions, size and a temp file.
     wait_until 20 log_has "notify post id=pd-m1 pkg=com.whatsapp" \
         || { bad "NOTIFY-MEDIA pd-m1 not recorded: $(tr '\n' '|' < "$log" 2>/dev/null)"; stop_app; stop_fakephone; return 1; }
-    log_has "image=image/jpeg w=160 h=120 size=1615 attachment=" \
-        && ok "NOTIFY-MEDIA the picture joined the post (jpeg 160x120, 1615 B)" \
+    grep -qE 'image=image/png w=160 h=160 size=[0-9]+ attachment=' "$log" 2>/dev/null \
+        && ok "NOTIFY-MEDIA the picture joined the post (composed png 160x160)" \
         || bad "NOTIFY-MEDIA the post carries no image facts"
-    path="$(sed -n 's/.*attachment=\([^ ]*\).*/\1/p' "$log" | head -1)"
+    path="$(sed -n 's/^notify post id=pd-m1 .*attachment=\([^ ]*\).*/\1/p' "$log" | head -1)"
     if [ -n "$path" ] && [ -f "$path" ]; then
         ok "NOTIFY-MEDIA the attachment temp file exists"
         mode="$(stat -f %Lp "$path" 2>/dev/null)"
@@ -9838,7 +9860,7 @@ EOF
     log_has "notify image id=pd-m2 refused=bytes" \
         && ok "NOTIFY-MEDIA the oversized picture was refused" \
         || bad "NOTIFY-MEDIA the oversized picture was not refused"
-    ! grep -q "notify post id=pd-m2 .*image=" "$log" 2>/dev/null \
+    ! grep -qE 'notify post id=pd-m2 .*image=image/jpeg w=160 h=120' "$log" 2>/dev/null \
         && ok "NOTIFY-MEDIA the refused picture was not attached" \
         || bad "NOTIFY-MEDIA the refused picture was attached anyway"
 

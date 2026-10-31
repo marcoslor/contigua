@@ -316,4 +316,68 @@ final class NotifyComposerTests: XCTestCase {
             }
         }
     }
+
+    // MARK: wiring into the banner
+
+    @MainActor
+    func testAPostWithAPictureAndACachedIconRecordsTheComposition() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("notify-compose-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let log = directory.appendingPathComponent("posts.log")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let center = NotifyCenter()
+        center.log = log
+        center.hold = 0.25
+        center.attachmentRoot = directory.appendingPathComponent("attachments", isDirectory: true)
+        center.iconFor = { _, _ in self.icon(self.fixtureIcon()) }
+        let picture = try XCTUnwrap(NSBitmapImageRep(cgImage: solid(200, 100, (255, 40, 40, 255)))
+            .representation(using: .png, properties: [:]))
+        center.post(PhoneNotification(id: "c1", pkg: "com.whatsapp", when: nil,
+                                      title: "Chat", text: "One", alert: true),
+                    phoneId: "phone-1", phoneName: "Nicky", labelFor: { _ in nil })
+        center.image(id: "c1", mime: "image/png", width: 200, height: 100, data: picture)
+        let settled = expectation(description: "the hold elapsed")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { settled.fulfill() }
+        wait(for: [settled], timeout: 3)
+        let lines = try String(contentsOf: log, encoding: .utf8)
+            .split(separator: "\n").map(String.init)
+        let post = lines.first { $0.hasPrefix("notify post id=c1 ") }
+        XCTAssertTrue(post?.contains(" composed shape=circle badge=yes side=200 class=deck ") == true,
+                      "the post says what it attached: \(post ?? "none")")
+        XCTAssertTrue(post?.contains(" image=image/png w=200 h=200 ") == true,
+                      "the composed PNG's own facts: \(post ?? "none")")
+        let files = (try? FileManager.default.contentsOfDirectory(
+            at: center.attachmentRoot!, includingPropertiesForKeys: nil)) ?? []
+        XCTAssertEqual(files.filter { $0.pathExtension == "png" }.count, 1,
+                       "one composed attachment on disk")
+    }
+
+    @MainActor
+    func testAPostWithNoPictureAndACachedIconHasAnAttachment() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("notify-icon-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let log = directory.appendingPathComponent("posts.log")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let center = NotifyCenter()
+        center.log = log
+        center.hold = 0
+        center.attachmentRoot = directory.appendingPathComponent("attachments", isDirectory: true)
+        center.iconFor = { _, _ in self.icon(self.fixtureIcon(side: 512)) }
+        center.post(PhoneNotification(id: "c2", pkg: "com.whatsapp", when: nil,
+                                      title: "Chat", text: "No picture", alert: true),
+                    phoneId: "phone-1", phoneName: "Nicky", labelFor: { _ in nil })
+        let lines = try String(contentsOf: log, encoding: .utf8)
+            .split(separator: "\n").map(String.init)
+        let post = lines.first { $0.hasPrefix("notify post id=c2 ") }
+        XCTAssertTrue(post?.contains(" composed shape=icon badge=no side=256 class=deck ") == true,
+                      "the icon alone is the attachment: \(post ?? "none")")
+        XCTAssertTrue(post?.contains(" image=image/png w=256 h=256 ") == true,
+                      "the post carries the icon's facts: \(post ?? "none")")
+        let files = (try? FileManager.default.contentsOfDirectory(
+            at: center.attachmentRoot!, includingPropertiesForKeys: nil)) ?? []
+        XCTAssertEqual(files.filter { $0.pathExtension == "png" }.count, 1,
+                       "the icon-only attachment is on disk")
+    }
 }

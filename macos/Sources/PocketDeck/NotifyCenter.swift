@@ -385,11 +385,14 @@ enum NotifyMapping {
     /// category id is a hash of the shape, so the e2e can see the counts.
     static func record(posted n: PhoneNotification, title: String, body: String,
                        thread: String, code: Bool, category: String,
-                       facts: NotifyBannerFacts, image: NotifyImageInfo? = nil) -> String {
+                       composed: String? = nil, facts: NotifyBannerFacts,
+                       image: NotifyImageInfo? = nil) -> String {
         let reply = n.actions.contains { $0.reply } ? 1 : 0
         var line = "notify post id=\(n.id) pkg=\(n.pkg) titleLen=\(title.count) bodyLen=\(body.count)"
             + " thread=\(thread) actions=\(n.actions.count) reply=\(reply) code=\(code ? 1 : 0)"
-            + " ongoing=\(n.ongoing ? 1 : 0) category=\(category) " + facts.record
+            + " ongoing=\(n.ongoing ? 1 : 0) category=\(category)"
+        if let composed { line += " " + composed }
+        line += " " + facts.record
         if n.live != nil { line += " live=1" }
         if let image { line += " " + image.record }
         return line
@@ -666,6 +669,15 @@ final class NotifyCenter {
     /// there is nothing to attach to).
     var hold: TimeInterval = 0.3
 
+    /// The post package's icon for the attachment (NOTIFY-22). `nil` leaves
+    /// every picture as a plain circle with no badge. Replaceable so tests draw
+    /// a fixture and never read the person's cache.
+    var iconFor: ((_ pkg: String, _ deviceId: String) -> NotifyAttachmentComposer.Icon?)?
+
+    /// Where attachment temp files are written. Tests point it at a temp folder;
+    /// nil means the profile's caches.
+    var attachmentRoot: URL?
+
     /// What a banner response or a debug action needs, kept for the ids the
     /// phone issued. Bounded like the wire's own id map.
     private struct Known {
@@ -711,12 +723,34 @@ final class NotifyCenter {
     private static let maxKnown = 200
 
     /// Where a profile's attachment temp files live: caches, not Documents.
-    private static var attachmentDirectory: URL? {
+    private static var profileAttachmentDirectory: URL? {
         guard let base = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first else {
             return nil
         }
         return base.appendingPathComponent(Profile.active.supportDirectoryName, isDirectory: true)
             .appendingPathComponent("notify", isDirectory: true)
+    }
+
+    private var attachmentDirectory: URL? { attachmentRoot ?? Self.profileAttachmentDirectory }
+
+    /// The post package's cached icon in the composer's form (NOTIFY-22): the
+    /// Deck's slot first, then the Dock's, so the first source that fits the
+    /// attachment's size is the one drawn.
+    nonisolated static func cachedIcon(pkg: String, deviceId: String) -> NotifyAttachmentComposer.Icon? {
+        var candidates: [NotifyAttachmentComposer.IconCandidate] = []
+        for sizeClass in IconSizeClass.allCases {
+            let layers = IconCache.shared.loadLayerData(pkg: pkg, deviceId: deviceId, sizeClass: sizeClass)
+            let flat = IconCache.shared.loadData(pkg: pkg, deviceId: deviceId, sizeClass: sizeClass)
+            if let layers, let fg = NotifyAttachmentComposer.decode(layers.fg),
+               let bg = NotifyAttachmentComposer.decode(layers.bg) {
+                candidates.append(NotifyAttachmentComposer.IconCandidate(
+                    layers: (fg, bg), flat: nil, sizeClass: sizeClass))
+            } else if let flat, let image = NotifyAttachmentComposer.decode(flat) {
+                candidates.append(NotifyAttachmentComposer.IconCandidate(
+                    layers: nil, flat: image, sizeClass: sizeClass))
+            }
+        }
+        return candidates.isEmpty ? nil : NotifyAttachmentComposer.Icon(candidates: candidates)
     }
 
     /// The whole set of live rows (the menu bar reads this).
@@ -843,8 +877,32 @@ final class NotifyCenter {
         let thread = NotifyMapping.thread(phoneId: post.phoneId, group: post.notification.group)
         var info = post.image?.info
         var url: URL?
-        if let image = post.image, let written = writeAttachment(phoneId: post.phoneId, id: id,
-                                                                 info: image.info, data: image.data) {
+        // NOTIFY-22: the picture is cut to a circle with the sending app's
+        // badge, and with no picture the app's icon alone is the attachment.
+        let picture = post.image.flatMap { NotifyAttachmentComposer.decode($0.data) }
+        let composition: NotifyAttachmentComposer.Outcome
+        if post.image != nil, picture == nil {
+            // Undecodable bytes never become "no picture": keep them as sent.
+            composition = NotifyAttachmentComposer.Outcome(attachment: nil, fallback: .render)
+        } else {
+            composition = NotifyAttachmentComposer.compose(
+                picture: picture,
+                icon: iconFor?(post.notification.pkg, post.phoneId),
+            )
+        }
+        if let composed = composition.attachment {
+            let composedInfo = NotifyImageInfo(mime: composed.mime, width: composed.side,
+                                               height: composed.side, size: composed.data.count)
+            info = composedInfo
+            if let written = writeAttachment(phoneId: post.phoneId, id: id, info: composedInfo,
+                                             data: composed.data) {
+                url = written
+                info?.attachment = written.path
+                attachments[id] = written
+            }
+        } else if let image = post.image, let written = writeAttachment(phoneId: post.phoneId, id: id,
+                                                                         info: image.info, data: image.data) {
+            // The composition could not meet the caps: today's picture.
             url = written
             info?.attachment = written.path
             attachments[id] = written
@@ -852,7 +910,7 @@ final class NotifyCenter {
         record(NotifyMapping.record(posted: post.notification, title: post.title, body: post.body,
                                     thread: thread, code: NotifyCode.find(title: post.notification.title,
                                                                                  text: post.notification.text) != nil,
-                                    category: post.category,
+                                    category: post.category, composed: composition.record,
                                     facts: NotifyBannerFacts(alert: post.notification.alert,
                                                              banners: requestIds[id] == nil ? 0 : 1,
                                                              presented: counts.presented,
@@ -880,7 +938,7 @@ final class NotifyCenter {
 
     /// Writes the temp file 0600 in a 0700 directory; nil when it cannot.
     private func writeAttachment(phoneId: String, id: String, info: NotifyImageInfo, data: Data) -> URL? {
-        guard let directory = Self.attachmentDirectory else { return nil }
+        guard let directory = attachmentDirectory else { return nil }
         let manager = FileManager.default
         do {
             try manager.createDirectory(at: directory, withIntermediateDirectories: true,
@@ -912,7 +970,7 @@ final class NotifyCenter {
         publishLive()
         for (_, url) in attachments { try? FileManager.default.removeItem(at: url) }
         attachments.removeAll()
-        if let directory = Self.attachmentDirectory {
+        if let directory = attachmentDirectory {
             try? FileManager.default.removeItem(at: directory)
         }
         requestIds.values.forEach {
