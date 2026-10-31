@@ -36,6 +36,29 @@ class PathTlsJoinTest {
         }
     }
 
+    /** Reads for [ms]; true if a bare `path.ping` arrived (D-1: none on one path). */
+    private fun sawPathPing(reader: FrameReader, socket: Socket, ms: Int): Boolean {
+        val previous = socket.soTimeout
+        socket.soTimeout = ms
+        return try {
+            var seen = false
+            while (true) {
+                val frame = reader.readFrame() ?: break
+                if (frame.type != Frames.TYPE_JSON) continue
+                val obj = runCatching { Json.parseObject(String(frame.payload)) }.getOrNull()
+                if (obj?.get("t") == "path.ping") {
+                    seen = true
+                    break
+                }
+            }
+            seen
+        } catch (e: java.net.SocketTimeoutException) {
+            false
+        } finally {
+            socket.soTimeout = previous
+        }
+    }
+
     private fun hello(path: String, join: String? = null, pairing: Boolean = false): ByteArray {
         val fields = mutableMapOf<String, Any?>(
             "t" to "hello", "v" to 4, "path" to path,
@@ -91,6 +114,8 @@ class PathTlsJoinTest {
         }
     }
 
+    /** D-1/PATH-21: one path is never pinged, so no lost pong can fail it; the
+     * session stays live on TCP keepalive plus the 15 s app keepalive. */
     @Test
     fun oneLostPongOnTheOnlyPathDoesNotReconnect() {
         val clock = { System.nanoTime() / 1_000_000 }
@@ -103,10 +128,11 @@ class PathTlsJoinTest {
                 out.flush()
                 val welcome = readJson(reader)
                 assertEquals("welcome", welcome["t"])
-                // The phone pings at once; this Mac never answers that ping.
-                val ping = gatherUntil(reader, "t", "path.ping")
-                assertEquals("a1b2c3d4", ping["path"])
-                Thread.sleep(2_400) // real-time: the phone's 2 s ticker and 1.5 s pong rule
+                // D-1: no path.ping at all on a single path.
+                assertFalse(
+                    "a one-path session was pinged: ${phone.logs}",
+                    sawPathPing(reader, socket, ms = 2_400),
+                )
                 assertFalse(
                     "one lost pong failed the only path: ${phone.logs}",
                     phone.logs.any { it == "paths: reconnecting" },
@@ -115,6 +141,31 @@ class PathTlsJoinTest {
                 out.write(json(mapOf("t" to "ping", "ts" to 31)))
                 out.flush()
                 assertEquals(31L, gatherUntil(reader, "ts", 31L)["ts"])
+            }
+        }
+    }
+
+    /** R-14/AGENTS: every session-machine transition is one `<from> --event--> <to>`
+     * line with closed tokens. */
+    @Test
+    fun theSessionMachineLogsEachTransition() {
+        harness().use { phone ->
+            phone.client().use { first ->
+                val reader = FrameReader(first.getInputStream())
+                first.getOutputStream().write(hello("a1b2c3d4"))
+                first.getOutputStream().flush()
+                assertEquals("welcome", readJson(reader)["t"])
+                first.close()
+                val deadline = System.currentTimeMillis() + 3_000
+                while (System.currentTimeMillis() < deadline &&
+                    phone.logs.none { it.startsWith("paths: live a1b2c3d4 --") }
+                ) {
+                    Thread.sleep(20) // real-time: the transition runs on the session's reader thread
+                }
+                assertTrue(
+                    "no transition line: ${phone.logs}",
+                    phone.logs.contains("paths: live a1b2c3d4 --failed--> orphaned"),
+                )
             }
         }
     }

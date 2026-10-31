@@ -530,6 +530,36 @@ class ServerTest {
         }
     }
 
+    /** R-8/D-4: the version refusal reaches the app through the callback. */
+    @Test
+    fun aRefusedVersionReachesTheAppCallback() {
+        val platform = FakePlatform()
+        val phoneIdentity = TestTls.generate("PocketDeck Phone (version callback)")
+        val macIdentity = TestTls.generate("PocketDeck Mac (version callback)")
+        val seen = mutableListOf<Int?>()
+        val server = Server(
+            { socket, plain, hello -> sessionFor(platform, socket, plain, hello) },
+            log = {},
+            { phoneIdentity.certPem },
+            { phoneIdentity.keyP8 },
+            { GateSettings(true, true) },
+            onVersionRefused = { seen.add(it) },
+        )
+        val port = server.start()
+        try {
+            client(port, macIdentity, phoneIdentity).use { old ->
+                val reader = FrameReader(old.getInputStream())
+                old.getOutputStream().write(Frames.encodeJson(0, Json.encode(mapOf(
+                    "t" to "hello", "v" to 3, "path" to "a1b2c3d4", "clientId" to "c3", "name" to "OldMac"))))
+                old.getOutputStream().flush()
+                assertEquals("version", readJson(reader)["code"])
+            }
+            assertEquals(listOf<Int?>(3), seen)
+        } finally {
+            server.stop()
+        }
+    }
+
     /** PATH-3: a join for an id the phone does not serve answers `no_session`. */
     @Test
     fun aJoinForAnUnknownSessionIsRefused() {

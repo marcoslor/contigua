@@ -113,11 +113,11 @@ class PathSessionTest {
         m.scores["b"] = 900
         val actions = m.handle(PathSessionEvent.CurrentFailed("a"), 5.0)
         assertEquals(PathSessionState.Migrating("a", "b", 5.0), m.state)
+        assertFalse("a socket error fails the path", m.live.contains("a"))
         assertEquals(
             listOf(
                 PathSessionAction.StopPing("a"),
                 PathSessionAction.SwitchTo("b"),
-                PathSessionAction.ReplayFromLastAck,
                 PathSessionAction.RequestKeyframes,
                 PathSessionAction.StartPing("b"),
                 PathSessionAction.Ranking(PathRankingEvent.CurrentFailed("a")),
@@ -154,24 +154,44 @@ class PathSessionTest {
         )
     }
 
+    /** D-2/R-10: a pong-only failure demotes the current path to a standby; it
+     * is not closed, stays pinged, and the phone never replays on it. */
     @Test
-    fun aLostPongWithTwoPathsSwitchesAtOnce() {
+    fun aLostPongDemotesTheCurrentPathToStandbyWithoutClosingIt() {
         val m = machine(live = setOf("a", "b"))
         m.scores["a"] = 100
         m.scores["b"] = 900
         val actions = m.handle(PathSessionEvent.PongLost("a"), 4.0)
-        assertEquals(PathSessionState.Migrating("a", "b", 4.0), m.state)
-        assertEquals(
-            listOf(
-                PathSessionAction.StopPing("a"),
-                PathSessionAction.SwitchTo("b"),
-                PathSessionAction.ReplayFromLastAck,
-                PathSessionAction.RequestKeyframes,
-                PathSessionAction.StartPing("b"),
-                PathSessionAction.Ranking(PathRankingEvent.CurrentFailed("a")),
-            ),
-            actions,
-        )
+        assertEquals(PathSessionState.Live("b"), m.state)
+        assertTrue("the demoted path stays open and pinged", m.live.contains("a"))
+        assertFalse(actions.any { it is PathSessionAction.ClosePath })
+        assertFalse(actions.contains(PathSessionAction.ReplayFromLastAck))
+        assertEquals(listOf(PathSessionAction.Ranking(PathRankingEvent.CurrentFailed("a"))), actions)
+    }
+
+    /** D-2: a path that is still delivering bytes is alive; its lost pong is a
+     * ranking sample, so the current path keeps its role. */
+    @Test
+    fun aPongLostCurrentPathWithFreshInboundKeepsItsRole() {
+        val m = machine(live = setOf("a", "b"))
+        assertEquals(null, pongFailure(PathHub.PongLoss("a", alive = true), "a"))
+        assertEquals(PathSessionState.Live("a"), m.state)
+        assertEquals(null, pongFailure(PathHub.PongLoss("b", alive = false), "a"))
+        assertEquals(PathSessionEvent.PongLost("a"), pongFailure(PathHub.PongLoss("a", alive = false), "a"))
+    }
+
+    /** R-10: the phone's health decisions never replay; only followSwitch does. */
+    @Test
+    fun thePhoneNeverReplaysOnItsOwnHealthDecisions() {
+        for (event in listOf(
+            PathSessionEvent.PongLost("a"),
+            PathSessionEvent.CurrentFailed("a"),
+            PathSessionEvent.PathDown("a"),
+        )) {
+            val m = machine(live = setOf("a", "b"))
+            val actions = m.handle(event, 1.0)
+            assertFalse("$event emitted a replay", actions.contains(PathSessionAction.ReplayFromLastAck))
+        }
     }
 
     @Test
@@ -250,7 +270,6 @@ class PathSessionTest {
         assertEquals(
             listOf(
                 PathSessionAction.SwitchTo("b"),
-                PathSessionAction.ReplayFromLastAck,
                 PathSessionAction.RequestKeyframes,
                 PathSessionAction.StartPing("b"),
                 PathSessionAction.Ranking(PathRankingEvent.PathUp("b")),
@@ -340,5 +359,22 @@ class PathSessionTest {
         assertEquals("live a", m.describe())
         m.handle(PathSessionEvent.CurrentFailed("a"), 1.0)
         assertEquals("orphaned", m.describe())
+    }
+
+    @Test
+    fun everyTransitionLogsAsPathsFromEventTo() {
+        val before = PathSessionState.Live("a")
+        assertEquals(
+            "paths: live a --failed--> migrating a->b",
+            PathSessionLog.line(before, PathSessionEvent.CurrentFailed("a"), PathSessionState.Migrating("a", "b", 1.0)),
+        )
+        assertEquals(
+            "paths: live a --pong-lost--> live b",
+            PathSessionLog.line(before, PathSessionEvent.PongLost("a"), PathSessionState.Live("b")),
+        )
+        assertEquals(
+            "paths: live a --close--> ended person",
+            PathSessionLog.line(before, PathSessionEvent.Close("person"), PathSessionState.Ended("person")),
+        )
     }
 }
