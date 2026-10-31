@@ -206,48 +206,77 @@ class PathTlsJoinTest {
      * must put `pair.ok` and `welcome` on the wire and keep the session live.
      */
     @Test
-    fun anInteractiveApprovalOverTlsPairsAndWelcomes() {
-        harness(clients = emptyList()).use { phone ->
-            phone.client().use { socket ->
-                socket.soTimeout = 10_000
-                val reader = FrameReader(socket.getInputStream())
-                val out = socket.getOutputStream()
-                out.write(hello("a1b2c3d4", pairing = true))
-                out.flush()
-                out.write(json(mapOf("t" to "pair.request")))
-                out.flush()
-                val commit = readJson(reader)
-                assertEquals("pair.commit", commit["t"])
-                out.write(json(mapOf("t" to "pair.nonce", "n" to "3fb962da6c0eaaee44a7a16a2bcf9c97")))
-                out.flush()
-                val reveal = readJson(reader)
-                assertEquals("pair.reveal", reveal["t"])
+    fun anInteractiveApprovalOverTlsPairsAndWelcomes() = interactiveApproval()
 
-                val deadline = System.nanoTime() + 3_000_000_000L
-                while (System.nanoTime() < deadline && phone.platform.pairRequests.isEmpty()) {
-                    Thread.sleep(20)
+    /**
+     * Boot 5's shape, with the server on Conscrypt's FD socket — the socket
+     * Android uses by default. SunJSSE tolerates a second thread writing while
+     * the reader polls; Android's provider throws, which is the boot-5 fault.
+     */
+    @Test
+    fun anInteractiveApprovalOnTheConscryptFdSocketPairsAndWelcomes() =
+        interactiveApproval(ServerTls(org.conscrypt.Conscrypt.newProvider(), useEngineSocket = false))
+
+    /** The same sequence on Conscrypt's engine socket. */
+    @Test
+    fun anInteractiveApprovalOnTheConscryptEngineSocketPairsAndWelcomes() =
+        interactiveApproval(ServerTls(org.conscrypt.Conscrypt.newProvider(), useEngineSocket = true))
+
+    private data class ServerTls(val provider: java.security.Provider, val useEngineSocket: Boolean) {
+        val label: String get() = if (useEngineSocket) "Conscrypt engine socket" else "Conscrypt FD socket"
+    }
+
+    private fun interactiveApproval(tls: ServerTls? = null) {
+        harness(clients = emptyList(), serverTls = tls).use { phone ->
+            try {
+                phone.client().use { socket ->
+                    socket.soTimeout = 10_000
+                    val reader = FrameReader(socket.getInputStream())
+                    val out = socket.getOutputStream()
+                    out.write(hello("a1b2c3d4", pairing = true))
+                    out.flush()
+                    out.write(json(mapOf("t" to "pair.request")))
+                    out.flush()
+                    val commit = readJson(reader)
+                    assertEquals("pair.commit", commit["t"])
+                    out.write(json(mapOf("t" to "pair.nonce", "n" to "3fb962da6c0eaaee44a7a16a2bcf9c97")))
+                    out.flush()
+                    val reveal = readJson(reader)
+                    assertEquals("pair.reveal", reveal["t"])
+
+                    val deadline = System.nanoTime() + 3_000_000_000L
+                    while (System.nanoTime() < deadline && phone.platform.pairRequests.isEmpty()) {
+                        Thread.sleep(20)
+                    }
+                    val request = phone.platform.pairRequests.firstOrNull()
+                        ?: error("the phone never asked its person: ${phone.logs}")
+                    // Longer than the 250 ms pairing poll: the reader timed out and
+                    // resumed many times before the decision, as boot 4 did.
+                    Thread.sleep(1_500)
+                    phone.server.respondPairing(request.requestId, true)
+
+                    val ok = readJson(reader)
+                    assertEquals("pair.ok", ok["t"])
+                    assertEquals(TlsV2Fixture.MAC_FP_HEX, ok["macFP"])
+                    val welcome = readJson(reader)
+                    assertEquals("welcome", welcome["t"])
+                    assertEquals(32, (welcome["session"] as String).length)
+
+                    // The session is READY on the same socket: a bare ping is served.
+                    out.write(json(mapOf("t" to "ping", "ts" to 21)))
+                    out.flush()
+                    assertEquals(21L, gatherUntil(reader, "ts", 21L)["ts"])
+                    assertTrue(
+                        "no welcome line: ${phone.logs}",
+                        phone.logs.any { it.contains(": welcome (protocol 4)") },
+                    )
                 }
-                val request = phone.platform.pairRequests.firstOrNull()
-                    ?: error("the phone never asked its person: ${phone.logs}")
-                // Longer than the 250 ms pairing poll: the reader timed out and
-                // resumed many times before the decision, as boot 4 did.
-                Thread.sleep(1_500)
-                phone.server.respondPairing(request.requestId, true)
-
-                val ok = readJson(reader)
-                assertEquals("pair.ok", ok["t"])
-                assertEquals(TlsV2Fixture.MAC_FP_HEX, ok["macFP"])
-                val welcome = readJson(reader)
-                assertEquals("welcome", welcome["t"])
-                assertEquals(32, (welcome["session"] as String).length)
-
-                // The session is READY on the same socket: a bare ping is served.
-                out.write(json(mapOf("t" to "ping", "ts" to 21)))
-                out.flush()
-                assertEquals(21L, gatherUntil(reader, "ts", 21L)["ts"])
-                assertTrue(
-                    "no welcome line: ${phone.logs}",
-                    phone.logs.any { it.contains(": welcome (protocol 4)") },
+            } catch (e: Throwable) {
+                // The exception behind boot 5 is the deliverable when this fails.
+                throw AssertionError(
+                    "interactive approval on ${tls?.label ?: "SunJSSE"} failed: ${e.message}; " +
+                        "phone log: ${phone.logs}",
+                    e,
                 )
             }
         }
@@ -256,6 +285,7 @@ class PathTlsJoinTest {
     /** One real [Server] with TLS on loopback and a paired Mac. */
     private fun harness(
         clients: List<PairedClient> = listOf(PairedClient("c1", "MacBook", TlsV2Fixture.MAC_FP_HEX)),
+        serverTls: ServerTls? = null,
     ): Harness {
         val platform = FakePlatform()
         platform.clients.addAll(clients)
@@ -267,6 +297,9 @@ class PathTlsJoinTest {
             log = { logs.add(it) },
             { phoneIdentity.certPem }, { phoneIdentity.keyP8 }, { GateSettings(true, true) },
             { listOf(fingerprintHex(macIdentity)) },
+            tlsContextBuilder = serverTls?.let { tls ->
+                { _, _ -> TestTls.serverContext(phoneIdentity, tls.provider, tls.useEngineSocket) }
+            },
         )
         return Harness(server.start(), macIdentity, phoneIdentity, platform, logs, server)
     }

@@ -48,6 +48,11 @@ class Server(
      * test can hold a session whose close blocks.
      */
     private val sessions: SessionDropper = SessionDropper(log),
+    /**
+     * Builds the TLS context from the pushed identity. Null (production) uses
+     * [ShellTls]; the JVM harness substitutes Conscrypt to match Android.
+     */
+    private val tlsContextBuilder: ((String, String) -> SSLContext?)? = null,
 ) {
     private val serverSocket = ServerSocket()
     private val running = AtomicBoolean(false)
@@ -77,7 +82,11 @@ class Server(
         synchronized(contextLock) {
             if (identity != cachedContext || cachedTlsContext == null) {
                 val built = try {
-                    ShellTls.serverContext(cert, key, null)
+                    if (tlsContextBuilder != null) {
+                        tlsContextBuilder.invoke(cert, key)
+                    } else {
+                        ShellTls.serverContext(cert, key, null)
+                    }
                 } catch (t: Throwable) {
                     // Class and message only: never the key or certificate bytes.
                     // This separates "identity missing" from "identity broken".
