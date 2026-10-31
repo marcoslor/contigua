@@ -27,6 +27,12 @@ class PathHub(
     private val log: (String) -> Unit = {},
     private val now: () -> Long = { System.nanoTime() / 1_000_000 },
 ) {
+    /**
+     * One path's socket plus its own writer (R-2): nothing is written under
+     * the hub lock, so a stalled path cannot freeze the reader, the ticker or
+     * teardown of the others. Bare control frames (ping, pong, ACK, an
+     * unplanned switch marker) take a priority lane ahead of queued bulk.
+     */
     class Transport(
         var id: String,
         val socket: Socket,
@@ -36,16 +42,81 @@ class PathHub(
         val out: OutputStream = BufferedOutputStream(socket.getOutputStream())
         @Volatile var closed = false
 
-        fun write(bytes: ByteArray) {
-            if (closed) throw java.io.IOException("path closed")
-            synchronized(this) {
-                out.write(bytes)
-                out.flush()
+        /** Set by the hub: the writer reports a dead socket from its own thread. */
+        @Volatile var onFailure: ((Throwable) -> Unit)? = null
+
+        private val writeLock = Object()
+        private val priority = ArrayDeque<ByteArray>()
+        private val normal = ArrayDeque<ByteArray>()
+        private var writer: Thread? = null
+        private var writing = false
+
+        /** Queues bytes for this path; never blocks on the socket. */
+        fun send(bytes: ByteArray, priorityLane: Boolean = false) {
+            synchronized(writeLock) {
+                if (closed) return
+                if (priorityLane) priority.addLast(bytes) else normal.addLast(bytes)
+                writeLock.notifyAll()
+                if (writer == null) {
+                    writer = Thread({ writerLoop() }, "pocketdeck-path-writer-$id").apply {
+                        isDaemon = true
+                        start()
+                    }
+                }
             }
         }
 
-        fun close() {
-            closed = true
+        private fun writerLoop() {
+            while (true) {
+                val bytes = synchronized(writeLock) {
+                    while (!closed && priority.isEmpty() && normal.isEmpty()) writeLock.wait()
+                    if (closed) return
+                    val next = if (priority.isNotEmpty()) priority.removeFirst() else normal.removeFirst()
+                    writing = true
+                    next
+                }
+                try {
+                    out.write(bytes)
+                    out.flush()
+                } catch (e: Throwable) {
+                    synchronized(writeLock) {
+                        writing = false
+                        writeLock.notifyAll()
+                    }
+                    if (!closed) onFailure?.invoke(e)
+                    return
+                }
+                synchronized(writeLock) {
+                    writing = false
+                    writeLock.notifyAll()
+                }
+            }
+        }
+
+        /**
+         * Waits until every queued byte is written, at most until [deadline]
+         * (a monotonic ms value; 0 = don't wait). A parked write never blocks
+         * a close for longer than that.
+         */
+        /** Waits for the queued bytes to be written, at most until [deadline]. */
+        fun drain(deadline: Long) {
+            synchronized(writeLock) {
+                while (!closed && (writing || priority.isNotEmpty() || normal.isNotEmpty())) {
+                    val left = deadline - System.currentTimeMillis()
+                    if (left <= 0) break
+                    writeLock.wait(left)
+                }
+            }
+        }
+
+        fun close(drainUntil: Long = 0L) {
+            if (drainUntil > 0) drain(drainUntil)
+            synchronized(writeLock) {
+                closed = true
+                priority.clear()
+                normal.clear()
+                writeLock.notifyAll()
+            }
             runCatching { plain.shutdownInput() }
             runCatching { plain.shutdownOutput() }
             runCatching { plain.close() }
@@ -96,6 +167,7 @@ class PathHub(
     val currentPath: String? get() = synchronized(lock) { current }
 
     fun start(firstPath: Transport) {
+        firstPath.onFailure = { failPath(firstPath.id, it) }
         synchronized(lock) {
             if (paths.isEmpty()) {
                 paths[firstPath.id] = firstPath
@@ -117,6 +189,13 @@ class PathHub(
 
     fun hasPath(id: String): Boolean = synchronized(lock) { paths.containsKey(id) }
 
+    /** Waits (bounded) for the paths' writer queues to flush before a close. */
+    fun drain(ms: Long = CLOSE_DRAIN_MS) {
+        val all = synchronized(lock) { paths.values.toList() }
+        val deadline = System.currentTimeMillis() + ms
+        for (t in all) t.drain(deadline)
+    }
+
     /** Marks a joined path's first-pong deadline (PATH-13). */
     fun expectFirstPong(id: String) = synchronized(lock) {
         if (paths.containsKey(id)) joinedAwaitingPong[id] = now()
@@ -125,6 +204,7 @@ class PathHub(
     /** Adds a joined path; false when the cap (3) is reached or the id is live. */
     fun attach(path: Transport): Boolean = synchronized(lock) {
         if (paths.size >= MAX_PATHS || paths.containsKey(path.id)) return false
+        path.onFailure = { failPath(path.id, it) }
         paths[path.id] = path
         if (current == null) current = path.id
         true
@@ -132,14 +212,19 @@ class PathHub(
 
     fun transport(id: String): Transport? = synchronized(lock) { paths[id] }
 
-    fun detach(id: String): Boolean = synchronized(lock) {
-        val t = paths.remove(id) ?: return false
-        if (current == id) current = null
-        draining.remove(id)
-        pingSentAt.remove(id)
-        joinedAwaitingPong.remove(id)
-        runCatching { t.close() }
-        true
+    fun detach(id: String): Boolean {
+        val t = synchronized(lock) {
+            val removed = paths.remove(id) ?: return false
+            if (current == id) current = null
+            draining.remove(id)
+            pingSentAt.remove(id)
+            joinedAwaitingPong.remove(id)
+            removed
+        }
+        // Closing can wait on a peer's read; never under the hub lock (R-2).
+        // A short drain lets a refusal or a planned switch's marker go out.
+        runCatching { t.close(System.currentTimeMillis() + CLOSE_DRAIN_MS) }
+        return true
     }
 
     fun closeAll() {
@@ -150,7 +235,9 @@ class PathHub(
             current = null
             copy
         }
-        for (t in all) runCatching { t.close() }
+        // One shared deadline: teardown stays bounded however many paths exist.
+        val drainUntil = System.currentTimeMillis() + CLOSE_DRAIN_MS
+        for (t in all) runCatching { t.close(drainUntil) }
     }
 
     /** Sends a reliable frame wrapped, or a lossy one bare (PATH-4/5). */
@@ -170,14 +257,10 @@ class PathHub(
             val inner = frameOf(bytes)
             val wrapped = PathCodec.encodeReliable(seq, inner)
             replay.append(seq, wrapped, bulk)
+            // Enqueue under the lock so seq order matches the write order; the
+            // path's own writer does the socket write outside it (R-2).
             val target = current
-            if (target != null) {
-                try {
-                    paths[target]?.write(wrapped)
-                } catch (e: Throwable) {
-                    failPath(target, e)
-                }
-            }
+            if (target != null) paths[target]?.send(wrapped)
         }
     }
 
@@ -186,8 +269,8 @@ class PathHub(
         writeTo(path, bytes)
     }
 
-    fun sendJSONOn(path: String, obj: Map<String, Any?>) {
-        writeTo(path, Frames.encodeJson(0, Json.encode(obj)))
+    fun sendJSONOn(path: String, obj: Map<String, Any?>, priority: Boolean = false) {
+        writeTo(path, Frames.encodeJson(0, Json.encode(obj)), priority)
     }
 
     /** Waits (writer thread) until the replay buffer can take the frame. */
@@ -206,25 +289,18 @@ class PathHub(
         synchronized(lock) {
             val target = current ?: return
             val t = paths[target] ?: return
-            for (entry in replay.unacked()) {
-                try {
-                    t.write(entry.frame)
-                } catch (e: Throwable) {
-                    failPath(target, e)
-                    return
-                }
-            }
+            for (entry in replay.unacked()) t.send(entry.frame)
         }
     }
 
     /** The phone's own marker: my next reliable frame is nextSeq and goes on [to]. */
-    fun sendMarker(to: String) = sendMarkerOn(to, to)
+    fun sendMarker(to: String) = sendMarkerOn(to, to, priority = true)
 
     /**
      * A planned switch sends its marker on the path being left (PATH-9). The
      * marker is itself reliable frame `N`, so the field names `N + 1`.
      */
-    fun sendMarkerOn(onPath: String, to: String) {
+    fun sendMarkerOn(onPath: String, to: String, priority: Boolean = false) {
         synchronized(lock) {
             while (!closed) {
                 val markerSeq = replay.nextSeq
@@ -238,11 +314,7 @@ class PathHub(
                 }
                 val wrapped = PathCodec.encodeReliable(markerSeq, frameOf(bytes))
                 replay.append(markerSeq, wrapped, false)
-                try {
-                    paths[onPath]?.write(wrapped)
-                } catch (e: Throwable) {
-                    failPath(onPath, e)
-                }
+                paths[onPath]?.send(wrapped, priority)
                 return
             }
         }
@@ -338,7 +410,7 @@ class PathHub(
                             val pingPath = obj["path"] as? String ?: path
                             val ts = (obj["ts"] as? Number)?.toLong() ?: 0
                             if (pingPath in currentPaths()) {
-                                sendJSONOn(path, mapOf("t" to "path.pong", "path" to pingPath, "ts" to ts))
+                                sendJSONOn(path, mapOf("t" to "path.pong", "path" to pingPath, "ts" to ts), priority = true)
                                 events.add(Event.Ping(pingPath))
                             }
                         }
@@ -379,13 +451,9 @@ class PathHub(
         Frame(encoded[4].toInt() and 0xFF, PathCodec.readInt(encoded, 5),
               encoded.copyOfRange(9, encoded.size))
 
-    private fun writeTo(path: String, bytes: ByteArray) {
+    private fun writeTo(path: String, bytes: ByteArray, priority: Boolean = false) {
         val t = synchronized(lock) { paths[path] } ?: return
-        try {
-            t.write(bytes)
-        } catch (e: Throwable) {
-            failPath(path, e)
-        }
+        t.send(bytes, priority)
     }
 
     private fun failPath(path: String, why: Throwable) {
@@ -402,7 +470,7 @@ class PathHub(
     private fun sendAckNow(path: String) {
         val ack = synchronized(lock) { reorder.ack }
         val bytes = PathCodec.encodeAck(ack)
-        writeTo(path, bytes)
+        writeTo(path, bytes, priority = true)
     }
 
     private fun ackLater(path: String) {
@@ -442,7 +510,7 @@ class PathHub(
         }
         for (id in targets) {
             synchronized(lock) { pingSentAt[id] = at }
-            sendJSONOn(id, mapOf("t" to "path.ping", "path" to id, "ts" to at))
+            sendJSONOn(id, mapOf("t" to "path.ping", "path" to id, "ts" to at), priority = true)
         }
     }
 
@@ -476,5 +544,7 @@ class PathHub(
         const val JOINED_PING_DROP_MS = 5_000L
         const val ACK_MS = 10L
         const val ACK_FRAMES = 16
+        /** How long a close waits for queued bytes (a refusal, a switch marker). */
+        const val CLOSE_DRAIN_MS = 300L
     }
 }

@@ -909,7 +909,10 @@ class Session(
                 hub.send(bytes)
             }
             // Drained after a stop (e.g. pair_denied): the reader is still in a
-            // blocking read, and closing the transport is what wakes it.
+            // blocking read, and closing the transport is what wakes it. The
+            // path writers flush first (R-2): a refusal must not lose its race
+            // with this close.
+            hub.drain()
             closeTransport()
         } catch (e: Throwable) {
             log("writer ended: ${e.message}")
