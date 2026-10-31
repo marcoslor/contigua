@@ -4724,8 +4724,11 @@ class FakePhone(object):
                             decision = ("error", "no_session", None)
                         elif self.args.no_rejoin and live._grace_deadline is not None:
                             # The phone has no route back either: its own grace
-                            # is running, so a join cannot attach (pathgrace).
-                            decision = ("busy", "busy", "no path")
+                            # is running, so a join gets no answer at all and
+                            # the connection closes (pathgrace waits the Mac's
+                            # whole 30 s grace; a `busy` reply would end it at
+                            # once, RR-12).
+                            decision = ("silent",)
                         elif msg.get("clientId") != live.client_id:
                             decision = ("busy", "busy", "one session at a time")
                         else:
@@ -4760,6 +4763,8 @@ class FakePhone(object):
                     decision = ("error", "no_session", None)
             if decision[0] == "attached":
                 handed_off = True
+                return
+            if decision[0] == "silent":
                 return
             if decision[0] in ("busy", "error"):
                 self._refuse_conn(conn, decision[1], decision[2] if len(decision) > 2 else None)

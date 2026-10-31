@@ -536,11 +536,13 @@ low / 1 MiB high per path.
   The path that holds the gap keeps being read, and ACKs still go out on any
   path, so progress toward the gap is never blocked by the window (RR-7).
 - **Bulk enters the seq space only when its path has room.** A bulk frame takes
-  a seq only while the sending path's outbox and unacknowledged queue are both
-  under the **256 KiB** low watermark; until then it waits outside the seq
-  space in the pending list with no seq. Control frames are admitted at once,
-  so a key is never more than the watermark plus one chunk behind the file, at
-  any link rate (E-4). The 12 MiB credit stays the hard cap on unacked bulk.
+  a seq only while the sending path's outbox is under its **256 KiB** low
+  watermark and its unacknowledged bulk is inside a **1 MiB** window (RR-4's
+  floor for an ack round, measured as the smallest window that carries a 64 MiB
+  file across a black-holed path); until then it waits outside the seq space in
+  the pending list with no seq. Control frames are admitted at once, so a key is
+  never more than the window plus one chunk behind the file, at any link rate
+  (E-4). The 12 MiB credit stays the hard cap on unacked bulk.
 - **Every path writes from its own writer.** No socket write happens under the
   session lock: one path's writes stay in order, and `detach` and `closeAll`
   close a socket without it, so a stalled path never freezes another's reader,

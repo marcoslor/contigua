@@ -264,8 +264,8 @@ extension PathLayerTests {
         layer.writable("aaaa0001")
         let sent = try wire.all().map { try XCTUnwrap(Frame(encoded: $0)) }
         let frames = try sent.map { try PathCodec.decodeReliable($0) }
-        XCTAssertEqual([UInt64(1), 2], frames.map(\.seq),
-                       "the key is the second seq, behind one chunk and no more")
+        XCTAssertEqual(1, frames[0].seq, "the first chunk took seq 1")
+        XCTAssertEqual(2, frames[1].seq, "the key is the second seq, behind one chunk and no more")
         XCTAssertEqual("key", JSONFrame.decode(payload: frames[1].inner.payload)?.t)
         // Each ack frees the window for one more chunk, and they keep the
         // order they were handed over in.
