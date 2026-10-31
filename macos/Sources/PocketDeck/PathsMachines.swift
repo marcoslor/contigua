@@ -13,6 +13,33 @@ enum PathSessionState: Equatable {
     case ended(reason: String)
 }
 
+extension PathSessionState {
+    /// The closed token the log line uses (docs/design/paths.md §3): never a
+    /// path id or anything from the wire.
+    var token: String {
+        switch self {
+        case .live: return "live"
+        case .migrating: return "migrating"
+        case .orphaned: return "orphaned"
+        case .ended: return "ended"
+        }
+    }
+}
+
+extension PathSessionEvent {
+    var token: String {
+        switch self {
+        case .pathUp: return "up"
+        case .pathDown: return "down"
+        case .currentFailed: return "failed"
+        case .peerSwitch: return "switch"
+        case .close: return "close"
+        case .graceExpired: return "grace"
+        case .drainExpired: return "drain"
+        }
+    }
+}
+
 enum PathSessionEvent: Equatable {
     case pathUp(id: String, joined: Bool)
     case pathDown(id: String)
@@ -394,7 +421,15 @@ struct PathRanking {
             return []
         case .tick(let tickNow):
             switch state {
-            case .idle, .challenging:
+            case .idle:
+                // A real start is pathUp first, pongs seconds later: with no
+                // score at pathUp the ranking stays idle, so the first tick
+                // that has a ranked path elects it (the founder in practice).
+                if let best = bestLiveRankable(now: tickNow) {
+                    state = .steady(current: best)
+                }
+                return []
+            case .challenging:
                 break
             case .steady(let current):
                 guard let challenger = bestLiveRankable(now: tickNow, excluding: current),

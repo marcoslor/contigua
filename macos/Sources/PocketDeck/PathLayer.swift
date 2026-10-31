@@ -60,6 +60,7 @@ final class PathLayer {
 
     /// Test seams.
     var heldBytes: Int { locked { replay.heldBytes } }
+    private(set) var peakHeldBytes = 0
     var pathCount: Int { locked { paths.count } }
     var currentPath: String? { locked { current } }
     var ackValue: UInt64 { locked { reorder.ack } }
@@ -118,6 +119,7 @@ final class PathLayer {
     }
 
     func closeAll() {
+        let peak = locked { peakHeldBytes }
         let all: [Path] = locked {
             closed = true
             let all = order.compactMap { paths[$0] }
@@ -131,6 +133,7 @@ final class PathLayer {
             return all
         }
         for path in all { path.close() }
+        log("paths: replay peak \(peak) bytes")
     }
 
     /// Moves the sending path. A planned switch leaves the old one draining
@@ -177,6 +180,13 @@ final class PathLayer {
         var ready: (path: Path?, seq: UInt64, frame: [UInt8])?
         locked {
             guard !closed else { return }
+            // A frame that did not fit is waiting: every later frame queues
+            // behind it, or the receiver would put the byte streams back in a
+            // different order (a file would arrive corrupted, not dropped).
+            guard pending.isEmpty else {
+                pending.append(Pending(frame: frame, bulk: bulk, completion: completion))
+                return
+            }
             let wrapped = (try? PathCodec.encodeReliable(seq: replay.nextSeq, inner: frame))?.encoded
             let size = wrapped?.count ?? Int.max
             guard let wrapped, replay.canAdmit(bytes: size, bulk: bulk) else {
@@ -185,6 +195,7 @@ final class PathLayer {
             }
             let seq = replay.nextSeq
             try? replay.append(seq: seq, frame: wrapped, bulk: bulk)
+            peakHeldBytes = max(peakHeldBytes, replay.heldBytes)
             ready = (current.flatMap { paths[$0] }, seq, wrapped)
         }
         guard let ready else { return }
@@ -219,6 +230,7 @@ final class PathLayer {
                 return
             }
             try? replay.append(seq: seq, frame: wrapped, bulk: false)
+            peakHeldBytes = max(peakHeldBytes, replay.heldBytes)
             paths[on]?.send(wrapped)
             sent = true
         }
@@ -242,15 +254,20 @@ final class PathLayer {
         if frame.type == PathCodec.ackType {
             let ack: UInt64
             do { ack = try PathCodec.decodeAck(frame) } catch { return [.ackAboveSent] }
-            var flush: [Pending] = []
+            var flush: [Flushed] = []
+            var target: Path?
             let above: Bool = locked {
                 if replay.ackAboveSent(ack) { return true }
                 _ = replay.ack(ack)
-                flush = takePendingLocked()
+                flush = admitPendingLocked()
+                target = current.flatMap { paths[$0] }
                 return false
             }
             if above { return [.ackAboveSent] }
-            for item in flush { sendLocked(item.frame, completion: item.completion) }
+            for item in flush {
+                target?.send(item.bytes)
+                item.completion?(true)
+            }
             return []
         }
         if frame.type == PathCodec.reliableType {
@@ -326,18 +343,27 @@ final class PathLayer {
         return events
     }
 
-    private func takePendingLocked() -> [Pending] {
-        var out: [Pending] = []
-        var keep: [Pending] = []
-        for item in pending {
+    private struct Flushed {
+        let bytes: [UInt8]
+        let completion: (@Sendable (Bool) -> Void)?
+    }
+
+    /// Admits the fitting prefix of [pending] in order. The bytes are already
+    /// wrapped; the caller sends them. Nothing is re-queued through `send`:
+    /// that would put the prefix behind the remainder and reorder the stream.
+    private func admitPendingLocked() -> [Flushed] {
+        var out: [Flushed] = []
+        while let item = pending.first {
             let wrapped = try? PathCodec.encodeReliable(seq: replay.nextSeq, inner: item.frame).encoded
-            if let wrapped, replay.canAdmit(bytes: wrapped.count, bulk: item.bulk) {
-                out.append(item)
-            } else {
-                keep.append(item)
+            guard let wrapped, replay.canAdmit(bytes: wrapped.count, bulk: item.bulk) else {
+                break
             }
+            let seq = replay.nextSeq
+            try? replay.append(seq: seq, frame: wrapped, bulk: item.bulk)
+            peakHeldBytes = max(peakHeldBytes, replay.heldBytes)
+            out.append(Flushed(bytes: wrapped, completion: item.completion))
+            pending.removeFirst()
         }
-        pending = keep
         return out
     }
 

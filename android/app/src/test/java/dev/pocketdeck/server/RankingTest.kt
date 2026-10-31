@@ -45,6 +45,20 @@ class RankingTest {
     }
 
     @Test
+    fun theFirstTickWithPongsElectsTheRealSessionsCurrentPath() {
+        // PathUp arrives before the first pong can: the ranking must not stay
+        // idle forever (the founder becomes current on the first tick with a
+        // ranked path).
+        val r = PathRanking()
+        r.register("lan", PathKind.LAN)
+        assertTrue(r.handle(PathRankingEvent.PathUp("lan"), 0.0).isEmpty())
+        assertEquals(PathRankingState.Idle, r.state)
+        feed(r, "lan", 5.5, 2.0)
+        assertEquals(emptyList<PathRankingAction>(), r.handle(PathRankingEvent.Tick(2.0), 2.0))
+        assertEquals(PathRankingState.Steady("lan"), r.state)
+    }
+
+    @Test
     fun aHealthyCurrentPathKeepsTheMarginAndDoesNotSwitch() {
         val r = PathRanking()
         feed(r, "lan", 5.5, 0.0)
