@@ -132,6 +132,40 @@ sys.exit(0 if count >= want else 1)
 PY
 }
 
+# path_pongs <N> — at least N distinct paths answered the fake's own ping
+# (PATH-12: the phone pings each path the moment it attaches it).
+path_pongs() {
+    python3 - "$WORK/events.jsonl" "$1" <<'PY'
+import json, sys
+want = int(sys.argv[2])
+answered = set()
+for line in open(sys.argv[1]):
+    try:
+        event = json.loads(line)
+    except ValueError:
+        continue
+    if event.get("ev") == "path" and event.get("kind") == "pong":
+        answered.add(event.get("path"))
+sys.exit(0 if len(answered) >= want else 1)
+PY
+}
+
+# path_no_pong_lost — no path missed a pong (the first ping after attach
+# included, which is what --ping-on-welcome sends).
+path_no_pong_lost() {
+    python3 - "$WORK/events.jsonl" <<'PY'
+import json, sys
+for line in open(sys.argv[1]):
+    try:
+        event = json.loads(line)
+    except ValueError:
+        continue
+    if event.get("ev") == "path" and event.get("kind") == "pong_lost":
+        sys.exit(1)
+sys.exit(0)
+PY
+}
+
 # path_rel_paths — how many distinct paths carried a reliable frame.
 path_rel_paths() {
     python3 - "$WORK/events.jsonl" <<'PY'
@@ -152,7 +186,7 @@ check_pathstart() {
     clean
     pathfault_nuke
     local listen="$((PORT + 2))" ctl plain_count join_count listener ok_all=0
-    FAKE_ARGS="--paths 2" start_fake || return 1
+    FAKE_ARGS="--paths 2 --ping-on-welcome" start_fake || return 1
     # The first listener's radio is off until the second founds. `delay`, not
     # `blackhole`: a radio that is off buffers the client's first bytes; a
     # blackhole drops them, and a real path cannot finish TLS from bytes it
@@ -170,6 +204,13 @@ check_pathstart() {
     done
     pathfault_mode "$ctl" pass
     wait_until 20 path_upto 2 || bad "[PATH-20] PATHSTART a second path never joined"
+    # PATH-12: each path's first ping (sent with its welcome) must be answered.
+    wait_until 15 path_pongs 2 \
+        && ok "[PATH-12] PATHSTART the first ping on each path was answered" \
+        || bad "[PATH-12] PATHSTART the Mac did not answer the phone's first ping on each path"
+    wait_until 15 path_no_pong_lost \
+        && ok "[PATH-12] PATHSTART no path lost its first ping" \
+        || bad "[PATH-12] PATHSTART a path lost its first ping"
     python3 - "$WORK/events.jsonl" <<'PY'
 import json, sys
 hellos = []

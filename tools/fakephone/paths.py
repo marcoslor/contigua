@@ -469,6 +469,21 @@ class PathHub(object):
                 self.cv.wait(0.05)
 
     # -- ping and the grace --
+    def ping_now(self, path_id):
+        """One immediate ping that counts as this round's (--ping-on-welcome).
+
+        The real ticker pings a path the moment it is attached; this sends the
+        same frame at the same point without waiting for the 2 s gate."""
+        at = now_ms()
+        with self.lock:
+            if self.closed:
+                return
+            if path_id not in self.paths:
+                return
+            self.last_ping_at = at
+            self.ping_sent_at[path_id] = at
+        self.send_json_on(path_id, {"t": "path.ping", "path": path_id, "ts": at})
+
     def ping_all(self):
         at = self.now()
         with self.lock:
