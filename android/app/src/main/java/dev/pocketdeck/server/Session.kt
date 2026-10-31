@@ -836,7 +836,8 @@ class Session(
                         held.isNotEmpty() && hub.canBuffer() -> held.removeFirst()
                         else -> reader.readFrame() ?: break
                     }
-                    val events = hub.receive(t.id, frame)
+                    val read = hub.receive(t.id, frame)
+                    val events = read.events
                     val pressure = events.filterIsInstance<PathHub.Event.Backpressure>().firstOrNull()
                     if (pressure != null) {
                         if (pressure.stop) {
@@ -875,9 +876,11 @@ class Session(
                     // R-1: the ACK leaves only after every frame the hub
                     // delivered is in the session's hand-off, so a slow handler
                     // pushes back through TCP instead of losing an acked frame.
+                    // RR-8: only a delivered RELIABLE frame earns one; the
+                    // Mac's ACKs, pings and lossy input would be pure airtime.
                     // A closing session never acks: the refusal/bye is the last
                     // frame the Mac may see.
-                    if (!closing) hub.ackHandled(t.id)
+                    if (!closing && read.deliveredReliable) hub.ackHandled(t.id)
                 }
             } catch (e: Throwable) {
                 if (teardown.get() == SessionTeardown.State.LIVE) {

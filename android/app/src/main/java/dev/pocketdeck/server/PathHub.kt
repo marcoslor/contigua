@@ -412,22 +412,28 @@ class PathHub(
 
     // ---- reading ------------------------------------------------------
 
+    /** One frame read from a path: its events and whether the reader may ACK. */
+    data class Read(val events: List<Event>, val deliveredReliable: Boolean)
+
     /**
-     * Processes one frame from [path]. Reliable frames are unwrapped, deduped,
-     * reordered and acked; the returned events are what the session dispatches.
+     * Processes one frame from [path]. Reliable frames are unwrapped, deduped
+     * and reordered; the returned events are what the session dispatches.
+     * [Read.deliveredReliable] is true only for a RELIABLE frame this call
+     * delivered in order (RR-8: only that frame earns an ACK).
      */
-    fun receive(path: String, frame: Frame): List<Event> {
+    fun receive(path: String, frame: Frame): Read {
         synchronized(lock) { lastInboundAt[path] = now() }
         val events = ArrayList<Event>()
+        var delivered = false
         when (frame.type) {
             PathCodec.TYPE_ACK -> {
                 val ack = try {
                     PathCodec.decodeAck(frame)
                 } catch (e: dev.pocketdeck.proto.PathException) {
-                    return listOf(Event.AckAboveSent)
+                    return Read(listOf(Event.AckAboveSent), false)
                 }
                 synchronized(lock) {
-                    if (replay.ackAboveSent(ack)) return listOf(Event.AckAboveSent)
+                    if (replay.ackAboveSent(ack)) return Read(listOf(Event.AckAboveSent), false)
                     replay.ack(ack)
                     lock.notifyAll()
                 }
@@ -438,11 +444,12 @@ class PathHub(
                 } catch (e: Throwable) {
                     // §5.3: a wrapper that contradicts its own header (or is
                     // malformed) is a session protocol error, not one path.
-                    return listOf(Event.ProtocolError)
+                    return Read(listOf(Event.ProtocolError), false)
                 }
                 val result = synchronized(lock) { reorder.receive(inner) }
                 when (result) {
                     is ReorderWindow.Result.Deliver -> {
+                        delivered = true
                         synchronized(lock) { gapPath = path }
                         for (f in result.frames) {
                             if (PathCodec.isBulk(f.inner.type)) {
@@ -517,7 +524,7 @@ class PathHub(
                 }
             }
         }
-        return events
+        return Read(events, delivered)
     }
 
     private fun currentPaths(): Set<String> = synchronized(lock) { paths.keys.toSet() }

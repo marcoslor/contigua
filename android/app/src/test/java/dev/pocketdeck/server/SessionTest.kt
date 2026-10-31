@@ -1461,6 +1461,55 @@ class SessionTest {
     }
 
     /**
+     * RR-8: the phone acked every frame its reader handled, so the Mac's ACKs,
+     * pings and lossy input each earned a redundant one back (pure airtime and
+     * wake-ups). Only a delivered RELIABLE frame advances our ACK.
+     */
+    @Test
+    fun onlyDeliveredReliableFramesEarnAnAck() {
+        addAndAuthenticate()
+        // Drain what the session already queued: the ACK for clip.enable is fine.
+        framesFor(200)
+        // Past the 10 ms coalescing window: a handled frame acks at once.
+        clock += 1_000
+        repeat(3) { i ->
+            client.getOutputStream().write(
+                Frames.encodeJson(
+                    0,
+                    Json.encode(mapOf("t" to "path.ping", "path" to "a1b2c3d4", "ts" to i)),
+                ),
+            )
+        }
+        client.getOutputStream().flush()
+        val types = framesFor(500)
+        assertTrue("the phone did not answer the three pings: $types", types.count { it == Frames.TYPE_JSON } >= 3)
+        assertTrue("a bare ping earned an ACK: $types", types.none { it == PathCodec.TYPE_ACK })
+
+        // A delivered RELIABLE frame still earns one.
+        send(mapOf("t" to "ping", "ts" to 99))
+        assertTrue(
+            "a reliable frame earned no ACK",
+            framesFor(1_000).contains(PathCodec.TYPE_ACK),
+        )
+    }
+
+    /** Every frame type the session puts out within [ms]; stops at the timeout. */
+    private fun framesFor(ms: Int): List<Int> {
+        val types = mutableListOf<Int>()
+        client.soTimeout = ms
+        try {
+            while (true) {
+                val frame = reader.readFrame() ?: break
+                types.add(frame.type)
+            }
+        } catch (_: java.net.SocketTimeoutException) {
+        } finally {
+            client.soTimeout = 5_000
+        }
+        return types
+    }
+
+    /**
      * R-11: a full reorder window whose missing seq is earlier in the same
      * path's stream must not pause that reader: the gap could never arrive.
      */
