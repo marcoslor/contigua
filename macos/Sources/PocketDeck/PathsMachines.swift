@@ -517,6 +517,110 @@ struct PathRanking {
     }
 }
 
+// MARK: - One attempt's lifecycle (R-14)
+
+/// A dialed path from `dial` to its welcome, its join, a refusal or a timeout.
+/// One enum, one pure transition function: the flags (`ready`, `joinAsked`, a
+/// live timer) used to mean the same things apart from each other.
+enum AttemptPhase: Equatable {
+    case dialing
+    /// TLS finished; the plain hello's slot (PathStart) has not reached it yet.
+    case ready
+    /// Its hello went out; `join` is the session id it asked for (nil = plain).
+    case hello(join: String?)
+    case welcomed(session: String)
+    case failed(reason: String)
+    case closed
+}
+
+enum AttemptEvent: Equatable {
+    case tlsReady
+    case sentHello(join: String?)
+    case welcomed(session: String)
+    case failed(reason: String)
+    case closed
+}
+
+/// The session owns the side effects (close the channel, report to PathStart);
+/// the machine only says, per event, whether the phase moved.
+enum AttemptAction: Equatable {
+    case ignore
+}
+
+extension AttemptPhase {
+    var token: String {
+        switch self {
+        case .dialing: return "dialing"
+        case .ready: return "ready"
+        case .hello(let join): return join == nil ? "hello" : "hello-join"
+        case .welcomed: return "welcomed"
+        case .failed: return "failed"
+        case .closed: return "closed"
+        }
+    }
+
+    /// The session id this attempt's hello asked to join, if it was a join.
+    var joinSession: String? {
+        if case .hello(let join) = self { return join }
+        return nil
+    }
+
+    var isWelcomed: Bool {
+        if case .welcomed = self { return true }
+        return false
+    }
+}
+
+extension AttemptEvent {
+    var token: String {
+        switch self {
+        case .tlsReady: return "tls"
+        case .sentHello(let join): return join == nil ? "hello" : "join"
+        case .welcomed: return "welcome"
+        case .failed: return "fail"
+        case .closed: return "close"
+        }
+    }
+}
+
+struct AttemptMachine {
+    private(set) var phase: AttemptPhase = .dialing
+
+    /// `(phase, event) -> (phase, actions)`; an event that cannot happen in the
+    /// current phase is ignored, never guessed at.
+    mutating func handle(_ event: AttemptEvent) -> [AttemptAction] {
+        switch (phase, event) {
+        case (.dialing, .tlsReady):
+            phase = .ready
+            return []
+        case (.ready, .sentHello(let join)):
+            phase = .hello(join: join)
+            return []
+        case (.hello, .welcomed(let session)):
+            phase = .welcomed(session: session)
+            return []
+        case (.dialing, .failed(let reason)),
+             (.ready, .failed(let reason)),
+             (.hello, .failed(let reason)),
+             (.welcomed, .failed(let reason)):
+            phase = .failed(reason: reason)
+            return []
+        case (.dialing, .closed), (.ready, .closed), (.hello, .closed),
+             (.welcomed, .closed), (.failed, .closed):
+            phase = .closed
+            return []
+        case (.dialing, .sentHello), (.dialing, .welcomed),
+             (.ready, .tlsReady), (.ready, .welcomed),
+             (.hello, .tlsReady), (.hello, .sentHello),
+             (.welcomed, .tlsReady), (.welcomed, .sentHello), (.welcomed, .welcomed),
+             (.failed, .tlsReady), (.failed, .sentHello), (.failed, .welcomed),
+             (.failed, .failed), (.closed, .tlsReady), (.closed, .sentHello),
+             (.closed, .welcomed), (.closed, .failed), (.closed, .closed):
+            return [.ignore]
+        }
+    }
+}
+
 // MARK: - The switch's marker order (PATH-9)
 
 enum PathSwitchKind: Equatable {
