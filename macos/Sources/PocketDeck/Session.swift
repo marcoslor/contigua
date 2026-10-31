@@ -1588,6 +1588,18 @@ final class Session {
                 emit(.fsError(id: id, code: code, message: message.string("message")))
                 return
             }
+            // RR-12: a rejoin refused because the session is gone (the phone's
+            // server restarted, or its grace ended first) ends the orphan at
+            // once, so the controller's reconnect starts exactly one new
+            // session instead of dialing a dead id for the whole grace.
+            // `busy` means the same for this Mac's join right now.
+            if message.int("stream") == nil, let attemptId = lastFramePath,
+               attempts[attemptId]?.machine.phase.joinSession != nil,
+               code == "no_session" || code == "busy" {
+                phoneErrorCode = code
+                fail(code)
+                return
+            }
             if message.int("stream") == nil { phoneErrorCode = code }
             emit(.phoneError(code: code, message: message.string("message"),
                              stream: UInt32(message.int("stream") ?? 0)))

@@ -110,6 +110,61 @@ final class SessionOrphanTests: XCTestCase {
         session.closeAndWait()
     }
 
+    /// RR-12: a rejoin refused with `no_session` (the phone's server restarted
+    /// or its grace ended first) ends the orphan at once, so the controller
+    /// starts exactly one new session instead of dialing a dead id for 30 s.
+    func testARejoinRefusedWithNoSessionEndsTheOrphanAtOnce() throws {
+        server = try FakeServer(phoneIdentity: phoneIdentity, trustingClientPem: macIdentity.identity.certPem)
+        let lock = NSLock()
+        var founder: FakeServer.Connection?
+        var foundingSession: String?
+        var joinHellos = 0
+        server.onFrame = { connection, frame in
+            guard frame.type == MessageType.json.rawValue,
+                  let message = JSONFrame.decode(payload: frame.payload),
+                  message.t == "hello" else { return }
+            if let join = message.string("join") {
+                lock.lock(); joinHellos += 1; let count = joinHellos; lock.unlock()
+                // The second provider joins the live session; the orphan's
+                // re-dial is refused: the phone's server restarted.
+                if count == 1 {
+                    connection.sendJSON(Self.welcomeJSON(session: join))
+                } else {
+                    connection.sendJSON(["t": "error", "code": "no_session"])
+                }
+                return
+            }
+            let session = PathIds.sessionId()
+            lock.lock(); foundingSession = session; founder = connection; lock.unlock()
+            connection.sendJSON(Self.welcomeJSON(session: session))
+        }
+        let record = PinnedPhoneV2(deviceId: "phone-1",
+                                   phoneFingerprintHex: server.phoneFingerprintHex,
+                                   certPem: phoneIdentity.certPem)
+        let endpoint = Session.Endpoint.hostPort(host: "127.0.0.1", port: server.port)
+        let session = Session(endpoint: endpoint, endpoints: [endpoint, endpoint],
+                              knownDeviceId: "phone-1", clientId: "test-client",
+                              identity: macIdentity.identity, pinnedPhone: record,
+                              connectTimeout: 4)
+        session.pairingPolicy = .never
+        session.start()
+        XCTAssertTrue(waitFor { session.state == .ready }, "never ready: \(session.state)")
+        XCTAssertTrue(waitFor {
+            lock.lock(); defer { lock.unlock() }
+            return foundingSession != nil
+        })
+        lock.lock(); let founderConnection = founder; lock.unlock()
+        founderConnection?.close()
+        let failed = waitFor(timeout: 6) {
+            if case .failed(let reason) = session.state { return reason == "no_session" }
+            return false
+        }
+        XCTAssertTrue(failed, "the refused rejoin did not end the orphan: \(session.state)")
+        lock.lock(); let joins = joinHellos; lock.unlock()
+        XCTAssertGreaterThanOrEqual(joins, 1)
+        session.closeAndWait()
+    }
+
     /// The founder welcomes; the held attempt joins; the founder's socket then
     /// dies (the only path is gone). A key and a drop chunk sent while orphaned
     /// must be held and replayed on the joining path, and the drop must not be
