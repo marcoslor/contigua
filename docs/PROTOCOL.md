@@ -259,7 +259,7 @@ Mac → phone (after `welcome`):
 | `apps.icon` | `pkg`, optional `px` | phone replies `icon` (with `fg`/`bg`/`mono` layers when the icon is adaptive); `px` is the pixel side of the 108 dp layer it should render (default 216, clamped to 216…1296), an older phone ignores it |
 | `window.open` | `stream`, `w`, `h`, `dpi`, and `pkg` (+ optional `activity`) **or** `"mode":"phone"`, and `newInstance` (optional bool) | create VD + encoder, launch app on it; `mode: phone` mirrors display 0 instead (`window.opened` has `displayId` 0 and the frame's size, the codec's nearest size to the screen's aspect inside `w`×`h`, with the screen's picture in it as `window.content` says; a rotation sends a new VIDEO_CONFIG with the turned size; error `mirror_unavailable` if the phone can't). `newInstance: true` asks for another task of the app on this display: the phone adds `FLAG_ACTIVITY_NEW_DOCUMENT \| FLAG_ACTIVITY_MULTIPLE_TASK` to the launch Intent, so the activity's own `launchMode`/`documentLaunchMode` still decides whether a second task appears; past the phone's cap it answers error `too_many_windows` before a display exists (see "Several windows of one app") |
 | `window.resize` | `stream`, `w`, `h`, `dpi` | resize VD + reconfigure encoder; phone sends new VIDEO_CONFIG, then `window.resize.ack`. A request equal to what the display already shows is a no-op; the same size at a new dpi changes the display's density and rebuilds no encoder (so no new VIDEO_CONFIG); one the phone cannot apply answers `refused` |
-| `window.close` | `stream` | tear down that VD/encoder, and with it that display's task: a task that still exists after the display went — running, or only a card in the phone's Recents — is removed by id, so a closed window leaves no card behind; its app's other tasks and the session stay up |
+| `window.close` | `stream` | tear down that VD/encoder, and with it that display's task: a task that still exists after the display went — running, or only a card in the phone's Recents — is removed by id, so a closed window leaves no card behind; its app's other tasks and the session stay up. It is the last message the Mac sends for that stream: anything later is answered `error no_stream` (the Mac gates it out, WIN-38) |
 | `window.pause` | `stream` | Mac window hidden/minimized/occluded: stop encoding (keep VD + app alive) |
 | `window.resume` | `stream` | resume; phone sends CONFIG + keyframe |
 | `window.keyframe` | `stream` | request IDR (decoder error recovery) |
@@ -887,7 +887,10 @@ and the Mac did not ask to pair — the Mac shows "<phone name> no longer trusts
 Mac." with Pair again and stops retrying), `pair_denied`, `pair_cooldown`, `pair_commit` (the revealed nonce does
 not match the commit), `version`, `protocol` (message not allowed in the current state;
 then close), `pair_timeout` (nobody answered the pairing prompt in 120 s; then close),
-`no_stream` (unknown `stream`), `launch_failed`, `bad_url` (a `link.open` URL that is
+`no_stream` (unknown `stream`: never opened, or already closed by its `window.close`;
+the Mac sends nothing for a stream it closed and shows no notice for a late answer — a
+window still opening is refused on its cover, a live one closes as on `window.closed`),
+`launch_failed`, `bad_url` (a `link.open` URL that is
 not allowed), `bad_size` (`task.continue` without w/h) — plus the device commands'
 own codes: `dnd_on` (a `phone.ringer` while Do Not Disturb is on) and `unavailable`
 (the phone would not write the ringer setting or the music volume), `connections_off` (the phone's
