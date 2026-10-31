@@ -16,6 +16,24 @@ final class PathLayer {
         /// Writes one encoded frame on this path's channel.
         let send: @Sendable ([UInt8]) -> Void
         let close: @Sendable () -> Void
+        /// True while the channel's write buffer is below its water mark: only
+        /// then does the layer feed it more bulk (D-2).
+        let isWritable: @Sendable () -> Bool
+        /// Stops or resumes reading this path: a full reorder window stops the
+        /// path that is ahead instead of dropping (R-11).
+        let setReading: @Sendable (Bool) -> Void
+
+        init(id: String, kind: PathKind, send: @escaping @Sendable ([UInt8]) -> Void,
+             close: @escaping @Sendable () -> Void,
+             isWritable: @escaping @Sendable () -> Bool = { true },
+             setReading: @escaping @Sendable (Bool) -> Void = { _ in }) {
+            self.id = id
+            self.kind = kind
+            self.send = send
+            self.close = close
+            self.isWritable = isWritable
+            self.setReading = setReading
+        }
     }
 
     enum Event {
@@ -50,6 +68,12 @@ final class PathLayer {
     private var replay = ReplayBuffer()
     private var reorder = ReorderWindow()
     private var pending: [Pending] = []
+    /// Admitted reliable frames per path, in seq order, fed to the channel only
+    /// while it is writable (D-2). The replay buffer still owns them.
+    private var outbox: [String: [[UInt8]]] = [:]
+    /// The last time any frame arrived on a path: a path that is still receiving
+    /// is alive even when a pong is late (D-2).
+    private var lastInboundAt: [String: Int64] = [:]
     private var ackFrames = 0
     private var lastAckAt: Int64 = 0
     private var lastPingAt: Int64 = 0
@@ -88,6 +112,7 @@ final class PathLayer {
             paths[first.id] = first
             order = [first.id]
             current = first.id
+            outbox[first.id] = []
         }
     }
 
@@ -99,6 +124,7 @@ final class PathLayer {
             guard !closed, paths[path.id] == nil else { return }
             paths[path.id] = path
             order.append(path.id)
+            outbox[path.id] = []
             if current == nil { current = path.id }
             if joined { joinedAwaitingPong[path.id] = nowMs() }
         }
@@ -113,6 +139,8 @@ final class PathLayer {
             draining.removeValue(forKey: id)
             pingSentAt.removeValue(forKey: id)
             joinedAwaitingPong.removeValue(forKey: id)
+            outbox.removeValue(forKey: id)
+            lastInboundAt.removeValue(forKey: id)
             return path
         }
         guard let path else { return false }
@@ -132,6 +160,8 @@ final class PathLayer {
             pingSentAt.removeAll()
             joinedAwaitingPong.removeAll()
             pending.removeAll()
+            outbox.removeAll()
+            lastInboundAt.removeAll()
             return all
         }
         for path in all { path.close() }
@@ -139,16 +169,27 @@ final class PathLayer {
     }
 
     /// Moves the sending path. A planned switch leaves the old one draining
-    /// until the peer's marker or the 2 s backstop closes it (§5.4).
+    /// until the peer's marker or the 2 s backstop closes it (§5.4). An
+    /// unplanned one keeps the old path as a standby, so its queued bulk is
+    /// dropped from the outbox and replayed on the new path (D-2).
     func moveTo(_ to: String, plannedFrom: String?) {
-        locked {
-            guard paths[to] != nil else { return }
+        let old: String? = locked {
+            guard paths[to] != nil else { return nil }
+            let old = current
             current = to
             if let plannedFrom, plannedFrom != to, paths[plannedFrom] != nil {
                 draining[plannedFrom] = nowMs() + Self.drainBackstopMs
+            } else if let old, old != to {
+                outbox[old] = []
             }
+            return old
         }
+        if let old, old != to { pump(to) }
     }
+
+    /// The channel under a path became writable again: feed it what the layer
+    /// has been holding (D-2).
+    func writable(_ id: String) { pump(id) }
 
     /// Old paths whose drain backstop passed; the caller detaches them.
     func closeDrained() -> [String] {
@@ -179,7 +220,7 @@ final class PathLayer {
             return
         }
         let bulk = PathCodec.isBulk(frame.type)
-        var ready: (path: Path?, seq: UInt64, frame: [UInt8])?
+        var queuedOn: String?
         locked {
             guard !closed else { return }
             // Only bulk queues behind pending bulk (PATH-10, R-6): control is
@@ -200,14 +241,28 @@ final class PathLayer {
             let seq = replay.nextSeq
             try? replay.append(seq: seq, frame: wrapped, bulk: bulk)
             peakHeldBytes = max(peakHeldBytes, replay.heldBytes)
-            ready = (current.flatMap { paths[$0] }, seq, wrapped)
+            if let id = current, paths[id] != nil {
+                outbox[id, default: []].append(wrapped)
+                queuedOn = id
+            }
         }
-        guard let ready else { return }
-        ready.path?.send(ready.frame)
         completion?(true)
-        if ready.path == nil && current != nil {
-            // The write failed on a vanished path: that path's own error will
-            // arrive from the channel; the frame stays in the replay buffer.
+        if let queuedOn { pump(queuedOn) }
+    }
+
+    /// Feeds a path's queued frames to its channel while it is writable. Bulk
+    /// waits here instead of in the channel's write buffer, so a ping, a pong,
+    /// an ACK or a marker never queues behind megabytes of a file (D-2).
+    private func pump(_ id: String) {
+        while true {
+            let next: (Path, [UInt8])? = locked {
+                guard let path = paths[id], let first = outbox[id]?.first,
+                      path.isWritable() else { return nil }
+                outbox[id]?.removeFirst()
+                return (path, first)
+            }
+            guard let (path, bytes) = next else { return }
+            path.send(bytes)
         }
     }
 
@@ -235,43 +290,47 @@ final class PathLayer {
             }
             try? replay.append(seq: seq, frame: wrapped, bulk: false)
             peakHeldBytes = max(peakHeldBytes, replay.heldBytes)
-            paths[on]?.send(wrapped)
+            outbox[on, default: []].append(wrapped)
             sent = true
         }
+        if sent { pump(on) }
         return sent
     }
 
-    /// Writes every unacked frame on the current path (a switch's replay).
+    /// Writes every unacked frame on the current path (a switch's replay). The
+    /// outbox is replaced, so a frame admitted but not yet written goes once.
     func replayOnCurrent() {
-        let target: (path: Path, frames: [[UInt8]])? = locked {
-            guard !closed, let id = current, let path = paths[id] else { return nil }
-            return (path, replay.unacked.map(\.frame))
+        let id: String? = locked {
+            guard !closed, let id = current, paths[id] != nil else { return nil }
+            outbox[id] = replay.unacked.map(\.frame)
+            return id
         }
-        guard let target else { return }
-        for frame in target.frames { target.path.send(frame) }
+        if let id { pump(id) }
     }
 
     // MARK: Receiving
 
     func receive(path id: String, frame: Frame) -> [Event] {
         var events: [Event] = []
+        locked { lastInboundAt[id] = nowMs() }
         if frame.type == PathCodec.ackType {
             let ack: UInt64
             do { ack = try PathCodec.decodeAck(frame) } catch { return [.ackAboveSent] }
             var flush: [Flushed] = []
-            var target: Path?
+            var target: String?
             let above: Bool = locked {
                 if replay.ackAboveSent(ack) { return true }
                 _ = replay.ack(ack)
                 flush = admitPendingLocked()
-                target = current.flatMap { paths[$0] }
+                if let id = current, paths[id] != nil {
+                    for item in flush { outbox[id, default: []].append(item.bytes) }
+                    target = id
+                }
                 return false
             }
             if above { return [.ackAboveSent] }
-            for item in flush {
-                target?.send(item.bytes)
-                item.completion?(true)
-            }
+            for item in flush { item.completion?(true) }
+            if let target { pump(target) }
             return []
         }
         if frame.type == PathCodec.reliableType {
@@ -413,11 +472,16 @@ final class PathLayer {
         }
     }
 
-    /// Paths whose ping went unanswered for 1.5 s (one lost sample).
+    /// Paths whose ping went unanswered for 1.5 s (one lost sample). A path
+    /// that received any frame in that window is alive: a pong can queue behind
+    /// our own bulk on a slow link, and a live path must not be demoted for it
+    /// (D-2).
     func lostPings() -> [String] {
         let at = nowMs()
         return locked {
-            let lost = pingSentAt.filter { at - $0.value > Self.pongTimeoutMs }.map(\.key)
+            let lost = pingSentAt.filter { id, sent in
+                at - sent > Self.pongTimeoutMs && at - (lastInboundAt[id] ?? at - Self.aliveMs - 1) > Self.aliveMs
+            }.map(\.key)
             for id in lost { pingSentAt.removeValue(forKey: id) }
             return lost
         }
@@ -441,6 +505,8 @@ final class PathLayer {
     static let maxPaths = 3
     static let pingIntervalMs: Int64 = 2_000
     static let pongTimeoutMs: Int64 = 1_500
+    /// A path that delivered anything this recently is alive (D-2).
+    static let aliveMs: Int64 = 1_500
     static let joinedPingDropMs: Int64 = 5_000
     static let drainBackstopMs: Int64 = 2_000
     static let ackEveryMs: Int64 = 10

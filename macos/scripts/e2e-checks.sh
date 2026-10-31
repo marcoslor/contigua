@@ -6,7 +6,7 @@
 # share, to drop) run back to back; every other check launches its own app.
 ALL_CHECKS=(tls qr pair gates forgot direct mirror spotlight clip sharein links share apk dock shortcuts nickname settings notify notify-actions notify-media media notify-vm menubar-vm handoff
             deck deckrail windows render resize input hover mouseback pinch chrome livetext menus density trackpad pause nav audio drop files files-bridge files-write files-watch intents mcp focus controls
-            pathkill pathmirror pathswitch pathgrace pathstart pathversion pathrejoin
+            pathkill pathmirror pathswitch pathgrace pathstart pathversion pathrejoin pathbulk
             dnd-edge panel-edge
             files-domain nfr menubar-shots)
 
@@ -32,9 +32,11 @@ PATHFAULT_CTL=""
 
 # path_log — the running app's session lines (the path transitions and the
 # replay peak are privacy: .public, so the check reads the exact tokens).
+# The process id goes in the predicate: `log show --process` is ignored when an
+# explicit --predicate is given, which once let a previous run's lines in.
 path_log() {
-    /usr/bin/log show --last 5m --info --style syslog --process "$APP_PID" \
-        --predicate 'subsystem == "dev.pocketdeck.mac"' 2>/dev/null
+    /usr/bin/log show --last 5m --info --style syslog \
+        --predicate "subsystem == \"dev.pocketdeck.mac\" AND processID == $APP_PID" 2>/dev/null
 }
 
 # pathfault_start <listen> <target> [mode] [delay-ms] — starts one proxy and
@@ -43,18 +45,19 @@ path_log() {
 # and pathfault_stop_all cannot kill the proxy (pathmirror once left 47736/
 # 47737 running; only the next check's pathfault_nuke hid it).
 pathfault_start() {
-    local listen="$1" target="$2" mode="${3:-pass}" delay="${4:-}" ctl
+    local listen="$1" target="$2" mode="${3:-pass}" delay="${4:-}" rate="${5:-}" ctl rate_arg=()
     ctl="$WORK/fault-$listen.ctl"
     : > "$ctl"
+    [ -z "$rate" ] || rate_arg=(--rate-mbit "$rate")
     if [ -n "$delay" ]; then
         "$FAKE_PY" "$ROOT/tools/pdpathfault/pdpathfault.py" \
             --listen "$listen" --connect "127.0.0.1:$target" --mode "$mode" \
-            --delay-ms "$delay" --ctl-file "$ctl" --events "$WORK/fault-$listen.events" \
+            --delay-ms "$delay" ${rate_arg[@]+"${rate_arg[@]}"} --ctl-file "$ctl" --events "$WORK/fault-$listen.events" \
             > "$WORK/fault-$listen.log" 2>&1 &
     else
         "$FAKE_PY" "$ROOT/tools/pdpathfault/pdpathfault.py" \
             --listen "$listen" --connect "127.0.0.1:$target" --mode "$mode" \
-            --ctl-file "$ctl" --events "$WORK/fault-$listen.events" \
+            ${rate_arg[@]+"${rate_arg[@]}"} --ctl-file "$ctl" --events "$WORK/fault-$listen.events" \
             > "$WORK/fault-$listen.log" 2>&1 &
     fi
     PATHFAULT_PIDS+=("$!")
@@ -671,6 +674,89 @@ PY
     grep -qF "session failed" "$WORK/app.log" \
         && bad "[PATH-6] PATHREJOIN the session ended instead of rejoining" \
         || ok "[PATH-6] PATHREJOIN no session failed"
+    stop_app
+    stop_fakephone
+    pathfault_stop_all
+}
+
+# pathbulk (D-2, R-5): a 16 Mbit/s path carries a 32 MiB drop while a fast
+# standby exists. The throttled path's ping must not wait behind the bulk, so
+# the Mac never declares it failed: no unplanned switch, and the hash is exact.
+check_pathbulk() {
+    clean
+    pathfault_nuke
+    local slow_ctl fast_ctl founder bytes_ok
+    python3 - "$WORK/pathbulk.bin" <<'PY'
+import os, sys
+with open(sys.argv[1], "wb") as fp:
+    fp.write(os.urandom(32 * 1024 * 1024))
+PY
+    FAKE_ARGS="--paths 2" start_fake || return 1
+    pathfault_start "$((PORT + 3))" "$PORT" throttle "" 16
+    slow_ctl="$PATHFAULT_CTL"
+    # The standby starts behind a handshake delay so the throttled path founds
+    # the session; it is made fast once both paths are up.
+    pathfault_start "$((PORT + 4))" "$((PORT + 1))" delay 600
+    fast_ctl="$PATHFAULT_CTL"
+    path_pair_once "$PORT"
+    printf '%s\n' "dropfile $WORK/pathbulk.bin" "wait 40" > "$WORK/pathbulk.txt"
+    launch --connect "127.0.0.1:$((PORT + 3))" --connect2 "127.0.0.1:$((PORT + 4))" \
+        --open com.android.settings --debug-input-script "$WORK/pathbulk.txt" --quit-after 60
+    wait_until 25 path_upto 2 || bad "[PATH-10] PATHBULK the standby never joined"
+    founder=""
+    for _ in $(seq 1 80); do
+        founder="$(path_hello_listener)"
+        [ -n "$founder" ] && break
+        sleep 0.25
+    done
+    if [ "$founder" = "$PORT" ]; then
+        ok "[PATH-10] PATHBULK the drop started on the throttled path"
+    else
+        bad "[PATH-10] PATHBULK the session founded on listener ${founder:-?}, not the throttled one"
+    fi
+    # The standby is fast for the rest of the run: a live throttled path must
+    # still not be failed by a late pong.
+    pathfault_mode "$fast_ctl" pass
+    if wait_until 70 grep -q '"ev":"drop".*"match":true.*"ok":true' "$WORK/events.jsonl"; then
+        ok "[PATH-10] PATHBULK the 32 MiB file arrived byte-exact across the throttled path"
+    else
+        bad "[PATH-10] PATHBULK the file never arrived intact: $(grep '"ev":"drop"' "$WORK/events.jsonl" | tail -2)"
+    fi
+    # D-2: the throttled path must not be failed while bulk runs. A planned
+    # margin switch is legitimate (a faster standby exists); a failure-driven
+    # one is not: no lost pong and no socket error may have moved the session.
+    # The peer sees the marker on whichever path it reaches first, so the Mac's
+    # own transition log is the evidence, not the fake's arrival.
+    local path_lines
+    path_lines="$(path_log)"
+    grep -q -- '--pong-lost-->' <<<"$path_lines" \
+        && bad "[PATH-7] PATHBULK the throttled path was failed by a lost pong during the transfer" \
+        || ok "[PATH-7] PATHBULK no path was demoted by a lost pong during the transfer"
+    grep -q "paths: path down" <<<"$path_lines" \
+        && bad "[PATH-7] PATHBULK a path died during the transfer" \
+        || ok "[PATH-7] PATHBULK both paths stayed open"
+    # The check is vacuous unless the throttle actually carried the file.
+    bytes_ok="$(python3 - "$WORK/fault-$((PORT + 3)).events" <<'PY'
+import json, sys
+total = 0
+for line in open(sys.argv[1]):
+    try:
+        event = json.loads(line)
+    except ValueError:
+        continue
+    if event.get("ev") == "bytes":
+        total += event.get("n") or 0
+print(total)
+PY
+)"
+    if [ -n "$bytes_ok" ] && [ "$bytes_ok" -ge $((1 << 20)) ]; then
+        ok "[PATH-10] PATHBULK the throttled path carried $bytes_ok bytes"
+    else
+        bad "[PATH-10] PATHBULK the throttled path carried ${bytes_ok:-0} bytes"
+    fi
+    grep -qF "session failed" "$WORK/app.log" \
+        && bad "[PATH-7] PATHBULK the session ended during the transfer" \
+        || ok "[PATH-7] PATHBULK the session stayed live"
     stop_app
     stop_fakephone
     pathfault_stop_all

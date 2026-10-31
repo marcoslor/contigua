@@ -499,7 +499,9 @@ final class TlsConnectorV2: @unchecked Sendable {
                  onFrame: @escaping @Sendable (Frame) -> Void,
                  onError: @escaping @Sendable (String) -> Void,
                  onPeerPin: (@Sendable (String) -> Void)? = nil,
-                 onPeerCert: (@Sendable (NIOSSLCertificate) -> Void)? = nil) throws -> (channel: Channel, exporter: () -> [UInt8]?, send: @Sendable (Frame) -> Void) {
+                 onPeerCert: (@Sendable (NIOSSLCertificate) -> Void)? = nil,
+                 onWritableChange: (@Sendable (Bool) -> Void)? = nil,
+                 handshakeTimeout: TimeAmount = .seconds(6)) throws -> (channel: Channel, exporter: () -> [UInt8]?, send: @Sendable (Frame) -> Void, isWritable: @Sendable () -> Bool, setReading: @Sendable (Bool) -> Void) {
         // Throws TlsV2Error.noPin / .pinMismatch / .incompleteIdentity BEFORE
         // any dial when the pin rules cannot be met (§8 step 3 gate).
         let tlsConfig = try configuration()
@@ -518,8 +520,16 @@ final class TlsConnectorV2: @unchecked Sendable {
         // has. The hello is serialized over the finished attempts, so a
         // black-holed provider must never win it just by accepting a socket.
         let handshake = group.next().makePromise(of: Void.self)
+        // R-12: a peer that accepts TCP and then goes silent must not block
+        // this thread and hold the fd forever. The attempt timer still owns the
+        // attempt; this closes the channel so the dial fails inside it.
+        let handshakeDeadline = group.next().scheduleTask(in: handshakeTimeout) {
+            handshake.fail(TlsV2Error.handshakeTimeout)
+        }
         do {
             let channel = try ClientBootstrap(group: group)
+                .channelOption(ChannelOptions.writeBufferWaterMark,
+                               value: WriteBufferWaterMark(low: 256 << 10, high: 1 << 20))
                 .connect(to: try SocketAddress(ipAddress: host, port: port))
                 .flatMap { ch -> EventLoopFuture<Channel> in
                     // Both handlers enter the pipeline in one event-loop turn,
@@ -531,6 +541,9 @@ final class TlsConnectorV2: @unchecked Sendable {
                             HandshakeLearnHandler(handshakeCompleted: { fps in learn?(fps) },
                                                   peerCertificate: { cert in learnCert?(cert) },
                                                   handshakePromise: handshake))
+                        if let onWritableChange {
+                            try ch.pipeline.syncOperations.addHandler(WritabilityHandler(onChange: onWritableChange))
+                        }
                     } catch {
                         return ch.eventLoop.makeFailedFuture(error)
                     }
@@ -540,6 +553,7 @@ final class TlsConnectorV2: @unchecked Sendable {
                     ch.pipeline.addHandler(FrameDeliveryHandler(onFrame: onFrame, onError: onError)).map { _ in ch }
                 }
                 .wait()
+            handshakeDeadline.cancel()
             do {
                 try handshake.futureResult.wait()
             } catch {
@@ -550,11 +564,30 @@ final class TlsConnectorV2: @unchecked Sendable {
                 var buffer = channel.allocator.buffer(capacity: frame.encoded.count)
                 buffer.writeBytes(frame.encoded)
                 _ = channel.writeAndFlush(buffer)
+            }, { channel.isWritable }, { reading in
+                _ = channel.setOption(ChannelOptions.autoRead, value: reading)
             })
         } catch {
+            handshakeDeadline.cancel()
             let message = String(describing: error)
             throw TlsV2Error.dialFailed(String(message.prefix(180)))
         }
+    }
+}
+
+/// Reports NIO's writability so the path layer can feed bulk only while the
+/// channel's write buffer is under its water mark (D-2).
+final class WritabilityHandler: ChannelInboundHandler, @unchecked Sendable {
+    typealias InboundIn = ByteBuffer
+    private let onChange: @Sendable (Bool) -> Void
+
+    init(onChange: @escaping @Sendable (Bool) -> Void) {
+        self.onChange = onChange
+    }
+
+    func channelWritabilityChanged(context: ChannelHandlerContext) {
+        onChange(context.channel.isWritable)
+        context.fireChannelWritabilityChanged()
     }
 }
 
