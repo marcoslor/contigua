@@ -175,7 +175,7 @@ class PathHub(
                 try {
                     paths[target]?.write(wrapped)
                 } catch (e: Throwable) {
-                    failPath(target)
+                    failPath(target, e)
                 }
             }
         }
@@ -210,7 +210,7 @@ class PathHub(
                 try {
                     t.write(entry.frame)
                 } catch (e: Throwable) {
-                    failPath(target)
+                    failPath(target, e)
                     return
                 }
             }
@@ -241,7 +241,7 @@ class PathHub(
                 try {
                     paths[onPath]?.write(wrapped)
                 } catch (e: Throwable) {
-                    failPath(onPath)
+                    failPath(onPath, e)
                 }
                 return
             }
@@ -385,13 +385,15 @@ class PathHub(
         try {
             t.write(bytes)
         } catch (e: Throwable) {
-            failPath(path)
+            failPath(path, e)
         }
     }
 
-    private fun failPath(path: String) {
+    private fun failPath(path: String, why: Throwable) {
         // The reader thread reports the Down event; a write failure detaches here.
-        log("path down: $path")
+        // Class and message only: a payload or a path's bytes never reach a log
+        // (R-PRIV-1). Boot 5 swallowed this exception, so the fix names it.
+        log("path down: $path (${why.javaClass.simpleName}: ${why.message})")
         detach(path)
     }
 
