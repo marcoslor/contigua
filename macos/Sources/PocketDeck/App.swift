@@ -601,7 +601,7 @@ enum PocketDeckMain {
                     throw NSError(domain: "p1-proof", code: 2,
                                   userInfo: [NSLocalizedDescriptionKey: refusal])
                 }
-                print("input script ok: \(script)")
+                print("input script ok")
                 exit(0)
             } catch {
                 FileHandle.standardError.write(Data(("check-launch \(script): \(error)\n").utf8))
