@@ -252,7 +252,7 @@ class Session(
     private var clientName = "Mac"
 
     // ---- paths (docs/design/paths.md §3) ------------------------------
-    private val hub = PathHub(log = log, now = now)
+    private val hub = PathHub(log = log, now = now, wake = ::wakeTicker)
     private val pathMachine = PathSessionMachine()
     private val pathRanking = PathRanking()
     private var sessionId = ""
@@ -304,6 +304,7 @@ class Session(
 
     private val inbound = InboundQueue(INBOX_MAX_BYTES)
     private var pathTicker: Thread? = null
+    private val tickSignal = Object()
     // Joined from the server thread and read from the session thread.
     private val pathReaders = CopyOnWriteArrayList<Thread>()
     /** The last AUDIO_CONFIG: repeated after a switch (docs/design/paths.md §5.6). */
@@ -709,6 +710,8 @@ class Session(
                 PathSessionAction.Ignore -> Unit
             }
         }
+        // A transition changes the grace/drain/ping deadlines: recompute.
+        wakeTicker()
     }
 
     /** The Mac named the path: follow it, and answer with our own marker (PATH-9). */
@@ -736,6 +739,7 @@ class Session(
     }
 
     private fun tickPaths() {
+        hub.flushAck()
         hub.pingAll(transferRunning())
         // During a switch the phone's sending path is still the old one until
         // the Mac's marker arrives; the path the session is moving to is the
@@ -770,15 +774,30 @@ class Session(
         pathTicker = Thread({
             while (teardown.get() == SessionTeardown.State.LIVE) {
                 val at = now()
-                try {
-                    Thread.sleep(nextTickDelay(at))
-                } catch (e: InterruptedException) {
-                    break
+                val wait = nextTickDelay(at)
+                if (wait > 0) {
+                    var interrupted = false
+                    synchronized(tickSignal) {
+                        try {
+                            tickSignal.wait(wait)
+                        } catch (e: InterruptedException) {
+                            interrupted = true
+                        }
+                    }
+                    if (interrupted) break
+                    // Woken for a new (earlier) deadline: recompute instead of
+                    // ticking early.
+                    if (now() < at + wait) continue
                 }
                 if (teardown.get() != SessionTeardown.State.LIVE) break
                 inbound.put(Inbound.Tick)
             }
         }, "pocketdeck-paths").also { it.start() }
+    }
+
+    /** R-15/D-1: a new deadline (an ACK timer, a join, a state change). */
+    private fun wakeTicker() {
+        synchronized(tickSignal) { tickSignal.notifyAll() }
     }
 
     /**
@@ -895,6 +914,7 @@ class Session(
         // welcome is already queued; the ping follows it on the same writer).
         hub.pingPath(pathId)
         inbound.put(Inbound.Up(pathId, joined = true))
+        wakeTicker()
         log("paths: joined $pathId (paths ${hub.pathCount})")
         return AttachResult.ATTACHED
     }
