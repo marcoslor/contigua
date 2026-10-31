@@ -1091,6 +1091,9 @@ class Session(
         val displayId = display.open(stream, w, h, dpi, this)
         val state = StreamState(stream, displayId, IntSize(w, h)).also { it.content = WindowContent.App(task.pkg, task.activity) }
         synchronized(streams) { streams[stream] = state }
+        // The episode's take-over first: on a shared group the move waits for
+        // the sleeping display to wake, so the wake cannot wait for it.
+        updatePower()
         // Moving before the reply: `started` must match what actually happened.
         val moved = runCatching { mover.move(task.taskId, displayId) }.getOrDefault(false)
         if (moved) {
@@ -1155,7 +1158,12 @@ class Session(
             val displayId = display.open(stream, w, h, dpi, this)
             val state = StreamState(stream, displayId, IntSize(w, h)).also { it.content = content }
             synchronized(streams) { streams[stream] = state }
-            // The launch first: `window.opened` names the task it made (WIN-32),
+            // The episode's take-over first: a VD created while the panel's
+            // group sleeps starts OFF, and the launch waits for the wake (the
+            // 10-30 open: 11 s in the launch, 23 s to the first frame). The
+            // keep-alive's own step runs after this returns, beside the launch.
+            updatePower()
+            // The launch next: `window.opened` names the task it made (WIN-32),
             // and video that arrived before this point waits in the gate.
             val launched = when (content) {
                 is WindowContent.App -> launchOn(displayId, content.pkg, content.activity, newInstance)
@@ -1173,7 +1181,9 @@ class Session(
                 }
             }
         }
-        updatePower()
+        // An app or link stream already told the power policy before its
+        // launch; only the mirror decides after its reply (it never wakes).
+        if (content == WindowContent.Phone) updatePower()
         runCatching { callback.onSessionChanged(true, clientId, currentMacName ?: clientName, windowCount()) }
         startStreamWatch()
         notifyAudioWindowsChanged()
