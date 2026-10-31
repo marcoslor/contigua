@@ -63,6 +63,8 @@ final class PathLayer {
     private(set) var peakHeldBytes = 0
     var pathCount: Int { locked { paths.count } }
     var currentPath: String? { locked { current } }
+    /// Attached path ids, for a new dial that must not reuse one (PATH-19).
+    var pathIds: [String] { locked { order } }
     var ackValue: UInt64 { locked { reorder.ack } }
 
     init(nowMs: @escaping () -> Int64 = { Int64(DispatchTime.now().uptimeNanoseconds / 1_000_000) },

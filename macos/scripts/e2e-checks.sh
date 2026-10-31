@@ -6,7 +6,7 @@
 # share, to drop) run back to back; every other check launches its own app.
 ALL_CHECKS=(tls qr pair gates forgot direct mirror spotlight clip sharein links share apk dock shortcuts nickname settings notify notify-actions notify-media media notify-vm menubar-vm handoff
             deck deckrail windows render resize input hover mouseback pinch chrome livetext menus density trackpad pause nav audio drop files files-bridge files-write files-watch intents mcp focus controls
-            pathkill pathmirror pathswitch pathgrace pathstart pathversion
+            pathkill pathmirror pathswitch pathgrace pathstart pathversion pathrejoin
             dnd-edge panel-edge
             files-domain nfr menubar-shots)
 
@@ -184,6 +184,52 @@ for line in open(sys.argv[1]):
     if event.get("ev") == "rel":
         paths.add(event.get("path"))
 print(len(paths))
+PY
+}
+
+# path_welcome_session — the session id the fake welcomed (an id, no values).
+path_welcome_session() {
+    python3 - "$WORK/events.jsonl" <<'PY'
+import json, sys
+for line in open(sys.argv[1]):
+    try:
+        event = json.loads(line)
+    except ValueError:
+        continue
+    if event.get("ev") == "welcome" and event.get("session"):
+        print(event["session"])
+        break
+PY
+}
+
+# path_join_hello <session> — a later path's hello named that session (a join).
+path_join_hello() {
+    python3 - "$WORK/events.jsonl" "$1" <<'PY'
+import json, sys
+want = sys.argv[2]
+for line in open(sys.argv[1]):
+    try:
+        event = json.loads(line)
+    except ValueError:
+        continue
+    if event.get("ev") == "hello" and event.get("join") == want and want:
+        sys.exit(0)
+sys.exit(1)
+PY
+}
+
+# path_joined_up — a joined (not founding) path attached again.
+path_joined_up() {
+    python3 - "$WORK/events.jsonl" <<'PY'
+import json, sys
+for line in open(sys.argv[1]):
+    try:
+        event = json.loads(line)
+    except ValueError:
+        continue
+    if event.get("ev") == "path" and event.get("kind") == "up" and event.get("joined"):
+        sys.exit(0)
+sys.exit(1)
 PY
 }
 
@@ -554,4 +600,78 @@ PY
         || bad "[PATH-6] PATHGRACE the old session's paths did not close"
     stop_app
     stop_fakephone
+}
+
+# pathrejoin (D-3, R-3): the only path dies and the route comes back inside the
+# 30 s grace. The Mac re-dials a join at once, the phone answers the same
+# session, the windows leave "reconnecting", and no new session starts.
+check_pathrejoin() {
+    clean
+    pathfault_nuke
+    local ctl session path_lines
+    FAKE_ARGS="--paths 1" start_fake || return 1
+    path_pair_once "$PORT"
+    pathfault_start "$((PORT + 3))" "$PORT"
+    ctl="$PATHFAULT_CTL"
+    launch --connect "127.0.0.1:$((PORT + 3))" --open-phone --quit-after 40
+    wait_until 20 events_have '"ev":"video"' \
+        && ok "[PATH-6] PATHREJOIN the session is live on its only path" \
+        || bad "[PATH-6] PATHREJOIN the session never opened a window"
+    session="$(path_welcome_session)"
+    [ -n "$session" ] \
+        && ok "[PATH-3] PATHREJOIN the phone minted the session" \
+        || bad "[PATH-3] PATHREJOIN no welcome reached the phone"
+    # A dead radio that resets: the Mac must see the path die at once and say
+    # reconnecting (a black hole would surface only through TCP keepalive).
+    pathfault_mode "$ctl" rst
+    path_lines=""
+    for _ in $(seq 1 40); do
+        path_lines="$(path_log)"
+        grep -q -- '--failed--> orphaned' <<<"$path_lines" && break
+        sleep 0.25
+    done
+    grep -q -- '--failed--> orphaned' <<<"$path_lines" \
+        && ok "[PATH-17] PATHREJOIN the only path died and the session went orphaned" \
+        || bad "[PATH-17] PATHREJOIN the orphan transition never happened: $(printf '%s\n' "$path_lines" | tail -2)"
+    sleep 2
+    pathfault_mode "$ctl" pass
+    wait_until 20 path_join_hello "$session" \
+        && ok "[PATH-3] PATHREJOIN the Mac re-dialed a join with the same session id" \
+        || bad "[PATH-3] PATHREJOIN no join named the session again: $(grep '"ev":"hello"' "$WORK/events.jsonl" | tail -2)"
+    wait_until 15 path_joined_up \
+        && ok "[PATH-6] PATHREJOIN the phone attached the path to the same session" \
+        || bad "[PATH-6] PATHREJOIN no path attached after the route came back"
+    path_lines=""
+    for _ in $(seq 1 40); do
+        path_lines="$(path_log)"
+        grep -Eq -- '--up--> live' <<<"$path_lines" && break
+        sleep 0.25
+    done
+    grep -Eq -- '--up--> live' <<<"$path_lines" \
+        && ok "[PATH-17] PATHREJOIN the windows cleared \"reconnecting\" (orphaned --up--> live)" \
+        || bad "[PATH-17] PATHREJOIN the session never returned to live: $(printf '%s\n' "$path_lines" | tail -2)"
+    # One session, not a second one: the count of plain hellos stays at one.
+    python3 - "$WORK/events.jsonl" <<'PY'
+import json, sys
+plain = 0
+for line in open(sys.argv[1]):
+    try:
+        event = json.loads(line)
+    except ValueError:
+        continue
+    if event.get("ev") == "hello" and event.get("plain"):
+        plain += 1
+print("plain=%d" % plain)
+sys.exit(0 if plain == 1 else 1)
+PY
+    [ $? -eq 0 ] \
+        && ok "[PATH-3] PATHREJOIN no new session started (one plain hello)" \
+        || bad "[PATH-3] PATHREJOIN a second session started"
+    sleep 1
+    grep -qF "session failed" "$WORK/app.log" \
+        && bad "[PATH-6] PATHREJOIN the session ended instead of rejoining" \
+        || ok "[PATH-6] PATHREJOIN no session failed"
+    stop_app
+    stop_fakephone
+    pathfault_stop_all
 }

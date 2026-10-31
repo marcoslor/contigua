@@ -36,6 +36,80 @@ final class SessionOrphanTests: XCTestCase {
                     "screen": ["w": 1080, "h": 2340, "dpi": 450], "locked": true]]
     }
 
+    /// D-3: while orphaned the Mac re-dials its provider with `hello{join}` on
+    /// the reconnect backoff; the same session id comes back and no new
+    /// session starts.
+    func testAnOrphanRedialsAJoinAndTheSameSessionComesBack() throws {
+        server = try FakeServer(phoneIdentity: phoneIdentity, trustingClientPem: macIdentity.identity.certPem)
+        let lock = NSLock()
+        var plainHellos = 0
+        var joinHellos = 0
+        var foundingSession: String?
+        var founder: FakeServer.Connection?
+        server.onFrame = { connection, frame in
+            guard frame.type == MessageType.json.rawValue,
+                  let message = JSONFrame.decode(payload: frame.payload),
+                  message.t == "hello" else { return }
+            if let join = message.string("join") {
+                lock.lock(); joinHellos += 1; let session = foundingSession; lock.unlock()
+                guard join == session else { return }
+                connection.sendJSON(Self.welcomeJSON(session: join))
+                return
+            }
+            let session = PathIds.sessionId()
+            lock.lock(); plainHellos += 1; foundingSession = session; founder = connection; lock.unlock()
+            connection.sendJSON(Self.welcomeJSON(session: session))
+        }
+        let record = PinnedPhoneV2(deviceId: "phone-1",
+                                   phoneFingerprintHex: server.phoneFingerprintHex,
+                                   certPem: phoneIdentity.certPem)
+        let endpoint = Session.Endpoint.hostPort(host: "127.0.0.1", port: server.port)
+        let session = Session(endpoint: endpoint, knownDeviceId: "phone-1",
+                              clientId: "test-client", identity: macIdentity.identity,
+                              pinnedPhone: record, connectTimeout: 2)
+        session.pairingPolicy = .never
+        let reconnecting = NSLock()
+        var wasReconnecting = false
+        var isReconnecting = false
+        session.onEvent = { event in
+            if case .pathsReconnecting(let on) = event {
+                reconnecting.lock()
+                wasReconnecting = wasReconnecting || on
+                isReconnecting = on
+                reconnecting.unlock()
+            }
+        }
+        session.start()
+        XCTAssertTrue(waitFor { session.state == .ready }, "never ready: \(session.state)")
+
+        lock.lock(); let founderConnection = founder; lock.unlock()
+        founderConnection?.close()
+        XCTAssertTrue(waitFor {
+            reconnecting.lock(); defer { reconnecting.unlock() }
+            return wasReconnecting
+        }, "the session never went orphaned")
+
+        let reconnected = waitFor(timeout: 8) {
+            lock.lock(); defer { lock.unlock() }
+            return joinHellos >= 1
+        }
+        XCTAssertTrue(reconnected, "the orphan never re-dialed a join (plain \(plainHellos))")
+        XCTAssertTrue(waitFor {
+            reconnecting.lock(); defer { reconnecting.unlock() }
+            return !isReconnecting
+        }, "the windows never cleared \"reconnecting\"")
+        lock.lock()
+        let plaints = plainHellos
+        let joins = joinHellos
+        let sessionId = foundingSession
+        lock.unlock()
+        XCTAssertEqual(1, plaints, "the rejoin started a new session (plain hellos)")
+        XCTAssertGreaterThanOrEqual(joins, 1)
+        XCTAssertNotNil(sessionId)
+        XCTAssertEqual(.ready, session.state)
+        session.closeAndWait()
+    }
+
     /// The founder welcomes; the held attempt joins; the founder's socket then
     /// dies (the only path is gone). A key and a drop chunk sent while orphaned
     /// must be held and replayed on the joining path, and the drop must not be

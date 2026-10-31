@@ -313,6 +313,11 @@ final class Session {
         var machine = AttemptMachine()
         /// The dial used a pin: only such a path may join.
         var dialedPinned = false
+        /// Which provider dialed it: a missing provider is re-dialed on the
+        /// reconnect backoff while the session is below its path target (D-3).
+        let providerIndex: Int
+        /// A rejoin dial: its hello carries `join` at once (D-3).
+        var rejoin = false
         /// The dialed host:port, for the cached address (C10).
         var address: CachedAddress?
         let kind: PathKind
@@ -324,6 +329,18 @@ final class Session {
     private var pathStart = PathStart()
     private var attempts: [String: Attempt] = [:]
     private var attemptReasons: [String: String] = [:]
+    /// The pin and the handshake-learned values every dial uses (a rejoin dial
+    /// happens long after doConnect).
+    private var dialPinned: PinnedPhoneV2?
+    private var dialLearned = SessionLockedBox(value: "")
+    private var dialLearnedCert = SessionLockedBox<NIOSSLCertificate?>(value: nil)
+    /// path id -> the provider that dialed it: a provider with no path and no
+    /// attempt is missing and gets re-dialed (D-3).
+    private var pathProvider: [String: Int] = [:]
+    /// Rejoin backoff inside the grace (D-3): consecutive dial failures and the
+    /// earliest next dial.
+    private var rejoinFailures = 0
+    private var rejoinNextAt: TimeInterval = 0
     /// True once a path was attached: a later path reaching an empty layer is
     /// a rejoin, not the founder (it replays instead of starting).
     private var everAttached = false
@@ -456,33 +473,55 @@ final class Session {
         let learnedCert = SessionLockedBox<NIOSSLCertificate?>(value: nil)
         learnedPinProvider = { learned.get() }
         learnedCertProvider = { learnedCert.get() }
+        dialLearned = learned
+        dialLearnedCert = learnedCert
+        dialPinned = pinned
 
         // PATH-20: every ready provider starts at once and only the hello is
         // serialized. PathStart hands the one plain hello to the first attempt
         // whose TLS is up and every other finished attempt joins the session.
         var live = Set<String>()
-        var started: [(String, PathProvider)] = []
-        for provider in providers where provider.availability.isReady && provider.endpoint != nil {
+        var started: [(index: Int, provider: PathProvider, id: String)] = []
+        for (index, provider) in readyProviders() {
             let id = PathIds.pathId(among: live)
             live.insert(id)
-            started.append((id, provider))
+            started.append((index, provider, id))
         }
         pathStart = PathStart()
-        _ = pathStart.handle(.start(started.map(\.0)))
-        for (id, provider) in started {
-            guard let endpoint = provider.endpoint else { continue }
-            attempts[id] = Attempt(id: id, endpoint: endpoint,
-                                   dialedPinned: pinned != nil, kind: provider.kind)
-            let timer = DispatchWorkItem { [weak self] in  // gcd: the session's one deadline timer
-                guard let self else { return }
-                self.queue.async { self.attemptFailed(id, reason: "timeout") }
-            }
-            attempts[id]?.timer = timer
-            DispatchQueue.main.asyncAfter(deadline: .now() + connectTimeout, execute: timer)  // gcd: a deadline timer hops back to the session queue
-            DispatchQueue.global(qos: .userInitiated).async { [weak self] in  // gcd: the TLS handshake blocks; one thread per path is the point
-                self?.dial(id: id, endpoint: endpoint, pinned: pinned, group: group,
-                           learned: learned, learnedCert: learnedCert)
-            }
+        _ = pathStart.handle(.start(started.map(\.id)))
+        for item in started {
+            startDial(index: item.index, provider: item.provider, join: false, id: item.id)
+        }
+    }
+
+    /// The ready providers with their index, the target the rejoin dials up to.
+    private func readyProviders() -> [(Int, PathProvider)] {
+        providers.enumerated().compactMap { index, provider in
+            provider.availability.isReady && provider.endpoint != nil ? (index, provider) : nil
+        }
+    }
+
+    /// One dial: a start attempt (PathStart owns its hello) or a rejoin (D-3).
+    private func startDial(index: Int, provider: PathProvider, join: Bool, id: String) {
+        guard let endpoint = provider.endpoint else { return }
+        attempts[id] = Attempt(id: id, endpoint: endpoint,
+                               dialedPinned: dialPinned != nil,
+                               providerIndex: index,
+                               rejoin: join,
+                               kind: provider.kind)
+        let timer = DispatchWorkItem { [weak self] in  // gcd: the session's one deadline timer
+            guard let self else { return }
+            self.queue.async { self.attemptFailed(id, reason: "timeout") }
+        }
+        attempts[id]?.timer = timer
+        DispatchQueue.main.asyncAfter(deadline: .now() + connectTimeout, execute: timer)  // gcd: a deadline timer hops back to the session queue
+        let group = eventLoopGroup!
+        let learned = dialLearned
+        let learnedCert = dialLearnedCert
+        let pinned = dialPinned
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in  // gcd: the TLS handshake blocks; one thread per path is the point
+            self?.dial(id: id, endpoint: endpoint, pinned: pinned, group: group,
+                       learned: learned, learnedCert: learnedCert)
         }
     }
 
@@ -547,7 +586,12 @@ final class Session {
         attemptEvent(id, .tlsReady)
         if state == .connecting { transition(.handshaking, nil) }
         Log.session.info("tls connected (path \(id, privacy: .public)); hello v\(PathVersion.current, privacy: .private)")
-        performStart(pathStart.handle(.ready(id)))
+        if attempts[id]?.rejoin == true, let session = pathSessionId {
+            // D-3: the orphan's own dial joins the session it was on.
+            sendHello(on: id, join: session)
+        } else {
+            performStart(pathStart.handle(.ready(id)))
+        }
     }
 
     private func performStart(_ actions: [PathStartAction]) {
@@ -617,7 +661,43 @@ final class Session {
         attemptEvent(id, .failed(reason: reason))
         attempts.removeValue(forKey: id)
         attemptReasons[id] = reason
+        if attempt.rejoin {
+            rejoinFailed()
+            return
+        }
         performStart(pathStart.handle(.attemptFailed(id)))
+    }
+
+    /// A rejoin dial failed: the next one waits on the reconnect backoff, still
+    /// inside the grace (D-3).
+    private func rejoinFailed() {
+        rejoinFailures += 1
+        rejoinNextAt = uptime + ReconnectPolicy.delay(afterFailures: rejoinFailures)
+    }
+
+    /// Dials the providers that have neither a path nor an attempt while the
+    /// session is below the paths its providers can give (D-3: orphaned or a
+    /// path short). Runs on the session queue's tick.
+    private func maintainPaths() {
+        guard !intentionalClose, founded.get(), pathSessionId != nil else { return }
+        let ready = readyProviders()
+        guard !ready.isEmpty else { return }
+        let target = min(ready.count, PathLayer.maxPaths)
+        let dialing: Set<Int> = Set(attempts.values.map(\.providerIndex))
+        var attached: Set<Int> = Set(pathProvider.values)
+        attached.formUnion(dialing)
+        let missing = ready.filter { !attached.contains($0.0) }
+        guard !missing.isEmpty, pathLayer.pathCount + attempts.count < target else { return }
+        let now = uptime
+        guard now >= rejoinNextAt else { return }
+        rejoinNextAt = now + ReconnectPolicy.delay(afterFailures: rejoinFailures + 1)
+        var live = Set(attempts.keys)
+        for id in pathLayer.pathIds { live.insert(id) }
+        for item in missing {
+            let id = PathIds.pathId(among: live)
+            live.insert(id)
+            startDial(index: item.0, provider: item.1, join: true, id: id)
+        }
     }
 
     /// One path's channel ended. Before welcome that is a failed attempt; after
@@ -634,11 +714,13 @@ final class Session {
             Log.session.notice("paths: path down \(id, privacy: .public) (\(token, privacy: .public))")  // log-ok: closed reason token, never the wire message
             let wasCurrent = pathLayer.currentPath == id
             pathLayer.detach(id)
+            pathProvider.removeValue(forKey: id)
+            attempts.removeValue(forKey: id)
             handlePath(wasCurrent ? .currentFailed(id: id) : .pathDown(id: id))
             return
         }
-        guard attempts[id] != nil else { return }
-        attempts[id]?.timer?.cancel()
+        guard let attempt = attempts[id] else { return }
+        attempt.timer?.cancel()
         var reason = "tls"
         let lowered = message.lowercased()
         if message.contains("closed-by-peer") {
@@ -649,6 +731,10 @@ final class Session {
         attemptEvent(id, .failed(reason: reason))
         closeAttempt(id)
         attemptReasons[id] = reason
+        if attempt.rejoin {
+            rejoinFailed()
+            return
+        }
         performStart(pathStart.handle(.attemptFailed(id)))
     }
 
@@ -669,6 +755,7 @@ final class Session {
         }
         let path = PathLayer.Path(id: id, kind: .lan, send: send,
                                   close: { channel.close() })
+        pathProvider[id] = attempt.providerIndex
         if pathLayer.pathCount == 0 {
             pathLayer.start(first: path)
             if everAttached {
@@ -693,6 +780,8 @@ final class Session {
             _ = pathRanking.handle(.externalSwitch(id), now: uptime)
         }
         dialedAddress = attempt.address ?? dialedAddress
+        rejoinFailures = 0
+        rejoinNextAt = 0
     }
 
     // MARK: Path events and the session machine
@@ -824,6 +913,7 @@ final class Session {
     }
 
     private func tickPaths() {
+        maintainPaths()
         pathLayer.pingAll()
         let now = uptime
         for lost in pathLayer.lostPings() {
@@ -900,6 +990,9 @@ final class Session {
         preWelcomeSender.set(nil)
         founded.set(false)
         everAttached = false
+        pathProvider.removeAll()
+        rejoinFailures = 0
+        rejoinNextAt = 0
         pathLayer.closeAll()
     }
 
