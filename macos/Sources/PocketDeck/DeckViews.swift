@@ -1737,7 +1737,7 @@ struct DockMenuItems: View {
         } else {
             Button("Add to Applications") { controller.addToApplications(app) }
                 .disabled(!controller.canAddToApplications)
-                .help("Add this app as a real Mac app in Applications, listed by Launchpad, Spotlight and Raycast.")
+                .help("Add this app as a real Mac app in Applications, listed by Launchpad, Spotlight and other launchers.")
         }
     }
 }

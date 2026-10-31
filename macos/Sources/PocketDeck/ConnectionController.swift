@@ -940,7 +940,7 @@ final class ConnectionController {
     var canMakeShortcuts: Bool { dockApps.isAvailable }
 
     /// "Add to Applications": adds `manual` and builds the shortcut, launching
-    /// nothing — it is a Launchpad/Spotlight/Raycast entry, not a window.
+    /// nothing — it is a Launchpad/Spotlight/launcher entry, not a window.
     func addToApplications(_ app: AppInfo) {
         guard let phone = link.phone, dockApps.isAvailable else { return }
         guard dockIconReady(pkg: app.pkg, deviceId: phone.id) else {
@@ -2761,7 +2761,7 @@ final class ConnectionController {
                                keep: dockPkgsOfOpenWindows,
                                saveAll: SaveAllShortcutsSetting.read(from: profile.defaults, deviceId: ref.id))
             queueSaveAll(deviceId: ref.id)
-            // An app with a shim is listed by Launchpad/Spotlight/Raycast as the
+            // An app with a shim is listed by Launchpad/Spotlight/a launcher as the
             // real app, so it is not a CoreSpotlight item too (DOCK-9).
             spotlight.index(apps: list, deviceId: ref.id, phoneName: displayName(for: ref),
                             excluding: dockApps.shimPackages(deviceId: ref.id),
@@ -3050,6 +3050,12 @@ final class ConnectionController {
             let label = arguments.joined(separator: " ")
             guard let deck = DeckWindow.window else { return "no deck window" }
             return DeckCellClick.click(label: label, in: deck)
+        case "deckmenu":
+            // The cell's own context menu, through a secondary click at its
+            // drawn place (for the quiet screenshots; setup, not a check).
+            guard !arguments.isEmpty else { return "deckmenu needs an app label" }
+            guard let deck = DeckWindow.window else { return "no deck window" }
+            return DeckCellClick.menu(label: arguments.joined(separator: " "), in: deck)
         case "shortcut", "dock":
             // The tile's menu actions (docs/specs/dock.md DOCK-3/4): a context
             // menu cannot be clicked in a quiet run, so the check runs the same
