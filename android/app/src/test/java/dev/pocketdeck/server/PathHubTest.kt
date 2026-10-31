@@ -117,6 +117,57 @@ class PathHubTest {
         assertEquals(listOf(PathHub.Event.ProtocolError), hub.receive("aaaa0001", outer))
     }
 
+    /**
+     * E-6/RR-6: a failover wedged when the replay was full: the marker waited
+     * for credit only the replay could earn, and the replay ran after it. The
+     * replay goes first and the marker bypasses credit on the priority lane.
+     */
+    @Test
+    fun aSwitchMarkerAndTheReplayGoOutWithFullCredit() {
+        hub.start(transport("aaaa0001"))
+        // The new path's socket, so what its writer puts out can be read back.
+        val server = ServerSocket(0)
+        val client = Socket("127.0.0.1", server.localPort)
+        val accepted = server.accept()
+        server.close()
+        client.soTimeout = 3_000
+        sockets += client
+        sockets += accepted
+        assertTrue(hub.attach(PathHub.Transport("bbbb0002", accepted, accepted, PathKind.LAN)))
+
+        // Fill the replay to its 16 MiB cap; the peer ACKs nothing.
+        val fill = Frames.encodeJson(0, Json.encode(mapOf("t" to "state", "pad" to "x".repeat(60_000))))
+        while (hub.canAdmit(fill.size + PathCodec.WRAPPER_BYTES, bulk = false)) hub.send(fill)
+        // Top it off so not even a small control frame fits.
+        val tiny = Frames.encodeJson(0, "{}")
+        while (hub.canAdmit(tiny.size + PathCodec.WRAPPER_BYTES, bulk = false)) hub.send(tiny)
+        assertFalse(
+            "the replay should be full",
+            hub.canAdmit(128, bulk = false),
+        )
+
+        val done = java.util.concurrent.atomic.AtomicBoolean(false)
+        val thread = Thread {
+            hub.followSwitch("bbbb0002", "bbbb0002")
+            done.set(true)
+        }.apply { isDaemon = true }
+        thread.start()
+        thread.join(2_000)
+        assertTrue("the marker waited for credit on a full replay", done.get())
+
+        val reader = dev.pocketdeck.proto.FrameReader(client.getInputStream())
+        var marker = false
+        var replayed = 0
+        val deadline = System.currentTimeMillis() + 5_000
+        while (System.currentTimeMillis() < deadline && !(marker && replayed > 0)) {
+            val frame = runCatching { reader.readFrame() }.getOrNull() ?: break
+            if (frame.type != PathCodec.TYPE_RELIABLE) continue
+            if (pathJson(frame)["t"] == "path.switch") marker = true else replayed++
+        }
+        assertTrue("the marker never went out", marker)
+        assertTrue("the replay never went out", replayed > 0)
+    }
+
     @Test
     fun aWrappedSwitchMarkerIsThePeersSwitch() {
         hub.start(transport("aaaa0001"))
