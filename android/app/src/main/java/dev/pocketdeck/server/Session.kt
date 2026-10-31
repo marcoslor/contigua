@@ -20,6 +20,7 @@ import java.io.BufferedOutputStream
 import java.io.File
 import java.net.Socket
 import java.net.SocketTimeoutException
+import java.util.ArrayDeque
 import java.util.Base64
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.Executors
@@ -203,6 +204,8 @@ class Session(
     @Volatile private var phase = Phase.HELLO
     /** This session's teardown; [SessionTeardown.State.LIVE] while it serves. */
     private val teardown = AtomicReference(SessionTeardown.State.LIVE)
+    /** The thread that owns the socket before `welcome`; set at [run]'s start. */
+    @Volatile private var readerThread: Thread? = null
 
     private val streams = LinkedHashMap<Int, StreamState>()
     /**
@@ -275,13 +278,30 @@ class Session(
         data object AckAboveSent : Inbound
     }
 
-    /** The v2 pairing room; read/written on the reader thread only. */
+    /** The v2 pairing room; read by the reader thread. The work queue is the
+     * one hand-off from another thread, and [pairLock] guards both. */
     private var pendingPairId: String? = null
     private var pairSettled = false
     private var pendingNp: ByteArray? = null
     private var pendingMacFp = ByteArray(32)
     private var pendingPhoneFp = ByteArray(32)
     private var currentMacName: String? = null
+
+    /**
+     * Pre-welcome work another thread recorded for the reader: the reader is
+     * the only thread that may write before `welcome` (PATH-2). Android's TLS
+     * socket refused the binder thread's `pair.ok` write while the reader was
+     * in its 250 ms poll (boot 5), so the answer is a queue, not a callback.
+     */
+    private sealed interface ReaderWork {
+        data object PairAllowed : ReaderWork
+        data object PairDenied : ReaderWork
+        data object PairExpired : ReaderWork
+        data class Refuse(val code: String, val message: String) : ReaderWork
+    }
+
+    /** Queued under [pairLock], drained by the reader only. */
+    private val readerWork = ArrayDeque<ReaderWork>()
 
     private val loggedUnknown = HashSet<String>()
 
@@ -477,6 +497,7 @@ class Session(
     }
 
     fun run() {
+        readerThread = Thread.currentThread()
         // The hold decides `state.panel` on its own (the person's power
         // button, a paused window, the session ending): tell the Mac at once —
         // but only once it has authenticated (nothing but the pairing machine
@@ -519,11 +540,16 @@ class Session(
                 runCatching { socket.soTimeout = 0 }
             }
             // A pairing may take minutes (a person reads two screens), so that
-            // phase polls instead of blocking forever: `welcome` can be set by
-            // the decision thread while this thread is in a read (PATH-3).
+            // phase polls instead of blocking forever: this thread checks the
+            // decision queue after every timeout (PATH-3).
             if (phase == Phase.PAIR) runCatching { socket.soTimeout = PAIR_POLL_MS }
             var pending: Frame? = null
             while (teardown.get() == SessionTeardown.State.LIVE && phase != Phase.READY) {
+                // Another thread records the pairing answer; this thread writes
+                // it. Android's TLS socket throws for a write from the binder
+                // thread while this one polls the read (boot 5, PATH-2).
+                drainReaderWork()
+                if (phase == Phase.READY) break
                 val frame = try {
                     reader.readFrame()
                 } catch (e: SocketTimeoutException) {
@@ -540,10 +566,15 @@ class Session(
                 }
                 handle(frame)
             }
+            // A gate push can record a refusal while `welcome` is going out.
+            drainReaderWork()
             if (phase == Phase.READY && teardown.get() == SessionTeardown.State.LIVE) {
                 startPathReader(firstTransport!!, reader, pending)
                 startPathTicker()
                 while (teardown.get() == SessionTeardown.State.LIVE) {
+                    // A refusal recorded as `welcome` went out still wins.
+                    drainReaderWork()
+                    if (teardown.get() != SessionTeardown.State.LIVE) break
                     val item = try {
                         inbound.poll(500, TimeUnit.MILLISECONDS)
                     } catch (e: InterruptedException) {
@@ -556,6 +587,7 @@ class Session(
             log("reader ended: ${e.message}")
         } finally {
             shutdown()
+            readerThread = null
         }
     }
 
@@ -764,6 +796,7 @@ class Session(
         val abandoned = synchronized(pairLock) {
             val open = if (pairSettled) null else pendingPairId
             pairSettled = true
+            readerWork.clear()
             pairLock.notifyAll()
             open
         }
@@ -1097,47 +1130,70 @@ class Session(
 
     private fun expirePairing(id: String) {
         val deadline = System.currentTimeMillis() + pairDecisionTimeoutMs
-        val expired = synchronized(pairLock) {
+        synchronized(pairLock) {
             while (!pairSettled && pendingPairId == id) {
                 val left = deadline - System.currentTimeMillis()
                 if (left <= 0) {
+                    // M-1: nobody answered. Keep the phone quiet for a moment so
+                    // a peer cannot retry the prompt in a tight loop. The reader
+                    // writes the timeout error; this thread never touches the
+                    // socket (PATH-2).
                     pairSettled = true
-                    return@synchronized true
+                    readerWork.addLast(ReaderWork.PairExpired)
+                    pairLock.notifyAll()
+                    return
                 }
                 pairLock.wait(left)
             }
-            false
         }
-        if (!expired) return
-        // M-1: nobody answered; keep the phone quiet for a moment so a peer
-        // cannot retry the prompt in a tight loop.
-        pairCooldown.start()
-        runCatching { callback.onPairingEnded(id) }
-        finishWithError("pair_timeout", "no decision on the phone")
     }
 
     /**
-     * Called from the app process (binder thread) when the user answers the
-     * prompt. Allow completes the pairing right here: the reader thread is
-     * only watching the socket.
+     * Called from the app process (binder thread) when the person answers the
+     * prompt. Only the decision is recorded here: the reader thread writes
+     * `pair.ok` or the denial, because before `welcome` it is the one thread
+     * that may touch the TLS socket (PATH-2, boot 5).
      */
     override fun respondPairing(requestId: String, allow: Boolean) {
-        val mine = synchronized(pairLock) {
-            if (requestId != pendingPairId || pairSettled || isClosed) {
-                false
-            } else {
-                pairSettled = true
-                pairLock.notifyAll()
-                true
-            }
+        synchronized(pairLock) {
+            if (requestId != pendingPairId || pairSettled || isClosed) return
+            pairSettled = true
+            readerWork.addLast(if (allow) ReaderWork.PairAllowed else ReaderWork.PairDenied)
+            pairLock.notifyAll()
         }
-        if (!mine) return
-        if (allow) {
-            completePairing()
-        } else {
-            // M-1: a Deny is a decision about this Mac; hold off new prompts.
-            pairCooldown.start()
-            finishWithError("pair_denied", "pairing denied")
+        log("pairing: ${if (allow) "allow" else "deny"} recorded")
+    }
+
+    /**
+     * Runs the pre-welcome work another thread recorded. Only the reader calls
+     * this; [finishWithError] hands a refusal here too, so no binder thread
+     * ever writes on the TLS socket (PATH-2).
+     */
+    private fun drainReaderWork() {
+        while (true) {
+            val work = synchronized(pairLock) { readerWork.pollFirst() } ?: return
+            if (teardown.get() != SessionTeardown.State.LIVE) return
+            // The pairing frames must not wait out the 250 ms read poll: clear
+            // the read timeout before the first write, as main did.
+            runCatching { socket.soTimeout = 0 }
+            when (work) {
+                ReaderWork.PairAllowed -> {
+                    log("pairing: allow")
+                    completePairing()
+                }
+                ReaderWork.PairDenied -> {
+                    log("pairing: deny")
+                    pairCooldown.start()
+                    finishWithError("pair_denied", "pairing denied")
+                }
+                ReaderWork.PairExpired -> {
+                    log("pairing: no decision")
+                    pairCooldown.start()
+                    pendingPairId?.let { runCatching { callback.onPairingEnded(it) } }
+                    finishWithError("pair_timeout", "no decision on the phone")
+                }
+                is ReaderWork.Refuse -> finishWithError(work.code, work.message)
+            }
         }
     }
 
@@ -1184,6 +1240,16 @@ class Session(
 
     /** Sends [code], lets it flush, then ends the session. */
     private fun finishWithError(code: String, message: String) {
+        if (phase != Phase.READY && Thread.currentThread() !== readerThread) {
+            // A pre-welcome refusal may not write from a caller thread (the
+            // app's gate push, a binder decision): hand it to the reader.
+            if (teardown.get() != SessionTeardown.State.LIVE) return
+            synchronized(pairLock) {
+                readerWork.addLast(ReaderWork.Refuse(code, message))
+                pairLock.notifyAll()
+            }
+            return
+        }
         sendError(code, message)
         apply(SessionTeardown.Event.Stop)
         queue.close()
