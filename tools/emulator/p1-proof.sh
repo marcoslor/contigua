@@ -33,8 +33,6 @@ for arg in "$@"; do
 done
 
 WORK="${PD_PROOF_WORK:-/tmp/pd-direct-p1-emu}"
-rm -rf "$WORK"
-mkdir -p "$WORK"
 PROFILE="pathsemu$$"
 SUPPORT="$HOME/Library/Application Support/PocketDeck-$PROFILE"
 APP="$ROOT/macos/build/e2e/PocketDeck.app/Contents/MacOS/PocketDeck"
@@ -79,6 +77,11 @@ if [ "$MODE" = check ]; then
     exit 1
 fi
 
+# The run owns a fresh work dir; --check above never touches it (a rehearsal
+# after a failed boot must not wipe that boot's evidence).
+rm -rf "$WORK"
+mkdir -p "$WORK"
+
 section() { PHASE="$1"; printf '\n== %s ==\n' "$1"; }
 ok() { printf 'PASS [%s] %s\n' "$PHASE" "$*"; }
 bad() { printf 'FAIL [%s] %s\n' "$PHASE" "$*"; FAIL=$((FAIL + 1)); }
@@ -101,25 +104,26 @@ stream_log() { # stream_log <pid> <file>
 
 refresh_log() { # refresh_log <pid> <file> — merge log show: a late stream start
                 # must not hide a line the checks are about
-    /usr/bin/log show --last 10m --info --style syslog --process "$1" \
-        --predicate 'subsystem == "dev.pocketdeck.mac"' 2>/dev/null >> "$2"
+    /usr/bin/log show --last 10m --info --style syslog \
+        --predicate "processID == $1 AND subsystem == \"dev.pocketdeck.mac\"" \
+        2>/dev/null >> "$2"
 }
 
-# settle_before_next <label> — the Mac app is gone; wait up to 50 s for the
-# phone's 30 s orphan grace to end that session, so the next launch's plain
-# hello founds a fresh session instead of superseding a live slot. A note
-# either way: the dedicated grace section proves the timer itself.
+# settle_before_next <label> — the Mac app is gone; wait up to 10 s for the
+# phone to record the slot free (its teardown ends the session at once; the
+# 30 s orphan grace is the Mac's, proven in the grace section). A note either
+# way: a lingering live slot is superseded by the next plain hello.
 settle_before_next() {
-    local label="$1" deadline=$(( $(date +%s) + 50 ))
+    local label="$1" deadline=$(( $(date +%s) + 10 ))
     while [ "$(date +%s)" -lt "$deadline" ]; do
         emu logcat -d -v time -s PocketDeckSvc:I 2>/dev/null > "$WORK/phone-$label-end.log"
-        if grep -q 'paths: ended graceExpired' "$WORK/phone-$label-end.log"; then
-            printf '[p1-proof] %s: the previous session ended at the grace (slot free)\n' "$label"
+        if grep -q 'session slot: live --ended--> free' "$WORK/phone-$label-end.log"; then
+            printf '[p1-proof] %s: the previous session ended, the slot is free\n' "$label"
             return 0
         fi
         sleep 0.25
     done
-    printf '[p1-proof] %s: the previous session did not end in 50 s; the next plain hello supersedes it\n' "$label"
+    printf '[p1-proof] %s: the slot was not seen free in 10 s; the next plain hello supersedes it\n' "$label"
     return 0
 }
 
@@ -155,6 +159,7 @@ cleanup() {
     stop_app
     [ -n "${TAP_PID:-}" ] && kill "$TAP_PID" 2>/dev/null
     stop_proxies
+    "$ADB" -s "$SERIAL" forward --remove tcp:47812 >/dev/null 2>&1 || true
     # The only allowed kill: this emulator's own console.
     "$ADB" -s "$SERIAL" emu kill >/dev/null 2>&1 || true
 }
@@ -191,6 +196,11 @@ emu logcat -c >/dev/null 2>&1 || true
 
 # A fresh Mac profile: no pin from a previous run can make this a reconnect.
 rm -rf "$SUPPORT"
+# The pairing prompt is the phone app's own dialog. start.sh launched it once,
+# but it can sit behind the home screen; flow.sh does exactly this before a
+# pair, so the prompt (and its Allow) is in the current window for poc.py.
+emu shell am start -n dev.pocketdeck/.app.MainActivity >/dev/null 2>&1 || true
+sleep 1
 
 # --- pair the Mac app ------------------------------------------------------
 section pair
@@ -224,20 +234,24 @@ emu logcat -c >/dev/null 2>&1 || true
 # A .part-* from an earlier rig run would trip the 8 MiB "drop started" check.
 emu shell "rm -f /sdcard/Download/PocketDeck/.part-*" >/dev/null 2>&1 || true
 # A: fast (it must found), B: 1.5 s in the way (it must hold, then join).
+# Each proxy gets its own adb forward: two concurrent TLS handshakes must not
+# share one forward's socket path (path A kept failing parse on the phone).
 printf 'mode pass\n' > "$WORK/fault-a.ctl"
 printf 'mode delay\n' > "$WORK/fault-b.ctl"
+emu forward --remove tcp:47812 >/dev/null 2>&1 || true
+emu forward tcp:47812 "tcp:$DEVPORT" >/dev/null || bad "second adb forward failed"
 "$PYTHON" "$ROOT/tools/pdpathfault/pdpathfault.py" --listen 47821 \
     --connect "127.0.0.1:${ADDR##*:}" --mode pass --rate-mbit 16 \
     --ctl-file "$WORK/fault-a.ctl" --events "$WORK/fault-a.events" \
     > "$WORK/fault-a.log" 2>&1 &
 PROXY_A_PID=$!
 "$PYTHON" "$ROOT/tools/pdpathfault/pdpathfault.py" --listen 47822 \
-    --connect "127.0.0.1:${ADDR##*:}" --mode delay --delay-ms 1500 --rate-mbit 16 \
+    --connect 127.0.0.1:47812 --mode delay --delay-ms 1500 --rate-mbit 16 \
     --ctl-file "$WORK/fault-b.ctl" --events "$WORK/fault-b.events" \
     > "$WORK/fault-b.log" 2>&1 &
 PROXY_B_PID=$!
-wait_for 10 grep -q listening "$WORK/fault-a.log" || bad "fault A did not listen"
-wait_for 10 grep -q listening "$WORK/fault-b.log" || bad "fault B did not listen"
+wait_for 10 grep -q '"ev":"start"' "$WORK/fault-a.events" || bad "fault A did not listen"
+wait_for 10 grep -q '"ev":"start"' "$WORK/fault-b.events" || bad "fault B did not listen"
 
 FILE="$WORK/pd-direct-p1-$(date +%s).bin"
 NAME="$(basename "$FILE")"
@@ -246,7 +260,7 @@ EXPECT_SHA="$(shasum -a 256 "$FILE" | awk '{print $1}')"
 cat > "$WORK/drop-script.txt" <<EOF
 waitfile $WORK/drop-go 80
 dropfile $FILE
-wait 80
+wait 60
 EOF
 LAUNCH2_TS="$(date +%s)"
 "$APP" --profile "$PROFILE" --background \
@@ -390,27 +404,36 @@ done
 sleep 2
 printf 'mode blackhole\n' > "$WORK/fault-a.ctl"
 printf 'mode blackhole\n' > "$WORK/fault-b.ctl"
-GRACE_PHONE=0
-for _ in $(seq 1 180); do
-    emu logcat -d -v time -s PocketDeckSvc:I 2>/dev/null > "$WORK/phone-grace.log"
-    grep -q 'paths: ended graceExpired' "$WORK/phone-grace.log" && { GRACE_PHONE=1; break; }
+GRACE_T0=$(date +%s)
+MAC_GRACE=0
+for _ in $(seq 1 160); do
+    if grep -q -- 'orphaned --grace--> ended' "$WORK/mac-grace.log"; then MAC_GRACE=1; break; fi
     sleep 0.25
 done
-if [ "$GRACE_PHONE" = 1 ]; then
-    ok "the phone ended the session at the 30 s grace (paths: ended graceExpired)"
-else
-    bad "the phone never ended the grace session"
-fi
-if wait_for 10 grep -q -- 'orphaned --grace--> ended' "$WORK/mac-grace.log"; then
-    ok "the Mac ended the same session at the grace (paths: orphaned --grace--> ended)"
-else
+if [ "$MAC_GRACE" = 0 ]; then
     refresh_log "$APP_PID" "$WORK/mac-grace.log"
-    if grep -q -- 'orphaned --grace--> ended' "$WORK/mac-grace.log"; then
-        ok "the Mac ended the same session at the grace (paths: orphaned --grace--> ended)"
-    else
-        bad "no Mac grace transition"
-    fi
+    grep -q -- 'orphaned --grace--> ended' "$WORK/mac-grace.log" && MAC_GRACE=1
 fi
+GRACE_DT=$(( $(date +%s) - GRACE_T0 ))
+if [ "$MAC_GRACE" = 1 ] && [ "$GRACE_DT" -ge 28 ]; then
+    ok "the Mac ended the session at the 30 s grace (orphaned --grace--> ended, ${GRACE_DT}s after the black-hole)"
+else
+    bad "no Mac grace transition in the 30 s window (${GRACE_DT}s, found=$MAC_GRACE)"
+fi
+SLOT_FREE=0
+for _ in $(seq 1 40); do
+    emu logcat -d -v time -s PocketDeckSvc:I 2>/dev/null > "$WORK/phone-grace.log"
+    grep -q 'session slot: live --ended--> free' "$WORK/phone-grace.log" && { SLOT_FREE=1; break; }
+    sleep 0.25
+done
+if [ "$SLOT_FREE" = 1 ]; then
+    ok "the phone freed the session slot when the paths died"
+else
+    bad "the phone's session slot did not free"
+fi
+grep -q 'paths: ended graceExpired' "$WORK/phone-grace.log" \
+    && ok "the phone's own path machine also reached its grace end" \
+    || printf '[p1-proof] note: the phone session tore down before its path-machine grace\n'
 sleep 2
 emu logcat -d -v time -s PocketDeckSvc:I 2>/dev/null > "$WORK/phone-grace.log"
 grep -E 'power:|panel given back|phone back to sleep' "$WORK/phone-grace.log" > "$WORK/phone-power.log" 2>/dev/null || true
@@ -454,6 +477,8 @@ fi
 
 # --- the slot is free: a fresh pairing succeeds ----------------------------
 section slot
+emu shell am start -n dev.pocketdeck/.app.MainActivity >/dev/null 2>&1 || true
+sleep 1
 if "$PYTHON" "$HERE/poc.py" --addr "$ADDR" --serial "$SERIAL" \
         --state "$WORK/deckctl-state.json" pair --timeout 60 \
         > "$WORK/deckctl-pair.log" 2>&1; then
