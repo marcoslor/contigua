@@ -63,6 +63,17 @@ final class LaunchOptionsTests: XCTestCase {
         XCTAssertNil(LaunchOptions.parse(["PocketDeck"]).debugInputScript)
     }
 
+    func testCheckInputScriptReadsItsValue() {
+        // The p1 emulator rig's rehearsal hook: `--check-input-script FILE`
+        // parses the script and exits, so a boot never loads a bad line.
+        XCTAssertEqual(
+            LaunchOptions.checkInputScript(["PocketDeck", "--check-input-script", "/tmp/pd-input.txt"]),
+            "/tmp/pd-input.txt",
+        )
+        XCTAssertNil(LaunchOptions.checkInputScript(["PocketDeck"]))
+        XCTAssertNil(LaunchOptions.checkInputScript(["PocketDeck", "--check-input-script"]))
+    }
+
     func testDebugControlDirectory() {
         let options = LaunchOptions.parse(["PocketDeck", "--debug-control", "/tmp/pd-control"])
         XCTAssertEqual(options.debugControl, "/tmp/pd-control")

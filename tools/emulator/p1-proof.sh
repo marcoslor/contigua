@@ -39,6 +39,32 @@ APP="$ROOT/macos/build/e2e/PocketDeck.app/Contents/MacOS/PocketDeck"
 FAIL=0
 PHASE=""
 
+# The drop script is generated once and used by both the run and --check, so the
+# rehearsal parses exactly the lines the boot will load. Each wait is <= 60 s:
+# the debug-input grammar refuses a longer single wait, and two pieces keep the
+# old total for a slow start.
+drop_script() { # drop_script <script file> <file to drop> <drop-go path>
+    cat > "$1" <<EOF
+waitfile $3 60
+waitfile $3 60
+dropfile $2
+wait 60
+EOF
+}
+
+pin_stored() { # 0 when the Mac profile holds a phone pin
+    local pins="$SUPPORT/pins.json"
+    [ -s "$pins" ] || return 1
+    "$PYTHON" - "$pins" <<'PY'
+import json, re, sys
+try:
+    records = json.load(open(sys.argv[1]))
+except (OSError, ValueError):
+    sys.exit(1)
+sys.exit(0 if any(re.fullmatch(r"[0-9a-fA-F]{64}", r.get("phoneFingerprintHex") or "") for r in records) else 1)
+PY
+}
+
 # --- --check: everything a boot would die on, without touching a device -----
 if [ "$MODE" = check ]; then
     CHECK_FAIL=0
@@ -69,6 +95,44 @@ if [ "$MODE" = check ]; then
     free_kb="$(df -k /tmp | awk 'NR == 2 { print $4 }')"
     [ -n "$free_kb" ] && [ "$free_kb" -ge 204800 ] ||
         cfail "less than 200 MiB free in /tmp for the 32 MiB drop"
+    # Rehearse every phase's command line, not only its files: the Mac app
+    # parses the same argv it will get (dummy addresses, no device) and the
+    # generated drop script through the debug-input grammar. `wait 80` once
+    # passed every file check and then failed the whole boot at load.
+    checkdir="$(mktemp -d "${TMPDIR:-/tmp}/pd-p1-check.XXXXXX")"
+    if [ -z "$checkdir" ]; then
+        cfail "cannot make a rehearsal dir"
+    else
+        CHECK_DROP="$checkdir/drop-check.bin"
+        : > "$CHECK_DROP"
+        drop_script "$checkdir/drop-script.txt" "$CHECK_DROP" "$WORK/drop-go"
+        rehearse() { # rehearse <phase> <app args...>
+            local phase="$1"
+            shift
+            local out
+            if out="$("$APP" "$@" --check-input-script "$checkdir/drop-script.txt" 2>&1)"; then
+                printf 'P1-PROOF CHECK: %s argv rehearsed\n' "$phase"
+            else
+                cfail "$phase argv: $(printf '%s' "$out" | tail -2 | tr '\n' ' ')"
+            fi
+        }
+        if [ -x "$APP" ]; then
+            rehearse pair --profile "$PROFILE" --background \
+                --connect 127.0.0.1:1 --open-phone --quit-after 70
+            rehearse join --profile "$PROFILE" --background \
+                --connect 127.0.0.1:1 --connect2 127.0.0.1:2 \
+                --open com.android.settings --debug-input-script "$checkdir/drop-script.txt" \
+                --quit-after 150
+            rehearse grace --profile "$PROFILE" --background \
+                --connect 127.0.0.1:1 --connect2 127.0.0.1:2 --open-phone --quit-after 70
+        fi
+        # Every single wait the run will load is inside the 60 s cap.
+        if awk '$1 == "waitfile" && $3 > 60 { bad = 1 } $1 == "wait" && $2 > 60 { bad = 1 }
+                END { exit bad ? 0 : 1 }' "$checkdir/drop-script.txt"; then
+            cfail "a debug-input wait is over 60 s: $(cat "$checkdir/drop-script.txt" | tr '\n' ' ')"
+        fi
+        rm -rf "$checkdir"
+    fi
     if [ "$CHECK_FAIL" -eq 0 ]; then
         echo "P1-PROOF CHECK PASS: one boot, $SERIAL, APK $(apk_version_code "$ROOT/android/app/build/outputs/apk/debug/app-debug.apk"), app $APP"
         exit 0
@@ -126,6 +190,25 @@ settle_before_next() {
     printf '[p1-proof] %s: the slot was not seen free in 10 s; the next plain hello supersedes it\n' "$label"
     return 0
 }
+
+# The pairing prompt is the phone app's own dialog; the app can sit behind the
+# home screen and then the prompt is only a notification, which poc.py's
+# wait-prompt does not read. flow.sh waits for the activity to be resumed before
+# pairing; this is the same step, and the proof cannot pair without it.
+bring_app_forward() {
+    emu shell am start -n dev.pocketdeck/.app.MainActivity >/dev/null 2>&1 || true
+    local deadline=$(( $(date +%s) + 60 ))
+    while [ "$(date +%s)" -lt "$deadline" ]; do
+        if emu shell dumpsys activity activities 2>/dev/null |
+            grep -q 'ResumedActivity.*dev.pocketdeck/dev.pocketdeck.app.MainActivity'; then
+            break
+        fi
+        sleep 2
+    done
+    sleep 3
+}
+
+
 
 APP_PID=""
 LOG_STREAM=""
@@ -196,16 +279,14 @@ emu logcat -c >/dev/null 2>&1 || true
 
 # A fresh Mac profile: no pin from a previous run can make this a reconnect.
 rm -rf "$SUPPORT"
-# The pairing prompt is the phone app's own dialog. start.sh launched it once,
-# but it can sit behind the home screen; flow.sh does exactly this before a
-# pair, so the prompt (and its Allow) is in the current window for poc.py.
-emu shell am start -n dev.pocketdeck/.app.MainActivity >/dev/null 2>&1 || true
-sleep 1
+# flow.sh's step before a pair: the app must be the resumed activity, or the
+# prompt is a notification in a window poc.py does not read.
+bring_app_forward
 
 # --- pair the Mac app ------------------------------------------------------
 section pair
 "$PYTHON" "$HERE/poc.py" --addr "$ADDR" --serial "$SERIAL" \
-    wait-prompt --timeout 90 > "$WORK/wait-prompt.log" 2>&1 &
+    wait-prompt --timeout 60 > "$WORK/wait-prompt.log" 2>&1 &
 TAP_PID=$!
 "$APP" --profile "$PROFILE" --background --connect "$ADDR" \
     --open-phone --quit-after 70 > "$WORK/app-pair.out" 2>&1 &
@@ -226,6 +307,15 @@ sleep 1
 stop_app
 wait "$TAP_PID" 2>/dev/null || true
 TAP_PID=""
+# No pin means every later launch is a pairing attempt again, not a join: the
+# three remaining proofs cannot run. Stop here instead of sinking the boot.
+if pin_stored; then
+    ok "the Mac stored the phone pin before the join"
+else
+    bad "no pin in $SUPPORT/pins.json after pairing; the join cannot run"
+    printf '\n== result ==\nFAIL: $FAIL proof(s) failed (one boot, stopped after pair)\n'
+    exit 1
+fi
 settle_before_next pair
 
 # --- two providers, one session: the join ----------------------------------
@@ -257,11 +347,7 @@ FILE="$WORK/pd-direct-p1-$(date +%s).bin"
 NAME="$(basename "$FILE")"
 head -c 33554432 /dev/urandom > "$FILE"
 EXPECT_SHA="$(shasum -a 256 "$FILE" | awk '{print $1}')"
-cat > "$WORK/drop-script.txt" <<EOF
-waitfile $WORK/drop-go 80
-dropfile $FILE
-wait 60
-EOF
+drop_script "$WORK/drop-script.txt" "$FILE" "$WORK/drop-go"
 LAUNCH2_TS="$(date +%s)"
 "$APP" --profile "$PROFILE" --background \
     --connect 127.0.0.1:47821 --connect2 127.0.0.1:47822 \
@@ -358,10 +444,14 @@ else
 fi
 [ -n "$FOUNDER_CTL" ] && printf 'mode blackhole\n' > "$FOUNDER_CTL"
 SAVED=0
-for _ in $(seq 1 480); do
-    emu logcat -d -v time -s PocketDeckSvc:I 2>/dev/null > "$WORK/phone-drop.log"
-    grep -q 'drop [0-9]*: saved' "$WORK/phone-drop.log" && { SAVED=1; break; }
-    sleep 0.25
+# Two 60 s pieces: a single wait may never be longer than the debug-input cap.
+for _piece in 1 2; do
+    for _ in $(seq 1 240); do
+        emu logcat -d -v time -s PocketDeckSvc:I 2>/dev/null > "$WORK/phone-drop.log"
+        grep -q 'drop [0-9]*: saved' "$WORK/phone-drop.log" && { SAVED=1; break; }
+        sleep 0.25
+    done
+    [ "$SAVED" = 1 ] && break
 done
 TARGET="/sdcard/Download/PocketDeck/$NAME"
 if [ "$SAVED" = 1 ]; then
@@ -477,8 +567,7 @@ fi
 
 # --- the slot is free: a fresh pairing succeeds ----------------------------
 section slot
-emu shell am start -n dev.pocketdeck/.app.MainActivity >/dev/null 2>&1 || true
-sleep 1
+bring_app_forward
 if "$PYTHON" "$HERE/poc.py" --addr "$ADDR" --serial "$SERIAL" \
         --state "$WORK/deckctl-state.json" pair --timeout 60 \
         > "$WORK/deckctl-pair.log" 2>&1; then
