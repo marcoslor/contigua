@@ -743,11 +743,11 @@ class EventLog(object):
     def session(self, state):
         self._emit({"ev": "session", "state": state, "ts": time.time()})
 
-    def hello(self, msg):
+    def hello(self, msg, listener=None):
         """One connection's hello: the pathstart check counts plain hellos."""
         self._emit({"ev": "hello", "v": msg.get("v"), "path": msg.get("path"),
                     "join": msg.get("join"), "plain": not bool(msg.get("join")),
-                    "ts": time.time()})
+                    "listener": listener, "ts": time.time()})
 
     def paths(self, ports):
         self._emit({"ev": "paths", "ports": ports, "count": len(ports),
@@ -888,6 +888,12 @@ class EventLog(object):
 
     def drop(self, drop_id, files, ok, code):
         self._emit({"ev": "drop", "id": drop_id, "files": files, "ok": ok, "code": code,
+                    "ts": time.time()})
+
+    def drop_progress(self, drop_id, bytes_received):
+        """Every 8 MiB a file drop has received, so a check can cut the path
+        mid-file instead of guessing from wall time."""
+        self._emit({"ev": "drop_progress", "id": drop_id, "bytes": bytes_received,
                     "ts": time.time()})
 
     def clip_image(self, direction, name, **extra):
@@ -2968,6 +2974,10 @@ class Session(object):
             return
         drop["data"] += payload
         got = len(drop["data"])
+        mark = got // (8 << 20)
+        if mark > drop.get("log_mark", 0):
+            drop["log_mark"] = mark
+            self.phone.events.drop_progress(drop_id, mark << 20)
         if got > drop["size"]:
             # The real receiver's rule: every byte must fit the announcement.
             self._drop = None
@@ -4498,7 +4508,8 @@ class FakePhone(object):
                 continue
             except OSError:
                 return
-            threading.Thread(target=self.handle_connection, args=(conn, addr),
+            port = srv.getsockname()[1]
+            threading.Thread(target=self.handle_connection, args=(conn, addr, port),
                              daemon=True).start()
 
     def _refuse_conn(self, conn, code, message=None):
@@ -4523,7 +4534,7 @@ class FakePhone(object):
             except OSError:
                 pass
 
-    def handle_connection(self, conn, addr):
+    def handle_connection(self, conn, addr, listener_port=None):
         """TLS, hello, then the session slot (docs/PROTOCOL.md §4).
 
         Only this method reads the hello: it decides a new session, a join or
@@ -4557,7 +4568,7 @@ class FakePhone(object):
                     self.events.path("version_refused", None,
                                      current=None, peer=msg.get("v"), v=self.args.version)
                     return
-            self.events.hello(msg)
+            self.events.hello(msg, listener=listener_port)
             mac_fp = (proto.point_fp_from_der(conn.client_der)
                       if getattr(conn, "client_der", None) else "")
             decision = ("founder",)
