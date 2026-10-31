@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # End-to-end checks C3-C13 for the macOS client against tools/fakephone.
 #
-#   ./scripts/check-e2e.sh [qr|pair|gates|forgot|tls|render|resize|input|hover|mouseback|input-global|pause|direct|nav|mirror|spotlight|intents|mcp|focus|controls|pinch|chrome|menus|density|trackpad|clip|sharein|links|share|apk|drop|dock|nickname|notify|notify-actions|notify-media|media|audio|handoff|deck|nfr|all [--shard N/M]]
+#   ./scripts/check-e2e.sh [qr|pair|gates|forgot|tls|render|resize|input|hover|mouseback|input-global|pause|direct|nav|mirror|spotlight|intents|mcp|focus|controls|pinch|chrome|menus|density|trackpad|clip|sharein|links|share|apk|drop|dock|shortcuts|nickname|notify|notify-actions|notify-media|media|audio|handoff|deck|nfr|all [--shard N/M]]
 #
 # Every check starts from a clean slate (the shared-app checks share one, see
 # "The shared app" below): no PocketDeck or fakephone processes
@@ -8174,6 +8174,83 @@ check_dock() {
     remove_dock_apps
 
     stop_fakephone
+    wait_until 5 no_fakephone
+}
+
+# --- Application shortcuts (docs/specs/dock.md) ---------------------------
+
+# origins_of <bundle> — the shim's PDOrigins as one spaced string ("dock manual").
+origins_of() {
+    python3 - "$1/Contents/Info.plist" <<'PY'
+import plistlib, sys
+try:
+    with open(sys.argv[1], "rb") as handle:
+        print(" ".join(plistlib.load(handle).get("PDOrigins", [])))
+except Exception:
+    print("")
+PY
+}
+
+# check_shortcuts — DOCK-3 and DOCK-4: the Deck tile's menu actions (through the
+# debug control route the Dock checks use, because a context menu cannot be
+# clicked in a quiet run). Add to Applications creates the shim in the run's
+# folder with the manual reason and opens no window; Add to Dock adds its reason
+# and launches; Remove from Applications takes only manual; Remove from Dock App
+# removes the bundle. Save all, reconcile, forget and Spotlight follow below.
+check_shortcuts() {
+    clean
+    local dir="$WORK/dock-apps" pkg="com.whatsapp" shim label="WhatsApp (FakePhone).app"
+    remove_dock_apps
+    mkdir -p "$dir" "$WORK-control"
+    start_fake || return 1
+    launch --connect "127.0.0.1:$PORT" --dock-dir "$dir" --debug-control "$WORK-control" --quit-after 300
+    wait_until 30 events_have '"t":"apps.icon"' \
+        || { bad "SHORTCUTS the app list never arrived"; stop_app; stop_fakephone; return 1; }
+    shim="$dir/$label"
+
+    # Add to Applications: the action the tile's item runs.
+    control shortcut add "$pkg" || bad "SHORTCUTS shortcut add: $CONTROL_REPLY"
+    wait_until 30 eval '[ -d "$shim" ]' \
+        || { bad "SHORTCUTS no shortcut bundle in $dir ($(ls "$dir" 2>/dev/null | tr '\n' ' '))"; stop_app; stop_fakephone; return 1; }
+    [ "$(origins_of "$shim")" = "manual" ] \
+        && ok "[DOCK-4] Add to Applications creates the shortcut with the manual reason" \
+        || bad "[DOCK-4] the shortcut's reasons are '$(origins_of "$shim")'"
+    [ -s "$shim/Contents/Resources/AppIcon.icns" ] \
+        && ok "[DOCK-4] the shortcut carries the app's own icon" \
+        || bad "[DOCK-4] the shortcut has no AppIcon.icns"
+    [ "$(count_events '"t":"window.open"' | head -1)" = "0" ] \
+        && ok "[DOCK-14] adding a shortcut launched nothing" \
+        || bad "[DOCK-14] adding a shortcut opened a window"
+
+    # Add to Dock on the same app: both reasons, and the Dock identity runs.
+    control dock add "$pkg" || bad "SHORTCUTS dock add: $CONTROL_REPLY"
+    wait_until 20 window_rx window.open "$pkg" \
+        && ok "[DOCK-3] Add to Dock launched the app's window" \
+        || bad "[DOCK-3] Add to Dock opened no window"
+    wait_until 20 eval '[ "$(origins_of "$shim")" = "dock manual" ]' \
+        && ok "[DOCK-3] Add to Dock kept the shortcut's manual reason" \
+        || bad "[DOCK-3] the reasons after Add to Dock are '$(origins_of "$shim")'"
+
+    # Remove from Applications: only manual goes; the Dock shim and its window stay.
+    control shortcut remove "$pkg" || bad "SHORTCUTS shortcut remove: $CONTROL_REPLY"
+    wait_until 20 eval '[ "$(origins_of "$shim")" = "dock" ]' \
+        && ok "[DOCK-4] Remove from Applications removes only manual" \
+        || bad "[DOCK-4] the reasons after Remove from Applications are '$(origins_of "$shim")'"
+    [ -d "$shim" ] && ok "[DOCK-4] the Dock's shim stays" || bad "[DOCK-4] the Dock's shim was deleted"
+    [ -n "$(dock_shim_pids)" ] && ok "[DOCK-4] its running identity stays" \
+        || bad "[DOCK-4] Remove from Applications stopped the Dock identity"
+
+    # Remove from Dock App: the bundle goes and the shim stops.
+    control dock remove "$pkg" || bad "SHORTCUTS dock remove: $CONTROL_REPLY"
+    wait_until 20 eval '[ ! -d "$shim" ]' \
+        && ok "[DOCK-3] Remove from Dock App removes the bundle" \
+        || bad "[DOCK-3] the bundle is still there after Remove from Dock App"
+    wait_until 10 eval '[ -z "$(dock_shim_pids)" ]' \
+        && ok "[DOCK-3] its shim stopped" || bad "[DOCK-3] the shim kept running"
+
+    stop_app
+    stop_fakephone
+    remove_dock_apps
     wait_until 5 no_fakephone
 }
 
