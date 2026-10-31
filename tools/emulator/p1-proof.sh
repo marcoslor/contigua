@@ -13,7 +13,10 @@
 #
 # It boots once (budget .agent/budgets/direct-p0), and kills only
 # `adb -s emulator-5554 emu kill`. Evidence lands in $WORK and the caller's
-# stdout; the table goes to .agent/direct-link/p1-emulator.md.
+# stdout; every line is also teed to $WORK/p1-proof.out (the reviewer's copy).
+# Each phase gets its own `fault-{a,b}.<phase>.{events,log,ctl}` and the drop's
+# verdict reads those events plus the proxies' delivered-byte counts. The table
+# goes to .agent/direct-link/p1-emulator.md.
 #
 # Run it as: heavy.sh timeout 2700 bash tools/emulator/p1-proof.sh
 # Rehearse it as the same heavy.sh line with --check (no device, no boot).
@@ -91,6 +94,18 @@ if [ "$MODE" = check ]; then
     "$PYTHON" "$HERE/poc.py" --help >/dev/null 2>&1 || cfail "poc.py --help"
     "$PYTHON" "$ROOT/tools/pdpathfault/pdpathfault.py" --help >/dev/null 2>&1 ||
         cfail "pdpathfault.py --help"
+    if close_out="$("$PYTHON" "$ROOT/tools/pdpathfault/test_close.py" 2>&1)"; then
+        printf 'P1-PROOF CHECK: pdpathfault forwards FINs and counts bytes\n'
+    else
+        cfail "pdpathfault close check: $(printf '%s' "$close_out" | tail -2 | tr '\n' ' ')"
+    fi
+    # Item 7's join predicate reads these two lines; a bundle without them can
+    # only fail the join after a full boot.
+    if [ -x "$APP" ]; then
+        for line in 'paths: attached' 'paths: sending'; do
+            grep -aq -- "$line" "$APP" || cfail "$APP lacks '$line' (rebuild the e2e bundle)"
+        done
+    fi
     [ -x /usr/bin/log ] || cfail "no /usr/bin/log for the Mac app's lines"
     free_kb="$(df -k /tmp | awk 'NR == 2 { print $4 }')"
     [ -n "$free_kb" ] && [ "$free_kb" -ge 204800 ] ||
@@ -145,6 +160,9 @@ fi
 # after a failed boot must not wipe that boot's evidence).
 rm -rf "$WORK"
 mkdir -p "$WORK"
+# Item 7's deliverable is this file: every PASS/FAIL line the reviewer reads,
+# even when the run dies before its result table. `tee` flushes on exit.
+exec > >(tee "$WORK/p1-proof.out") 2>&1
 
 section() { PHASE="$1"; printf '\n== %s ==\n' "$1"; }
 ok() { printf 'PASS [%s] %s\n' "$PHASE" "$*"; }
@@ -173,22 +191,25 @@ refresh_log() { # refresh_log <pid> <file> — merge log show: a late stream sta
         2>/dev/null >> "$2"
 }
 
-# settle_before_next <label> — the Mac app is gone; wait up to 10 s for the
-# phone to record the slot free (its teardown ends the session at once; the
-# 30 s orphan grace is the Mac's, proven in the grace section). A note either
-# way: a lingering live slot is superseded by the next plain hello.
-settle_before_next() {
-    local label="$1" deadline=$(( $(date +%s) + 10 ))
+# wait_slot_free <log> <cap seconds> <label> — the Mac app is gone; wait up to
+# `cap` seconds for the phone to record the slot free. The phone keeps a
+# session for its own 30 s grace after the last path dies (PATH-6), and a new
+# plain hello during that grace has to supersede it: waiting makes the next
+# dial start on a free slot instead of racing one. Returns 1 when the slot did
+# not free.
+wait_slot_free() { # wait_slot_free <log> <cap seconds> <label>
+    local log="$1" cap="$2" label="$3" deadline=$(( $(date +%s) + cap ))
     while [ "$(date +%s)" -lt "$deadline" ]; do
-        emu logcat -d -v time -s PocketDeckSvc:I 2>/dev/null > "$WORK/phone-$label-end.log"
-        if grep -q 'session slot: live --ended--> free' "$WORK/phone-$label-end.log"; then
-            printf '[p1-proof] %s: the previous session ended, the slot is free\n' "$label"
+        emu logcat -d -v time -s PocketDeckSvc:I 2>/dev/null > "$log"
+        if grep -Eq 'session slot: [a-z]+ --[a-z ]+--> free' "$log"; then
+            printf '[p1-proof] %s: the phone slot is free (%s)\n' "$label" \
+                "$(grep -E 'session slot: .*--> free' "$log" | tail -1 | sed 's/^.*PocketDeckSvc([^)]*): //')"
             return 0
         fi
         sleep 0.25
     done
-    printf '[p1-proof] %s: the slot was not seen free in 10 s; the next plain hello supersedes it\n' "$label"
-    return 0
+    printf '[p1-proof] %s: the phone slot was not seen free in %ss\n' "$label" "$cap"
+    return 1
 }
 
 # The pairing prompt is the phone app's own dialog; the app can sit behind the
@@ -199,8 +220,10 @@ bring_app_forward() {
     emu shell am start -n dev.pocketdeck/.app.MainActivity >/dev/null 2>&1 || true
     local deadline=$(( $(date +%s) + 60 ))
     while [ "$(date +%s)" -lt "$deadline" ]; do
+        # Android prints `ResumedActivity: ActivityRecord{… dev.pocketdeck/.app.MainActivity …}`
+        # (the short component form); the old full-name pattern never matched.
         if emu shell dumpsys activity activities 2>/dev/null |
-            grep -q 'ResumedActivity.*dev.pocketdeck/dev.pocketdeck.app.MainActivity'; then
+            grep -Eq 'ResumedActivity:.*dev\.pocketdeck/[^ ]*app\.MainActivity|topResumedActivity=.*dev\.pocketdeck/[^ ]*app\.MainActivity'; then
             break
         fi
         sleep 2
@@ -336,6 +359,28 @@ stop_proxies() {
     PROXY_A_PID=""; PROXY_B_PID=""
 }
 
+# start_faults <phase> <a-mode> <b-mode> [delay-ms] — one fresh proxy pair per
+# phase, each with its own never-overwritten events/log. Boot 8 reused the join
+# proxies for the grace, which truncated the join's events before the reviewer
+# could see the founder throttled and black-holed.
+start_faults() {
+    local phase="$1" amode="$2" bmode="$3" delay="${4:-1500}"
+    printf 'mode %s\n' "$amode" > "$WORK/fault-a.$phase.ctl"
+    printf 'mode %s\n' "$bmode" > "$WORK/fault-b.$phase.ctl"
+    "$PYTHON" "$ROOT/tools/pdpathfault/pdpathfault.py" --listen 47821 \
+        --connect "127.0.0.1:${ADDR##*:}" --mode "$amode" --rate-mbit 16 \
+        --ctl-file "$WORK/fault-a.$phase.ctl" --events "$WORK/fault-a.$phase.events" \
+        > "$WORK/fault-a.$phase.log" 2>&1 &
+    PROXY_A_PID=$!
+    "$PYTHON" "$ROOT/tools/pdpathfault/pdpathfault.py" --listen 47822 \
+        --connect 127.0.0.1:47812 --mode "$bmode" --delay-ms "$delay" --rate-mbit 16 \
+        --ctl-file "$WORK/fault-b.$phase.ctl" --events "$WORK/fault-b.$phase.events" \
+        > "$WORK/fault-b.$phase.log" 2>&1 &
+    PROXY_B_PID=$!
+    wait_for 10 grep -q '"ev":"start"' "$WORK/fault-a.$phase.events" || bad "fault A ($phase) did not listen"
+    wait_for 10 grep -q '"ev":"start"' "$WORK/fault-b.$phase.events" || bad "fault B ($phase) did not listen"
+}
+
 CLEANED=0
 cleanup() {
     # A timeout's TERM must not cost the evidence: traps below exit, and this is
@@ -432,39 +477,28 @@ else
     printf '\n== result ==\nFAIL: $FAIL proof(s) failed (one boot, stopped after pair)\n'
     exit 1
 fi
-settle_before_next pair
+# The phone's own grace keeps the pair session for 30 s after the Mac app
+# quits; wait it out so the join dials a free slot (boot 8 raced it and the
+# supersede muddied the first dial).
+wait_slot_free "$WORK/phone-pair-end.log" 40 pair || true
 
 # --- two providers, one session: the join ----------------------------------
 section join
 emu logcat -c >/dev/null 2>&1 || true
 # A .part-* from an earlier rig run would trip the 8 MiB "drop started" check.
 emu shell "rm -f /sdcard/Download/PocketDeck/.part-*" >/dev/null 2>&1 || true
-# A: fast (it must found), B: 1.5 s in the way (it must hold, then join).
 # Each proxy gets its own adb forward: two concurrent TLS handshakes must not
 # share one forward's socket path (path A kept failing parse on the phone).
-printf 'mode pass\n' > "$WORK/fault-a.ctl"
-printf 'mode delay\n' > "$WORK/fault-b.ctl"
 emu forward --remove tcp:47812 >/dev/null 2>&1 || true
 emu forward tcp:47812 "tcp:$DEVPORT" >/dev/null || bad "second adb forward failed"
-"$PYTHON" "$ROOT/tools/pdpathfault/pdpathfault.py" --listen 47821 \
-    --connect "127.0.0.1:${ADDR##*:}" --mode pass --rate-mbit 16 \
-    --ctl-file "$WORK/fault-a.ctl" --events "$WORK/fault-a.events" \
-    > "$WORK/fault-a.log" 2>&1 &
-PROXY_A_PID=$!
-"$PYTHON" "$ROOT/tools/pdpathfault/pdpathfault.py" --listen 47822 \
-    --connect 127.0.0.1:47812 --mode delay --delay-ms 1500 --rate-mbit 16 \
-    --ctl-file "$WORK/fault-b.ctl" --events "$WORK/fault-b.events" \
-    > "$WORK/fault-b.log" 2>&1 &
-PROXY_B_PID=$!
-wait_for 10 grep -q '"ev":"start"' "$WORK/fault-a.events" || bad "fault A did not listen"
-wait_for 10 grep -q '"ev":"start"' "$WORK/fault-b.events" || bad "fault B did not listen"
+# A: fast (it must found), B: 1.5 s in the way (it must hold, then join).
+start_faults join pass delay 1500
 
 FILE="$WORK/pd-direct-p1-$(date +%s).bin"
 NAME="$(basename "$FILE")"
 head -c 33554432 /dev/urandom > "$FILE"
 EXPECT_SHA="$(shasum -a 256 "$FILE" | awk '{print $1}')"
 drop_script "$WORK/drop-script.txt" "$FILE" "$WORK/drop-go"
-LAUNCH2_TS="$(date +%s)"
 "$APP" --profile "$PROFILE" --background \
     --connect 127.0.0.1:47821 --connect2 127.0.0.1:47822 \
     --open com.android.settings --debug-input-script "$WORK/drop-script.txt" \
@@ -478,87 +512,100 @@ for _ in $(seq 1 160); do
     grep -q 'paths: joined' "$WORK/phone-join.log" && { JOINED=1; break; }
     sleep 0.25
 done
+PHONE_JOIN_ID="$(grep -o 'paths: joined [0-9a-f]*' "$WORK/phone-join.log" | tail -1 | awk '{print $3}')"
 if [ "$JOINED" = 1 ]; then
-    ok "the phone attached the second path to the same session: $(grep -o 'paths: joined [0-9a-f]*' "$WORK/phone-join.log" | tail -1)"
+    ok "the phone attached the second path to the same session: $(grep -o 'paths: joined [0-9a-f]* (paths [0-9]*)' "$WORK/phone-join.log" | tail -1)"
 else
     bad "no join in the phone log"
 fi
-grep -q 'paths: ended' "$WORK/phone-join.log" && bad "a path/session ended before the drop" \
-    || ok "no session ended before the drop (no supersede)"
-UPS=0
-for _ in $(seq 1 40); do
-    UPS="$(grep -c -- '--up-->' "$WORK/mac-join.log" || true)"
-    [ "${UPS:-0}" -ge 2 ] && break
+# The Mac's own fact for two live paths (item 2's line). The session state
+# stays `live` when a healthy second path arrives, so --up--> transitions only
+# ever fired when the first path had failed (boot 6, boot 8: 0 is correct).
+MAC_ATTACH=""
+for _ in $(seq 1 80); do
+    MAC_ATTACH="$(grep -o 'paths: attached [0-9a-f]* (paths [0-9]*)' "$WORK/mac-join.log" | tail -1)"
+    [ -n "$MAC_ATTACH" ] && break
     sleep 0.25
 done
-if [ "${UPS:-0}" -lt 2 ]; then
+if [ -z "$MAC_ATTACH" ]; then
     refresh_log "$APP_PID" "$WORK/mac-join.log"
-    UPS="$(grep -c -- '--up-->' "$WORK/mac-join.log" || true)"
+    MAC_ATTACH="$(grep -o 'paths: attached [0-9a-f]* (paths [0-9]*)' "$WORK/mac-join.log" | tail -1)"
 fi
-if [ "${UPS:-0}" -ge 2 ]; then
-    ok "the Mac saw both providers attach to one live session ($UPS up transitions)"
+MAC_ATTACH_ID="$(printf '%s' "$MAC_ATTACH" | awk '{print $3}')"
+if [ -n "$MAC_ATTACH" ] && [ -n "$PHONE_JOIN_ID" ] && [ "$MAC_ATTACH_ID" = "$PHONE_JOIN_ID" ]; then
+    ok "the Mac logged the same path attached to the live session: $MAC_ATTACH"
 else
-    bad "the Mac did not see the second provider attach ($UPS up transitions)"
+    bad "the Mac did not log a second live path (windows attach='$MAC_ATTACH', phone join='$PHONE_JOIN_ID')"
+fi
+# No supersede of the join's own session: scope to the session it founded.
+SESSION_AT="$(grep -n 'session slot: free --adopted--> live' "$WORK/phone-join.log" | tail -1 | cut -d: -f1)"
+if [ -z "$SESSION_AT" ]; then
+    bad "the phone log has no adopted session for the join"
+elif tail -n +"$SESSION_AT" "$WORK/phone-join.log" | grep -q 'session superseded'; then
+    bad "a connect superseded the session the join had just founded"
+elif tail -n +"$SESSION_AT" "$WORK/phone-join.log" | grep -q 'paths: ended'; then
+    bad "a path/session ended after the join"
+else
+    ok "the join did not supersede or end its own session"
 fi
 
-# The proxy that connected first is the session's founder (A by construction,
-# but the evidence decides). Throttle it so the drop lasts long enough to cut.
-FOUNDER_CTL=""
-FOUNDER_EVENTS=""
-FOUNDER_LOG=""
-for pair in "a:$WORK/fault-a.events:$WORK/fault-a.ctl:$WORK/fault-a.log" \
-            "b:$WORK/fault-b.events:$WORK/fault-b.ctl:$WORK/fault-b.log"; do
-    events="${pair#*:}"; events="${events%%:*}"
-    first="$(python3 - "$events" "$LAUNCH2_TS" <<'PY'
-import json, sys
-start = float(sys.argv[2])
-first = None
-try:
-    for line in open(sys.argv[1]):
-        try: event = json.loads(line)
-        except ValueError: continue
-        if event.get("ev") == "conn" and event.get("ts", 0) >= start:
-            first = event["ts"]; break
-except OSError:
-    pass
-print("%.6f" % first if first is not None else "")
+# The founder is the provider that welcomed first. A is the fast proxy and B
+# delays every byte by 1.5 s, so the Mac's two `tls connected` lines must be
+# at least a second apart. Boot 8 picked the earliest `conn` event instead and
+# throttled B while the drop ran on A (the tell: 32 MiB in 0.58 s).
+TLS_TIMES="$(grep -o '^2026-[0-9-]* [0-9:.]*.*tls connected (path [0-9a-f]*)' "$WORK/mac-join.log" |
+    sed -E 's/^(2026-[0-9-]+ [0-9:.]+).*(path [0-9a-f]+).*/\1 \2/' | sort -u |
+    awk '!seen[$4]++')"
+FIRST_TLS="$(printf '%s\n' "$TLS_TIMES" | sed -n '1p')"
+SECOND_TLS="$(printf '%s\n' "$TLS_TIMES" | sed -n '2p')"
+FOUNDER_PATH="$(printf '%s' "$FIRST_TLS" | awk '{print $4}')"
+JOIN_PATH="$(printf '%s' "$SECOND_TLS" | awk '{print $4}')"
+TLS_DELTA=""
+if [ -n "$FIRST_TLS" ] && [ -n "$SECOND_TLS" ]; then
+    TLS_DELTA="$(python3 - "$FIRST_TLS" "$SECOND_TLS" <<'PY'
+from datetime import datetime
+import sys
+def stamp(line):
+    date, clock = line.split()[:2]
+    return datetime.strptime(date + " " + clock, "%Y-%m-%d %H:%M:%S.%f").timestamp()
+print("%.3f" % (stamp(sys.argv[2]) - stamp(sys.argv[1])))
 PY
 )"
-    [ -z "$first" ] && continue
-    if [ -z "${FOUNDER_TS:-}" ] || python3 -c "import sys; sys.exit(0 if $first < $FOUNDER_TS else 1)"; then
-        FOUNDER_TS="$first"
-        FOUNDER_CTL="$(echo "$pair" | cut -d: -f3)"
-        FOUNDER_EVENTS="$events"
-        FOUNDER_LOG="$(echo "$pair" | cut -d: -f4)"
-    fi
-done
-if [ -n "$FOUNDER_CTL" ]; then
-    ok "the founder is the proxy with the first connection ($FOUNDER_CTL)"
-    printf 'mode throttle\n' > "$FOUNDER_CTL"
-    # The other proxy held its TLS for 1.5 s to let the founder win; it must
-    # pass normally now, or every chunk of the failover would be delayed.
-    case "$FOUNDER_CTL" in
-        */fault-a.ctl) printf 'mode pass\n' > "$WORK/fault-b.ctl" ;;
-        */fault-b.ctl) printf 'mode pass\n' > "$WORK/fault-a.ctl" ;;
-    esac
-else
-    bad "could not tell which proxy founded the session"
 fi
+if [ -n "$TLS_DELTA" ] && [ -n "$PHONE_JOIN_ID" ] && [ "$JOIN_PATH" = "$PHONE_JOIN_ID" ] &&
+    python3 -c "import sys; sys.exit(0 if $TLS_DELTA >= 1.0 else 1)"; then
+    ok "the founder is the fast proxy A (tls connected $TLS_DELTA s before the join path $JOIN_PATH)"
+else
+    bad "cannot prove the founder is A (first '$FIRST_TLS', second '$SECOND_TLS', phone join '$PHONE_JOIN_ID')"
+fi
+printf 'mode throttle\n' > "$WORK/fault-a.join.ctl"
+printf 'mode pass\n' > "$WORK/fault-b.join.ctl"
+# Let the ctl watcher apply the throttle before the first data chunk.
+sleep 0.3
 
 # Let the drop start only now: the founder is throttled to 16 Mbit/s.
 : > "$WORK/drop-go"
+DROP_T0="$(python3 -c 'import time; print("%.6f" % time.time())')"
+DROP_LOG_OFFSET="$(wc -l < "$WORK/mac-join.log" | tr -d ' ')"
 STARTED=0
-for _ in $(seq 1 200); do
-    size="$(emu shell "stat -c %s /sdcard/Download/PocketDeck/.part-* 2>/dev/null" 2>/dev/null | tr -d '\r' | head -1)"
-    if [ -n "$size" ] && [ "$size" -ge 8388608 ] 2>/dev/null; then STARTED=1; break; fi
+PART_AT_BLACKHOLE=""
+for _ in $(seq 1 240); do
+    PART_AT_BLACKHOLE="$(emu shell "stat -c %s /sdcard/Download/PocketDeck/.part-* 2>/dev/null" 2>/dev/null | tr -d '\r' | head -1)"
+    if [ -n "$PART_AT_BLACKHOLE" ] && [ "$PART_AT_BLACKHOLE" -ge 8388608 ] 2>/dev/null; then STARTED=1; break; fi
     sleep 0.25
 done
 if [ "$STARTED" = 1 ]; then
-    ok "the drop started and reached 8 MiB on the founder"
+    ok "the drop reached 8 MiB on the founder (.part $PART_AT_BLACKHOLE bytes at the cut)"
 else
     bad "the drop never reached 8 MiB"
 fi
-[ -n "$FOUNDER_CTL" ] && printf 'mode blackhole\n' > "$FOUNDER_CTL"
+# A throttled 16 Mbit/s founder cannot have finished 32 MiB by the time the
+# 8 MiB mark is seen; a full-size .part means the transfer ran on the standby
+# and the black-hole would prove nothing (boot 8: 0.58 s for 32 MiB).
+if [ -n "$PART_AT_BLACKHOLE" ] && [ "$PART_AT_BLACKHOLE" -ge 33554432 ] 2>/dev/null; then
+    bad "the whole file was already on disk before the black-hole: the drop did not use the founder"
+fi
+printf 'mode blackhole\n' > "$WORK/fault-a.join.ctl"
 SAVED=0
 # Two 60 s pieces: a single wait may never be longer than the debug-input cap.
 for _piece in 1 2; do
@@ -575,6 +622,93 @@ if [ "$SAVED" = 1 ]; then
 else
     bad "the drop never finished"
 fi
+# The events name the two cuts; the byte counters say which proxy carried the
+# data, so "throttled then black-holed after 8 MiB" and "the other proxy kept
+# moving bytes" are facts, not an inference from the hash.
+BLACKHOLE_TS="$(python3 - "$WORK/fault-a.join.events" <<'PY'
+import json, sys
+ts = None
+for line in open(sys.argv[1]):
+    try:
+        event = json.loads(line)
+    except ValueError:
+        continue
+    if event.get("ev") == "mode" and event.get("mode") == "blackhole":
+        ts = event.get("ts")
+print("%.6f" % ts if ts else "")
+PY
+)"
+if [ -z "$BLACKHOLE_TS" ]; then
+    bad "the founder proxy never recorded the black-hole mode"
+    BLACKHOLE_TS="$DROP_T0"
+fi
+EVENT_ORDER="$(python3 - "$WORK/fault-a.join.events" <<'PY'
+import json, sys
+throttle = []
+blackhole = []
+for line in open(sys.argv[1]):
+    try:
+        event = json.loads(line)
+    except ValueError:
+        continue
+    if event.get("ev") != "mode":
+        continue
+    if event.get("mode") == "throttle":
+        throttle.append(event.get("ts", 0))
+    if event.get("mode") == "blackhole":
+        blackhole.append(event.get("ts", 0))
+print("ok" if throttle and blackhole and min(throttle) < max(blackhole) else "no")
+PY
+)"
+if [ "$EVENT_ORDER" = ok ]; then
+    ok "the founder was throttled before it was black-holed"
+else
+    bad "the founder's events do not show throttle before black-hole"
+fi
+FOUNDER_BYTES="$(python3 - "$WORK/fault-a.join.events" "$DROP_T0" <<'PY'
+import json, sys
+start = float(sys.argv[2])
+base = None
+best = 0
+for line in open(sys.argv[1]):
+    try:
+        event = json.loads(line)
+    except ValueError:
+        continue
+    if event.get("ev") != "bytes" or event.get("dir") != 0:
+        continue
+    total = event.get("total", 0)
+    if base is None and event.get("ts", 0) >= start:
+        base = total - event.get("n", 0)
+    if base is not None:
+        best = max(best, total)
+print(best - (base or 0))
+PY
+)"
+if [ "${FOUNDER_BYTES:-0}" -ge 8388608 ] 2>/dev/null; then
+    ok "the founder delivered the drop before the cut ($FOUNDER_BYTES bytes after drop-go)"
+else
+    bad "the founder delivered only $FOUNDER_BYTES bytes after drop-go (the drop missed it)"
+fi
+OTHER_BYTES="$(python3 - "$WORK/fault-b.join.events" "$BLACKHOLE_TS" <<'PY'
+import json, sys
+start = float(sys.argv[2])
+total = 0
+for line in open(sys.argv[1]):
+    try:
+        event = json.loads(line)
+    except ValueError:
+        continue
+    if event.get("ev") == "bytes" and event.get("dir") == 0 and event.get("ts", 0) > start:
+        total += event.get("n", 0)
+print(total)
+PY
+)"
+if [ "${OTHER_BYTES:-0}" -ge 8388608 ] 2>/dev/null; then
+    ok "the standby proxy kept moving the drop after the cut ($OTHER_BYTES bytes after the black-hole)"
+else
+    bad "the standby proxy moved only $OTHER_BYTES bytes after the black-hole"
+fi
 GOT_SHA="$(emu shell "sha256sum '$TARGET' 2>/dev/null" | tr -d '\r' | awk '{print $1}')"
 if [ -n "$GOT_SHA" ] && [ "$GOT_SHA" = "$EXPECT_SHA" ]; then
     ok "the 32 MiB file is byte-exact across the black-holed path (sha256 $EXPECT_SHA)"
@@ -583,18 +717,33 @@ else
 fi
 grep -q 'drop: ok' "$WORK/mac-join.log" && ok "the Mac's drop sender reported ok" \
     || bad "the Mac's drop sender did not report ok"
-grep -q 'session failed' "$WORK/mac-join.log" && bad "the session failed during the drop" \
-    || ok "the session stayed live through the drop"
+# The drop's window, not the whole log: the first dial's timeout (boot 8's
+# 08:14:10) is before the drop and is not a session failure during it.
+if tail -n +"$((DROP_LOG_OFFSET + 1))" "$WORK/mac-join.log" | grep -q 'session failed'; then
+    bad "the session failed during the drop"
+else
+    ok "the session stayed live through the drop (drop window from $(printf '%s' "$DROP_T0" | cut -c1-14))"
+fi
+SWITCH_LINE="$(tail -n +"$((DROP_LOG_OFFSET + 1))" "$WORK/mac-join.log" |
+    grep -o 'paths: sending [0-9a-f]* -> [0-9a-f]* ([a-z-]*)' | head -1)"
+if [ -n "$SWITCH_LINE" ]; then
+    ok "the Mac named the sending-path change: $SWITCH_LINE"
+else
+    bad "the Mac never named a sending-path change during the drop"
+fi
+printf '[p1-proof] drop timings: Mac `drop: sending` %s, Mac `drop: ok` %s; phone `streaming` %s, `saved` %s\n' \
+    "$(grep 'drop: sending' "$WORK/mac-join.log" | tail -1 | awk '{print $1" "$2}')" \
+    "$(grep 'drop: ok' "$WORK/mac-join.log" | tail -1 | awk '{print $1" "$2}')" \
+    "$(grep -o '^10-31 [0-9:.]*' "$WORK/phone-drop.log" | head -1)" \
+    "$(grep 'drop [0-9]*: saved' "$WORK/phone-drop.log" | tail -1)"
 stop_app
-settle_before_next join
+wait_slot_free "$WORK/phone-join-end.log" 40 join || true
+stop_proxies
 
 # --- 30 s grace ------------------------------------------------------------
 section grace
 emu logcat -c >/dev/null 2>&1 || true
-printf 'mode pass\n' > "$WORK/fault-a.ctl"
-printf 'mode pass\n' > "$WORK/fault-b.ctl"
-: > "$WORK/fault-a.events"
-: > "$WORK/fault-b.events"
+start_faults grace pass pass
 "$APP" --profile "$PROFILE" --background \
     --connect 127.0.0.1:47821 --connect2 127.0.0.1:47822 \
     --open-phone --quit-after 70 > "$WORK/app-grace.out" 2>&1 &
@@ -608,8 +757,8 @@ for _ in $(seq 1 160); do
 done
 [ "$GRACE_JOINED" = 1 ] && ok "a fresh two-path session is live" || bad "the grace session never joined"
 sleep 2
-printf 'mode blackhole\n' > "$WORK/fault-a.ctl"
-printf 'mode blackhole\n' > "$WORK/fault-b.ctl"
+printf 'mode blackhole\n' > "$WORK/fault-a.grace.ctl"
+printf 'mode blackhole\n' > "$WORK/fault-b.grace.ctl"
 GRACE_T0=$(date +%s)
 MAC_GRACE=0
 for _ in $(seq 1 160); do
@@ -653,10 +802,20 @@ fi
 [ -s "$WORK/phone-power.log" ] && ok "phone power log: $(tr '\n' ' ' < "$WORK/phone-power.log")" \
     || ok "no panel override was left (no power line needed)"
 stop_app
+stop_proxies
 
 # --- a v3 hello is refused with v ------------------------------------------
 section version
-if ROOT="$ROOT" ADDR="$ADDR" "$PYTHON" - "$WORK/v3-identity" <<'PY'
+# The refusal is a pre-session gate: the probe must be alone on the listener.
+# This step waits for the phone's slot to be free after the grace (cap 30 s),
+# because the grace teardown and the Mac app's own last retries can still hold
+# the two handshake workers (boot 8: the probe was closed with SSLEOF at
+# 08:15:25.137 while the slot freed at 08:15:25.227). Running before the grace
+# would instead hit the live session's busy slot, which is not a version
+# verdict. A handshake-level collision is retried; the verdict still requires
+# the exact `error version {v:4}` and a close.
+v3_probe() {
+    ROOT="$ROOT" ADDR="$ADDR" "$PYTHON" - "$WORK/v3-identity" <<'PY'
 import os, socket, sys
 sys.path.insert(0, os.path.join(os.environ["ROOT"], "tools", "fakephone"))
 import proto
@@ -675,10 +834,24 @@ after = proto.recv_frame(sock)
 print("code=%s v=%s closed=%s" % (message.get("code"), message.get("v"), after is None))
 sys.exit(0 if message.get("code") == "version" and message.get("v") == 4 and after is None else 1)
 PY
-then
-    ok "a v3-shaped hello got error version with v=4 and a close, no welcome"
+}
+wait_slot_free "$WORK/phone-grace.log" 30 version || true
+sleep 2
+V3_OK=0
+V3_OUT=""
+for attempt in 1 2 3; do
+    if V3_OUT="$(v3_probe 2>&1 | tail -2 | tr '\n' ' ')"; then
+        V3_OK=1
+        printf '[p1-proof] v3 probe attempt %s: %s\n' "$attempt" "$V3_OUT"
+        break
+    fi
+    printf '[p1-proof] v3 probe attempt %s: %s (a busy handshake pool is not a version verdict)\n' "$attempt" "$V3_OUT"
+    sleep 2
+done
+if [ "$V3_OK" = 1 ]; then
+    ok "a v3-shaped hello got error version with v=4 and a close, no welcome ($V3_OUT)"
 else
-    bad "the v3 hello was not refused with v=4"
+    bad "the v3 hello was not refused with v=4 ($V3_OUT)"
 fi
 
 # --- the slot is free: a fresh pairing succeeds ----------------------------
