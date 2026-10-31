@@ -697,6 +697,24 @@ final class Session {
         }
     }
 
+    /// A bare `path.ping` read before its path's welcome. The phone pings a
+    /// path the moment it attaches it, and a join is attached on the phone's
+    /// acceptor thread: that ping can be on the wire ahead of the join's
+    /// welcome. Answer it on the path it arrived on, naming the id our own
+    /// hello gave that path. Nothing else pre-welcome changes course: every
+    /// other frame still goes to the handshake router, and a ping for any
+    /// other id is left to PathLayer (PATH-12).
+    private func answerPreAttachPing(_ message: JSONMessage) {
+        guard let id = lastFramePath, let attempt = attempts[id], let send = attempt.sendRaw else { return }
+        let pingPath = message.string("path") ?? id
+        guard pingPath == id else { return }
+        let ts = Int64(message.int("ts") ?? 0)
+        let pong = Frame(type: MessageType.json.rawValue, stream: 0, payload: JSONFrame.payload([
+            "t": "path.pong", "path": pingPath, "ts": NSNumber(value: ts),
+        ]))
+        send(pong.encoded)
+    }
+
     private var uptime: TimeInterval { ProcessInfo.processInfo.systemUptime }
 
     private func handlePath(_ event: PathSessionEvent) {
@@ -1410,6 +1428,13 @@ final class Session {
                 fail(code)
                 return
             }
+        case "path.ping":
+            // The phone's ticker pings a path the moment it is attached; for a
+            // join that is on its acceptor thread, so the ping can precede the
+            // join's welcome. Answer it for the path we are attaching: it names
+            // the id our own hello gave that path, so no other frame moves and
+            // nothing else pre-welcome changes course.
+            answerPreAttachPing(message)
         default:
             if !loggedUnknown.contains(message.t) {
                 loggedUnknown.insert(message.t)

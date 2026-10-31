@@ -116,4 +116,121 @@ final class SessionPathsTests: XCTestCase {
         XCTAssertEqual(Array(1...UInt64(seqs.count)), seqs)
         session.close()
     }
+
+    /// Boot 6: the phone pings as soon as it welcomes, before the Mac has
+    /// answered anything else. The ping must get a pong whether it shares the
+    /// welcome's write (one TLS read) or follows it (two).
+    func testTheFirstPingInTheSameWriteAsWelcomeIsAnswered() throws {
+        try assertFirstPingAnswered(combined: true)
+    }
+
+    func testTheFirstPingAfterWelcomeInItsOwnWriteIsAnswered() throws {
+        try assertFirstPingAnswered(combined: false)
+    }
+
+    /// The phone's ticker pings a path the moment it is attached, and a join
+    /// is attached on the acceptor thread: its ping can be on the wire before
+    /// the join's welcome is written. The Mac must answer it for the path it
+    /// is attaching, not drop it as an unknown pre-welcome frame.
+    func testAPingForAJoiningPathBeforeItsWelcomeIsAnswered() throws {
+        server = try FakeServer(phoneIdentity: phoneIdentity, trustingClientPem: macIdentity.identity.certPem)
+        let lock = NSLock()
+        var pongs: [String] = []
+        var foundedSession: String?
+        var joinPath: String?
+        server.onRawFrame = { _, frame in
+            guard frame.type == MessageType.json.rawValue,
+                  let message = JSONFrame.decode(payload: frame.payload),
+                  message.t == "path.pong", let path = message.string("path") else { return }
+            lock.lock(); pongs.append(path); lock.unlock()
+        }
+        server.onFrame = { connection, frame in
+            guard frame.type == MessageType.json.rawValue,
+                  let message = JSONFrame.decode(payload: frame.payload),
+                  message.t == "hello", let path = message.string("path") else { return }
+            if message.string("join") != nil {
+                lock.lock(); let session = foundedSession; lock.unlock()
+                guard let session else { return }
+                lock.lock(); joinPath = path; lock.unlock()
+                // The phone's ticker can name the joined path just before the
+                // join's welcome leaves: both frames are in order, the ping
+                // first.
+                connection.sendJSON(["t": "path.ping", "path": path, "ts": 1])
+                connection.sendJSON(Self.welcomeJSON(session: session))
+            } else {
+                let session = PathIds.sessionId()
+                lock.lock(); foundedSession = session; lock.unlock()
+                connection.sendJSON(Self.welcomeJSON(session: session))
+            }
+        }
+        let record = PinnedPhoneV2(deviceId: "phone-1",
+                                   phoneFingerprintHex: server.phoneFingerprintHex,
+                                   certPem: phoneIdentity.certPem)
+        let endpoint = Session.Endpoint.hostPort(host: "127.0.0.1", port: server.port)
+        let session = Session(endpoint: endpoint, endpoints: [endpoint, endpoint],
+                              knownDeviceId: "phone-1", clientId: "test-client",
+                              identity: macIdentity.identity, pinnedPhone: record)
+        session.pairingPolicy = .never
+        session.start()
+        XCTAssertTrue(waitFor { session.state == .ready }, "never ready: \(session.state)")
+        let answered = waitFor {
+            lock.lock(); defer { lock.unlock() }
+            return joinPath.map(pongs.contains) ?? false
+        }
+        lock.lock(); let path = joinPath; lock.unlock()
+        XCTAssertTrue(answered, "no path.pong for the joining path \(path ?? "?") (pongs: \(pongs))")
+        session.closeAndWait()
+    }
+
+    private static func welcomeJSON(session: String) -> [String: Any] {
+        ["t": "welcome", "session": session,
+         "device": ["id": "phone-1", "name": "Pixel", "model": "Pixel", "sdk": 36,
+                    "screen": ["w": 1080, "h": 2340, "dpi": 450], "locked": true]]
+    }
+
+    private func assertFirstPingAnswered(combined: Bool) throws {
+        server = try FakeServer(phoneIdentity: phoneIdentity, trustingClientPem: macIdentity.identity.certPem)
+        let lock = NSLock()
+        var pongs: [String] = []
+        var welcomedPath: String?
+        server.onRawFrame = { _, frame in
+            guard frame.type == MessageType.json.rawValue,
+                  let message = JSONFrame.decode(payload: frame.payload),
+                  message.t == "path.pong", let path = message.string("path") else { return }
+            lock.lock(); pongs.append(path); lock.unlock()
+        }
+        server.onFrame = { connection, frame in
+            guard frame.type == MessageType.json.rawValue,
+                  let message = JSONFrame.decode(payload: frame.payload),
+                  message.t == "hello", let path = message.string("path") else { return }
+            lock.lock(); welcomedPath = path; lock.unlock()
+            let welcome = Frame(type: MessageType.json.rawValue, stream: 0, payload: JSONFrame.payload([
+                "t": "welcome", "session": PathIds.sessionId(),
+                "device": ["id": "phone-1", "name": "Pixel", "model": "Pixel", "sdk": 36,
+                           "screen": ["w": 1080, "h": 2340, "dpi": 450], "locked": true],
+            ]))
+            let ping = Frame(type: MessageType.json.rawValue, stream: 0, payload: JSONFrame.payload([
+                "t": "path.ping", "path": path, "ts": 1,
+            ]))
+            if combined {
+                let bytes = welcome.encoded + ping.encoded
+                var buffer = connection.channel.allocator.buffer(capacity: bytes.count)
+                buffer.writeBytes(bytes)
+                connection.channel.writeAndFlush(buffer, promise: nil)
+            } else {
+                connection.send(welcome)
+                connection.send(ping)
+            }
+        }
+        let session = makeSession(port: server.port)
+        session.start()
+        XCTAssertTrue(waitFor { session.state == .ready }, "never ready: \(session.state)")
+        lock.lock(); let path = welcomedPath; lock.unlock()
+        let answered = waitFor {
+            lock.lock(); defer { lock.unlock() }
+            return path.map(pongs.contains) ?? false
+        }
+        XCTAssertTrue(answered, "no path.pong for \(path ?? "?") (pongs: \(pongs))")
+        session.close()
+    }
 }
