@@ -182,12 +182,14 @@ final class PathLayer {
         var ready: (path: Path?, seq: UInt64, frame: [UInt8])?
         locked {
             guard !closed else { return }
-            // A frame that did not fit is waiting: every later frame queues
-            // behind it, or the receiver would put the byte streams back in a
-            // different order (a file would arrive corrupted, not dropped).
-            guard pending.isEmpty else {
-                pending.append(Pending(frame: frame, bulk: bulk, completion: completion))
-                return
+            // Only bulk queues behind pending bulk (PATH-10, R-6): control is
+            // admitted against its own budget at once, and seqs are assigned
+            // at admission, so the wire order stays a valid seq order.
+            if bulk {
+                guard pending.isEmpty else {
+                    pending.append(Pending(frame: frame, bulk: bulk, completion: completion))
+                    return
+                }
             }
             let wrapped = (try? PathCodec.encodeReliable(seq: replay.nextSeq, inner: frame))?.encoded
             let size = wrapped?.count ?? Int.max
