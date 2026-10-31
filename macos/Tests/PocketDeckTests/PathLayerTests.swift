@@ -87,7 +87,8 @@ final class PathLayerTests: XCTestCase {
     }
 
     func testAPongMeasuresTheRoundTripOnOurOwnClock() throws {
-        layer.pingAll()
+        layer.attach(PathLayer.Path(id: "bbbb0002", kind: .lan, send: { _ in }, close: {}), joined: true)
+        layer.pingAll(active: true)
         let ping = try XCTUnwrap(decoded(0))
         let message = try XCTUnwrap(JSONFrame.decode(payload: ping.payload))
         XCTAssertEqual("path.ping", message.t)
@@ -104,11 +105,12 @@ final class PathLayerTests: XCTestCase {
     }
 
     func testNoPongInOneAndAHalfSecondsIsALostPing() {
-        layer.pingAll()
+        layer.attach(PathLayer.Path(id: "bbbb0002", kind: .lan, send: { _ in }, close: {}), joined: true)
+        layer.pingAll(active: true)
         clock += 1_499
         XCTAssertTrue(layer.lostPings().isEmpty)
         clock += 2
-        XCTAssertEqual(["aaaa0001"], layer.lostPings())
+        XCTAssertEqual(["aaaa0001", "bbbb0002"], layer.lostPings().sorted())
     }
 
     func testTheSwitchMarkerNamesTheFrameAfterItself() throws {
@@ -235,7 +237,7 @@ extension PathLayerTests {
         wire.setWritable(false)
         layer.send(bulkFrame(1))
         XCTAssertTrue(wire.all().isEmpty, "bulk held back")
-        layer.pingAll()
+        layer.pingAll(active: true)
         let frames = try wire.all().map { try XCTUnwrap(Frame(encoded: $0)) }
         XCTAssertEqual(1, frames.count, "the ping is not behind the bulk")
         XCTAssertEqual(MessageType.json.rawValue, frames[0].type)
@@ -253,12 +255,18 @@ extension PathLayerTests {
     /// A path that keeps delivering frames is alive even when its pong is late:
     /// a pong can queue behind our own bulk on a slow link (D-2).
     func testAPathThatKeepsReceivingIsAliveThoughItsPongIsLate() {
-        layer.pingAll()
+        let second = Wire()
+        layer.attach(PathLayer.Path(id: "bbbb0002", kind: .lan, send: second.send,
+                                    close: second.close, isWritable: second.isWritable), joined: true)
+        wire.clear()
+        layer.pingAll(active: true)
+        XCTAssertEqual(1, wire.all().count, "the ping under test went out")
         clock += 1_000
         let inbound = Frame(type: .json, stream: 0, payload: JSONFrame.payload(["t": "noop"]))
         _ = layer.receive(path: "aaaa0001", frame: inbound)
         clock += 600                                    // 1.6 s after the ping
-        XCTAssertTrue(layer.lostPings().isEmpty, "a receiving path was reported lost")
+        XCTAssertFalse(layer.lostPings().contains("aaaa0001"),
+                       "a receiving path was reported lost")
         clock += 1_000                                  // 1.6 s after the last inbound
         XCTAssertEqual(["aaaa0001"], layer.lostPings())
     }
@@ -269,6 +277,7 @@ extension PathLayerTests {
         let second = Wire()
         layer.attach(PathLayer.Path(id: "bbbb0002", kind: .lan, send: second.send,
                                     close: second.close, isWritable: second.isWritable), joined: true)
+        second.clear()      // the join's own ping
         wire.setWritable(false)
         layer.send(bulkFrame(1))
         XCTAssertTrue(wire.all().isEmpty)
@@ -280,5 +289,79 @@ extension PathLayerTests {
         let frame = try XCTUnwrap(Frame(encoded: writes[0]))
         XCTAssertEqual(MessageType.dropData.rawValue, try PathCodec.decodeReliable(frame).inner.type)
         XCTAssertFalse(second.closed)
+    }
+}
+
+// MARK: - D-1: the ping policy
+
+extension PathLayerTests {
+    /// One path, screen on and sending: still no path.ping (D-1).
+    func testAOnePathSessionIsNeverPinged() {
+        for _ in 0..<20 {
+            clock += 1_000
+            layer.pingAll(active: true)
+        }
+        XCTAssertTrue(wire.all().isEmpty, "a one-path session sent a path.ping")
+        XCTAssertTrue(layer.lostPings().isEmpty)
+    }
+
+    /// Two paths: every 2 s while the screen is on or a transfer runs, every
+    /// 15 s otherwise.
+    func testTwoPathsPingEveryTwoSecondsWhenActiveAndFifteenWhenIdle() throws {
+        let second = Wire()
+        layer.attach(PathLayer.Path(id: "bbbb0002", kind: .lan, send: second.send,
+                                    close: second.close, isWritable: second.isWritable), joined: true)
+        second.clear()      // the join's own immediate ping
+        clock += 2_000
+        layer.pingAll(active: true)
+        let pings = try wire.all().map { try XCTUnwrap(Frame(encoded: $0)) }
+            .filter { JSONFrame.decode(payload: $0.payload)?.t == "path.ping" }
+        XCTAssertEqual(1, pings.count)
+        let standbyPings = second.all().compactMap { Frame(encoded: $0) }
+            .filter { JSONFrame.decode(payload: $0.payload)?.t == "path.ping" }
+        XCTAssertEqual(1, standbyPings.count, "both paths are pinged, the standby included")
+        wire.clear(); second.clear()
+        clock += 1_900
+        layer.pingAll(active: true)
+        XCTAssertTrue(wire.all().isEmpty, "no ping before the 2 s interval")
+        clock += 100
+        layer.pingAll(active: true)
+        XCTAssertFalse(wire.all().isEmpty, "the 2 s interval passed")
+        // Screen off, no transfer: 15 s.
+        wire.clear(); second.clear()
+        clock += 1_000
+        layer.pingAll(active: false)
+        XCTAssertTrue(wire.all().isEmpty)
+        clock += 13_900                             // 14.9 s since the last ping
+        layer.pingAll(active: false)
+        XCTAssertTrue(wire.all().isEmpty, "the idle interval is 15 s, not 2 s")
+        clock += 100
+        layer.pingAll(active: false)
+        XCTAssertFalse(wire.all().isEmpty, "the 15 s idle interval passed")
+    }
+
+    /// A transfer keeps the fast interval even with the screen off.
+    func testARunningTransferKeepsTheFastInterval() {
+        let second = Wire()
+        layer.attach(PathLayer.Path(id: "bbbb0002", kind: .lan, send: second.send,
+                                    close: second.close, isWritable: second.isWritable), joined: true)
+        clock += 2_000
+        layer.pingAll(active: false)
+        wire.clear(); second.clear()
+        layer.send(bulkFrame(1))
+        clock += 2_500
+        layer.pingAll(active: false)
+        XCTAssertFalse(wire.all().isEmpty, "a transfer runs: the fast interval applies")
+    }
+
+    /// A joined path is pinged at once, before any tick (PATH-12/D-1).
+    func testAJoinedPathIsPingedAtOnce() throws {
+        let second = Wire()
+        layer.attach(PathLayer.Path(id: "bbbb0002", kind: .lan, send: second.send,
+                                    close: second.close, isWritable: second.isWritable), joined: true)
+        let writes = try second.all().map { try XCTUnwrap(Frame(encoded: $0)) }
+        XCTAssertEqual(1, writes.count)
+        XCTAssertEqual("path.ping", JSONFrame.decode(payload: writes[0].payload)?.t)
+        XCTAssertEqual("bbbb0002", JSONFrame.decode(payload: writes[0].payload)?.string("path"))
     }
 }
