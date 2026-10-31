@@ -431,6 +431,7 @@ class PathHub(object):
 
     def _answer_ping(self, on_path, ping_path, ts):
         mode = self.pong_modes.get(ping_path)
+        self.log("pong %s mode=%r" % (ping_path, mode))
         if mode is True or mode == "off":
             return
         if isinstance(mode, (int, float)) and mode > 0:
